@@ -70,6 +70,10 @@ type Planned struct {
 	After  []byte // content after the change
 }
 
+// ErrNotIdempotent means applying the transform to its own output changed
+// it again. Such a patch is refused and nothing is written.
+var ErrNotIdempotent = errors.New("transform is not idempotent")
+
 // ErrDrift matches, through errors.Is, every *DriftError.
 var ErrDrift = errors.New("file changed since the patch was planned")
 
@@ -142,6 +146,17 @@ func Plan(p Patch) (Planned, error) {
 	if err != nil {
 		return Planned{}, fmt.Errorf("patch: %s: transform: %w", file, err)
 	}
+	// A repeat apply is recognized by the transform leaving its own output
+	// unchanged, so a transform that does not is refused outright. Without
+	// this, an appending transform re-applies on every run and a later
+	// run misreports the patched file as drift.
+	again, err := p.Transform(next)
+	if err != nil {
+		return Planned{}, fmt.Errorf("patch: %s: transform: %w", file, err)
+	}
+	if !bytes.Equal(again, next) {
+		return Planned{}, fmt.Errorf("patch: %s: %w", file, ErrNotIdempotent)
+	}
 	pl := Planned{
 		Record: Record{File: file, BeforeHash: curHash, AfterHash: Hash(next)},
 		Before: cur,
@@ -177,10 +192,8 @@ func Apply(p Patch, backupDir string) (Record, error) {
 	if pl.Action == NoOp {
 		return rec, nil
 	}
-	if pl.Action == Modify {
-		if rec.BackupPath, err = backup(backupDir, pl.Before); err != nil {
-			return Record{}, err
-		}
+	if pl.Action == Modify && backupDir == "" {
+		return Record{}, errors.New("patch: backup directory is required")
 	}
 	mode := p.Mode
 	if mode == 0 {
@@ -197,6 +210,13 @@ func Apply(p Patch, backupDir string) (Record, error) {
 		return Record{}, err
 	} else if h != rec.BeforeHash {
 		return Record{}, &DriftError{File: rec.File, Expected: rec.BeforeHash, Actual: h}
+	}
+	// The backup is taken only once the write is going ahead, so a refused
+	// patch leaves nothing behind.
+	if pl.Action == Modify {
+		if rec.BackupPath, err = backup(backupDir, pl.Before); err != nil {
+			return Record{}, err
+		}
 	}
 	if err := safefs.WriteFile(rec.File, pl.After, mode); err != nil {
 		return Record{}, err
@@ -245,6 +265,9 @@ func Revert(r Record) error {
 		return &DriftError{File: r.File, Expected: r.AfterHash, Actual: cur}
 	}
 	if r.BeforeHash == NoFile {
+		// TODO(T6607): directories created for the file are left in place.
+		// Exact restore also has to cover dangling symlinks, hard links,
+		// and xattrs.
 		return safefs.Remove(r.File)
 	}
 	old, err := safefs.ReadFile(r.BackupPath)
