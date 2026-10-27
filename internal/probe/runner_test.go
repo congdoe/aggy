@@ -18,7 +18,7 @@ func TestRunnerScrubsEnvAndStdin(t *testing.T) {
 	t.Setenv("ANTHROPIC_BASE_URL", "http://proxy")
 	t.Setenv("SOME_OTHER_VAR", "x")
 	run := f.runner(t, "", 10*time.Second)
-	out, err := run(context.Background(), adapter.Command{Path: f.fakes.Codex, Args: []string{"exec"}})
+	out, err := run(context.Background(), adapter.Command{Path: f.fakes.Codex, Args: []string{"exec", "a prompt"}})
 	if err != nil || out.ExitCode != 0 {
 		t.Fatalf("run = %+v, %v", out, err)
 	}
@@ -69,7 +69,7 @@ func TestRunnerTimeout(t *testing.T) {
 	f := setup(t)
 	run := f.runner(t, `{"sleep_ms":5000}`, 200*time.Millisecond)
 	start := time.Now()
-	_, err := run(context.Background(), adapter.Command{Path: f.fakes.Claude, Args: []string{"-p"}})
+	_, err := run(context.Background(), adapter.Command{Path: f.fakes.Claude, Args: []string{"-p", "a prompt"}})
 	if !errors.Is(err, ErrTimeout) {
 		t.Fatalf("run = %v, want ErrTimeout", err)
 	}

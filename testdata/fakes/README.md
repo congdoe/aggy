@@ -6,7 +6,7 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 
 ## Rules
 
-- A fake refuses to run (exit 97) when `HOME` is unset, relative, or the real user's home, or when the vendor's home (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`, else `~/.<vendor>`) is inside the real home. Tests set `HOME` to a temp dir.
+- A fake refuses to run (exit 97) when `HOME` is unset, relative, or the real user's home, or when any vendor home (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`, else `$HOME/.<vendor>`) is relative or inside the real home. Paths are compared after resolving symlinks, and case-insensitively on darwin. Tests set `HOME` to a temp dir and clear or set the three vendor variables.
 - It accepts only the flags recorded in [docs/adapters.md](../../docs/adapters.md). Any other flag fails with exit 2 and `unknown option`, as the real CLIs do, so an adapter that invents a flag fails its test. A scenario can allow more with `extra_flags` and `extra_switches`.
 - It never reads anything except the scenario file and its stdin.
 
@@ -28,7 +28,15 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 | `codex exec`, `codex exec resume <id>` | `-c`, `--disable` (repeatable), `--sandbox`, `-i` | `--json` |
 | `codex resume <id>` | `-c` | `--no-alt-screen` |
 
-Every command also takes `--version` and `--help` (`-h`). `--flag=value` works too.
+Every command also takes `--version` and `--help` (`-h`). `--flag=value` works too. Grok's `--continue` is recorded in the proposal (§3) and in docs/adapters.md.
+
+Values are checked where docs/adapters.md records them, with exit 2 otherwise:
+
+- `--session-id` must be a UUID.
+- `--output-format` must be `json`, `--permission-mode` must be `plan`, and `--sandbox` must be `read-only`. `extra_values` adds values.
+- `claude -p`, `codex exec`, and `codex exec resume <id>` need a prompt, as an argument or on stdin.
+- An interactive run needs a terminal on stdin, unless `interactive_without_tty` is set.
+- Rules that are not recorded are opt-in through `strict`: `resume-with-session-id` refuses `--resume` with `--session-id` unless `--fork-session` is given.
 
 Headless means `-p` (Claude, Grok) or `codex exec`. A headless run reads stdin to EOF when it is not a terminal: `codex exec` waits on such a stdin, which is why aggy runs it with `/dev/null`. An interactive run prints `stdout`, calls the hooks, then reads lines until `/exit` or EOF.
 
@@ -44,6 +52,9 @@ A JSON object. Every field is optional, and unknown fields are an error.
 | `version_output` | string | Exact `--version` text, replacing the default `<vendor> <version> (fake)`. |
 | `help` | string | Exact `--help` text, replacing the generated list of honored flags. |
 | `extra_flags`, `extra_switches` | strings | More value flags and switches to accept, for flags not yet recorded (such as a model flag). |
+| `extra_values` | object | More accepted values per flag, e.g. `{"--sandbox": ["workspace-write"]}`. |
+| `strict` | strings | Opt-in rules that are not recorded: `resume-with-session-id`. |
+| `interactive_without_tty` | bool | Let an interactive run start without a terminal, for tests that pipe stdin. |
 | `session_id` | string | Id of a new session. |
 | `stdout`, `stderr` | string | Text printed. `stdout` is the terminal output of an interactive run, or the reply of a headless run without JSON output. |
 | `json` | object | Claude and Grok `--output-format json` reply. Grok's always gets `sessionId`. |
