@@ -1,0 +1,20 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - forbidigo
+  settings:
+    forbidigo:
+      analyze-types: true
+      forbid:
+        # All file I/O goes through internal/safefs, which refuses vendor
+        # credential files.
+        - pattern: ^os\.(Open|OpenFile|ReadFile|WriteFile|Create|ReadDir)$
+          msg: use internal/safefs, which refuses vendor credential files
+  exclusions:
+    rules:
+      - path: _test\.go$
+        linters: [forbidigo]
+      - path: ^internal/safefs/
+        linters: [forbidigo]
