@@ -26,7 +26,14 @@ jobs:
       - run: go build ./...
 
   lint:
+    # Lint each target OS: files with a darwin or linux build tag are only
+    # type-checked, and so only linted, for that GOOS.
+    strategy:
+      matrix:
+        goos: [linux, darwin]
     runs-on: ubuntu-latest
+    env:
+      GOOS: ${{ matrix.goos }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0

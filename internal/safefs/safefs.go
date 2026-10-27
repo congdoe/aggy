@@ -54,7 +54,11 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
+	"testing"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // ErrAuthPath matches, through errors.Is, every refusal of a vendor
@@ -83,14 +87,24 @@ func (e *AuthPathError) Is(target error) bool { return target == ErrAuthPath }
 // variable so tests can exercise both behaviors on any OS.
 var foldCase = runtime.GOOS == "darwin"
 
-// lookupUserHome is the fallback when $HOME is unset or relative. Tests
-// replace it so they never reach the real home directory.
-var lookupUserHome = func() (string, error) {
+// passwdHome looks up the user database once per process.
+var passwdHome = sync.OnceValues(func() (string, error) {
 	u, err := user.Current()
 	if err != nil {
 		return "", err
 	}
 	return u.HomeDir, nil
+})
+
+// lookupUserHome returns the home directory from the user database, which
+// the guard covers as well as $HOME. In a test binary it is not consulted
+// (it reports an error), so tests never stat the real credential files;
+// safefs's own tests replace it to exercise both homes.
+var lookupUserHome = func() (string, error) {
+	if testing.Testing() {
+		return "", errors.New("the user database is not consulted in tests")
+	}
+	return passwdHome()
 }
 
 // credDirs lists each vendor's config directory: the default under home,
@@ -105,34 +119,55 @@ var credDirs = []struct {
 	{"GROK_HOME", ".grok", []string{"auth.json", "mcp_credentials.json"}},
 }
 
-// homeDir returns an absolute home directory: $HOME, else the user
-// database. A relative value is never used.
-func homeDir() (string, error) {
-	if h := os.Getenv("HOME"); h != "" && filepath.IsAbs(h) {
-		return filepath.Clean(h), nil
+// homeDirs returns every home directory a vendor CLI might use: $HOME,
+// made absolute against the working directory when it is relative, and the
+// home in the user database when it differs. A child that changes HOME
+// therefore cannot hide the real home's credential files. With neither,
+// it fails closed.
+func homeDirs() ([]string, error) {
+	var hs []string
+	if h := os.Getenv("HOME"); h != "" {
+		if !filepath.IsAbs(h) {
+			if wd, err := os.Getwd(); err == nil {
+				h = filepath.Join(wd, h)
+			} else {
+				h = ""
+			}
+		}
+		if h != "" {
+			hs = append(hs, filepath.Clean(h))
+		}
 	}
-	h, err := lookupUserHome()
-	if err == nil && h != "" && filepath.IsAbs(h) {
-		return filepath.Clean(h), nil
+	if h, err := lookupUserHome(); err == nil && h != "" && filepath.IsAbs(h) {
+		h = filepath.Clean(h)
+		if len(hs) == 0 || hs[0] != h {
+			hs = append(hs, h)
+		}
 	}
-	return "", fmt.Errorf("%w: no absolute home directory", ErrLocate)
+	if len(hs) == 0 {
+		return nil, fmt.Errorf("%w: no absolute home directory", ErrLocate)
+	}
+	return hs, nil
 }
 
 // guard is the deny list for one call. It is rebuilt each call because the
 // environment can change.
 type guard struct {
-	paths []string      // absolute credential paths, as given and with the directory resolved
+	paths []string      // credential paths, normalized by normPath
 	ids   []fs.FileInfo // identities of the credential files that exist
 }
 
 func loadGuard() (*guard, error) {
-	home, err := homeDir()
+	homes, err := homeDirs()
 	if err != nil {
 		return nil, err
 	}
 	var creds []string
 	for _, c := range credDirs {
-		dirs := []string{filepath.Join(home, c.dir)}
+		var dirs []string
+		for _, h := range homes {
+			dirs = append(dirs, filepath.Join(h, c.dir))
+		}
 		if v := os.Getenv(c.env); v != "" {
 			if !filepath.IsAbs(v) {
 				return nil, fmt.Errorf("%w: %s=%q is not an absolute path", ErrLocate, c.env, v)
@@ -147,9 +182,9 @@ func loadGuard() (*guard, error) {
 	}
 	g := &guard{}
 	for _, p := range creds {
-		g.paths = append(g.paths, p)
+		g.paths = append(g.paths, normPath(p))
 		if d, err := resolveExisting(filepath.Dir(p)); err == nil {
-			g.paths = append(g.paths, filepath.Join(d, filepath.Base(p)))
+			g.paths = append(g.paths, normPath(filepath.Join(d, filepath.Base(p))))
 		}
 		// Metadata only: these calls never read the file's contents.
 		if fi, err := os.Lstat(p); err == nil {
@@ -162,14 +197,30 @@ func loadGuard() (*guard, error) {
 	return g, nil
 }
 
-// pathMatch reports whether path names a credential file.
+// pathMatch reports whether path names a credential file, or a path
+// under one (which can only exist if the credential is a directory, or
+// would be created in its place). Paths compare in Unicode NFC, and
+// case-insensitively where the file system ignores case, so a credential
+// that does not exist yet, and so has no identity to check, is still
+// matched when spelled another way.
 func (g *guard) pathMatch(path string) bool {
+	n := normPath(path)
 	for _, d := range g.paths {
-		if samePath(path, d) {
+		if n == d || strings.HasPrefix(n, d+string(filepath.Separator)) {
 			return true
 		}
 	}
 	return false
+}
+
+// normPath is the lexical form paths are compared in: NFC, and case-folded
+// where the file system ignores case.
+func normPath(p string) string {
+	p = norm.NFC.String(p)
+	if foldCase {
+		p = strings.ToLower(p)
+	}
+	return p
 }
 
 // idMatch reports whether fi is a credential file.
@@ -180,13 +231,6 @@ func (g *guard) idMatch(fi fs.FileInfo) bool {
 		}
 	}
 	return false
-}
-
-func samePath(a, b string) bool {
-	if foldCase {
-		return strings.EqualFold(a, b)
-	}
-	return a == b
 }
 
 // absRaw makes name absolute without cleaning it, so ".." keeps its
@@ -239,7 +283,26 @@ type target struct {
 	g    *guard
 	real string // fully resolved path; the operation runs here
 	link string // parent resolved, last element kept, for Lstat and Remove
+	// The identities of real's and link's parent directories, taken when
+	// the path was checked; inParent acts only in those directories.
+	realDir, linkDir parentID
 }
+
+// parentID is a directory's identity at check time, or the error from
+// looking it up.
+type parentID struct {
+	fi  fs.FileInfo
+	err error
+}
+
+func lstatDir(p string) parentID {
+	fi, err := os.Lstat(filepath.Dir(p))
+	return parentID{fi, err}
+}
+
+// testHookAfterResolve, when set by a test, runs right after resolve has
+// checked a path and recorded its parents' identities.
+var testHookAfterResolve func(op string)
 
 func resolve(op, name string) (*target, error) {
 	g, err := loadGuard()
@@ -270,6 +333,14 @@ func resolve(op, name string) (*target, error) {
 		if g.pathMatch(t.link) {
 			return nil, &AuthPathError{Op: op, Path: name}
 		}
+	}
+	t.realDir = lstatDir(t.real)
+	t.linkDir = t.realDir
+	if filepath.Dir(t.link) != filepath.Dir(t.real) {
+		t.linkDir = lstatDir(t.link)
+	}
+	if testHookAfterResolve != nil {
+		testHookAfterResolve(op)
 	}
 	return t, nil
 }
@@ -303,9 +374,15 @@ func Check(name string) error {
 
 // ErrHardLink matches the refusal of a regular file that has more than one
 // link. A credential file can gain a second name before safefs learns its
-// identity, for example a hard link made before a token rotation, or a
-// credential created after the deny list was loaded. Refusing every
-// multiply-linked file closes both. aggy never hard-links its own files.
+// identity, for example when it is created after the deny list was loaded;
+// refusing every multiply-linked file closes that. aggy never hard-links
+// its own files.
+//
+// It does not cover a hard link made to a credential before a token
+// rotation that replaces the credential by rename: the old inode then has
+// one link left, holds the old token, and is no longer the credential's
+// identity.
+// TODO(T6724): close the hard-link-before-rotation case.
 var ErrHardLink = errors.New("refusing a file with more than one hard link")
 
 // ErrChanged means the file system changed between the checks and the
@@ -349,23 +426,20 @@ func beforeAct(op string) {
 }
 
 // inParent runs fn on the last element of p, through a descriptor for p's
-// directory. The directory's identity is taken before the hook and compared
-// after the open, so a directory replaced by a symlink in between is
-// refused, and the operation then works relative to that descriptor, so a
-// later swap of the directory path cannot redirect it.
-func inParent(op, name, p string, fn func(dir *os.Root, base string) error) error {
-	dir, base := filepath.Split(p)
-	if base == "" {
+// directory. want is the directory's identity from resolve, taken when the
+// path was checked, and is compared after the open, so a directory replaced
+// in between (by a symlink or another directory) is refused, and the
+// operation then works relative to that descriptor, so a later swap of the
+// directory path cannot redirect it.
+func inParent(op, name, p string, want parentID, fn func(dir *os.Root, base string) error) error {
+	dir, base := filepath.Dir(p), filepath.Base(p)
+	if dir == p {
 		base = "."
 	}
-	if dir == "" {
-		dir = "."
+	if want.err != nil {
+		return renamePath(want.err, name)
 	}
-	want, err := os.Lstat(dir)
-	if err != nil {
-		return renamePath(err, name)
-	}
-	if !want.IsDir() {
+	if !want.fi.IsDir() {
 		return &fs.PathError{Op: op, Path: name, Err: ErrChanged}
 	}
 	beforeAct(op)
@@ -378,7 +452,7 @@ func inParent(op, name, p string, fn func(dir *os.Root, base string) error) erro
 	if err != nil {
 		return renamePath(err, name)
 	}
-	if !os.SameFile(want, got) {
+	if !os.SameFile(want.fi, got) {
 		return &fs.PathError{Op: op, Path: name, Err: ErrChanged}
 	}
 	return fn(root, base)
@@ -409,7 +483,7 @@ func openFile(op, name string, flag int, perm fs.FileMode) (*os.File, error) {
 		return nil, &AuthPathError{Op: op, Path: name}
 	}
 	var f *os.File
-	err = inParent(op, name, t.real, func(dir *os.Root, base string) error {
+	err = inParent(op, name, t.real, t.realDir, func(dir *os.Root, base string) error {
 		// The final element is already resolved, so a symlink there now
 		// means it was swapped in after the check: refuse to follow it.
 		var err error
@@ -459,6 +533,51 @@ func ReadFile(name string) ([]byte, error) {
 	return io.ReadAll(f)
 }
 
+// ErrTooLarge means a file is larger than the caller's limit.
+var ErrTooLarge = errors.New("file is larger than the limit")
+
+// ErrNotRegular means a file is a symlink, directory, device, or other
+// non-regular file where a regular file is required.
+var ErrNotRegular = errors.New("not a regular file")
+
+// ReadFileLimit reads a regular file of at most max bytes through a
+// checked descriptor. Unlike ReadFile, it refuses a name that is itself a
+// symlink, and any file that is not regular (ErrNotRegular), and a file
+// over max bytes (ErrTooLarge). It is for small files whose content aggy
+// trusts to parse, such as config.
+func ReadFileLimit(name string, max int64) ([]byte, error) {
+	fi, err := Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, &fs.PathError{Op: "ReadFileLimit", Path: name, Err: ErrNotRegular}
+	}
+	f, err := openFile("ReadFileLimit", name, os.O_RDONLY|oNonBlock, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	fi, err = f.Stat()
+	if err != nil {
+		return nil, renamePath(err, name)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, &fs.PathError{Op: "ReadFileLimit", Path: name, Err: ErrNotRegular}
+	}
+	if fi.Size() > max {
+		return nil, &fs.PathError{Op: "ReadFileLimit", Path: name, Err: ErrTooLarge}
+	}
+	b, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, renamePath(err, name)
+	}
+	if int64(len(b)) > max {
+		return nil, &fs.PathError{Op: "ReadFileLimit", Path: name, Err: ErrTooLarge}
+	}
+	return b, nil
+}
+
 // ReadDir reads a directory through a checked descriptor and returns its
 // entries sorted by name, like os.ReadDir.
 func ReadDir(name string) ([]fs.DirEntry, error) {
@@ -501,7 +620,7 @@ func WriteFile(name string, data []byte, perm fs.FileMode) error {
 		return renamePath(err, name)
 	}
 	var syncErr error
-	err = inParent("WriteFile", name, t.real, func(dir *os.Root, base string) error {
+	err = inParent("WriteFile", name, t.real, t.realDir, func(dir *os.Root, base string) error {
 		// Re-check through the descriptor: the name may have been swapped.
 		if fi, err := dir.Lstat(base); err == nil {
 			if t.g.idMatch(fi) {
@@ -597,7 +716,7 @@ func Stat(name string) (fs.FileInfo, error) {
 		return nil, err
 	}
 	var fi fs.FileInfo
-	err = inParent("Stat", name, t.real, func(dir *os.Root, base string) error {
+	err = inParent("Stat", name, t.real, t.realDir, func(dir *os.Root, base string) error {
 		var err error
 		if fi, err = dir.Lstat(base); err != nil {
 			return err
@@ -640,7 +759,7 @@ func Lstat(name string) (fs.FileInfo, error) {
 		return nil, err
 	}
 	var fi fs.FileInfo
-	err = inParent("Lstat", name, t.link, func(dir *os.Root, base string) error {
+	err = inParent("Lstat", name, t.link, t.linkDir, func(dir *os.Root, base string) error {
 		var err error
 		fi, err = dir.Lstat(base)
 		return err
@@ -720,7 +839,7 @@ func Remove(name string) error {
 	if err != nil {
 		return err
 	}
-	return renamePath(inParent("Remove", name, t.link, func(dir *os.Root, base string) error {
+	return renamePath(inParent("Remove", name, t.link, t.linkDir, func(dir *os.Root, base string) error {
 		if fi, err := dir.Lstat(base); err == nil && t.g.idMatch(fi) {
 			return &AuthPathError{Op: "Remove", Path: name}
 		}
@@ -742,7 +861,7 @@ func Chmod(name string, mode fs.FileMode) error {
 		return &AuthPathError{Op: "Chmod", Path: name}
 	}
 	var f *os.File
-	err = inParent("Chmod", name, t.real, func(dir *os.Root, base string) error {
+	err = inParent("Chmod", name, t.real, t.realDir, func(dir *os.Root, base string) error {
 		var err error
 		f, err = dir.OpenFile(base, os.O_RDONLY|oNoFollow|oNonBlock, 0)
 		if errors.Is(err, fs.ErrPermission) {

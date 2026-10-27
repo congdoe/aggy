@@ -3,9 +3,61 @@ version: "2"
 linters:
   default: standard
   enable:
+    - depguard
     - forbidigo
     - nolintlint
   settings:
+    # Import-level bans. They catch every use of a package, which function
+    # patterns can miss (method values, struct literals, aliases).
+    depguard:
+      rules:
+        # Only the standard library, aggy itself, and the direct
+        # dependencies may be imported, and no network, TLS, plugin, or
+        # raw-syscall package: aggy makes no network calls of its own.
+        main:
+          list-mode: strict
+          files: ["$all"]
+          allow:
+            - $gostd
+            - github.com/congdoe/aggy
+            - github.com/BurntSushi/toml
+            - modernc.org/sqlite
+            - golang.org/x/text/unicode/norm
+          deny:
+            - pkg: "net$"
+              desc: aggy makes no network calls
+            - pkg: "net/http$"
+              desc: aggy makes no network calls
+            - pkg: "net/http/httputil$"
+              desc: aggy makes no network calls
+            - pkg: "net/smtp$"
+              desc: aggy makes no network calls
+            - pkg: "crypto/tls$"
+              desc: aggy makes no network calls
+            - pkg: "plugin$"
+              desc: aggy loads no code at run time
+            - pkg: golang.org/x/sys/unix
+              desc: use internal/safefs or the stdlib
+        # Processes start only in the supervisor, the borrow runner, the
+        # probe runner, and the test-only fake builder. Tests may start
+        # helper processes.
+        exec:
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/supervisor/**"
+            - "!**/internal/borrow/**"
+            - "!**/internal/probe/**"
+            - "!**/internal/fakecli/**"
+          deny:
+            - pkg: "os/exec$"
+              desc: processes start only in internal/supervisor, internal/borrow, or internal/probe
+        # The fake vendor CLIs are for tests only.
+        fakecli:
+          files: ["$all", "!$test"]
+          deny:
+            - pkg: github.com/congdoe/aggy/internal/fakecli
+              desc: the fake vendor CLIs are for tests only
     errcheck:
       # A failed write to the terminal has nowhere better to be reported.
       exclude-functions:
@@ -55,6 +107,21 @@ linters:
           msg: processes start only in internal/supervisor, internal/borrow, or the probe runner
         - pattern: ^os\.StartProcess$
           msg: processes start only in internal/supervisor, internal/borrow, or the probe runner
+        - pattern: ^exec\.Cmd$
+          msg: processes start only in internal/supervisor, internal/borrow, or the probe runner
+        - pattern: ^syscall\.(StartProcess|Readlink|Chown|Access|Mkfifo)$
+          msg: use internal/safefs, or start processes only where allowed
+        # Other stdlib entry points that open files by path.
+        - pattern: ^template\.(ParseFiles|ParseGlob)$
+          msg: use internal/safefs, then parse the bytes
+        - pattern: ^template\.Template\.(ParseFiles|ParseGlob)$
+          msg: use internal/safefs, then parse the bytes
+        - pattern: ^zip\.OpenReader$
+          msg: use internal/safefs, then zip.NewReader
+        - pattern: ^(elf|macho)\.Open$
+          msg: use internal/safefs, then elf.NewFile or macho.NewFile
+        - pattern: ^tls\.LoadX509KeyPair$
+          msg: aggy makes no network calls
         # aggy makes no network calls of its own: no telemetry, no model
         # requests, no proxy.
         - pattern: ^net\.Dial
@@ -66,6 +133,8 @@ linters:
         - pattern: ^http\.(Client|Transport)\.(Do|Get|Head|Post|PostForm|RoundTrip)$
           msg: aggy makes no network calls
   exclusions:
+    # A "Code generated ... DO NOT EDIT." header must not switch lint off.
+    generated: disable
     rules:
       - path: _test\.go$
         linters: [forbidigo]
@@ -79,6 +148,9 @@ linters:
         linters: [forbidigo]
       - path: ^internal/probe/runner\.go$
         text: "`exec\\.CommandContext`"
+        linters: [forbidigo]
+      - path: ^internal/probe/runner(_unix|_other)?\.go$
+        text: "`exec\\.Cmd`"
         linters: [forbidigo]
       - path: ^internal/fakecli/build\.go$
         text: "`exec\\.Command`"

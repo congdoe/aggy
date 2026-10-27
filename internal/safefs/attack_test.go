@@ -205,8 +205,9 @@ func TestUnicodeNormalization(t *testing.T) {
 	assertRefused(t, nfd)
 }
 
-// TestFailClosedWithoutHome: with no absolute home the deny list would be
-// empty or relative, so every call must fail.
+// TestFailClosedWithoutHome: with no home at all the deny list would be
+// empty, so every call must fail. A relative HOME is made absolute against
+// the working directory (T6723 S11) and covered.
 func TestFailClosedWithoutHome(t *testing.T) {
 	benign := filepath.Join(t.TempDir(), "benign.txt")
 	if err := os.WriteFile(benign, []byte("ok"), 0o600); err != nil {
@@ -221,8 +222,8 @@ func TestFailClosedWithoutHome(t *testing.T) {
 		wantFail bool
 	}{
 		{name: "unset, no fallback", home: "", lookup: "", wantFail: true},
-		{name: "relative, no fallback", home: "rel/home", lookup: "", wantFail: true},
-		{name: "relative, relative fallback", home: "rel", lookup: "also/rel", wantFail: true},
+		{name: "relative, no fallback", home: "rel/home", lookup: ""},
+		{name: "relative, relative fallback", home: "rel", lookup: "also/rel"},
 		{name: "unset, absolute fallback", home: "", lookup: altHome},
 		{name: "relative, absolute fallback", home: "rel", lookup: altHome},
 		{name: "relative CODEX_HOME", home: altHome, env: map[string]string{"CODEX_HOME": "codex"}, wantFail: true},
@@ -260,10 +261,21 @@ func TestFailClosedWithoutHome(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ReadFile = %v, want success", err)
 			}
-			// The fallback home's credentials are refused.
-			auth := filepath.Join(tt.lookup, ".claude", ".credentials.json")
-			if err := Check(auth); !errors.Is(err, ErrAuthPath) {
-				t.Errorf("Check(fallback credential) = %v, want ErrAuthPath", err)
+			// Every absolute home's credentials are refused: $HOME (made
+			// absolute) and the user database's.
+			var homes []string
+			if tt.home != "" {
+				wd, _ := os.Getwd()
+				homes = append(homes, filepath.Join(wd, tt.home))
+			}
+			if filepath.IsAbs(tt.lookup) {
+				homes = append(homes, tt.lookup)
+			}
+			for _, h := range homes {
+				auth := filepath.Join(h, ".claude", ".credentials.json")
+				if err := Check(auth); !errors.Is(err, ErrAuthPath) {
+					t.Errorf("Check(%s) = %v, want ErrAuthPath", auth, err)
+				}
 			}
 		})
 	}
