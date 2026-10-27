@@ -1,0 +1,12 @@
+--- $DIR/codex.toml
++++ $DIR/codex.toml
+@@ -1,2 +1,3 @@
+ model = "o"
+ approval_policy = "on-request"
++project_doc_fallback_filenames = ["CLAUDE.md"]
+--- /dev/null
++++ $DIR/grok/settings.toml
+@@ -0,0 +1 @@
++project_doc_fallback_filenames = ["CLAUDE.md"]
+# $DIR/drift.json: would not change: patch: $DIR/drift.json: file changed since the patch was planned (expected ca3d163bab05, found 8cb9816d3b26)
+# 2 files would change

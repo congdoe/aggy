@@ -1,0 +1,11 @@
+--- a/config.toml
++++ b/config.toml
+@@ -1,7 +1,7 @@
+ a
+ b
+ c
+-d
++D
+ e
+ f
+ g

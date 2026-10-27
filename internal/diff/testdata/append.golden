@@ -1,0 +1,5 @@
+--- a/config.toml
++++ b/config.toml
+@@ -1 +1,2 @@
+ model = "o"
++project_doc_fallback_filenames = ["CLAUDE.md"]
