@@ -5,6 +5,12 @@ linters:
   enable:
     - forbidigo
   settings:
+    errcheck:
+      # A failed write to the terminal has nowhere better to be reported.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
     forbidigo:
       analyze-types: true
       forbid:
@@ -18,3 +24,7 @@ linters:
         linters: [forbidigo]
       - path: ^internal/safefs/
         linters: [forbidigo]
+
+formatters:
+  enable:
+    - gofmt
