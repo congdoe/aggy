@@ -17,6 +17,7 @@ Usage:
   aggy <command>
 
 Commands:
+  log       Show harnesses, models, switches, borrows, and files changed
   version   Print the aggy version
   help      Show this help
 
@@ -34,6 +35,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "version", "--version", "-v":
 		fmt.Fprintf(stdout, "aggy %s\n", Version)
 		return 0
+	case "log":
+		return runLog(args[1:], stdout, stderr)
 	case "help", "--help", "-h":
 		fmt.Fprint(stdout, usage)
 		return 0
