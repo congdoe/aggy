@@ -77,6 +77,10 @@ func TestRefusesAuthPaths(t *testing.T) {
 		{"codex relocated", "CODEX_HOME", func(_, r string) string { return filepath.Join(r, "auth.json") }},
 		{"grok relocated", "GROK_HOME", func(_, r string) string { return filepath.Join(r, "auth.json") }},
 		{"unclean path", "", func(h, _ string) string { return h + "/.codex/../.codex//./auth.json" }},
+		{"codex mcp", "", func(h, _ string) string { return filepath.Join(h, ".codex", ".credentials.json") }},
+		{"codex mcp relocated", "CODEX_HOME", func(_, r string) string { return filepath.Join(r, ".credentials.json") }},
+		{"grok mcp", "", func(h, _ string) string { return filepath.Join(h, ".grok", "mcp_credentials.json") }},
+		{"grok mcp relocated", "GROK_HOME", func(_, r string) string { return filepath.Join(r, "mcp_credentials.json") }},
 	}
 	for _, tt := range tests {
 		for _, exists := range []bool{false, true} {
