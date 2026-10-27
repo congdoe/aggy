@@ -179,10 +179,19 @@ func Plan(p Patch) (Planned, error) {
 	return pl, nil
 }
 
+// writeFile is safefs.WriteFile; tests replace it to inject failures.
+var writeFile = safefs.WriteFile
+
 // Apply makes the change. When the file matches ExpectedHash it backs up the
 // current bytes into backupDir and writes the transform's output atomically.
 // When the file already holds the patched content it does nothing and
 // succeeds. Otherwise it returns a *DriftError and writes nothing.
+//
+// When the new content is in place but syncing its directory fails, the
+// change has happened and only its durability across a power loss is in
+// doubt. Apply then returns the full Record together with an error matching
+// safefs.ErrDirSync, and the caller must still record the change, or
+// aggy unwire could not undo it. Every other error comes with a zero Record.
 func Apply(p Patch, backupDir string) (Record, error) {
 	pl, err := Plan(p)
 	if err != nil {
@@ -218,7 +227,11 @@ func Apply(p Patch, backupDir string) (Record, error) {
 			return Record{}, err
 		}
 	}
-	if err := safefs.WriteFile(rec.File, pl.After, mode); err != nil {
+	if err := writeFile(rec.File, pl.After, mode); err != nil {
+		if errors.Is(err, safefs.ErrDirSync) {
+			rec.Changed = true
+			return rec, fmt.Errorf("patch: %s was written: %w", rec.File, err)
+		}
 		return Record{}, err
 	}
 	rec.Changed = true
@@ -249,7 +262,8 @@ func backup(dir string, b []byte) (string, error) {
 // Revert undoes an applied change. It restores the backup, or removes a file
 // the patch created, only while the file still has AfterHash; otherwise it
 // returns a *DriftError and leaves the file alone. Reverting a file that
-// already has BeforeHash is a no-op.
+// already has BeforeHash is a no-op. As with Apply, an error matching
+// safefs.ErrDirSync means the file was restored but not synced.
 func Revert(r Record) error {
 	if !r.Changed {
 		return nil
@@ -277,5 +291,5 @@ func Revert(r Record) error {
 	if Hash(old) != r.BeforeHash {
 		return fmt.Errorf("patch: backup %s does not match the recorded hash", r.BackupPath)
 	}
-	return safefs.WriteFile(r.File, old, DefaultMode)
+	return writeFile(r.File, old, DefaultMode)
 }

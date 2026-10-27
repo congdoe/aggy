@@ -35,13 +35,36 @@ linters:
           msg: use internal/safefs, which refuses vendor credential files
         - pattern: ^fs\.(ReadFile|ReadDir|WalkDir)$
           msg: use internal/safefs, or the method on an embed.FS
+        - pattern: ^syscall\.(Syscall|RawSyscall|Exec|ForkExec|Stat|Lstat|Chmod|Truncate|Rmdir|Mkdir)
+          msg: use internal/safefs, which refuses vendor credential files
+        - pattern: ^filepath\.Glob$
+          msg: use internal/safefs, which refuses vendor credential files
+        # golang.org/x/sys/unix reaches the disk and processes around both
+        # safefs and the process rules below.
+        - pattern: ^unix\.
+          msg: golang.org/x/sys/unix is banned; use internal/safefs or the stdlib
         # SQLite opens its file outside safefs, so only the store, which
         # checks the path and identity itself, may call sql.Open.
-        - pattern: ^sql\.Open$
+        - pattern: ^sql\.(Open|OpenDB)$
           msg: only internal/store opens databases
-        # exec.Command is not banned: it is too broad to ban usefully.
-        # Process launches belong to internal/supervisor and the borrow
-        # runner, which are reviewed separately.
+        # Processes start only in internal/supervisor, internal/borrow, and
+        # the probe runner (internal/probe/runner.go), which runs one CLI
+        # path with no stdin and a scrubbed environment. The fake-CLI
+        # builder used by tests (internal/fakecli/build.go) runs the go tool.
+        - pattern: ^exec\.(Command|CommandContext)$
+          msg: processes start only in internal/supervisor, internal/borrow, or the probe runner
+        - pattern: ^os\.StartProcess$
+          msg: processes start only in internal/supervisor, internal/borrow, or the probe runner
+        # aggy makes no network calls of its own: no telemetry, no model
+        # requests, no proxy.
+        - pattern: ^net\.Dial
+          msg: aggy makes no network calls
+        - pattern: ^(net\.)?Dialer\.Dial
+          msg: aggy makes no network calls
+        - pattern: ^http\.(Get|Head|Post|PostForm|DefaultClient|DefaultTransport)$
+          msg: aggy makes no network calls
+        - pattern: ^http\.(Client|Transport)\.(Do|Get|Head|Post|PostForm|RoundTrip)$
+          msg: aggy makes no network calls
   exclusions:
     rules:
       - path: _test\.go$
@@ -49,7 +72,16 @@ linters:
       - path: ^internal/safefs/
         linters: [forbidigo]
       - path: ^internal/store/
-        text: sql\.Open
+        text: "`sql\\.Open`"
+        linters: [forbidigo]
+      - path: ^internal/(supervisor|borrow)/
+        text: "`(exec\\.(Command|CommandContext)|os\\.StartProcess)`"
+        linters: [forbidigo]
+      - path: ^internal/probe/runner\.go$
+        text: "`exec\\.CommandContext`"
+        linters: [forbidigo]
+      - path: ^internal/fakecli/build\.go$
+        text: "`exec\\.Command`"
         linters: [forbidigo]
 
 formatters:

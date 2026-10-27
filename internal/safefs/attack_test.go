@@ -139,7 +139,7 @@ func TestSwapAfterCheck(t *testing.T) {
 				if err := os.WriteFile(p, []byte("benign"), 0o600); err != nil {
 					t.Fatal(err)
 				}
-				testHookBeforeOpen = func() {
+				testHookBeforeAct = func(string) {
 					tmp := p + ".tmp"
 					if err := tt.plant(auth, tmp); err != nil {
 						t.Error(err)
@@ -149,7 +149,7 @@ func TestSwapAfterCheck(t *testing.T) {
 						t.Error(err)
 					}
 				}
-				t.Cleanup(func() { testHookBeforeOpen = nil })
+				t.Cleanup(func() { testHookBeforeAct = nil })
 
 				var got []byte
 				var err error
