@@ -129,8 +129,17 @@ image    = { minutes = 5 }
 		{name: "duplicate routing vendor", text: "[routing]\nnews = [\"grok\", \"grok\"]\n", wantErr: "listed twice"},
 		{name: "bad routing string", text: "[routing]\nreview = \"anyone\"\n", wantErr: "not-author"},
 		{name: "routing wrong type", text: "[routing]\nnews = 3\n", wantErr: "vendor list"},
-		{name: "zero minutes", text: "[budgets]\nedit = { minutes = 0 }\n", wantErr: "budgets.edit.minutes must be positive"},
-		{name: "negative turns", text: "[budgets]\nnews = { minutes = 5, turns = -1 }\n", wantErr: "budgets.news.turns must not be negative"},
+		{name: "zero minutes", text: "[budgets]\nedit = { minutes = 0 }\n", wantErr: "budgets.edit.minutes must be 1 to 1440"},
+		{name: "negative turns", text: "[budgets]\nnews = { minutes = 5, turns = -1 }\n", wantErr: "budgets.news.turns must be 0 to 1000"},
+		// Regression rows for the PR #2 review.
+		{name: "minutes past a day", text: "[budgets]\nresearch = { minutes = 1441 }\n", wantErr: "budgets.research.minutes must be 1 to 1440"},
+		{name: "minutes overflow", text: "[budgets]\nresearch = { minutes = 9223372036854775807 }\n", wantErr: "budgets.research.minutes"},
+		{name: "turns too many", text: "[budgets]\nnews = { minutes = 5, turns = 1001 }\n", wantErr: "budgets.news.turns must be 0 to 1000"},
+		{name: "max budget allowed", text: "[budgets]\nedit = { minutes = 1440, turns = 1000 }\n", check: func(t *testing.T, c Config) {
+			equal(t, c.Budgets.Edit, Budget{Minutes: 1440, Turns: 1000})
+		}},
+		{name: "not-author outside review", text: "[routing]\nnews = \"not-author\"\n", wantErr: "routing.news: \"not-author\" is only valid for review"},
+		{name: "empty switch order", text: "[switch]\norder = []\n", wantErr: "switch.order must list at least one vendor"},
 		{name: "syntax error", text: "[routing\n", wantErr: "toml"},
 	}
 	for _, tt := range tests {

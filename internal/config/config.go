@@ -134,6 +134,13 @@ func (r Routing) For(k adapter.Kind) Route {
 	return Route{}
 }
 
+// Budget bounds. A day is far past any sane borrow, and the bound keeps
+// Minutes * time.Minute from overflowing.
+const (
+	MaxMinutes = 24 * 60
+	MaxTurns   = 1000
+)
+
 // Budget limits one borrow. aggy kills the process past Minutes.
 type Budget struct {
 	Minutes int `toml:"minutes"`
@@ -266,6 +273,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("default_vendor: %w", err)
 		}
 	}
+	if len(c.Switch.Order) == 0 {
+		return errors.New("switch.order must list at least one vendor")
+	}
 	seen := map[adapter.Vendor]bool{}
 	for _, v := range c.Switch.Order {
 		if _, err := adapter.ParseVendor(string(v)); err != nil {
@@ -277,17 +287,21 @@ func (c Config) Validate() error {
 		seen[v] = true
 	}
 	for _, k := range adapter.Kinds() {
-		for _, v := range c.Routing.For(k).Vendors {
+		r := c.Routing.For(k)
+		if r.NotAuthor && k != adapter.Review {
+			return fmt.Errorf("routing.%s: %q is only valid for review", k, NotAuthor)
+		}
+		for _, v := range r.Vendors {
 			if _, err := adapter.ParseVendor(string(v)); err != nil {
 				return fmt.Errorf("routing.%s: %w", k, err)
 			}
 		}
 		b := c.Budgets.For(k)
-		if b.Minutes <= 0 {
-			return fmt.Errorf("budgets.%s.minutes must be positive, got %d", k, b.Minutes)
+		if b.Minutes < 1 || b.Minutes > MaxMinutes {
+			return fmt.Errorf("budgets.%s.minutes must be 1 to %d, got %d", k, MaxMinutes, b.Minutes)
 		}
-		if b.Turns < 0 {
-			return fmt.Errorf("budgets.%s.turns must not be negative, got %d", k, b.Turns)
+		if b.Turns < 0 || b.Turns > MaxTurns {
+			return fmt.Errorf("budgets.%s.turns must be 0 to %d, got %d", k, MaxTurns, b.Turns)
 		}
 	}
 	return nil
