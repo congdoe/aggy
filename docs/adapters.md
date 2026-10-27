@@ -109,7 +109,8 @@ grok 1.0.70. Each adapter states the versions it was tested against.
   or the same path under `$GROK_HOME`. The reply gives the path relative to
   the session folder (`images/1.jpg`).
 - Sessions: `--session-id <uuid>`, `--resume <id>` (also with `-p`), and
-  `--fork-session`. Use `--no-alt-screen` to keep scrollback.
+  `--fork-session`. `--continue` takes the latest session in the current
+  directory. Use `--no-alt-screen` to keep scrollback.
 
 ### Claude
 

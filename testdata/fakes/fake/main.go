@@ -24,6 +24,8 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -51,6 +53,66 @@ type Scenario struct {
 	Images        int               `json:"images"`
 	SessionFiles  []SessionFile     `json:"session_files"`
 	SleepMS       int               `json:"sleep_ms"`
+	// ExtraValues adds accepted values to a flag with a recorded value
+	// set, e.g. {"--sandbox": ["workspace-write"]}.
+	ExtraValues map[string][]string `json:"extra_values"`
+	// Strict turns on rules docs/adapters.md does not record, by name:
+	// "resume-with-session-id" refuses --resume with --session-id unless
+	// --fork-session is given.
+	Strict []string `json:"strict"`
+	// InteractiveWithoutTTY lets an interactive run start with a stdin
+	// that is not a terminal. The real CLIs need a terminal.
+	InteractiveWithoutTTY bool `json:"interactive_without_tty"`
+}
+
+// recordedValues are the flag values docs/adapters.md records. Others are
+// refused unless the scenario adds them through extra_values.
+var recordedValues = map[string][]string{
+	"--output-format":   {"json"},
+	"--permission-mode": {"plan"},
+	"--sandbox":         {"read-only"},
+}
+
+var uuidRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// validate checks flag values and the rules docs/adapters.md records, and
+// the opt-in strict rules.
+func (f *fake) validate(headless bool) error {
+	for flag, allowed := range recordedValues {
+		allowed = append(append([]string{}, allowed...), f.sc.ExtraValues[flag]...)
+		for _, v := range f.flags[flag] {
+			if !contains(allowed, v) {
+				return fmt.Errorf("invalid value %q for %s", v, flag)
+			}
+		}
+	}
+	// Recorded: --session-id takes a UUID (Claude and Grok).
+	for _, v := range f.flags["--session-id"] {
+		if !uuidRE.MatchString(v) {
+			return fmt.Errorf("--session-id must be a UUID, got %q", v)
+		}
+	}
+	if contains(f.sc.Strict, "resume-with-session-id") && f.has("--resume") && f.has("--session-id") && !f.has("--fork-session") {
+		return errors.New("--session-id with --resume requires --fork-session")
+	}
+	// A headless Claude or Codex run needs a prompt: an argument or stdin.
+	needPrompt := (f.vendor == "claude" && f.has("-p")) || f.sub == "exec" || f.sub == "exec resume"
+	if needPrompt {
+		args := f.positional
+		if f.sub == "exec resume" && len(args) > 0 {
+			args = args[1:] // the session id
+		}
+		if len(args) == 0 && strings.TrimSpace(f.stdin) == "" {
+			return errors.New("no prompt given (pass it as an argument or on stdin)")
+		}
+	}
+	if f.sub == "exec resume" && len(f.positional) == 0 {
+		return errors.New("exec resume needs a session id")
+	}
+	if !headless && !f.terminal && !f.sc.InteractiveWithoutTTY {
+		return errors.New("an interactive session needs a terminal")
+	}
+	return nil
 }
 
 // Hook is one hook call: the event name and its recorded payload.
@@ -100,7 +162,7 @@ var specs = map[string]flagSpec{
 	"grok": {
 		values: []string{"--output-format", "--permission-mode", "--session-id", "--resume",
 			"--tools", "--disallowed-tools", "--max-turns"},
-		switches: []string{"-p", "--fork-session", "--no-alt-screen", "--continue"},
+		switches: []string{"-p", "--fork-session", "--no-alt-screen", "--continue"}, // --continue: proposal §3
 	},
 	"codex": {
 		values:   []string{"-c"},
@@ -157,20 +219,60 @@ func run() int {
 
 // checkHome refuses to run against the real home directory, so a fake can
 // never write into the real ~/.claude, ~/.codex, or ~/.grok.
-func checkHome(vendor string) error {
+//
+// Paths are compared after resolving symlinks, and case-insensitively on
+// darwin. HOME must not be the real home, and no vendor home the fake could
+// write (CLAUDE_CONFIG_DIR, CODEX_HOME, GROK_HOME, or HOME/.<vendor>) may
+// be relative or inside the real home.
+func checkHome(string) error {
 	h := os.Getenv("HOME")
 	if h == "" || !filepath.IsAbs(h) {
 		return errors.New("HOME must be an absolute temp directory")
 	}
-	if u, err := user.Current(); err == nil && u.HomeDir != "" {
-		if filepath.Clean(u.HomeDir) == filepath.Clean(h) {
-			return errors.New("refusing to run with HOME set to the real home directory")
+	for _, env := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME"} {
+		if v := os.Getenv(env); v != "" && !filepath.IsAbs(v) {
+			return fmt.Errorf("%s must be absolute, got %q", env, v)
 		}
-		if vendor != "hook" && strings.HasPrefix(vendorHome(vendor)+"/", filepath.Clean(u.HomeDir)+"/."+vendor+"/") {
-			return errors.New("refusing to run with the vendor home in the real home directory")
+	}
+	u, err := user.Current()
+	if err != nil || u.HomeDir == "" {
+		return errors.New("cannot find the real home directory to stay out of it")
+	}
+	realHome := canon(u.HomeDir)
+	if canon(h) == realHome {
+		return errors.New("refusing to run with HOME set to the real home directory")
+	}
+	for _, v := range []string{"claude", "codex", "grok"} {
+		vh := canon(vendorHome(v))
+		if vh == realHome || strings.HasPrefix(vh, realHome+"/") {
+			return fmt.Errorf("refusing to run with the %s home %s inside the real home directory", v, vendorHome(v))
 		}
 	}
 	return nil
+}
+
+// canon resolves symlinks in the longest existing prefix of p, and folds
+// case on darwin.
+func canon(p string) string {
+	p = filepath.Clean(p)
+	rest := ""
+	for {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			p = filepath.Join(r, rest)
+			break
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			p = filepath.Join(p, rest)
+			break
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = parent
+	}
+	if runtime.GOOS == "darwin" {
+		p = strings.ToLower(p)
+	}
+	return p
 }
 
 func loadScenario() (*Scenario, error) {
@@ -299,6 +401,10 @@ func (f *fake) main(args []string) int {
 		// read the prompt from it. Either way, read to EOF.
 		b, _ := io.ReadAll(os.Stdin)
 		f.stdin = string(b)
+	}
+	if err := f.validate(headless); err != nil {
+		f.record("error", args)
+		return fail(2, "%s: %v", f.vendor, err)
 	}
 	f.id = f.sessionID()
 	mode := "interactive"

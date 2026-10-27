@@ -59,6 +59,8 @@ func (e *env) run(t *testing.T, vendor, scenario, stdin string, args ...string) 
 	return result{out.String(), errb.String(), code}
 }
 
+const abc = "0b9d3c4e-1f2a-4b5c-8d7e-6f5a4b3c2d1e"
+
 func TestFakes(t *testing.T) {
 	fakes := Build(t)
 
@@ -93,7 +95,7 @@ func TestFakes(t *testing.T) {
 			t.Errorf("codex exec --search = %+v", r)
 		}
 		// extra_flags lets a test allow an unrecorded flag.
-		if r := e.run(t, "claude", `{"extra_flags":["--model"]}`, "", "-p", "--model", "m"); r.code != 0 {
+		if r := e.run(t, "claude", `{"extra_flags":["--model"]}`, "hi", "-p", "--model", "m"); r.code != 0 {
 			t.Errorf("extra flag = %+v", r)
 		}
 	})
@@ -120,7 +122,7 @@ func TestFakes(t *testing.T) {
 		e := newEnv(t, fakes)
 		e.run(t, "grok", `{"session_id":"new-id"}`, "", "-p", "--resume", "old-id")
 		e.run(t, "grok", `{"session_id":"new-id"}`, "", "-p", "--resume", "old-id", "--fork-session")
-		e.run(t, "codex", "", "", "exec", "resume", "thread-9", "--json")
+		e.run(t, "codex", "", "next step", "exec", "resume", "thread-9", "--json")
 		recs := Records(t, e.record)
 		if recs[0].SessionID != "old-id" || recs[1].SessionID != "new-id" || recs[2].SessionID != "thread-9" {
 			t.Errorf("session ids = %s %s %s", recs[0].SessionID, recs[1].SessionID, recs[2].SessionID)
@@ -150,7 +152,7 @@ func TestFakes(t *testing.T) {
 
 	t.Run("codex exec json and images", func(t *testing.T) {
 		e := newEnv(t, fakes)
-		r := e.run(t, "codex", `{"images":2,"session_id":"t-1","events":[{"type":"item.completed","text":"{session_id}"}]}`, "",
+		r := e.run(t, "codex", `{"images":2,"session_id":"t-1","events":[{"type":"item.completed","text":"{session_id}"}]}`, "draw",
 			"exec", "--json", "--sandbox", "read-only", "-c", `web_search="live"`,
 			"--disable", "shell_tool", "--disable", "unified_exec", "-i", "ref.png")
 		lines := strings.Split(strings.TrimSpace(r.stdout), "\n")
@@ -172,8 +174,8 @@ func TestFakes(t *testing.T) {
 		e := newEnv(t, fakes)
 		sc := `{"stdout":"hello from the fake\n","hook_command":["` + fakes.Hook + `","hook"],
 			"hooks":[{"event":"Stop","payload":{"session_id":"{session_id}","stop_hook_active":false}}],
-			"session_id":"abc"}`
-		r := e.run(t, "claude", sc, "", "--session-id", "abc")
+			"interactive_without_tty":true}`
+		r := e.run(t, "claude", sc, "", "--session-id", abc)
 		if r.code != 0 || r.stdout != "hello from the fake\n" {
 			t.Fatalf("interactive = %+v", r)
 		}
@@ -184,7 +186,7 @@ func TestFakes(t *testing.T) {
 		if got := recs[1].Args; strings.Join(got, " ") != "hook Stop" {
 			t.Errorf("hook args = %v", got)
 		}
-		if !strings.Contains(recs[1].Stdin, `"session_id":"abc"`) {
+		if !strings.Contains(recs[1].Stdin, `"session_id":"`+abc+`"`) {
 			t.Errorf("hook payload = %q", recs[1].Stdin)
 		}
 	})
@@ -193,7 +195,7 @@ func TestFakes(t *testing.T) {
 		for _, v := range []string{"claude", "grok"} {
 			e := newEnv(t, fakes)
 			sc := `{"error":"rate_limit","hook_command":["` + fakes.Hook + `"]}`
-			r := e.run(t, v, sc, "", "-p")
+			r := e.run(t, v, sc, "task", "-p")
 			if r.code == 0 {
 				t.Errorf("%s: exit 0 on a limit", v)
 			}
@@ -207,7 +209,7 @@ func TestFakes(t *testing.T) {
 	t.Run("codex usage limit", func(t *testing.T) {
 		e := newEnv(t, fakes)
 		sc := `{"error":"usage_limit_reached","error_event":{"type":"error","code":"usage_limit_reached"}}`
-		r := e.run(t, "codex", sc, "", "exec", "--json")
+		r := e.run(t, "codex", sc, "task", "exec", "--json")
 		if r.code != 1 || !strings.Contains(r.stderr, "You've hit your usage limit") || !strings.Contains(r.stdout, "usage_limit_reached") {
 			t.Errorf("usage limit = %+v", r)
 		}
@@ -219,12 +221,12 @@ func TestFakes(t *testing.T) {
 	t.Run("session files", func(t *testing.T) {
 		e := newEnv(t, fakes)
 		sc := `{"session_id":"s9","session_files":[{"path":"sessions/{session_id}.jsonl","content":"{\"id\":\"{session_id}\"}\n"}]}`
-		e.run(t, "codex", sc, "", "exec")
+		e.run(t, "codex", sc, "task", "exec")
 		b, err := os.ReadFile(filepath.Join(e.home, ".codex", "sessions", "s9.jsonl"))
 		if err != nil || string(b) != `{"id":"s9"}`+"\n" {
 			t.Errorf("session file = %q, %v", b, err)
 		}
-		r := e.run(t, "codex", `{"session_files":[{"path":"../escape","content":"x"}]}`, "", "exec")
+		r := e.run(t, "codex", `{"session_files":[{"path":"../escape","content":"x"}]}`, "task", "exec")
 		if r.code == 0 {
 			t.Error("session file outside the vendor home was written")
 		}
