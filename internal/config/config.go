@@ -246,19 +246,8 @@ func Parse(text string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if und := md.Undecoded(); len(und) > 0 {
-		// Report an unknown table once, not each key inside it.
-		var keys []string
-		for _, k := range und {
-			s := k.String()
-			if !slices.ContainsFunc(keys, func(p string) bool { return strings.HasPrefix(s, p+".") }) {
-				keys = append(keys, s)
-			}
-		}
-		if len(keys) == 1 {
-			return Config{}, fmt.Errorf("unknown key %s", keys[0])
-		}
-		return Config{}, fmt.Errorf("unknown keys %s", strings.Join(keys, ", "))
+	if err := unknownKeys(md); err != nil {
+		return Config{}, err
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -305,4 +294,24 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// unknownKeys returns an error naming the keys md did not decode. An
+// unknown table is reported once, not each key inside it.
+func unknownKeys(md toml.MetaData) error {
+	und := md.Undecoded()
+	if len(und) == 0 {
+		return nil
+	}
+	var keys []string
+	for _, k := range und {
+		s := k.String()
+		if !slices.ContainsFunc(keys, func(p string) bool { return strings.HasPrefix(s, p+".") }) {
+			keys = append(keys, s)
+		}
+	}
+	if len(keys) == 1 {
+		return fmt.Errorf("unknown key %s", keys[0])
+	}
+	return fmt.Errorf("unknown keys %s", strings.Join(keys, ", "))
 }
