@@ -114,6 +114,10 @@ func (m *Manifest) Apply(ctx context.Context, runID string, p patch.Patch) (stor
 	return got, warn
 }
 
+// isSyncWarning reports whether err only says a written file was not
+// synced, which does not undo the write.
+func isSyncWarning(err error) bool { return errors.Is(err, safefs.ErrDirSync) }
+
 // Record converts a recorded change back to the patch.Record that
 // patch.Revert takes.
 func Record(c store.Change) patch.Record {
