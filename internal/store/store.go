@@ -6,7 +6,6 @@ import (
 	"embed"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -122,7 +121,7 @@ type migration struct {
 // migrations returns the embedded files in version order. Each file is
 // named NNNN_description.sql and NNNN is its schema version.
 func migrations() ([]migration, error) {
-	entries, err := fs.ReadDir(migrationFS, "migrations")
+	entries, err := migrationFS.ReadDir("migrations")
 	if err != nil {
 		return nil, err
 	}
