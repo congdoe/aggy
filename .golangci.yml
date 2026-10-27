@@ -4,6 +4,7 @@ linters:
   default: standard
   enable:
     - forbidigo
+    - nolintlint
   settings:
     errcheck:
       # A failed write to the terminal has nowhere better to be reported.
@@ -11,18 +12,44 @@ linters:
         - fmt.Fprint
         - fmt.Fprintf
         - fmt.Fprintln
+    nolintlint:
+      # A //nolint must name the linter and say why, so a bare one cannot
+      # silence the file-system bans below.
+      require-explanation: true
+      require-specific: true
     forbidigo:
       analyze-types: true
       forbid:
-        # All file I/O goes through internal/safefs, which refuses vendor
-        # credential files.
-        - pattern: ^os\.(Open|OpenFile|ReadFile|WriteFile|Create|ReadDir)$
+        # All file-system access goes through internal/safefs, which refuses
+        # vendor credential files. These are the stdlib entry points that
+        # reach the disk by path.
+        - pattern: ^os\.(Open|OpenFile|OpenRoot|OpenInRoot|ReadFile|WriteFile|Create|CreateTemp|ReadDir|DirFS|CopyFS|NewFile)$
           msg: use internal/safefs, which refuses vendor credential files
+        - pattern: ^os\.(Rename|Link|Symlink|Readlink|Truncate|Remove|RemoveAll|Chmod|Chown|Lchown|Chtimes|Stat|Lstat|Mkdir|MkdirAll|MkdirTemp)$
+          msg: use internal/safefs, which refuses vendor credential files
+        - pattern: ^ioutil\.
+          msg: io/ioutil is banned; use internal/safefs
+        - pattern: ^syscall\.(Open|Openat|Read|Pread|Link|Symlink|Rename|Unlink)$
+          msg: use internal/safefs, which refuses vendor credential files
+        - pattern: ^filepath\.(Walk|WalkDir)$
+          msg: use internal/safefs, which refuses vendor credential files
+        - pattern: ^fs\.(ReadFile|ReadDir|WalkDir)$
+          msg: use internal/safefs, or the method on an embed.FS
+        # SQLite opens its file outside safefs, so only the store, which
+        # checks the path and identity itself, may call sql.Open.
+        - pattern: ^sql\.Open$
+          msg: only internal/store opens databases
+        # exec.Command is not banned: it is too broad to ban usefully.
+        # Process launches belong to internal/supervisor and the borrow
+        # runner, which are reviewed separately.
   exclusions:
     rules:
       - path: _test\.go$
         linters: [forbidigo]
       - path: ^internal/safefs/
+        linters: [forbidigo]
+      - path: ^internal/store/
+        text: sql\.Open
         linters: [forbidigo]
 
 formatters:
