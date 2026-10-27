@@ -1,0 +1,630 @@
+// Command fake is fake-claude, fake-codex, fake-grok, and fake-hook: a
+// stand-in for the vendor CLIs that follows a scenario file, so tests never
+// run a real vendor CLI or need a login. The vendor is the binary's name
+// without the "fake-" prefix, or $AGGY_FAKE_VENDOR. See ../README.md for
+// the scenario format.
+//
+// It honors only the flags recorded in docs/adapters.md, and fails like a
+// real CLI on any other, so an adapter that invents a flag fails its test.
+// It writes only under $HOME (or the vendor's relocated home) and refuses
+// to run when $HOME is the real user's home.
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"os"
+	"os/exec"
+	"os/user"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+// Scenario drives one run. Every field is optional.
+type Scenario struct {
+	Version       string            `json:"version"`
+	VersionOutput string            `json:"version_output"`
+	Help          *string           `json:"help"`
+	ExtraFlags    []string          `json:"extra_flags"`
+	ExtraSwitches []string          `json:"extra_switches"`
+	SessionID     string            `json:"session_id"`
+	Stdout        string            `json:"stdout"`
+	Stderr        string            `json:"stderr"`
+	JSON          map[string]any    `json:"json"`
+	Events        []json.RawMessage `json:"events"`
+	Error         string            `json:"error"`
+	ErrorText     *string           `json:"error_text"`
+	ErrorEvent    json.RawMessage   `json:"error_event"`
+	ExitCode      int               `json:"exit_code"`
+	HookCommand   []string          `json:"hook_command"`
+	HookPayloadIn string            `json:"hook_payload_in"`
+	Hooks         []Hook            `json:"hooks"`
+	Images        int               `json:"images"`
+	SessionFiles  []SessionFile     `json:"session_files"`
+	SleepMS       int               `json:"sleep_ms"`
+}
+
+// Hook is one hook call: the event name and its recorded payload.
+type Hook struct {
+	Event   string          `json:"event"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+// SessionFile is a file the run writes, relative to the vendor's home.
+type SessionFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+// Record is one line appended to $AGGY_FAKE_RECORD per run.
+type Record struct {
+	Vendor        string              `json:"vendor"`
+	Mode          string              `json:"mode"`
+	Args          []string            `json:"args"`
+	Cwd           string              `json:"cwd"`
+	Env           map[string]string   `json:"env"`
+	EnvKeys       []string            `json:"env_keys"`
+	StdinTerminal bool                `json:"stdin_terminal"`
+	Stdin         string              `json:"stdin"`
+	SessionID     string              `json:"session_id,omitempty"`
+	Flags         map[string][]string `json:"flags,omitempty"`
+	Positional    []string            `json:"positional,omitempty"`
+}
+
+// Versions the vendor facts were recorded against (docs/adapters.md).
+var defaultVersion = map[string]string{"claude": "2.1.311", "codex": "0.164.0", "grok": "1.0.70"}
+
+// flagSpec lists the flags a vendor command accepts: value flags take an
+// argument, switches do not.
+type flagSpec struct {
+	values   []string
+	switches []string
+}
+
+// Flags recorded in docs/adapters.md and docs/design.md, per vendor and
+// codex subcommand.
+var specs = map[string]flagSpec{
+	"claude": {
+		values:   []string{"--output-format", "--permission-mode", "--session-id", "--resume"},
+		switches: []string{"-p", "--fork-session"},
+	},
+	"grok": {
+		values: []string{"--output-format", "--permission-mode", "--session-id", "--resume",
+			"--tools", "--disallowed-tools", "--max-turns"},
+		switches: []string{"-p", "--fork-session", "--no-alt-screen", "--continue"},
+	},
+	"codex": {
+		values:   []string{"-c"},
+		switches: []string{"--no-alt-screen"},
+	},
+	"codex exec": {
+		values:   []string{"-c", "--disable", "--sandbox", "-i"},
+		switches: []string{"--json"},
+	},
+	"codex resume": {
+		values:   []string{"-c"},
+		switches: []string{"--no-alt-screen"},
+	},
+}
+
+// Limit text per vendor, from docs/adapters.md and docs/design.md. Claude's
+// is a recorded fragment; Grok's is not recorded, so it is the class name.
+var limitText = map[string]string{
+	"claude": "You've hit your limit · resets in 3h",
+	"codex":  "You've hit your usage limit",
+	"grok":   "rate_limit",
+}
+
+func main() {
+	os.Exit(run())
+}
+
+func fail(code int, format string, args ...any) int {
+	fmt.Fprintf(os.Stderr, "fake: "+format+"\n", args...)
+	return code
+}
+
+func run() int {
+	vendor := os.Getenv("AGGY_FAKE_VENDOR")
+	if vendor == "" {
+		vendor = strings.TrimPrefix(filepath.Base(os.Args[0]), "fake-")
+	}
+	if err := checkHome(vendor); err != nil {
+		return fail(97, "%v", err)
+	}
+	if vendor == "hook" {
+		return runHook()
+	}
+	if _, ok := specs[vendor]; !ok {
+		return fail(97, "unknown vendor %q", vendor)
+	}
+	sc, err := loadScenario()
+	if err != nil {
+		return fail(97, "scenario: %v", err)
+	}
+	f := &fake{vendor: vendor, sc: sc}
+	return f.main(os.Args[1:])
+}
+
+// checkHome refuses to run against the real home directory, so a fake can
+// never write into the real ~/.claude, ~/.codex, or ~/.grok.
+func checkHome(vendor string) error {
+	h := os.Getenv("HOME")
+	if h == "" || !filepath.IsAbs(h) {
+		return errors.New("HOME must be an absolute temp directory")
+	}
+	if u, err := user.Current(); err == nil && u.HomeDir != "" {
+		if filepath.Clean(u.HomeDir) == filepath.Clean(h) {
+			return errors.New("refusing to run with HOME set to the real home directory")
+		}
+		if vendor != "hook" && strings.HasPrefix(vendorHome(vendor)+"/", filepath.Clean(u.HomeDir)+"/."+vendor+"/") {
+			return errors.New("refusing to run with the vendor home in the real home directory")
+		}
+	}
+	return nil
+}
+
+func loadScenario() (*Scenario, error) {
+	sc := &Scenario{}
+	p := os.Getenv("AGGY_FAKE_SCENARIO")
+	if p == "" {
+		return sc, nil
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(sc); err != nil {
+		return nil, err
+	}
+	return sc, nil
+}
+
+// vendorHome is the vendor's config directory: the relocation variable when
+// set, else ~/.<vendor>.
+func vendorHome(vendor string) string {
+	env := map[string]string{"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME", "grok": "GROK_HOME"}[vendor]
+	if v := os.Getenv(env); v != "" {
+		return filepath.Clean(v)
+	}
+	return filepath.Join(os.Getenv("HOME"), "."+vendor)
+}
+
+type fake struct {
+	vendor     string
+	sc         *Scenario
+	flags      map[string][]string
+	positional []string
+	sub        string // codex subcommand: "", "exec", "resume", "exec resume"
+	id         string
+	stdin      string
+	terminal   bool
+}
+
+func (f *fake) has(flag string) bool { _, ok := f.flags[flag]; return ok }
+
+func (f *fake) value(flag string) string {
+	if v := f.flags[flag]; len(v) > 0 {
+		return v[len(v)-1]
+	}
+	return ""
+}
+
+// parse reads args against the spec for the vendor and subcommand. A flag
+// it does not know is an error, as in the real CLIs.
+func (f *fake) parse(args []string) error {
+	f.flags = map[string][]string{}
+	key := f.vendor
+	if f.vendor == "codex" && len(args) > 0 && (args[0] == "exec" || args[0] == "resume") {
+		f.sub = args[0]
+		args = args[1:]
+		key = "codex " + f.sub
+		if f.sub == "exec" && len(args) > 0 && args[0] == "resume" {
+			f.sub = "exec resume"
+			args = args[1:]
+		}
+	}
+	spec := specs[key]
+	values := append(append([]string{}, spec.values...), f.sc.ExtraFlags...)
+	switches := append(append([]string{"--version", "--help", "-h"}, spec.switches...), f.sc.ExtraSwitches...)
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			f.positional = append(f.positional, args[i+1:]...)
+			break
+		}
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			f.positional = append(f.positional, a)
+			continue
+		}
+		name, val, hasVal := strings.Cut(a, "=")
+		switch {
+		case contains(switches, name) && !hasVal:
+			f.flags[name] = append(f.flags[name], "")
+		case contains(values, name):
+			if !hasVal {
+				if i+1 >= len(args) {
+					return fmt.Errorf("option %s needs a value", name)
+				}
+				i++
+				val = args[i]
+			}
+			f.flags[name] = append(f.flags[name], val)
+		default:
+			return fmt.Errorf("unknown option '%s'", a)
+		}
+	}
+	return nil
+}
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *fake) main(args []string) int {
+	if err := f.parse(args); err != nil {
+		f.record("error", args)
+		return fail(2, "%s: %v", f.vendor, err)
+	}
+	if f.has("--version") {
+		f.record("version", args)
+		fmt.Print(f.versionText())
+		return 0
+	}
+	if f.has("--help") || f.has("-h") {
+		f.record("help", args)
+		fmt.Print(f.helpText())
+		return 0
+	}
+	headless := (f.vendor != "codex" && f.has("-p")) || f.sub == "exec" || f.sub == "exec resume"
+	f.terminal = isTerminal(os.Stdin)
+	if headless && !f.terminal {
+		// codex exec waits on a stdin that is not a terminal; the others
+		// read the prompt from it. Either way, read to EOF.
+		b, _ := io.ReadAll(os.Stdin)
+		f.stdin = string(b)
+	}
+	f.id = f.sessionID()
+	mode := "interactive"
+	if headless {
+		mode = "headless"
+	}
+	f.record(mode, args)
+	if f.sc.SleepMS > 0 {
+		time.Sleep(time.Duration(f.sc.SleepMS) * time.Millisecond)
+	}
+	if err := f.writeFiles(); err != nil {
+		return fail(3, "%v", err)
+	}
+	if headless {
+		f.headlessOutput()
+	} else {
+		fmt.Print(f.expand(f.sc.Stdout))
+	}
+	if f.sc.Stderr != "" {
+		fmt.Fprint(os.Stderr, f.expand(f.sc.Stderr))
+	}
+	if err := f.runHooks(); err != nil {
+		return fail(3, "hook: %v", err)
+	}
+	if f.sc.Error != "" {
+		text := limitText[f.vendor]
+		if f.sc.ErrorText != nil {
+			text = *f.sc.ErrorText
+		}
+		if text != "" {
+			fmt.Fprintln(os.Stderr, text)
+		}
+	}
+	if !headless {
+		waitForExit()
+	}
+	if f.sc.ExitCode == 0 && f.sc.Error != "" {
+		return 1
+	}
+	return f.sc.ExitCode
+}
+
+func (f *fake) versionText() string {
+	if f.sc.VersionOutput != "" {
+		return f.expand(f.sc.VersionOutput)
+	}
+	v := f.sc.Version
+	if v == "" {
+		v = defaultVersion[f.vendor]
+	}
+	// The real output formats are not recorded; this one is a placeholder
+	// that holds the version number.
+	return fmt.Sprintf("%s %s (fake)\n", f.vendor, v)
+}
+
+// helpText lists the flags the fake honors, unless the scenario gives the
+// text. The real help formats are not recorded.
+func (f *fake) helpText() string {
+	if f.sc.Help != nil {
+		return *f.sc.Help
+	}
+	key := f.vendor
+	if f.sub != "" {
+		key = "codex " + strings.Fields(f.sub)[0]
+	}
+	spec := specs[key]
+	var b strings.Builder
+	fmt.Fprintf(&b, "Usage: %s [options]\n\nOptions:\n", key)
+	for _, v := range spec.values {
+		fmt.Fprintf(&b, "  %s <value>\n", v)
+	}
+	for _, s := range spec.switches {
+		fmt.Fprintf(&b, "  %s\n", s)
+	}
+	if f.vendor == "codex" && f.sub == "" {
+		b.WriteString("\nCommands:\n  exec\n  resume\n")
+	}
+	return b.String()
+}
+
+// sessionID follows each CLI's recorded rules: Claude and Grok take
+// --session-id, resume keeps the id unless --fork-session, and Codex never
+// takes an id in advance.
+func (f *fake) sessionID() string {
+	fresh := f.sc.SessionID
+	if fresh == "" {
+		fresh = newUUID()
+	}
+	switch f.vendor {
+	case "codex":
+		if (f.sub == "exec resume" || f.sub == "resume") && len(f.positional) > 0 {
+			return f.positional[0]
+		}
+		return fresh
+	default:
+		if r := f.value("--resume"); r != "" && !f.has("--fork-session") {
+			return r
+		}
+		if s := f.value("--session-id"); s != "" {
+			return s
+		}
+		return fresh
+	}
+}
+
+func newUUID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	h := hex.EncodeToString(b[:])
+	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
+}
+
+// grokSessionDir is ~/.grok/sessions/<url-encoded cwd>/<sessionId>. The
+// exact encoding is not recorded; this uses url.QueryEscape, which encodes
+// "/" as %2F.
+func (f *fake) grokSessionDir() string {
+	cwd, _ := os.Getwd()
+	return filepath.Join(vendorHome("grok"), "sessions", url.QueryEscape(cwd), f.id)
+}
+
+// expand fills {session_id}, {cwd}, {home}, {vendor_home}, and, for Grok,
+// {session_dir}.
+func (f *fake) expand(s string) string {
+	cwd, _ := os.Getwd()
+	pairs := []string{
+		"{session_id}", f.id,
+		"{cwd}", cwd,
+		"{home}", os.Getenv("HOME"),
+		"{vendor_home}", vendorHome(f.vendor),
+	}
+	if f.vendor == "grok" {
+		pairs = append(pairs, "{session_dir}", f.grokSessionDir())
+	}
+	return strings.NewReplacer(pairs...).Replace(s)
+}
+
+func (f *fake) expandJSON(raw json.RawMessage) string {
+	return f.expand(string(raw))
+}
+
+func (f *fake) headlessOutput() {
+	jsonOut := f.value("--output-format") == "json" || f.has("--json")
+	if !jsonOut {
+		fmt.Print(f.expand(f.sc.Stdout))
+		return
+	}
+	switch f.vendor {
+	case "codex":
+		// Recorded: the first event is thread.started with thread_id.
+		// Later events are not recorded, so they come from the scenario.
+		line, _ := json.Marshal(map[string]string{"type": "thread.started", "thread_id": f.id})
+		fmt.Println(string(line))
+		for _, e := range f.sc.Events {
+			fmt.Println(compact(f.expandJSON(e)))
+		}
+		if len(f.sc.ErrorEvent) > 0 {
+			fmt.Println(compact(f.expandJSON(f.sc.ErrorEvent)))
+		}
+	default:
+		obj := map[string]any{}
+		if f.sc.JSON != nil {
+			b, _ := json.Marshal(f.sc.JSON)
+			_ = json.Unmarshal([]byte(f.expand(string(b))), &obj)
+		}
+		if f.vendor == "grok" {
+			// Recorded: Grok's JSON includes sessionId.
+			obj["sessionId"] = f.id
+		}
+		b, _ := json.Marshal(obj)
+		fmt.Println(string(b))
+	}
+}
+
+func compact(s string) string {
+	var buf bytes.Buffer
+	if json.Compact(&buf, []byte(s)) != nil {
+		return s
+	}
+	return buf.String()
+}
+
+// Minimal valid image bytes.
+var (
+	png = []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82")
+	jpg = []byte("\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9")
+)
+
+// writeFiles writes images where each CLI writes them, and the scenario's
+// session files under the vendor home.
+func (f *fake) writeFiles() error {
+	if f.sc.Images > 0 {
+		var dir, ext string
+		var data []byte
+		switch f.vendor {
+		case "codex":
+			dir, ext, data = filepath.Join(vendorHome("codex"), "generated_images", f.id), ".png", png
+		case "grok":
+			dir, ext, data = filepath.Join(f.grokSessionDir(), "images"), ".jpg", jpg
+		default:
+			return fmt.Errorf("%s image paths are not recorded", f.vendor)
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		for i := 1; i <= f.sc.Images; i++ {
+			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%d%s", i, ext)), data, 0o600); err != nil {
+				return err
+			}
+		}
+	}
+	base := vendorHome(f.vendor)
+	for _, sf := range f.sc.SessionFiles {
+		rel := filepath.Clean(f.expand(sf.Path))
+		if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("session file %q must stay inside the vendor home", sf.Path)
+		}
+		p := filepath.Join(base, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(p, []byte(f.expand(sf.Content)), 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runHooks calls the hook command once per hook, with the event name as
+// the last argument and the payload on stdin (or as an argument when
+// hook_payload_in is "arg"). A limit error with no hooks listed raises
+// StopFailure with error rate_limit on Claude and Grok; Codex has no
+// failure hook.
+func (f *fake) runHooks() error {
+	hooks := f.sc.Hooks
+	if len(hooks) == 0 && f.sc.Error == "rate_limit" && f.vendor != "codex" {
+		hooks = []Hook{{Event: "StopFailure", Payload: json.RawMessage(`{"error":"rate_limit"}`)}}
+	}
+	if len(hooks) == 0 {
+		return nil
+	}
+	if len(f.sc.HookCommand) == 0 {
+		return errors.New("hooks listed but no hook_command")
+	}
+	for _, h := range hooks {
+		payload := f.expandJSON(h.Payload)
+		args := append(append([]string{}, f.sc.HookCommand[1:]...), h.Event)
+		if f.sc.HookPayloadIn == "arg" {
+			args = append(args, payload)
+		}
+		cmd := exec.Command(f.sc.HookCommand[0], args...)
+		if f.sc.HookPayloadIn != "arg" {
+			cmd.Stdin = strings.NewReader(payload)
+		}
+		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("%s: %w", h.Event, err)
+		}
+	}
+	return nil
+}
+
+// waitForExit reads lines until "/exit" or EOF, like a session waiting at
+// its prompt.
+func waitForExit() {
+	sc := bufio.NewScanner(os.Stdin)
+	for sc.Scan() {
+		if strings.TrimSpace(sc.Text()) == "/exit" {
+			return
+		}
+	}
+}
+
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0 && fi.Mode()&os.ModeDevice != 0 && !isDevNull(fi)
+}
+
+// isDevNull reports whether fi is /dev/null, which is a character device
+// but not a terminal.
+func isDevNull(fi os.FileInfo) bool {
+	null, err := os.Stat(os.DevNull)
+	return err == nil && os.SameFile(fi, null)
+}
+
+// record appends this invocation to $AGGY_FAKE_RECORD. Values are kept
+// only for AGGY_* variables; every other variable is recorded by name.
+func (f *fake) record(mode string, args []string) {
+	p := os.Getenv("AGGY_FAKE_RECORD")
+	if p == "" {
+		return
+	}
+	cwd, _ := os.Getwd()
+	r := Record{
+		Vendor: f.vendor, Mode: mode, Args: args, Cwd: cwd, Env: map[string]string{},
+		StdinTerminal: f.terminal, Stdin: f.stdin, SessionID: f.id,
+		Flags: f.flags, Positional: f.positional,
+	}
+	for _, kv := range os.Environ() {
+		k, v, _ := strings.Cut(kv, "=")
+		r.EnvKeys = append(r.EnvKeys, k)
+		if strings.HasPrefix(k, "AGGY_") {
+			r.Env[k] = v
+		}
+	}
+	sort.Strings(r.EnvKeys)
+	appendJSON(p, r)
+}
+
+func appendJSON(path string, v any) {
+	b, _ := json.Marshal(v)
+	fh, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fake: record: %v\n", err)
+		return
+	}
+	defer fh.Close()
+	_, _ = fh.Write(append(b, '\n'))
+}
+
+// runHook is fake-hook: it records its arguments and stdin.
+func runHook() int {
+	b, _ := io.ReadAll(os.Stdin)
+	if p := os.Getenv("AGGY_FAKE_RECORD"); p != "" {
+		appendJSON(p, map[string]any{"vendor": "hook", "args": os.Args[1:], "stdin": string(b)})
+	}
+	return 0
+}
