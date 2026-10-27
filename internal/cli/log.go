@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -23,6 +25,9 @@ screen, switches, borrows, and files changed.
   -n N          show only the latest N events
   --parent ID   show only this aggy session's events
 `
+
+// logSchema is the oldest schema with the events table.
+const logSchema = 1
 
 // runLog is aggy log. It never creates the store: with no database there
 // is nothing to show.
@@ -55,13 +60,21 @@ func runLog(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy log: %v\n", err)
 		return 1
 	}
+	// Read only: aggy log never creates, migrates, or writes the index.
 	ctx := context.Background()
-	s, err := store.Open(ctx, path)
+	s, err := store.OpenReadOnly(ctx, path)
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy log: %v\n", err)
 		return 1
 	}
 	defer func() { _ = s.Close() }()
+	if v, err := s.Version(ctx); err != nil {
+		fmt.Fprintf(stderr, "aggy log: %v\n", err)
+		return 1
+	} else if v < logSchema {
+		fmt.Fprintf(stdout, "The index is at schema version %d and has no event log yet. Run another aggy command to upgrade it.\n", v)
+		return 0
+	}
 	events, err := s.Events(ctx, store.EventFilter{ParentID: *parent, Limit: *n})
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy log: %v\n", err)
@@ -74,7 +87,8 @@ func runLog(args []string, stdout, stderr io.Writer) int {
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "TIME (UTC)\tSESSION\tEVENT\tDETAIL")
 	for _, e := range events {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", e.At.UTC().Format("2006-01-02 15:04:05"), dash(e.ParentID), e.Type, describe(e))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", e.At.UTC().Format("2006-01-02 15:04:05"),
+			sanitize(dash(e.ParentID)), sanitize(e.Type), sanitize(describe(e)))
 	}
 	_ = tw.Flush()
 	return 0
@@ -140,4 +154,31 @@ func describe(e store.Event) string {
 		parts[i] = k + "=" + str(d, k)
 	}
 	return strings.Join(parts, " ")
+}
+
+// sanitize escapes what a terminal would act on rather than print: C0
+// controls except tab (including ESC, CR, and newline), DEL, C1 controls,
+// Unicode format characters such as bidi overrides, and invalid UTF-8. The
+// events table holds text from vendor sessions, so it is untrusted.
+func sanitize(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			fmt.Fprintf(&b, "\\x%02x", s[i])
+		case r == '\n':
+			b.WriteString("\\n")
+		case r == '\r':
+			b.WriteString("\\r")
+		case r < 0x20 && r != '\t', r == 0x7f:
+			fmt.Fprintf(&b, "\\x%02x", r)
+		case r >= 0x80 && r <= 0x9f, unicode.Is(unicode.Cf, r):
+			fmt.Fprintf(&b, "\\u%04x", r)
+		default:
+			b.WriteRune(r)
+		}
+		i += size
+	}
+	return b.String()
 }
