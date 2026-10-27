@@ -6,6 +6,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -53,23 +54,24 @@ func OpenDefault(ctx context.Context) (*Store, error) {
 	return Open(ctx, path)
 }
 
-// Open opens or creates the database at path and migrates it. The directory
-// is created 0700 and the file 0600. Every connection runs with WAL,
-// busy_timeout, and foreign_keys on.
+// Open opens or creates the database at path and migrates it. A directory
+// it creates is 0700; an existing directory keeps its mode. The file is
+// 0600. Every connection runs with busy_timeout, WAL, and foreign_keys on.
 func Open(ctx context.Context, path string) (*Store, error) {
 	path, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
 	dir := filepath.Dir(path)
-	if err := safefs.MkdirAll(dir, 0o700); err != nil {
+	if _, err := safefs.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+		if err := safefs.MkdirAll(dir, 0o700); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
 		return nil, err
 	}
-	if err := safefs.Chmod(dir, 0o700); err != nil {
-		return nil, err
-	}
-	// Create the file here so it starts 0600; SQLite gives the -wal and
-	// -shm files the same mode.
+	// Create the file here, through safefs, so it starts 0600 and is
+	// checked; SQLite gives the -wal and -shm files the same mode.
 	f, err := safefs.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err
@@ -81,6 +83,14 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 
+	// Serialize first-time setup (the WAL switch and migrations) across
+	// processes and goroutines; racing it fails with SQLITE_BUSY.
+	unlock, err := lockFile(path + ".lock")
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
 	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, err
@@ -90,6 +100,14 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: open %s: %w", path, err)
 	}
+	// SQLite opened the file itself, outside safefs. Confirm by identity
+	// that neither it nor its WAL files is a vendor credential file.
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if err := safefs.Check(p); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 	if err := s.Migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -97,13 +115,19 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return s, nil
 }
 
+// dsn builds a file: URI that names exactly path. SQLite percent-decodes
+// the URI path and splits it at '?' and '#', so the path is escaped rather
+// than concatenated: "auth.jso%6E" must open a file of that name, not
+// auth.json.
 func dsn(path string) string {
 	q := url.Values{}
-	q.Add("_pragma", "journal_mode(WAL)")
+	// busy_timeout first, so the pragmas after it wait instead of failing.
 	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeout.Milliseconds()))
+	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", "foreign_keys(1)")
 	q.Add("_pragma", "synchronous(NORMAL)")
-	return "file:" + path + "?" + q.Encode()
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: q.Encode()}
+	return u.String()
 }
 
 // Close closes the database.

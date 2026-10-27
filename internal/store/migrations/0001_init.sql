@@ -26,7 +26,8 @@ CREATE TABLE children (
     cwd               TEXT NOT NULL,
     worktree          TEXT NOT NULL DEFAULT '',
     transcript_path   TEXT NOT NULL DEFAULT '',
-    status            TEXT NOT NULL DEFAULT 'open',  -- open | running | closed | gone
+    status            TEXT NOT NULL DEFAULT 'open'
+                      CHECK (status IN ('open', 'running', 'closed', 'gone')),
     lease_pid         INTEGER,                       -- process holding this session, if any
     lease_at          INTEGER,
     created_at        INTEGER NOT NULL,
@@ -45,7 +46,8 @@ CREATE TABLE borrows (
     model       TEXT NOT NULL DEFAULT '',
     task_hash   TEXT NOT NULL DEFAULT '',
     budget      TEXT NOT NULL DEFAULT '{}',  -- JSON: {"minutes":10,"turns":30}
-    status      TEXT NOT NULL DEFAULT 'running',  -- running | done | failed | killed
+    status      TEXT NOT NULL DEFAULT 'running'
+                CHECK (status IN ('running', 'done', 'failed', 'killed')),
     outcome     TEXT NOT NULL DEFAULT '',  -- error class or person's verdict
     artifacts   TEXT NOT NULL DEFAULT '[]',  -- JSON list of paths
     image_count INTEGER NOT NULL DEFAULT 0,
@@ -91,6 +93,15 @@ CREATE TABLE events (
     detail    TEXT NOT NULL DEFAULT ''  -- JSON
 );
 CREATE INDEX events_at ON events (at);
+
+-- REPLACE (INSERT OR REPLACE, REPLACE INTO) deletes the old row without
+-- firing delete triggers, so an insert that names an existing id is
+-- refused before the conflict is resolved.
+CREATE TRIGGER events_no_replace BEFORE INSERT ON events
+WHEN NEW.id IS NOT NULL AND EXISTS (SELECT 1 FROM events WHERE id = NEW.id)
+BEGIN
+    SELECT RAISE(ABORT, 'events is append-only');
+END;
 
 CREATE TRIGGER events_no_update BEFORE UPDATE ON events
 BEGIN
