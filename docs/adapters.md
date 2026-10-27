@@ -8,6 +8,21 @@ added.
 The interface is `adapter.Adapter` in `internal/adapter/adapter.go`.
 Implementations live in `internal/adapter/<vendor>`.
 
+## Stability
+
+**The interface is unstable until M1.** It will change as the first vendor
+adapters are built. These gaps are known:
+
+- Parsing hook payloads: `Stop`, `StopFailure`, and the Codex
+  `agent-turn-complete` notify.
+- Discovering the session id of an interactive launch. Codex cannot be
+  given an id in advance.
+- Detecting a plan limit in an interactive session.
+- The exit sequence the supervisor types to end a session at turn end.
+- The inputs `ConfigPatches` needs: tool toggles, the safety policy, and
+  the MCP server list.
+- Patches that create symlinks or delete files.
+
 ## Contract
 
 **Adapters build commands and parse output. They never start processes.**
@@ -31,9 +46,11 @@ can be tested against recorded output with no vendor installed.
 Rules every adapter follows:
 
 - **No credentials.** Never read, copy, or store `~/.claude/.credentials.json`,
-  `~/.codex/auth.json`, `~/.grok/auth.json`, or their relocated forms under
-  `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `GROK_HOME`. All file access goes
-  through `internal/safefs`, which refuses those paths, and lint enforces it.
+  `~/.codex/auth.json`, `~/.codex/.credentials.json` (Codex's MCP OAuth
+  store), `~/.grok/auth.json`, `~/.grok/mcp_credentials.json`, or their
+  relocated forms under `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `GROK_HOME`.
+  All file access goes through `internal/safefs`, which refuses those files
+  by path and by file identity, and lint enforces it.
 - **No proxies or API keys.** Never set `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`,
   `GROK_MODELS_BASE_URL`, or any API-key variable.
 - **Prompts go in files.** `HeadlessRequest.PromptFile` and
