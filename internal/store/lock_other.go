@@ -2,6 +2,13 @@
 
 package store
 
-// lockFile is a no-op where flock does not exist. Windows support is a
-// later milestone and will need LockFileEx here.
-func lockFile(string) (func(), error) { return func() {}, nil }
+import (
+	"context"
+	"time"
+)
+
+// lockFile reports ErrLockUnsupported where flock does not exist. Windows
+// support is a later milestone and will need LockFileEx here.
+func lockFile(context.Context, string, time.Duration) (func(), error) {
+	return func() {}, ErrLockUnsupported
+}

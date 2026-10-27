@@ -2,8 +2,11 @@ package patch
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"testing"
+
+	"github.com/congdoe/aggy/internal/safefs"
 )
 
 // Regression tests for the PR #2 review.
@@ -91,5 +94,40 @@ func TestNoBackupWhenRecheckFails(t *testing.T) {
 	entries, _ := os.ReadDir(e.backups)
 	if len(entries) != 0 {
 		t.Errorf("backup left after a refused patch: %v", entries)
+	}
+}
+
+// TestApplyKeepsRecordOnDirSyncError: a directory sync that fails after the
+// rename must not lose the Record, or the manifest could not undo a change
+// that happened.
+func TestApplyKeepsRecordOnDirSyncError(t *testing.T) {
+	orig := "a = 1\n"
+	e := setup(t, ptr(orig))
+	old := writeFile
+	writeFile = func(name string, data []byte, perm fs.FileMode) error {
+		if err := old(name, data, perm); err != nil {
+			return err
+		}
+		return &safefs.DirSyncError{Path: name, Err: errors.New("EIO")}
+	}
+	t.Cleanup(func() { writeFile = old })
+
+	rec, err := Apply(Patch{File: e.file, ExpectedHash: Hash([]byte(orig)), Transform: addLine}, e.backups)
+	if !errors.Is(err, safefs.ErrDirSync) {
+		t.Fatalf("Apply = %v, want ErrDirSync", err)
+	}
+	if !rec.Changed || rec.BackupPath == "" || rec.AfterHash != Hash([]byte(orig+line)) || rec.BeforeHash != Hash([]byte(orig)) {
+		t.Fatalf("Record lost on a dir sync error: %+v", rec)
+	}
+	if got := content(t, e.file); got != orig+line {
+		t.Errorf("file = %q", got)
+	}
+	// The Record is complete enough to undo the change.
+	writeFile = old
+	if err := Revert(rec); err != nil {
+		t.Fatal(err)
+	}
+	if got := content(t, e.file); got != orig {
+		t.Errorf("after revert = %q, want %q", got, orig)
 	}
 }

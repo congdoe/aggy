@@ -30,10 +30,33 @@ const FileName = "aggy.db"
 // busyTimeout is how long a connection waits for another writer.
 const busyTimeout = 5 * time.Second
 
+// lockWait bounds the wait for another process's first-time setup.
+const lockWait = 30 * time.Second
+
+// ErrLockTimeout means another process held the setup lock for longer than
+// the store waits.
+var ErrLockTimeout = errors.New("store: timed out waiting for the setup lock")
+
+// ErrLockUnsupported means the file system holding the store cannot lock
+// files. Open goes on without the lock and reports it in Warnings: the
+// migrations still run in BEGIN IMMEDIATE transactions, so racing setups
+// cannot apply one twice, but a race on the first WAL switch can fail with
+// SQLITE_BUSY instead of waiting.
+var ErrLockUnsupported = errors.New("store: file locks are not supported here")
+
 // Store is the open index database.
 type Store struct {
-	db *sql.DB
+	db       *sql.DB
+	path     string
+	warnings []error
 }
+
+// Warnings returns problems Open worked around, such as
+// ErrLockUnsupported.
+func (s *Store) Warnings() []error { return s.warnings }
+
+// Path returns the absolute path of the database file.
+func (s *Store) Path() string { return s.path }
 
 // DefaultPath returns the database path in the state directory
 // ($AGGY_HOME or ~/.aggy).
@@ -84,9 +107,13 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	}
 
 	// Serialize first-time setup (the WAL switch and migrations) across
-	// processes and goroutines; racing it fails with SQLITE_BUSY.
-	unlock, err := lockFile(path + ".lock")
-	if err != nil {
+	// processes and goroutines; racing it fails with SQLITE_BUSY. The wait
+	// is bounded and honors ctx.
+	var warnings []error
+	unlock, err := lockFile(ctx, path+".lock", lockWait)
+	if errors.Is(err, ErrLockUnsupported) {
+		warnings = append(warnings, err)
+	} else if err != nil {
 		return nil, err
 	}
 	defer unlock()
@@ -95,7 +122,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db}
+	s := &Store{db: db, path: path, warnings: warnings}
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: open %s: %w", path, err)

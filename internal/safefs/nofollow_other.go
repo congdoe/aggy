@@ -2,6 +2,14 @@
 
 package safefs
 
-// oNoFollow is zero where O_NOFOLLOW does not exist; the identity check on
-// the opened descriptor still applies.
-const oNoFollow = 0
+import "io/fs"
+
+// oNoFollow and oNonBlock are zero where the flags do not exist; the
+// identity check on the opened descriptor still applies.
+const (
+	oNoFollow = 0
+	oNonBlock = 0
+)
+
+// linkCount is 1 where the link count is not available.
+func linkCount(fs.FileInfo) uint64 { return 1 }
