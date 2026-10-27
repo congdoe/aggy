@@ -43,13 +43,22 @@ type Patch struct {
 }
 
 // Record describes an applied change in the shape of the store's changes
-// table: file, hash before, hash after, backup path.
+// table: file, hash before, hash after, backup path, and what an exact undo
+// needs besides the old bytes.
 type Record struct {
 	File       string // absolute path
 	BeforeHash string // hex sha256, or NoFile when the patch created the file
 	AfterHash  string // hex sha256 after the change
 	BackupPath string // copy of the old bytes; empty when BeforeHash is NoFile or nothing changed
 	Changed    bool   // false when the file already held the patched content
+	// Created is true when the patch created the file.
+	Created bool
+	// Mode is the file's permission bits before the change, or those it was
+	// created with.
+	Mode fs.FileMode
+	// CreatedDirs lists the directories Apply created for a new file,
+	// outermost first. Revert removes them again while they are empty.
+	CreatedDirs []string
 }
 
 // Action is what applying a patch would do.
@@ -163,6 +172,19 @@ func Plan(p Patch) (Planned, error) {
 		After:  next,
 	}
 	exists := curHash != NoFile
+	if exists {
+		fi, err := safefs.Stat(file)
+		if err != nil {
+			return Planned{}, err
+		}
+		pl.Mode = fi.Mode().Perm()
+	} else {
+		pl.Created = true
+		pl.Mode = p.Mode
+		if pl.Mode == 0 {
+			pl.Mode = DefaultMode
+		}
+	}
 	same := exists && bytes.Equal(next, cur)
 	switch {
 	case same:
@@ -204,11 +226,10 @@ func Apply(p Patch, backupDir string) (Record, error) {
 	if pl.Action == Modify && backupDir == "" {
 		return Record{}, errors.New("patch: backup directory is required")
 	}
-	mode := p.Mode
-	if mode == 0 {
-		mode = DefaultMode
-	}
 	if pl.Action == Create {
+		if rec.CreatedDirs, err = missingDirs(filepath.Dir(rec.File)); err != nil {
+			return Record{}, err
+		}
 		if err := safefs.MkdirAll(filepath.Dir(rec.File), 0o700); err != nil {
 			return Record{}, err
 		}
@@ -227,7 +248,7 @@ func Apply(p Patch, backupDir string) (Record, error) {
 			return Record{}, err
 		}
 	}
-	if err := writeFile(rec.File, pl.After, mode); err != nil {
+	if err := writeFile(rec.File, pl.After, rec.Mode); err != nil {
 		if errors.Is(err, safefs.ErrDirSync) {
 			rec.Changed = true
 			return rec, fmt.Errorf("patch: %s was written: %w", rec.File, err)
@@ -236,6 +257,28 @@ func Apply(p Patch, backupDir string) (Record, error) {
 	}
 	rec.Changed = true
 	return rec, nil
+}
+
+// missingDirs lists the directories that do not exist on the way to dir,
+// outermost first.
+func missingDirs(dir string) ([]string, error) {
+	var missing []string
+	for {
+		_, err := safefs.Lstat(dir)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+		missing = append([]string{dir}, missing...)
+		up := filepath.Dir(dir)
+		if up == dir {
+			break
+		}
+		dir = up
+	}
+	return missing, nil
 }
 
 // backup stores b in dir under its own hash, so the same bytes are kept
@@ -279,10 +322,12 @@ func Revert(r Record) error {
 		return &DriftError{File: r.File, Expected: r.AfterHash, Actual: cur}
 	}
 	if r.BeforeHash == NoFile {
-		// TODO(T6607): directories created for the file are left in place.
-		// Exact restore also has to cover dangling symlinks, hard links,
-		// and xattrs.
-		return safefs.Remove(r.File)
+		// TODO(T6607): exact restore also has to cover dangling symlinks,
+		// hard links, and xattrs.
+		if err := safefs.Remove(r.File); err != nil {
+			return err
+		}
+		return removeEmptyDirs(r.CreatedDirs)
 	}
 	old, err := safefs.ReadFile(r.BackupPath)
 	if err != nil {
@@ -291,5 +336,42 @@ func Revert(r Record) error {
 	if Hash(old) != r.BeforeHash {
 		return fmt.Errorf("patch: backup %s does not match the recorded hash", r.BackupPath)
 	}
-	return writeFile(r.File, old, DefaultMode)
+	werr := writeFile(r.File, old, DefaultMode)
+	if werr != nil && !errors.Is(werr, safefs.ErrDirSync) {
+		return werr
+	}
+	if r.Mode != 0 {
+		fi, err := safefs.Stat(r.File)
+		if err != nil {
+			return err
+		}
+		if fi.Mode().Perm() != r.Mode {
+			if err := safefs.Chmod(r.File, r.Mode); err != nil {
+				return err
+			}
+		}
+	}
+	return werr
+}
+
+// removeEmptyDirs removes dirs, innermost first, while each is empty. A
+// directory something else has put files in since is kept, and so are the
+// ones above it.
+func removeEmptyDirs(dirs []string) error {
+	for i := len(dirs) - 1; i >= 0; i-- {
+		entries, err := safefs.ReadDir(dirs[i])
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if len(entries) > 0 {
+			return nil
+		}
+		if err := safefs.Remove(dirs[i]); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }

@@ -131,3 +131,72 @@ func TestApplyKeepsRecordOnDirSyncError(t *testing.T) {
 		t.Errorf("after revert = %q, want %q", got, orig)
 	}
 }
+
+// TestCreateRecordsUndoFacts: a created file records that it was created,
+// its mode, and the directories made for it, and Revert removes them.
+func TestCreateRecordsUndoFacts(t *testing.T) {
+	e := setup(t, nil)
+	file := e.dir + "/a/b/new.toml"
+	rec, err := Apply(Patch{File: file, ExpectedHash: NoFile, Transform: addLine, Mode: 0o640}, e.backups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rec.Created || rec.Mode != 0o640 {
+		t.Errorf("Created, Mode = %v, %o", rec.Created, rec.Mode)
+	}
+	if want := []string{e.dir + "/a", e.dir + "/a/b"}; len(rec.CreatedDirs) != 2 || rec.CreatedDirs[0] != want[0] || rec.CreatedDirs[1] != want[1] {
+		t.Errorf("CreatedDirs = %v, want %v", rec.CreatedDirs, want)
+	}
+	if err := Revert(rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(e.dir + "/a"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("created directory left after revert: %v", err)
+	}
+}
+
+// TestRevertKeepsDirsWithOtherFiles: a created directory that gained
+// another file is kept.
+func TestRevertKeepsDirsWithOtherFiles(t *testing.T) {
+	e := setup(t, nil)
+	file := e.dir + "/a/b/new.toml"
+	rec, err := Apply(Patch{File: file, ExpectedHash: NoFile, Transform: addLine}, e.backups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(e.dir+"/a/other", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Revert(rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(e.dir + "/a/b"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("empty created directory kept: %v", err)
+	}
+	if _, err := os.Stat(e.dir + "/a/other"); err != nil {
+		t.Errorf("directory with another file removed: %v", err)
+	}
+}
+
+// TestRevertRestoresMode: the mode recorded before the change comes back.
+func TestRevertRestoresMode(t *testing.T) {
+	orig := "a = 1\n"
+	e := setup(t, ptr(orig))
+	rec, err := Apply(Patch{File: e.file, ExpectedHash: Hash([]byte(orig)), Transform: addLine}, e.backups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Mode != 0o640 || rec.Created {
+		t.Errorf("Mode, Created = %o, %v", rec.Mode, rec.Created)
+	}
+	if err := os.Chmod(e.file, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Revert(rec); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(e.file)
+	if err != nil || fi.Mode().Perm() != 0o640 {
+		t.Errorf("mode after revert = %v, %v, want 640", fi.Mode().Perm(), err)
+	}
+}
