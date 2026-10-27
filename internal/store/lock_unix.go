@@ -45,7 +45,7 @@ func lockFile(ctx context.Context, path string, wait time.Duration) (func(), err
 			continue
 		case errors.Is(err, syscall.EWOULDBLOCK), errors.Is(err, syscall.EAGAIN):
 			// Held by another process or open; wait below.
-		case errors.Is(err, syscall.ENOTSUP), errors.Is(err, syscall.EOPNOTSUPP), errors.Is(err, syscall.ENOLCK):
+		case lockUnsupported(err):
 			_ = f.Close()
 			return func() {}, fmt.Errorf("%w: %s: %w", ErrLockUnsupported, path, err)
 		default:
