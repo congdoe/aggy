@@ -1,0 +1,43 @@
+name: release
+
+# Disabled until v0.1.0. It runs only by hand, and the job is switched off
+# by its `if`. To enable it, change the trigger to
+#   push:
+#     tags: ["v*"]
+# and remove the `if`.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub release and upload assets
+      id-token: write # keyless Sigstore signing through GitHub OIDC
+      attestations: write # store the build provenance attestations
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: v2.19.0
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Signed checksums and build provenance: a Sigstore-signed SLSA
+      # provenance attestation for every archive and for checksums.txt.
+      # Verify with: gh attestation verify <file> --repo congdoe/aggy
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/checksums.txt
