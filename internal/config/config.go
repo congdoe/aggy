@@ -1,0 +1,294 @@
+package config
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"path/filepath"
+	"slices"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+
+	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/home"
+	"github.com/congdoe/aggy/internal/safefs"
+)
+
+// FileName is the user config file inside the state directory.
+const FileName = "config.toml"
+
+// Config is the user config. Load fills unset keys with Default's values.
+type Config struct {
+	// DefaultVendor is the vendor `aggy` opens. Empty means the first
+	// connected vendor in claude, codex, grok order.
+	DefaultVendor adapter.Vendor `toml:"default_vendor"`
+	Vendors       Vendors        `toml:"vendors"`
+	Switch        Switch         `toml:"switch"`
+	Routing       Routing        `toml:"routing"`
+	Budgets       Budgets        `toml:"budgets"`
+}
+
+// Vendors holds per-vendor settings.
+type Vendors struct {
+	Claude VendorConfig `toml:"claude"`
+	Codex  VendorConfig `toml:"codex"`
+	Grok   VendorConfig `toml:"grok"`
+}
+
+// VendorConfig is one vendor's settings.
+type VendorConfig struct {
+	// Model is passed to the CLI unchanged. Empty passes no model flag, so
+	// the vendor uses its own default.
+	Model string `toml:"model"`
+}
+
+// For returns the settings of vendor v.
+func (vs Vendors) For(v adapter.Vendor) VendorConfig {
+	switch v {
+	case adapter.Claude:
+		return vs.Claude
+	case adapter.Codex:
+		return vs.Codex
+	case adapter.Grok:
+		return vs.Grok
+	}
+	return VendorConfig{}
+}
+
+// Switch configures the vendor switch picker.
+type Switch struct {
+	// Order is the picker's preference. It preselects the first vendor that
+	// is connected, has quota left, and is not the one on screen.
+	Order []adapter.Vendor `toml:"order"`
+}
+
+// NotAuthor is the routing value meaning any connected vendor except the
+// one that wrote the change.
+const NotAuthor = "not-author"
+
+// Route is one kind's routing: an ordered vendor list, or NotAuthor.
+type Route struct {
+	Vendors   []adapter.Vendor
+	NotAuthor bool
+}
+
+// UnmarshalTOML accepts a list of vendor names or the string "not-author".
+func (r *Route) UnmarshalTOML(v any) error {
+	switch x := v.(type) {
+	case string:
+		if x != NotAuthor {
+			return fmt.Errorf("want a vendor list or %q, got %q", NotAuthor, x)
+		}
+		*r = Route{NotAuthor: true}
+		return nil
+	case []any:
+		route := Route{Vendors: []adapter.Vendor{}}
+		for _, e := range x {
+			s, ok := e.(string)
+			if !ok {
+				return fmt.Errorf("vendor list holds %T, want strings", e)
+			}
+			vendor, err := adapter.ParseVendor(s)
+			if err != nil {
+				return err
+			}
+			if slices.Contains(route.Vendors, vendor) {
+				return fmt.Errorf("vendor %q listed twice", s)
+			}
+			route.Vendors = append(route.Vendors, vendor)
+		}
+		*r = route
+		return nil
+	}
+	return fmt.Errorf("want a vendor list or %q, got %T", NotAuthor, v)
+}
+
+// Routing maps each borrow kind to its route. An empty vendor list turns
+// the kind off.
+type Routing struct {
+	Image    Route `toml:"image"`
+	Video    Route `toml:"video"`
+	Research Route `toml:"research"`
+	News     Route `toml:"news"`
+	Review   Route `toml:"review"`
+	Edit     Route `toml:"edit"`
+}
+
+// For returns the route for kind k.
+func (r Routing) For(k adapter.Kind) Route {
+	switch k {
+	case adapter.Image:
+		return r.Image
+	case adapter.Video:
+		return r.Video
+	case adapter.Research:
+		return r.Research
+	case adapter.News:
+		return r.News
+	case adapter.Review:
+		return r.Review
+	case adapter.Edit:
+		return r.Edit
+	}
+	return Route{}
+}
+
+// Budget limits one borrow. aggy kills the process past Minutes.
+type Budget struct {
+	Minutes int `toml:"minutes"`
+	// Turns caps agent turns where the CLI supports it. Zero means no cap.
+	Turns int `toml:"turns"`
+}
+
+// Budgets holds a budget per borrow kind.
+type Budgets struct {
+	Image    Budget `toml:"image"`
+	Video    Budget `toml:"video"`
+	Research Budget `toml:"research"`
+	News     Budget `toml:"news"`
+	Review   Budget `toml:"review"`
+	Edit     Budget `toml:"edit"`
+}
+
+// For returns the budget for kind k.
+func (b Budgets) For(k adapter.Kind) Budget {
+	switch k {
+	case adapter.Image:
+		return b.Image
+	case adapter.Video:
+		return b.Video
+	case adapter.Research:
+		return b.Research
+	case adapter.News:
+		return b.News
+	case adapter.Review:
+		return b.Review
+	case adapter.Edit:
+		return b.Edit
+	}
+	return Budget{}
+}
+
+func vendors(vs ...adapter.Vendor) Route { return Route{Vendors: vs} }
+
+// Default returns the generic defaults. Routing follows each CLI's built-in
+// tools, not benchmarks; budgets follow the build plan.
+func Default() Config {
+	return Config{
+		Switch: Switch{Order: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok}},
+		Routing: Routing{
+			News:     vendors(adapter.Grok, adapter.Codex), // X search and web search built in
+			Research: vendors(adapter.Codex, adapter.Grok), // live web search with sources
+			Image:    vendors(adapter.Codex, adapter.Grok), // built-in image generation
+			Video:    vendors(adapter.Grok),                // only Grok has video tools
+			Review:   Route{NotAuthor: true},               // a different model catches different things
+			Edit:     vendors(adapter.Codex, adapter.Grok),
+		},
+		Budgets: Budgets{
+			News:     Budget{Minutes: 5, Turns: 15},
+			Research: Budget{Minutes: 10, Turns: 30},
+			Image:    Budget{Minutes: 5},
+			Video:    Budget{Minutes: 10},
+			Review:   Budget{Minutes: 15},
+			Edit:     Budget{Minutes: 45},
+		},
+	}
+}
+
+// Path returns the user config path in the state directory
+// ($AGGY_HOME or ~/.aggy).
+func Path() (string, error) {
+	dir, err := home.Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, FileName), nil
+}
+
+// LoadDefault loads the user config from Path.
+func LoadDefault() (Config, error) {
+	p, err := Path()
+	if err != nil {
+		return Config{}, err
+	}
+	return Load(p)
+}
+
+// Load reads the config at path over the defaults. A missing file gives the
+// defaults. Unknown keys are an error that names them.
+func Load(path string) (Config, error) {
+	b, err := safefs.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Default(), nil
+	}
+	if err != nil {
+		return Config{}, err
+	}
+	cfg, err := Parse(string(b))
+	if err != nil {
+		return Config{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// Parse decodes config text over the defaults and validates it.
+func Parse(text string) (Config, error) {
+	cfg := Default()
+	md, err := toml.Decode(text, &cfg)
+	if err != nil {
+		return Config{}, err
+	}
+	if und := md.Undecoded(); len(und) > 0 {
+		// Report an unknown table once, not each key inside it.
+		var keys []string
+		for _, k := range und {
+			s := k.String()
+			if !slices.ContainsFunc(keys, func(p string) bool { return strings.HasPrefix(s, p+".") }) {
+				keys = append(keys, s)
+			}
+		}
+		if len(keys) == 1 {
+			return Config{}, fmt.Errorf("unknown key %s", keys[0])
+		}
+		return Config{}, fmt.Errorf("unknown keys %s", strings.Join(keys, ", "))
+	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// Validate checks vendor names and budgets.
+func (c Config) Validate() error {
+	if c.DefaultVendor != "" {
+		if _, err := adapter.ParseVendor(string(c.DefaultVendor)); err != nil {
+			return fmt.Errorf("default_vendor: %w", err)
+		}
+	}
+	seen := map[adapter.Vendor]bool{}
+	for _, v := range c.Switch.Order {
+		if _, err := adapter.ParseVendor(string(v)); err != nil {
+			return fmt.Errorf("switch.order: %w", err)
+		}
+		if seen[v] {
+			return fmt.Errorf("switch.order: vendor %q listed twice", v)
+		}
+		seen[v] = true
+	}
+	for _, k := range adapter.Kinds() {
+		for _, v := range c.Routing.For(k).Vendors {
+			if _, err := adapter.ParseVendor(string(v)); err != nil {
+				return fmt.Errorf("routing.%s: %w", k, err)
+			}
+		}
+		b := c.Budgets.For(k)
+		if b.Minutes <= 0 {
+			return fmt.Errorf("budgets.%s.minutes must be positive, got %d", k, b.Minutes)
+		}
+		if b.Turns < 0 {
+			return fmt.Errorf("budgets.%s.turns must not be negative, got %d", k, b.Turns)
+		}
+	}
+	return nil
+}
