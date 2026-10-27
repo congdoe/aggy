@@ -1,0 +1,45 @@
+# goreleaser config. CI builds a snapshot on every pull request
+# (.github/workflows/ci.yml). Publishing is in .github/workflows/release.yml
+# and is disabled until v0.1.0.
+version: 2
+
+project_name: aggy
+
+builds:
+  - id: aggy
+    main: ./cmd/aggy
+    binary: aggy
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/congdoe/aggy/internal/cli.Version={{ .Version }}
+    # Reproducible: file times come from the commit, not the build clock.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: aggy
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+# checksums.txt is what gets signed: the release workflow attests it and
+# every archive with GitHub artifact attestations (Sigstore, keyless
+# through the workflow's OIDC token), which is the build provenance.
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot+{{ .ShortCommit }}"
+
+changelog:
+  disable: true
+
+release:
+  draft: true
