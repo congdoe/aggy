@@ -119,6 +119,20 @@ linters:
               desc: adapters never start processes; internal/devfix does
             - pkg: "os/exec$"
               desc: adapters never start processes
+        # The pseudo-terminal and raw-mode modules are allowed in the main
+        # list only for the code that runs the on-screen CLI: the process
+        # runner, the supervisor, and the end-to-end tests that drive them.
+        pty:
+          files:
+            - "$all"
+            - "!**/internal/execrun/**"
+            - "!**/internal/supervisor/**"
+            - "!**/test/e2e/**"
+          deny:
+            - pkg: github.com/creack/pty
+              desc: only internal/execrun and internal/supervisor use the pseudo-terminal
+            - pkg: golang.org/x/term
+              desc: only internal/supervisor sets raw mode
         # The fake vendor CLIs are for tests only.
         fakecli:
           files: ["$all", "!$test"]

@@ -26,19 +26,39 @@ type fakeChild struct {
 	mu   sync.Mutex
 	got  bytes.Buffer
 	exit chan int
+	// stuck makes Write block until the test ends, like a CLI that has
+	// stopped reading.
+	stuck chan struct{}
+	sigs  chan syscall.Signal // every Signal call
+	sizes chan [2]int         // every Resize call
 }
 
 func (c *fakeChild) Read(b []byte) (int, error) { return c.outR.Read(b) }
 func (c *fakeChild) Write(b []byte) (int, error) {
+	if c.stuck != nil {
+		<-c.stuck
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.got.Write(b)
 }
-func (c *fakeChild) Close() error                { return c.out.Close() }
-func (c *fakeChild) Resize(int, int) error       { return nil }
-func (c *fakeChild) Continue() error             { return nil }
-func (c *fakeChild) Signal(syscall.Signal) error { return nil }
-func (c *fakeChild) Wait() (bool, int, error)    { return false, <-c.exit, nil }
+func (c *fakeChild) Close() error { return c.out.Close() }
+func (c *fakeChild) Resize(r, cl int) error {
+	select {
+	case c.sizes <- [2]int{r, cl}:
+	default:
+	}
+	return nil
+}
+func (c *fakeChild) Continue() error { return nil }
+func (c *fakeChild) Signal(sig syscall.Signal) error {
+	select {
+	case c.sigs <- sig:
+	default:
+	}
+	return nil
+}
+func (c *fakeChild) Wait() (bool, int, error) { return false, <-c.exit, nil }
 func (c *fakeChild) received() []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -80,6 +100,12 @@ func poll(t *testing.T, what string, want []byte, get func() []byte) {
 // startRun runs Run on a test terminal against a fake CLI.
 func startRun(t *testing.T, double time.Duration) (*termSide, *fakeChild, <-chan int) {
 	t.Helper()
+	return startRunWith(t, double, nil)
+}
+
+// startRunWith is startRun with setup applied to the fake CLI first.
+func startRunWith(t *testing.T, double time.Duration, setup func(*fakeChild)) (*termSide, *fakeChild, <-chan int) {
+	t.Helper()
 	master, slave, err := pty.Open()
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +125,11 @@ func startRun(t *testing.T, double time.Duration) (*termSide, *fakeChild, <-chan
 		}
 	}()
 	r, w := io.Pipe()
-	c := &fakeChild{outR: r, out: w, exit: make(chan int, 1)}
+	c := &fakeChild{outR: r, out: w, exit: make(chan int, 1),
+		sigs: make(chan syscall.Signal, 16), sizes: make(chan [2]int, 16)}
+	if setup != nil {
+		setup(c)
+	}
 	started := make(chan struct{})
 	done := make(chan int, 1)
 	go func() {
@@ -234,4 +264,30 @@ func TestExitWithPickerOpenRestoresScreen(t *testing.T) {
 	poll(t, "the terminal to show", []byte("switch vendor"), ts.screen)
 	finish(t, c, done)
 	poll(t, "the terminal to show", []byte(altScreenOff), ts.screen)
+}
+
+// TestStalledCLIDoesNotBlockSignals (B13-2): a CLI that stops reading
+// must not stall the main loop, so signals still reach it.
+func TestStalledCLIDoesNotBlockSignals(t *testing.T) {
+	stuck := make(chan struct{})
+	t.Cleanup(func() { close(stuck) })
+	ts, c, done := startRunWith(t, time.Second, func(c *fakeChild) { c.stuck = stuck })
+	// Many separate reads: more than any fixed buffer between the
+	// terminal and the stalled CLI.
+	for i := 0; i < 200; i++ {
+		ts.typeIn(t, "k")
+		time.Sleep(time.Millisecond)
+	}
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case sig := <-c.sigs:
+		if sig != syscall.SIGTERM {
+			t.Errorf("the CLI got %v, want SIGTERM", sig)
+		}
+	case <-time.After(waitLimit):
+		t.Fatal("SIGTERM never reached the stalled CLI")
+	}
+	finish(t, c, done)
 }
