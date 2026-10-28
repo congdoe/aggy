@@ -58,6 +58,7 @@ aggy skill link        # let each CLI call aggy itself
 aggy policy wire       # write aggy's safety policy into Codex (Claude and Grok get it per launch)
 aggy memory import --from claude   # copy Claude's memory into .aggy/memory.md, after a diff
 aggy log               # borrows, vendors, models, files changed
+aggy usage             # what Codex says is left; what aggy's borrows used
 ```
 
 `aggy <command> --help` gives the details. Routing picks a vendor for each kind and says why it skipped the others; `--vendor` picks one yourself.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,7 +25,7 @@ import (
 //   - event_msg token_count lines, whose rate_limits.primary and
 //     .secondary hold used_percent and resets_at in unix seconds
 //     (protocol.rs#L2472, #L2478, #L2521), for the quota named by
-//     rate_limits.limit_id (see codexQuotas);
+//     rate_limits.limit_id (see CodexQuotas);
 //   - turn_context lines, whose payload.model is the session's model slug
 //     (protocol.rs#L3451; history/src/rollout_payload.rs#L32, #L51; one
 //     such line was read live, docs/verification.md "Live runs");
@@ -51,7 +52,7 @@ const RolloutTail = 256 << 10
 // was written after since (an unreadable timestamp counts); at is that
 // event's timestamp as written. Until is the latest resets_at of a
 // rate-limit window at 100% or more among the session's quotas
-// (codexQuotas), when that is after now; else zero (unknown). A window
+// (CodexQuotas), when that is after now; else zero (unknown). A window
 // of another quota never gives the reset time, even at 100%.
 func CodexRollout(tail []byte, since, now time.Time) (sig Signal, at string, ok bool) {
 	var limited bool
@@ -78,7 +79,7 @@ func CodexRollout(tail []byte, since, now time.Time) (sig Signal, at string, ok 
 		return Signal{}, "", false
 	}
 	var until time.Time
-	for _, q := range codexQuotas(tail) {
+	for _, q := range CodexQuotas(tail) {
 		for _, w := range []*CodexWindow{q.Primary, q.Secondary} {
 			if w != nil && w.UsedPercent >= 100 && w.ResetsAt > 0 {
 				until = later(until, time.Unix(w.ResetsAt, 0))
@@ -112,7 +113,7 @@ type CodexQuota struct {
 // draws on.
 const codexOrdinary = "codex"
 
-// codexQuotas returns the latest snapshot of each quota in a rollout's
+// CodexQuotas returns the latest snapshot of each quota in a rollout's
 // tail that applies to the session, in the order each quota first
 // appears. Codex keeps one RateLimitSnapshot per quota, keyed by
 // limit_id (protocol.rs#L2478-L2491; codex-rs at 6aaac694):
@@ -130,7 +131,7 @@ const codexOrdinary = "codex"
 // tui/src/chatwidget/luna_reserve_model.rs#L14-L18). Any other quota, or
 // a model-scoped one when the tail holds no turn_context, is left out:
 // failing closed, its reset time is never taken for the session's.
-func codexQuotas(tail []byte) []CodexQuota {
+func CodexQuotas(tail []byte) []CodexQuota {
 	var model string
 	var order []string
 	latest := map[string]CodexQuota{}
@@ -256,6 +257,8 @@ func (w *CodexWatch) Poll(now time.Time) {
 			}
 			sig, at, ok := CodexRollout(tail, w.Start, now)
 			if !ok {
+				// TODO(T6699): a near-limit warning would read
+				// CodexQuotas(tail) here, once the picker exists.
 				delete(w.last, p)
 				continue
 			}
@@ -269,6 +272,68 @@ func (w *CodexWatch) Poll(now time.Time) {
 			w.Found(sig)
 		}
 	}
+}
+
+// allowanceTries bounds the rollouts CodexAllowance reads: a session that
+// has not finished a turn has written no rate limits yet.
+const allowanceTries = 5
+
+// CodexAllowance returns the session quotas (CodexQuotas) of the newest
+// Codex rollout under sessionsDir that holds any, among rollouts written
+// in the last Max: what Codex last wrote about this account's limits. It
+// reads as CodexWatch does: date folders only, regular rollout files, and
+// only their last RolloutTail bytes through transcript.ReadTail, newest
+// first, at most allowanceTries of them. Nil means Codex wrote nothing
+// aggy can use.
+func CodexAllowance(sessionsDir string, now time.Time) []CodexQuota {
+	type rollout struct {
+		path string
+		mod  time.Time
+	}
+	var found []rollout
+	seen := map[string]bool{}
+	// One day ahead too: which clock names the date folder is not recorded.
+	for d := -1; d <= int(Max/(24*time.Hour)); d++ {
+		t := now.Add(-time.Duration(d) * 24 * time.Hour)
+		for _, u := range []time.Time{t.Local(), t.UTC()} {
+			dir := filepath.Join(sessionsDir, u.Format("2006"), u.Format("01"), u.Format("02"))
+			if seen[dir] {
+				continue
+			}
+			seen[dir] = true
+			es, err := safefs.ReadDir(dir)
+			if err != nil {
+				continue
+			}
+			for _, e := range es {
+				if _, ok := codex.RolloutThreadID(e.Name()); !ok || !e.Type().IsRegular() {
+					continue
+				}
+				if fi, err := e.Info(); err == nil && fi.ModTime().After(now.Add(-Max)) {
+					found = append(found, rollout{filepath.Join(dir, e.Name()), fi.ModTime()})
+				}
+			}
+		}
+	}
+	sort.Slice(found, func(i, j int) bool {
+		if !found[i].mod.Equal(found[j].mod) {
+			return found[i].mod.After(found[j].mod)
+		}
+		return found[i].path > found[j].path
+	})
+	for i, r := range found {
+		if i == allowanceTries {
+			break
+		}
+		tail, err := transcript.ReadTail(sessionsDir, r.path, RolloutTail)
+		if err != nil {
+			continue
+		}
+		if q := CodexQuotas(tail); len(q) > 0 {
+			return q
+		}
+	}
+	return nil
 }
 
 // Run polls every interval until stop closes.
