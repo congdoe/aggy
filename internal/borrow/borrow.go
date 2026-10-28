@@ -127,6 +127,9 @@ type Result struct {
 	ReportPath string
 	// Tried are the candidates passed over before Vendor, and why.
 	Tried []Attempt
+	// Refused are the files the child left that the artifact gate
+	// refused, each with the reason.
+	Refused []string
 }
 
 // Borrower runs borrows.
@@ -410,6 +413,9 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	// The time limit: past it the runner kills the child's whole
 	// process group.
 	timeout := time.Duration(budget.Minutes) * time.Minute
+	// The real wall clock, not b.Now: the artifact gate compares it with
+	// the times the file system gives the child's files.
+	started := time.Now()
 	out, runErr := b.Runner(timeout)(ctx, cmd)
 	res.Elapsed = b.Now().Sub(now)
 	end := store.BorrowEnd{EndedAt: b.Now()}
@@ -437,13 +443,18 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	}
 	end.Status, end.Outcome = res.Status, res.Outcome
 	if res.Status == "done" && (req.Kind == adapter.Image || req.Kind == adapter.Video) {
-		// Paths in the vendor's own store; nothing is copied here.
+		// Paths in the vendor's own store, each through the artifact
+		// gate; nothing is copied here.
 		arts, err := a.Artifacts(hreq, parsed)
 		if err != nil {
 			res.Detail = "listing artifacts: " + err.Error()
 		}
-		res.Artifacts = arts
-		for _, x := range arts {
+		passed, refused := gate(arts, started)
+		res.Refused = refused
+		for _, m := range passed {
+			res.Artifacts = append(res.Artifacts, m.Artifact)
+		}
+		for _, x := range res.Artifacts {
 			end.Artifacts = append(end.Artifacts, x.Path)
 			if x.Kind == "image" {
 				end.ImageCount++
