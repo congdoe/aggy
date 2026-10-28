@@ -103,6 +103,19 @@ var secretLines = []string{
 	// C16-15: the long s, which (?i) folds to s.
 	"paſſword=Zx9QwErTyUiOp1234",
 	"ſecret=Zx9QwErTyUiOp1234",
+	// F28-1: env-file and YAML or INI values that look like identifiers,
+	// dotted paths, or calls are still secrets.
+	"DB_PASSWORD=CorrectHorseBatteryStaple",
+	"password: SuperSecretPass",
+	"  db_password: MyDogRexIsGreat",
+	"STRIPE_SECRET=TopSecretValue",
+	"client_secret=SomeLongMixedCaseValue",
+	"SESSION_KEY=OnlyLettersHereAbcdef",
+	"passphrase=CorrectHorse",
+	"SECRET_KEY=Xk.Pq.Zr.Tv.Wm",
+	"api_key = abc(def)ghi123",
+	"export API_TOKEN=generateToken(x)",
+	"key: welcome.message.title", // C16-12 negative row dropped: a YAML pair is redacted (F28-1)
 	// C16-17: a JSON-escaped key body with no BEGIN or END.
 	`{"k": "x\n` + body + `\n` + body + `\n"}`,
 }
@@ -133,7 +146,8 @@ func TestSecret(t *testing.T) {
 		"const token = generateToken(user)",
 		"token: CancellationToken,",
 		"password = hashPassword(raw)",
-		"key: welcome.message.title",
+		"this.token = session.accessToken;",
+		"apiKey := loadKey(cfg)",
 		"login with the password reset link",
 		"data: " + base64.StdEncoding.EncodeToString([]byte("just some ordinary text here")),
 	} {
