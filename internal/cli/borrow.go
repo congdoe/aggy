@@ -50,16 +50,36 @@ type borrowEnv struct {
 	runner  func(timeout time.Duration) adapter.Runner
 	tempDir string
 	now     func() time.Time
+	// executable is aggy's own absolute path, for the guard hook.
+	executable func() (string, error)
+}
+
+// guard is the PreToolUse guard command: this aggy binary, resolved, with
+// hook pretooluse. Without a resolvable path there is no guard; the kinds
+// M1 runs keep no shell anyway (see internal/borrow).
+func (e borrowEnv) guard() []string {
+	if e.executable == nil {
+		return nil
+	}
+	exe, err := e.executable()
+	if err != nil || !filepath.IsAbs(exe) {
+		return nil
+	}
+	if r, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = r
+	}
+	return []string{exe, "hook", "pretooluse"}
 }
 
 func defaultBorrowEnv() borrowEnv {
 	return borrowEnv{
-		getenv:   os.Getenv,
-		cwd:      os.Getwd,
-		lookPath: probe.LookPath,
-		probeRun: execrun.ExecRunner(probeTimeout),
-		runner:   headlessRunner,
-		now:      time.Now,
+		getenv:     os.Getenv,
+		cwd:        os.Getwd,
+		lookPath:   probe.LookPath,
+		probeRun:   execrun.ExecRunner(probeTimeout),
+		runner:     headlessRunner,
+		now:        time.Now,
+		executable: os.Executable,
 	}
 }
 
@@ -203,6 +223,7 @@ func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 		TempDir:   env.tempDir,
 		Now:       env.now,
 		Getenv:    env.getenv,
+		Guard:     env.guard(),
 	})
 	results, err := b.Run(ctx, borrow.Request{
 		Kind: kind, Task: ba.task, Paths: paths, Constraints: ba.constraints,
@@ -247,10 +268,10 @@ func printResult(w io.Writer, r borrow.Result) {
 }
 
 // newAdapter builds vendor v's adapter for the CLI found.
-func newAdapter(v adapter.Vendor, _ borrow.CLI) adapter.Adapter {
+func newAdapter(v adapter.Vendor, cli borrow.CLI) adapter.Adapter {
 	switch v {
 	case adapter.Claude:
-		return claude.New()
+		return claude.Adapter{Caps: cli.Caps}
 	case adapter.Codex:
 		return codex.New()
 	}

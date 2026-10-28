@@ -150,3 +150,22 @@ type fileAdapter struct {
 func (f fileAdapter) ChildFiles(adapter.HeadlessRequest) ([]adapter.ChildFile, error) {
 	return []adapter.ChildFile{{Name: f.name, Data: []byte("{}")}}, nil
 }
+
+// TestGuardReachesClaude (T6624): with a guard and the --settings
+// capability, a Claude child gets the guard's settings layer.
+func TestGuardReachesClaude(t *testing.T) {
+	w := newWorld(t)
+	w.connected[adapter.Grok], w.connected[adapter.Codex] = false, false
+	w.caps[adapter.Claude] = []string{"settings"}
+	w.scenario[adapter.Claude] = `{"extra_flags":["--settings"],"json":{"type":"result","result":"ok"}}`
+	b := w.borrower()
+	b.Guard = []string{"/usr/local/bin/aggy", "hook", "pretooluse"}
+	res, err := b.Run(context.Background(), w.req(adapter.Review, "review it"))
+	if err != nil || res[0].Status != "done" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	s := w.records()[0].Flags["--settings"]
+	if len(s) != 1 || filepath.Base(s[0]) != "settings.json" || within(s[0], w.repo) {
+		t.Errorf("--settings %q", s)
+	}
+}
