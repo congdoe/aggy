@@ -272,9 +272,10 @@ func planGC(ctx context.Context, s *store.Store, g *gitWorktrees, stateDir strin
 // planWorktrees adds the edit worktrees to remove: accepted ones, a
 // rejected one whose removal was cut short, pending ones whose borrow
 // ended over r.pendingWorktree ago, and leftovers (a removal claimed in
-// the store whose directory is still there, after a crash). Each must be
-// one aggy made (gitWorktrees.owned), not a symlink, with its borrow
-// finished and its lease free, and is checked again before removal.
+// the store whose directory, branch, or git admin entry is still there,
+// after a crash). Each must be one aggy made (gitWorktrees.owned), not a
+// symlink, with its borrow finished and its lease free, and is checked
+// again before removal.
 func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktrees, r gcRetention, now time.Time) error {
 	wts, err := s.GCWorktrees(ctx)
 	if err != nil {
@@ -284,9 +285,18 @@ func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktre
 		wt, id := w.Worktree, w.BorrowID
 		leftover := !wt.Removed.IsZero()
 		fi, err := safefs.Lstat(wt.Path)
+		if leftover && errors.Is(err, fs.ErrNotExist) {
+			// The directory went; its branch or admin entry may not have.
+			left, lerr := g.leftBehind(ctx, wt)
+			if lerr != nil {
+				p.skip("worktree of borrow %s: %v", id, lerr)
+				continue
+			}
+			if !left {
+				continue // removed
+			}
+		}
 		switch {
-		case leftover && errors.Is(err, fs.ErrNotExist):
-			continue // removed
 		case w.Running:
 			p.skip("worktree of borrow %s: the borrow is still running", id)
 			continue
@@ -409,9 +419,11 @@ func acceptedAt(w store.GCWorktree) time.Time {
 // keptAccepted says why an accepted worktree must stay, "" if it may go:
 // a change in it since the accept (tracked files that differ from the
 // accepted tree, or new files that are not ignored), or commits on
-// aggy's branch past the commit it was made from. Ignored files such as
-// node_modules are not work and do not count. Every git call names the
-// worktree's admin dir and runs no filter or diff program.
+// aggy's branch past the commit it was made from whose tip is not the
+// accepted tree (commits the edit child made of its own work do not
+// count). Ignored files such as node_modules are not work and do not
+// count. Every git call names the worktree's admin dir and runs no
+// filter or diff program.
 func (g *gitWorktrees) keptAccepted(ctx context.Context, wt store.Worktree) (string, error) {
 	if wt.Tree == "" {
 		return "no tree was recorded for it", nil
@@ -441,10 +453,46 @@ func (g *gitWorktrees) keptAccepted(ctx context.Context, wt store.Worktree) (str
 	if err != nil {
 		return "", err
 	}
-	if head := strings.TrimSpace(string(o.Stdout)); o.ExitCode == 0 && head != wt.Base {
+	head := strings.TrimSpace(string(o.Stdout))
+	if o.ExitCode != 0 || head == wt.Base {
+		return "", nil
+	}
+	// Commits whose tip holds exactly the accepted tree (the edit child
+	// committing its own work) add nothing the accept did not apply.
+	o, err = g.env.gitOutput(ctx, wt.Repo, "rev-parse", "--verify", "--quiet", head+"^{tree}")
+	if err != nil {
+		return "", err
+	}
+	if o.ExitCode != 0 || strings.TrimSpace(string(o.Stdout)) != wt.Tree {
 		return "its branch " + wt.Branch + " has commits past the accepted edit", nil
 	}
 	return "", nil
+}
+
+// leftBehind reports whether a leftover whose directory is gone (a
+// removal cut short) still has aggy's branch or git admin entry in its
+// repo, so gc has something to clean. A record not aggy's, or whose repo
+// is gone, has nothing.
+func (g *gitWorktrees) leftBehind(ctx context.Context, wt store.Worktree) (bool, error) {
+	if g.owned(wt) != nil {
+		return false, nil
+	}
+	if _, err := safefs.Lstat(wt.Repo); errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	o, err := g.env.gitOutput(ctx, wt.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+wt.Branch)
+	if err != nil || o.ExitCode == 0 {
+		return err == nil, err
+	}
+	out, _, err := g.env.git(ctx, wt.Repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return false, err
+	}
+	_, err = safefs.Lstat(filepath.Join(strings.TrimSpace(out), "worktrees", filepath.Base(wt.Path)))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // unchanged reads w's record again just before its removal, since the

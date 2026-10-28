@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -88,21 +89,32 @@ type borrowEnv struct {
 }
 
 // defaultTmpDirs are /tmp and $TMPDIR, which Codex's workspace-write
-// sandbox leaves writable by default (verified live). codex.EditLockdown
-// excludes them; refusing them here too is defense in depth for older
-// Codex versions and other sandboxes.
-func defaultTmpDirs() []string { return []string{"/tmp", "/private/tmp", os.Getenv("TMPDIR")} }
+// sandbox leaves writable by default (verified live), and the OS temp
+// dir. codex.EditLockdown excludes them; refusing them here too is
+// defense in depth for older Codex versions and other sandboxes.
+func defaultTmpDirs() []string {
+	return []string{"/tmp", "/private/tmp", os.Getenv("TMPDIR"), os.TempDir()}
+}
 
-// childWritable returns the temp dir that holds repo (by real path), or
-// "" when none does.
-func (e borrowEnv) childWritable(repo string) string {
+// childWritable returns the temp dir that holds p (by real path), or ""
+// when none does. On darwin, whose default file system ignores case, so
+// does the comparison.
+func (e borrowEnv) childWritable(p string) string {
 	dirs := defaultTmpDirs
 	if e.tmpDirs != nil {
 		dirs = e.tmpDirs
 	}
-	r := resolvePath(repo)
+	fold := func(s string) string { return s }
+	if runtime.GOOS == "darwin" {
+		fold = strings.ToLower
+	}
+	r, err := realPath(p)
+	if err != nil {
+		r = resolvePath(p)
+	}
+	r = fold(r)
 	for _, d := range dirs() {
-		if d != "" && within(r, resolvePath(d)) {
+		if d != "" && within(r, fold(resolvePath(d))) {
 			return d
 		}
 	}
