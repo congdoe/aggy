@@ -138,6 +138,16 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 		// -c is global and goes before resume; the value is a TOML string.
 		{"resume with memory", alt, adapter.InteractiveRequest{Resume: tid, Memory: "a \"b\"\\\n\tc\x1b"},
 			[]string{"-c", `developer_instructions="a \"b\"\\\n\tc\u001B"`, "resume", "--no-alt-screen", tid}},
+		// T6708: each MCP server as -c overrides, before resume, with no
+		// approval mode.
+		{"tools on resume", alt, adapter.InteractiveRequest{Resume: tid, MCP: []adapter.MCPServer{
+			{Name: "code-graph", Command: "codegraph", Args: []string{"serve", `a"b`}, Cwd: "/s/run/x", EnvVars: []string{"DEMO_HOME"}},
+			{Name: "docs", Command: "docs-mcp"},
+		}}, []string{
+			"-c", `mcp_servers.code-graph.command="codegraph"`, "-c", `mcp_servers.code-graph.args=["serve", "a\"b"]`,
+			"-c", `mcp_servers.code-graph.cwd="/s/run/x"`, "-c", `mcp_servers.code-graph.env_vars=["DEMO_HOME"]`,
+			"-c", `mcp_servers.docs.command="docs-mcp"`, "-c", `mcp_servers.docs.args=[]`,
+			"resume", "--no-alt-screen", tid}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -161,6 +171,14 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 	} {
 		if _, err := a.Interactive(r); !errors.Is(err, adapter.ErrUnsupported) {
 			t.Errorf("%+v: %v, want ErrUnsupported", r, err)
+		}
+	}
+	for _, s := range []adapter.MCPServer{
+		{Name: "a.b", Command: "x"}, {Name: "a b", Command: "x"}, {Name: "", Command: "x"}, {Name: "x"},
+		{Name: "x", Command: "x", Cwd: "rel"},
+	} {
+		if _, err := a.Interactive(adapter.InteractiveRequest{MCP: []adapter.MCPServer{s}}); err == nil {
+			t.Errorf("%+v accepted", s)
 		}
 	}
 }

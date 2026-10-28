@@ -22,6 +22,7 @@ import (
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/limits"
 	"github.com/congdoe/aggy/internal/probe"
+	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/supervisor"
 	"github.com/congdoe/aggy/internal/termsafe"
@@ -202,7 +203,12 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	}
 	cleanup, mw := addMemory(v, caps, pl.child.Cwd, memDir, &req)
 	defer cleanup()
-	for _, w := range append(warns, mw...) {
+	// The tools that are on, for this child's own vendor and repo: a
+	// switch or resume is wired again for the CLI it starts. Their files
+	// share the launch's private folder, removed when the CLI exits.
+	tw := addTools(ctx, v, caps, pl.child.Cwd, memDir, nil, &req)
+	defer func() { _ = safefs.RemoveAll(memDir) }()
+	for _, w := range append(append(warns, mw...), tw...) {
 		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
 	}
 	// The brief is built now and written only once the lease is held, so

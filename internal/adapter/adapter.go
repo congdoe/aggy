@@ -166,6 +166,32 @@ type InteractiveRequest struct {
 	// permissions.deny in an inline --settings layer, Grok as --deny
 	// flags. Codex ignores them; its policy is a rules file.
 	Deny []string
+	// MCP are the stdio MCP servers of the managed tools that are on,
+	// added to the user's own servers for this session only. Codex takes
+	// them as -c mcp_servers.<name>.* overrides. Claude and Grok take a
+	// file instead: MCPConfigFile and AgentFile, which the caller renders
+	// from the same list (internal/toolwire).
+	MCP []MCPServer
+	// MCPConfigFile is an absolute path holding the MCP servers for
+	// Claude's --mcp-config (never with --strict-mcp-config: the user's
+	// own servers stay). Empty means none.
+	MCPConfigFile string
+	// AgentFile is an absolute path holding a Grok agent definition whose
+	// frontmatter lists the MCP servers, for --agent. Empty means none.
+	AgentFile string
+}
+
+// MCPServer is one stdio MCP server a session gets at launch.
+type MCPServer struct {
+	// Name is the managed tool's name, the server's name in the CLI.
+	Name    string
+	Command string
+	Args    []string
+	// EnvVars names variables passed from the user's environment.
+	EnvVars []string
+	// Cwd is the server's working directory, where the CLI takes one:
+	// never the repo (S63-14).
+	Cwd string
 }
 
 // HeadlessRequest asks for one bounded borrow run.

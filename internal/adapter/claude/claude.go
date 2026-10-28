@@ -146,6 +146,15 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		}
 		args = append(args, "--settings", string(js))
 	}
+	if req.MCPConfigFile != "" {
+		// Additive: no --strict-mcp-config, so the user's own servers stay
+		// (docs/design.md section 9). Re-passed on every resume, which
+		// otherwise drops the servers (docs/verification.md, T6734).
+		if err := adapter.CheckAbs("MCP config file", req.MCPConfigFile); err != nil {
+			return adapter.Command{}, err
+		}
+		args = append(args, "--mcp-config", req.MCPConfigFile)
+	}
 	if req.BriefFile != "" {
 		if err := adapter.CheckAbs("brief file", req.BriefFile); err != nil {
 			return adapter.Command{}, err

@@ -285,6 +285,9 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 			[]string{"--no-alt-screen", "--rules", "notes, with a comma", adapter.BriefPrompt(brief)}},
 		{"policy", adapter.InteractiveRequest{Deny: []string{"Read(**/.env)", "Bash(rm -rf *)"}},
 			[]string{"--no-alt-screen", "--deny", "Read(**/.env)", "--deny", "Bash(rm -rf *)"}},
+		// T6708: the tools' MCP servers through an agent file.
+		{"tools on resume", adapter.InteractiveRequest{Resume: sid, AgentFile: brief + ".agent.md"},
+			[]string{"--no-alt-screen", "--resume", sid, "--agent", brief + ".agent.md"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -306,6 +309,9 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 		if _, err := a.Interactive(adapter.InteractiveRequest{Deny: []string{r}}); err == nil {
 			t.Errorf("deny rule %q accepted", r)
 		}
+	}
+	if _, err := a.Interactive(adapter.InteractiveRequest{AgentFile: "agent.md"}); err == nil {
+		t.Error("a relative agent file accepted")
 	}
 }
 

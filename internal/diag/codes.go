@@ -123,6 +123,8 @@ var (
 	EvHookIgnored         = Event{"hook.event.ignored"}
 	EvHookForwardFailed   = Event{"hook.forward.failed"}
 	EvQueueDropped        = Event{"diag.queue.dropped"}
+	EvToolWireRefused     = Event{"tool.wire.refused"}
+	EvToolWired           = Event{"tool.wire.done"}
 )
 
 // Codes.
@@ -201,6 +203,10 @@ var (
 	CodeWrongVendor    = Code{"hook.wrong_vendor"}
 	CodeBadPayload     = Code{"hook.bad_payload"}
 	CodeToolChanged    = Code{"tool.changed_since_add"}
+	CodeToolNameClash  = Code{"tool.name_clash"}
+	CodeToolRepoPath   = Code{"tool.repo_path"}
+	CodeToolNoFlag     = Code{"tool.no_launch_flag"}
+	CodeToolWireFailed = Code{"tool.wire_failed"}
 )
 
 const showRun = "aggy diag show <run id> for what led to it"
@@ -255,6 +261,8 @@ var events = []EventInfo{
 	{EvHookIgnored, LevelInfo, "hook", "A turn end from the CLI's tree named another session, such as a nested claude -p, so it did not end the on-screen turn. Recorded once a minute per session (attrs.repeats: how many more came since the last record).", "Nothing, unless every turn end of the on-screen CLI is ignored: then its session id is not the one aggy recorded."},
 	{EvHookForwardFailed, LevelWarn, "hook", "aggy hook could not hand a vendor hook event to the supervisor; the CLI went on undisturbed.", "The code's entry; aggy diag --trace <trace id> for the session."},
 	{EvQueueDropped, LevelWarn, "diag", "The supervisor's diagnostic queue was full, so records were dropped (attrs.dropped is how many).", "The state dir's disk: a slow or full disk makes the log fall behind."},
+	{EvToolWireRefused, LevelWarn, "tool", "A launch did not wire a tool that is on (attrs: tool, or none for every tool of the vendor); the session started without it.", "The code's entry; aggy tool status."},
+	{EvToolWired, LevelInfo, "tool", "A launch wired the tools that are on into the CLI it started (attrs: tools, the names wired).", "aggy tool status shows why each is on."},
 }
 
 var codes = []CodeInfo{
@@ -331,6 +339,10 @@ var codes = []CodeInfo{
 	{CodePeerUnknown, false, "aggy could not tell which user or process opened a connection to the supervisor's socket, so it was closed unanswered.", "Usually a process that connected and exited at once; nothing, unless hooks stop arriving."},
 	{CodeWrongVendor, true, "A hook event from the CLI's tree came from another vendor's hook than the one on screen, so it did not gate a switch.", "A nested CLI of another vendor in the session; nothing else."},
 	{CodeBadPayload, false, "aggy hook could not read the vendor's hook payload, or it was not a JSON object.", "The vendor CLI's version; aggy doctor."},
+	{CodeToolNameClash, false, "A tool that is on was not wired: the CLI already loads an MCP server of that name from the user's or the repo's config, and aggy never replaces or merges into one.", "Rename or remove that server in the CLI's config, or turn the tool off."},
+	{CodeToolRepoPath, false, "A tool that is on was not wired: its arguments hold {repo}, and the session is not in a repo, or the repo's path holds a character other than letters, digits, and / . _ + @ -.", "Run the session in a repo whose path has only those characters."},
+	{CodeToolNoFlag, false, "Tools that are on were not wired: the CLI's --help lacks the launch flag they need (Codex -c).", "Update the CLI; aggy setup shows its version."},
+	{CodeToolWireFailed, false, "Tools that are on were not wired: the CLI's own MCP config could not be read to check names, or the session's tool file could not be written.", "The record's msg; aggy doctor."},
 	{CodeToolChanged, true, "aggy tool on refused: the user definition is not the file aggy tool add showed.", "aggy tool remove <name>, then aggy tool add the file again and read what it runs."},
 }
 
