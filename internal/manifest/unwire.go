@@ -125,7 +125,8 @@ type Undo struct {
 // A change proven never to have written its file is Cleaned first,
 // whatever came after it: a failed row, whatever the file holds, or a
 // pending row of an existing file whose backup is missing while the file
-// is at its hash before (see provenUnwritten). The file is left as it is, only empty directories
+// is at its hash before and no newer change to it is in effect (see
+// provenUnwritten). The file is left as it is, only empty directories
 // made for it are removed, and the row is marked undone.
 //
 // Any other change can only be undone after every newer change to the
@@ -500,19 +501,25 @@ func removeOwnDirs(c store.Change) error {
 //     directory sync failed). With the file at its hash before, nothing
 //     of the change is in it either way. Any other content goes to the
 //     normal path, which reports it (Blocked, Drifted, or Failed): a
-//     row is never marked undone while the file may hold its write. The
-//     cost: a pending row that stopped before its backup and was then
+//     row is never marked undone while the file may hold its write.
+//     Nor while a newer change to the file is still in effect: it may
+//     have taken the write out (an off toggle), and undoing it would put
+//     the write back, so the row goes to the newer-change rules instead.
+//     The cost: a pending row that stopped before its backup and was then
 //     edited by hand is reported as drifted until the edit is undone.
 //
 // TODO(T6735): the backups/<change-id> entry is not synced into backups/
 // before the target write, so a power cut can lose it while keeping the
 // target; requiring the hash before keeps that case loud.
-func (m *Manifest) provenUnwritten(c store.Change, run *unwireRun) (bool, error) {
+func (m *Manifest) provenUnwritten(ctx context.Context, c store.Change, run *unwireRun) (bool, error) {
 	switch {
 	case c.Status == store.ChangeFailed:
 		return true, nil
 	case c.Status != store.ChangePending || c.HashBefore == patch.NoFile:
 		return false, nil
+	}
+	if newer, _, _, err := m.newerChange(ctx, c, run); err != nil || newer != nil {
+		return false, err
 	}
 	_, curHash, err := readFile(c.File)
 	if err != nil {
@@ -640,7 +647,7 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 
 	// A change that never wrote has nothing in the file to undo, whatever
 	// came after it.
-	unwritten, err := m.provenUnwritten(c, run)
+	unwritten, err := m.provenUnwritten(ctx, c, run)
 	if err != nil {
 		return fail(err)
 	}
