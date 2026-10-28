@@ -110,6 +110,35 @@ func lockdown(k adapter.Kind) []string {
 	return out
 }
 
+// EditLockdown is the flag set of an edit child: Lockdown's config
+// isolation (--strict-config, --ignore-user-config, so no user MCP server,
+// writable_roots, or network_access from $CODEX_HOME/config.toml applies,
+// and apps, plugins, goals, image generation, view_image, and sleep off)
+// with --sandbox SandboxEdit, and the shell kept: with only apply_patch the
+// child could not read the files it edits. Each flag is live-verified in
+// the read-only set; the combination with workspace-write is not yet run
+// live (TODO(T6687)). Unverified too: whether exec's default web search
+// is on for an edit child (no recorded flag turns it off), and whether
+// Codex treats a linked worktree as its main repo for project trust; with
+// the user config ignored, no trust entry is loaded either way.
+var EditLockdown = editLockdown()
+
+func editLockdown() []string {
+	var out []string
+	for i := 0; i < len(Lockdown); i++ {
+		switch {
+		case Lockdown[i] == "--sandbox":
+			out = append(out, "--sandbox", SandboxEdit)
+			i++
+		case Lockdown[i] == "--disable" && (Lockdown[i+1] == "shell_tool" || Lockdown[i+1] == "unified_exec"):
+			i++
+		default:
+			out = append(out, Lockdown[i])
+		}
+	}
+	return out
+}
+
 // Refusal returns the one refusal of research and news on Codex, which
 // the adapter and internal/router both give, or nil for other kinds.
 //
@@ -203,7 +232,7 @@ func (a Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, e
 //
 // Image and review get the Lockdown flag set (image keeps image
 // generation); --skip-git-repo-check is added unless GitRepo. Edit runs
-// with --sandbox SandboxEdit (M3). Research and news are ErrUnsupported
+// with EditLockdown (M3). Research and news are ErrUnsupported
 // (Refusal; TODO(T6638)), as are video, AllowedTools (no recorded
 // tool allowlist), and a pre-assigned SessionID. MaxTurns is ignored:
 // codex exec has no turn limit. Codex hooks need hash trust and hooks
@@ -262,7 +291,7 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 			args = append(args, SkipGitRepoCheck)
 		}
 	case adapter.Edit:
-		args = append(args, "--sandbox", SandboxEdit)
+		args = append(args, EditLockdown...)
 	default:
 		return adapter.Command{}, fmt.Errorf("codex: unknown kind %q", req.Kind)
 	}

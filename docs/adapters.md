@@ -301,7 +301,7 @@ by default is news 15 and research 30; `<run>` is `HeadlessRequest.RunDir`):
 | image `--edit` | unsupported | `codex exec [-i <ref>]... --json <L without image_generation> --skip-git-repo-check resume <id> -- -` | only with `[media] grok_file_tools`: `grok -p --output-format json --resume <id> --tools image_gen,image_edit --disallowed-tools <D> --no-subagents` |
 | video | unsupported | unsupported | only with `[media] grok_file_tools`: `grok -p --output-format json --tools image_gen,image_to_video --disallowed-tools <D> --no-subagents` (unverified headless) |
 | review | `claude -p --output-format json --permission-mode plan --strict-mcp-config --mcp-config <run>/mcp.json --tools Read,Grep,Glob [--setting-sources user] [--settings <run>/settings.json] [--session-id <uuid> \| --resume <id>]` | `codex exec --json <L> -- -` (in a git work tree, so no `--skip-git-repo-check`) | `grok -p --output-format json --permission-mode plan --tools read_file,grep,list_dir --disallowed-tools <D> --no-subagents` |
-| edit (M3; `aggy borrow` runs Codex only, see below) | `claude -p --output-format json --permission-mode acceptEdits --strict-mcp-config --mcp-config <run>/mcp.json` | `codex exec --json --sandbox workspace-write -- -` | `grok -p --output-format json --tools read_file,grep,list_dir,write,search_replace --disallowed-tools <D> --no-subagents` |
+| edit (M3; `aggy borrow` runs Codex only, see below) | `claude -p --output-format json --permission-mode acceptEdits --strict-mcp-config --mcp-config <run>/mcp.json` | `codex exec --json <L with --sandbox workspace-write, keeping shell_tool and unified_exec> -- -` (`codex.EditLockdown`) | `grok -p --output-format json --tools read_file,grep,list_dir,write,search_replace --disallowed-tools <D> --no-subagents` |
 
 `L` is `codex.Lockdown`: `--strict-config --ignore-user-config --sandbox
 read-only --disable shell_tool --disable unified_exec --disable view_image
@@ -346,7 +346,13 @@ three read tools, edit no shell (`aggy check` runs the tests).
 
 An edit child runs in its own git worktree (design.md section 7), and
 `aggy borrow` lets only Codex write: `--sandbox workspace-write` was
-confirmed live (verification.md, "Codex resume with sandbox"). Claude's
+confirmed live (verification.md, "Codex resume with sandbox"). The edit
+child gets the lockdown's config isolation too (`--strict-config
+--ignore-user-config` and the `--disable` set, minus the shell, which it
+needs to read files), so no MCP server, `writable_roots`, or
+`network_access` from the user's `config.toml` widens the sandbox. That
+combination is not yet run live, and whether exec's default web search is
+on for it is unverified (no recorded flag turns it off). Claude's
 `acceptEdits` under `-p` and a Grok child writing with `write` and
 `search_replace` (which take any absolute path, with no sandbox recorded
 for a writing child) are unverified, so the borrow passes them over

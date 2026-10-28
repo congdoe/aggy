@@ -57,8 +57,12 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 			slices.Concat([]string{"exec", "--json"}, lock, skip, end), ""},
 		{"review with a model", adapter.HeadlessRequest{Kind: adapter.Review, Model: "gpt-5.5", GitRepo: true},
 			slices.Concat([]string{"exec", "--json", "-c", `model="gpt-5.5"`}, lock, end), ""},
-		{"edit", adapter.HeadlessRequest{Kind: adapter.Edit}, []string{"exec", "--json", "--sandbox", "workspace-write", "--", "-"},
-			`{"extra_values":{"--sandbox":["workspace-write"]}}`},
+		// W-1: the edit child ignores the user's config.toml (MCP servers,
+		// writable_roots, network_access) like every other kind.
+		{"edit", adapter.HeadlessRequest{Kind: adapter.Edit, GitRepo: true}, []string{"exec", "--json",
+			"--strict-config", "--ignore-user-config", "--sandbox", "workspace-write",
+			"--disable", "view_image", "--disable", "apps", "--disable", "plugins", "--disable", "goals",
+			"--disable", "image_generation", "--disable", "sleep_tool", "--", "-"}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
