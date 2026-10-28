@@ -199,6 +199,12 @@ func TestCodexRollout(t *testing.T) {
 		{"a newer snapshot of the same quota wins", q("codex", "", "", 100, other) + q("codex", "", "", 50, other) + limitDone, true, time.Time{}},
 		{"limit_id is normalized", model("gpt-5.5") + q(" CODEX ", "", "", 100, reset) + limitDone, true, time.Unix(reset, 0)},
 		{"a model switch drops the old model's quota", model("gpt-5.3-codex-spark") + spark + model("gpt-5.5") + limitDone, true, time.Time{}},
+		// L49-2: a full ordinary quota gives its own reset, not a later one
+		// of a full model quota.
+		{"a full ordinary quota wins over a full model quota", model("gpt-5.3-codex-spark") + q("codex", "", "", 100, reset) + spark + limitDone, true, time.Unix(reset, 0)},
+		{"a full ordinary quota with no reset time is unknown", model("gpt-5.3-codex-spark") + q("codex", "", "", 100, 0) + spark + limitDone, true, time.Time{}},
+		// L49-4: a null limit_id is the ordinary quota.
+		{"a null limit_id is the ordinary quota", line(after, "event_msg", fmt.Sprintf(`{"type":"token_count","rate_limits":{"limit_id":null,"primary":{"used_percent":100,"window_minutes":300,"resets_at":%d}}}`, reset)) + limitDone, true, time.Unix(reset, 0)},
 	}...)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
