@@ -58,6 +58,7 @@ Commands:
   unwire    Undo the config changes aggy made to other tools
   skill     Link aggy's skill into each vendor CLI, or unlink it
   hooks     Install the vendor hooks aggy listens to, or show them
+  memory    Import Claude's memory into the shared .aggy/memory.md
   version   Print the aggy version
   help      Show this help
 
@@ -112,6 +113,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runSkill(args[1:], stdout, stderr)
 	case "hooks":
 		return runHooks(args[1:], stdout, stderr)
+	case "memory":
+		return runMemory(args[1:], stdout, stderr)
 	case "help", "--help", "-h":
 		fmt.Fprint(stdout, usage)
 		return 0
