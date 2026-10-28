@@ -28,13 +28,18 @@ import (
 //     cwd>/<session id>.jsonl. Unverified: docs/verification.md does not
 //     record this layout. The folder for the cwd (every character but
 //     A-Z, a-z, and 0-9 made "-", also unverified) is tried first, then
-//     every project folder. A miss is "unknown", never "gone".
+//     every project folder. A miss after that full scan is errNotInScan:
+//     refreshChildren counts it as "gone" only for a child whose file was
+//     never seen (D23-7: Claude likely writes nothing for a session quit
+//     before its first message), else "unknown".
 //   - Codex: <$CODEX_HOME or ~/.codex>/sessions/<YYYY>/<MM>/<DD>/
 //     rollout-<timestamp>-<thread id>.jsonl, created at the first persist
 //     (codex.RolloutThreadID). Which clock names the date folder is not
-//     recorded, so every date folder from the day before the child's
-//     start through the day after today is searched. codex.RolloutDirs
-//     covers only the days around one session, so it is not used here.
+//     recorded, so a rollout in any date folder from the day before the
+//     child's start through the day after today counts. The date folders
+//     are listed once per sessionFiles and the rollouts indexed by id
+//     (D23-10). codex.RolloutDirs covers only the days around one
+//     session, so it is not used here.
 //   - Grok: <$GROK_HOME or ~/.grok>/sessions/<url-encoded cwd>/<session
 //     id>/, a folder (docs/adapters.md, Grok); its newest entry counts.
 //
@@ -43,8 +48,13 @@ type sessionFiles struct {
 	getenv func(string) string // nil means os.Getenv
 	now    func() time.Time    // nil means time.Now
 
-	claudeDirs map[string][]string // project folders per root, listed once
+	claudeDirs map[string][]string                // project folders per root, listed once
+	rollouts   map[string]map[string]codexRolloutAt // Codex rollouts per root, by thread id, listed once
 }
+
+// codexRolloutAt is one indexed rollout: its date folder as YYYY/MM/DD,
+// and its path.
+type codexRolloutAt struct{ day, path string }
 
 var (
 	// errNoSessionFile means the vendor's sessions folder is there, its
@@ -54,6 +64,9 @@ var (
 	// missing (an unmounted disk, another vendor home) or its layout is
 	// unverified.
 	errUnknownSession = errors.New("session file not found where aggy looks")
+	// errNotInScan means a Claude session file is in none of the project
+	// folders, whose layout is unverified.
+	errNotInScan = errors.New("session file in no project folder")
 )
 
 func (f *sessionFiles) env(k string) string {
@@ -118,7 +131,7 @@ func (f *sessionFiles) LastChanged(v adapter.Vendor, id, vendorHome, cwd string,
 		if f.now != nil {
 			now = f.now()
 		}
-		return codexRollout(root, id, started, now)
+		return f.codexRollout(root, id, started, now)
 	case adapter.Grok:
 		return grokSession(root, id, cwd)
 	}
@@ -160,42 +173,54 @@ func (f *sessionFiles) claude(root, id, cwd string) (time.Time, error) {
 			return t, nil
 		}
 	}
-	return time.Time{}, errUnknownSession
+	return time.Time{}, errNotInScan
 }
 
-// codexRollout searches the existing date folders from the day before
-// started through the day after now (which covers local time and UTC),
-// listing only folders that are there.
-func codexRollout(root, id string, started, now time.Time) (time.Time, error) {
+// codexRollout finds id's rollout in a date folder from the day before
+// started through the day after now (which covers local time and UTC).
+func (f *sessionFiles) codexRollout(root, id string, started, now time.Time) (time.Time, error) {
 	if started.IsZero() || started.After(now) {
 		started = now
 	}
 	from := started.UTC().Add(-48 * time.Hour).Format("2006/01/02")
 	to := now.UTC().Add(48 * time.Hour).Format("2006/01/02")
-	var days []string
-	for _, y := range dateDirs(root, 4, from[:4], to[:4]) {
-		for _, m := range dateDirs(y, 2, "01", "12") {
-			for _, d := range dateDirs(m, 2, "01", "31") {
-				if day := strings.TrimPrefix(filepath.ToSlash(d), filepath.ToSlash(root)+"/"); day >= from && day <= to {
-					days = append(days, d)
-				}
-			}
+	idx, ok := f.rollouts[root]
+	if !ok {
+		idx = indexRollouts(root)
+		if f.rollouts == nil {
+			f.rollouts = map[string]map[string]codexRolloutAt{}
 		}
+		f.rollouts[root] = idx
 	}
-	for _, d := range days {
-		es, err := safefs.ReadDir(d)
-		if err != nil {
-			continue
-		}
-		for _, e := range es {
-			if got, ok := codex.RolloutThreadID(e.Name()); ok && got == id {
-				if t, ok := regularMtime(filepath.Join(d, e.Name())); ok {
-					return t, nil
-				}
-			}
+	if r, ok := idx[id]; ok && r.day >= from && r.day <= to {
+		if t, ok := regularMtime(r.path); ok {
+			return t, nil
 		}
 	}
 	return time.Time{}, errNoSessionFile
+}
+
+// indexRollouts lists every date folder under root that is there (not
+// through a symlink) and maps each rollout's thread id to it.
+func indexRollouts(root string) map[string]codexRolloutAt {
+	idx := map[string]codexRolloutAt{}
+	for _, y := range dateDirs(root, 4, "0000", "9999") {
+		for _, m := range dateDirs(y, 2, "01", "12") {
+			for _, d := range dateDirs(m, 2, "01", "31") {
+				es, err := safefs.ReadDir(d)
+				if err != nil {
+					continue
+				}
+				day := strings.TrimPrefix(filepath.ToSlash(d), filepath.ToSlash(root)+"/")
+				for _, e := range es {
+					if id, ok := codex.RolloutThreadID(e.Name()); ok {
+						idx[id] = codexRolloutAt{day: day, path: filepath.Join(d, e.Name())}
+					}
+				}
+			}
+		}
+	}
+	return idx
 }
 
 // dateDirs lists dir's folders (not symlinks) whose names are width
@@ -315,7 +340,7 @@ const (
 	stateOpen    = "open"
 	stateRunning = "running" // a live process holds its lease
 	stateClosed  = "closed"  // its directory is gone (a removed worktree)
-	stateGone    = "gone"    // the vendor's sessions folder has no file for it
+	stateGone    = "gone"    // the vendor's sessions folder has no file for it, or never had one
 	stateUnknown = "unknown" // aggy cannot tell where the file should be
 )
 
@@ -354,6 +379,12 @@ func refreshChildren(ctx context.Context, s *store.Store, parentID string, files
 		t, err := files.LastChanged(v, c.VendorSessionID, c.VendorHome, c.Cwd, c.CreatedAt)
 		switch {
 		case err == nil:
+			if !c.FileSeen {
+				if err := s.SetChildFileSeen(ctx, c.ID); err != nil {
+					return nil, err
+				}
+				c.FileSeen = true
+			}
 			if t.After(c.LastActive) {
 				if err := s.SetChildActivity(ctx, c.ID, t); err != nil {
 					return nil, err
@@ -362,6 +393,11 @@ func refreshChildren(ctx context.Context, s *store.Store, parentID string, files
 			}
 		case c.Status == stateRunning:
 		case errors.Is(err, errNoSessionFile):
+			c.Status = stateGone
+		case errors.Is(err, errNotInScan) && !c.FileSeen:
+			// D23-7: never saved (quit before the first message), or
+			// aggy looks in the wrong place; either way resuming it
+			// would fail every time.
 			c.Status = stateGone
 		default:
 			c.Status = stateUnknown

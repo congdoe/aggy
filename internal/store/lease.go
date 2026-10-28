@@ -162,6 +162,46 @@ func (s *Store) AcquireLease(ctx context.Context, vendor, sessionID string) (*Le
 	return nil, fmt.Errorf("%w: %s session %s kept changing hands", ErrBusy, vendor, sessionID)
 }
 
+// SetChildSessionIDLeased records the vendor session id of a child
+// started without one (as SetChildSessionID) and takes its lease, in one
+// update, so another aggy never sees the id recorded but unleased
+// (D23-11). The child must have no id and no lease yet; otherwise, or
+// when another child holds the id, nothing changes and it fails.
+func (s *Store) SetChildSessionIDLeased(ctx context.Context, childID, sessionID string) (*Lease, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("store: empty vendor session id")
+	}
+	if err := safefs.MkdirAll(s.leaseDir(), 0o700); err != nil {
+		return nil, err
+	}
+	nonce, err := newNonce()
+	if err != nil {
+		return nil, err
+	}
+	lock := s.lockPath(nonce)
+	unlock, err := takeLock(lock)
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE children SET vendor_session_id = ?, lease_pid = ?, lease_nonce = ?, lease_at = ?
+		 WHERE id = ? AND vendor_session_id = '' AND lease_nonce IS NULL`,
+		sessionID, os.Getpid(), nonce, millis(time.Now()), childID)
+	var n int64
+	if err == nil {
+		n, err = res.RowsAffected()
+	}
+	if err != nil || n != 1 {
+		unlock()
+		_ = safefs.Remove(lock)
+		if err == nil {
+			err = ErrSessionSet
+		}
+		return nil, err
+	}
+	return &Lease{s: s, childID: childID, nonce: nonce, unlock: unlock, lock: lock}, nil
+}
+
 // Release gives up the lease. Releasing twice is a no-op.
 func (l *Lease) Release(ctx context.Context) error {
 	if l.unlock == nil {

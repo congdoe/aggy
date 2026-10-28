@@ -90,7 +90,7 @@ func (s *Store) ParentsByPrefix(ctx context.Context, prefix string) ([]Parent, e
 }
 
 const childCols = `id, parent_id, vendor, vendor_session_id, kind, title, model, cwd,
-	transcript_path, status, created_at, ` + activeExpr + ` AS active, vendor_home`
+	transcript_path, status, created_at, ` + activeExpr + ` AS active, vendor_home, file_seen`
 
 // Children returns the parent's children, most recently active first.
 func (s *Store) Children(ctx context.Context, parentID string) ([]Child, error) {
@@ -106,7 +106,7 @@ func (s *Store) Children(ctx context.Context, parentID string) ([]Child, error) 
 		var c Child
 		var created, active int64
 		if err := rows.Scan(&c.ID, &c.ParentID, &c.Vendor, &c.VendorSessionID, &c.Kind, &c.Title, &c.Model,
-			&c.Cwd, &c.TranscriptPath, &c.Status, &created, &active, &c.VendorHome); err != nil {
+			&c.Cwd, &c.TranscriptPath, &c.Status, &created, &active, &c.VendorHome, &c.FileSeen); err != nil {
 			return nil, err
 		}
 		c.CreatedAt, c.LastActive = fromMillis(created), fromMillis(active)
@@ -148,6 +148,12 @@ func (s *Store) OnScreen(ctx context.Context, parentID, childID, vendor string, 
 // FutureSlack.
 func (s *Store) SetChildActivity(ctx context.Context, childID string, active time.Time) error {
 	return s.tx(ctx, func(tx *sql.Tx) error { return raise(ctx, tx, childID, active) })
+}
+
+// SetChildFileSeen records that the child's session file was found.
+func (s *Store) SetChildFileSeen(ctx context.Context, childID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE children SET file_seen = 1 WHERE id = ?`, childID)
+	return err
 }
 
 // ErrSessionSet means a child already has a different vendor session id.

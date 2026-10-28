@@ -170,3 +170,51 @@ func TestFutureActivity(t *testing.T) {
 		t.Errorf("healed child at %v", cs[0].LastActive)
 	}
 }
+
+// TestSetChildSessionIDLeased (D23-11): the id and its lease land in one
+// update; a child that already has an id, or an id another child holds,
+// changes nothing and leaves no lease.
+func TestSetChildSessionIDLeased(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	t0 := time.UnixMilli(1_000_000).UTC()
+	if err := s.InsertParent(ctx, Parent{ID: "p1", Dir: "/a", CreatedAt: t0, LastActive: t0}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"c1", "c2"} {
+		if err := s.InsertChild(ctx, Child{ID: id, ParentID: "p1", Vendor: "codex", Cwd: "/a", CreatedAt: t0, LastActive: t0}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l, err := s.SetChildSessionIDLeased(ctx, "c1", "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, alive, _ := s.LeaseHolder(ctx, "codex", "t1"); !alive {
+		t.Error("t1 recorded without its lease")
+	}
+	if _, err := s.SetChildSessionIDLeased(ctx, "c1", "t2"); !errors.Is(err, ErrSessionSet) {
+		t.Errorf("a second id: %v", err)
+	}
+	if _, err := s.SetChildSessionIDLeased(ctx, "c2", "t1"); err == nil {
+		t.Error("an id another child holds was recorded")
+	}
+	cs, _ := s.Children(ctx, "p1")
+	for _, c := range cs {
+		if c.ID == "c2" && c.VendorSessionID != "" {
+			t.Errorf("c2 got id %q", c.VendorSessionID)
+		}
+	}
+	if err := l.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetChildFileSeen(ctx, "c2"); err != nil {
+		t.Fatal(err)
+	}
+	cs, _ = s.Children(ctx, "p1")
+	for _, c := range cs {
+		if c.FileSeen != (c.ID == "c2") {
+			t.Errorf("%s FileSeen = %v", c.ID, c.FileSeen)
+		}
+	}
+}
