@@ -419,6 +419,22 @@ var testHookBeforeAct func(op string)
 // testSyncDir, when set by a test, replaces the directory sync in WriteFile.
 var testSyncDir func() error
 
+// testSyncDirPath, set through SetTestDirSync, replaces the directory sync
+// in WriteFile for tests in other packages; it gets the directory's path.
+var testSyncDirPath func(dir string) error
+
+// SetTestDirSync makes WriteFile's directory sync call fn with the
+// directory's path instead, so tests in other packages can make a sync
+// fail. It panics outside a test binary. The returned func restores it.
+func SetTestDirSync(fn func(dir string) error) (restore func()) {
+	if !testing.Testing() {
+		panic("safefs: SetTestDirSync outside a test")
+	}
+	old := testSyncDirPath
+	testSyncDirPath = fn
+	return func() { testSyncDirPath = old }
+}
+
 func beforeAct(op string) {
 	if testHookBeforeAct != nil {
 		testHookBeforeAct(op)
@@ -695,6 +711,9 @@ func createTemp(dir *os.Root, base string) (string, *os.File, error) {
 func syncDir(dir *os.Root) error {
 	if testSyncDir != nil {
 		return testSyncDir()
+	}
+	if testSyncDirPath != nil {
+		return testSyncDirPath(dir.Name())
 	}
 	d, err := dir.Open(".")
 	if err != nil {

@@ -169,3 +169,13 @@ func nonNil(s []string) []string {
 	}
 	return s
 }
+
+// ChangesNewestFirst returns the changes of one run, or of every run when
+// runID is empty, newest first: the order an undo must run in.
+func (s *Store) ChangesNewestFirst(ctx context.Context, runID string) ([]Change, error) {
+	cs, err := s.Changes(ctx, runID)
+	for i, j := 0, len(cs)-1; i < j; i, j = i+1, j-1 {
+		cs[i], cs[j] = cs[j], cs[i]
+	}
+	return cs, err
+}

@@ -260,3 +260,12 @@ var ErrNotFound = errors.New("store: not found")
 func millis(t time.Time) int64 { return t.UnixMilli() }
 
 func fromMillis(ms int64) time.Time { return time.UnixMilli(ms).UTC() }
+
+// LockFile takes an exclusive lock on path, creating it 0600, and returns
+// the unlock function. It waits at most wait and honors ctx, returning
+// ErrLockTimeout or ctx's error. On a file system without file locks it
+// returns a no-op unlock and an error matching ErrLockUnsupported, so the
+// caller can choose to go on unlocked.
+func LockFile(ctx context.Context, path string, wait time.Duration) (func(), error) {
+	return lockFile(ctx, path, wait)
+}
