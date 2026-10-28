@@ -905,7 +905,12 @@ func rawEcho(banner string) error {
 				write(out)
 				out = nil
 				_ = restoreTerm(0, st)
+				// kill can return before the stop takes hold on Linux.
+				cont := make(chan os.Signal, 1)
+				signal.Notify(cont, syscall.SIGCONT)
 				_ = syscall.Kill(os.Getpid(), syscall.SIGSTOP)
+				<-cont
+				signal.Stop(cont)
 				if _, err := makeRaw(0); err != nil {
 					return err
 				}
