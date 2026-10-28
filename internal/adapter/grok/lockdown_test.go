@@ -2,6 +2,7 @@ package grok
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -67,6 +68,34 @@ func TestMetaToolsAlwaysDenied(t *testing.T) {
 		deny := c.Args[len(c.Args)-2]
 		if !strings.Contains(args, "--no-subagents") || !strings.Contains(deny, "search_tool") || !strings.Contains(deny, "use_tool") || !strings.Contains(deny, "Agent") {
 			t.Errorf("%s: %q", k, c.Args)
+		}
+	}
+}
+
+// TestWebSearchOnlyForSearchKinds (#10-4): every kind but research and
+// news denies web_search, and the deny list never names a tool Grok
+// cannot remove by name.
+func TestWebSearchOnlyForSearchKinds(t *testing.T) {
+	for _, k := range []adapter.Kind{adapter.Research, adapter.News, adapter.Image, adapter.Video, adapter.Review, adapter.Edit} {
+		c, err := New().Headless(adapter.HeadlessRequest{Kind: k, PromptFile: "/p", Cwd: "/w", IsolatedCwd: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var tools, deny []string
+		for i, a := range c.Args {
+			switch a {
+			case "--tools":
+				tools = strings.Split(c.Args[i+1], ",")
+			case "--disallowed-tools":
+				deny = strings.Split(c.Args[i+1], ",")
+			}
+		}
+		search := k == adapter.Research || k == adapter.News
+		if slices.Contains(tools, "web_search") != search || slices.Contains(deny, "web_search") == search {
+			t.Errorf("%s: tools %q deny %q", k, tools, deny)
+		}
+		if slices.Contains(deny, "open_page") || slices.Contains(deny, "open_page_with_find") {
+			t.Errorf("%s denies a tool Grok cannot remove by name: %q", k, deny)
 		}
 	}
 }

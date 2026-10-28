@@ -88,12 +88,21 @@ var (
 	// Lockdown is every built-in tool a borrow may be denied. Every run
 	// passes it as --disallowed-tools, minus the tools its kind uses, so
 	// the child keeps only those even if --tools were ignored. search_tool
-	// and use_tool, the MCP meta-tools, are always denied.
+	// and use_tool, the MCP meta-tools, are always denied, and web_search
+	// is denied to every kind but research and news.
+	//
+	// open_page and open_page_with_find, the browse helpers that come
+	// with web_search, are not in it: they cannot be removed by name, and
+	// naming them makes Grok warn "name no tool ... so they remove
+	// nothing" (live check C2, 2026-10-28), which fails a borrow closed.
+	// Denying web_search is expected to take them along; that, and
+	// --disable-web-search (not in a recorded help), are unverified:
+	// TODO(T6737).
 	Lockdown = []string{
 		"read_file", "grep", "list_dir", "write", "search_replace", "run_terminal_cmd", "web_fetch",
 		"Agent", "search_tool", "use_tool", "image_gen", "image_edit", "image_to_video",
 		"reference_to_video", "send_feedback", "monitor", "workflow", "todo_write",
-		"ask_user_question", "enter_plan_mode", "exit_plan_mode",
+		"ask_user_question", "enter_plan_mode", "exit_plan_mode", "web_search",
 	}
 	// NoSubagents keeps the child from starting its own agents.
 	NoSubagents = "--no-subagents"
