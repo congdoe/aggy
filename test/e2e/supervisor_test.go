@@ -24,6 +24,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/congdoe/aggy/internal/fakecli"
+	"github.com/congdoe/aggy/internal/parity"
 )
 
 const timeout = 10 * time.Second
@@ -82,6 +83,14 @@ func newWorld(t *testing.T) *world {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// Codex reads aggy's safety policy from its rules file; aggy run
+	// refuses to start it without one.
+	if err := os.MkdirAll(filepath.Join(home, ".codex", "rules"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "rules", "aggy.rules"), []byte(parity.CodexRules), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	for _, v := range []string{"claude", "codex", "grok"} {
 		b, err := os.ReadFile(fakes.For(v))

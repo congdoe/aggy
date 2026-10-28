@@ -27,6 +27,16 @@ type Config struct {
 	Switch        Switch         `toml:"switch"`
 	Routing       Routing        `toml:"routing"`
 	Budgets       Budgets        `toml:"budgets"`
+	Policy        Policy         `toml:"policy"`
+}
+
+// Policy configures aggy's safety policy. It is user config only: a
+// repo's .aggy/config.toml has no such table.
+type Policy struct {
+	// Required makes aggy run refuse to start a CLI the policy cannot
+	// reach (a flag missing from its help, an unwired Codex rules file).
+	// False starts it anyway, with a warning. Default true.
+	Required bool `toml:"required"`
 }
 
 // Vendors holds per-vendor settings.
@@ -233,6 +243,7 @@ func vendors(vs ...adapter.Vendor) Route { return Route{Vendors: vs} }
 func Default() Config {
 	return Config{
 		Switch: Switch{Order: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok}, Key: DefaultSwitchKey},
+		Policy: Policy{Required: true},
 		Routing: Routing{
 			// TODO(T6638): Codex is left out of news and research on
 			// purpose. Its apply_patch tool cannot be turned off, and its

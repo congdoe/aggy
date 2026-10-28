@@ -53,27 +53,36 @@ func TestAddPolicy(t *testing.T) {
 	tests := []struct {
 		v    adapter.Vendor
 		caps []string
-		deny bool
+		deny []string // nil: the policy cannot reach this CLI
 	}{
-		{adapter.Claude, []string{probe.CapSettings}, true},
-		{adapter.Claude, nil, false},
-		{adapter.Grok, []string{probe.CapDeny}, true},
-		{adapter.Grok, []string{probe.CapRules}, false},
-		{adapter.Codex, []string{probe.CapConfigOverride}, false},
+		{adapter.Claude, []string{probe.CapSettings}, parity.ClaudeDeny},
+		{adapter.Claude, nil, nil},
+		{adapter.Grok, []string{probe.CapDeny}, parity.GrokDeny},
+		{adapter.Grok, []string{probe.CapRules}, nil},
+		{adapter.Codex, []string{probe.CapConfigOverride}, nil},
 	}
 	for _, tt := range tests {
+		// Required (the default): a CLI the policy cannot reach is refused.
 		var req adapter.InteractiveRequest
-		warns := addPolicy(tt.v, tt.caps, &req)
-		want := map[adapter.Vendor][]string{adapter.Claude: parity.ClaudeDeny, adapter.Grok: parity.GrokDeny}[tt.v]
-		if got := len(req.Deny) > 0 && slices.Equal(req.Deny, want); got != tt.deny || (len(warns) == 0) != tt.deny {
-			t.Errorf("%s %v: deny %v, warns %v", tt.v, tt.caps, req.Deny, warns)
+		warns, err := addPolicy(tt.v, tt.caps, true, &req)
+		if !slices.Equal(req.Deny, tt.deny) || len(warns) > 0 || (err != nil) != (tt.deny == nil) {
+			t.Errorf("required %s %v: deny %v, warns %v, err %v", tt.v, tt.caps, req.Deny, warns, err)
+		}
+		if err != nil && !strings.Contains(err.Error(), "--no-policy") {
+			t.Errorf("the refusal does not name the way out: %v", err)
+		}
+		// Not required: a warning instead.
+		req = adapter.InteractiveRequest{}
+		warns, err = addPolicy(tt.v, tt.caps, false, &req)
+		if !slices.Equal(req.Deny, tt.deny) || err != nil || (len(warns) == 0) != (tt.deny != nil) {
+			t.Errorf("optional %s %v: deny %v, warns %v, err %v", tt.v, tt.caps, req.Deny, warns, err)
 		}
 	}
-	// Codex warns until the rules file is wired, then needs nothing on
-	// its command line.
+	// Codex is refused until the rules file is wired, then needs nothing
+	// on its command line.
 	mustRun(t, "policy", "wire")
 	var req adapter.InteractiveRequest
-	if warns := addPolicy(adapter.Codex, nil, &req); len(warns) > 0 || req.Deny != nil {
-		t.Errorf("wired codex: %v %v", warns, req.Deny)
+	if warns, err := addPolicy(adapter.Codex, nil, true, &req); len(warns) > 0 || err != nil || req.Deny != nil {
+		t.Errorf("wired codex: %v %v %v", warns, err, req.Deny)
 	}
 }

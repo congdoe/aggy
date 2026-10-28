@@ -21,14 +21,20 @@ import (
 	"github.com/congdoe/aggy/internal/termsafe"
 )
 
-// runRun is `aggy run <vendor>`: a new interactive session of that vendor
-// under the supervisor.
+// runRun is `aggy run [--no-policy] <vendor>`: a new interactive session
+// of that vendor under the supervisor. It refuses to start a CLI the
+// safety policy cannot reach, unless --no-policy is given or the user's
+// config sets [policy] required = false.
 //
 // TODO(T6661): bare `aggy` resumes the latest parent or starts one, and
 // `aggy new` and `aggy resume` record parents and children in the store.
 func runRun(args []string, stdout, stderr io.Writer) int {
+	noPolicy := len(args) > 0 && args[0] == "--no-policy"
+	if noPolicy {
+		args = args[1:]
+	}
 	if len(args) != 1 {
-		fmt.Fprint(stderr, "usage: aggy run <claude|codex|grok>\n")
+		fmt.Fprint(stderr, "usage: aggy run [--no-policy] <claude|codex|grok>\n")
 		return 2
 	}
 	v, err := adapter.ParseVendor(args[0])
@@ -78,7 +84,16 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	cleanup, warns := addMemory(v, caps, cwd, &req)
 	defer cleanup()
-	warns = append(warns, addPolicy(v, caps, &req)...)
+	if noPolicy {
+		warns = append(warns, "starting without the safety policy (--no-policy)")
+	} else {
+		pw, err := addPolicy(v, caps, cfg.Policy.Required, &req)
+		if err != nil {
+			fmt.Fprintf(stderr, "aggy run: %s\n", termsafe.Line(err.Error()))
+			return 1
+		}
+		warns = append(warns, pw...)
+	}
 	for _, w := range warns {
 		fmt.Fprintf(stderr, "aggy run: %s\n", termsafe.Line(w))
 	}
