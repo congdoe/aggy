@@ -2,6 +2,8 @@ package parity
 
 import (
 	"path/filepath"
+
+	"github.com/congdoe/aggy/internal/safefs"
 )
 
 // CodexSystemDir is the folder of Codex's system config layer on Unix
@@ -41,6 +43,40 @@ func CodexLayerDirs(cwd, root string) ([]CodexLayerDir, error) {
 	for i := len(tree) - 1; i >= 0; i-- {
 		if dot := filepath.Join(tree[i], ".codex"); dot != user {
 			out = append(out, CodexLayerDir{Dir: dot, Project: true})
+		}
+	}
+	return out, nil
+}
+
+// OtherCodexRules lists the *.rules files Codex would load beside aggy's:
+// every regular *.rules file in the rules folder of each layer folder of
+// CodexLayerDirs, but aggy's own. Codex stops at the first file it cannot
+// parse and then drops every rules file, aggy's included
+// (core/src/exec_policy.rs, load_exec_policy and
+// load_exec_policy_with_warning), so each of these can switch aggy's
+// policy off, a trusted repo's among them. Unreadable folders are
+// skipped.
+func OtherCodexRules(cwd, root string) ([]string, error) {
+	dirs, err := CodexLayerDirs(cwd, root)
+	if err != nil {
+		return nil, err
+	}
+	ours, err := CodexRulesPath()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, d := range dirs {
+		rules := filepath.Join(d.Dir, "rules")
+		des, err := safefs.ReadDir(rules)
+		if err != nil {
+			continue
+		}
+		for _, de := range des {
+			p := filepath.Join(rules, de.Name())
+			if filepath.Ext(p) == ".rules" && de.Type().IsRegular() && p != ours {
+				out = append(out, p)
+			}
 		}
 	}
 	return out, nil
