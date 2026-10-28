@@ -18,6 +18,7 @@ Usage:
 
 Commands:
   borrow    Run one bounded task headless in another vendor's CLI
+  image     Make an image in another vendor's CLI and copy it into the repo
   inbox     List unread borrow reports, or show one
   run       Start a vendor CLI (claude, codex, or grok) under aggy
   setup     Check each vendor CLI's install, version, and sign-in
@@ -44,6 +45,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "borrow":
 		return runBorrow(args[1:], stdout, stderr)
+	case "image":
+		return runImage(args[1:], stdout, stderr)
 	case "inbox":
 		return runInbox(args[1:], stdout, stderr)
 	case "hook":
