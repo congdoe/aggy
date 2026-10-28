@@ -32,7 +32,7 @@ func TestSince(t *testing.T) {
 	for _, turn := range tr.Turns {
 		got = append(got, turn.Role+": "+turn.Text)
 	}
-	want := "codex assistant: NEW codex answer|grok assistant: undated grok turn"
+	want := "grok assistant: undated grok turn|codex assistant: NEW codex answer"
 	if strings.Join(got, "|") != want {
 		t.Errorf("turns = %q, want %q", got, want)
 	}
@@ -54,5 +54,27 @@ func TestSince(t *testing.T) {
 	in.Transcript, in.TranscriptErr = adapter.Transcript{}, nil
 	if out := Build(in); !strings.Contains(out, "No other CLI added a turn") {
 		t.Errorf("empty return brief:\n%s", out)
+	}
+}
+
+// G34-3: a long undated session active since cannot push the dated new
+// turns out of the brief's turn cap.
+func TestSinceKeepsDatedTurns(t *testing.T) {
+	left := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	big := strings.Repeat("old claude history ", MaxTurnBytes/16)
+	tr, err := Since(left, []Other{
+		{Vendor: adapter.Codex, Transcript: adapter.Transcript{Turns: []adapter.Turn{
+			{Role: "assistant", Text: "NEW codex work", Time: left.Add(time.Minute)},
+		}}},
+		{Vendor: adapter.Claude, Transcript: adapter.Transcript{Turns: []adapter.Turn{
+			{Role: "user", Text: big}, {Role: "assistant", Text: big},
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := Build(Input{From: adapter.Claude, To: adapter.Grok, Since: left, Transcript: tr})
+	if !strings.Contains(out, "NEW codex work") {
+		t.Error("dated turn after since was cut by an undated session")
 	}
 }
