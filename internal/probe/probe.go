@@ -74,6 +74,10 @@ const (
 	CapDisable        = "disable"         // codex exec --disable <feature>
 	CapImageInput     = "image-input"     // codex exec -i
 	CapConfigOverride = "config-override" // codex -c key=value
+	// CapIgnoreUserConfig is codex --ignore-user-config, which keeps a
+	// research child from loading the user's MCP servers. Not recorded in
+	// docs/adapters.md: present only when help lists it.
+	CapIgnoreUserConfig = "ignore-user-config"
 )
 
 // Specs holds the probe spec of each vendor, from the flags recorded in
@@ -122,6 +126,8 @@ var Specs = map[adapter.Vendor]Spec{
 			{CapSandbox, 1, "--sandbox", Option},
 			{CapDisable, 1, "--disable", Option},
 			{CapImageInput, 1, "-i", Option},
+			{CapIgnoreUserConfig, 0, "--ignore-user-config", Option},
+			{CapIgnoreUserConfig, 1, "--ignore-user-config", Option},
 		},
 	},
 }
@@ -135,7 +141,7 @@ var ErrAmbiguousVersion = errors.New("probe: several versions in --version outpu
 
 // semver is x.y.z with an optional v prefix and an optional pre-release or
 // build suffix; its group is the version without the v.
-const semver = `v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)`
+const semver = `v?(\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)`
 
 // note is an optional parenthesized remark after the version, such as
 // "(Claude Code)" or "(fake)".
@@ -315,9 +321,11 @@ func Detect(ctx context.Context, run adapter.Runner, vendor adapter.Vendor, path
 		return p, fmt.Errorf("probe: no spec for vendor %q", vendor)
 	}
 	version, err := Version(ctx, run, path, spec.Programs)
-	if err != nil {
+	if err != nil && !unreadable(err) {
 		return p, err
 	}
+	// An unreadable version is not a failed probe: Version stays empty
+	// and adapter.VersionWarning reports it.
 	p.Version = version
 	hs, _ := helps(ctx, run, spec, path)
 	p.Capabilities = Capabilities(spec, hs)
@@ -335,6 +343,12 @@ func Version(ctx context.Context, run adapter.Runner, path string, programs []st
 		return "", fmt.Errorf("probe: %s --version exited %d", path, out.ExitCode)
 	}
 	return ParseVersion(out.Stdout, out.Stderr, programs)
+}
+
+// unreadable reports whether err means --version ran but printed no
+// version aggy can read.
+func unreadable(err error) bool {
+	return errors.Is(err, ErrNoVersion) || errors.Is(err, ErrAmbiguousVersion)
 }
 
 // ErrIncomplete matches a probe in which a help invocation failed. Its
@@ -397,8 +411,18 @@ func (p *Prober) Probe(ctx context.Context, vendor adapter.Vendor, path string) 
 		return adapter.Probe{}, false, fmt.Errorf("probe: no spec for vendor %q", vendor)
 	}
 	version, err := Version(ctx, p.Run, path, spec.Programs)
-	if err != nil {
+	if err != nil && !unreadable(err) {
 		return adapter.Probe{Vendor: vendor, Path: path}, false, err
+	}
+	if version == "" {
+		// No version to key a cache entry on: probe in full, record
+		// nothing, and let adapter.VersionWarning report it.
+		res, err := Detect(ctx, p.Run, vendor, path)
+		res.ProbedAt = time.Now().UTC().Truncate(time.Millisecond)
+		if p.Now != nil {
+			res.ProbedAt = p.Now().UTC().Truncate(time.Millisecond)
+		}
+		return res, false, err
 	}
 	row, err := p.Store.LatestProbe(ctx, string(vendor), path, version)
 	if err == nil {

@@ -23,8 +23,8 @@ func TestCompareVersions(t *testing.T) {
 			t.Errorf("CompareVersions(%s, %s) = %d, %v, want %d", tt.a, tt.b, got, err, tt.want)
 		}
 	}
-	if _, err := CompareVersions("1.0", "1.0.0"); err == nil {
-		t.Error("1.0 accepted")
+	if _, err := CompareVersions("1.0.x", "1.0.0"); err == nil {
+		t.Error("1.0.x accepted")
 	}
 }
 
@@ -48,5 +48,30 @@ func TestVersionWarning(t *testing.T) {
 	r := VersionRange{Min: "1.0.0", Max: "1.2.0"}
 	if ok, _ := r.Contains("1.1.5"); !ok {
 		t.Error("1.1.5 not in 1.0.0 to 1.2.0")
+	}
+}
+
+// TestCompareVersionsSemver (9): pre-release identifiers compare the semver
+// way, build metadata is allowed, and x.y means x.y.0. Each fails on
+// ed38103.
+func TestCompareVersionsSemver(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want int
+	}{
+		{"1.0.0-beta.10", "1.0.0-beta.9", 1},
+		{"1.0.0-alpha", "1.0.0-alpha.1", -1},
+		{"1.0.0-1", "1.0.0-alpha", -1},
+		{"1.0.0-rc.1+build.7", "1.0.0-rc.1", 0},
+		{"1.2", "1.2.0", 0},
+		{"1.2", "1.2.1", -1},
+	}
+	for _, tt := range tests {
+		if got, err := CompareVersions(tt.a, tt.b); err != nil || got != tt.want {
+			t.Errorf("CompareVersions(%s, %s) = %d, %v, want %d", tt.a, tt.b, got, err, tt.want)
+		}
+	}
+	if w := VersionWarning(stub{}, ""); !strings.Contains(w, "cannot read") {
+		t.Errorf("empty version warning = %q", w)
 	}
 }
