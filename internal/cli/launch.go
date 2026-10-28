@@ -66,15 +66,20 @@ func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t 
 		if err != nil {
 			return p, err
 		}
-		switch len(ps) {
-		case 0:
-			if p.parent, pick, err = childByPrefix(ctx, s, t.ParentID); err != nil {
-				return p, err
-			}
-		case 1:
+		par, kids, err := childByPrefix(ctx, s, t.ParentID)
+		if err != nil {
+			return p, err
+		}
+		// A prefix of both a parent and a child is ambiguous (G34-8).
+		switch n := len(ps) + len(kids); {
+		case n == 0:
+			return p, fmt.Errorf("no session %s (aggy sessions and aggy session list them)", t.ParentID)
+		case n > 1:
+			return p, fmt.Errorf("%d sessions start with %s; give more of the id", n, t.ParentID)
+		case len(ps) == 1:
 			p.parent = ps[0]
 		default:
-			return p, fmt.Errorf("%d sessions start with %s; give more of the id", len(ps), t.ParentID)
+			p.parent, pick = par, kids[0]
 		}
 	default:
 		key, err := safefs.CanonicalPath(cwd)
@@ -114,7 +119,7 @@ func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t 
 	}
 
 	files := &sessionFiles{}
-	children, err := refreshChildren(ctx, s, p.parent.ID, files)
+	children, err := planRefresh(ctx, s, p.parent.ID, files)
 	if err != nil {
 		return p, err
 	}
@@ -129,6 +134,10 @@ func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t 
 	}
 	short := shortID(p.parent.ID)
 	switch {
+	case last == nil && pick != "":
+		// The child named went from the index while it was refreshed
+		// (G34-9): starting another one instead would surprise.
+		return p, fmt.Errorf("session %s is no longer recorded (aggy sessions lists the sessions)", shortID(pick))
 	case last == nil:
 		v, _ := adapter.ParseVendor(p.parent.LastVendor)
 		return p, p.newChildOf(ctx, s, cfg, v, now)
@@ -378,19 +387,22 @@ func (c *childIDs) release(ctx context.Context) {
 	}
 }
 
-// childByPrefix returns the parent of the one interactive child whose id
-// starts with prefix, and that child's id.
-func childByPrefix(ctx context.Context, s *store.Store, prefix string) (store.Parent, string, error) {
+// planRefresh is refreshChildren; a test swaps it to drop a child.
+var planRefresh = refreshChildren
+
+// childByPrefix returns the ids of the interactive children whose id
+// starts with prefix, and the parent of the last one.
+func childByPrefix(ctx context.Context, s *store.Store, prefix string) (store.Parent, []string, error) {
 	ps, err := s.Parents(ctx)
 	if err != nil {
-		return store.Parent{}, "", err
+		return store.Parent{}, nil, err
 	}
 	var par store.Parent
 	var found []string
 	for _, p := range ps {
 		cs, err := s.Children(ctx, p.ID)
 		if err != nil {
-			return store.Parent{}, "", err
+			return store.Parent{}, nil, err
 		}
 		for _, c := range cs {
 			if c.Kind == "" && strings.HasPrefix(c.ID, prefix) {
@@ -398,11 +410,5 @@ func childByPrefix(ctx context.Context, s *store.Store, prefix string) (store.Pa
 			}
 		}
 	}
-	switch len(found) {
-	case 0:
-		return par, "", fmt.Errorf("no session %s (aggy sessions and aggy session list them)", prefix)
-	case 1:
-		return par, found[0], nil
-	}
-	return par, "", fmt.Errorf("%d sessions start with %s; give more of the id", len(found), prefix)
+	return par, found, nil
 }

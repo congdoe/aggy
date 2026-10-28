@@ -434,8 +434,10 @@ the brief's missing-tools list rely on these:
   also loads `~/.claude.json`'s servers unless `[compat.claude] mcps =
   false` or `GROK_CLAUDE_MCPS_ENABLED` turns that off, and `config.toml`
   wins on a name clash (same guide, "Compatibility"). How Grok parses the
-  variable's value is unverified; aggy counts any value but `1` or
-  `true` as off. Source/Doc-verified at `2bdd1d6a`.
+  variable's value is unverified; when listing Grok's servers aggy
+  counts any value but `1` or `true` as off, and for `aggy doctor`'s
+  warning any value but `0` or `false` as on. Source/Doc-verified at
+  `2bdd1d6a`.
 
 ## Codex CLI details
 

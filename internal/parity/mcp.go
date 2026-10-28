@@ -268,13 +268,72 @@ func checkURL(raw string) string {
 	case u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
 		return "its url has user info, a query, or a fragment, which may carry a token"
 	}
-	// Capability URLs (Zapier, Composio) carry their key in the path.
+	// Capability URLs (Zapier, Composio) carry their key in the path, or
+	// in a host label. A refusal here is final: --server only picks among
+	// the servers aggy may copy, so the user adds such a server by hand.
+	for _, label := range strings.Split(u.Hostname(), ".") {
+		if uuidLike.MatchString(label) || redact.Secret(label) || len(label) >= 16 && spread(label) {
+			return "its url has a host name part that looks like a key"
+		}
+	}
+	if mixedRun(u.Hostname()) {
+		return "its url has a host name part that looks like a key"
+	}
 	for _, seg := range strings.Split(u.EscapedPath(), "/") {
 		if keyLike(seg) {
 			return "its url has a path segment that looks like a key"
 		}
 	}
+	if mixedRun(u.EscapedPath()) {
+		return "its url has path text that looks like a key"
+	}
 	return ""
+}
+
+// mixedRun reports whether s holds key-like text that may be short or
+// split (G2 re-review): a run of letter-and-digit words, each with a
+// change of class in it (a1, Xp), taken together across any separators
+// ("/ab12/CD34/ef56/GH78", "k7Xp2QwZ9a"), that is 8 or more characters
+// long and changes class (lower, upper, digit; upper to lower, as in a
+// capital, does not count) at a third or more of its places. Words such
+// as v1, flux1, context7, or TypeScript change class too rarely.
+func mixedRun(s string) bool {
+	run := ""
+	for _, w := range strings.FieldsFunc(s, func(r rune) bool { return !isAlnum(r) }) {
+		if changes(w) == 0 {
+			run = ""
+			continue
+		}
+		run += w
+		if len(run) >= 8 && 3*changes(run) >= len(run) {
+			return true
+		}
+	}
+	return false
+}
+
+func isAlnum(r rune) bool { return r < utf8.RuneSelf && (unicode.IsLetter(r) || unicode.IsDigit(r)) }
+
+// changes counts the places in w where one ASCII character class (lower,
+// upper, digit) follows another, except upper to lower.
+func changes(w string) int {
+	class := func(c byte) int {
+		switch {
+		case 'a' <= c && c <= 'z':
+			return 1
+		case 'A' <= c && c <= 'Z':
+			return 2
+		}
+		return 3
+	}
+	n := 0
+	for i := 1; i < len(w); i++ {
+		a, b := class(w[i-1]), class(w[i])
+		if a != b && (a != 2 || b != 1) {
+			n++
+		}
+	}
+	return n
 }
 
 var uuidLike = regexp.MustCompile(`(?i)[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}`)
@@ -291,12 +350,10 @@ func keyLike(seg string) bool {
 		return false
 	}
 	var lower, upper, digit bool
-	count := map[rune]int{}
 	for _, r := range seg {
 		lower = lower || unicode.IsLower(r)
 		upper = upper || unicode.IsUpper(r)
 		digit = digit || unicode.IsDigit(r)
-		count[r]++
 	}
 	classes := 0
 	for _, b := range []bool{lower, upper, digit} {
@@ -304,10 +361,18 @@ func keyLike(seg string) bool {
 			classes++
 		}
 	}
-	if classes >= 2 {
-		return true
+	return classes >= 2 || spread(seg)
+}
+
+// spread reports whether s's characters are spread out enough (4 bits
+// each or more) to be random. A host label is checked only this way, as
+// host names are lower case and often hold a digit (flux1-schnell).
+func spread(s string) bool {
+	count := map[rune]int{}
+	for _, r := range s {
+		count[r]++
 	}
-	n := float64(utf8.RuneCountInString(seg))
+	n := float64(utf8.RuneCountInString(s))
 	bits := 0.0
 	for _, c := range count {
 		p := float64(c) / n
@@ -560,6 +625,48 @@ func MCPNames(v adapter.Vendor, root string, getenv func(string) string) ([]stri
 		}
 	}
 	return slices.Sorted(maps.Keys(set)), nil
+}
+
+// GrokClaudeStdio reports whether Grok would start stdio MCP servers
+// from ~/.claude.json itself (user scope, or the local scope of the
+// project at root): its Claude compatibility is not off and the file has
+// such a server. A repo's allowed_vendors cannot stop that. Unlike
+// MCPNames, a GROK_CLAUDE_MCPS_ENABLED value other than "0" or "false"
+// counts as on, so an unverified spelling errs toward a warning.
+func GrokClaudeStdio(root string, getenv func(string) string) (bool, error) {
+	if e := getenv("GROK_CLAUDE_MCPS_ENABLED"); e == "0" || strings.EqualFold(e, "false") {
+		return false, nil
+	}
+	path, err := MCPConfigPath(adapter.Grok, getenv)
+	if err != nil {
+		return false, err
+	}
+	doc, _, err := readTOML(path)
+	if err != nil {
+		return false, err
+	}
+	if !grokLoadsClaude(doc, func(string) string { return "" }) {
+		return false, nil
+	}
+	if path, err = ClaudeJSONPath(getenv); err != nil {
+		return false, err
+	}
+	f, err := readClaude(path)
+	if err != nil {
+		return false, err
+	}
+	entries := slices.Collect(maps.Values(f.MCPServers))
+	if p, ok := f.Projects[root]; ok && root != "" {
+		entries = append(entries, slices.Collect(maps.Values(p.MCPServers))...)
+	}
+	for _, raw := range entries {
+		var e claudeEntry
+		// An entry aggy cannot parse may still be one Grok starts.
+		if json.Unmarshal(raw, &e) != nil || e.Type == "" || e.Type == "stdio" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // grokLoadsClaude reports whether Grok loads ~/.claude.json's servers:

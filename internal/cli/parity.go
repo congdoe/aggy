@@ -13,6 +13,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/checkup"
+	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
@@ -203,6 +204,7 @@ const (
 	codePolicyNotWired     = "policy-not-wired"     // info: aggy policy wire has not run
 	codePolicyNotApplied   = "policy-not-applied"   // warning: this CLI will not get it
 	codePolicyFragile      = "policy-fragile"       // warning: another Codex rules file can switch aggy's off
+	codeGrokClaudeMCP      = "grok-claude-mcp"      // warning: Grok starts Claude's stdio MCP servers in a repo that excludes it
 )
 
 // parityFindings checks what aggy run would give each installed CLI: the
@@ -283,6 +285,20 @@ func parityFindings(cwd string, vendors []checkup.Vendor) []checkup.Finding {
 			add(codePolicyNotWired, checkup.LevelInfo, v, "", name+" does not get the safety policy: "+why, nil)
 		default:
 			add(codePolicyNotApplied, checkup.LevelWarn, v, "", name+" does not get the safety policy: "+why, err)
+		}
+		if v == adapter.Grok && root != "" {
+			// G35-2: allowed_vendors cannot keep Grok from starting the
+			// stdio MCP servers in ~/.claude.json, which it loads itself.
+			rc, err := config.LoadRepo(root)
+			if err != nil || rc.AllowedVendors == nil || slices.Contains(rc.AllowedVendors, adapter.Grok) {
+				continue
+			}
+			switch on, err := parity.GrokClaudeStdio(root, os.Getenv); {
+			case err != nil:
+				add(codeGrokClaudeMCP, checkup.LevelWarn, v, "", "cannot tell whether Grok Build starts Claude's stdio MCP servers in this repo, which allowed_vendors excludes it from", err)
+			case on:
+				add(codeGrokClaudeMCP, checkup.LevelWarn, v, "", "Grok Build starts the stdio MCP servers in ~/.claude.json itself, so this repo's allowed_vendors cannot keep them from Grok; set mcps = false under [compat.claude] in Grok's config.toml to stop that", nil)
+			}
 		}
 	}
 	return out

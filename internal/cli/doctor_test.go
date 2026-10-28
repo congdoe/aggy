@@ -458,3 +458,44 @@ func TestDoctorOtherCodexRules(t *testing.T) {
 		t.Errorf("doctor flags aggy's own file or a non-rules file:\n%s", got)
 	}
 }
+
+// TestDoctorGrokClaudeMCP (G35-2): doctor warns when Grok would start
+// ~/.claude.json's stdio MCP servers in a repo whose allowed_vendors
+// leaves Grok out.
+func TestDoctorGrokClaudeMCP(t *testing.T) {
+	fakes := fakecli.Build(t)
+	const stdio = `{"mcpServers":{"fs":{"command":"npx"}}}`
+	const remote = `{"mcpServers":{"lin":{"type":"sse","url":"https://mcp.linear.app/sse"}}}`
+	for _, tc := range []struct {
+		name, allowed, claudeJSON, grokTOML, env string
+		warn                                     bool
+	}{
+		{"excluded", `["claude"]`, stdio, "", "", true},
+		{"compat off", `["claude"]`, stdio, "[compat.claude]\nmcps = false\n", "", false},
+		{"env off", `["claude"]`, stdio, "", "0", false},
+		{"env unknown", `["claude"]`, stdio, "", "yes", true},
+		{"grok allowed", `["claude", "grok"]`, stdio, "", "", false},
+		{"remote only", `["claude"]`, remote, "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := isolate(t)
+			t.Setenv("PATH", t.TempDir())
+			t.Setenv("GROK_CLAUDE_MCPS_ENABLED", tc.env)
+			w := newFakeWorld(t, fakes)
+			repo := filepath.Join(home, "repo")
+			mustWrite(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n", 0o644)
+			mustWrite(t, filepath.Join(repo, ".aggy", "config.toml"), "allowed_vendors = "+tc.allowed+"\n", 0o644)
+			mustWrite(t, filepath.Join(home, ".claude.json"), tc.claudeJSON, 0o600)
+			if tc.grokTOML != "" {
+				mustWrite(t, filepath.Join(home, ".grok", "config.toml"), tc.grokTOML, 0o600)
+			}
+			env := w.env(home, "", false)
+			env.cwd = repo
+			var out bytes.Buffer
+			doctorWith(nil, env, &out, &out)
+			if got := strings.Contains(out.String(), "warning grok-claude-mcp: Grok Build starts the stdio MCP servers"); got != tc.warn {
+				t.Errorf("warned %v, want %v:\n%s", got, tc.warn, out.String())
+			}
+		})
+	}
+}
