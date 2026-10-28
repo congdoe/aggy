@@ -174,10 +174,36 @@ func Live(runDir, parentID string) (bool, error) {
 }
 
 // takeLock opens path and takes an exclusive flock on it without waiting.
+//
+// Close unlinks the lock file while holding it, so a file opened just
+// before that unlink can be locked once its holder lets go, while another
+// process creates and locks a new file at path: two holders of "the"
+// lock (B13-7). So after locking, path must still name the locked file;
+// if it does not, the lock is on an unlinked file and is taken again.
 func takeLock(path string) (*os.File, error) {
+	for range 3 {
+		f, err := lockOnce(path)
+		if err != nil {
+			return nil, err
+		}
+		if sameFile(f, path) {
+			return f, nil
+		}
+		_ = f.Close()
+	}
+	return nil, fmt.Errorf("supervisor: lock %s keeps changing", path)
+}
+
+// lockOpened, when set by a test, runs between the open and the flock.
+var lockOpened func()
+
+func lockOnce(path string) (*os.File, error) {
 	f, err := safefs.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err
+	}
+	if lockOpened != nil {
+		lockOpened()
 	}
 	for {
 		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
@@ -193,6 +219,16 @@ func takeLock(path string) (*os.File, error) {
 		return nil, fmt.Errorf("supervisor: lock %s: %w", path, err)
 	}
 	return f, nil
+}
+
+// sameFile reports whether path still names the open file f.
+func sameFile(f *os.File, path string) bool {
+	a, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	b, err := safefs.Lstat(path)
+	return err == nil && os.SameFile(a, b)
 }
 
 // goSafe runs f in a goroutine Close waits for, which runs onPanic

@@ -309,10 +309,6 @@ func TestPickerOverCLIAlternateScreen(t *testing.T) {
 	ts.typeIn(t, "\x1c")
 	poll(t, "the terminal to show", []byte("aggy: switch vendor"), ts.screen)
 	ts.typeIn(t, "\x1b")
-	poll(t, "the terminal to show", []byte(restCursor), ts.screen)
-	if got := ts.screen(); bytes.Contains(got, []byte(altScreenOn)) || bytes.Count(got, []byte("\x1b[?1049")) != 1 {
-		t.Errorf("the picker switched screens over the CLI's alternate screen: %q", got)
-	}
 	for i, want := range []string{"one row fewer", "back"} {
 		select {
 		case sz := <-c.sizes:
@@ -323,6 +319,9 @@ func TestPickerOverCLIAlternateScreen(t *testing.T) {
 			t.Fatalf("no repaint resize (%s)", want)
 		}
 	}
+	if got := ts.screen(); bytes.Contains(got, []byte(altScreenOn)) || bytes.Count(got, []byte("\x1b[?1049")) != 1 {
+		t.Errorf("the picker switched screens over the CLI's alternate screen: %q", got)
+	}
 
 	// Back on the main screen, the picker uses its own alternate screen.
 	c.print("\x1b[?1049lMAIN")
@@ -332,4 +331,47 @@ func TestPickerOverCLIAlternateScreen(t *testing.T) {
 	ts.typeIn(t, "\x1b")
 	poll(t, "the terminal to show", []byte("MAIN"+altScreenOn), ts.screen)
 	finish(t, c, done)
+}
+
+// TestPickerWaitsForSplitAltSequence (B13-12): a picker opened while the
+// CLI's ESC [ ? 1049 h is split across reads must see the switch.
+func TestPickerWaitsForSplitAltSequence(t *testing.T) {
+	ts, c, done := startRun(t, 20*time.Millisecond)
+	c.print("\x1b[?10")
+	poll(t, "the terminal to show", []byte("\x1b[?10"), ts.screen)
+	ts.typeIn(t, "\x1c")
+	time.Sleep(25 * time.Millisecond) // the press has fired; the tracker is mid-sequence
+	c.print("49h")
+	poll(t, "the terminal to show", []byte("aggy: switch vendor"), ts.screen)
+	if bytes.Contains(ts.screen(), []byte(altScreenOn)) {
+		t.Errorf("the picker took the CLI for the main screen: %q", ts.screen())
+	}
+	ts.typeIn(t, "\x1b")
+	finish(t, c, done)
+}
+
+// TestExitOnAltScreenLeavesIt (B13-14): a CLI that exits on its
+// alternate screen must not leave the terminal there.
+func TestExitOnAltScreenLeavesIt(t *testing.T) {
+	ts, c, done := startRun(t, time.Second)
+	c.print("\x1b[?1049hFULL")
+	poll(t, "the terminal to show", []byte("FULL"), ts.screen)
+	finish(t, c, done)
+	poll(t, "the terminal to show", []byte("FULL"+altScreenOff), ts.screen)
+}
+
+// TestQueueDropsUntilDrained (B13-15): after an overflow, later small
+// input is dropped too until the CLI catches up, so it never sees a gap.
+func TestQueueDropsUntilDrained(t *testing.T) {
+	q := newByteQueue(4)
+	q.push([]byte("ab"))
+	q.push([]byte("cde")) // overflows
+	q.push([]byte("f"))   // fits, but would follow a gap
+	if b, _ := q.pop(); string(b) != "ab" {
+		t.Fatalf("pop %q", b)
+	}
+	q.push([]byte("g")) // drained: accepted again
+	if b, _ := q.pop(); string(b) != "g" {
+		t.Errorf("pop %q, want g", b)
+	}
 }

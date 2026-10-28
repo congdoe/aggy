@@ -354,3 +354,35 @@ func TestCloseDoesNotWaitForClients(t *testing.T) {
 		})
 	}
 }
+
+// TestTakeLockAfterUnlink (B13-7): a lock taken on a file that Close
+// unlinked in the meantime, while another supervisor locked a new file
+// at the path, must not count.
+func TestTakeLockAfterUnlink(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "p.lock")
+	old, err := takeLock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var other *os.File
+	lockOpened = func() {
+		lockOpened = nil
+		// The old holder exits as Close does (unlink, then unlock), and
+		// a new supervisor locks a fresh file at the path.
+		if err := os.Remove(path); err != nil {
+			t.Error(err)
+		}
+		_ = old.Close()
+		if other, err = takeLock(path); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { lockOpened = nil })
+	if f, err := takeLock(path); err == nil {
+		_ = f.Close()
+		t.Fatal("took a lock on an unlinked file while another supervisor holds the path's")
+	}
+	if other != nil {
+		_ = other.Close()
+	}
+}
