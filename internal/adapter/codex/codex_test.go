@@ -2,6 +2,7 @@ package codex
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -228,6 +229,39 @@ func TestArtifactsUnderCodexHome(t *testing.T) {
 	// A session id that is not a valid id is an error.
 	if arts, err := a.Artifacts(req, adapter.HeadlessResult{SessionID: "../" + tid}); err == nil || len(arts) != 0 {
 		t.Errorf("escaping id = %v, %v", arts, err)
+	}
+}
+
+// TestArtifactsEveryFile (T6632): every file in the thread's folder is
+// listed, whatever its name, for the artifact gate to judge; a
+// subfolder is not.
+func TestArtifactsEveryFile(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "generated_images", tid)
+	for _, p := range []string{"1.png", "2.PNG", "3.webp", "notes", "sub/4.png"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, p)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, p), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(dir, "1.png"), filepath.Join(dir, "5.png")); err != nil {
+		t.Fatal(err)
+	}
+	a := Adapter{Getenv: func(k string) string {
+		if k == "CODEX_HOME" {
+			return home
+		}
+		return ""
+	}}
+	arts, err := a.Artifacts(adapter.HeadlessRequest{}, adapter.HeadlessResult{SessionID: tid})
+	var names []string
+	for _, x := range arts {
+		names = append(names, filepath.Base(x.Path))
+	}
+	if err != nil || !slices.Equal(names, []string{"1.png", "2.PNG", "3.webp", "5.png", "notes"}) {
+		t.Errorf("Artifacts = %q, %v", names, err)
 	}
 }
 

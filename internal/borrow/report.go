@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/safefs"
 )
 
@@ -37,6 +38,9 @@ func reportText(r Result, req Request, sessionID string, started time.Time) stri
 	fmt.Fprintf(&b, "- Started: %s\n- Time: %s\n- Tokens: %d\n", started.UTC().Format(time.RFC3339), r.Elapsed.Round(time.Second), r.Tokens)
 	if sessionID != "" {
 		fmt.Fprintf(&b, "- Child session: %s\n", sessionID)
+	}
+	if r.Kind == adapter.Image || r.Kind == adapter.Video {
+		fmt.Fprintf(&b, "- Files made: %d, kept: %d\n", r.Made, len(r.Artifacts))
 	}
 	for _, a := range r.Artifacts {
 		fmt.Fprintf(&b, "- %s: %s\n", a.Kind, a.Path)
