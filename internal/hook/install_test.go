@@ -126,3 +126,27 @@ func TestCheckBin(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestAddNotify(t *testing.T) {
+	line := "notify = ['" + bin + "', 'hook', '--vendor', 'codex', 'notify']"
+	tests := []struct {
+		name, src, want string
+		err             bool
+	}{
+		{"new file", "", line + "\n", false},
+		{"keeps the rest", "# mine\r\nmodel = \"o3\"\r\n[tui]\r\nx = 1\r\n", line + "\r\n# mine\r\nmodel = \"o3\"\r\n[tui]\r\nx = 1\r\n", false},
+		{"already there", line + "\n[a]\n", line + "\n[a]\n", false},
+		{"someone else's notify", "notify = [\"notify-send\"]\n", "", true},
+		{"other aggy path", "notify = ['/old/aggy', 'hook', '--vendor', 'codex', 'notify']\n", "", true},
+		{"not TOML", "a = = 1\n", "", true},
+	}
+	for _, tt := range tests {
+		out, err := AddNotify(bin)([]byte(tt.src))
+		if (err != nil) != tt.err || (!tt.err && string(out) != tt.want) {
+			t.Errorf("%s: %q, %v", tt.name, out, err)
+		}
+		if tt.err && !errors.Is(err, ErrAmbiguous) && !errors.Is(err, ErrNotifyTaken) {
+			t.Errorf("%s: err %v is not ErrAmbiguous", tt.name, err)
+		}
+	}
+}

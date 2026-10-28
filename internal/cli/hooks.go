@@ -28,6 +28,10 @@ nothing. Existing hooks are kept. Every change goes through the
 manifest; aggy unwire undoes it.
 
   claude   ~/.claude/settings.json: Stop, StopFailure, SessionStart, Notification
+  codex    ~/.codex/hooks.json ($CODEX_HOME): Stop, SessionStart; and
+           notify in ~/.codex/config.toml, unless it already sets one.
+           Codex runs hooks only after you approve them once (start
+           codex, then /hooks); the notify needs no approval.
 
   --vendor V   install for one vendor only (default: all)
   --dry-run    show the changes and make none
@@ -59,7 +63,9 @@ func entries(v adapter.Vendor, events ...string) []hook.Entry {
 
 // hookFiles lists where each vendor's hooks go. Sources: Claude's
 // ~/.claude/settings.json "hooks" (code.claude.com/docs/en/hooks.md;
-// CLAUDE_CONFIG_DIR is unverified, as for skills, so not followed).
+// CLAUDE_CONFIG_DIR is unverified, as for skills, so not followed);
+// Codex's $CODEX_HOME/hooks.json (docs/verification.md, Codex hooks:
+// hook_config.rs#L12, engine/discovery.rs#L378).
 func hookFiles(v adapter.Vendor) ([]hookFile, error) {
 	h := os.Getenv("HOME")
 	if !filepath.IsAbs(h) {
@@ -69,9 +75,33 @@ func hookFiles(v adapter.Vendor) ([]hookFile, error) {
 	case adapter.Claude:
 		return []hookFile{{filepath.Join(h, ".claude", "settings.json"),
 			entries(v, "Stop", "StopFailure", "SessionStart", "Notification")}}, nil
+	case adapter.Codex:
+		ch, err := codexHome(h)
+		if err != nil {
+			return nil, err
+		}
+		// Codex has no failure hook (verification.md, Codex limits).
+		return []hookFile{{filepath.Join(ch, "hooks.json"), entries(v, "Stop", "SessionStart")}}, nil
 	}
 	return nil, nil
 }
+
+// codexHome is $CODEX_HOME, or ~/.codex.
+func codexHome(h string) (string, error) {
+	if c := os.Getenv("CODEX_HOME"); c != "" {
+		if !filepath.IsAbs(c) {
+			return "", fmt.Errorf("CODEX_HOME=%q is not an absolute path", c)
+		}
+		return filepath.Clean(c), nil
+	}
+	return filepath.Join(h, ".codex"), nil
+}
+
+// codexTrustNote is shown wherever Codex's hooks are installed. Codex
+// runs a hook only once its hash is trusted (verification.md, trust
+// gate), which the person approves in interactive Codex. aggy has no
+// documented way to read that state and never bypasses it.
+const codexTrustNote = "Codex runs its hooks only once you approve them (start codex, then /hooks), which aggy cannot check; the turn-end notify works without approval."
 
 // planHooks returns the patches that install v's hooks for bin. It
 // writes nothing.
@@ -92,6 +122,25 @@ func planHooks(v adapter.Vendor, bin string) (hookPlan, error) {
 		}
 		if len(missing) > 0 {
 			p.patches = append(p.patches, patch.Patch{File: f.path, ExpectedHash: h, Transform: hook.Merge(bin, f.entries)})
+		}
+	}
+	if v == adapter.Codex {
+		p.note = codexTrustNote
+		cfg := filepath.Join(filepath.Dir(files[0].path), "config.toml")
+		src, h, err := readMaybe(cfg)
+		if err != nil {
+			return p, err
+		}
+		missing, err := hook.NotifyMissing(src, bin)
+		switch {
+		case errors.Is(err, hook.ErrNotifyTaken):
+			// The hooks still go in; only the notify is left out.
+			p.note = err.Error() + ". " + p.note
+		case err != nil:
+			return p, fmt.Errorf("%s: %w", cfg, err)
+		}
+		if missing {
+			p.patches = append(p.patches, patch.Patch{File: cfg, ExpectedHash: h, Transform: hook.AddNotify(bin)})
 		}
 	}
 	return p, nil
@@ -166,8 +215,8 @@ func runHooks(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		ps = append(ps, p.patches...)
-		if len(p.patches) > 0 && p.note != "" {
-			notes = append(notes, p.note)
+		if p.note != "" {
+			notes = append(notes, string(v)+": "+p.note)
 		}
 	}
 	if *dryRun {
@@ -178,6 +227,7 @@ func runHooks(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(ps) == 0 {
 		fmt.Fprintln(stdout, "Nothing to change: aggy's hooks are installed.")
+		printNotes(stdout, notes)
 		return 0
 	}
 	ctx := context.Background()
@@ -203,11 +253,15 @@ func runHooks(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy hooks install: %s\n", termsafe.Line(err.Error()))
 		return 1
 	}
-	for _, n := range notes {
-		fmt.Fprintln(stdout, n)
-	}
+	printNotes(stdout, notes)
 	fmt.Fprintf(stdout, "Done (run %s). aggy unwire --run %s undoes it.\n", runID, runID)
 	return 0
+}
+
+func printNotes(w io.Writer, notes []string) {
+	for _, n := range notes {
+		fmt.Fprintln(w, termsafe.Line(n))
+	}
 }
 
 // Hook states, as aggy hooks status and aggy doctor show them.
@@ -225,8 +279,12 @@ func hookStatus(v adapter.Vendor, bin string) (state, note string) {
 	switch {
 	case err != nil:
 		return hookError, ": " + err.Error()
-	case len(p.patches) > 0:
-		return hookMissing, ""
 	}
-	return hookInstalled, ""
+	if p.note != "" {
+		note = ": " + p.note
+	}
+	if len(p.patches) > 0 {
+		return hookMissing, note
+	}
+	return hookInstalled, note
 }
