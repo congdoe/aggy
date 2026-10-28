@@ -1,6 +1,6 @@
 //go:build !unix
 
-package probe
+package execrun
 
 import "os/exec"
 

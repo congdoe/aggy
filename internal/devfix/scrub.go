@@ -1,6 +1,6 @@
 // Package devfix records and cleans the vendor CLI fixtures under
 // testdata/fixtures, for maintainers. Capture runs a real CLI once through
-// the probe runner and records what it printed and the text files of its
+// the process runner (internal/execrun) and records what it printed and the text files of its
 // session; Scrub replaces home paths (also URL-encoded and in Claude's
 // dash form), emails, usernames, hostnames, session UUIDs, and
 // token-shaped strings; Detect finds what must never be committed. The

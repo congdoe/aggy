@@ -68,19 +68,50 @@ linters:
             - pkg: modernc.org/sqlite
               desc: only internal/store uses the SQLite driver
         # Processes start only in the supervisor, the borrow runner, the
-        # probe runner, and the test-only fake builder. Tests may start
-        # helper processes.
+        # process runner (internal/execrun), and the test-only fake
+        # builder. Tests may start helper processes.
         exec:
           files:
             - "$all"
             - "!$test"
             - "!**/internal/supervisor/**"
             - "!**/internal/borrow/**"
-            - "!**/internal/probe/**"
+            - "!**/internal/execrun/**"
             - "!**/internal/fakecli/**"
           deny:
             - pkg: "os/exec$"
-              desc: processes start only in internal/supervisor, internal/borrow, or internal/probe
+              desc: processes start only in internal/supervisor, internal/borrow, or internal/execrun
+        # The process-starting runner is its own package so that no
+        # adapter can reach it. Adapters build commands and run them only
+        # through the adapter.Runner their caller passes. An import ban
+        # alone in internal/adapter could be dodged by a re-export
+        # elsewhere, so only the command layer (internal/cli) and the
+        # maintainer capture tool (internal/devfix) may import it; neither
+        # can be imported by an adapter (rule adapters below). Tests may.
+        execrun:
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/cli/**"
+            - "!**/internal/devfix/**"
+          deny:
+            - pkg: github.com/congdoe/aggy/internal/execrun
+              desc: only internal/cli and internal/devfix start CLIs; adapters run commands through the Runner their caller passes
+        # Adapters never start processes, so they import nothing that
+        # does: not the runner, and not the packages allowed to use it.
+        adapters:
+          files:
+            - "**/internal/adapter/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/congdoe/aggy/internal/execrun
+              desc: adapters never start processes; the caller passes them a Runner
+            - pkg: github.com/congdoe/aggy/internal/cli
+              desc: adapters never start processes; internal/cli does
+            - pkg: github.com/congdoe/aggy/internal/devfix
+              desc: adapters never start processes; internal/devfix does
+            - pkg: "os/exec$"
+              desc: adapters never start processes
         # The fake vendor CLIs are for tests only.
         fakecli:
           files: ["$all", "!$test"]
@@ -122,13 +153,6 @@ linters:
           msg: syscall reaches the disk and processes around internal/safefs; only the allowlisted names may be used
         - pattern: ^filepath\.Glob$
           msg: use internal/safefs, which refuses vendor credential files
-        # Adapters build commands and parse output; they never start
-        # processes. They may use probe's specs and parsers and run
-        # commands through the Runner the caller passes, but not build
-        # the process-starting runner (allowed outside internal/adapter
-        # by an exclusion below).
-        - pattern: ^probe\.ExecRunner$
-          msg: adapters never start processes; the caller passes them a Runner
         - pattern: ^toml\.(DecodeFile|DecodeFS)$
           msg: read config through internal/safefs (safefs.ReadConfig), then toml.Decode
         # golang.org/x/sys/unix reaches the disk and processes around both
@@ -140,15 +164,15 @@ linters:
         - pattern: ^sql\.(Open|OpenDB)$
           msg: only internal/store opens databases
         # Processes start only in internal/supervisor, internal/borrow, and
-        # the probe runner (internal/probe/runner.go), which runs one CLI
-        # path with no stdin and a scrubbed environment. The fake-CLI
-        # builder used by tests (internal/fakecli/build.go) runs the go tool.
+        # the process runner (internal/execrun), which runs one CLI path
+        # with no stdin and a scrubbed environment. The fake-CLI builder
+        # used by tests (internal/fakecli/build.go) runs the go tool.
         - pattern: ^exec\.(Command|CommandContext)$
-          msg: processes start only in internal/supervisor, internal/borrow, or the probe runner
+          msg: processes start only in internal/supervisor, internal/borrow, or internal/execrun
         - pattern: ^os\.StartProcess$
-          msg: processes start only in internal/supervisor, internal/borrow, or the probe runner
+          msg: processes start only in internal/supervisor, internal/borrow, or internal/execrun
         - pattern: ^exec\.Cmd$
-          msg: processes start only in internal/supervisor, internal/borrow, or the probe runner
+          msg: processes start only in internal/supervisor, internal/borrow, or internal/execrun
         # Other stdlib entry points that open files by path.
         - pattern: ^template\.(ParseFiles|ParseGlob)$
           msg: use internal/safefs, then parse the bytes
@@ -186,22 +210,18 @@ linters:
       # safefs needs, the stat type, and flock for the store's locks.
       - text: "use of `syscall\\.(E[A-Z0-9]+|O_NOFOLLOW|O_NONBLOCK|Stat_t|Flock|LOCK_(EX|NB|SH|UN))`"
         linters: [forbidigo]
-      # The process-starting probe runner is banned only in adapters.
-      - path-except: ^internal/adapter/
-        text: "use of `probe\\.ExecRunner`"
-        linters: [forbidigo]
       # access(2) only in safefs, behind its path check (DirWritable).
       - path: ^internal/safefs/
         text: "use of `syscall\\.Access`"
         linters: [forbidigo]
       # Signals and process attributes only where processes are run or
-      # checked: the probe runner, and the store's leases.
-      - path: ^internal/(probe|store)/
+      # checked: the process runner, and the store's leases.
+      - path: ^internal/(execrun|store)/
         text: "use of `syscall\\.(Kill|SIG[A-Z0-9]+|Signal|SysProcAttr|WaitStatus)`"
         linters: [forbidigo]
       # Field keys in a syscall.SysProcAttr literal are reported by their
       # bare name.
-      - path: ^internal/(probe|store)/
+      - path: ^internal/(execrun|store)/
         text: "use of `(Setpgid|Setsid|Pgid|Pdeathsig|Noctty)`"
         linters: [forbidigo]
       - path: ^internal/store/
@@ -210,10 +230,10 @@ linters:
       - path: ^internal/(supervisor|borrow)/
         text: "`(exec\\.(Command|CommandContext)|os\\.StartProcess)`"
         linters: [forbidigo]
-      - path: ^internal/probe/runner\.go$
+      - path: ^internal/execrun/execrun\.go$
         text: "`exec\\.CommandContext`"
         linters: [forbidigo]
-      - path: ^internal/probe/runner(_unix|_other)?\.go$
+      - path: ^internal/execrun/execrun(_unix|_other)?\.go$
         text: "`exec\\.Cmd`"
         linters: [forbidigo]
       - path: ^internal/fakecli/build\.go$

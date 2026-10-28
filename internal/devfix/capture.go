@@ -17,6 +17,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/claude"
 	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
+	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
 )
@@ -52,7 +53,7 @@ type CaptureOptions struct {
 	Env []string
 	// Timeout bounds the run. Zero means five minutes.
 	Timeout time.Duration
-	// Run runs the CLI. Nil means probe.ExecRunner(Timeout).
+	// Run runs the CLI. Nil means execrun.ExecRunner(Timeout).
 	Run adapter.Runner
 	// Identity is what the scrub replaces besides pattern matches. Nil
 	// means the current user's.
@@ -202,7 +203,7 @@ func Capture(ctx context.Context, opts CaptureOptions) (Meta, error) {
 	}
 	run := opts.Run
 	if run == nil {
-		run = probe.ExecRunner(timeout)
+		run = execrun.ExecRunner(timeout)
 	}
 	id := CurrentIdentity()
 	if opts.Identity != nil {

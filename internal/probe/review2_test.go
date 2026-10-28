@@ -124,40 +124,6 @@ func TestCommandsBlockSkipsWrappedLines(t *testing.T) {
 	}
 }
 
-// TestEnvAllowlist (L2): a command may add only AGGY_* variables. Each of
-// these passed the old deny list.
-func TestEnvAllowlist(t *testing.T) {
-	base := []string{"HOME=/h", "PATH=/usr/bin"}
-	for _, k := range []string{
-		"BASH_ENV", "ENV", "NODE_PATH", "GIT_SSH_COMMAND", "GIT_CONFIG_GLOBAL", "PYTHONPATH",
-		"PERL5OPT", "RUBYOPT", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "npm_config_registry",
-		"ELECTRON_RUN_AS_NODE", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME", "XDG_CONFIG_HOME",
-		"aggy_delegated",
-	} {
-		if _, err := Env(base, []string{k + "=x"}); err == nil {
-			t.Errorf("%s accepted in a command's env", k)
-		}
-	}
-	env, err := Env(base, []string{"AGGY_DELEGATED=1", "AGGY_FAKE_SCENARIO=/s"})
-	if err != nil || !slices.Contains(env, "AGGY_DELEGATED=1") {
-		t.Errorf("AGGY_* refused: %v, %v", env, err)
-	}
-}
-
-// TestEnvRelativePathUnset (L2): when every PATH entry is relative, PATH is
-// left unset rather than set empty.
-func TestEnvRelativePathUnset(t *testing.T) {
-	env, err := Env([]string{"HOME=/h", "PATH=.:bin::rel/x"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, kv := range env {
-		if strings.HasPrefix(kv, "PATH=") {
-			t.Errorf("PATH set to %q, want unset", kv)
-		}
-	}
-}
-
 // TestLookPath finds an executable on the absolute PATH entries only.
 func TestLookPath(t *testing.T) {
 	dir := t.TempDir()
@@ -170,6 +136,9 @@ func TestLookPath(t *testing.T) {
 	t.Setenv("PATH", "rel:"+dir)
 	if p, err := LookPath("codex"); err != nil || p != filepath.Join(dir, "codex") {
 		t.Errorf("LookPath = %q, %v", p, err)
+	}
+	if _, err := LookPath("missing"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("LookPath(missing) = %v, want ErrNotFound", err)
 	}
 	for _, name := range []string{"plain", "missing", "../codex", ""} {
 		if _, err := LookPath(name); err == nil {
