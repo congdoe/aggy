@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io/fs"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -15,6 +17,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/grok"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/fakecli"
+	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 )
 
@@ -50,6 +53,7 @@ type fakeWorld struct {
 	record   string
 	mu       sync.Mutex
 	checks   map[string]int
+	environ  []string
 	scenario func(vendor string, checks int) string
 }
 
@@ -87,7 +91,8 @@ func (w *fakeWorld) env(home, input string, tty bool, adapters ...adapter.Adapte
 	}
 	return checkEnv{
 		adapters: adapters, run: w.runner(), in: strings.NewReader(input), tty: tty, home: home,
-		now: func() time.Time { return time.UnixMilli(1_800_000_000_000) },
+		environ: w.environ,
+		now:     func() time.Time { return time.UnixMilli(1_800_000_000_000) },
 	}
 }
 
@@ -297,6 +302,37 @@ func TestSetupRerun(t *testing.T) {
 	}
 }
 
+// TestSetupAPIKeyWarning (T6610): a set API-key variable is named, with
+// the vendor it concerns, and its value never appears anywhere: not in
+// the output and not in the store.
+func TestSetupAPIKeyWarning(t *testing.T) {
+	fakes := fakecli.Build(t)
+	home := isolate(t)
+	w := newFakeWorld(t, fakes)
+	const secret = "sk-SETUPSECRET-0123456789abcdef"
+	w.environ = []string{"OPENAI_API_KEY=" + secret, "ANTHROPIC_API_KEY=", "XAI_API_KEY=" + secret}
+	var stdout, stderr bytes.Buffer
+	if code := setupWith(nil, w.env(home, "", false), &stdout, &stderr); code != 0 {
+		t.Fatal(stderr.String())
+	}
+	out := stdout.String()
+	codexPart := out[strings.Index(out, "\nCodex\n"):strings.Index(out, "\nGrok Build\n")]
+	if !strings.Contains(codexPart, "warning: OPENAI_API_KEY is set: the CLI may bill the API instead of the subscription") {
+		t.Errorf("no Codex warning:\n%s", out)
+	}
+	if strings.Contains(out, "ANTHROPIC_API_KEY") || !strings.Contains(out, "XAI_API_KEY is set") {
+		t.Errorf("wrong warnings:\n%s", out)
+	}
+	path, _ := store.DefaultPath()
+	db, err := safefsReadAll(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out+stderr.String(), "SETUPSECRET") || bytes.Contains(db, []byte("SETUPSECRET")) {
+		t.Error("the value leaked")
+	}
+}
+
 func TestSetupArgs(t *testing.T) {
 	isolate(t)
 	for _, tt := range []struct {
@@ -312,4 +348,17 @@ func TestSetupArgs(t *testing.T) {
 			t.Errorf("%v: exit %d, want %d", tt.args, code, tt.code)
 		}
 	}
+}
+
+// safefsReadAll reads the database and its WAL, as they are on disk.
+func safefsReadAll(path string) ([]byte, error) {
+	var all []byte
+	for _, p := range []string{path, path + "-wal"} {
+		b, err := safefs.ReadFile(p)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+		all = append(all, b...)
+	}
+	return all, nil
 }
