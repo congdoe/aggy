@@ -327,3 +327,29 @@ func TestReadSidecar(t *testing.T) {
 		t.Errorf("missing sidecar = %v", err)
 	}
 }
+
+// TestImageCap (T6636): a vendor that makes more than the cap has every
+// file counted, and only MaxImages kept and copied.
+func TestImageCap(t *testing.T) {
+	w := newWorld(t)
+	w.scenario[adapter.Codex] = `{"images":6}`
+	req := w.req(adapter.Image, "cats")
+	req.Vendor = "codex"
+	req.Media = &Media{Out: filepath.Join(w.repo, "cat.png"), N: 2}
+	res, err := w.borrower().Run(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := res[0]
+	if r.Status != "done" || r.Made != 6 || len(r.Artifacts) != MaxImages || len(r.Refused) != 1 ||
+		!strings.Contains(r.Refused[0], "2 more not kept: the cap is 4") {
+		t.Fatalf("result %+v", r)
+	}
+	if _, err := os.Stat(filepath.Join(w.repo, "cat-5.png")); err == nil {
+		t.Error("a fifth image was copied")
+	}
+	row, _ := w.store.GetBorrow(context.Background(), r.ID)
+	if row.ImageCount != 6 {
+		t.Errorf("image count %d", row.ImageCount)
+	}
+}

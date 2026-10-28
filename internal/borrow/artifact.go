@@ -147,7 +147,8 @@ func sniff(data []byte) string {
 }
 
 // gate passes each artifact through readArtifact and returns the ones
-// that passed, a reason for each one refused, and how many the run made.
+// that passed, at most MaxImages, a reason for each one refused, and how
+// many the run made.
 // A resumed session's folder holds the files of its earlier runs: with
 // resumed, a file made before this run is skipped quietly (still never
 // copied) and not counted as made.
@@ -163,6 +164,12 @@ func gate(arts []adapter.Artifact, started time.Time, resumed bool) (ok []media,
 			continue
 		}
 		ok = append(ok, m)
+	}
+	// Image turns use a plan's limits several times faster than text,
+	// and a vendor may make more than it was asked for: keep MaxImages.
+	if len(ok) > MaxImages {
+		refused = append(refused, fmt.Sprintf("%d more not kept: the cap is %d files per borrow", len(ok)-MaxImages, MaxImages))
+		ok = ok[:MaxImages]
 	}
 	return ok, refused, made
 }
