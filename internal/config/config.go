@@ -27,6 +27,18 @@ type Config struct {
 	Switch        Switch         `toml:"switch"`
 	Routing       Routing        `toml:"routing"`
 	Budgets       Budgets        `toml:"budgets"`
+	Media         Media          `toml:"media"`
+}
+
+// Media holds opt-ins for media tools. It is user config only: a repo's
+// .aggy/config.toml can never turn a tool on.
+type Media struct {
+	// GrokFileTools turns on Grok's image_edit (image --edit),
+	// image_to_video (every video borrow), and reference_to_video. Each
+	// reads a local file at any absolute path the model names and uploads
+	// it to xAI, so a brief that names a private image, or text the child
+	// is steered by, can send that image off the machine. Off by default.
+	GrokFileTools bool `toml:"grok_file_tools"`
 }
 
 // Vendors holds per-vendor settings.

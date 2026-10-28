@@ -378,6 +378,34 @@ relies on these:
   `crates/codegen/xai-grok-pager/docs/user-guide/08-skills.md`, at
   commit `2bdd1d6a`). Invoked as `/<name>`.
 
+## Grok media tools and local files (2026-10-28, source)
+
+Source-verified against grok-build `2bdd1d6a` (see Method; possibly
+newer than the tested grok 1.0.70). Paths below are under
+`https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-tools/src/implementations/grok_build`. Not run live (TODO(T6649)).
+
+| Tool | Takes a local path? | Evidence |
+| --- | --- | --- |
+| `image_gen` | No. Input is `prompt` and `aspect_ratio` only. | `image_gen/mod.rs#L366-L374` (`ImageGenInput`) |
+| `image_edit` | Yes. Each `image` may be an attachment token, an absolute path, or a data URL; a path (or `file://` URI) is read with `tokio::fs::read`, with no check that it is under the cwd. Small PNG/JPEG pass as is; other bytes must decode as an image. | `image_edit/mod.rs#L113-L161` (`resolve_to_data_url`, read at `#L146`), `#L47-L75` (`compress_reference`), `#L241` (the parameter's description) |
+| `image_to_video` | Yes. `image` is "an absolute filesystem path, HTTPS URL, or data URL"; a path is read with `tokio::fs::read` and must validate as an image. No cwd check. | `video_gen/mod.rs#L1010-L1020` (`ImageToVideoInput`), `#L880-L926` (`resolve_image_reference`, read at `#L909`, `validate_image_bytes` at `#L921`), `#L1223` |
+| `reference_to_video` | Yes. `images` (up to 14), `first_frame`, `last_frame`, and `keyframes[].image` each take an absolute path, read the same way. | `video_gen/mod.rs#L1053-L1079`, `#L1376-L1389` |
+| text-to-video | **None exists.** `reference_to_video` needs at least one of `images`, `voices`, `first_frame`, `last_frame`, or `keyframes`. | `video_gen/mod.rs#L1330-L1338` |
+
+Every path-taking tool uploads the bytes to xAI as a data URL, so a
+brief that names a private image (or text that steers the child to one)
+sends it off the machine. Only real images are read (the tools reject
+other bytes), but that is no comfort for a photo of a passport. Videos
+are saved as `<session folder>/videos/<n>.mp4` (`video_gen/mod.rs#L14`,
+`#L48`).
+
+Consequence in aggy: `image_edit`, `image_to_video`, and
+`reference_to_video` are off unless the user sets `[media]
+grok_file_tools = true` in `~/.aggy/config.toml` (never repo config). So
+`aggy video` and Grok `aggy image --edit` refuse by default, naming the
+key; a new Grok image gets `image_gen` only. `reference_to_video` is never
+given, opt-in or not.
+
 ## Still open
 
 1. Codex limit event, captured live from an exhausted account: the

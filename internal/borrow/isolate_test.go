@@ -40,6 +40,7 @@ func TestIsolation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			w := newWorld(t)
+			w.cfg.Media.GrokFileTools = tt.kind == adapter.Video
 			if !tt.gitRepo {
 				if err := os.Remove(filepath.Join(w.repo, ".git")); err != nil {
 					t.Fatal(err)

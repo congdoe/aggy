@@ -2,6 +2,7 @@ package borrow
 
 import (
 	"context"
+	"errors"
 
 	"github.com/congdoe/aggy/internal/adapter"
 )
@@ -47,5 +48,9 @@ func Supports(a adapter.Adapter, k adapter.Kind) error {
 		IsolatedCwd: true, WebSearch: k == adapter.Research || k == adapter.News,
 	}
 	_, err := a.Headless(req)
+	if errors.Is(err, adapter.ErrFileTools) {
+		// Supported once the user opts in; runOne refuses with the hint.
+		return nil
+	}
 	return err
 }

@@ -399,11 +399,17 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 		Env:          []string{Delegated + "=1"},
 		GuardCommand: b.Guard,
 		RefImages:    refs,
+		// The user's opt-in only; see config.Media.
+		FileTools: v == adapter.Grok && b.Config.Media.GrokFileTools,
 	}
 	if req.Media != nil {
 		hreq.Resume = req.Media.Resume
 	}
 	cmd, err := a.Headless(hreq)
+	if errors.Is(err, adapter.ErrFileTools) {
+		return Result{}, &preStartError{fmt.Errorf("%w; to allow it, set grok_file_tools = true under [media] in %s (Grok then uploads to xAI any local image a path in the brief or the child's reply names)",
+			err, filepath.Join(b.StateDir, config.FileName))}
+	}
 	if errors.Is(err, adapter.ErrUnsupported) {
 		// Such as reference images on Grok: the next vendor may serve it.
 		return Result{}, &preStartError{err}

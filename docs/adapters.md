@@ -281,8 +281,8 @@ by default is news 15 and research 30; `<run>` is `HeadlessRequest.RunDir`):
 | --- | --- | --- | --- |
 | research, news | unsupported | unsupported until T6638 (`codex.Refusal`: apply_patch can confirm guessed file contents) | `grok -p --output-format json --tools web_search --disallowed-tools <D> --no-subagents` |
 | image | unsupported | `codex exec [-i <ref>]... --json <L without --disable image_generation> --skip-git-repo-check -- -` | `grok -p --output-format json [--session-id <uuid>] --tools image_gen --disallowed-tools <D> --no-subagents` |
-| image `--edit` | unsupported | `codex exec [-i <ref>]... --json <L without image_generation> --skip-git-repo-check resume <id> -- -` | `grok -p --output-format json --resume <id> --tools image_gen,image_edit --disallowed-tools <D> --no-subagents` |
-| video | unsupported | unsupported | `grok -p --output-format json --tools image_gen,image_to_video --disallowed-tools <D> --no-subagents` (unverified headless) |
+| image `--edit` | unsupported | `codex exec [-i <ref>]... --json <L without image_generation> --skip-git-repo-check resume <id> -- -` | only with `[media] grok_file_tools`: `grok -p --output-format json --resume <id> --tools image_gen,image_edit --disallowed-tools <D> --no-subagents` |
+| video | unsupported | unsupported | only with `[media] grok_file_tools`: `grok -p --output-format json --tools image_gen,image_to_video --disallowed-tools <D> --no-subagents` (unverified headless) |
 | review | `claude -p --output-format json --permission-mode plan --strict-mcp-config --mcp-config <run>/mcp.json --tools Read,Grep,Glob [--setting-sources user] [--settings <run>/settings.json] [--session-id <uuid> \| --resume <id>]` | `codex exec --json <L> -- -` (in a git work tree, so no `--skip-git-repo-check`) | `grok -p --output-format json --permission-mode plan --tools read_file,grep,list_dir --disallowed-tools <D> --no-subagents` |
 | edit (M3; refused by `aggy borrow`) | `claude -p --output-format json --permission-mode acceptEdits --strict-mcp-config --mcp-config <run>/mcp.json` | `codex exec --json --sandbox workspace-write -- -` | `grok -p --output-format json --tools read_file,grep,list_dir,write,search_replace --disallowed-tools <D> --no-subagents` |
 
@@ -308,6 +308,14 @@ not run the reviewed repo's own `.claude/settings.json` hooks) and
 `--settings` (the PreToolUse guard) are passed only when the probe found
 them in `claude --help` (capabilities `setting-sources` and `settings`);
 without the first, that gap is open (TODO(T6643)).
+
+Grok's `image_edit`, `image_to_video`, and `reference_to_video` read a
+local file at any absolute path the model names and upload it to xAI
+(source, verification.md "Grok media tools and local files"), and there is
+no text-to-video tool. So they need `HeadlessRequest.FileTools`, which
+aggy sets only from the user's own `[media] grok_file_tools = true`;
+without it a video or a Grok image edit fails with `adapter.ErrFileTools`
+and the borrow names the key. `reference_to_video` is never given.
 
 Codex puts every exec flag before the `resume` subcommand, which takes
 only its own flags; `-i` takes one or more values, so the references come

@@ -73,12 +73,21 @@ func (a Adapter) Probe(ctx context.Context, run adapter.Runner) (adapter.Probe, 
 var (
 	// SearchTools is research and news, and the only tools they may have.
 	SearchTools = []string{"web_search"}
-	// ImageTools is image generation. image_edit, added on resume, is
-	// unverified headless.
+	// ImageTools is image generation. image_gen takes only a prompt and
+	// an aspect ratio (grok-build 2bdd1d6a, image_gen/mod.rs ImageGenInput).
 	ImageTools = []string{"image_gen"}
-	// VideoTools is video generation: Grok has no text-to-video tool, so
-	// the child makes a still with image_gen and animates it with
-	// image_to_video. Unverified headless.
+	// TODO(T6649): a live check that image_gen alone, with these denied,
+	// leaves the child no tool that reads a local path.
+	//
+	// FileTools read a local file at any absolute path the model names
+	// (tokio::fs::read, no cwd check) and upload it to xAI: image_edit
+	// (image_edit/mod.rs resolve_to_data_url), image_to_video and
+	// reference_to_video (video_gen/mod.rs resolve_image_reference). They
+	// are off unless HeadlessRequest.FileTools, the user's opt-in.
+	FileTools = []string{"image_edit", "image_to_video", "reference_to_video"}
+	// VideoTools is video generation, behind FileTools: Grok has no
+	// text-to-video tool, so the child makes a still with image_gen and
+	// animates it with image_to_video. Unverified headless.
 	VideoTools = []string{"image_gen", "image_to_video"}
 	// ReadTools is review, which also runs with --permission-mode plan.
 	ReadTools = []string{"read_file", "grep", "list_dir"}
@@ -118,15 +127,21 @@ const UnknownToolWarning = "name no tool"
 var alwaysDenied = []string{"search_tool", "use_tool", "Agent"}
 
 // permitted lists the tools each kind may have: its own and, through
-// AllowedTools, nothing else.
-func permitted(k adapter.Kind) []string {
+// AllowedTools, nothing else. The FileTools need fileTools.
+func permitted(k adapter.Kind, fileTools bool) []string {
 	switch k {
 	case adapter.Research, adapter.News:
 		return SearchTools
 	case adapter.Image:
-		return append(slices.Clone(ImageTools), "image_edit")
+		if fileTools {
+			return append(slices.Clone(ImageTools), "image_edit")
+		}
+		return ImageTools
 	case adapter.Video:
-		return append(slices.Clone(VideoTools), "reference_to_video")
+		if fileTools {
+			return VideoTools
+		}
+		return nil
 	case adapter.Review:
 		return ReadTools
 	case adapter.Edit:
@@ -137,8 +152,8 @@ func permitted(k adapter.Kind) []string {
 
 // canonical returns the permitted tool named t, compared
 // case-insensitively, or false.
-func canonical(k adapter.Kind, t string) (string, bool) {
-	for _, p := range permitted(k) {
+func canonical(k adapter.Kind, fileTools bool, t string) (string, bool) {
+	for _, p := range permitted(k, fileTools) {
 		if strings.EqualFold(p, t) {
 			return p, true
 		}
@@ -248,9 +263,16 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	case adapter.Image:
 		tools = slices.Clone(ImageTools)
 		if req.Resume != "" {
+			// An edit needs image_edit, which reads any local path.
+			if !req.FileTools {
+				return adapter.Command{}, fmt.Errorf("grok: an image edit (image_edit) %w", adapter.ErrFileTools)
+			}
 			tools = append(tools, "image_edit")
 		}
 	case adapter.Video:
+		if !req.FileTools {
+			return adapter.Command{}, fmt.Errorf("grok: video (image_to_video) %w", adapter.ErrFileTools)
+		}
 		tools = slices.Clone(VideoTools)
 	case adapter.Review:
 		tools, plan = slices.Clone(ReadTools), true
@@ -260,9 +282,9 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 		return adapter.Command{}, fmt.Errorf("grok: unknown kind %q", req.Kind)
 	}
 	for _, t := range req.AllowedTools {
-		c, ok := canonical(req.Kind, t)
+		c, ok := canonical(req.Kind, req.FileTools, t)
 		if !ok || slices.Contains(alwaysDenied, c) {
-			return adapter.Command{}, fmt.Errorf("grok: %s may use only %s, not %q", req.Kind, strings.Join(permitted(req.Kind), ", "), t)
+			return adapter.Command{}, fmt.Errorf("grok: %s may use only %s, not %q", req.Kind, strings.Join(permitted(req.Kind, req.FileTools), ", "), t)
 		}
 		if !slices.Contains(tools, c) {
 			tools = append(tools, c)

@@ -27,7 +27,10 @@ and style.
   --edit PATH      change an image aggy made: resumes the same child
                    session on the same vendor (from PATH's sidecar in
                    .aggy/assets) and writes the result over PATH, or to
-                   --out
+                   --out. On Grok this needs image_edit, which reads a
+                   local image at any path the model names and uploads
+                   it to xAI: off unless grok_file_tools = true under
+                   [media] in ~/.aggy/config.toml
   --vendor V       codex or grok, skipping routing
   --allow-untested run a CLI whose version is outside the versions the
                    borrow lockdown was verified on
@@ -38,6 +41,15 @@ const videoUsage = `Usage: aggy video "<brief>" --out PATH.mp4 [--vendor grok]
 Makes a short video in Grok's CLI (only Grok has video tools: it makes a
 still with image_gen and animates it with image_to_video), read-only in
 an empty temp dir, and copies it to --out, inside this repo.
+
+Off by default: image_to_video reads a local image at any path the model
+names and uploads it to xAI, so a brief that names a private image, or a
+child steered to one, sends it off this machine. To allow it, set
+
+  [media]
+  grok_file_tools = true
+
+in ~/.aggy/config.toml (a repo's config cannot).
 
   --out PATH       where the video goes, inside this repo (.mp4)
   --vendor V       grok, skipping routing

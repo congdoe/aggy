@@ -60,7 +60,7 @@ func TestUnknownToolFailsClosed(t *testing.T) {
 func TestMetaToolsAlwaysDenied(t *testing.T) {
 	a := New()
 	for _, k := range []adapter.Kind{adapter.Research, adapter.News, adapter.Image, adapter.Video, adapter.Review, adapter.Edit} {
-		c, err := a.Headless(adapter.HeadlessRequest{Kind: k, PromptFile: "/p", Cwd: "/w", IsolatedCwd: true})
+		c, err := a.Headless(adapter.HeadlessRequest{Kind: k, PromptFile: "/p", Cwd: "/w", IsolatedCwd: true, FileTools: k == adapter.Video})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -77,7 +77,7 @@ func TestMetaToolsAlwaysDenied(t *testing.T) {
 // cannot remove by name.
 func TestWebSearchOnlyForSearchKinds(t *testing.T) {
 	for _, k := range []adapter.Kind{adapter.Research, adapter.News, adapter.Image, adapter.Video, adapter.Review, adapter.Edit} {
-		c, err := New().Headless(adapter.HeadlessRequest{Kind: k, PromptFile: "/p", Cwd: "/w", IsolatedCwd: true})
+		c, err := New().Headless(adapter.HeadlessRequest{Kind: k, PromptFile: "/p", Cwd: "/w", IsolatedCwd: true, FileTools: k == adapter.Video})
 		if err != nil {
 			t.Fatal(err)
 		}

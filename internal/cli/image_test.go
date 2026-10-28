@@ -118,6 +118,13 @@ func TestVideoCommand(t *testing.T) {
 	if code, _, errOut := f.media(t, adapter.Video, "a reveal", "--out", "intro.png"); code != 1 || !strings.Contains(errOut, "must end in .mp4") {
 		t.Errorf("png out: code %d stderr %q", code, errOut)
 	}
+	// Off by default: image_to_video uploads any local image a path names.
+	if code, _, errOut := f.media(t, adapter.Video, "a reveal", "--out", "intro.mp4"); code != 1 || !strings.Contains(errOut, "grok_file_tools") {
+		t.Errorf("default: code %d stderr %q", code, errOut)
+	}
+	if err := os.WriteFile(filepath.Join(f.state, "config.toml"), []byte("[media]\ngrok_file_tools = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	f.scenario["grok"] = `{"videos":1,"json":{"result":"videos/1.mp4"}}`
 	code, out, errOut := f.media(t, adapter.Video, "a reveal", "--out", "media/intro.mp4")
 	if code != 0 || !strings.Contains(out, "video: "+filepath.Join(f.repo, "media", "intro.mp4")) {
