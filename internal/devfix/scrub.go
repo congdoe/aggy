@@ -132,7 +132,7 @@ func identifying(name string) bool {
 }
 
 // words returns the user name and host names to match. The user name is
-// matched only in identifying contexts (see userAtRE), never as a bare
+// matched only in identifying contexts (see userREs), never as a bare
 // word, since many account names are ordinary words; the host names are
 // matched as whole words. Generic and short names are left out.
 func (id Identity) words() (user string, hosts []string) {
@@ -147,9 +147,44 @@ func (id Identity) words() (user string, hosts []string) {
 	return user, hosts
 }
 
-// userAtRE matches user as "user@host" or an email's local part.
-func userAtRE(user string) *regexp.Regexp {
-	return regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_.+-])` + regexp.QuoteMeta(user) + `@`)
+// userREs match user in the forms that name an account rather than use
+// a word: "user@host" or an email's local part, "~user" (a home in shell
+// and path form), and "/Volumes/<user>" (an external disk named after the
+// account; also URL-encoded and JSON-escaped). Each captures the text before and after the name, which a
+// replacement keeps. A user name in prose ("ann wrote this") is not
+// matched: many account names are ordinary words, so that is a known
+// limit, and generic names are never matched at all (see identifying).
+func userREs(user string) []*regexp.Regexp {
+	u := regexp.QuoteMeta(user)
+	return []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_.+-])` + u + `(@)`),
+		regexp.MustCompile(`(?i)(^~|[^A-Za-z0-9_.+~-]~|%(?:25)*7E)` + u + `($|[^A-Za-z0-9_.-])`),
+		regexp.MustCompile(`(?i)(/Volumes/|\\/Volumes\\/|%(?:25)*2FVolumes%(?:25)*2F)` + u + `($|[^A-Za-z0-9_.-])`),
+	}
+}
+
+// matchesUser reports whether line names user in one of userREs' forms.
+func matchesUser(user, line string) bool {
+	return slices.ContainsFunc(userREs(user), func(re *regexp.Regexp) bool { return re.MatchString(line) })
+}
+
+// replaceUser replaces user in userREs' forms with with.
+func replaceUser(text, user, with string) string {
+	for _, re := range userREs(user) {
+		// A match consumes its boundary, so adjacent names need another
+		// pass.
+		for range 8 {
+			out := re.ReplaceAllStringFunc(text, func(m string) string {
+				sub := re.FindStringSubmatch(m)
+				return sub[1] + with + sub[2]
+			})
+			if out == text {
+				break
+			}
+			text = out
+		}
+	}
+	return text
 }
 
 // decoded returns line with URL escapes decoded until stable (so %252F
@@ -224,10 +259,7 @@ func (s *Scrubber) String(text string) string {
 		text = replaceWord(text, h, HostPlaceholder)
 	}
 	if user != "" {
-		re := userAtRE(user)
-		text = re.ReplaceAllStringFunc(text, func(m string) string {
-			return re.FindStringSubmatch(m)[1] + UserPlaceholder + "@"
-		})
+		text = replaceUser(text, user, UserPlaceholder)
 	}
 	return text
 }
@@ -375,7 +407,8 @@ func allowed(allow []Allow, file, match string) bool {
 // DetectText returns what text must not hold, as findings for file: home
 // paths (also URL-encoded, decoded until stable, JSON-escaped, and in
 // Claude's dash form), emails, token-shaped strings, the identity's user
-// name as user@host or an email local part, its host names, and UUIDs
+// name as user@host, an email local part, ~user, or /Volumes/<user>, its
+// host names, and UUIDs
 // other than the scrub placeholders. A token wrapped in base64 is not
 // found: a known limit.
 func DetectText(file, text string, id Identity, allow []Allow) []Finding {
@@ -420,7 +453,7 @@ func DetectText(file, text string, id Identity, allow []Allow) []Finding {
 				add(KindUUID, m)
 			}
 		}
-		if user != "" && userAtRE(user).MatchString(line) {
+		if user != "" && slices.ContainsFunc(views, func(v string) bool { return matchesUser(user, v) }) {
 			add(KindUser, user)
 		}
 		for _, h := range hosts {

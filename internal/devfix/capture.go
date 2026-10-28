@@ -132,28 +132,19 @@ var adapters = map[adapter.Vendor]adapter.Adapter{
 	adapter.Claude: claude.New(), adapter.Codex: codex.New(), adapter.Grok: grok.New(),
 }
 
-// sessionIDs returns the run's session id: from the vendor's structured
+// sessionIDs returns the run's session id from the vendor's structured
 // field (Claude session_id, Codex thread.started, Grok sessionId) through
-// the adapter's ParseHeadless, else the one UUID the output holds. With
-// none, or several candidates, it returns no id and why, so no vendor-home
-// file is copied: a reply that mentions another session must not copy
-// that session's transcript.
+// the adapter's ParseHeadless. Without one it returns no id and why, so
+// no vendor-home file is copied. There is no fallback to a UUID found in
+// the output: a reply that mentions another session, even as the only
+// UUID it holds, must not copy that session's transcript.
 func sessionIDs(v adapter.Vendor, out adapter.Output) ([]string, string) {
 	if a, ok := adapters[v]; ok {
 		if res, err := a.ParseHeadless(adapter.HeadlessRequest{}, out); err == nil && res.SessionID != "" {
 			return []string{res.SessionID}, ""
 		}
 	}
-	var cands []string
-	for _, m := range uuidRE.FindAllString(string(out.Stdout)+"\n"+string(out.Stderr), -1) {
-		if !slices.ContainsFunc(cands, func(c string) bool { return strings.EqualFold(c, m) }) {
-			cands = append(cands, m)
-		}
-	}
-	if len(cands) == 1 {
-		return cands, ""
-	}
-	return nil, fmt.Sprintf(" (no session id: %d candidates in the output)", len(cands))
+	return nil, " (no structured session id in the output)"
 }
 
 // sessionFile reports whether rel, under the vendor home, matches one of
