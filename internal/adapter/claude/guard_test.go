@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"errors"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -60,9 +61,9 @@ func TestGuardWiring(t *testing.T) {
 		guard []string
 		want  bool
 	}{
-		{"capability and guard", []string{probe.CapSettings}, guard, true},
-		{"no capability", nil, guard, false},
-		{"no guard", []string{probe.CapSettings}, nil, false},
+		{"capability and guard", []string{probe.CapSettings, probe.CapSettingSources}, guard, true},
+		{"no capability", []string{probe.CapSettingSources}, guard, false},
+		{"no guard", []string{probe.CapSettings, probe.CapSettingSources}, nil, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -92,9 +93,9 @@ func TestGuardWiring(t *testing.T) {
 	}
 }
 
-// TestReviewSettingSources (#10-6): a review loads only the user's
-// settings when the CLI takes --setting-sources, so the reviewed repo's
-// own hooks do not run.
+// TestReviewSettingSources (#10-6, T6643): a review loads only the
+// user's settings, so the reviewed repo's own hooks do not run; a CLI
+// without --setting-sources cannot review at all.
 func TestReviewSettingSources(t *testing.T) {
 	tests := []struct {
 		name string
@@ -103,11 +104,17 @@ func TestReviewSettingSources(t *testing.T) {
 		want bool
 	}{
 		{"review with the capability", []string{probe.CapSettingSources}, adapter.Review, true},
-		{"review without it", nil, adapter.Review, false},
+		{"review without it", nil, adapter.Review, false}, // refused
 		{"edit", []string{probe.CapSettingSources}, adapter.Edit, false},
 	}
 	for _, tt := range tests {
 		c, err := Adapter{Caps: tt.caps}.Headless(adapter.HeadlessRequest{Kind: tt.kind, PromptFile: "/p", Cwd: "/w", RunDir: "/r"})
+		if tt.kind == adapter.Review && !tt.want {
+			if !errors.Is(err, adapter.ErrUnsupported) {
+				t.Errorf("%s: err = %v, want ErrUnsupported", tt.name, err)
+			}
+			continue
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
