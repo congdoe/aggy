@@ -177,8 +177,11 @@ func addPolicy(v adapter.Vendor, caps []string, req *adapter.InteractiveRequest)
 		}
 		return []string{"safety policy not applied: " + why}
 	}
-	if v != adapter.Codex {
-		req.Deny = parity.DenyRules
+	switch v {
+	case adapter.Claude:
+		req.Deny = parity.ClaudeDeny
+	case adapter.Grok:
+		req.Deny = parity.GrokDeny
 	}
 	return nil
 }

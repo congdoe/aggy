@@ -73,7 +73,7 @@ func TestPolicyOnCommandLine(t *testing.T) {
 			s.exit()
 			vals := interactiveRecord(t, w).Flags[tc.flag]
 			if tc.vendor == "claude" {
-				if len(vals) != 1 || !strings.HasPrefix(vals[0], `{"permissions":{"deny":["Read(**/.env)",`) {
+				if len(vals) != 1 || !strings.HasPrefix(vals[0], `{"permissions":{"deny":["Read(//**/.env)",`) {
 					t.Errorf("--settings = %q", vals)
 				}
 				return
