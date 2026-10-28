@@ -12,7 +12,10 @@ import (
 	"github.com/congdoe/aggy/internal/safefs"
 )
 
-const sid = "0b9d3c4e-1f2a-4b5c-8d7e-6f5a4b3c2d1e"
+const (
+	sid = "0b9d3c4e-1f2a-4b5c-8d7e-6f5a4b3c2d1e"
+	rid = "7c4f1e2a-3b5d-4a6c-9e8f-1a2b3c4d5e6f"
+)
 
 // scenario reads testdata/<name>.json, filling {hook} with the fake hook.
 func scenario(t *testing.T, h *fakecli.Harness, name string) string {
@@ -38,8 +41,8 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 			`{"extra_values":{"--permission-mode":["acceptEdits"]}}`},
 		{"review with a session id", adapter.HeadlessRequest{Kind: adapter.Review, SessionID: sid},
 			[]string{"-p", "--output-format", "json", "--permission-mode", "plan", "--session-id", sid}, ""},
-		{"review resumed with a model", adapter.HeadlessRequest{Kind: adapter.Review, Resume: "r-1", Model: "opus"},
-			[]string{"-p", "--output-format", "json", "--model", "opus", "--permission-mode", "plan", "--resume", "r-1"},
+		{"review resumed with a model", adapter.HeadlessRequest{Kind: adapter.Review, Resume: rid, Model: "opus"},
+			[]string{"-p", "--output-format", "json", "--model", "opus", "--permission-mode", "plan", "--resume", rid},
 			`{"extra_flags":["--model"]}`},
 	}
 	for _, tt := range tests {
@@ -104,9 +107,9 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 	}{
 		{"new", adapter.InteractiveRequest{}, nil},
 		{"new with an id", adapter.InteractiveRequest{SessionID: sid}, []string{"--session-id", sid}},
-		{"resume", adapter.InteractiveRequest{Resume: "r-1"}, []string{"--resume", "r-1"}},
-		{"fork with a brief", adapter.InteractiveRequest{Resume: "r-1", Fork: true, SessionID: sid, BriefFile: brief},
-			[]string{"--resume", "r-1", "--fork-session", "--session-id", sid, adapter.BriefPrompt(brief)}},
+		{"resume", adapter.InteractiveRequest{Resume: rid}, []string{"--resume", rid}},
+		{"fork with a brief", adapter.InteractiveRequest{Resume: rid, Fork: true, SessionID: sid, BriefFile: brief},
+			[]string{"--resume", rid, "--fork-session", "--session-id", sid, adapter.BriefPrompt(brief)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -126,7 +129,7 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 	}
 	for _, r := range []adapter.InteractiveRequest{
 		{Fork: true},
-		{Resume: "r", SessionID: sid},
+		{Resume: rid, SessionID: sid},
 		{BriefFile: "brief.md"},
 	} {
 		if _, err := a.Interactive(r); err == nil {

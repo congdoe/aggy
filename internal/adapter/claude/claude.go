@@ -51,21 +51,30 @@ func (a Adapter) Probe(ctx context.Context, run adapter.Runner) (adapter.Probe, 
 	return probe.Detect(ctx, run, adapter.Claude, path)
 }
 
-// modelArgs passes a model through unchanged. --model is not recorded in
-// docs/adapters.md (unconfirmed); an empty model adds nothing.
-func modelArgs(model string) []string {
-	if model == "" {
-		return nil
+// modelArgs passes a model through unchanged, after adapter.ValidModel.
+// --model is not recorded in docs/adapters.md (unconfirmed); an empty
+// model adds nothing.
+func modelArgs(model string) ([]string, error) {
+	if err := adapter.ValidModel(model); err != nil || model == "" {
+		return nil, err
 	}
-	return []string{"--model", model}
+	return []string{"--model", model}, nil
 }
 
 // sessionArgs builds the session flags: --session-id <uuid> for a new
 // session, --resume <id> to reopen one, and --fork-session to branch it,
 // optionally with a pre-assigned id for the fork.
+//
+// Every id passes adapter.ValidSessionID, so none can be read as a flag.
+// Claude's --resume takes an optional value; a valid id never starts with
+// "-", so it is always taken as the value.
 func sessionArgs(sessionID, resume string, fork bool) ([]string, error) {
-	if sessionID != "" && !adapter.IsUUID(sessionID) {
-		return nil, fmt.Errorf("claude: --session-id takes a UUID, got %q", sessionID)
+	for _, id := range []string{sessionID, resume} {
+		if id != "" {
+			if err := adapter.ValidSessionID(adapter.Claude, id); err != nil {
+				return nil, err
+			}
+		}
 	}
 	switch {
 	case resume == "" && fork:
@@ -91,7 +100,10 @@ func sessionArgs(sessionID, resume string, fork bool) ([]string, error) {
 // inline, so no alt-screen flag is needed. A brief is passed as a short
 // first message that points to the file.
 func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, error) {
-	args := modelArgs(req.Model)
+	args, err := modelArgs(req.Model)
+	if err != nil {
+		return adapter.Command{}, err
+	}
 	s, err := sessionArgs(req.SessionID, req.Resume, req.Fork)
 	if err != nil {
 		return adapter.Command{}, err
@@ -130,12 +142,16 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	case req.AllowedTools != nil:
 		return adapter.Command{}, fmt.Errorf("claude: allowed tools: %w (no recorded tool flag)", adapter.ErrUnsupported)
 	case req.WebSearch:
-		return adapter.Command{}, fmt.Errorf("claude: web search: %w", adapter.ErrUnsupported)
+		return adapter.Command{}, fmt.Errorf("claude: %s: %w: %s", req.Kind, adapter.ErrUnsupported, adapter.ErrWebSearchKind)
 	case len(req.RefImages) > 0:
 		return adapter.Command{}, fmt.Errorf("claude: reference images: %w", adapter.ErrUnsupported)
 	}
 	args := []string{"-p", "--output-format", "json"}
-	args = append(args, modelArgs(req.Model)...)
+	m, err := modelArgs(req.Model)
+	if err != nil {
+		return adapter.Command{}, err
+	}
+	args = append(args, m...)
 	switch req.Kind {
 	case adapter.Review:
 		args = append(args, "--permission-mode", "plan")
@@ -179,36 +195,44 @@ type result struct {
 // limitText is the recorded fragment of Claude's plan-limit message.
 const limitText = "hit your limit"
 
-// ParseHeadless reads the JSON reply: final text, session id (else the
-// one the request assigned or resumed), tokens, and the error class. The
-// plan limit is recognized by its recorded text, "hit your limit".
+// ParseHeadless reads the JSON reply: final text, session id, tokens, and
+// the error class. A session id aggy pre-assigned is kept, and a reply
+// naming another one, or an invalid one, is an error.
+//
+// The class comes from structured fields only: an "error" class name,
+// subtype error_max_turns, and is_error. The recorded limit text "hit
+// your limit" is looked for only where the CLI, not the model, wrote it:
+// in result when is_error is set, and in stderr when the exit is non-zero.
 func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (adapter.HeadlessResult, error) {
-	res := adapter.HeadlessResult{SessionID: req.SessionID}
-	if res.SessionID == "" {
-		res.SessionID = req.Resume
+	assigned := req.SessionID
+	if assigned == "" {
+		assigned = req.Resume
 	}
+	res := adapter.HeadlessResult{SessionID: assigned}
 	var r result
 	// A JSON object with none of the expected fields is not a reply.
 	parsed := lastJSON(out.Stdout, &r) && (r.Type != "" || r.SessionID != "" || r.Result != "")
+	var idErr error
 	if parsed {
-		if r.SessionID != "" {
-			res.SessionID = r.SessionID
+		res.SessionID, idErr = adapter.ParsedSessionID(adapter.Claude, req.SessionID, r.SessionID)
+		if req.SessionID == "" && r.SessionID == "" {
+			res.SessionID = assigned
 		}
 		res.Text = r.Result
 		res.Tokens = r.Usage.Input + r.Usage.Output
 	}
-	failed := out.ExitCode != 0 || r.IsError || strings.HasPrefix(r.Subtype, "error")
+	failed := out.ExitCode != 0 || r.IsError || strings.HasPrefix(r.Subtype, "error") || r.Error != ""
 	if !failed && parsed {
-		return res, nil
+		return res, idErr
 	}
-	all := string(out.Stderr) + "\n" + r.Result + "\n" + r.Error
 	switch {
-	case strings.Contains(all, limitText):
-		res.Error = adapter.ErrRateLimit
-	case adapter.ClassifyName(r.Error) != adapter.ErrUnknown && r.Error != "":
+	case r.Error != "":
 		res.Error = adapter.ClassifyName(r.Error)
 	case r.Subtype == "error_max_turns":
 		res.Error = adapter.ErrMaxTurns
+	case r.IsError && strings.Contains(r.Result, limitText),
+		out.ExitCode != 0 && strings.Contains(string(out.Stderr), limitText):
+		res.Error = adapter.ErrRateLimit
 	default:
 		res.Error = adapter.ErrUnknown
 	}
@@ -216,7 +240,7 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 	if !parsed && out.ExitCode == 0 {
 		return res, fmt.Errorf("claude: %w", adapter.ErrUnparsed)
 	}
-	return res, nil
+	return res, idErr
 }
 
 // lastJSON decodes the last line of out that holds a JSON object into v.
