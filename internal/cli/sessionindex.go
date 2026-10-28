@@ -1,9 +1,13 @@
 package cli
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -25,13 +29,17 @@ import (
 //   - Claude and Grok get a pre-assigned --session-id (adapters.md), and
 //     that is the only id recorded. A later /clear starts another
 //     session the index does not follow.
-//   - Codex cannot be given an id. The first thread id a Codex hook
-//     reports is the claim (the on-screen CLI's SessionStart comes before
-//     its agent can run anything), and it is recorded only once the
-//     sessions folder shows a rollout of that id that was not there at
-//     launch. A new rollout alone (another Codex in another terminal, or
-//     a borrow sharing CODEX_HOME) is never recorded, and neither is a
-//     later claim. Once recorded, the id is not replaced.
+//   - Codex cannot be given an id. A thread id a Codex hook reports is a
+//     claim, kept only when the socket found the hook's process in the
+//     on-screen CLI's tree (supervisor.Request.FromSession, peer-pid
+//     lineage). That tree still holds the agent's own tool subprocesses,
+//     so a nested codex exec's hooks pass it too (D20-7, D23-8). A claim
+//     is recorded only once the sessions folder shows a rollout of that
+//     id that was not there at launch, and that rollout's first line, its
+//     session_meta, has source "cli": the interactive TUI's, where codex
+//     exec writes "exec" (verifyRollout). A new rollout alone (another
+//     Codex in another terminal, or a borrow sharing CODEX_HOME) is never
+//     recorded. Once recorded, the id is not replaced.
 //
 // The id goes to the events log under the parent id, and to onID, which
 // records it on the child row (childIDs.set): first wins there too, so
@@ -44,16 +52,24 @@ type sessionIndex struct {
 	// onID gets the recorded id, once; nil means nothing more to do.
 	onID func(id string)
 
-	mu    sync.Mutex
-	id    string          // recorded
-	claim string          // Codex: the first id a hook reported
-	seen  map[string]bool // Codex: new rollouts the watch has seen
-	known chan struct{}   // closed once an id is recorded
+	// verify checks a claimed rollout; tests replace it.
+	verify func(path, id string) rolloutVerdict
+
+	mu       sync.Mutex
+	id       string            // recorded
+	claims   []string          // Codex: ids hooks in the CLI's tree reported, in order
+	rejected map[string]bool   // Codex: claims whose rollout is not the TUI's
+	seen     map[string]string // Codex: new rollouts the watch has seen, id to path
+	known    chan struct{}     // closed once an id is recorded
 }
+
+// maxClaims bounds the claims kept; a session sees one, plus one per
+// nested codex exec that ran before the first rollout showed.
+const maxClaims = 16
 
 func newSessionIndex(parentID string, v adapter.Vendor) *sessionIndex {
 	return &sessionIndex{parentID: parentID, vendor: v, known: make(chan struct{}),
-		seen: map[string]bool{}, record: appendEvent}
+		seen: map[string]string{}, rejected: map[string]bool{}, record: appendEvent, verify: verifyRollout}
 }
 
 // appendEvent opens the index, appends e, and closes it.
@@ -68,9 +84,9 @@ func appendEvent(e store.Event) error {
 }
 
 // hook is supervisor.Options.OnHook. Only Codex ids come from hooks, as
-// a claim (see sessionIndex).
+// a claim, and only from the CLI's process tree (see sessionIndex).
 func (x *sessionIndex) hook(r supervisor.Request) {
-	if x.vendor != adapter.Codex || r.Vendor != string(x.vendor) {
+	if x.vendor != adapter.Codex || r.Vendor != string(x.vendor) || !r.FromSession {
 		return
 	}
 	// TODO(T6616): that Codex's SessionStart and Stop payloads carry the
@@ -80,30 +96,101 @@ func (x *sessionIndex) hook(r supervisor.Request) {
 		return
 	}
 	x.mu.Lock()
-	if x.claim == "" {
-		x.claim = ev.SessionID
+	if !slices.Contains(x.claims, ev.SessionID) && len(x.claims) < maxClaims {
+		x.claims = append(x.claims, ev.SessionID)
 	}
-	confirmed := x.seen[x.claim]
-	claim := x.claim
 	x.mu.Unlock()
-	if confirmed {
-		x.set(claim, ev.Source, "hook and sessions folder")
+	x.check()
+}
+
+// saw records rollouts the watch found new (id to path), and checks the
+// claims against them.
+func (x *sessionIndex) saw(rollouts map[string]string) {
+	x.mu.Lock()
+	for id, p := range rollouts {
+		x.seen[id] = p
+	}
+	x.mu.Unlock()
+	x.check()
+}
+
+// check records the first claim, in claim order, whose new rollout is
+// the interactive TUI's. A rollout not written yet is tried again on the
+// next poll; one that is another kind of session rules its claim out.
+func (x *sessionIndex) check() {
+	type cand struct{ id, path string }
+	var cs []cand
+	x.mu.Lock()
+	if x.id != "" {
+		x.mu.Unlock()
+		return
+	}
+	for _, id := range x.claims {
+		if p, ok := x.seen[id]; ok && !x.rejected[id] {
+			cs = append(cs, cand{id, p})
+		}
+	}
+	x.mu.Unlock()
+	for _, c := range cs {
+		switch x.verify(c.path, c.id) {
+		case rolloutTUI:
+			x.set(c.id, "", "hook and sessions folder")
+			return
+		case rolloutOther:
+			x.mu.Lock()
+			x.rejected[c.id] = true
+			x.mu.Unlock()
+		}
 	}
 }
 
-// saw records rollouts the watch found new, and the claim once it is
-// among them.
-func (x *sessionIndex) saw(ids []string) {
-	x.mu.Lock()
-	for _, id := range ids {
-		x.seen[id] = true
+// rolloutVerdict is what verifyRollout found.
+type rolloutVerdict int
+
+const (
+	rolloutPending rolloutVerdict = iota // not readable or not written yet
+	rolloutTUI                           // the interactive TUI's own session
+	rolloutOther                         // another session: codex exec, a sub-agent
+)
+
+// maxMetaLine bounds the session_meta line read; it carries the base
+// instructions, tens of KiB.
+const maxMetaLine = 1 << 20
+
+// verifyRollout reads the rollout's first line, which Codex writes as its
+// session_meta before anything else (rollout/src/recorder.rs#L1936 at
+// rust-v0.164.0), and checks its payload: id the claimed thread, and
+// source "cli", which the interactive TUI sets (tui/src/lib.rs#L753)
+// and codex exec does not ("exec", exec/src/lib.rs#L744; the field is
+// SessionSource, lowercase, protocol/src/protocol.rs#L2959). Source
+// only: the TUI's session_source reaching the recorder's source
+// (recorder.rs#L968) is traced through the client, not seen live.
+// TODO(T6616): confirm a live TUI rollout's source is "cli".
+func verifyRollout(path, id string) rolloutVerdict {
+	f, err := safefs.OpenRegular(path)
+	if err != nil {
+		return rolloutPending
 	}
-	confirmed := x.claim != "" && x.seen[x.claim]
-	claim := x.claim
-	x.mu.Unlock()
-	if confirmed {
-		x.set(claim, "", "hook and sessions folder")
+	defer func() { _ = f.Close() }()
+	line, err := bufio.NewReaderSize(io.LimitReader(f, maxMetaLine), 64<<10).ReadBytes('\n')
+	if err != nil {
+		if len(line) >= maxMetaLine {
+			return rolloutOther
+		}
+		return rolloutPending // no whole line yet
 	}
+	var m struct {
+		Type    string `json:"type"`
+		Payload struct {
+			ID     string          `json:"id"`
+			Source json.RawMessage `json:"source"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(line, &m) != nil || m.Type != "session_meta" || m.Payload.ID != id ||
+		string(m.Payload.Source) != `"cli"` {
+		return rolloutOther
+	}
+	return rolloutTUI
 }
 
 // set records id, once.
@@ -165,9 +252,9 @@ var codexPoll = 500 * time.Millisecond
 // there at launch (before, codexRollouts at start, taken before the CLI
 // started) and hands them to saw, until an id is recorded or stop
 // closes. Codex creates a rollout lazily, at the first persist, so it
-// may appear only after the first turn. It reads folder listings only,
-// never a rollout's content.
-func (x *sessionIndex) watchCodex(dir string, start time.Time, before map[string]bool, stop <-chan struct{}) {
+// may appear only after the first turn. It reads folder listings; only a
+// claimed rollout's first line (session_meta) is read, by check.
+func (x *sessionIndex) watchCodex(dir string, start time.Time, before map[string]string, stop <-chan struct{}) {
 	t := time.NewTicker(codexPoll)
 	defer t.Stop()
 	for {
@@ -177,10 +264,10 @@ func (x *sessionIndex) watchCodex(dir string, start time.Time, before map[string
 		case <-x.known:
 			return
 		case now := <-t.C:
-			var fresh []string
-			for id := range codexRollouts(dir, start, now) {
-				if !before[id] {
-					fresh = append(fresh, id)
+			fresh := map[string]string{}
+			for id, p := range codexRollouts(dir, start, now) {
+				if _, old := before[id]; !old {
+					fresh[id] = p
 				}
 			}
 			x.saw(fresh)
@@ -188,10 +275,11 @@ func (x *sessionIndex) watchCodex(dir string, start time.Time, before map[string
 	}
 }
 
-// codexRollouts lists the thread ids of the rollouts in the date folders
-// a session between start and now could use. Missing folders are empty.
-func codexRollouts(dir string, start, now time.Time) map[string]bool {
-	ids := map[string]bool{}
+// codexRollouts maps the thread ids of the rollouts in the date folders a
+// session between start and now could use to their paths. Missing
+// folders are empty.
+func codexRollouts(dir string, start, now time.Time) map[string]string {
+	ids := map[string]string{}
 	for _, d := range codex.RolloutDirs(dir, start, now) {
 		es, err := safefs.ReadDir(d)
 		if err != nil {
@@ -199,7 +287,7 @@ func codexRollouts(dir string, start, now time.Time) map[string]bool {
 		}
 		for _, e := range es {
 			if id, ok := codex.RolloutThreadID(e.Name()); ok && e.Type().IsRegular() {
-				ids[id] = true
+				ids[id] = filepath.Join(d, e.Name())
 			}
 		}
 	}

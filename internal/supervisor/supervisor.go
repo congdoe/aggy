@@ -23,6 +23,8 @@ type Child interface {
 	Continue() error
 	// Signal sends sig to the CLI's process group.
 	Signal(sig syscall.Signal) error
+	// Pid is the CLI's process id, the top of the socket's lineage check.
+	Pid() int
 }
 
 // Options configure one supervised session.

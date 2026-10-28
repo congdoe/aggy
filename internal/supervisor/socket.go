@@ -31,9 +31,14 @@ const maxSockPath = 103
 // connIdle is how long a connection may sit without a full request.
 const connIdle = 10 * time.Second
 
-// peerUID returns the uid of the process at the other end of c. Tests
-// replace it before Listen, which keeps the value it finds.
-var peerUID = peerUIDOf
+// rootWait bounds how long a request waits for SetRoot, so a hook that
+// races the CLI's start is still checked (aggy hook gives up at 3 s).
+// Tests shorten it.
+var rootWait = 2 * time.Second
+
+// peerCred returns the uid and pid of the process at the other end of c.
+// Tests replace it before Listen, which keeps the value it finds.
+var peerCred = peerCredOf
 
 // Server is the supervisor socket, run/<parent-id>.sock in the state
 // directory. Only processes of aggy's own uid get an answer.
@@ -41,7 +46,13 @@ type Server struct {
 	ln   *net.UnixListener
 	path string
 	lock *os.File // flocked while the server runs; marks the socket live
-	peer func(*net.UnixConn) (int, error)
+	peer func(*net.UnixConn) (uid, pid int, err error)
+	// root is the on-screen CLI's pid (SetRoot), the top of the lineage;
+	// rootSet closes once it is known, done once Close runs.
+	root     int
+	rootSet  chan struct{}
+	rootOnce sync.Once
+	done     chan struct{}
 	// onPanic restores the terminal before a panic in a server goroutine
 	// ends the process.
 	onPanic func()
@@ -112,10 +123,33 @@ func Listen(runDir, parentID string, onPanic func(), onHook func(Request)) (*Ser
 		_ = safefs.Remove(path)
 		return fail(err)
 	}
-	s := &Server{ln: ln, path: path, lock: lock, peer: peerUID, onPanic: onPanic, onHook: onHook,
-		conns: map[*net.UnixConn]struct{}{}}
+	s := &Server{ln: ln, path: path, lock: lock, peer: peerCred, onPanic: onPanic, onHook: onHook,
+		conns: map[*net.UnixConn]struct{}{}, rootSet: make(chan struct{}), done: make(chan struct{})}
 	s.goSafe(s.accept)
 	return s, nil
+}
+
+// SetRoot records the on-screen CLI's pid once it has started: a request
+// is FromSession when its sender descends from it (see lineage.go). Only
+// the first call counts.
+func (s *Server) SetRoot(pid int) {
+	s.rootOnce.Do(func() {
+		s.root = pid
+		close(s.rootSet)
+	})
+}
+
+// inLineage reports whether pid descends from the root, waiting up to
+// rootWait for SetRoot.
+func (s *Server) inLineage(pid int) bool {
+	select {
+	case <-s.rootSet:
+	case <-s.done:
+		return false
+	case <-time.After(rootWait):
+		return false
+	}
+	return descends(pid, s.root)
 }
 
 // privateDir makes dir a 0700 directory owned by aggy's uid: it creates
@@ -273,6 +307,7 @@ func (s *Server) Close() error {
 	var err error
 	s.once.Do(func() {
 		err = s.ln.Close()
+		close(s.done)
 		s.mu.Lock()
 		s.closed = true
 		for c := range s.conns {
@@ -312,11 +347,21 @@ func (s *Server) accept() {
 }
 
 // serve answers c's requests until it closes, idles, or errs. A peer of
-// another uid is closed at once, unanswered.
+// another uid is closed at once, unanswered. Whether the peer is in the
+// CLI's lineage is worked out once, when a request first needs it.
 func (s *Server) serve(c *net.UnixConn) {
 	defer func() { _ = c.Close() }()
-	if uid, err := s.peer(c); err != nil || uid != os.Getuid() {
+	uid, peerPID, err := s.peer(c)
+	if err != nil || uid != os.Getuid() {
 		return
+	}
+	var lineage *bool
+	fromSession := func() bool {
+		if lineage == nil {
+			v := s.inLineage(peerPID)
+			lineage = &v
+		}
+		return *lineage
 	}
 	r := bufio.NewReaderSize(c, MaxMessage+1)
 	for {
@@ -329,7 +374,7 @@ func (s *Server) serve(c *net.UnixConn) {
 		if err != nil {
 			return // closed, idle, or a last line without a newline
 		}
-		resp := answer(line[:len(line)-1], s.onHook)
+		resp := answer(line[:len(line)-1], fromSession, s.onHook)
 		reply(c, resp)
 		if !resp.OK {
 			return

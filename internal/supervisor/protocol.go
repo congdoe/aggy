@@ -36,6 +36,11 @@ type Request struct {
 	Event string `json:"event,omitempty"`
 	// Payload is the hook's JSON object, unchanged.
 	Payload json.RawMessage `json:"payload,omitempty"`
+	// FromSession is set by the server, never read from the wire: the
+	// sender's process descends from the on-screen CLI (lineage.go). That
+	// includes the CLI's own tool subprocesses, so it is a hint, not
+	// proof that the CLI itself sent it.
+	FromSession bool `json:"-"`
 }
 
 // Response answers one Request.
@@ -87,8 +92,9 @@ func decodeRequest(line []byte) (Request, error) {
 }
 
 // answer handles one request line. onHook, if set, gets each valid
-// hook-event.
-func answer(line []byte, onHook func(Request)) Response {
+// hook-event, with FromSession from fromSession. A switch-request must be
+// FromSession.
+func answer(line []byte, fromSession func() bool, onHook func(Request)) Response {
 	r, err := decodeRequest(line)
 	if err != nil {
 		return Response{Error: err.Error()}
@@ -98,13 +104,18 @@ func answer(line []byte, onHook func(Request)) Response {
 		return Response{OK: true, Type: "pong"}
 	case ReqHookEvent:
 		// TODO(T6664): turn-end hooks gate a pending switch, and a
-		// rate_limit StopFailure opens the picker. Until then onHook
-		// keeps the index (session ids) and records limits.
+		// rate_limit StopFailure opens the picker, both only when
+		// FromSession (fail closed). Until then onHook keeps the index
+		// (session ids) and records limits.
 		if onHook != nil {
+			r.FromSession = fromSession()
 			onHook(r)
 		}
 		return Response{OK: true}
 	default: // ReqSwitchRequest
+		if !fromSession() {
+			return Response{Error: "switch-request from outside this session"}
+		}
 		// TODO(T6664): perform the switch at the CLI's turn end.
 		return Response{Error: "switching is not implemented yet"}
 	}
