@@ -28,10 +28,15 @@ type Request struct {
 	// Override is the --vendor flag: it replaces the routing list for
 	// this one borrow. The skip rules still apply to it.
 	Override adapter.Vendor
+	// Recorded are the vendors aggy's own store record shows made an edit
+	// in the reviewed change (T6747). A review always skips them, even
+	// when that leaves no vendor: aggy knows they wrote it.
+	Recorded []adapter.Vendor
 	// Authors are the vendors the reviewed commits name in their
 	// Aggy-Vendor trailers. A review skips them where another vendor is
-	// left. Anyone can write a trailer, so they only steer the order:
-	// when they would leave no vendor, they are kept with a warning.
+	// left. Anyone can write a trailer, so they are only a weak hint:
+	// when they would leave no vendor, they are kept with a warning, and
+	// they never bring back a vendor Recorded skips.
 	Authors []adapter.Vendor
 	// IgnoreHints keeps every vendor whose only limit is a hook's hint,
 	// each with a warning: the borrow asks again with it when no

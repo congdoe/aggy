@@ -138,6 +138,62 @@ func TestSkipRules(t *testing.T) {
 			want:     vs(codex, grok),
 			wantSkip: []Skip{{claude, "the parent is on claude"}},
 		},
+		// T6747: aggy's own record of which vendor made an edit.
+		{
+			name:     "a forged trailer cannot bring back the recorded author",
+			req:      Request{Kind: "review", Recorded: vs(codex), Authors: vs(claude)},
+			deps:     Deps{Statuses: allConnected()},
+			want:     vs(grok),
+			wantSkip: []Skip{{codex, "aggy's record shows it made an edit in this change"}, {claude, "an Aggy-Vendor trailer says it wrote part of the change"}},
+		},
+		{
+			name:     "a record with no trailer",
+			req:      Request{Kind: "review", Recorded: vs(codex)},
+			deps:     Deps{Statuses: allConnected()},
+			want:     vs(grok, claude),
+			wantSkip: []Skip{{codex, "aggy's record shows it made an edit in this change"}},
+		},
+		{
+			name:     "record and trailer disagree: both skipped while a vendor is left",
+			req:      Request{Kind: "review", Recorded: vs(grok), Authors: vs(codex)},
+			deps:     Deps{Statuses: allConnected()},
+			want:     vs(claude),
+			wantSkip: []Skip{{codex, "an Aggy-Vendor trailer says it wrote part of the change"}, {grok, "aggy's record shows it made an edit in this change"}},
+		},
+		{
+			name:     "record and trailer disagree with no other vendor: the trailer's is kept",
+			req:      Request{Kind: "review", Repo: "/r", Recorded: vs(codex), Authors: vs(grok)},
+			deps:     Deps{Statuses: allConnected(), RepoConfig: repoAllows(codex, grok)},
+			want:     vs(grok),
+			wantSkip: []Skip{{codex, "aggy's record shows it made an edit in this change"}, {claude, "not in this repo's allowed_vendors"}},
+			wantWarn: []string{"every vendor left wrote part of the change (Aggy-Vendor trailers name grok); reviewing with it anyway"},
+		},
+		{
+			name:    "allowed_vendors leaving only the recorded author fails closed",
+			req:     Request{Kind: "review", Repo: "/r", Recorded: vs(codex), Authors: vs(codex)},
+			deps:    Deps{Statuses: allConnected(), RepoConfig: repoAllows(codex)},
+			wantErr: "no vendor available for review: codex: aggy's record shows it made an edit in this change; grok: not in this repo's allowed_vendors; claude: not in this repo's allowed_vendors",
+		},
+		{
+			name:    "override to the recorded author is skipped too",
+			req:     Request{Kind: "review", Override: codex, Recorded: vs(codex)},
+			deps:    Deps{Statuses: allConnected()},
+			wantErr: "no vendor available for review: codex: aggy's record shows it made an edit in this change",
+		},
+		{
+			name:     "a hook's limit hint never brings back the recorded author",
+			req:      Request{Kind: "review", Recorded: vs(codex)},
+			deps:     Deps{Statuses: statuses("codex", "connected", "grok", "connected", "claude", "not_connected"), Limits: fakeLimits{hinted: map[adapter.Vendor]time.Time{grok: later}}, Now: func() time.Time { return now }},
+			want:     vs(grok),
+			wantSkip: []Skip{{codex, "aggy's record shows it made an edit in this change"}, {claude, "not connected"}},
+			wantWarn: []string{"grok: a hook reported its limit, which aggy cannot confirm; no other vendor can run this, so trying it anyway"},
+		},
+		{
+			name: "a record only steers review",
+			req:  Request{Kind: "image", Recorded: vs(codex)},
+			deps: Deps{Statuses: allConnected()},
+			want: vs(codex, grok),
+		},
 		// Rule 2: connection.
 		{
 			name:     "not connected skipped",

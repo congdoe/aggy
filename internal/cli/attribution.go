@@ -21,9 +21,10 @@ const attributionUsage = `Usage: aggy attribution wire [--dry-run]
 Installs a git commit-msg hook in the repo you are in that adds
 Aggy-Vendor and Aggy-Model trailers to commits made under a CLI aggy
 runs (aggy sets AGGY_VENDOR and AGGY_MODEL for each child). Your own
-commits, made outside aggy, get nothing. A review borrow reads the
-Aggy-Vendor trailers to send the review to a vendor that did not write
-the change.
+commits, made outside aggy, get nothing. A review borrow routes on
+aggy's own record of which vendor made an edit, and reads the
+Aggy-Vendor trailers only as a hint of more vendors to pass over:
+anyone can write a trailer.
 
 The hook goes in the repo's common git dir, so it covers every worktree
 of the repo, edit borrows' included. It is fixed text: nothing from the

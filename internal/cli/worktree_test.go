@@ -348,13 +348,13 @@ func editBorrow(t *testing.T, f *borrowFixture, files map[string]string) (string
 
 // editFixture is a borrow fixture on an edit repo, with git found once
 // and PATH then pointed at an empty dir.
-func editFixture(t *testing.T) (*borrowFixture, []string) {
+func editFixture(t *testing.T, more ...adapter.Vendor) (*borrowFixture, []string) {
 	t.Helper()
 	gitBin, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("no git")
 	}
-	f := newBorrowFixture(t, adapter.Codex)
+	f := newBorrowFixture(t, append([]adapter.Vendor{adapter.Codex}, more...)...)
 	markers := editRepo(t, f.repo)
 	f.env.gitPath = func() (string, error) { return gitBin, nil }
 	f.env.gitRun = execrun.ExecRunner(gitTimeout)

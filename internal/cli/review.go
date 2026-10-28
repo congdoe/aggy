@@ -15,6 +15,7 @@ import (
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/safefs"
+	"github.com/congdoe/aggy/internal/store"
 )
 
 // gitTimeout bounds each git command a review runs.
@@ -248,10 +249,10 @@ const maxAuthorCommits = 1000
 // the repo's config runs.
 //
 // Trailers are best-effort and forgeable: anyone can commit with
-// AGGY_VENDOR set, or skip the hook and write one by hand, to steer a
-// review back to the real author (never past allowed_vendors).
-// TODO(T6747): route on aggy's own store record of which vendor made an
-// edit, and keep trailers as a fallback.
+// AGGY_VENDOR set, or skip the hook and write one by hand, and an
+// accepted edit is committed under the on-screen vendor's AGGY_VENDOR,
+// not the edit's. So they are a weak hint beside aggy's own record
+// (recordAuthors), which the router lets them add to, never override.
 func (e borrowEnv) reviewAuthors(ctx context.Context, root, base string) []adapter.Vendor {
 	if !validRef(base) {
 		return nil
@@ -271,6 +272,121 @@ func (e borrowEnv) reviewAuthors(ctx context.Context, root, base string) []adapt
 	return vs
 }
 
+// reviewDiff is the diff a review sees, and the one an edit's record is
+// compared with: fixed a/ and b/ prefixes and no rename detection,
+// whatever the repo's config says, so a file has the same header in both.
+var reviewDiff = []string{"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/"}
+
+// minMatchLine is the fewest characters, spaces aside, a changed line
+// needs to tie a recorded edit to a review: shorter lines ("}", "return
+// err") are in too many changes to say who wrote them.
+const minMatchLine = 10
+
+// changedLines reads a unified diff and returns, per file (its diff --git
+// header line), its added and removed lines of at least minMatchLine
+// characters, each as its sign and its text with runs of space made one.
+// A file with no such line (binary, or short lines only) has an empty set.
+func changedLines(diff string) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	var file map[string]bool
+	hunk := false
+	for _, l := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(l, "diff --git "):
+			file, hunk = map[string]bool{}, false
+			out[l] = file
+		case file == nil:
+		case strings.HasPrefix(l, "@@"):
+			hunk = true // no line inside a hunk starts with @@
+		case hunk && (strings.HasPrefix(l, "+") || strings.HasPrefix(l, "-")):
+			if f := strings.Fields(l[1:]); len(strings.Join(f, "")) >= minMatchLine {
+				file[l[:1]+strings.Join(f, " ")] = true
+			}
+		}
+	}
+	return out
+}
+
+// recordAuthors returns the vendors aggy's own store record shows made an
+// edit in the reviewed change, for the router to skip whatever the
+// trailers say (T6747). Edits made in this repo (this work tree, or a
+// linked worktree of the same repo) are compared with the reviewed diff:
+// an edit is in it when one of its changed lines (changedLines) is changed
+// the same way in the same file, or when the review touches a file of
+// the edit that has no such line (binary, or short lines only). It
+// fails closed: when the
+// reviewed diff was cut short, or git cannot give an edit's diff while
+// its worktree is still there, the edit counts. An edit whose worktree
+// aggy gc removed and whose objects git has since pruned no longer
+// counts, and neither does one aggy gc pruned from the index.
+func (e borrowEnv) recordAuthors(ctx context.Context, s *store.Store, root string, m *borrow.Material) ([]adapter.Vendor, error) {
+	recs, err := s.EditRecords(ctx)
+	if err != nil || len(recs) == 0 {
+		return nil, err
+	}
+	common := ""
+	if out, _, err := e.git(ctx, root, "rev-parse", "--git-common-dir"); err == nil && strings.TrimSpace(out) != "" {
+		c := strings.TrimSpace(out)
+		if !filepath.IsAbs(c) {
+			c = filepath.Join(root, c)
+		}
+		common = canonicalPath(c)
+	}
+	croot := canonicalPath(root)
+	review := changedLines(m.Diff)
+	var vs []adapter.Vendor
+	for _, r := range recs {
+		v, err := adapter.ParseVendor(r.Vendor)
+		if err != nil || slices.Contains(vs, v) || !sameRepo(r.Worktree, croot, common) {
+			continue
+		}
+		if m.DiffTruncated || e.editInReview(ctx, root, r.Worktree, review) {
+			vs = append(vs, v)
+		}
+	}
+	return vs, nil
+}
+
+// sameRepo reports whether wt was made from the work tree root, or from
+// any work tree of the repo whose common git dir is common. Both are
+// canonical paths; common may be "".
+func sameRepo(wt store.Worktree, root, common string) bool {
+	if canonicalPath(wt.Repo) == root {
+		return true
+	}
+	// A linked worktree's admin dir is <common dir>/worktrees/<name>.
+	admin := filepath.Dir(wt.GitDir)
+	return common != "" && filepath.IsAbs(wt.GitDir) && filepath.Base(admin) == "worktrees" && canonicalPath(filepath.Dir(admin)) == common
+}
+
+// editInReview reports whether the edit recorded in wt is in review, the
+// reviewed diff's changedLines (see recordAuthors). git diffs two of its
+// own objects in root, which share the edit's object store, so no work
+// tree file and no filter is read.
+func (e borrowEnv) editInReview(ctx context.Context, root string, wt store.Worktree, review map[string]map[string]bool) bool {
+	if !validRef(wt.Base) || !validRef(wt.Tree) {
+		return wt.Removed.IsZero()
+	}
+	out, cut, err := e.git(ctx, root, append(slices.Clone(reviewDiff), "-U0", wt.Base, wt.Tree, "--")...)
+	switch {
+	case err != nil:
+		return wt.Removed.IsZero()
+	case cut:
+		return true
+	}
+	for f, ls := range changedLines(out) {
+		if _, touched := review[f]; touched && len(ls) == 0 {
+			return true
+		}
+		for l := range ls {
+			if review[f][l] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // maxFile caps one --path file read for a review.
 const maxFile = borrow.MaxMaterial
 
@@ -288,7 +404,7 @@ func (e borrowEnv) reviewMaterial(ctx context.Context, root, base string, paths 
 	if err != nil {
 		return nil, err
 	}
-	diff, cut, err := e.git(ctx, root, append(off, "diff", "--no-color", "--no-ext-diff", "--no-textconv", b, "--")...)
+	diff, cut, err := e.git(ctx, root, append(append(off, reviewDiff...), b, "--")...)
 	if err != nil {
 		return nil, err
 	}

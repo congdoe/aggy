@@ -29,6 +29,9 @@ type RouteRequest struct {
 	// Override is the --vendor the caller named, "" for none. It replaces
 	// the routing list, and the skip rules still apply to it.
 	Override adapter.Vendor
+	// Recorded are the vendors aggy's store record shows made an edit in
+	// the reviewed change (see Request.Recorded).
+	Recorded []adapter.Vendor
 	// Authors are the vendors the reviewed commits' Aggy-Vendor trailers
 	// name (see Request.Authors).
 	Authors []adapter.Vendor

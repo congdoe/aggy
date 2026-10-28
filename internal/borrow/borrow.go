@@ -59,6 +59,9 @@ type Request struct {
 	Repo string
 	// Parent is the vendor on screen, from AGGY_VENDOR; "" when unknown.
 	Parent adapter.Vendor
+	// Recorded are the vendors aggy's own store record shows made an
+	// edit in a review's change: a review never goes to them.
+	Recorded []adapter.Vendor
 	// Authors are the vendors a review's commits name in their
 	// Aggy-Vendor trailers: untrusted, so they only steer routing.
 	Authors []adapter.Vendor
@@ -263,7 +266,7 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 		}
 		return out, nil
 	}
-	rr := RouteRequest{Kind: req.Kind, Parent: req.Parent, Repo: req.Repo, Authors: req.Authors}
+	rr := RouteRequest{Kind: req.Kind, Parent: req.Parent, Repo: req.Repo, Recorded: req.Recorded, Authors: req.Authors}
 	if req.Vendor != "" {
 		v, err := adapter.ParseVendor(req.Vendor)
 		if err != nil {

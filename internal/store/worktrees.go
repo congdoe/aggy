@@ -128,3 +128,39 @@ func (s *Store) UnclaimWorktreeRemoval(ctx context.Context, id string) error {
 		 WHERE id = (SELECT child_id FROM borrows WHERE id = ?) AND worktree <> ''`, id)
 	return err
 }
+
+// EditRecord is aggy's own record of an edit borrow: the vendor that ran
+// it and its worktree, tree included.
+type EditRecord struct {
+	BorrowID string
+	Vendor   string
+	Worktree Worktree
+}
+
+// EditRecords returns every edit borrow whose worktree had its tree
+// recorded, in any state, removed ones included, by borrow id. A review
+// matches them against its diff to find which vendors made the change.
+func (s *Store) EditRecords(ctx context.Context) ([]EditRecord, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT b.id, b.vendor, c.worktree, c.branch, c.worktree_base, c.worktree_repo, c.worktree_git_dir,
+		        c.worktree_state, c.worktree_tree, c.worktree_removed_at
+		 FROM borrows b JOIN children c ON c.id = b.child_id
+		 WHERE c.worktree <> '' AND c.worktree_tree <> '' ORDER BY b.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []EditRecord
+	for rows.Next() {
+		var r EditRecord
+		var removed sql.NullInt64
+		w := &r.Worktree
+		if err := rows.Scan(&r.BorrowID, &r.Vendor, &w.Path, &w.Branch, &w.Base, &w.Repo, &w.GitDir,
+			&w.State, &w.Tree, &removed); err != nil {
+			return nil, err
+		}
+		w.Removed = fromNull(removed)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

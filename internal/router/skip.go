@@ -68,7 +68,9 @@ const hintReason = "a hook reported its limit (unconfirmed)"
 
 // skips applies the skip rules to list, in this order: the parent's own
 // vendor, a vendor not connected, a vendor outside the repo's
-// allowed_vendors, and a vendor at its limit. It returns, per vendor, why
+// allowed_vendors, for a review a vendor aggy's record shows made the
+// change, and a vendor at its limit; then, for a review, the vendors
+// trailers name where another vendor is left (skipAuthors). It returns, per vendor, why
 // it is left out (the first rule that matched), notes on vendors kept,
 // and warnings the caller must show. A rule's input that cannot be read
 // is an error: the router never guesses that a repo allows a vendor.
@@ -117,6 +119,10 @@ func (r *Router) skips(ctx context.Context, req Request, k adapter.Kind, list []
 		}
 		if !allowed.Allows(v) {
 			skip[v] = "not in this repo's allowed_vendors"
+			continue
+		}
+		if k == adapter.Review && slices.Contains(req.Recorded, v) {
+			skip[v] = "aggy's record shows it made an edit in this change"
 			continue
 		}
 		t := now()
