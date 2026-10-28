@@ -21,7 +21,7 @@ push). It is a guardrail against an agent's mistakes, not a sandbox:
 each CLI matches its rules against the command text or file path it
 sees, so a command written another way, or a script that opens a file
 itself, gets past it. It only adds denials, never loosens a setting of
-yours or a repo's, and a repo cannot change it.
+yours or a repo's, and a repo cannot edit it (but see Codex below).
 
 Claude Code and Grok Build get it on the command line of every session
 aggy starts (claude --settings, grok --deny), so nothing is stored.
@@ -29,7 +29,9 @@ Codex has no such flag: wire writes ~/.codex/rules/aggy.rules
 ($CODEX_HOME/rules) through the manifest, never over a file of yours,
 and aggy unwire removes it. Codex's sandbox and approval settings are
 left as you set them, and its rules cannot stop a file read, so .env is
-not covered there.
+not covered there. Codex drops every rules file, aggy's included, when
+any rules file it loads fails to parse, a trusted repo's .codex/rules
+among them; aggy doctor lists those files.
 
   --dry-run   show the change and make none
 `

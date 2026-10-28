@@ -16,6 +16,7 @@ import (
 	"github.com/congdoe/aggy/internal/checkup"
 	"github.com/congdoe/aggy/internal/devfix"
 	"github.com/congdoe/aggy/internal/fakecli"
+	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/patch"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -423,5 +424,37 @@ func TestDoctorParity(t *testing.T) {
 	}
 	if strings.Contains(got, home) {
 		t.Errorf("report holds the home path:\n%s", got)
+	}
+}
+
+// TestDoctorOtherCodexRules: a rules file of the person's beside aggy's,
+// or a repo's in .codex/rules, can switch aggy's Codex policy off with a
+// parse error, so doctor warns about each.
+func TestDoctorOtherCodexRules(t *testing.T) {
+	fakes := fakecli.Build(t)
+	home := isolate(t)
+	w := newFakeWorld(t, fakes)
+	repo := filepath.Join(home, "repo")
+	mustWrite(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n", 0o644)
+	mustWrite(t, filepath.Join(home, ".codex", "rules", "aggy.rules"), parity.CodexRules, 0o600)
+	mustWrite(t, filepath.Join(home, ".codex", "rules", "mine.rules"), "prefix_rule(pattern = [\"ls\"])\n", 0o600)
+	mustWrite(t, filepath.Join(repo, ".codex", "rules", "repo.rules"), "broken(\n", 0o644)
+	mustWrite(t, filepath.Join(repo, ".codex", "rules", "notes.txt"), "x", 0o644)
+	env := w.env(home, "", false)
+	env.cwd = repo
+	var out bytes.Buffer
+	doctorWith(nil, env, &out, &out)
+	got := out.String()
+	for _, s := range []string{
+		"info    policy-applied: Codex gets the safety policy",
+		"warning policy-fragile: ~/.codex/rules/mine.rules: Codex loads this rules file with aggy's",
+		"warning policy-fragile: ~/repo/.codex/rules/repo.rules: Codex loads this rules file with aggy's",
+	} {
+		if !strings.Contains(got, s) {
+			t.Errorf("doctor lacks %q:\n%s", s, got)
+		}
+	}
+	if strings.Contains(got, "aggy.rules: Codex loads") || strings.Contains(got, "notes.txt") {
+		t.Errorf("doctor flags aggy's own file or a non-rules file:\n%s", got)
 	}
 }
