@@ -210,6 +210,48 @@ func TestCodexRollout(t *testing.T) {
 	}
 }
 
+// TestCodexAllowance (T6698): the newest rollout with quotas counts; one
+// with none yet is passed over, and symlinks and old rollouts are not read.
+func TestCodexAllowance(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	sessions := t.TempDir()
+	clock := time.Now()
+	day := filepath.Join(sessions, clock.Format("2006"), clock.Format("01"), clock.Format("02"))
+	if err := os.MkdirAll(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	quota := func(used int) string {
+		return line(after, "event_msg", fmt.Sprintf(`{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":%d,"window_minutes":300,"resets_at":1}}}`, used))
+	}
+	write := func(name, body string, age time.Duration) string {
+		p := filepath.Join(day, "rollout-2026-10-28T12-00-00-0199a213-81c0-7800-8aa1-bbab2a035a"+name+".jsonl")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, clock.Add(-age), clock.Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	write("51", quota(10), 9*24*time.Hour) // older than Max
+	write("52", quota(42), time.Hour)
+	write("53", line(after, "turn_context", `{"model":"gpt-5.5"}`), time.Minute) // no turn finished yet
+	target := filepath.Join(t.TempDir(), "x.jsonl")
+	if err := os.WriteFile(target, []byte(quota(99)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(day, "rollout-2026-10-28T12-00-00-0199a213-81c0-7800-8aa1-bbab2a035a54.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	got := CodexAllowance(sessions, clock)
+	if len(got) != 1 || got[0].ID != "codex" || got[0].Primary == nil || got[0].Primary.UsedPercent != 42 {
+		t.Fatalf("CodexAllowance = %+v, want the 42%% snapshot", got)
+	}
+	if got := CodexAllowance(t.TempDir(), clock); got != nil {
+		t.Errorf("empty sessions folder: %+v", got)
+	}
+}
+
 func TestCodexWatch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	sessions := t.TempDir()
