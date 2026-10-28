@@ -296,10 +296,21 @@ Trusted:
 So a repo the user once trusted in interactive Grok, on a hostile
 branch, would run that branch's hooks in a Grok review. aggy does not
 rely on folder trust: a Grok review is refused, and Grok passed over,
-when the review root holds any of these files or dirs except the
-instruction and skill ones, which are prompt text
-(`internal/borrow/grok_trust.go`). Grok 1.0.70's folder-trust behaviour
-is unverified; the live check is TODO(T6649).
+when the review root holds any of these files or dirs, the instruction
+and skill ones included (`internal/borrow/grok_trust.go`). Instructions
+run no code, but Grok's `read_file` keeps an absolute or `~` path as is,
+with no check that it is under the cwd
+(`xai-grok-tools/src/types/resources.rs:404-430`, `resolve_model_path`;
+the tool's own description says an absolute path "will be preserved as
+is", `implementations/grok_build/read_file/mod.rs:135`), so a hostile
+repo's instructions could have a reviewer read and echo a file outside
+the repo (C17-10). The instruction names are `INSTRUCTION_FILENAMES`
+and `.claude/CLAUDE*.md` (`xai-grok-config/src/compat.rs:311-318`,
+`:431-438`) and the `.grok`, `.claude`, and `.cursor` `rules` dirs
+(`:418-427`); skills are `skills/` or `commands/` under `.grok`,
+`.agents`, `.claude`, or `.cursor` (`compat.rs:405-414`,
+`skills/discovery.rs:26-27`). Grok 1.0.70's folder-trust behaviour is
+unverified; the live check is TODO(T6649).
 
 Grok's CLI parses its flags with clap (`xai-grok-pager/src/app/cli.rs:2`),
 so its rejection lines have clap's form.

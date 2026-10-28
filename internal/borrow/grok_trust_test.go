@@ -12,7 +12,8 @@ import (
 
 // TestGrokTrustGate (C17-1): a Grok review is refused, and Grok passed
 // over, when the repo holds a hook or other config Grok loads and runs
-// once the folder is trusted. Instructions alone do not refuse it.
+// once the folder is trusted. C17-10: instructions and skills refuse it
+// too, since its read_file is not limited to the repo.
 func TestGrokTrustGate(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -20,7 +21,14 @@ func TestGrokTrustGate(t *testing.T) {
 		refuse bool
 	}{
 		{"nothing", "", false},
-		{"AGENTS.md only", "AGENTS.md", false},
+		{"AGENTS.md only", "AGENTS.md", true},
+		{"CLAUDE.md", "CLAUDE.md", true},
+		{"claude CLAUDE.md", ".claude/CLAUDE.md", true},
+		{"grok rules", ".grok/rules/", true},
+		{"cursor rules", ".cursor/rules/", true},
+		{"agents skills", ".agents/skills/", true},
+		{"claude commands", ".claude/commands/", true},
+		{"a readme", "README.md", false},
 		{"claude settings hooks", ".claude/settings.json", true},
 		{"claude local settings", ".claude/settings.local.json", true},
 		{"grok hooks dir", ".grok/hooks/", true},

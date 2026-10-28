@@ -48,10 +48,29 @@ var grokRootSources = []string{
 	".claude/settings.json", ".claude/settings.local.json", ".grok/hooks", ".cursor/hooks.json", ".grok/workflows",
 }
 
-// Not checked: AGENTS.md-style instructions and skill dirs, which
-// folder trust also gates (folder_trust.rs:539-546). They are prompt
-// text, which a review treats as untrusted data anyway, and nearly every
-// repo has one; no review tool runs code.
+// grokInstructionSources are project instructions and skills, checked in
+// every dir from the cwd up to the git root; folder trust gates them too
+// (folder_trust.rs:539-546). They run no code, but Grok loads them as
+// system-level text, and a review keeps read_file, which takes an
+// absolute or ~ path as is, with no check that it is under the cwd
+// (grok-build 2bdd1d6a, xai-grok-tools/src/types/resources.rs:404-430,
+// resolve_model_path; implementations/grok_build/read_file/mod.rs:135,
+// :419). A hostile repo's instructions could have the reviewer read
+// ~/.ssh or another CLI's auth file and echo it into the review. So they
+// refuse a Grok review like code does. The names: INSTRUCTION_FILENAMES
+// and agent_filenames (xai-grok-config/src/compat.rs:311-318, :431-438),
+// rules dirs (:418-427), checked by has_project_instruction_markers_in
+// (xai-grok-agent/src/prompt/agents_md.rs:213-223); skill dirs are
+// skills/ or commands/ under each skill config dir (compat.rs:405-414,
+// xai-grok-tools/src/implementations/skills/discovery.rs:26-27), checked
+// by has_project_skill_dirs_in (prompt/skills.rs:51-64).
+var grokInstructionSources = []string{
+	"AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", "AGENT.md", "Agents.md", "Claude.md",
+	".claude/CLAUDE.md", ".claude/CLAUDE.local.md",
+	".grok/rules", ".claude/rules", ".cursor/rules",
+	".grok/skills", ".grok/commands", ".agents/skills", ".agents/commands",
+	".claude/skills", ".claude/commands", ".cursor/skills", ".cursor/commands",
+}
 
 // present reports whether p exists in any form, or cannot be checked.
 func present(p string) bool {
@@ -87,7 +106,8 @@ func grokProjectSources(cwd string) []string {
 			r = p
 		}
 		for _, f := range found {
-			if f == r {
+			// A case-insensitive disk finds CLAUDE.md as Claude.md too.
+			if strings.EqualFold(f, r) {
 				return
 			}
 		}
@@ -95,6 +115,9 @@ func grokProjectSources(cwd string) []string {
 	}
 	for _, d := range chain {
 		for _, s := range grokChainSources {
+			add(d, s)
+		}
+		for _, s := range grokInstructionSources {
 			add(d, s)
 		}
 	}
@@ -108,7 +131,7 @@ func grokProjectSources(cwd string) []string {
 }
 
 // grokTrustGate refuses a Grok borrow that runs in a repo holding config
-// Grok would load and run.
+// Grok would load and run, or instructions it would load.
 func grokTrustGate(v adapter.Vendor, req Request) error {
 	if v != adapter.Grok || req.Kind != adapter.Review {
 		// Every other kind runs in a fresh empty dir outside any git
@@ -116,7 +139,7 @@ func grokTrustGate(v adapter.Vendor, req Request) error {
 		return nil
 	}
 	if found := grokProjectSources(req.Repo); len(found) > 0 {
-		return fmt.Errorf("grok: %s: %w: the repo holds config Grok may load and run (%s), and its folder trust is not relied on",
+		return fmt.Errorf("grok: %s: %w: the repo holds config or instructions Grok may load (%s), and its folder trust is not relied on",
 			req.Kind, adapter.ErrUnsupported, strings.Join(found, ", "))
 	}
 	return nil

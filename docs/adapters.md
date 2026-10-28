@@ -343,8 +343,11 @@ workflow config, and sources `.envrc`, whenever its folder trust says
 Trusted, which includes a folder trusted once interactively
 (`docs/verification.md`, source only). So a Grok review is refused, and
 the borrow passes Grok over, when the review root holds any of them
-(`internal/borrow/grok_trust.go`); instructions and skills alone do not
-refuse it. Every other Grok kind runs in an empty dir outside any git
+(`internal/borrow/grok_trust.go`). Project instructions (`AGENTS.md`,
+`CLAUDE.md`, rules dirs) and skill dirs refuse it too: Grok loads them as
+system-level text, and its `read_file` is not limited to the cwd
+(`docs/verification.md`), so a hostile repo could steer a reviewer to
+read a file outside it. Every other Grok kind runs in an empty dir outside any git
 tree.
 
 Interactive argv: Claude `claude [--session-id <uuid> | --resume <id>
