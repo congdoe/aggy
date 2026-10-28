@@ -63,15 +63,28 @@ func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t 
 			return p, fmt.Errorf("%d sessions start with %s; give more of the id", len(ps), t.ParentID)
 		}
 	default:
-		par, err := s.LatestParentInDir(ctx, cwd)
+		key, err := safefs.CanonicalPath(cwd)
+		if err != nil {
+			return p, err
+		}
+		par, err := s.LatestParentInDir(ctx, key, cwd)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			p.newParent = true
 		case err != nil:
 			return p, err
+		case replaced(par):
+			// A directory removed and made again (a re-clone) is another
+			// project: its old sessions are not resumed by default.
+			fmt.Fprintf(stderr, "aggy: this directory was replaced since session %s; starting a new session. aggy resume %s reopens the old one.\n",
+				shortID(par.ID), shortID(par.ID))
+			p.newParent = true
 		default:
 			p.parent = par
 		}
+	}
+	if !p.newParent && replaced(p.parent) {
+		fmt.Fprintf(stderr, "aggy: warning: the directory of session %s was replaced since it started (a re-clone?)\n", shortID(p.parent.ID))
 	}
 	if p.newParent {
 		id, err := newUUID()
@@ -79,10 +92,15 @@ func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t 
 			return p, err
 		}
 		p.parent = store.Parent{ID: id, Dir: cwd, CreatedAt: now, LastActive: now}
+		if p.parent.DirKey, err = safefs.CanonicalPath(cwd); err != nil {
+			return p, err
+		}
+		p.parent.DirID = dirID(cwd)
 		return p, p.newChildOf(ctx, s, cfg, t.Vendor, now)
 	}
 
-	children, err := refreshChildren(ctx, s, p.parent.ID, &sessionFiles{})
+	files := &sessionFiles{}
+	children, err := refreshChildren(ctx, s, p.parent.ID, files)
 	if err != nil {
 		return p, err
 	}
@@ -99,9 +117,9 @@ func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t 
 	case last == nil:
 		v, _ := adapter.ParseVendor(p.parent.LastVendor)
 		return p, p.newChildOf(ctx, s, cfg, v, now)
-	case last.Status == "closed" || last.Status == "gone":
+	case last.Status == stateClosed || last.Status == stateGone:
 		why := "the vendor no longer has it"
-		if last.Status == "closed" {
+		if last.Status == stateClosed {
 			why = "its directory was removed"
 		}
 		fmt.Fprintf(stderr, "aggy: the last %s session of %s cannot be resumed (%s); starting a new %s session. The parent's other sessions are kept.\n",
@@ -147,6 +165,9 @@ func (p *launchPlan) newChildOf(ctx context.Context, s *store.Store, cfg config.
 	}
 	c := store.Child{ID: id, ParentID: p.parent.ID, Vendor: string(v), Model: cfg.Vendors.For(v).Model,
 		Cwd: p.parent.Dir, Status: "open", CreatedAt: now, LastActive: now}
+	// Where its session files are looked for later, whatever that
+	// shell's CLAUDE_CONFIG_DIR, CODEX_HOME, or GROK_HOME.
+	c.VendorHome, _ = (&sessionFiles{}).home(v)
 	if v != adapter.Codex {
 		// Claude and Grok take --session-id <uuid>; Codex cannot be given
 		// an id in advance (docs/adapters.md).
@@ -231,6 +252,29 @@ func (p *launchPlan) interactiveRequest() adapter.InteractiveRequest {
 		req.SessionID = p.child.VendorSessionID
 	}
 	return req
+}
+
+// dirID is dir's device and inode as "dev:ino", or "" when unknown.
+func dirID(dir string) string {
+	fi, err := safefs.Stat(dir)
+	if err != nil {
+		return ""
+	}
+	dev, ino, ok := safefs.FileID(fi)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d", dev, ino)
+}
+
+// replaced reports whether p's directory is now another one than when p
+// was made: same path, other device and inode.
+func replaced(p store.Parent) bool {
+	if p.DirID == "" {
+		return false
+	}
+	now := dirID(p.Dir)
+	return now != "" && now != p.DirID
 }
 
 // shortID is the first 8 characters of an id, as aggy sessions shows it.

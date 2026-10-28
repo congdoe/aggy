@@ -191,7 +191,11 @@ func openParent(ctx context.Context, s *store.Store) (store.Parent, error) {
 	if err != nil {
 		return store.Parent{}, err
 	}
-	return s.LatestParentInDir(ctx, cwd)
+	key, err := safefs.CanonicalPath(cwd)
+	if err != nil {
+		return store.Parent{}, err
+	}
+	return s.LatestParentInDir(ctx, key, cwd)
 }
 
 // when is a local time as aggy's lists show it.

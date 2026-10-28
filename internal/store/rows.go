@@ -15,32 +15,29 @@ type Parent struct {
 	LastVendor string
 	CreatedAt  time.Time
 	LastActive time.Time
+	// DirKey is Dir's canonical form, which parents are matched by; DirID
+	// is Dir's device and inode when the parent was made. Both may be
+	// empty (rows from before schema version 9, borrow parents).
+	DirKey string
+	DirID  string
 }
 
 // InsertParent adds a parent.
 func (s *Store) InsertParent(ctx context.Context, p Parent) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO parents (id, title, dir, last_vendor, created_at, last_active)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		p.ID, p.Title, p.Dir, p.LastVendor, millis(p.CreatedAt), millis(p.LastActive))
+		`INSERT INTO parents (id, title, dir, last_vendor, created_at, last_active, dir_key, dir_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Title, p.Dir, p.LastVendor, millis(p.CreatedAt), millis(p.LastActive), p.DirKey, p.DirID)
 	return err
 }
 
 // GetParent returns the parent with id, or ErrNotFound.
 func (s *Store) GetParent(ctx context.Context, id string) (Parent, error) {
-	var p Parent
-	var created, active int64
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, title, dir, last_vendor, created_at, last_active FROM parents WHERE id = ?`, id).
-		Scan(&p.ID, &p.Title, &p.Dir, &p.LastVendor, &created, &active)
+	p, err := scanParent(s.db.QueryRowContext(ctx, `SELECT `+parentCols+` FROM parents WHERE id = ?`, capMillis(), id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Parent{}, ErrNotFound
 	}
-	if err != nil {
-		return Parent{}, err
-	}
-	p.CreatedAt, p.LastActive = fromMillis(created), fromMillis(active)
-	return p, nil
+	return p, err
 }
 
 // Child is a row of children.
@@ -54,9 +51,12 @@ type Child struct {
 	Model           string
 	Cwd             string
 	TranscriptPath  string
-	Status          string
-	CreatedAt       time.Time
-	LastActive      time.Time
+	// VendorHome is the vendor's home folder at launch, where its session
+	// files are looked for; empty means the current environment's.
+	VendorHome string
+	Status     string
+	CreatedAt  time.Time
+	LastActive time.Time
 }
 
 // InsertChild adds a child. The parent must exist. An empty Status means
@@ -67,9 +67,9 @@ func (s *Store) InsertChild(ctx context.Context, c Child) error {
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO children (id, parent_id, vendor, vendor_session_id, kind, title, model, cwd,
-		                       transcript_path, status, created_at, last_active)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       transcript_path, status, created_at, last_active, vendor_home)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.ParentID, c.Vendor, c.VendorSessionID, c.Kind, c.Title, c.Model, c.Cwd,
-		c.TranscriptPath, c.Status, millis(c.CreatedAt), millis(c.LastActive))
+		c.TranscriptPath, c.Status, millis(c.CreatedAt), millis(c.LastActive), c.VendorHome)
 	return err
 }

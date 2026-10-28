@@ -11,6 +11,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 )
 
@@ -116,7 +117,7 @@ func TestPlan(t *testing.T) {
 					store.Child{ID: "last", Vendor: "claude", VendorSessionID: sidA})
 				claudeSession(t, sidA, time.Now().Add(-time.Hour))
 				// A borrow is newer, but only interactive children resume.
-				_ = s.SetChildActivity(context.Background(), "borrow", time.Now(), "")
+				_ = s.SetChildActivity(context.Background(), "borrow", time.Now())
 			},
 			check: func(t *testing.T, p launchPlan, dir string) {
 				if p.newParent || p.newChild || p.child.ID != "last" || p.resume != sidA {
@@ -132,7 +133,12 @@ func TestPlan(t *testing.T) {
 			name: "a gone child starts a new one of its vendor",
 			seed: func(t *testing.T, s *store.Store, dir string) {
 				seedParent(t, s, "p0000000-0000-4000-8000-000000000000", dir,
-					store.Child{ID: "g", Vendor: "grok", VendorSessionID: sidB, Status: "gone"})
+					store.Child{ID: "g", Vendor: "grok", VendorSessionID: sidB})
+				// Grok's layout is recorded: its sessions folder is there
+				// and holds nothing for sidB.
+				if err := os.MkdirAll(filepath.Join(os.Getenv("HOME"), ".grok", "sessions"), 0o700); err != nil {
+					t.Fatal(err)
+				}
 			},
 			check: func(t *testing.T, p launchPlan, dir string) {
 				if p.newParent || !p.newChild || p.child.Vendor != "grok" || p.resume != "" {
@@ -140,6 +146,51 @@ func TestPlan(t *testing.T) {
 				}
 			},
 			note: "the vendor no longer has it",
+		},
+		{
+			name: "a claude session file aggy cannot find is unknown, and still resumed",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "p0000000-0000-4000-8000-000000000000", dir,
+					store.Child{ID: "c", Vendor: "claude", VendorSessionID: sidA})
+				if err := os.MkdirAll(filepath.Join(os.Getenv("HOME"), ".claude", "projects", "-x"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+			check: func(t *testing.T, p launchPlan, dir string) {
+				if p.newChild || p.resume != sidA {
+					t.Errorf("plan = %+v", p)
+				}
+			},
+		},
+		{
+			name: "a child whose directory was removed starts a new one",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "p0000000-0000-4000-8000-000000000000", dir,
+					store.Child{ID: "c", Vendor: "claude", VendorSessionID: sidA, Cwd: filepath.Join(dir, "wt")})
+				claudeSession(t, sidA, time.Now())
+			},
+			check: func(t *testing.T, p launchPlan, dir string) {
+				if !p.newChild || p.child.Vendor != "claude" || p.child.Cwd != dir {
+					t.Errorf("plan = %+v", p)
+				}
+			},
+			note: "its directory was removed",
+		},
+		{
+			name: "a re-cloned directory starts a new parent",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				key, _ := safefs.CanonicalPath(dir)
+				if err := s.InsertParent(context.Background(), store.Parent{ID: "abc00000-0000-4000-8000-000000000000",
+					Dir: dir, DirKey: key, DirID: "1:1", CreatedAt: time.Now(), LastActive: time.Now()}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			check: func(t *testing.T, p launchPlan, dir string) {
+				if !p.newParent || p.parent.DirID != dirID(dir) || p.parent.DirID == "" {
+					t.Errorf("plan = %+v", p)
+				}
+			},
+			note: "aggy resume abc00000 reopens the old one",
 		},
 		{
 			name: "a codex child without an id starts a new codex child",
@@ -265,8 +316,53 @@ func TestCommitLease(t *testing.T) {
 	if err != nil || lease != nil {
 		t.Fatalf("codex commit = %v, %v; a codex child has no id to lease", lease, err)
 	}
-	got, err := s.LatestParentInDir(ctx, dir)
+	got, err := s.LatestParentInDir(ctx, canon(t, dir), dir)
 	if err != nil || got.ID != p.parent.ID || got.LastVendor != "codex" {
 		t.Errorf("latest parent = %+v, %v", got, err)
 	}
+}
+
+// TestPlanCanonicalDir (D23-3): another spelling of the directory (here
+// through a symlink) finds the same parent.
+func TestPlanCanonicalDir(t *testing.T) {
+	s := sessionStore(t)
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.DefaultVendor = adapter.Grok
+	ctx := context.Background()
+	p, err := plan(ctx, s, cfg, real, target{New: true}, time.Now(), &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := p.commit(ctx, s, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lease.Release(ctx) })
+	if err := os.MkdirAll(filepath.Join(os.Getenv("HOME"), ".grok", "sessions", "x", p.child.VendorSessionID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	again, err := plan(ctx, s, cfg, link, target{}, time.Now(), &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.newParent || again.parent.ID != p.parent.ID || again.resume != p.child.VendorSessionID {
+		t.Errorf("from the symlink: plan = %+v, want parent %s resumed", again, p.parent.ID)
+	}
+	if p.child.VendorHome != filepath.Join(os.Getenv("HOME"), ".grok") {
+		t.Errorf("vendor home = %q", p.child.VendorHome)
+	}
+}
+
+func canon(t *testing.T, dir string) string {
+	t.Helper()
+	k, err := safefs.CanonicalPath(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
 }

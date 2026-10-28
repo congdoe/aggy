@@ -9,12 +9,29 @@ import (
 	"time"
 )
 
-const parentCols = `id, title, dir, last_vendor, created_at, last_active`
+// FutureSlack is how far past now a last-active time may be. A session
+// file's modified time from further in the future (clock skew, a network
+// file system, touch -t) is capped at now plus FutureSlack when stored.
+// A stored time past that (a row written before the cap, or by a clock
+// that was ahead) is not trusted: it reads as the row's creation time and
+// is replaced by the next real activity, so it cannot keep a child or
+// parent first for good.
+const FutureSlack = 5 * time.Minute
+
+// capMillis is the latest last-active time aggy accepts now.
+func capMillis() int64 { return millis(time.Now().Add(FutureSlack)) }
+
+// activeExpr is last_active, read as created_at when it is past the
+// cap, its argument.
+const activeExpr = `CASE WHEN last_active > ? THEN created_at ELSE last_active END`
+
+// parentCols take capMillis() as their first argument.
+const parentCols = `id, title, dir, last_vendor, created_at, ` + activeExpr + ` AS active, dir_key, dir_id`
 
 func scanParent(sc interface{ Scan(...any) error }) (Parent, error) {
 	var p Parent
 	var created, active int64
-	if err := sc.Scan(&p.ID, &p.Title, &p.Dir, &p.LastVendor, &created, &active); err != nil {
+	if err := sc.Scan(&p.ID, &p.Title, &p.Dir, &p.LastVendor, &created, &active, &p.DirKey, &p.DirID); err != nil {
 		return Parent{}, err
 	}
 	p.CreatedAt, p.LastActive = fromMillis(created), fromMillis(active)
@@ -22,7 +39,7 @@ func scanParent(sc interface{ Scan(...any) error }) (Parent, error) {
 }
 
 func (s *Store) queryParents(ctx context.Context, q string, args ...any) ([]Parent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+parentCols+` FROM parents `+q, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+parentCols+` FROM parents `+q, append([]any{capMillis()}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -40,13 +57,15 @@ func (s *Store) queryParents(ctx context.Context, q string, args ...any) ([]Pare
 
 // Parents returns every parent, most recently active first.
 func (s *Store) Parents(ctx context.Context) ([]Parent, error) {
-	return s.queryParents(ctx, `ORDER BY last_active DESC, created_at DESC, id`)
+	return s.queryParents(ctx, `ORDER BY active DESC, created_at DESC, id`)
 }
 
 // LatestParentInDir returns the most recently active parent whose
-// directory is dir, or ErrNotFound.
-func (s *Store) LatestParentInDir(ctx context.Context, dir string) (Parent, error) {
-	ps, err := s.queryParents(ctx, `WHERE dir = ? ORDER BY last_active DESC, created_at DESC, id LIMIT 1`, dir)
+// directory has the canonical form key, or, for a row without one, is
+// dir; or ErrNotFound.
+func (s *Store) LatestParentInDir(ctx context.Context, key, dir string) (Parent, error) {
+	ps, err := s.queryParents(ctx, `WHERE dir_key = ? OR (dir_key = '' AND dir = ?)
+		ORDER BY active DESC, created_at DESC, id LIMIT 1`, key, dir)
 	if err != nil {
 		return Parent{}, err
 	}
@@ -71,13 +90,13 @@ func (s *Store) ParentsByPrefix(ctx context.Context, prefix string) ([]Parent, e
 }
 
 const childCols = `id, parent_id, vendor, vendor_session_id, kind, title, model, cwd,
-	transcript_path, status, created_at, last_active`
+	transcript_path, status, created_at, ` + activeExpr + ` AS active, vendor_home`
 
 // Children returns the parent's children, most recently active first.
 func (s *Store) Children(ctx context.Context, parentID string) ([]Child, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+childCols+` FROM children WHERE parent_id = ?
-		 ORDER BY last_active DESC, created_at DESC, id`, parentID)
+		 ORDER BY active DESC, created_at DESC, id`, capMillis(), parentID)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +106,7 @@ func (s *Store) Children(ctx context.Context, parentID string) ([]Child, error) 
 		var c Child
 		var created, active int64
 		if err := rows.Scan(&c.ID, &c.ParentID, &c.Vendor, &c.VendorSessionID, &c.Kind, &c.Title, &c.Model,
-			&c.Cwd, &c.TranscriptPath, &c.Status, &created, &active); err != nil {
+			&c.Cwd, &c.TranscriptPath, &c.Status, &created, &active, &c.VendorHome); err != nil {
 			return nil, err
 		}
 		c.CreatedAt, c.LastActive = fromMillis(created), fromMillis(active)
@@ -96,45 +115,39 @@ func (s *Store) Children(ctx context.Context, parentID string) ([]Child, error) 
 	return out, rows.Err()
 }
 
+// raise sets the child's last active, and its parent's, to at when that
+// is later; at is capped, and a stored time past the cap does not count.
+func raise(ctx context.Context, tx *sql.Tx, childID string, at time.Time) error {
+	limit := capMillis()
+	ms := min(millis(at), limit)
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE children SET last_active = MAX(`+activeExpr+`, ?) WHERE id = ?`, limit, ms, childID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx,
+		`UPDATE parents SET last_active = MAX(`+activeExpr+`, ?)
+		 WHERE id = (SELECT parent_id FROM children WHERE id = ?)`, limit, ms, childID)
+	return err
+}
+
 // OnScreen records that child (of vendor) came on screen at at: the
 // child and its parent become active then, and the parent's last vendor
 // is vendor.
 func (s *Store) OnScreen(ctx context.Context, parentID, childID, vendor string, at time.Time) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE children SET last_active = MAX(last_active, ?) WHERE id = ?`, millis(at), childID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE parents SET last_vendor = ? WHERE id = ?`, vendor, parentID); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx,
-			`UPDATE parents SET last_vendor = ?, last_active = MAX(last_active, ?) WHERE id = ?`,
-			vendor, millis(at), parentID)
-		return err
+		return raise(ctx, tx, childID, at)
 	})
 }
 
-// SetChildActivity records what aggy found about a child: activity at
-// active (taken from the vendor's session file; zero leaves it) raises
-// the child's and its parent's last-active times, never lowers them, and
-// a non-empty status replaces the child's.
-func (s *Store) SetChildActivity(ctx context.Context, childID string, active time.Time, status string) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
-		if status != "" {
-			if _, err := tx.ExecContext(ctx, `UPDATE children SET status = ? WHERE id = ?`, status, childID); err != nil {
-				return err
-			}
-		}
-		if active.IsZero() {
-			return nil
-		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE children SET last_active = MAX(last_active, ?) WHERE id = ?`, millis(active), childID); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx,
-			`UPDATE parents SET last_active = MAX(last_active, ?)
-			 WHERE id = (SELECT parent_id FROM children WHERE id = ?)`, millis(active), childID)
-		return err
-	})
+// SetChildActivity records activity of a child at active (taken from the
+// vendor's session file): it raises the child's and its parent's
+// last-active times, never lowers them, and caps them at now plus
+// FutureSlack.
+func (s *Store) SetChildActivity(ctx context.Context, childID string, active time.Time) error {
+	return s.tx(ctx, func(tx *sql.Tx) error { return raise(ctx, tx, childID, active) })
 }
 
 // ErrSessionSet means a child already has a different vendor session id.

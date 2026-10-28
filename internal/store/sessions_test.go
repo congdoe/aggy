@@ -13,18 +13,22 @@ func TestSessionsRows(t *testing.T) {
 	t0 := time.UnixMilli(1_000_000).UTC()
 	for _, p := range []Parent{
 		{ID: "aaaa1111", Dir: "/a", CreatedAt: t0, LastActive: t0},
-		{ID: "aaaa2222", Dir: "/a", CreatedAt: t0, LastActive: t0.Add(time.Minute)},
-		{ID: "bbbb1111", Dir: "/b", CreatedAt: t0, LastActive: t0.Add(2 * time.Minute)},
+		{ID: "aaaa2222", Dir: "/A/", DirKey: "/a", CreatedAt: t0, LastActive: t0.Add(time.Minute)},
+		{ID: "bbbb1111", Dir: "/b", DirKey: "/b", CreatedAt: t0, LastActive: t0.Add(2 * time.Minute)},
 	} {
 		if err := s.InsertParent(ctx, p); err != nil {
 			t.Fatal(err)
 		}
 	}
-	p, err := s.LatestParentInDir(ctx, "/a")
-	if err != nil || p.ID != "aaaa2222" {
-		t.Errorf("LatestParentInDir(/a) = %v, %v", p.ID, err)
+	// By canonical key, and by dir for a row without one.
+	p, err := s.LatestParentInDir(ctx, "/a", "/a")
+	if err != nil || p.ID != "aaaa2222" || p.DirKey != "/a" {
+		t.Errorf("LatestParentInDir(/a) = %+v, %v", p, err)
 	}
-	if _, err := s.LatestParentInDir(ctx, "/c"); !errors.Is(err, ErrNotFound) {
+	if p, err := s.LatestParentInDir(ctx, "/x", "/a"); err != nil || p.ID != "aaaa1111" {
+		t.Errorf("LatestParentInDir(key /x, dir /a) = %v, %v", p.ID, err)
+	}
+	if _, err := s.LatestParentInDir(ctx, "/c", "/c"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("LatestParentInDir(/c) err = %v", err)
 	}
 	ps, err := s.Parents(ctx)
@@ -69,16 +73,16 @@ func TestSessionsRows(t *testing.T) {
 		t.Errorf("parent after OnScreen = %+v", p)
 	}
 
-	// SetChildActivity never lowers last_active, and sets status.
-	if err := s.SetChildActivity(ctx, "c2", t0.Add(-time.Hour), "gone"); err != nil {
+	// SetChildActivity never lowers last_active.
+	if err := s.SetChildActivity(ctx, "c2", t0.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	t2 := t1.Add(time.Minute)
-	if err := s.SetChildActivity(ctx, "c1", t2, ""); err != nil {
+	if err := s.SetChildActivity(ctx, "c1", t2); err != nil {
 		t.Fatal(err)
 	}
 	cs, _ = s.Children(ctx, "aaaa1111")
-	if cs[0].ID != "c1" || !cs[0].LastActive.Equal(t2) || cs[1].Status != "gone" || !cs[1].LastActive.Equal(t0) {
+	if cs[0].ID != "c1" || !cs[0].LastActive.Equal(t2) || !cs[1].LastActive.Equal(t0) {
 		t.Errorf("Children after SetChildActivity = %+v", cs)
 	}
 	if p, _ = s.GetParent(ctx, "aaaa1111"); !p.LastActive.Equal(t2) {
@@ -104,5 +108,65 @@ func TestSessionsRows(t *testing.T) {
 	}
 	if err := s.SetChildSessionID(ctx, "c3", "t1"); err == nil {
 		t.Error("a second codex child took the same thread id")
+	}
+}
+
+// TestFutureActivity (D23-2): a session file time from the future is
+// capped when stored, and a row already holding one reads as its
+// creation time and is replaced by the next real activity, so it cannot
+// stay first for good.
+func TestFutureActivity(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	now := time.Now()
+	t0 := now.Add(-time.Hour).Truncate(time.Millisecond)
+	for _, id := range []string{"p1", "p2"} {
+		if err := s.InsertParent(ctx, Parent{ID: id, Dir: "/" + id, CreatedAt: t0, LastActive: t0}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.InsertChild(ctx, Child{ID: "c" + id, ParentID: id, Vendor: "claude", Cwd: "/", CreatedAt: t0, LastActive: t0}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Capped on write.
+	if err := s.SetChildActivity(ctx, "cp1", now.Add(100*365*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	ps, _ := s.Parents(ctx)
+	if ps[0].ID != "p1" || ps[0].LastActive.After(time.Now().Add(FutureSlack)) {
+		t.Errorf("capped write: first = %s at %v", ps[0].ID, ps[0].LastActive)
+	}
+	// A row poisoned before the cap existed.
+	if _, err := s.DB().ExecContext(ctx, `UPDATE parents SET last_active = ? WHERE id = 'p1'`,
+		millis(now.Add(50*365*24*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `UPDATE children SET last_active = ? WHERE id = 'cp1'`,
+		millis(now.Add(50*365*24*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	ps, _ = s.Parents(ctx)
+	for _, p := range ps {
+		if !p.LastActive.Equal(t0) {
+			t.Errorf("parent %s reads as %v, want its creation time %v", p.ID, p.LastActive, t0)
+		}
+	}
+	// Real activity on the other parent takes the lead, and on the
+	// poisoned one heals it.
+	if err := s.OnScreen(ctx, "p2", "cp2", "claude", now); err != nil {
+		t.Fatal(err)
+	}
+	if ps, _ = s.Parents(ctx); ps[0].ID != "p2" {
+		t.Errorf("after OnScreen p2, first = %s", ps[0].ID)
+	}
+	later := now.Add(time.Second)
+	if err := s.SetChildActivity(ctx, "cp1", later); err != nil {
+		t.Fatal(err)
+	}
+	if ps, _ = s.Parents(ctx); ps[0].ID != "p1" || !ps[0].LastActive.Equal(later.Truncate(time.Millisecond)) {
+		t.Errorf("healed: first = %s at %v", ps[0].ID, ps[0].LastActive)
+	}
+	if cs, _ := s.Children(ctx, "p1"); !cs[0].LastActive.Equal(later.Truncate(time.Millisecond)) {
+		t.Errorf("healed child at %v", cs[0].LastActive)
 	}
 }
