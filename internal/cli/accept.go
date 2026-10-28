@@ -18,6 +18,7 @@ import (
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/supervisor"
 	"github.com/congdoe/aggy/internal/termsafe"
 )
 
@@ -143,6 +144,9 @@ func gateText(r string) string {
 // skipped when the person said no, and returns the result ("" when
 // nothing was decided).
 func gateEdit(ctx context.Context, s *store.Store, g *gitWorktrees, ce repoCheckEnv, b store.Borrow, wt store.Worktree, run bool, ask func(string) bool, stdout io.Writer) (string, error) {
+	if d := g.env.childWritable(wt.Repo); d != "" {
+		return "", fmt.Errorf("refusing to run the checks: the main checkout %s is under %s, which an edit child's sandbox may write (Codex workspace-write keeps temp dirs writable), so its check list may be the child's; run the edit from a repo outside temp dirs", wt.Repo, d)
+	}
 	rc, err := config.LoadRepo(wt.Repo)
 	if err != nil {
 		return "", err
@@ -175,13 +179,21 @@ func gateEdit(ctx context.Context, s *store.Store, g *gitWorktrees, ce repoCheck
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
+	// The checks passed on the recorded tree only if they left it as it
+	// was: a check that writes (gofmt -w, go generate, golden updates)
+	// changed what would be applied, so it is recorded as a failure.
+	tree, terr := g.Tree(ctx, wt)
+	if terr != nil || tree != wt.Tree {
+		res = store.CheckFail
+	}
 	if err := s.SetWorktreeCheck(context.WithoutCancel(ctx), b.ID, res); err != nil {
 		return "", err
 	}
-	// A check that wrote files the diff would hold makes accept refuse the
-	// worktree (editDiff), so say so now.
-	if tree, err := g.Tree(ctx, wt); err != nil || tree != wt.Tree {
-		fmt.Fprintln(stdout, "Warning: the checks changed files in the worktree, so aggy accept will refuse it until they are undone.")
+	if terr != nil {
+		return "", fmt.Errorf("after the checks: %w", terr)
+	}
+	if tree != wt.Tree {
+		return "", fmt.Errorf("refusing: the checks changed files in the worktree, so it no longer matches the diff the child left; review %s by hand, or undo the changes and run the checks again", wt.Path)
 	}
 	return res, nil
 }
@@ -286,6 +298,14 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 	if flags["--check"] || (wt.Check == "" && tty && !yes) {
 		if wt.Check, err = gateEdit(ctx, s, g, defaultRepoCheckEnv(), b, wt, flags["--check"], ask, stdout); err != nil {
 			return fail(err)
+		}
+		// The checks ran code outside any sandbox: take the diff again, so
+		// the worktree must still match its recorded tree and the main
+		// checkout must still be clean in the touched paths.
+		if wt.Check == store.CheckPass || wt.Check == store.CheckFail {
+			if _, patch, err = g.editDiff(ctx, wt); err != nil {
+				return fail(err)
+			}
 		}
 	}
 	if wt.Check == store.CheckFail {
@@ -445,7 +465,7 @@ func (g *gitWorktrees) hooksDir(ctx context.Context, repo string) (string, error
 		return "", nil
 	}
 	refuse := func(why string) (string, error) {
-		return "", fmt.Errorf("refusing: cannot tell where the repo's core.hooksPath %q points (%s), so the diff cannot be checked against it", val, why)
+		return "", fmt.Errorf("refusing: core.hooksPath %s: %s; aggy cannot tell where it points, so the diff cannot be checked against it", val, why)
 	}
 	p := val
 	if p == "~" || strings.HasPrefix(p, "~/") {
@@ -465,11 +485,11 @@ func (g *gitWorktrees) hooksDir(ctx context.Context, repo string) (string, error
 	}
 	real, err := realPath(p)
 	if err != nil {
-		return refuse(err.Error())
+		return refuse(pathErr(err))
 	}
 	root, err := realPath(repo)
 	if err != nil {
-		return refuse(err.Error())
+		return refuse("the repo: " + pathErr(err))
 	}
 	if !within(real, root) {
 		return "", nil
@@ -479,6 +499,16 @@ func (g *gitWorktrees) hooksDir(ctx context.Context, repo string) (string, error
 		return refuse(err.Error())
 	}
 	return filepath.ToSlash(rel), nil
+}
+
+// pathErr is a path error's cause alone ("not a directory"), or the
+// whole error for any other.
+func pathErr(err error) string {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err.Error()
+	}
+	return err.Error()
 }
 
 // realPath resolves every symlink in p's deepest existing ancestor and
@@ -557,7 +587,12 @@ func (g *gitWorktrees) cleanIn(ctx context.Context, repo string, paths []string)
 // git apply, which refuses paths outside the repo and writes through no
 // symlink, with every filter driver switched off.
 func (g *gitWorktrees) apply(ctx context.Context, wt store.Worktree, patch string) error {
-	dir, err := safefs.MkdirTemp(g.env.tempDir, "aggy-accept-")
+	// Not in $TMPDIR or /tmp: an edit child's sandbox may write there.
+	run := filepath.Join(g.stateDir, "run")
+	if err := supervisor.PrivateDir(run); err != nil {
+		return err
+	}
+	dir, err := safefs.MkdirTemp(run, "aggy-accept-")
 	if err != nil {
 		return err
 	}

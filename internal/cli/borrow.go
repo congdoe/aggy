@@ -81,6 +81,30 @@ type borrowEnv struct {
 	// kernelSandbox is probe.HostKernelSandbox: nil when the host can
 	// apply Grok's sandbox. A nil func means it cannot.
 	kernelSandbox func() error
+	// tmpDirs are the temp dirs an edit child's sandbox may write; nil
+	// means defaultTmpDirs.
+	tmpDirs func() []string
+}
+
+// defaultTmpDirs are /tmp and $TMPDIR, which Codex's workspace-write
+// sandbox is taken to leave writable (unverified: aggy passes no
+// exclude_slash_tmp or exclude_tmpdir_env_var key yet).
+func defaultTmpDirs() []string { return []string{"/tmp", "/private/tmp", os.Getenv("TMPDIR")} }
+
+// childWritable returns the temp dir that holds repo (by real path), or
+// "" when none does.
+func (e borrowEnv) childWritable(repo string) string {
+	dirs := defaultTmpDirs
+	if e.tmpDirs != nil {
+		dirs = e.tmpDirs
+	}
+	r := resolvePath(repo)
+	for _, d := range dirs() {
+		if d != "" && within(r, resolvePath(d)) {
+			return d
+		}
+	}
+	return ""
 }
 
 // guard is the PreToolUse guard command: this aggy binary, resolved, with
@@ -114,6 +138,7 @@ func defaultBorrowEnv() borrowEnv {
 		runner:        headlessRunner,
 		now:           time.Now,
 		executable:    os.Executable,
+		tmpDirs:       defaultTmpDirs,
 	}
 }
 

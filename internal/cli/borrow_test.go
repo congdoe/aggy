@@ -136,6 +136,9 @@ func newBorrowFixture(t *testing.T, vendors ...adapter.Vendor) *borrowFixture {
 		now:    time.Now,
 		// The host's kernel is not under test here (probe.TestKernelSandbox).
 		kernelSandbox: func() error { return nil },
+		// The test repos live in temp dirs; TestGateRefusesTmpRepo checks
+		// the refusal.
+		tmpDirs: func() []string { return nil },
 	}
 	return f
 }
