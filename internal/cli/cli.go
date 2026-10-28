@@ -12,9 +12,11 @@ import (
 //	go build -ldflags "-X github.com/congdoe/aggy/internal/cli.Version=v0.1.0"
 var Version = "dev"
 
-// version is Version, or, in a binary built by `go install
-// github.com/congdoe/aggy/cmd/aggy@<tag>` (no ldflags), the module
-// version Go recorded.
+// version is Version when the build set it with -ldflags (make build,
+// goreleaser), else the main module version Go recorded: the tag for
+// `go install github.com/congdoe/aggy/cmd/aggy@<tag>`, and, since Go
+// 1.24, a VCS pseudo-version for a plain `go build` in a checkout. A
+// build with neither (go run, tests) says "dev".
 func version() string {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
