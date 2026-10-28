@@ -87,8 +87,9 @@ func shellSafe(key string, a []string) error {
 // in ~/.aggy/skills/<name>; a built-in's may be elsewhere under home,
 // but not in a dot folder (vendor homes, ~/.ssh) or in ~/.aggy outside
 // skills/.
-// TODO(T6708): resolve the path and check it again through safefs when
-// linking, so a symlink cannot point a skill link at a credential.
+// Linking resolves the folder and checks it again through safefs
+// (cli.checkSkillStore), so a symlink cannot point a skill link at a
+// credential.
 func skillPath(key, name, p string, builtIn bool) error {
 	bad := func(m string) error { return &Error{Key: key, Msg: m} }
 	if err := text(key, p, maxPath, true); err != nil {

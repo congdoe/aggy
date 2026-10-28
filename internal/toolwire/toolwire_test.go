@@ -80,6 +80,32 @@ func TestMCP(t *testing.T) {
 	}
 }
 
+// TestHooks: a tool's hook runs aggy hook-tool for Claude; a hook that
+// approves, by its definition or a verified fact, is never wired; Codex
+// and Grok take no hook for one session.
+func TestHooks(t *testing.T) {
+	hk := func(name string, approves bool, argv ...string) switchboard.State {
+		h := tooldef.Hook{Vendors: []adapter.Vendor{adapter.Claude, adapter.Codex}, Event: "PreToolUse", Matcher: "Bash", Decides: true, Approves: approves, Argv: argv}
+		return switchboard.State{Tool: tooldef.Tool{Digest: strings.Repeat("0f", 32), Def: tooldef.Def{Name: name, Hooks: []tooldef.Hook{h}}}, On: true}
+	}
+	on := []switchboard.State{hk("rtk", false, "rtk", "hook", "claude"), hk("yes", true, "yes-hook"), hk("rtkc", false, "rtk", "hook", "codex")}
+	got, refused := Hooks(on, adapter.Claude, "/opt/bin/aggy")
+	want := map[string][]adapter.HookGroup{"PreToolUse": {{Matcher: "Bash", Hooks: []adapter.HookCommand{{Type: "command",
+		Command: "test -x /opt/bin/aggy && /opt/bin/aggy hook-tool --vendor claude rtk 0 0f0f0f0f0f0f0f0f || true", Timeout: ToolHookTimeout + 2}}}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("hooks = %+v", got)
+	}
+	if len(refused) != 2 || refused[0].Code != diag.CodeToolHookApproves || refused[1].Code != diag.CodeToolHookApproves {
+		t.Errorf("refused = %+v", refused)
+	}
+	if got, refused := Hooks(on[:1], adapter.Codex, ""); got != nil || len(refused) != 1 || refused[0].Code != diag.CodeToolNoFlag {
+		t.Errorf("codex: %+v %+v", got, refused)
+	}
+	if got, refused := Hooks(on[:1], adapter.Claude, "/opt/my bin/aggy"); got != nil || len(refused) != 1 {
+		t.Errorf("a path a shell would split: %+v %+v", got, refused)
+	}
+}
+
 func TestClaudeConfig(t *testing.T) {
 	b, err := ClaudeConfig([]adapter.MCPServer{{Name: "idx", Command: "idx", Args: []string{"--a", `x"y`}, Cwd: "/d"}, {Name: "docs", Command: "docs-mcp"}})
 	if err != nil {
