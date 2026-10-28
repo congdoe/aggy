@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"strconv"
 
@@ -47,14 +48,18 @@ func readStat(pid string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, 4096))
 }
 
-// parentPIDOf reads pid's parent from /proc/<pid>/stat.
-func parentPIDOf(pid int) (int, error) {
+// procInfoOf reads pid's parent and start time (clock ticks since boot)
+// from /proc/<pid>/stat.
+func procInfoOf(pid int) (ppid int, start int64, err error) {
 	b, err := readStat(strconv.Itoa(pid))
 	if err != nil {
-		return -1, err
+		return -1, 0, err
 	}
-	ppid, _, err := parseStat(b)
-	return ppid, err
+	ppid, st, err := parseStat(b)
+	if st > math.MaxInt64 {
+		return -1, 0, errors.New("supervisor: bad start time")
+	}
+	return ppid, int64(st), err
 }
 
 // peerInstanceOf pins the process that connected. With SO_PEERPIDFD the
@@ -66,7 +71,9 @@ func parentPIDOf(pid int) (int, error) {
 // for a peer that has exited (6.5 to 6.14), is no identity (G38-7).
 //
 // shortcut: on that fallback, a pid freed and reused between the peer's
-// connect and this read (microseconds) is not caught.
+// connect and this read is not caught (G38-8): normally microseconds, but
+// unbounded if a process of the user's SIGSTOPs aggy. Kernels from 6.5
+// take the pidfd path, which has no such gap.
 func peerInstanceOf(c *net.UnixConn, pid int) (same func() bool, release func(), err error) {
 	pfd, err := peerPidfd(c)
 	switch {
@@ -76,12 +83,8 @@ func peerInstanceOf(c *net.UnixConn, pid int) (same func() bool, release func(),
 	case !pidfdFallback(err):
 		return nil, nil, err
 	}
-	start := func() (uint64, error) {
-		b, err := readStat(strconv.Itoa(pid))
-		if err != nil {
-			return 0, err
-		}
-		_, st, err := parseStat(b)
+	start := func() (int64, error) {
+		_, st, err := procInfoOf(pid)
 		return st, err
 	}
 	t0, err := start()

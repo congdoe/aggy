@@ -5,6 +5,7 @@ package supervisor
 import (
 	"bytes"
 	"errors"
+	"math"
 	"strconv"
 	"syscall"
 )
@@ -30,7 +31,8 @@ import (
 // The answer is worked out once per connection, at accept, before any
 // request is read, and bound to the process that connected, not just its
 // pid (G38-1): peerInstance pins that process (a pidfd on Linux, its
-// start time otherwise) before the walk and checks it again after. A pid
+// start time otherwise) before the walk and checks it again after, and
+// the walk pins each ancestor by its start time (G38-9). A pid
 // is otherwise easy to have reused: a process outside the tree connects,
 // hands the connection on, and exits, and pids are handed out again soon
 // (pid_max 99999 on darwin, often 32768 on Linux) to whatever the CLI
@@ -46,31 +48,36 @@ import (
 // the CLI (CLI, shell, aggy hook; a node launcher adds one).
 const maxLineageDepth = 64
 
-// parentPID returns a process's parent pid, and peerInstance pins the
-// process that connected (see peerInstanceOf); tests replace them.
+// procInfo returns a process's parent pid and start time (any unit
+// that orders starts on this OS), and peerInstance pins the process that
+// connected (see peerInstanceOf); tests replace them.
 var (
-	parentPID    = parentPIDOf
+	procInfo     = procInfoOf
 	peerInstance = peerInstanceOf
 )
 
 // descends reports whether pid is root or descends from it. The caller
-// pins pid's process around it (peerInstance).
+// pins pid's process around it (peerInstance); the walk pins each
+// ancestor by its start time (G38-9): a parent cannot have started after
+// its child, so a pid that names a newer process than the child it was
+// read from has been freed and reused mid-walk, and the walk stops.
 func descends(pid, root int) bool {
 	if pid <= 0 || root <= 0 {
 		return false
 	}
+	childStart := int64(math.MaxInt64)
 	for range maxLineageDepth {
+		ppid, start, err := procInfo(pid)
+		if err != nil || start > childStart {
+			return false
+		}
 		if pid == root {
 			return true
 		}
-		if pid <= 1 {
+		if pid <= 1 || ppid == pid || ppid <= 0 {
 			return false
 		}
-		p, err := parentPID(pid)
-		if err != nil || p == pid {
-			return false
-		}
-		pid = p
+		pid, childStart = ppid, start
 	}
 	return false
 }
