@@ -120,7 +120,11 @@ func lockdown(k adapter.Kind) []string {
 // the cwd works, one outside it is refused. Unverified: whether exec's default web search
 // is on for an edit child (no recorded flag turns it off), and whether
 // Codex treats a linked worktree as its main repo for project trust; with
-// the user config ignored, no trust entry is loaded either way.
+// the user config ignored, no trust entry is loaded either way. Also
+// unverified (K46-2): whether workspace-write leaves /tmp and $TMPDIR
+// writable, and the sandbox_workspace_write exclude_slash_tmp and
+// exclude_tmpdir_env_var keys that would close them; a wrong key fails
+// under --strict-config, so none is passed until a live check.
 var EditLockdown = editLockdown()
 
 func editLockdown() []string {

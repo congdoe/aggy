@@ -608,4 +608,10 @@ func TestHooksDir(t *testing.T) {
 			t.Errorf("%s (HOME %q): %q, %v; want %q, error %v", tt.val, tt.home, got, err, tt.want, tt.err)
 		}
 	}
+	// K46-3: an ancestor that is a file is refused, and says why.
+	mustWrite(t, filepath.Join(repo, "scripts"), "x\n", 0o600)
+	gitIn(t, repo, "config", "core.hooksPath", "scripts/hooks")
+	if _, err := g.hooksDir(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "core.hooksPath scripts/hooks: not a directory") {
+		t.Errorf("err = %v", err)
+	}
 }

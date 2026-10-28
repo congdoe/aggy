@@ -12,10 +12,11 @@ import (
 )
 
 // gateFixture is an edit fixture whose main checkout lists one check,
-// sh t.sh, and ignores .aggy as aggy's parity does. The child writes t.sh
-// (exit status st), which records its working dir in a marker, and its
-// own .aggy/config.toml naming evil.sh, which must never run.
-func gateFixture(t *testing.T, exit string) (f *borrowFixture, id, wt, ran, evil string) {
+// sh t.sh, and ignores .aggy as aggy's parity does. The child writes t.sh,
+// which records its working dir in a marker and then runs script (REPO
+// in it is the main checkout), and its own .aggy/config.toml naming
+// evil.sh, which must never run.
+func gateFixture(t *testing.T, script string) (f *borrowFixture, id, wt, ran, evil string) {
 	t.Helper()
 	f, markers := editFixture(t)
 	t.Cleanup(func() { noMarkers(t, markers) })
@@ -27,7 +28,7 @@ func gateFixture(t *testing.T, exit string) (f *borrowFixture, id, wt, ran, evil
 	ran, evil = filepath.Join(dir, "ran"), filepath.Join(dir, "evil")
 	id, wt = editBorrow(t, f, map[string]string{
 		"a.go":              "package a\n\nfunc Edited() {}\n",
-		"t.sh":              "pwd > " + ran + "\nexit " + exit + "\n",
+		"t.sh":              "pwd > " + ran + "\n" + strings.ReplaceAll(script, "REPO", f.repo) + "\n",
 		"evil.sh":           "touch " + evil + "\n",
 		".aggy/config.toml": `check = [["sh", "evil.sh"]]` + "\n",
 	})
@@ -59,7 +60,7 @@ func gateResult(t *testing.T, id string) string {
 // config, says the worktree holds the child's code, runs the checks in
 // the worktree only on y or --yes, and records the result.
 func TestEditCheckGate(t *testing.T) {
-	f, id, wt, ran, evil := gateFixture(t, "0")
+	f, id, wt, ran, evil := gateFixture(t, "exit 0")
 
 	code, out, errOut := checkEdit(f, "", false, id)
 	if code != 1 || !strings.Contains(out, "a.go") || !strings.Contains(out, "code the child wrote") || !strings.Contains(out, "Checks not run") {
@@ -106,7 +107,7 @@ func TestEditCheckGate(t *testing.T) {
 // accept --check runs the checks; on a terminal accept offers them first.
 func TestAcceptGate(t *testing.T) {
 	t.Run("failed check warns", func(t *testing.T) {
-		f, id, _, ran, evil := gateFixture(t, "1")
+		f, id, _, ran, evil := gateFixture(t, "exit 1")
 		if code, out, _ := checkEdit(f, "", false, id, "--yes"); code != 1 || !strings.Contains(out, "FAIL sh t.sh") {
 			t.Fatalf("code %d: %s", code, out)
 		}
@@ -126,7 +127,7 @@ func TestAcceptGate(t *testing.T) {
 		}
 	})
 	t.Run("accept --check", func(t *testing.T) {
-		f, id, _, ran, _ := gateFixture(t, "0")
+		f, id, _, ran, _ := gateFixture(t, "exit 0")
 		code, out, errOut := accept(f, "", false, id, "--check", "--yes")
 		if code != 0 || !strings.Contains(out, "code the child wrote") || !strings.Contains(out, "ok   sh t.sh") {
 			t.Errorf("code %d: %s %s", code, out, errOut)
@@ -136,7 +137,7 @@ func TestAcceptGate(t *testing.T) {
 		}
 	})
 	t.Run("accept asks on a terminal", func(t *testing.T) {
-		f, id, _, ran, _ := gateFixture(t, "0")
+		f, id, _, ran, _ := gateFixture(t, "exit 0")
 		code, out, errOut := accept(f, "n\ny\n", true, id)
 		if code != 0 || !strings.Contains(out, "Run them?") || !strings.Contains(out, "Checks skipped") || !strings.Contains(out, "Applied") {
 			t.Errorf("code %d: %s %s", code, out, errOut)
@@ -149,7 +150,7 @@ func TestAcceptGate(t *testing.T) {
 		}
 	})
 	t.Run("accept --yes without checks records skipped", func(t *testing.T) {
-		f, id, _, ran, _ := gateFixture(t, "0")
+		f, id, _, ran, _ := gateFixture(t, "exit 0")
 		if code, out, errOut := accept(f, "", false, id, "--yes"); code != 0 || !strings.Contains(out, "checks: not run") {
 			t.Errorf("code %d: %s %s", code, out, errOut)
 		}
@@ -162,7 +163,7 @@ func TestAcceptGate(t *testing.T) {
 // TestCheckRefusesEditWorktree (T6691, W-5): aggy check run by hand in an
 // edit worktree refuses, so the child's own config never runs.
 func TestCheckRefusesEditWorktree(t *testing.T) {
-	f, _, wt, _, evil := gateFixture(t, "0")
+	f, _, wt, _, evil := gateFixture(t, "exit 0")
 	for _, dir := range []string{wt, filepath.Join(wt, ".aggy")} {
 		e := defaultRepoCheckEnv()
 		e.getwd = func() (string, error) { return dir, nil }
@@ -180,5 +181,52 @@ func TestCheckRefusesEditWorktree(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := e.check(context.Background(), nil, &out, &errb); strings.Contains(errb.String(), "edit worktree") {
 		t.Errorf("main checkout: code %d: %s", code, errb.String())
+	}
+}
+
+// TestGateChecksThatWrite (K46-1): a check that changes the worktree, or
+// the main checkout, makes accept refuse; the old patch is never applied
+// and no pass is recorded.
+func TestGateChecksThatWrite(t *testing.T) {
+	t.Run("worktree", func(t *testing.T) {
+		f, id, _, _, _ := gateFixture(t, "echo '// gofmt' >> a.go\nexit 0")
+		code, out, errOut := accept(f, "y\ny\n", true, id)
+		if code != 1 || !strings.Contains(errOut, "the checks changed files in the worktree") || strings.Contains(out, "Applied") {
+			t.Errorf("code %d: %s %s", code, out, errOut)
+		}
+		if data, _ := os.ReadFile(filepath.Join(f.repo, "a.go")); strings.Contains(string(data), "Edited") {
+			t.Errorf("applied: a.go = %q", data)
+		}
+		if r := gateResult(t, id); r != store.CheckFail {
+			t.Errorf("recorded %q, want fail", r)
+		}
+		if code, out, errOut := checkEdit(f, "", false, id, "--yes"); code != 1 || !strings.Contains(errOut, "changed after the borrow ended") {
+			t.Errorf("check again: code %d: %s %s", code, out, errOut)
+		}
+	})
+	t.Run("main checkout", func(t *testing.T) {
+		f, id, _, _, _ := gateFixture(t, "echo '// dirty' >> REPO/a.go\nexit 0")
+		code, out, errOut := accept(f, "", false, id, "--check", "--yes")
+		if code != 1 || !strings.Contains(errOut, "has changes in paths the diff touches") || strings.Contains(out, "Applied") {
+			t.Errorf("code %d: %s %s", code, out, errOut)
+		}
+		if data, _ := os.ReadFile(filepath.Join(f.repo, "a.go")); strings.Contains(string(data), "Edited") {
+			t.Errorf("applied: a.go = %q", data)
+		}
+	})
+}
+
+// TestGateRefusesTmpRepo (K46-2): a main checkout in a temp dir the
+// child's sandbox may write gets no check run: its check list may be the
+// child's.
+func TestGateRefusesTmpRepo(t *testing.T) {
+	f, id, _, ran, _ := gateFixture(t, "exit 0")
+	f.env.tmpDirs = func() []string { return []string{"", filepath.Dir(f.repo)} }
+	code, out, errOut := checkEdit(f, "", false, id, "--yes")
+	if code != 1 || !strings.Contains(errOut, "refusing to run the checks") || !strings.Contains(errOut, "temp dirs") {
+		t.Errorf("code %d: %s %s", code, out, errOut)
+	}
+	if _, err := os.Stat(ran); err == nil {
+		t.Error("the checks ran")
 	}
 }

@@ -557,6 +557,14 @@ Not checked: whether exec's default web search is on under this set, and
 whether Codex resolves a linked worktree to its main repo for project
 trust (with `--ignore-user-config` no trust entry loads). `codex.EditLockdown` is this set.
 
+Also not checked (K46-2): whether `workspace-write` leaves `/tmp` and
+`$TMPDIR` writable, and whether `-c sandbox_workspace_write.exclude_slash_tmp=true`
+and `-c sandbox_workspace_write.exclude_tmpdir_env_var=true` are valid keys
+at this version (no offline source was at hand, and `--strict-config` makes
+a wrong key fatal). Until then aggy assumes they are writable: the check
+gate refuses a main checkout under them, and accept keeps its patch file in
+its own `run` dir.
+
 ## Codex CLI details
 
 - `codex exec resume [SESSION_ID] [PROMPT]` with `--last` and `--all`
