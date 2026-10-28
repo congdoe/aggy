@@ -21,8 +21,9 @@ import (
 // runNew is `aggy new [vendor]`: another parent in the current directory.
 // The old ones stay listed.
 func runNew(args []string, _, stderr io.Writer) int {
+	noPolicy, args := cutNoPolicy(args)
 	if len(args) > 1 || (len(args) == 1 && strings.HasPrefix(args[0], "-")) {
-		fmt.Fprint(stderr, "usage: aggy new [claude|codex|grok]\n")
+		fmt.Fprint(stderr, "usage: aggy new [--no-policy] [claude|codex|grok]\n")
 		return 2
 	}
 	var v adapter.Vendor
@@ -33,17 +34,18 @@ func runNew(args []string, _, stderr io.Writer) int {
 			return 2
 		}
 	}
-	return launch("aggy new", target{New: true, Vendor: v}, stderr)
+	return launch("aggy new", target{New: true, Vendor: v, NoPolicy: noPolicy}, stderr)
 }
 
 // runResume is `aggy resume [id]`: the latest parent in the current
 // directory, or the one whose id starts with id.
 func runResume(args []string, _, stderr io.Writer) int {
+	noPolicy, args := cutNoPolicy(args)
 	if len(args) > 1 {
-		fmt.Fprint(stderr, "usage: aggy resume [id]\n")
+		fmt.Fprint(stderr, "usage: aggy resume [--no-policy] [id]\n")
 		return 2
 	}
-	var t target
+	t := target{NoPolicy: noPolicy}
 	if len(args) == 1 {
 		id := strings.ToLower(args[0])
 		if len(id) < 4 || len(id) > 36 || strings.Trim(id, "0123456789abcdef-") != "" {
@@ -221,4 +223,12 @@ func tildePath(p string) string {
 		return "~/" + rel
 	}
 	return p
+}
+
+// cutNoPolicy takes a leading --no-policy off args.
+func cutNoPolicy(args []string) (bool, []string) {
+	if len(args) > 0 && args[0] == "--no-policy" {
+		return true, args[1:]
+	}
+	return false, args
 }

@@ -40,8 +40,9 @@ func TestResumeLatest(t *testing.T) {
 	}
 	recs := fakecli.Records(t, w.record)
 	second := recs[len(recs)-1]
-	if second.Mode != "interactive" || !slices.Equal(second.Args, []string{"--resume", id[0]}) {
-		t.Errorf("bare aggy args = %q, want --resume %s and nothing else", second.Args, id[0])
+	// The safety policy rides along as --settings; nothing else, no brief.
+	if second.Mode != "interactive" || len(second.Args) != 4 || !slices.Equal(second.Args[:3], []string{"--resume", id[0], "--settings"}) {
+		t.Errorf("bare aggy args = %q, want --resume %s, the policy, and nothing else", second.Args, id[0])
 	}
 	if second.Env["AGGY_PARENT"] != first.Env["AGGY_PARENT"] || second.Env["AGGY_PARENT"] == "" {
 		t.Errorf("AGGY_PARENT %q, then %q: want the same parent", first.Env["AGGY_PARENT"], second.Env["AGGY_PARENT"])

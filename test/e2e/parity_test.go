@@ -95,19 +95,60 @@ func TestPolicyFailsClosed(t *testing.T) {
 	if err := os.Remove(filepath.Join(w.home, ".codex", "rules", "aggy.rules")); err != nil {
 		t.Fatal(err)
 	}
-	s := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "run", "codex")
-	s.waitFor([]byte("--no-policy"))
-	if code := s.exit(); code != 1 {
-		t.Errorf("exit %d, want 1", code)
-	}
-	for _, r := range fakecli.Records(t, w.record) {
-		if r.Mode == "interactive" {
-			t.Fatalf("the CLI started without the policy: %+v", r)
+	for _, args := range [][]string{{"run", "codex"}, {"run", "--direct", "codex"}, {"--direct", "codex"}, {"new", "codex"}} {
+		s := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, args...)
+		s.waitFor([]byte("--no-policy"))
+		if code := s.exit(); code != 1 {
+			t.Errorf("%q: exit %d, want 1", args, code)
+		}
+		for _, r := range fakecli.Records(t, w.record) {
+			if r.Mode == "interactive" {
+				t.Fatalf("%q: the CLI started without the policy: %+v", args, r)
+			}
 		}
 	}
-	s = w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "run", "--no-policy", "codex")
+	s := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "run", "--no-policy", "codex")
 	s.waitFor([]byte("READY>"))
 	s.send([]byte{0x04})
 	s.exit()
 	interactiveRecord(t, w)
+}
+
+// TestResumeMemoryFromChildRepo (F23-1): aggy resume <id> run from
+// another repo gives the CLI the memory of the session's own repo, never
+// the current directory's.
+func TestResumeMemoryFromChildRepo(t *testing.T) {
+	w := newWorld(t)
+	other := filepath.Join(w.home, "other")
+	for dir, text := range map[string]string{w.cwd: "memory of the session repo", other: "memory of the other repo"} {
+		if err := os.MkdirAll(filepath.Join(dir, ".aggy"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".aggy", "memory.md"), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sc := map[string]any{"raw_echo": true, "stdout": "READY>"}
+	s := w.start(t, sc, "run", "grok")
+	s.waitFor([]byte("READY>"))
+	s.send([]byte{0x04})
+	s.exit()
+	parent := interactiveRecord(t, w).Env["AGGY_PARENT"]
+	if parent == "" {
+		t.Fatal("no AGGY_PARENT")
+	}
+	w.cwd = other
+	s = w.start(t, sc, "resume", parent)
+	s.waitFor([]byte("READY>"))
+	s.send([]byte{0x04})
+	s.exit()
+	recs := fakecli.Records(t, w.record)
+	last := recs[len(recs)-1]
+	if last.Mode != "interactive" || last.Env["AGGY_PARENT"] != parent {
+		t.Fatalf("resume record = %+v", last)
+	}
+	rules := strings.Join(last.Flags["--rules"], "")
+	if !strings.Contains(rules, "memory of the session repo") || strings.Contains(rules, "other repo") {
+		t.Errorf("--rules = %q, want the session repo's memory only", rules)
+	}
 }

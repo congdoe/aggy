@@ -47,6 +47,8 @@ Commands:
             --direct, on your terminal without aggy's pass-through (for
             when it breaks a terminal feature; no switch key), still
             kept in the index through hooks. aggy --direct V is the same.
+            aggy refuses to start a CLI its safety policy cannot reach;
+            --no-policy (on aggy, run, new, resume) starts it without.
   brief     Preview the handoff brief for a vendor session
   new       Start another session in this directory (optionally: a vendor)
   resume    Reopen the latest session here, or the one with this id
@@ -91,6 +93,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "run":
 		return runRun(args[1:], stdout, stderr)
 	case "--direct":
+		return runRun(args, stdout, stderr)
+	case "--no-policy":
+		if len(args) == 1 {
+			return launch("aggy", target{NoPolicy: true}, stderr)
+		}
 		return runRun(args, stdout, stderr)
 	case "new":
 		return runNew(args[1:], stdout, stderr)
