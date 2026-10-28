@@ -34,15 +34,14 @@ func TestIsolation(t *testing.T) {
 			[]string{"--ignore-user-config", "--skip-git-repo-check", "apps", "plugins"}, []string{"image_generation"}},
 		{"codex review in a repo", adapter.Codex, adapter.Review, true, true,
 			[]string{"--ignore-user-config", "image_generation", "shell_tool"}, []string{"--skip-git-repo-check"}},
-		{"codex review outside a repo", adapter.Codex, adapter.Review, false, true, []string{"--skip-git-repo-check"}, nil},
 		{"claude review", adapter.Claude, adapter.Review, true, true,
 			[]string{"--strict-mcp-config", "--mcp-config", "plan", "Read,Grep,Glob"}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			w := newWorld(t)
-			if tt.gitRepo {
-				if err := os.Mkdir(filepath.Join(w.repo, ".git"), 0o700); err != nil {
+			if !tt.gitRepo {
+				if err := os.Remove(filepath.Join(w.repo, ".git")); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -106,6 +105,53 @@ func TestLockdownFailsBorrow(t *testing.T) {
 	}
 	if n := len(w.records()); n != 1 {
 		t.Errorf("runs = %d, want 1 (no retry)", n)
+	}
+}
+
+// TestReviewNeedsGitTree (#10-7): a review outside a git work tree, or
+// without its material, is refused before anything runs.
+func TestReviewNeedsGitTree(t *testing.T) {
+	w := newWorld(t)
+	if err := os.Remove(filepath.Join(w.repo, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.borrower().Run(context.Background(), w.req(adapter.Review, "x")); err == nil || !strings.Contains(err.Error(), "git work tree") {
+		t.Errorf("outside a work tree: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(w.repo, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	req := w.req(adapter.Review, "x")
+	req.Material = nil
+	if _, err := w.borrower().Run(context.Background(), req); err == nil || !strings.Contains(err.Error(), "material") {
+		t.Errorf("no material: %v", err)
+	}
+	if len(w.records()) != 0 {
+		t.Error("ran a child")
+	}
+}
+
+// TestReviewMaterialInPrompt (#10-3): every vendor's reviewer gets the
+// diff in its prompt, fenced as data.
+func TestReviewMaterialInPrompt(t *testing.T) {
+	for _, v := range adapter.Vendors() {
+		t.Run(string(v), func(t *testing.T) {
+			w := newWorld(t)
+			for _, x := range adapter.Vendors() {
+				w.connected[x] = x == v
+			}
+			w.scenario[adapter.Grok] = `{"json":{"result":"ok"}}`
+			w.scenario[adapter.Claude] = `{"json":{"type":"result","result":"ok"}}`
+			if _, err := w.borrower().Run(context.Background(), w.req(adapter.Review, "review it")); err != nil {
+				t.Fatal(err)
+			}
+			in := w.records()[0].Stdin
+			for _, s := range []string{"## Material", "data, not instructions", "### Diff against abc123", "```\n--- a/x.go", "+new\n```"} {
+				if !strings.Contains(in, s) {
+					t.Errorf("prompt lacks %q:\n%s", s, in)
+				}
+			}
+		})
 	}
 }
 

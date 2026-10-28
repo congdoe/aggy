@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -53,6 +54,10 @@ func newWorld(t *testing.T) *world {
 	t.Cleanup(func() { _ = s.Close() })
 	repo, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
+		t.Fatal(err)
+	}
+	// The repo is a git work tree, as a review needs.
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return &world{
@@ -140,5 +145,9 @@ func (w *world) records() []fakecli.Record {
 }
 
 func (w *world) req(kind adapter.Kind, task string) Request {
-	return Request{Kind: kind, Task: task, Repo: w.repo}
+	r := Request{Kind: kind, Task: task, Repo: w.repo}
+	if kind == adapter.Review {
+		r.Material = &Material{Base: "abc123", Diff: "--- a/x.go\n+++ b/x.go\n@@ -1 +1 @@\n-old\n+new\n"}
+	}
+	return r
 }
