@@ -23,7 +23,11 @@ import (
 //     limit path is inferred);
 //   - event_msg token_count lines, whose rate_limits.primary and
 //     .secondary hold used_percent and resets_at in unix seconds
-//     (protocol.rs#L2472, #L2478, #L2521);
+//     (protocol.rs#L2472, #L2478, #L2521), for the quota named by
+//     rate_limits.limit_id (see codexQuotas);
+//   - turn_context lines, whose payload.model is the session's model slug
+//     (protocol.rs#L3451; history/src/rollout_payload.rs#L32, #L51; one
+//     such line was read live, docs/verification.md "Live runs");
 //   - as a fallback, the CLI's text "You've hit your usage limit"
 //     (protocol/src/error.rs#L719), looked for only inside such an
 //     event's error, never in a message a model wrote.
@@ -46,24 +50,18 @@ const RolloutTail = 256 << 10
 // task_complete or turn_aborted event in it ended on a usage limit and
 // was written after since (an unreadable timestamp counts); at is that
 // event's timestamp as written. Until is the latest resets_at of a
-// rate-limit window at 100% or more in the last token_count, when that
-// is after now; else zero (unknown).
+// rate-limit window at 100% or more among the session's quotas
+// (codexQuotas), when that is after now; else zero (unknown). A window
+// of another quota never gives the reset time, even at 100%.
 func CodexRollout(tail []byte, since, now time.Time) (sig Signal, at string, ok bool) {
 	var limited bool
-	var until time.Time
 	for _, line := range bytes.Split(tail, []byte{'\n'}) {
 		var l struct {
 			Timestamp string `json:"timestamp"`
 			Type      string `json:"type"`
 			Payload   struct {
-				Type       string          `json:"type"`
-				Error      json.RawMessage `json:"error"`
-				RateLimits *struct {
-					Primary, Secondary *struct {
-						UsedPercent float64 `json:"used_percent"`
-						ResetsAt    int64   `json:"resets_at"`
-					}
-				} `json:"rate_limits"`
+				Type  string          `json:"type"`
+				Error json.RawMessage `json:"error"`
 			} `json:"payload"`
 		}
 		if json.Unmarshal(line, &l) != nil || l.Type != "event_msg" {
@@ -74,30 +72,104 @@ func CodexRollout(tail []byte, since, now time.Time) (sig Signal, at string, ok 
 			ts, err := time.Parse(time.RFC3339Nano, l.Timestamp)
 			limited = codexLimitError(l.Payload.Error) && (err != nil || !ts.Before(since))
 			at = l.Timestamp
-		case "token_count":
-			// TODO(T6741): RateLimitSnapshot also has limit_id and
-			// normal_model_slug; a snapshot for another limit or model may
-			// not be the one that stopped this session.
-			if rl := l.Payload.RateLimits; rl != nil {
-				until = time.Time{}
-				for _, w := range []*struct {
-					UsedPercent float64 `json:"used_percent"`
-					ResetsAt    int64   `json:"resets_at"`
-				}{rl.Primary, rl.Secondary} {
-					if w != nil && w.UsedPercent >= 100 && w.ResetsAt > 0 {
-						until = later(until, time.Unix(w.ResetsAt, 0))
-					}
-				}
-			}
 		}
 	}
 	if !limited {
 		return Signal{}, "", false
 	}
+	var until time.Time
+	for _, q := range codexQuotas(tail) {
+		for _, w := range []*CodexWindow{q.Primary, q.Secondary} {
+			if w != nil && w.UsedPercent >= 100 && w.ResetsAt > 0 {
+				until = later(until, time.Unix(w.ResetsAt, 0))
+			}
+		}
+	}
 	if !until.After(now) {
 		until = time.Time{}
 	}
 	return Signal{Vendor: adapter.Codex, Until: until, Via: ViaRollout}, at, true
+}
+
+// CodexWindow is one rate-limit window of a Codex quota
+// (RateLimitWindow, protocol.rs#L2521-L2530).
+type CodexWindow struct {
+	UsedPercent   float64 `json:"used_percent"`
+	WindowMinutes int64   `json:"window_minutes"`
+	ResetsAt      int64   `json:"resets_at"` // unix seconds
+}
+
+// CodexQuota is the latest snapshot of one Codex quota in a rollout.
+type CodexQuota struct {
+	ID        string       `json:"limit_id"`   // normalized; "codex" is the ordinary quota
+	Name      string       `json:"limit_name"` // as written
+	Primary   *CodexWindow `json:"primary"`
+	Secondary *CodexWindow `json:"secondary"`
+	At        string       `json:"-"` // the token_count line's timestamp as written
+}
+
+// codexOrdinary is the limit_id of the ordinary quota every session
+// draws on.
+const codexOrdinary = "codex"
+
+// codexQuotas returns the latest snapshot of each quota in a rollout's
+// tail that applies to the session, in the order each quota first
+// appears. Codex keeps one RateLimitSnapshot per quota, keyed by
+// limit_id (protocol.rs#L2478-L2491; codex-rs at 6aaac694):
+//
+//   - a missing limit_id is the ordinary "codex" quota
+//     (core/src/state/session.rs#L446-L453), and ids are compared
+//     lowercased with '-' read as '_' (codex-api/src/rate_limits.rs#L270);
+//   - a session draws on the ordinary quota and on the quota whose
+//     limit_name is its model slug: Codex's own TUI watches exactly
+//     these (tui/src/chatwidget/rate_limits.rs#L196-L202). The model is
+//     the last turn_context's in the tail.
+//
+// normal_model_slug is not matched: it is metadata of a quota alias,
+// "never a replacement for the request model" (protocol.rs#L2481-L2483,
+// tui/src/chatwidget/luna_reserve_model.rs#L14-L18). Any other quota, or
+// a model-scoped one when the tail holds no turn_context, is left out:
+// failing closed, its reset time is never taken for the session's.
+func codexQuotas(tail []byte) []CodexQuota {
+	var model string
+	var order []string
+	latest := map[string]CodexQuota{}
+	for _, line := range bytes.Split(tail, []byte{'\n'}) {
+		var l struct {
+			Timestamp string `json:"timestamp"`
+			Type      string `json:"type"`
+			Payload   struct {
+				Type       string      `json:"type"`
+				Model      string      `json:"model"`
+				RateLimits *CodexQuota `json:"rate_limits"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(line, &l) != nil {
+			continue
+		}
+		switch {
+		case l.Type == "turn_context":
+			model = l.Payload.Model
+		case l.Type == "event_msg" && l.Payload.Type == "token_count" && l.Payload.RateLimits != nil:
+			q := *l.Payload.RateLimits
+			q.ID = strings.ReplaceAll(strings.ToLower(strings.TrimSpace(q.ID)), "-", "_")
+			if q.ID == "" {
+				q.ID = codexOrdinary
+			}
+			q.At = l.Timestamp
+			if _, ok := latest[q.ID]; !ok {
+				order = append(order, q.ID)
+			}
+			latest[q.ID] = q
+		}
+	}
+	var out []CodexQuota
+	for _, id := range order {
+		if q := latest[id]; id == codexOrdinary || model != "" && q.Name == model {
+			out = append(out, q)
+		}
+	}
+	return out
 }
 
 // codexLimitError reports whether an event's error names a usage limit:
