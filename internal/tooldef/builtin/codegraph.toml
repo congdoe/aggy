@@ -1,6 +1,8 @@
 # CodeGraph: a local code index the agent queries instead of grepping.
 # Source: docs/verification.md, "Managed tools (2026-10-28)":
-# @colbymchenry/codegraph 1.6.2, codegraph serve --mcp (stdio).
+# @colbymchenry/codegraph 1.6.2, codegraph serve --mcp (stdio), which
+# takes --path (W71-6): the server runs in aggy's private launch folder,
+# so it is told the repo.
 # codegraph init writes .codegraph/ inside the repo; it runs only on an
 # explicit aggy tool install, after asking.
 name = "codegraph"
@@ -19,7 +21,7 @@ prebuild = ["codegraph", "init"]
 
 [[mcp]]
 vendors = ["claude", "codex", "grok"]
-argv = ["codegraph", "serve", "--mcp"]
+argv = ["codegraph", "serve", "--mcp", "--path", "{repo}"]
 
 [cost]
 method = "mcp-schema"

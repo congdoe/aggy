@@ -122,7 +122,12 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 			[]string{"--settings", `{"permissions":{"deny":["Read(**/.env)","Bash(git push * main)"]}}`}},
 		// T6708: additive, never --strict-mcp-config; re-passed on resume.
 		{"tools on resume", adapter.InteractiveRequest{Resume: rid, MCPConfigFile: brief + ".mcp.json"},
-			[]string{"--resume", rid, "--mcp-config", brief + ".mcp.json"}},
+			[]string{"--mcp-config", brief + ".mcp.json", "--resume", rid}},
+		// W71-1: the variadic --mcp-config never takes the brief prompt.
+		{"tools with a brief", adapter.InteractiveRequest{SessionID: sid, MCPConfigFile: brief + ".mcp.json", BriefFile: brief},
+			[]string{"--mcp-config", brief + ".mcp.json", "--session-id", sid, "--", adapter.BriefPrompt(brief)}},
+		{"tools with a brief, no other flag", adapter.InteractiveRequest{MCPConfigFile: brief + ".mcp.json", BriefFile: brief},
+			[]string{"--mcp-config", brief + ".mcp.json", "--", adapter.BriefPrompt(brief)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -137,6 +142,13 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 			out, rec := h.Run(t, c, `{"interactive_without_tty":true,"strict":["resume-with-session-id"]}`)
 			if out.ExitCode != 0 || rec.Mode != "interactive" {
 				t.Errorf("fake: exit %d %q", out.ExitCode, out.Stderr)
+			}
+			// W71-1: the brief stays the prompt, and --mcp-config one file.
+			if tt.req.BriefFile != "" && !slices.Equal(rec.Positional, []string{adapter.BriefPrompt(tt.req.BriefFile)}) {
+				t.Errorf("prompt = %q", rec.Positional)
+			}
+			if tt.req.MCPConfigFile != "" && !slices.Equal(rec.Flags["--mcp-config"], []string{tt.req.MCPConfigFile}) {
+				t.Errorf("--mcp-config = %q", rec.Flags["--mcp-config"])
 			}
 		})
 	}
