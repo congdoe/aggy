@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/adapter/claude"
@@ -20,11 +22,8 @@ import (
 	"github.com/congdoe/aggy/internal/supervisor"
 )
 
-// runRun is `aggy run <vendor>`: a new interactive session of that vendor
-// under the supervisor.
-//
-// TODO(T6661): bare `aggy` resumes the latest parent or starts one, and
-// `aggy new` and `aggy resume` record parents and children in the store.
+// runRun is `aggy run <vendor>`: a new parent in the current directory
+// with an interactive session of that vendor, under the supervisor.
 func runRun(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		fmt.Fprint(stderr, "usage: aggy run <claude|codex|grok>\n")
@@ -35,21 +34,43 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy run: %v\n", err)
 		return 2
 	}
+	return launch("aggy run", target{New: true, Vendor: v}, stderr)
+}
+
+// launch opens the parent t names and puts its child on screen under the
+// supervisor: the child last on screen resumed with its CLI's resume
+// flag and no brief, or a new child. name prefixes errors.
+func launch(name string, t target, stderr io.Writer) int {
+	fail := func(err error) int {
+		fmt.Fprintf(stderr, "%s: %v\n", name, err)
+		return 1
+	}
+	// Refused before anything is written to the index.
+	if !isTerminal(os.Stdin) {
+		return fail(errors.New("needs a terminal on stdin"))
+	}
 	cfg, err := config.LoadDefault()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy run: %v\n", err)
-		return 1
+		return fail(err)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy run: %v\n", err)
-		return 1
+		return fail(err)
 	}
-	bin := map[adapter.Vendor]string{adapter.Claude: claude.Bin, adapter.Codex: codex.Bin, adapter.Grok: grok.Bin}[v]
-	path, err := probe.LookPath(bin)
+	ctx := context.Background()
+	s, err := store.OpenDefault(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy run: %v\n", err)
-		return 1
+		return fail(err)
+	}
+	defer func() { _ = s.Close() }()
+	pl, err := plan(ctx, s, cfg, cwd, t, time.Now(), stderr)
+	if err != nil {
+		return fail(err)
+	}
+	v := adapter.Vendor(pl.child.Vendor)
+	path, err := probe.LookPath(vendorBin(v))
+	if err != nil {
+		return fail(err)
 	}
 	var a adapter.Adapter
 	switch v {
@@ -60,37 +81,33 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		// command line only when this CLI's help lists it.
 		p, err := codex.Adapter{Path: path}.Probe(context.Background(), execrun.ExecRunner(probeTimeout))
 		if err != nil {
-			fmt.Fprintf(stderr, "aggy run: probing codex: %v; starting it without --no-alt-screen\n", err)
+			fmt.Fprintf(stderr, "%s: probing codex: %v; starting it without --no-alt-screen\n", name, err)
 		}
 		a = codex.Adapter{Caps: p.Capabilities}
 	case adapter.Grok:
 		a = grok.New()
 	}
-	cmd, err := a.Interactive(adapter.InteractiveRequest{
-		Cwd:   cwd,
-		Model: cfg.Vendors.For(v).Model,
-		Env:   []string{"AGGY_VENDOR=" + string(v)},
-	})
+	cmd, err := a.Interactive(pl.interactiveRequest())
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy run: %v\n", err)
-		return 1
+		return fail(err)
 	}
 	cmd.Path = path
 	key, err := config.ParseKey(cfg.Switch.Key)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy run: %v\n", err)
-		return 1
+		return fail(err)
 	}
 	stateDir, err := home.Dir()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy run: %v\n", err)
-		return 1
+		return fail(err)
 	}
-	parentID, err := newParentID()
+	lease, err := pl.commit(ctx, s, time.Now())
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy run: %v\n", err)
-		return 1
+		return fail(err)
 	}
+	if lease != nil {
+		defer func() { _ = lease.Release(ctx) }()
+	}
+	parentID := pl.parent.ID
 	code, err := supervisor.Run(supervisor.Options{
 		In: os.Stdin, Out: os.Stdout, Command: cmd,
 		Start:     startPTY,
@@ -100,7 +117,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		ParentID:  parentID,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy run: %v\n", err)
+		fmt.Fprintf(stderr, "%s: %v\n", name, err)
 		if code == 0 {
 			code = 1
 		}
@@ -139,11 +156,13 @@ func pickerVendors(order []adapter.Vendor, on adapter.Vendor) []adapter.Vendor {
 	return out
 }
 
-// newParentID returns a random (version 4) UUID.
-//
-// TODO(T6661): record the parent in the store; for now the id only names
-// the supervisor socket.
-func newParentID() (string, error) {
+// vendorBin is the vendor CLI's command name.
+func vendorBin(v adapter.Vendor) string {
+	return map[adapter.Vendor]string{adapter.Claude: claude.Bin, adapter.Codex: codex.Bin, adapter.Grok: grok.Bin}[v]
+}
+
+// newUUID returns a random (version 4) UUID.
+func newUUID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err

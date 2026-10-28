@@ -14,6 +14,7 @@ var Version = "dev"
 const usage = `aggy runs the official Claude Code, Codex, and Grok Build CLIs.
 
 Usage:
+  aggy              Resume the latest session in this directory, or start one
   aggy <command>
 
 Commands:
@@ -37,8 +38,7 @@ aggy is pre-alpha. Nothing else is implemented yet.
 // the process exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprint(stdout, usage)
-		return 0
+		return launch("aggy", target{}, stderr)
 	}
 	switch args[0] {
 	case "version", "--version", "-v":

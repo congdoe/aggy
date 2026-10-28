@@ -1,0 +1,251 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/store"
+)
+
+// sessionStore is a store in a temp AGGY_HOME, with HOME a temp dir.
+func sessionStore(t *testing.T) *store.Store {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGGY_HOME", filepath.Join(t.TempDir(), "aggy"))
+	for _, k := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME"} {
+		t.Setenv(k, "")
+	}
+	s, err := store.OpenDefault(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+const (
+	sidA = "11111111-2222-4333-8444-555555555555"
+	sidB = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+)
+
+// seedParent adds a parent in dir with the given interactive children,
+// oldest first.
+func seedParent(t *testing.T, s *store.Store, id, dir string, children ...store.Child) {
+	t.Helper()
+	ctx := context.Background()
+	t0 := time.Now().Add(-time.Hour)
+	if err := s.InsertParent(ctx, store.Parent{ID: id, Dir: dir, CreatedAt: t0, LastActive: t0}); err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range children {
+		c.ParentID = id
+		if c.Cwd == "" {
+			c.Cwd = dir
+		}
+		c.CreatedAt = t0.Add(time.Duration(i) * time.Minute)
+		c.LastActive = c.CreatedAt
+		if err := s.InsertChild(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestPlan(t *testing.T) {
+	cfg := config.Default()
+	cfg.DefaultVendor = adapter.Claude
+	tests := []struct {
+		name  string
+		seed  func(t *testing.T, s *store.Store, dir string)
+		tgt   target
+		check func(t *testing.T, p launchPlan, dir string)
+		want  string // error text; "" means none
+		note  string // stderr text
+	}{
+		{
+			name: "new with a vendor",
+			tgt:  target{New: true, Vendor: adapter.Grok},
+			check: func(t *testing.T, p launchPlan, dir string) {
+				if !p.newParent || !p.newChild || p.child.Vendor != "grok" || p.resume != "" ||
+					!adapter.IsUUID(p.child.VendorSessionID) || p.parent.Dir != dir || p.child.Cwd != dir {
+					t.Errorf("plan = %+v", p)
+				}
+			},
+		},
+		{
+			name: "bare with no parent here starts one on the default vendor",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "99999999-0000-4000-8000-000000000000", t.TempDir(),
+					store.Child{ID: "x", Vendor: "grok", VendorSessionID: sidB})
+			},
+			check: func(t *testing.T, p launchPlan, dir string) {
+				if !p.newParent || p.child.Vendor != "claude" || p.parent.Dir != dir {
+					t.Errorf("plan = %+v", p)
+				}
+			},
+		},
+		{
+			name: "bare resumes the child last on screen",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "p0000000-0000-4000-8000-000000000000", dir,
+					store.Child{ID: "old", Vendor: "grok", VendorSessionID: sidB},
+					store.Child{ID: "borrow", Vendor: "codex", Kind: "research"},
+					store.Child{ID: "last", Vendor: "claude", VendorSessionID: sidA})
+				// A borrow is newer, but only interactive children resume.
+				_ = s.SetChildActivity(context.Background(), "borrow", time.Now(), "")
+			},
+			check: func(t *testing.T, p launchPlan, dir string) {
+				if p.newParent || p.newChild || p.child.ID != "last" || p.resume != sidA {
+					t.Errorf("plan = %+v", p)
+				}
+				req := p.interactiveRequest()
+				if req.Resume != sidA || req.SessionID != "" || req.BriefFile != "" || req.Cwd != dir {
+					t.Errorf("request = %+v", req)
+				}
+			},
+		},
+		{
+			name: "a gone child starts a new one of its vendor",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "p0000000-0000-4000-8000-000000000000", dir,
+					store.Child{ID: "g", Vendor: "grok", VendorSessionID: sidB, Status: "gone"})
+			},
+			check: func(t *testing.T, p launchPlan, dir string) {
+				if p.newParent || !p.newChild || p.child.Vendor != "grok" || p.resume != "" {
+					t.Errorf("plan = %+v", p)
+				}
+			},
+			note: "the vendor no longer has it",
+		},
+		{
+			name: "a codex child without an id starts a new codex child",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "p0000000-0000-4000-8000-000000000000", dir,
+					store.Child{ID: "c", Vendor: "codex"})
+			},
+			check: func(t *testing.T, p launchPlan, dir string) {
+				if !p.newChild || p.child.Vendor != "codex" || p.child.VendorSessionID != "" {
+					t.Errorf("plan = %+v", p)
+				}
+				if req := p.interactiveRequest(); req.SessionID != "" || req.Resume != "" {
+					t.Errorf("request = %+v", req)
+				}
+			},
+			note: "no recorded session id",
+		},
+		{
+			name: "an id from the index that is not a UUID is refused",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "p0000000-0000-4000-8000-000000000000", dir,
+					store.Child{ID: "c", Vendor: "claude", VendorSessionID: "--dangerously-skip-permissions"})
+			},
+			want: "invalid id",
+		},
+		{
+			name: "resume by prefix",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "abcdef00-0000-4000-8000-000000000000", t.TempDir(),
+					store.Child{ID: "c", Vendor: "claude", VendorSessionID: sidA})
+			},
+			tgt: target{ParentID: "abcdef"},
+			check: func(t *testing.T, p launchPlan, dir string) {
+				if p.resume != sidA || p.child.Cwd == dir {
+					t.Errorf("plan = %+v", p)
+				}
+			},
+		},
+		{
+			name: "unknown prefix",
+			tgt:  target{ParentID: "abc"},
+			want: "no session abc",
+		},
+		{
+			name: "ambiguous prefix",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "abc00000-0000-4000-8000-000000000000", dir)
+				seedParent(t, s, "abc11111-0000-4000-8000-000000000000", dir)
+			},
+			tgt:  target{ParentID: "abc"},
+			want: "2 sessions start with abc",
+		},
+		{
+			name: "a parent whose directory is gone",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "abc00000-0000-4000-8000-000000000000", filepath.Join(dir, "removed"))
+			},
+			tgt:  target{ParentID: "abc0"},
+			want: "no longer exists",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := sessionStore(t)
+			dir := t.TempDir()
+			if tt.seed != nil {
+				tt.seed(t, s, dir)
+			}
+			var errb bytes.Buffer
+			p, err := plan(context.Background(), s, cfg, dir, tt.tgt, time.Now(), &errb)
+			if tt.want != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.want) {
+					t.Fatalf("err = %v, want %q", err, tt.want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(errb.String(), tt.note) {
+				t.Errorf("stderr = %q, want %q", errb.String(), tt.note)
+			}
+			tt.check(t, p, dir)
+		})
+	}
+}
+
+// TestCommitLease: a launch takes the vendor session's lease, and one
+// that finds it held by a live process is refused with a clear message.
+func TestCommitLease(t *testing.T) {
+	s := sessionStore(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	seedParent(t, s, "p0000000-0000-4000-8000-000000000000", dir,
+		store.Child{ID: "c", Vendor: "claude", VendorSessionID: sidA})
+	cfg := config.Default()
+	p, err := plan(ctx, s, cfg, dir, target{}, time.Now(), &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := p.commit(ctx, s, time.Now())
+	if err != nil || lease == nil {
+		t.Fatalf("commit = %v, %v", lease, err)
+	}
+	if _, err := p.commit(ctx, s, time.Now()); err == nil || !strings.Contains(err.Error(), "already open in another aggy") {
+		t.Errorf("second commit err = %v", err)
+	}
+	if err := lease.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if pid, alive, _ := s.LeaseHolder(ctx, "claude", sidA); alive {
+		t.Errorf("lease still held by %d", pid)
+	}
+
+	// A new parent records its rows, and the parent's last vendor.
+	p, err = plan(ctx, s, cfg, dir, target{New: true, Vendor: adapter.Codex}, time.Now(), &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err = p.commit(ctx, s, time.Now())
+	if err != nil || lease != nil {
+		t.Fatalf("codex commit = %v, %v; a codex child has no id to lease", lease, err)
+	}
+	got, err := s.LatestParentInDir(ctx, dir)
+	if err != nil || got.ID != p.parent.ID || got.LastVendor != "codex" {
+		t.Errorf("latest parent = %+v, %v", got, err)
+	}
+}
