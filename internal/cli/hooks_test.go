@@ -96,3 +96,53 @@ func TestHooksArgs(t *testing.T) {
 		t.Errorf("go run binary: %d %s", code, errOut)
 	}
 }
+
+func TestHooksInstallCodex(t *testing.T) {
+	h := hooksHome(t)
+	ch := filepath.Join(h, "ch")
+	t.Setenv("CODEX_HOME", ch)
+	cfg := filepath.Join(ch, "config.toml")
+	writeAt(t, cfg, "model = \"o3\"\n[tui]\nx = 1\n", 0o600)
+	before := snapshot(t, h)
+
+	out := mustRun(t, "hooks", "install", "--vendor", "codex")
+	if !strings.Contains(out, "/hooks") || !strings.Contains(out, "cannot check") {
+		t.Errorf("no approval note:\n%s", out)
+	}
+	b, _ := os.ReadFile(filepath.Join(ch, "hooks.json"))
+	for _, s := range []string{"hook --vendor codex Stop", "hook --vendor codex SessionStart"} {
+		if !strings.Contains(string(b), s) {
+			t.Errorf("hooks.json lacks %q:\n%s", s, b)
+		}
+	}
+	if strings.Contains(string(b), "StopFailure") {
+		t.Error("Codex has no StopFailure hook")
+	}
+	c, _ := os.ReadFile(cfg)
+	if !strings.HasPrefix(string(c), "notify = ['"+testBin+"', 'hook', '--vendor', 'codex', 'notify']\n") {
+		t.Errorf("config.toml:\n%s", c)
+	}
+	if out := mustRun(t, "hooks", "status"); !strings.Contains(out, "codex   installed: Codex runs its hooks only once you approve them") {
+		t.Errorf("status: %s", out)
+	}
+	mustRun(t, "unwire", "--all")
+	if d := diffSnapshots(before, snapshot(t, h)); len(d) > 0 {
+		t.Errorf("unwire left: %v", d)
+	}
+}
+
+func TestHooksCodexKeepsUserNotify(t *testing.T) {
+	h := hooksHome(t)
+	cfg := filepath.Join(h, ".codex", "config.toml")
+	writeAt(t, cfg, "notify = [\"notify-send\", \"done\"]\n", 0o600)
+	out := mustRun(t, "hooks", "install", "--vendor", "codex")
+	if !strings.Contains(out, "already sets notify") {
+		t.Errorf("no note:\n%s", out)
+	}
+	if c, _ := os.ReadFile(cfg); string(c) != "notify = [\"notify-send\", \"done\"]\n" {
+		t.Errorf("config.toml changed:\n%s", c)
+	}
+	if _, err := os.Stat(filepath.Join(h, ".codex", "hooks.json")); err != nil {
+		t.Error("hooks.json was not written")
+	}
+}

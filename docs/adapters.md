@@ -176,7 +176,9 @@ was tested against.
   `SessionStart` carries `session_id` (the thread id) and `source`. A
   hook runs only once its hash is trusted; one passed with `-c` is
   skipped silently (checked live). Whether it fires in `exec` is still
-  open.
+  open. `aggy hooks install` writes `Stop` and `SessionStart` to
+  `$CODEX_HOME/hooks.json` and the legacy `notify` (not trust-gated) to
+  `config.toml`; the person approves the hooks once in `/hooks`.
 - Grok runs the hooks in Claude's `settings.json` by default. Its payload
   has `sessionId` and its environment `GROK_SESSION_ID`, which is how
   aggy tells a Grok call from a Claude one.
