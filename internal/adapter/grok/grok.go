@@ -424,13 +424,21 @@ func EncodeCwd(cwd string) string { return url.QueryEscape(cwd) }
 // TODO(T6737): list video files for the video kind too; batch 6 owns
 // video (review finding #10-10).
 //
-// Artifacts lists the images in sessions/<encoded cwd>/<sessionId>/images/
-// under the Grok home. When that folder is missing (the cwd encoding is
-// unconfirmed, or the CLI saw the cwd with symlinks resolved), it falls
-// back to the one sessions/*/<sessionId>/images folder; several matches are
-// an error, not a guess. An id that fails adapter.ValidSessionID is an
-// error. It returns paths only and copies nothing.
+// Artifacts lists every file in sessions/<encoded cwd>/<sessionId>/images/
+// under the Grok home (Grok replies with the path relative to the session
+// folder, images/1.jpg), for the borrow's artifact gate to judge. When
+// that folder is missing (the cwd encoding is unconfirmed, or the CLI saw
+// the cwd with symlinks resolved), it falls back to the one
+// sessions/*/<sessionId>/images folder; several matches are an error, not
+// a guess. An id that fails adapter.ValidSessionID is an error. It
+// returns paths only and copies nothing.
 func (a Adapter) Artifacts(req adapter.HeadlessRequest, res adapter.HeadlessResult) ([]adapter.Artifact, error) {
+	return a.sessionFiles(req, res, "images", "image")
+}
+
+// sessionFiles lists every file in the sub folder of the session's folder
+// as kind artifacts; see Artifacts.
+func (a Adapter) sessionFiles(req adapter.HeadlessRequest, res adapter.HeadlessResult, sub, kind string) ([]adapter.Artifact, error) {
 	id := res.SessionID
 	if id == "" {
 		return nil, nil
@@ -443,9 +451,9 @@ func (a Adapter) Artifacts(req adapter.HeadlessRequest, res adapter.HeadlessResu
 		return nil, fmt.Errorf("grok: cannot locate the Grok home")
 	}
 	sessions := filepath.Join(home, "sessions")
-	images := func(cwdDir string) string { return filepath.Join(sessions, cwdDir, id, "images") }
+	folder := func(cwdDir string) string { return filepath.Join(sessions, cwdDir, id, sub) }
 	if req.Cwd != "" {
-		got, err := adapter.ListFiles(images(EncodeCwd(req.Cwd)), "image", ".jpg")
+		got, err := adapter.ListFiles(folder(EncodeCwd(req.Cwd)), kind)
 		if err != nil || len(got) > 0 {
 			return got, err
 		}
@@ -457,7 +465,7 @@ func (a Adapter) Artifacts(req adapter.HeadlessRequest, res adapter.HeadlessResu
 	var found []adapter.Artifact
 	matches := 0
 	for _, d := range dirs {
-		got, err := adapter.ListFiles(images(d), "image", ".jpg")
+		got, err := adapter.ListFiles(folder(d), kind)
 		if err != nil {
 			return nil, err
 		}
@@ -467,7 +475,7 @@ func (a Adapter) Artifacts(req adapter.HeadlessRequest, res adapter.HeadlessResu
 		}
 	}
 	if matches > 1 {
-		return nil, fmt.Errorf("grok: session %s has images under %d working dirs", id, matches)
+		return nil, fmt.Errorf("grok: session %s has %s under %d working dirs", id, sub, matches)
 	}
 	return found, nil
 }

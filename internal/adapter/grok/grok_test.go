@@ -2,6 +2,7 @@ package grok
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -249,5 +250,31 @@ func TestTranscriptAndPatches(t *testing.T) {
 	}
 	if p, err := a.ConfigPatches(adapter.ConfigContext{}); err != nil || len(p) != 0 {
 		t.Errorf("ConfigPatches = %v, %v", p, err)
+	}
+}
+
+// TestArtifactsEveryFile (T6633): every file in the session's images
+// folder is listed, for the artifact gate to judge.
+func TestArtifactsEveryFile(t *testing.T) {
+	home := t.TempDir()
+	cwd := "/tmp/work"
+	dir := filepath.Join(home, "sessions", EncodeCwd(cwd), sid, "images")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"1.jpg", "2.png", "notes"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := Adapter{Getenv: func(k string) string {
+		if k == "GROK_HOME" {
+			return home
+		}
+		return ""
+	}}
+	arts, err := a.Artifacts(adapter.HeadlessRequest{Cwd: cwd}, adapter.HeadlessResult{SessionID: sid})
+	if err != nil || len(arts) != 3 || arts[2].Path != filepath.Join(dir, "notes") || arts[2].Kind != "image" {
+		t.Errorf("Artifacts = %v, %v", arts, err)
 	}
 }

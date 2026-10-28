@@ -339,7 +339,7 @@ Artifacts are paths only; copying them is the borrow runner's job, through
 PNG or JPEG or MP4 by magic bytes, under a size cap; design section 13). Codex: every file (not
 only `*.png`) in `$CODEX_HOME/generated_images/<thread-id>/` (else
 `~/.codex/...`), all counted as made; the gate keeps the real images. Grok:
-every `*.jpg` in `$GROK_HOME/sessions/<encoded cwd>/<sessionId>/images/`
+every file in `$GROK_HOME/sessions/<encoded cwd>/<sessionId>/images/`
 (else `~/.grok/...`), falling back to the single `sessions/*/<sessionId>/
 images/` folder; several are an error. Claude has none.
 `TranscriptTail` returns `ErrNoTranscript` for every vendor: no transcript
