@@ -18,6 +18,7 @@ Usage:
 
 Commands:
   log       Show harnesses, models, switches, borrows, and files changed
+  unwire    Undo the config changes aggy made to other tools
   version   Print the aggy version
   help      Show this help
 
@@ -39,6 +40,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runLog(args[1:], stdout, stderr)
 	case "dev":
 		return runDev(args[1:], stdout, stderr)
+	case "unwire":
+		return runUnwire(args[1:], stdout, stderr)
 	case "help", "--help", "-h":
 		fmt.Fprint(stdout, usage)
 		return 0

@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"time"
 
@@ -184,34 +185,20 @@ func Record(c store.Change) patch.Record {
 	}
 }
 
-// Revert undoes one applied change and marks it undone.
+// Revert undoes one change and marks it undone, as Unwire does for a
+// single change without force: it refuses, with a *patch.DriftError, when
+// the file changed after aggy changed it, and returns an error for a
+// change that is not applied, pending, or failed.
 //
-// Undoing several changes (aggy unwire, T6607) must revert them newest
-// first, in reverse id order (store.ChangesNewestFirst): a later change
-// to the same file was planned against the earlier one's result. It refuses, with a
-// *patch.DriftError, when the file changed after aggy changed it.
+// Undoing several changes must revert them newest first; use Unwire.
 func (m *Manifest) Revert(ctx context.Context, changeID string) error {
 	c, err := m.store.GetChange(ctx, changeID)
 	if err != nil {
 		return err
 	}
-	unlock, err := m.lockTarget(ctx, c.File)
-	if err != nil {
-		return err
+	u := m.undo(ctx, c, UnwireOptions{}, io.Discard)
+	if u.Change.ChangeID == "" {
+		return fmt.Errorf("manifest: change %s is not applied, pending, or failed", changeID)
 	}
-	defer unlock()
-	if c, err = m.store.GetChange(ctx, changeID); err != nil {
-		return err
-	}
-	if c.Status != store.ChangeApplied {
-		return fmt.Errorf("manifest: change %s is %s, not applied", changeID, c.Status)
-	}
-	err = patch.Revert(Record(c))
-	if err != nil && !errors.Is(err, safefs.ErrDirSync) {
-		return err
-	}
-	if merr := m.store.MarkChangeUndone(context.WithoutCancel(ctx), changeID, m.now()); merr != nil {
-		return errors.Join(merr, err)
-	}
-	return err
+	return u.Err
 }

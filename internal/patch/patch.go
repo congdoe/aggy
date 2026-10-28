@@ -340,8 +340,14 @@ func backup(dir string, b []byte) (string, error) {
 // Revert undoes an applied change. It restores the backup, or removes a file
 // the patch created, only while the file still has AfterHash; otherwise it
 // returns a *DriftError and leaves the file alone. Reverting a file that
-// already has BeforeHash is a no-op. As with Apply, an error matching
+// already has BeforeHash is a no-op, apart from removing the empty
+// directories a created file needed. As with Apply, an error matching
 // safefs.ErrDirSync means the file was restored but not synced.
+//
+// Known limits, left for the T6607 follow-up: a file that was a symlink
+// is restored through the link (the link stays and its target gets the
+// old bytes), a hard link to the file is not kept (the restore writes a
+// new inode), and extended attributes are not restored.
 func Revert(r Record) error {
 	if !r.Changed {
 		return nil
@@ -361,22 +367,79 @@ func Revert(r Record) error {
 	if cur != r.AfterHash {
 		return &DriftError{File: r.File, Expected: r.AfterHash, Actual: cur}
 	}
-	if r.BeforeHash == NoFile {
-		// TODO(T6607): exact restore also has to cover dangling symlinks,
-		// hard links, and xattrs.
-		if err := safefs.Remove(r.File); err != nil {
-			return err
+	return restore(r, cur)
+}
+
+// RevertForce undoes a change whatever the file holds now. The current
+// bytes, when the file exists and differs from the before state, are
+// first copied into backupDir under their hash, so a forced undo loses
+// nothing; saved is that copy's path, or "" when nothing was saved. It
+// is for an explicit, confirmed request only: Revert is the normal undo.
+func RevertForce(r Record, backupDir string) (saved string, err error) {
+	if !r.Changed {
+		return "", nil
+	}
+	b, cur, err := read(r.File)
+	if err != nil {
+		return "", err
+	}
+	if cur == r.BeforeHash {
+		return "", Revert(r)
+	}
+	if cur != NoFile && cur != r.AfterHash {
+		if saved, err = backup(backupDir, b); err != nil {
+			return "", err
 		}
-		return removeEmptyDirs(r.CreatedDirs)
+	}
+	return saved, restore(r, cur)
+}
+
+// Target returns the content Revert would leave in r.File, and whether
+// the file would exist at all. It reads and checks the backup.
+func Target(r Record) ([]byte, bool, error) {
+	if r.BeforeHash == NoFile {
+		return nil, false, nil
 	}
 	old, err := safefs.ReadFile(r.BackupPath)
 	if err != nil {
-		return fmt.Errorf("patch: read backup for %s: %w", r.File, err)
+		return nil, false, fmt.Errorf("patch: read backup for %s: %w", r.File, err)
 	}
 	if Hash(old) != r.BeforeHash {
-		return fmt.Errorf("patch: backup %s does not match the recorded hash", r.BackupPath)
+		return nil, false, fmt.Errorf("patch: backup %s does not match the recorded hash", r.BackupPath)
 	}
-	werr := writeFile(r.File, old, DefaultMode)
+	return old, true, nil
+}
+
+// restore puts r's before state in place: it removes a created file, or
+// writes the backup's bytes and the recorded mode. cur is the file's
+// current hash.
+func restore(r Record, cur string) error {
+	if r.BeforeHash == NoFile {
+		if cur != NoFile {
+			// TODO(T6607): exact restore also has to cover dangling
+			// symlinks, hard links, and xattrs.
+			if err := safefs.Remove(r.File); err != nil {
+				return err
+			}
+		}
+		return removeEmptyDirs(r.CreatedDirs)
+	}
+	old, _, err := Target(r)
+	if err != nil {
+		return err
+	}
+	mode := r.Mode
+	if mode == 0 {
+		mode = DefaultMode
+	}
+	if cur == NoFile {
+		// Deleted since; only a forced undo gets here. Recreate its
+		// directory if that went too.
+		if err := safefs.MkdirAll(filepath.Dir(r.File), 0o700); err != nil {
+			return err
+		}
+	}
+	werr := writeFile(r.File, old, mode)
 	if werr != nil && !errors.Is(werr, safefs.ErrDirSync) {
 		return werr
 	}

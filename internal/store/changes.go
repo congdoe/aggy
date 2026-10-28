@@ -102,15 +102,18 @@ func (s *Store) FinishChange(ctx context.Context, c Change) error {
 	return oneRow(res, "pending change "+c.ChangeID)
 }
 
-// MarkChangeUndone marks an applied change undone.
+// MarkChangeUndone marks a change undone. Only an applied, pending, or
+// failed change can be undone: aggy unwire undoes a pending or failed
+// change too, whose write may have happened before the process stopped.
 func (s *Store) MarkChangeUndone(ctx context.Context, changeID string, at time.Time) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE changes SET status = 'undone', undone_at = ? WHERE change_id = ? AND status = 'applied'`,
+		`UPDATE changes SET status = 'undone', undone_at = ?
+		 WHERE change_id = ? AND status IN ('applied', 'pending', 'failed') AND kind = 'change'`,
 		millis(at), changeID)
 	if err != nil {
 		return err
 	}
-	return oneRow(res, "applied change "+changeID)
+	return oneRow(res, "undoable change "+changeID)
 }
 
 func oneRow(res sql.Result, what string) error {
