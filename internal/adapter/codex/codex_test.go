@@ -129,6 +129,9 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 		{"new, help lacks the flag", nil, adapter.InteractiveRequest{}, nil},
 		{"resume, help lacks the flag", nil, adapter.InteractiveRequest{Resume: tid}, []string{"resume", tid}},
 		{"other caps only", []string{probe.CapConfigOverride}, adapter.InteractiveRequest{BriefFile: brief}, []string{adapter.BriefPrompt(brief)}},
+		// -c is global and goes before resume; the value is a TOML string.
+		{"resume with memory", alt, adapter.InteractiveRequest{Resume: tid, Memory: "a \"b\"\\\n\tc\x1b"},
+			[]string{"-c", `developer_instructions="a \"b\"\\\n\tc\u001B"`, "resume", "--no-alt-screen", tid}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -219,6 +219,11 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		return adapter.Command{}, err
 	}
 	args = append(args, s...)
+	if req.Memory != "" {
+		// Inline text only; there is no file variant
+		// (docs/verification.md, T6619).
+		args = append(args, "--rules", req.Memory)
+	}
 	if req.BriefFile != "" {
 		if err := adapter.CheckAbs("brief file", req.BriefFile); err != nil {
 			return adapter.Command{}, err

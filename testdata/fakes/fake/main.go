@@ -240,13 +240,15 @@ var specs = map[string]flagSpec{
 	// built-ins (tool names unverified). --setting-sources is in Claude
 	// Code's CLI reference, not in a recorded help.
 	"claude": {
-		values:   []string{"--output-format", "--permission-mode", "--session-id", "--mcp-config", "--tools", "--setting-sources"},
+		// --append-system-prompt-file: the shared memory, live-verified on
+		// 2.1.312 although the real --help omits it (T6619).
+		values:   []string{"--output-format", "--permission-mode", "--session-id", "--mcp-config", "--tools", "--setting-sources", "--append-system-prompt-file"},
 		switches: []string{"-p", "--fork-session", "--strict-mcp-config"},
 		optional: []string{"--resume"},
 	},
 	"grok": {
 		values: []string{"--output-format", "--permission-mode", "--session-id", "--resume",
-			"--tools", "--disallowed-tools", "--max-turns"},
+			"--tools", "--disallowed-tools", "--max-turns", "--rules"},
 		// --continue: proposal §3. --no-subagents: the borrow lockdown,
 		// live-verified on grok 1.0.70 (2026-10-28).
 		switches: []string{"-p", "--fork-session", "--no-alt-screen", "--continue", "--no-subagents"},

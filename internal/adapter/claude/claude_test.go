@@ -116,6 +116,8 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 		{"resume", adapter.InteractiveRequest{Resume: rid}, []string{"--resume", rid}},
 		{"fork with a brief", adapter.InteractiveRequest{Resume: rid, Fork: true, SessionID: sid, BriefFile: brief},
 			[]string{"--resume", rid, "--fork-session", "--session-id", sid, adapter.BriefPrompt(brief)}},
+		{"resume with memory and a brief", adapter.InteractiveRequest{Resume: rid, MemoryFile: brief + ".mem", BriefFile: brief},
+			[]string{"--resume", rid, "--append-system-prompt-file", brief + ".mem", adapter.BriefPrompt(brief)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -137,6 +139,7 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 		{Fork: true},
 		{Resume: rid, SessionID: sid},
 		{BriefFile: "brief.md"},
+		{MemoryFile: "memory.md"},
 	} {
 		if _, err := a.Interactive(r); err == nil {
 			t.Errorf("%+v accepted", r)
