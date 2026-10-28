@@ -95,6 +95,9 @@ func Build(in Input) string {
 	}
 }
 
+// redactLines is redact.Lines; tests wrap it to count the bytes redacted.
+var redactLines = redact.Lines
+
 // writer builds a brief and counts the lines redaction removed.
 type writer struct {
 	strings.Builder
@@ -103,7 +106,7 @@ type writer struct {
 
 // data writes s, an untrusted part, redacted and fenced.
 func (w *writer) data(lang, s string) {
-	s, n := redact.Lines(s)
+	s, n := redactLines(s)
 	w.removed += n
 	fence(&w.Builder, lang, s)
 }

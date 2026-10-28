@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/redact"
 )
 
 func TestBuild(t *testing.T) {
@@ -130,7 +130,7 @@ func TestBuildBeginInProse(t *testing.T) {
 	got := Build(Input{From: adapter.Claude,
 		Transcript: adapter.Transcript{Path: "/t/x.jsonl", Turns: []adapter.Turn{
 			{Role: "user", Text: "look at -----BEGIN RSA PRIVATE KEY----- in the docs"},
-			{Role: "assistant", Text: "-----BEGIN RSA PRIVATE KEY-----\nMIIabc"}, // no END
+			{Role: "assistant", Text: "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun"}, // no END
 			{Role: "user", Text: "next turn kept"},
 		}},
 		GitStatus: " M a.go\n",
@@ -140,7 +140,7 @@ func TestBuildBeginInProse(t *testing.T) {
 			t.Errorf("brief lacks %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "MIIabc") || strings.Count(got, "```text\n")*2 != strings.Count(got, "```") {
+	if strings.Contains(got, "MIIEowIBAAKCAQEA") || strings.Count(got, "```text\n")*2 != strings.Count(got, "```") {
 		t.Errorf("key left or fences unbalanced:\n%s", got)
 	}
 }
@@ -168,18 +168,26 @@ func TestBuildFencesErrors(t *testing.T) {
 	}
 }
 
-// C16-7: a Grok brief over many turns takes a few builds, not one per turn.
-func TestBuildGrokGuardFast(t *testing.T) {
+// C16-7: the Grok guard redacts each turn once, so the bytes redacted
+// stay proportional to the transcript, not turns times its size.
+func TestBuildGrokGuardLinear(t *testing.T) {
 	var turns []adapter.Turn
-	for i := range 5000 {
-		turns = append(turns, adapter.Turn{Role: "user", Text: fmt.Sprintf("turn %d %s", i, strings.Repeat("z", 40))})
+	total := 0
+	for i := range 300 {
+		turns = append(turns, adapter.Turn{Role: "user", Text: fmt.Sprintf("turn %d %s", i, strings.Repeat("z ", 500))})
+		total += len(turns[i].Text)
 	}
-	start := time.Now()
+	redacted := 0
+	defer func(f func(string) (string, int)) { redactLines = f }(redactLines)
+	redactLines = func(s string) (string, int) {
+		redacted += len(s)
+		return redact.Lines(s)
+	}
 	got := Build(Input{To: adapter.Grok, Transcript: adapter.Transcript{Turns: turns}})
-	if d := time.Since(start); d > 10*time.Second {
-		t.Errorf("took %v", d)
+	if limit := 2*total + 64<<10; redacted > limit {
+		t.Errorf("redacted %d bytes for a %d-byte transcript, want at most %d", redacted, total, limit)
 	}
-	if EstimateTokens(got) > GrokBriefTokens || !strings.Contains(got, "turn 4999 ") {
+	if EstimateTokens(got) > GrokBriefTokens || !strings.Contains(got, "turn 299 ") || strings.Contains(got, "turn 0 ") {
 		t.Error("guard result wrong")
 	}
 }
