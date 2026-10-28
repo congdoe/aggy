@@ -221,7 +221,25 @@ func TestSkipRules(t *testing.T) {
 			deps:     Deps{Statuses: allConnected(), Limits: fakeLimits{hinted: map[adapter.Vendor]time.Time{codex: later}}, Now: func() time.Time { return now }},
 			want:     vs(codex),
 			wantSkip: []Skip{{grok, "the parent is on grok"}},
-			wantWarn: []string{"codex: a hook reported its limit, which aggy cannot confirm; no other vendor is left, so trying it anyway"},
+			wantWarn: []string{"codex: a hook reported its limit, which aggy cannot confirm; no other vendor can run this, so trying it anyway"},
+		},
+		{
+			name: "a vendor that refuses the kind does not count as left",
+			routing: func(r *config.Routing) {
+				r.Research = config.Route{Vendors: vs(grok, codex)}
+			},
+			req:       Request{Kind: "research"},
+			deps:      Deps{Statuses: allConnected(), Limits: fakeLimits{hinted: map[adapter.Vendor]time.Time{grok: later}}, Now: func() time.Time { return now }},
+			want:      vs(grok, codex),
+			wantNotes: []string{"codex: research: not supported"},
+			wantWarn:  []string{"grok: a hook reported its limit, which aggy cannot confirm; no other vendor can run this, so trying it anyway"},
+		},
+		{
+			name:     "IgnoreHints keeps hinted vendors",
+			req:      Request{Kind: "image", IgnoreHints: true},
+			deps:     Deps{Statuses: allConnected(), Limits: fakeLimits{hinted: map[adapter.Vendor]time.Time{grok: later}, limited: map[adapter.Vendor]time.Time{claude: {}}}, Now: func() time.Time { return now }},
+			want:     vs(codex, grok),
+			wantWarn: []string{"grok: a hook reported its limit, which aggy cannot confirm; no other vendor can run this, so trying it anyway"},
 		},
 		{
 			name:    "a confirmed limit still disables the last vendor",

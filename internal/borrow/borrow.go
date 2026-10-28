@@ -266,20 +266,36 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 	// Try the candidates in order. A vendor that cannot start this borrow
 	// (its CLI is missing, its adapter refuses the kind, or the lockdown
 	// was not verified on its version) is skipped for the next; a run
-	// that started and failed is the result.
+	// that started and failed is the result. When none could start, the
+	// router is asked once more with IgnoreHints, so a limit only a hook
+	// reported (which any process the CLI starts can send) never leaves a
+	// borrow with no vendor; a confirmed limit still skips.
 	var tried []Attempt
-	for _, v := range candidates {
-		res, err := b.runOne(ctx, req, v)
-		var pre *preStartError
-		if errors.As(err, &pre) {
-			tried = append(tried, Attempt{Vendor: v, Reason: pre.Error()})
-			continue
+	done := map[adapter.Vendor]bool{}
+	for pass := 0; pass < 2; pass++ {
+		if pass == 1 {
+			rr.IgnoreHints = true
+			if candidates, err = b.Router.Choose(ctx, rr); err != nil {
+				break
+			}
 		}
-		res.Tried = tried
-		if err != nil {
-			return []Result{res}, err
+		for _, v := range candidates {
+			if done[v] {
+				continue
+			}
+			done[v] = true
+			res, err := b.runOne(ctx, req, v)
+			var pre *preStartError
+			if errors.As(err, &pre) {
+				tried = append(tried, Attempt{Vendor: v, Reason: pre.Error()})
+				continue
+			}
+			res.Tried = tried
+			if err != nil {
+				return []Result{res}, err
+			}
+			return []Result{res}, nil
 		}
-		return []Result{res}, nil
 	}
 	return nil, &NoStartError{Kind: req.Kind, Tried: tried}
 }
