@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -117,6 +116,10 @@ type State struct {
 	Info fs.FileInfo // the Lstat of what is there; nil for NoFile
 }
 
+// testHookAfterLstat runs in ReadState between the Lstat and the read of
+// a regular file; tests use it to swap the path.
+var testHookAfterLstat func(path string)
+
 // ReadState reads path without following a final symlink. Anything but a
 // regular file, a symlink, or nothing is an error, and so is a file
 // swapped for another between the Lstat and the read.
@@ -136,17 +139,13 @@ func ReadState(path string) (State, error) {
 		}
 		return State{Data: []byte(t), Hash: LinkHash(t), Info: fi}, nil
 	case fi.Mode().IsRegular():
-		b, err := safefs.ReadFile(path)
+		if testHookAfterLstat != nil {
+			testHookAfterLstat(path)
+		}
+		// Never through a symlink, and only the file this Lstat saw.
+		b, err := safefs.ReadFileNoFollow(path, fi)
 		if err != nil {
 			return State{}, err
-		}
-		// ReadFile follows a final symlink: make sure none was swapped in.
-		again, err := safefs.Lstat(path)
-		if err != nil {
-			return State{}, err
-		}
-		if !os.SameFile(fi, again) || !again.Mode().IsRegular() {
-			return State{}, &fs.PathError{Op: "read", Path: path, Err: safefs.ErrChanged}
 		}
 		return State{Data: b, Hash: Hash(b), Info: fi}, nil
 	}
