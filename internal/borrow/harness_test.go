@@ -83,7 +83,7 @@ func (w *world) router() Router {
 	r := router.New(w.cfg, router.Deps{Statuses: worldStatuses{w}, Limits: worldLimits{w}})
 	return RouterFunc(func(ctx context.Context, req RouteRequest) ([]adapter.Vendor, bool, error) {
 		w.chooses++
-		d, err := r.Decide(ctx, router.Request{Kind: string(req.Kind), Parent: req.Parent, Repo: req.Repo, Override: req.Override, IgnoreHints: req.IgnoreHints})
+		d, err := r.Decide(ctx, router.Request{Kind: string(req.Kind), Parent: req.Parent, Repo: req.Repo, Override: req.Override, Authors: req.Authors, IgnoreHints: req.IgnoreHints})
 		return d.Candidates, d.HintSkipped, err
 	})
 }

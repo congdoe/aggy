@@ -315,3 +315,44 @@ func TestReviewRootHomeCase(t *testing.T) {
 		t.Error("root in another case accepted")
 	}
 }
+
+// TestReviewAuthors (T6693): the vendors named by Aggy-Vendor trailers in
+// base..HEAD, deduplicated; values that are not vendors are ignored, and
+// a bad range gives none.
+func TestReviewAuthors(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo, _ := filepath.EvalSymlinks(t.TempDir())
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main"}, args...)...)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q")
+	git("commit", "-q", "--allow-empty", "-m", "base\n\nAggy-Vendor: claude")
+	base := git("rev-parse", "HEAD")
+	for _, msg := range []string{
+		"one\n\nAggy-Vendor: grok\nAggy-Model: grok-4",
+		"two\n\nAggy-Vendor: gemini",
+		"three\n\nAggy-Vendor: codex; rm -rf /",
+		"four\n\nAggy-Vendor: grok",
+		"five",
+	} {
+		git("commit", "-q", "--allow-empty", "-m", msg)
+	}
+	e := gitEnv()
+	ctx := context.Background()
+	if got := e.reviewAuthors(ctx, repo, base); !reflect.DeepEqual(got, []adapter.Vendor{adapter.Grok}) {
+		t.Errorf("authors = %v, want [grok]", got)
+	}
+	for _, b := range []string{"no-such-ref", "-x", ""} {
+		if got := e.reviewAuthors(ctx, repo, b); got != nil {
+			t.Errorf("base %q: authors = %v, want none", b, got)
+		}
+	}
+}

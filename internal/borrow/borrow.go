@@ -62,6 +62,9 @@ type Request struct {
 	Repo string
 	// Parent is the vendor on screen, from AGGY_VENDOR; "" when unknown.
 	Parent adapter.Vendor
+	// Authors are the vendors a review's commits name in their
+	// Aggy-Vendor trailers: untrusted, so they only steer routing.
+	Authors []adapter.Vendor
 	// AllowUntested runs a CLI whose version is outside the adapter's
 	// tested range (--allow-untested).
 	AllowUntested bool
@@ -264,7 +267,7 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 		}
 		return out, nil
 	}
-	rr := RouteRequest{Kind: req.Kind, Parent: req.Parent, Repo: req.Repo}
+	rr := RouteRequest{Kind: req.Kind, Parent: req.Parent, Repo: req.Repo, Authors: req.Authors}
 	if req.Vendor != "" {
 		v, err := adapter.ParseVendor(req.Vendor)
 		if err != nil {

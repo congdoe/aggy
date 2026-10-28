@@ -102,6 +102,35 @@ func TestSkipRules(t *testing.T) {
 			deps:    Deps{Statuses: allConnected()},
 			wantErr: "no vendor available for image: claude: the parent is on claude",
 		},
+		// T6693: the vendors the reviewed commits' trailers name.
+		{
+			name:     "review skips trailer authors",
+			req:      Request{Kind: "review", Parent: claude, Authors: vs(codex)},
+			deps:     Deps{Statuses: allConnected()},
+			want:     vs(grok),
+			wantSkip: []Skip{{codex, "an Aggy-Vendor trailer says it wrote part of the change"}, {claude, "the parent is on claude"}},
+		},
+		{
+			name:     "trailer authors never empty the list",
+			req:      Request{Kind: "review", Parent: claude, Authors: vs(codex, grok)},
+			deps:     Deps{Statuses: allConnected()},
+			want:     vs(codex, grok),
+			wantSkip: []Skip{{claude, "the parent is on claude"}},
+			wantWarn: []string{"every vendor left wrote part of the change (Aggy-Vendor trailers name codex, grok); reviewing with it anyway"},
+		},
+		{
+			name:     "a not connected vendor stays skipped for its own reason",
+			req:      Request{Kind: "review", Authors: vs(codex)},
+			deps:     Deps{Statuses: statuses("codex", "connected", "grok", "not_connected", "claude", "connected")},
+			want:     vs(claude),
+			wantSkip: []Skip{{codex, "an Aggy-Vendor trailer says it wrote part of the change"}, {grok, "not connected"}},
+		},
+		{
+			name: "authors only steer review",
+			req:  Request{Kind: "image", Authors: vs(codex)},
+			deps: Deps{Statuses: allConnected()},
+			want: vs(codex, grok),
+		},
 		{
 			name:     "review skips its author",
 			req:      Request{Kind: "review", Parent: claude},
