@@ -113,6 +113,9 @@ func TestReviewRoot(t *testing.T) {
 		{"subdir uses the root", sub, "/nohome", "/nostate", repo, ""},
 		{"not a work tree", plain, "/nohome", "/nostate", "", "in none"},
 		{"home is the repo", sub, repo, "/nostate", "", "your home directory"},
+		// The residual of #10-7: the repo holds $HOME, with AGGY_HOME elsewhere.
+		{"home inside the repo", sub, filepath.Join(repo, "home", "me"), "/nostate", "", "your home directory"},
+		{"home beside the repo", sub, filepath.Join(base, "home"), "/nostate", repo, ""},
 		{"state dir inside", sub, "/nohome", filepath.Join(repo, ".aggy-state"), "", "state dir"},
 		{"inside the state dir", sub, "/nohome", base, "", "state dir"},
 	}

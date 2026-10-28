@@ -223,6 +223,10 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 	// the child's whole process group before the outcome is recorded.
 	ctx, stop := execrun.NotifyContext(context.Background())
 	defer stop()
+	// Once the first signal has cancelled ctx, a second one takes its
+	// default action and ends aggy during cleanup (R-5): the child's
+	// process group is already being killed.
+	context.AfterFunc(ctx, stop)
 	cfg, err := config.LoadDefault()
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy borrow: config: %s\n", termsafe.Field(err.Error()))

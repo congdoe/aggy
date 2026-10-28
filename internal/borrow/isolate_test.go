@@ -216,3 +216,28 @@ func TestGuardReachesClaude(t *testing.T) {
 		t.Errorf("--settings %q", s)
 	}
 }
+
+// TestTempDirInsideOtherRepoRefused (#10-13): a TMPDIR inside some other
+// git work tree is refused too, since Codex and Grok load that repo's
+// AGENTS.md and project config from its root down to the cwd.
+func TestTempDirInsideOtherRepoRefused(t *testing.T) {
+	w := newWorld(t)
+	b := w.borrower()
+	other := t.TempDir()
+	if err := os.Mkdir(filepath.Join(other, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	b.TempDir = filepath.Join(other, "tmp")
+	if err := os.Mkdir(b.TempDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Run(context.Background(), w.req(adapter.News, "x")); err == nil || !strings.Contains(err.Error(), "git work tree") {
+		t.Errorf("err = %v", err)
+	}
+	if len(w.records()) != 0 {
+		t.Error("ran a child")
+	}
+	if left, _ := os.ReadDir(b.TempDir); len(left) != 0 {
+		t.Errorf("temp dirs left: %d", len(left))
+	}
+}
