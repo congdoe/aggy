@@ -156,7 +156,7 @@ type flagSpec struct {
 	// with "-": Claude's --resume [value] opens a picker without one, and
 	// never takes a following flag as its value.
 	optional []string
-	// multi take one or more values, up to the next argument that starts
+	// multi take one or more values, each split on commas, up to the next argument that starts
 	// with "-" (a lone "-" is a value), as clap's num_args = 1.. does.
 	multi []string
 }
@@ -420,15 +420,16 @@ func (f *fake) parse(args []string) error {
 			}
 			f.flags[name] = append(f.flags[name], val)
 		case contains(spec.multi, name):
+			// Values split on commas too, as codex's value_delimiter = ','.
 			if hasVal {
-				f.flags[name] = append(f.flags[name], val)
+				f.flags[name] = append(f.flags[name], strings.Split(val, ",")...)
 				continue
 			}
 			n := 0
 			for i+1 < len(args) && args[i+1] != "--" && (args[i+1] == "-" || !strings.HasPrefix(args[i+1], "-")) {
 				i++
 				n++
-				f.flags[name] = append(f.flags[name], args[i])
+				f.flags[name] = append(f.flags[name], strings.Split(args[i], ",")...)
 			}
 			if n == 0 {
 				return fmt.Errorf("option %s needs a value", name)

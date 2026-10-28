@@ -101,3 +101,17 @@ func TestErrorThenTurnCompleted(t *testing.T) {
 		t.Errorf("ParseHeadless = %+v, %v", res, err)
 	}
 }
+
+// TestRefImageCommas (second review, N2): -i splits on commas, so a path
+// holding one is refused, and the fake splits as codex does.
+func TestRefImageCommas(t *testing.T) {
+	if _, err := New().Headless(adapter.HeadlessRequest{Kind: adapter.Image, PromptFile: "/p", Cwd: "/w", RefImages: []string{"/b,c.png"}}); err == nil {
+		t.Error("a reference path with a comma was accepted")
+	}
+	h := fakecli.NewHarness(t, fakecli.Build(t))
+	out, rec := h.Run(t, adapter.Command{Path: Bin, Args: []string{"exec", "-i", "/b,c.png", "--json", "--", "-"}, Dir: h.Cwd,
+		Stdin: adapter.StdinFile, StdinPath: h.Prompt}, "")
+	if out.ExitCode != 0 || !slices.Equal(rec.Flags["-i"], []string{"/b", "c.png"}) {
+		t.Errorf("fake -i = %q (exit %d)", rec.Flags["-i"], out.ExitCode)
+	}
+}
