@@ -391,26 +391,32 @@ func TestVideo(t *testing.T) {
 // borrow and a Grok image edit start nothing, and the refusal names the
 // config key and the upload risk.
 func TestFileToolsOffByDefault(t *testing.T) {
-	id := "5f0c6a2e-9b1d-4e7a-8c3f-2d4b6a8e0c1f"
-	for _, tt := range []struct {
-		name string
-		kind adapter.Kind
-		m    Media
-	}{
-		{"video", adapter.Video, Media{Out: "intro.mp4"}},
-		{"grok edit", adapter.Image, Media{Out: "hero.jpg", Resume: id}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, edit := range []bool{false, true} {
+		t.Run(map[bool]string{false: "video", true: "grok edit"}[edit], func(t *testing.T) {
 			w := newWorld(t)
-			req := w.req(tt.kind, "a thing")
+			w.scenario[adapter.Grok] = `{"images":1,"json":{"result":"images/1.jpg"}}`
+			req := w.req(adapter.Video, "a thing")
 			req.Vendor = "grok"
-			tt.m.Out = filepath.Join(w.repo, tt.m.Out)
-			req.Media = &tt.m
+			req.Media = &Media{Out: filepath.Join(w.repo, "intro.mp4")}
+			if edit {
+				// A new image needs no opt-in; its edit does.
+				req.Kind, req.Media.Out = adapter.Image, filepath.Join(w.repo, "hero.jpg")
+				first, err := w.borrower().Run(context.Background(), req)
+				if err != nil || first[0].Status != "done" {
+					t.Fatalf("first %+v, %v", first, err)
+				}
+				sc, err := ReadSidecar(w.repo, req.Media.Out)
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.Media = &Media{Out: req.Media.Out, Resume: sc.SessionID}
+			}
+			runs := len(w.records())
 			_, err := w.borrower().Run(context.Background(), req)
 			if err == nil || !strings.Contains(err.Error(), "grok_file_tools = true under [media]") || !strings.Contains(err.Error(), "uploads to xAI") {
 				t.Fatalf("err = %v", err)
 			}
-			if len(w.records()) != 0 {
+			if len(w.records()) != runs {
 				t.Error("a child ran")
 			}
 		})

@@ -211,6 +211,9 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 	if err := req.validate(); err != nil {
 		return nil, err
 	}
+	if err := b.checkResume(ctx, req); err != nil {
+		return nil, err
+	}
 	if req.Vendor == Both {
 		vs, err := b.both(ctx, req)
 		if err != nil {

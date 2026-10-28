@@ -73,3 +73,39 @@ func TestReadFileNoFollow(t *testing.T) {
 		t.Errorf("read through a link = %q", b)
 	}
 }
+
+// TestWriteFileNoFollowIn (B15-1): the write lands only in the directory
+// whose identity the caller took; a directory swapped for a symlink to
+// elsewhere after that fails with ErrChanged and writes nothing there.
+func TestWriteFileNoFollowIn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	dir := filepath.Join(root, "public")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := Lstat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileNoFollowIn(fi, filepath.Join(dir, "a.png"), []byte("ok"), 0o644, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileNoFollowIn(nil, filepath.Join(dir, "b.png"), []byte("x"), 0o644, nil); err == nil {
+		t.Error("no dir identity accepted")
+	}
+	// The directory is swapped for a symlink out of root.
+	outside := t.TempDir()
+	if err := os.Rename(dir, dir+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileNoFollowIn(fi, filepath.Join(dir, "c.png"), []byte("x"), 0o644, nil); !errors.Is(err, ErrChanged) {
+		t.Errorf("swapped dir = %v, want ErrChanged", err)
+	}
+	if es, _ := os.ReadDir(outside); len(es) != 0 {
+		t.Errorf("wrote outside: %v", es)
+	}
+}

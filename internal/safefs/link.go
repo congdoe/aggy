@@ -173,9 +173,28 @@ func checkTarget(name, dir, target string) error {
 // links fails that case rather than risk a replace. The new file gets
 // perm.
 func WriteFileNoFollow(name string, data []byte, perm fs.FileMode, want fs.FileInfo) error {
+	return writeFileNoFollow(name, data, perm, want, nil)
+}
+
+// WriteFileNoFollowIn is WriteFileNoFollow that also requires name's
+// directory to be dir, an identity the caller took (Lstat) when it
+// checked where that directory is. The write then lands in the directory
+// the caller judged, even if a path element is swapped for a symlink
+// after the check: it fails with ErrChanged instead.
+func WriteFileNoFollowIn(dir fs.FileInfo, name string, data []byte, perm fs.FileMode, want fs.FileInfo) error {
+	if dir == nil || !dir.IsDir() {
+		return &fs.PathError{Op: "WriteFile", Path: name, Err: errors.New("no directory identity to compare")}
+	}
+	return writeFileNoFollow(name, data, perm, want, dir)
+}
+
+func writeFileNoFollow(name string, data []byte, perm fs.FileMode, want, wantDir fs.FileInfo) error {
 	t, err := resolve("WriteFile", name)
 	if err != nil {
 		return err
+	}
+	if wantDir != nil && (t.linkDir.err != nil || !os.SameFile(wantDir, t.linkDir.fi)) {
+		return &fs.PathError{Op: "WriteFile", Path: name, Err: ErrChanged}
 	}
 	var syncErr error
 	err = inParent("WriteFile", name, t.link, t.linkDir, func(dir *os.Root, base string) error {

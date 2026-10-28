@@ -153,7 +153,20 @@ func sniff(data []byte) string {
 // resumed, a file made before this run is skipped quietly (still never
 // copied) and not counted as made.
 func gate(arts []adapter.Artifact, started time.Time, resumed bool) (ok []media, refused []string, made int) {
+	over := 0
 	for _, a := range arts {
+		if len(ok) == MaxImages {
+			// Image turns use a plan's limits several times faster than
+			// text, and a vendor may make more than it was asked for:
+			// keep MaxImages, and only count the rest (Lstat, no read).
+			fi, err := safefs.Lstat(a.Path)
+			if resumed && err == nil && born(fi).Before(started.Add(-timeSlack)) {
+				continue
+			}
+			made++
+			over++
+			continue
+		}
 		m, err := readArtifact(a, started)
 		if resumed && errors.Is(err, errOld) {
 			continue
@@ -165,11 +178,8 @@ func gate(arts []adapter.Artifact, started time.Time, resumed bool) (ok []media,
 		}
 		ok = append(ok, m)
 	}
-	// Image turns use a plan's limits several times faster than text,
-	// and a vendor may make more than it was asked for: keep MaxImages.
-	if len(ok) > MaxImages {
-		refused = append(refused, fmt.Sprintf("%d more not kept: the cap is %d files per borrow", len(ok)-MaxImages, MaxImages))
-		ok = ok[:MaxImages]
+	if over > 0 {
+		refused = append(refused, fmt.Sprintf("%d more not kept: the cap is %d files per borrow", over, MaxImages))
 	}
 	return ok, refused, made
 }
