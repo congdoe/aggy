@@ -255,7 +255,7 @@ func printReport(w io.Writer, res doctorResult, id devfix.Identity) {
 	clean := func(s string) string { return termsafe.Field(sc.String(reportScrub(s, id))) }
 	var b strings.Builder
 	fmt.Fprintln(&b, "aggy doctor report")
-	fmt.Fprintf(&b, "aggy: %s\n", clean(Version))
+	fmt.Fprintf(&b, "aggy: %s\n", clean(version()))
 	fmt.Fprintf(&b, "os: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	for _, v := range adapter.Vendors() {
 		ver, ok := res.versions[v]

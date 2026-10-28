@@ -4,12 +4,31 @@ package cli
 import (
 	"fmt"
 	"io"
+	"runtime/debug"
 )
 
 // Version is set at build time:
 //
 //	go build -ldflags "-X github.com/congdoe/aggy/internal/cli.Version=v0.1.0"
 var Version = "dev"
+
+// version is Version, or, in a binary built by `go install
+// github.com/congdoe/aggy/cmd/aggy@<tag>` (no ldflags), the module
+// version Go recorded.
+func version() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return Version
+	}
+	return pickVersion(Version, bi.Main.Version)
+}
+
+func pickVersion(set, module string) string {
+	if set != "dev" || module == "" || module == "(devel)" {
+		return set
+	}
+	return module
+}
 
 const usage = `aggy runs the official Claude Code, Codex, and Grok Build CLIs.
 
@@ -42,7 +61,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "version", "--version", "-v":
-		fmt.Fprintf(stdout, "aggy %s\n", Version)
+		fmt.Fprintf(stdout, "aggy %s\n", version())
 		return 0
 	case "borrow":
 		return runBorrow(args[1:], stdout, stderr)
