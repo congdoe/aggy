@@ -1,0 +1,23 @@
+# Playwright MCP: the page's accessibility tree instead of a screenshot.
+# Project-scoped, only for repos with a UI, and not in the default set.
+# Source: the aggy proposal, section 17. The server command is not in
+# docs/verification.md, so it is unverified until T6716 checks it at a
+# pinned version.
+name = "playwright"
+description = "Browser automation that reads the accessibility tree instead of a screenshot"
+homepage = "https://github.com/microsoft/playwright-mcp"
+version = "unpinned" # TODO(T6716): pin the version aggy installs
+default = false
+scope = "repo"
+when = "has-ui"
+unverified = ["version", "install", "mcp"]
+
+[install]
+check = ["mcp-server-playwright", "--version"]
+
+[mcp]
+vendors = ["claude", "codex", "grok"]
+argv = ["mcp-server-playwright"]
+
+[cost]
+method = "mcp-schema"

@@ -1,0 +1,25 @@
+# RTK: compresses shell output before the model sees it; failures stay.
+# Source: the aggy proposal, section 17. None of its commands is in
+# docs/verification.md yet, so every vendor fact below is unverified
+# until T6712 checks it at a pinned version.
+#
+# TODO(T6712): Grok gets a PostToolUse hook on shell output instead of
+# rtk init. RTK's hook command is not known yet, so the [[hook]] part is
+# left out rather than guessed.
+name = "rtk"
+description = "Compresses shell command output before the model sees it; failures stay"
+homepage = "https://github.com/rtk-ai/rtk"
+version = "unpinned" # TODO(T6712): pin the version aggy installs
+default = false
+scope = "global"
+unverified = ["version", "install", "init", "cost"]
+
+[install]
+check = ["rtk", "--version"]
+
+[[init]]
+vendors = ["claude", "codex"]
+argv = ["rtk", "init"]
+
+[cost]
+method = "none" # TODO(T6712): measure what rtk init adds to each CLI

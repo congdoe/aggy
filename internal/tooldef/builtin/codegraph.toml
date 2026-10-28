@@ -1,0 +1,23 @@
+# CodeGraph: a local code index the agent queries instead of grepping.
+# Source: the aggy proposal, section 17, and docs/design.md section 9.
+# None of its commands is in docs/verification.md yet, so every vendor
+# fact below is unverified until T6711 checks it at a pinned version.
+name = "codegraph"
+description = "Local code index: the agent asks where a symbol lives instead of grepping"
+homepage = "https://github.com/colbymchenry/codegraph"
+version = "unpinned" # TODO(T6711): pin the version aggy installs
+default = false
+scope = "repo"
+lifecycle = ["worktree-copy", "gc", "refresh"]
+unverified = ["version", "install", "mcp"]
+
+[install]
+check = ["codegraph", "--version"]
+prebuild = ["codegraph", "init"]
+
+[mcp]
+vendors = ["claude", "codex", "grok"]
+argv = ["codegraph", "serve", "--mcp"]
+
+[cost]
+method = "mcp-schema"

@@ -1,0 +1,18 @@
+# Caveman: a skill for shorter assistant replies. /caveman in Claude and
+# Grok, $caveman in Codex. Never Caveman's proxy.
+# Source: the aggy proposal, section 17. Where the skill folder comes
+# from is not in docs/verification.md, so it is unverified until T6715.
+name = "caveman"
+description = "A skill for shorter assistant replies, to save output tokens"
+homepage = "https://github.com/JuliusBrussee/caveman"
+version = "unpinned" # TODO(T6715): pin the version aggy installs
+default = false
+scope = "global"
+unverified = ["version", "homepage", "install", "skill"]
+
+[skill]
+vendors = ["claude", "codex", "grok"]
+path = "~/.aggy/skills/caveman"
+
+[cost]
+method = "skill-md"

@@ -1,0 +1,22 @@
+# Context7: current docs for the library version in the repo. The docs
+# query leaves the machine; source code stays local.
+# Source: the aggy proposal, section 17. The server command is not in
+# docs/verification.md, so it is unverified until T6714 checks it at a
+# pinned version.
+name = "context7"
+description = "Current library docs for the version in the repo; the docs query leaves the machine"
+homepage = "https://github.com/upstash/context7"
+version = "unpinned" # TODO(T6714): pin the version aggy installs
+default = false
+scope = "global"
+unverified = ["version", "install", "mcp"]
+
+[install]
+check = ["context7-mcp", "--version"]
+
+[mcp]
+vendors = ["claude", "codex", "grok"]
+argv = ["context7-mcp"]
+
+[cost]
+method = "mcp-schema"

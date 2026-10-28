@@ -267,6 +267,58 @@ Whether a tool is on is set per vendor and per repo, in aggy's state in `~/.aggy
 
 The CodeGraph index is built lazily the first time CodeGraph is turned on for a repo, then refreshed incrementally. Worktrees do not share it: a worktree gets a copy of the main checkout's index only when a session aggy launches there has CodeGraph on, the copy is refreshed for its branch, and `aggy gc` removes it with the worktree.
 
+**Tool definitions** (T6752, `internal/tooldef`). Every managed tool is described by one definition, and the switchboard works only from definitions. aggy's built-ins (CodeGraph, RTK, Headroom, Context7, Caveman, Playwright) are definitions embedded in aggy, plus a Go lifecycle hook where a tool needs one; a user adds their own as `~/.aggy/tools/<name>.toml`, and a good one can be proposed for the built-in set (CONTRIBUTING). A definition is TOML:
+
+```toml
+name = "demo"                       # a-z, 0-9, -; the file is <name>.toml
+description = "What the tool does, in one line"
+homepage = "https://example.com/demo"   # optional; https, no user info
+version = "1.4.2"                   # pinned
+default = false                     # user tools are always off
+scope = "repo"                      # "global", or "repo"
+when = "has-ui"                     # repo scope only: a condition
+unverified = ["mcp", "install"]     # keys whose vendor facts are not yet in verification.md
+
+[install]                           # nothing here runs unasked
+check = ["demo", "--version"]       # presence and version
+install = ["/usr/local/bin/demo-install", "1.4.2"]   # only on aggy tool install, after asking
+prebuild = ["demo", "index"]        # likewise
+
+[mcp]                               # a stdio MCP server
+vendors = ["claude", "codex", "grok"]
+argv = ["demo", "serve", "--mcp"]   # the program and its arguments
+env = ["DEMO_HOME"]                 # names passed through from the environment; never values
+
+[skill]                             # a folder holding SKILL.md, linked per vendor
+vendors = ["claude", "grok"]
+path = "~/.aggy/skills/demo"        # absolute, or under ~/
+
+[[hook]]                            # only for vendors whose hook can do it
+vendors = ["grok"]
+event = "PostToolUse"
+argv = ["demo", "hook"]
+
+[[init]]                            # a vendor-specific setup step
+vendors = ["claude", "codex"]
+argv = ["demo", "init"]
+
+[cost]
+method = "mcp-schema"               # mcp-schema, skill-md, static (with tokens = N), or none
+```
+
+A tool has at least one part (`mcp`, `skill`, `hook`, `init`), and each part lists the vendors it supports; `install.check` is required unless the tool is only a skill. `lifecycle = ["worktree-copy", "gc", "refresh"]` names the Go hooks of a built-in and is refused in a user definition. The registry gives the switchboard each tool, whether it is built-in or user, its source file, and its parts for one vendor.
+
+Trust rules. A definition is untrusted input, validated like the `check` list, and a built-in passes the same validator (a test fails otherwise):
+
+- Definitions come only from aggy itself and from `~/.aggy/tools/` (under `$AGGY_HOME` when set), never from a repo or the working directory. A repo's `.aggy/config.toml` can still only turn tools off.
+- A user file must be a regular file, not a symlink, owned by the user, and writable by neither group nor others, in a tools folder that passes the same checks; it is read through `safefs`.
+- At most 64 KB of UTF-8, with no control or format character anywhere, comments included (a TOML escape in a value is refused too); unknown keys are an error; names, versions, text, argument lists (64 arguments of 4 KB), env names (16), hooks (8), and init steps (8) are bounded.
+- Commands are argv only, never a shell string: the program is one word, a bare name found on `PATH` or a clean absolute path, and never a shell or `env`.
+- The env allowlist holds names only and refuses any `*_BASE_URL`, proxy, key, token, secret, password, credential, or auth name, and the vendor CLIs' and aggy's own variables.
+- A name may not collide: a user tool never shadows a built-in, and the file must be named after the tool.
+
+An invalid or untrusted file is refused with the file and the key named, and the rest still load. `aggy tool add <file>` validates a file, prints exactly what would run and be wired per vendor, and copies it into `~/.aggy/tools` (mode 0600) only after a yes, or `--yes` without a terminal. `aggy tool remove <name>` deletes a user definition, a refused one included, and refuses a built-in and a tool that is still wired (the wiring check comes with T6708). `aggy tool list` shows each tool's name, built-in or user, default, source file, and description; the cost columns come later. A borrow child cannot add or remove definitions. Every vendor fact in the built-ins is marked unverified until its tool's task checks it.
+
 ## 10. Parity
 
 Without parity, a switch lands in an agent that does not know the project's rules, lessons, or safety settings. Codex reads only `AGENTS.md`, while many repos have only `CLAUDE.md`. Claude's auto-memory is invisible to the other two. A repo's `.claude/` permission rules apply only to Claude.
