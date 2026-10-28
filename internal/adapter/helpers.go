@@ -142,7 +142,7 @@ func ValidSessionID(v Vendor, id string) error {
 const idChars = "-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 // ParsedSessionID checks an id a vendor CLI reported against the one aggy
-// pre-assigned (empty when none): a pre-assigned id is kept, and a
+// pre-assigned or resumed (empty when none): a pre-assigned id is kept, and a
 // different reported id is an error, as is an invalid one. It returns the
 // id to record.
 func ParsedSessionID(v Vendor, assigned, reported string) (string, error) {
@@ -153,7 +153,7 @@ func ParsedSessionID(v Vendor, assigned, reported string) (string, error) {
 		return assigned, fmt.Errorf("%w (reported by the CLI)", err)
 	}
 	if assigned != "" && !strings.EqualFold(assigned, reported) {
-		return assigned, fmt.Errorf("adapter: %s reported session %s, but aggy assigned %s", v, reported, assigned)
+		return assigned, fmt.Errorf("adapter: %s reported session %s, but aggy expected %s", v, reported, assigned)
 	}
 	if assigned != "" {
 		return assigned, nil

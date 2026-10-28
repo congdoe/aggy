@@ -155,8 +155,8 @@ UUID (Claude and Grok take UUIDs; the Codex thread-id format is not
 recorded, so it is held to a UUID too). So an id can never be read as a
 flag. Ids are passed as plain arguments (`--resume <id>`, `resume <id>`),
 since `--resume=<id>` and `--` before an id are not recorded. When aggy
-pre-assigned an id (`SessionID`), `ParseHeadless` keeps it and returns an
-error if the CLI reports another. Models pass `adapter.ValidModel`.
+pre-assigned an id (`SessionID`) or resumes one (`Resume`), `ParseHeadless`
+keeps it and returns an error if the CLI reports another. Models pass `adapter.ValidModel`.
 
 **Web search and isolation.** Web search is only for research and news:
 any other kind with `WebSearch` is `ErrUnsupported`, because a child that
@@ -166,7 +166,8 @@ empty temp dir, which the M1 borrow runner (T6621) must create, since an
 adapter cannot check it without touching the disk. On Codex they also
 pass `--ignore-user-config` when the probe found it in `codex --help` or
 `codex exec --help` (capability `ignore-user-config`, through
-`codex.Adapter.Caps`), which keeps the user's MCP servers out. When it is
+`codex.Adapter.Caps`, which the T6621 borrow runner must fill from the
+probe), which keeps the user's MCP servers out. When it is
 absent, user-configured MCP servers remain an open isolation gap on Codex,
 and on every vendor tool deny lists cover only built-in tools.
 
@@ -207,7 +208,8 @@ given; Grok's `[--max-turns N]` when `MaxTurns` is set):
 
 Codex puts every exec flag before the `resume` subcommand, which takes
 only its own flags; `-i` takes one or more values, so the references come
-right after `exec` and `--json` ends them. `SessionID` adds `--session-id`
+right after `exec` and `--json` ends them. `-i` also splits values on
+commas, so a reference path holding a comma is refused. `SessionID` adds `--session-id`
 on Claude and Grok; Codex refuses it. On Grok, `AllowedTools` may only
 name tools the kind already permits, compared case-insensitively:
 research and news get the three search tools and nothing else, review the
