@@ -77,8 +77,11 @@ type Command struct {
 	// Dir is the working directory.
 	Dir string
 	// Stdin says what the process reads. Codex exec waits on a non-terminal
-	// stdin, so headless Codex runs with StdinNull.
+	// stdin until EOF, so headless Codex never gets an open pipe.
 	Stdin Stdin
+	// StdinPath is the file read as stdin when Stdin is StdinFile: the
+	// headless prompt file, so the prompt never goes in argv.
+	StdinPath string
 }
 
 // Stdin is the standard input of a Command.
@@ -88,6 +91,7 @@ type Stdin int
 const (
 	StdinNull     Stdin = iota // /dev/null (the zero value)
 	StdinTerminal              // the pseudo-terminal, for interactive sessions
+	StdinFile                  // the regular file at Command.StdinPath, read to EOF
 )
 
 // Output is what a Runner returns for a finished Command.
@@ -157,6 +161,9 @@ type HeadlessRequest struct {
 	WebSearch bool
 	// Resume continues this vendor session id, as for image --edit.
 	Resume string
+	// SessionID pre-assigns a new session's id where the CLI supports it
+	// (Claude and Grok). Empty lets the CLI choose.
+	SessionID string
 	// RefImages are reference images passed to the CLI where it takes them.
 	RefImages []string
 	// Env holds extra KEY=value entries, such as AGGY_DELEGATED=1.
@@ -213,6 +220,15 @@ type Transcript struct {
 // for example after a format change. Callers degrade: the brief then uses
 // the task file alone.
 var ErrNoTranscript = errors.New("transcript not available")
+
+// ErrUnsupported matches a request this vendor's CLI cannot serve with
+// the flags recorded in docs/adapters.md, such as a pre-assigned session
+// id on Codex or video on Codex. Callers route elsewhere.
+var ErrUnsupported = errors.New("not supported by this CLI")
+
+// ErrUnparsed matches a headless run whose output the adapter could not
+// read. Its HeadlessResult carries ErrUnknown.
+var ErrUnparsed = errors.New("unrecognized headless output")
 
 // ConfigContext tells ConfigPatches where to write.
 type ConfigContext struct {

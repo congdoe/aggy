@@ -173,3 +173,21 @@ func (c *capped) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+// LookPath finds the vendor binary name on aggy's PATH, using only its
+// absolute entries (see cleanPath), and returns a clean absolute path for
+// ExecRunner. It starts nothing.
+func LookPath(name string) (string, error) {
+	if name == "" || strings.ContainsRune(name, filepath.Separator) {
+		return "", fmt.Errorf("probe: %q is not a bare program name", name)
+	}
+	for _, dir := range filepath.SplitList(cleanPath(os.Getenv("PATH"))) {
+		p := filepath.Join(dir, name)
+		fi, err := safefs.Stat(p)
+		if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
+			continue
+		}
+		return filepath.Clean(p), nil
+	}
+	return "", fmt.Errorf("probe: %s: %w", name, exec.ErrNotFound)
+}
