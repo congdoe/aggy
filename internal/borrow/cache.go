@@ -113,3 +113,19 @@ func statOK(p string) bool {
 	_, err := safefs.Lstat(p)
 	return err == nil
 }
+
+// MaxCacheEntry caps a cache entry aggy gc reads to date it.
+const MaxCacheEntry = maxCacheEntry
+
+// CacheExpired reports whether the cache entry data, a file last
+// modified at mod, can no longer answer its question at now: it is past
+// its kind's time to live. An entry aggy cannot read is dated by mod,
+// against the longest time to live. An entry from the future (a clock
+// set back) is kept.
+func CacheExpired(data []byte, mod, now time.Time) bool {
+	var r researchReport
+	if json.Unmarshal(data, &r) != nil || r.AsOf.IsZero() {
+		return now.Sub(mod) >= cacheTTL(adapter.Research)
+	}
+	return now.Sub(r.AsOf) >= cacheTTL(adapter.Kind(r.Kind))
+}

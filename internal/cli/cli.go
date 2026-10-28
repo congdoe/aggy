@@ -45,6 +45,8 @@ Commands:
   inbox     List unread borrow reports, or show one
   accept    Show an edit borrow's diff and apply it to this checkout
   reject    Discard an edit borrow's worktree and branch
+  gc        Remove finished worktrees, closed borrow children, old inbox
+            reports, and expired research
   run       Start a vendor CLI (claude, codex, or grok) under aggy; with
             --direct, on your terminal without aggy's pass-through (for
             when it breaks a terminal feature; no switch key), still
@@ -144,6 +146,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runAttribution(args[1:], stdout, stderr)
 	case "check":
 		return runCheck(args[1:], stdout, stderr)
+	case "gc":
+		return runGC(args[1:], stdout, stderr)
 	case "help", "--help", "-h":
 		fmt.Fprint(stdout, usage)
 		return 0
