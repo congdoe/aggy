@@ -93,6 +93,11 @@ const (
 	// (docs/verification.md, T6619), not in a recorded help: present
 	// only when help lists it.
 	CapRules = "rules"
+	// CapDeny is grok --deny <rule>, a permission deny rule for one
+	// session: the safety policy goes in it. Source- and doc-verified at
+	// grok-build 2bdd1d6a, not in a recorded help: present only when help
+	// lists it.
+	CapDeny = "deny"
 )
 
 // Specs holds the probe spec of each vendor, from the flags recorded in
@@ -127,6 +132,7 @@ var Specs = map[adapter.Vendor]Spec{
 			{CapDisallowTools, 0, "--disallowed-tools", Option},
 			{CapMaxTurns, 0, "--max-turns", Option},
 			{CapRules, 0, "--rules", Option},
+			{CapDeny, 0, "--deny", Option},
 		},
 	},
 	adapter.Codex: {

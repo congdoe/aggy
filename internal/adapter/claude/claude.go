@@ -136,6 +136,16 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		}
 		args = append(args, "--append-system-prompt-file", req.MemoryFile)
 	}
+	if len(req.Deny) > 0 {
+		// An inline settings layer: its permissions.deny list merges with
+		// every settings file's, and a deny wins over any allow
+		// (code.claude.com/docs settings.md, permissions.md).
+		js, err := json.Marshal(map[string]any{"permissions": map[string]any{"deny": req.Deny}})
+		if err != nil {
+			return adapter.Command{}, err
+		}
+		args = append(args, "--settings", string(js))
+	}
 	if req.BriefFile != "" {
 		if err := adapter.CheckAbs("brief file", req.BriefFile); err != nil {
 			return adapter.Command{}, err

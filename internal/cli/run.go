@@ -79,6 +79,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	root, _ := repoRoot(cwd)
 	cleanup, warns := addMemory(v, caps, root, &req)
 	defer cleanup()
+	warns = append(warns, addPolicy(v, caps, &req)...)
 	for _, w := range warns {
 		fmt.Fprintf(stderr, "aggy run: %s\n", termsafe.Line(w))
 	}

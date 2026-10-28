@@ -98,3 +98,45 @@ func codexConfigs(root string) (user, project []byte, err error) {
 	project, err = read(filepath.Join(root, ".codex", "config.toml"))
 	return user, project, err
 }
+
+// policyDelivery says how vendor v takes the safety policy, given its
+// probed capabilities: ok, or why not. Claude and Grok take it per
+// launch; Codex reads its rules file, which aggy policy wire writes.
+func policyDelivery(v adapter.Vendor, caps []string) (bool, string) {
+	switch v {
+	case adapter.Claude:
+		if !slices.Contains(caps, probe.CapSettings) {
+			return false, "claude --help does not list --settings"
+		}
+	case adapter.Grok:
+		if !slices.Contains(caps, probe.CapDeny) {
+			return false, "grok --help does not list --deny"
+		}
+	case adapter.Codex:
+		path, err := parity.CodexRulesPath()
+		if err != nil {
+			return false, err.Error()
+		}
+		switch st, err := parity.CodexRulesState(path); {
+		case err != nil:
+			return false, err.Error()
+		case st == parity.RulesMissing:
+			return false, "its rules file is not written; run aggy policy wire"
+		case st == parity.RulesOther:
+			return false, "its rules file is not aggy's current policy; see aggy doctor"
+		}
+	}
+	return true, ""
+}
+
+// addPolicy puts the safety policy on req for vendor v where it goes on
+// the command line, and warns when the vendor will not get it.
+func addPolicy(v adapter.Vendor, caps []string, req *adapter.InteractiveRequest) []string {
+	if ok, why := policyDelivery(v, caps); !ok {
+		return []string{"safety policy not applied: " + why}
+	}
+	if v != adapter.Codex {
+		req.Deny = parity.DenyRules
+	}
+	return nil
+}

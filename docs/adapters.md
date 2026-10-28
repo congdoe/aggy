@@ -346,6 +346,14 @@ controls and framed as data. A `-c` value replaces Codex's own
 `config.toml` first; when a profile or `<repo>/.codex/config.toml` sets
 the key, Codex gets no memory and `aggy run` says why.
 
+The safety policy (design.md section 10) is per launch for Claude and
+Grok: Claude `--settings '{"permissions":{"deny":[...]}}'` when the probe
+finds `--settings`, Grok one `--deny <rule>` per rule when it finds
+`--deny` (Grok splits a `--deny` value on commas, so a rule holding one
+is refused). The rules are `parity.DenyRules`, in the `Read(...)` and
+`Bash(...)` syntax both CLIs document. Codex gets nothing on its argv; it
+reads `$CODEX_HOME/rules/aggy.rules`, written by `aggy policy wire`.
+
 Artifacts are paths only; copying them is the borrow runner's job, through
 `internal/safefs`. Codex: every `*.png` in
 `$CODEX_HOME/generated_images/<thread-id>/` (else `~/.codex/...`). Grok:

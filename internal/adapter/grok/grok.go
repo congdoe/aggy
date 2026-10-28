@@ -208,6 +208,13 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		// (docs/verification.md, T6619).
 		args = append(args, "--rules", req.Memory)
 	}
+	for _, r := range req.Deny {
+		// --deny splits its value on commas (src/app/cli.rs at 2bdd1d6a).
+		if r == "" || strings.ContainsAny(r, ",\x00") {
+			return adapter.Command{}, fmt.Errorf("grok: deny rule %q cannot be passed as one --deny value", r)
+		}
+		args = append(args, "--deny", r)
+	}
 	if req.BriefFile != "" {
 		if err := adapter.CheckAbs("brief file", req.BriefFile); err != nil {
 			return adapter.Command{}, err
