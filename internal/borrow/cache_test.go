@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/config"
 )
 
 // TestResearchCache (T6641): the same question reuses its report for a
@@ -33,6 +34,15 @@ func TestResearchCache(t *testing.T) {
 		{"other constraints", adapter.News, time.Hour, func(_ *world, r *Request) { r.Constraints = []string{"only blogs"} }, false},
 		{"other kind", adapter.News, time.Hour, func(_ *world, r *Request) { r.Kind = adapter.Research }, false},
 		{"the same vendor asked for", adapter.News, time.Hour, func(_ *world, r *Request) { r.Vendor = "grok" }, true},
+		// C17-3: routing now puts another vendor first (claude refuses news
+		// and grok runs again), or grok's model changed.
+		{"another vendor routed first", adapter.News, time.Hour, func(w *world, _ *Request) {
+			w.cfg.Routing.News = config.Route{Vendors: []adapter.Vendor{adapter.Claude, adapter.Grok}}
+		}, false},
+		{"another model", adapter.News, time.Hour, func(w *world, _ *Request) {
+			w.cfg.Vendors.Grok.Model = "grok-5"
+			w.scenario[adapter.Grok] = `{"extra_flags":["--model"],"json":{"result":"## Summary\nGo 1.27 shipped."}}`
+		}, false},
 		{"another repo", adapter.News, time.Hour, func(w *world, r *Request) {
 			r.Repo = w.t.TempDir()
 			if err := os.Mkdir(filepath.Join(r.Repo, ".git"), 0o700); err != nil {
