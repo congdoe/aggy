@@ -23,7 +23,7 @@ func TestScrubString(t *testing.T) {
 		{`{"access_token": "abcdefghijklmnop1234"}`, `{` + TokenPlaceholder + `"}`},
 		{"jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnop", "jwt " + TokenPlaceholder},
 		{"t " + id1 + " " + id2 + " " + strings.ToLower(id1), "t 00000000-0000-4000-8000-000000000001 00000000-0000-4000-8000-000000000002 00000000-0000-4000-8000-000000000001"},
-		{"user annb on ann-mbp.local (ann-mbp) annb", "user fixture-user on fixture-host (fixture-host) fixture-user"},
+		{"user annb@ann-mbp: (ann-mbp.local) annb", "user fixture-user@fixture-host: (fixture-host) annb"},
 		{"annbell is someone else", "annbell is someone else"},
 	}
 	for _, tt := range tests {

@@ -87,12 +87,12 @@ func TestTokenPatterns(t *testing.T) {
 // UUIDs other than the placeholders fail the check.
 func TestDetectIdentityAndUUIDs(t *testing.T) {
 	id := Identity{User: "annb", Host: "Ann-MBP.local"}
-	got := DetectText("f", "by ANNB on ann-mbp, id 0b9d3c4e-1f2a-4b5c-8d7e-6f5a4b3c2d1e and "+UUIDPrefix+"000000000001", id, nil)
+	got := DetectText("f", "by ANNB@ann-mbp, id 0b9d3c4e-1f2a-4b5c-8d7e-6f5a4b3c2d1e and "+UUIDPrefix+"000000000001", id, nil)
 	if !slices.Equal(kinds(got), []string{KindUUID, KindUser, KindHost}) {
 		t.Errorf("DetectText = %v", got)
 	}
-	out := NewScrubber(id).String("by ANNB on ann-mbp.LOCAL")
-	if out != "by "+UserPlaceholder+" on "+HostPlaceholder {
+	out := NewScrubber(id).String("by ANNB@ann-mbp")
+	if out != "by "+UserPlaceholder+"@"+HostPlaceholder {
 		t.Errorf("scrubbed = %q", out)
 	}
 }

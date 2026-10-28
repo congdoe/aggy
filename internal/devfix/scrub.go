@@ -54,7 +54,10 @@ var (
 	// with its user name.
 	homeRE = regexp.MustCompile(`/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+|/root\b|[A-Za-z]:\\\\?Users\\\\?[A-Za-z0-9._ -]+`)
 	// encHomeRE matches a URL-encoded home, as in Grok's session folders.
-	encHomeRE = regexp.MustCompile(`(?i)%2F(?:Users|home)%2F[A-Za-z0-9._-]+|%2Froot\b`)
+	// The escape may itself be escaped: %252F.
+	encHomeRE = regexp.MustCompile(`(?i)%(?:25)*2F(?:Users|home)%(?:25)*2F[A-Za-z0-9._-]+|%(?:25)*2Froot\b`)
+	// jsonHomeRE matches a home with JSON-escaped slashes.
+	jsonHomeRE = regexp.MustCompile(`\\/(?:Users|home)\\/[A-Za-z0-9._-]+|\\/root\b`)
 	// dashHomeRE matches Claude's project-folder form of a home path,
 	// "-Users-name-proj", at the start of a path element or word.
 	dashHomeRE = regexp.MustCompile(`(^|[/"'\s=:])-(?:Users|home)-[A-Za-z0-9._]+`)
@@ -90,29 +93,76 @@ type Identity struct {
 	Host string
 }
 
-// homeForms returns the identity's home as written, URL-encoded, and in
-// Claude's dash form.
+// dashRE matches what Claude turns into "-" in a project folder name.
+var dashRE = regexp.MustCompile(`[^A-Za-z0-9]`)
+
+// homeForms returns the identity's home, and /Users/<user> and
+// /home/<user>, as written, URL-encoded, and in Claude's dash form (every
+// non-alphanumeric becomes "-", so "/Users/john.doe" is
+// "-Users-john-doe"), longest first.
 func (id Identity) homeForms() []string {
-	h := strings.TrimRight(id.Home, "/")
-	if len(h) <= 1 {
-		return nil
+	var homes []string
+	if h := strings.TrimRight(id.Home, "/"); len(h) > 1 {
+		homes = append(homes, h)
 	}
-	forms := []string{h, url.QueryEscape(h), strings.ReplaceAll(h, "/", "-")}
-	return slices.Compact(forms)
+	if id.User != "" && !strings.ContainsAny(id.User, "/\\") {
+		homes = append(homes, "/Users/"+id.User, "/home/"+id.User)
+	}
+	var forms []string
+	for _, h := range homes {
+		for _, f := range []string{h, url.QueryEscape(h), dashRE.ReplaceAllString(h, "-")} {
+			if !slices.Contains(forms, f) {
+				forms = append(forms, f)
+			}
+		}
+	}
+	slices.SortStableFunc(forms, func(a, b string) int { return len(b) - len(a) })
+	return forms
 }
 
-// words returns the user and host names to replace, ignoring names too
-// short or generic to match safely.
+// genericNames are account and host names that are ordinary words or
+// shared defaults (CI runners, containers, codespaces), so they identify
+// no one on their own.
+var genericNames = []string{"runner", "root", "ubuntu", "user", "admin", "vscode", "codespace", "build", "localhost"}
+
+// identifying reports whether a user or host name identifies someone on
+// its own: at least 3 characters and not a generic name.
+func identifying(name string) bool {
+	return len(name) >= 3 && !slices.ContainsFunc(genericNames, func(g string) bool { return strings.EqualFold(g, name) })
+}
+
+// words returns the user name and host names to match. The user name is
+// matched only in identifying contexts (see userAtRE), never as a bare
+// word, since many account names are ordinary words; the host names are
+// matched as whole words. Generic and short names are left out.
 func (id Identity) words() (user string, hosts []string) {
-	if len(id.User) >= 3 {
+	if identifying(id.User) {
 		user = id.User
 	}
 	for _, h := range []string{id.Host, strings.SplitN(id.Host, ".", 2)[0]} {
-		if len(h) >= 3 && !strings.EqualFold(h, "localhost") && !slices.Contains(hosts, h) {
+		if identifying(h) && !slices.Contains(hosts, h) {
 			hosts = append(hosts, h)
 		}
 	}
 	return user, hosts
+}
+
+// userAtRE matches user as "user@host" or an email's local part.
+func userAtRE(user string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_.+-])` + regexp.QuoteMeta(user) + `@`)
+}
+
+// decoded returns line with URL escapes decoded until stable (so %252F
+// becomes "/") and JSON's escaped "\/" as "/".
+func decoded(line string) string {
+	for range 5 {
+		d, err := url.PathUnescape(line)
+		if err != nil || d == line {
+			break
+		}
+		line = d
+	}
+	return strings.ReplaceAll(line, `\/`, "/")
 }
 
 // wordRE matches w case-insensitively as a whole word, not inside a
@@ -157,6 +207,7 @@ func (s *Scrubber) String(text string) string {
 	}
 	text = homeRE.ReplaceAllLiteralString(text, HomePlaceholder)
 	text = encHomeRE.ReplaceAllLiteralString(text, HomePlaceholder)
+	text = jsonHomeRE.ReplaceAllLiteralString(text, HomePlaceholder)
 	text = dashHomeRE.ReplaceAllStringFunc(text, func(m string) string {
 		return dashHomeRE.FindStringSubmatch(m)[1] + HomePlaceholder
 	})
@@ -173,7 +224,10 @@ func (s *Scrubber) String(text string) string {
 		text = replaceWord(text, h, HostPlaceholder)
 	}
 	if user != "" {
-		text = replaceWord(text, user, UserPlaceholder)
+		re := userAtRE(user)
+		text = re.ReplaceAllStringFunc(text, func(m string) string {
+			return re.FindStringSubmatch(m)[1] + UserPlaceholder + "@"
+		})
 	}
 	return text
 }
@@ -319,9 +373,11 @@ func allowed(allow []Allow, file, match string) bool {
 }
 
 // DetectText returns what text must not hold, as findings for file: home
-// paths (also URL-encoded, which is decoded first, and in Claude's dash
-// form), emails, token-shaped strings, the identity's user and host names,
-// and UUIDs other than the scrub placeholders.
+// paths (also URL-encoded, decoded until stable, JSON-escaped, and in
+// Claude's dash form), emails, token-shaped strings, the identity's user
+// name as user@host or an email local part, its host names, and UUIDs
+// other than the scrub placeholders. A token wrapped in base64 is not
+// found: a known limit.
 func DetectText(file, text string, id Identity, allow []Allow) []Finding {
 	user, hosts := id.words()
 	var out []Finding
@@ -335,7 +391,7 @@ func DetectText(file, text string, id Identity, allow []Allow) []Finding {
 			}
 		}
 		views := []string{line}
-		if d, err := url.PathUnescape(line); err == nil && d != line {
+		if d := decoded(line); d != line {
 			views = append(views, d)
 		}
 		var homes []string
@@ -343,6 +399,7 @@ func DetectText(file, text string, id Identity, allow []Allow) []Finding {
 			homes = append(homes, homeRE.FindAllString(v, -1)...)
 		}
 		homes = append(homes, encHomeRE.FindAllString(line, -1)...)
+		homes = append(homes, jsonHomeRE.FindAllString(line, -1)...)
 		for _, m := range dashHomeRE.FindAllStringSubmatch(line, -1) {
 			homes = append(homes, strings.TrimPrefix(m[0], m[1]))
 		}
@@ -363,7 +420,7 @@ func DetectText(file, text string, id Identity, allow []Allow) []Finding {
 				add(KindUUID, m)
 			}
 		}
-		if user != "" && wordRE(user).MatchString(line) {
+		if user != "" && userAtRE(user).MatchString(line) {
 			add(KindUser, user)
 		}
 		for _, h := range hosts {
