@@ -230,3 +230,17 @@ func tempName(base string) (string, error) {
 	}
 	return "." + base + ".aggy-" + hex.EncodeToString(b[:]), nil
 }
+
+// Mkdir makes the one directory name, behind both checks, relative to a
+// checked descriptor for its parent. Unlike MkdirAll it fails with an
+// error matching fs.ErrExist when name exists, so a caller knows which
+// directories it made itself.
+func Mkdir(name string, perm fs.FileMode) error {
+	t, err := resolve("Mkdir", name)
+	if err != nil {
+		return err
+	}
+	return renamePath(inParent("Mkdir", name, t.link, t.linkDir, func(dir *os.Root, base string) error {
+		return dir.Mkdir(base, perm)
+	}), name)
+}

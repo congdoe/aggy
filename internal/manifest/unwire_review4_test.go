@@ -76,8 +76,11 @@ func TestSupersedeProofMustBeInEffect(t *testing.T) {
 
 // TestSweepAfterCrashMidUndo (finding 2): R2's undo removed its file and
 // stopped before marking R2 undone (or the person deleted the file). The
-// next --all must still sweep R1's directory, with or without birth
-// times.
+// next --all sweeps R1's directory where birth times prove it is aggy's.
+// Without them (Linux), since T6735, it stays: a file found already gone
+// cannot be told from one the person removed along with the directory
+// they then made again, and leaving an empty directory of aggy's beats
+// removing one of theirs.
 func TestSweepAfterCrashMidUndo(t *testing.T) {
 	for _, birth := range []bool{false, true} {
 		t.Run(map[bool]string{false: "no birth time", true: "birth time"}[birth], func(t *testing.T) {
@@ -104,8 +107,12 @@ func TestSweepAfterCrashMidUndo(t *testing.T) {
 			if _, err := f.m.Unwire(ctx, Selection{All: true}, UnwireOptions{}, io.Discard); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := os.Lstat(dir); err == nil {
+			_, err := os.Lstat(dir)
+			if birth && err == nil {
 				t.Error("aggy's directory left behind")
+			}
+			if !birth && err != nil {
+				t.Errorf("swept on a file found gone, with no birth time: %v", err)
 			}
 		})
 	}
