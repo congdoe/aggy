@@ -52,10 +52,10 @@ These are requirements, not preferences.
 
 `aggy sessions` lists parents with their directory, last vendor, and last-active time.
 
-- `aggy` with no arguments resumes the latest parent, or starts one when none exists.
-- `aggy resume` reopens the latest parent. `aggy resume <id>` reopens that one.
+- `aggy` with no arguments resumes the latest parent in the current directory, or starts one there when none exists. `aggy run <vendor>` starts a parent there on that vendor.
+- `aggy resume` reopens the latest parent in the current directory. `aggy resume <id>` reopens that one (a unique prefix of its id is enough), wherever it is.
 - `aggy new` starts another parent in the current directory. The old one stays listed.
-- Resume launches the child that was last on screen with that CLI's resume flag, and injects no brief unless `--brief` is set.
+- Resume launches the child that was last on screen (the parent's most recently active interactive child) with that CLI's resume flag, in that child's directory, and injects no brief unless `--brief` is set (`--brief` comes with the brief, T6664). It first takes the child's lease; if another live aggy holds it, resume refuses and says so. A new Claude or Grok child gets its id in advance (`--session-id`); a new Codex child cannot, so its id is recorded once its hooks or sessions folder report it (until then aggy says so and starts a new Codex child).
 - If the vendor no longer has that session, aggy says so and keeps the parent's other children.
 - Claude sessions are tied to their directory, so a child whose worktree was removed is marked closed, not resumable.
 
