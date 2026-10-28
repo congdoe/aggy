@@ -1037,3 +1037,23 @@ func (t *tty) size() (rows, cols int) {
 	}
 	return h, w
 }
+
+// holdSignal reports whether vendor v tells aggy, by a hook, when it
+// waits for the user (a permission prompt): Claude and Grok send
+// Notification; Codex has no such hook (design.md section 11). Without
+// it, a Stop forged by a tool process in the CLI's own tree is
+// indistinguishable from a real turn end, so a switch the agent asks for
+// is refused on such a vendor (S-12): only the user, looking at the
+// screen, starts one. TODO(T6617): revisit when Codex has a signal.
+func holdSignal(v adapter.Vendor) bool { return v != adapter.Codex }
+
+// turnEnd reports whether a hook event ends a turn (design.md section
+// 11): Stop for every vendor, StopCancelled (Grok), and StopFailure
+// (Claude, Grok: "a turn ends because of an API error",
+// docs/verification.md). Codex sends only Stop.
+func turnEnd(event string) bool {
+	return event == "Stop" || event == "StopCancelled" || event == "StopFailure"
+}
+
+// ctrlU clears the line in a readline-style composer.
+const ctrlU = 0x15
