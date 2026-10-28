@@ -87,6 +87,9 @@ type Command struct {
 	// FIFO or device could block or feed the CLI forever), and only then
 	// clears O_NONBLOCK and hands the descriptor to the child.
 	StdinPath string
+	// StdinData is read as stdin when Stdin is StdinBytes. Only aggy's
+	// own git runner (execrun.GitRunner) takes it; adapters never set it.
+	StdinData []byte
 }
 
 // Stdin is the standard input of a Command.
@@ -97,6 +100,7 @@ const (
 	StdinNull     Stdin = iota // /dev/null (the zero value)
 	StdinTerminal              // the pseudo-terminal, for interactive sessions
 	StdinFile                  // the regular file at Command.StdinPath, read to EOF
+	StdinBytes                 // Command.StdinData, for aggy's own git calls only
 )
 
 // Output is what a Runner returns for a finished Command.

@@ -69,6 +69,8 @@ type borrowEnv struct {
 	// gitPath finds git, and gitRun runs it, for a review's diff.
 	gitPath func() (string, error)
 	gitRun  adapter.Runner
+	// gitBatchRun runs git with a stdin list (aggy's recorded edits).
+	gitBatchRun adapter.Runner
 	// setupRun runs a repo's worktree setup command, once the person
 	// allowed it.
 	setupRun adapter.Runner
@@ -135,6 +137,7 @@ func defaultBorrowEnv() borrowEnv {
 		kernelSandbox: probe.HostKernelSandbox,
 		gitPath:       func() (string, error) { return probe.LookPath("git") },
 		gitRun:        execrun.ExecRunner(gitTimeout),
+		gitBatchRun:   execrun.GitRunner(recordBudget, maxBatch),
 		setupRun:      execrun.ExecRunner(setupTimeout),
 		runner:        headlessRunner,
 		now:           time.Now,

@@ -147,7 +147,22 @@ func ExecRunner(timeout time.Duration) adapter.Runner {
 		if c.Stdin != adapter.StdinNull {
 			return adapter.Output{}, errors.New("execrun: the runner gives commands no stdin")
 		}
-		return run(ctx, c, timeout, false)
+		return run(ctx, c, timeout, false, MaxOutput)
+	}
+}
+
+// GitRunner returns the Runner for aggy's own batched git calls (git
+// diff-tree --stdin, git cat-file --batch-check over aggy's recorded
+// edits): ExecRunner, except that a command may also read bytes from
+// memory as stdin (adapter.StdinBytes), never a file or terminal, and
+// each output stream keeps up to limit bytes. The command line, the
+// scrubbed environment, and the process-group kill are ExecRunner's.
+func GitRunner(timeout time.Duration, limit int) adapter.Runner {
+	return func(ctx context.Context, c adapter.Command) (adapter.Output, error) {
+		if c.Stdin != adapter.StdinNull && c.Stdin != adapter.StdinBytes {
+			return adapter.Output{}, errors.New("execrun: the git runner gives commands no stdin but bytes")
+		}
+		return run(ctx, c, timeout, false, limit)
 	}
 }
 
@@ -159,7 +174,7 @@ func CheckRunner(timeout time.Duration) adapter.Runner {
 		if c.Stdin != adapter.StdinNull {
 			return adapter.Output{}, errors.New("execrun: the runner gives commands no stdin")
 		}
-		return run(ctx, c, timeout, true)
+		return run(ctx, c, timeout, true, MaxOutput)
 	}
 }
 
@@ -179,7 +194,7 @@ func HeadlessRunner(timeout time.Duration) adapter.Runner {
 		if c.Dir == "" || !filepath.IsAbs(c.Dir) {
 			return adapter.Output{}, fmt.Errorf("execrun: a headless child needs an absolute working dir, got %q", c.Dir)
 		}
-		return run(ctx, c, timeout, false)
+		return run(ctx, c, timeout, false, MaxOutput)
 	}
 }
 
@@ -196,7 +211,7 @@ func NotifyRunner(timeout time.Duration) adapter.Runner {
 		if c.Stdin != adapter.StdinNull || len(c.Env) > 0 {
 			return adapter.Output{}, errors.New("execrun: a notifier gets no stdin and no added environment")
 		}
-		return run(ctx, c, timeout, false, notifyEnv...)
+		return run(ctx, c, timeout, false, MaxOutput, notifyEnv...)
 	}
 }
 
@@ -210,7 +225,7 @@ func NotifyRunner(timeout time.Duration) adapter.Runner {
 // own session) escapes that kill and is not tracked.
 // shortcut: no Linux subreaper or cgroup tracking; add one when a
 // vendor CLI or a check is seen escaping its group.
-func run(ctx context.Context, c adapter.Command, timeout time.Duration, tail bool, pass ...string) (adapter.Output, error) {
+func run(ctx context.Context, c adapter.Command, timeout time.Duration, tail bool, limit int, pass ...string) (adapter.Output, error) {
 	if !filepath.IsAbs(c.Path) || filepath.Clean(c.Path) != c.Path {
 		return adapter.Output{}, fmt.Errorf("execrun: %q is not a clean absolute path", c.Path)
 	}
@@ -237,6 +252,15 @@ func run(ctx context.Context, c adapter.Command, timeout time.Duration, tail boo
 		}
 		defer func() { _ = stdin.Close() }()
 	}
+	var feed *os.File // the write end of a StdinBytes pipe
+	if c.Stdin == adapter.StdinBytes {
+		r, w, err := os.Pipe()
+		if err != nil {
+			return adapter.Output{}, err
+		}
+		stdin, feed = r, w
+		defer func() { _ = r.Close(); _ = w.Close() }()
+	}
 	dir := c.Dir
 	if dir == "" {
 		tmp, err := safefs.MkdirTemp("", "aggy-probe-")
@@ -257,8 +281,8 @@ func run(ctx context.Context, c adapter.Command, timeout time.Duration, tail boo
 	} else {
 		cmd.Stdin = nil // /dev/null
 	}
-	stdout := &capped{max: MaxOutput, tail: tail}
-	stderr := &capped{max: MaxOutput, tail: tail}
+	stdout := &capped{max: limit, tail: tail}
+	stderr := &capped{max: limit, tail: tail}
 	// The child writes into pipes aggy owns, so Wait returns when the
 	// leader exits, not when the last holder of the pipe does; the group
 	// is killed then, and the copies end.
@@ -277,6 +301,19 @@ func run(ctx context.Context, c adapter.Command, timeout time.Duration, tail boo
 	err = cmd.Start()
 	_ = outW.Close()
 	_ = errW.Close()
+	fed := make(chan struct{})
+	if feed != nil && err == nil {
+		// Only the child holds the read end now, so a child that exits
+		// without reading it ends the write with EPIPE.
+		_ = stdin.Close()
+		go func() {
+			_, _ = feed.Write(c.StdinData)
+			_ = feed.Close()
+			close(fed)
+		}()
+	} else {
+		close(fed)
+	}
 	copied := make(chan struct{}, 2)
 	for _, p := range []struct {
 		r *os.File
@@ -290,6 +327,12 @@ func run(ctx context.Context, c adapter.Command, timeout time.Duration, tail boo
 	if err == nil {
 		err = reap(cmd)
 	}
+	if feed != nil {
+		// A process that escaped the group may hold the read end without
+		// reading: closing the write end ends a blocked write.
+		_ = feed.Close()
+	}
+	<-fed
 	// A process that escaped the group may hold the pipes open: stop
 	// reading after a second.
 	grace := time.After(time.Second)

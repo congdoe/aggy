@@ -96,6 +96,47 @@ func TestRunnerRefusals(t *testing.T) {
 	}
 }
 
+// TestGitRunnerStdin (N53-9): the git runner feeds bytes from memory as
+// stdin, still with the scrubbed environment, keeps up to its limit, and
+// never hangs on a child that does not read them; every other runner
+// refuses bytes, and the git runner refuses a file or terminal.
+func TestGitRunnerStdin(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	extra := []string{fakecli.EnvRecord + "=" + f.record}
+	git := GitRunner(10*time.Second, 2*MaxOutput)
+	out, err := git(ctx, adapter.Command{Path: f.fakes.Codex, Args: []string{"exec", "a prompt"}, Env: extra,
+		Stdin: adapter.StdinBytes, StdinData: []byte("base tree\n")})
+	if err != nil || out.ExitCode != 0 {
+		t.Fatalf("run = %+v, %v", out, err)
+	}
+	if recs := fakecli.Records(t, f.record); len(recs) != 1 || recs[0].Stdin != "base tree\n" {
+		t.Errorf("records = %+v", recs)
+	}
+	// 8 MiB the child never reads: the run still ends.
+	start := time.Now()
+	if _, err := git(ctx, adapter.Command{Path: f.fakes.Claude, Args: []string{"--version"}, Env: extra,
+		Stdin: adapter.StdinBytes, StdinData: make([]byte, 8<<20)}); err != nil || time.Since(start) > 8*time.Second {
+		t.Errorf("unread stdin: %v after %s", err, time.Since(start))
+	}
+	big := strings.Repeat("x", MaxOutput+100)
+	sc := []string{fakecli.EnvScenario + "=" + fakecli.WriteScenario(t, `{"stdout":"`+big+`"}`)}
+	if out, err := git(ctx, adapter.Command{Path: f.fakes.Grok, Args: []string{"-p", "x"}, Env: append(sc, extra...)}); err != nil || len(out.Stdout) != MaxOutput+100 {
+		t.Errorf("limit: %d bytes, %v", len(out.Stdout), err)
+	}
+	for name, run := range map[string]adapter.Runner{"exec": ExecRunner(time.Second), "check": CheckRunner(time.Second),
+		"headless": HeadlessRunner(time.Second), "notify": NotifyRunner(time.Second)} {
+		if _, err := run(ctx, adapter.Command{Path: f.fakes.Codex, Dir: t.TempDir(), Stdin: adapter.StdinBytes, StdinData: []byte("x")}); err == nil {
+			t.Errorf("%s runner took stdin bytes", name)
+		}
+	}
+	for _, s := range []adapter.Stdin{adapter.StdinFile, adapter.StdinTerminal} {
+		if _, err := git(ctx, adapter.Command{Path: f.fakes.Codex, Stdin: s, StdinPath: f.record}); err == nil {
+			t.Errorf("git runner took stdin %d", s)
+		}
+	}
+}
+
 func TestRunnerTimeout(t *testing.T) {
 	f := setup(t)
 	run := f.runner(t, `{"sleep_ms":5000}`, 200*time.Millisecond)

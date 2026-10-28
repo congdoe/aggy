@@ -2,17 +2,179 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/borrow"
 	"github.com/congdoe/aggy/internal/fakecli"
 	"github.com/congdoe/aggy/internal/store"
 )
+
+// editRecords writes edit borrow records straight into the index of the
+// fixture's repo: a quick stand-in for running each edit.
+type editRecords struct {
+	t   *testing.T
+	f   *borrowFixture
+	s   *store.Store
+	n   int
+	now time.Time
+}
+
+func newEditRecords(t *testing.T, f *borrowFixture) *editRecords {
+	t.Helper()
+	ctx := context.Background()
+	s, err := store.OpenDefault(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	now := time.Now().Add(-24 * time.Hour)
+	if err := s.InsertParent(ctx, store.Parent{ID: "rec-parent", Dir: f.repo, CreatedAt: now, LastActive: now}); err != nil {
+		t.Fatal(err)
+	}
+	return &editRecords{t: t, f: f, s: s, now: now}
+}
+
+// add records an edit by vendor from base to tree, one second newer than
+// the last, and marks its worktree removed when removed is set.
+func (r *editRecords) add(vendor, base, tree string, removed bool) {
+	r.t.Helper()
+	ctx := context.Background()
+	r.n++
+	id := fmt.Sprintf("%016x", r.n)
+	at := r.now.Add(time.Duration(r.n) * time.Second)
+	path := filepath.Join(r.f.state, worktreesDir, id)
+	c := store.Child{ID: "rec-" + id, ParentID: "rec-parent", Vendor: vendor, Kind: "edit", Cwd: path, CreatedAt: at, LastActive: at,
+		Worktree: store.Worktree{Path: path, Branch: branchPrefix + id, Base: base, Repo: r.f.repo, State: store.WorktreePending}}
+	l, err := r.s.StartBorrow(ctx, c, store.Borrow{ID: id, Kind: "edit", Vendor: vendor, StartedAt: at}, store.BorrowCaps{})
+	if err == nil {
+		err = l.Finish(ctx, store.BorrowEnd{Status: "done", EndedAt: at})
+	}
+	if err == nil {
+		err = r.s.SetWorktreeTree(ctx, id, tree)
+	}
+	if err == nil && removed {
+		err = r.s.ClaimWorktreeRemoval(ctx, id, store.WorktreePending, at)
+	}
+	if err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// gitStdin runs the test's own git in dir with in as stdin.
+func gitStdin(t *testing.T, dir, in string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir, cmd.Stdin = dir, strings.NewReader(in)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// TestReviewRecordMany (N53-9): every recorded edit is compared, in a
+// fixed number of git calls; an old one is never counted blind. Missing
+// objects count while the worktree is there, never once aggy gc removed
+// it.
+func TestReviewRecordMany(t *testing.T) {
+	f, _ := editFixture(t)
+	ctx := context.Background()
+	gitIn(t, f.repo, "checkout", "--", "a.go")
+	base := gitIn(t, f.repo, "rev-parse", "HEAD")
+	recs := newEditRecords(t, f)
+	check := func(name string, want []adapter.Vendor, note string) {
+		t.Helper()
+		m, err := f.env.reviewMaterial(ctx, f.repo, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, notes, err := f.env.recordAuthors(ctx, recs.s, f.repo, m)
+		if err != nil || !slices.Equal(got, want) || (note == "") != (len(notes) == 0) || (note != "" && !strings.Contains(strings.Join(notes, "\n"), note)) {
+			t.Errorf("%s: authors %v, notes %q, err %v; want %v, note %q", name, got, notes, err, want, note)
+		}
+	}
+
+	// The edit in review is the oldest of all: grok's lines in a.go.
+	committed := "package a\n\nfunc Committed() {}\n"
+	mustWrite(t, filepath.Join(f.repo, "a.go"), committed+codexLines, 0o600)
+	gitIn(t, f.repo, "add", "a.go")
+	recs.add("grok", base, gitIn(t, f.repo, "write-tree"), false)
+	gitIn(t, f.repo, "reset", "-q")
+	gitIn(t, f.repo, "checkout", "--", "a.go")
+	// 60 newer codex edits, each adding its own file.
+	ls := gitIn(t, f.repo, "ls-tree", "HEAD")
+	dir := t.TempDir()
+	var paths []string
+	for i := range 60 {
+		p := filepath.Join(dir, fmt.Sprintf("u%d.go", i))
+		mustWrite(t, p, fmt.Sprintf("package a\n\nfunc Unrelated%d() string { return \"value %d\" }\n", i, i), 0o600)
+		paths = append(paths, p)
+	}
+	blobs := strings.Fields(gitIn(t, f.repo, append([]string{"hash-object", "-w"}, paths...)...))
+	for i, b := range blobs {
+		recs.add("codex", base, gitStdin(t, f.repo, ls+"\n100644 blob "+b+"\tu"+fmt.Sprint(i)+".go\n", "mktree"), false)
+	}
+
+	// The person's own change to z.go: none of the 61 is in it.
+	mustWrite(t, filepath.Join(f.repo, "z.go"), "package a\n\nfunc Mine() string { return \"the person's own\" }\n", 0o600)
+	gitIn(t, f.repo, "add", "z.go")
+	check("an unrelated change among 61 edits", nil, "")
+	mustWrite(t, filepath.Join(f.repo, "a.go"), committed+codexLines, 0o600)
+	check("the oldest edit, in review", []adapter.Vendor{adapter.Grok}, "")
+	gitIn(t, f.repo, "checkout", "--", "a.go")
+
+	// Objects git no longer has: gone with a removed worktree, counted
+	// while the worktree is there.
+	gone := strings.Repeat("ab", 20)
+	recs.add("claude", base, gone, true)
+	check("missing objects, worktree removed", nil, "")
+	recs.add("claude", base, gone, false)
+	check("missing objects, worktree there", []adapter.Vendor{adapter.Claude}, "no longer has the objects")
+}
+
+// TestReviewRecordMove (N53-9 MEDIUM): an edit that moves code already in
+// the base into another file is in the review: it has not landed, since
+// the base does not hold its files as it left them.
+func TestReviewRecordMove(t *testing.T) {
+	f, _ := editFixture(t)
+	ctx := context.Background()
+	gitIn(t, f.repo, "checkout", "--", "a.go")
+	body := "func B() int {\n\ttotal := computeTheTotal(items)\n\tfiltered := filterTheItems(items, total)\n\treturn reduceTheFiltered(filtered)\n}\n"
+	mustWrite(t, filepath.Join(f.repo, "b.go"), "package a\n\n"+body, 0o600)
+	gitIn(t, f.repo, "add", "b.go")
+	gitIn(t, f.repo, "commit", "-q", "-m", "b")
+	base := gitIn(t, f.repo, "rev-parse", "HEAD")
+	recs := newEditRecords(t, f)
+	// Codex moved B into c.go; the person accepted it.
+	mustWrite(t, filepath.Join(f.repo, "b.go"), "package a\n", 0o600)
+	mustWrite(t, filepath.Join(f.repo, "c.go"), "package a\n\n"+body, 0o600)
+	gitIn(t, f.repo, "add", "-A", "b.go", "c.go")
+	recs.add("codex", base, gitIn(t, f.repo, "write-tree"), false)
+	m, err := f.env.reviewMaterial(ctx, f.repo, base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, notes, err := f.env.recordAuthors(ctx, recs.s, f.repo, m); err != nil || !slices.Equal(got, []adapter.Vendor{adapter.Codex}) {
+		t.Errorf("moved code: authors %v, notes %q, err %v; want codex", got, notes, err)
+	}
+	// Once committed, a review from there finds it landed.
+	gitIn(t, f.repo, "commit", "-q", "-m", "moved")
+	if m, err = f.env.reviewMaterial(ctx, f.repo, "HEAD", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, err := f.env.recordAuthors(ctx, recs.s, f.repo, m); err != nil || got != nil {
+		t.Errorf("landed move: authors %v, err %v; want none", got, err)
+	}
+}
 
 // codexLines are an edit's own lines, long and found nowhere else.
 const codexLines = "func EditedByCodex() int { return 42 }\n" +
@@ -171,39 +333,46 @@ func TestEditIn(t *testing.T) {
 	}
 	l1, l2, l3, l4, l5 := "alpha := compute(one)", "beta := compute(two)", "gamma := compute(three)", "delta := compute(four)", "epsilon := compute(five)"
 	five := file("a.go", l1, l2, l3, l4, l5)
+	all := []string{l1, l2, l3, l4, l5}
 	tests := []struct {
-		name         string
-		edit, review string
-		inBase       []string
-		want         bool
+		name           string
+		edit, review   string
+		inBase, landed []string
+		want           bool
 	}{
-		{"three lines", five, file("a.go", l1, l2, l3), nil, true},
-		{"two of five", five, file("a.go", l1, l2), nil, false},
-		{"moved to another file", five, file("z.go", l1, l2, l3), nil, true},
-		{"common lines in the base tree", five, file("a.go", l1, l2, l3), []string{l2}, false},
-		{"lines the review adds twice", five, file("a.go", l1, l2, l3) + file("b.go", l3), nil, false},
-		{"one of a two-line edit", file("a.go", l1, l2), file("b.go", l2), nil, false},
-		{"both of a two-line edit", file("a.go", l1, l2), file("b.go", l2, l1), nil, true},
-		{"short lines only", file("a.go", "x := 1", "}"), file("a.go", "y := 2"), nil, true},
-		{"short lines, other file", file("a.go", "x := 1"), file("b.go", "x := 1"), nil, false},
-		{"binary file touched", five + bin("img.png"), bin("img.png"), nil, true},
-		{"binary file untouched", five + bin("img.png"), bin("other.png"), nil, false},
+		{"three lines", five, file("a.go", l1, l2, l3), nil, nil, true},
+		{"two of five", five, file("a.go", l1, l2), nil, nil, false},
+		{"moved to another file", five, file("z.go", l1, l2, l3), nil, nil, true},
+		{"common lines in the base tree", five, file("a.go", l1, l2, l3), []string{l2}, nil, false},
+		{"lines the review adds twice", five, file("a.go", l1, l2, l3) + file("b.go", l3), nil, nil, false},
+		{"one of a two-line edit", file("a.go", l1, l2), file("b.go", l2), nil, nil, false},
+		{"both of a two-line edit", file("a.go", l1, l2), file("b.go", l2, l1), nil, nil, true},
+		{"short lines only", file("a.go", "x := 1", "}"), file("a.go", "y := 2"), nil, nil, true},
+		{"short lines, other file", file("a.go", "x := 1"), file("b.go", "x := 1"), nil, nil, false},
+		{"short lines, file landed", file("a.go", "x := 1"), file("a.go", "y := 2"), nil, []string{"a.go"}, false},
+		{"binary file touched", five + bin("img.png"), bin("img.png"), nil, nil, true},
+		{"binary file untouched", five + bin("img.png"), bin("other.png"), nil, nil, false},
 		// N53-7: common lines padding an edit lower what it needs.
-		{"two distinctive lines padded with three common ones", five, file("a.go", l1, l2), []string{l3, l4, l5}, true},
-		{"one distinctive line", five, file("b.go", l5), []string{l1, l2, l3, l4}, true},
-		// Every line in the base: the edit landed there, files and all.
-		{"landed", five + bin("img.png"), file("a.go", l1, l2, l3) + bin("img.png"), []string{l1, l2, l3, l4, l5}, false},
+		{"two distinctive lines padded with three common ones", five, file("a.go", l1, l2), []string{l3, l4, l5}, nil, true},
+		{"one distinctive line", five, file("b.go", l5), []string{l1, l2, l3, l4}, nil, true},
+		// Landed: every file it touched is in the base as it left it.
+		{"landed", five + bin("img.png"), file("a.go", l1, l2, l3) + bin("img.png"), all, []string{"a.go", "img.png"}, false},
+		// A move or copy of code already in the base, files not landed:
+		// its lines decide.
+		{"moved code the review adds", five, file("c.go", l1, l2, l3), all, nil, true},
+		{"landed lines, file changed since, review elsewhere", five, file("a.go", "zeta := other(six)"), all, nil, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			in := map[string]bool{}
-			for _, l := range tt.inBase {
-				in[l] = true
+			set := func(ls []string) map[string]bool {
+				m := map[string]bool{}
+				for _, l := range ls {
+					m[l] = true
+				}
+				return m
 			}
-			// A file match also needs filesLanded to say no; here it is
-			// taken as no.
-			if got, files := editIn(readDiff(tt.edit), readDiff(tt.review), in); (got || len(files) > 0) != tt.want {
-				t.Errorf("editIn = %v, %q, want %v", got, files, tt.want)
+			if got := editIn(readDiff(tt.edit), readDiff(tt.review), set(tt.inBase), set(tt.landed)); got != tt.want {
+				t.Errorf("editIn = %v, want %v", got, tt.want)
 			}
 		})
 	}

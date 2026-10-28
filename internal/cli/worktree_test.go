@@ -358,6 +358,7 @@ func editFixture(t *testing.T, more ...adapter.Vendor) (*borrowFixture, []string
 	markers := editRepo(t, f.repo)
 	f.env.gitPath = func() (string, error) { return gitBin, nil }
 	f.env.gitRun = execrun.ExecRunner(gitTimeout)
+	f.env.gitBatchRun = execrun.GitRunner(recordBudget, maxBatch)
 	// PATH holds git alone, for the test's own git calls.
 	bin := t.TempDir()
 	if err := os.Symlink(gitBin, filepath.Join(bin, "git")); err != nil {

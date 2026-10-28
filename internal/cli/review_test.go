@@ -50,8 +50,9 @@ func gitRepo(t *testing.T, dir string) (marker string) {
 
 func gitEnv() borrowEnv {
 	return borrowEnv{
-		gitPath: func() (string, error) { return probe.LookPath("git") },
-		gitRun:  execrun.ExecRunner(gitTimeout),
+		gitPath:     func() (string, error) { return probe.LookPath("git") },
+		gitRun:      execrun.ExecRunner(gitTimeout),
+		gitBatchRun: execrun.GitRunner(recordBudget, maxBatch),
 	}
 }
 
