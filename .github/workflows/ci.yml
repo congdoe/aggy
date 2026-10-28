@@ -27,18 +27,27 @@ jobs:
 
   lint:
     # Lint each target OS: files with a darwin or linux build tag are only
-    # type-checked, and so only linted, for that GOOS.
+    # type-checked, and so only linted, for that GOOS,
+    # and each architecture, since files can carry an arch build tag.
+    # Keep the targets in step with the lint target in the Makefile.
     strategy:
       matrix:
-        goos: [linux, darwin]
+        include:
+          - { goos: darwin, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
     runs-on: ubuntu-latest
     env:
       GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
+      # Lint cannot see a cgo file when it cross-compiles; cgo is banned.
+      - run: make nocgo
       # Keep the version in step with GOLANGCI_LINT_VERSION in the Makefile.
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:

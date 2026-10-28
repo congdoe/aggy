@@ -113,3 +113,25 @@ func TestLoadRepoRefusesLinkedAggyDir(t *testing.T) {
 		t.Errorf("Load with a linked state dir = %v, want ErrLinkedDir", err)
 	}
 }
+
+// TestLoadDefaultLinkedStateDir (PR #6): a state directory that is itself
+// a symlink, as dotfile setups make it, is resolved and its config read.
+func TestLoadDefaultLinkedStateDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	base := t.TempDir()
+	real := filepath.Join(base, "dotfiles")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, FileName), []byte("default_vendor = \"grok\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "state")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGGY_HOME", link)
+	if c, err := LoadDefault(); err != nil || c.DefaultVendor != "grok" {
+		t.Errorf("LoadDefault = %q, %v", c.DefaultVendor, err)
+	}
+}
