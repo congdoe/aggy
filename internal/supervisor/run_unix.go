@@ -279,8 +279,11 @@ type session struct {
 	open  bool // the picker is on screen, holding outMu
 	// alt follows the CLI's alternate screen; guarded by outMu.
 	alt altTracker
-	// pickerOverCLI is how the open picker was drawn.
+	// pickerOverCLI is how the open picker was drawn; statusRows, when
+	// set, is the row count of the screen a confirmation's status line
+	// went on the bottom row of.
 	pickerOverCLI bool
+	statusRows    int
 	// toChild holds input for the CLI. The main loop only ever pushes,
 	// which never blocks, so a CLI that stops reading cannot stall signal
 	// handling, the picker, or the terminal-closed check.
@@ -307,6 +310,10 @@ type session struct {
 	// CLI may still hold unsent; toldDirty: they were told it blocks the
 	// switch.
 	dirty, toldDirty bool
+	// lastByte is the last byte sent to the CLI; inPaste: a bracketed
+	// paste was opened and not closed.
+	lastByte byte
+	inPaste  bool
 	// openedAt is when the picker last opened.
 	openedAt time.Time
 	// input feeds keys through the key filter (set by Run).
@@ -385,6 +392,10 @@ func (s *session) hookEvent(ev hookEvent) {
 // turn end. It runs on a connection's goroutine.
 func (s *session) onSwitch(r Request) error {
 	v := adapter.Vendor(r.Vendor)
+	if !holdSignal(s.o.Vendor) {
+		return fmt.Errorf("an agent cannot ask for a switch away from %s: aggy cannot tell when %s waits for an approval, so only the user may start one, with aggy's switch key",
+			s.o.Vendor, s.o.Vendor)
+	}
 	if err := s.offered(v); err != nil && !errors.Is(err, ErrChecking) {
 		return err
 	}
@@ -415,15 +426,35 @@ func (s *session) offered(v adapter.Vendor) error {
 
 // send queues the user's input for the CLI and notes what it may start:
 // an Enter may start a turn, and text after the last Enter may be unsent.
+//
+// Only a plain Enter sends (S-13): a chunk that ends in a \r not preceded
+// by ESC (Option+Enter, a newline in Claude) and not by a backslash (also
+// a newline in Claude), even one in the chunk before, and not inside a
+// bracketed paste. Anything else leaves text that may be unsent. When in
+// doubt it stays dirty: the user can press Enter on an empty prompt.
+// shortcut: a CLI that turns on kitty's all-keys-as-escapes mode gets
+// Enter as CSI 13 u, which never clears it, so it cannot be switched
+// from by aggy. Upgrade if T6684 finds one.
 func (s *session) send(b []byte) {
 	s.lastIn = time.Now()
 	s.held = false
-	if i := bytes.LastIndexByte(b, '\r'); i >= 0 {
-		s.atPrompt, s.toldDirty = false, false
-		s.dirty = i < len(b)-1
-	} else {
-		s.dirty = true
+	if len(b) == 0 {
+		return
 	}
+	if i, j := bytes.LastIndex(b, pasteStart), bytes.LastIndex(b, pasteEnd); i > j {
+		s.inPaste = true
+	} else if j >= 0 {
+		s.inPaste = false
+	}
+	if bytes.IndexByte(b, '\r') >= 0 {
+		s.atPrompt, s.toldDirty = false, false // an Enter may start a turn
+	}
+	prev := s.lastByte
+	if len(b) > 1 {
+		prev = b[len(b)-2]
+	}
+	s.dirty = b[len(b)-1] != '\r' || prev == esc || prev == '\\' || s.inPaste
+	s.lastByte = b[len(b)-1]
 	s.toChild.push(b)
 }
 
@@ -456,16 +487,16 @@ func (s *session) offerSwitch() {
 		s.openPicker()
 		return
 	}
-	var lines []string
-	if s.sw.asked {
-		lines = append(lines, fmt.Sprintf("The agent asked to switch to %s.", v))
-	}
+	// One status line (S-12): what matters first, as a narrow terminal
+	// cuts the end.
 	cmd, verified := adapter.ExitCommand(on)
-	lines = append(lines, fmt.Sprintf("%s's turn seems to have ended. aggy will type %s into %s, then start %s.", on, cmd, on, v))
-	if !verified {
-		lines = append(lines, fmt.Sprintf("(%s is not yet verified to end %s.)", cmd, on))
+	lines := []string{fmt.Sprintf("See %s's prompt? %s types %s; Esc stays.", on, keyName(s.pk.key), cmd)}
+	if s.sw.asked {
+		lines = append(lines, "(The agent asked.)")
 	}
-	lines = append(lines, "If a turn is still running or "+string(on)+" is asking you something, press Esc.")
+	if !verified {
+		lines = append(lines, fmt.Sprintf("(%s is unverified.)", cmd))
+	}
 	s.pk.ask(v, lines...)
 	s.openPicker()
 }
@@ -523,6 +554,14 @@ func (s *session) openPicker() {
 	s.open = true
 	s.openedAt = time.Now()
 	s.pickerOverCLI = s.alt.on
+	s.statusRows = 0
+	if s.pk.confirm != "" {
+		if rows, cols := s.t.size(); rows > 1 {
+			s.statusRows, s.pickerOverCLI = rows, true
+			s.pk.drawStatus(s.o.Out, rows, cols, s.alt.on)
+			return
+		}
+	}
 	s.pk.draw(s.o.Out, s.pickerOverCLI)
 }
 
@@ -542,7 +581,11 @@ func (s *session) closePicker() {
 	if !s.open {
 		return
 	}
-	s.pk.erase(s.o.Out, s.pickerOverCLI)
+	if s.statusRows > 0 {
+		s.pk.eraseStatus(s.o.Out, s.statusRows, s.alt.on)
+	} else {
+		s.pk.erase(s.o.Out, s.pickerOverCLI)
+	}
 	s.open = false
 	s.outMu.Unlock()
 	if s.pickerOverCLI {

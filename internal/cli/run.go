@@ -239,7 +239,10 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	defer stopLimits()
 	// A switch is checked when picked or asked for, and again before the
 	// CLI is told to exit; launch checks everything once more.
-	canSwitch := switchCheck(ctx, cfg, pl.child.Cwd)
+	// The probes switchCheck starts end with this launch.
+	pctx, cancelProbes := context.WithCancel(ctx)
+	defer cancelProbes()
+	canSwitch := switchCheck(pctx, cfg, pl.child.Cwd)
 	ex, err := supervisor.Run(supervisor.Options{
 		In: os.Stdin, Out: os.Stdout, Command: cmd,
 		Start:      startPTY,

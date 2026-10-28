@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/creack/pty"
+
 	"github.com/congdoe/aggy/internal/adapter"
 )
 
@@ -17,6 +19,13 @@ import (
 // FromSession. It returns the socket's path too.
 func switchRun(t *testing.T, startsTurn bool) (*termSide, *fakeChild, <-chan Exit, string) {
 	t.Helper()
+	return switchRunOn(t, startsTurn, adapter.Claude)
+}
+
+// switchRunOn is switchRun with vendor on screen; the picker offers the
+// other two, in claude, codex, grok order.
+func switchRunOn(t *testing.T, startsTurn bool, vendor adapter.Vendor) (*termSide, *fakeChild, <-chan Exit, string) {
+	t.Helper()
 	oldQ, oldW, oldG, oldE := switchQuiet, exitWait, confirmGuard, escTimeout
 	switchQuiet, exitWait, confirmGuard, escTimeout = 50*time.Millisecond, 300*time.Millisecond, 100*time.Millisecond, 20*time.Millisecond
 	t.Cleanup(func() { switchQuiet, exitWait, confirmGuard, escTimeout = oldQ, oldW, oldG, oldE })
@@ -24,6 +33,12 @@ func switchRun(t *testing.T, startsTurn bool) (*termSide, *fakeChild, <-chan Exi
 	ts, c, done := startRunOpts(t, 20*time.Millisecond, nil, func(o *Options) {
 		o.RunDir, o.ParentID, o.StartsTurn = run, pid, startsTurn
 		o.SessionID = func() string { return childSID }
+		o.Vendor, o.Vendors = vendor, nil
+		for _, v := range adapter.Vendors() {
+			if v != vendor {
+				o.Vendors = append(o.Vendors, v)
+			}
+		}
 	})
 	return ts, c, done, filepath.Join(run, pid+".sock")
 }
@@ -84,7 +99,7 @@ func TestSwitchWaitsForTurnEnd(t *testing.T) {
 		t.Fatalf("hook reply %q", r)
 	}
 	poll(t, "the confirmation", []byte("aggy: switch to grok"), ts.screen)
-	for _, want := range []string{"not yet verified", `Press Ctrl+\ to switch`} {
+	for _, want := range []string{"See claude's prompt?", `Ctrl+\ types /exit`} {
 		if !bytes.Contains(ts.screen(), []byte(want)) {
 			t.Errorf("the confirmation does not say %q", want)
 		}
@@ -297,8 +312,11 @@ func TestSwitchRequest(t *testing.T) {
 		}
 	}
 	never(t, "mid-turn", []byte("switch to grok"), ts.screen, 200*time.Millisecond)
+	if err := pty.Setsize(ts.master, &pty.Winsize{Rows: 24, Cols: 160}); err != nil {
+		t.Fatal(err)
+	}
 	_ = request(t, sock, stopLine)
-	poll(t, "the confirmation", []byte("The agent asked to switch to grok."), ts.screen)
+	poll(t, "the confirmation", []byte("(The agent asked.)"), ts.screen)
 	confirm(t, ts)
 	c.waitGot(t, []byte("/exit\r"))
 	c.quit(0)
@@ -381,4 +399,122 @@ func TestSwitchSplitEscHandedBack(t *testing.T) {
 	poll(t, "the list", []byte("Switching to grok"), ts.screen)
 	ts.typeIn(t, "\x1b")
 	finish(t, c, done)
+}
+
+// TestSwitchConfirmKeepsScreen (S-12): the confirmation is one status
+// line on the bottom row, with the cursor saved and put back: it never
+// switches screens or clears the CLI's, so a pending approval stays in
+// view.
+func TestSwitchConfirmKeepsScreen(t *testing.T) {
+	ts, c, done, _ := switchRun(t, false)
+	c.print("APPROVE? 1. Yes 2. No")
+	poll(t, "the CLI", []byte("APPROVE?"), ts.screen)
+	ts.typeIn(t, "\x1c2")
+	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+	mark := len(ts.screen())
+	poll(t, "the confirmation", []byte("aggy: switch to grok?"), ts.screen)
+	time.Sleep(50 * time.Millisecond)
+	drawn := ts.screen()[mark:]
+	for _, bad := range []string{altScreenOn, "\x1b[?1049", "\x1b[2J", "\x1b[H"} {
+		if bytes.Contains(drawn, []byte(bad)) {
+			t.Errorf("the confirmation drew %q: %q", bad, drawn)
+		}
+	}
+	if !bytes.HasPrefix(drawn, []byte("\x1b7\x1b[24;1H\x1b[2K")) || !bytes.Contains(drawn, []byte("\x1b8")) {
+		t.Errorf("the confirmation is not one saved-cursor line on row 24: %q", drawn)
+	}
+	ts.typeIn(t, "\x1b")
+	poll(t, "the line cleared", []byte("\x1b7\x1b[24;1H\x1b[2K\x1b8"), ts.screen)
+	finish(t, c, done)
+}
+
+// TestSwitchCodexAgentRefused (S-12): on Codex, which has no hold signal,
+// an agent's switch-request is refused, so a forged Stop can never lead
+// to /exit; a switch the user starts still works.
+func TestSwitchCodexAgentRefused(t *testing.T) {
+	ts, c, done, sock := switchRunOn(t, true, adapter.Codex)
+	codexStop := `{"type":"hook-event","vendor":"codex","event":"Stop","payload":{"session_id":"` + childSID + `"}}`
+	if r := request(t, sock, `{"type":"switch-request","vendor":"grok"}`); !strings.Contains(r, "an agent cannot ask for a switch away from codex") {
+		t.Errorf("switch-request reply %q", r)
+	}
+	_ = request(t, sock, codexStop) // forged, from the tree
+	never(t, "an agent switch on codex", []byte("aggy: switch to"), ts.screen, 300*time.Millisecond)
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list", []byte("aggy: switch vendor"), ts.screen)
+	ts.typeIn(t, "\x1c") // the switch key closes the list; nothing typed
+	time.Sleep(200 * time.Millisecond)
+	if got := c.received(); bytes.Contains(got, []byte("/exit")) {
+		t.Fatalf("the CLI got %q", got)
+	}
+
+	// The user picks grok themselves, and confirms at the turn end.
+	ts.typeIn(t, "\x1c2")
+	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+	_ = request(t, sock, codexStop)
+	poll(t, "the confirmation", []byte("aggy: switch to grok? See codex's prompt?"), ts.screen)
+	confirm(t, ts)
+	c.waitGot(t, []byte("/exit\r"))
+	c.quit(0)
+	wantExit(t, done, Exit{SwitchTo: adapter.Grok})
+}
+
+// TestSendDirty (S-13): only a plain Enter sends; Claude's newline keys
+// (Option+Enter, backslash then Enter, even across reads) and paste
+// content leave the prompt dirty.
+func TestSendDirty(t *testing.T) {
+	tests := []struct {
+		name   string
+		chunks []string
+		dirty  bool
+	}{
+		{"typed and sent", []string{"hello", "\r"}, false},
+		{"sent in one read", []string{"hello\r"}, false},
+		{"typed, not sent", []string{"hello"}, true},
+		{"option+enter", []string{"line one", "\x1b\r"}, true},
+		{"backslash enter, one read", []string{"line one\\\r"}, true},
+		{"backslash enter, two reads", []string{"line one\\", "\r"}, true},
+		{"newline then more", []string{"a\x1b\r", "b"}, true},
+		{"newline, then sent", []string{"a\x1b\r", "b", "\r"}, false},
+		{"paste ending in Enter", []string{"\x1b[200~x\r\x1b[201~"}, true},
+		{"paste open, Enter inside", []string{"\x1b[200~x\r"}, true},
+		{"paste, then sent", []string{"\x1b[200~x\x1b[201~", "\r"}, false},
+	}
+	for _, tt := range tests {
+		s := &session{toChild: newByteQueue(maxQueued)}
+		for _, ch := range tt.chunks {
+			s.send([]byte(ch))
+		}
+		if s.dirty != tt.dirty {
+			t.Errorf("%s: dirty = %v, want %v", tt.name, s.dirty, tt.dirty)
+		}
+	}
+}
+
+// TestSwitchMultilineDraft (S-13): a draft with a newline key, then a
+// re-pick and the switch key, never types /exit.
+func TestSwitchMultilineDraft(t *testing.T) {
+	for _, nl := range [][]string{{"\x1b\r"}, {"\\\r"}, {"\\", "\r"}} {
+		ts, c, done, _ := switchRun(t, false)
+		ts.typeIn(t, "line one")
+		c.waitGot(t, []byte("line one"))
+		for _, k := range nl {
+			time.Sleep(20 * time.Millisecond)
+			ts.typeIn(t, k)
+		}
+		c.waitGot(t, []byte(strings.Join(nl, "")))
+		// The newline key holds an Enter, so the first pick waits for a
+		// turn end; picking again says none runs, and the draft blocks.
+		ts.typeIn(t, "\x1c2")
+		poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+		time.Sleep(60 * time.Millisecond)
+		ts.typeIn(t, "\x1c2")
+		poll(t, "the note", []byte("you typed text you have not sent"), ts.screen)
+		time.Sleep(400 * time.Millisecond)
+		ts.typeIn(t, "\x1c")
+		time.Sleep(200 * time.Millisecond)
+		if got := c.received(); bytes.Contains(got, []byte("/exit")) {
+			t.Fatalf("%q: the CLI got %q", nl, got)
+		}
+		finish(t, c, done)
+	}
 }
