@@ -99,13 +99,19 @@ func poll(t *testing.T, what string, want []byte, get func() []byte) {
 }
 
 // startRun runs Run on a test terminal against a fake CLI.
-func startRun(t *testing.T, double time.Duration) (*termSide, *fakeChild, <-chan int) {
+func startRun(t *testing.T, double time.Duration) (*termSide, *fakeChild, <-chan Exit) {
 	t.Helper()
 	return startRunWith(t, double, nil)
 }
 
 // startRunWith is startRun with setup applied to the fake CLI first.
-func startRunWith(t *testing.T, double time.Duration, setup func(*fakeChild)) (*termSide, *fakeChild, <-chan int) {
+func startRunWith(t *testing.T, double time.Duration, setup func(*fakeChild)) (*termSide, *fakeChild, <-chan Exit) {
+	t.Helper()
+	return startRunOpts(t, double, setup, nil)
+}
+
+// startRunOpts is startRunWith with opts applied to the Options first.
+func startRunOpts(t *testing.T, double time.Duration, setup func(*fakeChild), opts func(*Options)) (*termSide, *fakeChild, <-chan Exit) {
 	t.Helper()
 	master, slave, err := pty.Open()
 	if err != nil {
@@ -135,22 +141,28 @@ func startRunWith(t *testing.T, double time.Duration, setup func(*fakeChild)) (*
 		setup(c)
 	}
 	started := make(chan struct{})
-	done := make(chan int, 1)
+	done := make(chan Exit, 1)
+	o := Options{
+		In: slave, Out: slave,
+		Command: adapter.Command{Path: "/fake"},
+		Start: func(adapter.Command, int, int) (Child, error) {
+			close(started)
+			return c, nil
+		},
+		Vendors:     []adapter.Vendor{adapter.Codex, adapter.Grok},
+		DoublePress: double,
+		Vendor:      adapter.Claude,
+		CanSwitch:   func(adapter.Vendor) error { return nil },
+	}
+	if opts != nil {
+		opts(&o)
+	}
 	go func() {
-		code, err := Run(Options{
-			In: slave, Out: slave,
-			Command: adapter.Command{Path: "/fake"},
-			Start: func(adapter.Command, int, int) (Child, error) {
-				close(started)
-				return c, nil
-			},
-			Vendors:     []adapter.Vendor{adapter.Codex, adapter.Grok},
-			DoublePress: double,
-		})
+		ex, err := Run(o)
 		if err != nil {
 			t.Error(err)
 		}
-		done <- code
+		done <- ex
 	}()
 	select {
 	case <-started:
@@ -167,13 +179,13 @@ func (s *termSide) typeIn(t *testing.T, b string) {
 	}
 }
 
-func finish(t *testing.T, c *fakeChild, done <-chan int) {
+func finish(t *testing.T, c *fakeChild, done <-chan Exit) {
 	t.Helper()
 	c.quit(3)
 	select {
-	case code := <-done:
-		if code != 3 {
-			t.Errorf("exit code %d, want 3", code)
+	case ex := <-done:
+		if ex != (Exit{Code: 3}) {
+			t.Errorf("exit %+v, want code 3 and no switch", ex)
 		}
 	case <-time.After(waitLimit):
 		t.Fatal("Run did not return")

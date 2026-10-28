@@ -134,6 +134,37 @@ func TestPlan(t *testing.T) {
 			},
 		},
 		{
+			// T6664: a switch puts the parent's latest child of that
+			// vendor on screen, not the latest child.
+			name: "a switch resumes the latest child of its vendor",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "c0000000-0000-4000-8000-000000000000", dir,
+					store.Child{ID: "c", Vendor: "claude", VendorSessionID: sidA},
+					store.Child{ID: "last", Vendor: "grok", VendorSessionID: sidB})
+				claudeSession(t, sidA, time.Now().Add(-time.Hour))
+			},
+			tgt: target{ParentID: "c0000000", Vendor: adapter.Claude},
+			check: func(t *testing.T, p launchPlan, dir string) {
+				if p.newParent || p.newChild || p.child.ID != "c" || p.resume != sidA {
+					t.Errorf("plan = %+v", p)
+				}
+			},
+		},
+		{
+			name: "a switch to a vendor with no child here starts one",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "c0000000-0000-4000-8000-000000000000", dir,
+					store.Child{ID: "c", Vendor: "claude", VendorSessionID: sidA})
+				claudeSession(t, sidA, time.Now())
+			},
+			tgt: target{ParentID: "c0000000", Vendor: adapter.Codex},
+			check: func(t *testing.T, p launchPlan, dir string) {
+				if p.newParent || !p.newChild || p.child.Vendor != "codex" || p.parent.ID != "c0000000-0000-4000-8000-000000000000" {
+					t.Errorf("plan = %+v", p)
+				}
+			},
+		},
+		{
 			name: "a gone child starts a new one of its vendor",
 			seed: func(t *testing.T, s *store.Store, dir string) {
 				seedParent(t, s, "p0000000-0000-4000-8000-000000000000", dir,

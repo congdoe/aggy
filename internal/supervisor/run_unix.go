@@ -3,14 +3,19 @@
 package supervisor
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"golang.org/x/term"
+
+	"github.com/congdoe/aggy/internal/adapter"
 )
 
 // drainWait bounds how long Run waits, after the CLI exits, for its last
@@ -24,10 +29,38 @@ const drainWait = 500 * time.Millisecond
 // resume instead. Upgrade if the terminal checklist (T6684) shows it.
 const stopDrain = 50 * time.Millisecond
 
+// switchQuiet is how long the CLI's output and the user's input must have
+// been quiet, after a turn end, before a switch is offered.
+//
+// shortcut: a running turn shows a spinner or streams text in all three
+// CLIs as seen in use, not checked against their source; the user's
+// confirmation is the real guard. Upgrade if T6684 shows an idle CLI that
+// keeps drawing. Tests shorten it.
+var switchQuiet = time.Second
+
+// switchPoll is how often a waiting switch checks whether it may go on.
+const switchPoll = 100 * time.Millisecond
+
+// exitWait bounds how long a CLI has to exit after aggy types its exit
+// command. Past it, aggy leaves the CLI running and drops the switch.
+// Tests shorten it.
+var exitWait = 10 * time.Second
+
 // Run supervises one CLI: it puts In in raw mode, starts the CLI at In's
 // size, and copies bytes both ways unchanged until the CLI exits. It
-// returns the CLI's exit code. The terminal is restored on every return,
-// on a panic, and around a suspend.
+// returns the CLI's exit code, and the vendor to launch next when it
+// exited for a switch. The terminal is restored on every return, on a
+// panic, and around a suspend.
+//
+// A switch (T6664) is picked in the picker or asked for by the agent (a
+// switch-request from the session). It never interrupts a turn: it waits
+// for the vendor's turn-end hook, from the CLI's own process tree
+// (FromSession), with no Enter typed since, and for the CLI's output and
+// the user's typing to go quiet. A marked hook is still only a hint (a
+// nested CLI's Stop can arrive mid-turn), so aggy then asks the user, and
+// only on Enter types the exit command (adapter.ExitCommand) through the
+// input queue. A CLI that has not exited within exitWait is left running
+// and the switch dropped, with a note.
 //
 //   - SIGWINCH: In's new size is passed to the CLI.
 //   - SIGINT, SIGQUIT, SIGTERM, SIGHUP sent to aggy are forwarded to the
@@ -42,25 +75,29 @@ const stopDrain = 50 * time.Millisecond
 //     raw mode, passes on the current size, and resumes the CLI. A
 //     SIGTSTP sent to aggy does the same, without stopping the CLI.
 //     TODO(T6684): check what each CLI shows on Ctrl+Z under aggy.
-func Run(o Options) (int, error) {
+func Run(o Options) (Exit, error) {
 	fd := int(o.In.Fd())
 	if !term.IsTerminal(fd) {
-		return 1, errors.New("supervisor: standard input is not a terminal")
+		return Exit{Code: 1}, errors.New("supervisor: standard input is not a terminal")
 	}
 	t := &tty{fd: fd}
+	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, turnEnds: make(chan struct{}, 1), asks: make(chan adapter.Vendor, 1)}
 	var srv *Server
 	if o.RunDir != "" {
 		var err error
-		srv, err = Listen(o.RunDir, o.ParentID, t.restore, o.OnHook)
+		srv, err = Listen(o.RunDir, o.ParentID, t.restore, s.onHook)
 		if err != nil {
-			return 1, err
+			return Exit{Code: 1}, err
 		}
 		defer func() { _ = srv.Close() }()
+		if o.CanSwitch != nil {
+			srv.SetSwitch(s.onSwitch)
+		}
 		// Hooks and skills inside the CLI reach aggy through these.
 		o.Command.Env = SocketEnv(o.Command.Env, srv.Path(), o.ParentID)
 	}
 	if err := t.raw(); err != nil {
-		return 1, err
+		return Exit{Code: 1}, err
 	}
 	defer t.restore()
 
@@ -72,18 +109,16 @@ func Run(o Options) (int, error) {
 	rows, cols := t.size()
 	child, err := o.Start(o.Command, rows, cols)
 	if err != nil {
-		return 1, err
+		return Exit{Code: 1}, err
 	}
 	defer func() { _ = child.Close() }()
 	if srv != nil {
 		srv.SetRoot(child.Pid())
 	}
-
-	s := &session{o: o, t: t, child: child}
+	s.child = child
 	outDone := make(chan struct{})
 	s.goSafe(func() { s.copyOut(); close(outDone) })
-	input := make(chan []byte)
-	s.goSafe(func() { s.readIn(input) })
+	input := inputOf(o.In)
 	s.toChild = newByteQueue(maxQueued)
 	s.goSafe(s.writeChild)
 	defer s.toChild.close()
@@ -109,7 +144,28 @@ func Run(o Options) (int, error) {
 	// follows within double; it fires when none does.
 	var pending <-chan time.Time
 	for {
+		// check polls a switch that waits for the turn end.
+		var check <-chan time.Time
+		if s.sw.to != "" && !s.sw.typed && !s.open {
+			check = time.After(switchPoll)
+		}
 		select {
+		case <-s.turnEnds:
+			s.atPrompt = true
+		case v := <-s.asks:
+			if s.sw.to == "" { // a switch the user picked wins
+				s.setSwitch(pendingSwitch{to: v, asked: true})
+			}
+		case <-check:
+			s.offerSwitch()
+		case <-s.exitBy:
+			s.exitBy = nil
+			if s.sw.typed {
+				v := s.o.Vendor
+				s.setSwitch(pendingSwitch{})
+				s.pk.tell(fmt.Sprintf("%s did not exit after aggy typed its exit command, so it is still running and aggy did not switch.", v))
+				s.openPicker()
+			}
 		case b, ok := <-input:
 			if !ok {
 				// The terminal is gone: hang up the CLI, as a closed
@@ -129,22 +185,22 @@ func Run(o Options) (int, error) {
 				case ev.press && pending != nil:
 					// A double press: the CLI gets one switch key.
 					pending = nil
-					s.toChild.push(ev.data)
+					s.send(ev.data)
 				case ev.press:
 					pending = time.After(double)
 				case pending != nil:
 					// Other input after one press: the picker opens and
 					// takes it, so Ctrl+\ 2 picks the second vendor.
 					pending = nil
-					s.openPicker()
+					s.openList()
 					s.pickerInput(ev.data)
 				default:
-					s.toChild.push(ev.data)
+					s.send(ev.data)
 				}
 			}
 		case <-pending:
 			pending = nil
-			s.openPicker()
+			s.openList()
 		case sig := <-sigs:
 			switch sig {
 			case syscall.SIGWINCH:
@@ -157,7 +213,7 @@ func Run(o Options) (int, error) {
 		case w := <-waits:
 			switch {
 			case w.err != nil:
-				return 1, w.err
+				return Exit{Code: 1}, w.err
 			case w.stopped:
 				s.suspend(true)
 			default:
@@ -166,7 +222,13 @@ func Run(o Options) (int, error) {
 				case <-outDone:
 				case <-time.After(drainWait):
 				}
-				return w.code, nil
+				// Only an exit after aggy typed the exit command is a
+				// switch; a CLI the user quit ends aggy.
+				ex := Exit{Code: w.code}
+				if s.sw.typed {
+					ex.SwitchTo = s.sw.to
+				}
+				return ex, nil
 			}
 		}
 	}
@@ -195,6 +257,143 @@ type session struct {
 	// which never blocks, so a CLI that stops reading cannot stall signal
 	// handling, the picker, or the terminal-closed check.
 	toChild *byteQueue
+
+	// The switch state, owned by the main loop. turnEnds and asks bring
+	// it hook turn ends and the agent's switch requests from the socket.
+	sw       pendingSwitch
+	turnEnds chan struct{}
+	asks     chan adapter.Vendor
+	// atPrompt: a turn end from the session came after the last Enter the
+	// user typed (or none was typed since a launch that started no turn).
+	atPrompt bool
+	// dirty: the user typed something after their last Enter, which the
+	// CLI may still hold unsent.
+	dirty bool
+	// lastIn is when the user last typed to the CLI; lastOut (unix ns),
+	// written by copyOut, when the CLI last drew.
+	lastIn  time.Time
+	lastOut atomic.Int64
+	// exitBy fires exitWait after the exit command was typed.
+	exitBy <-chan time.Time
+	// waiting mirrors sw.to != "" for the socket's goroutines, so a
+	// second switch-request is refused rather than dropped.
+	waiting atomic.Bool
+}
+
+// setSwitch sets the switch state.
+func (s *session) setSwitch(p pendingSwitch) {
+	s.sw = p
+	s.waiting.Store(p.to != "")
+}
+
+// pendingSwitch is a switch waiting for the turn end.
+type pendingSwitch struct {
+	to    adapter.Vendor
+	asked bool // the agent asked for it (a skill), not the user
+	typed bool // the exit command has been typed
+}
+
+// onHook is the socket's hook callback: it passes the event on, and a
+// turn end of the vendor on screen from the session tells the main loop.
+// It runs on a connection's goroutine.
+func (s *session) onHook(r Request) {
+	if s.o.OnHook != nil {
+		s.o.OnHook(r)
+	}
+	if r.FromSession && r.Vendor == string(s.o.Vendor) && turnEnd(r.Event) {
+		select {
+		case s.turnEnds <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// onSwitch takes a switch-request from the session (the socket refuses
+// any other): the vendor must be one the picker offers and CanSwitch
+// allows. It queues it for the main loop, which asks the user at the
+// turn end. It runs on a connection's goroutine.
+func (s *session) onSwitch(r Request) error {
+	v := adapter.Vendor(r.Vendor)
+	if err := s.offered(v); err != nil {
+		return err
+	}
+	if !s.waiting.CompareAndSwap(false, true) {
+		return errors.New("a switch is already waiting")
+	}
+	s.asks <- v // the only one past the swap; the channel holds one
+	return nil
+}
+
+// offered says why v cannot be switched to, or nil.
+func (s *session) offered(v adapter.Vendor) error {
+	if v == s.o.Vendor {
+		return fmt.Errorf("%s is already on screen", v)
+	}
+	ok := false
+	for _, o := range s.o.Vendors {
+		ok = ok || o == v
+	}
+	if !ok {
+		return fmt.Errorf("%s is not offered here (allowed_vendors, switch.order, or aggy setup found it signed out)", v)
+	}
+	if s.o.CanSwitch == nil {
+		return errors.New("this session cannot switch")
+	}
+	return s.o.CanSwitch(v)
+}
+
+// send queues the user's input for the CLI and notes what it may start:
+// an Enter may start a turn, and text after the last Enter may be unsent.
+func (s *session) send(b []byte) {
+	s.lastIn = time.Now()
+	if i := bytes.LastIndexByte(b, '\r'); i >= 0 {
+		s.atPrompt = false
+		s.dirty = i < len(b)-1
+	} else {
+		s.dirty = true
+	}
+	s.toChild.push(b)
+}
+
+// offerSwitch asks the user to confirm the waiting switch once the CLI
+// is at its prompt and quiet. The vendor is checked again first: the
+// repo config or PATH may have changed since the pick.
+func (s *session) offerSwitch() {
+	now := time.Now()
+	if !s.atPrompt || now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
+		return
+	}
+	v, on := s.sw.to, s.o.Vendor
+	if err := s.offered(v); err != nil {
+		s.setSwitch(pendingSwitch{})
+		s.pk.tell(fmt.Sprintf("Cannot switch to %s: %v", v, err))
+		s.openPicker()
+		return
+	}
+	var lines []string
+	if s.sw.asked {
+		lines = append(lines, fmt.Sprintf("The agent asked to switch to %s.", v))
+	}
+	cmd, verified := adapter.ExitCommand(on)
+	lines = append(lines, fmt.Sprintf("%s's turn seems to have ended. aggy will type %s into %s, then start %s.", on, cmd, on, v))
+	if !verified {
+		lines = append(lines, fmt.Sprintf("(%s is not yet verified to end %s.)", cmd, on))
+	}
+	if s.dirty {
+		lines = append(lines, "You typed text you have not sent; it would go before "+cmd+". Esc, clear it, and switch again.")
+	}
+	lines = append(lines, "If a turn is still running, press Esc.")
+	s.pk.ask(v, lines...)
+	s.openPicker()
+}
+
+// typeExit types the on-screen CLI's exit command, through the input
+// queue, after anything the user typed before it.
+func (s *session) typeExit() {
+	cmd, _ := adapter.ExitCommand(s.o.Vendor)
+	s.toChild.push([]byte(cmd + "\r"))
+	s.sw.typed = true
+	s.exitBy = time.After(exitWait)
 }
 
 // altSettle bounds how long openPicker waits for the CLI's output to
@@ -203,6 +402,16 @@ type session struct {
 // shortcut: past it the picker trusts the last whole sequence; a CLI that
 // stalls mid-sequence that long is not expected.
 const altSettle = 50 * time.Millisecond
+
+// openList opens the picker on the vendor list.
+func (s *session) openList() {
+	s.pk.list()
+	s.pk.waiting = ""
+	if !s.sw.typed {
+		s.pk.waiting = s.sw.to
+	}
+	s.openPicker()
+}
 
 // openPicker pauses the CLI's output and draws the picker. Input goes to
 // the picker until it closes. It first lets the alternate-screen tracker
@@ -266,14 +475,32 @@ func (s *session) repaint() {
 }
 
 func (s *session) pickerInput(b []byte) {
+	confirming, note := s.pk.confirm != "", s.pk.note
 	done, picked := s.pk.handle(b)
 	if !done {
 		return
 	}
 	s.closePicker()
-	// TODO(T6664): switch to picked at the CLI's turn end. Until then
-	// the picker returns to the session unchanged.
-	_ = picked
+	switch {
+	case note || s.sw.typed:
+	case confirming && picked != "":
+		s.typeExit()
+	case confirming: // Esc: stay
+		s.setSwitch(pendingSwitch{})
+	case picked != "" && picked == s.sw.to:
+		// Picked again while it waits: the user says no turn is running
+		// (an Enter that started none leaves no turn end to wait for).
+		s.atPrompt = true
+	case picked != "":
+		if err := s.offered(picked); err != nil {
+			s.pk.tell(fmt.Sprintf("Cannot switch to %s: %v", picked, err))
+			s.openPicker()
+			return
+		}
+		s.setSwitch(pendingSwitch{to: picked})
+	default: // Esc on the list cancels a waiting switch
+		s.setSwitch(pendingSwitch{})
+	}
 }
 
 // goSafe runs f in a goroutine that restores the terminal before a panic
@@ -295,6 +522,7 @@ func (s *session) copyOut() {
 	for {
 		n, err := s.child.Read(buf)
 		if n > 0 {
+			s.lastOut.Store(time.Now().UnixNano())
 			s.outMu.Lock()
 			s.alt.feed(buf[:n])
 			_, werr := s.o.Out.Write(buf[:n])
@@ -309,20 +537,38 @@ func (s *session) copyOut() {
 	}
 }
 
-// readIn sends each read from In as a new slice and closes ch when In
-// fails.
-func (s *session) readIn(ch chan<- []byte) {
-	defer close(ch)
-	buf := make([]byte, 32<<10)
-	for {
-		n, err := s.o.In.Read(buf)
-		if n > 0 {
-			ch <- append([]byte(nil), buf[:n]...)
-		}
-		if err != nil {
-			return
-		}
+// readers holds one reader per input file, kept across Runs: a read on
+// a terminal cannot be cancelled, so a reader per Run would outlive it
+// and take the next CLI's first keys after a switch.
+var (
+	readersMu sync.Mutex
+	readers   = map[*os.File]chan []byte{}
+)
+
+// inputOf returns in's reader: each read from in as a new slice, closed
+// when in fails.
+func inputOf(in *os.File) <-chan []byte {
+	readersMu.Lock()
+	defer readersMu.Unlock()
+	if ch, ok := readers[in]; ok {
+		return ch
 	}
+	ch := make(chan []byte)
+	readers[in] = ch
+	go func() {
+		defer close(ch)
+		buf := make([]byte, 32<<10)
+		for {
+			n, err := in.Read(buf)
+			if n > 0 {
+				ch <- append([]byte(nil), buf[:n]...)
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return ch
 }
 
 // writeChild writes queued input to the CLI, off the main loop.

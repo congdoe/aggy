@@ -53,7 +53,32 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 // child the shared memory of the child's own repo and the safety
 // policy, and refuses to start a CLI the policy cannot reach unless
 // t.NoPolicy is set or the user's config sets [policy] required = false.
+//
+// When the CLI exits for a switch (T6664), the next vendor's child of the
+// same parent goes on screen the same way, through launchOnce, so it gets
+// its own lease, the repo's allowed_vendors, the policy, and memory. Like
+// /vendor without flags it gets no brief: --brief, --new, and --model
+// for a switch are TODO(T6665).
 func launch(name string, t target, stderr io.Writer) int {
+	for {
+		var next switchTo
+		code := launchOnce(name, t, stderr, &next)
+		if next.vendor == "" {
+			return code
+		}
+		t = target{ParentID: next.parentID, Vendor: next.vendor, NoPolicy: t.NoPolicy}
+	}
+}
+
+// switchTo is the vendor a CLI exited for, and its parent.
+type switchTo struct {
+	vendor   adapter.Vendor
+	parentID string
+}
+
+// launchOnce is one launch. It returns the CLI's exit code, and sets next
+// when the CLI exited for a switch.
+func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	fail := func(err error) int {
 		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(err.Error()))
 		return 1
@@ -212,22 +237,40 @@ func launch(name string, t target, stderr io.Writer) int {
 	defer stopIndex()
 	onHook, stopLimits := startLimits(parentID, v, onHook)
 	defer stopLimits()
-	code, err := supervisor.Run(supervisor.Options{
+	// A switch is checked when picked or asked for, and again before the
+	// CLI is told to exit; launch checks everything once more.
+	canSwitch := func(next adapter.Vendor) error {
+		if _, err := allowedIn(cfg, pl.child.Cwd, next); err != nil {
+			return err
+		}
+		if _, err := probe.LookPath(vendorBin(next)); err != nil {
+			return fmt.Errorf("%s is not on PATH", next)
+		}
+		return nil
+	}
+	ex, err := supervisor.Run(supervisor.Options{
 		In: os.Stdin, Out: os.Stdout, Command: cmd,
-		Start:     startPTY,
-		SwitchKey: key,
-		Vendors:   pickerVendors(eff.Switch.Order, v),
-		RunDir:    runDir,
-		ParentID:  parentID,
-		OnHook:    onHook,
+		Start:      startPTY,
+		SwitchKey:  key,
+		Vendors:    pickerVendors(eff.Switch.Order, v),
+		RunDir:     runDir,
+		ParentID:   parentID,
+		OnHook:     onHook,
+		Vendor:     v,
+		CanSwitch:  canSwitch,
+		StartsTurn: t.Brief,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", name, err)
-		if code == 0 {
-			code = 1
+		if ex.Code == 0 {
+			ex.Code = 1
 		}
+		return ex.Code
 	}
-	return code
+	if ex.SwitchTo != "" {
+		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID}
+	}
+	return ex.Code
 }
 
 // pickerVendors lists the vendors in order, except on, that aggy setup

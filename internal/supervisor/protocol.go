@@ -93,22 +93,21 @@ func decodeRequest(line []byte) (Request, error) {
 
 // answer handles one request line. onHook, if set, gets each valid
 // hook-event, with FromSession set to fromSession. A switch-request must
-// be FromSession.
-func answer(line []byte, fromSession bool, onHook func(Request)) Response {
+// be FromSession; onSwitch, if set, takes it or says why not, and without
+// it (aggy --direct) switching is refused.
+func answer(line []byte, fromSession bool, onHook func(Request), onSwitch func(Request) error) Response {
 	r, err := decodeRequest(line)
 	if err != nil {
 		return Response{Error: err.Error()}
 	}
+	r.FromSession = fromSession
 	switch r.Type {
 	case ReqPing:
 		return Response{OK: true, Type: "pong"}
 	case ReqHookEvent:
-		// TODO(T6664): turn-end hooks gate a pending switch, and a
-		// rate_limit StopFailure opens the picker, both only when
-		// FromSession (fail closed). Until then onHook keeps the index
-		// (session ids) and records limits.
+		// The supervisor acts on a turn end only when FromSession, and
+		// even then only as a hint (Run, T6664).
 		if onHook != nil {
-			r.FromSession = fromSession
 			onHook(r)
 		}
 		return Response{OK: true}
@@ -116,7 +115,12 @@ func answer(line []byte, fromSession bool, onHook func(Request)) Response {
 		if !fromSession {
 			return Response{Error: "switch-request from outside this session"}
 		}
-		// TODO(T6664): perform the switch at the CLI's turn end.
-		return Response{Error: "switching is not implemented yet"}
+		if onSwitch == nil {
+			return Response{Error: "switching needs aggy's pass-through; this session cannot switch"}
+		}
+		if err := onSwitch(r); err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true}
 	}
 }
