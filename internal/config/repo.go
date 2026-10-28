@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/safefs"
@@ -49,12 +51,12 @@ type Worktree struct {
 // RepoPath returns the repo config path for the repo at root.
 func RepoPath(root string) string { return filepath.Join(root, RepoDir, FileName) }
 
-// LoadRepo reads the repo config of the repo at root through safefs. A
-// missing file gives the zero RepoConfig, which narrows nothing. Unknown
-// keys are an error.
+// LoadRepo reads the repo config of the repo at root through safefs: a
+// regular file of at most MaxFileSize, not a symlink. A missing file gives
+// the zero RepoConfig, which narrows nothing. Unknown keys are an error.
 func LoadRepo(root string) (RepoConfig, error) {
 	path := RepoPath(root)
-	b, err := safefs.ReadFile(path)
+	b, err := safefs.ReadFileLimit(path, MaxFileSize)
 	if errors.Is(err, fs.ErrNotExist) {
 		return RepoConfig{}, nil
 	}
@@ -115,16 +117,31 @@ func (rc RepoConfig) Validate() error {
 	return nil
 }
 
-// checkRepoPath accepts a clean relative path inside the repo, outside
-// .git.
+// checkRepoPath accepts a clean relative path inside the repo that has no
+// .git component at any depth, compared after Unicode NFC normalization
+// and case folding (APFS and HFS+ treat ".GIT" and a decomposed spelling
+// as ".git"), and no control or format characters (such as zero-width
+// joiners, which HFS+ ignores in names).
+//
+// Validation is only half the defense: the worktree copier (T6595 follow
+// up) must open the repo with os.Root and refuse symlinks, so a path that
+// passes here cannot be redirected on disk.
 func checkRepoPath(p string) error {
+	for _, r := range p {
+		if unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) {
+			return fmt.Errorf("%q holds a control or format character", p)
+		}
+	}
 	switch {
 	case p == "" || filepath.IsAbs(p) || strings.HasPrefix(p, "/"):
 		return fmt.Errorf("%q must be a path relative to the repo root", p)
 	case filepath.Clean(p) != p || p == "." || p == ".." || strings.HasPrefix(p, "../"):
 		return fmt.Errorf("%q must be a clean path inside the repo", p)
-	case p == ".git" || strings.HasPrefix(p, ".git/"):
-		return fmt.Errorf("%q is inside .git", p)
+	}
+	for _, c := range strings.Split(p, "/") {
+		if strings.EqualFold(norm.NFC.String(c), ".git") {
+			return fmt.Errorf("%q is or is inside a .git directory", p)
+		}
 	}
 	return nil
 }

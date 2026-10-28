@@ -49,7 +49,7 @@ setup = ["npm", "ci"]
 		{name: "absolute copy", text: "[worktree]\ncopy = [\"/etc/passwd\"]\n", wantErr: "relative"},
 		{name: "escaping copy", text: "[worktree]\ncopy = [\"../secrets\"]\n", wantErr: "inside the repo"},
 		{name: "unclean copy", text: "[worktree]\ncopy = [\"a/../../b\"]\n", wantErr: "clean path"},
-		{name: "git copy", text: "[worktree]\ncopy = [\".git/config\"]\n", wantErr: "inside .git"},
+		{name: "git copy", text: "[worktree]\ncopy = [\".git/config\"]\n", wantErr: "a .git directory"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
