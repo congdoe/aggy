@@ -104,6 +104,7 @@ func (w *world) borrower() *Borrower {
 		Config:    w.cfg,
 		StateDir:  w.state,
 		Now:       func() time.Time { return w.now },
+		Getenv:    func(string) string { return "" },
 	})
 }
 
