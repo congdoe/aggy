@@ -80,10 +80,18 @@ func TestChildBrief(t *testing.T) {
 		t.Errorf("return brief:\n%s", back)
 	}
 
+	// Codex has an MCP server Grok lacks: the brief to Grok lists it.
+	codexCfg := filepath.Join(os.Getenv("HOME"), ".codex", "config.toml")
+	if err := os.WriteFile(codexCfg, []byte("[mcp_servers.cx]\ncommand = \"x\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	fresh := store.Child{ID: "c3", ParentID: pid, Vendor: "grok", Cwd: dir}
 	first, err := childBrief(ctx, s, env, launchPlan{parent: parent, child: fresh, newChild: true})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(first, "Tools codex had that you lack") || !strings.Contains(first, "MCP server cx") {
+		t.Errorf("first-visit brief lacks the missing tools:\n%s", first)
 	}
 	if !strings.Contains(first, "# Handoff brief") || !strings.Contains(first, "running in codex") || !strings.Contains(first, "BEFORE close") {
 		t.Errorf("first-visit brief:\n%s", first)
