@@ -125,3 +125,28 @@ func TestCodexImagesCounted(t *testing.T) {
 		t.Errorf("report:\n%s", report)
 	}
 }
+
+// TestGrokImagesCounted (T6633): Grok's images are found in
+// sessions/<encoded cwd>/<sessionId>/images/, built from the reply's
+// session id and the child's temp cwd, and pass the gate as JPEGs.
+func TestGrokImagesCounted(t *testing.T) {
+	w := newWorld(t)
+	w.scenario[adapter.Grok] = `{"images":2,"json":{"result":"images/1.jpg and images/2.jpg"}}`
+	req := w.req(adapter.Image, "two cats")
+	req.Vendor = "grok"
+	res, err := w.borrower().Run(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := res[0]
+	if r.Status != "done" || r.Made != 2 || len(r.Artifacts) != 2 || len(r.Refused) != 0 {
+		t.Fatalf("result %+v", r)
+	}
+	for i, a := range r.Artifacts {
+		dir := filepath.Dir(a.Path)
+		if filepath.Base(a.Path) != []string{"1.jpg", "2.jpg"}[i] || filepath.Base(dir) != "images" ||
+			!strings.HasPrefix(dir, filepath.Join(w.home, ".grok", "sessions")+string(filepath.Separator)) {
+			t.Errorf("artifact %d = %s", i, a.Path)
+		}
+	}
+}
