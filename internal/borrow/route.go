@@ -2,7 +2,6 @@ package borrow
 
 import (
 	"context"
-	"errors"
 
 	"github.com/congdoe/aggy/internal/adapter"
 )
@@ -48,6 +47,3 @@ func Supports(a adapter.Adapter, k adapter.Kind) error {
 	_, err := a.Headless(req)
 	return err
 }
-
-// unsupported reports whether err says the CLI cannot serve the kind.
-func unsupported(err error) bool { return errors.Is(err, adapter.ErrUnsupported) }

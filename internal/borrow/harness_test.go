@@ -15,7 +15,6 @@ import (
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/fakecli"
-	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 )
 
@@ -142,14 +141,4 @@ func (w *world) records() []fakecli.Record {
 
 func (w *world) req(kind adapter.Kind, task string) Request {
 	return Request{Kind: kind, Task: task, Repo: w.repo}
-}
-
-func mustWrite(t *testing.T, p, s string) {
-	t.Helper()
-	if err := safefs.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := safefs.WriteFile(p, []byte(s), 0o600); err != nil {
-		t.Fatal(err)
-	}
 }
