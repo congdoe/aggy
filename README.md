@@ -73,6 +73,11 @@ What each borrow kind does on each CLI. "Live" means checked against the real CL
 | review | Supported when the CLI has `--setting-sources` (probed), read-only in plan mode. Its tool names are unverified. | Supported, with the Codex lockdown flags, which leave no tool that reads a file, so the diff and files go in the prompt. That lockdown is not leak-proof: `apply_patch`, which no flag removes, can confirm a guessed line of a file at a known path (Live; the same reason research is off on Codex). | Supported, read-only in plan mode; the tool list was checked live as the model reported it. Refused in a repo holding config Grok may load and run (such as project hooks), because aggy does not rely on Grok's folder trust. |
 | edit | M3, not shipped. | M3, not shipped. | M3, not shipped. |
 
+## Known limits
+
+- The shared memory (`.aggy/memory.md`) reaches Codex and Grok on their command line, which other local users can read with `ps`. So does the payload Codex passes to its legacy `notify` hook. Keep secrets out of the memory; see [docs/design.md](docs/design.md), section 13.
+- The safety policy is a guardrail against an agent's mistakes, not a sandbox.
+
 ## Not affiliated
 
 aggy is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by Anthropic, OpenAI, or xAI. Claude Code, Codex, and Grok Build are their respective owners' products and trademarks, named here only to say what aggy works with.
