@@ -26,8 +26,12 @@ It calls no model and writes nothing.
   --session ID    that CLI's session id
   --to VENDOR     the CLI that would read the brief; refused when the
                   repo's allowed_vendors does not list it
-  --turns N       how many of the latest turns to include (default 20)
+  --turns N       how many of the latest turns to include (default 20,
+                  at most 1000)
 `
+
+// maxTurns caps --turns; the transcript tail is 4 MiB anyway.
+const maxTurns = 1000
 
 func runBrief(args []string, stdout, stderr io.Writer) int {
 	return briefWith(args, defaultBorrowEnv(), stdout, stderr)
@@ -59,8 +63,8 @@ func briefWith(args []string, e borrowEnv, stdout, stderr io.Writer) int {
 	case !*show:
 		// TODO(T6674): write .aggy/briefs/<child-id>.md when switching.
 		return usageErr("only --show is implemented")
-	case *turns < 1:
-		return usageErr("--turns must be at least 1")
+	case *turns < 1 || *turns > maxTurns:
+		return usageErr(fmt.Sprintf("--turns must be from 1 to %d", maxTurns))
 	}
 	in := brief.Input{}
 	var err error
