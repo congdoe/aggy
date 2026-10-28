@@ -178,6 +178,8 @@ func launch(name string, t target, stderr io.Writer) int {
 	}
 	onHook, stopIndex := startIndex(parentID, v, assigned, ids.set)
 	defer stopIndex()
+	onHook, stopLimits := startLimits(parentID, v, onHook)
+	defer stopLimits()
 	code, err := supervisor.Run(supervisor.Options{
 		In: os.Stdin, Out: os.Stdout, Command: cmd,
 		Start:     startPTY,

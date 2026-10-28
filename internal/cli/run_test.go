@@ -18,6 +18,8 @@ func TestRunArgs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			t.Setenv("PATH", t.TempDir())
 			var out, errb bytes.Buffer
 			if code := Run(tt.args, &out, &errb); code != 2 {
 				t.Errorf("exit code = %d, want 2", code)

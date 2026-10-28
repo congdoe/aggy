@@ -99,7 +99,7 @@ func answer(line []byte, onHook func(Request)) Response {
 	case ReqHookEvent:
 		// TODO(T6664): turn-end hooks gate a pending switch, and a
 		// rate_limit StopFailure opens the picker. Until then onHook
-		// only keeps the index (session ids).
+		// keeps the index (session ids) and records limits.
 		if onHook != nil {
 			onHook(r)
 		}
