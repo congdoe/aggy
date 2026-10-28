@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/fs"
 	"path/filepath"
 	"sort"
@@ -117,19 +116,18 @@ func vendorHome(get func(string) string, relocate, name string) (string, bool) {
 //
 // Codex is not checked: the key that sets its OpenAI provider's base URL
 // is not recorded in docs/adapters.md. A missing file is not a finding;
-// one that cannot be read or parsed is a warning. Paths are shown
-// with the home directory as ~.
+// one that cannot be read or parsed is a warning. Each finding's Path is
+// the file.
 func RouteFiles(environ []string) []Finding {
 	get := envLookup(environ)
-	home := get("HOME")
 	var out []Finding
 	if dir, ok := vendorHome(get, "CLAUDE_CONFIG_DIR", ".claude"); ok {
 		for _, name := range []string{"settings.json", "settings.local.json"} {
-			out = append(out, claudeSettings(filepath.Join(dir, name), home)...)
+			out = append(out, claudeSettings(filepath.Join(dir, name))...)
 		}
 	}
 	if dir, ok := vendorHome(get, "GROK_HOME", ".grok"); ok {
-		out = append(out, grokConfig(filepath.Join(dir, "config.toml"), home)...)
+		out = append(out, grokConfig(filepath.Join(dir, "config.toml"))...)
 	}
 	return out
 }
@@ -140,10 +138,10 @@ func RouteFiles(environ []string) []Finding {
 // Dotfile managers often link these files, so a symlink is resolved and
 // its target read, after the target passes the safefs credential check,
 // with safefs.ReadFileLimit, which opens it without following a link.
-func readConfig(path, home string, v adapter.Vendor) ([]byte, *Finding) {
+func readConfig(path string, v adapter.Vendor) ([]byte, *Finding) {
 	unreadable := func(why string) *Finding {
-		return &Finding{Code: CodeConfigUnreadable, Level: LevelWarn, Vendor: v,
-			Message: fmt.Sprintf("%s: cannot be checked for base URLs and API keys (%s)", ShowPath(path, home), why)}
+		return &Finding{Code: CodeConfigUnreadable, Level: LevelWarn, Vendor: v, Path: path,
+			Message: "cannot be checked for base URLs and API keys (" + why + ")"}
 	}
 	fi, err := safefs.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -185,9 +183,9 @@ func reason(err error) string {
 	return "unreadable"
 }
 
-func routeConfig(path, home string, v adapter.Vendor, key, what string) Finding {
-	return Finding{Code: CodeRouteConfig, Level: LevelWarn, Vendor: v,
-		Message: fmt.Sprintf("%s: %s is set: %s", ShowPath(path, home), key, what)}
+func routeConfig(path string, v adapter.Vendor, key, what string) Finding {
+	return Finding{Code: CodeRouteConfig, Level: LevelWarn, Vendor: v, Path: path,
+		Message: key + " is set: " + what}
 }
 
 // set reports whether a config value is present and not empty.
@@ -201,8 +199,8 @@ func set(v any) bool {
 	return true
 }
 
-func claudeSettings(path, home string) []Finding {
-	b, f := readConfig(path, home, adapter.Claude)
+func claudeSettings(path string) []Finding {
+	b, f := readConfig(path, adapter.Claude)
 	if f != nil {
 		return []Finding{*f}
 	}
@@ -214,8 +212,8 @@ func claudeSettings(path, home string) []Finding {
 		APIKeyHelper any `json:"apiKeyHelper"`
 	}
 	if err := json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &s); err != nil {
-		return []Finding{{Code: CodeConfigUnreadable, Level: LevelWarn, Vendor: adapter.Claude,
-			Message: ShowPath(path, home) + ": cannot be checked for base URLs and API keys (not valid JSON)"}}
+		return []Finding{{Code: CodeConfigUnreadable, Level: LevelWarn, Vendor: adapter.Claude, Path: path,
+			Message: "cannot be checked for base URLs and API keys (not valid JSON)"}}
 	}
 	env, _ := s.Env.(map[string]any) // an env that is not an object sets nothing
 	keys := make([]string, 0, len(env))
@@ -225,7 +223,7 @@ func claudeSettings(path, home string) []Finding {
 	sort.Strings(keys)
 	var out []Finding
 	if set(s.APIKeyHelper) {
-		out = append(out, routeConfig(path, home, adapter.Claude, "apiKeyHelper",
+		out = append(out, routeConfig(path, adapter.Claude, "apiKeyHelper",
 			"Claude Code may get an API key from it and bill the API instead of the subscription"))
 	}
 	for _, k := range keys {
@@ -233,24 +231,24 @@ func claudeSettings(path, home string) []Finding {
 			continue
 		}
 		if p, ok := cloudVar(k); ok {
-			f := cloudFinding(ShowPath(path, home)+": env."+k, p)
-			f.Code = CodeRouteConfig
+			f := cloudFinding("env."+k, p)
+			f.Code, f.Path = CodeRouteConfig, path
 			out = append(out, f)
 			continue
 		}
 		if _, ok := BaseURLVar(k); ok {
-			out = append(out, routeConfig(path, home, adapter.Claude, "env."+k,
+			out = append(out, routeConfig(path, adapter.Claude, "env."+k,
 				"Claude Code may send its requests to another endpoint, which can bill an API key or sit in the middle of plan traffic"))
 		} else if _, ok := apiKeyVar(k); ok {
-			out = append(out, routeConfig(path, home, adapter.Claude, "env."+k,
+			out = append(out, routeConfig(path, adapter.Claude, "env."+k,
 				"Claude Code may bill the API instead of the subscription"))
 		}
 	}
 	return out
 }
 
-func grokConfig(path, home string) []Finding {
-	b, f := readConfig(path, home, adapter.Grok)
+func grokConfig(path string) []Finding {
+	b, f := readConfig(path, adapter.Grok)
 	if f != nil {
 		return []Finding{*f}
 	}
@@ -261,15 +259,15 @@ func grokConfig(path, home string) []Finding {
 		Toolset map[string]any `toml:"toolset"`
 	}
 	if _, err := toml.Decode(string(b), &c); err != nil {
-		return []Finding{{Code: CodeConfigUnreadable, Level: LevelWarn, Vendor: adapter.Grok,
-			Message: ShowPath(path, home) + ": cannot be checked for media API settings (not valid TOML)"}}
+		return []Finding{{Code: CodeConfigUnreadable, Level: LevelWarn, Vendor: adapter.Grok, Path: path,
+			Message: "cannot be checked for media API settings (not valid TOML)"}}
 	}
 	var out []Finding
 	for _, tool := range []string{"image_gen", "video_gen"} {
 		tbl, _ := c.Toolset[tool].(map[string]any)
 		for _, key := range []string{"base_url", "env_key"} {
 			if set(tbl[key]) {
-				out = append(out, routeConfig(path, home, adapter.Grok, "toolset."+tool+"."+key,
+				out = append(out, routeConfig(path, adapter.Grok, "toolset."+tool+"."+key,
 					"Grok may send media requests to an API key instead of the subscription"))
 			}
 		}

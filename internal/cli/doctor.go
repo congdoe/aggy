@@ -65,6 +65,7 @@ type doctorSection struct {
 type doctorResult struct {
 	sections []doctorSection
 	versions map[adapter.Vendor]string // "" when not installed; "unreadable" when unreadable
+	home     string                    // to show paths under it as ~
 }
 
 func runDoctor(args []string, stdout, stderr io.Writer) int {
@@ -109,7 +110,7 @@ func doctorWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 
 // doctor runs every check. It writes nothing.
 func doctor(ctx context.Context, env checkEnv) doctorResult {
-	res := doctorResult{versions: map[adapter.Vendor]string{}}
+	res := doctorResult{versions: map[adapter.Vendor]string{}, home: env.home}
 	envFindings := checkup.Environment(env.environ)
 	installed := 0
 	for _, a := range env.adapters {
@@ -125,7 +126,7 @@ func doctor(ctx context.Context, env checkEnv) doctorResult {
 		} else {
 			res.versions[v] = ""
 		}
-		fs := checkup.VendorFindings(vr, name, a.SignIn().Steps, env.home)
+		fs := checkup.VendorFindings(vr, name, a.SignIn().Steps)
 		fs = append(fs, checkup.ForVendor(envFindings, v)...)
 		res.sections = append(res.sections, doctorSection{title: name, findings: fs})
 	}
@@ -138,64 +139,78 @@ func doctor(ctx context.Context, env checkEnv) doctorResult {
 	if len(general) > 0 {
 		res.sections = append(res.sections, doctorSection{title: "General", findings: general})
 	}
-	res.sections = append(res.sections, doctorSection{title: "Config aggy changed", findings: driftFindings(ctx, env.home)})
+	res.sections = append(res.sections, doctorSection{title: "Config aggy changed", findings: driftFindings(ctx)})
 	return res
 }
 
 // driftFindings checks the files aggy changed, reading the index
-// read-only: doctor never creates or migrates it.
-func driftFindings(ctx context.Context, home string) []checkup.Finding {
-	f := func(code string, l checkup.Level, msg string) []checkup.Finding {
-		return []checkup.Finding{{Code: code, Level: l, Message: msg}}
+// read-only: doctor never creates or migrates it. A finding about a file
+// has it as its Path, and error text goes in Detail.
+func driftFindings(ctx context.Context) []checkup.Finding {
+	f := func(code string, l checkup.Level, msg string, err error) []checkup.Finding {
+		fd := checkup.Finding{Code: code, Level: l, Message: msg}
+		if err != nil {
+			fd.Detail = err.Error()
+		}
+		return []checkup.Finding{fd}
 	}
 	path, err := store.DefaultPath()
 	if err != nil {
-		return f(codeIndex, checkup.LevelError, "cannot find the index: "+err.Error())
+		return f(codeIndex, checkup.LevelError, "cannot find the index", err)
 	}
 	if _, err := safefs.Stat(path); errors.Is(err, fs.ErrNotExist) {
-		return f(codeNoIndex, checkup.LevelInfo, "aggy has not changed any config")
+		return f(codeNoIndex, checkup.LevelInfo, "aggy has not changed any config", nil)
 	} else if err != nil {
-		return f(codeIndex, checkup.LevelError, "cannot read the index: "+err.Error())
+		return f(codeIndex, checkup.LevelError, "cannot read the index", err)
 	}
 	s, err := store.OpenReadOnly(ctx, path)
 	if err != nil {
-		return f(codeIndex, checkup.LevelError, "cannot read the index: "+err.Error())
+		return f(codeIndex, checkup.LevelError, "cannot read the index", err)
 	}
 	defer func() { _ = s.Close() }()
 	if v, err := s.Version(ctx); err != nil {
-		return f(codeIndex, checkup.LevelError, "cannot read the index: "+store.ReadError(err).Error())
+		return f(codeIndex, checkup.LevelError, "cannot read the index", store.ReadError(err))
 	} else if v < driftSchema {
-		return f(codeIndexOld, checkup.LevelWarn, "the index is older than drift checks need; run aggy setup to upgrade it")
+		return f(codeIndexOld, checkup.LevelWarn, "the index is older than drift checks need; run aggy setup to upgrade it", nil)
 	}
 	m, err := manifest.Open(s)
 	if err != nil {
-		return f(codeIndex, checkup.LevelError, err.Error())
+		return f(codeIndex, checkup.LevelError, "cannot read the index", err)
 	}
 	ds, err := m.Drift(ctx)
 	if err != nil {
-		return f(codeIndex, checkup.LevelError, "cannot read the index: "+store.ReadError(err).Error())
+		return f(codeIndex, checkup.LevelError, "cannot read the index", store.ReadError(err))
 	}
 	var out []checkup.Finding
-	add := func(code string, l checkup.Level, format string, a ...any) {
-		out = append(out, checkup.Finding{Code: code, Level: l, Message: fmt.Sprintf(format, a...)})
+	add := func(code string, l checkup.Level, d manifest.Drift, detail error, format string, a ...any) {
+		fd := checkup.Finding{Code: code, Level: l, Path: d.Change.File, Message: fmt.Sprintf(format, a...)}
+		if detail != nil {
+			fd.Detail = detail.Error()
+		}
+		out = append(out, fd)
 	}
 	for _, d := range ds {
-		file, id := checkup.ShowPath(d.Change.File, home), d.Change.ChangeID
+		id := d.Change.ChangeID
 		switch d.Outcome {
 		case manifest.Drifted:
-			add(codeDrift, checkup.LevelWarn, "%s changed after aggy wrote it (change %s); aggy unwire will ask for --force", file, id)
+			add(codeDrift, checkup.LevelWarn, d, nil, "changed after aggy wrote it (change %s); aggy unwire will ask for --force", id)
 		case manifest.Invalid:
-			add(codeDriftUnchecked, checkup.LevelError, "change %s is not a change aggy could have made: %s", id, file)
+			add(codeDriftUnchecked, checkup.LevelError, d, nil, "change %s is not a change aggy could have made", id)
 		case manifest.Failed:
 			if errors.Is(d.Err, safefs.ErrAuthPath) {
-				add(codeDriftUnchecked, checkup.LevelError, "change %s names a vendor credential file, which aggy never reads: %s", id, file)
+				add(codeDriftUnchecked, checkup.LevelError, d, nil, "change %s names a vendor credential file, which aggy never reads", id)
 			} else {
-				add(codeDriftUnchecked, checkup.LevelError, "%s cannot be checked (change %s): %v", file, id, d.Err)
+				add(codeDriftUnchecked, checkup.LevelError, d, d.Err, "cannot be checked (change %s)", id)
 			}
 		case manifest.Blocked:
-			// Only an older change waiting on a newer one; --all
-			// handles it. Info, not a problem.
-			add(codeDriftBlocked, checkup.LevelInfo, "change %s to %s waits for a newer change to the file; aggy unwire --all undoes them in order", id, file)
+			// An older change behind a newer one still in place (in an
+			// --all run, a drifted one): unwire will not undo it until
+			// that one is. Info; the newer change has its own finding.
+			if d.BlockedBy != "" {
+				add(codeDriftBlocked, checkup.LevelInfo, d, nil, "change %s waits on a newer change to the same file (change %s), which must be undone first", id, d.BlockedBy)
+			} else {
+				add(codeDriftBlocked, checkup.LevelInfo, d, nil, "change %s waits on a newer change to the same file, which must be undone first", id)
+			}
 		}
 		// Restored, Removed, Cleaned, Superseded: unwire undoes them as
 		// they are. Not drift.
@@ -206,7 +221,7 @@ func driftFindings(ctx context.Context, home string) []checkup.Finding {
 		if n == 0 {
 			msg = "no config change of aggy's is in effect"
 		}
-		return f(codeNoDrift, checkup.LevelInfo, msg)
+		return f(codeNoDrift, checkup.LevelInfo, msg, nil)
 	}
 	return out
 }
@@ -222,7 +237,7 @@ func printDoctor(w io.Writer, res doctorResult) {
 		fmt.Fprintln(w, s.title)
 		for _, f := range s.findings {
 			counts[f.Level]++
-			fmt.Fprintf(w, "  %-7s %s: %s\n", f.Level, f.Code, termsafe.Field(f.Message))
+			fmt.Fprintf(w, "  %-7s %s: %s\n", f.Level, f.Code, termsafe.Field(f.Text(res.home)))
 		}
 	}
 	fmt.Fprintf(w, "\n%d %s, %d %s\n", counts[checkup.LevelError], plural(counts[checkup.LevelError], "error", "errors"),
@@ -259,7 +274,7 @@ func printReport(w io.Writer, res doctorResult, id devfix.Identity) {
 			if f.Vendor != "" {
 				vendor = " (" + string(f.Vendor) + ")"
 			}
-			fmt.Fprintf(&b, "  %s %s%s: %s\n", f.Level, f.Code, vendor, clean(f.Message))
+			fmt.Fprintf(&b, "  %s %s%s: %s\n", f.Level, f.Code, vendor, clean(f.ReportText(res.home)))
 		}
 	}
 	fmt.Fprint(w, b.String())

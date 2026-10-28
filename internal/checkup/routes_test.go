@@ -102,7 +102,7 @@ func TestRouteFiles(t *testing.T) {
 				t.Fatalf("findings = %+v, want %v", got, tt.want)
 			}
 			for i, f := range got {
-				line := f.Code + " " + string(f.Vendor) + " " + f.Message
+				line := f.Code + " " + string(f.Vendor) + " " + f.Text(home)
 				if !strings.HasPrefix(line, tt.want[i]) {
 					t.Errorf("finding %d = %q, want prefix %q", i, line, tt.want[i])
 				}
@@ -137,7 +137,7 @@ func TestRouteFilesLocalSettings(t *testing.T) {
 	home := t.TempDir()
 	write(t, filepath.Join(home, ".claude", "settings.local.json"), `{"env":{"ANTHROPIC_BASE_URL":"u"}}`)
 	got := RouteFiles([]string{"HOME=" + home})
-	if len(got) != 1 || got[0].Message != "~/.claude/settings.local.json: env.ANTHROPIC_BASE_URL is set: Claude Code may send its requests to another endpoint, which can bill an API key or sit in the middle of plan traffic" {
+	if len(got) != 1 || got[0].Text(home) != "~/.claude/settings.local.json: env.ANTHROPIC_BASE_URL is set: Claude Code may send its requests to another endpoint, which can bill an API key or sit in the middle of plan traffic" {
 		t.Errorf("findings = %+v", got)
 	}
 }
@@ -183,7 +183,7 @@ func TestRouteFilesSymlinks(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := RouteFiles([]string{"HOME=" + home})
-			if len(got) != 1 || !strings.HasPrefix(got[0].Message, tt.want) || got[0].Level != tt.level {
+			if len(got) != 1 || !strings.HasPrefix(got[0].Text(home), tt.want) || got[0].Level != tt.level {
 				t.Errorf("findings = %+v, want %q", got, tt.want)
 			}
 		})

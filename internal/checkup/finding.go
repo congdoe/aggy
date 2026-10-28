@@ -1,6 +1,7 @@
 package checkup
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -33,10 +34,55 @@ func (l Level) String() string {
 // Finding is one thing a check found. It names variables, files, and
 // keys, never their values.
 type Finding struct {
-	Code    string         // stable, for reports: e.g. "api-key-env"
-	Level   Level          //
-	Vendor  adapter.Vendor // the vendor it concerns, or ""
-	Message string         // for the person; holds no secret or env value
+	Code   string         // stable, for reports: e.g. "api-key-env"
+	Level  Level          //
+	Vendor adapter.Vendor // the vendor it concerns, or ""
+	// Path is the absolute path the finding is about, or "". It is kept
+	// out of Message so each output can show it its own way (Text,
+	// ReportText).
+	Path string
+	// Message is aggy's own text: no secret, env value, or path.
+	Message string
+	// Detail is free text from a CLI or the system, such as an error,
+	// which may hold paths and names; a report leaves it out.
+	Detail string
+}
+
+// Text is the finding for the person: "<path>: <message>: <detail>",
+// with the home directory shown as ~. It may hold CLI text: print it
+// through termsafe.
+func (f Finding) Text(home string) string {
+	s := f.Message
+	if f.Path != "" {
+		s = ShowPath(f.Path, home) + ": " + s
+	}
+	if f.Detail != "" {
+		s += ": " + f.Detail
+	}
+	return s
+}
+
+// ReportText is the finding for a public report: the path as ReportPath
+// shows it, the message, and no detail.
+func (f Finding) ReportText(home string) string {
+	s := f.Message
+	if f.Path != "" {
+		s = ReportPath(f.Path, home) + ": " + s
+	}
+	if f.Detail != "" {
+		s += " (details left out of the report)"
+	}
+	return s
+}
+
+// ReportPath shows p for a public report: under home as ~/..., anywhere
+// else as <path>/<base name>, since a path outside home can hold a user
+// or company name (/mnt/c/Users/John Doe/..., /Volumes/Acme Corp/...).
+func ReportPath(p, home string) string {
+	if s := ShowPath(p, home); s != p {
+		return s
+	}
+	return "<path>/" + filepath.Base(p)
 }
 
 // Finding codes. Each is stable, for reports and issues.
