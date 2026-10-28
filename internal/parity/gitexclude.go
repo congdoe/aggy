@@ -34,6 +34,11 @@ const maxGitFile = 4 << 10
 // The result is <common dir>/info/exclude. The info directory may not
 // exist. GIT_DIR and GIT_COMMON_DIR in the environment are not
 // consulted.
+//
+// A .git file can name any directory, so the git dir must hold a HEAD
+// file and the common dir a HEAD file and an objects directory, and
+// neither info nor info/exclude may be a symlink. Otherwise it is an
+// error and nothing is planned.
 func GitExcludePath(root string) (string, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
@@ -71,6 +76,9 @@ func GitExcludePath(root string) (string, error) {
 	default:
 		return "", fmt.Errorf("parity: %s is not a directory or a gitdir file", dotgit)
 	}
+	if err := looksLikeGitDir(gitDir, false); err != nil {
+		return "", err
+	}
 	common := gitDir
 	b, err := safefs.ReadFileLimit(filepath.Join(gitDir, "commondir"), maxGitFile)
 	switch {
@@ -81,7 +89,57 @@ func GitExcludePath(root string) (string, error) {
 	case !errors.Is(err, fs.ErrNotExist):
 		return "", err
 	}
-	return filepath.Join(common, "info", "exclude"), nil
+	if err := looksLikeGitDir(common, true); err != nil {
+		return "", err
+	}
+	// Neither info nor the exclude file may be a symlink: the patch must
+	// change the repo's own exclude file, never a file a link points at.
+	info := filepath.Join(common, "info")
+	exclude := filepath.Join(info, "exclude")
+	if fi, err := safefs.Lstat(info); err == nil && !fi.IsDir() {
+		return "", fmt.Errorf("parity: %s is not a directory (a symlink is refused)", info)
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	if fi, err := safefs.Lstat(exclude); err == nil && !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("parity: %s is not a regular file (a symlink is refused)", exclude)
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	return exclude, nil
+}
+
+// looksLikeGitDir refuses a directory that is not a git dir: it must hold
+// a regular HEAD file and, for the common dir, an objects directory. A
+// crafted .git file can name any directory, such as ~/.ssh or the home
+// directory, and aggy must not create info/exclude there.
+func looksLikeGitDir(dir string, common bool) error {
+	notGit := func(why string) error {
+		return fmt.Errorf("parity: %s does not look like a git dir: %s", dir, why)
+	}
+	fi, err := safefs.Lstat(dir)
+	if err != nil {
+		return notGit(err.Error())
+	}
+	if !fi.IsDir() {
+		// A .git symlink was already resolved to a directory; a git dir
+		// named by gitdir: or commondir must be a real directory.
+		if fi.Mode()&fs.ModeSymlink == 0 {
+			return notGit("not a directory")
+		}
+		if fi, err = safefs.Stat(dir); err != nil || !fi.IsDir() {
+			return notGit("not a directory")
+		}
+	}
+	if fi, err := safefs.Lstat(filepath.Join(dir, "HEAD")); err != nil || !fi.Mode().IsRegular() {
+		return notGit("no HEAD file")
+	}
+	if common {
+		if fi, err := safefs.Lstat(filepath.Join(dir, "objects")); err != nil || !fi.IsDir() {
+			return notGit("no objects directory")
+		}
+	}
+	return nil
 }
 
 func firstLine(b []byte) string {

@@ -21,6 +21,17 @@ func must(t *testing.T, err error) {
 	}
 }
 
+// gitDir makes dir look like a git dir: HEAD, and objects/ for a common
+// dir.
+func gitDir(t *testing.T, dir string, common bool) {
+	t.Helper()
+	must(t, os.MkdirAll(dir, 0o755))
+	must(t, os.WriteFile(filepath.Join(dir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644))
+	if common {
+		must(t, os.MkdirAll(filepath.Join(dir, "objects"), 0o755))
+	}
+}
+
 func isolate(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -71,18 +82,18 @@ func TestGitExcludePath(t *testing.T) {
 	base := t.TempDir()
 	// A plain repo.
 	main := filepath.Join(base, "main")
-	must(t, os.MkdirAll(filepath.Join(main, ".git"), 0o755))
+	gitDir(t, filepath.Join(main, ".git"), true)
 	// A linked worktree: .git is a file, and the worktree's git dir names
 	// the common dir.
 	wtGit := filepath.Join(main, ".git", "worktrees", "wt")
-	must(t, os.MkdirAll(wtGit, 0o755))
+	gitDir(t, wtGit, false)
 	must(t, os.WriteFile(filepath.Join(wtGit, "commondir"), []byte("../..\n"), 0o644))
 	wt := filepath.Join(base, "wt")
 	must(t, os.MkdirAll(wt, 0o755))
 	must(t, os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+wtGit+"\r\n"), 0o644))
 	// A submodule with a relative gitdir and no commondir.
 	modGit := filepath.Join(main, ".git", "modules", "sub")
-	must(t, os.MkdirAll(modGit, 0o755))
+	gitDir(t, modGit, true)
 	sub := filepath.Join(main, "sub")
 	must(t, os.MkdirAll(sub, 0o755))
 	must(t, os.WriteFile(filepath.Join(sub, ".git"), []byte("gitdir: ../.git/modules/sub\n"), 0o644))
@@ -120,7 +131,7 @@ func TestGitExcludeThroughManifest(t *testing.T) {
 	isolate(t)
 	ctx := context.Background()
 	repo := t.TempDir()
-	must(t, os.MkdirAll(filepath.Join(repo, ".git"), 0o755))
+	gitDir(t, filepath.Join(repo, ".git"), true)
 	s, err := store.OpenDefault(ctx)
 	must(t, err)
 	defer func() { _ = s.Close() }()
@@ -145,5 +156,52 @@ func TestGitExcludeThroughManifest(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(repo, ".git", "info")); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("info dir left behind: %v", err)
+	}
+}
+
+// TestGitExcludeRefusesCraftedGitDirs (PR #6 finding 6): a crafted .git
+// cannot make aggy append to ~/.bashrc or create info/exclude in ~/.ssh
+// or ~/.codex. On a8b4c37 all three were planned.
+func TestGitExcludeRefusesCraftedGitDirs(t *testing.T) {
+	isolate(t)
+	h := os.Getenv("HOME")
+	must(t, os.MkdirAll(filepath.Join(h, ".ssh"), 0o700))
+	must(t, os.MkdirAll(filepath.Join(h, ".codex"), 0o700))
+	bashrc := filepath.Join(h, ".bashrc")
+	must(t, os.WriteFile(bashrc, []byte("alias ll='ls -l'\n"), 0o644))
+	base := t.TempDir()
+	repo := func(name, dotgit string) string {
+		r := filepath.Join(base, name)
+		must(t, os.MkdirAll(r, 0o755))
+		must(t, os.WriteFile(filepath.Join(r, ".git"), []byte("gitdir: "+dotgit+"\n"), 0o644))
+		return r
+	}
+	// info is a symlink to HOME, so info/exclude would be ~/exclude; and
+	// a git dir whose info/exclude is a symlink to ~/.bashrc.
+	linkedInfo := filepath.Join(base, "linkedinfo")
+	gitDir(t, linkedInfo, true)
+	must(t, os.Symlink(h, filepath.Join(linkedInfo, "info")))
+	linkedExclude := filepath.Join(base, "linkedexclude")
+	gitDir(t, linkedExclude, true)
+	must(t, os.MkdirAll(filepath.Join(linkedExclude, "info"), 0o755))
+	must(t, os.Symlink(bashrc, filepath.Join(linkedExclude, "info", "exclude")))
+	for _, root := range []string{
+		repo("ssh", filepath.Join(h, ".ssh")),
+		repo("codex", filepath.Join(h, ".codex")),
+		repo("home", h),
+		repo("li", linkedInfo),
+		repo("le", linkedExclude),
+	} {
+		if p, err := GitExcludePatch(root); err == nil {
+			t.Errorf("GitExcludePatch(%s) = %s, want a refusal", root, p.File)
+		}
+	}
+	for _, p := range []string{filepath.Join(h, ".ssh", "info"), filepath.Join(h, ".codex", "info")} {
+		if _, err := os.Lstat(p); err == nil {
+			t.Errorf("%s was created", p)
+		}
+	}
+	if b, _ := os.ReadFile(bashrc); string(b) != "alias ll='ls -l'\n" {
+		t.Errorf(".bashrc = %q", b)
 	}
 }
