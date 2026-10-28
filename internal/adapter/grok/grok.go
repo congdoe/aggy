@@ -76,8 +76,9 @@ var (
 	// ImageTools is image generation. image_gen takes only a prompt and
 	// an aspect ratio (grok-build 2bdd1d6a, image_gen/mod.rs ImageGenInput).
 	ImageTools = []string{"image_gen"}
-	// TODO(T6649): a live check that image_gen alone, with these denied,
-	// leaves the child no tool that reads a local path.
+	// That image_gen alone, with these denied, leaves the child no tool
+	// that reads a local path is checked live by test/smoke/smoke.sh
+	// (grok-image-tool-list); not yet recorded in docs/verification.md.
 	//
 	// FileTools read a local file at any absolute path the model names
 	// (tokio::fs::read, no cwd check) and upload it to xAI: image_edit

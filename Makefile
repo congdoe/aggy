@@ -9,7 +9,7 @@ GOLANGCI_LINT ?= golangci-lint
 GORELEASER_VERSION := v2.19.0
 GORELEASER ?= goreleaser
 
-.PHONY: build test vet lint nocgo noasm lint-install snapshot release-check
+.PHONY: build test vet lint nocgo noasm lint-install snapshot release-check smoke
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/aggy ./cmd/aggy
@@ -51,3 +51,8 @@ snapshot:
 
 release-check:
 	$(GORELEASER) check
+
+# Opt-in live checks against the real vendor CLIs; they spend quota. The
+# script refuses to run unless AGGY_SMOKE=1. Never part of test or CI.
+smoke:
+	test/smoke/smoke.sh

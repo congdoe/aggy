@@ -299,7 +299,8 @@ rely on folder trust: a Grok review is refused, and Grok passed over,
 when the review root holds any of these files or dirs except the
 instruction and skill ones, which are prompt text
 (`internal/borrow/grok_trust.go`). Grok 1.0.70's folder-trust behaviour
-is unverified; the live check is TODO(T6649).
+is unverified; `test/smoke/smoke.sh` (`grok-review-untrusted`) runs the
+live check, not yet recorded here.
 
 Grok's CLI parses its flags with clap (`xai-grok-pager/src/app/cli.rs:2`),
 so its rejection lines have clap's form.
@@ -490,7 +491,8 @@ relies on these:
 
 Source-verified against grok-build `2bdd1d6a` (see Method; possibly
 newer than the tested grok 1.0.70). Paths below are under
-`https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-tools/src/implementations/grok_build`. Not run live (TODO(T6649)).
+`https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-tools/src/implementations/grok_build`. Not run live yet; `test/smoke/smoke.sh` runs the video path
+(`video-borrow-grok`) and the image tool list (`grok-image-tool-list`).
 
 | Tool | Takes a local path? | Evidence |
 | --- | --- | --- |
@@ -596,7 +598,8 @@ does not set it yet (TODO(T6673)).
    re-enable Codex research (open: the existence oracle and the readable
    `~/.codex`).
 6. Greedy `codex exec -i a.png -` without `--`.
-7. Grok 1.0.70 folder trust in a headless review (TODO(T6649)): a scratch
+7. Grok 1.0.70 folder trust in a headless review (`test/smoke/smoke.sh`,
+   `grok-review-untrusted`, not yet run): a scratch
    repo whose `.claude/settings.json` and `.grok/hooks` hold SessionStart
    and PreToolUse hooks that touch a marker, never trusted, run with
    aggy's exact Grok review argv; the marker must stay absent.
