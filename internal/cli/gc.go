@@ -249,10 +249,11 @@ func planGC(ctx context.Context, s *store.Store, g *gitWorktrees, stateDir strin
 }
 
 // planWorktrees adds the edit worktrees to remove: accepted ones, a
-// rejected one whose removal was cut short, and pending ones whose
-// borrow ended over r.pendingWorktree ago. Each must be one aggy made
-// (gitWorktrees.owned), not a symlink, with its borrow finished and its
-// lease free.
+// rejected one whose removal was cut short, pending ones whose borrow
+// ended over r.pendingWorktree ago, and leftovers (a removal claimed in
+// the store whose directory is still there, after a crash). Each must be
+// one aggy made (gitWorktrees.owned), not a symlink, with its borrow
+// finished and its lease free, and is checked again before removal.
 func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktrees, r gcRetention, now time.Time) error {
 	wts, err := s.GCWorktrees(ctx)
 	if err != nil {
@@ -260,13 +261,18 @@ func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktre
 	}
 	for _, w := range wts {
 		wt, id := w.Worktree, w.BorrowID
+		leftover := !wt.Removed.IsZero()
+		fi, err := safefs.Lstat(wt.Path)
 		switch {
+		case leftover && errors.Is(err, fs.ErrNotExist):
+			continue // removed
 		case w.Running:
 			p.skip("worktree of borrow %s: the borrow is still running", id)
 			continue
 		case w.Held:
 			p.skip("worktree of borrow %s: its lease is held by a running aggy", id)
 			continue
+		case leftover:
 		case wt.State == store.WorktreePending && now.Sub(w.Ended) < r.pendingWorktree:
 			continue // waiting for accept or reject
 		case wt.State != store.WorktreePending && wt.State != store.WorktreeAccepted && wt.State != store.WorktreeRejected:
@@ -276,7 +282,6 @@ func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktre
 			p.skip("worktree of borrow %s: %v", id, err)
 			continue
 		}
-		fi, err := safefs.Lstat(wt.Path)
 		var size int64
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
@@ -289,12 +294,38 @@ func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktre
 		default:
 			size = dirSize(wt.Path)
 		}
-		p.items = append(p.items, gcItem{
-			kind:   "worktree",
-			what:   fmt.Sprintf("%s (%s, branch %s)", wt.Path, wt.State, wt.Branch),
-			bytes:  size,
-			remove: func(ctx context.Context) error { return discardEdit(ctx, s, g, id, wt, now) },
-		})
+		what := fmt.Sprintf("%s (%s, branch %s)", wt.Path, wt.State, wt.Branch)
+		if leftover {
+			what = fmt.Sprintf("%s (left by a removal cut short, branch %s)", wt.Path, wt.Branch)
+		}
+		p.items = append(p.items, gcItem{kind: "worktree", what: what, bytes: size, remove: func(ctx context.Context) error {
+			if err := unchanged(ctx, s, w); err != nil {
+				return err
+			}
+			if leftover {
+				return g.Remove(ctx, wt) // the removal is claimed already
+			}
+			return discardEdit(ctx, s, g, id, wt, now)
+		}})
+	}
+	return nil
+}
+
+// unchanged reads w's record again just before its removal, since the
+// person may have taken a while to answer: a borrow running again, a
+// lease taken (a resumed child), or a change of state or claim since the
+// plan skips it.
+func unchanged(ctx context.Context, s *store.Store, w store.GCWorktree) error {
+	cur, err := s.GCWorktree(ctx, w.BorrowID)
+	switch {
+	case err != nil:
+		return err
+	case cur.Running:
+		return errors.New("skipped: its borrow is running")
+	case cur.Held:
+		return errors.New("skipped: its lease was taken since (a resumed child?)")
+	case cur.Worktree.State != w.Worktree.State || !cur.Worktree.Removed.Equal(w.Worktree.Removed):
+		return errors.New("skipped: it changed since")
 	}
 	return nil
 }
