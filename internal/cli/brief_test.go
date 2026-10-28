@@ -47,6 +47,7 @@ func TestBriefShow(t *testing.T) {
 		{[]string{"--show", "--from", "gpt", "--session", id}, 2},                    // bad vendor
 		{[]string{"--show", "--from", "claude", "--session", "-x"}, 2},               // bad id
 		{[]string{"--show", "--from", "claude", "--session", id, "--to", "grok"}, 1}, // not allowed
+		{[]string{"--show", "--from", "claude", "--session", id, "--turns", "100000"}, 2},
 	} {
 		out.Reset()
 		errb.Reset()
