@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -133,6 +134,16 @@ func describe(e store.Event) string {
 		s := str(d, "kind") + " on " + withModel(str(d, "vendor"), str(d, "model"))
 		if o := str(d, "outcome"); o != "" {
 			s += ": " + o
+		}
+		var extra []string
+		if ms, ok := d["ms"].(float64); ok {
+			extra = append(extra, (time.Duration(ms) * time.Millisecond).Round(time.Second).String())
+		}
+		if tok, ok := d["tokens"].(float64); ok && tok > 0 {
+			extra = append(extra, fmt.Sprintf("%.0f tokens", tok))
+		}
+		if len(extra) > 0 {
+			s += " (" + strings.Join(extra, ", ") + ")"
 		}
 		return s
 	case store.EventFiles:

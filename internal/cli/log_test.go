@@ -99,3 +99,22 @@ func TestLog(t *testing.T) {
 		})
 	}
 }
+
+// TestDescribeBorrow (T6630): a borrow event shows its time and tokens.
+func TestDescribeBorrow(t *testing.T) {
+	tests := []struct {
+		detail map[string]any
+		want   string
+	}{
+		{map[string]any{"kind": "news", "vendor": "grok", "model": "grok-4.7", "outcome": "ok", "ms": float64(42400), "tokens": float64(150)},
+			"news on grok (grok-4.7): ok (42s, 150 tokens)"},
+		{map[string]any{"kind": "image", "vendor": "codex", "outcome": "timeout", "ms": float64(300000), "tokens": float64(0)},
+			"image on codex: timeout (5m0s)"},
+		{map[string]any{"kind": "review", "vendor": "claude"}, "review on claude"},
+	}
+	for _, tt := range tests {
+		if got := describe(store.Event{Type: store.EventBorrow, Detail: tt.detail}); got != tt.want {
+			t.Errorf("describe = %q, want %q", got, tt.want)
+		}
+	}
+}
