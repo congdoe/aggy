@@ -8,6 +8,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/fakecli"
+	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
 )
 
@@ -100,19 +101,26 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 	h := fakecli.NewHarness(t, fakecli.Build(t))
 	brief := filepath.Join(h.Cwd, "brief.md")
 	a := New()
+	alt := []string{probe.CapNoAltScreen}
 	tests := []struct {
 		name string
+		caps []string
 		req  adapter.InteractiveRequest
 		want []string
 	}{
-		{"new", adapter.InteractiveRequest{}, []string{"--no-alt-screen"}},
-		{"new with a brief", adapter.InteractiveRequest{BriefFile: brief}, []string{"--no-alt-screen", adapter.BriefPrompt(brief)}},
-		{"resume", adapter.InteractiveRequest{Resume: tid}, []string{"resume", "--no-alt-screen", tid}},
+		{"new", alt, adapter.InteractiveRequest{}, []string{"--no-alt-screen"}},
+		{"new with a brief", alt, adapter.InteractiveRequest{BriefFile: brief}, []string{"--no-alt-screen", adapter.BriefPrompt(brief)}},
+		{"resume", alt, adapter.InteractiveRequest{Resume: tid}, []string{"resume", "--no-alt-screen", tid}},
+		// --no-alt-screen is not verified for Codex: without the probe
+		// finding it in help, it is left out.
+		{"new, help lacks the flag", nil, adapter.InteractiveRequest{}, nil},
+		{"resume, help lacks the flag", nil, adapter.InteractiveRequest{Resume: tid}, []string{"resume", tid}},
+		{"other caps only", []string{probe.CapConfigOverride}, adapter.InteractiveRequest{BriefFile: brief}, []string{adapter.BriefPrompt(brief)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.req.Cwd = h.Cwd
-			c, err := a.Interactive(tt.req)
+			c, err := Adapter{Caps: tt.caps}.Interactive(tt.req)
 			if err != nil {
 				t.Fatal(err)
 			}
