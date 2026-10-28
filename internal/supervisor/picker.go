@@ -32,6 +32,8 @@ type picker struct {
 	// waiting is a picked switch waiting for the turn end, shown in the
 	// list; Esc there cancels it.
 	waiting adapter.Vendor
+	// checking: a check of waiting (the policy probe) is still running.
+	checking bool
 	// confirm is the vendor a confirmation is for; lines explain it.
 	confirm adapter.Vendor
 	note    bool
@@ -67,6 +69,9 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 		}
 		if p.waiting != "" {
 			lines = append(lines, "", fmt.Sprintf("Switching to %s when this turn ends; Esc cancels it, picking it again says no turn is running.", p.waiting))
+			if p.checking {
+				lines = append(lines, fmt.Sprintf("Checking that %s can get the safety policy...", p.waiting))
+			}
 		}
 		lines = append(lines, "", "Number or Enter to switch at the turn end, Esc to go back.")
 	}
