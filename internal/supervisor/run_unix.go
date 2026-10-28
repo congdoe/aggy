@@ -80,9 +80,9 @@ func Run(o Options) (int, error) {
 	s.goSafe(func() { s.copyOut(); close(outDone) })
 	input := make(chan []byte)
 	s.goSafe(func() { s.readIn(input) })
-	toChild := make(chan []byte, 64)
-	s.goSafe(func() { s.writeChild(toChild) })
-	defer close(toChild)
+	s.toChild = newByteQueue(maxQueued)
+	s.goSafe(s.writeChild)
+	defer s.toChild.close()
 	waits := make(chan waitResult, 1)
 	s.goSafe(func() { s.wait(waits) })
 
@@ -122,7 +122,7 @@ func Run(o Options) (int, error) {
 				case ev.press && pending != nil:
 					// A double press: the CLI gets one switch key.
 					pending = nil
-					toChild <- ev.data
+					s.toChild.push(ev.data)
 				case ev.press:
 					pending = time.After(double)
 				case pending != nil:
@@ -132,7 +132,7 @@ func Run(o Options) (int, error) {
 					s.openPicker()
 					s.pickerInput(ev.data)
 				default:
-					toChild <- ev.data
+					s.toChild.push(ev.data)
 				}
 			}
 		case <-pending:
@@ -180,6 +180,10 @@ type session struct {
 	outMu sync.Mutex
 	pk    *picker
 	open  bool // the picker is on screen, holding outMu
+	// toChild holds input for the CLI. The main loop only ever pushes,
+	// which never blocks, so a CLI that stops reading cannot stall signal
+	// handling, the picker, or the terminal-closed check.
+	toChild *byteQueue
 }
 
 // openPicker pauses the CLI's output and draws the picker. Input goes to
@@ -259,10 +263,13 @@ func (s *session) readIn(ch chan<- []byte) {
 	}
 }
 
-// writeChild writes to the CLI off the main loop, so a CLI that is not
-// reading (or is stopped) never blocks signal handling.
-func (s *session) writeChild(ch <-chan []byte) {
-	for b := range ch {
+// writeChild writes queued input to the CLI, off the main loop.
+func (s *session) writeChild() {
+	for {
+		b, ok := s.toChild.pop()
+		if !ok {
+			return
+		}
 		_, _ = s.child.Write(b)
 	}
 }
