@@ -18,6 +18,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/congdoe/aggy/internal/redact"
 	"github.com/congdoe/aggy/internal/safefs"
 )
 
@@ -63,24 +64,8 @@ var (
 	dashHomeRE = regexp.MustCompile(`(^|[/"'\s=:])-(?:Users|home)-[A-Za-z0-9._]+`)
 	emailRE    = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`)
 	// tokenRE matches token-shaped strings.
-	tokenRE = regexp.MustCompile(strings.Join([]string{
-		`\bsk-[A-Za-z0-9_-]{16,}`,                                            // OpenAI and Anthropic keys
-		`\bxai-[A-Za-z0-9_-]{16,}`,                                           // xAI keys
-		`\bgh[pousr]_[A-Za-z0-9]{20,}`,                                       // GitHub tokens
-		`\bgithub_pat_[A-Za-z0-9_]{20,}`,                                     // GitHub fine-grained tokens
-		`\bxox[abprs]-[A-Za-z0-9-]{10,}`,                                     // Slack tokens
-		`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`,                                      // AWS access key ids
-		`(?i)aws_?secret_?access_?key["']?\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}`, // AWS secret keys
-		`\bAIza[0-9A-Za-z_-]{35}`,                                            // Google API keys
-		`\bya29\.[0-9A-Za-z_-]{10,}`,                                         // Google OAuth tokens
-		`\b[rs]k_(?:live|test)_[0-9A-Za-z]{10,}`,                             // Stripe keys
-		`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`,                              // PEM private keys
-		`\beyJ[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]*`,          // JWTs, signed or not
-		`(?i)\bauthorization\s*:\s*basic\s+[A-Za-z0-9+/=]{6,}`,               // HTTP basic auth
-		`(?i)\bbearer\s+[A-Za-z0-9._~+/-]{16,}=*`,                            // bearer tokens
-		`(?i)["']?\b(?:access_token|refresh_token|id_token|api_key|apikey|secret|password|auth_token)["']?\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{16,}`,
-	}, "|"))
-	uuidRE = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
+	tokenRE = redact.Token
+	uuidRE  = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
 	// exampleEmail is a documentation address, never personal.
 	exampleEmail = regexp.MustCompile(`(?i)@(?:[a-z0-9-]+\.)*example\.(?:com|org|net)$`)
 )
