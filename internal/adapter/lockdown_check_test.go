@@ -22,8 +22,14 @@ func TestCheckLockdownFormats(t *testing.T) {
 		{"clap invalid value", Codex, 2, "error: invalid value 'read-only' for '--sandbox <SANDBOX_MODE>'\n", "", true},
 		{"codex strict config", Codex, 1, "Error: unknown configuration field `features.shell_tool` in -c/--config override\n", "", true},
 		{"rejection on stdout", Codex, 2, "", "error: unexpected argument '--disable' found\n", true},
-		{"grok, commander form", Grok, 1, "error: unknown option '--no-subagents'\n", "", true},
 		{"grok, clap form", Grok, 2, "error: unexpected argument '--no-subagents' found\n", "", true},
+		{"grok, clap invalid value", Grok, 2, "error: invalid value 'yolo' for '--permission-mode <MODE>'\n", "", true},
+		// C17-6: Grok is clap, and the Codex config message is anchored
+		// and read on stderr only.
+		{"grok, commander form", Grok, 1, "error: unknown option '--no-subagents'\n", "", false},
+		{"codex config message quoted", Codex, 1, "turn failed: unknown configuration field `x` in -c/--config override\n", "", false},
+		{"codex config message on stdout", Codex, 1, "", "unknown configuration field `x` in -c/--config override\n", false},
+		{"codex bare config message", Codex, 1, "unknown configuration field `features.x` in -c/--config override\n", "", true},
 		{"unrelated invalid value", Codex, 1, "stream error: invalid value in response body\n", "", false},
 		{"unrelated unknown option text", Claude, 1, "API Error: the model said unknown option '--x'\n", "", false},
 		{"a model's reply on stdout", Claude, 1, "", `{"result":"error: unknown option is a phrase"}`, false},

@@ -211,27 +211,24 @@ var (
 		regexp.MustCompile(`^error: unknown option '[^']+'`),
 		regexp.MustCompile(`^error: option '[^']+' argument '[^']*' is invalid\.`),
 	}
-	// clap's unknown argument and invalid value (Codex is a clap CLI).
+	// clap's unknown argument and invalid value (Codex and Grok are clap
+	// CLIs; Grok: grok-build 2bdd1d6, xai-grok-pager/src/app/cli.rs:2).
 	clapRejected = []*regexp.Regexp{
 		regexp.MustCompile(`^error: unexpected argument '[^']+' found`),
 		regexp.MustCompile(`^error: invalid value '[^']*' for '[^']+'`),
 	}
 	// Codex's --strict-config message for a feature it does not know
-	// (config/src/loader/mod.rs at 6aaac69), with any prefix codex adds.
-	codexUnknownField = regexp.MustCompile("unknown configuration field `[^`]+` in -c/--config override")
+	// (config/src/loader/mod.rs at 6aaac69), at the start of a stderr
+	// line, bare or after an "Error: " prefix.
+	codexUnknownField = regexp.MustCompile("^(?:[Ee]rror: )?unknown configuration field `[^`]+` in -c/--config override")
 )
 
 // rejected returns the formats vendor v prints for a flag it refuses.
-// Grok's parser is not recorded (unverified), so it takes both the
-// commander and the clap forms.
 func rejected(v Vendor) []*regexp.Regexp {
-	switch v {
-	case Claude:
+	if v == Claude {
 		return commanderRejected
-	case Codex:
-		return append(slices.Clone(clapRejected), codexUnknownField)
 	}
-	return slices.Concat(commanderRejected, clapRejected)
+	return clapRejected
 }
 
 // CheckLockdown returns an error matching ErrLockdownRejected when a run
@@ -243,8 +240,12 @@ func CheckLockdown(v Vendor, out Output) error {
 	if out.ExitCode == 0 {
 		return nil
 	}
-	pats := rejected(v)
-	for _, stream := range [][]byte{out.Stderr, out.Stdout} {
+	for i, stream := range [][]byte{out.Stderr, out.Stdout} {
+		pats := rejected(v)
+		if v == Codex && i == 0 {
+			// The --strict-config message goes to stderr only.
+			pats = append(slices.Clone(pats), codexUnknownField)
+		}
 		for _, line := range strings.Split(string(stream), "\n") {
 			line = strings.TrimSpace(line)
 			for _, re := range pats {

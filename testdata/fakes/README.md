@@ -7,7 +7,7 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 ## Rules
 
 - A fake refuses to run (exit 97) when `HOME` is unset, relative, or the real user's home, or when any vendor home (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`, else `$HOME/.<vendor>`) is relative or inside the real home. Paths are compared by name, after resolving symlinks and case-insensitively on darwin, and by file identity: every existing ancestor of each candidate is compared with `os.SameFile` against the real home and the real `~/.claude`, `~/.codex`, and `~/.grok`, which catches spellings such as macOS's `/System/Volumes/Data` firmlink or a case-folded `ſ`. Tests set `HOME` to a temp dir and clear or set the three vendor variables.
-- It accepts only the flags recorded in [docs/adapters.md](../../docs/adapters.md). Any other flag fails with exit 2 and the CLI's own message (commander's `error: unknown option '<flag>'` for Claude and Grok, clap's `error: unexpected argument '<flag>' found` for Codex; Grok's form is unverified), so an adapter that invents a flag fails its test. A scenario can allow more with `extra_flags` and `extra_switches`.
+- It accepts only the flags recorded in [docs/adapters.md](../../docs/adapters.md). Any other flag fails with exit 2 and the CLI's own message (commander's `error: unknown option '<flag>'` for Claude, clap's `error: unexpected argument '<flag>' found` for Codex and Grok), so an adapter that invents a flag fails its test. A scenario can allow more with `extra_flags` and `extra_switches`.
 - It never reads anything except the scenario file and its stdin.
 
 ## Environment
