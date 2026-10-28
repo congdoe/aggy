@@ -225,6 +225,8 @@ the code until a live check settles them.
 ## Testing an adapter
 
 CI has no vendor logins. Test adapters against the fake CLIs in
-`testdata/fakes` and the recorded output in `testdata/fixtures`. Scrub
-fixtures of personal content before you commit them. Tests that touch home
+`testdata/fakes` and the recorded output in `testdata/fixtures`. Record a
+fixture with `aggy dev capture` and clean it with `aggy dev scrub`
+(see `testdata/fixtures/README.md`); the fixture check in `make test`
+fails on any home path, email, or token left in one. Tests that touch home
 paths set `HOME` to a temp dir.
