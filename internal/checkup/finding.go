@@ -104,9 +104,10 @@ const (
 // apiKeys maps each API-key variable to the vendor CLI it can switch to
 // API billing.
 // ANTHROPIC_API_KEY, OPENAI_API_KEY, and XAI_API_KEY are in
-// docs/design.md section 2. ANTHROPIC_AUTH_TOKEN and CODEX_API_KEY are
-// unverified (not recorded in docs/adapters.md): checked anyway, since a
-// false warning costs less than a missed API bill.
+// docs/design.md section 2. CODEX_API_KEY is source-verified (codex
+// rust-v0.164.0: codex exec prefers it over any stored login, and it
+// bills the API). ANTHROPIC_AUTH_TOKEN is in Claude Code's docs. See the
+// table in docs/adapters.md.
 var apiKeys = []struct {
 	name   string
 	vendor adapter.Vendor
@@ -119,8 +120,7 @@ var apiKeys = []struct {
 }
 
 // cloudVars switch Claude Code to a cloud provider's API, billed to that
-// account instead of the subscription. Unverified (not recorded in
-// docs/adapters.md).
+// account instead of the subscription (Claude Code's docs).
 var cloudVars = []struct{ name, provider string }{
 	{"CLAUDE_CODE_USE_BEDROCK", "Amazon Bedrock"},
 	{"CLAUDE_CODE_USE_VERTEX", "Google Vertex AI"},

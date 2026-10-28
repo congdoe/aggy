@@ -358,7 +358,7 @@ func TestSetupRoutes(t *testing.T) {
 	if err := safefs.MkdirAll(filepath.Join(home, ".grok"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := safefs.WriteFile(filepath.Join(home, ".grok", "config.toml"), []byte("[toolset.image_gen]\nenv_key = \""+secret+"\"\n"), 0o600); err != nil {
+	if err := safefs.WriteFile(filepath.Join(home, ".grok", "config.toml"), []byte("[endpoints]\nxai_api_base_url = \""+secret+"\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	w := newFakeWorld(t, fakes)
@@ -371,7 +371,7 @@ func TestSetupRoutes(t *testing.T) {
 	claudePart := out[strings.Index(out, "\nClaude Code\n"):strings.Index(out, "\nCodex\n")]
 	grokPart := out[strings.Index(out, "\nGrok Build\n"):]
 	if !strings.Contains(claudePart, "warning: ANTHROPIC_BASE_URL is set") ||
-		!strings.Contains(grokPart, "warning: ~/.grok/config.toml: toolset.image_gen.env_key is set") {
+		!strings.Contains(grokPart, "warning: ~/.grok/config.toml: endpoints.xai_api_base_url is set") {
 		t.Errorf("output:\n%s", out)
 	}
 	if strings.Contains(out, secret) {
