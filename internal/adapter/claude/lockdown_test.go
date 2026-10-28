@@ -7,13 +7,14 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/fakecli"
+	"github.com/congdoe/aggy/internal/probe"
 )
 
 // TestLockdown (T6621): every headless run needs a run dir holding the
 // empty MCP config, and a CLI that rejects a lockdown flag fails the
 // borrow closed.
 func TestLockdown(t *testing.T) {
-	a := New()
+	a := Adapter{Caps: []string{probe.CapSettingSources}}
 	files, err := a.ChildFiles(adapter.HeadlessRequest{Kind: adapter.Review})
 	if err != nil || len(files) != 1 || files[0].Name != MCPConfigFile {
 		t.Fatalf("ChildFiles = %v, %v", files, err)

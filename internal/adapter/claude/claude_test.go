@@ -9,6 +9,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/fakecli"
+	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
 )
 
@@ -29,10 +30,10 @@ func scenario(t *testing.T, h *fakecli.Harness, name string) string {
 
 func TestHeadlessGoldenArgv(t *testing.T) {
 	h := fakecli.NewHarness(t, fakecli.Build(t))
-	a := New()
+	a := Adapter{Caps: []string{probe.CapSettingSources}}
 	mcp := filepath.Join(h.RunDir, MCPConfigFile)
 	lock := []string{"--strict-mcp-config", "--mcp-config", mcp}
-	review := append([]string{"-p", "--output-format", "json", "--permission-mode", "plan"}, append(lock, "--tools", "Read,Grep,Glob")...)
+	review := append([]string{"-p", "--output-format", "json", "--permission-mode", "plan"}, append(lock, "--tools", "Read,Grep,Glob", "--setting-sources", "user")...)
 	cat := func(parts ...[]string) []string { return slices.Concat(parts...) }
 	tests := []struct {
 		name     string
@@ -47,7 +48,7 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 			cat(review, []string{"--session-id", sid}), ""},
 		{"review resumed with a model", adapter.HeadlessRequest{Kind: adapter.Review, Resume: rid, Model: "opus"},
 			cat([]string{"-p", "--output-format", "json", "--model", "opus", "--permission-mode", "plan"}, lock,
-				[]string{"--tools", "Read,Grep,Glob", "--resume", rid}),
+				[]string{"--tools", "Read,Grep,Glob", "--setting-sources", "user", "--resume", rid}),
 			`{"extra_flags":["--model"]}`},
 	}
 	for _, tt := range tests {
@@ -145,7 +146,7 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 
 func TestParseHeadlessFromScenarios(t *testing.T) {
 	h := fakecli.NewHarness(t, fakecli.Build(t))
-	a := New()
+	a := Adapter{Caps: []string{probe.CapSettingSources}}
 	tests := []struct {
 		scenario  string
 		wantText  string
