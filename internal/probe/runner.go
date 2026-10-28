@@ -30,22 +30,54 @@ var passEnv = []string{
 	"CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME",
 }
 
+// baseOnly lists the variables a command's own Env may not override.
+var baseOnly = []string{"HOME", "PATH", "TMPDIR", "USER", "LOGNAME"}
+
 // forbiddenEnv reports whether a variable must never reach a vendor CLI
-// from aggy: API keys and base URLs that would bill an API key or proxy
-// plan traffic.
+// from aggy, compared case-insensitively: API keys, tokens, and base URLs
+// that would bill an API key or redirect plan traffic, proxies, code
+// injected into the CLI's runtime (NODE_OPTIONS, LD_*, DYLD_*), and
+// Claude Code's provider switches (CLAUDE_CODE_USE_*).
 func forbiddenEnv(key string) bool {
 	k := strings.ToUpper(key)
-	return strings.HasSuffix(k, "_API_KEY") || strings.HasSuffix(k, "_BASE_URL")
+	for _, suffix := range []string{"_API_KEY", "_BASE_URL", "_API_BASE", "_AUTH_TOKEN", "_OAUTH_TOKEN", "_TOKEN", "_PROXY"} {
+		if strings.HasSuffix(k, suffix) {
+			return true
+		}
+	}
+	for _, prefix := range []string{"LD_", "DYLD_", "CLAUDE_CODE_USE_"} {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return k == "NODE_OPTIONS"
+}
+
+// cleanPath drops empty, ".", and relative PATH entries, which would make
+// the CLI's own lookups depend on its working directory.
+func cleanPath(p string) string {
+	var keep []string
+	for _, d := range filepath.SplitList(p) {
+		if d != "" && filepath.IsAbs(d) {
+			keep = append(keep, d)
+		}
+	}
+	return strings.Join(keep, string(filepath.ListSeparator))
 }
 
 // Env builds the scrubbed environment for a probed CLI: the passEnv
-// variables from base, TERM=dumb and NO_COLOR=1, then extra. An extra entry
-// that names an API key or base URL, or is not KEY=value, is an error.
+// variables from base (PATH without empty, ".", or relative entries),
+// TERM=dumb and NO_COLOR=1, then extra. An extra entry that is forbidden
+// (see forbiddenEnv), overrides HOME, PATH, TMPDIR, USER, or LOGNAME, or is
+// not KEY=value, is an error.
 func Env(base, extra []string) ([]string, error) {
 	var env []string
 	for _, kv := range base {
-		k, _, ok := strings.Cut(kv, "=")
+		k, v, ok := strings.Cut(kv, "=")
 		if ok && contains(passEnv, k) {
+			if k == "PATH" {
+				kv = "PATH=" + cleanPath(v)
+			}
 			env = append(env, kv)
 		}
 	}
@@ -57,6 +89,9 @@ func Env(base, extra []string) ([]string, error) {
 		}
 		if forbiddenEnv(k) {
 			return nil, fmt.Errorf("probe: refusing to pass %s to a vendor CLI", k)
+		}
+		if contains(baseOnly, strings.ToUpper(k)) {
+			return nil, fmt.Errorf("probe: a command may not override %s", k)
 		}
 		env = append(env, kv)
 	}
@@ -74,10 +109,12 @@ func contains(list []string, s string) bool {
 
 // ExecRunner returns a Runner that executes exactly cmd.Path, which must be
 // an absolute path: there is no PATH lookup. The process gets no stdin
-// (/dev/null), a scrubbed environment (see Env), cmd.Dir or else the
-// system temp dir as its working directory, and at most timeout to finish. Past
-// it, the process and its group are killed and the error matches
-// ErrTimeout. A non-zero exit is not an error: it is in Output.ExitCode.
+// (/dev/null), a scrubbed environment (see Env), cmd.Dir or else a private
+// empty temp dir (removed afterwards) as its working directory, and at
+// most timeout to finish. Past it, the process and its group are killed
+// and the error matches ErrTimeout; when the caller's ctx ends first, the
+// error is ctx's. A non-zero exit is not an error: it is in
+// Output.ExitCode.
 func ExecRunner(timeout time.Duration) adapter.Runner {
 	return func(ctx context.Context, c adapter.Command) (adapter.Output, error) {
 		if !filepath.IsAbs(c.Path) || filepath.Clean(c.Path) != c.Path {
@@ -93,14 +130,21 @@ func ExecRunner(timeout time.Duration) adapter.Runner {
 		if err != nil {
 			return adapter.Output{}, err
 		}
+		dir := c.Dir
+		if dir == "" {
+			tmp, err := safefs.MkdirTemp("", "aggy-probe-")
+			if err != nil {
+				return adapter.Output{}, err
+			}
+			defer func() { _ = safefs.RemoveAll(tmp) }()
+			dir = tmp
+		}
+		parent := ctx
 		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, c.Path, c.Args...)
 		cmd.Env = env
-		cmd.Dir = c.Dir
-		if cmd.Dir == "" {
-			cmd.Dir = os.TempDir()
-		}
+		cmd.Dir = dir
 		cmd.Stdin = nil // /dev/null
 		stdout := &capped{max: MaxOutput}
 		stderr := &capped{max: MaxOutput}
@@ -109,6 +153,9 @@ func ExecRunner(timeout time.Duration) adapter.Runner {
 		cmd.WaitDelay = time.Second
 		err = cmd.Run()
 		out := adapter.Output{Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes(), ExitCode: cmd.ProcessState.ExitCode()}
+		if perr := parent.Err(); perr != nil {
+			return out, perr
+		}
 		if ctx.Err() != nil {
 			return out, fmt.Errorf("%w: %s after %s", ErrTimeout, filepath.Base(c.Path), timeout)
 		}

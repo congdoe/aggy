@@ -23,6 +23,10 @@ type fixture struct {
 func setup(t *testing.T) fixture {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
+	// The runner passes these to the CLI: never let a real one through.
+	for _, v := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME"} {
+		t.Setenv(v, "")
+	}
 	s, err := store.Open(context.Background(), filepath.Join(t.TempDir(), store.FileName))
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +132,7 @@ func TestProbeDegrades(t *testing.T) {
 	}
 
 	// codex exec --help fails: the exec capabilities are missing, the
-	// rest are kept, and the result is cached.
+	// rest are kept, and the result is not cached (C8).
 	partial := func(_ context.Context, c adapter.Command) (adapter.Output, error) {
 		switch strings.Join(c.Args, " ") {
 		case "--version":
@@ -140,8 +144,11 @@ func TestProbeDegrades(t *testing.T) {
 	}
 	pr.Run = partial
 	p, cached, err := pr.Probe(ctx, adapter.Codex, "/x/codex")
-	if err != nil || cached || !slices.Equal(p.Capabilities, []string{CapHeadless, CapResume}) {
+	if !errors.Is(err, ErrIncomplete) || cached || !slices.Equal(p.Capabilities, []string{CapHeadless}) {
 		t.Errorf("partial = %+v, %v, %v", p, cached, err)
+	}
+	if _, err := f.store.LatestProbe(ctx, "codex", "/x/codex", "0.200.0"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("partial probe was cached: %v", err)
 	}
 
 	// A help run that times out degrades and is not cached.
@@ -166,15 +173,17 @@ func TestParseVersion(t *testing.T) {
 		{"2.1.311 (Claude Code)\n", "2.1.311"},
 		{"codex-cli 0.164.0\n", "0.164.0"},
 		{"grok 1.0.70-beta.2\n", "1.0.70-beta.2"},
-		{"\n  weird build xyz\n", "weird build xyz"},
+		{"v1.2.3\n", "1.2.3"},
 	}
 	for _, tt := range tests {
-		if got, err := ParseVersion([]byte(tt.in)); err != nil || got != tt.want {
+		if got, err := ParseVersion([]byte(tt.in), nil, nil); err != nil || got != tt.want {
 			t.Errorf("ParseVersion(%q) = %q, %v, want %q", tt.in, got, err, tt.want)
 		}
 	}
-	if _, err := ParseVersion([]byte("  \n")); !errors.Is(err, ErrNoVersion) {
-		t.Errorf("empty = %v", err)
+	for _, in := range []string{"  \n", "\n  weird build xyz\n"} {
+		if _, err := ParseVersion([]byte(in), nil, nil); !errors.Is(err, ErrNoVersion) {
+			t.Errorf("ParseVersion(%q) = %v, want ErrNoVersion", in, err)
+		}
 	}
 }
 
