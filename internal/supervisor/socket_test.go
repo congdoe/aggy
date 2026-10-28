@@ -33,7 +33,7 @@ func shortDir(t *testing.T) string {
 
 func listen(t *testing.T, runDir string) *Server {
 	t.Helper()
-	s, err := Listen(runDir, pid, nil)
+	s, err := Listen(runDir, pid, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestSocketRefusesBadSetup(t *testing.T) {
 			if tt.pre != nil {
 				tt.pre(t, run)
 			}
-			s, err := Listen(run, tt.id, nil)
+			s, err := Listen(run, tt.id, nil, nil)
 			if err == nil {
 				_ = s.Close()
 				t.Fatal("Listen succeeded")
@@ -171,7 +171,7 @@ func TestStaleSocketCleanup(t *testing.T) {
 
 	// A live supervisor holds the lock: a second one is refused and the
 	// live socket stays.
-	if s2, err := Listen(run, pid, nil); err == nil {
+	if s2, err := Listen(run, pid, nil, nil); err == nil {
 		_ = s2.Close()
 		t.Fatal("a second supervisor took a live session's socket")
 	} else if !strings.Contains(err.Error(), "another aggy") {
@@ -301,7 +301,7 @@ func TestCloseDoesNotWaitForClients(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s, err := Listen(filepath.Join(shortDir(t), "run"), pid, nil)
+			s, err := Listen(filepath.Join(shortDir(t), "run"), pid, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

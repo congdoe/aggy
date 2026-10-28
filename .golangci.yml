@@ -261,10 +261,17 @@ linters:
       # The supervisor socket, ~/.aggy/run/<parent-id>.sock, needs net: a
       # Unix socket in a 0700 dir that only listens (net.Dial stays
       # banned) and answers only its own uid. Only these files may import
-      # net (and later the hook client, which dials it). Tests dial it.
-      - path: ^(internal/supervisor/(socket(_test)?|peercred_(darwin|linux|other))|test/e2e/supervisor_test)\.go$
+      # net, and the hook client (client_unix.go), which dials it. Tests
+      # dial it.
+      - path: ^(internal/supervisor/(socket(_test)?|client_unix(_test)?|peercred_(darwin|linux|other))|test/e2e/supervisor_test)\.go$
         text: "import 'net' is not allowed"
         linters: [depguard]
+      # aggy hook reaches the supervisor socket with net.DialUnix, after
+      # checking the path is aggy's own socket in its 0700 run directory.
+      # No other dial, anywhere.
+      - path: ^internal/supervisor/client_unix\.go$
+        text: "use of `net\\.DialUnix`"
+        linters: [forbidigo]
       # The socket's peer-uid check: the stdlib has no getpeereid
       # (LOCAL_PEERCRED) on darwin, so golang.org/x/sys/unix, for exactly
       # these calls in these two files.

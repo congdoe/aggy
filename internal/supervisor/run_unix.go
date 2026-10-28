@@ -49,14 +49,13 @@ func Run(o Options) (int, error) {
 	}
 	t := &tty{fd: fd}
 	if o.RunDir != "" {
-		srv, err := Listen(o.RunDir, o.ParentID, t.restore)
+		srv, err := Listen(o.RunDir, o.ParentID, t.restore, o.OnHook)
 		if err != nil {
 			return 1, err
 		}
 		defer func() { _ = srv.Close() }()
 		// Hooks and skills inside the CLI reach aggy through these.
-		o.Command.Env = append(append([]string(nil), o.Command.Env...),
-			"AGGY_SOCKET="+srv.Path(), "AGGY_PARENT="+o.ParentID)
+		o.Command.Env = SocketEnv(o.Command.Env, srv.Path(), o.ParentID)
 	}
 	if err := t.raw(); err != nil {
 		return 1, err
