@@ -310,6 +310,11 @@ var ErrFileTools = fmt.Errorf("needs a media tool that uploads any local image a
 // borrow passes the vendor over rather than run it without the flag.
 var ErrNoCapability = fmt.Errorf("needs a flag this CLI's --help does not list (%w)", ErrUnsupported)
 
+// ErrNoSandbox matches a kind that runs only under the CLI's own sandbox,
+// which this CLI or host cannot apply. It matches ErrNoCapability too.
+// The diagnostic log names it sandbox.missing.
+var ErrNoSandbox = fmt.Errorf("its sandbox is missing: %w", ErrNoCapability)
+
 // ErrUnparsed matches a headless run whose output the adapter could not
 // read. Its HeadlessResult carries ErrUnknown.
 var ErrUnparsed = errors.New("unrecognized headless output")

@@ -21,7 +21,7 @@ import (
 	_ "modernc.org/sqlite" // registers the pure-Go "sqlite" driver
 )
 
-//go:embed migrations/*.sql
+//go:embed migrations/*.sql diagmigrations/*.sql
 var migrationFS embed.FS
 
 // FileName is the database file inside the state directory.
@@ -81,13 +81,19 @@ func OpenDefault(ctx context.Context) (*Store, error) {
 // it creates is 0700; an existing directory keeps its mode. The file is
 // 0600. Every connection runs with busy_timeout, WAL, and foreign_keys on.
 func Open(ctx context.Context, path string) (*Store, error) {
+	return openRW(ctx, path, "migrations")
+}
+
+// openRW opens or creates the database at path, as Open documents, and
+// applies the migrations embedded in dir.
+func openRW(ctx context.Context, path, dir string) (*Store, error) {
 	path, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Dir(path)
-	if _, err := safefs.Stat(dir); errors.Is(err, fs.ErrNotExist) {
-		if err := safefs.MkdirAll(dir, 0o700); err != nil {
+	parent := filepath.Dir(path)
+	if _, err := safefs.Stat(parent); errors.Is(err, fs.ErrNotExist) {
+		if err := safefs.MkdirAll(parent, 0o700); err != nil {
 			return nil, err
 		}
 	} else if err != nil {
@@ -135,7 +141,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 			return nil, err
 		}
 	}
-	if err := s.Migrate(ctx); err != nil {
+	if err := s.migrate(ctx, dir); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -171,8 +177,11 @@ type migration struct {
 
 // migrations returns the embedded files in version order. Each file is
 // named NNNN_description.sql and NNNN is its schema version.
-func migrations() ([]migration, error) {
-	entries, err := migrationFS.ReadDir("migrations")
+func migrations() ([]migration, error) { return migrationsIn("migrations") }
+
+// migrationsIn returns the migrations embedded in dir, in version order.
+func migrationsIn(dir string) ([]migration, error) {
+	entries, err := migrationFS.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +192,7 @@ func migrations() ([]migration, error) {
 		if !ok || err != nil || v <= 0 {
 			return nil, fmt.Errorf("store: bad migration name %q", e.Name())
 		}
-		b, err := migrationFS.ReadFile("migrations/" + e.Name())
+		b, err := migrationFS.ReadFile(dir + "/" + e.Name())
 		if err != nil {
 			return nil, err
 		}
@@ -202,8 +211,10 @@ func migrations() ([]migration, error) {
 // runs in its own write transaction (BEGIN IMMEDIATE) that also bumps the
 // version, so a crash leaves the schema at a whole version and two processes
 // cannot apply the same migration twice. Running it again is a no-op.
-func (s *Store) Migrate(ctx context.Context) error {
-	ms, err := migrations()
+func (s *Store) Migrate(ctx context.Context) error { return s.migrate(ctx, "migrations") }
+
+func (s *Store) migrate(ctx context.Context, dir string) error {
+	ms, err := migrationsIn(dir)
 	if err != nil {
 		return err
 	}

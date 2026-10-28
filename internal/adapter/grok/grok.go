@@ -328,9 +328,9 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 	if sandbox {
 		switch {
 		case !slices.Contains(a.Caps, probe.CapSandbox):
-			return adapter.Command{}, fmt.Errorf("grok: %s runs only under --sandbox strict, which this grok's --help does not list: %w", req.Kind, adapter.ErrNoCapability)
+			return adapter.Command{}, fmt.Errorf("grok: %s runs only under --sandbox strict, which this grok's --help does not list: %w", req.Kind, adapter.ErrNoSandbox)
 		case !slices.Contains(a.Caps, probe.CapKernelSandbox):
-			return adapter.Command{}, fmt.Errorf("grok: %s runs only under Grok's kernel sandbox, which this host cannot apply (macOS, or Linux with Landlock in /sys/kernel/security/lsm): %w", req.Kind, adapter.ErrNoCapability)
+			return adapter.Command{}, fmt.Errorf("grok: %s runs only under Grok's kernel sandbox, which this host cannot apply (macOS, or Linux with Landlock in /sys/kernel/security/lsm): %w", req.Kind, adapter.ErrNoSandbox)
 		}
 	}
 	var denyRules []string

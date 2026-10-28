@@ -75,6 +75,21 @@ func TestParse(t *testing.T) {
 		{name: "gc days too large", text: "[gc]\nclosed_child_days = 3651\n", wantErr: "gc.closed_child_days must be 1 to 3650"},
 		{name: "gc unknown key", text: "[gc]\nresearch_days = 1\n", wantErr: "unknown key gc.research_days"},
 		{
+			name: "log defaults, user config sets it",
+			text: "[log]\nretention_days = 3\nlevel = \"debug\"\n",
+			check: func(t *testing.T, c Config) {
+				if d := Default().Log; d != (Log{RetentionDays: 14, MaxMB: 50, Level: "info"}) {
+					t.Errorf("default log = %+v", d)
+				}
+				if c.Log != (Log{RetentionDays: 3, MaxMB: 50, Level: "debug"}) {
+					t.Errorf("log = %+v", c.Log)
+				}
+			},
+		},
+		{name: "log days below 1", text: "[log]\nretention_days = 0\n", wantErr: "log.retention_days must be 1 to 3650"},
+		{name: "log size too large", text: "[log]\nmax_mb = 10241\n", wantErr: "log.max_mb must be 1 to 10240"},
+		{name: "log level unknown", text: "[log]\nlevel = \"loud\"\n", wantErr: `log.level must be error, warn, info, or debug, got "loud"`},
+		{
 			name: "full proposal example",
 			text: `
 default_vendor = "claude"

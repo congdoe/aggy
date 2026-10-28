@@ -32,7 +32,23 @@ type Config struct {
 	Notify        Notify         `toml:"notify"`
 	Worktree      UserWorktree   `toml:"worktree"`
 	GC            GC             `toml:"gc"`
+	Log           Log            `toml:"log"`
 }
+
+// Log is the diagnostic log's retention and level (docs/logging.md). It
+// is user config only: a repo's .aggy/config.toml has no such table.
+type Log struct {
+	// RetentionDays keeps a record this long; aggy gc prunes older ones.
+	RetentionDays int `toml:"retention_days"`
+	// MaxMB caps diag.db; aggy gc prunes the oldest records past it.
+	MaxMB int `toml:"max_mb"`
+	// Level is the lowest level stored: error, warn, info (the default),
+	// or debug. AGGY_DEBUG=1 stores debug records too.
+	Level string `toml:"level"`
+}
+
+// MaxLogMB bounds log.max_mb.
+const MaxLogMB = 10240
 
 // GC is how long aggy gc keeps what it may remove, in days. It is user
 // config only: a repo's .aggy/config.toml has no such table, so a cloned
@@ -316,6 +332,7 @@ func Default() Config {
 		Switch: Switch{Order: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok}, Key: DefaultSwitchKey},
 		Policy: Policy{Required: true},
 		GC:     GC{PendingWorktreeDays: 30, AcceptedWorktreeDays: 30, ClosedChildDays: 30, InboxDays: 30},
+		Log:    Log{RetentionDays: 14, MaxMB: 50, Level: "info"},
 		Routing: Routing{
 			// TODO(T6638): Codex is left out of news and research on
 			// purpose. Its apply_patch tool cannot be turned off, and its
@@ -448,6 +465,15 @@ func (c Config) Validate() error {
 		if d.n < 1 || d.n > MaxGCDays {
 			return fmt.Errorf("gc.%s must be 1 to %d, got %d", d.key, MaxGCDays, d.n)
 		}
+	}
+	if c.Log.RetentionDays < 1 || c.Log.RetentionDays > MaxGCDays {
+		return fmt.Errorf("log.retention_days must be 1 to %d, got %d", MaxGCDays, c.Log.RetentionDays)
+	}
+	if c.Log.MaxMB < 1 || c.Log.MaxMB > MaxLogMB {
+		return fmt.Errorf("log.max_mb must be 1 to %d, got %d", MaxLogMB, c.Log.MaxMB)
+	}
+	if !slices.Contains([]string{"error", "warn", "info", "debug"}, c.Log.Level) {
+		return fmt.Errorf("log.level must be error, warn, info, or debug, got %q", c.Log.Level)
 	}
 	for _, k := range adapter.Kinds() {
 		r := c.Routing.For(k)

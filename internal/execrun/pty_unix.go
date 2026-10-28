@@ -62,8 +62,11 @@ func StartPTY(c adapter.Command, rows, cols int) (*PTY, error) {
 // ptyExtraNames are the only variables StartPTY may add to the user's
 // session. It is its own list, apart from the borrow allowlist (Env):
 // an on-screen CLI is never marked AGGY_DELEGATED, and a borrow never
-// gets the socket.
-var ptyExtraNames = []string{"AGGY_VENDOR", "AGGY_MODEL", "AGGY_SOCKET", "AGGY_PARENT"}
+// gets the socket. AGGY_TRACE is the diagnostic log's trace id
+// (docs/logging.md), so the hooks and an aggy borrow run from the session
+// record under the flow that started it; one set here replaces an
+// inherited one.
+var ptyExtraNames = []string{"AGGY_VENDOR", "AGGY_MODEL", "AGGY_SOCKET", "AGGY_PARENT", "AGGY_TRACE"}
 
 // PTYEnv is base, without any variable extra sets and without
 // AGGY_VENDOR and AGGY_MODEL (a child's own, never inherited: a stale

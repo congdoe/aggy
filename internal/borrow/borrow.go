@@ -14,6 +14,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 )
@@ -25,13 +26,18 @@ var Kinds = []adapter.Kind{adapter.Image, adapter.Video, adapter.Research, adapt
 // with Delegated=1, and aggy borrow refuses to run under it: one hop.
 const Delegated = "AGGY_DELEGATED"
 
-// childEnv is a child's added environment: Delegated=1, and the vendor
-// and model it runs as (AGGY_VENDOR, AGGY_MODEL when one is set), which
-// the attribution hook writes into a commit's trailers.
-func childEnv(v adapter.Vendor, model string) []string {
+// childEnv is a child's added environment: Delegated=1, the vendor and
+// model it runs as (AGGY_VENDOR, AGGY_MODEL when one is set), which the
+// attribution hook writes into a commit's trailers, and the diagnostic
+// log's trace (AGGY_TRACE, when there is one), so an aggy the child runs
+// records under this borrow's flow.
+func childEnv(v adapter.Vendor, model, trace string) []string {
 	env := []string{Delegated + "=1", "AGGY_VENDOR=" + string(v)}
 	if model != "" {
 		env = append(env, "AGGY_MODEL="+model)
+	}
+	if trace != "" {
+		env = append(env, diag.TraceEnv+"="+trace)
 	}
 	return env
 }
@@ -118,6 +124,8 @@ type Deps struct {
 	ChildDone func()
 	// Worktrees makes an edit child's worktree; nil refuses edit.
 	Worktrees Worktrees
+	// Diag is the diagnostic log; nil logs nothing.
+	Diag *diag.Writer
 }
 
 // Caps are the concurrency limits of design section 7: at most 2 borrows
@@ -236,7 +244,7 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 		return nil, ErrDelegated
 	}
 	if err := req.validate(); err != nil {
-		return nil, err
+		return nil, invalidError{err}
 	}
 	if err := b.checkResume(ctx, req); err != nil {
 		return nil, err
@@ -269,7 +277,7 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 	if req.Vendor != "" {
 		v, err := adapter.ParseVendor(req.Vendor)
 		if err != nil {
-			return nil, fmt.Errorf("--vendor: %w (or %q for research)", err, Both)
+			return nil, invalidError{fmt.Errorf("--vendor: %w (or %q for research)", err, Both)}
 		}
 		rr.Override = v
 	}
@@ -306,6 +314,12 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 			var pre *preStartError
 			if errors.As(err, &pre) {
 				tried = append(tried, Attempt{Vendor: v, Reason: pre.Error()})
+				ev := diag.EvBorrowVendorSkipped
+				if pre.code == diag.CodeNoSandbox && v == adapter.Grok {
+					ev = diag.EvGrokSandboxRefused
+				}
+				b.Diag.Log(ctx, diag.Rec{Event: ev, Code: pre.code, Msg: pre.Error(), Vendor: string(v),
+					Attrs: map[string]any{"kind": string(req.Kind)}})
 				continue
 			}
 			res.Tried = tried
@@ -344,8 +358,11 @@ func (e *NoStartError) Error() string {
 }
 
 // preStartError is a vendor's refusal before anything ran or was
-// recorded: the next candidate may try.
-type preStartError struct{ err error }
+// recorded: the next candidate may try. code is its reason code.
+type preStartError struct {
+	err  error
+	code diag.Code
+}
 
 func (e *preStartError) Error() string { return e.err.Error() }
 func (e *preStartError) Unwrap() error { return e.err }
@@ -412,25 +429,25 @@ func title(task string) string {
 func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, group string) (Result, error) {
 	cli, err := b.Locate(ctx, v)
 	if err != nil {
-		return Result{}, &preStartError{fmt.Errorf("%s: %w", v, err)}
+		return Result{}, &preStartError{fmt.Errorf("%s: %w", v, err), diag.CodeCLIMissing}
 	}
 	a := b.Adapter(v, cli)
 	// The adapter may refuse the kind (ErrUnsupported).
 	if err := Supports(a, req.Kind); err != nil {
-		return Result{}, &preStartError{err}
+		return Result{}, &preStartError{err, adapterCode(err)}
 	}
 	// The lockdown flags were verified on the tested versions only: a
 	// newer CLI may take them differently, so it needs the caller's
 	// say-so.
 	if w := adapter.VersionWarning(a, cli.Version, cli.VersionLine); w != "" && !req.AllowUntested {
-		return Result{}, &preStartError{fmt.Errorf("%s; the borrow lockdown was verified only there, so aggy will not borrow on it (pass --allow-untested to run it anyway)", w)}
+		return Result{}, &preStartError{fmt.Errorf("%s; the borrow lockdown was verified only there, so aggy will not borrow on it (pass --allow-untested to run it anyway)", w), diag.CodeUntested}
 	}
 	if err := grokTrustGate(v, req); err != nil {
-		return Result{}, &preStartError{err}
+		return Result{}, &preStartError{err, diag.CodeUnsupported}
 	}
 	if req.Kind == adapter.Edit {
 		if err := editGate(v); err != nil {
-			return Result{}, &preStartError{err}
+			return Result{}, &preStartError{err, diag.CodeUnsupported}
 		}
 	}
 	budget := b.Config.Budgets.For(req.Kind)
@@ -490,7 +507,7 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 		// The turn limit, where the CLI takes one (Grok's --max-turns;
 		// Codex has none, and Claude's is not recorded).
 		MaxTurns:     budget.Turns,
-		Env:          childEnv(v, model),
+		Env:          childEnv(v, model, b.Diag.Trace()),
 		GuardCommand: b.Guard,
 		RefImages:    refs,
 		// The user's opt-in only; see config.Media.
@@ -502,11 +519,11 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 	cmd, err := a.Headless(hreq)
 	if errors.Is(err, adapter.ErrFileTools) {
 		return Result{}, &preStartError{fmt.Errorf("%w; to allow it, set grok_file_tools = true under [media] in %s (Grok then uploads to xAI any local image a path in the brief or the child's reply names)",
-			err, filepath.Join(b.StateDir, config.FileName))}
+			err, filepath.Join(b.StateDir, config.FileName)), diag.CodeFileTools}
 	}
 	if errors.Is(err, adapter.ErrUnsupported) {
 		// Such as reference images on Grok: the next vendor may serve it.
-		return Result{}, &preStartError{err}
+		return Result{}, &preStartError{err, adapterCode(err)}
 	}
 	if err != nil {
 		return Result{}, err
@@ -534,6 +551,13 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 		return Result{}, err
 	}
 	markRecorded()
+	ids := diag.Rec{Parent: parent.ID, Child: child.ID, Borrow: id, Vendor: string(v)}
+	if res.Worktree.Path != "" {
+		ids.Worktree = filepath.Base(res.Worktree.Path)
+	}
+	rec := ids
+	rec.Event, rec.Attrs = diag.EvBorrowChildStarted, map[string]any{"kind": string(req.Kind), "model": model, "minutes": budget.Minutes}
+	cause := b.Diag.Log(ctx, rec)
 
 	// The time limit: past it the runner kills the child's whole
 	// process group.
@@ -546,6 +570,9 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 		b.ChildDone()
 	}
 	res.Elapsed = b.Now().Sub(now)
+	rec = ids
+	rec.Event, rec.Cause, rec.Duration, rec.Exit = diag.EvBorrowChildExited, cause, res.Elapsed, diag.Int(out.ExitCode)
+	cause = b.Diag.Log(ctx, rec)
 	end := store.BorrowEnd{EndedAt: b.Now()}
 	parsed, perr := a.ParseHeadless(hreq, out)
 	res.Text, res.Tokens = parsed.Text, parsed.Tokens
@@ -622,6 +649,7 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 			res.Worktree.Tree = tree
 		}
 	}
+	b.logEnd(ctx, ids, res, end.VendorSessionID, cause)
 	// The per-borrow log behind aggy log and aggy stats.
 	detail := map[string]any{
 		"borrow": id, "kind": string(req.Kind), "vendor": string(v), "model": model,

@@ -25,6 +25,12 @@ const (
 	// (unix ms, when aggy expects it back), via (hook-unverified, or
 	// "hook" in older rows; rollout; or borrow). internal/limits writes and reads it.
 	EventLimit = "limit"
+	// EventRefusal: aggy refused something for a security reason (a
+	// lockdown rejection, a borrow from inside a borrow, a protected path
+	// in an edit). Detail: code, event, run, record (the diag.db record
+	// id), and borrow, vendor, and trace when known. internal/diag
+	// writes it.
+	EventRefusal = "refusal"
 )
 
 // Event is a row of events.

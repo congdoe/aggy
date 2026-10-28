@@ -17,6 +17,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/grok"
 	"github.com/congdoe/aggy/internal/checkup"
 	"github.com/congdoe/aggy/internal/devfix"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -129,22 +130,24 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 			fmt.Fprint(stdout, setupUsage)
 			return 0
 		}
-		fmt.Fprintf(stderr, "aggy setup: %v\n\n%s", err, setupUsage)
+		refuse(context.Background(), stderr, "setup", diag.EvSetupFailed, diag.CodeUsage, err.Error(), diag.Rec{})
+		fmt.Fprintf(stderr, "\n%s", setupUsage)
 		return 2
 	}
 	if fl.NArg() > 0 {
-		fmt.Fprintf(stderr, "aggy setup: unexpected arguments\n\n%s", setupUsage)
+		refuse(context.Background(), stderr, "setup", diag.EvSetupFailed, diag.CodeUsage, "unexpected arguments", diag.Rec{})
+		fmt.Fprintf(stderr, "\n%s", setupUsage)
 		return 2
 	}
 	selected, err := parseOnly(*only, env.adapters)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy setup: %v\n", termsafe.Field(err.Error()))
+		refuse(context.Background(), stderr, "setup", diag.EvSetupFailed, diag.CodeUsage, err.Error(), diag.Rec{})
 		return 2
 	}
 	ctx := context.Background()
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy setup: %s\n", termsafe.Field(err.Error()))
+		refuse(ctx, stderr, "setup", diag.EvSetupFailed, diag.CodeStore, err.Error(), diag.Rec{})
 		return 1
 	}
 	defer func() { _ = s.Close() }()
@@ -162,7 +165,7 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 	code := 0
 	for _, a := range selected {
 		if c := st.vendor(ctx, a); c != 0 {
-			fmt.Fprintf(stderr, "aggy setup: %s\n", termsafe.Field(st.err.Error()))
+			refuse(ctx, stderr, "setup", diag.EvSetupFailed, diag.CodeStore, st.err.Error(), diag.Rec{Vendor: string(a.Vendor())})
 			code = c
 		}
 	}
@@ -276,6 +279,8 @@ func (r *setupRun) vendor(ctx context.Context, a adapter.Adapter) int {
 		r.err = err
 		return 1
 	}
+	dlog.Log(ctx, diag.Rec{Event: diag.EvSetupChecked, Vendor: string(v),
+		Attrs: map[string]any{"installed": res.Installed, "connected": rec.Connected, "version": rec.Version}})
 	fmt.Fprintf(r.out, "  recorded: %s\n", recordText(rec))
 	return 0
 }

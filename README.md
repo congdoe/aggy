@@ -60,9 +60,11 @@ aggy memory import --from claude   # copy Claude's memory into .aggy/memory.md, 
 aggy log               # borrows, vendors, models, files changed
 aggy stats             # borrows per kind and vendor: runs, tokens, time, redo rate
 aggy usage             # what Codex says is left; what aggy's borrows used
+aggy diag show <id>    # what happened: the run id every error ends with, or a borrow id
+aggy diag bundle > aggy-bundle.md   # scrubbed, to hand to an agent or attach to an issue
 ```
 
-`aggy <command> --help` gives the details. Routing picks a vendor for each kind and says why it skipped the others; `--vendor` picks one yourself.
+`aggy <command> --help` gives the details. Every refusal or error ends with `[<code> · run <id>]`: `aggy diag codes <code>` says what it means and what to check next, and `aggy diag` filters and queries the diagnostic log (`--since 1h`, `--borrow`, `--json`, `aggy diag sql`); see [docs/logging.md](docs/logging.md). Routing picks a vendor for each kind and says why it skipped the others; `--vendor` picks one yourself.
 
 ## Vendor support
 

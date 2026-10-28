@@ -12,6 +12,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -346,11 +347,15 @@ func (p *launchPlan) interactiveRequest() adapter.InteractiveRequest {
 }
 
 // childEnv is AGGY_VENDOR, and AGGY_MODEL when a model is set, for a
-// child: the linked skill and the attribution hook read them.
+// child: the linked skill and the attribution hook read them. AGGY_TRACE
+// carries this run's diagnostic trace (docs/logging.md) to the session.
 func childEnv(vendor, model string) []string {
 	env := []string{"AGGY_VENDOR=" + vendor}
 	if model != "" {
 		env = append(env, "AGGY_MODEL="+model)
+	}
+	if t := dlog.Trace(); t != "" {
+		env = append(env, diag.TraceEnv+"="+t)
 	}
 	return env
 }
