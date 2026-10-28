@@ -470,9 +470,7 @@ func Check(name string) error {
 // would refuse its own new files). The case is closed where such a file
 // could leave the machine: in M1, a borrow's artifacts must be real image
 // files, checked by magic bytes, created during the child's run, with one
-// link.
-// TODO(T6724): close the hard-link-before-rotation case at the M1
-// artifact boundary.
+// link (internal/borrow, artifact.go).
 var ErrHardLink = errors.New("refusing a file with more than one hard link")
 
 // ErrChanged means the file system changed between the checks and the
@@ -565,6 +563,10 @@ func inParent(op, name, p string, want parentID, fn func(dir *os.Root, base stri
 }
 
 // isMultiLinked reports whether fi is a regular file with another name.
+// LinkCount returns the number of hard links to the file fi describes,
+// from metadata safefs returned; 1 where the count is not available.
+func LinkCount(fi fs.FileInfo) uint64 { return linkCount(fi) }
+
 func isMultiLinked(fi fs.FileInfo) bool {
 	return fi.Mode().IsRegular() && linkCount(fi) > 1
 }

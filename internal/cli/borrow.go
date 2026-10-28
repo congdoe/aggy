@@ -314,6 +314,9 @@ func printResult(w io.Writer, r borrow.Result) {
 		}
 		fmt.Fprintf(w, "  %s: %s\n", termsafe.Field(a.Kind), termsafe.Field(a.Path))
 	}
+	for _, x := range r.Refused {
+		fmt.Fprintf(w, "  %s\n", termsafe.Line(x))
+	}
 	if r.ReportPath != "" {
 		fmt.Fprintf(w, "Full report: %s\n", termsafe.Field(r.ReportPath))
 	}
