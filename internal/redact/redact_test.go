@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
 // body is one 64-character line of a PEM key body.
@@ -300,10 +299,24 @@ func TestHints(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		lines = append(lines, strings.Split(string(b), "\n")...)
+		for i, l := range strings.Split(string(b), "\n") {
+			// Under -race, where regexps run far slower, every tenth source
+			// line; the test rows above are always checked in full, and
+			// go test without -race checks every source line (I43-10).
+			if !raceOn || i%10 == 0 {
+				lines = append(lines, l)
+			}
+		}
 	}
+	// Only unhinted lines can fail, and each is checked once (I43-10: the
+	// package must stay fast under -race).
+	seen := map[string]bool{}
 	for _, l := range lines {
-		if (Token.MatchString(l) || assign.MatchString(l) || other.MatchString(l) || pendingKey.MatchString(l)) && !hinted(l) {
+		if seen[l] || hinted(l) {
+			continue
+		}
+		seen[l] = true
+		if Token.MatchString(l) || assign.MatchString(l) || other.MatchString(l) || pendingKey.MatchString(l) || nameKey.MatchString(l) || flagKey.MatchString(l) {
 			t.Errorf("match without a hint: %q", l)
 		}
 	}
@@ -328,25 +341,24 @@ func TestTripleCap(t *testing.T) {
 	}
 }
 
-// TestLinear (I43-1): Lines takes time in proportion to its input on a
-// line with many assign matches; the old code rescanned the rest of the
-// line once per match. Four times the input must take well under
-// sixteen times as long (the best of three runs each).
+// TestLinear (I43-1, I43-10): on lines built to have many assign
+// matches, factsOf runs at most once a line, and the bytes factsOf and
+// the assign loop examine stay within a small multiple of the input; the
+// old code rescanned the rest of the line once per match.
 func TestLinear(t *testing.T) {
-	for _, unit := range []string{"{key:f(bbbbbbbb),", "token := f(x) "} {
-		best := func(n int) time.Duration {
+	defer func() { work = nil }()
+	for _, unit := range []string{
+		"{key:f(bbbbbbbb),", "token := f(x) ", "name: DB_PASSWORD, value: ",
+		`"--token", `, "key: !a ", `password = ("`, "--api-key -x ", "token = '''x ",
+	} {
+		for _, n := range []int{50, 400} {
 			in := strings.Repeat(unit, n)
-			d := time.Duration(1 << 62)
-			for range 3 {
-				s := time.Now()
-				Lines(in)
-				d = min(d, time.Since(s))
+			in += "\n" + in
+			work = &workCount{}
+			Lines(in)
+			if work.facts > 2 || work.bytes > 4*len(in) {
+				t.Errorf("%q x%d: %d factsOf calls, %d bytes examined for %d bytes", unit, n, work.facts, work.bytes, len(in))
 			}
-			return d
-		}
-		small, big := best(4000), best(16000)
-		if big > 10*small+20*time.Millisecond {
-			t.Errorf("%q: %v for 4x the input of %v", unit, big, small)
 		}
 	}
 }
