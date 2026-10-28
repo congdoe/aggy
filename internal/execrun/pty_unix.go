@@ -63,7 +63,7 @@ func StartPTY(c adapter.Command, rows, cols int) (*PTY, error) {
 // session. It is its own list, apart from the borrow allowlist (Env):
 // an on-screen CLI is never marked AGGY_DELEGATED, and a borrow never
 // gets the socket.
-var ptyExtraNames = []string{"AGGY_VENDOR", "AGGY_SOCKET", "AGGY_PARENT"}
+var ptyExtraNames = []string{"AGGY_VENDOR", "AGGY_MODEL", "AGGY_SOCKET", "AGGY_PARENT"}
 
 // PTYEnv is base, without any variable extra sets, followed by extra. An
 // extra entry must be KEY=value with a key in ptyExtraNames: aggy never

@@ -258,7 +258,7 @@ func (p *launchPlan) interactiveRequest() adapter.InteractiveRequest {
 	req := adapter.InteractiveRequest{
 		Cwd:   p.child.Cwd,
 		Model: p.child.Model,
-		Env:   []string{"AGGY_VENDOR=" + p.child.Vendor},
+		Env:   childEnv(p.child.Vendor, p.child.Model),
 	}
 	if p.resume != "" {
 		req.Resume = p.resume
@@ -266,6 +266,16 @@ func (p *launchPlan) interactiveRequest() adapter.InteractiveRequest {
 		req.SessionID = p.child.VendorSessionID
 	}
 	return req
+}
+
+// childEnv is AGGY_VENDOR, and AGGY_MODEL when a model is set, for a
+// child: the linked skill and the attribution hook read them.
+func childEnv(vendor, model string) []string {
+	env := []string{"AGGY_VENDOR=" + vendor}
+	if model != "" {
+		env = append(env, "AGGY_MODEL="+model)
+	}
+	return env
 }
 
 // dirID is dir's device and inode as "dev:ino", or "" when unknown.
