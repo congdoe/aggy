@@ -62,6 +62,7 @@ Confidence words: *Source-verified*, *Help-verified*, *Doc-verified*,
 | Managed tools | Pinned versions, binaries, `--version` output, and MCP or hook commands of RTK, CodeGraph, Context7, Playwright MCP, and Headroom; Caveman's skill folder. | Live-confirmed (2026-10-28) |
 | Codex CLI details | `codex exec resume`, `--ignore-user-config` on `exec` only, greedy `-i`. | Help/Source-verified; parts Live-confirmed |
 | API and route settings | Listed in adapters.md. | Source/Doc-verified |
+| Same-vendor nested review (T6779) | A Claude review borrow run from inside an on-screen Claude Code session routes to Claude and runs as a fresh headless session. Codex under Codex and Grok under Grok are not run. | Claude Live-confirmed; Codex and Grok unverified |
 
 ## Codex hooks (T6616)
 
@@ -913,6 +914,23 @@ arm64 with `DO_NOT_TRACK=1`. No vendor config was edited, and no tool's
   the agents and their logins, edit vendor configs, add a proxy, and
   send telemetry by default. aggy uses only the `skills/caveman/` folder
   at the pinned tag (T6715).
+
+## Same-vendor nested review (T6779)
+
+Live-confirmed on 2026-10-28. The `review-route` binary at 3ef4753, with a
+scratch `AGGY_HOME` and `aggy setup --only claude`, run from inside a
+Claude Code 2.1.312 session (`CLAUDECODE=1` in the environment).
+`aggy borrow review "…" --base main` with the default routing routed to
+Claude and ran a fresh headless session: "ok in 12s, 432 tokens", and the
+report found the bug planted in the diff. So a Claude review nested under
+an on-screen Claude works.
+
+Not run: Codex under Codex and Grok under Grok. The default route reaches
+them only when Claude is limited, disconnected, or not allowed, or when a
+user lists them. Grok's `--sandbox strict`, which a Grok review uses,
+refuses to start inside another sandbox (S6 above), so a Grok review
+nested under a sandboxed Grok session may fail closed. The smoke script
+has no check for either yet (TODO(T6779)).
 
 ## Still open
 

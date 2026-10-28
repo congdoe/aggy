@@ -1,12 +1,13 @@
 ---
 name: aggy
-description: Borrow a bounded task to another vendor's CLI with aggy (image, video, research, news, review). Use for anything that may have changed since training, for images or video, or for a fresh-context code review.
+description: Borrow a bounded task to a vendor's CLI with aggy (image, video, research, news, review). Use for anything that may have changed since training, for images or video, or for a fresh-context code review.
 ---
 
 # aggy: borrow a task
 
-`aggy borrow` runs one bounded task headless in another vendor's CLI
-(Claude Code, Codex, or Grok Build) and prints a short report. Run it in
+`aggy borrow` runs one bounded task headless in a vendor's CLI (Claude
+Code, Codex, or Grok Build; for review, possibly the one on screen, in a
+fresh session) and prints a short report. Run it in
 your shell, in the background where you can.
 
 ```sh
