@@ -253,24 +253,28 @@ command through a scenario `replies` entry.
 variable name, file, and key, never by value. `aggy setup` shows these as
 warnings and `aggy doctor` reports them:
 
-- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY` set and non-empty.
-- `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GROK_MODELS_BASE_URL`, and any
-  other `*_BASE_URL` starting `ANTHROPIC_`, `OPENAI_`, `CODEX_`, `GROK_`,
-  or `XAI_`.
-- Claude `settings.json` (in `$CLAUDE_CONFIG_DIR`, else `~/.claude`) whose
-  `env` block sets one of those base-URL or API-key variables.
-- Grok `toolset.image_gen` and `toolset.video_gen` `base_url` or
-  `env_key`, read from `config.toml` in `$GROK_HOME`, else `~/.grok`.
-  The keys are in docs/design.md section 2; **the file name
-  `config.toml` is unverified**.
-- **Codex is not checked in its config file.** The key that sets a base
-  URL for its OpenAI provider is not recorded here or in the fixtures, so
-  it is unverified; only the `OPENAI_BASE_URL` and `CODEX_*_BASE_URL`
-  variables are flagged.
+Each is marked by where it comes from: **design** is docs/design.md
+section 2, **unverified** is a name taken from the vendors' public docs
+that this repo has not recorded or checked live. Unverified names are
+checked anyway: a false warning costs less than a missed API bill.
 
-Files are read through `safefs.ReadFileLimit`, which refuses credential
-files, symlinks, and files over 1 MiB; a file that cannot be read or
-parsed is an info finding naming the file. The process runner never
+| What | Vendor | Source |
+| --- | --- | --- |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY` set and non-empty | Claude, Codex, Grok | design |
+| `ANTHROPIC_AUTH_TOKEN`, `CODEX_API_KEY` set and non-empty | Claude, Codex | unverified |
+| `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` set and non-empty | Claude | unverified |
+| `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GROK_MODELS_BASE_URL` | Claude, Codex, Grok | design |
+| any other `*_BASE_URL` starting `ANTHROPIC_`, `OPENAI_`, `CODEX_`, `GROK_`, or `XAI_` | by prefix | a catch-all, not a recorded name |
+| Claude `settings.json` and `settings.local.json` (in `$CLAUDE_CONFIG_DIR`, else `~/.claude`): an `env` block setting any variable above, or an `apiKeyHelper` | Claude | unverified (file names, `env`, `apiKeyHelper`) |
+| Grok `toolset.image_gen` and `toolset.video_gen` `base_url` or `env_key`, in `config.toml` in `$GROK_HOME`, else `~/.grok` | Grok | design (keys); the file name is unverified |
+| Codex config file | Codex | **not checked**: the key that sets a base URL for its OpenAI provider is not recorded here or in the fixtures |
+
+Config files are read through `safefs`. A symlinked file (as dotfile
+managers make) is resolved, its target must pass the credential check,
+and the target is read with `safefs.ReadFileLimit`, which refuses a
+link, a non-regular file, and anything over 1 MiB. A file that cannot be
+read or parsed, or a link to a credential file or to nothing, is a
+`config-unreadable` warning naming the file. The process runner never
 passes any of these variables to a CLI (`execrun.Env`).
 
 ### Tested versions

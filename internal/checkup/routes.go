@@ -108,22 +108,25 @@ func vendorHome(get func(string) string, relocate, name string) (string, bool) {
 // subscription, through safefs (which refuses credential files), and
 // flags what it finds by file and key, never by value:
 //
-//   - Claude: settings.json in $CLAUDE_CONFIG_DIR or ~/.claude, whose
-//     "env" block sets a base-URL variable (BaseURLVar) or an API-key
-//     variable (ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY).
+//   - Claude: settings.json and settings.local.json in
+//     $CLAUDE_CONFIG_DIR or ~/.claude: an apiKeyHelper, or an "env"
+//     block setting a base-URL variable (BaseURLVar), an API-key variable
+//     (see APIKeyEnv), or CLAUDE_CODE_USE_BEDROCK or _VERTEX.
 //   - Grok: config.toml in $GROK_HOME or ~/.grok, whose
 //     toolset.image_gen or toolset.video_gen sets base_url or env_key.
 //
 // Codex is not checked: the key that sets its OpenAI provider's base URL
 // is not recorded in docs/adapters.md. A missing file is not a finding;
-// one that cannot be read or parsed is, at info level. Paths are shown
+// one that cannot be read or parsed is a warning. Paths are shown
 // with the home directory as ~.
 func RouteFiles(environ []string) []Finding {
 	get := envLookup(environ)
 	home := get("HOME")
 	var out []Finding
 	if dir, ok := vendorHome(get, "CLAUDE_CONFIG_DIR", ".claude"); ok {
-		out = append(out, claudeSettings(filepath.Join(dir, "settings.json"), home)...)
+		for _, name := range []string{"settings.json", "settings.local.json"} {
+			out = append(out, claudeSettings(filepath.Join(dir, name), home)...)
+		}
 	}
 	if dir, ok := vendorHome(get, "GROK_HOME", ".grok"); ok {
 		out = append(out, grokConfig(filepath.Join(dir, "config.toml"), home)...)
@@ -132,15 +135,37 @@ func RouteFiles(environ []string) []Finding {
 }
 
 // readConfig reads a vendor config file. A missing file is (nil, nil
-// finding); any other failure is an info finding naming the file only.
+// finding); any other failure is a warning naming the file only.
+//
+// Dotfile managers often link these files, so a symlink is resolved and
+// its target read, after the target passes the safefs credential check,
+// with safefs.ReadFileLimit, which opens it without following a link.
 func readConfig(path, home string, v adapter.Vendor) ([]byte, *Finding) {
-	b, err := safefs.ReadFileLimit(path, maxConfig)
+	unreadable := func(why string) *Finding {
+		return &Finding{Code: CodeConfigUnreadable, Level: LevelWarn, Vendor: v,
+			Message: fmt.Sprintf("%s: cannot be checked for base URLs and API keys (%s)", ShowPath(path, home), why)}
+	}
+	fi, err := safefs.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, &Finding{Code: CodeConfigUnreadable, Level: LevelInfo, Vendor: v,
-			Message: fmt.Sprintf("%s: cannot be checked for base URLs and API keys (%s)", ShowPath(path, home), reason(err))}
+		return nil, unreadable(reason(err))
+	}
+	target := path
+	if fi.Mode()&fs.ModeSymlink != 0 {
+		r, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return nil, unreadable("a symlink whose target cannot be found")
+		}
+		if err := safefs.Check(r); err != nil {
+			return nil, unreadable("a symlink to " + reason(err))
+		}
+		target = r
+	}
+	b, err := safefs.ReadFileLimit(target, maxConfig)
+	if err != nil {
+		return nil, unreadable(reason(err))
 	}
 	return b, nil
 }
@@ -185,10 +210,11 @@ func claudeSettings(path, home string) []Finding {
 		return nil
 	}
 	var s struct {
-		Env any `json:"env"`
+		Env          any `json:"env"`
+		APIKeyHelper any `json:"apiKeyHelper"`
 	}
 	if err := json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &s); err != nil {
-		return []Finding{{Code: CodeConfigUnreadable, Level: LevelInfo, Vendor: adapter.Claude,
+		return []Finding{{Code: CodeConfigUnreadable, Level: LevelWarn, Vendor: adapter.Claude,
 			Message: ShowPath(path, home) + ": cannot be checked for base URLs and API keys (not valid JSON)"}}
 	}
 	env, _ := s.Env.(map[string]any) // an env that is not an object sets nothing
@@ -198,8 +224,18 @@ func claudeSettings(path, home string) []Finding {
 	}
 	sort.Strings(keys)
 	var out []Finding
+	if set(s.APIKeyHelper) {
+		out = append(out, routeConfig(path, home, adapter.Claude, "apiKeyHelper",
+			"Claude Code may get an API key from it and bill the API instead of the subscription"))
+	}
 	for _, k := range keys {
 		if !set(env[k]) {
+			continue
+		}
+		if p, ok := cloudVar(k); ok {
+			f := cloudFinding(ShowPath(path, home)+": env."+k, p)
+			f.Code = CodeRouteConfig
+			out = append(out, f)
 			continue
 		}
 		if _, ok := BaseURLVar(k); ok {
@@ -225,7 +261,7 @@ func grokConfig(path, home string) []Finding {
 		Toolset map[string]any `toml:"toolset"`
 	}
 	if _, err := toml.Decode(string(b), &c); err != nil {
-		return []Finding{{Code: CodeConfigUnreadable, Level: LevelInfo, Vendor: adapter.Grok,
+		return []Finding{{Code: CodeConfigUnreadable, Level: LevelWarn, Vendor: adapter.Grok,
 			Message: ShowPath(path, home) + ": cannot be checked for media API settings (not valid TOML)"}}
 	}
 	var out []Finding
