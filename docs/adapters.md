@@ -136,7 +136,10 @@ was tested against.
   Grok ignored with a warning) got that list as the model's own one-turn
   report, not a wire dump; this exact set has not been run live yet. There is no `x_keyword_search` or `x_semantic_search`
   tool: naming them made Grok warn and ignore the whole `--tools`
-  allowlist. `open_page*` cannot be named in `--disallowed-tools`.
+  allowlist. `open_page*` cannot be named in `--disallowed-tools`. Every
+  other kind (review, image, video) denies `web_search`, which takes
+  `open_page*` with it: a live review run listed only its read tools
+  (`docs/verification.md` C3).
 - MCP at launch: no flag. `--agent <file>` whose frontmatter lists
   `mcpServers` works, with `--allow 'MCPTool(<server>__<tool>)'`.
 - Extra context: `--rules "<text>"`, inline only.
@@ -225,12 +228,19 @@ adapter's tested range, or unreadable, is refused for borrows unless
 
 **Review input.** Codex keeps the full lockdown for review, which leaves it
 no tool that reads a file, so every vendor's reviewer gets its input in
-the prompt: `internal/cli` runs `git diff` of the work tree (committed and
-uncommitted changes) against the merge-base of `HEAD` with the default
-branch (`origin/HEAD`, else `main`, else `master`), or against `--base
-<ref>`, through `execrun` with no fsmonitor, hooks, pager, external diff,
-or textconv from the repo's config; and it reads the `--path` files inside
-the repo through `safefs`. The material is capped at 256 KiB and says
+the prompt: `internal/cli` runs `git diff` of the work tree against the
+merge-base of `HEAD` with the default branch (`origin/HEAD`, else `main`,
+else `master`), or against `--base <ref>`. That covers committed changes
+and staged or unstaged changes to tracked files; an untracked new file is
+not in the diff unless it is passed with `--path`. git runs through
+`execrun` with no fsmonitor, hooks, pager, external diff, or textconv from
+the repo's config, and with every filter driver git's config defines
+(`git config -z --get-regexp '^filter\.'`) switched off by `-c
+filter.<name>.clean= -c filter.<name>.smudge= -c filter.<name>.process= -c
+filter.<name>.required=false`, since attributes (`.gitattributes`,
+`.git/info/attributes`) would otherwise run a driver on a stat-dirty
+file. A driver name `-c` cannot carry is refused. The `--path` files
+inside the repo are read through `safefs`. The material is capped at 256 KiB and says
 where it was cut. It sits under a "Material" heading in fences longer than
 any backtick run inside, marked as data to review, not instructions.
 Claude and Grok keep their read tools, at the work tree root. A review
@@ -284,9 +294,12 @@ run_terminal_cmd, web_fetch, Agent, search_tool, use_tool, image_gen,
 image_edit, image_to_video, reference_to_video, send_feedback, monitor,
 workflow, todo_write, ask_user_question, enter_plan_mode, exit_plan_mode,
 web_search`. `open_page` and `open_page_with_find` are not in it: they
-cannot be removed by name. Whether denying `web_search` takes them along,
-and `--disable-web-search` (not in a recorded help), are unverified
-(TODO(T6737)). Claude's `<run>/mcp.json` is `{"mcpServers":{}}`; the
+cannot be removed by name. Denying `web_search` takes them along: the
+review argv, run live with grok 1.0.70 (2026-10-28,
+`docs/verification.md` C3), left the model reporting only `read_file`,
+`grep`, and `list_dir`, with empty stderr; image and video deny
+`web_search` the same way. `--disable-web-search` (not in a recorded
+help) is unverified and not needed (TODO(T6737)). Claude's `<run>/mcp.json` is `{"mcpServers":{}}`; the
 `--tools` names are unverified. `--setting-sources user` (so a review does
 not run the reviewed repo's own `.claude/settings.json` hooks) and
 `--settings` (the PreToolUse guard) are passed only when the probe found
