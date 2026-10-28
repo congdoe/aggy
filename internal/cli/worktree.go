@@ -271,12 +271,21 @@ func (g *gitWorktrees) Remove(ctx context.Context, wt store.Worktree) error {
 	if err != nil {
 		return err
 	}
-	if _, err := safefs.Lstat(wt.Path); errors.Is(err, fs.ErrNotExist) {
+	// A symlink (or anything but a directory) at aggy's path is not the
+	// worktree aggy made: removing through it could reach another tree.
+	switch fi, err := safefs.Lstat(wt.Path); {
+	case errors.Is(err, fs.ErrNotExist):
 		if err := g.dropAdmin(ctx, wt); err != nil {
 			return err
 		}
-	} else if _, _, err := g.env.git(ctx, wt.Repo, append(off, "worktree", "remove", "--force", "--", wt.Path)...); err != nil {
+	case err != nil:
 		return err
+	case !fi.IsDir():
+		return fmt.Errorf("refusing: %s is not a directory (a symlink?)", wt.Path)
+	default:
+		if _, _, err := g.env.git(ctx, wt.Repo, append(off, "worktree", "remove", "--force", "--", wt.Path)...); err != nil {
+			return err
+		}
 	}
 	_, _, err = g.env.git(ctx, wt.Repo, "branch", "-D", wt.Branch)
 	return err

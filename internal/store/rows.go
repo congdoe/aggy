@@ -80,6 +80,9 @@ type Worktree struct {
 	// Check is the check gate's result on Tree: "" (not run), pass, fail,
 	// or skipped (schema version 13).
 	Check string
+	// Removed is when aggy reject or aggy gc removed the worktree and
+	// branch (schema version 14); zero while they may still exist.
+	Removed time.Time
 }
 
 // InsertChild adds a child. The parent must exist. An empty Status means
