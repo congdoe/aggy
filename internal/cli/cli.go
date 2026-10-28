@@ -21,6 +21,7 @@ Commands:
   doctor    Check the vendor CLIs, API-key and proxy settings, and config drift
   log       Show harnesses, models, switches, borrows, and files changed
   unwire    Undo the config changes aggy made to other tools
+  skill     Link aggy's skill into each vendor CLI, or unlink it
   version   Print the aggy version
   help      Show this help
 
@@ -48,6 +49,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDev(args[1:], stdout, stderr)
 	case "unwire":
 		return runUnwire(args[1:], stdout, stderr)
+	case "skill":
+		return runSkill(args[1:], stdout, stderr)
 	case "help", "--help", "-h":
 		fmt.Fprint(stdout, usage)
 		return 0
