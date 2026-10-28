@@ -16,7 +16,22 @@ import (
 )
 
 // sessionIndex keeps the index's record of the on-screen CLI's session
-// id, from its hooks and, for Codex, from its sessions folder.
+// id. Any process the CLI starts inherits AGGY_SOCKET and AGGY_VENDOR (a
+// nested claude -p or codex exec run by the agent's shell tool, or the
+// agent piping JSON into aggy hook), and aggy cannot keep them from its
+// tool subprocesses, so a hook event alone never sets or replaces the
+// id:
+//
+//   - Claude and Grok get a pre-assigned --session-id (adapters.md), and
+//     that is the only id recorded. A later /clear starts another
+//     session the index does not follow.
+//   - Codex cannot be given an id. The first thread id a Codex hook
+//     reports is the claim (the on-screen CLI's SessionStart comes before
+//     its agent can run anything), and it is recorded only once the
+//     sessions folder shows a rollout of that id that was not there at
+//     launch. A new rollout alone (another Codex in another terminal, or
+//     a borrow sharing CODEX_HOME) is never recorded, and neither is a
+//     later claim. Once recorded, the id is not replaced.
 //
 // TODO(T6661): record the parent and child rows; until then the id goes
 // to the events log under the parent id.
@@ -27,12 +42,15 @@ type sessionIndex struct {
 	record func(store.Event) error
 
 	mu    sync.Mutex
-	id    string
-	known chan struct{} // closed once an id is known
+	id    string          // recorded
+	claim string          // Codex: the first id a hook reported
+	seen  map[string]bool // Codex: new rollouts the watch has seen
+	known chan struct{}   // closed once an id is recorded
 }
 
 func newSessionIndex(parentID string, v adapter.Vendor) *sessionIndex {
-	return &sessionIndex{parentID: parentID, vendor: v, known: make(chan struct{}), record: appendEvent}
+	return &sessionIndex{parentID: parentID, vendor: v, known: make(chan struct{}),
+		seen: map[string]bool{}, record: appendEvent}
 }
 
 // appendEvent opens the index, appends e, and closes it.
@@ -46,36 +64,54 @@ func appendEvent(e store.Event) error {
 	return s.AppendEvent(ctx, e)
 }
 
-// hook is supervisor.Options.OnHook. A SessionStart sets the id (a
-// /clear or resume starts another session); any other event with an id
-// sets it only while none is known (Codex's notify carries thread-id,
-// and needs no hook approval). Events of another vendor are ignored.
+// hook is supervisor.Options.OnHook. Only Codex ids come from hooks, as
+// a claim (see sessionIndex).
 func (x *sessionIndex) hook(r supervisor.Request) {
-	if r.Vendor != string(x.vendor) {
+	if x.vendor != adapter.Codex || r.Vendor != string(x.vendor) {
 		return
 	}
+	// TODO(T6616): that Codex's SessionStart and Stop payloads carry the
+	// thread id as session_id is source-verified, not yet seen live.
 	ev := hook.Parse(x.vendor, r.Payload)
 	if adapter.ValidSessionID(x.vendor, ev.SessionID) != nil {
 		return
 	}
-	// TODO(T6616): whether Codex's SessionStart payload carries the
-	// thread id is source-verified only; the sessions folder watch
-	// (watchCodex) is the path that does not depend on it.
-	x.set(ev.SessionID, ev.Source, "hook", r.Event == "SessionStart")
+	x.mu.Lock()
+	if x.claim == "" {
+		x.claim = ev.SessionID
+	}
+	confirmed := x.seen[x.claim]
+	claim := x.claim
+	x.mu.Unlock()
+	if confirmed {
+		x.set(claim, ev.Source, "hook and sessions folder")
+	}
 }
 
-// set records id unless it is the one already known, or, unless
-// replace, another id is known.
-func (x *sessionIndex) set(id, source, via string, replace bool) {
+// saw records rollouts the watch found new, and the claim once it is
+// among them.
+func (x *sessionIndex) saw(ids []string) {
 	x.mu.Lock()
-	if id == x.id || (x.id != "" && !replace) {
+	for _, id := range ids {
+		x.seen[id] = true
+	}
+	confirmed := x.claim != "" && x.seen[x.claim]
+	claim := x.claim
+	x.mu.Unlock()
+	if confirmed {
+		x.set(claim, "", "hook and sessions folder")
+	}
+}
+
+// set records id, once.
+func (x *sessionIndex) set(id, source, via string) {
+	x.mu.Lock()
+	if x.id != "" {
 		x.mu.Unlock()
 		return
 	}
-	if x.id == "" {
-		close(x.known)
-	}
 	x.id = id
+	close(x.known)
 	x.mu.Unlock()
 	d := map[string]any{"vendor": string(x.vendor), "session": id, "via": via}
 	if source != "" {
@@ -83,6 +119,26 @@ func (x *sessionIndex) set(id, source, via string, replace bool) {
 	}
 	// A failed write loses one index line; it must not disturb the CLI.
 	_ = x.record(store.Event{At: time.Now(), ParentID: x.parentID, Type: store.EventSession, Detail: d})
+}
+
+// startIndex returns the OnHook for a session of v under parentID. A
+// pre-assigned id (Claude, Grok) is recorded at once; for Codex it
+// starts the sessions folder watch. stop ends the watch once the CLI has
+// exited.
+func startIndex(parentID string, v adapter.Vendor, assigned string) (onHook func(supervisor.Request), stop func()) {
+	x := newSessionIndex(parentID, v)
+	done := make(chan struct{})
+	if assigned != "" {
+		x.set(assigned, "", "assigned")
+	}
+	if v == adapter.Codex {
+		if dir, err := codexSessionsDir(); err == nil {
+			start := time.Now()
+			before := codexRollouts(dir, start, start)
+			go x.watchCodex(dir, start, before, done)
+		}
+	}
+	return x.hook, func() { close(done) }
 }
 
 // codexSessionsDir is the Codex home's sessions folder.
@@ -94,34 +150,15 @@ func codexSessionsDir() (string, error) {
 	return filepath.Join(ch, "sessions"), nil
 }
 
-// startIndex returns the OnHook for a session of v under parentID and,
-// for Codex, starts the sessions folder watch; stop ends it once the CLI
-// has exited.
-func startIndex(parentID string, v adapter.Vendor) (onHook func(supervisor.Request), stop func()) {
-	x := newSessionIndex(parentID, v)
-	done := make(chan struct{})
-	if v == adapter.Codex {
-		if dir, err := codexSessionsDir(); err == nil {
-			start := time.Now()
-			before := codexRollouts(dir, start, start)
-			go x.watchCodex(dir, start, before, done)
-		}
-	}
-	return x.hook, func() { close(done) }
-}
-
 // codexPoll is how often watchCodex looks at the sessions folder.
 var codexPoll = 500 * time.Millisecond
 
-// watchCodex finds the thread id of a Codex session started at start
-// from its rollout file, which Codex creates lazily, at the first
-// persist: it polls the date folders for a rollout name that was not
-// there before, until an id is known (from a hook too), stop closes, or
-// two new rollouts appear at once (another Codex started alongside, so
-// which is ours cannot be told: nothing is recorded). It reads folder
-// listings only, never a rollout's content.
-//
-// before is codexRollouts at start, taken before the CLI was started.
+// watchCodex polls the date folders for Codex rollouts that were not
+// there at launch (before, codexRollouts at start, taken before the CLI
+// started) and hands them to saw, until an id is recorded or stop
+// closes. Codex creates a rollout lazily, at the first persist, so it
+// may appear only after the first turn. It reads folder listings only,
+// never a rollout's content.
 func (x *sessionIndex) watchCodex(dir string, start time.Time, before map[string]bool, stop <-chan struct{}) {
 	t := time.NewTicker(codexPoll)
 	defer t.Stop()
@@ -138,13 +175,7 @@ func (x *sessionIndex) watchCodex(dir string, start time.Time, before map[string
 					fresh = append(fresh, id)
 				}
 			}
-			switch len(fresh) {
-			case 0:
-				continue
-			case 1:
-				x.set(fresh[0], "", "sessions folder", false)
-			}
-			return
+			x.saw(fresh)
 		}
 	}
 }
