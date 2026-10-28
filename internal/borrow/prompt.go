@@ -23,12 +23,18 @@ type Prompt struct {
 
 // kindGuide is the report shape asked of each kind.
 var kindGuide = map[adapter.Kind]string{
-	adapter.Research: "Search the web. Cite every source with its publish date, say what the findings are as of, and list open questions.",
-	adapter.News:     "Search for the latest news. Cite every source with its publish date, say what the news is as of, and list open questions.",
+	adapter.Research: "Search the web. " + webReport,
+	adapter.News:     "Search for the latest news. " + webReport,
 	adapter.Image:    "Generate the image the task describes. Say how many images you made and describe each in one line.",
 	adapter.Video:    "Generate the video the task describes. Say what you made in one line.",
 	adapter.Review:   "Review the change in the Material section read-only. Do not change any file. List findings by severity with file:line and a concrete failure scenario.",
 }
+
+// webReport is the report shape of research and news: aggy shows the
+// parent the first lines, so the summary leads.
+const webReport = "Use these sections, in this order: `## Summary` (at most 8 lines, the answer first), " +
+	"`## Findings`, `## Sources` (one line each: title, URL, and publish date as YYYY-MM-DD, or \"date unknown\"), " +
+	"`## As of` (the newest date your sources cover), and `## Open questions`. Cite a source for every finding."
 
 // Text renders the prompt as Markdown.
 func (p Prompt) Text() string {

@@ -151,7 +151,7 @@ func TestBorrowCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code %d, stderr %q, stdout %q", code, errOut, out)
 	}
-	for _, w := range []string{"news on grok (default model): ok", "Summary: Go 1.27 shipped.", `\x1b[31mred`, "Full report: ", "/inbox/"} {
+	for _, w := range []string{"news on grok (default model): ok", "Summary: Go 1.27 shipped.", `\x1b[31mred`, "Report: ", "-what-shipped-in-go-1-27.md"} {
 		if !strings.Contains(out, w) {
 			t.Errorf("stdout lacks %q:\n%s", w, out)
 		}

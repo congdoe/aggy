@@ -42,6 +42,9 @@ func reportText(r Result, req Request, sessionID string, started time.Time) stri
 	if r.Kind == adapter.Image || r.Kind == adapter.Video {
 		fmt.Fprintf(&b, "- Files made: %d, kept: %d\n", r.Made, len(r.Artifacts))
 	}
+	if r.ResearchPath != "" {
+		fmt.Fprintf(&b, "- %s report: %s\n", r.Kind, r.ResearchPath)
+	}
 	for _, a := range r.Artifacts {
 		fmt.Fprintf(&b, "- %s: %s\n", a.Kind, a.Path)
 	}
