@@ -120,6 +120,7 @@ var (
 	EvNearLimitWarned     = Event{"switch.near_limit.warned"}
 	EvHookAccepted        = Event{"hook.event.accepted"}
 	EvHookRejected        = Event{"hook.event.rejected"}
+	EvHookIgnored         = Event{"hook.event.ignored"}
 	EvHookForwardFailed   = Event{"hook.forward.failed"}
 	EvQueueDropped        = Event{"diag.queue.dropped"}
 )
@@ -195,6 +196,8 @@ var (
 	CodePeerUID        = Code{"peer.uid_mismatch"}
 	CodeBadRequest     = Code{"socket.bad_request"}
 	CodeForeignSession = Code{"hook.foreign_session"}
+	CodeNoSession      = Code{"hook.no_session"}
+	CodePeerUnknown    = Code{"peer.cred_failed"}
 	CodeWrongVendor    = Code{"hook.wrong_vendor"}
 	CodeBadPayload     = Code{"hook.bad_payload"}
 )
@@ -246,8 +249,9 @@ var events = []EventInfo{
 	{EvLimitReceived, LevelWarn, "switch", "The on-screen vendor reported its plan limit (attrs.unverified: only a hook said so, which any process in the CLI's tree can send).", "aggy log shows the limit; switch.request.queued or switch.limit.not_offered follows."},
 	{EvLimitNotOffered, LevelInfo, "switch", "After a limit, aggy did not queue a switch itself; the code says why.", "The code's entry."},
 	{EvNearLimitWarned, LevelInfo, "switch", "The near-limit warning was shown at a turn end (attrs: used_pct, warn_at_pct, window, to).", "With switch.near_limit_no_quota no vendor had quota; aggy usage."},
-	{EvHookAccepted, LevelInfo, "hook", "The supervisor took a hook event from the on-screen CLI's own session (attrs.event: Stop, StopFailure, StopCancelled, SessionStart, Notification, or other).", "A turn end that did not move a switch on: the switch.request.refused records near it."},
-	{EvHookRejected, LevelWarn, "hook", "The supervisor did not act on a message on its socket; the code says why.", "The code's entry; aggy log shows it as a refusal."},
+	{EvHookAccepted, LevelInfo, "hook", "The supervisor took a hook event of the vendor on screen from the CLI's process tree (attrs.event: Stop, StopFailure, StopCancelled, SessionStart, Notification, or other). A turn end has attrs.counted: true when it named the on-screen session and so may let a switch go on, false while that session's id is not known yet; any other event holds a switch (attrs.holds).", "A counted turn end that did not move a switch on: the switch.request.refused records near it."},
+	{EvHookRejected, LevelWarn, "hook", "The supervisor did not act on a message on its socket; the code says why.", "The code's entry; aggy log shows the security ones as refusals."},
+	{EvHookIgnored, LevelInfo, "hook", "A turn end from the CLI's tree named another session, such as a nested claude -p, so it did not end the on-screen turn. Recorded once a minute per session (attrs.repeats: how many more came in that minute).", "Nothing, unless every turn end of the on-screen CLI is ignored: then its session id is not the one aggy recorded."},
 	{EvHookForwardFailed, LevelWarn, "hook", "aggy hook could not hand a vendor hook event to the supervisor; the CLI went on undisturbed.", "The code's entry; aggy diag --trace <trace id> for the session."},
 	{EvQueueDropped, LevelWarn, "diag", "The supervisor's diagnostic queue was full, so records were dropped (attrs.dropped is how many).", "The state dir's disk: a slow or full disk makes the log fall behind."},
 }
@@ -321,7 +325,9 @@ var codes = []CodeInfo{
 	{CodeLineage, true, "A message on the supervisor's socket came from a process outside the on-screen CLI's process tree, so it was not acted on.", "Which process of yours writes to ~/.aggy/run; a CLI's tool that outlived it is reparented and falls out."},
 	{CodePeerUID, true, "A process of another user reached the supervisor's socket; it got no answer.", "The run directory's owner and mode (0700)."},
 	{CodeBadRequest, true, "A message on the supervisor's socket was not one aggy sends (bad JSON, an unknown type or field, a bad name).", "Which process writes to ~/.aggy/run; aggy hook and aggy switch send only valid messages."},
-	{CodeForeignSession, true, "A turn end from the CLI's tree named another session (a nested CLI) or none, so it did not end the on-screen turn.", "Nothing, unless the on-screen CLI's own turn ends are rejected: then its session id is not the one aggy recorded."},
+	{CodeForeignSession, false, "A turn end from the CLI's tree named another session (a nested CLI), so it did not end the on-screen turn.", "Nothing, unless the on-screen CLI's own turn ends are ignored: then its session id is not the one aggy recorded."},
+	{CodeNoSession, true, "A turn end from the CLI's tree named no session, which the vendor's own hook always does, so it looks forged and was not acted on.", "Which process in the session sends hook events: aggy hook forwards what the vendor gives it."},
+	{CodePeerUnknown, false, "aggy could not tell which user or process opened a connection to the supervisor's socket, so it was closed unanswered.", "Usually a process that connected and exited at once; nothing, unless hooks stop arriving."},
 	{CodeWrongVendor, true, "A hook event from the CLI's tree came from another vendor's hook than the one on screen, so it did not gate a switch.", "A nested CLI of another vendor in the session; nothing else."},
 	{CodeBadPayload, false, "aggy hook could not read the vendor's hook payload, or it was not a JSON object.", "The vendor CLI's version; aggy doctor."},
 }

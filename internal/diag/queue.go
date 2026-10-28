@@ -2,24 +2,31 @@ package diag
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
+// secQueue is how many records with a security code a Queue keeps apart
+// from the rest, so a flood of plain records cannot crowd one out.
+const secQueue = 64
+
 // Queue is the writer's path for code that must never wait on the disk,
 // such as the supervisor's terminal loop and its socket: Log only
-// enqueues, and one goroutine writes, in order. When the queue is full a
-// record is dropped and counted, and once the queue is closed one
-// diag.queue.dropped record carries the count. A nil *Queue writes
-// nothing.
+// enqueues, and one goroutine writes, records with a security code first.
+// When the queue is full a record is dropped and counted, and once the
+// queue is closed one diag.queue.dropped record carries the counts. A nil
+// *Queue writes nothing.
 type Queue struct {
 	w       *Writer
-	ch      chan Rec
+	ch, sec chan Rec
 	done    chan struct{}
 	dropped atomic.Int64
+	// droppedSec counts the dropped records with a security code.
+	droppedSec atomic.Int64
 
-	mu     sync.RWMutex // held to send, and to close ch
+	mu     sync.RWMutex // held to send, and to close the channels
 	closed bool
 }
 
@@ -28,20 +35,55 @@ func (w *Writer) Queue(n int) *Queue {
 	if w == nil {
 		return nil
 	}
-	q := &Queue{w: w, ch: make(chan Rec, n), done: make(chan struct{})}
+	q := &Queue{w: w, ch: make(chan Rec, n), sec: make(chan Rec, secQueue), done: make(chan struct{})}
 	go q.run()
 	return q
 }
 
 func (q *Queue) run() {
 	defer close(q.done)
-	for r := range q.ch {
-		q.w.Log(context.Background(), r)
+	ch, sec := q.ch, q.sec
+	for ch != nil || sec != nil {
+		var r Rec
+		var ok bool
+		// Security records first, whenever one is waiting.
+		select {
+		case r, ok = <-sec:
+			if !ok {
+				sec = nil
+				continue
+			}
+		default:
+			select {
+			case r, ok = <-sec:
+				if !ok {
+					sec = nil
+					continue
+				}
+			case r, ok = <-ch:
+				if !ok {
+					ch = nil
+					continue
+				}
+			}
+		}
+		q.write(r)
 	}
 	if n := q.dropped.Load(); n > 0 {
-		q.w.Log(context.Background(), Rec{Event: EvQueueDropped, Code: CodeQueueFull,
-			Msg: "the diagnostic log fell behind and dropped records", Attrs: map[string]any{"dropped": n}})
+		q.write(Rec{Event: EvQueueDropped, Code: CodeQueueFull, Msg: "the diagnostic log fell behind and dropped records",
+			Attrs: map[string]any{"dropped": n, "dropped_security": q.droppedSec.Load()}})
 	}
+}
+
+// write writes r. A panic in the writer is reported as a failed write
+// and never ends aggy, whose terminal may be raw (G67-5).
+func (q *Queue) write(r Rec) {
+	defer func() {
+		if p := recover(); p != nil {
+			q.w.warnOnce(fmt.Errorf("panic: %v", p))
+		}
+	}()
+	q.w.Log(context.Background(), r)
 }
 
 // Writer is the queue's writer, for its run id and tags; nil for a nil q.
@@ -55,25 +97,46 @@ func (q *Queue) Writer() *Writer {
 // Log enqueues r without waiting and returns the id it will have, so a
 // later record can name it as its cause. The record keeps the time it was
 // enqueued. It returns "" when r was dropped: q is nil or closed, or full.
-func (q *Queue) Log(r Rec) string {
+func (q *Queue) Log(r Rec) string { return q.LogWait(r, 0) }
+
+// LogWait is Log, but waits up to d for room when the queue is full: for
+// goroutines that are not the terminal loop, such as the socket's.
+func (q *Queue) LogWait(r Rec, d time.Duration) string {
 	if q == nil {
 		return ""
 	}
 	now := q.w.now()
 	r.at = now
 	r.id = q.w.ids.next(now)
+	ch := q.ch
+	c, _ := LookupCode(r.Code)
+	if c.Security {
+		ch = q.sec
+	}
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 	if q.closed {
 		return ""
 	}
 	select {
-	case q.ch <- r:
+	case ch <- r:
 		return r.id
 	default:
-		q.dropped.Add(1)
-		return ""
 	}
+	if d > 0 {
+		t := time.NewTimer(d)
+		defer t.Stop()
+		select {
+		case ch <- r:
+			return r.id
+		case <-t.C:
+		}
+	}
+	q.dropped.Add(1)
+	if c.Security {
+		q.droppedSec.Add(1)
+	}
+	return ""
 }
 
 // Dropped is how many records were dropped so far.
@@ -95,6 +158,7 @@ func (q *Queue) Close(wait time.Duration) {
 	if !q.closed {
 		q.closed = true
 		close(q.ch)
+		close(q.sec)
 	}
 	q.mu.Unlock()
 	select {

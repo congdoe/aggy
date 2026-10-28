@@ -32,10 +32,11 @@ func runSwitch(args []string, stdout, stderr io.Writer) int {
 func switchWith(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	req := supervisor.Request{Type: supervisor.ReqSwitchRequest}
-	// refused records a refusal under code with msg, and prints it with
-	// shown, which may quote the agent's own arguments; the record never
-	// does. This process's trace is the supervisor's (AGGY_TRACE), so
-	// its record joins the session's.
+	// refused records a refusal under code with msg, aggy's own words,
+	// and prints it with shown, which may quote the agent's arguments,
+	// AGGY_SOCKET, AGGY_HOME, or the supervisor's answer; the record
+	// never does (G67-1). This process's trace is the supervisor's
+	// (AGGY_TRACE), so its record joins the session's.
 	refused := func(code diag.Code, msg, shown string, v adapter.Vendor) {
 		dlog.Log(ctx, diag.Rec{Event: diag.EvSwitchRefused, Code: code, Msg: msg, Vendor: string(v)})
 		fmt.Fprintf(stderr, "aggy switch: %s %s\n", termsafe.Line(shown), dlog.Tag(code))
@@ -75,23 +76,25 @@ func switchWith(args []string, getenv func(string) string, stdout, stderr io.Wri
 	}
 	dir, err := home.Dir()
 	if err != nil {
-		refused(diag.CodeStore, err.Error(), err.Error(), v)
+		refused(diag.CodeStore, "the state directory could not be found", err.Error(), v)
 		return 1
 	}
 	req.Vendor = string(v)
 	resp, err := supervisor.Send(filepath.Join(dir, "run"), sock, req, hookTimeout)
 	switch {
 	case err != nil:
-		refused(diag.CodeUnreachable, err.Error(), err.Error(), v)
+		refused(diag.CodeUnreachable, "the supervisor's socket could not be reached", err.Error(), v)
 		return 1
 	case !resp.OK:
-		// The supervisor recorded it too; its code is taken only when
-		// the registry has it.
+		// The supervisor recorded it, and wrote any refusal to aggy log;
+		// this record only reports it (G67-4). Its code is taken only
+		// when the registry has it.
 		code := diag.CodeSwitchVendor
 		if c, ok := diag.CodeNamed(resp.Code); ok {
 			code = c.Name
 		}
-		refused(code, "refused: "+resp.Error, "refused: "+resp.Error, v)
+		dlog.Log(ctx, diag.Rec{Event: diag.EvSwitchRefused, Code: code, Msg: "the supervisor refused it", Vendor: string(v), NoRefusal: true})
+		fmt.Fprintf(stderr, "aggy switch: refused: %s %s\n", termsafe.Line(resp.Error), dlog.Tag(code))
 		return 1
 	}
 	fmt.Fprintf(stdout, "aggy will offer the user a switch to %s when this turn ends. End your turn now; the user decides.\n", v)

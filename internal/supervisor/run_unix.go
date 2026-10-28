@@ -113,7 +113,7 @@ func Run(o Options) (Exit, error) {
 			return Exit{Code: 1}, err
 		}
 		defer func() { _ = srv.Close() }()
-		srv.SetLog(func(r diag.Rec) { s.log(r) })
+		srv.SetLog(s.logWait)
 		if o.CanSwitch != nil {
 			srv.SetSwitch(s.onSwitch)
 		}
@@ -373,9 +373,55 @@ type session struct {
 	shares          chan shareReading
 	share           *shareReading
 	shareSeq        int
-	// lastHook is the id of the latest record of a hook event or limit
-	// from the session, the cause of what it sets off.
-	lastHook string
+	// lastTurnEnd is the id of the record of the latest counted turn end
+	// of the on-screen child, and lastLimit of the latest limit: the
+	// causes of what each sets off (G67-2).
+	lastTurnEnd, lastLimit string
+	// foreign is, per session id a turn end named that was not the
+	// on-screen one, when it was last recorded and how many came since
+	// (G67-4). Only in memory; owned by the main loop.
+	foreign map[string]*foreignSeen
+}
+
+// foreignSeen is one foreign session's turn ends: when one was last
+// recorded, and how many came since.
+type foreignSeen struct {
+	at      time.Time
+	repeats int
+}
+
+// maxForeign caps the sessions foreign keeps; past it, it starts over.
+const maxForeign = 64
+
+// turnCause is the cause of a switch's step at a turn end: the counted
+// turn end, when it came after the switch's latest record (ids sort by
+// time), else that record.
+func (s *session) turnCause() string {
+	if s.lastTurnEnd > s.sw.rec {
+		return s.lastTurnEnd
+	}
+	return s.sw.rec
+}
+
+// ignoredTurnEnd records a turn end that named another session, at most
+// once a minute per session, with how many came since the last record.
+func (s *session) ignoredTurnEnd(ev hookEvent) {
+	now := time.Now()
+	if s.foreign == nil || len(s.foreign) >= maxForeign {
+		s.foreign = map[string]*foreignSeen{}
+	}
+	f := s.foreign[ev.sessionID]
+	if f != nil && now.Sub(f.at) < time.Minute {
+		f.repeats++
+		return
+	}
+	repeats := 0
+	if f != nil {
+		repeats = f.repeats
+	}
+	s.foreign[ev.sessionID] = &foreignSeen{at: now}
+	s.log(diag.Rec{Event: diag.EvHookIgnored, Code: diag.CodeForeignSession, Msg: "a turn end of another session",
+		Attrs: map[string]any{"event": hookName(ev.name), "repeats": repeats}})
 }
 
 // setSwitch sets the switch state.
@@ -418,10 +464,10 @@ func (s *session) onHook(r Request) {
 	case !r.FromSession:
 		// The socket recorded it (peer.lineage_failed).
 	case r.Vendor != string(s.o.Vendor):
-		s.log(diag.Rec{Event: diag.EvHookRejected, Code: diag.CodeWrongVendor, Msg: "a hook event of another vendor than the one on screen",
+		s.logWait(diag.Rec{Event: diag.EvHookRejected, Code: diag.CodeWrongVendor, Msg: "a hook event of another vendor than the one on screen",
 			Attrs: map[string]any{"event": hookName(r.Event), "from": r.Vendor}})
 	case r.Event == "SessionStart":
-		s.log(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(r.Event)}})
+		s.logWait(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(r.Event)}})
 	}
 	if r.FromSession && r.Vendor == string(s.o.Vendor) && r.Event != "SessionStart" {
 		ev := hookEvent{name: r.Event, sessionID: hook.Parse(s.o.Vendor, r.Payload).SessionID}
@@ -449,14 +495,17 @@ func (s *session) hookEvent(ev hookEvent) {
 		}
 		// Neither session id is stored: the payload's could be any text.
 		switch {
+		case ev.sessionID == "":
+			// The vendor's own hook always names its session.
+			s.log(diag.Rec{Event: diag.EvHookRejected, Code: diag.CodeNoSession, Msg: "a turn end that names no session",
+				Attrs: map[string]any{"event": hookName(ev.name)}})
 		case own == "":
-			s.lastHook = s.log(diag.Rec{Event: diag.EvHookAccepted, Msg: "the on-screen session's id is not known yet, so the turn end is not counted",
+			s.log(diag.Rec{Event: diag.EvHookAccepted, Msg: "the on-screen session's id is not known yet, so the turn end is not counted",
 				Attrs: map[string]any{"event": hookName(ev.name), "counted": false}})
 		case ev.sessionID != own:
-			s.lastHook = s.log(diag.Rec{Event: diag.EvHookRejected, Code: diag.CodeForeignSession, Msg: "a turn end of another session, or of none",
-				Attrs: map[string]any{"event": hookName(ev.name), "names_session": ev.sessionID != ""}})
+			s.ignoredTurnEnd(ev)
 		default:
-			s.lastHook = s.log(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(ev.name), "counted": true, "held": s.held}})
+			s.lastTurnEnd = s.log(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(ev.name), "counted": true, "held": s.held}})
 		}
 		if ev.sessionID != "" && ev.sessionID == own {
 			s.atPrompt = !s.held
@@ -468,7 +517,7 @@ func (s *session) hookEvent(ev hookEvent) {
 		}
 		return
 	}
-	s.lastHook = s.log(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(ev.name), "holds": true}})
+	s.log(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(ev.name), "holds": true}})
 	s.atPrompt, s.held = false, true
 }
 
@@ -513,7 +562,27 @@ func (s *session) offered(v adapter.Vendor) error {
 	if s.o.CanSwitch == nil {
 		return errors.New("this session cannot switch")
 	}
-	return s.o.CanSwitch(v)
+	if err := s.o.CanSwitch(v); err != nil {
+		return &checkError{err}
+	}
+	return nil
+}
+
+// checkError is CanSwitch's answer: its text can hold a path or a CLI's
+// own error text, so a record never stores it (G67-1).
+type checkError struct{ err error }
+
+func (e *checkError) Error() string { return e.err.Error() }
+func (e *checkError) Unwrap() error { return e.err }
+
+// refusedMsg is a record's message for a switch to v refused with err:
+// err's text when it is aggy's own (offered), else a fixed one.
+func refusedMsg(v adapter.Vendor, err error) string {
+	var ce *checkError
+	if errors.As(err, &ce) {
+		return fmt.Sprintf("cannot switch to %s: the repo's allowed_vendors, its CLI not on PATH, or the safety policy", v)
+	}
+	return err.Error()
 }
 
 // send queues the user's input for the CLI and notes what it may start:
@@ -607,7 +676,7 @@ func (s *session) offerSwitch() {
 		// both, so the switch waits; the user is told once.
 		if !s.toldDirty {
 			s.toldDirty = true
-			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeUnsentText, Cause: s.lastHook,
+			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeUnsentText, Cause: s.turnCause(),
 				Msg: "the switch waits: text the user typed is not sent", Attrs: map[string]any{"to": string(v)}})
 			s.pk.tell(fmt.Sprintf("aggy is ready to switch to %s, but you typed text you have not sent to %s.", v, on),
 				"Send it, or clear it (Ctrl+U or Backspace) and press Enter on the empty prompt; aggy asks again at the",
@@ -619,7 +688,7 @@ func (s *session) offerSwitch() {
 	if err := s.offered(v); errors.Is(err, ErrChecking) {
 		return // offered once the check is done
 	} else if err != nil {
-		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchVendor, Cause: s.lastHook, Msg: err.Error(), Attrs: map[string]any{"to": string(v)}})
+		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchVendor, Cause: s.turnCause(), Msg: refusedMsg(v, err), Attrs: map[string]any{"to": string(v)}})
 		s.setSwitch(pendingSwitch{})
 		s.pk.tell(fmt.Sprintf("Cannot switch to %s: %v", v, err))
 		s.openPicker()
@@ -646,11 +715,7 @@ func (s *session) offerSwitch() {
 		line += fmt.Sprintf(" (%s is unverified.)", cmd)
 	}
 	lines := []string{line}
-	cause := s.lastHook
-	if cause == "" {
-		cause = s.sw.rec
-	}
-	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: cause, Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "asked": s.sw.asked, "limit": s.sw.limit})})
+	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: s.turnCause(), Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "asked": s.sw.asked, "limit": s.sw.limit})})
 	s.pk.preselect = "" // offered once (O56-5)
 	s.pk.ask(v, lines...)
 	s.openPicker()
@@ -707,7 +772,7 @@ func (s *session) offerWarn() {
 	// The epsilon keeps 0.29*100 (28.999...) at 29%.
 	pct := int(math.Floor(r.Used*100 + 1e-9))
 	pre := s.withQuota()
-	rec := diag.Rec{Event: diag.EvNearLimitWarned, Cause: s.lastHook,
+	rec := diag.Rec{Event: diag.EvNearLimitWarned, Cause: s.lastTurnEnd,
 		Attrs: map[string]any{"used_pct": pct, "warn_at_pct": int(math.Floor(s.o.WarnAt*100 + 1e-9)), "window": r.Window, "to": string(pre)}}
 	if pre == "" {
 		rec.Code = diag.CodeNearNoQuota
@@ -797,7 +862,7 @@ func (s *session) onLimit(h LimitHit) {
 	if v != s.o.Vendor {
 		return
 	}
-	s.lastHook = s.log(diag.Rec{Event: diag.EvLimitReceived, Code: diag.CodeRateLimit, Attrs: map[string]any{"unverified": h.Unverified}})
+	s.lastLimit = s.log(diag.Rec{Event: diag.EvLimitReceived, Code: diag.CodeRateLimit, Attrs: map[string]any{"unverified": h.Unverified}})
 	// L60-1: a limit ends any near-limit warning: none follows for this
 	// crossing, and one on screen gives way to the limit's own note.
 	s.warned, s.warnDue, s.warnedWindow, s.warnedReset = true, false, "", time.Time{}
@@ -811,17 +876,17 @@ func (s *session) onLimit(h LimitHit) {
 	}
 	switch {
 	case pre == "":
-		s.log(diag.Rec{Event: diag.EvLimitNotOffered, Code: diag.CodeNoQuota, Cause: s.lastHook})
+		s.log(diag.Rec{Event: diag.EvLimitNotOffered, Code: diag.CodeNoQuota, Cause: s.lastLimit})
 		s.pk.tell(fmt.Sprintf("%s, and no other vendor aggy offers has quota left.", limitWho(h)))
 		s.openPicker()
 	case !holdSignal(v):
-		s.log(diag.Rec{Event: diag.EvLimitNotOffered, Code: diag.CodeLimitNoHold, Cause: s.lastHook, Attrs: map[string]any{"to": string(pre)}})
+		s.log(diag.Rec{Event: diag.EvLimitNotOffered, Code: diag.CodeLimitNoHold, Cause: s.lastLimit, Attrs: map[string]any{"to": string(pre)}})
 		s.pk.tell(fmt.Sprintf("%s. %s has quota left: press %s, then Enter, to switch to it with a brief.", limitWho(h), pre, keyName(s.pk.key)),
 			fmt.Sprintf("aggy cannot tell when %s waits for an approval, so it does not offer the switch itself.", v))
 		s.openPicker()
 	default:
 		s.setSwitch(pendingSwitch{to: pre, limit: true, unverified: h.Unverified, choice: Choice{Vendor: pre, Brief: true}})
-		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Cause: s.lastHook,
+		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Cause: s.lastLimit,
 			Attrs: switchAttrs(s.sw.choice, map[string]any{"origin": "limit", "to": string(pre), "unverified": h.Unverified})})
 	}
 }
@@ -1017,7 +1082,7 @@ func (s *session) pickerInput(b []byte) {
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Cause: s.sw.rec, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked), "again": true})})
 	case picked != "":
 		if err := s.offered(picked); err != nil && !errors.Is(err, ErrChecking) {
-			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchVendor, Msg: err.Error(), Attrs: map[string]any{"to": string(picked)}})
+			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchVendor, Msg: refusedMsg(picked, err), Attrs: map[string]any{"to": string(picked)}})
 			s.pk.tell(fmt.Sprintf("Cannot switch to %s: %v", picked, err))
 			s.openPicker()
 			return

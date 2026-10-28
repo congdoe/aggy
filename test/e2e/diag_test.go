@@ -22,6 +22,9 @@ import (
 func TestDiagSessionCanary(t *testing.T) {
 	const secret = "ghp_Wm4Kq9Zt2Lx7Bn3Rv8Hc1Jd6Fs5Pa0Ye2Gu"
 	const typed, said, printed = "typed-tapir-canary-61", "payload-quokka-canary-62", "stderr-egret-canary-63"
+	// G67-7: an env value an agent sets, a model typed in the picker,
+	// and a hook event name aggy does not know.
+	const envSock, envHome, model, event = "/tmp/env-ocelot-canary-64.sock", "env-lemur-canary-65", "model-ibex-canary-66", "EventNewtCanary67"
 	w := newWorld(t)
 	env := []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
 	aggy := func(args ...string) string {
@@ -35,7 +38,9 @@ func TestDiagSessionCanary(t *testing.T) {
 		return string(out)
 	}
 	aggy("setup", "--yes")
-	hook := buildAggy(t) + " hook --vendor claude \"$1\"; " + buildAggy(t) + " switch --new grok >/dev/null 2>&1; true"
+	hook := buildAggy(t) + " hook --vendor claude \"$1\"; " + buildAggy(t) + " switch --new grok >/dev/null 2>&1; " +
+		"AGGY_SOCKET=" + envSock + " " + buildAggy(t) + " switch grok >/dev/null 2>&1; " +
+		"AGGY_HOME=" + envHome + " " + buildAggy(t) + " switch grok >/dev/null 2>&1; true"
 	sc := map[string]any{
 		"stdout":       "READY>",
 		"stderr":       "error: " + printed + " " + secret + "\n",
@@ -43,6 +48,7 @@ func TestDiagSessionCanary(t *testing.T) {
 		"hooks": []map[string]any{
 			{"event": "Stop", "payload": map[string]any{"session_id": said}},
 			{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}", "error": said + " " + secret}},
+			{"event": event, "payload": map[string]any{"session_id": "{session_id}", "message": said}},
 		},
 	}
 	s := w.start(t, sc, "run", "claude")
@@ -56,9 +62,17 @@ func TestDiagSessionCanary(t *testing.T) {
 		key = []byte("1")
 	}
 	s.mu.Unlock()
+	s.send([]byte("m" + model + "\r"))
+	s.waitFor([]byte(model))
 	s.send(key)
 	time.Sleep(200 * time.Millisecond)
 	s.send([]byte(typed + " " + secret)) // never sent
+	// The unknown event held the switch; picking grok again says no turn
+	// is running, and the unsent text still blocks it.
+	time.Sleep(200 * time.Millisecond)
+	s.send([]byte{0x1c})
+	time.Sleep(600 * time.Millisecond)
+	s.send(key)
 	s.waitWithin([]byte("you have not sent"), offerTimeout)
 	s.send([]byte{0x1b})
 	time.Sleep(300 * time.Millisecond)
@@ -70,8 +84,10 @@ func TestDiagSessionCanary(t *testing.T) {
 	all := aggy("diag", "sql", "SELECT * FROM records")
 	exp := aggy("diag", "export", "--jsonl")
 	bundle := aggy("diag", "bundle", "--since", "1h")
-	for name, text := range map[string]string{"diag.db": all, "export": exp, "bundle": bundle} {
-		for _, leak := range []string{secret, secret[:16], typed, said, printed} {
+	events := aggy("diag", "sql", "SELECT * FROM idx.events")
+	log := aggy("log", "-n", "1000")
+	for name, text := range map[string]string{"diag.db": all, "export": exp, "bundle": bundle, "idx.events": events, "aggy log": log} {
+		for _, leak := range []string{secret, secret[:16], typed, said, printed, envSock, "env-ocelot", envHome, model, event} {
 			if strings.Contains(text, leak) {
 				t.Errorf("%s holds %q", name, leak)
 			}
@@ -110,7 +126,7 @@ func TestDiagSessionCanary(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"hook.event.rejected hook.foreign_session", "hook.event.accepted ", "switch.picker.chosen ",
+		"hook.event.ignored hook.foreign_session", "hook.event.accepted ", "switch.picker.chosen ",
 		"switch.request.queued ", "switch.request.refused switch.unsent_text", "supervisor.child.exited ",
 	} {
 		if r, ok := seen[want]; !ok || r != run {
@@ -118,7 +134,9 @@ func TestDiagSessionCanary(t *testing.T) {
 		}
 	}
 	// The agent's aggy switch is its own process, in the session's trace.
-	if r, ok := seen["switch.request.refused switch.agent_options"]; !ok || r == run {
-		t.Errorf("the agent's refused switch: run %q (supervisor %s), seen %v", r, run, seen)
+	for _, want := range []string{"switch.request.refused switch.agent_options", "switch.request.refused supervisor.unreachable"} {
+		if r, ok := seen[want]; !ok || r == run {
+			t.Errorf("%s: run %q (supervisor %s), seen %v", want, r, run, seen)
+		}
 	}
 }

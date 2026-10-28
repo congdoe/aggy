@@ -75,12 +75,26 @@ func hookWith(args []string, in io.Reader, getenv func(string) string, stdout, s
 		drain(in)
 		return 0
 	}
+	deadline := time.Now().Add(hookTimeout)
 	// The record joins the session's trace: aggy hook runs with the
 	// AGGY_TRACE of the supervisor it reports to. It holds aggy's own
-	// words only, never the payload or what the socket said.
+	// words only, never the payload or what the socket said. The vendor
+	// waits for its hook, so the record gets only the time left before
+	// the deadline (G67-6); one not written in time is not tagged.
 	failed := func(f hookFailure) {
-		dlog.Log(context.Background(), diag.Rec{Event: diag.EvHookForwardFailed, Code: f.code, Msg: f.why, Vendor: string(v)})
-		fmt.Fprintf(stderr, "aggy hook: %s %s\n", termsafe.Line(f.shown), dlog.Tag(f.code))
+		written := make(chan string, 1)
+		go func() {
+			written <- dlog.Log(context.Background(), diag.Rec{Event: diag.EvHookForwardFailed, Code: f.code, Msg: f.why, Vendor: string(v), NoRefusal: f.relayed})
+		}()
+		tag := ""
+		select {
+		case id := <-written:
+			if id != "" {
+				tag = " " + dlog.Tag(f.code)
+			}
+		case <-time.After(time.Until(deadline)):
+		}
+		fmt.Fprintf(stderr, "aggy hook: %s%s\n", termsafe.Line(f.shown), tag)
 	}
 	done := make(chan *hookFailure, 1)
 	go func() { done <- forward(v, event, in, getenv) }()
@@ -89,9 +103,9 @@ func hookWith(args []string, in io.Reader, getenv func(string) string, stdout, s
 		if f != nil {
 			failed(*f)
 		}
-	case <-time.After(hookTimeout):
-		const msg = "the supervisor did not answer in time; ignored"
-		failed(hookFailure{diag.CodeUnreachable, msg, msg})
+	case <-time.After(time.Until(deadline)):
+		// No time is left for a record.
+		fmt.Fprintln(stderr, "aggy hook: the supervisor did not answer in time; ignored")
 	}
 	return 0
 }
@@ -101,6 +115,8 @@ func hookWith(args []string, in io.Reader, getenv func(string) string, stdout, s
 type hookFailure struct {
 	code       diag.Code
 	why, shown string
+	// relayed: the code is the supervisor's, which recorded the refusal.
+	relayed bool
 }
 
 // forward reads the payload, keeps the fields aggy uses, and sends it to
@@ -109,27 +125,27 @@ func forward(v adapter.Vendor, event string, in io.Reader, getenv func(string) s
 	raw, err := io.ReadAll(io.LimitReader(in, hook.MaxPayload+1))
 	if err != nil || len(raw) > hook.MaxPayload {
 		const msg = "the payload could not be read; ignored"
-		return &hookFailure{diag.CodeBadPayload, msg, msg}
+		return &hookFailure{diag.CodeBadPayload, msg, msg, false}
 	}
 	payload, err := hook.Project(v, raw)
 	if err != nil {
-		return &hookFailure{diag.CodeBadPayload, "the payload is not a JSON object; ignored", err.Error() + "; ignored"}
+		return &hookFailure{diag.CodeBadPayload, "the payload is not a JSON object; ignored", err.Error() + "; ignored", false}
 	}
 	dir, err := home.Dir()
 	if err != nil {
-		return &hookFailure{diag.CodeStore, "the state directory could not be found", err.Error()}
+		return &hookFailure{diag.CodeStore, "the state directory could not be found", err.Error(), false}
 	}
 	resp, err := supervisor.Send(filepath.Join(dir, "run"), getenv("AGGY_SOCKET"),
 		supervisor.Request{Type: supervisor.ReqHookEvent, Vendor: string(v), Event: event, Payload: payload}, hookTimeout)
 	switch {
 	case err != nil:
-		return &hookFailure{diag.CodeUnreachable, "the supervisor's socket could not be reached", err.Error()}
+		return &hookFailure{diag.CodeUnreachable, "the supervisor's socket could not be reached", err.Error(), false}
 	case !resp.OK:
 		code := diag.CodeBadRequest
 		if c, ok := diag.CodeNamed(resp.Code); ok {
 			code = c.Name
 		}
-		return &hookFailure{code, "the supervisor refused the event", "the supervisor refused the event: " + resp.Error}
+		return &hookFailure{code, "the supervisor refused the event", "the supervisor refused the event: " + resp.Error, true}
 	}
 	return nil
 }
