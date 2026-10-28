@@ -7,10 +7,17 @@ import (
 	"io"
 	"io/fs"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/borrow"
+	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/termsafe"
 )
 
 // worktreesDir is where edit worktrees live, under the state dir: never
@@ -29,6 +36,10 @@ type gitWorktrees struct {
 	env      borrowEnv
 	stateDir string
 	out      io.Writer // progress lines for the person
+	// allow is the person's setup opt-ins, and cfgPath their config file,
+	// named when a setup command is not allowed.
+	allow   config.UserWorktree
+	cfgPath string
 }
 
 // validBorrowID reports whether id is a borrow id: 16 lowercase hex digits.
@@ -82,11 +93,157 @@ func (g *gitWorktrees) Create(ctx context.Context, repo, id string) (store.Workt
 			err = fmt.Errorf("git gave %q for the worktree's git dir", wt.GitDir)
 		}
 	}
+	if err == nil {
+		err = g.prepare(ctx, wt)
+	}
 	if err != nil {
 		_ = g.Remove(context.WithoutCancel(ctx), wt)
 		return store.Worktree{}, err
 	}
 	return wt, nil
+}
+
+// prepare copies the ignored files the repo config lists into a new
+// worktree, then runs the repo's setup command when the person allowed
+// it. Only edit worktrees get either: research and news children run in
+// an empty temp dir and never see a copied file.
+func (g *gitWorktrees) prepare(ctx context.Context, wt store.Worktree) error {
+	rc, err := config.LoadRepo(wt.Repo)
+	if err != nil {
+		return err
+	}
+	for _, rel := range rc.Worktree.Copy {
+		if err := g.copyIgnored(ctx, wt, rel); err != nil {
+			fmt.Fprintf(g.out, "aggy borrow: not copied into the worktree: %s\n", termsafe.Field(err.Error()))
+		}
+	}
+	return g.setup(ctx, wt, rc.Worktree.Setup)
+}
+
+// maxCopy caps one copied file: the copy list is for small local
+// settings such as .env, not data.
+const maxCopy = 16 << 20
+
+// copyIgnored copies the file rel (validated by config.LoadRepo: clean,
+// relative, no .git part) from the main checkout into wt. It refuses a
+// symlink anywhere on either side, a file that is not regular or has
+// another hard link, a credential file (safefs), and a file that is not
+// ignored in the worktree, which would land in the edit's diff. It never
+// replaces a file.
+func (g *gitWorktrees) copyIgnored(ctx context.Context, wt store.Worktree, rel string) error {
+	elems := strings.Split(rel, "/")
+	for i := 1; i < len(elems); i++ {
+		d := filepath.Join(append([]string{wt.Repo}, elems[:i]...)...)
+		if fi, err := safefs.Lstat(d); err != nil || !fi.IsDir() {
+			return fmt.Errorf("%s: %s is not a real directory in the main checkout", rel, strings.Join(elems[:i], "/"))
+		}
+	}
+	src := filepath.Join(wt.Repo, filepath.FromSlash(rel))
+	fi, err := safefs.Lstat(src)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("%s: not in the main checkout", rel)
+	case err != nil:
+		return fmt.Errorf("%s: %w", rel, err)
+	case !fi.Mode().IsRegular():
+		return fmt.Errorf("%s: not a regular file (a link or a directory)", rel)
+	case fi.Size() > maxCopy:
+		return fmt.Errorf("%s: over %d bytes", rel, maxCopy)
+	}
+	// Exit 0: ignored. A tracked file is never reported ignored.
+	o, err := g.env.gitOutput(ctx, wt.Path, "--git-dir="+wt.GitDir, "--work-tree="+wt.Path, "check-ignore", "-q", "--", rel)
+	if err != nil {
+		return fmt.Errorf("%s: %w", rel, err)
+	}
+	if o.ExitCode != 0 {
+		return fmt.Errorf("%s: not ignored in the worktree, so it would land in the edit's diff", rel)
+	}
+	data, err := safefs.ReadFileNoFollow(src, fi)
+	if err != nil {
+		return fmt.Errorf("%s: %w", rel, err)
+	}
+	dir, err := safefs.Lstat(wt.Path)
+	if err != nil {
+		return err
+	}
+	if len(elems) > 1 {
+		if dir, err = safefs.MkdirChain(wt.Path, dir, elems[:len(elems)-1], 0o700); err != nil {
+			return fmt.Errorf("%s: %w", rel, err)
+		}
+	}
+	if err := safefs.WriteFileNoFollowIn(dir, filepath.Join(wt.Path, filepath.FromSlash(rel)), data, fi.Mode().Perm()&0o700, nil); err != nil {
+		return fmt.Errorf("%s: %w", rel, err)
+	}
+	fmt.Fprintf(g.out, "aggy borrow: copied %s into the worktree\n", termsafe.Field(rel))
+	return nil
+}
+
+// setupTimeout bounds the repo's setup command.
+const setupTimeout = 15 * time.Minute
+
+// setup runs the repo's worktree setup command in wt. It is the repo's
+// own code, as trusted as its build scripts, so it runs only when the
+// person's own config allows this exact command for this repo (a repo
+// cannot allow it), and it is always shown first. It runs through
+// execrun with the scrubbed environment, no stdin, and a time limit.
+func (g *gitWorktrees) setup(ctx context.Context, wt store.Worktree, cmd config.Command) error {
+	if len(cmd) == 0 {
+		return nil
+	}
+	shown := quoteCommand(cmd)
+	if !g.allow.AllowsSetup(canonicalPath(wt.Repo), cmd, canonicalPath) {
+		fmt.Fprintf(g.out, "aggy borrow: the repo's worktree setup command was not run: %s\n", shown)
+		fmt.Fprintf(g.out, "  It runs the repo's own code. To allow it for this repo, add to %s:\n", termsafe.Field(g.cfgPath))
+		fmt.Fprintf(g.out, "  [[worktree.allow_setup]]\n  repo = %s\n  command = [%s]\n", tomlString(wt.Repo), tomlList(cmd))
+		return nil
+	}
+	fmt.Fprintf(g.out, "aggy borrow: running the repo's worktree setup command in %s: %s\n", termsafe.Field(wt.Path), shown)
+	prog := cmd[0]
+	switch {
+	case !strings.Contains(prog, "/"):
+		p, err := probe.LookPath(prog)
+		if err != nil {
+			return fmt.Errorf("worktree setup: %s: %w", termsafe.Field(prog), err)
+		}
+		prog = p
+	case !filepath.IsAbs(prog):
+		prog = filepath.Join(wt.Path, prog)
+		if !within(prog, wt.Path) {
+			return fmt.Errorf("worktree setup: %s is outside the worktree", termsafe.Field(cmd[0]))
+		}
+	}
+	if g.env.setupRun == nil {
+		return errors.New("worktree setup: no runner")
+	}
+	out, err := g.env.setupRun(ctx, adapter.Command{Path: prog, Args: cmd[1:], Dir: wt.Path})
+	if err == nil && out.ExitCode != 0 {
+		tail := borrow.Excerpt(string(out.Stderr), 5, 160)
+		err = fmt.Errorf("exit %d: %s", out.ExitCode, termsafe.Field(strings.Join(tail, " | ")))
+	}
+	if err != nil {
+		return fmt.Errorf("worktree setup: %w", err)
+	}
+	return nil
+}
+
+// quoteCommand shows a command for the person, each part quoted and
+// escaped for the terminal.
+func quoteCommand(cmd config.Command) string {
+	parts := make([]string, len(cmd))
+	for i, c := range cmd {
+		parts[i] = termsafe.Field(strconv.Quote(c))
+	}
+	return strings.Join(parts, " ")
+}
+
+func tomlString(s string) string { return termsafe.Field(strconv.Quote(s)) }
+
+func tomlList(cmd config.Command) string {
+	parts := make([]string, len(cmd))
+	for i, c := range cmd {
+		parts[i] = tomlString(c)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // owned refuses a worktree record that is not one aggy made: its path

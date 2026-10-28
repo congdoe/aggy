@@ -68,6 +68,9 @@ type borrowEnv struct {
 	// gitPath finds git, and gitRun runs it, for a review's diff.
 	gitPath func() (string, error)
 	gitRun  adapter.Runner
+	// setupRun runs a repo's worktree setup command, once the person
+	// allowed it.
+	setupRun adapter.Runner
 	// runner makes the runner for one child.
 	runner  func(timeout time.Duration) adapter.Runner
 	tempDir string
@@ -101,6 +104,7 @@ func defaultBorrowEnv() borrowEnv {
 		probeRun:   execrun.ExecRunner(probeTimeout),
 		gitPath:    func() (string, error) { return probe.LookPath("git") },
 		gitRun:     execrun.ExecRunner(gitTimeout),
+		setupRun:   execrun.ExecRunner(setupTimeout),
 		runner:     headlessRunner,
 		now:        time.Now,
 		executable: os.Executable,
@@ -281,7 +285,7 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 				stop()
 			}
 		},
-		Worktrees: &gitWorktrees{env: env, stateDir: stateDir, out: stderr},
+		Worktrees: &gitWorktrees{env: env, stateDir: stateDir, out: stderr, allow: cfg.Worktree, cfgPath: filepath.Join(stateDir, config.FileName)},
 	})
 	req := borrow.Request{
 		Kind: kind, Task: ba.task, Paths: paths, Constraints: ba.constraints,
