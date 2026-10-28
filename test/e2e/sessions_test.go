@@ -22,7 +22,7 @@ func TestResumeLatest(t *testing.T) {
 	s.waitFor([]byte("READY>"))
 	s.send([]byte{0x04})
 	if code := s.exit(); code != 0 {
-		t.Fatalf("aggy run exit = %d: %q", code, s.out.Bytes())
+		t.Fatalf("aggy run exit = %d", code)
 	}
 	first := fakecli.Records(t, w.record)[0]
 	id := first.Flags["--session-id"]
@@ -34,7 +34,7 @@ func TestResumeLatest(t *testing.T) {
 	s.waitFor([]byte("READY>"))
 	s.send([]byte{0x04})
 	if code := s.exit(); code != 0 {
-		t.Fatalf("aggy exit = %d: %q", code, s.out.Bytes())
+		t.Fatalf("aggy exit = %d", code)
 	}
 	recs := fakecli.Records(t, w.record)
 	second := recs[len(recs)-1]
@@ -43,5 +43,35 @@ func TestResumeLatest(t *testing.T) {
 	}
 	if second.Env["AGGY_PARENT"] != first.Env["AGGY_PARENT"] || second.Env["AGGY_PARENT"] == "" {
 		t.Errorf("AGGY_PARENT %q, then %q: want the same parent", first.Env["AGGY_PARENT"], second.Env["AGGY_PARENT"])
+	}
+}
+
+// TestResumeGone (T6663): a session the vendor never saved is marked
+// gone, and bare aggy says so and starts a new one in the same parent.
+func TestResumeGone(t *testing.T) {
+	w := newWorld(t)
+	sc := map[string]any{"raw_echo": true, "stdout": "READY>"}
+	s := w.start(t, sc, "run", "grok")
+	s.waitFor([]byte("READY>"))
+	s.send([]byte{0x04})
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy run exit = %d", code)
+	}
+	first := fakecli.Records(t, w.record)[0]
+
+	s = w.start(t, sc)
+	s.waitFor([]byte("cannot be resumed"))
+	s.waitFor([]byte("READY>"))
+	s.send([]byte{0x04})
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	recs := fakecli.Records(t, w.record)
+	second := recs[len(recs)-1]
+	if len(second.Flags["--session-id"]) != 1 || second.SessionID == first.SessionID || len(second.Flags["--resume"]) != 0 {
+		t.Errorf("second run args = %q, want a new --session-id", second.Args)
+	}
+	if second.Env["AGGY_PARENT"] != first.Env["AGGY_PARENT"] {
+		t.Error("a new child of the same parent was expected")
 	}
 }

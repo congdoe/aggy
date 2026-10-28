@@ -157,6 +157,10 @@ was tested against.
 - Headless is `claude -p --output-format json`. Read-only uses
   `--permission-mode plan`.
 - Sessions: `--session-id <uuid>`, `--resume <id>`, and `--fork-session`.
+  Unverified: each session is saved as `projects/<folder per cwd>/<id>.jsonl`
+  under `~/.claude` (or `$CLAUDE_CONFIG_DIR`); aggy stats it for a child's
+  last-active time and looks in every project folder, since the folder
+  naming is not recorded.
 - MCP at launch: `--mcp-config <file> --strict-mcp-config`; it is not kept
   with the session, so pass it again on resume. With an empty
   `{"mcpServers":{}}` no MCP or connector tool is left.

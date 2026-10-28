@@ -88,6 +88,19 @@ func runSessions(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = s.Close() }()
 	ps, err := s.Parents(ctx)
+	if err == nil {
+		// Last active comes from the vendors' session files, so it holds
+		// after a crash or sleep; then the order may change.
+		files := &sessionFiles{}
+		for _, p := range ps {
+			if _, err = refreshChildren(ctx, s, p.ID, files); err != nil {
+				break
+			}
+		}
+		if err == nil {
+			ps, err = s.Parents(ctx)
+		}
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy sessions: %s\n", termsafe.Field(err.Error()))
 		return 1
@@ -136,7 +149,7 @@ func runSession(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy session: %s\n", termsafe.Field(err.Error()))
 		return 1
 	}
-	cs, err := s.Children(ctx, p.ID)
+	cs, err := refreshChildren(ctx, s, p.ID, &sessionFiles{})
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy session: %s\n", termsafe.Field(err.Error()))
 		return 1
