@@ -38,24 +38,31 @@ func runNew(args []string, _, stderr io.Writer) int {
 }
 
 // runResume is `aggy resume [id]`: the latest parent in the current
-// directory, or the one whose id starts with id.
+// directory, or the one whose id starts with id, or, when no parent's id
+// does, the parent of the interactive child whose id starts with id, with
+// that child on screen (aggy session lists child ids). Flags may come
+// before or after the id.
 func runResume(args []string, stdout, stderr io.Writer) int {
 	const use = "usage: aggy resume [--no-policy] [--brief [--show]] [id]\n"
 	var t target
 	var show bool
-	for ; len(args) > 0 && strings.HasPrefix(args[0], "--"); args = args[1:] {
-		switch args[0] {
-		case "--no-policy":
+	var ids []string
+	for _, a := range args {
+		switch {
+		case a == "--no-policy":
 			t.NoPolicy = true
-		case "--brief":
+		case a == "--brief":
 			t.Brief = true
-		case "--show":
+		case a == "--show":
 			show = true
-		default:
+		case strings.HasPrefix(a, "-"):
 			fmt.Fprint(stderr, use)
 			return 2
+		default:
+			ids = append(ids, a)
 		}
 	}
+	args = ids
 	if len(args) > 1 || show && !t.Brief {
 		fmt.Fprint(stderr, use)
 		return 2
@@ -179,7 +186,7 @@ func runSession(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "VENDOR\tKIND\tTITLE\tMODEL\tLAST ACTIVE\tSTATUS")
+	fmt.Fprintln(tw, "ID\tVENDOR\tKIND\tTITLE\tMODEL\tLAST ACTIVE\tSTATUS")
 	for _, c := range cs {
 		kind := c.Kind
 		if kind == "" {
@@ -189,7 +196,7 @@ func runSession(args []string, stdout, stderr io.Writer) int {
 		if model == "" {
 			model = "default"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", termsafe.Field(c.Vendor), termsafe.Field(kind),
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", termsafe.Field(shortID(c.ID)), termsafe.Field(c.Vendor), termsafe.Field(kind),
 			orDash(termsafe.Field(c.Title)), termsafe.Field(model), when(c.LastActive), termsafe.Field(c.Status))
 	}
 	_ = tw.Flush()

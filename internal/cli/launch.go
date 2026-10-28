@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,9 +24,11 @@ type target struct {
 	// (empty means the default vendor).
 	New    bool
 	Vendor adapter.Vendor
-	// ParentID reopens that parent (an id or a unique prefix). Empty, and
-	// not New, reopens the latest parent in the current directory, or
-	// starts one there.
+	// ParentID reopens that parent (an id or a unique prefix), or, when
+	// no parent's id has that prefix, the parent of the one interactive
+	// child whose id does, with that child on screen. Empty, and not New,
+	// reopens the latest parent in the current directory, or starts one
+	// there.
 	ParentID string
 	// Direct runs the CLI on aggy's own terminal (aggy run --direct).
 	Direct bool
@@ -54,6 +57,7 @@ type launchPlan struct {
 // recorded) go to stderr.
 func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t target, now time.Time, stderr io.Writer) (launchPlan, error) {
 	var p launchPlan
+	pick := "" // a child t.ParentID named, put on screen instead of the latest
 	switch {
 	case t.New:
 		p.newParent = true
@@ -64,7 +68,9 @@ func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t 
 		}
 		switch len(ps) {
 		case 0:
-			return p, fmt.Errorf("no session %s (aggy sessions lists them)", t.ParentID)
+			if p.parent, pick, err = childByPrefix(ctx, s, t.ParentID); err != nil {
+				return p, err
+			}
 		case 1:
 			p.parent = ps[0]
 		default:
@@ -112,10 +118,11 @@ func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t 
 	if err != nil {
 		return p, err
 	}
-	// The interactive child last on screen: the most recently active one.
+	// The interactive child last on screen: the most recently active one,
+	// or the one picked by id.
 	var last *store.Child
 	for i := range children {
-		if children[i].Kind == "" {
+		if children[i].Kind == "" && (pick == "" || children[i].ID == pick) {
 			last = &children[i]
 			break
 		}
@@ -332,4 +339,33 @@ func (c *childIDs) release(ctx context.Context) {
 		_ = c.lease.Release(ctx)
 		c.lease = nil
 	}
+}
+
+// childByPrefix returns the parent of the one interactive child whose id
+// starts with prefix, and that child's id.
+func childByPrefix(ctx context.Context, s *store.Store, prefix string) (store.Parent, string, error) {
+	ps, err := s.Parents(ctx)
+	if err != nil {
+		return store.Parent{}, "", err
+	}
+	var par store.Parent
+	var found []string
+	for _, p := range ps {
+		cs, err := s.Children(ctx, p.ID)
+		if err != nil {
+			return store.Parent{}, "", err
+		}
+		for _, c := range cs {
+			if c.Kind == "" && strings.HasPrefix(c.ID, prefix) {
+				par, found = p, append(found, c.ID)
+			}
+		}
+	}
+	switch len(found) {
+	case 0:
+		return par, "", fmt.Errorf("no session %s (aggy sessions and aggy session list them)", prefix)
+	case 1:
+		return par, found[0], nil
+	}
+	return par, "", fmt.Errorf("%d sessions start with %s; give more of the id", len(found), prefix)
 }

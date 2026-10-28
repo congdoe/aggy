@@ -255,6 +255,8 @@ func build(in Input, turns []string, removed []int, dropped int) string {
 	case in.TranscriptErr != nil && !back:
 	case len(turns) == 0 && dropped > 0:
 		fmt.Fprintf(&b, "All %d turns read were left out to keep this brief within its size limit; the full transcript has them.\n", dropped)
+	case len(turns) == 0 && back && in.From == "":
+		b.WriteString("No other CLI worked in this session since you left, so nothing was added since.\n")
 	case len(turns) == 0 && back:
 		b.WriteString("No other CLI added a turn that could be read.\n")
 	case len(turns) == 0 && in.From == "":

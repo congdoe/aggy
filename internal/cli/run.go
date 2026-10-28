@@ -121,16 +121,6 @@ func launch(name string, t target, stderr io.Writer) int {
 	}
 	sweepMemoryDirs(runDir, time.Now())
 	req := pl.interactiveRequest()
-	if t.Brief {
-		// A file the child is told to read, never an argument (ARG_MAX).
-		text, err := childBrief(ctx, s, defaultBorrowEnv(), pl)
-		if err != nil {
-			return fail(err)
-		}
-		if req.BriefFile, err = brief.WriteFile(pl.child.Cwd, pl.child.ID, text); err != nil {
-			return fail(err)
-		}
-	}
 	// The policy is checked before anything is written to the index, so
 	// a refused launch leaves no trace.
 	var warns []string
@@ -154,6 +144,19 @@ func launch(name string, t target, stderr io.Writer) int {
 	for _, w := range append(warns, mw...) {
 		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
 	}
+	// The brief is built now and written only once the lease is held, so
+	// a refused launch leaves no file and never rewrites the brief of a
+	// child another aggy has on screen (G34-5). It is a file the child is
+	// told to read, never an argument (ARG_MAX).
+	var briefText string
+	if t.Brief {
+		if briefText, err = childBrief(ctx, s, defaultBorrowEnv(), pl); err != nil {
+			return fail(err)
+		}
+		if req.BriefFile, err = brief.Path(pl.child.Cwd, pl.child.ID); err != nil {
+			return fail(err)
+		}
+	}
 	cmd, err := a.Interactive(req)
 	if err != nil {
 		return fail(err)
@@ -170,6 +173,11 @@ func launch(name string, t target, stderr io.Writer) int {
 		// Record the session file's time now the CLI has exited.
 		_, _ = refreshChildren(ctx, s, pl.parent.ID, &sessionFiles{})
 	}()
+	if t.Brief {
+		if _, err := brief.WriteFile(pl.child.Cwd, pl.child.ID, briefText); err != nil {
+			return fail(err)
+		}
+	}
 	// The child's id when known at launch: Claude's and Grok's
 	// pre-assigned or resumed one (the only id the index records for
 	// them), or a resumed Codex thread. A new Codex child's id comes from

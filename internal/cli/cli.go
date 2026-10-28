@@ -51,8 +51,9 @@ Commands:
             --no-policy (on aggy, run, new, resume) starts it without.
   brief     Preview the handoff brief for a vendor session
   new       Start another session in this directory (optionally: a vendor)
-  resume    Reopen the latest session here, or the one with this id;
-            --brief hands its child a brief file, --brief --show previews it
+  resume    Reopen the latest session here, or the one with this id (a
+            child id from aggy session reopens that child); --brief hands
+            the child a brief file, --brief --show previews it
   sessions  List every session: directory, last vendor, last active
   session   List this session's children: vendor, kind, title, model
   setup     Check each vendor CLI's install, version, and sign-in
