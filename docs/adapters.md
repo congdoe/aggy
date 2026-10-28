@@ -168,24 +168,36 @@ was tested against.
   (2026-10-28, grok 1.0.70) `read_file` of a canary under
   `~/Library/Caches` was refused, `Denied by permission policy: deny rule
   on read matching "~/Library/**"`, while the in-repo README still read.
-  That is a permission rule, not the kernel sandbox.
-- Grok's sandbox fails open: where the platform cannot apply it, Grok
-  logs "Sandbox not supported on this platform, continuing without
-  sandbox" or "Sandbox could not be applied, continuing without sandbox"
-  and runs unsandboxed (`xai-grok-sandbox/src/lib.rs:206-216`,
-  `:236-247`; also "Sandbox enforcement unavailable (built without
-  'enforce' feature)"). So aggy refuses these kinds
-  (`adapter.ErrNoCapability`) unless the probed `--help` lists
-  `--sandbox` and the host has a kernel sandbox: macOS (Seatbelt), or
-  Linux whose `/sys/kernel/security/lsm` names `landlock` (read through
-  safefs, capped; checked per borrow, never cached); any other OS is
-  refused. After a run, any of those messages on stderr fails it closed
-  (`ErrLockdownRejected`) and its output is discarded. Whether those
-  tracing events reach stderr in headless mode is unverified, so the host
-  check is the main guard. Image and video do not use the sandbox
+  That is a permission rule, not the kernel sandbox, and Grok matches it
+  on the lexical path: on macOS, `read_file
+  /System/Volumes/Data<HOME>/Library/...` (the firmlink spelling, not a
+  symlink) returned the canary past it (live, 2026-10-28, grok 1.0.70),
+  so on darwin aggy also denies `Read(/System/Volumes/Data/**)` and
+  `Grep(/System/Volumes/Data/**)`. The same firmlink read of a home
+  folder outside `~/Library` was refused by the sandbox itself.
+- When grok 1.0.70 cannot apply the profile it was asked for, it refuses
+  to start, exit 1 (live, 2026-10-28, nested in `sandbox-exec -p
+  '(version 1)(allow default)'`): `sandbox initialization failed:
+  Operation not permitted`, then `error: could not apply the 'strict'
+  sandbox profile; see the warning above for the cause. Refusing to start
+  with its protections missing.` aggy reports that as
+  `ErrLockdownRejected`, saying aggy itself may be running inside another
+  sandbox. The source also has paths that log "Sandbox not supported on
+  this platform, continuing without sandbox" or "Sandbox could not be
+  applied, continuing without sandbox" and run on
+  (`xai-grok-sandbox/src/lib.rs:206-216`, `:236-247`; also "Sandbox
+  enforcement unavailable (built without 'enforce' feature)"), so aggy
+  refuses these kinds (`adapter.ErrNoCapability`) unless the probed
+  `--help` lists `--sandbox` and the host has a kernel sandbox: macOS
+  (Seatbelt), or Linux whose `/sys/kernel/security/lsm` names `landlock`
+  (read through safefs, capped; checked per borrow, never cached); any
+  other OS is refused. Those log lines on stderr also fail a run closed,
+  but headless tracing is off by default (live: a sandboxed run printed
+  no sandbox line on stderr, even with `RUST_LOG=xai_grok_sandbox=info`),
+  so that is a weak guard; the host check and Grok's own refusal are the
+  main ones. aggy does not set `RUST_LOG`. Image and video do not use the sandbox
   yet: their output write under strict is unchecked (TODO(T6742)).
-  Research and news under strict have not been run live (web search is
-  Grok's own tool, not a child process, so it should be unaffected).
+  Research under strict plus the denies passed live (smoke, b972adf).
 - Flags: `--tools`, `--disallowed-tools`, `--max-turns`, and
   `--permission-mode plan`.
 - Research and news: `--tools web_search --no-subagents --disallowed-tools
@@ -368,7 +380,7 @@ by default is news 15 and research 30; `<run>` is `HeadlessRequest.RunDir`):
 | review | `claude -p --output-format json --permission-mode plan --strict-mcp-config --mcp-config <run>/mcp.json --tools Read,Grep,Glob [--setting-sources user] [--settings <run>/settings.json] [--session-id <uuid> \| --resume <id>]` | `codex exec --json <L> -- -` (in a git work tree, so no `--skip-git-repo-check`) | `grok --prompt-file <p> --output-format json --permission-mode plan --sandbox strict --deny <Lib> --tools read_file,grep,list_dir --disallowed-tools <D> --no-subagents` |
 | edit (M3; refused by `aggy borrow`) | `claude -p --output-format json --permission-mode acceptEdits --strict-mcp-config --mcp-config <run>/mcp.json` | `codex exec --json --sandbox workspace-write -- -` | `grok --prompt-file <p> --output-format json --tools read_file,grep,list_dir,write,search_replace --disallowed-tools <D> --no-subagents` |
 
-`--deny <Lib>` is `--deny 'Read(<HOME>/Library/**)' --deny 'Grep(<HOME>/Library/**)'`.
+`--deny <Lib>` is `--deny 'Read(<HOME>/Library/**)' --deny 'Grep(<HOME>/Library/**)'`, plus on darwin `--deny 'Read(/System/Volumes/Data/**)' --deny 'Grep(/System/Volumes/Data/**)'`.
 `L` is `codex.Lockdown`: `--strict-config --ignore-user-config --sandbox
 read-only --disable shell_tool --disable unified_exec --disable view_image
 --disable apps --disable plugins --disable goals --disable image_generation
