@@ -29,6 +29,8 @@ type target struct {
 	ParentID string
 	// Direct runs the CLI on aggy's own terminal (aggy run --direct).
 	Direct bool
+	// NoPolicy starts the CLI without aggy's safety policy (--no-policy).
+	NoPolicy bool
 }
 
 // launchPlan is what a launch puts on screen.

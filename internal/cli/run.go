@@ -18,21 +18,25 @@ import (
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/probe"
+	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/supervisor"
 	"github.com/congdoe/aggy/internal/termsafe"
 )
 
-// runRun is `aggy run [--direct] <vendor>`: a new parent in the current
-// directory with an interactive session of that vendor, under the
-// supervisor, or with --direct on aggy's own terminal (runDirect).
+// runRun is `aggy run [--direct] [--no-policy] <vendor>`: a new parent in
+// the current directory with an interactive session of that vendor, under
+// the supervisor, or with --direct on aggy's own terminal (runDirect).
+// --no-policy starts it without the safety policy (launch).
 func runRun(args []string, stdout, stderr io.Writer) int {
-	direct := len(args) > 0 && args[0] == "--direct"
-	if direct {
+	var direct, noPolicy bool
+	for len(args) > 0 && (args[0] == "--direct" || args[0] == "--no-policy") {
+		direct = direct || args[0] == "--direct"
+		noPolicy = noPolicy || args[0] == "--no-policy"
 		args = args[1:]
 	}
 	if len(args) != 1 {
-		fmt.Fprint(stderr, "usage: aggy run [--direct] <claude|codex|grok>\n")
+		fmt.Fprint(stderr, "usage: aggy run [--direct] [--no-policy] <claude|codex|grok>\n")
 		return 2
 	}
 	v, err := adapter.ParseVendor(args[0])
@@ -40,12 +44,15 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy run: %v\n", err)
 		return 2
 	}
-	return launch("aggy run", target{New: true, Vendor: v, Direct: direct}, stderr)
+	return launch("aggy run", target{New: true, Vendor: v, Direct: direct, NoPolicy: noPolicy}, stderr)
 }
 
 // launch opens the parent t names and puts its child on screen under the
 // supervisor: the child last on screen resumed with its CLI's resume
-// flag and no brief, or a new child. name prefixes errors.
+// flag and no brief, or a new child. name prefixes errors. It gives the
+// child the shared memory of the child's own repo and the safety
+// policy, and refuses to start a CLI the policy cannot reach unless
+// t.NoPolicy is set or the user's config sets [policy] required = false.
 func launch(name string, t target, stderr io.Writer) int {
 	fail := func(err error) int {
 		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(err.Error()))
@@ -78,26 +85,26 @@ func launch(name string, t target, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
+	// The probe finds the flags whose presence is only known from help:
+	// Codex --no-alt-screen and -c, Claude --settings, Grok --rules and
+	// --deny.
+	var caps []string
+	probed, err := map[adapter.Vendor]adapter.Adapter{adapter.Claude: claude.Adapter{Path: path},
+		adapter.Codex: codex.Adapter{Path: path}, adapter.Grok: grok.Adapter{Path: path}}[v].Probe(ctx, execrun.ExecRunner(probeTimeout))
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: probing %s: %s; starting it without the flags help must list\n", name, v, termsafe.Line(err.Error()))
+	} else {
+		caps = probed.Capabilities
+	}
 	var a adapter.Adapter
 	switch v {
 	case adapter.Claude:
-		a = claude.New()
+		a = claude.Adapter{Caps: caps}
 	case adapter.Codex:
-		// --no-alt-screen is unverified for Codex, so it goes on the
-		// command line only when this CLI's help lists it.
-		p, err := codex.Adapter{Path: path}.Probe(context.Background(), execrun.ExecRunner(probeTimeout))
-		if err != nil {
-			fmt.Fprintf(stderr, "%s: probing codex: %v; starting it without --no-alt-screen\n", name, err)
-		}
-		a = codex.Adapter{Caps: p.Capabilities}
+		a = codex.Adapter{Caps: caps}
 	case adapter.Grok:
 		a = grok.New()
 	}
-	cmd, err := a.Interactive(pl.interactiveRequest())
-	if err != nil {
-		return fail(err)
-	}
-	cmd.Path = path
 	key, err := config.ParseKey(cfg.Switch.Key)
 	if err != nil {
 		return fail(err)
@@ -106,6 +113,41 @@ func launch(name string, t target, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
+	parentID := pl.parent.ID
+	runDir := filepath.Join(stateDir, "run")
+	if err := supervisor.PrivateDir(runDir); err != nil {
+		return fail(err)
+	}
+	sweepMemoryDirs(runDir, time.Now())
+	req := pl.interactiveRequest()
+	// The policy is checked before anything is written to the index, so
+	// a refused launch leaves no trace.
+	var warns []string
+	if t.NoPolicy {
+		warns = append(warns, "starting without the safety policy (--no-policy)")
+	} else {
+		pw, err := addPolicy(v, caps, cfg.Policy.Required, &req)
+		if err != nil {
+			return fail(err)
+		}
+		warns = append(warns, pw...)
+	}
+	// Memory comes from the child's own directory, never the current one:
+	// aggy resume <id> works from anywhere.
+	memDir := memoryDir(runDir, parentID)
+	if live, err := supervisor.Live(runDir, parentID); err == nil && !live {
+		_ = safefs.RemoveAll(memDir) // left by a crash of this parent's last launch
+	}
+	cleanup, mw := addMemory(v, caps, pl.child.Cwd, memDir, &req)
+	defer cleanup()
+	for _, w := range append(warns, mw...) {
+		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
+	}
+	cmd, err := a.Interactive(req)
+	if err != nil {
+		return fail(err)
+	}
+	cmd.Path = path
 	lease, err := pl.commit(ctx, s, time.Now())
 	if err != nil {
 		return fail(err)
@@ -117,8 +159,6 @@ func launch(name string, t target, stderr io.Writer) int {
 		// Record the session file's time now the CLI has exited.
 		_, _ = refreshChildren(ctx, s, pl.parent.ID, &sessionFiles{})
 	}()
-	parentID := pl.parent.ID
-	runDir := filepath.Join(stateDir, "run")
 	// The child's id when known at launch: Claude's and Grok's
 	// pre-assigned or resumed one (the only id the index records for
 	// them), or a resumed Codex thread. A new Codex child's id comes from

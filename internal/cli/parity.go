@@ -211,8 +211,9 @@ const (
 // fixed text; a path goes in Path and an error in Detail, which
 // doctor --report leaves out.
 //
+// Hooks have their own finding in each vendor's section (hookFinding).
 // TODO(T6681): instructions (nothing wires the Codex CLAUDE.md fallback
-// yet), MCP entries, and hooks (M2-2) are not checked.
+// yet) and MCP entries (no MCP wiring exists yet) are not checked.
 func parityFindings(cwd string, vendors []checkup.Vendor) []checkup.Finding {
 	var out []checkup.Finding
 	add := func(code string, l checkup.Level, v adapter.Vendor, path, msg string, err error) {

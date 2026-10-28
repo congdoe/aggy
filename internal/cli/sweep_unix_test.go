@@ -44,7 +44,7 @@ func TestSweepMemoryDirs(t *testing.T) {
 	// A stale lock file nobody holds is not live.
 	writeAt(t, filepath.Join(run, dead+".lock"), "", 0o600)
 	var srv *supervisor.Server
-	srv, err = supervisor.Listen(run, live, nil)
+	srv, err = supervisor.Listen(run, live, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

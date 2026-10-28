@@ -55,6 +55,8 @@ aggy inbox             # unread borrow reports
 
 aggy run claude        # start a vendor CLI under aggy (pass-through; switching is M2)
 aggy skill link        # let each CLI call aggy itself
+aggy policy wire       # write aggy's safety policy into Codex (Claude and Grok get it per launch)
+aggy memory import --from claude   # copy Claude's memory into .aggy/memory.md, after a diff
 aggy log               # borrows, vendors, models, files changed
 ```
 
@@ -72,6 +74,19 @@ What each borrow kind does on each CLI. "Live" means checked against the real CL
 | video | Not offered. | Not offered. | **Off by default**, behind the same `grok_file_tools` opt-in and with the same upload risk (`image_to_video`). Unverified headless. |
 | review | Supported when the CLI has `--setting-sources` (probed), read-only in plan mode. Its tool names are unverified. | Supported, with the Codex lockdown flags, which leave no tool that reads a file, so the diff and files go in the prompt. That lockdown is not leak-proof: `apply_patch`, which no flag removes, can confirm a guessed line of a file at a known path (Live; the same reason research is off on Codex). | Supported, read-only in plan mode; the tool list was checked live as the model reported it. Refused in a repo holding config Grok may load and run (such as project hooks), because aggy does not rely on Grok's folder trust. |
 | edit | M3, not shipped. | M3, not shipped. | M3, not shipped. |
+
+## Shared memory and safety policy
+
+Every session aggy starts gets the repo's `.aggy/memory.md` (at most 4 KB, framed as notes, not instructions) at session start: Claude through a private file, Codex and Grok on their command line. `aggy memory import --from claude` fills it from Claude's own memory after showing the diff, and `aggy unwire` takes it back.
+
+Every session also gets aggy's safety policy: never read `.env` or key files, never push to main, no `rm -rf`, `git reset --hard`, `git clean`, or force push. Claude and Grok get deny rules on their command line; Codex reads a rules file that `aggy policy wire` writes once. The policy only adds denials and never loosens your own settings. If a CLI cannot get it (its help lacks the flag, or Codex's rules file is not wired), aggy refuses to start that CLI. To start it anyway, pass `--no-policy` (`aggy --no-policy`, `aggy run --no-policy codex`, `aggy new --no-policy`, `aggy resume --no-policy <id>`), or set this in `~/.aggy/config.toml` (a repo's config cannot):
+
+```toml
+[policy]
+required = false   # start with a warning instead of refusing
+```
+
+`aggy doctor` shows, per CLI, whether it gets the memory and the policy.
 
 ## Known limits
 
