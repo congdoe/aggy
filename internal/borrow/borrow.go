@@ -318,7 +318,10 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 				if pre.code == diag.CodeNoSandbox && v == adapter.Grok {
 					ev = diag.EvGrokSandboxRefused
 				}
-				b.Diag.Log(ctx, diag.Rec{Event: ev, Code: pre.code, Msg: pre.Error(), Vendor: string(v),
+				// The code's text, not pre's: it can quote the CLI's own
+				// version or help output (G67-1).
+				info, _ := diag.LookupCode(pre.code)
+				b.Diag.Log(ctx, diag.Rec{Event: ev, Code: pre.code, Msg: info.Meaning, Vendor: string(v),
 					Attrs: map[string]any{"kind": string(req.Kind)}})
 				continue
 			}

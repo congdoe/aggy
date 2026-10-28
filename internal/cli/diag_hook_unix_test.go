@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,5 +65,23 @@ func TestDiagHookTrace(t *testing.T) {
 	}
 	if n != len(tests) {
 		t.Errorf("%d hook.forward.failed records, want %d", n, len(tests))
+	}
+}
+
+// TestRefuseStoresFixedText (G67-1): a refusal prints its error in full,
+// and records only its code's registry text: the error can quote argv, a
+// path, an environment value, or a vendor CLI's own words.
+func TestRefuseStoresFixedText(t *testing.T) {
+	freshRun(t)
+	const canary = "argv-gecko-canary-71"
+	var errb bytes.Buffer
+	refuse(context.Background(), &errb, "borrow", diag.EvBorrowRefused, diag.CodeUsage, "flag provided but not defined: -"+canary, diag.Rec{})
+	if !strings.Contains(errb.String(), canary) {
+		t.Errorf("stderr %q lost the error", errb.String())
+	}
+	text := allDiagText(t, os.Getenv("AGGY_HOME"))
+	info, _ := diag.LookupCode(diag.CodeUsage)
+	if strings.Contains(text, canary) || !strings.Contains(text, info.Meaning) {
+		t.Errorf("diag.db: %s", text)
 	}
 }

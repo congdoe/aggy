@@ -138,7 +138,9 @@ func TestDiagOfferCause(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		_ = request(t, sock, nestedStop)
 	}
-	_ = request(t, sock, idlessStop)
+	for i := 0; i < 3; i++ {
+		_ = request(t, sock, idlessStop)
+	}
 	poll(t, "the confirmation", []byte("-> grok. Ctrl+"), ts.screen)
 	ts.typeIn(t, "\x1b")
 	time.Sleep(100 * time.Millisecond)
@@ -166,8 +168,16 @@ func TestDiagOfferCause(t *testing.T) {
 	if ignored != 1 {
 		t.Errorf("%d ignored records for three foreign turn ends in a minute, want 1", ignored)
 	}
-	if _, ok := find(recs, diag.EvHookRejected, diag.CodeNoSession); !ok {
-		t.Error("no hook.no_session rejection for a turn end naming no session")
+	// G67-R1: three turn ends naming no session in a minute are one
+	// security record.
+	var none int
+	for _, r := range recs {
+		if r.Code == diag.CodeNoSession.String() {
+			none++
+		}
+	}
+	if none != 1 {
+		t.Errorf("%d hook.no_session records for three in a minute, want 1", none)
 	}
 }
 

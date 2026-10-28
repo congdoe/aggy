@@ -12,6 +12,10 @@ import (
 // from the rest, so a flood of plain records cannot crowd one out.
 const secQueue = 64
 
+// secBurst is how many security records go in a row while plain ones
+// wait.
+const secBurst = 8
+
 // Queue is the writer's path for code that must never wait on the disk,
 // such as the supervisor's terminal loop and its socket: Log only
 // enqueues, and one goroutine writes, records with a security code first.
@@ -43,29 +47,48 @@ func (w *Writer) Queue(n int) *Queue {
 func (q *Queue) run() {
 	defer close(q.done)
 	ch, sec := q.ch, q.sec
+	// burst counts the security records written in a row: after
+	// secBurst, a waiting plain record goes next, so a flood of security
+	// records cannot starve the rest (G67-R1).
+	burst := 0
 	for ch != nil || sec != nil {
 		var r Rec
-		var ok bool
-		// Security records first, whenever one is waiting.
-		select {
-		case r, ok = <-sec:
-			if !ok {
-				sec = nil
-				continue
-			}
-		default:
+		var ok, isSec bool
+		if burst >= secBurst && ch != nil {
 			select {
-			case r, ok = <-sec:
-				if !ok {
-					sec = nil
-					continue
-				}
 			case r, ok = <-ch:
+				burst = 0
 				if !ok {
 					ch = nil
 					continue
 				}
+				q.write(r)
+				continue
+			default:
 			}
+		}
+		// Security records first, whenever one is waiting.
+		select {
+		case r, ok = <-sec:
+			isSec = true
+		default:
+			select {
+			case r, ok = <-sec:
+				isSec = true
+			case r, ok = <-ch:
+			}
+		}
+		switch {
+		case !ok && isSec:
+			sec = nil
+			continue
+		case !ok:
+			ch = nil
+			continue
+		case isSec:
+			burst++
+		default:
+			burst = 0
 		}
 		q.write(r)
 	}

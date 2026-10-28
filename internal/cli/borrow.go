@@ -378,11 +378,9 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 		case errors.As(err, &none):
 			c = diag.CodeNoVendor
 		}
-		rec := diag.Rec{Event: diag.EvBorrowRefused, Code: c, Msg: err.Error()}
-		if c == diag.CodeBorrowInvalid {
-			// Its text may quote a path or constraint as typed.
-			rec.Msg = "the borrow request is invalid"
-		}
+		// Its text may quote a path or constraint as typed, or a vendor's
+		// own words, so the record holds the code's text (G67-1).
+		rec := diag.Rec{Event: diag.EvBorrowRefused, Code: c, Msg: fixedMsg(c)}
 		dlog.Log(ctx, rec)
 		fmt.Fprintf(stderr, "aggy borrow: %s %s\n", termsafe.Field(err.Error()), dlog.Tag(c))
 		code = 1

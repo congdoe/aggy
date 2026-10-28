@@ -405,6 +405,8 @@ func (s *session) turnCause() string {
 
 // ignoredTurnEnd records a turn end that named another session, at most
 // once a minute per session, with how many came since the last record.
+// A turn end naming no session is keyed by "" and recorded the same
+// way, as a security rejection (G67-R1).
 func (s *session) ignoredTurnEnd(ev hookEvent) {
 	now := time.Now()
 	if s.foreign == nil || len(s.foreign) >= maxForeign {
@@ -420,8 +422,13 @@ func (s *session) ignoredTurnEnd(ev hookEvent) {
 		repeats = f.repeats
 	}
 	s.foreign[ev.sessionID] = &foreignSeen{at: now}
-	s.log(diag.Rec{Event: diag.EvHookIgnored, Code: diag.CodeForeignSession, Msg: "a turn end of another session",
-		Attrs: map[string]any{"event": hookName(ev.name), "repeats": repeats}})
+	attrs := map[string]any{"event": hookName(ev.name), "repeats": repeats}
+	if ev.sessionID == "" {
+		// The vendor's own hook always names its session.
+		s.log(diag.Rec{Event: diag.EvHookRejected, Code: diag.CodeNoSession, Msg: "a turn end that names no session", Attrs: attrs})
+		return
+	}
+	s.log(diag.Rec{Event: diag.EvHookIgnored, Code: diag.CodeForeignSession, Msg: "a turn end of another session", Attrs: attrs})
 }
 
 // setSwitch sets the switch state.
@@ -496,9 +503,7 @@ func (s *session) hookEvent(ev hookEvent) {
 		// Neither session id is stored: the payload's could be any text.
 		switch {
 		case ev.sessionID == "":
-			// The vendor's own hook always names its session.
-			s.log(diag.Rec{Event: diag.EvHookRejected, Code: diag.CodeNoSession, Msg: "a turn end that names no session",
-				Attrs: map[string]any{"event": hookName(ev.name)}})
+			s.ignoredTurnEnd(ev)
 		case own == "":
 			s.log(diag.Rec{Event: diag.EvHookAccepted, Msg: "the on-screen session's id is not known yet, so the turn end is not counted",
 				Attrs: map[string]any{"event": hookName(ev.name), "counted": false}})
