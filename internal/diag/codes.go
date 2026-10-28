@@ -99,6 +99,9 @@ var (
 	EvSetupFailed         = Event{"setup.run.failed"}
 	EvDoctorError         = Event{"doctor.finding.error"}
 	EvDoctorRefused       = Event{"doctor.run.refused"}
+	EvToolRefused         = Event{"tool.request.refused"}
+	EvToolDefRefused      = Event{"tool.def.refused"}
+	EvToolSwitched        = Event{"tool.switch.changed"}
 )
 
 // Codes.
@@ -142,6 +145,14 @@ var (
 	CodeGCRemoveFailed = Code{"gc.remove_failed"}
 	CodeDoctorError    = Code{"doctor.error_finding"}
 	CodeDiagWrite      = Code{"diag.write_failed"}
+	CodeToolUnknown    = Code{"tool.unknown"}
+	CodeToolScope      = Code{"tool.not_applicable"}
+	CodeToolRepoOff    = Code{"tool.repo_off"}
+	CodeToolDelegated  = Code{"tool.delegated"}
+	CodeToolInvalid    = Code{"tool.def_invalid"}
+	CodeToolUntrusted  = Code{"tool.def_untrusted"}
+	CodeToolStillOn    = Code{"tool.still_on"}
+	CodeToolFailed     = Code{"tool.failed"}
 )
 
 const showRun = "aggy diag show <run id> for what led to it"
@@ -172,6 +183,9 @@ var events = []EventInfo{
 	{EvSetupFailed, LevelError, "setup", "aggy setup failed.", "The code's entry."},
 	{EvDoctorError, LevelError, "doctor", "aggy doctor reported an error-level finding (attrs.finding is its doctor code).", "aggy doctor shows the finding in full."},
 	{EvDoctorRefused, LevelError, "doctor", "aggy doctor did not run.", "The code's entry."},
+	{EvToolRefused, LevelError, "tool", "aggy tool refused or failed; no definition or switch changed.", "The code's entry."},
+	{EvToolDefRefused, LevelWarn, "tool", "A user tool definition was left out: invalid, untrusted, or colliding (attrs.file names it).", "aggy tool list names the file and the key; fix or remove it."},
+	{EvToolSwitched, LevelInfo, "tool", "aggy tool on or off recorded a switch (attrs: tool, vendor, repo, on).", "aggy tool status shows what is on where."},
 }
 
 var codes = []CodeInfo{
@@ -214,6 +228,14 @@ var codes = []CodeInfo{
 	{CodeGCRemoveFailed, false, "aggy gc could not remove one item.", "The record's msg; aggy gc --dry-run."},
 	{CodeDoctorError, false, "aggy doctor found an error-level finding.", "aggy doctor."},
 	{CodeDiagWrite, false, "aggy could not write its diagnostic log; the command went on without it.", "The state dir's permissions and free space; aggy gc prunes the log."},
+	{CodeToolUnknown, false, "No built-in or loaded user tool has that name.", "aggy tool list; a refused user file is named there."},
+	{CodeToolScope, false, "The tool has nothing for that vendor, or is a per-repo tool turned on without --repo.", "aggy tool status <name>; aggy tool on <name> --repo ."},
+	{CodeToolRepoOff, false, "The repo's .aggy/config.toml lists the tool in tools_off; a repo config always wins, and can only turn tools off.", "Edit that repo's tools_off if it is your repo."},
+	{CodeToolDelegated, true, "aggy tool add, remove, on, or off ran inside a borrow child (AGGY_DELEGATED is set).", "Run it from your own shell. A child that tries this was steered to; read its task."},
+	{CodeToolInvalid, false, "A tool definition failed validation; the message names the file and the key.", "Fix the key; docs/design.md section 9 has the rules."},
+	{CodeToolUntrusted, true, "A user tool definition, its tools folder, or the state dir is a symlink, not the user's own, or writable by group or others.", "chmod go-w and check the owner of ~/.aggy, ~/.aggy/tools, and the file."},
+	{CodeToolStillOn, false, "aggy tool remove refused: the tool is still on somewhere.", "aggy tool off <name>, then remove it."},
+	{CodeToolFailed, false, "Another aggy tool error: a file or the index could not be read or written.", "The record's msg; aggy doctor."},
 }
 
 // LookupEvent returns event e's entry.

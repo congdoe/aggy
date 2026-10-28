@@ -49,7 +49,6 @@ func (r *Registry) add(t Tool) error {
 		if old.BuiltIn {
 			why = "a built-in tool has this name, and built-ins cannot be shadowed"
 		}
-		// TODO(T6753): log tool.def_invalid (name collision).
 		return &Error{File: t.Source, Key: "name", Msg: why}
 	}
 	i, _ := slices.BinarySearchFunc(r.tools, t.Name, func(x Tool, n string) int { return strings.Compare(x.Name, n) })
@@ -147,11 +146,9 @@ func loadUser(file string) (Tool, error) {
 	}
 	d, err := Parse(file, b, false)
 	if err != nil {
-		// TODO(T6753): log tool.def_invalid.
 		return Tool{}, err
 	}
 	if filepath.Base(file) != d.Name+".toml" {
-		// TODO(T6753): log tool.def_invalid.
 		return Tool{}, &Error{File: file, Key: "name", Msg: fmt.Sprintf("the file must be named %s.toml", d.Name)}
 	}
 	return Tool{Def: d, Source: file}, nil

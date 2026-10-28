@@ -1,0 +1,57 @@
+package store
+
+import (
+	"context"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+// TestPutToolSwitch: a setting replaces every narrower setting of the
+// same tool that it covers, and nothing else.
+func TestPutToolSwitch(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	now := time.UnixMilli(1_700_000_000_000)
+	put := func(tool, vendor, repo string, on bool) {
+		t.Helper()
+		if err := s.PutToolSwitch(ctx, ToolSwitch{Tool: tool, Vendor: vendor, Repo: repo, On: on, At: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("demo", "claude", "/r/a", true)
+	put("demo", "", "/r/b", true)
+	put("demo", "codex", "", true)
+	put("other", "claude", "/r/a", true)
+	put("demo", "claude", "", false) // covers claude in every repo
+	got, err := s.ToolSwitches(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ToolSwitch{
+		{"demo", "claude", "", false, now},
+		{"demo", "codex", "", true, now},
+		{"demo", "", "/r/b", true, now},
+		{"other", "claude", "/r/a", true, now},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v", got)
+	}
+	for i := range want {
+		if !got[i].At.Equal(now) {
+			t.Errorf("row %d at %v", i, got[i].At)
+		}
+		got[i].At = now
+		if got[i] != want[i] {
+			t.Errorf("row %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	put("demo", "", "", false) // covers every demo setting
+	if got, _ := s.ToolSwitches(ctx); len(got) != 2 || got[0].Tool != "demo" || got[0].On || got[1].Tool != "other" {
+		t.Errorf("after off everywhere: %+v", got)
+	}
+}

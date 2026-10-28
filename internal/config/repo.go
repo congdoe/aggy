@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -40,7 +41,17 @@ type RepoConfig struct {
 	CheckMinutes int `toml:"check_minutes"`
 	// Worktree configures new git worktrees for edit borrows.
 	Worktree Worktree `toml:"worktree"`
+	// ToolsOff names managed tools this repo turns off. A repo config
+	// has no way to turn a tool on: cloning a repo must never start an
+	// MCP server or a hook on the person's machine.
+	ToolsOff []string `toml:"tools_off"`
 }
+
+// toolNameRE is tooldef's tool name rule.
+var toolNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
+// maxToolsOff bounds tools_off; the config comes with a clone.
+const maxToolsOff = 64
 
 // Worktree configures new git worktrees.
 type Worktree struct {
@@ -133,6 +144,15 @@ func (rc RepoConfig) Validate() error {
 	for _, p := range rc.Worktree.Copy {
 		if err := checkRepoPath(p); err != nil {
 			return fmt.Errorf("worktree.copy: %w", err)
+		}
+	}
+	if len(rc.ToolsOff) > maxToolsOff {
+		return fmt.Errorf("tools_off: at most %d tools", maxToolsOff)
+	}
+	for i, n := range rc.ToolsOff {
+		// A name aggy does not know is kept: it turns nothing on.
+		if !toolNameRE.MatchString(n) {
+			return fmt.Errorf("tools_off[%d]: %q is not a tool name", i, n)
 		}
 	}
 	return nil

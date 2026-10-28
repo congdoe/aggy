@@ -2,26 +2,33 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/borrow"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/safefs"
+	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
 	"github.com/congdoe/aggy/internal/tooldef"
 )
 
 const toolUsage = `Usage:
   aggy tool list
+  aggy tool status [<name>] [--vendor V] [--repo DIR]
+  aggy tool on <name> [--vendor V] [--repo DIR]
+  aggy tool off <name> [--vendor V] [--repo DIR]
   aggy tool add <file> [--yes]
   aggy tool remove <name>
 
@@ -29,16 +36,67 @@ Managed tools are described by definitions: aggy's built-ins, and your
 own in ~/.aggy/tools/<name>.toml. Definitions are never read from a repo.
 
   list     show each tool: name, built-in or user, default, source file
+  status   show whether each tool is on, per vendor, here (or in --repo
+           DIR), and why
+  on, off  turn a tool on or off for every vendor, or one (--vendor),
+           in every repo, or one (--repo DIR); the newest setting holds
+           wherever it applies. A per-repo tool is turned on only with
+           --repo. A repo's .aggy/config.toml can turn a tool off
+           (tools_off) and never on. It takes effect at the next launch.
   add      validate a definition, show what it would run and wire per
            vendor, and copy it into ~/.aggy/tools after you answer y at a
            terminal (--yes skips the question; it never works without a
            terminal). A user tool starts off, and none of its commands
            runs while it is off.
-  remove   delete a user definition; refused while the tool is wired
+  remove   delete a user definition; refused while the tool is on
 `
 
 func runTool(args []string, stdout, stderr io.Writer) int {
 	return toolWith(args, os.Stdin, isTerminal(os.Stdin), stdout, stderr)
+}
+
+// toolArgs are aggy tool's parsed arguments.
+type toolArgs struct {
+	pos          []string
+	yes          bool
+	vendor, repo string
+	hasRepo      bool
+}
+
+func parseToolArgs(args []string) (toolArgs, bool) {
+	var a toolArgs
+	for i := 0; i < len(args); i++ {
+		w := args[i]
+		name, val, hasVal := strings.Cut(w, "=")
+		switch {
+		case w == "--yes":
+			a.yes = true
+		case name == "--vendor" || name == "--repo":
+			if !hasVal {
+				if i+1 >= len(args) {
+					return a, false
+				}
+				i++
+				val = args[i]
+			}
+			if name == "--vendor" {
+				if a.vendor != "" {
+					return a, false
+				}
+				a.vendor = val
+			} else {
+				if a.hasRepo || val == "" {
+					return a, false
+				}
+				a.repo, a.hasRepo = val, true
+			}
+		case strings.HasPrefix(w, "-"):
+			return a, false
+		default:
+			a.pos = append(a.pos, w)
+		}
+	}
+	return a, true
 }
 
 func toolWith(args []string, in io.Reader, tty bool, stdout, stderr io.Writer) int {
@@ -46,48 +104,60 @@ func toolWith(args []string, in io.Reader, tty bool, stdout, stderr io.Writer) i
 		fmt.Fprint(stderr, toolUsage)
 		return 2
 	}
+	ctx := context.Background()
+	cmd := "tool " + args[0]
 	usageErr := func() int {
-		fmt.Fprintf(stderr, "aggy tool %s: bad arguments\n\n%s", termsafe.Field(args[0]), toolUsage)
+		refuse(ctx, stderr, cmd, diag.EvToolRefused, diag.CodeUsage, "bad arguments", diag.Rec{})
+		fmt.Fprintf(stderr, "\n%s", toolUsage)
 		return 2
 	}
 	fail := func(err error) int {
-		fmt.Fprintf(stderr, "aggy tool %s: %s\n", termsafe.Field(args[0]), termsafe.Line(err.Error()))
+		refuse(ctx, stderr, cmd, diag.EvToolRefused, toolCode(err), err.Error(), diag.Rec{})
 		return 1
 	}
-	var pos []string
-	yes := false
-	for _, a := range args[1:] {
-		switch {
-		case a == "--yes":
-			yes = true
-		case strings.HasPrefix(a, "-"):
-			return usageErr()
-		default:
-			pos = append(pos, a)
-		}
+	a, ok := parseToolArgs(args[1:])
+	if !ok {
+		return usageErr()
 	}
+	noSwitchFlags := a.vendor == "" && !a.hasRepo
 	switch args[0] {
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, toolUsage)
 		return 0
 	case "list":
-		if len(pos) != 0 || yes {
+		if len(a.pos) != 0 || a.yes || !noSwitchFlags {
 			return usageErr()
 		}
-		return toolList(stdout, stderr)
+		return toolList(ctx, stdout, stderr)
+	case "status":
+		if len(a.pos) > 1 || a.yes {
+			return usageErr()
+		}
+		if err := toolStatus(ctx, a, stdout); err != nil {
+			return fail(err)
+		}
+		return 0
+	case "on", "off":
+		if len(a.pos) != 1 || a.yes {
+			return usageErr()
+		}
+		if err := toolSwitch(ctx, a, args[0] == "on", stdout); err != nil {
+			return fail(err)
+		}
+		return 0
 	case "add":
-		if len(pos) != 1 {
+		if len(a.pos) != 1 || !noSwitchFlags {
 			return usageErr()
 		}
-		if err := toolAdd(pos[0], yes, in, tty, stdout); err != nil {
+		if err := toolAdd(a.pos[0], a.yes, in, tty, stdout); err != nil {
 			return fail(err)
 		}
 		return 0
 	case "remove":
-		if len(pos) != 1 || yes {
+		if len(a.pos) != 1 || a.yes || !noSwitchFlags {
 			return usageErr()
 		}
-		if err := toolRemove(pos[0], stdout); err != nil {
+		if err := toolRemove(ctx, a.pos[0], stdout); err != nil {
 			return fail(err)
 		}
 		return 0
@@ -96,18 +166,35 @@ func toolWith(args []string, in io.Reader, tty bool, stdout, stderr io.Writer) i
 	return 2
 }
 
-// toolWired reports whether a tool is wired into any vendor.
-// TODO(T6708): read the switchboard's wiring; nothing is wired before it.
-var toolWired = func(string) (bool, error) { return false, nil }
+// toolCode is the reason code of an aggy tool error.
+func toolCode(err error) diag.Code {
+	var te *tooldef.Error
+	switch {
+	case errors.Is(err, errToolDelegated):
+		return diag.CodeToolDelegated
+	case errors.Is(err, tooldef.ErrUntrusted):
+		return diag.CodeToolUntrusted
+	case errors.As(err, &te):
+		return diag.CodeToolInvalid
+	}
+	return codeOf(err, diag.CodeToolFailed)
+}
 
-// errToolDelegated refuses add and remove from a borrow child: a
-// delegated CLI must not change which tools aggy trusts.
-var errToolDelegated = errors.New("a borrow child cannot add or remove tool definitions (" + borrow.Delegated + " is set)")
+// errToolDelegated refuses add, remove, on, and off from a borrow child:
+// a delegated CLI must not change which tools aggy trusts or runs.
+var errToolDelegated = errors.New("a borrow child cannot add, remove, or switch tools (" + borrow.Delegated + " is set)")
 
-func toolList(stdout, stderr io.Writer) int {
+func delegated() error {
+	if _, ok := os.LookupEnv(borrow.Delegated); ok {
+		return errToolDelegated
+	}
+	return nil
+}
+
+func toolList(ctx context.Context, stdout, stderr io.Writer) int {
 	r, refused, err := tooldef.LoadDefault()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy tool list: %s\n", termsafe.Line(err.Error()))
+		refuse(ctx, stderr, "tool list", diag.EvToolRefused, toolCode(err), err.Error(), diag.Rec{})
 		return 1
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
@@ -123,18 +210,22 @@ func toolList(stdout, stderr io.Writer) int {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", t.Name, kind, def, termsafe.Field(t.Source), termsafe.Field(t.Description))
 	}
 	_ = tw.Flush()
-	for _, e := range refused {
-		fmt.Fprintf(stderr, "aggy tool list: refused %s\n", termsafe.Line(e.Error()))
-	}
+	logRefusedDefs(ctx, stderr, "tool list", refused)
 	if len(refused) > 0 {
 		return 1
 	}
 	return 0
 }
 
+// logRefusedDefs prints and records each user definition Load left out.
+func logRefusedDefs(ctx context.Context, stderr io.Writer, cmd string, refused []error) {
+	for _, e := range refused {
+		refuse(ctx, stderr, cmd, diag.EvToolDefRefused, toolCode(e), "refused "+e.Error(), diag.Rec{})
+	}
+}
 func toolAdd(src string, yes bool, in io.Reader, tty bool, stdout io.Writer) error {
-	if _, ok := os.LookupEnv(borrow.Delegated); ok {
-		return errToolDelegated
+	if err := delegated(); err != nil {
+		return err
 	}
 	src, err := filepath.Abs(src)
 	if err != nil {
@@ -146,8 +237,7 @@ func toolAdd(src string, yes bool, in io.Reader, tty bool, stdout io.Writer) err
 	}
 	d, err := tooldef.Parse(src, b, false)
 	if err != nil {
-		// TODO(T6753): log tool.def_invalid.
-		return err
+		return err // tool.def_invalid, by toolCode
 	}
 	state, err := home.Dir()
 	if err != nil {
@@ -158,7 +248,6 @@ func toolAdd(src string, yes bool, in io.Reader, tty bool, stdout io.Writer) err
 		return err
 	}
 	if old, ok := r.Get(d.Name); ok {
-		// TODO(T6753): log tool.def_invalid (name collision).
 		if old.BuiltIn {
 			return &tooldef.Error{File: src, Key: "name", Msg: "a built-in tool has this name, and built-ins cannot be shadowed"}
 		}
@@ -300,12 +389,12 @@ func quoteArgv(a []string) string {
 	return strings.Join(q, " ")
 }
 
-func toolRemove(name string, stdout io.Writer) error {
-	if _, ok := os.LookupEnv(borrow.Delegated); ok {
-		return errToolDelegated
+func toolRemove(ctx context.Context, name string, stdout io.Writer) error {
+	if err := delegated(); err != nil {
+		return err
 	}
 	if !tooldef.ValidName(name) {
-		return fmt.Errorf("%q is not a tool name", name)
+		return withCode(diag.CodeToolUnknown, fmt.Errorf("%q is not a tool name", name))
 	}
 	state, err := home.Dir()
 	if err != nil {
@@ -319,10 +408,10 @@ func toolRemove(name string, stdout io.Writer) error {
 	if errors.Is(statErr, fs.ErrNotExist) {
 		if r, err := tooldef.Builtins(); err == nil {
 			if _, ok := r.Get(name); ok {
-				return fmt.Errorf("%s is a built-in tool and cannot be removed", name)
+				return withCode(diag.CodeToolScope, fmt.Errorf("%s is a built-in tool and cannot be removed", name))
 			}
 		}
-		return fmt.Errorf("no user tool %s", name)
+		return withCode(diag.CodeToolUnknown, fmt.Errorf("no user tool %s", name))
 	}
 	if statErr != nil {
 		return statErr
@@ -331,13 +420,12 @@ func toolRemove(name string, stdout io.Writer) error {
 	if err := tooldef.CheckDir(dir); err != nil {
 		return err
 	}
-	wired, err := toolWired(name)
+	sws, err := toolSwitches(ctx)
 	if err != nil {
 		return err
 	}
-	if wired {
-		// TODO(T6753): log tool.remove_wired.
-		return fmt.Errorf("%s is wired into a CLI; turn it off first", name)
+	if slices.ContainsFunc(sws, func(s store.ToolSwitch) bool { return s.Tool == name && s.On }) {
+		return withCode(diag.CodeToolStillOn, fmt.Errorf("%s is on; aggy tool off %s first", name, name))
 	}
 	if err := safefs.Remove(dest); err != nil {
 		return err
