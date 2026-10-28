@@ -7,20 +7,24 @@
 #   AGGY_SMOKE=1 test/smoke/smoke.sh --fake   # the fakes in testdata/fakes, no quota
 #
 # AGGY_SMOKE_VENDORS (default "claude codex grok") limits the vendors;
-# AGGY_SMOKE_TIMEOUT (default 300) is the limit in seconds for each direct
-# vendor run. The script prints one scrubbed line per check (name, result,
-# a fixed note) and the CLI versions, never vendor output, paths, session
-# ids, or tokens.
+# AGGY_SMOKE_TIMEOUT (default 300) is the wall-time limit in seconds for
+# each direct vendor run; AGGY_SMOKE_ANY_VERSION=1 runs the Grok checks on
+# a grok other than the tested 1.0.70. The script prints one scrubbed line
+# per check (name, result, a fixed note) and the CLI versions, never vendor
+# output, paths, session ids, or tokens.
 #
-# Safety: everything runs in a fresh temp dir with a temp AGGY_HOME. The
-# script never edits vendor config, never trusts a folder, never passes a
-# --dangerously-* or other permission- or trust-skipping flag, and never
-# runs aggy setup, hooks, or wiring against the real ~/.aggy. aggy setup
-# runs only against the temp AGGY_HOME, where it records sign-in status.
+# Safety: everything runs in a fresh temp dir with a temp AGGY_HOME, and
+# every vendor CLI and aggy run gets a fresh environment (env -i) holding
+# only an allowlist. The script refuses to start when an API-key or route
+# variable is set. It never edits vendor config, never trusts a folder,
+# never passes a --dangerously-* or other permission- or trust-skipping
+# flag, and never runs aggy setup, hooks, or wiring against the real
+# ~/.aggy. aggy setup runs only against the temp AGGY_HOME, where it
+# records each CLI's version.
 set -u
 
 usage() {
-	sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 FAKE=0
@@ -46,21 +50,27 @@ if [ "$FAKE" = 0 ] && [ -n "${CI:-}" ]; then
 	exit 2
 fi
 
+# The runs must use the subscription: refuse, rather than drop silently,
+# any API-key or route variable (docs/adapters.md, "API and route
+# settings"). Names only; values are never read.
+bad=""
+for v in $(compgen -e); do
+	case "$v" in
+	ANTHROPIC_API_KEY | ANTHROPIC_AUTH_TOKEN | CLAUDE_CODE_USE_BEDROCK | CLAUDE_CODE_USE_VERTEX | \
+		OPENAI_API_KEY | CODEX_API_KEY | XAI_API_KEY | *_BASE_URL) bad="$bad $v" ;;
+	esac
+done
+if [ -n "$bad" ]; then
+	echo "smoke: refusing to run: unset these first, so the CLIs use your subscription:$bad" >&2
+	exit 2
+fi
+
 ROOT=$(cd "$(dirname "$0")/../.." && pwd -P)
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/aggy-smoke.XXXXXX") || exit 1
 WORK=$(cd "$WORK" && pwd -P)
 trap 'rm -rf "$WORK"' EXIT
 TO=${AGGY_SMOKE_TIMEOUT:-300}
 AGGY_TO=1200 # aggy enforces each borrow's own budget; this is a backstop.
-
-# Only the vendor CLIs talk to their vendors, on the user's subscription:
-# drop API-key and base-URL variables for these runs (aggy's own borrow
-# runner scrubs them too). Names only; values are never read.
-for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL OPENAI_API_KEY OPENAI_BASE_URL \
-	CODEX_API_KEY XAI_API_KEY GROK_XAI_API_BASE_URL GROK_MODELS_BASE_URL \
-	AGGY_DELEGATED AGGY_VENDOR AGGY_MODEL AGGY_FAKE_SCENARIO AGGY_FAKE_RECORD AGGY_FAKE_VENDOR; do
-	unset "$v"
-done
 
 if ! (cd "$ROOT" && go build -o "$WORK/bin/aggy" ./cmd/aggy); then
 	echo "smoke: cannot build aggy" >&2
@@ -89,25 +99,44 @@ if [ "$FAKE" = 1 ]; then
 	unset CLAUDE_CONFIG_DIR CODEX_HOME GROK_HOME
 fi
 
+# CLEAN_ENV is the whole environment of every vendor CLI and aggy run
+# (run_to, version), as execrun.passEnv gives a borrow child: nothing of
+# the caller's beyond these, so no proxy, Claude Code session, Grok
+# folder-trust or hook switch, or AGGY_* variable leaks in.
+CLEAN_ENV=("HOME=$HOME" "PATH=$PATH" "TERM=dumb" "NO_COLOR=1" "AGGY_HOME=$AGGY_HOME")
+for v in USER LOGNAME SHELL LANG TMPDIR CLAUDE_CONFIG_DIR CODEX_HOME GROK_HOME $(compgen -e | grep '^LC_'); do
+	if printenv "$v" >/dev/null 2>&1; then CLEAN_ENV+=("$v=${!v}"); fi
+done
+
 VENDORS=$(printf '%s' "${AGGY_SMOKE_VENDORS:-claude codex grok}" | tr ',' ' ')
 CALLS_claude=0
 CALLS_codex=0
 CALLS_grok=0
 FAILED=0
+INCONCLUSIVE=0
+GROK_SKIP=""
 
-# want V: V is selected and on PATH.
+# want V: V is selected, on PATH, and (Grok) the tested version. When not,
+# WHY says why, for the SKIP line.
 want() {
+	WHY="$1 not selected or not on PATH"
 	case " $VENDORS " in *" $1 "*) ;; *) return 1 ;; esac
-	command -v "$1" >/dev/null 2>&1
+	command -v "$1" >/dev/null 2>&1 || return 1
+	if [ "$1" = grok ] && [ -n "$GROK_SKIP" ]; then
+		WHY=$GROK_SKIP
+		return 1
+	fi
 }
 
 # call V: count one model-calling run of V.
 call() { eval "CALLS_$1=\$((CALLS_$1 + 1))"; }
 
-# result NAME PASS|FAIL|SKIP NOTE. NOTE is always text this script wrote.
+# result NAME PASS|FAIL|SKIP|INCONCLUSIVE NOTE. NOTE is always text this
+# script wrote.
 result() {
 	printf '%-30s %-4s %s\n' "$1" "$2" "$3"
 	[ "$2" = FAIL ] && FAILED=$((FAILED + 1))
+	[ "$2" = INCONCLUSIVE ] && INCONCLUSIVE=$((INCONCLUSIVE + 1))
 	return 0
 }
 
@@ -120,13 +149,14 @@ scn() {
 	printf '%s' "$1" >"$WORK/scenario.json"
 }
 
-# run_to SECS OUT ERR IN CMD...: run CMD with stdin IN and its output in
-# files, killed after SECS. shortcut: kills the process only, not its
-# group; a vendor CLI's own children can outlive a timeout.
+# run_to SECS OUT ERR IN [VAR=value]... CMD...: run CMD in CLEAN_ENV (plus
+# any VAR=value) with stdin IN and its output in files, killed after SECS
+# of wall time. shortcut: kills the process only, not its group; a vendor
+# CLI's own children can outlive a timeout.
 run_to() {
 	local secs=$1 out=$2 err=$3 in=$4
 	shift 4
-	"$@" <"$in" >"$out" 2>"$err" &
+	env -i "${CLEAN_ENV[@]}" "$@" <"$in" >"$out" 2>"$err" &
 	local pid=$!
 	(
 		sleep "$secs"
@@ -143,7 +173,7 @@ run_to() {
 }
 
 # version V: the CLI's version number only.
-version() { "$1" --version </dev/null 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1; }
+version() { env -i "${CLEAN_ENV[@]}" "$1" --version </dev/null 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1; }
 
 # is_image F / is_mp4 F: the file starts with PNG or JPEG / MP4 magic.
 is_image() {
@@ -181,7 +211,7 @@ CODEX_CLEAN="--ignore-user-config --sandbox read-only --disable shell_tool --dis
 check_claude_append() {
 	local n=claude-append-prompt d=$WORK/c-append tok rc
 	want claude || {
-		result $n SKIP "claude not selected or not on PATH"
+		result $n SKIP "$WHY"
 		return
 	}
 	tok=$(token)
@@ -205,7 +235,7 @@ check_claude_append() {
 check_codex_hook() {
 	local n=codex-hook-trust-gate d=$WORK/c-hook rc
 	want codex || {
-		result $n SKIP "codex not selected or not on PATH"
+		result $n SKIP "$WHY"
 		return
 	}
 	mkdir -p "$d/work"
@@ -232,7 +262,7 @@ check_codex_hook() {
 check_codex_isolation() {
 	local n=codex-research-isolation d=$WORK/c-iso tok rc
 	want codex || {
-		result $n SKIP "codex not selected or not on PATH"
+		result $n SKIP "$WHY"
 		return
 	}
 	tok=$(token)
@@ -308,7 +338,7 @@ EOF
 		rc=$?
 		mcp_result claude $rc "$d/claude.out" "$tok"
 	else
-		result mcp-launch-claude SKIP "claude not selected or not on PATH"
+		result mcp-launch-claude SKIP "$WHY"
 	fi
 
 	if want codex; then
@@ -321,7 +351,7 @@ EOF
 		rc=$?
 		mcp_result codex $rc "$d/codex.out" "$tok"
 	else
-		result mcp-launch-codex SKIP "codex not selected or not on PATH"
+		result mcp-launch-codex SKIP "$WHY"
 	fi
 
 	if want grok; then
@@ -341,11 +371,11 @@ EOF
 		scn '{"extra_flags":["--agent","--allow"],"json":{"result":"'"$tok"'"}}'
 		call grok
 		(cd "$d/work" && run_to "$TO" "$d/grok.out" "$d/grok.err" /dev/null \
-			grok -p "$ask" --agent ../agent.md --allow 'MCPTool(aggy__aggy_ping)' --output-format json)
+			grok -p "$ask" --agent ../agent.md --allow 'MCPTool(aggy__aggy_ping)' --output-format json --max-turns 3)
 		rc=$?
 		mcp_result grok $rc "$d/grok.out" "$tok"
 	else
-		result mcp-launch-grok SKIP "grok not selected or not on PATH"
+		result mcp-launch-grok SKIP "$WHY"
 	fi
 }
 
@@ -361,38 +391,68 @@ mcp_result() {
 
 # --- Open TODO(T6649) checks ---
 
-# Grok folder trust (internal/borrow/grok_trust.go): a never-trusted
-# repo whose Claude settings and Grok hooks touch markers, run with
-# aggy's exact Grok review argv. No folder is trusted (that would write
-# Grok's trust store); the markers must stay absent. aggy itself must
-# refuse a Grok review in that repo.
+# Grok folder trust (internal/borrow/grok_trust.go). Two scratch repos
+# whose Claude settings and Grok hooks touch markers on SessionStart and
+# PreToolUse, each run once with aggy's exact Grok review argv and a
+# prompt that makes the model call list_dir (proved by a random file name
+# coming back).
+#
+# - Untrusted: never trusted (trusting would write Grok's trust store);
+#   no hook may fire.
+# - Control: GROK_FOLDER_TRUST=0 turns folder trust off, which makes the
+#   folder Trusted, so the hooks must fire. That writes no trust store:
+#   the env value "0" parses false (xai-grok-env/src/registry.rs:13-19)
+#   and outranks config and remote settings
+#   (xai-grok-permission-rules/src/folder_trust.rs:132-151); feature off
+#   decides Trusted (:69-77); xai-grok-shell/src/agent/folder_trust.rs
+#   keeps that verdict in its in-process DECISIONS map only (record,
+#   :131-135; resolve_and_record_inner, :259-285); the store is written
+#   only by an accepted interactive prompt (finish_prompt, reached only on
+#   NeedsPrompt, :307), --trust (grant_folder_trust), or a revoke
+#   (xai-grok-workspace/src/folder_trust.rs:18-26, :235, :270). All at
+#   grok-build 2bdd1d6a.
+#
+# PASS needs the control to fire and the untrusted run not to; a control
+# that fires nothing, or a run with no list_dir call, is INCONCLUSIVE.
+# aggy itself must refuse a Grok review in such a repo.
 check_grok_trust() {
-	local n=grok-review-untrusted d=$WORK/g-trust r rc ran="" m
+	local n=grok-review-untrusted d=$WORK/g-trust rc crc ran="" fired="" m tok
 	want grok || {
-		result $n SKIP "grok not selected or not on PATH"
-		result aggy-grok-review-refused SKIP "grok not selected or not on PATH"
+		result $n SKIP "$WHY"
+		result aggy-grok-review-refused SKIP "$WHY"
 		return
 	}
-	r=$d/repo
-	newrepo "$r" || {
-		result $n FAIL "cannot make the scratch repo"
-		return
-	}
-	mkdir -p "$r/.claude" "$r/.grok/hooks" "$d/markers"
-	for who in claude grok; do
-		printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch %s/markers/%s-SessionStart"}]}],"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"touch %s/markers/%s-PreToolUse"}]}]}}\n' \
-			"$d" "$who" "$d" "$who" >"$d/$who.json"
+	tok=$(token)
+	mkdir -p "$d"
+	for side in untrusted control; do
+		newrepo "$d/$side" || {
+			result $n FAIL "cannot make the scratch repos"
+			return
+		}
+		mkdir -p "$d/$side/.claude" "$d/$side/.grok/hooks" "$d/$side-markers"
+		: >"$d/$side/f-$tok.txt"
+		for who in claude grok; do
+			printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch %s/%s-SessionStart"}]}],"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"touch %s/%s-PreToolUse"}]}]}}\n' \
+				"$d/$side-markers" "$who" "$d/$side-markers" "$who" >"$d/$side.$who.json"
+		done
+		cp "$d/$side.claude.json" "$d/$side/.claude/settings.json"
+		cp "$d/$side.grok.json" "$d/$side/.grok/hooks/smoke.json"
 	done
-	cp "$d/claude.json" "$r/.claude/settings.json"
-	cp "$d/grok.json" "$r/.grok/hooks/smoke.json"
-	printf 'Call list_dir on the current directory, then reply with the word DONE.\n' >"$d/prompt.txt"
-	scn '{"json":{"result":"DONE"}}'
+	printf 'Call list_dir on the current directory, then reply with the names it lists, then the word DONE.\n' >"$d/prompt.txt"
+
+	scn '{"json":{"result":"README.md f-'"$tok"'.txt DONE"}}'
 	call grok
 	# shellcheck disable=SC2086 # the argv is split on purpose
-	(cd "$r" && run_to "$TO" "$d/out" "$d/err" "$d/prompt.txt" grok $GROK_REVIEW_ARGS)
+	(cd "$d/untrusted" && run_to "$TO" "$d/out" "$d/err" "$d/prompt.txt" grok $GROK_REVIEW_ARGS)
 	rc=$?
+	scn '{"json":{"result":"README.md f-'"$tok"'.txt DONE"},"hook_payload_in":"arg","hooks":[{"event":"x","payload":{}}],"hook_command":["/usr/bin/touch","'"$d"'/control-markers/grok-PreToolUse"]}'
+	call grok
+	# shellcheck disable=SC2086 # the argv is split on purpose
+	(cd "$d/control" && run_to "$TO" "$d/cout" "$d/cerr" "$d/prompt.txt" GROK_FOLDER_TRUST=0 grok $GROK_REVIEW_ARGS)
+	crc=$?
 	for m in claude-SessionStart claude-PreToolUse grok-SessionStart grok-PreToolUse; do
-		[ -e "$d/markers/$m" ] && ran="$ran $m"
+		[ -e "$d/untrusted-markers/$m" ] && ran="$ran $m"
+		[ -e "$d/control-markers/$m" ] && fired="$fired $m"
 	done
 	if [ -n "$ran" ]; then
 		result $n FAIL "hooks ran untrusted:$ran"
@@ -400,16 +460,23 @@ check_grok_trust() {
 		result $n FAIL "exit $rc"
 	elif grep -q 'name no tool' "$d/err"; then
 		result $n FAIL "grok warned of an unknown tool name"
+	elif ! grep -qF "f-$tok" "$d/out"; then
+		result $n INCONCLUSIVE "no hook ran, but list_dir was not shown called"
+	elif [ $crc -ne 0 ]; then
+		result $n INCONCLUSIVE "no hook ran; the control run failed (exit $crc)"
+	elif [ -z "$fired" ]; then
+		result $n INCONCLUSIVE "no hook ran; none fired in the control either"
 	else
-		result $n PASS "answered; no project hook ran"
+		result $n PASS "no hook ran untrusted; control (trust off) fired:$fired"
 	fi
 
 	scn '{"json":{"result":"no findings"}}'
-	(cd "$r" && run_to "$AGGY_TO" "$d/aggy.out" "$d/aggy.err" /dev/null "$AGGY" borrow review "Smoke check: review this repo." --vendor grok)
+	(cd "$d/untrusted" && run_to "$AGGY_TO" "$d/aggy.out" "$d/aggy.err" /dev/null "$AGGY" borrow review "Smoke check: review this repo." --vendor grok)
 	rc=$?
 	if [ $rc -ne 0 ] && grep -q 'folder trust is not relied on' "$d/aggy.err"; then
 		result aggy-grok-review-refused PASS "refused before starting grok"
 	else
+		call grok # it may have run a review child
 		result aggy-grok-review-refused FAIL "not refused (exit $rc)"
 	fi
 }
@@ -420,7 +487,7 @@ check_grok_trust() {
 check_grok_image_tools() {
 	local n=grok-image-tool-list d=$WORK/g-tools rc extra="" t
 	want grok || {
-		result $n SKIP "grok not selected or not on PATH"
+		result $n SKIP "$WHY"
 		return
 	}
 	mkdir -p "$d/work"
@@ -465,7 +532,7 @@ check_setup() {
 check_image() {
 	local v=$1 ext=$2 n=image-borrow-$1 rc out=smoke-$1.$2
 	want "$v" || {
-		result "$n" SKIP "$v not selected or not on PATH"
+		result "$n" SKIP "$WHY"
 		return
 	}
 	if [ "$v" = codex ]; then
@@ -490,8 +557,8 @@ check_image() {
 check_video() {
 	local n=video-borrow-grok rc
 	want grok || {
-		result aggy-video-default-refused SKIP "grok not selected or not on PATH"
-		result $n SKIP "grok not selected or not on PATH"
+		result aggy-video-default-refused SKIP "$WHY"
+		result $n SKIP "$WHY"
 		return
 	}
 	scn '{"videos":1,"json":{"result":"made one video"}}'
@@ -525,7 +592,7 @@ check_video() {
 check_research() {
 	local n=research-borrow-grok tok rc
 	want grok || {
-		result $n SKIP "grok not selected or not on PATH"
+		result $n SKIP "$WHY"
 		return
 	}
 	tok=$(token)
@@ -549,17 +616,17 @@ check_research() {
 check_codex_research_refused() {
 	local rc
 	want codex || {
-		result aggy-codex-research-refused SKIP "codex not selected or not on PATH"
+		result aggy-codex-research-refused SKIP "$WHY"
 		return
 	}
 	scn '{}'
 	(cd "$REPO" && run_to "$AGGY_TO" "$WORK/cr.out" "$WORK/cr.err" /dev/null \
 		"$AGGY" borrow research "Smoke check." --vendor codex)
 	rc=$?
-	if [ $rc -ne 0 ]; then
-		result aggy-codex-research-refused PASS "refused (exit $rc)"
+	if [ $rc -ne 0 ] && grep -q 'until T6638' "$WORK/cr.err"; then
+		result aggy-codex-research-refused PASS "refused with the T6638 reason"
 	else
-		result aggy-codex-research-refused FAIL "not refused"
+		result aggy-codex-research-refused FAIL "not refused for T6638 (exit $rc)"
 	fi
 }
 
@@ -573,6 +640,19 @@ for v in claude codex grok; do
 	if want "$v"; then vers="$vers $v $(version "$v")"; else vers="$vers $v -"; fi
 done
 echo "versions:$vers"
+
+# The Grok checks pin grok 1.0.70, the version every Grok fact here was
+# checked on (docs/verification.md).
+if want grok; then
+	gv=$(version grok)
+	if [ "$gv" != 1.0.70 ]; then
+		if [ "${AGGY_SMOKE_ANY_VERSION:-}" = 1 ]; then
+			echo "WARNING: grok ${gv:-unknown} is not the tested 1.0.70; running the Grok checks anyway (AGGY_SMOKE_ANY_VERSION=1)" >&2
+		else
+			GROK_SKIP="grok ${gv:-unknown} is not the tested 1.0.70 (AGGY_SMOKE_ANY_VERSION=1 runs it anyway)"
+		fi
+	fi
+fi
 
 REPO=$WORK/repo
 newrepo "$REPO" || {
@@ -599,4 +679,5 @@ if [ "$FAKE" = 1 ]; then
 else
 	echo "vendor runs (quota used): claude $CALLS_claude, codex $CALLS_codex, grok $CALLS_grok"
 fi
-[ "$FAILED" -eq 0 ]
+[ "$INCONCLUSIVE" -eq 0 ] || echo "inconclusive: $INCONCLUSIVE"
+[ "$FAILED" -eq 0 ] && [ "$INCONCLUSIVE" -eq 0 ]

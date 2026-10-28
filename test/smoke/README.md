@@ -7,14 +7,17 @@ AGGY_SMOKE=1 make smoke                   # live
 AGGY_SMOKE=1 test/smoke/smoke.sh --fake   # against testdata/fakes, no quota
 ```
 
-`AGGY_SMOKE_VENDORS=claude,codex` limits the vendors (default all three); a vendor not selected or not on `PATH` is skipped. `AGGY_SMOKE_TIMEOUT` (default 300) is the limit in seconds for each direct vendor run; aggy's own borrow budgets bound the borrows.
+`AGGY_SMOKE_VENDORS=claude,codex` limits the vendors (default all three); a vendor not selected or not on `PATH` is skipped. The Grok checks run only on grok 1.0.70, the version every Grok fact here was checked on; on another version they are skipped, unless `AGGY_SMOKE_ANY_VERSION=1` runs them with a warning.
+
+**Bounds.** Wall time is the real bound. Each direct vendor run is killed after `AGGY_SMOKE_TIMEOUT` seconds (default 300); each aggy borrow stops at its kind's budget (image 5 minutes, video 10, research 10 with 30 turns) and the script kills it after 1200 seconds anyway. Turn limits exist only where the CLI has one: Grok's `--max-turns` (docs/adapters.md, Grok flags) is passed to the direct Grok MCP run (3 turns), and not to the review and image runs, which must use aggy's exact argv; Claude's turn flag is not recorded and Codex `exec` has none.
 
 ## Safety
 
 - Everything runs in a fresh temp dir, deleted at exit, with a temp `AGGY_HOME`. `aggy setup` runs only against that temp state (it runs each CLI's `--version` and `--help`, no model call).
+- Every vendor CLI and aggy run gets a fresh environment (`env -i`) with only `HOME`, `PATH`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TMPDIR`, `TERM=dumb`, `NO_COLOR=1`, `AGGY_HOME`, and `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME` when you set them, as aggy gives a borrow child. Proxies, a surrounding Claude Code session's variables, and Grok's folder-trust and hook switches do not leak in.
+- The script refuses to start while an API-key or route variable is set (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `XAI_API_KEY`, or any `*_BASE_URL`), and names it.
 - No vendor config is edited, no folder is trusted, and no `--dangerously-*`, yolo, or other permission- or trust-skipping flag is passed. The CLIs use the user's own sign-in in their usual homes, as the 2026-10-27 checks did, and record their sessions there as any run does.
-- API-key and base-URL variables are unset for the run, so the CLIs use the subscription.
-- Output is one line per check: its name, PASS, FAIL, or SKIP, and a note the script wrote. Vendor output, paths, session ids, and tokens are never printed. The CLI versions are printed as numbers only.
+- Output is one line per check: its name, PASS, FAIL, SKIP, or INCONCLUSIVE, and a note the script wrote. The exit status is 0 only when nothing failed and nothing was inconclusive. Vendor output, paths, session ids, and tokens are never printed. The CLI versions are printed as numbers only.
 - The fake mode builds the fakes, puts them first on `PATH`, and sets `HOME` to a temp dir, so a real CLI is never reached.
 
 ## Checks and cost
@@ -28,17 +31,17 @@ Vendor runs are one-turn, minimal prompts. A borrow counts as one run, though th
 | `codex-hook-trust-gate` | a `SessionStart` hook passed with `-c` is skipped | verification.md T6616 | codex 1 |
 | `codex-research-isolation` | with the clean lockdown set, a canary one level up is not read | verification.md T6618 | codex 1 |
 | `mcp-launch-claude`, `-codex`, `-grok` | launch-time MCP returns a stdio server's token (needs `python3`) | verification.md T6734 | 1 each |
-| `grok-review-untrusted` | in a never-trusted repo whose `.claude/settings.json` and `.grok/hooks` hold `SessionStart` and `PreToolUse` hooks, aggy's exact Grok review argv runs no hook | open item in grok_trust.go | grok 1 |
-| `aggy-grok-review-refused` | aggy refuses a Grok review in that repo | grok_trust.go | 0 |
+| `grok-review-untrusted` | in a never-trusted repo whose `.claude/settings.json` and `.grok/hooks` hold `SessionStart` and `PreToolUse` hooks, aggy's exact Grok review argv runs no hook, while the model is shown to call `list_dir`; a control repo run with `GROK_FOLDER_TRUST=0` (trust off, so Trusted, and no trust-store write; sources in smoke.sh) must fire them. PASS needs both; a control that fires nothing is INCONCLUSIVE | open item in grok_trust.go | grok 2 |
+| `aggy-grok-review-refused` | aggy refuses a Grok review in that repo | grok_trust.go | 0 (grok 1 if it was not refused) |
 | `grok-image-tool-list` | with aggy's image argv the model reports `image_gen` and no tool that reads a path | open item in grok.go | grok 1 |
-| `aggy-codex-research-refused` | Codex research is refused (T6638) | | 0 |
+| `aggy-codex-research-refused` | Codex research is refused with the T6638 reason | | 0 |
 | `image-borrow-codex`, `image-borrow-grok` | `aggy image` round trip into a scratch repo | | 1 each |
 | `research-borrow-grok` | `aggy borrow research` on Grok with planted page text that asks for a canary file in the repo; the canary must not come back | open item in research_isolation_test.go | grok 1 |
 | `aggy-video-default-refused` | `aggy video` is refused without `[media] grok_file_tools` | | 0 |
 | `video-borrow-grok` | `aggy video` round trip with the opt-in in the temp `config.toml` | open item in video file tools | grok 1 |
 
-Totals, all vendors selected: claude 2, codex 4, grok 6. The script prints the count it made at the end (an upper bound: a run aggy refuses before starting is still counted).
+Totals, all vendors selected: claude 2, codex 4, grok 7. The script prints the count it made at the end (an upper bound: a run aggy refuses before starting is still counted).
 
-Limits: the Grok tool list is the model's own one-turn report, not a wire dump. The research check's "page" is text in the task, not a hosted page. The Grok agent file's frontmatter layout is not recorded in verification.md, so a failure of `mcp-launch-grok` may mean the layout is wrong. If the user's Grok has folder trust turned off, `grok-review-untrusted` fails by design: that is what aggy's refusal guards against. The run timeout kills the CLI process, not its children.
+Limits: the Grok tool list is the model's own one-turn report, not a wire dump. The research check's "page" is text in the task, not a hosted page. The Grok agent file's frontmatter layout is not recorded in verification.md, so a failure of `mcp-launch-grok` may mean the layout is wrong. If the user's Grok has folder trust turned off, `grok-review-untrusted` fails by design: that is what aggy's refusal guards against. The run timeout kills the CLI process, not its children. Whether Grok fires `SessionStart` in `-p` mode is unverified; the control shows which hooks fired.
 
 Record the scrubbed results in `docs/verification.md`.
