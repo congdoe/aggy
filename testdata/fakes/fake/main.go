@@ -22,13 +22,18 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"os/user"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
+
+	"golang.org/x/term"
 )
 
 // Scenario drives one run. Every field is optional.
@@ -67,6 +72,12 @@ type Scenario struct {
 	// not record, such as a sign-in status command a test supplies,
 	// before any flag is parsed.
 	Replies []Reply `json:"replies"`
+	// RawEcho makes an interactive run behave like a full-screen CLI: it
+	// puts its terminal in raw mode, prints stdout, echoes every byte it
+	// reads, reports each resize as "[winch <rows>x<cols>]", stops itself
+	// on Ctrl+Z (0x1a) and prints "[continued]" when resumed, and exits on
+	// Ctrl+D (0x04).
+	RawEcho bool `json:"raw_echo"`
 }
 
 // Reply is the fixed answer to one exact argument list.
@@ -594,7 +605,7 @@ func (f *fake) main(args []string) int {
 	}
 	if headless {
 		f.headlessOutput()
-	} else {
+	} else if !f.sc.RawEcho {
 		fmt.Print(f.expand(f.sc.Stdout))
 	}
 	if f.sc.Stderr != "" {
@@ -612,7 +623,12 @@ func (f *fake) main(args []string) int {
 			fmt.Fprintln(os.Stderr, text)
 		}
 	}
-	if !headless {
+	switch {
+	case !headless && f.sc.RawEcho:
+		if err := rawEcho(f.expand(f.sc.Stdout)); err != nil {
+			return fail(3, "raw echo: %v", err)
+		}
+	case !headless:
 		waitForExit()
 	}
 	if f.sc.ExitCode == 0 && f.sc.Error != "" {
@@ -853,6 +869,58 @@ func (f *fake) runHooks() error {
 		}
 	}
 	return nil
+}
+
+// rawEcho is the RawEcho session: raw mode, banner, byte echo, resize
+// reports, Ctrl+Z suspend, and Ctrl+D exit.
+func rawEcho(banner string) error {
+	st, err := term.MakeRaw(0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = term.Restore(0, st) }()
+	var mu sync.Mutex
+	write := func(b []byte) {
+		mu.Lock()
+		defer mu.Unlock()
+		_, _ = os.Stdout.Write(b)
+	}
+	winch := make(chan os.Signal, 4)
+	signal.Notify(winch, syscall.SIGWINCH)
+	go func() {
+		for range winch {
+			w, h, _ := term.GetSize(0)
+			write([]byte(fmt.Sprintf("[winch %dx%d]", h, w)))
+		}
+	}()
+	write([]byte(banner))
+	buf := make([]byte, 4096)
+	for {
+		n, rerr := os.Stdin.Read(buf)
+		var out []byte
+		for _, c := range buf[:n] {
+			switch c {
+			case 0x04:
+				write(out)
+				return nil
+			case 0x1a:
+				write(out)
+				out = nil
+				_ = term.Restore(0, st)
+				_ = syscall.Kill(os.Getpid(), syscall.SIGSTOP)
+				if _, err := term.MakeRaw(0); err != nil {
+					return err
+				}
+				write([]byte("[continued]"))
+			default:
+				out = append(out, c)
+			}
+		}
+		write(out)
+		if rerr != nil {
+			return nil
+		}
+	}
 }
 
 // waitForExit reads lines until "/exit" or EOF, like a session waiting at

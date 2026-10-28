@@ -12,11 +12,12 @@ aggy is a Go CLI that runs the official Claude Code, Codex, and Grok Build CLIs 
 - `internal/cli`: argument parsing and command dispatch.
 - `internal/adapter`: the vendor `Adapter` interface, and `claude/`, `codex/`, `grok/`, which build each CLI's commands and parse its output. Adapters never start processes.
 - `internal/router`: the routing table, which picks the vendors a borrow kind may use and says why each other vendor was skipped.
-- `internal/supervisor`, `brief`, `parity`: stubs today, holding only their package docs. In order: the pseudo-terminal pass-through and switches; the handoff brief; and rendering shared config into each CLI.
+- `internal/supervisor`: the pseudo-terminal pass-through behind `aggy run <vendor>` (switches come later).
+- `internal/brief`, `parity`: stubs today, holding only their package docs. In order: the handoff brief; and rendering shared config into each CLI.
 - `internal/borrow`: headless borrows (routing with fall-through, isolation, budgets and leases, reports, the per-borrow log). `internal/hook`: the PreToolUse guard that stops a delegated child from starting another vendor CLI.
 - `internal/checkup`: the checks `aggy setup` and `aggy doctor` share: API-key variables and proxy routes, by name only.
 - `internal/probe`: probe specs, version and help parsing, the probe cache, and `LookPath`. It starts nothing.
-- `internal/execrun`: the only runner that starts vendor CLI processes (no stdin, or a borrow's prompt file opened through `safefs.OpenRegular`; a scrubbed env whose only additions are `AGGY_DELEGATED`, `AGGY_VENDOR`, `AGGY_MODEL`, and the fakes' `AGGY_FAKE_*`; a time limit that kills the process group). Only the files of `internal/cli` and `internal/devfix` (not their subpackages) and tests may import it.
+- `internal/execrun`: the only runner that starts vendor CLI processes (no stdin, or a borrow's prompt file opened through `safefs.OpenRegular`; a scrubbed env whose only additions are `AGGY_DELEGATED`, `AGGY_VENDOR`, `AGGY_MODEL`, and the fakes' `AGGY_FAKE_*`; a time limit that kills the process group). Separately, `StartPTY` starts the on-screen CLI in a pseudo-terminal with the user's own environment plus `AGGY_*` variables only; it never uses or loosens the borrow allowlist. Only the files of `internal/cli` and `internal/devfix` (not their subpackages) and tests may import it.
 - `internal/patch`: guarded, reversible config changes recorded for `aggy unwire`.
 - `internal/safefs`: the only file I/O layer; refuses vendor credential files by path and file identity.
 - `internal/store`: the SQLite index at `~/.aggy/aggy.db` and its migrations; the only package that may call `sql.Open`.
