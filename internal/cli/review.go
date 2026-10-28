@@ -26,11 +26,33 @@ var gitSafe = []string{
 	"-c", "diff.external=", "--no-pager",
 }
 
+// vendorHomeVars name the vendor config dirs set by environment.
+var vendorHomeVars = []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME"}
+
+// vendorHomes are the dirs that hold vendor credentials and config: the
+// defaults under home, ~/.agents, and any set by vendorHomeVars.
+func vendorHomes(getenv func(string) string) []string {
+	var out []string
+	if h := getenv("HOME"); filepath.IsAbs(h) {
+		for _, d := range []string{".claude", ".codex", ".grok", ".agents"} {
+			out = append(out, filepath.Join(h, d))
+		}
+	}
+	for _, k := range vendorHomeVars {
+		if v := getenv(k); filepath.IsAbs(v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // reviewRoot returns the git work tree root a review runs in. It refuses
-// a dir in no work tree, and a root that is $HOME, /, the aggy state dir
-// (or inside it), or that holds the state dir: the reviewer keeps its
-// read tools there.
-func reviewRoot(cwd, homeDir, stateDir string) (string, error) {
+// a dir in no work tree, and a root that is /, is or holds $HOME, is,
+// holds, or sits inside a vendor home (where credentials live), or is,
+// holds, or sits inside the aggy state dir: the reviewer keeps its read
+// tools there.
+func reviewRoot(cwd string, getenv func(string) string, stateDir string) (string, error) {
+	homeDir := getenv("HOME")
 	root, ok := repoRoot(cwd)
 	if !ok {
 		return "", fmt.Errorf("a review runs in a git work tree, and %s is in none", cwd)
@@ -43,6 +65,11 @@ func reviewRoot(cwd, homeDir, stateDir string) (string, error) {
 	// all of it, whatever AGGY_HOME says (#10-7).
 	if h := resolvePath(homeDir); h != "" && within(h, root) {
 		return "", fmt.Errorf("refusing to review %s: it is or holds your home directory, which the reviewer could read in full", root)
+	}
+	for _, vh := range vendorHomes(getenv) {
+		if vh = resolvePath(vh); within(root, vh) || within(vh, root) {
+			return "", fmt.Errorf("refusing to review %s: it is, holds, or is inside the vendor config dir %s, where credentials live", root, vh)
+		}
 	}
 	if st := resolvePath(stateDir); st != "" && (within(root, st) || within(st, root)) {
 		return "", fmt.Errorf("refusing to review %s: it holds or is inside aggy's state dir %s", root, st)

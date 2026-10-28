@@ -275,7 +275,7 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 		Vendor: ba.vendor, Repo: root, Parent: parent, AllowUntested: ba.allowUntested, Media: media,
 	}
 	if kind == adapter.Review {
-		if req.Repo, err = reviewRoot(cwd, env.getenv("HOME"), stateDir); err != nil {
+		if req.Repo, err = reviewRoot(cwd, env.getenv, stateDir); err != nil {
 			fmt.Fprintf(stderr, "aggy borrow: %s\n", termsafe.Field(err.Error()))
 			return 1
 		}
