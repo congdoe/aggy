@@ -251,7 +251,7 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 // Headless builds
 //
 //	grok --prompt-file <abs prompt file> --output-format json [--model m] [session] [--permission-mode plan]
-//	     [--sandbox strict --deny Read(<HOME>/Library/**) --deny Grep(<HOME>/Library/**) [--deny Read(/System/Volumes/Data/**) --deny Grep(/System/Volumes/Data/**)]] --tools <kind's tools> --disallowed-tools <Lockdown minus them> --no-subagents [--max-turns N]
+//	     [--sandbox strict --deny Read(<HOME>/Library/**) --deny Grep(<HOME>/Library/**) --deny Read(<Grok home>/**) --deny Grep(<Grok home>/**) [--deny Read(/System/Volumes/Data/**) --deny Grep(/System/Volumes/Data/**)]] --tools <kind's tools> --disallowed-tools <Lockdown minus them> --no-subagents [--max-turns N]
 //
 // with no stdin, so the prompt never goes in argv. Not -p: in grok 1.0.70
 // -p is --single <PROMPT>, which takes the prompt itself as its value
@@ -270,8 +270,9 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 // probe.CapKernelSandbox (the host has Seatbelt or Landlock), and
 // ParseHeadless fails closed on Grok's refusal and, as a weak extra
 // guard, on those log lines (sandboxErr). Strict still allows reads of
-// ~/Library, so they also deny Read and Grep there, and on darwin under
-// the /System/Volumes/Data firmlink (sandboxDeny). AllowedTools may only name tools the
+// ~/Library and of Grok's own home, so they also deny Read and Grep
+// there, and on darwin under the /System/Volumes/Data firmlink
+// (sandboxDeny). AllowedTools may only name tools the
 // kind already permits (compared case-insensitively), and never the MCP
 // meta-tools. Review runs with --permission-mode plan, MaxTurns sets
 // --max-turns, and research and news need IsolatedCwd. Web search outside
@@ -410,9 +411,21 @@ const globMeta = "*?[]{}()!,\\\x00\n\r"
 // cookies, app tokens), and on darwin of /System/Volumes/Data/**, the
 // firmlink spelling of the same files. A deny outranks any allow (decision_rank,
 // xai-grok-permission-rules/src/policy.rs:791 at grok-build 2bdd1d6a);
-// live-verified to refuse read_file there (2026-10-28, grok 1.0.70). HOME
-// must be a clean absolute path with no glob or rule syntax, else the
-// kind is refused.
+// live-verified to refuse read_file there (2026-10-28, grok 1.0.70).
+//
+// They also deny Read and Grep of Grok's own home (Home: $GROK_HOME, else
+// <HOME>/.grok, and <HOME>/.grok too when GROK_HOME points elsewhere),
+// which strict leaves readable (profiles.rs:463-488) and which holds
+// Grok's auth.json. Inferred from the ~/Library deny, the same mechanism;
+// not checked live with a canary there. Read and Grep only: Grok's media
+// tools write their output there in their own code, and image_edit and
+// image_to_video, which read the still they reuse from there, are checked
+// as AccessKind::Tool, which Read and Grep rules do not match
+// (xai-grok-tools/src/permission_access.rs:38-41,
+// xai-grok-permission-rules/src/policy.rs:571, grok-src 559751fd).
+//
+// HOME and the Grok home must be clean absolute paths with no glob or
+// rule syntax, else the kind is refused.
 func (a Adapter) sandboxDeny() ([]string, error) {
 	getenv := a.Getenv
 	if getenv == nil {
@@ -423,6 +436,12 @@ func (a Adapter) sandboxDeny() ([]string, error) {
 		return nil, fmt.Errorf("grok: HOME %q cannot be named in a --deny rule, so ~/Library cannot be denied: %w", home, adapter.ErrNoCapability)
 	}
 	rules := []string{"Read(" + home + "/Library/**)", "Grep(" + home + "/Library/**)"}
+	for _, gh := range slices.Compact([]string{a.Home(), filepath.Join(home, ".grok")}) {
+		if err := adapter.CheckAbs("Grok home", gh); err != nil || gh == "/" || strings.ContainsAny(gh, globMeta) {
+			return nil, fmt.Errorf("grok: the Grok home %q cannot be named in a --deny rule, so it cannot be denied: %w", gh, adapter.ErrNoCapability)
+		}
+		rules = append(rules, "Read("+gh+"/**)", "Grep("+gh+"/**)")
+	}
 	goos := a.GOOS
 	if goos == "" {
 		goos = runtime.GOOS
@@ -431,7 +450,9 @@ func (a Adapter) sandboxDeny() ([]string, error) {
 		// Grok matches deny rules on the lexical path, and a firmlink is
 		// not a symlink: /System/Volumes/Data<HOME>/Library/... read the
 		// canary past the rule above, live (G32-9, 2026-10-28, grok
-		// 1.0.70). Nothing aggy names lives under that spelling.
+		// 1.0.70). Nothing aggy names lives under that spelling. It also
+		// covers the firmlink spelling of the Grok home, so that needs no
+		// rule of its own.
 		rules = append(rules, "Read(/System/Volumes/Data/**)", "Grep(/System/Volumes/Data/**)")
 	}
 	return rules, nil

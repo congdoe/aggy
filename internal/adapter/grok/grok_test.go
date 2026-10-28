@@ -57,6 +57,7 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 	}
 	head := []string{"--prompt-file", h.Prompt, "--output-format", "json"}
 	strict := []string{"--sandbox", "strict", "--deny", "Read(/home/u/Library/**)", "--deny", "Grep(/home/u/Library/**)",
+		"--deny", "Read(/home/u/.grok/**)", "--deny", "Grep(/home/u/.grok/**)",
 		"--deny", "Read(/System/Volumes/Data/**)", "--deny", "Grep(/System/Volumes/Data/**)"}
 	tests := []struct {
 		name     string
@@ -157,6 +158,7 @@ func TestSandboxFailsClosed(t *testing.T) {
 func TestStrictMediaSwitch(t *testing.T) {
 	defer func(old bool) { strictMedia = old }(strictMedia)
 	strict := "--sandbox strict --deny Read(/home/u/Library/**) --deny Grep(/home/u/Library/**) " +
+		"--deny Read(/home/u/.grok/**) --deny Grep(/home/u/.grok/**) " +
 		"--deny Read(/System/Volumes/Data/**) --deny Grep(/System/Volumes/Data/**) "
 	tests := []struct {
 		req  adapter.HeadlessRequest
@@ -574,6 +576,75 @@ func TestFirmlinkDeny(t *testing.T) {
 			has := strings.Contains(args, "--deny Read(/System/Volumes/Data/**) --deny Grep(/System/Volumes/Data/**)")
 			if has != (goos == "darwin") || !strings.Contains(args, "--deny Read(/home/u/Library/**) --deny Grep(/home/u/Library/**)") {
 				t.Errorf("%s %s: %q", goos, k, c.Args)
+			}
+		}
+	}
+}
+
+// TestGrokHomeDeny (T6742): every sandboxed kind denies Read and Grep of
+// Grok's own home (its auth file lives there), and of ~/.grok too when
+// GROK_HOME points elsewhere; never a write rule. A Grok home that
+// cannot be named in a rule refuses the kind.
+func TestGrokHomeDeny(t *testing.T) {
+	env := func(grokHome string) Adapter {
+		a := sandboxed()
+		a.Getenv = func(k string) string {
+			switch k {
+			case "HOME":
+				return "/home/u"
+			case "GROK_HOME":
+				return grokHome
+			}
+			return ""
+		}
+		return a
+	}
+	sandboxedKinds := []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video}
+	for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video, adapter.Edit} {
+		if usesSandbox(k) != slices.Contains(sandboxedKinds, k) {
+			t.Fatalf("usesSandbox(%s) = %v", k, usesSandbox(k))
+		}
+	}
+	tests := []struct {
+		grokHome string
+		want     []string
+	}{
+		{"", []string{"/home/u/.grok"}},
+		{"/home/u/.grok", []string{"/home/u/.grok"}},
+		{"/data/grok/", []string{"/data/grok", "/home/u/.grok"}},
+	}
+	for _, tt := range tests {
+		for _, k := range sandboxedKinds {
+			req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true, FileTools: true}
+			c, err := env(tt.grokHome).Headless(req)
+			if err != nil {
+				t.Fatalf("%s, GROK_HOME %q: %v", k, tt.grokHome, err)
+			}
+			var got []string
+			for i, a := range c.Args {
+				if a == "--deny" && i+1 < len(c.Args) && !strings.Contains(c.Args[i+1], "/Library/") && !strings.Contains(c.Args[i+1], "/System/Volumes/Data/") {
+					got = append(got, c.Args[i+1])
+				}
+			}
+			var want []string
+			for _, h := range tt.want {
+				want = append(want, "Read("+h+"/**)", "Grep("+h+"/**)")
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("%s, GROK_HOME %q: Grok home denies %q, want %q", k, tt.grokHome, got, want)
+			}
+		}
+	}
+	// Edit takes no sandbox and so no deny.
+	c, err := env("").Headless(adapter.HeadlessRequest{Kind: adapter.Edit, PromptFile: "/p/prompt.md", Cwd: "/w"})
+	if err != nil || slices.Contains(c.Args, "--deny") {
+		t.Errorf("edit: %q, %v", c.Args, err)
+	}
+	for _, bad := range []string{"rel/grok", "/", "/g*", "/g,h", "/g)"} {
+		for _, k := range sandboxedKinds {
+			req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true, FileTools: true}
+			if c, err := env(bad).Headless(req); !errors.Is(err, adapter.ErrNoCapability) {
+				t.Errorf("%s, GROK_HOME %q: %q, %v", k, bad, c.Args, err)
 			}
 		}
 	}
