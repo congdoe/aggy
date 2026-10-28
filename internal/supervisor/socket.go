@@ -395,8 +395,14 @@ func (s *Server) accept() {
 func (s *Server) serve(c *net.UnixConn) {
 	defer func() { _ = c.Close() }()
 	uid, peerPID, err := s.peer(c)
-	if err != nil || uid != os.Getuid() {
-		s.logger()(diag.Rec{Event: diag.EvHookRejected, Code: diag.CodePeerUID, Msg: "a connection whose peer is not this user, or could not be told"})
+	switch {
+	case err != nil:
+		// Not a security refusal: a peer that connected and left at once
+		// cannot be told either (G67-8).
+		s.logger()(diag.Rec{Event: diag.EvHookRejected, Code: diag.CodePeerUnknown, Msg: "a connection whose peer could not be told"})
+		return
+	case uid != os.Getuid():
+		s.logger()(diag.Rec{Event: diag.EvHookRejected, Code: diag.CodePeerUID, Msg: "a connection from another user", Attrs: map[string]any{"uid": uid}})
 		return
 	}
 	from := s.fromSession(c, peerPID)

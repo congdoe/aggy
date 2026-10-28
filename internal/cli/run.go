@@ -105,9 +105,12 @@ const (
 func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag.Queue) int {
 	// ids are the entity ids known so far, for the records.
 	var ids diag.Rec
+	// The record's message is the code's registry text: the error can
+	// quote a path, PATH, AGGY_HOME, or a CLI's own text (G67-1).
 	fail := func(code diag.Code, err error) int {
 		r := ids
-		r.Event, r.Code, r.Msg = diag.EvLaunchRefused, code, err.Error()
+		info, _ := diag.LookupCode(code)
+		r.Event, r.Code, r.Msg = diag.EvLaunchRefused, code, info.Meaning
 		dlog.Log(context.Background(), r)
 		fmt.Fprintf(stderr, "%s: %s %s\n", name, termsafe.Line(err.Error()), dlog.Tag(code))
 		return 1
@@ -255,7 +258,13 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	launched.Event, launched.VendorSession = diag.EvLaunched, assigned
 	launched.Attrs = map[string]any{"new_child": pl.newChild, "new_parent": pl.newParent, "resumed": pl.resume != "",
 		"brief": t.Brief, "model_set": t.Model != "", "direct": t.Direct}
-	cause := dlog.Log(ctx, launched)
+	// Queued, like the rest of the session's records, so the launch
+	// never waits on the disk (G67-6).
+	cause := q.Log(launched)
+	// The CLI owns the terminal from here: a warning about the log waits
+	// until it is back (G67-5).
+	dlog.Hold()
+	defer dlog.Release()
 	began := time.Now()
 	exited := func(code int, to adapter.Vendor) {
 		r := ids
@@ -268,11 +277,12 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	if t.Direct {
 		code, err := runDirect(cmd, runDir, parentID, v, assigned, cids.set, func(r diag.Rec) {
 			r.Parent, r.Child, r.Vendor = parentID, pl.child.ID, string(v)
-			q.Log(r)
+			q.LogWait(r, 100*time.Millisecond) // the socket's goroutines
 		})
+		dlog.Release()
 		if err != nil {
 			r := ids
-			r.Event, r.Code, r.Cause, r.Msg = diag.EvLaunchRefused, diag.CodeLaunchFailed, cause, err.Error()
+			r.Event, r.Code, r.Cause, r.Msg = diag.EvLaunchRefused, diag.CodeLaunchFailed, cause, "the supervisor failed"
 			q.Log(r)
 			fmt.Fprintf(stderr, "%s: %s %s\n", name, termsafe.Line(err.Error()), dlog.Tag(diag.CodeLaunchFailed))
 			if code == 0 {
@@ -340,9 +350,10 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 		Diag:       q,
 		ChildID:    pl.child.ID,
 	})
+	dlog.Release()
 	if err != nil {
 		r := ids
-		r.Event, r.Code, r.Cause, r.Msg = diag.EvLaunchRefused, diag.CodeLaunchFailed, cause, err.Error()
+		r.Event, r.Code, r.Cause, r.Msg = diag.EvLaunchRefused, diag.CodeLaunchFailed, cause, "the supervisor failed"
 		q.Log(r)
 		fmt.Fprintf(stderr, "%s: %s %s\n", name, termsafe.Line(err.Error()), dlog.Tag(diag.CodeLaunchFailed))
 		if ex.Code == 0 {

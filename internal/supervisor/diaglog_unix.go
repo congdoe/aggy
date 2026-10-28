@@ -4,6 +4,7 @@ package supervisor
 
 import (
 	"errors"
+	"time"
 
 	"github.com/congdoe/aggy/internal/diag"
 )
@@ -45,6 +46,20 @@ func (s *session) log(r diag.Rec) string {
 	}
 	return s.o.Diag.Log(r)
 }
+
+// logWait is log for the socket's goroutines, which are not the
+// terminal loop: it waits up to sockLogWait for room in a full queue.
+func (s *session) logWait(r diag.Rec) {
+	r.Parent, r.Child = s.o.ParentID, s.o.ChildID
+	if r.Vendor == "" {
+		r.Vendor = string(s.o.Vendor)
+	}
+	s.o.Diag.LogWait(r, sockLogWait)
+}
+
+// sockLogWait bounds how long a socket goroutine waits for room in the
+// diagnostic queue; a hook waits for the answer, up to 3 s.
+const sockLogWait = 100 * time.Millisecond
 
 // hookName is a hook event's name for a record: the names aggy acts on,
 // else "other", since any process in the CLI's tree can pick the name.

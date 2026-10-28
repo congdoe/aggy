@@ -70,6 +70,10 @@ type Rec struct {
 	// takes the trace of that borrow's first record, and any other the
 	// writer's own.
 	Trace string
+	// NoRefusal keeps a record with a security code out of aggy log: the
+	// process that refused it (the supervisor) wrote that refusal, and
+	// this one only reports it.
+	NoRefusal bool
 	// id and at are set by Queue.Log: the record's id, and when it was
 	// queued.
 	id string
@@ -94,6 +98,12 @@ type Writer struct {
 	mu     sync.Mutex
 	warned bool
 	forbid []string
+	// holding: warnings wait in held until Release (the terminal is
+	// raw while the supervisor runs).
+	holding bool
+	held    string
+	// env are the values of envScrubbed, set by New.
+	env []string
 
 	// The open log and its path, under dbMu.
 	dbMu   sync.Mutex
@@ -118,8 +128,20 @@ func New(version string, warn io.Writer) *Writer {
 	if t := w.getenv(TraceEnv); ValidID(t) {
 		w.trace = t
 	}
+	// Environment values are never stored, and these reach error text
+	// aggy prints: a CLI's tree, an agent included, sets them at will
+	// (G67-1).
+	for _, k := range envScrubbed {
+		if v := strings.TrimSpace(w.getenv(k)); len(v) >= 4 {
+			w.env = append(w.env, v)
+		}
+	}
 	return w
 }
+
+// envScrubbed are the variables whose values the writer replaces with
+// [env value] wherever they show.
+var envScrubbed = []string{"AGGY_SOCKET", "AGGY_HOME"}
 
 // RunID is this process's run id; "" for a nil writer.
 func (w *Writer) RunID() string {
@@ -179,6 +201,9 @@ func (w *Writer) scrub(s string, max int) string {
 	w.mu.Lock()
 	for _, f := range w.forbid {
 		s = strings.ReplaceAll(s, f, "[task text]")
+	}
+	for _, v := range w.env {
+		s = strings.ReplaceAll(s, v, "[env value]")
 	}
 	w.mu.Unlock()
 	s, n := redact.Lines(s)
@@ -288,7 +313,7 @@ func (w *Writer) Log(ctx context.Context, r Rec) string {
 		}
 		return ""
 	}
-	if code.Security {
+	if code.Security && !r.NoRefusal {
 		w.refusal(ctx, rec)
 	}
 	return rec.ID
@@ -376,7 +401,39 @@ func (w *Writer) warnOnce(err error) {
 		return
 	}
 	w.warned = true
-	fmt.Fprintf(w.warn, "aggy: warning: the diagnostic log was not written: %s %s\n", termsafe.Field(err.Error()), w.Tag(CodeDiagWrite))
+	msg := fmt.Sprintf("aggy: warning: the diagnostic log was not written: %s %s\n", termsafe.Field(err.Error()), w.Tag(CodeDiagWrite))
+	if w.holding {
+		w.held = msg
+		return
+	}
+	fmt.Fprint(w.warn, msg)
+}
+
+// Hold keeps the writer's warning off the terminal until Release: the
+// supervisor's terminal is raw, and a line on it would garble the CLI's
+// screen (G67-5).
+func (w *Writer) Hold() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.holding = true
+}
+
+// Release prints a warning held since Hold, and prints the next ones as
+// they come.
+func (w *Writer) Release() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.holding = false
+	if w.held != "" && w.warn != nil {
+		fmt.Fprint(w.warn, w.held)
+	}
+	w.held = ""
 }
 
 // LockdownEvent is vendor's lockdown_rejected event; "" for another name.

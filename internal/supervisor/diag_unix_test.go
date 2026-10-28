@@ -98,7 +98,7 @@ func TestDiagSwitchRecords(t *testing.T) {
 		code diag.Code
 	}{
 		{diag.EvPickerOpened, diag.Code{}}, {diag.EvPickerChosen, diag.Code{}},
-		{diag.EvSwitchRefused, diag.CodeUnsentText}, {diag.EvHookRejected, diag.CodeForeignSession},
+		{diag.EvSwitchRefused, diag.CodeUnsentText}, {diag.EvHookIgnored, diag.CodeForeignSession},
 	} {
 		if _, ok := find(recs, w.ev, w.code); !ok {
 			t.Errorf("no %s %s record", w.ev, w.code)
@@ -121,6 +121,53 @@ func TestDiagSwitchRecords(t *testing.T) {
 	}
 	if stop.Event != diag.EvHookAccepted.String() || !strings.Contains(string(stop.Attrs), `"counted":true`) {
 		t.Errorf("the offer's cause is %+v, want the turn end it followed", stop)
+	}
+}
+
+// TestDiagOfferCause (G67-2): a nested CLI's Stop right after the
+// on-screen one, before the offer is polled, does not become the offer's
+// cause; the counted turn end does. Foreign turn ends are recorded once
+// a minute per session, as ignored, not as refusals; one naming no
+// session is a security rejection.
+func TestDiagOfferCause(t *testing.T) {
+	q, records := diagHome(t)
+	ts, c, done, sock := switchRunOn(t, true, adapter.Claude, func(o *Options) { o.Diag = q })
+	ts.typeIn(t, "\x1c2")
+	poll(t, "the picker to close", []byte(altScreenOff), ts.screen)
+	_ = request(t, sock, stopLine)
+	for i := 0; i < 3; i++ {
+		_ = request(t, sock, nestedStop)
+	}
+	_ = request(t, sock, idlessStop)
+	poll(t, "the confirmation", []byte("-> grok. Ctrl+"), ts.screen)
+	ts.typeIn(t, "\x1b")
+	time.Sleep(100 * time.Millisecond)
+	finish(t, c, done)
+	recs := records()
+	offered, ok := find(recs, diag.EvSwitchOffered, diag.Code{})
+	if !ok {
+		t.Fatal("no offer record")
+	}
+	var ignored int
+	for _, r := range recs {
+		if r.ID == offered.CauseID && (r.Event != diag.EvHookAccepted.String() || !strings.Contains(string(r.Attrs), `"counted":true`)) {
+			t.Errorf("the offer's cause is %s %s, want the counted turn end", r.Event, r.Attrs)
+		}
+		if r.Event == diag.EvHookIgnored.String() {
+			ignored++
+			if r.Code != diag.CodeForeignSession.String() {
+				t.Errorf("ignored with code %q", r.Code)
+			}
+		}
+		if r.Code == diag.CodeForeignSession.String() && r.Event != diag.EvHookIgnored.String() {
+			t.Errorf("foreign session recorded as %s", r.Event)
+		}
+	}
+	if ignored != 1 {
+		t.Errorf("%d ignored records for three foreign turn ends in a minute, want 1", ignored)
+	}
+	if _, ok := find(recs, diag.EvHookRejected, diag.CodeNoSession); !ok {
+		t.Error("no hook.no_session rejection for a turn end naming no session")
 	}
 }
 

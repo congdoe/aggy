@@ -112,7 +112,9 @@ func answer(line []byte, fromSession bool, onHook func(Request), onSwitch func(R
 			return refuse(diag.EvSwitchRefused, diag.CodeNotSupervised, errors.New("switching needs aggy's pass-through; this session cannot switch"), attrs)
 		}
 		if err := onSwitch(r); err != nil {
-			return refuse(diag.EvSwitchRefused, codeOf(err, diag.CodeSwitchVendor), err, attrs)
+			r := diag.Rec{Event: diag.EvSwitchRefused, Code: codeOf(err, diag.CodeSwitchVendor), Msg: refusedMsg(adapter.Vendor(r.Vendor), err), Attrs: attrs}
+			log(r)
+			return Response{Error: err.Error(), Code: r.Code.String()}
 		}
 		return Response{OK: true}
 	}

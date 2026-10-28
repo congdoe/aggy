@@ -236,14 +236,21 @@ func diagList(ctx context.Context, args []string, now func() time.Time, export b
 	if *f.follow && *f.json {
 		return usageError{errors.New("--follow prints a table or --jsonl")}
 	}
+	// Ctrl-C, at any point, is how --follow ends: not an error (G67-9).
+	quit := func(err error) error {
+		if *f.follow && ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
 	v, err := openDiagView(ctx)
 	if err != nil {
-		return err
+		return quit(err)
 	}
 	defer func() { _ = v.Close() }()
 	recs, err := v.Records(ctx, flt)
 	if err != nil {
-		return err
+		return quit(err)
 	}
 	switch {
 	case export || *f.jsonl:
@@ -280,13 +287,13 @@ func diagList(ctx context.Context, args []string, now func() time.Time, export b
 			// diag.db did not exist when the view opened; look again.
 			_ = v.Close()
 			if v, err = openDiagView(ctx); err != nil {
-				return err
+				return quit(err)
 			}
 		}
 		flt.AfterRow = last
 		recs, err := v.Records(ctx, flt)
 		if err != nil {
-			return err
+			return quit(err)
 		}
 		if len(recs) == 0 {
 			continue

@@ -3,6 +3,7 @@ package diag
 import (
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,7 +52,7 @@ func TestQueueSlowWriter(t *testing.T) {
 		}
 	}
 	last := recs[len(recs)-1]
-	if last.Event != EvQueueDropped.String() || last.Code != CodeQueueFull.String() || string(last.Attrs) != `{"dropped":`+strconv.FormatInt(q.Dropped(), 10)+`}` {
+	if last.Event != EvQueueDropped.String() || last.Code != CodeQueueFull.String() || string(last.Attrs) != `{"dropped":`+strconv.FormatInt(q.Dropped(), 10)+`,"dropped_security":0}` {
 		t.Errorf("last record %+v", last)
 	}
 	var nilQ *Queue
@@ -59,4 +60,105 @@ func TestQueueSlowWriter(t *testing.T) {
 		t.Error("a nil queue is not a no-op")
 	}
 	nilQ.Close(0)
+}
+
+// TestQueueSecurityFirst (G67-3): a queue full of plain records still
+// takes a record with a security code, writes it first, and counts a
+// dropped one apart; LogWait waits for room.
+func TestQueueSecurityFirst(t *testing.T) {
+	w, _, dir := testWriter(t, "info")
+	gate := make(chan struct{})
+	w.diagPath = func() (string, error) {
+		<-gate
+		return filepath.Join(dir, "diag.db"), nil
+	}
+	q := w.Queue(2)
+	for i := 0; i < 10; i++ {
+		q.Log(Rec{Event: EvPickerOpened})
+	}
+	sec := q.Log(Rec{Event: EvHookRejected, Code: CodeLineage})
+	if sec == "" {
+		t.Fatal("a security record was dropped behind plain ones")
+	}
+	for i := 0; i < secQueue+5; i++ {
+		q.Log(Rec{Event: EvHookRejected, Code: CodeLineage})
+	}
+	if q.droppedSec.Load() == 0 {
+		t.Error("no dropped security record counted")
+	}
+	close(gate)
+	q.Close(30 * time.Second)
+	recs := records(t, dir)
+	var secRow int64
+	for _, r := range recs {
+		if r.ID == sec {
+			secRow = r.Row
+		}
+	}
+	before := 0
+	for _, r := range recs {
+		if r.Code == "" && r.Row < secRow {
+			before++
+		}
+	}
+	// One plain record was already with the writer.
+	if secRow == 0 || before > 1 {
+		t.Errorf("the security record (row %d) was written after %d plain ones", secRow, before)
+	}
+	last := recs[len(recs)-1]
+	if last.Event != EvQueueDropped.String() || !strings.Contains(string(last.Attrs), `"dropped_security":`) {
+		t.Errorf("last record %+v", last)
+	}
+}
+
+// TestQueueLogWait: LogWait waits for room; Log does not.
+func TestQueueLogWait(t *testing.T) {
+	w, _, dir := testWriter(t, "info")
+	gate := make(chan struct{})
+	w.diagPath = func() (string, error) {
+		<-gate
+		return filepath.Join(dir, "diag.db"), nil
+	}
+	q := w.Queue(1)
+	q.Log(Rec{Event: EvPickerOpened}) // taken by the writer, which waits
+	time.Sleep(20 * time.Millisecond)
+	q.Log(Rec{Event: EvPickerOpened}) // fills the queue
+	if q.Log(Rec{Event: EvPickerOpened}) != "" {
+		t.Fatal("Log took a record past a full queue")
+	}
+	go func() { time.Sleep(20 * time.Millisecond); close(gate) }()
+	if q.LogWait(Rec{Event: EvPickerOpened}, 10*time.Second) == "" {
+		t.Error("LogWait did not wait for room")
+	}
+	q.Close(30 * time.Second)
+}
+
+// TestQueuePanicAndHold (G67-5): a panic while writing is a failed write,
+// not a crash, and its warning waits for Release.
+func TestQueuePanicAndHold(t *testing.T) {
+	w, warn, _ := testWriter(t, "info")
+	w.diagPath = func() (string, error) { panic("disk on fire") }
+	w.Hold()
+	q := w.Queue(4)
+	q.Log(Rec{Event: EvPickerOpened})
+	q.Close(5 * time.Second)
+	if warn.Len() != 0 {
+		t.Fatalf("a warning reached the terminal while held: %q", warn.String())
+	}
+	w.Release()
+	if !strings.Contains(warn.String(), "panic: disk on fire") {
+		t.Errorf("warning %q", warn.String())
+	}
+}
+
+// TestWriterScrubsEnv (G67-1): the values of AGGY_SOCKET and AGGY_HOME,
+// which a CLI's tree sets at will, never reach a record.
+func TestWriterScrubsEnv(t *testing.T) {
+	t.Setenv("AGGY_SOCKET", "/tmp/sock-canary-heron-91.sock")
+	t.Setenv("AGGY_HOME", "relative-canary-heron-92")
+	w := New("v-test", nil)
+	got := w.scrub("dial /tmp/sock-canary-heron-91.sock: no such file; AGGY_HOME relative-canary-heron-92 is not absolute", maxMsg)
+	if strings.Contains(got, "canary") || strings.Count(got, "[env value]") != 2 {
+		t.Errorf("scrubbed %q", got)
+	}
 }
