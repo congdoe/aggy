@@ -178,13 +178,26 @@ func dirIDs(dirs []string) []store.DirID {
 	}
 	ids := make([]store.DirID, len(dirs))
 	for i, d := range dirs {
-		if fi, err := safefs.Lstat(d); err == nil && fi.IsDir() {
-			if dev, ino, ok := safefs.FileID(fi); ok {
-				ids[i] = store.DirID{Dev: dev, Ino: ino}
-			}
-		}
+		ids[i], _ = dirIdentity(d)
 	}
 	return ids
+}
+
+// dirIdentity returns the identity of the directory at path: its device
+// and inode, and its birth time where the file system reports one. ok is
+// false when path is not a directory or has no device and inode. Tests
+// replace it to simulate inode reuse.
+var dirIdentity = func(path string) (id store.DirID, ok bool) {
+	fi, err := safefs.Lstat(path)
+	if err != nil || !fi.IsDir() {
+		return store.DirID{}, false
+	}
+	dev, ino, ok := safefs.FileID(fi)
+	if !ok {
+		return store.DirID{}, false
+	}
+	birth, _ := safefs.FileBirth(fi)
+	return store.DirID{Dev: dev, Ino: ino, Birth: birth}, true
 }
 
 // isSyncWarning reports whether err only says a written file was not
