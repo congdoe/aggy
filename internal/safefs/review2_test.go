@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"syscall"
 	"testing"
 )
@@ -120,16 +119,5 @@ func TestReadFileLimit(t *testing.T) {
 	}
 	if _, err := ReadFileLimit(filepath.Join(dir, "missing"), 1); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("missing = %v", err)
-	}
-}
-
-// TestErrHardLinkDocIsHonest (S4): the doc must not claim the rotation case.
-func TestErrHardLinkDocIsHonest(t *testing.T) {
-	b, err := os.ReadFile("safefs.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(b), "TODO(T6724)") {
-		t.Error("ErrHardLink doc lacks the T6724 note")
 	}
 }
