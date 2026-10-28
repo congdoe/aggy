@@ -41,6 +41,9 @@ func reportText(r Result, req Request, sessionID string, started time.Time) stri
 	for _, a := range r.Artifacts {
 		fmt.Fprintf(&b, "- %s: %s\n", a.Kind, a.Path)
 	}
+	for _, x := range r.Refused {
+		fmt.Fprintf(&b, "- Refused file: %s\n", x)
+	}
 	b.WriteString("\n## Task\n\n")
 	b.WriteString(strings.TrimSpace(req.Task))
 	b.WriteString("\n")

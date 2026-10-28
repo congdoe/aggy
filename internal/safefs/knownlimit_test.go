@@ -10,12 +10,13 @@ import (
 	"testing"
 )
 
-// TestHardLinkBeforeRotation documents a known gap (TODO(T6724)): a hard
+// TestHardLinkBeforeRotation documents a known limit of safefs: a hard
 // link made to a credential before the vendor rotates its token keeps the
 // old inode, with one link and the old token, and safefs reads it. The
-// gap is closed at the M1 artifact boundary, not here. The test skips
-// while the gap is open, and fails if safefs starts refusing it, so the
-// doc is updated together with the behavior.
+// case is closed at the borrow artifact boundary (internal/borrow,
+// artifact.go, TestArtifactRotatedCredential), not here. The test fails
+// if safefs starts refusing it, so the doc is updated together with the
+// behavior.
 func TestHardLinkBeforeRotation(t *testing.T) {
 	home := fakeHome(t)
 	auth := filepath.Join(home, ".codex", "auth.json")
@@ -39,10 +40,9 @@ func TestHardLinkBeforeRotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), "TODO(T6724)") {
-		t.Error("the ErrHardLink doc lacks the TODO(T6724) note for this gap")
+	if !strings.Contains(string(b), "artifact.go") {
+		t.Error("the ErrHardLink doc no longer points to where this case is closed")
 	}
-	t.Skip("known limit TODO(T6724): a hard link made before a token rotation is read; closed at the M1 artifact boundary")
 }
 
 // TestNoIdentityHistoryFile: safefs keeps no state file of its own; a
