@@ -115,6 +115,23 @@ func TestSkillGrokRelinkDropsIgnore(t *testing.T) {
 	}
 }
 
+// TestSkillGrokEmptyConfigKept (B14-4): an empty Grok config.toml the
+// person had stays a file when aggy takes its ignore entry out again,
+// rather than being deleted (and brought back only by aggy unwire).
+func TestSkillGrokEmptyConfigKept(t *testing.T) {
+	_, l := skillHome(t)
+	writeAt(t, l.grokConfig, "", 0o600)
+	mustRun(t, "skill", "link")
+	mustRun(t, "skill", "unlink", "--vendor", "grok")
+	if b, _ := os.ReadFile(l.grokConfig); !strings.Contains(string(b), l.store) {
+		t.Fatalf("no ignore entry: %q", b)
+	}
+	mustRun(t, "skill", "link", "--vendor", "grok")
+	if b, err := os.ReadFile(l.grokConfig); err != nil || len(b) != 0 {
+		t.Errorf("grok config = %q, %v; want the empty file kept", b, err)
+	}
+}
+
 // TestSkillDryRun: --dry-run shows the changes and writes nothing, not
 // even the index.
 func TestSkillDryRun(t *testing.T) {

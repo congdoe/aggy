@@ -287,12 +287,9 @@ func (l skillLayout) grokIgnorePatch(want bool) (*patch.Patch, error) {
 	case want:
 		return &patch.Patch{File: l.grokConfig, ExpectedHash: h, Transform: addGrokIgnore(l.store), Mode: 0o600}, nil
 	}
-	// A config that holds only what aggy added goes away whole (an empty
-	// config.toml that was there before means the same to Grok, and
-	// aggy unwire would bring it back).
-	if block, err := ignoreBlock(l.store, "\n"); err == nil && h == patch.Hash([]byte(block)) {
-		return &patch.Patch{File: l.grokConfig, ExpectedHash: h, Remove: true}, nil
-	}
+	// Only the block is taken out, even when it is all the file holds:
+	// the file stays, empty, rather than being deleted and brought back
+	// by aggy unwire (B14-4).
 	return &patch.Patch{File: l.grokConfig, ExpectedHash: h, Transform: removeGrokIgnore(l.store)}, nil
 }
 
@@ -456,6 +453,9 @@ func removeGrokIgnore(entry string) func([]byte) ([]byte, error) {
 		delete(sk, "ignore")
 		var out []byte
 		switch i := skillsHeader(src); {
+		case len(sk) == 0 && bytes.Equal(src, []byte(block)):
+			out = []byte{} // the block was the whole file: keep it, empty
+			delete(doc, "skills")
 		case len(sk) == 0 && bytes.HasSuffix(src, []byte(nl+block)):
 			out = src[:len(src)-len(nl+block)]
 			delete(doc, "skills")

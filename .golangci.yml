@@ -241,6 +241,11 @@ linters:
       # safefs needs, the stat type, and flock for the store's locks.
       - text: "use of `syscall\\.(E[A-Z0-9]+|O_NOFOLLOW|O_NONBLOCK|Stat_t|Flock|LOCK_(EX|NB|SH|UN))`"
         linters: [forbidigo]
+      # statfs(2) only in safefs, behind its path check (IsAPFS), for the
+      # file system's type.
+      - path: ^internal/safefs/fstype_darwin\.go$
+        text: "use of `syscall\\.(Statfs|Statfs_t)`"
+        linters: [forbidigo]
       # access(2) only in safefs, behind its path check (DirWritable).
       - path: ^internal/safefs/
         text: "use of `syscall\\.Access`"

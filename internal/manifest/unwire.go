@@ -516,17 +516,24 @@ func sameDir(dir string, id store.DirID) bool {
 }
 
 // sameDevIno reports whether dir has id's device and inode, whatever its
-// birth time. APFS can rewrite a directory's birth time (a restore, or a
-// tool that sets it), and APFS never hands out an inode number again (its
-// object ids only grow), so a device and inode match there is still the
-// same directory. It is used only during the undo of the change that
-// made the directory (removeOwnDirs, and sweepDirs for a change this call
-// undid), so a later run, even one related through a file, never relies
-// on it.
+// birth time, on APFS. APFS can rewrite a directory's birth time (a
+// restore, or a tool that sets it), and APFS never hands out an inode
+// number again (its object ids only grow), so a device and inode match
+// there is still the same directory. Other file systems (exFAT, msdos,
+// SMB) reuse inode numbers, so there it is sameDir, birth time included
+// (B14-7). It is used only during the undo of the change that made the
+// directory (removeOwnDirs, and sweepDirs for a change this call undid),
+// so a later run, even one related through a file, never relies on it.
 func sameDevIno(dir string, id store.DirID) bool {
+	if !isAPFS(dir) {
+		return sameDir(dir, id)
+	}
 	_, ok := devIno(dir, id)
 	return ok
 }
+
+// isAPFS is safefs.IsAPFS; tests replace it.
+var isAPFS = safefs.IsAPFS
 
 func devIno(dir string, id store.DirID) (store.DirID, bool) {
 	if id == (store.DirID{}) {
