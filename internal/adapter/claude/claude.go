@@ -268,6 +268,13 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 	if tools != nil {
 		args = append(args, "--tools", strings.Join(tools, ","))
 	}
+	// A review runs in the reviewed repo, whose .claude/settings.json
+	// hooks would run with no trust prompt: load the user's settings only.
+	// TODO(T6643): --setting-sources is documented but not in a recorded
+	// help, so without the probed capability the repo's hooks still load.
+	if req.Kind == adapter.Review && slices.Contains(a.Caps, probe.CapSettingSources) {
+		args = append(args, "--setting-sources", "user")
+	}
 	if a.guarded(req) {
 		if _, err := GuardSettings(req.GuardCommand); err != nil {
 			return adapter.Command{}, err

@@ -84,6 +84,10 @@ const (
 	// Not recorded in docs/adapters.md or a fixture: present only when
 	// help lists it.
 	CapSettings = "settings"
+	// CapSettingSources is claude --setting-sources <list>, which limits
+	// the settings files a run loads. Documented, but not in a recorded
+	// help: present only when help lists it.
+	CapSettingSources = "setting-sources"
 )
 
 // Specs holds the probe spec of each vendor, from the flags recorded in
@@ -100,6 +104,7 @@ var Specs = map[adapter.Vendor]Spec{
 			{CapForkSession, 0, "--fork-session", Option},
 			{CapPermissionMode, 0, "--permission-mode", Option},
 			{CapSettings, 0, "--settings", Option},
+			{CapSettingSources, 0, "--setting-sources", Option},
 		},
 	},
 	adapter.Grok: {
