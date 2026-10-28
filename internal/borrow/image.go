@@ -1,8 +1,10 @@
 package borrow
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -106,4 +108,97 @@ func stageRefs(refs []string, run string) ([]string, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// Sidecar is what aggy records about a generated asset, in
+// <repo>/.aggy/assets/<path>.json: enough for the on-screen agent to know
+// where it came from, and for --edit to resume the same child.
+type Sidecar struct {
+	Prompt    string    `json:"prompt"`
+	Kind      string    `json:"kind"`
+	Vendor    string    `json:"vendor"`
+	Model     string    `json:"model,omitempty"`
+	SessionID string    `json:"session_id"`
+	Borrow    string    `json:"borrow"`
+	Created   time.Time `json:"created"`
+}
+
+// AssetsDir is where sidecars go, inside the repo.
+const AssetsDir = ".aggy/assets"
+
+// SidecarPath is the sidecar of out, a file inside repo.
+func SidecarPath(repo, out string) (string, error) {
+	rel, err := filepath.Rel(repo, out)
+	if err != nil || !within(out, repo) || out == repo {
+		return "", fmt.Errorf("%s is not inside %s", out, repo)
+	}
+	return filepath.Join(repo, filepath.FromSlash(AssetsDir), rel+".json"), nil
+}
+
+// outPath is where the i-th kept file goes: out, then out's name with -2,
+// -3, and so on. When out's extension does not fit what the vendor made
+// (a JPEG for hero.png), the extension is changed to fit, and the report
+// shows the path written.
+func outPath(out string, i int, m media) string {
+	ext := filepath.Ext(out)
+	stem := strings.TrimSuffix(out, ext)
+	switch e := strings.ToLower(ext); {
+	case m.Type == JPEG && (e == ".jpg" || e == ".jpeg"), m.Type == PNG && e == ".png", m.Type == MP4 && e == ".mp4":
+	default:
+		ext = m.Ext()
+	}
+	if i > 0 {
+		stem += fmt.Sprintf("-%d", i+1)
+	}
+	return stem + ext
+}
+
+// deliver copies the kept files to req.Media.Out and writes a sidecar
+// for each. The child never writes the repo;
+// aggy does, here. It returns the paths written.
+func deliver(req Request, res Result, kept []media, sessionID string, created time.Time) ([]adapter.Artifact, error) {
+	if len(kept) == 0 {
+		return nil, errors.New("the child left no file that passed the artifact gate")
+	}
+	var out []adapter.Artifact
+	for i, m := range kept {
+		p := outPath(req.Media.Out, i, m)
+		if err := writeIn(req.Repo, p, m.Data, 0o755, 0o644); err != nil {
+			return out, err
+		}
+		out = append(out, adapter.Artifact{Path: p, Kind: m.Kind})
+		sc, err := SidecarPath(req.Repo, p)
+		if err != nil {
+			return out, err
+		}
+		data, err := json.MarshalIndent(Sidecar{
+			Prompt: req.Task, Kind: string(req.Kind), Vendor: string(res.Vendor), Model: res.Model,
+			SessionID: sessionID, Borrow: res.ID, Created: created.UTC(),
+		}, "", "  ")
+		if err != nil {
+			return out, err
+		}
+		if err := writeIn(req.Repo, sc, append(data, '\n'), 0o700, 0o600); err != nil {
+			return out, err
+		}
+	}
+	return out, nil
+}
+
+// writeIn writes data to p through safefs, making p's dir, and refuses
+// when that dir, with symlinks resolved, is not inside repo: a symlinked
+// folder must not carry the write out of the repo.
+func writeIn(repo, p string, data []byte, dirPerm, perm fs.FileMode) error {
+	dir := filepath.Dir(p)
+	if err := safefs.MkdirAll(dir, dirPerm); err != nil {
+		return err
+	}
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
+	if !within(real, resolve(repo)) {
+		return fmt.Errorf("%s resolves to %s, outside %s", dir, real, repo)
+	}
+	return safefs.WriteFile(filepath.Join(real, filepath.Base(p)), data, perm)
 }

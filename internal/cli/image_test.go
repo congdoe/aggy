@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -80,5 +82,27 @@ func TestImageCommandRefusals(t *testing.T) {
 	}
 	if recs := fakecli.Records(t, f.record); slices.ContainsFunc(recs, func(r fakecli.Record) bool { return r.Mode == "headless" }) {
 		t.Error("a refused image borrow ran a child")
+	}
+}
+
+// TestImageCommand (T6634): aggy image copies the image into the repo
+// and prints where it went.
+func TestImageCommand(t *testing.T) {
+	f := newBorrowFixture(t, adapter.Codex)
+	f.scenario["codex"] = `{"images":1}`
+	code, out, errOut := f.media(t, adapter.Image, "a cat", "--out", "pub/cat.png")
+	if code != 0 {
+		t.Fatalf("code %d stderr %q stdout %q", code, errOut, out)
+	}
+	p := filepath.Join(f.repo, "pub", "cat.png")
+	for _, w := range []string{"image on codex", "1 files made, 1 kept", "image: " + p} {
+		if !strings.Contains(out, w) {
+			t.Errorf("stdout lacks %q:\n%s", w, out)
+		}
+	}
+	for _, q := range []string{p, filepath.Join(f.repo, ".aggy", "assets", "pub", "cat.png.json")} {
+		if _, err := os.Stat(q); err != nil {
+			t.Error(err)
+		}
 	}
 }
