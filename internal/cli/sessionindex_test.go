@@ -140,7 +140,7 @@ func TestWatchCodex(t *testing.T) {
 
 func TestSessionIndexWritesTheIndex(t *testing.T) {
 	isolate(t)
-	_, stop := startIndex("11111111-2222-4333-8444-555555555555", adapter.Claude, idA)
+	_, stop := startIndex("11111111-2222-4333-8444-555555555555", adapter.Claude, idA, nil)
 	stop()
 	code, out, _ := run("log")
 	if code != 0 || !strings.Contains(out, "session="+idA) || !strings.Contains(out, "via=assigned") {

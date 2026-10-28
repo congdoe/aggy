@@ -366,3 +366,62 @@ func canon(t *testing.T, dir string) string {
 	}
 	return k
 }
+
+// TestChildIDs (F23-2, F23-3): each vendor's id reaches the child row.
+// Claude and Grok: the id the launch assigned, recorded at once, with
+// the launch's lease. Codex: none at launch; the id the session index
+// confirms is recorded first-wins, and its lease is taken then and held
+// until the CLI exits.
+func TestChildIDs(t *testing.T) {
+	ctx := context.Background()
+	for _, v := range []adapter.Vendor{adapter.Claude, adapter.Grok, adapter.Codex} {
+		t.Run(string(v), func(t *testing.T) {
+			s := sessionStore(t)
+			p, err := plan(ctx, s, config.Default(), t.TempDir(), target{New: true, Vendor: v}, time.Now(), &bytes.Buffer{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			lease, err := p.commit(ctx, s, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids := &childIDs{s: s, child: p.child}
+			var got []string
+			onID := func(id string) { got = append(got, id); ids.set(id) }
+			x := newSessionIndex(p.parent.ID, v)
+			x.record = func(store.Event) error { return nil }
+			x.onID = onID
+			want := p.child.VendorSessionID
+			if v == adapter.Codex {
+				if want != "" || lease != nil {
+					t.Fatalf("codex child has id %q at launch", want)
+				}
+				want = idA
+				x.hook(hookReq(v, "SessionStart", `{"session_id":"`+idA+`","source":"startup"}`))
+				x.saw([]string{idA})
+				// A /clear or nested session's later id never moves it.
+				ids.set(idB)
+			} else {
+				x.set(want, "", "assigned")
+				x.hook(hookReq(v, "SessionStart", `{"session_id":"`+idB+`","sessionId":"`+idB+`","source":"clear"}`))
+			}
+			if len(got) != 1 || got[0] != want {
+				t.Errorf("onID got %v, want [%s]", got, want)
+			}
+			cs, _ := s.Children(ctx, p.parent.ID)
+			if len(cs) != 1 || cs[0].VendorSessionID != want {
+				t.Fatalf("child row = %+v, want session %s", cs, want)
+			}
+			if _, alive, _ := s.LeaseHolder(ctx, string(v), want); !alive {
+				t.Errorf("%s session %s is not leased while on screen", v, want)
+			}
+			ids.release(ctx)
+			if lease != nil {
+				_ = lease.Release(ctx)
+			}
+			if _, alive, _ := s.LeaseHolder(ctx, string(v), want); alive {
+				t.Error("lease outlived the CLI")
+			}
+		})
+	}
+}
