@@ -117,7 +117,8 @@ image    = { minutes = 5 }
 			},
 		},
 		{name: "unknown top-level key", text: "colour = \"red\"\n", wantErr: "unknown key colour"},
-		{name: "unknown kind", text: "[routing]\nchat = [\"grok\"]\n", wantErr: "unknown key routing.chat"},
+		{name: "unknown kind", text: "[routing]\nchat = [\"grok\"]\n", wantErr: "routing.chat: unknown kind \"chat\""},
+		{name: "unknown budget kind", text: "[budgets]\nchat = { minutes = 5 }\n", wantErr: "budgets.chat: unknown kind \"chat\""},
 		{name: "unknown vendor section", text: "[vendors.gemini]\nmodel = \"x\"\n", wantErr: "unknown key vendors.gemini"},
 		{name: "unknown vendor field", text: "[vendors.codex]\nmodle = \"x\"\n", wantErr: "unknown key vendors.codex.modle"},
 		{name: "unknown budget field", text: "[budgets]\nnews = { minutes = 5, tokens = 9 }\n", wantErr: "unknown key budgets.news.tokens"},
@@ -126,7 +127,12 @@ image    = { minutes = 5 }
 		{name: "bad switch vendor", text: "[switch]\norder = [\"gpt\"]\n", wantErr: "switch.order: unknown vendor \"gpt\""},
 		{name: "duplicate switch vendor", text: "[switch]\norder = [\"grok\", \"grok\"]\n", wantErr: "listed twice"},
 		{name: "bad routing vendor", text: "[routing]\nnews = [\"bard\"]\n", wantErr: "unknown vendor \"bard\""},
-		{name: "duplicate routing vendor", text: "[routing]\nnews = [\"grok\", \"grok\"]\n", wantErr: "listed twice"},
+		{name: "duplicate routing vendor is dropped", text: "[routing]\nnews = [\"grok\", \"codex\", \"grok\"]\n", check: func(t *testing.T, c Config) {
+			equal(t, c.Routing.News.Vendors, []adapter.Vendor{adapter.Grok, adapter.Codex})
+		}},
+		{name: "codex in research is kept", text: "[routing]\nresearch = [\"codex\"]\n", check: func(t *testing.T, c Config) {
+			equal(t, c.Routing.Research.Vendors, []adapter.Vendor{adapter.Codex})
+		}},
 		{name: "bad routing string", text: "[routing]\nreview = \"anyone\"\n", wantErr: "not-author"},
 		{name: "routing wrong type", text: "[routing]\nnews = 3\n", wantErr: "vendor list"},
 		{name: "zero minutes", text: "[budgets]\nedit = { minutes = 0 }\n", wantErr: "budgets.edit.minutes must be 1 to 1440"},
@@ -218,5 +224,25 @@ func equal[T any](t *testing.T, got, want T) {
 	t.Helper()
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+// TestDefaultRouting pins the default table in design section 8. Codex
+// is out of news and research on purpose (T6638).
+func TestDefaultRouting(t *testing.T) {
+	r := Default().Routing
+	tests := []struct {
+		kind adapter.Kind
+		want Route
+	}{
+		{adapter.News, Route{Vendors: []adapter.Vendor{adapter.Grok}}},
+		{adapter.Research, Route{Vendors: []adapter.Vendor{adapter.Grok}}},
+		{adapter.Image, Route{Vendors: []adapter.Vendor{adapter.Codex, adapter.Grok}}},
+		{adapter.Video, Route{Vendors: []adapter.Vendor{adapter.Grok}}},
+		{adapter.Review, Route{NotAuthor: true}},
+		{adapter.Edit, Route{Vendors: []adapter.Vendor{adapter.Codex, adapter.Grok}}},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.kind), func(t *testing.T) { equal(t, r.For(tt.kind), tt.want) })
 	}
 }

@@ -145,8 +145,11 @@ func TestMergeNarrowsNeverWidens(t *testing.T) {
 			if !slices.Equal(e.Switch.Order, []adapter.Vendor{adapter.Claude, adapter.Codex}) {
 				t.Errorf("switch order = %v", e.Switch.Order)
 			}
-			if !slices.Equal(e.Routing.News.Vendors, []adapter.Vendor{adapter.Codex}) {
-				t.Errorf("news = %v", e.Routing.News.Vendors)
+			if !slices.Equal(e.Routing.Image.Vendors, []adapter.Vendor{adapter.Codex}) {
+				t.Errorf("image = %v", e.Routing.Image.Vendors)
+			}
+			if len(e.Routing.News.Vendors) != 0 {
+				t.Errorf("news = %v, want none (grok not allowed)", e.Routing.News.Vendors)
 			}
 			if len(e.Routing.Video.Vendors) != 0 {
 				t.Errorf("video = %v, want none (grok not allowed)", e.Routing.Video.Vendors)
