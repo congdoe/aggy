@@ -123,9 +123,9 @@ type Undo struct {
 // differently than when the change was made still works.
 //
 // A change proven never to have written its file is Cleaned first,
-// whatever the file holds and whatever came after it: a failed row, or a
-// pending row of an existing file whose backup was never made (see
-// provenUnwritten). The file is left as it is, only empty directories
+// whatever came after it: a failed row, whatever the file holds, or a
+// pending row of an existing file whose backup is missing while the file
+// is at its hash before (see provenUnwritten). The file is left as it is, only empty directories
 // made for it are removed, and the row is marked undone.
 //
 // Any other change can only be undone after every newer change to the
@@ -483,33 +483,45 @@ func removeOwnDirs(c store.Change) error {
 }
 
 // provenUnwritten reports whether c is known never to have written its
-// file, whatever the file holds now:
+// file:
 //
-//   - A failed row: Apply records failed only when patch.Apply wrote
-//     nothing. The target write is atomic (a rename) and the only error
-//     after the rename is a directory sync, which is recorded as applied.
-//     A drift refusal at patch.Apply's re-check also lands here, with no
-//     backup.
-//   - A pending row of a file that existed, whose backup is missing:
-//     patch.Apply writes and fsyncs the backup, and renames it into
-//     place, before it writes the target, so a stop before the backup
-//     is a stop before the write. A backup can also be lost, though:
-//     deleted by hand (alone, or with the whole backups folder, which a
-//     later change makes again), or, after its directory sync failed, by
-//     a power cut. So the proof is used only while the file does not
-//     hold exactly this change's result (curHash, the file's hash now):
-//     a file that does is reported as Drifted or Failed by the normal
-//     path, never quietly marked undone with aggy's write in it. The
-//     backups folder must also exist.
+//   - A failed row, whatever the file holds now; the file is not read.
+//     Apply records failed only when patch.Apply wrote nothing. The
+//     target write is atomic (a rename) and the only error after the
+//     rename is a directory sync, which is recorded as applied. A drift
+//     refusal at patch.Apply's re-check also lands here, with no backup.
+//   - A pending row of a file that existed, whose backup is missing,
+//     while the file is exactly as it was before the change (its hash
+//     now, simulated in a dry run, is the row's hash before). patch.Apply
+//     writes and fsyncs the backup, and renames it into place, before it
+//     writes the target, so a stop before the backup is a stop before
+//     the write; but a backup can also be lost (deleted by hand, alone or
+//     with the whole backups folder, or by a power cut after its
+//     directory sync failed). With the file at its hash before, nothing
+//     of the change is in it either way. Any other content goes to the
+//     normal path, which reports it (Blocked, Drifted, or Failed): a
+//     row is never marked undone while the file may hold its write. The
+//     cost: a pending row that stopped before its backup and was then
+//     edited by hand is reported as drifted until the edit is undone.
 //
 // TODO(T6735): the backups/<change-id> entry is not synced into backups/
 // before the target write, so a power cut can lose it while keeping the
-// target; the curHash guard keeps that loud when the file is unchanged.
-func (m *Manifest) provenUnwritten(c store.Change, curHash string) (bool, error) {
+// target; requiring the hash before keeps that case loud.
+func (m *Manifest) provenUnwritten(c store.Change, run *unwireRun) (bool, error) {
 	switch {
 	case c.Status == store.ChangeFailed:
 		return true, nil
-	case c.Status != store.ChangePending || c.HashBefore == patch.NoFile || curHash == c.HashAfter:
+	case c.Status != store.ChangePending || c.HashBefore == patch.NoFile:
+		return false, nil
+	}
+	_, curHash, err := readFile(c.File)
+	if err != nil {
+		return false, err
+	}
+	if f, ok := run.sim[simKey(c.File)]; ok {
+		curHash = f.hash
+	}
+	if curHash != c.HashBefore {
 		return false, nil
 	}
 	if _, err := safefs.Lstat(m.backupRoot); err != nil {
@@ -518,7 +530,7 @@ func (m *Manifest) provenUnwritten(c store.Change, curHash string) (bool, error)
 		}
 		return false, err
 	}
-	_, err := safefs.Lstat(filepath.Join(m.backupRoot, c.ChangeID, c.HashBefore+".bak"))
+	_, err = safefs.Lstat(filepath.Join(m.backupRoot, c.ChangeID, c.HashBefore+".bak"))
 	switch {
 	case err == nil:
 		return false, nil
@@ -627,15 +639,8 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 	}
 
 	// A change that never wrote has nothing in the file to undo, whatever
-	// the file holds now and whatever came after it.
-	_, nowHash, err := readFile(r.File)
-	if err != nil {
-		return fail(err)
-	}
-	if f, ok := run.sim[simKey(r.File)]; ok {
-		nowHash = f.hash
-	}
-	unwritten, err := m.provenUnwritten(c, nowHash)
+	// came after it.
+	unwritten, err := m.provenUnwritten(c, run)
 	if err != nil {
 		return fail(err)
 	}
