@@ -58,6 +58,7 @@ import (
 	"syscall"
 	"testing"
 
+	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -213,14 +214,40 @@ func (g *guard) pathMatch(path string) bool {
 	return false
 }
 
-// normPath is the lexical form paths are compared in: NFC, and case-folded
-// where the file system ignores case.
+// normPath is the lexical form paths are compared in: NFC, and, where the
+// file system ignores case, full Unicode case folding followed by NFC
+// again. Full folding matches what APFS treats as one name: "ſ" (long s)
+// folds to "s", "ß" to "ss", and the Kelvin sign to "k", where
+// strings.ToLower would leave all three alone.
 func normPath(p string) string {
 	p = norm.NFC.String(p)
 	if foldCase {
-		p = strings.ToLower(p)
+		p = norm.NFC.String(cases.Fold().String(p))
 	}
 	return p
+}
+
+// CanonicalPath returns the one spelling of name that every other
+// spelling of the same file shares: made absolute, resolved through
+// symlinks the way the kernel resolves them (the deepest existing
+// ancestor, then the rest appended), and normalized the way safefs
+// compares paths (NFC, and case-folded where the file system ignores
+// case). It is for keys such as lock names, never for opening the file.
+// It refuses a credential path like every other call.
+func CanonicalPath(name string) (string, error) {
+	t, err := resolve("CanonicalPath", name)
+	if err != nil {
+		return "", err
+	}
+	return normPath(t.real), nil
+}
+
+// under reports whether the normalized path d is p or lies below it.
+func under(d, p string) bool {
+	if p == string(filepath.Separator) {
+		return true
+	}
+	return d == p || strings.HasPrefix(d, p+string(filepath.Separator))
 }
 
 // idMatch reports whether fi is a credential file.
@@ -491,9 +518,18 @@ func OpenFile(name string, flag int, perm fs.FileMode) (*os.File, error) {
 }
 
 func openFile(op, name string, flag int, perm fs.FileMode) (*os.File, error) {
+	return openFileIn(op, name, flag, perm, nil)
+}
+
+// openFileIn is openFile that, when wantDir is not nil, also requires the
+// checked parent directory to be wantDir.
+func openFileIn(op, name string, flag int, perm fs.FileMode, wantDir fs.FileInfo) (*os.File, error) {
 	t, err := resolve(op, name)
 	if err != nil {
 		return nil, err
+	}
+	if wantDir != nil && (t.realDir.err != nil || !os.SameFile(wantDir, t.realDir.fi)) {
+		return nil, &fs.PathError{Op: op, Path: name, Err: ErrChanged}
 	}
 	if fi, err := os.Stat(t.real); err == nil && t.g.idMatch(fi) {
 		return nil, &AuthPathError{Op: op, Path: name}
@@ -562,14 +598,44 @@ var ErrNotRegular = errors.New("not a regular file")
 // over max bytes (ErrTooLarge). It is for small files whose content aggy
 // trusts to parse, such as config.
 func ReadFileLimit(name string, max int64) ([]byte, error) {
+	return readFileLimit("ReadFileLimit", name, max, nil)
+}
+
+// ErrLinkedDir means a file's own directory is a symlink where aggy
+// requires a real directory.
+var ErrLinkedDir = errors.New("the file's directory is a symlink")
+
+// ReadConfig is ReadFileLimit for config files. It also refuses, with
+// ErrLinkedDir, a file whose own directory is a symlink, such as a cloned
+// repo's .aggy pointing somewhere else on the disk. The directory checked
+// is the one the file is read from: a directory swapped for a symlink
+// after the check is refused with ErrChanged. Directories further up may
+// be symlinks.
+func ReadConfig(name string, max int64) ([]byte, error) {
+	// The file is checked first, so a credential path is refused as such
+	// even when its directory does not exist.
+	if err := Check(name); err != nil {
+		return nil, err
+	}
+	dfi, err := Lstat(filepath.Dir(name))
+	if err != nil {
+		return nil, err
+	}
+	if dfi.Mode()&fs.ModeSymlink != 0 || !dfi.IsDir() {
+		return nil, &fs.PathError{Op: "ReadConfig", Path: name, Err: ErrLinkedDir}
+	}
+	return readFileLimit("ReadConfig", name, max, dfi)
+}
+
+func readFileLimit(op, name string, max int64, wantDir fs.FileInfo) ([]byte, error) {
 	fi, err := Lstat(name)
 	if err != nil {
 		return nil, err
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, &fs.PathError{Op: "ReadFileLimit", Path: name, Err: ErrNotRegular}
+		return nil, &fs.PathError{Op: op, Path: name, Err: ErrNotRegular}
 	}
-	f, err := openFile("ReadFileLimit", name, os.O_RDONLY|oNonBlock, 0)
+	f, err := openFileIn(op, name, os.O_RDONLY|oNonBlock, 0, wantDir)
 	if err != nil {
 		return nil, err
 	}
@@ -579,17 +645,17 @@ func ReadFileLimit(name string, max int64) ([]byte, error) {
 		return nil, renamePath(err, name)
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, &fs.PathError{Op: "ReadFileLimit", Path: name, Err: ErrNotRegular}
+		return nil, &fs.PathError{Op: op, Path: name, Err: ErrNotRegular}
 	}
 	if fi.Size() > max {
-		return nil, &fs.PathError{Op: "ReadFileLimit", Path: name, Err: ErrTooLarge}
+		return nil, &fs.PathError{Op: op, Path: name, Err: ErrTooLarge}
 	}
 	b, err := io.ReadAll(io.LimitReader(f, max+1))
 	if err != nil {
 		return nil, renamePath(err, name)
 	}
 	if int64(len(b)) > max {
-		return nil, &fs.PathError{Op: "ReadFileLimit", Path: name, Err: ErrTooLarge}
+		return nil, &fs.PathError{Op: op, Path: name, Err: ErrTooLarge}
 	}
 	return b, nil
 }
@@ -926,18 +992,88 @@ func MkdirTemp(dir, pattern string) (string, error) {
 // never follows a symlink out of that directory, so a link inside the tree
 // is removed, not its target. Removing a hard link's name never removes
 // the file's data from its other names.
+//
+// The checks cover the whole tree, not only name. The call is refused,
+// and nothing is removed, when a credential path lies under name
+// (compared lexically, after normalization, whether or not the credential
+// exists), or when any entry in the tree, walked before anything is
+// removed, has the identity of a credential file. So RemoveAll(~/.codex)
+// is refused.
 func RemoveAll(name string) error {
 	t, err := resolve("RemoveAll", name)
 	if err != nil {
 		return err
 	}
+	for _, p := range []string{t.real, t.link} {
+		np := normPath(p)
+		for _, d := range t.g.paths {
+			if under(d, np) {
+				return &AuthPathError{Op: "RemoveAll", Path: name}
+			}
+		}
+	}
 	return renamePath(inParent("RemoveAll", name, t.link, t.linkDir, func(dir *os.Root, base string) error {
 		if base == "." || base == ".." {
 			return &fs.PathError{Op: "RemoveAll", Path: name, Err: errors.New("refusing to remove a dot entry")}
 		}
-		if fi, err := dir.Lstat(base); err == nil && t.g.idMatch(fi) {
-			return &AuthPathError{Op: "RemoveAll", Path: name}
+		if err := t.g.walkTree(dir, base, 0); err != nil {
+			if errors.Is(err, ErrAuthPath) {
+				return &AuthPathError{Op: "RemoveAll", Path: name}
+			}
+			return err
 		}
 		return dir.RemoveAll(base)
 	}), name)
+}
+
+// maxWalkDepth bounds the tree RemoveAll checks. A deeper tree is refused
+// rather than removed unchecked.
+const maxWalkDepth = 256
+
+// walkTree checks base in dir and, for a directory, everything under it,
+// by identity, without following symlinks. A missing entry is fine.
+func (g *guard) walkTree(dir *os.Root, base string, depth int) error {
+	if depth > maxWalkDepth {
+		return fmt.Errorf("safefs: RemoveAll: tree is deeper than %d levels", maxWalkDepth)
+	}
+	fi, err := dir.Lstat(base)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if g.idMatch(fi) {
+		return ErrAuthPath
+	}
+	if !fi.IsDir() {
+		return nil
+	}
+	sub, err := dir.OpenRoot(base)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sub.Close() }()
+	got, err := sub.Stat(".")
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(fi, got) {
+		return ErrChanged
+	}
+	d, err := sub.Open(".")
+	if err != nil {
+		return err
+	}
+	entries, err := d.ReadDir(-1)
+	_ = d.Close()
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := g.walkTree(sub, e.Name(), depth+1); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -23,21 +23,43 @@ linters:
             - github.com/BurntSushi/toml
             - modernc.org/sqlite
             - golang.org/x/text/unicode/norm
+            - golang.org/x/text/cases
+            # The only net packages allowed: they parse, and never connect.
+            - "net/url$"
+            - "net/netip$"
           deny:
+            # Every net package by prefix (net, net/http, net/http/cgi,
+            # net/rpc, net/smtp, ...) except net/url and net/netip above.
             - pkg: "net$"
               desc: aggy makes no network calls
-            - pkg: "net/http$"
-              desc: aggy makes no network calls
-            - pkg: "net/http/httputil$"
-              desc: aggy makes no network calls
-            - pkg: "net/smtp$"
-              desc: aggy makes no network calls
+            - pkg: "net/"
+              desc: aggy makes no network calls; only net/url and net/netip are allowed
+            - pkg: "log/syslog"
+              desc: aggy sends nothing off the machine
             - pkg: "crypto/tls$"
               desc: aggy makes no network calls
             - pkg: "plugin$"
               desc: aggy loads no code at run time
             - pkg: golang.org/x/sys/unix
               desc: use internal/safefs or the stdlib
+            # These open files by path, around internal/safefs.
+            - pkg: "debug/"
+              desc: debug/* opens files by path; use internal/safefs, then parse the bytes
+            - pkg: "go/parser$"
+              desc: go/parser reads files by path; use internal/safefs, then parse the bytes
+            - pkg: "go/build$"
+              desc: go/build reads the disk around internal/safefs
+        # SQLite opens its files outside safefs, so only the store, which
+        # checks the paths itself, may import the driver (and so use its
+        # Driver type). Tests may, to build old schemas.
+        sqlite:
+          files:
+            - "$all"
+            - "!$test"
+            - "!**/internal/store/**"
+          deny:
+            - pkg: modernc.org/sqlite
+              desc: only internal/store uses the SQLite driver
         # Processes start only in the supervisor, the borrow runner, the
         # probe runner, and the test-only fake builder. Tests may start
         # helper processes.
@@ -81,14 +103,16 @@ linters:
           msg: use internal/safefs, which refuses vendor credential files
         - pattern: ^ioutil\.
           msg: io/ioutil is banned; use internal/safefs
-        - pattern: ^syscall\.(Open|Openat|Read|Pread|Link|Symlink|Rename|Unlink)$
-          msg: use internal/safefs, which refuses vendor credential files
         - pattern: ^filepath\.(Walk|WalkDir)$
           msg: use internal/safefs, which refuses vendor credential files
         - pattern: ^fs\.(ReadFile|ReadDir|WalkDir)$
           msg: use internal/safefs, or the method on an embed.FS
-        - pattern: ^syscall\.(Syscall|RawSyscall|Exec|ForkExec|Stat|Lstat|Chmod|Truncate|Rmdir|Mkdir)
-          msg: use internal/safefs, which refuses vendor credential files
+        # Every syscall package-level name is banned, in safefs too; the
+        # constants, types, and calls aggy needs are allowed by name in
+        # the exclusions below. Fields and methods of an allowed type
+        # (Stat_t.Nlink, SysProcAttr.Setpgid) are not package-level.
+        - pattern: ^syscall\.[A-Za-z0-9_]+$
+          msg: syscall reaches the disk and processes around internal/safefs; only the allowlisted names may be used
         - pattern: ^filepath\.Glob$
           msg: use internal/safefs, which refuses vendor credential files
         # golang.org/x/sys/unix reaches the disk and processes around both
@@ -109,8 +133,6 @@ linters:
           msg: processes start only in internal/supervisor, internal/borrow, or the probe runner
         - pattern: ^exec\.Cmd$
           msg: processes start only in internal/supervisor, internal/borrow, or the probe runner
-        - pattern: ^syscall\.(StartProcess|Readlink|Chown|Access|Mkfifo)$
-          msg: use internal/safefs, or start processes only where allowed
         # Other stdlib entry points that open files by path.
         - pattern: ^template\.(ParseFiles|ParseGlob)$
           msg: use internal/safefs, then parse the bytes
@@ -138,7 +160,20 @@ linters:
     rules:
       - path: _test\.go$
         linters: [forbidigo]
+      # safefs is the file layer, so the os, io/fs, and filepath bans do
+      # not apply to it. The syscall ban does: safefs gets only the
+      # allowlist below, like everyone else.
       - path: ^internal/safefs/
+        text: "use of `(os|fs|filepath|ioutil)\\."
+        linters: [forbidigo]
+      # The syscall allowlist: errno values, open flags safefs needs, the
+      # stat type, and flock, kill, and process attributes for the store's
+      # locks and leases and the process runners.
+      - text: "use of `syscall\\.(E[A-Z0-9]+|O_NOFOLLOW|O_NONBLOCK|Stat_t|Flock|LOCK_(EX|NB|SH|UN)|Kill|SIG[A-Z0-9]+|Signal|SysProcAttr|WaitStatus)`"
+        linters: [forbidigo]
+      # Field keys in a syscall.SysProcAttr literal are reported by their
+      # bare name.
+      - text: "use of `(Setpgid|Setsid|Pgid|Pdeathsig|Noctty)`"
         linters: [forbidigo]
       - path: ^internal/store/
         text: "`sql\\.Open`"

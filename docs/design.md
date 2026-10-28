@@ -255,14 +255,15 @@ aggy runs with your privileges next to agents that can run shell commands. Every
 
 **What aggy never reads.** The goal is that aggy never reads the vendor credential files: `~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.codex/.credentials.json` (Codex's MCP token store), `~/.grok/auth.json`, `~/.grok/mcp_credentials.json`, and the same files under a relocated `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or `GROK_HOME`. A guard enforces it: all file access goes through one wrapper, `internal/safefs`, which on every call:
 
-- checks the path first, resolved through symlinks and compared case-insensitively on macOS, and then acts on the resolved path
+- checks the path first, resolved through symlinks and compared in Unicode NFC and, on macOS, with full Unicode case folding (so `ſ`, `ß`, and the Kelvin sign match the way APFS matches them), and then acts on the resolved path
 - refuses the credential files by file identity (device and inode, read from metadata only), so a hard link or a different spelling of the same file is caught
 - reads through an opened descriptor, opened with `O_NOFOLLOW`, whose identity is checked before any byte is returned
+- refuses a `RemoveAll` whose tree holds a credential path, or any entry with a credential's identity, before removing anything
 - fails closed: when it cannot find an absolute home directory, or a relocation variable is a relative path, every call is refused
 
 Hardening is still in progress for a few known gaps, such as a hard link made before a vendor rotates its token file, and check-then-act races in the path-based calls (`Chmod`, `Remove`, `MkdirAll`).
 
-Lint bans the main file-system entry points (`os`, `io/ioutil`, `io/fs`, `filepath` walks, `syscall` opens) outside `internal/safefs` and test files, bans `sql.Open` outside `internal/store`, and requires every `nolint` comment to name the linter and give a reason. Process launches and other packages that open files are covered by review. The SQLite driver is the one exception to the wrapper: it opens the database and its `-wal` and `-shm` files itself, so the store checks those paths through `safefs` after opening.
+Lint bans the main file-system entry points (`os`, `io/ioutil`, `io/fs`, `filepath` walks) outside `internal/safefs` and test files; every `syscall` name except an explicit allowlist (errno values, the open flags safefs needs, `Stat_t`, flock, and process attributes), in safefs too; every `net/` package except `net/url` and `net/netip`, `log/syslog`, `debug/*`, `go/parser`, and `go/build`; the SQLite driver and `sql.Open` outside `internal/store`; and requires every `nolint` comment to name the linter and give a reason. Process launches and other packages that open files are covered by review. The SQLite driver is the one exception to the wrapper: it opens the database and its `-wal` and `-shm` files itself, so the store checks those paths through `safefs` after opening.
 
 **What aggy never sends.** aggy collects no telemetry, sends nothing to the project, makes no model or vendor API calls of its own, and never proxies vendor traffic. The network surfaces aggy itself will open are all planned and opt-in: the remote client and chat connection, local webhooks, `aggy pr`, which opens a pull request on your git host, and `aggy usage`, whose ccusage reader may fetch pricing data unless it runs offline (section 21). What a vendor CLI receives from aggy is limited to:
 

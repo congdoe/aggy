@@ -35,7 +35,7 @@ func TestChangeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.ID = got.ID
+	c.ID, c.Kind = got.ID, KindChange
 	if !reflect.DeepEqual(got, c) {
 		t.Errorf("applied = %+v\nwant %+v", got, c)
 	}
@@ -103,5 +103,60 @@ func TestMigrateChangesFromV1(t *testing.T) {
 	}
 	if c := cs[1]; c.CreatedFile || c.Status != ChangeUndone || c.BackupPath != "/bk" || c.UndoneAt.UnixMilli() != 3000 {
 		t.Errorf("row 2 = %+v", c)
+	}
+}
+
+// TestMarkerRows (T6725 N7): a marker row has its own kind, rows from
+// before version 5 are classified, and ChangesNewestFirst leaves markers
+// out.
+func TestMarkerRows(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), FileName)
+	ms, err := migrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range ms[:4] {
+		if _, err := db.ExecContext(ctx, m.sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, q := range []string{
+		`PRAGMA user_version = 4`,
+		`INSERT INTO changes (change_id, run_id, file, hash_before, hash_after, status, planned_at) VALUES ('old-marker', 'r', '', '', '', 'noop', 1)`,
+		`INSERT INTO changes (change_id, run_id, file, hash_before, hash_after, status, planned_at) VALUES ('old-change', 'r', '/a', 'none', 'h', 'applied', 2)`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = db.Close()
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	at := time.Unix(10, 0)
+	if err := s.InsertChange(ctx, Change{ChangeID: "new-marker", RunID: "r", Status: ChangeNoop, Kind: KindMarker, PlannedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertChange(ctx, Change{ChangeID: "bad", RunID: "r", Kind: "bogus", PlannedAt: at}); err == nil {
+		t.Error("bad kind accepted")
+	}
+	for id, want := range map[string]string{"old-marker": KindMarker, "old-change": KindChange, "new-marker": KindMarker} {
+		if c, err := s.GetChange(ctx, id); err != nil || c.Kind != want {
+			t.Errorf("%s kind = %q, %v, want %q", id, c.Kind, err, want)
+		}
+	}
+	for _, run := range []string{"r", ""} {
+		cs, err := s.ChangesNewestFirst(ctx, run)
+		if err != nil || len(cs) != 1 || cs[0].ChangeID != "old-change" {
+			t.Errorf("ChangesNewestFirst(%q) = %+v, %v, want only old-change", run, cs, err)
+		}
 	}
 }

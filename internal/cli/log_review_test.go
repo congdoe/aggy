@@ -131,3 +131,35 @@ func TestLogEscapesControls(t *testing.T) {
 		t.Errorf("an event spans more than one line: %q", out)
 	}
 }
+
+// TestLogEscapesTab (N6): a tab in event text is escaped, so tabwriter
+// cannot take it as a column break and shift the columns.
+func TestLogEscapesTab(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(home.Env, t.TempDir())
+	s, err := store.OpenDefault(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.AppendEvent(context.Background(), store.Event{
+		At: time.Unix(0, 0), ParentID: "p\tq", Type: "x",
+		Detail: map[string]any{"text": "a\tb"},
+	})
+	_ = s.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"log"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	if strings.Contains(out, "\t") {
+		t.Errorf("output holds a raw tab: %q", out)
+	}
+	for _, esc := range []string{`p\tq`, `text=a\tb`} {
+		if !strings.Contains(out, esc) {
+			t.Errorf("output lacks %s: %q", esc, out)
+		}
+	}
+}

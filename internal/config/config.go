@@ -227,10 +227,11 @@ func LoadDefault() (Config, error) {
 const MaxFileSize = 1 << 20
 
 // Load reads the config at path over the defaults: a regular file of at
-// most MaxFileSize, not a symlink. A missing file gives the defaults.
+// most MaxFileSize, not a symlink, in a directory that is not a symlink
+// either (safefs.ReadConfig). A missing file gives the defaults.
 // Unknown keys are an error that names them.
 func Load(path string) (Config, error) {
-	b, err := safefs.ReadFileLimit(path, MaxFileSize)
+	b, err := safefs.ReadConfig(path, MaxFileSize)
 	if errors.Is(err, fs.ErrNotExist) {
 		return Default(), nil
 	}
