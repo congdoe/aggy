@@ -54,9 +54,9 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 	switch {
 	case p.confirm != "":
 		lines = append(append([]string{"aggy: switch to " + string(p.confirm), ""}, p.lines...),
-			"", "Enter to switch, Esc to stay.")
+			"", fmt.Sprintf("Press %s to switch, Esc to stay. Anything else you type goes to the CLI.", keyName(p.key)))
 	case p.note:
-		lines = append(append([]string{"aggy", ""}, p.lines...), "", "Press any key to go back.")
+		lines = append(append([]string{"aggy", ""}, p.lines...), "", "Esc closes this. Anything else you type goes to the CLI.")
 	default:
 		lines = []string{"aggy: switch vendor", ""}
 		if len(p.vendors) == 0 {
@@ -66,7 +66,7 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 			lines = append(lines, fmt.Sprintf("  %d  %s", i+1, v))
 		}
 		if p.waiting != "" {
-			lines = append(lines, "", fmt.Sprintf("Switching to %s when this turn ends; Esc cancels it.", p.waiting))
+			lines = append(lines, "", fmt.Sprintf("Switching to %s when this turn ends; Esc cancels it, picking it again says no turn is running.", p.waiting))
 		}
 		lines = append(lines, "", "Number or Enter to switch at the turn end, Esc to go back.")
 	}
@@ -93,12 +93,23 @@ func (p *picker) erase(w io.Writer, overCLI bool) {
 	_, _ = io.WriteString(w, altScreenOff)
 }
 
-// handle reads one chunk of input. It returns done when the picker should
-// close, and the vendor picked or confirmed, if any.
-func (p *picker) handle(b []byte) (done bool, picked adapter.Vendor) {
-	if p.note {
-		return len(b) > 0, ""
+// keyName names a switch key, such as Ctrl+\.
+func keyName(k byte) string { return "Ctrl+" + string(rune(k+0x40)) }
+
+// isKey reports whether b is one press of the switch key, as its control
+// byte or its kitty report.
+func (p *picker) isKey(b []byte) bool {
+	if len(b) == 1 {
+		return b[0] == p.key
 	}
+	r, ok := parseCSIu(b)
+	return ok && r.n == len(b) && r.code == kittyCode(p.key) && r.mods == 5
+}
+
+// handle reads one chunk of input. It returns done when the picker should
+// close, and the vendor picked, if any. It reads the list only; a
+// confirmation or note is session.promptInput's.
+func (p *picker) handle(b []byte) (done bool, picked adapter.Vendor) {
 	if len(b) == 1 && b[0] == esc {
 		return true, ""
 	}
@@ -124,10 +135,6 @@ func (p *picker) handle(b []byte) (done bool, picked adapter.Vendor) {
 		switch {
 		case c == 0x03 || c == p.key:
 			return true, ""
-		case p.confirm != "":
-			if c == '\r' {
-				return true, p.confirm
-			}
 		case c == '\r' && len(p.vendors) > 0:
 			return true, p.vendors[0]
 		case c >= '1' && c <= '9' && int(c-'0') <= len(p.vendors):

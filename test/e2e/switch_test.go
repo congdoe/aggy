@@ -14,7 +14,7 @@ import (
 
 // TestSwitchAtTurnEnd (T6664): a vendor picked mid-session waits for the
 // CLI's Stop hook (sent through aggy hook from the CLI's own tree), asks,
-// types /exit on Enter, and launches the next CLI in the same parent.
+// types /exit on the switch key, and launches the next CLI in the same parent.
 func TestSwitchAtTurnEnd(t *testing.T) {
 	w := newWorld(t)
 	// aggy setup records the vendors the picker offers.
@@ -43,8 +43,8 @@ func TestSwitchAtTurnEnd(t *testing.T) {
 	s.mu.Unlock()
 	s.send(key)
 	s.waitFor([]byte("aggy: switch to grok"))
-	time.Sleep(50 * time.Millisecond)
-	s.send([]byte("\r"))
+	time.Sleep(600 * time.Millisecond) // past the confirmation's guard
+	s.send([]byte{0x1c})
 	// grok is on screen: end it.
 	deadline := time.Now().Add(timeout)
 	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
@@ -86,8 +86,8 @@ func TestSkillRequestedSwitch(t *testing.T) {
 	}
 	s := w.start(t, sc, "run", "claude")
 	s.waitFor([]byte("The agent asked to switch to grok."))
-	time.Sleep(50 * time.Millisecond)
-	s.send([]byte("\r"))
+	time.Sleep(600 * time.Millisecond) // past the confirmation's guard
+	s.send([]byte{0x1c})
 	deadline := time.Now().Add(timeout)
 	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
