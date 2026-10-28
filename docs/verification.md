@@ -367,6 +367,18 @@ these, and adapters.md lists what it reads.
   `event_msg` `user_message` and `agent_message` events are persisted
   only in the legacy history mode (`policy.rs#L143`), so they are not
   read.
+  Codex also writes context as `user` messages: AGENTS.md text
+  (`# AGENTS.md instructions` ... `</INSTRUCTIONS>`,
+  `core/src/context/user_instructions.rs#L31`), the environment context,
+  turn notes (`<turn_aborted>`, `context/turn_aborted.rs#L36`), and a
+  shell command the user ran, as `<user_shell_command>` holding
+  `<command>` and a `<result>` with the full output
+  (`context/user_shell_command.rs#L46`, `#L51`). Codex itself treats a
+  user message as context when any text item, trimmed, starts with a
+  fragment's start marker and ends with its end marker
+  (`core/src/event_mapping.rs#L64`,
+  `context/contextual_user_message.rs#L24`,
+  `context-fragments/src/fragment.rs#L163`).
 - **Grok** (grok-build `2bdd1d6a`): a session folder holds
   `chat_history.jsonl` ("raw chat messages sent to the model") and
   `updates.jsonl` (`xai-grok-pager/docs/user-guide/17-sessions.md`,
@@ -379,14 +391,23 @@ these, and adapters.md lists what it reads.
   (`xai-grok-sampling-types/src/conversation.rs#L71`, `#L239`, `#L266`,
   `#L379`). The reader skips lines it cannot parse, as Grok's own loader
   does (`jsonl/mod.rs#L954`).
-- **Claude**: no Claude doc gives the transcript format. Grok's importer
-  of Claude sessions (grok-build `2bdd1d6a`,
-  `xai-grok-foreign-sessions/src/claude/projects.rs#L44`, `claude.rs#L437`)
-  reads `projects/<cwd with every non-alphanumeric ASCII character as
-  ->/<id>.jsonl`, lines with `type` `user`, `message.content` as a string
-  or blocks of `type` `text`, and skips `isMeta`, `isCompactSummary`, and
-  `isSidechain` lines. **Unverified:** assistant lines (read the same way
-  with `type` `assistant`) and how Claude names the folder of a long path.
+- **Claude**: no Claude doc gives the transcript format, so it is partly
+  unverified. Grok-build (`2bdd1d6a`) lists Claude sessions as
+  `projects/<cwd with every character but an ASCII letter or digit as
+  ->/<id>.jsonl`, mapped per character
+  (`xai-grok-foreign-sessions/src/claude/projects.rs#L44`), and skips a
+  session whose first line has `isSidechain` true (`claude.rs#L372`). Its
+  session-title heuristic (`first_prompt`, `claude.rs#L428`, which reads
+  only the head of a file) takes lines with `type` `user` and
+  `message.content` as a string or blocks of `type` `text`, skips
+  `isMeta` and `isCompactSummary` lines, takes `! <cmd>` from
+  `<bash-input>` (`#L464`), and skips text that starts with `<` and a
+  lowercase letter or with "[Request interrupted by user" (`#L482`).
+  aggy reads every line that way and skips `isSidechain` per line.
+  **Unverified:** assistant lines (read the same way with `type`
+  `assistant`); the bash-mode output tags `<bash-stdout>` and
+  `<bash-stderr>` and `<local-command-stdout>`, which aggy drops; and how
+  Claude names the folder of a long path.
 
 Grok's auto-compaction threshold (T6673): `[session]
 auto_compact_threshold_percent` in the user `config.toml`, also per model
