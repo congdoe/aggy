@@ -904,3 +904,40 @@ func Chmod(name string, mode fs.FileMode) error {
 	}
 	return renamePath(f.Chmod(mode), name)
 }
+
+// MkdirTemp creates a new directory with mode 0700 in dir (the system temp
+// dir when dir is empty), like os.MkdirTemp, behind both checks.
+func MkdirTemp(dir, pattern string) (string, error) {
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	t, err := resolve("MkdirTemp", dir)
+	if err != nil {
+		return "", err
+	}
+	if fi, err := os.Stat(t.real); err == nil && t.g.idMatch(fi) {
+		return "", &AuthPathError{Op: "MkdirTemp", Path: dir}
+	}
+	return os.MkdirTemp(t.real, pattern)
+}
+
+// RemoveAll removes name and everything under it, behind both checks, and
+// working relative to a checked descriptor for name's parent: os.Root
+// never follows a symlink out of that directory, so a link inside the tree
+// is removed, not its target. Removing a hard link's name never removes
+// the file's data from its other names.
+func RemoveAll(name string) error {
+	t, err := resolve("RemoveAll", name)
+	if err != nil {
+		return err
+	}
+	return renamePath(inParent("RemoveAll", name, t.link, t.linkDir, func(dir *os.Root, base string) error {
+		if base == "." || base == ".." {
+			return &fs.PathError{Op: "RemoveAll", Path: name, Err: errors.New("refusing to remove a dot entry")}
+		}
+		if fi, err := dir.Lstat(base); err == nil && t.g.idMatch(fi) {
+			return &AuthPathError{Op: "RemoveAll", Path: name}
+		}
+		return dir.RemoveAll(base)
+	}), name)
+}
