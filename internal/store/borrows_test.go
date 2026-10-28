@@ -89,3 +89,55 @@ func TestBorrowCapsReclaimDead(t *testing.T) {
 		t.Errorf("child of the dead borrow is %q, %v", status, err)
 	}
 }
+
+// TestBorrowUsageSince (T6698): finished borrows since a time, summed
+// per vendor; running and older ones are left out.
+func TestBorrowUsageSince(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	now := time.Now()
+	p, err := s.ParentForDir(ctx, "/repo", "borrows", "p1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range []struct {
+		id, vendor string
+		started    time.Time
+		took       time.Duration // 0: still running
+		tokens     int64
+	}{
+		{"u1", "claude", now.Add(-time.Hour), 2 * time.Minute, 100},
+		{"u2", "claude", now.Add(-30 * time.Minute), time.Minute, 0},
+		{"u3", "grok", now.Add(-10 * 24 * time.Hour), time.Minute, 500},
+		{"u4", "codex", now.Add(-time.Minute), 0, 0},
+		{"u5", "grok", now.Add(-time.Minute), 30 * time.Second, 7},
+	} {
+		l, err := s.StartBorrow(ctx,
+			Child{ID: "c-" + b.id, ParentID: p.ID, Vendor: b.vendor, Kind: "news", Title: "t", Cwd: "/tmp/w", CreatedAt: b.started, LastActive: b.started},
+			Borrow{ID: b.id, Kind: "news", Vendor: b.vendor, StartedAt: b.started}, BorrowCaps{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b.took > 0 {
+			if err := l.Finish(ctx, BorrowEnd{Status: "done", Outcome: "ok", Tokens: b.tokens, EndedAt: b.started.Add(b.took)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	got, err := s.BorrowUsageSince(ctx, now.Add(-7*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []BorrowUsage{
+		{Vendor: "claude", Borrows: 2, WithTokens: 1, Tokens: 100, Time: 3 * time.Minute},
+		{Vendor: "grok", Borrows: 1, WithTokens: 1, Tokens: 7, Time: 30 * time.Second},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("row %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}

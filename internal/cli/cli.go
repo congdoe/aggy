@@ -63,6 +63,8 @@ Commands:
   setup     Check each vendor CLI's install, version, and sign-in
   doctor    Check the vendor CLIs, API-key and proxy settings, and config drift
   log       Show harnesses, models, switches, borrows, and files changed
+  usage     Show what a vendor has left where its CLI writes that, and
+            what aggy's own borrows used
   unwire    Undo the config changes aggy made to other tools
   skill     Link aggy's skill into each vendor CLI, or unlink it
   hooks     Install the vendor hooks aggy listens to, or show them
@@ -128,6 +130,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDoctor(args[1:], stdout, stderr)
 	case "log":
 		return runLog(args[1:], stdout, stderr)
+	case "usage":
+		return runUsage(args[1:], stdout, stderr)
 	case "dev":
 		return runDev(args[1:], stdout, stderr)
 	case "unwire":

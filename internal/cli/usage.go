@@ -1,0 +1,194 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"io/fs"
+	"text/tabwriter"
+	"time"
+
+	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/limits"
+	"github.com/congdoe/aggy/internal/safefs"
+	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/termsafe"
+)
+
+const usageUsage = `Usage: aggy usage
+
+Shows what each vendor has left, only where its CLI writes that on this
+machine (today: Codex's rate limits in its session files), and what
+aggy's own borrows used in the last 7 days. The second part is what aggy
+saw, not the vendor's count, bill, or allowance.
+`
+
+// usageWindow is how far back aggy-observed consumption goes.
+const usageWindow = 7 * 24 * time.Hour
+
+// runUsage is aggy usage. It reads the index read-only and never creates
+// it, and reads vendor files only through internal/limits (safefs).
+// ccusage and grok usage are not used (T6696).
+func runUsage(args []string, stdout, stderr io.Writer) int {
+	fl := flag.NewFlagSet("usage", flag.ContinueOnError)
+	fl.SetOutput(io.Discard)
+	if err := fl.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprint(stdout, usageUsage)
+			return 0
+		}
+		fmt.Fprintf(stderr, "aggy usage: %v\n\n%s", err, usageUsage)
+		return 2
+	}
+	if fl.NArg() > 0 {
+		fmt.Fprintf(stderr, "aggy usage: unexpected arguments\n\n%s", usageUsage)
+		return 2
+	}
+	now := time.Now()
+	ctx := context.Background()
+	s, err := openIndexReadOnly(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "aggy usage: %v\n", err)
+		return 1
+	}
+	var rows []store.BorrowUsage
+	var statuses []store.VendorStatus
+	if s != nil {
+		defer func() { _ = s.Close() }()
+		statuses, _ = s.VendorStatuses(ctx) // an index before vendor rows lists every vendor
+		if rows, err = s.BorrowUsageSince(ctx, now.Add(-usageWindow)); err != nil {
+			fmt.Fprintf(stderr, "aggy usage: %v\n", store.ReadError(err))
+			return 1
+		}
+	}
+	vendors := usageVendors(statuses)
+
+	fmt.Fprintln(stdout, "Remaining allowance, as each vendor's CLI wrote it on this machine:")
+	for _, v := range vendors {
+		if v != adapter.Codex {
+			fmt.Fprintf(stdout, "  %-7s not written locally; aggy cannot see what is left\n", v)
+			continue
+		}
+		var quotas []limits.CodexQuota
+		if dir, err := codexSessionsDir(); err == nil {
+			quotas = limits.CodexAllowance(dir, now)
+		}
+		if len(quotas) == 0 {
+			fmt.Fprintf(stdout, "  %-7s nothing written in the last %d days\n", v, int(limits.Max.Hours()/24))
+			continue
+		}
+		for _, line := range codexAllowanceLines(quotas, now) {
+			fmt.Fprintf(stdout, "  %-7s %s\n", v, line)
+		}
+	}
+
+	fmt.Fprintf(stdout, "\nConsumption aggy observed, last %d days: aggy's own borrows only, as the CLIs\n"+
+		"reported them. Not the vendor's count, bill, or allowance; on-screen sessions are not counted.\n",
+		int(usageWindow.Hours()/24))
+	by := map[string]store.BorrowUsage{}
+	for _, r := range rows {
+		by[r.Vendor] = r
+	}
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  VENDOR\tBORROWS\tTOKENS\tTIME")
+	for _, v := range vendors {
+		r := by[string(v)]
+		tokens := fmt.Sprint(r.Tokens)
+		if r.WithTokens < r.Borrows {
+			tokens += fmt.Sprintf(" (%d of %d borrows reported tokens)", r.WithTokens, r.Borrows)
+		}
+		fmt.Fprintf(tw, "  %s\t%d\t%s\t%s\n", v, r.Borrows, tokens, r.Time.Round(time.Second))
+	}
+	_ = tw.Flush()
+	return 0
+}
+
+// openIndexReadOnly opens the index read-only, or returns nil when there
+// is none (or it predates the borrows table): nothing to show then.
+func openIndexReadOnly(ctx context.Context) (*store.Store, error) {
+	path, err := store.DefaultPath()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := safefs.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	s, err := store.OpenReadOnly(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if v, err := s.Version(ctx); err != nil || v < 1 {
+		_ = s.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// usageVendors is every vendor except those setup recorded as signed
+// out (design.md, "Any subset of vendors": a skipped vendor is absent
+// from usage).
+func usageVendors(statuses []store.VendorStatus) []adapter.Vendor {
+	out := []adapter.Vendor{}
+	for _, v := range adapter.Vendors() {
+		skip := false
+		for _, s := range statuses {
+			skip = skip || s.Vendor == string(v) && s.Connected == string(adapter.SignedOut)
+		}
+		if !skip {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// codexAllowanceLines renders each window of the session's Codex quotas:
+// the share left and the reset time, as Codex last wrote them. Codex's
+// credits balance is not shown: its unit is not recorded.
+func codexAllowanceLines(quotas []limits.CodexQuota, now time.Time) []string {
+	var out []string
+	for _, q := range quotas {
+		name := "ordinary quota"
+		if q.ID != "codex" {
+			name = termsafe.Field(q.Name) + " quota"
+		}
+		asOf := ""
+		if t, err := time.Parse(time.RFC3339Nano, q.At); err == nil {
+			asOf = ", as of " + t.Local().Format("2006-01-02 15:04")
+		}
+		for _, w := range []*limits.CodexWindow{q.Primary, q.Secondary} {
+			if w == nil {
+				continue
+			}
+			s := fmt.Sprintf("%s, %s window: ", name, windowLabel(w.WindowMinutes))
+			left := fmt.Sprintf("%.0f%% left", min(max(100-w.UsedPercent, 0), 100))
+			switch reset := time.Unix(w.ResetsAt, 0); {
+			case w.ResetsAt <= 0:
+				s += left + ", reset time not written"
+			case !reset.After(now):
+				// The written share is from before the reset: stale.
+				s += "reset at " + reset.Local().Format("2006-01-02 15:04") + "; what is left now is unknown"
+			default:
+				s += left + ", resets " + reset.Local().Format("2006-01-02 15:04")
+			}
+			out = append(out, s+asOf)
+		}
+	}
+	return out
+}
+
+// windowLabel names a window by its length: "5h", "7d", "90m".
+func windowLabel(minutes int64) string {
+	switch {
+	case minutes <= 0:
+		return "unnamed"
+	case minutes%(24*60) == 0:
+		return fmt.Sprintf("%dd", minutes/(24*60))
+	case minutes%60 == 0:
+		return fmt.Sprintf("%dh", minutes/60)
+	}
+	return fmt.Sprintf("%dm", minutes)
+}
