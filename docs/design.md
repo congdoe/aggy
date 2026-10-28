@@ -249,6 +249,14 @@ Parity and tool wiring edit other tools' config: `~/.codex/config.toml`, Claude 
 
 No other code path writes another tool's config.
 
+`aggy unwire (--change ID | --run ID | --all) [--dry-run]` undoes changes newest first (reverse id order), because a later change to a file was planned against the earlier one's result. Each undo runs under the target's lock, restores the old bytes and mode (or removes a created file and any directories made for it that are now empty), and marks the row undone. `--dry-run` prints the diff of each undo, escaped for the terminal. No-op rows and the marker row of a run that changed nothing are skipped.
+
+A row is `pending` until its write is recorded, and `failed` when the write failed after the row was written. Either may have been written or not, so unwire compares the file with the row's hashes: still the hash before means nothing was written, and only empty directories made for a new file are removed; the hash after means the write happened before the process stopped, and it is undone from `backups/<change-id>` like an applied change; anything else is drift. Either way the change leaves nothing behind.
+
+A file changed after aggy changed it is reported and left alone, and unwire goes on with the rest. `--force` undoes one such change anyway: it needs `--change` and `--yes`, without `--yes` it only shows what it would overwrite, and the edited bytes are saved under `backups/<change-id>` first.
+
+Known limits (TODO(T6607) follow-up): a file that is a symlink is restored through the link, a hard link to a changed file is not kept (the restore writes a new inode), and extended attributes are not restored.
+
 ## 13. Security model
 
 aggy runs with your privileges next to agents that can run shell commands. Every surface that carries outside text or writes config has a named control.
