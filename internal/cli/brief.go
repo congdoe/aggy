@@ -91,12 +91,12 @@ func briefWith(args []string, e borrowEnv, stdout, stderr io.Writer) int {
 			return usageErr("--to: " + err.Error())
 		}
 		// A brief carries repo content, so it obeys allowed_vendors.
-		rc, err := config.LoadRepo(root)
+		eff, err := repoEffective(config.Config{}, root)
 		if err != nil {
 			fmt.Fprintf(stderr, "aggy brief: %v\n", err)
 			return 1
 		}
-		if !config.Merge(config.Config{}, rc).Allows(in.To) {
+		if !eff.Allows(in.To) {
 			fmt.Fprintf(stderr, "aggy brief: this repo's allowed_vendors does not list %s\n", in.To)
 			return 1
 		}
