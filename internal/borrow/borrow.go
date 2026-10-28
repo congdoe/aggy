@@ -314,9 +314,9 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 			var pre *preStartError
 			if errors.As(err, &pre) {
 				tried = append(tried, Attempt{Vendor: v, Reason: pre.Error()})
-				ev := diag.EvBorrowVendorSkipped()
-				if pre.code == diag.CodeNoSandbox() && v == adapter.Grok {
-					ev = diag.EvGrokSandboxRefused()
+				ev := diag.EvBorrowVendorSkipped
+				if pre.code == diag.CodeNoSandbox && v == adapter.Grok {
+					ev = diag.EvGrokSandboxRefused
 				}
 				b.Diag.Log(ctx, diag.Rec{Event: ev, Code: pre.code, Msg: pre.Error(), Vendor: string(v),
 					Attrs: map[string]any{"kind": string(req.Kind)}})
@@ -429,7 +429,7 @@ func title(task string) string {
 func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, group string) (Result, error) {
 	cli, err := b.Locate(ctx, v)
 	if err != nil {
-		return Result{}, &preStartError{fmt.Errorf("%s: %w", v, err), diag.CodeCLIMissing()}
+		return Result{}, &preStartError{fmt.Errorf("%s: %w", v, err), diag.CodeCLIMissing}
 	}
 	a := b.Adapter(v, cli)
 	// The adapter may refuse the kind (ErrUnsupported).
@@ -440,14 +440,14 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 	// newer CLI may take them differently, so it needs the caller's
 	// say-so.
 	if w := adapter.VersionWarning(a, cli.Version, cli.VersionLine); w != "" && !req.AllowUntested {
-		return Result{}, &preStartError{fmt.Errorf("%s; the borrow lockdown was verified only there, so aggy will not borrow on it (pass --allow-untested to run it anyway)", w), diag.CodeUntested()}
+		return Result{}, &preStartError{fmt.Errorf("%s; the borrow lockdown was verified only there, so aggy will not borrow on it (pass --allow-untested to run it anyway)", w), diag.CodeUntested}
 	}
 	if err := grokTrustGate(v, req); err != nil {
-		return Result{}, &preStartError{err, diag.CodeUnsupported()}
+		return Result{}, &preStartError{err, diag.CodeUnsupported}
 	}
 	if req.Kind == adapter.Edit {
 		if err := editGate(v); err != nil {
-			return Result{}, &preStartError{err, diag.CodeUnsupported()}
+			return Result{}, &preStartError{err, diag.CodeUnsupported}
 		}
 	}
 	budget := b.Config.Budgets.For(req.Kind)
@@ -519,7 +519,7 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 	cmd, err := a.Headless(hreq)
 	if errors.Is(err, adapter.ErrFileTools) {
 		return Result{}, &preStartError{fmt.Errorf("%w; to allow it, set grok_file_tools = true under [media] in %s (Grok then uploads to xAI any local image a path in the brief or the child's reply names)",
-			err, filepath.Join(b.StateDir, config.FileName)), diag.CodeFileTools()}
+			err, filepath.Join(b.StateDir, config.FileName)), diag.CodeFileTools}
 	}
 	if errors.Is(err, adapter.ErrUnsupported) {
 		// Such as reference images on Grok: the next vendor may serve it.
@@ -557,7 +557,7 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 		ids.Worktree = filepath.Base(res.Worktree.Path)
 	}
 	rec := ids
-	rec.Event, rec.Attrs = diag.EvBorrowChildStarted(), map[string]any{"kind": string(req.Kind), "model": model, "minutes": budget.Minutes}
+	rec.Event, rec.Attrs = diag.EvBorrowChildStarted, map[string]any{"kind": string(req.Kind), "model": model, "minutes": budget.Minutes}
 	cause := b.Diag.Log(ctx, rec)
 
 	// The time limit: past it the runner kills the child's whole
@@ -572,7 +572,7 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 	}
 	res.Elapsed = b.Now().Sub(now)
 	rec = ids
-	rec.Event, rec.Cause, rec.Duration, rec.Exit = diag.EvBorrowChildExited(), cause, res.Elapsed, diag.Int(out.ExitCode)
+	rec.Event, rec.Cause, rec.Duration, rec.Exit = diag.EvBorrowChildExited, cause, res.Elapsed, diag.Int(out.ExitCode)
 	cause = b.Diag.Log(ctx, rec)
 	end := store.BorrowEnd{EndedAt: b.Now()}
 	parsed, perr := a.ParseHeadless(hreq, out)

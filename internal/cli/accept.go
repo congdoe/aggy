@@ -52,10 +52,10 @@ func runReject(args []string, stdout, stderr io.Writer) int {
 func editTarget(ctx context.Context, s *store.Store, g *gitWorktrees, id string) (store.Borrow, store.Worktree, error) {
 	bs, err := s.BorrowsByPrefix(ctx, id)
 	if err != nil || id == "" {
-		return store.Borrow{}, store.Worktree{}, withCode(diag.CodeAcceptTarget(), fmt.Errorf("no borrow %q", id))
+		return store.Borrow{}, store.Worktree{}, withCode(diag.CodeAcceptTarget, fmt.Errorf("no borrow %q", id))
 	}
 	if len(bs) != 1 {
-		return store.Borrow{}, store.Worktree{}, withCode(diag.CodeAcceptTarget(), fmt.Errorf("%d borrows start with %q", len(bs), id))
+		return store.Borrow{}, store.Worktree{}, withCode(diag.CodeAcceptTarget, fmt.Errorf("%d borrows start with %q", len(bs), id))
 	}
 	b := bs[0]
 	wt, err := s.BorrowWorktree(ctx, b.ID)
@@ -63,7 +63,7 @@ func editTarget(ctx context.Context, s *store.Store, g *gitWorktrees, id string)
 	case errors.Is(err, store.ErrNotFound):
 		err = fmt.Errorf("borrow %s has no worktree (only edit borrows do)", b.ID)
 	case err != nil:
-		return b, wt, withCode(diag.CodeStore(), err)
+		return b, wt, withCode(diag.CodeStore, err)
 	case b.Status == "running":
 		err = fmt.Errorf("borrow %s is still running", b.ID)
 	case wt.State != store.WorktreePending:
@@ -73,7 +73,7 @@ func editTarget(ctx context.Context, s *store.Store, g *gitWorktrees, id string)
 	default:
 		err = g.owned(wt)
 	}
-	return b, wt, withCode(diag.CodeAcceptTarget(), err)
+	return b, wt, withCode(diag.CodeAcceptTarget, err)
 }
 
 // editRec is the diagnostic log's ids for edit borrow b.
@@ -138,18 +138,18 @@ func openEdit(args []string, allowed ...string) (id string, flags map[string]boo
 		return "", nil, nil, "", errors.New("want a borrow id")
 	}
 	if stateDir, err = home.Dir(); err != nil {
-		return "", nil, nil, "", withCode(diag.CodeStore(), err)
+		return "", nil, nil, "", withCode(diag.CodeStore, err)
 	}
 	s, err = store.OpenDefault(context.Background())
-	return id, flags, s, stateDir, withCode(diag.CodeStore(), err)
+	return id, flags, s, stateDir, withCode(diag.CodeStore, err)
 }
 
 // editUsage prints an openEdit error: a usage error with the usage text
 // (exit 2), or a store error (exit 1).
 func editUsage(stderr io.Writer, cmd string, ev diag.Event, err error, usage string) int {
-	c := codeOf(err, diag.CodeUsage())
+	c := codeOf(err, diag.CodeUsage)
 	refuse(context.Background(), stderr, cmd, ev, c, err.Error(), diag.Rec{})
-	if c != diag.CodeUsage() {
+	if c != diag.CodeUsage {
 		return 1
 	}
 	fmt.Fprintf(stderr, "\n%s", usage)
@@ -207,15 +207,15 @@ func gateText(r string) string {
 // nothing was decided).
 func gateEdit(ctx context.Context, s *store.Store, g *gitWorktrees, ce repoCheckEnv, b store.Borrow, wt store.Worktree, run bool, ask func(string) bool, stdout io.Writer) (string, error) {
 	if d := g.env.childWritable(wt.Repo); d != "" {
-		return "", withCode(diag.CodeGateTempDir(), fmt.Errorf("refusing to run the checks: the main checkout %s is under %s, which an edit child's sandbox may write (Codex workspace-write leaves temp dirs writable unless told otherwise), so its check list may be the child's; run the edit from a repo outside temp dirs", wt.Repo, d))
+		return "", withCode(diag.CodeGateTempDir, fmt.Errorf("refusing to run the checks: the main checkout %s is under %s, which an edit child's sandbox may write (Codex workspace-write leaves temp dirs writable unless told otherwise), so its check list may be the child's; run the edit from a repo outside temp dirs", wt.Repo, d))
 	}
 	rc, err := config.LoadRepo(wt.Repo)
 	if err != nil {
-		return "", withCode(diag.CodeConfig(), err)
+		return "", withCode(diag.CodeConfig, err)
 	}
 	decided := func(res string) {
 		rec := editRec(b, wt)
-		rec.Event, rec.Attrs = diag.EvGateDecided(), map[string]any{"result": res}
+		rec.Event, rec.Attrs = diag.EvGateDecided, map[string]any{"result": res}
 		dlog.Log(ctx, rec)
 	}
 	if len(rc.Check) == 0 {
@@ -255,14 +255,14 @@ func gateEdit(ctx context.Context, s *store.Store, g *gitWorktrees, ce repoCheck
 		res = store.CheckFail
 	}
 	if err := s.SetWorktreeCheck(context.WithoutCancel(ctx), b.ID, res); err != nil {
-		return "", withCode(diag.CodeStore(), err)
+		return "", withCode(diag.CodeStore, err)
 	}
 	decided(res)
 	if terr != nil {
 		return "", fmt.Errorf("after the checks: %w", terr)
 	}
 	if tree != wt.Tree {
-		return "", withCode(diag.CodeChecksChanged(), fmt.Errorf("refusing: the checks changed files in the worktree, so it no longer matches the diff the child left; review %s by hand, or undo the changes and run the checks again", wt.Path))
+		return "", withCode(diag.CodeChecksChanged, fmt.Errorf("refusing: the checks changed files in the worktree, so it no longer matches the diff the child left; review %s by hand, or undo the changes and run the checks again", wt.Path))
 	}
 	return res, nil
 }
@@ -272,7 +272,7 @@ func gateEdit(ctx context.Context, s *store.Store, g *gitWorktrees, ce repoCheck
 func checkEditWith(ctx context.Context, args []string, env borrowEnv, ce repoCheckEnv, in io.Reader, tty bool, stdout, stderr io.Writer) int {
 	id, flags, s, stateDir, err := openEdit(args, "--yes")
 	if err != nil {
-		return editUsage(stderr, "check", diag.EvGateRefused(), err, checkUsage)
+		return editUsage(stderr, "check", diag.EvGateRefused, err, checkUsage)
 	}
 	defer func() { _ = s.Close() }()
 	g := &gitWorktrees{env: env, stateDir: stateDir, out: stderr}
@@ -289,7 +289,7 @@ func checkEditWith(ctx context.Context, args []string, env borrowEnv, ce repoChe
 		res, err = gateEdit(ctx, s, g, ce, b, wt, flags["--yes"], ask, stdout)
 	}
 	if err != nil {
-		refuse(ctx, stderr, "check", diag.EvGateRefused(), codeOf(err, diag.CodeGateFailed()), err.Error(), editRec(b, wt))
+		refuse(ctx, stderr, "check", diag.EvGateRefused, codeOf(err, diag.CodeGateFailed), err.Error(), editRec(b, wt))
 		return 1
 	}
 	if res != store.CheckPass {
@@ -305,7 +305,7 @@ func rejectWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 	}
 	id, _, s, stateDir, err := openEdit(args)
 	if err != nil {
-		return editUsage(stderr, "reject", diag.EvAcceptRefused(), err, acceptUsage)
+		return editUsage(stderr, "reject", diag.EvAcceptRefused, err, acceptUsage)
 	}
 	defer func() { _ = s.Close() }()
 	ctx := context.Background()
@@ -315,7 +315,7 @@ func rejectWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 		err = discardEdit(ctx, s, g, b.ID, wt, env.now())
 	}
 	if err != nil {
-		refuse(ctx, stderr, "reject", diag.EvAcceptRefused(), codeOf(err, diag.CodeAcceptFailed()), err.Error(), editRec(b, wt))
+		refuse(ctx, stderr, "reject", diag.EvAcceptRefused, codeOf(err, diag.CodeAcceptFailed), err.Error(), editRec(b, wt))
 		return 1
 	}
 	fmt.Fprintf(stdout, "Rejected: removed %s and branch %s.\n", termsafe.Field(wt.Path), termsafe.Field(wt.Branch))
@@ -328,17 +328,17 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 		return 0
 	}
 	if err := acceptOS(); err != nil {
-		refuse(context.Background(), stderr, "accept", diag.EvAcceptRefused(), diag.CodeAcceptOS(), err.Error(), diag.Rec{})
+		refuse(context.Background(), stderr, "accept", diag.EvAcceptRefused, diag.CodeAcceptOS, err.Error(), diag.Rec{})
 		return 1
 	}
 	id, flags, s, stateDir, err := openEdit(args, "--yes", "--check")
 	if err != nil {
-		return editUsage(stderr, "accept", diag.EvAcceptRefused(), err, acceptUsage)
+		return editUsage(stderr, "accept", diag.EvAcceptRefused, err, acceptUsage)
 	}
 	defer func() { _ = s.Close() }()
 	var rec diag.Rec
 	fail := func(err error) int {
-		refuse(context.Background(), stderr, "accept", diag.EvAcceptRefused(), codeOf(err, diag.CodeAcceptFailed()), err.Error(), rec)
+		refuse(context.Background(), stderr, "accept", diag.EvAcceptRefused, codeOf(err, diag.CodeAcceptFailed), err.Error(), rec)
 		return 1
 	}
 	// Ctrl-C, a kill, or a hangup during the checks kills their process
@@ -350,7 +350,7 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 	// The patch is written under the state dir: not in a temp dir an edit
 	// child's sandbox may write (K46-4).
 	if d := env.childWritable(stateDir); d != "" {
-		return fail(withCode(diag.CodeStateTempDir(), fmt.Errorf("refusing: aggy's state dir %s is under %s, which an edit child's sandbox may write, so the patch accept writes there could be changed before it is applied; set AGGY_HOME to a dir outside temp dirs", stateDir, d)))
+		return fail(withCode(diag.CodeStateTempDir, fmt.Errorf("refusing: aggy's state dir %s is under %s, which an edit child's sandbox may write, so the patch accept writes there could be changed before it is applied; set AGGY_HOME to a dir outside temp dirs", stateDir, d)))
 	}
 	b, wt, err := editTarget(ctx, s, g, id)
 	rec = editRec(b, wt)
@@ -383,7 +383,7 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 	}
 	if !yes {
 		declined := rec
-		declined.Event = diag.EvAcceptDeclined()
+		declined.Event = diag.EvAcceptDeclined
 		if !tty {
 			declined.Attrs = map[string]any{"why": "no terminal and no --yes"}
 			dlog.Log(ctx, declined)
@@ -404,14 +404,14 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 	// Claimed before the write (the per-record lock reject takes too), so
 	// a second accept or a reject cannot act on it meanwhile.
 	if err := s.SetWorktreeState(ctx, b.ID, store.WorktreePending, store.WorktreeAccepted); err != nil {
-		return fail(withCode(diag.CodeAcceptTarget(), err))
+		return fail(withCode(diag.CodeAcceptTarget, err))
 	}
 	if err := g.apply(ctx, wt, patch); err != nil {
 		_ = s.SetWorktreeState(context.WithoutCancel(ctx), b.ID, store.WorktreeAccepted, store.WorktreePending)
 		return fail(err)
 	}
 	applied := rec
-	applied.Event, applied.Attrs = diag.EvAcceptApplied(), map[string]any{"check": gateText(wt.Check)}
+	applied.Event, applied.Attrs = diag.EvAcceptApplied, map[string]any{"check": gateText(wt.Check)}
 	dlog.Log(ctx, applied)
 	fmt.Fprintf(stdout, "Applied to %s (not staged or committed). The worktree and branch %s stay until aggy gc.\n",
 		termsafe.Field(wt.Repo), termsafe.Field(wt.Branch))
@@ -471,7 +471,7 @@ func (g *gitWorktrees) editDiff(ctx context.Context, wt store.Worktree) (stat, p
 		return "", "", err
 	}
 	if now != wt.Tree {
-		return "", "", withCode(diag.CodeTreeChanged(), fmt.Errorf("refusing: the worktree changed after the borrow ended (a process the child left behind?); review %s by hand", wt.Path))
+		return "", "", withCode(diag.CodeTreeChanged, fmt.Errorf("refusing: the worktree changed after the borrow ended (a process the child left behind?); review %s by hand", wt.Path))
 	}
 	run, err := g.wtRun(ctx, wt)
 	if err != nil {
@@ -544,7 +544,7 @@ func (g *gitWorktrees) hooksDir(ctx context.Context, repo string) (string, error
 		return "", nil
 	}
 	refuse := func(why string) (string, error) {
-		return "", withCode(diag.CodeProtected(), fmt.Errorf("refusing: core.hooksPath %s: %s; aggy cannot tell where it points, so the diff cannot be checked against it", val, why))
+		return "", withCode(diag.CodeProtected, fmt.Errorf("refusing: core.hooksPath %s: %s; aggy cannot tell where it points, so the diff cannot be checked against it", val, why))
 	}
 	p := val
 	if p == "~" || strings.HasPrefix(p, "~/") {
@@ -625,13 +625,13 @@ func checkTouched(raw, hooks string) ([]string, error) {
 		}
 		for _, mode := range m[:2] {
 			if mode == "120000" || mode == "160000" {
-				return nil, withCode(diag.CodeProtected(), fmt.Errorf("refusing: the diff makes or changes a symlink or submodule at %s", p))
+				return nil, withCode(diag.CodeProtected, fmt.Errorf("refusing: the diff makes or changes a symlink or submodule at %s", p))
 			}
 		}
 		inHooks := hooks != "" && ((hooks == "." && !strings.Contains(p, "/")) ||
 			strings.EqualFold(p, hooks) || strings.HasPrefix(strings.ToLower(p), strings.ToLower(hooks)+"/"))
 		if borrow.ProtectedPath(p) || inHooks {
-			return nil, withCode(diag.CodeProtected(), fmt.Errorf("refusing: the diff touches %s, which may hold hooks, CI, config, or instructions a tool or CLI runs or loads; review the worktree by hand", p))
+			return nil, withCode(diag.CodeProtected, fmt.Errorf("refusing: the diff touches %s, which may hold hooks, CI, config, or instructions a tool or CLI runs or loads; review the worktree by hand", p))
 		}
 		paths = append(paths, p)
 	}
@@ -657,7 +657,7 @@ func (g *gitWorktrees) cleanIn(ctx context.Context, repo string, paths []string)
 				dirty = append(dirty, e[3:])
 			}
 		}
-		return withCode(diag.CodeDirty(), fmt.Errorf("refusing: the main checkout has changes in paths the diff touches (%s); commit or stash them first", strings.Join(dirty, ", ")))
+		return withCode(diag.CodeDirty, fmt.Errorf("refusing: the main checkout has changes in paths the diff touches (%s); commit or stash them first", strings.Join(dirty, ", ")))
 	}
 	return nil
 }

@@ -77,14 +77,15 @@ func tokens(t *testing.T, name, src string) []tok {
 }
 
 // uses counts, per identifier, the references to the registry's
-// accessors in code (never in comments): diag.X outside the package, X
+// variables in code (never in comments): diag.X outside the package, X
 // inside it. It also returns where package diag builds an Event or Code
 // from a value outside codes.go (Event{} and Code{}, the zero values, are
-// allowed).
-func uses(t *testing.T, src map[string]string) (map[string]int, []string) {
+// allowed), and where any file outside codes.go assigns to a registry
+// variable or takes its address.
+func uses(t *testing.T, src map[string]string) (map[string]int, []string, []string) {
 	t.Helper()
 	n := map[string]int{}
-	var built []string
+	var built, assigned []string
 	for path, text := range src {
 		if path == "internal/diag/codes.go" {
 			continue
@@ -98,15 +99,38 @@ func uses(t *testing.T, src map[string]string) (map[string]int, []string) {
 			switch {
 			case !inPkg && x.lit == "diag" && i+2 < len(ts) && ts[i+1].t == token.PERIOD && ts[i+2].t == token.IDENT:
 				n[ts[i+2].lit]++
+				if registryName(ts[i+2].lit) && writes(ts, i, i+3) {
+					assigned = append(assigned, path+": diag."+ts[i+2].lit)
+				}
 			case inPkg && (i == 0 || ts[i-1].t != token.PERIOD):
 				n[x.lit]++
 				if (x.lit == "Event" || x.lit == "Code") && builds(ts[i+1:]) {
 					built = append(built, path)
 				}
+				if registryName(x.lit) && writes(ts, i, i+1) {
+					assigned = append(assigned, path+": "+x.lit)
+				}
 			}
 		}
 	}
-	return n, built
+	return n, built, assigned
+}
+
+// registryName reports whether name is shaped like a registry variable.
+func registryName(name string) bool { return varNameRE.MatchString(name) }
+
+// writes reports whether the reference spanning ts[start:end] is written:
+// its address is taken (&X), or it is a target of an assignment (X = ...,
+// or one of several targets, a, X = ...).
+func writes(ts []tok, start, end int) bool {
+	if start > 0 && ts[start-1].t == token.AND {
+		return true
+	}
+	j := end
+	for j < len(ts) && (ts[j].t == token.COMMA || ts[j].t == token.IDENT || ts[j].t == token.PERIOD) {
+		j++
+	}
+	return j < len(ts) && ts[j].t == token.ASSIGN
 }
 
 // builds reports whether the tokens after an Event or Code are a
@@ -120,15 +144,13 @@ func builds(ts []tok) bool {
 }
 
 var (
-	varRE = regexp.MustCompile(`(?m)^func ((?:Ev|Code)[A-Z]\w*)\(\) (Event|Code)\s+\{ return (?:Event|Code)\{"([^"]+)"\} \}$`)
-	// sealRE finds a registry entry declared as a variable, which any
-	// package could reassign.
-	sealRE  = regexp.MustCompile(`(?m)^\s*(?:var\s+)?(?:Ev|Code)[A-Z]\w*\s*(?:Event|Code)?\s*=`)
-	eventRE = regexp.MustCompile(`^[a-z]+(\.[a-z]+)?\.[a-z_]+\.[a-z_]+$`)
-	codeRE  = regexp.MustCompile(`^[a-z]+\.[a-z_]+$`)
+	varNameRE = regexp.MustCompile(`^(?:Ev|Code)[A-Z]\w*$`)
+	varRE     = regexp.MustCompile(`(?m)^\s+((?:Ev|Code)[A-Z]\w*)\s*=\s*(Event|Code)\{"([^"]+)"\}`)
+	eventRE   = regexp.MustCompile(`^[a-z]+(\.[a-z]+)?\.[a-z_]+\.[a-z_]+$`)
+	codeRE    = regexp.MustCompile(`^[a-z]+\.[a-z_]+$`)
 )
 
-// TestRegistry: every event and code accessor is registered once, with a
+// TestRegistry: every event and code variable is registered once, with a
 // name that follows the naming rules, a level, a meaning, and a next
 // step; every one is used in code outside the registry (a mention in a
 // comment does not count); and nothing outside codes.go builds an Event
@@ -138,14 +160,14 @@ func TestRegistry(t *testing.T) {
 	src := sources(t, repoRoot(t))
 	vars := varRE.FindAllStringSubmatch(src["internal/diag/codes.go"], -1)
 	if len(vars) != len(events)+len(codes) {
-		t.Errorf("codes.go declares %d accessors, the registry has %d entries", len(vars), len(events)+len(codes))
+		t.Errorf("codes.go declares %d variables, the registry has %d entries", len(vars), len(events)+len(codes))
 	}
-	if m := sealRE.FindAllString(src["internal/diag/codes.go"], -1); len(m) > 0 {
-		t.Errorf("registry entries must be accessor functions, not variables: %q", m)
-	}
-	used, built := uses(t, src)
+	used, built, assigned := uses(t, src)
 	if len(built) > 0 {
 		t.Errorf("only codes.go may build an Event or Code: %v", built)
+	}
+	if len(assigned) > 0 {
+		t.Errorf("registry variables are never assigned or addressed outside codes.go: %v", assigned)
 	}
 	seen := map[string]bool{}
 	for _, v := range vars {
@@ -186,10 +208,13 @@ func TestRegistry(t *testing.T) {
 // is caught.
 func TestRegistryUses(t *testing.T) {
 	src := map[string]string{
-		"internal/cli/a.go":  "package cli\n// diag.EvGCRemoved() in a comment\n/* diag.CodeUsage() */\nvar _ = diag.CodeStore()\n",
+		"internal/cli/a.go":  "package cli\n// diag.EvGCRemoved in a comment\n/* diag.CodeUsage */\nvar _ = diag.CodeStore\n",
 		"internal/diag/b.go": "package diag\n// EvGCRefused\nvar _ = EvGCRemoved\nvar _ = Event{\"x.y.z\"}\nvar _ = Code{}\n",
 	}
-	used, built := uses(t, src)
+	used, built, assigned := uses(t, src)
+	if len(assigned) != 0 {
+		t.Errorf("assigned = %v", assigned)
+	}
 	if used["EvGCRemoved"] != 1 || used["CodeUsage"] != 0 || used["CodeStore"] != 1 || used["EvGCRefused"] != 0 {
 		t.Errorf("uses = %v", used)
 	}
@@ -221,5 +246,31 @@ func TestRegistryDoc(t *testing.T) {
 	}
 	if doc != want {
 		t.Error("docs/logging.md's registry tables differ from internal/diag/codes.go; run AGGY_UPDATE_DOCS=1 go test ./internal/diag -run TestRegistryDoc")
+	}
+}
+
+// TestRegistryAssign (T6777 D64-4): an assignment to a registry variable,
+// or taking its address, is caught anywhere outside codes.go; reading one
+// in a list, a call, or a case is not.
+func TestRegistryAssign(t *testing.T) {
+	tests := []struct {
+		name, path, src string
+		want            bool
+	}{
+		{"assign outside", "internal/cli/a.go", "package cli\nfunc f() { diag.CodeStore = diag.CodeUsage }\n", true},
+		{"second target", "internal/cli/a.go", "package cli\nfunc f() { x, diag.EvGCRemoved = 1, y }\n", true},
+		{"address", "internal/cli/a.go", "package cli\nvar p = &diag.CodeStore\n", true},
+		{"assign inside", "internal/diag/b.go", "package diag\nfunc init() { EvGCRemoved = EvGCRefused }\n", true},
+		{"read", "internal/cli/a.go", "package cli\nvar c = diag.CodeStore\nfunc f() { g(diag.CodeStore, x); switch c { case diag.CodeUsage, diag.CodeStore: } }\n", false},
+		{"list", "internal/cli/a.go", "package cli\nvar l = []diag.Code{diag.CodeStore, diag.CodeUsage}\n", false},
+		{"field", "internal/cli/a.go", "package cli\nfunc f() { r := diag.Rec{Event: diag.EvGCRemoved}; r.Code = diag.CodeStore }\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, assigned := uses(t, map[string]string{tt.path: tt.src})
+			if got := len(assigned) > 0; got != tt.want {
+				t.Errorf("assigned = %v, want caught %v", assigned, tt.want)
+			}
+		})
 	}
 }

@@ -89,12 +89,12 @@ func gcWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, stderr
 			fmt.Fprint(stdout, gcUsage)
 			return 0
 		}
-		refuse(context.Background(), stderr, "gc", diag.EvGCRefused(), diag.CodeUsage(), err.Error(), diag.Rec{})
+		refuse(context.Background(), stderr, "gc", diag.EvGCRefused, diag.CodeUsage, err.Error(), diag.Rec{})
 		fmt.Fprintf(stderr, "\n%s", gcUsage)
 		return 2
 	}
 	if fl.NArg() > 0 {
-		refuse(context.Background(), stderr, "gc", diag.EvGCRefused(), diag.CodeUsage(), "unexpected arguments", diag.Rec{})
+		refuse(context.Background(), stderr, "gc", diag.EvGCRefused, diag.CodeUsage, "unexpected arguments", diag.Rec{})
 		fmt.Fprintf(stderr, "\n%s", gcUsage)
 		return 2
 	}
@@ -104,24 +104,24 @@ func gcWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, stderr
 		log = nil
 	}
 	fail := func(code diag.Code, err error) int {
-		refuseWith(log, context.Background(), stderr, "gc", diag.EvGCRefused(), code, err.Error(), diag.Rec{})
+		refuseWith(log, context.Background(), stderr, "gc", diag.EvGCRefused, code, err.Error(), diag.Rec{})
 		return 1
 	}
 	// A borrow child never cleans up after its parent.
 	if env.getenv(borrow.Delegated) != "" {
-		return fail(diag.CodeOneHop(), borrow.ErrDelegated)
+		return fail(diag.CodeOneHop, borrow.ErrDelegated)
 	}
 	stateDir, err := home.Dir()
 	if err != nil {
-		return fail(diag.CodeStore(), err)
+		return fail(diag.CodeStore, err)
 	}
 	cfg, err := config.LoadDefault()
 	if err != nil {
-		return fail(diag.CodeConfig(), err)
+		return fail(diag.CodeConfig, err)
 	}
 	path, err := store.DefaultPath()
 	if err != nil {
-		return fail(diag.CodeStore(), err)
+		return fail(diag.CodeStore, err)
 	}
 	if _, err := safefs.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		fmt.Fprintln(stdout, "Nothing to remove: aggy has no index yet.")
@@ -135,13 +135,13 @@ func gcWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, stderr
 	}
 	s, err := open(ctx)
 	if err != nil {
-		return fail(diag.CodeStore(), err)
+		return fail(diag.CodeStore, err)
 	}
 	defer func() { _ = s.Close() }()
 	g := &gitWorktrees{env: env, stateDir: stateDir, out: stderr}
 	plan, err := planGC(ctx, s, g, stateDir, retention(cfg.GC), env.now())
 	if err != nil {
-		return fail(diag.CodeGCFailed(), store.ReadError(err))
+		return fail(diag.CodeGCFailed, store.ReadError(err))
 	}
 	// diag.db is aggy's own log: one it cannot read never stops the rest
 	// of gc.
@@ -173,12 +173,12 @@ func gcWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, stderr
 		rec := it.ids
 		rec.Attrs = map[string]any{"kind": it.kind}
 		if err := it.remove(ctx); err != nil {
-			refuse(ctx, stderr, "gc", diag.EvGCRemoveFailed(), diag.CodeGCRemoveFailed(),
+			refuse(ctx, stderr, "gc", diag.EvGCRemoveFailed, diag.CodeGCRemoveFailed,
 				fmt.Sprintf("not removed: %s %s: %s", it.kind, it.what, err), rec)
 			code = 1
 			continue
 		}
-		rec.Event, rec.Msg = diag.EvGCRemoved(), it.what
+		rec.Event, rec.Msg = diag.EvGCRemoved, it.what
 		dlog.Log(ctx, rec)
 		fmt.Fprintf(stdout, "Removed %s %s\n", it.kind, termsafe.Field(it.what))
 	}

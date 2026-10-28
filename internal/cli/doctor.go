@@ -85,12 +85,12 @@ func doctorWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 			fmt.Fprint(stdout, doctorUsage)
 			return 0
 		}
-		refuse(context.Background(), stderr, "doctor", diag.EvDoctorRefused(), diag.CodeUsage(), err.Error(), diag.Rec{})
+		refuse(context.Background(), stderr, "doctor", diag.EvDoctorRefused, diag.CodeUsage, err.Error(), diag.Rec{})
 		fmt.Fprintf(stderr, "\n%s", doctorUsage)
 		return 2
 	}
 	if fl.NArg() > 0 {
-		refuse(context.Background(), stderr, "doctor", diag.EvDoctorRefused(), diag.CodeUsage(), "unexpected arguments", diag.Rec{})
+		refuse(context.Background(), stderr, "doctor", diag.EvDoctorRefused, diag.CodeUsage, "unexpected arguments", diag.Rec{})
 		fmt.Fprintf(stderr, "\n%s", doctorUsage)
 		return 2
 	}
@@ -102,7 +102,7 @@ func doctorWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 		}
 		printReport(stdout, res, id)
 	} else {
-		printDoctor(stdout, res, dlog.Tag(diag.CodeDoctorError()))
+		printDoctor(stdout, res, dlog.Tag(diag.CodeDoctorError))
 	}
 	code := 0
 	for _, s := range res.sections {
@@ -110,7 +110,7 @@ func doctorWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 			if f.Level == checkup.LevelError {
 				// The finding's code and vendor only: its text may hold a
 				// path or a CLI's own error text.
-				dlog.Log(context.Background(), diag.Rec{Event: diag.EvDoctorError(), Code: diag.CodeDoctorError(), Vendor: string(f.Vendor),
+				dlog.Log(context.Background(), diag.Rec{Event: diag.EvDoctorError, Code: diag.CodeDoctorError, Vendor: string(f.Vendor),
 					Attrs: map[string]any{"finding": string(f.Code)}})
 				code = 1
 			}

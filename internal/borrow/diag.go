@@ -24,39 +24,39 @@ func Invalid(err error) bool {
 func adapterCode(err error) diag.Code {
 	switch {
 	case errors.Is(err, adapter.ErrNoSandbox):
-		return diag.CodeNoSandbox()
+		return diag.CodeNoSandbox
 	case errors.Is(err, adapter.ErrFileTools):
-		return diag.CodeFileTools()
+		return diag.CodeFileTools
 	case errors.Is(err, adapter.ErrNoCapability):
-		return diag.CodeNoCapability()
+		return diag.CodeNoCapability
 	}
-	return diag.CodeUnsupported()
+	return diag.CodeUnsupported
 }
 
 // OutcomeCode is the reason code of a failed borrow's outcome.
 func OutcomeCode(outcome string) diag.Code {
 	switch adapter.ErrorClass(outcome) {
 	case adapter.ErrRateLimit:
-		return diag.CodeRateLimit()
+		return diag.CodeRateLimit
 	case adapter.ErrAuth:
-		return diag.CodeAuth()
+		return diag.CodeAuth
 	case adapter.ErrBilling:
-		return diag.CodeBilling()
+		return diag.CodeBilling
 	case adapter.ErrServer:
-		return diag.CodeServer()
+		return diag.CodeServer
 	case adapter.ErrInvalidRequest:
-		return diag.CodeVendorInvalid()
+		return diag.CodeVendorInvalid
 	case adapter.ErrMaxTurns:
-		return diag.CodeMaxTurns()
+		return diag.CodeMaxTurns
 	case adapter.ErrTimeout:
-		return diag.CodeTimeout()
+		return diag.CodeTimeout
 	case adapter.ErrLockdown:
-		return diag.CodeLockdown()
+		return diag.CodeLockdown
 	}
 	if outcome == Interrupted {
-		return diag.CodeInterrupted()
+		return diag.CodeInterrupted
 	}
-	return diag.CodeChildFailed()
+	return diag.CodeChildFailed
 }
 
 // logEnd records how the borrow ended: a failure under its code (a
@@ -66,15 +66,15 @@ func OutcomeCode(outcome string) diag.Code {
 func (b *Borrower) logEnd(ctx context.Context, ids diag.Rec, res Result, session, cause string) {
 	if res.Status != "done" {
 		rec := ids
-		rec.Event, rec.Code, rec.Cause = diag.EvBorrowFailed(), OutcomeCode(res.Outcome), cause
-		if rec.Code == diag.CodeLockdown() {
+		rec.Event, rec.Code, rec.Cause = diag.EvBorrowFailed, OutcomeCode(res.Outcome), cause
+		if rec.Code == diag.CodeLockdown {
 			rec.Event = diag.LockdownEvent(string(res.Vendor))
 		}
 		rec.Attrs = map[string]any{"outcome": res.Outcome, "kind": string(res.Kind)}
 		cause = b.Diag.Log(ctx, rec)
 	}
 	rec := ids
-	rec.Event, rec.Cause, rec.Duration, rec.VendorSession = diag.EvBorrowFinished(), cause, res.Elapsed, session
+	rec.Event, rec.Cause, rec.Duration, rec.VendorSession = diag.EvBorrowFinished, cause, res.Elapsed, session
 	rec.Attrs = map[string]any{
 		"kind": string(res.Kind), "status": res.Status, "outcome": res.Outcome, "tokens": res.Tokens,
 		"artifacts": len(res.Artifacts), "refused": len(res.Refused),

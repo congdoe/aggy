@@ -100,14 +100,14 @@ func TestDiagPrivacyCanary(t *testing.T) {
 	noMarkers(t, markers)
 
 	text := allDiagText(t, f.state)
-	for _, ev := range []diag.Event{diag.EvBorrowChildStarted(), diag.EvBorrowChildExited(), diag.EvBorrowFinished(), diag.EvAcceptApplied(), diag.EvGCRemoved()} {
+	for _, ev := range []diag.Event{diag.EvBorrowChildStarted, diag.EvBorrowChildExited, diag.EvBorrowFinished, diag.EvAcceptApplied, diag.EvGCRemoved} {
 		if !strings.Contains(text, ev.String()) {
 			t.Errorf("no %s record", ev)
 		}
 	}
 	_, exp, _ := runDiagCmd("export", "--jsonl")
 	_, bundle, errB := runDiagCmd("bundle", "--since", "1h")
-	if !strings.Contains(exp, id) || !strings.Contains(bundle, diag.EvAcceptApplied().String()) {
+	if !strings.Contains(exp, id) || !strings.Contains(bundle, diag.EvAcceptApplied.String()) {
 		t.Errorf("export or bundle misses the borrow: %s\n%s %s", exp, bundle, errB)
 	}
 	for name, s := range map[string]string{"diag.db": text, "export": exp, "bundle": bundle} {
@@ -231,7 +231,7 @@ func TestDiagFollow(t *testing.T) {
 	done := make(chan int)
 	go func() { done <- diagWith(ctx, []string{"--follow", "--jsonl"}, time.Now, &out, &out) }()
 	time.Sleep(50 * time.Millisecond)
-	dlog.Log(context.Background(), diag.Rec{Event: diag.EvGCRemoved(), Msg: "followed"})
+	dlog.Log(context.Background(), diag.Rec{Event: diag.EvGCRemoved, Msg: "followed"})
 	deadline := time.Now().Add(5 * time.Second)
 	for !strings.Contains(out.String(), "followed") && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
@@ -267,7 +267,7 @@ func TestRefusalTagged(t *testing.T) {
 	if code != 1 || !strings.HasSuffix(strings.TrimSpace(errOut), tag) {
 		t.Fatalf("code %d: %q", code, errOut)
 	}
-	if !strings.Contains(allDiagText(t, f.state), diag.CodeOneHop().String()) {
+	if !strings.Contains(allDiagText(t, f.state), diag.CodeOneHop.String()) {
 		t.Error("no record")
 	}
 	var out, errb strings.Builder
@@ -287,7 +287,7 @@ func TestGCPrunesDiag(t *testing.T) {
 	}
 	now := time.Now()
 	for i, age := range []time.Duration{30 * 24 * time.Hour, 20 * 24 * time.Hour, time.Hour} {
-		r := store.DiagRecord{ID: fmt.Sprintf("old%d", i), Schema: 1, TS: now.Add(-age), Level: "info", Component: "gc", Event: diag.EvGCRemoved().String(), RunID: "r"}
+		r := store.DiagRecord{ID: fmt.Sprintf("old%d", i), Schema: 1, TS: now.Add(-age), Level: "info", Component: "gc", Event: diag.EvGCRemoved.String(), RunID: "r"}
 		if err := d.Insert(ctx, r); err != nil {
 			t.Fatal(err)
 		}
@@ -422,8 +422,8 @@ func TestDiagPrivacyCanaryFailures(t *testing.T) {
 	}
 
 	text := allDiagText(t, f.state)
-	for _, want := range []string{diag.EvCheckCommandFailed().String(), diag.CodeChecksFailed().String(), diag.EvBorrowFailed().String(),
-		diag.EvBorrowRefused().String(), diag.EvAcceptRefused().String(), diag.CodeProtected().String()} {
+	for _, want := range []string{diag.EvCheckCommandFailed.String(), diag.CodeChecksFailed.String(), diag.EvBorrowFailed.String(),
+		diag.EvBorrowRefused.String(), diag.EvAcceptRefused.String(), diag.CodeProtected.String()} {
 		if !strings.Contains(text, want) {
 			t.Errorf("no %s in diag.db:\n%s", want, text)
 		}
@@ -431,7 +431,7 @@ func TestDiagPrivacyCanaryFailures(t *testing.T) {
 	_, exp, _ := runDiagCmd("export", "--jsonl")
 	_, bundle, _ := runDiagCmd("bundle", "--since", "1h")
 	code, events, errOut := runDiagCmd("sql", "SELECT * FROM idx.events", "--json")
-	if code != 0 || !strings.Contains(events, `"refusal"`) || !strings.Contains(events, diag.CodeProtected().String()) {
+	if code != 0 || !strings.Contains(events, `"refusal"`) || !strings.Contains(events, diag.CodeProtected.String()) {
 		t.Errorf("idx.events: code %d: %s %s", code, events, errOut)
 	}
 	for name, s := range map[string]string{"diag.db": text, "export": exp, "bundle": bundle, "idx.events": events} {
