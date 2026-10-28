@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // body is one 64-character line of a PEM key body.
@@ -56,6 +57,16 @@ var linesTests = []struct {
 	{"block folded", "password: >-\n  hunter2hunter2\nuser: me", "password: >-\nuser: me", 1},
 	{"comment between", "password:\n# the prod one\n  hunter2hunter2\nnext", "password:\n# the prod one\nnext", 1},
 	{"pending call literal", "const password =\n  getPass(\"hunter2hunter2\");\nnext", "const password =\nnext", 1},
+	// I43-3: JSON env, a block scalar with a comment or a tag, and a
+	// triple-quoted value over several lines.
+	{"json env", "[\n  {\n    \"name\": \"DB_PASSWORD\",\n    \"value\": \"hunter2hunter2\"\n  }\n]", "[\n  {\n    \"name\": \"DB_PASSWORD\",\n  }\n]", 1},
+	{"block comment", "password: | # set by ops\n  hunter2hunter2\nuser: me", "password: | # set by ops\nuser: me", 1},
+	{"block tag", "api_key: !!binary |\n  aHVudGVyMmh1bnRlcjI=\nnext", "next", 2},
+	{"triple single", "token = '''\nhunter2hunter2\nsecond line\n'''\nnext", "token = '''\nnext", 3},
+	{"triple double", "password = \"\"\"\nhunter2hunter2\"\"\"\nnext", "password = \"\"\"\nnext", 1},
+	// I43-4: a secret flag's value on the next line of a list or array.
+	{"yaml flag list", "args:\n  - --token\n  - hunter2hunter2\n  - --verbose", "args:\n  - --token\n  - --verbose", 1},
+	{"json flag array", "\"args\": [\n  \"--api-key\",\n  \"hunter2hunter2\"\n]", "\"args\": [\n  \"--api-key\",\n]", 1},
 }
 
 func TestLines(t *testing.T) {
@@ -171,6 +182,19 @@ var secretLines = []string{
 	`requests.get(url, auth=("bob","hunter2hunter2"))`,
 	`const password = getPass("hunter2hunter2");`,
 	"redis-cli -a hunter2hunter2 ping",
+	// I43-2: a flag value that starts with "-", and the --pass rows.
+	"some-cli --password -Hunter2Hunter2",
+	"some-cli --pass -Hunter2Hunter2",
+	"some-cli --password=S3cretPass",
+	`some-cli --api-key "-abcdefghij123456"`,
+	// I43-3: a flow env entry, in either order.
+	"- {name: DB_PASSWORD, value: hunter2hunter2}",
+	`{"value": "hunter2hunter2", "name": "DB_PASSWORD"}`,
+	// I43-4: an args array, and run-together flag names.
+	`"args": ["--api-key", "hunter2hunter2"]`,
+	"some-cli --apikey hunter2hunter2",
+	"some-cli --authtoken hunter2hunter2",
+	"some-cli --clientsecret hunter2hunter2",
 }
 
 // C16-11: base64-wrapped secrets, in either alphabet.
@@ -224,6 +248,10 @@ func TestSecret(t *testing.T) {
 		`os.Getenv("API_KEY", "")`,
 		"| Name | Description |",
 		"the cookie jar is empty",
+		"some-cli --token --verbose",
+		"codex --dangerously-bypass-approvals-and-sandbox exec",
+		"- {name: MODE, value: production}",
+		`"args": ["--verbose", "hunter2hunter2"]`,
 		"data: " + base64.StdEncoding.EncodeToString([]byte("just some ordinary text here")),
 	} {
 		if Secret(line) {
@@ -287,5 +315,38 @@ func folds(l string) []string {
 		l, strings.ToUpper(l), strings.ToLower(l),
 		strings.NewReplacer("s", "ſ", "S", "ſ").Replace(l),
 		strings.NewReplacer("k", "\u212a", "K", "\u212a").Replace(l),
+	}
+}
+
+// TestTripleCap (I43-3): a triple-quoted secret value with no closing
+// quotes drops at most maxTriple lines.
+func TestTripleCap(t *testing.T) {
+	in := "token = '''\n" + strings.Repeat("x\n", maxTriple+50) + "end"
+	got, n := Lines(in)
+	if n != maxTriple || !strings.HasSuffix(got, "end") {
+		t.Errorf("removed %d lines, want %d", n, maxTriple)
+	}
+}
+
+// TestLinear (I43-1): Lines takes time in proportion to its input on a
+// line with many assign matches; the old code rescanned the rest of the
+// line once per match. Four times the input must take well under
+// sixteen times as long (the best of three runs each).
+func TestLinear(t *testing.T) {
+	for _, unit := range []string{"{key:f(bbbbbbbb),", "token := f(x) "} {
+		best := func(n int) time.Duration {
+			in := strings.Repeat(unit, n)
+			d := time.Duration(1 << 62)
+			for range 3 {
+				s := time.Now()
+				Lines(in)
+				d = min(d, time.Since(s))
+			}
+			return d
+		}
+		small, big := best(4000), best(16000)
+		if big > 10*small+20*time.Millisecond {
+			t.Errorf("%q: %v for 4x the input of %v", unit, big, small)
+		}
 	}
 }

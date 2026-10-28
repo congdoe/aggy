@@ -65,6 +65,14 @@ const (
 	// blockMark ends a key line whose value follows on the next lines: a
 	// YAML block scalar indicator (|, >-, |2) or a TOML triple quote.
 	blockMark = `[|>][-+0-9]*|"""|'''`
+	// blockEnd ends a key line whose value follows: an optional YAML tag
+	// (!!binary), then blockMark, then an optional comment (I43-3).
+	blockEnd = `(?:!\S*\s+)?(?:` + blockMark + `)(?:\s+#.*)?`
+	// flagName is a secret-named command-line flag after its "--": words
+	// joined by "-" or "_", the last of which holds key, token, or secret
+	// (run together or not: apikey, authtoken, clientsecret), or is a
+	// password word. "pass" run into a word (bypass) does not count.
+	flagName = `(?:[A-Za-z0-9]+[-_])*(?:[A-Za-z0-9]*(?:key|token|secret)|pass(?:word|wd|phrase)?|requirepass|masterauth)`
 )
 
 // keyPrefix is what may stand before a key line: quoting, a comment
@@ -91,28 +99,44 @@ var (
 		`(?i)\(\s*` + q + `(?:` + nameRe + `|authorization|cookie)` + q + `\s*,\s*` + lit,
 		// A literal set at a secret-named subscript: os.environ["API_KEY"] = "...".
 		`(?i)\[\s*` + q + nameRe + q + `\s*\]\s*(?:\|\||&&|\?\?)?=\s*` + lit,
-		`(?i)basic_?auth\s*\(\s*[^,()]*,\s*` + lit,                                                                             // SetBasicAuth("bob", "...")
-		`(?i)\bauth\s*=\s*\(\s*` + q + "[^\"'`]*" + q + `\s*,\s*` + lit,                                                        // auth=("bob", "...")
-		`(?i)\|\s*` + q + `*` + nameRe + q + `*\s*\|\s*[^\s|]{8,}\s*(?:\||$)`,                                                  // | DB_PASSWORD | value |
-		`(?i)\bcookie["']?\s*[:=,]\s*["']?[^\s"';=]+=[^\s"';]`,                                                                 // Cookie: session=...
-		`(?i)--(?:[A-Za-z0-9]+[-_])*(?:key|token|secret|pass(?:word|wd|phrase)?|requirepass|masterauth)(?:=|\s+)["']?[^\s"'-]`, // --token X
-		`(?i)\bcurl\b.*\s(?:-u|--user)(?:=|\s*)["']?[^\s:"']*:[^\s"']`,                                                         // curl -u user:pw
-		`(?i)\b(?:(?:docker|podman|nerdctl|helm\s+registry)\s+login|sshpass)\b.*\s-p(?:=|\s*)[^\s-]`,                           // docker login -p pw
-		`(?i)\bredis-cli\b.*\s-a\s+\S`,                                                                                         // redis-cli -a pw
-		`(?-i:\bhtpasswd\b.*\s-[A-Za-z]*b[A-Za-z]*\s+\S)`,                                                                      // htpasswd -b file user pw
-		`(?i)\bgh\s+secret\s+set\b.*\s(?:-b|--body)(?:=|\s+)\S`,                                                                // gh secret set --body X
+		`(?i)basic_?auth\s*\(\s*[^,()]*,\s*` + lit,                            // SetBasicAuth("bob", "...")
+		`(?i)\bauth\s*=\s*\(\s*` + q + "[^\"'`]*" + q + `\s*,\s*` + lit,       // auth=("bob", "...")
+		`(?i)\|\s*` + q + `*` + nameRe + q + `*\s*\|\s*[^\s|]{8,}\s*(?:\||$)`, // | DB_PASSWORD | value |
+		`(?i)\bcookie["']?\s*[:=,]\s*["']?[^\s"';=]+=[^\s"';]`,                // Cookie: session=...
+		// --token X, and --password -Hunter2: a value may start with one
+		// "-" (I43-2), but not "--", which starts the next flag.
+		`(?i)--` + flagName + `(?:=|\s+)["']?-?[^\s"'-]`,
+		// An args array: ["--api-key", "..."] (I43-4).
+		`(?i)` + q + `--` + flagName + q + `\s*,\s*` + lit,
+		// A JSON or YAML flow env entry on one line, in either order
+		// (I43-3): {name: DB_PASSWORD, value: ...}.
+		`(?i)\bname["']?\s*:\s*["']?` + nameRe + `["']?\s*,\s*["']?value["']?\s*:\s*["']?[^\s"',}]`,
+		`(?i)\bvalue["']?\s*:\s*["']?[^\s"',}]+["']?\s*,\s*["']?name["']?\s*:\s*["']?` + nameRe + `\b`,
+		`(?i)\bcurl\b.*\s(?:-u|--user)(?:=|\s*)["']?[^\s:"']*:[^\s"']`,                               // curl -u user:pw
+		`(?i)\b(?:(?:docker|podman|nerdctl|helm\s+registry)\s+login|sshpass)\b.*\s-p(?:=|\s*)[^\s-]`, // docker login -p pw
+		`(?i)\bredis-cli\b.*\s-a\s+\S`,                          // redis-cli -a pw
+		`(?-i:\bhtpasswd\b.*\s-[A-Za-z]*b[A-Za-z]*\s+\S)`,       // htpasswd -b file user pw
+		`(?i)\bgh\s+secret\s+set\b.*\s(?:-b|--body)(?:=|\s+)\S`, // gh secret set --body X
 		`(?i)\bConvertTo-SecureString\b.*\bAsPlainText\b|\bAsPlainText\b.*\bConvertTo-SecureString\b`,
 	}, "|"))
 	// pendingKey is a secret name whose value is on the next line, as in
 	// JSON or YAML split across lines.
 	// A YAML block scalar indicator (password: |) or a TOML triple quote
 	// may end the line too.
-	pendingKey = regexp.MustCompile(secretName + `\s*(?:` + blockMark + `)?\s*$`)
+	pendingKey = regexp.MustCompile(secretName + `\s*(?:` + blockEnd + `)?\s*$`)
 	// nameKey is a list entry's name line whose value line follows, as in
-	// Kubernetes env: "- name: API_TOKEN", then "value: ...".
-	nameKey = regexp.MustCompile(`(?i)^\s*(?:-\s+)?["']?name["']?\s*:\s*["']?` + nameRe + `["']?\s*$`)
+	// Kubernetes env: "- name: API_TOKEN", then "value: ...", or JSON env
+	// ("name": "DB_PASSWORD", then "value": ...).
+	nameKey = regexp.MustCompile(`(?i)^\s*(?:-\s+)?["']?name["']?\s*:\s*["']?` + nameRe + `["']?\s*,?\s*$`)
+	// flagKey is a secret-named flag alone on its line, its value on the
+	// next: "- --token" in a YAML list, or "--api-key", in a JSON array
+	// (I43-4).
+	flagKey = regexp.MustCompile(`(?i)^\s*(?:-\s+)?["']?--` + flagName + `["']?\s*,?\s*$`)
 	// blockKey is a key line that opens a YAML block scalar.
-	blockKey = regexp.MustCompile(`[:=]\s*[|>][-+0-9]*\s*$`)
+	blockKey = regexp.MustCompile(`[:=]\s*(?:!\S*\s+)?[|>][-+0-9]*\s*(?:#.*)?$`)
+	// tripleKey is a key line that opens a TOML or Python triple-quoted
+	// string, whose value runs to the closing quotes.
+	tripleKey = regexp.MustCompile(`[:=]\s*("""|''')\s*$`)
 	// comment is a comment line, which may stand between a key and its
 	// value.
 	comment = regexp.MustCompile(`^\s*(?:#|//|;|<!--)`)
@@ -149,7 +173,7 @@ var (
 	ident = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$`)
 	// pairKey is a YAML, INI, or JSON key alone on its line, whose value
 	// is on the next line.
-	pairKey = regexp.MustCompile(`^\s*(?:-\s+)?["']?[\w.-]+["']?\s*(?:=>|[:=])\s*(?:` + blockMark + `)?\s*$`)
+	pairKey = regexp.MustCompile(`^\s*(?:-\s+)?["']?[\w.-]+["']?\s*(?:=>|[:=])\s*(?:` + blockEnd + `)?\s*$`)
 	// b64 is a run of base64 text (either alphabet) long enough to wrap a
 	// secret.
 	b64 = regexp.MustCompile(`[A-Za-z0-9+/_-]{24,}={0,2}`)
@@ -217,16 +241,20 @@ func hasRun(line string, n int, url bool) bool {
 // path, or a camelCase or PascalCase identifier ({item.id},
 // CancellationToken). A bare identifier is not kept after "=>" or a
 // "$"-sigiled name (Perl, PowerShell: F29-3).
-func codeValue(line, rest string, m []string, dollar bool) bool {
+//
+// f holds the facts about the whole line, worked out once per line so
+// that a line with many matches stays linear (I43-1); at is where the
+// value starts.
+func codeValue(f *lineFacts, at int, m []string, dollar bool) bool {
 	name, before, sep, after, v := m[1], m[2], m[3], m[4], m[6]
-	if envLine.MatchString(line) {
+	if f.env {
 		return false
 	}
 	tight := before == "" && after == "" && !strings.HasPrefix(v, "{")
 	if tight && (sep == "=" || strings.EqualFold(sep, "%3d")) {
 		return false
 	}
-	if pairLine.MatchString(line) || quotedArg(rest) {
+	if f.pair || f.quotedCall[at] {
 		return false
 	}
 	if call.MatchString(v) {
@@ -235,10 +263,7 @@ func codeValue(line, rest string, m []string, dollar bool) bool {
 	if !ident.MatchString(name) {
 		return false
 	}
-	t := strings.TrimSpace(line)
-	code := strings.Contains(t, ":=") || strings.HasSuffix(t, ";") || strings.HasSuffix(t, ",") ||
-		keyword.MatchString(t) || strings.ContainsAny(v[:1], "{[<(")
-	if !code {
+	if !f.code && !strings.ContainsAny(v[:1], "{[<(") {
 		return false
 	}
 	if strings.ContainsAny(v, "(){}[]<>") || dotted.MatchString(v) {
@@ -247,16 +272,40 @@ func codeValue(line, rest string, m []string, dollar bool) bool {
 	return sep != "=>" && !dollar && camel(v)
 }
 
-// quotedArg reports whether a value, from its start to the end of its
-// statement, calls something with a quoted literal among the arguments,
-// as getPass("hunter2hunter2") does (G34-1); such a call is not code to
-// keep.
-func quotedArg(rest string) bool {
-	if i := strings.IndexByte(rest, ';'); i >= 0 {
-		rest = rest[:i]
+// lineFacts is what codeValue needs to know about a whole line: an
+// env-file line, a one-pair YAML or INI line, a line that is clearly code
+// (":=", a trailing ";" or ",", a keyword), and, per byte offset, whether
+// the text from there to the end of its statement (the next ";") calls
+// something with a quoted literal among the arguments, as
+// getPass("hunter2hunter2") does (G34-1); such a call is not code to keep.
+type lineFacts struct {
+	env, pair, code bool
+	quotedCall      []bool
+}
+
+func factsOf(line string) *lineFacts {
+	t := strings.TrimSpace(line)
+	f := &lineFacts{
+		env:  envLine.MatchString(line),
+		pair: pairLine.MatchString(line),
+		code: strings.Contains(t, ":=") || strings.HasSuffix(t, ";") || strings.HasSuffix(t, ",") || keyword.MatchString(t),
+		// One pass from the end: a "(" with a quote after it, before the
+		// next ";".
+		quotedCall: make([]bool, len(line)+1),
 	}
-	i := strings.IndexByte(rest, '(')
-	return i >= 0 && strings.ContainsAny(rest[i:], "\"'`")
+	quote, found := false, false
+	for i := len(line) - 1; i >= 0; i-- {
+		switch line[i] {
+		case ';':
+			quote, found = false, false
+		case '"', '\'', '`':
+			quote = true
+		case '(':
+			found = found || quote
+		}
+		f.quotedCall[i] = found
+	}
+	return f
 }
 
 // camel reports whether v is a camelCase or PascalCase identifier.
@@ -277,12 +326,19 @@ func camel(v string) bool {
 // assigned reports whether line sets a secret name to a value that is
 // quoted or not code.
 func assigned(line string) bool {
+	var f *lineFacts
 	for _, ix := range assign.FindAllStringSubmatchIndex(line, -1) {
 		m := make([]string, len(ix)/2)
 		for i := range m {
 			m[i] = line[ix[2*i]:ix[2*i+1]]
 		}
-		if m[5] != "" || !codeValue(line, line[ix[12]:], m, ix[2] > 0 && line[ix[2]-1] == '$') {
+		if m[5] != "" {
+			return true
+		}
+		if f == nil {
+			f = factsOf(line)
+		}
+		if !codeValue(f, ix[12], m, ix[2] > 0 && line[ix[2]-1] == '$') {
 			return true
 		}
 	}
@@ -358,6 +414,10 @@ func Each(text string) (string, int) {
 	return strings.Join(out, "\n"), len(lines) - len(out)
 }
 
+// maxTriple caps the lines of a triple-quoted secret value that Lines
+// drops when its closing quotes do not come.
+const maxTriple = 200
+
 // indent is the width of l's leading spaces and tabs.
 func indent(l string) int {
 	return len(l) - len(strings.TrimLeft(l, " \t"))
@@ -378,9 +438,12 @@ func endAfter(lines []string, i int) int {
 //
 //   - every line Secret matches
 //   - the value line after a secret name that ends its line, or after a
-//     list entry's secret name ("- name: API_TOKEN", then "value: ..."),
+//     list entry's secret name ("- name: API_TOKEN", then "value: ...",
+//     or JSON env), or after a secret flag alone on its line ("- --token"),
 //     with any comment lines between them
-//   - every line of a YAML block scalar under a secret name (password: |)
+//   - every line of a YAML block scalar under a secret name (password: |),
+//     and a triple-quoted value up to its closing quotes (at most
+//     maxTriple lines)
 //   - a private key: from a BEGIN line (the marker anywhere on the line)
 //     to the next END line in text; with no END, the BEGIN line and the
 //     key lines after it, which may carry a short prefix such as "> ",
@@ -397,8 +460,18 @@ func Lines(text string) (string, int) {
 	inKey, pending, pair := false, false, false
 	skip := -1  // lines up to skip are already dropped as one block
 	block := -1 // the indent of a secret key opening a YAML block scalar
+	// triple is the closing quotes of a triple-quoted secret value, and
+	// left how many more of its lines are dropped at most.
+	triple, left := "", 0
 	for i, l := range lines {
 		if i <= skip {
+			continue
+		}
+		if triple != "" {
+			drop[i] = true
+			if left--; strings.Contains(l, triple) || left == 0 {
+				triple = ""
+			}
 			continue
 		}
 		blank := strings.TrimSpace(l) == ""
@@ -455,12 +528,17 @@ func Lines(text string) (string, int) {
 			drop[i] = Secret(l)
 		}
 		if !blank || !pending {
-			key := !drop[i] && hinted(l)
-			named := key && nameKey.MatchString(l)
+			// A key line that is itself dropped (api_key: !!binary |) still
+			// makes its value go.
+			key := hinted(l)
+			named := key && (nameKey.MatchString(l) || flagKey.MatchString(l))
 			pending = key && (named || pendingKey.MatchString(l))
 			pair = pending && (named || pairKey.MatchString(l))
 			if pending && !named && blockKey.MatchString(l) {
 				block, pending = indent(l), false
+			}
+			if m := tripleKey.FindStringSubmatch(l); pending && !named && m != nil {
+				triple, left, pending = m[1], maxTriple, false
 			}
 		}
 	}
