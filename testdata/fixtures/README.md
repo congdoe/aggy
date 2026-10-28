@@ -10,7 +10,7 @@ Real CLI outputs captured with `aggy dev capture` and cleaned with `aggy dev scr
 aggy dev capture codex --i-know-this-runs-the-real-cli --name image-two -- exec --json --sandbox read-only -- "draw a cat"
 ```
 
-It runs the CLI through the probe runner (no stdin, a scrubbed environment, a fresh temp working dir, a time limit) and writes `testdata/fixtures/<vendor>/<name>/`. `--name` resolves against the repo root, and `--out` must also be under `testdata/fixtures`. Neither `testdata` nor `testdata/fixtures` may be a symlink.
+It runs the CLI through the process runner, `internal/execrun` (no stdin, a scrubbed environment, a fresh temp working dir, a time limit) and writes `testdata/fixtures/<vendor>/<name>/`. `--name` resolves against the repo root, and `--out` must also be under `testdata/fixtures`. Neither `testdata` nor `testdata/fixtures` may be a symlink.
 
 | File | Holds |
 | --- | --- |

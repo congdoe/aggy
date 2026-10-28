@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/fakecli"
 	"github.com/congdoe/aggy/internal/store"
 )
@@ -35,7 +36,7 @@ func setup(t *testing.T) fixture {
 	return fixture{fakes: fakecli.Build(t), record: filepath.Join(t.TempDir(), "rec.jsonl"), store: s}
 }
 
-// runner is the real ExecRunner with the fake's scenario and record file
+// runner is the real execrun.ExecRunner with the fake's scenario and record file
 // passed through the scrubbed environment.
 func (f fixture) runner(t *testing.T, scenario string, timeout time.Duration) adapter.Runner {
 	t.Helper()
@@ -43,7 +44,7 @@ func (f fixture) runner(t *testing.T, scenario string, timeout time.Duration) ad
 	if scenario != "" {
 		extra = append(extra, fakecli.EnvScenario+"="+fakecli.WriteScenario(t, scenario))
 	}
-	real := ExecRunner(timeout)
+	real := execrun.ExecRunner(timeout)
 	return func(ctx context.Context, c adapter.Command) (adapter.Output, error) {
 		c.Env = append(c.Env, extra...)
 		return real(ctx, c)
@@ -156,11 +157,11 @@ func TestProbeDegrades(t *testing.T) {
 		if c.Args[0] == "--version" {
 			return adapter.Output{Stdout: []byte("grok 2.0.0")}, nil
 		}
-		return adapter.Output{}, ErrTimeout
+		return adapter.Output{}, execrun.ErrTimeout
 	}
 	pr.Run = timeout
 	p, _, err = pr.Probe(ctx, adapter.Grok, "/x/grok")
-	if !errors.Is(err, ErrTimeout) || p.Version != "2.0.0" || len(p.Capabilities) != 0 {
+	if !errors.Is(err, execrun.ErrTimeout) || p.Version != "2.0.0" || len(p.Capabilities) != 0 {
 		t.Errorf("timeout = %+v, %v", p, err)
 	}
 	if _, err := f.store.LatestProbe(ctx, "grok", "/x/grok", "2.0.0"); !errors.Is(err, store.ErrNotFound) {

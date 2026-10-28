@@ -1,8 +1,9 @@
-package probe
+package execrun
 
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -11,6 +12,36 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/fakecli"
 )
+
+type fixture struct {
+	fakes  fakecli.Fakes
+	record string
+}
+
+func setup(t *testing.T) fixture {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	// The runner passes these to the CLI: never let a real one through.
+	for _, v := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME"} {
+		t.Setenv(v, "")
+	}
+	return fixture{fakes: fakecli.Build(t), record: filepath.Join(t.TempDir(), "rec.jsonl")}
+}
+
+// runner is ExecRunner with the fake's scenario and record file passed
+// through the scrubbed environment.
+func (f fixture) runner(t *testing.T, scenario string, timeout time.Duration) adapter.Runner {
+	t.Helper()
+	extra := []string{fakecli.EnvRecord + "=" + f.record}
+	if scenario != "" {
+		extra = append(extra, fakecli.EnvScenario+"="+fakecli.WriteScenario(t, scenario))
+	}
+	real := ExecRunner(timeout)
+	return func(ctx context.Context, c adapter.Command) (adapter.Output, error) {
+		c.Env = append(c.Env, extra...)
+		return real(ctx, c)
+	}
+}
 
 func TestRunnerScrubsEnvAndStdin(t *testing.T) {
 	f := setup(t)

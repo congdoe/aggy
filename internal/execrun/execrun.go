@@ -1,4 +1,15 @@
-package probe
+// Package execrun is the runner that starts vendor CLI processes for
+// probes and maintainer captures: ExecRunner runs one absolute CLI path
+// with no stdin, a scrubbed environment (see Env), a private working
+// directory, capped output, and a time limit.
+//
+// It is the only process-starting code outside internal/supervisor and
+// internal/borrow, and it is its own package so lint can keep it out of
+// the adapters: depguard denies importing it under internal/adapter, and
+// allows it only in internal/cli, internal/devfix, and tests, so no other
+// package can re-export it to them. Adapters build commands and run them
+// only through the adapter.Runner their caller passes.
+package execrun
 
 import (
 	"bytes"
@@ -17,7 +28,7 @@ import (
 )
 
 // ErrTimeout matches a run the runner killed at its time limit.
-var ErrTimeout = errors.New("probe: command timed out")
+var ErrTimeout = errors.New("execrun: command timed out")
 
 // MaxOutput caps each of stdout and stderr; the rest is dropped.
 const MaxOutput = 1 << 20
@@ -78,10 +89,10 @@ func Env(base, extra []string) ([]string, error) {
 	for _, kv := range extra {
 		k, _, ok := strings.Cut(kv, "=")
 		if !ok || k == "" {
-			return nil, fmt.Errorf("probe: bad environment entry %q", kv)
+			return nil, fmt.Errorf("execrun: bad environment entry %q", kv)
 		}
 		if !extraKey.MatchString(k) {
-			return nil, fmt.Errorf("probe: refusing to pass %s to a vendor CLI (only AGGY_* variables may be added)", k)
+			return nil, fmt.Errorf("execrun: refusing to pass %s to a vendor CLI (only AGGY_* variables may be added)", k)
 		}
 		env = append(env, kv)
 	}
@@ -108,10 +119,10 @@ func contains(list []string, s string) bool {
 func ExecRunner(timeout time.Duration) adapter.Runner {
 	return func(ctx context.Context, c adapter.Command) (adapter.Output, error) {
 		if !filepath.IsAbs(c.Path) || filepath.Clean(c.Path) != c.Path {
-			return adapter.Output{}, fmt.Errorf("probe: %q is not a clean absolute path", c.Path)
+			return adapter.Output{}, fmt.Errorf("execrun: %q is not a clean absolute path", c.Path)
 		}
 		if c.Stdin != adapter.StdinNull {
-			return adapter.Output{}, errors.New("probe: the runner gives commands no stdin")
+			return adapter.Output{}, errors.New("execrun: the runner gives commands no stdin")
 		}
 		if err := safefs.Check(c.Path); err != nil {
 			return adapter.Output{}, err
@@ -172,22 +183,4 @@ func (c *capped) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
-}
-
-// LookPath finds the vendor binary name on aggy's PATH, using only its
-// absolute entries (see cleanPath), and returns a clean absolute path for
-// ExecRunner. It starts nothing.
-func LookPath(name string) (string, error) {
-	if name == "" || strings.ContainsRune(name, filepath.Separator) {
-		return "", fmt.Errorf("probe: %q is not a bare program name", name)
-	}
-	for _, dir := range filepath.SplitList(cleanPath(os.Getenv("PATH"))) {
-		p := filepath.Join(dir, name)
-		fi, err := safefs.Stat(p)
-		if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
-			continue
-		}
-		return filepath.Clean(p), nil
-	}
-	return "", fmt.Errorf("probe: %s: %w", name, exec.ErrNotFound)
 }

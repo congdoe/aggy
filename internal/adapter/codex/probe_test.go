@@ -6,13 +6,14 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/fakecli"
 	"github.com/congdoe/aggy/internal/probe"
 )
 
 func TestProbeFake(t *testing.T) {
 	h := fakecli.NewHarness(t, fakecli.Build(t))
-	p, err := Adapter{Path: h.Fakes.Codex}.Probe(context.Background(), probe.ExecRunner(10*time.Second))
+	p, err := Adapter{Path: h.Fakes.Codex}.Probe(context.Background(), execrun.ExecRunner(10*time.Second))
 	if err != nil || p.Vendor != adapter.Codex || p.Version != "0.164.0" || !probe.Has(p, probe.CapResume) || p.Connected {
 		t.Errorf("Probe = %+v, %v", p, err)
 	}

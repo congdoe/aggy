@@ -12,6 +12,8 @@ aggy is a Go CLI that runs the official Claude Code, Codex, and Grok Build CLIs 
 - `internal/cli`: argument parsing and command dispatch.
 - `internal/adapter`: the vendor `Adapter` interface. `claude/`, `codex/`, `grok/` are stubs today, not implementations.
 - `internal/supervisor`, `hook`, `brief`, `borrow`, `router`, `parity`: stubs today, holding only their package docs. In order: the pseudo-terminal pass-through and switches; `aggy hook <event>`, which forwards vendor hook JSON over a local socket; the handoff brief; headless borrows (isolation, budgets, artifacts, inbox); vendor choice per borrow kind; and rendering shared config into each CLI.
+- `internal/probe`: probe specs, version and help parsing, the probe cache, and `LookPath`. It starts nothing.
+- `internal/execrun`: the only runner that starts vendor CLI processes (no stdin, a scrubbed `AGGY_*`-only env addition, a time limit). Only `internal/cli`, `internal/devfix`, and tests may import it.
 - `internal/patch`: guarded, reversible config changes recorded for `aggy unwire`.
 - `internal/safefs`: the only file I/O layer; refuses vendor credential files by path and file identity.
 - `internal/store`: the SQLite index at `~/.aggy/aggy.db` and its migrations; the only package that may call `sql.Open`.
@@ -23,7 +25,7 @@ aggy is a Go CLI that runs the official Claude Code, Codex, and Grok Build CLIs 
 
 ## Hard rules
 
-- **Never read, copy, or store vendor credentials.** All file I/O goes through `internal/safefs`. Lint bans the main file-system entry points (`os`, `io/ioutil`, `io/fs`, `filepath` walks, `syscall` opens) outside `internal/safefs` and test files, and `sql.Open` outside `internal/store`. A `nolint` comment must name the linter and give a reason. Process launches and other packages that open files are covered by review, not lint. Tests set `HOME` to a temp dir.
+- **Never read, copy, or store vendor credentials.** All file I/O goes through `internal/safefs`. Lint bans the main file-system entry points (`os`, `io/ioutil`, `io/fs`, `filepath` walks, `syscall` opens) outside `internal/safefs` and test files, and `sql.Open` outside `internal/store`. A `nolint` comment must name the linter and give a reason. Processes start only in `internal/execrun` (and the planned supervisor and borrow runner): lint bans `os/exec` elsewhere and keeps `internal/execrun` out of adapters, which run commands only through the `Runner` their caller passes. Other packages that open files are covered by review, not lint. Tests set `HOME` to a temp dir.
 - **No telemetry, no model requests, no vendor API calls, no proxy.** Only the vendor CLIs talk to their vendors. Never set `*_BASE_URL` or API-key variables.
 - **Every config change goes through `internal/patch`** and must be undoable with `aggy unwire`.
 
