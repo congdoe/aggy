@@ -26,8 +26,8 @@ jobs:
       - run: go build ./...
 
   lint:
-    # Lint each target OS: files with a darwin or linux build tag are only
-    # type-checked, and so only linted, for that GOOS,
+    # Lint each target OS: files with a darwin, linux, unix, or !unix build
+    # tag are only type-checked, and so only linted, for that GOOS,
     # and each architecture, since files can carry an arch build tag.
     # Keep the targets in step with the lint target in the Makefile.
     strategy:
@@ -37,6 +37,7 @@ jobs:
           - { goos: darwin, goarch: amd64 }
           - { goos: linux, goarch: amd64 }
           - { goos: linux, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
     runs-on: ubuntu-latest
     env:
       GOOS: ${{ matrix.goos }}

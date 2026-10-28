@@ -26,13 +26,14 @@ lint: nocgo noasm
 	GOOS=darwin GOARCH=amd64 $(GOLANGCI_LINT) run ./...
 	GOOS=linux GOARCH=amd64 $(GOLANGCI_LINT) run ./...
 	GOOS=linux GOARCH=arm64 $(GOLANGCI_LINT) run ./...
+	GOOS=windows GOARCH=amd64 $(GOLANGCI_LINT) run ./...
 
 # cgo reaches the disk and processes around every lint ban, and lint
 # cannot see a cgo file when it cross-compiles. go list, with cgo on,
 # names every package's cgo files for each OS; any is a failure. Test
 # files are not part of CgoFiles.
 nocgo:
-	@for os in darwin linux; do \
+	@for os in darwin linux windows; do \
 		out=$$(CGO_ENABLED=1 GOOS=$$os go list -f '{{if .CgoFiles}}{{.ImportPath}} {{.CgoFiles}}{{end}}' ./...) || exit 1; \
 		if [ -n "$$out" ]; then echo "cgo is banned ($$os): $$out"; exit 1; fi; \
 	done

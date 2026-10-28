@@ -13,8 +13,6 @@ import (
 
 var (
 	pngBytes = []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
-	jpgBytes = []byte("\xff\xd8\xff\xe0\x00\x10JFIF\x00")
-	mp4Bytes = []byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00")
 )
 
 func TestMediaValidate(t *testing.T) {
