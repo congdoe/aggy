@@ -52,6 +52,7 @@ type checkEnv struct {
 	in       io.Reader // the person's answers
 	tty      bool      // in is a terminal
 	home     string    // HOME, to show paths as ~
+	environ  []string  // aggy's environment; only names are ever reported
 	now      func() time.Time
 }
 
@@ -64,6 +65,7 @@ func defaultCheckEnv() checkEnv {
 		in:       os.Stdin,
 		tty:      isTerminal(os.Stdin),
 		home:     os.Getenv("HOME"),
+		environ:  os.Environ(),
 		now:      time.Now,
 	}
 }
@@ -131,7 +133,8 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = s.Close() }()
 
-	st := &setupRun{env: env, ask: env.tty && !*yes, in: bufio.NewReader(env.in), out: stdout, store: s}
+	st := &setupRun{env: env, ask: env.tty && !*yes, in: bufio.NewReader(env.in), out: stdout, store: s,
+		findings: checkup.APIKeyEnv(env.environ)}
 	if st.ask {
 		fmt.Fprintln(stdout, "aggy setup checks each vendor CLI in turn. Answer n to skip one; run aggy setup again any time.")
 	}
@@ -158,6 +161,9 @@ type setupRun struct {
 	out   io.Writer
 	store *store.Store
 	err   error
+	// findings are the environment and config checks, shown with the
+	// vendor they concern.
+	findings []checkup.Finding
 }
 
 // answer prints prompt and reads one line, lower-cased and trimmed. ok
@@ -190,6 +196,9 @@ func (r *setupRun) vendor(ctx context.Context, a adapter.Adapter) (code int, sto
 	}
 	res := checkup.CheckVendor(ctx, a, r.env.run)
 	r.printVendor(res)
+	for _, f := range checkup.ForVendor(r.findings, v) {
+		fmt.Fprintf(r.out, "  %s: %s\n", f.Level, termsafe.Field(f.Message))
+	}
 	steps := a.SignIn().Steps
 	switch {
 	case !res.Installed:
