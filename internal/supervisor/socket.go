@@ -139,9 +139,16 @@ func (s *Server) SetRoot(pid int) {
 	})
 }
 
-// inLineage reports whether pid descends from the root, waiting up to
-// rootWait for SetRoot.
-func (s *Server) inLineage(pid int) bool {
+// fromSession reports whether the process that opened c, at pid, is in
+// the CLI's tree (lineage.go): it pins that process, waits up to
+// rootWait for SetRoot, walks pid's parents, and checks the pinned
+// process still has pid.
+func (s *Server) fromSession(c *net.UnixConn, pid int) bool {
+	same, release, err := peerInstance(c, pid)
+	if err != nil {
+		return false
+	}
+	defer release()
 	select {
 	case <-s.rootSet:
 	case <-s.done:
@@ -149,7 +156,7 @@ func (s *Server) inLineage(pid int) bool {
 	case <-time.After(rootWait):
 		return false
 	}
-	return descends(pid, s.root)
+	return descends(pid, s.root) && same()
 }
 
 // privateDir makes dir a 0700 directory owned by aggy's uid: it creates
@@ -348,21 +355,15 @@ func (s *Server) accept() {
 
 // serve answers c's requests until it closes, idles, or errs. A peer of
 // another uid is closed at once, unanswered. Whether the peer is in the
-// CLI's lineage is worked out once, when a request first needs it.
+// CLI's lineage is worked out once, now, before any request is read, and
+// a peer that is not is closed after its first request (lineage.go).
 func (s *Server) serve(c *net.UnixConn) {
 	defer func() { _ = c.Close() }()
 	uid, peerPID, err := s.peer(c)
 	if err != nil || uid != os.Getuid() {
 		return
 	}
-	var lineage *bool
-	fromSession := func() bool {
-		if lineage == nil {
-			v := s.inLineage(peerPID)
-			lineage = &v
-		}
-		return *lineage
-	}
+	from := s.fromSession(c, peerPID)
 	r := bufio.NewReaderSize(c, MaxMessage+1)
 	for {
 		_ = c.SetDeadline(time.Now().Add(connIdle))
@@ -374,9 +375,9 @@ func (s *Server) serve(c *net.UnixConn) {
 		if err != nil {
 			return // closed, idle, or a last line without a newline
 		}
-		resp := answer(line[:len(line)-1], fromSession, s.onHook)
+		resp := answer(line[:len(line)-1], from, s.onHook)
 		reply(c, resp)
-		if !resp.OK {
+		if !resp.OK || !from {
 			return
 		}
 	}

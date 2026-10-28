@@ -17,3 +17,8 @@ func peerCredOf(*net.UnixConn) (uid, pid int, err error) {
 func parentPIDOf(int) (int, error) {
 	return -1, errors.New("supervisor: process parents are not supported on this OS")
 }
+
+// peerInstanceOf fails closed: no peer is in the lineage.
+func peerInstanceOf(*net.UnixConn, int) (same func() bool, release func(), err error) {
+	return nil, nil, errors.New("supervisor: process identity is not supported on this OS")
+}

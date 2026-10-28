@@ -38,14 +38,45 @@ func peerCredOf(c *net.UnixConn) (uid, pid int, err error) {
 	return uid, pid, cerr
 }
 
-// parentPIDOf reads pid's parent with sysctl kern.proc.pid, without cgo.
-func parentPIDOf(pid int) (int, error) {
+// kinfo reads pid's process entry with sysctl kern.proc.pid, without cgo.
+func kinfo(pid int) (*unix.KinfoProc, error) {
 	k, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil {
+		return nil, err
+	}
+	if int(k.Proc.P_pid) != pid {
+		return nil, fmt.Errorf("supervisor: sysctl answered for pid %d, not %d", k.Proc.P_pid, pid)
+	}
+	return k, nil
+}
+
+// parentPIDOf reads pid's parent.
+func parentPIDOf(pid int) (int, error) {
+	k, err := kinfo(pid)
 	if err != nil {
 		return -1, err
 	}
-	if int(k.Proc.P_pid) != pid {
-		return -1, fmt.Errorf("supervisor: sysctl answered for pid %d, not %d", k.Proc.P_pid, pid)
-	}
 	return int(k.Eproc.Ppid), nil
+}
+
+// peerInstanceOf pins the process at pid by its start time, read now (at
+// accept): same reports whether pid still names that process, so a pid
+// reused later, by any process, does not count.
+//
+// shortcut: darwin has no pidfd, and its audit token (LOCAL_PEERTOKEN)
+// needs a raw getsockopt aggy has no call for; a pid freed and reused
+// between the peer's connect and this read (microseconds) is not caught.
+func peerInstanceOf(_ *net.UnixConn, pid int) (same func() bool, release func(), err error) {
+	start := func() (int64, error) {
+		k, err := kinfo(pid)
+		if err != nil {
+			return 0, err
+		}
+		return k.Proc.P_starttime.Nano(), nil
+	}
+	t0, err := start()
+	if err != nil {
+		return nil, nil, err
+	}
+	return func() bool { t, err := start(); return err == nil && t == t0 }, func() {}, nil
 }
