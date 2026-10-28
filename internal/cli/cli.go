@@ -70,6 +70,7 @@ Commands:
             what aggy's own borrows used
   unwire    Undo the config changes aggy made to other tools
   skill     Link aggy's skill into each vendor CLI, or unlink it
+  tool      List managed tools, or add or remove your own definitions
   hooks     Install the vendor hooks aggy listens to, or show them
   memory    Import Claude's memory into the shared .aggy/memory.md
   policy    Wire aggy's safety policy into Codex (Claude and Grok get it per launch)
@@ -145,6 +146,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runUnwire(args[1:], stdout, stderr)
 	case "skill":
 		return runSkill(args[1:], stdout, stderr)
+	case "tool":
+		return runTool(args[1:], stdout, stderr)
 	case "hooks":
 		return runHooks(args[1:], stdout, stderr)
 	case "memory":

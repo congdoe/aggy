@@ -1,0 +1,22 @@
+# Headroom MCP: compresses a blob the agent already holds; the original
+# stays local and can be retrieved (headroom_compress, headroom_retrieve,
+# headroom_stats, per the aggy proposal). Never headroom wrap or its
+# proxy. The homepage and the server command are not in the proposal or
+# docs/verification.md: the command below is a placeholder, unverified
+# until T6713 checks it at a pinned version.
+name = "headroom"
+description = "Compresses a large blob the agent holds; originals stay local and can be retrieved"
+version = "unpinned" # TODO(T6713): pin the version aggy installs
+default = false
+scope = "global"
+unverified = ["version", "homepage", "install", "mcp"]
+
+[install]
+check = ["headroom", "--version"]
+
+[mcp]
+vendors = ["claude", "codex", "grok"]
+argv = ["headroom", "mcp"]
+
+[cost]
+method = "mcp-schema"
