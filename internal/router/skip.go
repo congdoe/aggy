@@ -68,9 +68,9 @@ const (
 // is an error: the router never guesses that a repo allows a vendor.
 //
 // A limit only a hook reported (Limit.Hint) never leaves the list empty:
-// when every vendor would be skipped, those vendors are kept, each with a
-// warning.
-func (r *Router) skips(ctx context.Context, req Request, _ adapter.Kind, list []adapter.Vendor) (skip, notes map[adapter.Vendor]string, warnings []string, err error) {
+// when every vendor would be skipped or refuses the kind (Refusal), or
+// req.IgnoreHints is set, those vendors are kept, each with a warning.
+func (r *Router) skips(ctx context.Context, req Request, k adapter.Kind, list []adapter.Vendor) (skip, notes map[adapter.Vendor]string, warnings []string, err error) {
 	status, err := r.statuses(ctx)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("read vendor status: %w", err)
@@ -135,14 +135,14 @@ func (r *Router) skips(ctx context.Context, req Request, _ adapter.Kind, list []
 	}
 	kept := 0
 	for _, v := range list {
-		if _, ok := skip[v]; !ok {
+		if _, ok := skip[v]; !ok && Refusal(k, v) == nil {
 			kept++
 		}
 	}
-	if kept == 0 {
+	if kept == 0 || req.IgnoreHints {
 		for _, v := range hinted {
 			delete(skip, v)
-			warnings = append(warnings, fmt.Sprintf("%s: a hook reported its limit, which aggy cannot confirm; no other vendor is left, so trying it anyway", v))
+			warnings = append(warnings, fmt.Sprintf("%s: a hook reported its limit, which aggy cannot confirm; no other vendor can run this, so trying it anyway", v))
 		}
 	}
 	return skip, notes, warnings, nil

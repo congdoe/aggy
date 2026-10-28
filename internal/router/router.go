@@ -28,6 +28,10 @@ type Request struct {
 	// Override is the --vendor flag: it replaces the routing list for
 	// this one borrow. The skip rules still apply to it.
 	Override adapter.Vendor
+	// IgnoreHints keeps every vendor whose only limit is a hook's hint,
+	// each with a warning: the borrow asks again with it when no
+	// candidate could start.
+	IgnoreHints bool
 }
 
 // NotAuthorOrder is the order a "not-author" review route walks. The
