@@ -19,7 +19,10 @@ Usage:
 Commands:
   borrow    Run one bounded task headless in another vendor's CLI
   inbox     List unread borrow reports, or show one
-  run       Start a vendor CLI (claude, codex, or grok) under aggy
+  run       Start a vendor CLI (claude, codex, or grok) under aggy; with
+            --direct, on your terminal without aggy's pass-through (for
+            when it breaks a terminal feature; no switch key), still
+            kept in the index through hooks. aggy --direct V is the same.
   setup     Check each vendor CLI's install, version, and sign-in
   doctor    Check the vendor CLIs, API-key and proxy settings, and config drift
   log       Show harnesses, models, switches, borrows, and files changed
@@ -51,6 +54,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runHook(args[1:], stdout, stderr)
 	case "run":
 		return runRun(args[1:], stdout, stderr)
+	case "--direct":
+		return runRun(args, stdout, stderr)
 	case "setup":
 		return runSetup(args[1:], stdout, stderr)
 	case "doctor":
