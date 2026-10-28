@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"strconv"
+	"syscall"
 )
 
 // Peer-pid lineage (D20-7, D23-8). Every process the CLI starts inherits
@@ -73,6 +74,10 @@ func descends(pid, root int) bool {
 	}
 	return false
 }
+
+// pidfdFallback reports whether a failed SO_PEERPIDFD may fall back to
+// the start-time check: only when the kernel lacks the option.
+func pidfdFallback(err error) bool { return errors.Is(err, syscall.ENOPROTOOPT) }
 
 // parseStat reads the parent pid (field 4) and start time (field 22, in
 // clock ticks since boot) from a Linux /proc/<pid>/stat line (proc(5)).

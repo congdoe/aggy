@@ -5,12 +5,15 @@ package supervisor
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -571,5 +574,23 @@ func TestFromSessionNotOnTheWire(t *testing.T) {
 	r := ask(t, s, `{"type":"hook-event","vendor":"codex","event":"Stop","payload":{},"FromSession":true}`+"\n")
 	if !strings.Contains(r, "unknown field") {
 		t.Errorf("reply %q, want an unknown-field error", r)
+	}
+}
+
+func TestPidfdFallback(t *testing.T) {
+	tests := []struct {
+		err  error
+		want bool
+	}{
+		{syscall.ENOPROTOOPT, true},
+		{fmt.Errorf("getsockopt: %w", syscall.ENOPROTOOPT), true},
+		{syscall.EINVAL, false},
+		{syscall.EBADF, false},
+		{errors.New("other"), false},
+	}
+	for _, tt := range tests {
+		if got := pidfdFallback(tt.err); got != tt.want {
+			t.Errorf("pidfdFallback(%v) = %v", tt.err, got)
+		}
 	}
 }

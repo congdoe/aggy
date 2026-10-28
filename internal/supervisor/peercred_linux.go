@@ -4,9 +4,9 @@ package supervisor
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
-	"runtime"
 	"strconv"
 
 	"golang.org/x/sys/unix"
@@ -57,23 +57,24 @@ func parentPIDOf(pid int) (int, error) {
 	return ppid, err
 }
 
-// soPeerPidfd is SO_PEERPIDFD (Linux 6.5, include/uapi/asm-generic/
-// socket.h), which x/sys v0.49 does not name. Its value is 77 where the
-// generic socket options apply, amd64 and arm64 among them.
-const soPeerPidfd = 77
-
 // peerInstanceOf pins the process that connected. With SO_PEERPIDFD the
 // kernel hands over a pidfd for that very process, taken at connect, and
 // same reports whether it still has pid (a pidfd's fdinfo shows -1 once
-// it has exited), so no reuse of the pid counts. Without it (an older
-// kernel), the process at pid is pinned by its start time, read now.
+// it has exited), so no reuse of the pid counts. Only a kernel without
+// the option (ENOPROTOOPT, before 6.5) falls back to pinning the process
+// at pid by its start time, read now; any other error, such as EINVAL
+// for a peer that has exited (6.5 to 6.14), is no identity (G38-7).
 //
 // shortcut: on that fallback, a pid freed and reused between the peer's
 // connect and this read (microseconds) is not caught.
 func peerInstanceOf(c *net.UnixConn, pid int) (same func() bool, release func(), err error) {
-	if pfd, ok := peerPidfd(c); ok {
+	pfd, err := peerPidfd(c)
+	switch {
+	case err == nil:
 		fdinfo := "/proc/self/fdinfo/" + strconv.Itoa(pfd)
 		return func() bool { return fdinfoPid(fdinfo) == pid }, func() { _ = unix.Close(pfd) }, nil
+	case !pidfdFallback(err):
+		return nil, nil, err
 	}
 	start := func() (uint64, error) {
 		b, err := readStat(strconv.Itoa(pid))
@@ -90,22 +91,25 @@ func peerInstanceOf(c *net.UnixConn, pid int) (same func() bool, release func(),
 	return func() bool { t, err := start(); return err == nil && t == t0 }, func() {}, nil
 }
 
-// peerPidfd asks for the peer's pidfd, where the kernel has SO_PEERPIDFD.
-func peerPidfd(c *net.UnixConn) (int, bool) {
-	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
-		return -1, false
-	}
+// getPeerPidfd is getsockopt SO_PEERPIDFD on a socket; tests replace it.
+var getPeerPidfd = func(fd int) (int, error) {
+	return unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_PEERPIDFD)
+}
+
+// peerPidfd asks for the peer's pidfd (SO_PEERPIDFD, Linux 6.5).
+func peerPidfd(c *net.UnixConn) (int, error) {
 	raw, err := c.SyscallConn()
 	if err != nil {
-		return -1, false
+		return -1, err
 	}
 	pfd, gerr := -1, error(nil)
-	if err := raw.Control(func(fd uintptr) {
-		pfd, gerr = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, soPeerPidfd)
-	}); err != nil || gerr != nil || pfd < 0 {
-		return -1, false
+	if err := raw.Control(func(fd uintptr) { pfd, gerr = getPeerPidfd(int(fd)) }); err != nil {
+		return -1, err
 	}
-	return pfd, true
+	if gerr == nil && pfd < 0 {
+		gerr = errors.New("supervisor: no pidfd")
+	}
+	return pfd, gerr
 }
 
 // fdinfoPid reads the Pid: line of a pidfd's fdinfo, or -1.
