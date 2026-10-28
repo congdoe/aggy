@@ -35,6 +35,9 @@ type RepoConfig struct {
 	AllowedVendors []adapter.Vendor `toml:"allowed_vendors"`
 	// Check lists the commands aggy check runs, in order.
 	Check []Command `toml:"check"`
+	// CheckMinutes is each check command's time limit; zero means
+	// DefaultCheckMinutes.
+	CheckMinutes int `toml:"check_minutes"`
 	// Worktree configures new git worktrees for edit borrows.
 	Worktree Worktree `toml:"worktree"`
 }
@@ -47,6 +50,16 @@ type Worktree struct {
 	// Setup runs in a new worktree after the copy. Empty means none.
 	Setup Command `toml:"setup"`
 }
+
+// Limits on the check commands a repo config may hold. The config comes
+// with a clone, so it is untrusted input.
+const (
+	DefaultCheckMinutes = 10
+	MaxCheckMinutes     = 120
+	maxChecks           = 20
+	maxCheckArgs        = 64
+	maxCheckArg         = 4096
+)
 
 // RepoPath returns the repo config path for the repo at root.
 func RepoPath(root string) string { return filepath.Join(root, RepoDir, FileName) }
@@ -103,10 +116,16 @@ func (rc RepoConfig) Validate() error {
 		}
 		seen[v] = true
 	}
+	if len(rc.Check) > maxChecks {
+		return fmt.Errorf("check: at most %d commands", maxChecks)
+	}
 	for i, c := range rc.Check {
-		if len(c) == 0 || c[0] == "" {
-			return fmt.Errorf("check[%d]: want a program and its arguments", i)
+		if err := checkCommand(c); err != nil {
+			return fmt.Errorf("check[%d]: %w", i, err)
 		}
+	}
+	if rc.CheckMinutes < 0 || rc.CheckMinutes > MaxCheckMinutes {
+		return fmt.Errorf("check_minutes: want 1 to %d, got %d", MaxCheckMinutes, rc.CheckMinutes)
 	}
 	if len(rc.Worktree.Setup) > 0 && rc.Worktree.Setup[0] == "" {
 		return errors.New("worktree.setup: the program is empty")
@@ -115,6 +134,39 @@ func (rc RepoConfig) Validate() error {
 		if err := checkRepoPath(p); err != nil {
 			return fmt.Errorf("worktree.copy: %w", err)
 		}
+	}
+	return nil
+}
+
+// checkCommand accepts a program and its arguments: the program a bare
+// name looked up on PATH, or ./ and a clean path inside the repo; at most
+// maxCheckArgs arguments of at most maxCheckArg bytes, with no control or
+// format characters.
+func checkCommand(c Command) error {
+	if len(c) == 0 || c[0] == "" {
+		return errors.New("want a program and its arguments")
+	}
+	if len(c) > maxCheckArgs {
+		return fmt.Errorf("at most %d arguments", maxCheckArgs)
+	}
+	for _, a := range c {
+		if len(a) > maxCheckArg {
+			return fmt.Errorf("an argument is over %d bytes", maxCheckArg)
+		}
+		for _, r := range a {
+			if unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) {
+				return fmt.Errorf("%q holds a control or format character", a)
+			}
+		}
+	}
+	if rel, ok := strings.CutPrefix(c[0], "./"); ok {
+		if err := checkRepoPath(rel); err != nil {
+			return fmt.Errorf("program: %w", err)
+		}
+		return nil
+	}
+	if strings.Contains(c[0], "/") || c[0] == "." || c[0] == ".." {
+		return fmt.Errorf("program %q: want a bare name found on PATH, or ./ and a path inside the repo", c[0])
 	}
 	return nil
 }
