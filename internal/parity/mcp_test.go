@@ -64,8 +64,8 @@ func TestClaudeServer(t *testing.T) {
 		"https://mcp.example.com/s/kqzvtwmrjxhplbnaqzvt",
 		"https://abcd1234efgh.mcp.example.com/mcp",
 		"https://kqzvtwmrjxhplbn.mcp.example.com/mcp",
-		// I43-11: 15 digits, and short base64.
-		"https://mcp.example.com/s/123456789012345/mcp",
+		// I43-11: 15 digits in a host name, and short base64.
+		"https://123456789012345.mcp.example.com/mcp",
 		"https://mcp.example.com/s/QUJDREVGR0g/mcp",
 	} {
 		cases = append(cases, struct {
@@ -97,6 +97,12 @@ func TestClaudeServer(t *testing.T) {
 		"https://gitmcp.io/modelcontextprotocol/typescript-sdk",
 		"https://gitmcp.io/congdoe/aggy",
 		"https://gitmcp.io/docs",
+		// N55-6: acronyms with a digit, and AWS account and GCP project
+		// numbers in a path.
+		"https://mcp.example.com/OPENAPI3/mcp",
+		"https://mcp.example.com/mcp/GITHUB2",
+		"https://mcp.example.com/aws/123456789012/mcp",
+		"https://mcp.example.com/projects/123456789012/mcp",
 	} {
 		name := fmt.Sprintf("public%d", i)
 		cases = append(cases, struct {

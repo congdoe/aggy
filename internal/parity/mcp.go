@@ -276,10 +276,10 @@ func checkURL(raw string) string {
 			return "its url has a host name part that looks like a key"
 		}
 	}
-	if mixedRun(u.Hostname()) || oddRun(u.Hostname()) {
+	if mixedRun(u.Hostname()) || oddRun(u.Hostname(), 12) {
 		return "its url has a host name part that looks like a key"
 	}
-	if oddRun(u.EscapedPath()) {
+	if oddRun(u.EscapedPath(), 16) {
 		return "its url has path text that looks like a key"
 	}
 	for _, seg := range strings.Split(u.EscapedPath(), "/") {
@@ -316,15 +316,18 @@ func mixedRun(s string) bool {
 }
 
 // oddRun reports whether s holds key-like text the other checks miss
-// (I43-7): 12 or more digits in a row (I43-11); 4 or more digits with
-// letters right before and after (abcd1234efgh); 10 or more letters in a
-// row of which under a fifth are vowels (y counts), which words and names
-// almost never are (kqzvtwmrjxhplbn); or a word with a digit and 6 or
-// more capitals in a row, as short base64 has (QUJDREVGR0g, I43-11).
+// (I43-7): a run of the given number of digits or more (12 in a host name, I43-11;
+// 16 in a path, which holds AWS account and GCP project numbers, N55-6);
+// 4 or more digits with letters right before and after (abcd1234efgh); 10
+// or more letters in a row of which under a fifth are vowels (y counts),
+// which words and names almost never are (kqzvtwmrjxhplbn); or a word
+// with lower case, a digit, and 6 or more capitals in a row, as short
+// base64 has (QUJDREVGR0g, I43-11), and an acronym such as OPENAPI3 has
+// not (N55-6).
 // shortcut: a random lower-case run with more vowels (kaqizuvoteb) gets
 // through, since words such as typescript look the same to these rules; a
 // pronounceability model would catch more.
-func oddRun(s string) bool {
+func oddRun(s string, digits int) bool {
 	for _, w := range strings.FieldsFunc(s, func(r rune) bool { return !isAlnum(r) }) {
 		run, most := 0, 0
 		for k := 0; k < len(w); k++ {
@@ -335,7 +338,7 @@ func oddRun(s string) bool {
 				run = 0
 			}
 		}
-		if most >= 6 && strings.ContainsAny(w, "0123456789") {
+		if most >= 6 && strings.ContainsAny(w, "0123456789") && strings.ContainsAny(w, "abcdefghijklmnopqrstuvwxyz") {
 			return true
 		}
 	}
@@ -346,7 +349,7 @@ func oddRun(s string) bool {
 			for j < len(s) && '0' <= s[j] && s[j] <= '9' {
 				j++
 			}
-			if j-i >= 12 || j-i >= 4 && i > 0 && isLetter(s[i-1]) && j < len(s) && isLetter(s[j]) {
+			if j-i >= digits || j-i >= 4 && i > 0 && isLetter(s[i-1]) && j < len(s) && isLetter(s[j]) {
 				return true
 			}
 		case isLetter(c):
