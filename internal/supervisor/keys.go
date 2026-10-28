@@ -112,17 +112,24 @@ func (f *keyFilter) isPress(r csiU) bool {
 	return r.code == f.code && (r.mods-1)&^locks == ctrl && (r.event == 0 || r.event == 1)
 }
 
-// csiU is a parsed kitty keyboard report: ESC [ code[:alt...] [; mods[:event]] u.
+// csiU is a parsed kitty keyboard report, ESC [ code[:alt...] [; mods[:event]
+// [; text]] u, or an xterm modifyOtherKeys report, ESC [ 27 ; mods ; code ~,
+// which carries the same code and modifiers.
 type csiU struct {
 	code, mods, event int
 	n                 int // its length in bytes
 }
 
-// parseCSIu parses a kitty report at the start of b.
+// parseCSIu parses a kitty or modifyOtherKeys report at the start of b.
+// TODO(T6684): the terminal checklist records whether any CLI turns on
+// modifyOtherKeys or kitty's report-text flag (16); both are parsed.
 func parseCSIu(b []byte) (csiU, bool) {
 	r := csiU{mods: 1}
 	if len(b) < 4 || b[0] != esc || b[1] != '[' {
 		return r, false
+	}
+	if m, ok := parseModifyOtherKeys(b); ok {
+		return m, true
 	}
 	i := 2
 	num := func() (int, bool) {
@@ -153,10 +160,45 @@ func parseCSIu(b []byte) (csiU, bool) {
 				return r, false
 			}
 		}
+		// Kitty's report-text flag adds the text as code points.
+		if i < len(b) && b[i] == ';' {
+			i++
+			for i < len(b) && (b[i] >= '0' && b[i] <= '9' || b[i] == ':') && i < 64 {
+				i++
+			}
+		}
 	}
 	if i >= len(b) || b[i] != 'u' {
 		return r, false
 	}
 	r.n = i + 1
 	return r, true
+}
+
+// parseModifyOtherKeys parses xterm's ESC [ 27 ; mods ; code ~ at the
+// start of b.
+func parseModifyOtherKeys(b []byte) (csiU, bool) {
+	const prefix = "\x1b[27;"
+	if len(b) < len(prefix) || string(b[:len(prefix)]) != prefix {
+		return csiU{}, false
+	}
+	i := len(prefix)
+	var f [2]int
+	for k := range f {
+		d := 0
+		for i < len(b) && b[i] >= '0' && b[i] <= '9' && d < 7 {
+			f[k] = f[k]*10 + int(b[i]-'0')
+			i++
+			d++
+		}
+		want := byte(';')
+		if k == 1 {
+			want = '~'
+		}
+		if d == 0 || i >= len(b) || b[i] != want {
+			return csiU{}, false
+		}
+		i++
+	}
+	return csiU{code: f[1], mods: f[0], n: i}, true
 }

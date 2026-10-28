@@ -24,6 +24,8 @@ func (a *altTracker) feed(b []byte) {
 			switch c {
 			case '[':
 				a.state = 2
+			case 'c': // RIS, a full reset, leaves the alternate screen
+				a.on, a.state = false, 0
 			case esc:
 			default:
 				a.state = 0
@@ -54,6 +56,10 @@ func (a *altTracker) feed(b []byte) {
 		}
 	}
 }
+
+// idle reports whether the tracker is between sequences, so on is not
+// about to change with the next byte.
+func (a *altTracker) idle() bool { return a.state == 0 }
 
 func (a *altTracker) apply(set bool) {
 	start := 0
