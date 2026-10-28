@@ -295,3 +295,37 @@ func TestFailedRowOnUnreadableFile(t *testing.T) {
 		t.Errorf("A = %q, %v, want cleaned", got, err)
 	}
 }
+
+// TestLostBackupUnderNewerToggle (re-review A”): C wrote and lost its
+// backup, then a newer change M took C's line out, so the file is back at
+// C's hash before. Undoing M would bring the line back, so the missing
+// backup proves nothing while M is in effect: C waits for M, and --all
+// reports C. Fails on 662ddfd.
+func TestLostBackupUnderNewerToggle(t *testing.T) {
+	for _, single := range []bool{false, true} {
+		t.Run(map[bool]string{false: "run C", true: "change C"}[single], func(t *testing.T) {
+			f := setup(t)
+			ctx := context.Background()
+			file := filepath.Join(f.dir, "c.toml")
+			must(t, os.WriteFile(file, []byte("X\n"), 0o600))
+			c := pendingWritten(t, f, "C", file, "A\n")
+			must(t, os.RemoveAll(filepath.Join(f.state, BackupDirName, c.ChangeID)))
+			setText(t, f, "M", file, "X\n")
+			sel := Selection{RunID: "C"}
+			if single {
+				sel = Selection{ChangeID: c.ChangeID}
+			}
+			undos, _ := f.m.Unwire(ctx, sel, UnwireOptions{}, io.Discard)
+			if got := outcomeOf(undos, c.ChangeID); got != Blocked {
+				t.Errorf("C = %q, want blocked", got)
+			}
+			undos, err := f.m.Unwire(ctx, Selection{All: true}, UnwireOptions{}, io.Discard)
+			if err == nil || outcomeOf(undos, c.ChangeID) == Cleaned {
+				t.Errorf("--all: C = %q, %v; want it reported", outcomeOf(undos, c.ChangeID), err)
+			}
+			if s := status(t, f, c.ChangeID); s != store.ChangePending {
+				t.Errorf("C = %s, want still pending", s)
+			}
+		})
+	}
+}
