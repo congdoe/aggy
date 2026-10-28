@@ -89,6 +89,42 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 	_, _ = io.WriteString(w, b.String())
 }
 
+// statusLine is the confirmation's one line (S-12): it never hides the
+// CLI's screen, so an approval prompt or menu the CLI shows stays in
+// view while the user decides.
+func (p *picker) statusLine(cols int) string {
+	line := "aggy: switch to " + string(p.confirm) + "? " + strings.Join(p.lines, " ")
+	if cols > 1 && len(line) > cols-1 {
+		line = line[:cols-1] // ASCII only; never writes the last column, so no wrap or scroll
+	}
+	return line
+}
+
+// drawStatus writes the confirmation on the bottom row. On the CLI's
+// main screen the cursor is saved and put back (DECSC, DECRC), so an
+// inline renderer's relative moves still line up; on its alternate
+// screen the CLI repaints the whole screen afterwards anyway.
+//
+// shortcut: DECSC takes the CLI's own save slot for the moment the line
+// is drawn; a CLI holding a position there loses it. Upgrade if T6684
+// finds one.
+func (p *picker) drawStatus(w io.Writer, rows, cols int, onAlt bool) {
+	at := fmt.Sprintf("\x1b[%d;1H\x1b[2K\x1b[7m%s\x1b[0m", rows, p.statusLine(cols))
+	if !onAlt {
+		at = "\x1b7" + at + "\x1b8"
+	}
+	_, _ = io.WriteString(w, at)
+}
+
+// eraseStatus clears the bottom row the confirmation used.
+func (p *picker) eraseStatus(w io.Writer, rows int, onAlt bool) {
+	at := fmt.Sprintf("\x1b[%d;1H\x1b[2K", rows)
+	if !onAlt {
+		at = "\x1b7" + at + "\x1b8"
+	}
+	_, _ = io.WriteString(w, at)
+}
+
 // erase takes the picker off the screen: it leaves the alternate screen,
 // or, when drawn over the CLI, does nothing (the CLI repaints).
 func (p *picker) erase(w io.Writer, overCLI bool) {
