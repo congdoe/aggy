@@ -62,6 +62,7 @@ Commands:
   hooks     Install the vendor hooks aggy listens to, or show them
   memory    Import Claude's memory into the shared .aggy/memory.md
   policy    Wire aggy's safety policy into Codex (Claude and Grok get it per launch)
+  mcp       Copy Claude's public MCP servers into Codex and Grok
   version   Print the aggy version
   help      Show this help
 
@@ -125,6 +126,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runMemory(args[1:], stdout, stderr)
 	case "policy":
 		return runPolicy(args[1:], stdout, stderr)
+	case "mcp":
+		return runMCP(args[1:], stdout, stderr)
 	case "help", "--help", "-h":
 		fmt.Fprint(stdout, usage)
 		return 0

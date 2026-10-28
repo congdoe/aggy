@@ -32,9 +32,9 @@ type Input struct {
 	DiffStat  string
 	GitErr    error
 
-	// MissingTools are tools the previous CLI had that To lacks, by name.
-	// TODO(T6679): parity fills this from the tool manifest; until then
-	// callers pass nil and the section is left out.
+	// MissingTools are tools the previous CLI had that To lacks, by name
+	// (internal/cli fills it from each CLI's MCP config). Nil leaves the
+	// section out.
 	MissingTools []string
 }
 
