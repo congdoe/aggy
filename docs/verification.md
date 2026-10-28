@@ -282,6 +282,9 @@ found every Grok borrow failing. Minimal runs in a scratch directory.
 | S1, read confinement | G3 plus a prompt asking to read `./README.md`, then a canary file outside the cwd by absolute path, with `--permission-mode plan`; `--permission-mode dontAsk --allow 'Read(./**)'`; `--permission-mode plan --allow 'Read(./**)'` | **Not confined** | All three exited 0 and returned the canary: Grok auto-allows reads in every mode, so allow rules do not confine `read_file`. |
 | S2, strict sandbox | the same with `--permission-mode plan --sandbox strict` | **Confined under `$HOME`** | README was read; the canary under `$HOME` was refused, `Permission denied: <HOME>/.../canary.txt`. |
 | S3, `~/Library` (G32-3) | S2 with the canary at `<HOME>/Library/Caches/aggy-canary.*/canary.txt` | **Not confined** | `read_file` returned the canary: strict allows `~/Library`. |
+| S5, firmlink (G32-9) | S4, with `read_file /System/Volumes/Data<HOME>/Library/Caches/.../c.txt` | **Not confined** | Returned the canary: Grok matches deny rules on the lexical path, and a firmlink is not a symlink. The same spelling of a home folder outside `~/Library` was refused by Seatbelt (`Permission denied`). aggy now also denies `Read(/System/Volumes/Data/**)` and `Grep(/System/Volumes/Data/**)` on darwin; re-check pending. |
+| S6, nested sandbox (G32-8) | the review argv with `--sandbox strict`, run inside `sandbox-exec -p '(version 1)(allow default)'` | **Refuses to start** | Exit 1; stderr `sandbox initialization failed: Operation not permitted` / `error: could not apply the 'strict' sandbox profile; see the warning above for the cause. Refusing to start with its protections missing.` So a profile that cannot be applied fails closed here; aggy maps it to `ErrLockdownRejected`. |
+| S7, sandbox logging | a successful sandboxed run with `RUST_LOG=xai_grok_sandbox=info` | Recorded | No sandbox line on stderr: headless tracing does not reach stderr, so the source's "continuing without sandbox" warnings are a weak guard. aggy does not set `RUST_LOG`. |
 | S4, `~/Library` denied | S3 plus `--deny "Read(<HOME>/Library/**)" --deny "Grep(<HOME>/Library/**)"`, `$HOME` expanded | **Confined** | `read_file` was refused, `Denied by permission policy: deny rule on read matching "~/Library/**"`; the in-repo README still read. aggy's argv since G32-3. |
 
 The strict profile (grok-src `crates/codegen/xai-grok-sandbox/src/profiles.rs:463-488`,
@@ -292,16 +295,19 @@ networking. Gaps: files under `/tmp` and `/private` (`$TMPDIR`, aggy's
 run dirs) stay readable, `~/.grok` (Grok's own home) is readable,
 `~/Library` is readable (S3; aggy's deny rules close it for `read_file`
 and `grep`, S4), and only vendor homes and other paths under `$HOME` are
-denied. The sandbox fails open: `xai-grok-sandbox/src/lib.rs:206-216`
-and `:236-247` log "continuing without sandbox" and return Ok when the
-platform has none or applying it fails (source only, 2bdd1d6a). aggy
-passes `--sandbox strict` on review, research, and news, and refuses
-them when the probed `--help` does not list `--sandbox` or the host has
-no kernel sandbox (macOS, or Linux with `landlock` in
-`/sys/kernel/security/lsm`); a run whose stderr has one of those
-messages is discarded. Whether they reach stderr headless is
-unverified. Not yet run live: research and news under strict, and
-image and video under strict (their output write; TODO(T6742)).
+denied, and the `~/Library` deny is lexical, so on darwin the
+`/System/Volumes/Data` firmlink is denied too (S5). When the profile
+cannot be applied, grok 1.0.70 refused to start (S6); the source also has
+paths, `xai-grok-sandbox/src/lib.rs:206-216` and `:236-247`, that log
+"continuing without sandbox" and return Ok when the platform has none
+(source only, 2bdd1d6a), and those logs do not reach stderr by default
+(S7). aggy passes `--sandbox strict` on review, research, and news,
+refuses them when the probed `--help` does not list `--sandbox` or the
+host has no kernel sandbox (macOS, or Linux with `landlock` in
+`/sys/kernel/security/lsm`), and discards a run whose stderr shows the
+refusal or, a weak extra check, one of those log lines. Not yet run
+live: news under strict, and image and video under strict (their output
+write; TODO(T6742)).
 
 ## Smoke run, 2026-10-28 (main 2383c13)
 
@@ -347,6 +353,23 @@ runs), then Codex alone (4 codex runs).
 | `mcp-launch-grok` | FAIL, exit 1 | stderr: `failed to load agent profile '<scratch>/agent.md': failed to parse agent definition: its frontmatter is not a valid definition at line 5, column 3`. The smoke agent file gave `mcpServers` as a map; Grok wants a YAML list whose entries are a name, a one-key `{name: config}` map, or an object with `name` (grok-src `crates/codegen/xai-grok-agent/src/config.rs:1121-1163`, `McpServerRef`; test `crates/codegen/xai-grok-shell/src/session/agent_mcp_tests.rs:429`). A stdio entry is `{command, args}` with no `type`: `McpServerTransportConfig` is untagged (`crates/codegen/xai-grok-config/src/mcp_server_config.rs:27-41`). The file is now `- aggy: {command: python3, args: [...]}`, and `--max-turns 3` is gone (MCP tools are deferred). Re-run pending. |
 | `grok-review-untrusted` | INCONCLUSIVE: no hook ran, none fired in the control either | `--sandbox strict` allows writes only to Grok's sessions dir, so the control's hook marker writes failed. The control now runs without `--sandbox`; the untrusted run keeps aggy's exact argv. Re-run pending. |
 | Codex: all four checks, including `mcp-launch-codex` | PASS ("the server's token came back") | The 2383c13 timeout did not recur: intermittent, seen once, cause unknown. No code change. |
+
+### Re-run on b972adf (T6740, 2026-10-28)
+
+Live, Grok alone (7 grok runs), with the review argv's `--sandbox strict`
+and `~/Library` denies.
+
+| Check | Result |
+| --- | --- |
+| `aggy-setup` | PASS |
+| `mcp-launch-grok` | PASS (the list-form agent file loads) |
+| `grok-review-untrusted` | PASS: no hook ran untrusted; the control fired `claude-SessionStart`, `claude-PreToolUse`, `grok-SessionStart`, `grok-PreToolUse` |
+| `aggy-grok-review-refused` | PASS |
+| `grok-image-tool-list` | PASS |
+| `image-borrow-grok` | PASS |
+| `research-borrow-grok` | PASS: report back, canary 0 times, under strict plus the deny |
+| `aggy-video-default-refused` | PASS |
+| `video-borrow-grok` | FAIL, environment: the account has zero data retention, and Grok's `image_to_video` reported "Video generation tools are unavailable under zero data retention (ZDR)"; aggy's artifact gate correctly found no file. Testing Grok video needs ZDR off or a user-hosted bucket (owner item). |
 
 ## Grok project config and folder trust (source only)
 

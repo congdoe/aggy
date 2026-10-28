@@ -104,7 +104,8 @@ const (
 	// lists it.
 	CapDeny = "deny"
 	// CapKernelSandbox is not read from help: the host can apply Grok's
-	// kernel sandbox (KernelSandbox). Grok's --sandbox fails open, so
+	// kernel sandbox (KernelSandbox). Grok's source can run on without
+	// its sandbox where the platform has none, so
 	// aggy checks the host itself; callers add it at locate time, never
 	// to the cache, since the kernel can change under the same CLI.
 	CapKernelSandbox = "kernel-sandbox"
@@ -114,7 +115,7 @@ const (
 const lsmPath = "/sys/kernel/security/lsm"
 
 // KernelSandbox returns nil when the host on goos can apply Grok's kernel
-// sandbox, and why not otherwise. Grok applies no sandbox, and only logs
+// sandbox, and why not otherwise. Per its source, Grok applies no sandbox, and only logs
 // "continuing without sandbox", when the platform lacks one
 // (xai-grok-sandbox/src/lib.rs:206-216 and :236-247 at grok-build
 // 2bdd1d6a). darwin has Seatbelt; Linux needs Landlock, which readLSM's

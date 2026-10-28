@@ -26,7 +26,8 @@ func TestScriptArgvMatchesAdapter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a := grok.Adapter{Caps: []string{probe.CapSandbox, probe.CapKernelSandbox}, Getenv: func(k string) string {
+			// The live checks run on macOS.
+			a := grok.Adapter{Caps: []string{probe.CapSandbox, probe.CapKernelSandbox}, GOOS: "darwin", Getenv: func(k string) string {
 				if k == "HOME" {
 					return "/smokehome"
 				}

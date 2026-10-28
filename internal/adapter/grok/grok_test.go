@@ -14,10 +14,10 @@ import (
 	"github.com/congdoe/aggy/internal/safefs"
 )
 
-// sandboxed is an adapter whose probe found --sandbox, on a host that
-// can apply Grok's sandbox, with HOME /home/u.
+// sandboxed is an adapter whose probe found --sandbox, on a darwin host
+// that can apply Grok's sandbox, with HOME /home/u.
 func sandboxed() Adapter {
-	return Adapter{Caps: []string{probe.CapSandbox, probe.CapKernelSandbox}, Getenv: func(k string) string {
+	return Adapter{Caps: []string{probe.CapSandbox, probe.CapKernelSandbox}, GOOS: "darwin", Getenv: func(k string) string {
 		if k == "HOME" {
 			return "/home/u"
 		}
@@ -56,7 +56,8 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 		return []string{"--tools", tools, "--disallowed-tools", deny(keep...), "--no-subagents"}
 	}
 	head := []string{"--prompt-file", h.Prompt, "--output-format", "json"}
-	strict := []string{"--sandbox", "strict", "--deny", "Read(/home/u/Library/**)", "--deny", "Grep(/home/u/Library/**)"}
+	strict := []string{"--sandbox", "strict", "--deny", "Read(/home/u/Library/**)", "--deny", "Grep(/home/u/Library/**)",
+		"--deny", "Read(/System/Volumes/Data/**)", "--deny", "Grep(/System/Volumes/Data/**)"}
 	tests := []struct {
 		name     string
 		req      adapter.HeadlessRequest
@@ -503,5 +504,40 @@ func TestSandboxNotAppliedFailsClosed(t *testing.T) {
 	quoted := strings.Replace(liveReply, `"the answer"`, `"the docs say: continuing without sandbox"`, 1)
 	if res, err := sandboxed().ParseHeadless(adapter.HeadlessRequest{Kind: adapter.Review}, adapter.Output{Stdout: []byte(quoted)}); err != nil || res.Error != adapter.ErrNone {
 		t.Errorf("the message in the reply text failed the run: %+v, %v", res, err)
+	}
+}
+
+// TestFirmlinkDeny (G32-9): on darwin the sandboxed kinds also deny the
+// /System/Volumes/Data firmlink spelling, which read a ~/Library canary
+// past the lexical ~/Library rule live; elsewhere there is no such path.
+func TestFirmlinkDeny(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux"} {
+		a := sandboxed()
+		a.GOOS = goos
+		for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News} {
+			c, err := a.Headless(adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := strings.Join(c.Args, " ")
+			has := strings.Contains(args, "--deny Read(/System/Volumes/Data/**) --deny Grep(/System/Volumes/Data/**)")
+			if has != (goos == "darwin") || !strings.Contains(args, "--deny Read(/home/u/Library/**) --deny Grep(/home/u/Library/**)") {
+				t.Errorf("%s %s: %q", goos, k, c.Args)
+			}
+		}
+	}
+}
+
+// TestSandboxRefusalFailsClosed (G32-8): grok that could not apply its
+// sandbox profile refuses to start (live, nested in sandbox-exec); every
+// kind reports it as a lockdown failure that names the likely cause.
+func TestSandboxRefusalFailsClosed(t *testing.T) {
+	out := adapter.Output{ExitCode: 1, Stderr: []byte("sandbox initialization failed: Operation not permitted\n" +
+		"error: could not apply the 'strict' sandbox profile; see the warning above for the cause. Refusing to start with its protections missing.\n")}
+	for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image} {
+		res, err := sandboxed().ParseHeadless(adapter.HeadlessRequest{Kind: k}, out)
+		if !errors.Is(err, adapter.ErrLockdownRejected) || res.Error != adapter.ErrLockdown || !strings.Contains(err.Error(), "inside another sandbox") {
+			t.Errorf("%s: %+v, %v", k, res, err)
+		}
 	}
 }
