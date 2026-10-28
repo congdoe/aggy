@@ -115,9 +115,9 @@ func lockdown(k adapter.Kind) []string {
 // writable_roots, or network_access from $CODEX_HOME/config.toml applies,
 // and apps, plugins, goals, image generation, view_image, and sleep off)
 // with --sandbox SandboxEdit, and the shell kept: with only apply_patch the
-// child could not read the files it edits. Each flag is live-verified in
-// the read-only set; the combination with workspace-write is not yet run
-// live (TODO(T6687)). Unverified too: whether exec's default web search
+// child could not read the files it edits. Live-verified on codex-cli
+// 0.164.0 (2026-10-28, verification.md "Codex edit lockdown"): a write in
+// the cwd works, one outside it is refused. Unverified: whether exec's default web search
 // is on for an edit child (no recorded flag turns it off), and whether
 // Codex treats a linked worktree as its main repo for project trust; with
 // the user config ignored, no trust entry is loaded either way.
