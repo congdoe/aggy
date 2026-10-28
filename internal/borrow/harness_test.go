@@ -36,6 +36,7 @@ type world struct {
 	connected map[adapter.Vendor]bool
 	caps      map[adapter.Vendor][]string
 	version   map[adapter.Vendor]string // "" means the tested version
+	limits    map[adapter.Vendor]router.Limit
 	now       time.Time
 }
 
@@ -78,10 +79,18 @@ func newWorld(t *testing.T) *world {
 // router is internal/router over the world's config, with the
 // connected map as aggy setup's record.
 func (w *world) router() Router {
-	r := router.New(w.cfg, router.Deps{Statuses: worldStatuses{w}})
+	r := router.New(w.cfg, router.Deps{Statuses: worldStatuses{w}, Limits: worldLimits{w}})
 	return RouterFunc(func(ctx context.Context, req RouteRequest) ([]adapter.Vendor, error) {
-		return r.Choose(ctx, router.Request{Kind: string(req.Kind), Parent: req.Parent, Repo: req.Repo, Override: req.Override})
+		return r.Choose(ctx, router.Request{Kind: string(req.Kind), Parent: req.Parent, Repo: req.Repo, Override: req.Override, IgnoreHints: req.IgnoreHints})
 	})
+}
+
+// worldLimits reports the world's limits map.
+type worldLimits struct{ w *world }
+
+func (l worldLimits) Limited(_ context.Context, v adapter.Vendor, _ time.Time) (router.Limit, bool, error) {
+	lim, ok := l.w.limits[v]
+	return lim, ok, nil
 }
 
 type worldStatuses struct{ w *world }

@@ -416,7 +416,7 @@ type borrowRouter struct {
 // too: --vendor never bypasses the parent skip, allowed_vendors, or the
 // connected check.
 func (b borrowRouter) Choose(ctx context.Context, req borrow.RouteRequest) ([]adapter.Vendor, error) {
-	d, err := b.r.Decide(ctx, router.Request{Kind: string(req.Kind), Parent: req.Parent, Repo: req.Repo, Override: req.Override})
+	d, err := b.r.Decide(ctx, router.Request{Kind: string(req.Kind), Parent: req.Parent, Repo: req.Repo, Override: req.Override, IgnoreHints: req.IgnoreHints})
 	if err != nil {
 		return nil, err
 	}
