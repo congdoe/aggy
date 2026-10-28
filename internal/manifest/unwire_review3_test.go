@@ -118,6 +118,12 @@ func TestUnwireSupersededNeedsSameHashBefore(t *testing.T) {
 				}
 				cs, _ := f.s.Changes(ctx, "A")
 				a = cs[0]
+				// Pending with its backup made: nothing proves it never
+				// wrote but a newer change (a failed row is proven by its
+				// status alone and is Cleaned).
+				if _, err := f.s.DB().ExecContext(ctx, `UPDATE changes SET status = 'pending' WHERE change_id = ?`, a.ChangeID); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if tt.edit != "" {
 				must(t, os.WriteFile(file, []byte(tt.edit), 0o600))
@@ -135,13 +141,27 @@ func TestUnwireSupersededNeedsSameHashBefore(t *testing.T) {
 	}
 }
 
+// noBirth makes dirIdentity report no birth times, as on Linux, for the
+// rest of the test.
+func noBirth(t *testing.T) {
+	real := dirIdentity
+	dirIdentity = func(p string) (store.DirID, bool) {
+		id, ok := real(p)
+		id.Birth = 0
+		return id, ok
+	}
+	t.Cleanup(func() { dirIdentity = real })
+}
+
 // TestSweepSkipsUnrelatedRun: R1 made a directory and R2 put a second
 // file in it. After R1 is undone and the person deletes R2's file by
-// hand, the directory looks, by device and inode, like the one aggy made,
-// as one the person made again would on ext4. An unwire that removed
-// nothing in it must not sweep it. Fails on 45fa3fa.
+// hand, the directory looks, by device and inode alone (no birth time,
+// as on Linux), like the one aggy made, as one the person made again
+// would on ext4. An unwire unrelated to it must not sweep it; R2's own
+// undo does. Fails on 45fa3fa.
 func TestSweepSkipsUnrelatedRun(t *testing.T) {
 	f := setup(t)
+	noBirth(t)
 	ctx := context.Background()
 	dir := filepath.Join(f.dir, "made")
 	apply(t, f, "R1", filepath.Join(dir, "x.toml"), "x\n")
@@ -151,13 +171,17 @@ func TestSweepSkipsUnrelatedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	must(t, os.Remove(filepath.Join(dir, "y.toml")))
-	for _, run := range []string{"R3", "R2"} {
-		if _, err := f.m.Unwire(ctx, Selection{RunID: run}, UnwireOptions{}, io.Discard); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := os.Lstat(dir); err != nil {
-			t.Fatalf("unwire %s swept a directory it removed nothing from: %v", run, err)
-		}
+	if _, err := f.m.Unwire(ctx, Selection{RunID: "R3"}, UnwireOptions{}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(dir); err != nil {
+		t.Fatalf("an unrelated unwire swept the directory: %v", err)
+	}
+	if _, err := f.m.Unwire(ctx, Selection{RunID: "R2"}, UnwireOptions{}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(dir); err == nil {
+		t.Error("R2's undo left aggy's directory behind")
 	}
 }
 
@@ -168,17 +192,20 @@ func TestSweepSkipsUnrelatedRun(t *testing.T) {
 func TestSweepInodeReuse(t *testing.T) {
 	tests := []struct {
 		name        string
-		birth       bool // the file system reports birth times
-		putBack     bool // the person put R2's file back in the new directory
+		birth       bool   // the file system reports birth times
+		putBack     bool   // the person put R2's file back in the new directory
+		run         string // the run unwound after the directory is made again
 		wantRemoved bool
 	}{
-		{"no birth time, unrelated unwire", false, false, false},
-		{"birth time, unrelated unwire", true, false, false},
-		{"birth time, related unwire", true, true, false},
-		// The documented limit: without birth times, an unwire that
-		// removes aggy's file from a directory made again around it
-		// takes the directory when that leaves it empty.
-		{"no birth time, related unwire", false, true, true},
+		{"no birth time, unrelated unwire", false, false, "R3", false},
+		{"birth time, unrelated unwire", true, false, "R3", false},
+		{"birth time, related unwire", true, true, "R2", false},
+		{"birth time, related unwire, file gone", true, false, "R2", false},
+		// The documented limit: without birth times, the unwire of
+		// aggy's file in a directory made again around it takes the
+		// directory when that leaves it empty.
+		{"no birth time, related unwire", false, true, "R2", true},
+		{"no birth time, related unwire, file gone", false, false, "R2", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -206,6 +233,7 @@ func TestSweepInodeReuse(t *testing.T) {
 			dir := filepath.Join(f.dir, "made")
 			c1 := apply(t, f, "R1", filepath.Join(dir, "x.toml"), "x\n")
 			apply(t, f, "R2", filepath.Join(dir, "y.toml"), "y\n")
+			apply(t, f, "R3", filepath.Join(f.dir, "other.toml"), "z\n")
 			if _, err := f.m.Unwire(ctx, Selection{RunID: "R1"}, UnwireOptions{}, io.Discard); err != nil {
 				t.Fatal(err)
 			}
@@ -222,7 +250,7 @@ func TestSweepInodeReuse(t *testing.T) {
 			if tt.putBack {
 				must(t, os.WriteFile(filepath.Join(dir, "y.toml"), []byte("y\n"), 0o600))
 			}
-			if _, err := f.m.Unwire(ctx, Selection{RunID: "R2"}, UnwireOptions{}, io.Discard); err != nil {
+			if _, err := f.m.Unwire(ctx, Selection{RunID: tt.run}, UnwireOptions{}, io.Discard); err != nil {
 				t.Fatal(err)
 			}
 			_, err := os.Lstat(dir)

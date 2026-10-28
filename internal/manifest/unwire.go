@@ -66,16 +66,16 @@ const (
 	// for it that are now empty.
 	Removed Outcome = "removed"
 	// Cleaned: a pending or failed change whose write never happened.
-	// The file is as it was; any directories made for it that are empty
-	// are removed.
+	// The file is left as it is, edited since or not; any directories
+	// made for it that are empty are removed.
 	Cleaned Outcome = "cleaned"
 	// Drifted: the file changed after aggy changed it, so the change was
 	// not undone. Err holds a *patch.DriftError.
 	Drifted Outcome = "drifted"
-	// Superseded: a pending or failed change to a file that a newer
-	// change, still in place, has written since, where some newer change
-	// was planned on this change's hash before, which proves this one had
-	// not written by then. The file belongs to the newer change and is
+	// Superseded: a pending change to a file that a newer change, still
+	// in place, has written since, where some newer change still in
+	// effect was planned on this change's hash before, which proves this
+	// one had not written by then. The file belongs to the newer change and is
 	// left alone; only empty directories made for this change are
 	// removed, and the row is marked undone.
 	Superseded Outcome = "superseded"
@@ -122,27 +122,35 @@ type Undo struct {
 // read from the current backup root, so a state directory spelled
 // differently than when the change was made still works.
 //
-// A change can only be undone after every newer change to the same file
-// (by canonical path) that is still applied, pending, or failed:
+// A change proven never to have written its file is Cleaned first,
+// whatever the file holds and whatever came after it: a failed row, or a
+// pending row of an existing file whose backup was never made (see
+// provenUnwritten). The file is left as it is, only empty directories
+// made for it are removed, and the row is marked undone.
+//
+// Any other change can only be undone after every newer change to the
+// same file (by canonical path) that is still applied, pending, or
+// failed:
 //
 //   - With --change (sel.ChangeID), such a newer change refuses the undo,
 //     forced or not (Blocked, naming it). Undo it first, or use --all.
 //   - An applied change with such a newer change outside the selection
 //     is Blocked too.
-//   - A pending or failed change that such a newer change was planned on
-//     (the newer change's hash before is this change's hash after) may
-//     have written before its process stopped, and that write is under
-//     the newer change: it is Blocked too. --all undoes the newer one
-//     first and so handles it.
-//   - A pending or failed change that some newer change to the same file
-//     (in any status) was planned on the same hash before as it is
-//     Superseded: that newer change read the file under the target lock
-//     and found this change's write had not happened, so whatever is in
-//     the file now is the newer changes', the file is left alone, only
-//     empty directories made for the old change are removed, and the row
-//     is marked undone.
-//   - Any other pending or failed change with such a newer change is
-//     Blocked: nothing proves its write did not happen (it may have
+//   - A pending change that such a newer change was planned on (the
+//     newer change's hash before is this change's hash after) may have
+//     written before its process stopped, and that write is under the
+//     newer change: it is Blocked too. --all undoes the newer one first
+//     and so handles it.
+//   - A pending change that such a newer change, still in effect, was
+//     planned on the same hash before as it is Superseded: that newer
+//     change read the file under the target lock and found this change's
+//     write had not happened, and since it is still in effect nothing
+//     older has been undone since, so whatever is in the file now is the
+//     newer changes'. The file is left alone, only empty directories
+//     made for the old change are removed, and the row is marked undone.
+//     An undone newer change proves nothing: undoing the changes between
+//     can have brought this change's write back.
+//   - Any other pending change with such a newer change is Blocked: nothing proves its write did not happen (it may have
 //     written, been edited by hand, and had the newer change planned on
 //     the edit), so it waits for the newer change. Once that is undone,
 //     the file is compared with this change's hashes as below, and an
@@ -153,8 +161,8 @@ type Undo struct {
 //   - applied: the file is restored byte for byte from the backup, with
 //     its mode, or, when the change created it, removed along with the
 //     directories made for it while they are empty.
-//   - pending or failed: the row was written before the file, so the
-//     write may or may not have happened (a pending row that outlives
+//   - pending: the row was written before the file, so the write may or
+//     may not have happened (a pending row that outlives
 //     its process means the process stopped mid-change; the target lock
 //     means a live Apply is waited for, not raced). Unwire compares the
 //     file with the row's hashes. Still the hash before: nothing was
@@ -241,8 +249,9 @@ type unwireRun struct {
 	sim       map[string]simFile
 	simUndone map[string]bool
 	// Outside a dry run: the changes this call marked undone, and the
-	// files it removed (that were there to remove). The sweep removes
-	// only directories this call is related to through them.
+	// created files whose undo it did (removed now or found gone). The
+	// sweep removes directories known only by device and inode only when
+	// this call is related to them through these.
 	undoneNow map[string]bool
 	emptied   []string
 }
@@ -318,39 +327,23 @@ func isHash(h string) bool {
 }
 
 // newerChange returns the oldest change to the same file as c, newer
-// than c, that is still applied, pending, or failed (and, in a dry run,
-// not undone by an earlier previewed undo), or nil. builtOn reports
-// whether any such change was planned on c's result (its hash before is
-// c's hash after): then c's write is underneath it.
+// than c, that is still in effect: applied, pending, or failed (and, in a
+// dry run, not undone by an earlier previewed undo), or nil. builtOn
+// reports whether any such change was planned on c's result (its hash
+// before is c's hash after): then c's write is underneath it.
 //
-// notWritten reports whether any newer change to the same file, in any
-// status, was planned on c's hash before. Apply plans under the target
-// lock, which c's own Apply held until its process stopped, so that
-// newer change saw the file as c found it: c's write had not happened
-// (or had already been taken out by hand). Only then may c be
-// superseded.
+// notWritten reports whether any such change, still in effect, was
+// planned on c's hash before. Apply plans under the target lock, which
+// c's own Apply held until its process stopped, so that change saw the
+// file as c found it: c's write had not happened (or had been taken out
+// by hand). The proof holds only while that change is in effect: while
+// it is, no older change to the file can have been undone, since unwire
+// undoes newer changes first. Once it is undone, undoing the changes
+// between can bring c's write back, so an undone change proves nothing.
 func (m *Manifest) newerChange(ctx context.Context, c store.Change, run *unwireRun) (first *store.Change, builtOn, notWritten bool, err error) {
-	all, err := m.store.Changes(ctx, "")
-	if err != nil {
-		return nil, false, false, err
-	}
-	key := simKey(c.File)
-	for _, n := range all {
-		if n.ID > c.ID && n.Kind != store.KindMarker && n.HashBefore == c.HashBefore &&
-			(n.File == c.File || simKey(n.File) == key) {
-			notWritten = true
-			break
-		}
-	}
-	first, builtOn, err = m.newerInPlace(ctx, c, run)
-	return first, builtOn, notWritten, err
-}
-
-// newerInPlace is newerChange without the notWritten scan.
-func (m *Manifest) newerInPlace(ctx context.Context, c store.Change, run *unwireRun) (first *store.Change, builtOn bool, err error) {
 	newer, err := m.store.UndoableAfter(ctx, c.ID)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	key := simKey(c.File)
 	for i := range newer {
@@ -365,9 +358,12 @@ func (m *Manifest) newerInPlace(ctx context.Context, c store.Change, run *unwire
 			if n.HashBefore == c.HashAfter && c.HashAfter != c.HashBefore {
 				builtOn = true
 			}
+			if n.HashBefore == c.HashBefore {
+				notWritten = true
+			}
 		}
 	}
-	return first, builtOn, nil
+	return first, builtOn, notWritten, nil
 }
 
 // sweepDirs removes the directories undone changes created that are now
@@ -379,19 +375,23 @@ func (m *Manifest) newerInPlace(ctx context.Context, c store.Change, run *unwire
 // library has no statx). Device and inode alone do not prove it: ext4
 // hands a freed inode number to the next directory made, so a directory
 // the person removed and made again can match. So a directory is swept
-// only when both hold:
+// only when its identity matches, birth time included when one was
+// recorded, and either:
 //
-//   - its identity matches, birth time included when one was recorded;
+//   - a birth time was recorded and matches, which on its own tells
+//     aggy's directory from one made later at the same path; or
 //   - this Unwire call is related to it: it undid the change that created
-//     the directory, or it removed a file aggy wrote inside it (the undo
-//     that left it empty). An unrelated later run never sweeps it.
+//     the directory, or it undid a change that created a file inside it
+//     (removing that file, or finding it already gone, as after an undo
+//     that stopped before it was recorded). An unrelated later run never
+//     sweeps a directory known only by device and inode.
 //
-// A directory the person made again in between that they left empty, or
-// with nothing of aggy's in it, is therefore kept: on Linux only an undo
-// of a change inside it could take it, and that undo found aggy's file
-// there. Once a recorded directory is gone, or has another identity, its
-// identity is cleared in the row, so a later directory that happens to
-// get the same inode number is never taken for it.
+// Known limit, without birth times: a directory the person removed with
+// aggy's file in it and made again, empty, at the same path with the
+// same inode number, is swept by the unwire of that file's change. Once
+// a recorded directory is gone, or has another identity, its identity is
+// cleared in the row, so a later directory that happens to get the same
+// inode number is never taken for it.
 func (m *Manifest) sweepDirs(ctx context.Context, run *unwireRun) error {
 	all, err := m.store.Changes(ctx, "")
 	if err != nil {
@@ -424,20 +424,17 @@ func (m *Manifest) sweepDirs(ctx context.Context, run *unwireRun) error {
 		}
 		ids := append([]store.DirID(nil), c.CreatedDirIDs...)
 		ours := func(k int) bool {
-			if k >= len(ids) || ids[k] == (store.DirID{}) {
-				return false
-			}
-			cur, ok := dirIdentity(c.CreatedDirs[k])
-			if !ok || cur.Dev != ids[k].Dev || cur.Ino != ids[k].Ino ||
-				(ids[k].Birth != 0 && cur.Birth != ids[k].Birth) {
-				ids[k] = store.DirID{}
+			if k >= len(ids) || !sameDir(c.CreatedDirs[k], ids[k]) {
+				if k < len(ids) {
+					ids[k] = store.DirID{}
+				}
 				return false
 			}
 			return true
 		}
 		var dirs []string
 		for k, d := range c.CreatedDirs {
-			if !live[d] && related(c, d) && ours(k) {
+			if !live[d] && ours(k) && (ids[k].Birth != 0 || related(c, d)) {
 				dirs = append(dirs, d)
 			}
 		}
@@ -454,6 +451,73 @@ func (m *Manifest) sweepDirs(ctx context.Context, run *unwireRun) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// sameDir reports whether dir has the recorded identity id: the same
+// device and inode, and the same birth time when one was recorded. A zero
+// id matches nothing.
+//
+// TODO(T6735): APFS may rewrite a directory's birth time (a restore, or
+// tools that set it), which would make aggy keep its own directory.
+func sameDir(dir string, id store.DirID) bool {
+	if id == (store.DirID{}) {
+		return false
+	}
+	cur, ok := dirIdentity(dir)
+	return ok && cur.Dev == id.Dev && cur.Ino == id.Ino && (id.Birth == 0 || cur.Birth == id.Birth)
+}
+
+// removeOwnDirs removes, while empty, the directories c created, during
+// the undo of c itself. A directory whose identity was recorded is
+// removed only while it still has it; one recorded with none (a pending
+// row) is removed while empty, as patch.Revert does.
+func removeOwnDirs(c store.Change) error {
+	var dirs []string
+	for k, d := range c.CreatedDirs {
+		if k < len(c.CreatedDirIDs) && c.CreatedDirIDs[k] != (store.DirID{}) && !sameDir(d, c.CreatedDirIDs[k]) {
+			continue
+		}
+		dirs = append(dirs, d)
+	}
+	return patch.RemoveEmptyDirs(dirs)
+}
+
+// provenUnwritten reports whether c is known never to have written its
+// file, whatever the file holds now:
+//
+//   - A failed row: Apply records failed only when patch.Apply wrote
+//     nothing. The target write is atomic (a rename) and the only error
+//     after the rename is a directory sync, which is recorded as applied.
+//     A drift refusal at patch.Apply's re-check also lands here, with no
+//     backup.
+//   - A pending row of a file that existed, whose backup is missing:
+//     patch.Apply writes and fsyncs the backup, and renames it into
+//     place, before it writes the target, so a stop before the backup
+//     is a stop before the write. This trusts the backups folder: it
+//     must exist (so it was not deleted wholesale), and a backup lost to
+//     a power cut after its directory sync failed, or deleted by hand,
+//     would be taken for one never made.
+func (m *Manifest) provenUnwritten(c store.Change) (bool, error) {
+	switch {
+	case c.Status == store.ChangeFailed:
+		return true, nil
+	case c.Status != store.ChangePending || c.HashBefore == patch.NoFile:
+		return false, nil
+	}
+	if _, err := safefs.Lstat(m.backupRoot); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	_, err := safefs.Lstat(filepath.Join(m.backupRoot, c.ChangeID, c.HashBefore+".bak"))
+	switch {
+	case err == nil:
+		return false, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return true, nil
+	}
+	return false, err
 }
 
 // userReverted reports whether cur is aggy's change undone by hand: a
@@ -554,6 +618,26 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 		return u
 	}
 
+	// A change that never wrote has nothing in the file to undo, whatever
+	// the file holds now and whatever came after it.
+	unwritten, err := m.provenUnwritten(c)
+	if err != nil {
+		return fail(err)
+	}
+	if unwritten {
+		u.Outcome = Cleaned
+		if opt.DryRun {
+			fmt.Fprintf(w, "# %s: change %s never wrote; would leave the file\n",
+				termsafe.Line(r.File), termsafe.Line(c.ChangeID))
+			printDirs(w, r.CreatedDirs)
+			return done()
+		}
+		if err := removeOwnDirs(c); err != nil {
+			return fail(err)
+		}
+		return done()
+	}
+
 	newer, builtOn, notWritten, err := m.newerChange(ctx, c, run)
 	if err != nil {
 		return fail(err)
@@ -584,7 +668,7 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 			printDirs(w, r.CreatedDirs)
 			return done()
 		}
-		if err := patch.RemoveEmptyDirs(r.CreatedDirs); err != nil {
+		if err := removeOwnDirs(c); err != nil {
 			return fail(err)
 		}
 		return done()
@@ -649,7 +733,9 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 		return u
 	}
 	u.Err = err
-	if u.Outcome == Removed && curHash != patch.NoFile {
+	if u.Outcome == Removed {
+		// Removed now, or found already gone: either way this undo is
+		// what leaves the file's directory without it.
 		run.emptied = append(run.emptied, r.File)
 	}
 	return done()
