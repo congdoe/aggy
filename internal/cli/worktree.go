@@ -287,6 +287,12 @@ func (g *gitWorktrees) Remove(ctx context.Context, wt store.Worktree) error {
 			return err
 		}
 	}
+	// A removal cut short after the worktree went may have left the
+	// branch, or not.
+	o, err := g.env.gitOutput(ctx, wt.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+wt.Branch)
+	if err != nil || o.ExitCode != 0 {
+		return err
+	}
 	_, _, err = g.env.git(ctx, wt.Repo, "branch", "-D", wt.Branch)
 	return err
 }
