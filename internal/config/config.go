@@ -93,10 +93,9 @@ func (r *Route) UnmarshalTOML(v any) error {
 			if err != nil {
 				return err
 			}
-			if slices.Contains(route.Vendors, vendor) {
-				return fmt.Errorf("vendor %q listed twice", s)
+			if !slices.Contains(route.Vendors, vendor) { // a repeat is dropped
+				route.Vendors = append(route.Vendors, vendor)
 			}
-			route.Vendors = append(route.Vendors, vendor)
 		}
 		*r = route
 		return nil
@@ -105,7 +104,7 @@ func (r *Route) UnmarshalTOML(v any) error {
 }
 
 // Routing maps each borrow kind to its route. An empty vendor list turns
-// the kind off.
+// the kind off. A vendor listed twice keeps its first place.
 type Routing struct {
 	Image    Route `toml:"image"`
 	Video    Route `toml:"video"`
@@ -185,12 +184,23 @@ func Default() Config {
 	return Config{
 		Switch: Switch{Order: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok}},
 		Routing: Routing{
-			News:     vendors(adapter.Grok, adapter.Codex), // X search and web search built in
-			Research: vendors(adapter.Codex, adapter.Grok), // live web search with sources
+			// TODO(T6638): Codex is left out of news and research on
+			// purpose. Its apply_patch tool cannot be turned off, and its
+			// errors tell a right guess of a file line from a wrong one,
+			// so a research child could confirm file contents
+			// (docs/verification.md, 2026-10-28). The Codex adapter
+			// refuses both kinds; a user who lists codex here gets that
+			// refusal, named by the router.
+			News:     vendors(adapter.Grok),                // web search built in, clean tool list
+			Research: vendors(adapter.Grok),                // web search with sources, clean tool list
 			Image:    vendors(adapter.Codex, adapter.Grok), // built-in image generation
 			Video:    vendors(adapter.Grok),                // only Grok has video tools
-			Review:   Route{NotAuthor: true},               // a different model catches different things
-			Edit:     vendors(adapter.Codex, adapter.Grok),
+			// "not-author" walks codex, grok, claude and skips the
+			// parent's vendor, which wrote the change: a different model
+			// catches different things.
+			Review: Route{NotAuthor: true},
+			// Accepted in config; borrow refuses edit until M3.
+			Edit: vendors(adapter.Codex, adapter.Grok),
 		},
 		Budgets: Budgets{
 			News:     Budget{Minutes: 5, Turns: 15},
@@ -252,6 +262,9 @@ func Parse(text string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if err := unknownKinds(md); err != nil {
+		return Config{}, err
+	}
 	if err := unknownKeys(md); err != nil {
 		return Config{}, err
 	}
@@ -297,6 +310,20 @@ func (c Config) Validate() error {
 		}
 		if b.Turns < 0 || b.Turns > MaxTurns {
 			return fmt.Errorf("budgets.%s.turns must be 0 to %d, got %d", k, MaxTurns, b.Turns)
+		}
+	}
+	return nil
+}
+
+// unknownKinds names an undecoded key under [routing] or [budgets] as an
+// unknown borrow kind, which reads better than "unknown key".
+func unknownKinds(md toml.MetaData) error {
+	for _, k := range md.Undecoded() {
+		if len(k) < 2 || (k[0] != "routing" && k[0] != "budgets") {
+			continue
+		}
+		if _, err := adapter.ParseKind(k[1]); err != nil {
+			return fmt.Errorf("%s.%s: %w", k[0], k[1], err)
 		}
 	}
 	return nil

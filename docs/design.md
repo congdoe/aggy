@@ -169,19 +169,23 @@ Defaults, chosen from what each CLI has built in, not from benchmarks:
 
 | Kind | Order | Why | Time limit |
 | --- | --- | --- | --- |
-| `news` | Grok, Codex | Grok has X search and web search built in. | 5 min, 15 turns |
-| `research` | Codex, Grok | Live web search with sources. | 10 min, 30 turns |
+| `news` | Grok | Web search built in, and a flag set that leaves only web tools (section 7). | 5 min, 15 turns |
+| `research` | Grok | Web search with sources, with the same clean flag set. | 10 min, 30 turns |
 | `image` | Codex, Grok | Built-in image generation. | 5 min |
 | `video` | Grok | Only Grok has video tools. | 10 min |
-| `review` | Not the author | Any connected vendor except the one that wrote the change. | 15 min |
-| `edit` | Codex, Grok | Moves edit work off the on-screen vendor. | 45 min |
+| `review` | Not the author: Codex, Grok, Claude | Any connected vendor except the one that wrote the change (the parent's vendor). | 15 min |
+| `edit` | Codex, Grok | Moves edit work off the on-screen vendor. Accepted in config; borrows refuse `edit` until M3. | 45 min |
 
-aggy walks the list for the kind and skips:
+Codex is deliberately not in the `news` and `research` defaults. Its `apply_patch` tool cannot be turned off, and its error text tells a right guess of a line in a file at a known path from a wrong one, so a research child could confirm file contents by guessing ([verification.md](verification.md), 2026-10-28). Until that oracle is closed (T6638), the Codex adapter refuses both kinds. A user config may still list `codex` for them: the router keeps it in the list with a note naming the reason, and the adapter refuses it with `ErrUnsupported`.
 
-- the vendor the parent is on, which should use its own tools instead
-- vendors that are not connected
+aggy walks the list for the kind (or the one `--vendor` named) and skips, checking in this order:
+
+- the vendor the parent is on, which should use its own tools instead (for `review`, it wrote the change)
+- vendors that are not connected, or that `aggy setup` never recorded, in the `vendors` table; an `unknown` sign-in status counts as usable, and aggy says so
 - vendors outside the repo's `allowed_vendors`
-- vendors that hit their limit recently
+- vendors that hit their limit recently (the limit signal comes with M2)
+
+The rest are tried in order. When none is left, the error names each vendor and why it was skipped, for example `no vendor available for research: grok: the parent is on grok; codex: not connected`.
 
 Every borrow is logged with its kind, vendor, model, tokens, time, and outcome. A redo, or the same question re-asked of another vendor, counts against the first. `aggy stats` shows results per kind, and you reorder the table. The switch picker uses the same signals.
 
@@ -201,7 +205,8 @@ model = "<model-id>"        # passed to the CLI unchanged
 order = ["grok", "codex", "claude"]
 
 [routing]
-research = ["grok", "codex"]
+image = ["grok", "codex"]
+review = ["grok", "claude"]  # or "not-author": codex, grok, claude minus the author
 
 [budgets]
 research = { minutes = 15, turns = 40 }
@@ -210,6 +215,8 @@ research = { minutes = 15, turns = 40 }
 Per repo, `<repo>/.aggy/config.toml` holds `allowed_vendors`, `tools_off` (tools this repo turns off; a repo cannot turn any on), the commands `aggy check` runs, the ignored files a new worktree copies (such as `.env`), and a worktree setup command.
 
 Defaults are generic. No model is set for any vendor, so each CLI uses its own default. `switch.order` defaults to claude, codex, grok, and the picker skips the vendor on screen. Routing and budgets default to the table in section 8, and no tool is wired in.
+
+`[routing]` takes one key per kind (`news`, `research`, `image`, `video`, `review`, `edit`), each an ordered vendor list; an empty list turns the kind off, and `review` also takes `"not-author"`. An unknown kind or vendor is an error that names the key, and a vendor listed twice keeps its first place. A setting replaces that kind's default list; it is not merged with it. Listing `codex` for `research` or `news` is accepted, but the Codex adapter refuses those kinds for now (section 8).
 
 **Tools.** Every tool, plugin, skill, and MCP server aggy manages, aggy's own skill included, can be turned off cleanly per vendor, and off costs zero tokens: an off tool leaves no MCP entry, no skill link, no hook that injects text, and no line in memory, the brief, or the missing-tools list, and a CLI that scans shared skill folders (Grok scans `~/.claude/skills` and `~/.agents/skills`) gets the skill on its ignore list. A test proves it per vendor. `aggy tool list` and `aggy doctor` show each tool's estimated token cost per vendor. Tools are installed once at a pinned version, with any index built ahead of time, and stay ready while off, so `on` and `off` only rewire: the next session aggy launches or resumes gets the new set on its command line, and a config edit through the manifest is made only for a CLI without a launch flag (below). A switch takes effect at the next turn end: aggy resumes that harness on the same session where the CLI allows it, and never interrupts a turn.
 
