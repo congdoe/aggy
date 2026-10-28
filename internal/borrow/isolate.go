@@ -44,11 +44,6 @@ func resolve(p string) string {
 	return p
 }
 
-// TODO(T6737): check that the isolated cwd is outside any git work tree
-// (a TMPDIR inside some other repo), and keep absolute --path values out
-// of research and news prompts, which go to the web (review finding
-// #10-13).
-//
 // makeDirs makes the child's directories for req.
 func (b *Borrower) makeDirs(req Request) (childDirs, error) {
 	root, err := safefs.MkdirTemp(b.TempDir, "aggy-borrow-")
@@ -66,6 +61,13 @@ func (b *Borrower) makeDirs(req Request) (childDirs, error) {
 			d.remove()
 			return childDirs{}, fmt.Errorf("the temp dir %s is inside %s; set TMPDIR to a directory outside it", root, bad)
 		}
+	}
+	// Codex and Grok load AGENTS.md, CLAUDE.md, and project config from
+	// the repo root down to the cwd, so a TMPDIR inside any git work tree
+	// would hand that repo's instructions to the child (#10-13).
+	if inGitRepo(root) {
+		d.remove()
+		return childDirs{}, fmt.Errorf("the temp dir %s is inside a git work tree; set TMPDIR to a directory outside it", root)
 	}
 	for _, p := range []string{d.run, d.cwd} {
 		if err := safefs.MkdirAll(p, 0o700); err != nil {

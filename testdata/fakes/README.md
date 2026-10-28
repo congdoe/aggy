@@ -7,7 +7,7 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 ## Rules
 
 - A fake refuses to run (exit 97) when `HOME` is unset, relative, or the real user's home, or when any vendor home (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`, else `$HOME/.<vendor>`) is relative or inside the real home. Paths are compared by name, after resolving symlinks and case-insensitively on darwin, and by file identity: every existing ancestor of each candidate is compared with `os.SameFile` against the real home and the real `~/.claude`, `~/.codex`, and `~/.grok`, which catches spellings such as macOS's `/System/Volumes/Data` firmlink or a case-folded `ſ`. Tests set `HOME` to a temp dir and clear or set the three vendor variables.
-- It accepts only the flags recorded in [docs/adapters.md](../../docs/adapters.md). Any other flag fails with exit 2 and `unknown option`, as the real CLIs do, so an adapter that invents a flag fails its test. A scenario can allow more with `extra_flags` and `extra_switches`.
+- It accepts only the flags recorded in [docs/adapters.md](../../docs/adapters.md). Any other flag fails with exit 2 and the CLI's own message (commander's `error: unknown option '<flag>'` for Claude and Grok, clap's `error: unexpected argument '<flag>' found` for Codex; Grok's form is unverified), so an adapter that invents a flag fails its test. A scenario can allow more with `extra_flags` and `extra_switches`.
 - It never reads anything except the scenario file and its stdin.
 
 ## Environment
@@ -29,7 +29,7 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 | `codex exec resume <id>`, after `resume` | `-c` | |
 | `codex resume <id>` | `-c` | `--no-alt-screen` |
 
-Claude's `--resume` takes an optional value, as the real CLI does: it takes the next argument only when that does not start with `-`, so `--resume --permission-mode plan` is a bare `--resume`. Codex's `-i` takes one or more values, up to the next argument that starts with `-` (a lone `-` is a value), as clap's `num_args = 1..` does, and splits each on commas, as its `value_delimiter = ','` does. `codex exec resume` takes only its own flags, so exec flags placed after `resume` fail with `unknown option`.
+Claude's `--resume` takes an optional value, as the real CLI does: it takes the next argument only when that does not start with `-`, so `--resume --permission-mode plan` is a bare `--resume`. Codex's `-i` takes one or more values, up to the next argument that starts with `-` (a lone `-` is a value), as clap's `num_args = 1..` does, and splits each on commas, as its `value_delimiter = ','` does. `codex exec resume` takes only its own flags, so exec flags placed after `resume` fail as unknown.
 
 Every command also takes `--version` and `--help` (`-h`). The generated help lists the honored flags; `codex --help` lists `exec` and `resume` in a `Commands:` block, `codex exec --help` lists `resume`, and `codex exec resume --help` names a `[SESSION_ID]` argument. `--flag=value` works too. Grok's `--continue` is recorded in the proposal (§3) and in docs/adapters.md.
 

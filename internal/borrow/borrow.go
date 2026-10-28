@@ -183,6 +183,10 @@ func (r Request) validate() error {
 		return errors.New("a review needs its material (the diff and files)")
 	case r.Kind == adapter.Review && !inGitRepo(r.Repo):
 		return fmt.Errorf("a review runs in a git work tree, and %s is in none", r.Repo)
+	case (r.Kind == adapter.Research || r.Kind == adapter.News) && len(r.Paths) > 0:
+		// The child cannot read them, and its queries go to the web, where
+		// a local path would leak the user name and layout (#10-13).
+		return fmt.Errorf("--path is not for %s: the child cannot read files, and local paths must not reach the web; put what matters in the task", r.Kind)
 	}
 	for _, p := range r.Paths {
 		if !filepath.IsAbs(p) || strings.ContainsAny(p, "\n\r") {

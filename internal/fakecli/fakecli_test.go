@@ -87,11 +87,11 @@ func TestFakes(t *testing.T) {
 	t.Run("unknown flag fails", func(t *testing.T) {
 		e := newEnv(t, fakes)
 		r := e.run(t, "claude", "", "", "-p", "--bogus")
-		if r.code != 2 || !strings.Contains(r.stderr, "unknown option") {
+		if r.code != 2 || r.stderr != "error: unknown option '--bogus'\n" {
 			t.Errorf("unknown flag = %+v", r)
 		}
-		// codex exec has no --search.
-		if r := e.run(t, "codex", "", "", "exec", "--search"); r.code != 2 {
+		// codex exec has no --search; clap's message.
+		if r := e.run(t, "codex", "", "", "exec", "--search"); r.code != 2 || r.stderr != "error: unexpected argument '--search' found\n" {
 			t.Errorf("codex exec --search = %+v", r)
 		}
 		// extra_flags lets a test allow an unrecorded flag.
