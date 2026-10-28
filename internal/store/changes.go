@@ -52,27 +52,33 @@ type Change struct {
 	UndoneAt      time.Time // zero until undone
 }
 
-// DirID is a directory's device and inode.
+// DirID is a directory's device and inode, and its birth time (Unix
+// nanoseconds) where the file system reports one; Birth is zero where it
+// does not (Linux through the standard library, or a row recorded before
+// birth times were).
 type DirID struct {
-	Dev uint64 `json:"dev"`
-	Ino uint64 `json:"ino"`
+	Dev   uint64 `json:"dev"`
+	Ino   uint64 `json:"ino"`
+	Birth int64  `json:"birth,omitempty"`
 }
 
 // createdDir is one element of created_dirs in the JSON object form.
 // Older rows hold a plain list of paths; both forms are read.
 type createdDir struct {
-	Path string `json:"path"`
-	Dev  uint64 `json:"dev,omitempty"`
-	Ino  uint64 `json:"ino,omitempty"`
+	Path  string `json:"path"`
+	Dev   uint64 `json:"dev,omitempty"`
+	Ino   uint64 `json:"ino,omitempty"`
+	Birth int64  `json:"birth,omitempty"`
 }
 
-// encodeDirs writes created_dirs as a JSON list of {path, dev, ino}.
+// encodeDirs writes created_dirs as a JSON list of {path, dev, ino,
+// birth}.
 func encodeDirs(dirs []string, ids []DirID) (string, error) {
 	out := make([]createdDir, len(dirs))
 	for i, d := range dirs {
 		out[i].Path = d
 		if i < len(ids) {
-			out[i].Dev, out[i].Ino = ids[i].Dev, ids[i].Ino
+			out[i].Dev, out[i].Ino, out[i].Birth = ids[i].Dev, ids[i].Ino, ids[i].Birth
 		}
 	}
 	b, err := json.Marshal(out)
@@ -80,7 +86,7 @@ func encodeDirs(dirs []string, ids []DirID) (string, error) {
 }
 
 // decodeDirs reads created_dirs in either form: a list of paths, or a
-// list of {path, dev, ino}.
+// list of {path, dev, ino, birth}.
 func decodeDirs(text string) ([]string, []DirID, error) {
 	var paths []string
 	if err := json.Unmarshal([]byte(text), &paths); err == nil {
@@ -94,11 +100,11 @@ func decodeDirs(text string) ([]string, []DirID, error) {
 	var ids []DirID
 	for i, o := range objs {
 		paths[i] = o.Path
-		if o.Dev != 0 || o.Ino != 0 {
+		if o.Dev != 0 || o.Ino != 0 || o.Birth != 0 {
 			if ids == nil {
 				ids = make([]DirID, len(objs))
 			}
-			ids[i] = DirID{Dev: o.Dev, Ino: o.Ino}
+			ids[i] = DirID{Dev: o.Dev, Ino: o.Ino, Birth: o.Birth}
 		}
 	}
 	return paths, ids, nil
