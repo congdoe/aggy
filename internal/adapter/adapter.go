@@ -241,6 +241,10 @@ type Adapter interface {
 	// Vendor names this adapter's vendor.
 	Vendor() Vendor
 
+	// TestedVersions is the range of CLI versions this adapter was tested
+	// on. VersionWarning compares a probed version with it.
+	TestedVersions() VersionRange
+
 	// Probe checks the installed CLI through run: path, version, sign-in
 	// status, and capabilities. It never reads credential files.
 	Probe(ctx context.Context, run Runner) (Probe, error)

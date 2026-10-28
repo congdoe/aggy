@@ -29,6 +29,13 @@ func New() Adapter { return Adapter{} }
 // Vendor returns adapter.Claude.
 func (Adapter) Vendor() adapter.Vendor { return adapter.Claude }
 
+// Tested is the Claude Code CLI version range this adapter was tested on: the
+// version the facts in docs/adapters.md were verified with.
+var Tested = adapter.VersionRange{Min: "2.1.311", Max: "2.1.311"}
+
+// TestedVersions returns Tested.
+func (Adapter) TestedVersions() adapter.VersionRange { return Tested }
+
 // Probe reports the CLI's path, version, and capabilities through run,
 // using probe.Specs[adapter.Claude]. It never checks sign-in, so Connected
 // is false.

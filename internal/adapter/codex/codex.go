@@ -34,6 +34,13 @@ func New() Adapter { return Adapter{} }
 // Vendor returns adapter.Codex.
 func (Adapter) Vendor() adapter.Vendor { return adapter.Codex }
 
+// Tested is the Codex CLI version range this adapter was tested on: the
+// version the facts in docs/adapters.md were verified with.
+var Tested = adapter.VersionRange{Min: "0.164.0", Max: "0.164.0"}
+
+// TestedVersions returns Tested.
+func (Adapter) TestedVersions() adapter.VersionRange { return Tested }
+
 // Probe reports the CLI's path, version, and capabilities through run,
 // using probe.Specs[adapter.Codex].
 func (a Adapter) Probe(ctx context.Context, run adapter.Runner) (adapter.Probe, error) {

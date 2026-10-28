@@ -35,6 +35,7 @@ can be tested against recorded output with no vendor installed.
 | Method | Does |
 | --- | --- |
 | `Vendor()` | Names the vendor: `claude`, `codex`, or `grok`. |
+| `TestedVersions()` | The CLI version range the adapter was tested on. |
 | `Probe(ctx, run)` | Reports the CLI's path, version, sign-in status, and capabilities. It records connection status only and never tokens. |
 | `Interactive(req)` | Builds the command for an on-screen session: new session, resume, or fork. It sets a model only when one is given, and points to a brief file when there is one. |
 | `Headless(req)` | Builds the command for one borrow. |
@@ -193,8 +194,10 @@ path or format is recorded. `ConfigPatches` returns nothing yet; the Codex
 
 Each adapter declares the CLI versions it was tested on, from the verified
 versions above: claude 2.1.311, codex-cli 0.164.0, and grok 1.0.70.
-`adapter.VersionWarning` returns a warning when a probed version falls
-outside that range, for `aggy doctor`.
+Each declares it as `Tested` and through `TestedVersions()`.
+`adapter.VersionWarning(a, version)` returns a warning when a probed
+version falls outside that range or cannot be read, and "" inside it, for
+`aggy doctor` to show.
 
 ### Unconfirmed facts and their fallbacks
 
