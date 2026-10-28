@@ -365,16 +365,21 @@ reads through `safefs`, at most the last 4 MiB (`transcript.MaxTail`),
 refuses a symlink anywhere between the vendor's session folder and the
 file (`ErrUnsafe`) and a file swapped after the check, and returns
 `ErrNoTranscript` when it finds no file, or a file with no line in a known
-shape. Several files for one id are an error, never a guess. Only message
-text is read: tool calls, tool output, reasoning, and injected messages
-are skipped. The vendor home is `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or
+shape, or when the last line is larger than that window. Several files
+for one id are an error, never a guess. Only message text is read: tool
+calls, tool output, and reasoning are skipped, and so is context the CLI
+wrote into a user message: Codex's AGENTS.md text, environment context,
+and turn notes, and Claude's slash-command output. Of a shell command the
+user ran (Codex `!cmd`, Claude bash mode), only `! <command>` is kept,
+never its output. A user message that starts with a tag (`<` and a
+letter) is treated as such context. The vendor home is `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or
 `GROK_HOME`, else `~/.<vendor>`. No session file has been recorded as a
 fixture yet; the tests use lines in the shapes below. Sources are in
 [verification.md](verification.md#session-file-formats-t6670).
 
 | Vendor | File | Lines read | Confidence |
 | --- | --- | --- | --- |
-| Claude | `projects/<cwd, every non-alphanumeric as ->/<id>.jsonl`, else the one `projects/*/<id>.jsonl` | `type` `user` or `assistant`; `message.content` a string or blocks whose `text` blocks are joined; lines with `isMeta`, `isCompactSummary`, or `isSidechain` skipped | User lines and the folder name from Grok's Claude importer; **assistant lines unverified** |
+| Claude | `projects/<cwd, every non-alphanumeric as ->/<id>.jsonl`, else the one `projects/*/<id>.jsonl` | `type` `user` or `assistant`; `message.content` a string or blocks whose `text` blocks are joined; lines with `isMeta`, `isCompactSummary`, or `isSidechain` skipped | User-line shape and folder name from Grok's Claude session lister and title heuristic; **assistant lines and the bash-mode and slash-command tags unverified** |
 | Codex | the one `sessions/YYYY/MM/DD/rollout-*-<id>.jsonl` | `type` `response_item` whose `payload` is a `message` with `role` `user` or `assistant`; `input_text` and `output_text` content joined; `timestamp` kept | Source-verified (0.164.0) |
 | Grok | `sessions/<grok.EncodeCwd(cwd)>/<id>/chat_history.jsonl`, else the one `sessions/*/<id>/chat_history.jsonl` | `type` `user` (text parts; skipped when `synthetic_reason` is set) and `assistant` (`content` a string) | Source-verified at a revision possibly newer than 1.0.70 |
 
