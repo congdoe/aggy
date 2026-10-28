@@ -594,3 +594,7 @@ does not set it yet (TODO(T6673)).
 8. Grok's `auto_compact_threshold_percent` at 1.0.70, and the context
    window of the user's model, before aggy sets Grok's compaction below
    200,000 tokens (T6673).
+9. aggy's installed hooks firing live in each CLI (T6616 for Codex):
+   that Codex runs a `hooks.json` `command` holding arguments
+   (`'<aggy>' hook --vendor codex Stop`) through a shell, as Claude and
+   Grok do, is unverified; the live check used a bare script path.
