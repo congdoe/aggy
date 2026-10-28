@@ -140,3 +140,40 @@ func TestReadErrorNeverSaysDelete(t *testing.T) {
 		t.Error("ReadError changed an unrelated error")
 	}
 }
+
+// TestReadOnlyHandleRefusesNonSelect (second PR #6 review, N10): the
+// read-only handle runs only SELECTs and the user_version read.
+func TestReadOnlyHandleRefusesNonSelect(t *testing.T) {
+	s, path := openTemp(t)
+	_ = s.Close()
+	ctx := context.Background()
+	ro, err := OpenReadOnly(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ro.Close() }()
+	if _, err := ro.Version(ctx); err != nil {
+		t.Errorf("Version = %v", err)
+	}
+	var n int
+	if err := ro.DB().QueryRowContext(ctx, `WITH RECURSIVE r(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM r WHERE i < 3) SELECT count(*) FROM r, changes`).Scan(&n); err != nil {
+		t.Errorf("SELECT = %v", err)
+	}
+	other := filepath.Join(t.TempDir(), "other.db")
+	for _, q := range []string{
+		`ATTACH DATABASE '` + other + `' AS o`,
+		`PRAGMA journal_mode = DELETE`,
+		`PRAGMA user_version = 99`,
+		`PRAGMA query_only = 0`,
+		`VACUUM`,
+		`INSERT INTO events (at, type) VALUES (1, 'x')`,
+		`CREATE TEMP TABLE t (x)`,
+	} {
+		if _, err := ro.DB().ExecContext(ctx, q); err == nil {
+			t.Errorf("%s was allowed", q)
+		}
+	}
+	if _, err := os.Lstat(other); err == nil {
+		t.Error("ATTACH created a file")
+	}
+}

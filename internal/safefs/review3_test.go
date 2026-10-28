@@ -210,3 +210,39 @@ func TestFirmlinkSpelling(t *testing.T) {
 		t.Errorf("two lock keys: %s and %s", k1, k2)
 	}
 }
+
+// TestVolPathsRefused (second PR #6 review, N3): macOS's /.vol names any
+// file by device and inode, so a credential that does not exist yet
+// could be written through it, and it gave one file another lock key.
+// It is refused outright, in any case spelling.
+func TestVolPathsRefused(t *testing.T) {
+	oldVol, oldFold := refuseVol, foldCase
+	refuseVol, foldCase = true, true
+	t.Cleanup(func() { refuseVol, foldCase = oldVol, oldFold })
+	fakeHome(t)
+	for _, p := range []string{"/.vol/16777234/2/x", "/.VOL/1/2", "/.vol"} {
+		if err := Check(p); !errors.Is(err, ErrAuthPath) {
+			t.Errorf("Check(%s) = %v, want ErrAuthPath", p, err)
+		}
+		if _, err := CanonicalPath(p); err == nil {
+			t.Errorf("CanonicalPath(%s) succeeded", p)
+		}
+	}
+	if err := Check("/.volume/x"); errors.Is(err, ErrAuthPath) {
+		t.Error("/.volume was refused as /.vol")
+	}
+}
+
+// TestFirmlinkFoldedSpelling (N4): the firmlink prefix is stripped after
+// case folding, so a long-s spelling of it is stripped too.
+func TestFirmlinkFoldedSpelling(t *testing.T) {
+	oldStrip, oldFold := stripFirmlink, foldCase
+	stripFirmlink, foldCase = true, true
+	t.Cleanup(func() { stripFirmlink, foldCase = oldStrip, oldFold })
+	longS := string(rune(0x17f))
+	for _, p := range []string{"/System/Volumes/Data/Users/x", "/Sy" + longS + "tem/Volumes/Data/Users/x", "/SYSTEM/volumes/DATA/Users/x"} {
+		if got := normPath(p); got != "/users/x" {
+			t.Errorf("normPath(%q) = %q, want /users/x", p, got)
+		}
+	}
+}

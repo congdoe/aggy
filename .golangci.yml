@@ -205,7 +205,7 @@ linters:
         text: "use of `(Setpgid|Setsid|Pgid|Pdeathsig|Noctty)`"
         linters: [forbidigo]
       - path: ^internal/store/
-        text: "`sql\\.Open`"
+        text: "`sql\\.(Open|OpenDB)`"
         linters: [forbidigo]
       - path: ^internal/(supervisor|borrow)/
         text: "`(exec\\.(Command|CommandContext)|os\\.StartProcess)`"
