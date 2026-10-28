@@ -350,6 +350,34 @@ Claude's `settings.json` by default** (`[compat.claude] hooks = false` or
 for Claude fires under Grok too (`docs.x.ai/build/features/hooks.md`;
 `user-guide/10-hooks.md`).
 
+## Skill folders
+
+Source and docs only, not run live (2026-10-28). `aggy skill link`
+relies on these:
+
+- Claude Code loads personal skills from `~/.claude/skills/<name>/SKILL.md`,
+  follows a symlinked skill folder, and "loads the skill once even if
+  several locations point at the same target"; only the description is
+  loaded every turn, the body on invoke; invoked as `/<name>`
+  (code.claude.com/docs/en/skills). Whether `CLAUDE_CONFIG_DIR` moves the
+  folder is not stated: unverified, so aggy uses `~/.claude/skills`.
+- Codex reads user skills from `$HOME/.agents/skills` (repo
+  `.agents/skills`, `/etc/codex/skills`, and bundled ones too; not
+  `~/.codex/skills`), follows symlinked skill folders, requires `name`
+  and `description`, and is invoked with `$<name>`; two skills with one
+  name are both kept (learn.chatgpt.com/docs/build-skills, formerly
+  developers.openai.com/codex/skills).
+- Grok scans `<grok home>/skills`, `~/.agents/skills` (always), and
+  `~/.claude/skills` (unless `[compat.claude] skills = false`), plus
+  project folders; it drops a skill whose canonical path it has already
+  seen, then dedupes by name; `[skills] ignore` takes paths (with `~`
+  expansion), canonicalizes them, and hides every skill whose canonical
+  path starts with one; `disabled` takes names and keeps the skill
+  listed (`crates/codegen/xai-grok-agent/src/prompt/skills.rs`:
+  `collect_config_dirs`, `dedupe_skills`, `filter_skills`;
+  `crates/codegen/xai-grok-pager/docs/user-guide/08-skills.md`, at
+  commit `2bdd1d6a`). Invoked as `/<name>`.
+
 ## Still open
 
 1. Codex limit event, captured live from an exhausted account: the
