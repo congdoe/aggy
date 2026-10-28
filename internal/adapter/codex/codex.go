@@ -413,10 +413,13 @@ func (a Adapter) Home() string {
 	return ""
 }
 
-// Artifacts lists every image in generated_images/<thread-id>/ under the
-// Codex home: one request can produce several, and the image tool call is
-// not in the JSON stream. It returns paths only and copies nothing. An
-// id that fails adapter.ValidSessionID is an error.
+// Artifacts lists every file in generated_images/<thread-id>/ under the
+// Codex home, not only the *.png files recorded there: one request can
+// produce several (Codex made two for one request in testing and
+// reported one), and the image tool call is not in the JSON stream. The
+// borrow's artifact gate then refuses any that is not a real image. It
+// returns paths only and copies nothing. An id that fails
+// adapter.ValidSessionID is an error.
 func (a Adapter) Artifacts(_ adapter.HeadlessRequest, res adapter.HeadlessResult) ([]adapter.Artifact, error) {
 	if res.SessionID == "" {
 		return nil, nil
@@ -428,7 +431,7 @@ func (a Adapter) Artifacts(_ adapter.HeadlessRequest, res adapter.HeadlessResult
 	if !filepath.IsAbs(home) {
 		return nil, fmt.Errorf("codex: cannot locate the Codex home")
 	}
-	return adapter.ListFiles(filepath.Join(home, "generated_images", res.SessionID), "image", ".png")
+	return adapter.ListFiles(filepath.Join(home, "generated_images", res.SessionID), "image")
 }
 
 // TranscriptTail returns ErrNoTranscript: the format of Codex's session

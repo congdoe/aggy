@@ -134,6 +134,9 @@ type Result struct {
 	// Refused are the files the child left that the artifact gate
 	// refused, each with the reason.
 	Refused []string
+	// Made counts every file an image or video child left in its
+	// vendor's store, kept or refused.
+	Made int
 }
 
 // Borrower runs borrows.
@@ -468,6 +471,12 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 		if err != nil {
 			res.Detail = "listing artifacts: " + err.Error()
 		}
+		// Every file the vendor left counts, kept or not: image turns use
+		// plan limits faster, and Codex can make more than it says.
+		res.Made = len(arts)
+		if req.Kind == adapter.Image {
+			end.ImageCount = res.Made
+		}
 		passed, refused := gate(arts, started)
 		res.Refused = refused
 		for _, m := range passed {
@@ -475,9 +484,6 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 		}
 		for _, x := range res.Artifacts {
 			end.Artifacts = append(end.Artifacts, x.Path)
-			if x.Kind == "image" {
-				end.ImageCount++
-			}
 		}
 	}
 	path, rerr := b.writeReport(res, req, parsed.SessionID, now)

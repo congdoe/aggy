@@ -66,8 +66,10 @@ func ClassifyName(name string) ErrorClass {
 
 // ListFiles returns the regular files directly in dir whose extension
 // (lower-cased, with the dot) is in exts, sorted by name, as kind
-// artifacts. A missing dir is no files. It reads through safefs, never
-// follows a symlink, and never copies anything.
+// artifacts. With no exts it returns every entry but directories,
+// symlinks and other odd files included, for the borrow's artifact gate
+// to refuse with a reason. A missing dir is no files. It reads through
+// safefs, never follows a symlink, and never copies anything.
 func ListFiles(dir, kind string, exts ...string) ([]Artifact, error) {
 	entries, err := safefs.ReadDir(dir)
 	if err != nil {
@@ -78,10 +80,11 @@ func ListFiles(dir, kind string, exts ...string) ([]Artifact, error) {
 	}
 	var out []Artifact
 	for _, e := range entries {
-		if !e.Type().IsRegular() {
-			continue
-		}
-		if !slices.Contains(exts, strings.ToLower(filepath.Ext(e.Name()))) {
+		if len(exts) == 0 {
+			if e.IsDir() {
+				continue
+			}
+		} else if !e.Type().IsRegular() || !slices.Contains(exts, strings.ToLower(filepath.Ext(e.Name()))) {
 			continue
 		}
 		out = append(out, Artifact{Path: filepath.Join(dir, e.Name()), Kind: kind})

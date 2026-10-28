@@ -313,6 +313,9 @@ func printResult(w io.Writer, r borrow.Result) {
 	for _, l := range borrow.Excerpt(text, 8, 160) {
 		fmt.Fprintf(w, "  %s\n", termsafe.Line(l))
 	}
+	if r.Status == "done" && (r.Kind == adapter.Image || r.Kind == adapter.Video) {
+		fmt.Fprintf(w, "  %d files made, %d kept\n", r.Made, len(r.Artifacts))
+	}
 	for i, a := range r.Artifacts {
 		if i == maxArtifactLines {
 			fmt.Fprintf(w, "  and %d more\n", len(r.Artifacts)-i)
