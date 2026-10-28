@@ -1,11 +1,12 @@
 package diag
 
 import (
+	"go/scanner"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -49,34 +50,106 @@ func sources(t *testing.T, root string) map[string]string {
 	return out
 }
 
+// tok is one token of a Go file; comments are skipped.
+type tok struct {
+	t   token.Token
+	lit string
+}
+
+func tokens(t *testing.T, name, src string) []tok {
+	t.Helper()
+	fset := token.NewFileSet()
+	file := fset.AddFile(name, -1, len(src))
+	var s scanner.Scanner
+	s.Init(file, []byte(src), func(pos token.Position, msg string) { t.Errorf("%s: %s", pos, msg) }, 0)
+	var out []tok
+	for {
+		_, tk, lit := s.Scan()
+		if tk == token.EOF {
+			return out
+		}
+		if tk == token.IDENT || tk == token.PERIOD || tk == token.LBRACE || tk == token.RBRACE {
+			out = append(out, tok{tk, lit})
+		} else {
+			out = append(out, tok{tk, ""})
+		}
+	}
+}
+
+// uses counts, per identifier, the references to the registry's
+// variables in code (never in comments): diag.X outside the package, X
+// inside it. It also returns where package diag builds an Event or Code
+// from a value outside codes.go (Event{} and Code{}, the zero values, are
+// allowed).
+func uses(t *testing.T, src map[string]string) (map[string]int, []string) {
+	t.Helper()
+	n := map[string]int{}
+	var built []string
+	for path, text := range src {
+		if path == "internal/diag/codes.go" {
+			continue
+		}
+		inPkg := strings.HasPrefix(path, "internal/diag/")
+		ts := tokens(t, path, text)
+		for i, x := range ts {
+			if x.t != token.IDENT {
+				continue
+			}
+			switch {
+			case !inPkg && x.lit == "diag" && i+2 < len(ts) && ts[i+1].t == token.PERIOD && ts[i+2].t == token.IDENT:
+				n[ts[i+2].lit]++
+			case inPkg && (i == 0 || ts[i-1].t != token.PERIOD):
+				n[x.lit]++
+				if (x.lit == "Event" || x.lit == "Code") && builds(ts[i+1:]) {
+					built = append(built, path)
+				}
+			}
+		}
+	}
+	return n, built
+}
+
+// builds reports whether the tokens after an Event or Code are a
+// composite literal with a value: {"x"}, {s}, or {name: s}. A function
+// body after a result type (func f() Event {) is not one.
+func builds(ts []tok) bool {
+	if len(ts) < 3 || ts[0].t != token.LBRACE {
+		return false
+	}
+	return ts[1].t == token.STRING || ts[1].t == token.IDENT && (ts[2].t == token.RBRACE || ts[2].t == token.COLON)
+}
+
 var (
-	constRE   = regexp.MustCompile(`(?m)^\s+((?:Ev|Code)[A-Z]\w*)\s+(Event|Code)\s*=\s*"([^"]+)"`)
-	literalRE = regexp.MustCompile(`\b(?:Event|Code):\s*"|\bdiag\.(?:Event|Code)\(\s*"`)
-	eventRE   = regexp.MustCompile(`^[a-z]+(\.[a-z]+)?\.[a-z_]+\.[a-z_]+$`)
-	codeRE    = regexp.MustCompile(`^[a-z]+\.[a-z_]+$`)
+	varRE   = regexp.MustCompile(`(?m)^\s+((?:Ev|Code)[A-Z]\w*)\s*=\s*(Event|Code)\{"([^"]+)"\}`)
+	eventRE = regexp.MustCompile(`^[a-z]+(\.[a-z]+)?\.[a-z_]+\.[a-z_]+$`)
+	codeRE  = regexp.MustCompile(`^[a-z]+\.[a-z_]+$`)
 )
 
-// TestRegistry: every event and code constant is registered once, with a
+// TestRegistry: every event and code variable is registered once, with a
 // name that follows the naming rules, a level, a meaning, and a next
-// step; every one is used outside the registry; and no code names an
-// event or code with a string instead of a constant.
+// step; every one is used in code outside the registry (a mention in a
+// comment does not count); and nothing outside codes.go builds an Event
+// or Code from a value. Elsewhere, the type system refuses one: the
+// field is unexported.
 func TestRegistry(t *testing.T) {
-	root := repoRoot(t)
-	src := sources(t, root)
-	reg := src["internal/diag/codes.go"]
-	consts := constRE.FindAllStringSubmatch(reg, -1)
-	if len(consts) != len(events)+len(codes) {
-		t.Errorf("codes.go declares %d constants, the registry has %d entries", len(consts), len(events)+len(codes))
+	src := sources(t, repoRoot(t))
+	vars := varRE.FindAllStringSubmatch(src["internal/diag/codes.go"], -1)
+	if len(vars) != len(events)+len(codes) {
+		t.Errorf("codes.go declares %d variables, the registry has %d entries", len(vars), len(events)+len(codes))
+	}
+	used, built := uses(t, src)
+	if len(built) > 0 {
+		t.Errorf("only codes.go may build an Event or Code: %v", built)
 	}
 	seen := map[string]bool{}
-	for _, c := range consts {
-		name, kind, value := c[1], c[2], c[3]
+	for _, v := range vars {
+		name, kind, value := v[1], v[2], v[3]
 		if seen[value] {
 			t.Errorf("%s is registered twice", value)
 		}
 		seen[value] = true
 		if kind == "Event" {
-			e, ok := LookupEvent(Event(value))
+			e, ok := EventNamed(value)
 			switch {
 			case !ok:
 				t.Errorf("event %s (%s) is not in the registry", value, name)
@@ -86,7 +159,7 @@ func TestRegistry(t *testing.T) {
 				t.Errorf("event %s: level, meaning, and next step are required", value)
 			}
 		} else {
-			c, ok := LookupCode(Code(value))
+			c, ok := CodeNamed(value)
 			switch {
 			case !ok:
 				t.Errorf("code %s (%s) is not in the registry", value, name)
@@ -96,36 +169,26 @@ func TestRegistry(t *testing.T) {
 				t.Errorf("code %s: meaning and next step are required", value)
 			}
 		}
-		used := false
-		for path, text := range src {
-			if path == "internal/diag/codes.go" {
-				continue
-			}
-			pat := `\b` + name + `\b`
-			if !strings.HasPrefix(path, "internal/diag/") {
-				pat = `\bdiag\.` + name + `\b`
-			}
-			if regexp.MustCompile(pat).MatchString(text) {
-				used = true
-				break
-			}
-		}
-		if !used {
+		if used[name] == 0 {
 			t.Errorf("%s (%s) is registered but never used", value, name)
 		}
 	}
-	var bad []string
-	for path, text := range src {
-		if path == "internal/diag/codes.go" {
-			continue
-		}
-		if literalRE.MatchString(text) {
-			bad = append(bad, path)
-		}
+}
+
+// TestRegistryUses checks the usage counter itself: a comment does not
+// count, code does, and building an Event from a string in package diag
+// is caught.
+func TestRegistryUses(t *testing.T) {
+	src := map[string]string{
+		"internal/cli/a.go":  "package cli\n// diag.EvGCRemoved in a comment\n/* diag.CodeUsage */\nvar _ = diag.CodeStore\n",
+		"internal/diag/b.go": "package diag\n// EvGCRefused\nvar _ = EvGCRemoved\nvar _ = Event{\"x.y.z\"}\nvar _ = Code{}\n",
 	}
-	sort.Strings(bad)
-	if len(bad) > 0 {
-		t.Errorf("events and codes must be named by their diag constants, not strings: %v", bad)
+	used, built := uses(t, src)
+	if used["EvGCRemoved"] != 1 || used["CodeUsage"] != 0 || used["CodeStore"] != 1 || used["EvGCRefused"] != 0 {
+		t.Errorf("uses = %v", used)
+	}
+	if len(built) != 1 || built[0] != "internal/diag/b.go" {
+		t.Errorf("built = %v", built)
 	}
 }
 

@@ -31,7 +31,10 @@ func allDiagText(t *testing.T, state string) string {
 		t.Fatal(err)
 	}
 	defer func() { _ = v.Close() }()
-	_, rows, err := v.Query(context.Background(), "SELECT * FROM diag.records")
+	var rows [][]any
+	_, err = v.Query(context.Background(), "SELECT * FROM diag.records", 0,
+		func([]string) error { return nil },
+		func(r []any) error { rows = append(rows, r); return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +55,9 @@ func allDiagText(t *testing.T, state string) string {
 // with a planted secret in the task, a constraint, the child's reply, and
 // the edited file, and a distinctive task, leaves neither in any column
 // of diag.db, in the export, or in the bundle. The records it needs are
-// there, linked by borrow and trace, and the child got the trace.
+// there, linked by borrow and trace, and the child got the trace. Each
+// step runs with its own run id and trace, as its own process would, so
+// the link comes from the borrow's row.
 func TestDiagPrivacyCanary(t *testing.T) {
 	f, markers := editFixture(t)
 	gitIn(t, f.repo, "checkout", "--", "a.go")
@@ -68,6 +73,7 @@ func TestDiagPrivacyCanary(t *testing.T) {
 		"cwd_files": []map[string]string{{"path": "a.go", "content": "package a\n\n// " + secret + "\nfunc Edited() {}\n"}},
 	})
 	f.scenario["codex"] = string(sc)
+	freshRun(t)
 	if code, out, errOut := f.run(t, "edit", task+" with key "+secret, "--vendor", "codex", "--constraint", "never print "+secret); code != 0 {
 		t.Fatalf("borrow: code %d: %s %s", code, out, errOut)
 	}
@@ -80,9 +86,12 @@ func TestDiagPrivacyCanary(t *testing.T) {
 			}
 		}
 	}
+	borrowTrace := dlog.Trace()
+	freshRun(t)
 	if code, out, errOut := accept(f, "", false, id, "--yes"); code != 0 {
 		t.Fatalf("accept: code %d: %s %s", code, out, errOut)
 	}
+	freshRun(t)
 	later := time.Now().Add(40 * 24 * time.Hour)
 	f.env.now = func() time.Time { return later }
 	if code, out, errOut := gc(f, "--yes"); code != 0 || !strings.Contains(out, "Removed worktree") {
@@ -92,13 +101,13 @@ func TestDiagPrivacyCanary(t *testing.T) {
 
 	text := allDiagText(t, f.state)
 	for _, ev := range []diag.Event{diag.EvBorrowChildStarted, diag.EvBorrowChildExited, diag.EvBorrowFinished, diag.EvAcceptApplied, diag.EvGCRemoved} {
-		if !strings.Contains(text, string(ev)) {
+		if !strings.Contains(text, ev.String()) {
 			t.Errorf("no %s record", ev)
 		}
 	}
 	_, exp, _ := runDiagCmd("export", "--jsonl")
 	_, bundle, errB := runDiagCmd("bundle", "--since", "1h")
-	if !strings.Contains(exp, id) || !strings.Contains(bundle, string(diag.EvAcceptApplied)) {
+	if !strings.Contains(exp, id) || !strings.Contains(bundle, diag.EvAcceptApplied.String()) {
 		t.Errorf("export or bundle misses the borrow: %s\n%s %s", exp, bundle, errB)
 	}
 	for name, s := range map[string]string{"diag.db": text, "export": exp, "bundle": bundle} {
@@ -116,8 +125,8 @@ func TestDiagPrivacyCanary(t *testing.T) {
 			traces[r.TraceID] = true
 		}
 	}
-	if len(traces) != 1 {
-		t.Errorf("the borrow's records have traces %v", traces)
+	if len(traces) != 1 || !traces[borrowTrace] {
+		t.Errorf("the borrow's records have traces %v, want %s alone", traces, borrowTrace)
 	}
 }
 
@@ -258,7 +267,7 @@ func TestRefusalTagged(t *testing.T) {
 	if code != 1 || !strings.HasSuffix(strings.TrimSpace(errOut), tag) {
 		t.Fatalf("code %d: %q", code, errOut)
 	}
-	if !strings.Contains(allDiagText(t, f.state), string(diag.CodeOneHop)) {
+	if !strings.Contains(allDiagText(t, f.state), diag.CodeOneHop.String()) {
 		t.Error("no record")
 	}
 	var out, errb strings.Builder
@@ -278,7 +287,7 @@ func TestGCPrunesDiag(t *testing.T) {
 	}
 	now := time.Now()
 	for i, age := range []time.Duration{30 * 24 * time.Hour, 20 * 24 * time.Hour, time.Hour} {
-		r := store.DiagRecord{ID: fmt.Sprintf("old%d", i), Schema: 1, TS: now.Add(-age), Level: "info", Component: "gc", Event: string(diag.EvGCRemoved), RunID: "r"}
+		r := store.DiagRecord{ID: fmt.Sprintf("old%d", i), Schema: 1, TS: now.Add(-age), Level: "info", Component: "gc", Event: diag.EvGCRemoved.String(), RunID: "r"}
 		if err := d.Insert(ctx, r); err != nil {
 			t.Fatal(err)
 		}
@@ -334,5 +343,188 @@ func TestParseWhen(t *testing.T) {
 		if _, err := parseWhen(bad, now); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+// freshRun gives the next command a writer of its own, as a new aggy
+// process has: a new run id, and a new trace unless AGGY_TRACE is set.
+// The old writer is back after the test.
+func freshRun(t *testing.T) {
+	t.Helper()
+	old := dlog
+	t.Cleanup(func() { dlog = old })
+	dlog = diag.New(version(), os.Stderr)
+}
+
+// TestDiagPrivacyCanaryFailures (T6753, P58-5): the failure paths store
+// none of a planted secret, a distinctive task, a check's output, or an
+// env value: a failed borrow, one that never started, a failed check,
+// and an accept refusal, whose security code also writes a refusal row
+// to the index's events. Each step runs as its own process would.
+func TestDiagPrivacyCanaryFailures(t *testing.T) {
+	const secret = "ghp_Rf4Kw9Tz2Lq7Xm3Bv8Nc1Hd6Js5Pa0Ye2Gu"
+	const word = "tangerine-heron-canary"
+	const task = "Make b.go print the " + word + " banner"
+	const envValue = "plum-envvalue-canary-55913"
+	const checkOut = "marmalade-checkoutput-canary"
+	t.Setenv("OPENAI_API_KEY", envValue)
+	t.Setenv("AGGY_CANARY_ENV", envValue)
+	f, id, _, _, _ := gateFixture(t, "echo "+checkOut+" >&2; echo "+secret+" >&2; exit 1")
+	if err := os.WriteFile(filepath.Join(f.state, "config.toml"), []byte("[log]\nlevel = \"debug\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A failed check.
+	freshRun(t)
+	if code, out, _ := checkEdit(f, "", false, id, "--yes"); code != 1 || !strings.Contains(out, checkOut) {
+		t.Fatalf("check: code %d: %s", code, out)
+	}
+	// A borrow whose child fails, with the secret in its task, its
+	// constraint, its reply, and its stderr.
+	freshRun(t)
+	sc, _ := json.Marshal(map[string]any{
+		"events":    []any{map[string]any{"type": "item.completed", "item": map[string]any{"type": "agent_message", "text": task + " " + secret}}},
+		"stderr":    "fatal: " + task + " " + secret + "\n",
+		"exit_code": 3,
+	})
+	f.scenario["codex"] = string(sc)
+	if code, out, errOut := f.run(t, "review", task+" key "+secret, "--vendor", "codex", "--constraint", "hide "+secret); code == 0 {
+		t.Fatalf("failed borrow: code 0: %s %s", out, errOut)
+	}
+	// One that never starts: grok is not installed.
+	freshRun(t)
+	if code, out, errOut := f.run(t, "research", task+" key "+secret, "--vendor", "grok"); code == 0 {
+		t.Fatalf("no-start borrow: code 0: %s %s", out, errOut)
+	}
+	// An accept refused for a protected path (a security code).
+	freshRun(t)
+	sc, _ = json.Marshal(map[string]any{
+		"events": []any{map[string]any{"type": "item.completed", "item": map[string]any{"type": "agent_message", "text": "done " + secret}}},
+		"cwd_files": []map[string]string{
+			{"path": "b.go", "content": "package a\n// " + word + " " + secret + "\n"},
+			{"path": ".github/workflows/ci.yml", "content": "run: echo " + secret + "\n"},
+		},
+	})
+	f.scenario["codex"] = string(sc)
+	before := len(fakecli.Records(t, f.record))
+	if code, out, errOut := f.run(t, "edit", task+" key "+secret, "--vendor", "codex", "--constraint", "hide "+secret); code != 0 {
+		t.Fatalf("edit: code %d: %s %s", code, out, errOut)
+	}
+	var edit string
+	for _, r := range fakecli.Records(t, f.record)[before:] {
+		if r.Mode == "headless" {
+			edit = filepath.Base(r.Cwd)
+		}
+	}
+	freshRun(t)
+	if code, _, errOut := accept(f, "", false, edit, "--yes"); code != 1 || !strings.Contains(errOut, "[accept.protected_path · run "+dlog.RunID()+"]") {
+		t.Fatalf("accept: code %d: %s", code, errOut)
+	}
+
+	text := allDiagText(t, f.state)
+	for _, want := range []string{diag.EvCheckCommandFailed.String(), diag.CodeChecksFailed.String(), diag.EvBorrowFailed.String(),
+		diag.EvBorrowRefused.String(), diag.EvAcceptRefused.String(), diag.CodeProtected.String()} {
+		if !strings.Contains(text, want) {
+			t.Errorf("no %s in diag.db:\n%s", want, text)
+		}
+	}
+	_, exp, _ := runDiagCmd("export", "--jsonl")
+	_, bundle, _ := runDiagCmd("bundle", "--since", "1h")
+	code, events, errOut := runDiagCmd("sql", "SELECT * FROM idx.events", "--json")
+	if code != 0 || !strings.Contains(events, `"refusal"`) || !strings.Contains(events, diag.CodeProtected.String()) {
+		t.Errorf("idx.events: code %d: %s %s", code, events, errOut)
+	}
+	for name, s := range map[string]string{"diag.db": text, "export": exp, "bundle": bundle, "idx.events": events} {
+		for _, leak := range []string{secret, secret[:16], task, word, envValue, checkOut} {
+			if strings.Contains(s, leak) {
+				t.Errorf("%s holds %q", name, leak)
+			}
+		}
+	}
+}
+
+// TestDiagNoStateNoFiles (P58-1): a refusal with no state dir, a dry run
+// included, makes no file; a dry run where the state dir is there makes
+// no diag.db and writes no index row.
+func TestDiagNoStateNoFiles(t *testing.T) {
+	f := newBorrowFixture(t)
+	t.Setenv("PATH", t.TempDir())
+	f.env.getenv = func(k string) string {
+		if k == "AGGY_DELEGATED" {
+			return "1"
+		}
+		return ""
+	}
+	parent := t.TempDir()
+	t.Setenv("AGGY_HOME", filepath.Join(parent, "aggy"))
+	for _, args := range [][]string{{"--dry-run"}, {"--yes"}} {
+		freshRun(t)
+		if code, _, errOut := gc(f, args...); code != 1 || !strings.Contains(errOut, "borrow child") && errOut == "" || strings.Contains(errOut, "warning") {
+			t.Errorf("%v: code %d: %s", args, code, errOut)
+		}
+		if ents, err := os.ReadDir(parent); err != nil || len(ents) != 0 {
+			t.Errorf("%v: made %v, %v", args, ents, err)
+		}
+	}
+	// The state dir and the index exist: a dry run's refusal stores nothing.
+	t.Setenv("AGGY_HOME", f.state)
+	freshRun(t)
+	if code, out, errOut := gc(f, "--dry-run"); code != 1 || strings.Contains(errOut, "[") {
+		t.Errorf("dry run: code %d: %s %s", code, out, errOut)
+	}
+	if _, err := os.Stat(filepath.Join(f.state, store.DiagFileName)); !os.IsNotExist(err) {
+		t.Errorf("diag.db: %v", err)
+	}
+	s, err := store.OpenReadOnly(context.Background(), filepath.Join(f.state, store.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if evs, err := s.Events(context.Background(), store.EventFilter{}); err != nil || len(evs) != 0 {
+		t.Errorf("events = %+v, %v", evs, err)
+	}
+}
+
+// TestGCCorruptDiag (P58-2): a diag.db that cannot be read is warned
+// about once, by name, and gc goes on to exit 0.
+func TestGCCorruptDiag(t *testing.T) {
+	f := newBorrowFixture(t)
+	t.Setenv("PATH", t.TempDir())
+	if err := os.WriteFile(filepath.Join(f.state, store.DiagFileName), []byte(strings.Repeat("not a database ", 400)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"--dry-run"}, {"--yes"}} {
+		freshRun(t)
+		code, out, errOut := gc(f, args...)
+		if code != 0 || strings.Count(errOut, "diag.db") != 1 || !strings.Contains(errOut, "skipping the diagnostic log") {
+			t.Errorf("%v: code %d: %s %s", args, code, out, errOut)
+		}
+	}
+}
+
+// TestDiagSQLCaps (P58-6): --limit stops at that many rows and says so;
+// --timeout stops a query that runs on.
+func TestDiagSQLCaps(t *testing.T) {
+	newBorrowFixture(t)
+	q := "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 5) SELECT x FROM n"
+	code, out, errOut := runDiagCmd("sql", q, "--limit", "2")
+	if code != 0 || strings.Count(out, "\n") != 3 || !strings.Contains(errOut, "stopped at 2 rows") {
+		t.Errorf("--limit 2: code %d: %q %q", code, out, errOut)
+	}
+	code, out, errOut = runDiagCmd("sql", q, "--limit", "2", "--json")
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(out), &rows); code != 0 || err != nil || len(rows) != 2 {
+		t.Errorf("--json --limit 2: code %d: %q %q %v", code, out, errOut, err)
+	}
+	if code, out, errOut = runDiagCmd("sql", q, "--limit", "0"); code != 0 || strings.Count(out, "\n") != 6 || errOut != "" {
+		t.Errorf("--limit 0: code %d: %q %q", code, out, errOut)
+	}
+	forever := "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) SELECT count(*) FROM n"
+	start := time.Now()
+	if code, _, errOut = runDiagCmd("sql", forever, "--timeout", "200ms"); code == 0 || !strings.Contains(errOut, "--timeout") {
+		t.Errorf("--timeout: code %d: %q", code, errOut)
+	}
+	if d := time.Since(start); d > 20*time.Second {
+		t.Errorf("--timeout took %s", d)
 	}
 }

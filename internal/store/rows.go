@@ -63,6 +63,9 @@ type Child struct {
 	// Worktree is an edit child's git worktree; zero for every other
 	// child.
 	Worktree Worktree
+	// TraceID is the diagnostic trace of the flow that made it (schema
+	// version 15), written when the row is made; "" for none.
+	TraceID string
 }
 
 // Worktree is an edit child's own git worktree and branch (schema
@@ -93,9 +96,9 @@ func (s *Store) InsertChild(ctx context.Context, c Child) error {
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO children (id, parent_id, vendor, vendor_session_id, kind, title, model, cwd,
-		                       transcript_path, status, created_at, last_active, vendor_home)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       transcript_path, status, created_at, last_active, vendor_home, trace_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''))`,
 		c.ID, c.ParentID, c.Vendor, c.VendorSessionID, c.Kind, c.Title, c.Model, c.Cwd,
-		c.TranscriptPath, c.Status, millis(c.CreatedAt), millis(c.LastActive), c.VendorHome)
+		c.TranscriptPath, c.Status, millis(c.CreatedAt), millis(c.LastActive), c.VendorHome, c.TraceID)
 	return err
 }

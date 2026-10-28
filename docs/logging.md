@@ -22,9 +22,10 @@ Records go to `~/.aggy/diag.db` (`$AGGY_HOME/diag.db`), a SQLite database of its
   level = "info"        # the lowest level stored: error, warn, info, or debug
   ```
 
-  `aggy gc` deletes records older than `retention_days`, then the oldest records until the data fits in `max_mb`, and compacts the file. `aggy gc --dry-run` shows the count and changes nothing.
+  `aggy gc` deletes records older than `retention_days` and compacts the file. When it is still over `max_mb`, gc deletes, in one pass, the oldest records that hold the excess (their share of the rows' size, the pages in use less the empty schema's) and compacts again; should the compacted file still be over, it repeats, at most three passes in all. `aggy gc --dry-run` shows the count and changes nothing. A diag.db gc cannot read is skipped with one warning naming it, and the rest of gc goes on.
 - **Debug.** Debug records are stored only with `AGGY_DEBUG=1` or `level = "debug"`.
 - **A failed write never fails the command.** aggy warns once on stderr (`[diag.write_failed · run …]`) and goes on.
+- **No state dir, no files.** When the state directory does not exist, aggy writes no record and makes nothing: no directory, no diag.db, no index. A dry run (`aggy gc --dry-run`) writes no record at all, refusals included; that is decided once its flags are parsed.
 - **Reading never writes.** Every `aggy diag` form opens diag.db and the index read-only and never creates, migrates, or writes either file.
 
 ## The record
@@ -33,7 +34,8 @@ Each record is one row of the `records` table. The record schema is versioned (`
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `id` | text | a ULID: 26 characters that sort by time |
+| `seq` | int | the order records were written: an `INTEGER PRIMARY KEY AUTOINCREMENT` (diag.db version 2), which `VACUUM` never renumbers and a delete never reuses; `aggy diag --follow` resumes after the last `seq` it printed |
+| `id` | text | a ULID: 26 characters that sort by time; unique |
 | `schema` | int | the record schema version |
 | `ts` | int | Unix milliseconds, UTC |
 | `level` | text | `error`, `warn`, `info`, or `debug`, from the event's registry entry |
@@ -58,8 +60,8 @@ Indexes: `ts`, `trace_id`, `run_id`, `borrow_id`, `child_id`, `code`.
 - **Events** are `<component>.<thing>.<what happened>`, lower case with `_` inside a word: `borrow.child.exited`, `check.gate.refused`, `adapter.grok.lockdown_rejected`. A component with a dot (`adapter.grok`) is one component.
 - **Codes** are `<area>.<reason>`: `borrow.one_hop`, `lockdown.rejected`, `accept.protected_path`. A code names why, not where: the same code may come from two events.
 - Both are stable. Rename one only with a new name in the registry and the old one kept until no supported version writes it.
-- Code names events and codes only through the constants in `internal/diag/codes.go`, never as strings. `TestRegistry` fails on a string event or code, on a constant not in the registry, and on a registry entry no code uses.
-- A **security** code is a security-relevant refusal. Its record also goes to the index's `events` table as a `refusal` row, which `aggy log` shows with the run and the record id.
+- Code names events and codes only through the variables in `internal/diag/codes.go`, never as strings. `diag.Event` and `diag.Code` are structs with an unexported field, so a string or a literal outside the package does not compile; `diag.EventNamed` and `diag.CodeNamed` look a name up in the registry (for `aggy diag codes`). `TestRegistry` fails on an entry not in the registry, on a registry entry no code uses (comments do not count), and on a literal built inside the package outside `codes.go`.
+- A **security** code is a security-relevant refusal. Its record also goes to the index's `events` table as a `refusal` row, which `aggy log` shows with the run and the record id. The row is written only when the index already exists: the index is then opened without being made or migrated.
 
 ## Correlation ids
 
@@ -69,8 +71,8 @@ Every record carries them, so any problem can be followed end to end with one qu
 - **`trace_id`**: one per user-visible flow, inherited by everything the flow starts.
   - A run started by a person begins a new trace: its trace id is its run id.
   - aggy passes the trace to the children it starts in `AGGY_TRACE`, and an aggy that starts with a valid `AGGY_TRACE` (a ULID) joins that trace. `AGGY_TRACE` is on `internal/execrun`'s allowlist for headless children (borrows), so the guard hook or a refused `aggy borrow` inside a child records under the borrow's flow, and on its list for on-screen CLIs (`PTYEnv`), so a session's hooks and the borrows run from it carry the trace of the aggy that launched it. It is an id aggy made; aggy's own `AGGY_TRACE` is never passed on as is, only the writer's validated trace.
-  - A record about a borrow (`borrow_id` set) takes the trace of that borrow's first record, so `aggy accept`, `aggy check <id>`, and `aggy gc` acting on a borrow join the flow that started it, whenever they run.
-  - The trace lives in diag.db only. The index has no trace column: the borrow's first record links its `borrow_id`, `child_id`, `parent_id`, and `worktree_id` to it.
+  - The trace is also written on the index's `borrows` and `children` rows when they are made (`trace_id`, index migration 0015; NULL on rows from before it, and on rows made with no trace).
+  - A record about a borrow (`borrow_id` set) takes its trace from the borrow's row, which `aggy accept`, `aggy check <id>`, and `aggy gc` read, so they join the flow that started it whenever they run; when the row has none (a borrow from before 0015), from that borrow's first record in diag.db.
 - **`cause_id`**: the record that led to this one: a child's exit points at its start, a failure at the exit, the end at the failure.
 - **Entity ids**: `parent_id`, `child_id`, `borrow_id`, `worktree_id` (an edit worktree's directory name, which is its borrow id), `vendor`, and the vendor session id where aggy already stores it.
 
@@ -84,15 +86,15 @@ aggy accept: refusing: the diff touches .github/workflows/ci.yml, ... [accept.pr
 borrow 4f1c2a9e0b7d3c55: research on grok (default model): lockdown in 3s, 0 tokens [lockdown.rejected · run 01JBX4P...]
 ```
 
-The message is the one aggy printed before; the code and run id are added. Usage errors print the usage text after the tagged line.
+The message is the one aggy printed before; the code and run id are added. Usage errors print the usage text after the tagged line. `aggy doctor`'s error findings end with `[doctor.error_finding · run …]`, and `aggy check`'s failed commands and its summary line with `[check.failed · run …]`. A dry run prints its refusals without the tag, since it stores no record.
 
 ### Exit codes
 
 | Status | Meaning |
 | --- | --- |
 | 0 | Done. |
-| 1 | An error or a refusal; a borrow that ran and failed; a check that failed or was not run; an accept, gc, or setup that did not finish. |
-| 2 | A usage error, and `aggy check`'s config errors. |
+| 1 | An error or a refusal; a borrow that ran and failed; a check that failed or was not run (`check.failed`, `check.no_checks`, and every `aggy check <id>` refusal); an accept, gc, or setup that did not finish. |
+| 2 | A usage error. `aggy check` (no id) also exits 2 when it is not in a git work tree (`check.not_git`), when the state dir cannot be found (`store.unavailable`), when run in an edit worktree (`check.edit_worktree`), and on a repo config error (`cli.config_invalid`). |
 | other | `aggy`, `aggy run`, `new`, and `resume` exit with the vendor CLI's own status. |
 
 ## Privacy
@@ -113,7 +115,7 @@ The hard rules hold for every record, the export, and the bundle.
 | `aggy diag` | the latest records as a table; filters `--since`/`--until` (`1h`, `2d`, `today`, a date, RFC 3339), `--level` (that level and more severe), `--component`, `--event`, `--code` (globs: `borrow.*`), `--vendor`, `--run`, `--trace`, `--parent`, `--child`, `--borrow`, `-n N` (default 100; 0 for all), `--follow`; `--json` or `--jsonl` |
 | `aggy diag show <id>` | one timeline for a run, trace, borrow, child, parent, or record id: diag records, the index's `events` rows, and the borrow rows, by time, indented by `cause_id`; it says which kind of id it was given; `--json` |
 | `aggy diag codes [code]` | the code registry, or one code or event, with its meaning and what to check next |
-| `aggy diag sql "<SELECT …>"` | one read-only statement; `--json` |
+| `aggy diag sql "<SELECT …>"` | one read-only statement, its rows printed as they are read; `--json`; `--timeout D` (default 30s) stops it; `--limit N` (default 10000; 0 for no cap) stops after N rows and says so on stderr |
 | `aggy diag export --jsonl` | the records as JSON lines (every record unless `-n`), with the same filters |
 | `aggy diag bundle [--trace ID] [--since WHEN]` | scrubbed Markdown: versions, the timeline (default: the last 24 hours, at most 500 records), the codes in it with their registry text, `aggy doctor --report`, and the config keys |
 
@@ -123,8 +125,8 @@ The hard rules hold for every record, the export, and the bundle.
 
 - `diag.records`: the columns in [The record](#the-record). `attrs` is JSON: `json_extract(attrs, '$.outcome')`.
 - `idx.events`: `id`, `at` (Unix ms), `parent_id`, `child_id`, `type` (`screen`, `switch`, `borrow`, `files`, `session`, `limit`, `refusal`), `detail` (JSON; a refusal's has `code`, `event`, `run`, `record`).
-- `idx.borrows`: `id`, `child_id`, `kind`, `vendor`, `model`, `status` (`running`, `done`, `failed`, `killed`), `outcome`, `tokens`, `started_at`, `ended_at`, `report_path`.
-- `idx.children`: `id`, `parent_id`, `vendor`, `vendor_session_id`, `kind`, `status`, `worktree`, `branch`, `worktree_state`, `worktree_check`, `last_active`.
+- `idx.borrows`: `id`, `child_id`, `kind`, `vendor`, `model`, `status` (`running`, `done`, `failed`, `killed`), `outcome`, `tokens`, `started_at`, `ended_at`, `report_path`, `trace_id`.
+- `idx.children`: `id`, `parent_id`, `vendor`, `vendor_session_id`, `kind`, `status`, `worktree`, `branch`, `worktree_state`, `worktree_check`, `last_active`, `trace_id`.
 - `idx.parents`: `id`, `dir`, `last_vendor`, `created_at`, `last_active`.
 - `diag.sqlite_master` and `idx.sqlite_master` list the rest.
 

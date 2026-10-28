@@ -56,6 +56,9 @@ type Borrow struct {
 	EndedAt    time.Time // zero while running
 	ReadAt     time.Time // zero while the report is unread
 	Title      string    // the child's title, read back with the row
+	// TraceID is the diagnostic trace of the flow that started it
+	// (schema version 15); "" when none was recorded.
+	TraceID string
 }
 
 // BorrowBudget is a borrow's limits as recorded in its budget column.
@@ -78,7 +81,7 @@ type BorrowEnd struct {
 
 const borrowCols = `b.id, COALESCE(b.child_id, ''), b.kind, b.vendor, b.model, b.task_hash, b.budget,
 	b.status, b.outcome, b.artifacts, b.image_count, b.tokens, b.report_path, b.started_at,
-	b.ended_at, b.read_at, COALESCE(c.title, '')`
+	b.ended_at, b.read_at, COALESCE(c.title, ''), COALESCE(b.trace_id, '')`
 
 func scanBorrow(sc interface{ Scan(...any) error }) (Borrow, error) {
 	var b Borrow
@@ -87,7 +90,7 @@ func scanBorrow(sc interface{ Scan(...any) error }) (Borrow, error) {
 	var ended, read sql.NullInt64
 	if err := sc.Scan(&b.ID, &b.ChildID, &b.Kind, &b.Vendor, &b.Model, &b.TaskHash, &budget,
 		&b.Status, &b.Outcome, &artifacts, &b.ImageCount, &b.Tokens, &b.ReportPath, &started,
-		&ended, &read, &b.Title); err != nil {
+		&ended, &read, &b.Title, &b.TraceID); err != nil {
 		return Borrow{}, err
 	}
 	_ = json.Unmarshal([]byte(budget), &b.Budget)
@@ -284,11 +287,11 @@ func insertBorrow(ctx context.Context, conn *sql.Conn, c Child, b Borrow, pid in
 	if _, err := conn.ExecContext(ctx,
 		`INSERT INTO children (id, parent_id, vendor, vendor_session_id, kind, title, model, cwd,
 		                       transcript_path, status, created_at, last_active,
-		                       worktree, branch, worktree_base, worktree_repo, worktree_git_dir, worktree_state)
-		 VALUES (?, ?, ?, '', ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       worktree, branch, worktree_base, worktree_repo, worktree_git_dir, worktree_state, trace_id)
+		 VALUES (?, ?, ?, '', ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''))`,
 		c.ID, c.ParentID, c.Vendor, c.Kind, c.Title, c.Model, c.Cwd, c.Status,
 		millis(c.CreatedAt), millis(c.LastActive),
-		c.Worktree.Path, c.Worktree.Branch, c.Worktree.Base, c.Worktree.Repo, c.Worktree.GitDir, c.Worktree.State); err != nil {
+		c.Worktree.Path, c.Worktree.Branch, c.Worktree.Base, c.Worktree.Repo, c.Worktree.GitDir, c.Worktree.State, c.TraceID); err != nil {
 		return err
 	}
 	budget, err := json.Marshal(b.Budget)
@@ -303,10 +306,10 @@ func insertBorrow(ctx context.Context, conn *sql.Conn, c Child, b Borrow, pid in
 	}
 	_, err = conn.ExecContext(ctx,
 		`INSERT INTO borrows (id, child_id, kind, vendor, model, task_hash, budget, status, started_at,
-		                      lease_pid, lease_nonce)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
+		                      lease_pid, lease_nonce, trace_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, NULLIF(?, ''))`,
 		b.ID, c.ID, b.Kind, b.Vendor, b.Model, b.TaskHash, string(budget), millis(b.StartedAt),
-		leasePID, leaseNonce)
+		leasePID, leaseNonce, b.TraceID)
 	return err
 }
 

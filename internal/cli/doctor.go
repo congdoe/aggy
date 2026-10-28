@@ -102,7 +102,7 @@ func doctorWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 		}
 		printReport(stdout, res, id)
 	} else {
-		printDoctor(stdout, res)
+		printDoctor(stdout, res, dlog.Tag(diag.CodeDoctorError))
 	}
 	code := 0
 	for _, s := range res.sections {
@@ -264,8 +264,9 @@ func driftFindings(ctx context.Context) []checkup.Finding {
 }
 
 // printDoctor prints the findings by section. Every message may hold
-// text from a CLI or the disk, so it goes through termsafe.
-func printDoctor(w io.Writer, res doctorResult) {
+// text from a CLI or the disk, so it goes through termsafe. An error
+// finding ends with tag, its reason code and run id.
+func printDoctor(w io.Writer, res doctorResult, tag string) {
 	counts := map[checkup.Level]int{}
 	for i, s := range res.sections {
 		if i > 0 {
@@ -274,7 +275,11 @@ func printDoctor(w io.Writer, res doctorResult) {
 		fmt.Fprintln(w, s.title)
 		for _, f := range s.findings {
 			counts[f.Level]++
-			fmt.Fprintf(w, "  %-7s %s: %s\n", f.Level, f.Code, termsafe.Field(f.Text(res.home)))
+			end := ""
+			if f.Level == checkup.LevelError && tag != "" {
+				end = " " + tag
+			}
+			fmt.Fprintf(w, "  %-7s %s: %s%s\n", f.Level, f.Code, termsafe.Field(f.Text(res.home)), end)
 		}
 	}
 	fmt.Fprintf(w, "\n%d %s, %d %s\n", counts[checkup.LevelError], plural(counts[checkup.LevelError], "error", "errors"),

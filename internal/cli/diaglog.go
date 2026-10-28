@@ -19,9 +19,20 @@ var dlog = diag.New(version(), os.Stderr)
 // prints it as aggy prints every refusal and error: "aggy <cmd>: <msg>
 // [<code> · run <id>]". It returns the record id ("" when not stored).
 func refuse(ctx context.Context, stderr io.Writer, cmd string, ev diag.Event, code diag.Code, msg string, rec diag.Rec) string {
+	return refuseWith(dlog, ctx, stderr, cmd, ev, code, msg, rec)
+}
+
+// refuseWith is refuse through w. A nil w (a dry run, which writes
+// nothing) prints the message alone.
+func refuseWith(w *diag.Writer, ctx context.Context, stderr io.Writer, cmd string, ev diag.Event, code diag.Code, msg string, rec diag.Rec) string {
 	rec.Event, rec.Code, rec.Msg = ev, code, msg
-	id := dlog.Log(ctx, rec)
-	fmt.Fprintf(stderr, "aggy %s: %s %s\n", cmd, termsafe.Field(msg), dlog.Tag(code))
+	id := w.Log(ctx, rec)
+	if tag := w.Tag(code); tag != "" {
+		msg = termsafe.Field(msg) + " " + tag
+	} else {
+		msg = termsafe.Field(msg)
+	}
+	fmt.Fprintf(stderr, "aggy %s: %s\n", cmd, msg)
 	return id
 }
 
