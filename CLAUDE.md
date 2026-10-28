@@ -28,7 +28,7 @@ aggy is a Go CLI that runs the official Claude Code, Codex, and Grok Build CLIs 
 - `internal/safefs`: the only file I/O layer; refuses vendor credential files by path and file identity.
 - `internal/aggydir`: the one rule for a repo's `.aggy` folder: no symlink anywhere under it, directories made through descriptors, and nothing read from it trusted as aggy's record unless the store confirms it.
 - `internal/store`: the SQLite index at `~/.aggy/aggy.db` and its migrations, and the diagnostic log `~/.aggy/diag.db` with its own; the only package that may call `sql.Open`.
-- `internal/diag`: the diagnostic log's writer (run, trace, and cause ids; scrubbing; a failed write warns once and never fails the command) and the event and reason-code registry. [docs/logging.md](docs/logging.md) is the convention: every refusal or error ends with `[<code> · run <id>]`, events and codes are named only by the registry's constants, and `TestRegistry` checks both ways.
+- `internal/diag`: the diagnostic log's writer (run, trace, and cause ids; scrubbing; a failed write warns once and never fails the command; `Queue`, the path that never waits, for the supervisor's loop and socket) and the event and reason-code registry. [docs/logging.md](docs/logging.md) is the convention: every refusal or error ends with `[<code> · run <id>]`, events and codes are named only by the registry's constants, and `TestRegistry` checks both ways.
 - `internal/config`: user and repo config with generic defaults.
 - `internal/home`: locates the state directory (`$AGGY_HOME` or `~/.aggy`).
 - `docs/`: the design, the adapter guide, and the verification record.

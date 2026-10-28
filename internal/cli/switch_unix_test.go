@@ -51,13 +51,13 @@ func TestSwitchCommand(t *testing.T) {
 	}{
 		{"queued", []string{"grok"}, srv.Path(), 0, "when this turn ends", ""},
 		{"with a brief", []string{"--brief", "grok"}, srv.Path(), 0, "when this turn ends", ""},
-		{"no --new for agents", []string{"--new", "grok"}, srv.Path(), 2, "", "user's choice"},
+		{"no --new for agents", []string{"--new", "grok"}, srv.Path(), 2, "", "[switch.agent_options · run "},
 		{"no --model for agents", []string{"--model", "grok-5", "grok"}, srv.Path(), 2, "", "user's choice"},
 		{"unknown flag", []string{"--fork", "grok"}, srv.Path(), 2, "", "usage"},
-		{"refused", []string{"codex"}, srv.Path(), 1, "", "not offered here"},
+		{"refused", []string{"codex"}, srv.Path(), 1, "", "not offered here [switch.vendor_unavailable · run "},
 		{"unknown vendor", []string{"gpt"}, srv.Path(), 2, "", "unknown vendor"},
 		{"no vendor", nil, srv.Path(), 2, "", "usage"},
-		{"outside aggy", []string{"grok"}, "", 1, "", "not inside a CLI aggy runs"},
+		{"outside aggy", []string{"grok"}, "", 1, "", "[switch.not_supervised · run "},
 		{"socket elsewhere", []string{"grok"}, "/tmp/11111111-2222-4333-8444-555555555555.sock", 1, "", "run directory"},
 	}
 	for _, tt := range tests {

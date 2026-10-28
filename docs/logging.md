@@ -39,7 +39,7 @@ Each record is one row of the `records` table. The record schema is versioned (`
 | `schema` | int | the record schema version |
 | `ts` | int | Unix milliseconds, UTC |
 | `level` | text | `error`, `warn`, `info`, or `debug`, from the event's registry entry |
-| `component` | text | `borrow`, `accept`, `check`, `gc`, `setup`, `doctor`, `adapter.claude`, `adapter.codex`, `adapter.grok`; later `supervisor`, `hook`, `switch`, `tool`, `store`, `cli` |
+| `component` | text | `borrow`, `accept`, `check`, `gc`, `setup`, `doctor`, `adapter.claude`, `adapter.codex`, `adapter.grok`, `supervisor`, `switch`, `hook`, `diag`; later `tool` |
 | `event` | text | the stable dotted event name |
 | `code` | text | the stable reason code; empty for a plain info event |
 | `msg` | text | short and scrubbed: aggy's own text, or the error aggy printed |
@@ -71,6 +71,7 @@ Every record carries them, so any problem can be followed end to end with one qu
 - **`trace_id`**: one per user-visible flow, inherited by everything the flow starts.
   - A run started by a person begins a new trace: its trace id is its run id.
   - aggy passes the trace to the children it starts in `AGGY_TRACE`, and an aggy that starts with a valid `AGGY_TRACE` (a ULID) joins that trace. `AGGY_TRACE` is on `internal/execrun`'s allowlist for headless children (borrows), so the guard hook or a refused `aggy borrow` inside a child records under the borrow's flow, and on its list for on-screen CLIs (`PTYEnv`), so a session's hooks and the borrows run from it carry the trace of the aggy that launched it. It is an id aggy made; aggy's own `AGGY_TRACE` is never passed on as is, only the writer's validated trace.
+  - A supervised session (`aggy`, `aggy run`, `new`, `resume`) is one trace from its first launch to its last: every vendor it switches to is launched in the same process, and each CLI gets the trace in `AGGY_TRACE`. So the CLI's `aggy hook` calls (the hook handler adopts the trace of the supervisor it reports to), an `aggy switch` the agent runs, and the borrows run from the session all carry it, and the supervisor's own records (switches, the picker, the socket) do too.
   - The trace is also written on the index's `borrows` and `children` rows when they are made (`trace_id`, index migration 0015; NULL on rows from before it, and on rows made with no trace).
   - A record about a borrow (`borrow_id` set) takes its trace from the borrow's row, which `aggy accept`, `aggy check <id>`, and `aggy gc` read, so they join the flow that started it whenever they run; when the row has none (a borrow from before 0015), from that borrow's first record in diag.db.
 - **`cause_id`**: the record that led to this one: a child's exit points at its start, a failure at the exit, the end at the failure.
@@ -136,13 +137,23 @@ The hard rules hold for every record, the export, and the bundle.
 - **Why was a borrow refused?** `aggy diag --event 'borrow.*' --since 1h`, then `aggy diag show <run id>`; for each vendor passed over, `aggy diag --run <run id> --event borrow.vendor.skipped` (the code says why: `vendor.cli_missing`, `sandbox.missing`, `lockdown.untested_version`, …).
 - **Why did a borrow fail?** `aggy diag show <borrow id>`: the child's start, its exit code and duration, the failure's code, and the borrow row.
 - **Why did accept fail?** `aggy diag show <borrow id>` shows the check gate and the accept refusal with its code (`accept.protected_path`, `accept.checkout_dirty`, `accept.worktree_changed`, …).
-- **Why didn't the switch happen?** Not recorded yet: the supervisor and switch paths are instrumented in the next phase (see below). `aggy log` shows the switches that did happen.
-- **Which runs hit a vendor limit today?**
+- **Why didn't the switch happen?** `aggy diag --component switch --since 1h`, or the whole session with `aggy diag show <trace id>` (the trace of a `supervisor.child.launched` record). A switch goes `switch.request.queued`, `switch.request.offered` (its `cause_id` is the turn end, a `hook.event.accepted` with `counted: true`), `switch.request.confirmed`, `switch.request.completed`. Where it stops says why:
+  - a `switch.request.refused` names the reason: `switch.unsent_text` (text at the prompt), `switch.held` (the CLI waits for the user), `switch.vendor_unavailable`, `switch.agent_no_hold` (Codex), `switch.agent_options`, `switch.already_waiting`;
+  - no `switch.request.offered` and no refusal: no turn end was counted. Look at the `hook.event.*` records: `hook.foreign_session` (a nested CLI's turn end), `counted: false` (the session's id not known yet), `peer.lineage_failed` (a hook from outside the CLI's tree), or none at all (the CLI's hooks are not installed: `aggy hooks status`; or `hook.forward.failed` from `aggy hook` itself);
+  - `switch.exit.timed_out`: the CLI did not exit after aggy typed its exit command.
 
   ```sh
-  aggy diag sql "SELECT DISTINCT run_id, vendor, borrow_id FROM records WHERE code = 'vendor.rate_limit' AND ts >= unixepoch('now', 'start of day') * 1000"
+  aggy diag sql "SELECT ts, event, code, msg FROM records WHERE trace_id = '<trace id>' AND component IN ('switch', 'hook') ORDER BY seq"
   ```
-- **Every security refusal this week:** `aggy diag --code 'lockdown.*' --since 7d`, or `aggy diag sql "SELECT ts, code, run_id, borrow_id FROM records WHERE code IN ('borrow.one_hop', 'lockdown.rejected', 'accept.protected_path', 'accept.worktree_changed', 'check.gate_temp_dir', 'check.tree_changed', 'check.edit_worktree')"`, or `aggy log` for the `refusal` rows.
+- **Why did the agent's `aggy switch` fail?** Its message ends with the code; the supervisor recorded the same code in the session's trace: `aggy diag --trace <trace id> --event switch.request.refused`.
+- **Which runs hit a vendor limit today?** A borrow's failure (`borrow.run.failed`) and a limit the on-screen CLI reported (`switch.limit.received`, `attrs.unverified` when only a hook said so) both carry `vendor.rate_limit`:
+
+  ```sh
+  aggy diag sql "SELECT DISTINCT run_id, trace_id, vendor, event, borrow_id FROM records WHERE code = 'vendor.rate_limit' AND ts >= unixepoch('now', 'start of day') * 1000"
+  ```
+- **Did the near-limit warning show?** `aggy diag --event switch.near_limit.warned --since today` (attrs: `used_pct`, `warn_at_pct`, `to`; code `switch.near_limit_no_quota` when no vendor had quota).
+- **Why did a launch fail?** `aggy diag --event supervisor.launch.refused --since 1h`; the code says which step (`supervisor.no_terminal`, `policy.unreachable`, `vendor.cli_missing`, `cli.config_invalid`, `supervisor.launch_failed`).
+- **Every security refusal this week:** `aggy log` for the `refusal` rows, or `aggy diag sql "SELECT ts, code, run_id, trace_id, borrow_id FROM records WHERE code IN ('borrow.one_hop', 'lockdown.rejected', 'accept.protected_path', 'accept.worktree_changed', 'accept.state_temp_dir', 'check.gate_temp_dir', 'check.tree_changed', 'check.edit_worktree', 'peer.lineage_failed', 'peer.uid_mismatch', 'socket.bad_request', 'hook.foreign_session', 'hook.wrong_vendor') AND ts >= unixepoch('now', '-7 days') * 1000"` (the registry's Security column lists them).
 - **Borrows that started and never finished (aggy was killed):**
 
   ```sh
@@ -152,9 +163,20 @@ The hard rules hold for every record, the export, and the bundle.
 
 ## What is instrumented
 
-Now: borrow (start, the child's exit, the end, vendors passed over, refusals), the adapters' lockdown rejections and Grok's sandbox refusal, accept and reject, the check gate, `aggy check`, `aggy gc`, `aggy setup`, `aggy doctor`, and `aggy tool` (refusals, refused user definitions, and each on or off).
+- borrow (start, the child's exit, the end, vendors passed over, refusals), the adapters' lockdown rejections and Grok's sandbox refusal, accept and reject, the check gate, `aggy check`, `aggy gc`, `aggy setup`, `aggy doctor`, and `aggy tool` (refusals, refused user definitions, and each on or off);
+- the supervisor: a launch and its refusals, the CLI's exit (with the vendor launched next);
+- switching: a switch queued (by the user, the agent, or a limit), offered, confirmed, refused (each reason), cancelled, completed, and an exit that did not come; the picker opened, a vendor chosen, the picker dismissed; a limit received, verified or not, and when aggy did not offer the switch itself; the near-limit warning;
+- the supervisor's socket: a hook event accepted from the session, and every message rejected (outside the CLI's tree, another user, not a message aggy sends, a turn end of a foreign session, another vendor's hook), as security refusals; an agent's `aggy switch` refused, in both processes; `aggy hook` failing to reach the supervisor.
 
-Next phase (T6753 phase 2): the supervisor and switch paths, and the hook handler (which adopts the trace of the supervisor it reports to, and records forged or foreign hook events as security refusals). On-screen CLIs already get `AGGY_TRACE`.
+Not yet: `aggy hooks`.
+
+### The supervisor never waits on the log
+
+The supervisor's terminal loop and its socket write records through `diag.Queue`: `Log` only puts the record on a queue of 256 (it gets its id and time then, so a later record can name it as its cause) and one goroutine writes them, in order. When the queue is full the record is dropped and counted, and when the session ends one `diag.queue.dropped` record (`diag.queue_full`, `attrs.dropped`) says how many. At the end aggy waits at most 2 seconds for the queue to be written. A slow disk can lose records; it never holds up a key, the CLI's output, or a hook's answer. `TestQueueSlowWriter` checks it with a writer that takes 50 ms a record.
+
+### Never stored, in a session
+
+The supervisor's records hold no keys the user typed, no text the CLI printed, and nothing of a hook's payload: not even a session id from one, since any process in the CLI's tree can send a payload. A hook event's name is kept only when it is one aggy acts on (else `other`), a switch's model only as `model_set`, and the on-screen session's vendor id only on the launch record, where the index has it already. `TestDiagSessionCanary` (test/e2e: the real binary on a pseudo-terminal, against the fake CLI) plants canaries and a secret in the composer, the hook payloads, and the CLI's stderr, and checks diag.db, the export, and the bundle, and that the records of `aggy hook` and an agent's `aggy switch` share the session's trace; `TestDiagSwitchRecords` and `TestDiagHookTrace` do the same in-process.
 
 ## Registry
 
@@ -191,6 +213,26 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `tool.request.refused` | error | tool | aggy tool refused or failed; no definition or switch changed. | The code's entry. |
 | `tool.def.refused` | warn | tool | A user tool definition was left out: invalid, untrusted, or colliding (attrs: file, its base name in ~/.aggy/tools, and key; never its argv). | aggy tool list names the file and the key; fix or remove it. |
 | `tool.switch.changed` | info | tool | aggy tool on or off recorded a switch (attrs: tool, vendor, repo, on). | aggy tool status shows what is on where. |
+| `supervisor.launch.refused` | error | supervisor | aggy run, new, or resume did not put the CLI on screen, or the supervisor failed while it ran. | The code's entry; aggy diag show &lt;run id&gt; for what led to it. |
+| `supervisor.child.launched` | info | supervisor | A CLI went on screen (attrs: new_child, brief, model_set, direct). Its trace is the one its hooks, switches, and borrows carry. | aggy diag show &lt;trace id&gt; for the whole session. |
+| `supervisor.child.exited` | info | supervisor | The on-screen CLI exited; exit_code and duration_ms say how, attrs.switch_to the vendor launched next, if any. | A switch_to with no supervisor.child.launched after it: the next launch's supervisor.launch.refused. |
+| `switch.request.queued` | info | switch | A switch waits for the turn end (attrs.origin: user, agent, or limit; brief, new, model_set). | No switch.request.offered after it: the session never reached a quiet turn end; look for hook.event.accepted (Stop) and switch.request.refused. |
+| `switch.request.offered` | info | switch | The turn ended and aggy asked the user to confirm the switch. | switch.request.confirmed or switch.request.cancelled follows. |
+| `switch.request.confirmed` | info | switch | The user pressed the switch key at the confirmation; aggy typed the CLI's exit command. | switch.request.completed, or switch.exit.timed_out if the CLI did not exit. |
+| `switch.request.refused` | warn | switch | A switch was refused, or held back until the user acts; the code says why. | The code's entry; aggy diag show &lt;run id&gt; for what led to it. |
+| `switch.request.cancelled` | info | switch | The user cancelled a waiting switch (attrs.how: esc_confirm or esc_list). | Nothing, unless the user did not cancel it. |
+| `switch.request.completed` | info | switch | The CLI exited after aggy typed its exit command; the next vendor is launched. | The next supervisor.child.launched in the same trace. |
+| `switch.exit.timed_out` | warn | switch | The CLI had not exited a while after aggy typed its exit command; the switch still stands. | The CLI's screen: a turn or a menu may have taken the exit command. |
+| `switch.picker.opened` | info | switch | The switch picker opened on the vendor list (attrs.preselect: a vendor suggested after a limit or a near-limit warning). | switch.picker.chosen or switch.picker.dismissed follows. |
+| `switch.picker.chosen` | info | switch | A vendor was picked in the list (attrs: brief, new, model_set, again). | switch.request.queued, or switch.request.refused with the reason. |
+| `switch.picker.dismissed` | info | switch | The picker was closed with Esc; a waiting switch, if any, was cancelled. | Nothing. |
+| `switch.limit.received` | warn | switch | The on-screen vendor reported its plan limit (attrs.unverified: only a hook said so, which any process in the CLI's tree can send). | aggy log shows the limit; switch.request.queued or switch.limit.not_offered follows. |
+| `switch.limit.not_offered` | info | switch | After a limit, aggy did not queue a switch itself; the code says why. | The code's entry. |
+| `switch.near_limit.warned` | info | switch | The near-limit warning was shown at a turn end (attrs: used_pct, warn_at_pct, window, to). | With switch.near_limit_no_quota no vendor had quota; aggy usage. |
+| `hook.event.accepted` | info | hook | The supervisor took a hook event from the on-screen CLI's own session (attrs.event: Stop, StopFailure, StopCancelled, SessionStart, Notification, or other). | A turn end that did not move a switch on: the switch.request.refused records near it. |
+| `hook.event.rejected` | warn | hook | The supervisor did not act on a message on its socket; the code says why. | The code's entry; aggy log shows it as a refusal. |
+| `hook.forward.failed` | warn | hook | aggy hook could not hand a vendor hook event to the supervisor; the CLI went on undisturbed. | The code's entry; aggy diag --trace &lt;trace id&gt; for the session. |
+| `diag.queue.dropped` | warn | diag | The supervisor's diagnostic queue was full, so records were dropped (attrs.dropped is how many). | The state dir's disk: a slow or full disk makes the log fall behind. |
 
 | Code | Security | Meaning | What to check next |
 | --- | --- | --- | --- |
@@ -243,4 +285,26 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `tool.def_untrusted` | yes | A user tool definition, its tools folder, or the state dir is a symlink, not the user's own, or writable by group or others. | chmod go-w and check the owner of ~/.aggy, ~/.aggy/tools, and the file. |
 | `tool.still_on` |  | aggy tool remove refused: the tool is still on somewhere. | aggy tool off &lt;name&gt;, then remove it. |
 | `tool.failed` |  | Another aggy tool error: a file or the index could not be read or written. | The record's msg; aggy doctor. |
+| `diag.queue_full` |  | The diagnostic log fell behind the supervisor and dropped records rather than hold up the terminal. | The state dir's disk; aggy gc prunes the log. |
+| `supervisor.no_terminal` |  | aggy run, new, or resume needs a terminal on stdin. | Run it in a terminal, not a pipe or a script. |
+| `supervisor.launch_failed` |  | Another launch error: the parent or child could not be planned or recorded, the CLI could not start, or the supervisor failed. | The record's msg; aggy doctor. |
+| `supervisor.unreachable` |  | The supervisor's socket did not answer: the session has ended, or the socket path is not aggy's. | Is aggy still running the session? AGGY_SOCKET must be in ~/.aggy/run. |
+| `policy.unreachable` |  | The safety policy cannot be applied to the vendor's CLI, so aggy did not start it. | aggy doctor; --no-policy or [policy] required = false start it anyway. |
+| `switch.unsent_text` |  | Text the user typed and did not send is at the CLI's prompt: the exit command would send it, so the switch waits. | Send or clear the text, then press Enter on the empty prompt. |
+| `switch.agent_no_hold` |  | The agent asked for a switch away from a vendor with no hold signal (Codex), which only the user may start. | Press aggy's switch key. |
+| `switch.agent_options` |  | The agent asked for a new session or a model, which are the user's choice in the picker. | Press aggy's switch key and choose them there. |
+| `switch.vendor_unavailable` |  | The vendor cannot be switched to now: on screen already, not offered, not allowed by the repo, not on PATH, or the safety policy cannot reach it. | The record's msg; aggy setup; the repo's allowed_vendors. |
+| `switch.already_waiting` |  | Another switch is already waiting. | Wait for it, or cancel it in the picker. |
+| `switch.held` |  | The CLI said it waits for the user (a permission prompt or a notice), so the switch waits. | Answer the CLI, or send a message; the switch goes on at the next turn end. |
+| `switch.not_supervised` |  | aggy switch ran outside a session aggy supervises, or in one started with --direct. | Press aggy's switch key in a session started with aggy run. |
+| `switch.exit_timeout` |  | The CLI did not exit within the wait after aggy typed its exit command. | The CLI's screen; cancel with the switch key, then Esc. |
+| `switch.no_quota` |  | After a limit, no vendor the picker offers has quota left. | aggy usage; aggy log shows the limits. |
+| `switch.limit_no_hold` |  | After a limit on a vendor with no hold signal (Codex), aggy only suggests the switch; the user picks it. | Press the switch key, then Enter. |
+| `switch.near_limit_no_quota` |  | The near-limit warning found no vendor with quota to hand off to. | aggy usage. |
+| `peer.lineage_failed` | yes | A message on the supervisor's socket came from a process outside the on-screen CLI's process tree, so it was not acted on. | Which process of yours writes to ~/.aggy/run; a CLI's tool that outlived it is reparented and falls out. |
+| `peer.uid_mismatch` | yes | A process of another user reached the supervisor's socket; it got no answer. | The run directory's owner and mode (0700). |
+| `socket.bad_request` | yes | A message on the supervisor's socket was not one aggy sends (bad JSON, an unknown type or field, a bad name). | Which process writes to ~/.aggy/run; aggy hook and aggy switch send only valid messages. |
+| `hook.foreign_session` | yes | A turn end from the CLI's tree named another session (a nested CLI) or none, so it did not end the on-screen turn. | Nothing, unless the on-screen CLI's own turn ends are rejected: then its session id is not the one aggy recorded. |
+| `hook.wrong_vendor` | yes | A hook event from the CLI's tree came from another vendor's hook than the one on screen, so it did not gate a switch. | A nested CLI of another vendor in the session; nothing else. |
+| `hook.bad_payload` |  | aggy hook could not read the vendor's hook payload, or it was not a JSON object. | The vendor CLI's version; aggy doctor. |
 <!-- registry:end -->

@@ -17,6 +17,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/grok"
 	"github.com/congdoe/aggy/internal/brief"
 	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/limits"
@@ -65,10 +66,17 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 // the next child gets the policy unless [policy] required = false, and a
 // switch to a CLI the policy cannot reach is refused before the exit
 // command is typed (CanSwitch).
+//
+// The launches share one diagnostic trace, this process's: each CLI gets
+// it in AGGY_TRACE, so its hooks and borrows join it. The supervisor's
+// records go through a queue (diagQueue), so the terminal never waits
+// on the disk.
 func launch(name string, t target, stderr io.Writer) int {
+	q := dlog.Queue(diagQueue)
+	defer q.Close(diagFlush)
 	for {
 		var next switchTo
-		code := launchOnce(name, t, stderr, &next)
+		code := launchOnce(name, t, stderr, &next, q)
 		if next.vendor == "" {
 			return code
 		}
@@ -85,45 +93,58 @@ type switchTo struct {
 	choice   supervisor.Choice
 }
 
+// diagQueue is how many records the supervisor's diagnostic queue holds;
+// diagFlush bounds how long aggy waits for it to be written at the end.
+const (
+	diagQueue = 256
+	diagFlush = 2 * time.Second
+)
+
 // launchOnce is one launch. It returns the CLI's exit code, and sets next
-// when the CLI exited for a switch.
-func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
-	fail := func(err error) int {
-		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(err.Error()))
+// when the CLI exited for a switch. q takes the supervisor's records.
+func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag.Queue) int {
+	// ids are the entity ids known so far, for the records.
+	var ids diag.Rec
+	fail := func(code diag.Code, err error) int {
+		r := ids
+		r.Event, r.Code, r.Msg = diag.EvLaunchRefused, code, err.Error()
+		dlog.Log(context.Background(), r)
+		fmt.Fprintf(stderr, "%s: %s %s\n", name, termsafe.Line(err.Error()), dlog.Tag(code))
 		return 1
 	}
 	// Refused before anything is written to the index.
 	if !isTerminal(os.Stdin) {
-		return fail(errors.New("needs a terminal on stdin"))
+		return fail(diag.CodeNoTerminal, errors.New("needs a terminal on stdin"))
 	}
 	cfg, err := config.LoadDefault()
 	if err != nil {
-		return fail(err)
+		return fail(diag.CodeConfig, err)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		return fail(err)
+		return fail(diag.CodeLaunchFailed, err)
 	}
 	ctx := context.Background()
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
-		return fail(err)
+		return fail(diag.CodeStore, err)
 	}
 	defer func() { _ = s.Close() }()
 	pl, err := plan(ctx, s, cfg, cwd, t, time.Now(), stderr)
 	if err != nil {
-		return fail(err)
+		return fail(diag.CodeLaunchFailed, err)
 	}
 	v := adapter.Vendor(pl.child.Vendor)
+	ids = diag.Rec{Parent: pl.parent.ID, Child: pl.child.ID, Vendor: string(v)}
 	// The child's repo decides which vendors may see it, the one on
 	// screen and the ones the switch picker offers.
 	eff, err := allowedIn(cfg, pl.child.Cwd, v)
 	if err != nil {
-		return fail(err)
+		return fail(diag.CodeConfig, err)
 	}
 	path, err := probe.LookPath(vendorBin(v))
 	if err != nil {
-		return fail(err)
+		return fail(diag.CodeCLIMissing, err)
 	}
 	// The probe finds the flags whose presence is only known from help:
 	// Codex --no-alt-screen and -c, Claude --settings, Grok --rules and
@@ -143,16 +164,16 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	}
 	key, err := config.ParseKey(cfg.Switch.Key)
 	if err != nil {
-		return fail(err)
+		return fail(diag.CodeConfig, err)
 	}
 	stateDir, err := home.Dir()
 	if err != nil {
-		return fail(err)
+		return fail(diag.CodeStore, err)
 	}
 	parentID := pl.parent.ID
 	runDir := filepath.Join(stateDir, "run")
 	if err := supervisor.PrivateDir(runDir); err != nil {
-		return fail(err)
+		return fail(diag.CodeLaunchFailed, err)
 	}
 	sweepMemoryDirs(runDir, time.Now())
 	req := pl.interactiveRequest()
@@ -165,7 +186,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	} else {
 		pw, err := addPolicy(v, caps, cfg.Policy.Required, &req)
 		if err != nil {
-			return fail(err)
+			return fail(diag.CodePolicy, err)
 		}
 		warns = append(warns, pw...)
 	}
@@ -174,7 +195,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	// A crashed launch's folder is left to sweepMemoryDirs above.
 	memDir, err := memoryDir(runDir, parentID)
 	if err != nil {
-		return fail(err)
+		return fail(diag.CodeLaunchFailed, err)
 	}
 	cleanup, mw := addMemory(v, caps, pl.child.Cwd, memDir, &req)
 	defer cleanup()
@@ -188,20 +209,20 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	var briefText string
 	if t.Brief {
 		if briefText, err = childBrief(ctx, s, defaultBorrowEnv(), pl); err != nil {
-			return fail(err)
+			return fail(diag.CodeLaunchFailed, err)
 		}
 		if req.BriefFile, err = brief.Path(pl.child.Cwd, pl.child.ID); err != nil {
-			return fail(err)
+			return fail(diag.CodeLaunchFailed, err)
 		}
 	}
 	cmd, err := a.Interactive(req)
 	if err != nil {
-		return fail(err)
+		return fail(diag.CodeUnsupported, err)
 	}
 	cmd.Path = path
 	lease, err := pl.commit(ctx, s, time.Now())
 	if err != nil {
-		return fail(err)
+		return fail(diag.CodeLaunchFailed, err)
 	}
 	defer func() {
 		if lease != nil {
@@ -215,7 +236,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 		// session behind it. That is benign: the next plan marks it gone.
 		_, warn, err := brief.WriteFile(pl.child.Cwd, pl.child.ID, briefText)
 		if err != nil {
-			return fail(err)
+			return fail(diag.CodeLaunchFailed, err)
 		}
 		if warn != "" {
 			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(warn))
@@ -226,19 +247,43 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	// them), or a resumed Codex thread. A new Codex child's id comes from
 	// the session index, which ids hands to the child row.
 	assigned := pl.child.VendorSessionID
-	ids := &childIDs{s: s, child: pl.child}
-	defer ids.release(ctx)
+	cids := &childIDs{s: s, child: pl.child}
+	defer cids.release(ctx)
+	// The launch, and the CLI's exit (with the vendor launched next), as
+	// records; the vendor session id only where the index has it already.
+	launched := ids
+	launched.Event, launched.VendorSession = diag.EvLaunched, assigned
+	launched.Attrs = map[string]any{"new_child": pl.newChild, "new_parent": pl.newParent, "resumed": pl.resume != "",
+		"brief": t.Brief, "model_set": t.Model != "", "direct": t.Direct}
+	cause := dlog.Log(ctx, launched)
+	began := time.Now()
+	exited := func(code int, to adapter.Vendor) {
+		r := ids
+		r.Event, r.Cause, r.Exit, r.Duration = diag.EvSessionExited, cause, diag.Int(code), time.Since(began)
+		if to != "" {
+			r.Attrs = map[string]any{"switch_to": string(to)}
+		}
+		q.Log(r)
+	}
 	if t.Direct {
-		code, err := runDirect(cmd, runDir, parentID, v, assigned, ids.set)
+		code, err := runDirect(cmd, runDir, parentID, v, assigned, cids.set, func(r diag.Rec) {
+			r.Parent, r.Child, r.Vendor = parentID, pl.child.ID, string(v)
+			q.Log(r)
+		})
 		if err != nil {
-			fmt.Fprintf(stderr, "%s: %v\n", name, err)
+			r := ids
+			r.Event, r.Code, r.Cause, r.Msg = diag.EvLaunchRefused, diag.CodeLaunchFailed, cause, err.Error()
+			q.Log(r)
+			fmt.Fprintf(stderr, "%s: %s %s\n", name, termsafe.Line(err.Error()), dlog.Tag(diag.CodeLaunchFailed))
 			if code == 0 {
 				code = 1
 			}
+		} else {
+			exited(code, "")
 		}
 		return code
 	}
-	onHook, stopIndex := startIndex(parentID, v, assigned, ids.set)
+	onHook, stopIndex := startIndex(parentID, v, assigned, cids.set)
 	defer stopIndex()
 	// A limit reaches the picker (T6667) without ever blocking the watch.
 	limitHit := make(chan supervisor.LimitHit, 1)
@@ -273,7 +318,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	var used func(adapter.Vendor) (supervisor.Share, bool)
 	if eff.Switch.WarnAt > 0 {
 		var allowance limits.AllowanceCache
-		used = func(o adapter.Vendor) (supervisor.Share, bool) { return usedShare(o, &allowance, ids.current()) }
+		used = func(o adapter.Vendor) (supervisor.Share, bool) { return usedShare(o, &allowance, cids.current()) }
 	}
 	ex, err := supervisor.Run(supervisor.Options{
 		In: os.Stdin, Out: os.Stdout, Command: cmd,
@@ -286,20 +331,26 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 		Vendor:     v,
 		CanSwitch:  canSwitch,
 		StartsTurn: t.Brief,
-		SessionID:  ids.current,
+		SessionID:  cids.current,
 		Children:   children,
 		Limits:     limitHit,
 		HasQuota:   quota,
 		Used:       used,
 		WarnAt:     eff.Switch.WarnAt,
+		Diag:       q,
+		ChildID:    pl.child.ID,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "%s: %v\n", name, err)
+		r := ids
+		r.Event, r.Code, r.Cause, r.Msg = diag.EvLaunchRefused, diag.CodeLaunchFailed, cause, err.Error()
+		q.Log(r)
+		fmt.Fprintf(stderr, "%s: %s %s\n", name, termsafe.Line(err.Error()), dlog.Tag(diag.CodeLaunchFailed))
 		if ex.Code == 0 {
 			ex.Code = 1
 		}
 		return ex.Code
 	}
+	exited(ex.Code, ex.SwitchTo)
 	if ex.SwitchTo != "" {
 		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next}
 	}

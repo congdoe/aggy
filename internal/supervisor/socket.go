@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/safefs"
 )
 
@@ -60,11 +61,14 @@ type Server struct {
 	// onSwitch takes a switch-request (SetSwitch); nil refuses them.
 	// Guarded by mu.
 	onSwitch func(Request) error
-	wg       sync.WaitGroup
-	once     sync.Once
-	mu       sync.Mutex
-	conns    map[*net.UnixConn]struct{} // open connections, closed by Close
-	closed   bool
+	// log gets a record of each message refused or not acted on
+	// (SetLog); it must not block. Guarded by mu.
+	log    func(diag.Rec)
+	wg     sync.WaitGroup
+	once   sync.Once
+	mu     sync.Mutex
+	conns  map[*net.UnixConn]struct{} // open connections, closed by Close
+	closed bool
 }
 
 // Path returns the socket's path, for AGGY_SOCKET.
@@ -149,6 +153,25 @@ func (s *Server) SetSwitch(f func(Request) error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onSwitch = f
+}
+
+// SetLog sets what gets a record of each message the server refuses or
+// does not act on (docs/logging.md). It must never block: a hook waits
+// for its answer, and the CLI for its hook.
+func (s *Server) SetLog(f func(diag.Rec)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.log = f
+}
+
+// logger is the server's log, or one that drops records.
+func (s *Server) logger() func(diag.Rec) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.log == nil {
+		return func(diag.Rec) {}
+	}
+	return s.log
 }
 
 // fromSession reports whether the process that opened c, at pid, is in
@@ -373,6 +396,7 @@ func (s *Server) serve(c *net.UnixConn) {
 	defer func() { _ = c.Close() }()
 	uid, peerPID, err := s.peer(c)
 	if err != nil || uid != os.Getuid() {
+		s.logger()(diag.Rec{Event: diag.EvHookRejected, Code: diag.CodePeerUID, Msg: "a connection whose peer is not this user, or could not be told"})
 		return
 	}
 	from := s.fromSession(c, peerPID)
@@ -381,16 +405,17 @@ func (s *Server) serve(c *net.UnixConn) {
 		_ = c.SetDeadline(time.Now().Add(connIdle))
 		line, err := r.ReadSlice('\n')
 		if errors.Is(err, bufio.ErrBufferFull) {
-			reply(c, Response{Error: fmt.Sprintf("request longer than %d bytes", MaxMessage)})
+			s.logger()(diag.Rec{Event: diag.EvHookRejected, Code: diag.CodeBadRequest, Msg: "a message over the size limit", Attrs: map[string]any{"from_session": from}})
+			reply(c, Response{Error: fmt.Sprintf("request longer than %d bytes", MaxMessage), Code: diag.CodeBadRequest.String()})
 			return
 		}
 		if err != nil {
 			return // closed, idle, or a last line without a newline
 		}
 		s.mu.Lock()
-		onSwitch := s.onSwitch
+		onSwitch, log := s.onSwitch, s.log
 		s.mu.Unlock()
-		resp := answer(line[:len(line)-1], from, s.onHook, onSwitch)
+		resp := answer(line[:len(line)-1], from, s.onHook, onSwitch, log)
 		reply(c, resp)
 		if !resp.OK || !from {
 			return
