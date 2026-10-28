@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -56,6 +57,9 @@ type Request struct {
 	// Material is the review input (required for review, which runs in
 	// Repo, the git work tree root); internal/cli gathers it.
 	Material *Material
+	// Media is the file arguments of aggy image and aggy video; nil for
+	// aggy borrow.
+	Media *Media
 }
 
 // CLI is an installed vendor CLI: its absolute path and the
@@ -186,6 +190,9 @@ func (r Request) validate() error {
 		if strings.ContainsAny(c, "\n\r") {
 			return fmt.Errorf("constraint %q must be on one line", c)
 		}
+	}
+	if r.Media != nil {
+		return r.Media.validate(r)
 	}
 	return nil
 }
@@ -368,6 +375,13 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	if req.Kind == adapter.Review {
 		prompt.Material = req.Material
 	}
+	var refs []string
+	if req.Media != nil {
+		prompt.Constraints = append(slices.Clone(prompt.Constraints), req.Media.constraints()...)
+		if refs, err = stageRefs(req.Media.Refs, dirs.run); err != nil {
+			return Result{}, err
+		}
+	}
 	promptFile := filepath.Join(dirs.run, "prompt.md")
 	if err := safefs.WriteFile(promptFile, []byte(prompt.Text()), 0o600); err != nil {
 		return Result{}, err
@@ -381,8 +395,13 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 		MaxTurns:     budget.Turns,
 		Env:          []string{Delegated + "=1"},
 		GuardCommand: b.Guard,
+		RefImages:    refs,
 	}
 	cmd, err := a.Headless(hreq)
+	if errors.Is(err, adapter.ErrUnsupported) {
+		// Such as reference images on Grok: the next vendor may serve it.
+		return Result{}, &preStartError{err}
+	}
 	if err != nil {
 		return Result{}, err
 	}
