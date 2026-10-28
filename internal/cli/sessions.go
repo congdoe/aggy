@@ -39,13 +39,27 @@ func runNew(args []string, _, stderr io.Writer) int {
 
 // runResume is `aggy resume [id]`: the latest parent in the current
 // directory, or the one whose id starts with id.
-func runResume(args []string, _, stderr io.Writer) int {
-	noPolicy, args := cutNoPolicy(args)
-	if len(args) > 1 {
-		fmt.Fprint(stderr, "usage: aggy resume [--no-policy] [id]\n")
+func runResume(args []string, stdout, stderr io.Writer) int {
+	const use = "usage: aggy resume [--no-policy] [--brief [--show]] [id]\n"
+	var t target
+	var show bool
+	for ; len(args) > 0 && strings.HasPrefix(args[0], "--"); args = args[1:] {
+		switch args[0] {
+		case "--no-policy":
+			t.NoPolicy = true
+		case "--brief":
+			t.Brief = true
+		case "--show":
+			show = true
+		default:
+			fmt.Fprint(stderr, use)
+			return 2
+		}
+	}
+	if len(args) > 1 || show && !t.Brief {
+		fmt.Fprint(stderr, use)
 		return 2
 	}
-	t := target{NoPolicy: noPolicy}
 	if len(args) == 1 {
 		id := strings.ToLower(args[0])
 		if len(id) < 4 || len(id) > 36 || strings.Trim(id, "0123456789abcdef-") != "" {
@@ -53,6 +67,9 @@ func runResume(args []string, _, stderr io.Writer) int {
 			return 2
 		}
 		t.ParentID = id
+	}
+	if show {
+		return showBrief("aggy resume", t, stdout, stderr)
 	}
 	return launch("aggy resume", t, stderr)
 }

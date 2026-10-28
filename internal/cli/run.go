@@ -14,6 +14,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/claude"
 	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
+	"github.com/congdoe/aggy/internal/brief"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
@@ -120,6 +121,16 @@ func launch(name string, t target, stderr io.Writer) int {
 	}
 	sweepMemoryDirs(runDir, time.Now())
 	req := pl.interactiveRequest()
+	if t.Brief {
+		// A file the child is told to read, never an argument (ARG_MAX).
+		text, err := childBrief(ctx, s, defaultBorrowEnv(), pl)
+		if err != nil {
+			return fail(err)
+		}
+		if req.BriefFile, err = brief.WriteFile(pl.child.Cwd, pl.child.ID, text); err != nil {
+			return fail(err)
+		}
+	}
 	// The policy is checked before anything is written to the index, so
 	// a refused launch leaves no trace.
 	var warns []string
