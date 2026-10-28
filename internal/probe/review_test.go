@@ -93,7 +93,10 @@ func TestCodexSubcommandsFromCommandsBlock(t *testing.T) {
 			case "--help":
 				return adapter.Output{Stdout: []byte(tt.top)}, nil
 			case "exec resume --help":
-				return adapter.Output{ExitCode: tt.resumeExit}, nil
+				if tt.resumeExit != 0 {
+					return adapter.Output{ExitCode: tt.resumeExit}, nil
+				}
+				return adapter.Output{Stdout: []byte("Usage: codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]\n")}, nil
 			}
 			return adapter.Output{ExitCode: 2}, nil
 		}
@@ -121,7 +124,7 @@ func TestRunnerCallerCancel(t *testing.T) {
 func TestRunnerPrivateDir(t *testing.T) {
 	f := setup(t)
 	run := f.runner(t, "", 10*time.Second)
-	out, err := run(context.Background(), adapter.Command{Path: f.fakes.Grok, Args: []string{"-p"}})
+	out, err := run(context.Background(), adapter.Command{Path: f.fakes.Grok, Args: []string{"-p", "x"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,14 +160,14 @@ func TestEnvRules(t *testing.T) {
 		"CLAUDE_CODE_OAUTH_TOKEN", "GITHUB_TOKEN", "HTTPS_PROXY", "http_proxy", "ALL_PROXY",
 		"NODE_OPTIONS", "node_options", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES",
 		"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
-		"HOME", "PATH", "TMPDIR", "USER", "home",
+		"HOME", "PATH", "TMPDIR", "USER", "home", "CODEX_HOME",
 	}
 	for _, k := range denied {
 		if _, err := Env(base, []string{k + "=x"}); err == nil {
 			t.Errorf("%s accepted in a command's env", k)
 		}
 	}
-	for _, k := range []string{"AGGY_DELEGATED", "AGGY_VENDOR", "CODEX_HOME"} {
+	for _, k := range []string{"AGGY_DELEGATED", "AGGY_VENDOR"} {
 		if _, err := Env(base, []string{k + "=x"}); err != nil {
 			t.Errorf("%s refused: %v", k, err)
 		}

@@ -23,9 +23,9 @@ func TestFakesCheckValues(t *testing.T) {
 		wantErr  string
 	}{
 		{"session id not a uuid", "claude", "", "p", []string{"-p", "--session-id", "abc"}, 2, "UUID"},
-		{"session id uuid", "grok", "", "", []string{"-p", "--session-id", abc}, 0, ""},
+		{"session id uuid", "grok", "", "p", []string{"-p", "--session-id", abc}, 0, ""},
 		{"output format not recorded", "claude", "", "p", []string{"-p", "--output-format", "yaml"}, 2, "invalid value"},
-		{"permission mode not recorded", "grok", "", "", []string{"-p", "--permission-mode", "yolo"}, 2, "invalid value"},
+		{"permission mode not recorded", "grok", "", "p", []string{"-p", "--permission-mode", "yolo"}, 2, "invalid value"},
 		{"sandbox not recorded", "codex", "", "p", []string{"exec", "--sandbox", "danger-full-access"}, 2, "invalid value"},
 		{"sandbox added by scenario", "codex", `{"extra_values":{"--sandbox":["workspace-write"]}}`, "p", []string{"exec", "--sandbox", "workspace-write"}, 0, ""},
 		{"claude -p without a prompt", "claude", "", "", []string{"-p"}, 2, "no prompt"},
@@ -34,9 +34,9 @@ func TestFakesCheckValues(t *testing.T) {
 		{"codex exec resume without a prompt", "codex", "", "", []string{"exec", "resume", "t-1"}, 2, "no prompt"},
 		{"interactive without a terminal", "claude", "", "", nil, 2, "needs a terminal"},
 		{"interactive opted out", "claude", `{"interactive_without_tty":true}`, "", nil, 0, ""},
-		{"resume and session id, lax", "grok", "", "", []string{"-p", "--resume", "r", "--session-id", abc}, 0, ""},
-		{"resume and session id, strict", "grok", `{"strict":["resume-with-session-id"]}`, "", []string{"-p", "--resume", "r", "--session-id", abc}, 2, "fork-session"},
-		{"resume, session id, and fork, strict", "grok", `{"strict":["resume-with-session-id"]}`, "", []string{"-p", "--resume", "r", "--session-id", abc, "--fork-session"}, 0, ""},
+		{"resume and session id, lax", "grok", "", "p", []string{"-p", "--resume", "r", "--session-id", abc}, 0, ""},
+		{"resume and session id, strict", "grok", `{"strict":["resume-with-session-id"]}`, "p", []string{"-p", "--resume", "r", "--session-id", abc}, 2, "fork-session"},
+		{"resume, session id, and fork, strict", "grok", `{"strict":["resume-with-session-id"]}`, "p", []string{"-p", "--resume", "r", "--session-id", abc, "--fork-session"}, 0, ""},
 		{"grok continue", "grok", `{"interactive_without_tty":true}`, "", []string{"--continue"}, 0, ""},
 	}
 	for _, tt := range tests {
