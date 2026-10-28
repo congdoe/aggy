@@ -86,6 +86,14 @@ func APIKeyEnv(environ []string) []Finding {
 	return out
 }
 
+// Environment returns every environment and config-file finding: API-key
+// variables, base-URL variables, and routes set in vendor config files.
+func Environment(environ []string) []Finding {
+	out := APIKeyEnv(environ)
+	out = append(out, RouteEnv(environ)...)
+	return append(out, RouteFiles(environ)...)
+}
+
 // ForVendor returns the findings about v.
 func ForVendor(fs []Finding, v adapter.Vendor) []Finding {
 	var out []Finding

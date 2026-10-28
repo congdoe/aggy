@@ -134,7 +134,7 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 	defer func() { _ = s.Close() }()
 
 	st := &setupRun{env: env, ask: env.tty && !*yes, in: bufio.NewReader(env.in), out: stdout, store: s,
-		findings: checkup.APIKeyEnv(env.environ)}
+		findings: checkup.Environment(env.environ)}
 	if st.ask {
 		fmt.Fprintln(stdout, "aggy setup checks each vendor CLI in turn. Answer n to skip one; run aggy setup again any time.")
 	}

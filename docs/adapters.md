@@ -247,6 +247,32 @@ status reads), it goes in the adapter's `SignIn().Check`, whose `Parse`
 returns a status and keeps none of the output. The fakes answer such a
 command through a scenario `replies` entry.
 
+### Proxy and API-key routes
+
+`internal/checkup` flags what can take a CLI off its subscription, by
+variable name, file, and key, never by value. `aggy setup` shows these as
+warnings and `aggy doctor` reports them:
+
+- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY` set and non-empty.
+- `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GROK_MODELS_BASE_URL`, and any
+  other `*_BASE_URL` starting `ANTHROPIC_`, `OPENAI_`, `CODEX_`, `GROK_`,
+  or `XAI_`.
+- Claude `settings.json` (in `$CLAUDE_CONFIG_DIR`, else `~/.claude`) whose
+  `env` block sets one of those base-URL or API-key variables.
+- Grok `toolset.image_gen` and `toolset.video_gen` `base_url` or
+  `env_key`, read from `config.toml` in `$GROK_HOME`, else `~/.grok`.
+  The keys are in docs/design.md section 2; **the file name
+  `config.toml` is unverified**.
+- **Codex is not checked in its config file.** The key that sets a base
+  URL for its OpenAI provider is not recorded here or in the fixtures, so
+  it is unverified; only the `OPENAI_BASE_URL` and `CODEX_*_BASE_URL`
+  variables are flagged.
+
+Files are read through `safefs.ReadFileLimit`, which refuses credential
+files, symlinks, and files over 1 MiB; a file that cannot be read or
+parsed is an info finding naming the file. The process runner never
+passes any of these variables to a CLI (`execrun.Env`).
+
 ### Tested versions
 
 Each adapter declares the CLI versions it was tested on, from the verified
