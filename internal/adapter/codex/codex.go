@@ -24,13 +24,6 @@ type Adapter struct {
 	Path string
 	// Getenv reads HOME and CODEX_HOME for Artifacts. Nil means os.Getenv.
 	Getenv func(string) string
-	// Caps are the capabilities a probe of this CLI found. Headless adds
-	// --ignore-user-config to research and news only when they include
-	// probe.CapIgnoreUserConfig.
-	//
-	// TODO(T6621): the borrow runner must build the adapter with the
-	// probe's Caps; without them --ignore-user-config is never passed.
-	Caps []string
 }
 
 var _ adapter.Adapter = Adapter{}
@@ -74,16 +67,46 @@ func (a Adapter) Probe(ctx context.Context, run adapter.Runner) (adapter.Probe, 
 var (
 	// WebSearchLive turns on live web search: exec has no --search.
 	WebSearchLive = []string{"-c", `web_search="live"`}
-	// Isolation removes Codex's shell, exec, and image-view tools for
-	// research and news, which also run with --sandbox read-only in an
-	// empty temp dir. Unconfirmed (T6618): whether this fully stops file
-	// reads is still to be checked live.
-	Isolation = []string{"--disable", "shell_tool", "--disable", "unified_exec", "--disable", "view_image"}
 )
 
-// IgnoreUserConfig keeps the user's config, and so their MCP servers, out
-// of a research child. Not recorded: used only when a probe found it.
-const IgnoreUserConfig = "--ignore-user-config"
+// Lockdown is the flag set every read-only borrow child gets, live-verified
+// on codex-cli 0.164.0 (2026-10-28): the user's config (and so their MCP
+// servers) is ignored, the sandbox is read-only, and the shell, exec,
+// image-view, apps, plugins, goals, image-generation, and sleep tools are
+// off. Without --disable apps --disable plugins, 52 ChatGPT connector
+// tools load even under --ignore-user-config. The image kind keeps
+// image_generation (see lockdown).
+var Lockdown = []string{
+	"--ignore-user-config", "--sandbox", "read-only",
+	"--disable", "shell_tool", "--disable", "unified_exec", "--disable", "view_image",
+	"--disable", "apps", "--disable", "plugins", "--disable", "goals",
+	"--disable", "image_generation", "--disable", "sleep_tool",
+}
+
+// SkipGitRepoCheck lets codex exec run in a dir that is not a git repo,
+// such as a borrow's empty temp dir.
+const SkipGitRepoCheck = "--skip-git-repo-check"
+
+// lockdown returns Lockdown for kind k: image keeps image_generation.
+func lockdown(k adapter.Kind) []string {
+	if k != adapter.Image {
+		return slices.Clone(Lockdown)
+	}
+	var out []string
+	for i := 0; i < len(Lockdown); i++ {
+		if Lockdown[i] == "--disable" && Lockdown[i+1] == "image_generation" {
+			i++
+			continue
+		}
+		out = append(out, Lockdown[i])
+	}
+	return out
+}
+
+// ErrSearchOracle is why research and news are unsupported on Codex: its
+// apply_patch tool cannot be removed, and its answers reveal whether a
+// file exists, so a planted instruction could probe the disk.
+const ErrSearchOracle = "apply_patch cannot be removed and works as a file-guess oracle"
 
 // SandboxEdit is the sandbox of an edit borrow, which writes its own
 // worktree. Unconfirmed: only "read-only" is recorded.
@@ -144,20 +167,22 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 
 // Headless builds
 //
-//	codex exec [-i <ref>]... --json [-c model=...] --sandbox <mode> [isolation] [resume <id>] -- -
+//	codex exec [-i <ref>]... --json [-c model=...] <Lockdown> [--skip-git-repo-check] [resume <id>] -- -
 //
 // The exec flags all go before the resume subcommand, which takes only its
 // own flags. -i takes one or more values, so the references come first and
 // --json ends them. The prompt argument is "-" after "--", and stdin is
 // the prompt file: codex exec reads a non-terminal stdin to EOF, and a
 // regular file reaches EOF, so it never waits as it would on an open pipe.
-// The order and "-" are unconfirmed on 0.164.
 //
-// Read-only kinds run with --sandbox read-only, edit with SandboxEdit.
-// Research and news add Isolation, live web search, and, when the probe
-// found it, --ignore-user-config; they need IsolatedCwd. Web search
-// anywhere else, video, AllowedTools (no recorded tool allowlist), and a
-// pre-assigned SessionID are ErrUnsupported. MaxTurns is ignored.
+// Image and review get the Lockdown flag set (image keeps image
+// generation); --skip-git-repo-check is added unless GitRepo. Edit runs
+// with --sandbox SandboxEdit (M3). Research and news are ErrUnsupported
+// (ErrSearchOracle; TODO(T6638)), as are video, AllowedTools (no recorded
+// tool allowlist), and a pre-assigned SessionID. MaxTurns is ignored:
+// codex exec has no turn limit. Codex hooks need hash trust and hooks
+// passed with -c do not run untrusted, so GuardCommand is not wired:
+// TODO(M2 hooks).
 func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	if err := adapter.CheckAbs("prompt file", req.PromptFile); err != nil {
 		return adapter.Command{}, err
@@ -168,6 +193,10 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 	switch {
 	case req.Kind == adapter.Video:
 		return adapter.Command{}, fmt.Errorf("codex: video: %w", adapter.ErrUnsupported)
+	case req.Kind == adapter.Research || req.Kind == adapter.News:
+		// TODO(T6638): support research and news once apply_patch can be
+		// removed or contained.
+		return adapter.Command{}, fmt.Errorf("codex: %s: %w: %s", req.Kind, adapter.ErrUnsupported, ErrSearchOracle)
 	case req.AllowedTools != nil:
 		return adapter.Command{}, fmt.Errorf("codex: allowed tools: %w (no recorded tool allowlist)", adapter.ErrUnsupported)
 	case req.SessionID != "":
@@ -203,15 +232,11 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 	}
 	args = append(args, m...)
 	switch req.Kind {
-	case adapter.Research, adapter.News:
-		args = append(args, "--sandbox", "read-only")
-		args = append(args, Isolation...)
-		args = append(args, WebSearchLive...)
-		if slices.Contains(a.Caps, probe.CapIgnoreUserConfig) {
-			args = append(args, IgnoreUserConfig)
-		}
 	case adapter.Image, adapter.Review:
-		args = append(args, "--sandbox", "read-only")
+		args = append(args, lockdown(req.Kind)...)
+		if !req.GitRepo {
+			args = append(args, SkipGitRepoCheck)
+		}
 	case adapter.Edit:
 		args = append(args, "--sandbox", SandboxEdit)
 	default:
@@ -273,7 +298,8 @@ const (
 	LimitText = "You've hit your usage limit"
 )
 
-// ParseHeadless reads the JSON event stream: the session id from the
+// ParseHeadless first fails closed when the CLI rejected a lockdown flag
+// (ErrLockdown). It then reads the JSON event stream: the session id from the
 // first thread.started event (checked with adapter.ValidSessionID), the
 // final text from the last completed agent message, and tokens from
 // turn.completed usage.
@@ -286,6 +312,10 @@ const (
 // unconfirmed.
 func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (adapter.HeadlessResult, error) {
 	res := adapter.HeadlessResult{}
+	if err := adapter.CheckLockdown(adapter.Codex, out); err != nil {
+		res.Error, res.ErrorDetail = adapter.ErrLockdown, strings.TrimSpace(string(out.Stderr))
+		return res, err
+	}
 	var errText []string
 	sawThread, pending, failed, limit := false, false, false, false
 	var idErr error

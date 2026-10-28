@@ -30,24 +30,29 @@ func scenario(t *testing.T, h *fakecli.Harness, name string) string {
 func TestHeadlessGoldenArgv(t *testing.T) {
 	h := fakecli.NewHarness(t, fakecli.Build(t))
 	a := New()
+	mcp := filepath.Join(h.RunDir, MCPConfigFile)
+	lock := []string{"--strict-mcp-config", "--mcp-config", mcp}
+	review := append([]string{"-p", "--output-format", "json", "--permission-mode", "plan"}, append(lock, "--tools", "Read,Grep,Glob")...)
+	cat := func(parts ...[]string) []string { return slices.Concat(parts...) }
 	tests := []struct {
 		name     string
 		req      adapter.HeadlessRequest
 		want     []string
 		scenario string
 	}{
-		{"review", adapter.HeadlessRequest{Kind: adapter.Review}, []string{"-p", "--output-format", "json", "--permission-mode", "plan"}, ""},
-		{"edit", adapter.HeadlessRequest{Kind: adapter.Edit}, []string{"-p", "--output-format", "json", "--permission-mode", "acceptEdits"},
+		{"review", adapter.HeadlessRequest{Kind: adapter.Review}, review, ""},
+		{"edit", adapter.HeadlessRequest{Kind: adapter.Edit}, cat([]string{"-p", "--output-format", "json", "--permission-mode", "acceptEdits"}, lock),
 			`{"extra_values":{"--permission-mode":["acceptEdits"]}}`},
 		{"review with a session id", adapter.HeadlessRequest{Kind: adapter.Review, SessionID: sid},
-			[]string{"-p", "--output-format", "json", "--permission-mode", "plan", "--session-id", sid}, ""},
+			cat(review, []string{"--session-id", sid}), ""},
 		{"review resumed with a model", adapter.HeadlessRequest{Kind: adapter.Review, Resume: rid, Model: "opus"},
-			[]string{"-p", "--output-format", "json", "--model", "opus", "--permission-mode", "plan", "--resume", rid},
+			cat([]string{"-p", "--output-format", "json", "--model", "opus", "--permission-mode", "plan"}, lock,
+				[]string{"--tools", "Read,Grep,Glob", "--resume", rid}),
 			`{"extra_flags":["--model"]}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tt.req.PromptFile, tt.req.Cwd = h.Prompt, h.Cwd
+			tt.req.PromptFile, tt.req.Cwd, tt.req.RunDir = h.Prompt, h.Cwd, h.RunDir
 			c, err := a.Headless(tt.req)
 			if err != nil {
 				t.Fatal(err)
@@ -68,7 +73,7 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 
 func TestHeadlessUnsupported(t *testing.T) {
 	a := New()
-	base := adapter.HeadlessRequest{PromptFile: "/p/prompt.md", Cwd: "/w"}
+	base := adapter.HeadlessRequest{PromptFile: "/p/prompt.md", Cwd: "/w", RunDir: "/r"}
 	for _, mod := range []func(*adapter.HeadlessRequest){
 		func(r *adapter.HeadlessRequest) { r.Kind = adapter.Image },
 		func(r *adapter.HeadlessRequest) { r.Kind = adapter.Video },
@@ -155,7 +160,7 @@ func TestParseHeadlessFromScenarios(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.scenario, func(t *testing.T) {
-			req := adapter.HeadlessRequest{Kind: adapter.Review, PromptFile: h.Prompt, Cwd: h.Cwd, SessionID: sid}
+			req := adapter.HeadlessRequest{Kind: adapter.Review, PromptFile: h.Prompt, Cwd: h.Cwd, RunDir: h.RunDir, SessionID: sid}
 			c, err := a.Headless(req)
 			if err != nil {
 				t.Fatal(err)

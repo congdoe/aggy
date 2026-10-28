@@ -65,28 +65,47 @@ func (a Adapter) Probe(ctx context.Context, run adapter.Runner) (adapter.Probe, 
 	return probe.Detect(ctx, run, adapter.Grok, path)
 }
 
-// Tool lists, from the verified runs in docs/adapters.md: the news run
-// kept web_search, x_keyword_search, and x_semantic_search, image
-// generation used image_gen, and the isolation run's deny list named the
-// file, shell, fetch, and agent tools.
+// Tool names, live-verified on grok 1.0.70 (2026-10-28). Grok ignores
+// the whole --tools allowlist when any name in it is unknown, and only
+// warns on stderr (UnknownToolWarning), so every name here must be exact.
+// x_keyword_search and x_semantic_search do not exist; web_search brings
+// open_page and open_page_with_find with it.
 var (
 	// SearchTools is research and news, and the only tools they may have.
-	SearchTools = []string{"web_search", "x_keyword_search", "x_semantic_search"}
+	SearchTools = []string{"web_search"}
 	// ImageTools is image generation. image_edit, added on resume, is
 	// unverified headless.
 	ImageTools = []string{"image_gen"}
-	// VideoTools is video generation, unverified headless.
-	VideoTools = []string{"video_gen"}
+	// VideoTools is video generation: Grok has no text-to-video tool, so
+	// the child makes a still with image_gen and animates it with
+	// image_to_video. Unverified headless.
+	VideoTools = []string{"image_gen", "image_to_video"}
 	// ReadTools is review, which also runs with --permission-mode plan.
 	ReadTools = []string{"read_file", "grep", "list_dir"}
 	// EditTools is edit, in its own worktree. No shell: aggy check runs
 	// the tests.
 	EditTools = []string{"read_file", "grep", "list_dir", "write", "search_replace"}
-	// VerifiedDeny is the --disallowed-tools list of the verified
-	// isolation run. Every run passes it, minus the tools its kind uses,
-	// so isolation holds even if --tools is not a strict allowlist.
-	VerifiedDeny = []string{"read_file", "grep", "list_dir", "write", "search_replace", "run_terminal_cmd", "web_fetch", "Agent"}
+	// Lockdown is every built-in tool a borrow may be denied. Every run
+	// passes it as --disallowed-tools, minus the tools its kind uses, so
+	// the child keeps only those even if --tools were ignored. search_tool
+	// and use_tool, the MCP meta-tools, are always denied.
+	Lockdown = []string{
+		"read_file", "grep", "list_dir", "write", "search_replace", "run_terminal_cmd", "web_fetch",
+		"Agent", "search_tool", "use_tool", "image_gen", "image_edit", "image_to_video",
+		"reference_to_video", "send_feedback", "monitor", "workflow", "todo_write",
+		"ask_user_question", "enter_plan_mode", "exit_plan_mode",
+	}
+	// NoSubagents keeps the child from starting its own agents.
+	NoSubagents = "--no-subagents"
 )
+
+// UnknownToolWarning is what Grok writes to stderr when a --tools name is
+// unknown, after which it ignores the whole allowlist. ParseHeadless takes
+// it as a failed borrow.
+const UnknownToolWarning = "name no tool"
+
+// alwaysDenied are never allowed, whatever AllowedTools says.
+var alwaysDenied = []string{"search_tool", "use_tool", "Agent"}
 
 // permitted lists the tools each kind may have: its own and, through
 // AllowedTools, nothing else.
@@ -97,7 +116,7 @@ func permitted(k adapter.Kind) []string {
 	case adapter.Image:
 		return append(slices.Clone(ImageTools), "image_edit")
 	case adapter.Video:
-		return VideoTools
+		return append(slices.Clone(VideoTools), "reference_to_video")
 	case adapter.Review:
 		return ReadTools
 	case adapter.Edit:
@@ -183,15 +202,18 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 	return adapter.Command{Path: Bin, Args: args, Env: req.Env, Dir: req.Cwd, Stdin: adapter.StdinTerminal}, nil
 }
 
-// Headless builds grok -p --output-format json with the prompt file as
-// stdin (that grok -p reads its prompt from stdin is unconfirmed). Each
-// kind gets a fixed --tools allowlist and --disallowed-tools with the
-// verified deny list minus those tools. AllowedTools may only name tools
-// the kind already permits (compared case-insensitively): research and
-// news get search tools and nothing else, review read tools only. Review
-// runs with --permission-mode plan, MaxTurns sets --max-turns, and
-// research and news need IsolatedCwd. Web search outside research and
-// news, and RefImages (no recorded flag), are ErrUnsupported.
+// Headless builds
+//
+//	grok -p --output-format json [--model m] [session] [--permission-mode plan]
+//	     --tools <kind's tools> --disallowed-tools <Lockdown minus them> --no-subagents [--max-turns N]
+//
+// with the prompt file as stdin. AllowedTools may only name tools the
+// kind already permits (compared case-insensitively), and never the MCP
+// meta-tools. Review runs with --permission-mode plan, MaxTurns sets
+// --max-turns, and research and news need IsolatedCwd. Web search outside
+// research and news, and RefImages (no recorded flag), are ErrUnsupported.
+// Grok takes no per-run hook flag (it does load Claude's settings.json
+// hooks by default), so GuardCommand is not wired: TODO(M2 hooks).
 func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	if err := adapter.CheckAbs("prompt file", req.PromptFile); err != nil {
 		return adapter.Command{}, err
@@ -229,7 +251,7 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	}
 	for _, t := range req.AllowedTools {
 		c, ok := canonical(req.Kind, t)
-		if !ok {
+		if !ok || slices.Contains(alwaysDenied, c) {
 			return adapter.Command{}, fmt.Errorf("grok: %s may use only %s, not %q", req.Kind, strings.Join(permitted(req.Kind), ", "), t)
 		}
 		if !slices.Contains(tools, c) {
@@ -237,8 +259,8 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 		}
 	}
 	var deny []string
-	for _, d := range VerifiedDeny {
-		if !slices.Contains(tools, d) {
+	for _, d := range Lockdown {
+		if !slices.Contains(tools, d) || slices.Contains(alwaysDenied, d) {
 			deny = append(deny, d)
 		}
 	}
@@ -256,7 +278,7 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	if plan {
 		args = append(args, "--permission-mode", "plan")
 	}
-	args = append(args, "--tools", strings.Join(tools, ","), "--disallowed-tools", strings.Join(deny, ","))
+	args = append(args, "--tools", strings.Join(tools, ","), "--disallowed-tools", strings.Join(deny, ","), NoSubagents)
 	if req.MaxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(req.MaxTurns))
 	}
@@ -270,7 +292,8 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 // sessionId is recorded in Grok's JSON; these names are unconfirmed.
 var TextFields = []string{"result", "text", "response"}
 
-// ParseHeadless reads the JSON reply: sessionId (recorded; checked with
+// ParseHeadless first fails closed when the CLI rejected a lockdown flag
+// or printed UnknownToolWarning (ErrLockdown). It then reads the JSON reply: sessionId (recorded; checked with
 // adapter.ValidSessionID, and a pre-assigned or resumed id is kept, with
 // an error if the reply names another), and the final text from the first of
 // TextFields present.
@@ -285,6 +308,10 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 		assigned = req.Resume
 	}
 	res := adapter.HeadlessResult{SessionID: assigned}
+	if err := lockdownErr(out); err != nil {
+		res.Error, res.ErrorDetail = adapter.ErrLockdown, strings.TrimSpace(string(out.Stderr))
+		return res, err
+	}
 	var obj map[string]any
 	parsed := false
 	lines := bytes.Split(bytes.TrimSpace(out.Stdout), []byte("\n"))
@@ -325,6 +352,22 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 		return res, fmt.Errorf("grok: %w", adapter.ErrUnparsed)
 	}
 	return res, idErr
+}
+
+// lockdownErr fails the run closed when Grok refused a lockdown flag, or
+// warned that a --tools name is unknown: it then ignores the whole
+// allowlist, so the child ran with every tool.
+func lockdownErr(out adapter.Output) error {
+	if err := adapter.CheckLockdown(adapter.Grok, out); err != nil {
+		return err
+	}
+	for _, line := range strings.Split(string(out.Stderr), "\n") {
+		if strings.Contains(line, UnknownToolWarning) {
+			return fmt.Errorf("grok: %w: Grok ignored the --tools allowlist because a tool name is unknown (%s)",
+				adapter.ErrLockdownRejected, strings.TrimSpace(line))
+		}
+	}
+	return nil
 }
 
 // Home is Grok's config directory: $GROK_HOME, else ~/.grok.

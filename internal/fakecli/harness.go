@@ -16,6 +16,7 @@ type Harness struct {
 	Cwd    string // an empty working dir, symlinks resolved
 	Prompt string // a prompt file holding "the task"
 	Record string // the fakes' record file
+	RunDir string // an empty dir for a borrow's per-run files
 }
 
 // NewHarness sets HOME to a temp dir for the test, clears the vendor home
@@ -32,6 +33,7 @@ func NewHarness(t *testing.T, fakes Fakes) *Harness {
 		t.Fatal(err)
 	}
 	h.Cwd = cwd
+	h.RunDir = t.TempDir()
 	h.Prompt = filepath.Join(t.TempDir(), "prompt.md")
 	if err := safefs.WriteFile(h.Prompt, []byte("the task\n"), 0o600); err != nil {
 		t.Fatal(err)

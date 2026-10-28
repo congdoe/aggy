@@ -26,8 +26,23 @@ func scenario(t *testing.T, h *fakecli.Harness, name string) string {
 func TestHeadlessGoldenArgv(t *testing.T) {
 	h := fakecli.NewHarness(t, fakecli.Build(t))
 	a := New()
-	search := "web_search,x_keyword_search,x_semantic_search"
-	denyAll := "read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent"
+	all := strings.Split("read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,"+
+		"image_gen,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,"+
+		"ask_user_question,enter_plan_mode,exit_plan_mode", ",")
+	// deny is every lockdown tool but the kind's own.
+	deny := func(keep ...string) string {
+		var out []string
+		for _, t := range all {
+			if !slices.Contains(keep, t) {
+				out = append(out, t)
+			}
+		}
+		return strings.Join(out, ",")
+	}
+	tail := func(tools string, keep ...string) []string {
+		return []string{"--tools", tools, "--disallowed-tools", deny(keep...), "--no-subagents"}
+	}
+	head := []string{"-p", "--output-format", "json"}
 	tests := []struct {
 		name     string
 		req      adapter.HeadlessRequest
@@ -35,21 +50,21 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 		scenario string
 	}{
 		{"research", adapter.HeadlessRequest{Kind: adapter.Research, MaxTurns: 30, IsolatedCwd: true},
-			[]string{"-p", "--output-format", "json", "--tools", search, "--disallowed-tools", denyAll, "--max-turns", "30"}, ""},
-		{"news", adapter.HeadlessRequest{Kind: adapter.News, IsolatedCwd: true, WebSearch: true},
-			[]string{"-p", "--output-format", "json", "--tools", search, "--disallowed-tools", denyAll}, ""},
+			slices.Concat(head, tail("web_search"), []string{"--max-turns", "30"}), ""},
+		{"news", adapter.HeadlessRequest{Kind: adapter.News, IsolatedCwd: true, WebSearch: true, MaxTurns: 15},
+			slices.Concat(head, tail("web_search"), []string{"--max-turns", "15"}), ""},
 		{"image", adapter.HeadlessRequest{Kind: adapter.Image, SessionID: sid},
-			[]string{"-p", "--output-format", "json", "--session-id", sid, "--tools", "image_gen", "--disallowed-tools", denyAll}, ""},
+			slices.Concat(head, []string{"--session-id", sid}, tail("image_gen", "image_gen")), ""},
 		{"image edit", adapter.HeadlessRequest{Kind: adapter.Image, Resume: sid},
-			[]string{"-p", "--output-format", "json", "--resume", sid, "--tools", "image_gen,image_edit", "--disallowed-tools", denyAll}, ""},
+			slices.Concat(head, []string{"--resume", sid}, tail("image_gen,image_edit", "image_gen", "image_edit")), ""},
 		{"video", adapter.HeadlessRequest{Kind: adapter.Video},
-			[]string{"-p", "--output-format", "json", "--tools", "video_gen", "--disallowed-tools", denyAll}, ""},
+			slices.Concat(head, tail("image_gen,image_to_video", "image_gen", "image_to_video")), ""},
 		{"review", adapter.HeadlessRequest{Kind: adapter.Review},
-			[]string{"-p", "--output-format", "json", "--permission-mode", "plan", "--tools", "read_file,grep,list_dir",
-				"--disallowed-tools", "write,search_replace,run_terminal_cmd,web_fetch,Agent"}, ""},
+			slices.Concat(head, []string{"--permission-mode", "plan"}, tail("read_file,grep,list_dir", "read_file", "grep", "list_dir")), ""},
 		{"edit with a model", adapter.HeadlessRequest{Kind: adapter.Edit, Model: "grok-4.7"},
-			[]string{"-p", "--output-format", "json", "--model", "grok-4.7", "--tools",
-				"read_file,grep,list_dir,write,search_replace", "--disallowed-tools", "run_terminal_cmd,web_fetch,Agent"}, `{"extra_flags":["--model"]}`},
+			slices.Concat(head, []string{"--model", "grok-4.7"},
+				tail("read_file,grep,list_dir,write,search_replace", "read_file", "grep", "list_dir", "write", "search_replace")),
+			`{"extra_flags":["--model"]}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -65,6 +80,9 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 				t.Errorf("stdin %v %q dir %q", c.Stdin, c.StdinPath, c.Dir)
 			}
 			out, rec := h.Run(t, c, tt.scenario)
+			if strings.Contains(string(out.Stderr), UnknownToolWarning) {
+				t.Errorf("an unknown tool name in %q: %s", c.Args, out.Stderr)
+			}
 			if out.ExitCode != 0 || rec.Mode != "headless" || rec.Stdin != "the task\n" {
 				t.Errorf("fake: exit %d %q, record %+v", out.ExitCode, out.Stderr, rec)
 			}
@@ -82,7 +100,9 @@ func TestHeadlessRefusals(t *testing.T) {
 		{Kind: adapter.Review, AllowedTools: []string{"write"}},
 		{Kind: adapter.Image, AllowedTools: []string{"run_terminal_cmd"}},
 		{Kind: adapter.Edit, AllowedTools: []string{"a,b"}},
-		{Kind: adapter.Research, AllowedTools: []string{"x_semantic_search", "extra_search"}, IsolatedCwd: true},
+		{Kind: adapter.Research, AllowedTools: []string{"x_semantic_search"}, IsolatedCwd: true},
+		{Kind: adapter.Research, AllowedTools: []string{"search_tool"}, IsolatedCwd: true},
+		{Kind: adapter.News, AllowedTools: []string{"use_tool"}, IsolatedCwd: true},
 		{Kind: adapter.Review, SessionID: "nope"},
 		{Kind: adapter.Review, Resume: "r", SessionID: sid},
 		{Kind: "chat"},
