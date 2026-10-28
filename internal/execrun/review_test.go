@@ -155,12 +155,12 @@ func TestEnvRelativePathUnset(t *testing.T) {
 // fakes' AGGY_FAKE_* may be added; AGGY_HOME and other AGGY_ names may
 // not, and AGGY_DELEGATED from aggy's own environment never passes.
 func TestEnvNarrowAllowlist(t *testing.T) {
-	base := []string{"HOME=/h", "PATH=/usr/bin", "AGGY_DELEGATED=1", "AGGY_HOME=/s"}
+	base := []string{"HOME=/h", "PATH=/usr/bin", "AGGY_DELEGATED=1", "AGGY_HOME=/s", "AGGY_TRACE=01JABCDEFGHJKMNPQRSTVWXYZ0"}
 	tests := []struct {
 		key string
 		ok  bool
 	}{
-		{"AGGY_DELEGATED", true}, {"AGGY_VENDOR", true}, {"AGGY_MODEL", true},
+		{"AGGY_DELEGATED", true}, {"AGGY_VENDOR", true}, {"AGGY_MODEL", true}, {"AGGY_TRACE", true},
 		{"AGGY_FAKE_SCENARIO", true}, {"AGGY_FAKE_RECORD", true},
 		{"AGGY_HOME", false}, {"AGGY_ANYTHING", false}, {"AGGY_FAKE_", false}, {"AGGY_FAKE_x", false},
 	}
@@ -170,7 +170,7 @@ func TestEnvNarrowAllowlist(t *testing.T) {
 		}
 	}
 	env, err := Env(base, nil)
-	if err != nil || slices.Contains(env, "AGGY_DELEGATED=1") || slices.Contains(env, "AGGY_HOME=/s") {
+	if err != nil || slices.Contains(env, "AGGY_DELEGATED=1") || slices.Contains(env, "AGGY_HOME=/s") || slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "AGGY_TRACE=") }) {
 		t.Errorf("inherited AGGY_ variables passed: %v, %v", env, err)
 	}
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/borrow"
 	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -60,6 +61,7 @@ type gcItem struct {
 	kind, what string
 	bytes      int64
 	remove     func(context.Context) error
+	ids        diag.Rec // the diagnostic log's ids for it
 }
 
 // gcPlan is what a gc run would remove, and what it leaves and why.
@@ -86,32 +88,34 @@ func gcWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, stderr
 			fmt.Fprint(stdout, gcUsage)
 			return 0
 		}
-		fmt.Fprintf(stderr, "aggy gc: %v\n\n%s", err, gcUsage)
+		refuse(context.Background(), stderr, "gc", diag.EvGCRefused, diag.CodeUsage, err.Error(), diag.Rec{})
+		fmt.Fprintf(stderr, "\n%s", gcUsage)
 		return 2
 	}
 	if fl.NArg() > 0 {
-		fmt.Fprintf(stderr, "aggy gc: unexpected arguments\n\n%s", gcUsage)
+		refuse(context.Background(), stderr, "gc", diag.EvGCRefused, diag.CodeUsage, "unexpected arguments", diag.Rec{})
+		fmt.Fprintf(stderr, "\n%s", gcUsage)
 		return 2
 	}
-	fail := func(err error) int {
-		fmt.Fprintf(stderr, "aggy gc: %s\n", termsafe.Field(err.Error()))
+	fail := func(code diag.Code, err error) int {
+		refuse(context.Background(), stderr, "gc", diag.EvGCRefused, code, err.Error(), diag.Rec{})
 		return 1
 	}
 	// A borrow child never cleans up after its parent.
 	if env.getenv(borrow.Delegated) != "" {
-		return fail(borrow.ErrDelegated)
+		return fail(diag.CodeOneHop, borrow.ErrDelegated)
 	}
 	stateDir, err := home.Dir()
 	if err != nil {
-		return fail(err)
+		return fail(diag.CodeStore, err)
 	}
 	cfg, err := config.LoadDefault()
 	if err != nil {
-		return fail(err)
+		return fail(diag.CodeConfig, err)
 	}
 	path, err := store.DefaultPath()
 	if err != nil {
-		return fail(err)
+		return fail(diag.CodeStore, err)
 	}
 	if _, err := safefs.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		fmt.Fprintln(stdout, "Nothing to remove: aggy has no index yet.")
@@ -125,13 +129,16 @@ func gcWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, stderr
 	}
 	s, err := open(ctx)
 	if err != nil {
-		return fail(err)
+		return fail(diag.CodeStore, err)
 	}
 	defer func() { _ = s.Close() }()
 	g := &gitWorktrees{env: env, stateDir: stateDir, out: stderr}
 	plan, err := planGC(ctx, s, g, stateDir, retention(cfg.GC), env.now())
+	if err == nil {
+		err = planDiag(ctx, &plan, cfg.Log, env.now())
+	}
 	if err != nil {
-		return fail(store.ReadError(err))
+		return fail(diag.CodeGCFailed, store.ReadError(err))
 	}
 	showPlan(stdout, plan)
 	if len(plan.items) == 0 {
@@ -155,11 +162,16 @@ func gcWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, stderr
 	}
 	code := 0
 	for _, it := range plan.items {
+		rec := it.ids
+		rec.Attrs = map[string]any{"kind": it.kind}
 		if err := it.remove(ctx); err != nil {
-			fmt.Fprintf(stderr, "aggy gc: not removed: %s %s: %s\n", it.kind, termsafe.Field(it.what), termsafe.Field(err.Error()))
+			refuse(ctx, stderr, "gc", diag.EvGCRemoveFailed, diag.CodeGCRemoveFailed,
+				fmt.Sprintf("not removed: %s %s: %s", it.kind, it.what, err), rec)
 			code = 1
 			continue
 		}
+		rec.Event, rec.Msg = diag.EvGCRemoved, it.what
+		dlog.Log(ctx, rec)
 		fmt.Fprintf(stdout, "Removed %s %s\n", it.kind, termsafe.Field(it.what))
 	}
 	return code
@@ -223,7 +235,7 @@ func planGC(ctx context.Context, s *store.Store, g *gitWorktrees, stateDir strin
 		}
 		c := c
 		p.items = append(p.items, gcItem{
-			kind: "child",
+			kind: "child", ids: diag.Rec{Child: c.ID, Vendor: c.Vendor},
 			what: fmt.Sprintf("%s (%s %s borrow, last active %s; index row only)", c.ID, c.Vendor, c.Kind, c.LastActive.Format("2006-01-02")),
 			remove: func(ctx context.Context) error {
 				ok, err := s.PruneChild(ctx, c)
@@ -312,7 +324,8 @@ func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktre
 		if leftover {
 			what = fmt.Sprintf("%s (left by a removal cut short, branch %s)", wt.Path, wt.Branch)
 		}
-		p.items = append(p.items, gcItem{kind: "worktree", what: what, bytes: size, remove: func(ctx context.Context) error {
+		ids := diag.Rec{Borrow: id, Worktree: filepath.Base(wt.Path)}
+		p.items = append(p.items, gcItem{kind: "worktree", what: what, bytes: size, ids: ids, remove: func(ctx context.Context) error {
 			if err := unchanged(ctx, s, w); err != nil {
 				return err
 			}
@@ -330,6 +343,50 @@ func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktre
 			return discardEdit(ctx, s, g, id, wt, now)
 		}})
 	}
+	return nil
+}
+
+// planDiag adds the diagnostic log's records past [log] retention_days,
+// and the oldest past max_mb, when diag.db exists. It reads the log
+// read-only; the removal opens it to prune.
+func planDiag(ctx context.Context, p *gcPlan, l config.Log, now time.Time) error {
+	path, err := store.DiagPath()
+	if err != nil {
+		return err
+	}
+	fi, err := safefs.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	v, err := store.OpenDiagView(ctx, path, "")
+	if err != nil {
+		return err
+	}
+	before := now.Add(-time.Duration(l.RetentionDays) * 24 * time.Hour)
+	n, err := v.CountBefore(ctx, before)
+	_ = v.Close()
+	if err != nil {
+		return err
+	}
+	max := int64(l.MaxMB) << 20
+	if n == 0 && fi.Size() <= max {
+		return nil
+	}
+	what := fmt.Sprintf("%d diagnostic record(s) older than %d days in %s", n, l.RetentionDays, path)
+	if fi.Size() > max {
+		what += fmt.Sprintf(", and the oldest past %d MB", l.MaxMB)
+	}
+	p.items = append(p.items, gcItem{kind: "diag", what: what, remove: func(ctx context.Context) error {
+		db, err := store.OpenDiag(ctx, path)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = db.Close() }()
+		_, err = db.Prune(ctx, before, max)
+		return err
+	}})
 	return nil
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/checkup"
 	"github.com/congdoe/aggy/internal/devfix"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/manifest"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -28,7 +29,8 @@ Checks each vendor CLI (installed, version against the versions aggy was
 tested on, sign-in), API-key and base-URL variables and vendor config
 settings that can bill an API instead of the subscription, whether each
 CLI gets this repo's shared memory and aggy's safety policy, and whether
-config files aggy changed have changed since. It changes nothing.
+config files aggy changed have changed since. It changes nothing; an
+error finding goes to aggy's diagnostic log (aggy diag).
 
   --report   print a version safe to paste into a public issue: home
              paths, user and host names, emails, and token-shaped text
@@ -83,11 +85,13 @@ func doctorWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 			fmt.Fprint(stdout, doctorUsage)
 			return 0
 		}
-		fmt.Fprintf(stderr, "aggy doctor: %v\n\n%s", err, doctorUsage)
+		refuse(context.Background(), stderr, "doctor", diag.EvDoctorRefused, diag.CodeUsage, err.Error(), diag.Rec{})
+		fmt.Fprintf(stderr, "\n%s", doctorUsage)
 		return 2
 	}
 	if fl.NArg() > 0 {
-		fmt.Fprintf(stderr, "aggy doctor: unexpected arguments\n\n%s", doctorUsage)
+		refuse(context.Background(), stderr, "doctor", diag.EvDoctorRefused, diag.CodeUsage, "unexpected arguments", diag.Rec{})
+		fmt.Fprintf(stderr, "\n%s", doctorUsage)
 		return 2
 	}
 	res := doctor(context.Background(), env)
@@ -100,14 +104,19 @@ func doctorWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 	} else {
 		printDoctor(stdout, res)
 	}
+	code := 0
 	for _, s := range res.sections {
 		for _, f := range s.findings {
 			if f.Level == checkup.LevelError {
-				return 1
+				// The finding's code and vendor only: its text may hold a
+				// path or a CLI's own error text.
+				dlog.Log(context.Background(), diag.Rec{Event: diag.EvDoctorError, Code: diag.CodeDoctorError, Vendor: string(f.Vendor),
+					Attrs: map[string]any{"finding": string(f.Code)}})
+				code = 1
 			}
 		}
 	}
-	return 0
+	return code
 }
 
 // doctor runs every check. It writes nothing.
