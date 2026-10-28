@@ -213,6 +213,7 @@ var (
 	versionRE     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
 	userVersionRE = regexp.MustCompile(`^[0-9][A-Za-z0-9._+-]{0,63}$`)
 	matcherRE     = regexp.MustCompile(`^[A-Za-z0-9_|.*]+$`)
+	keyRE         = regexp.MustCompile(`^[a-z_]+$`)
 )
 
 // Fixed vocabularies.
@@ -240,7 +241,10 @@ var hookEvents = map[adapter.Vendor][]string{
 }
 
 // decidingEvents are events whose hook can allow or deny an action.
-var decidingEvents = []string{"PreToolUse", "PermissionRequest"}
+// Codex's PreModelRequest and PostModelRequest are in hook_config.rs,
+// but what their output can do (block or change a model request) is
+// unverified, so they are treated as deciding: no user tool hooks them.
+var decidingEvents = []string{"PreToolUse", "PermissionRequest", "PreModelRequest", "PostModelRequest"}
 
 // ValidName reports whether name is a well-formed tool name.
 func ValidName(name string) bool { return nameRE.MatchString(name) }
@@ -269,12 +273,13 @@ func Parse(file string, data []byte, builtIn bool) (Def, error) {
 	if err != nil {
 		return Def{}, bad("", "%v", err)
 	}
-	// The decoder matches keys without case, so [MCP] or ARGV would
-	// merge with or override the lower-case key.
+	// The decoder matches keys with Unicode case folding, so [MCP], ARGV,
+	// or vendorſ (U+017F) would merge with or override the lower-case
+	// key: every key is plain a-z and _.
 	for _, k := range md.Keys() {
 		for _, part := range k {
-			if part != strings.ToLower(part) {
-				return Def{}, bad(k.String(), "keys are lower case")
+			if !keyRE.MatchString(part) {
+				return Def{}, bad(k.String(), "keys are lower case: a-z and _ only")
 			}
 		}
 	}

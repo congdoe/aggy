@@ -45,6 +45,9 @@ publishing stays off until the owner turns it on.
 4. Run the live smoke checks and record the results in
    `docs/verification.md`: `AGGY_SMOKE=1 make smoke`
    ([test/smoke/README.md](../test/smoke/README.md) lists what it spends).
+   `make release-pinned` must pass: every built-in tool pinned to a
+   version. The release workflow runs it before goreleaser and stops on
+   a failure.
 5. Enable the release workflow: in `release.yml`, change the trigger to
    `push: tags: ["v*"]` and remove the job's `if: ${{ false }}`. Merge
    that change.

@@ -9,6 +9,10 @@
 # TODO(T6712): confirm RTK's hook command (the argv below is a
 # placeholder), and add Codex and Grok, whose shell tool names are not
 # verified yet (Grok gets a PostToolUse hook on shell output).
+# TODO(T6712): #59 F-6, unverified: if RTK's Claude hook answers
+# permissionDecision "allow" together with updatedInput, it would
+# approve every Bash command it rewrites. Check its output at the pinned
+# version; the wiring must refuse such a hook or strip the allow.
 name = "rtk"
 description = "Compresses shell command output before the model sees it; failures stay"
 homepage = "https://github.com/rtk-ai/rtk"

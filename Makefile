@@ -9,7 +9,7 @@ GOLANGCI_LINT ?= golangci-lint
 GORELEASER_VERSION := v2.19.0
 GORELEASER ?= goreleaser
 
-.PHONY: build test vet lint nocgo noasm lint-install snapshot release-check smoke
+.PHONY: build test vet lint nocgo noasm lint-install snapshot release-check release-pinned smoke
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/aggy ./cmd/aggy
@@ -51,6 +51,11 @@ snapshot:
 
 release-check:
 	$(GORELEASER) check
+
+# A release fails on a built-in tool whose version is not pinned
+# (internal/tooldef). release.yml runs it before goreleaser.
+release-pinned:
+	AGGY_RELEASE=1 go test -count=1 -run '^TestBuiltinsPinnedForRelease$$' ./internal/tooldef/
 
 # Opt-in live checks against the real vendor CLIs; they spend quota. The
 # script refuses to run unless AGGY_SMOKE=1. Never part of test or CI.

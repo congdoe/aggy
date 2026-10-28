@@ -113,7 +113,18 @@ var wrappers = map[string][]string{
 	"watch": {"-n", "--interval", "-q", "--equexit"},
 	// ssh runs its command on the host named after its flags.
 	"ssh": {"-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o", "-P", "-p", "-Q", "-R", "-S", "-W", "-w"},
+	// Schedulers and launchers that run the command after their flags;
+	// chrt, taskset, and flock first take a priority, a mask, or a lock
+	// file (positional), and flock -c takes the command as a string.
+	"arch": {"-arch", "-e"}, "caffeinate": {"-t", "-w"}, "chrt": nil, "taskset": nil,
+	"ionice": {"-c", "--class", "-n", "--classdata", "-p", "--pid", "-P", "--pgid", "-u", "--uid"},
+	"flock":  {"-w", "--timeout", "-E", "--conflict-exit-code"}, "unbuffer": nil, "toybox": nil,
+	"uvx": {"--from", "--with", "-p", "--python"},
 }
+
+// positional names the wrappers that take one argument after their flags
+// before the command: a duration, a host, a priority, a mask, a lock file.
+var positional = []string{"timeout", "ssh", "chrt", "taskset", "flock"}
 
 // IsWrapper reports whether prog (a base name) runs another program
 // named in its arguments, such as env, nice, timeout, xargs, or npx.
@@ -234,8 +245,11 @@ func nestedIn(ws []string) string {
 		}
 		if vals, ok := wrappers[prog]; ok {
 			i = skipFlags(ws, i+1, vals)
-			if (prog == "timeout" || prog == "ssh") && i < len(ws) {
-				i++ // the duration, or the host
+			if slices.Contains(positional, prog) && i < len(ws) {
+				i++
+				if prog == "flock" {
+					i = skipFlags(ws, i, nil) // -c <command>
+				}
 			}
 			continue
 		}
@@ -287,7 +301,8 @@ func nestedIn(ws []string) string {
 				return "aggy " + rest[k]
 			} else if k < len(rest) && rest[k] == "tool" {
 				// A delegated child must not change which tools aggy trusts.
-				if j := skipFlags(rest, k+1, nil); j < len(rest) && (rest[j] == "add" || rest[j] == "remove") {
+				// nor which ones are on.
+				if j := skipFlags(rest, k+1, nil); j < len(rest) && slices.Contains([]string{"add", "remove", "on", "off"}, rest[j]) {
 					return "aggy tool " + rest[j]
 				}
 			}

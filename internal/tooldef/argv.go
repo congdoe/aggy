@@ -7,6 +7,9 @@ import (
 	"strings"
 	"unicode"
 
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/congdoe/aggy/internal/hook"
 )
 
@@ -28,17 +31,26 @@ var (
 	shellNames = []string{"sh", "ash", "nu", "osh", "cmd", "command.com"}
 	// neverPrograms run a string as a command, or as another user.
 	neverPrograms = []string{"env", "sudo", "doas", "su", "ssh", "eval", "exec", "builtin", "command", "busybox",
-		"watch", "parallel", "script", "run0", "pkexec", "start-stop-daemon", "setsid"}
+		"toybox", "watch", "parallel", "script", "run0", "pkexec", "start-stop-daemon", "setsid",
+		// These run commands named in their arguments or script text
+		// (sed's e command, awk's system(), vim -c, lldb -o, gdb -ex),
+		// and none is a tool's program.
+		"sed", "gsed", "awk", "gawk", "mawk", "nawk", "vi", "vim", "nvim", "view", "ex", "lldb", "gdb"}
 	// interpreters run code given with -c, -e, -E, --eval, or eval.
 	interpreters = []string{"python", "perl", "ruby", "node", "nodejs", "php", "lua", "luajit", "osascript",
-		"tclsh", "wish", "rscript", "julia", "deno", "bun", "awk", "gawk", "mawk", "nawk", "jshell", "irb", "groovy"}
+		"tclsh", "wish", "rscript", "julia", "deno", "bun", "jshell", "irb", "groovy"}
+	// fetchers download a package and run it: npx -y pkg@latest or uvx
+	// pkg would run new code on every launch.
+	fetchers = []string{"npx", "pnpx", "bunx", "uvx"}
 	// codeFlags give an interpreter its code inline.
 	codeFlags = []string{"-c", "-e", "-E", "--eval", "--command", "--exec", "-r", "eval", "--print", "-p"}
 )
 
-// normProgram is the base name of p, lower case, without .exe.
+// normProgram is the base name of p, case folded as a case-insensitive
+// file system may (full Unicode folding after compatibility
+// normalization, so ſh and SH are both sh), without .exe.
 func normProgram(p string) string {
-	return strings.TrimSuffix(strings.ToLower(path.Base(p)), ".exe")
+	return strings.TrimSuffix(cases.Fold().String(norm.NFKC.String(path.Base(p))), ".exe")
 }
 
 func isShell(n string) bool {
@@ -70,15 +82,51 @@ func checkPrograms(a []string) string {
 			return fmt.Sprintf("%q is a shell, which would run a shell string", a[i])
 		case slices.Contains(neverPrograms, n):
 			return fmt.Sprintf("%q runs a string as a command, or as another user", a[i])
-		case hook.IsWrapper(n):
-			// npx -c runs its value through a shell.
-			if n == "npx" || n == "pnpx" || n == "bunx" {
-				for _, f := range a[i+1:] {
-					if f == "-c" || f == "--call" || strings.HasPrefix(f, "--call=") {
-						return fmt.Sprintf("%q is given a shell string with %q", a[i], f)
-					}
+		case n == "find":
+			for _, f := range a[i+1:] {
+				if slices.Contains([]string{"-exec", "-execdir", "-ok", "-okdir"}, f) {
+					return fmt.Sprintf("%q runs a command with %q", a[i], f)
 				}
 			}
+		case n == "git":
+			// -c core.sshCommand=..., alias.x=!..., core.pager and the
+			// like run a command from a config value.
+			for _, f := range a[i+1:] {
+				if strings.HasPrefix(f, "-c") || strings.HasPrefix(f, "--config-env") {
+					return fmt.Sprintf("%q is given a config value with %q, which can run a command", a[i], f)
+				}
+			}
+		case n == "flock":
+			for _, f := range a[i+1:] {
+				if f == "-c" || f == "--command" || strings.HasPrefix(f, "--command=") {
+					return fmt.Sprintf("%q is given a shell string with %q", a[i], f)
+				}
+			}
+			continue
+		case slices.Contains(fetchers, n):
+			if why := checkFetch(a[i], a[i+1:]); why != "" {
+				return why
+			}
+			continue
+		case slices.Contains([]string{"npm", "pnpm", "yarn", "uv", "pipx"}, n):
+			// npm exec, pnpm dlx, yarn dlx, uv run, uv tool run, pipx run.
+			subs := []string{"exec", "dlx", "x"}
+			if n == "uv" || n == "pipx" {
+				subs = []string{"run"}
+			}
+			for k, f := range a[i+1:] {
+				if slices.Contains(subs, f) {
+					if why := checkFetch(a[i]+" "+f, a[i+2+k:]); why != "" {
+						return why
+					}
+					break
+				}
+			}
+			if i > 0 {
+				continue
+			}
+			return ""
+		case hook.IsWrapper(n):
 			continue // what the wrapper runs is checked too
 		case hasPrefixIn(n, interpreters):
 			for _, f := range a[i+1:] {
@@ -94,6 +142,51 @@ func checkPrograms(a []string) string {
 		return ""
 	}
 	return ""
+}
+
+// checkFetch refuses a package runner that would fetch new code on a
+// launch, which breaks "never install unasked": a shell string (npx -c),
+// -y or --yes, and a package not pinned to a version (pkg, pkg@latest).
+func checkFetch(prog string, rest []string) string {
+	named := false // a pinned --package or --from names the package
+	for k := 0; k < len(rest); k++ {
+		f := rest[k]
+		name, val, hasVal := strings.Cut(f, "=")
+		switch {
+		case f == "-c" || name == "--call":
+			return fmt.Sprintf("%q is given a shell string with %q", prog, f)
+		case f == "-y" || name == "--yes":
+			return fmt.Sprintf("%q with %q installs a package on launch without asking", prog, f)
+		case name == "-p" || name == "--package" || name == "--from" || name == "--with":
+			if !hasVal && k+1 < len(rest) {
+				k++
+				val = rest[k]
+			}
+			if !pinned(val) {
+				return fmt.Sprintf("%q runs %q, which is not pinned to a version (want name@1.2.3)", prog, val)
+			}
+			named = named || name != "--with" // --with adds a dependency only
+		case strings.HasPrefix(f, "-"):
+		default:
+			if !named && !pinned(f) {
+				return fmt.Sprintf("%q runs %q, which is not pinned to a version (want name@1.2.3)", prog, f)
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+// pinned reports whether a package spec names an exact version, not a
+// tag: name@1.2.3, @scope/name@1.2.3-beta.1, or name==1.2.3.
+func pinned(spec string) bool {
+	v := ""
+	if _, after, ok := strings.Cut(spec, "=="); ok {
+		v = after
+	} else if i := strings.LastIndexByte(spec, '@'); i > 0 {
+		v = spec[i+1:]
+	}
+	return userVersionRE.MatchString(v)
 }
 
 // codeFlag reports an inline-code flag: one of codeFlags, its --x=value
@@ -133,6 +226,11 @@ func argv(key string, a []string, required bool) error {
 	}
 	p := a[0]
 	switch {
+	case strings.Contains(p, Placeholder):
+		return bad("the program %q holds %s: the repo's own code would run as the tool", p, Placeholder)
+	case strings.ContainsFunc(p, func(r rune) bool { return r > unicode.MaxASCII }):
+		// A case-insensitive file system folds more than ASCII (/bin/ſh).
+		return bad("the program %q must be ASCII", p)
 	case p == "" || strings.ContainsFunc(p, unicode.IsSpace):
 		return bad("the program %q must be one word: a command is argv, never a shell string", p)
 	case strings.HasPrefix(p, "/"):
@@ -154,11 +252,15 @@ func argv(key string, a []string, required bool) error {
 // one. It is CheckBin's set.
 const hookChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._+-@"
 
-// shellSafe refuses a hook word a shell would read as more than text.
+// shellSafe refuses a hook word a shell would read as more than text,
+// and {repo}: a repo path may hold any character, and Codex runs a hook
+// through $SHELL, so no one quoting is right for sh and fish alike.
 func shellSafe(key string, a []string) error {
 	for _, s := range a {
-		w := strings.ReplaceAll(s, Placeholder, "x")
-		if w == "" || strings.Trim(w, hookChars) != "" {
+		if strings.Contains(s, Placeholder) {
+			return &Error{Key: key, Msg: fmt.Sprintf("%q: a hook command runs in a shell, which cannot be handed the repo's path safely, so it may not hold %s", s, Placeholder)}
+		}
+		if s == "" || strings.Trim(s, hookChars) != "" {
 			return &Error{Key: key, Msg: fmt.Sprintf("%q: a hook command runs in a shell, so each word may hold only letters, digits, and / . _ + @ -", s)}
 		}
 	}

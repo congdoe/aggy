@@ -4,6 +4,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"path/filepath"
 	"slices"
@@ -140,13 +141,9 @@ func loadUser(file string) (Tool, error) {
 	if err := checkFile(file, false); err != nil {
 		return Tool{}, err
 	}
-	// TODO(T6752): follow-up to review finding T59-15: check owner and mode on the descriptor
-	// ReadConfig opens (fstat), not on the earlier Lstat. A swap between
-	// the two needs write access to the checked tools folder.
-	b, err := safefs.ReadConfig(file, MaxSize)
+	b, err := readTrusted(file)
 	if err != nil {
-		// TODO(T6753): log tool.def_untrusted.
-		return Tool{}, fmt.Errorf("%s: %w", file, err)
+		return Tool{}, err
 	}
 	d, err := Parse(file, b, false)
 	if err != nil {
@@ -160,17 +157,64 @@ func loadUser(file string) (Tool, error) {
 	return Tool{Def: d, Source: file}, nil
 }
 
+// readTrusted reads file through one no-follow descriptor and checks the
+// owner, mode, and type on that descriptor (fstat), so a file swapped in
+// after checkFile's Lstat is refused rather than read (T59-15).
+func readTrusted(file string) ([]byte, error) {
+	f, err := safefs.OpenRegular(file)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", file, err)
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", file, err)
+	}
+	if err := trusted(file, fi, false); err != nil {
+		return nil, err
+	}
+	if fi.Size() > MaxSize {
+		return nil, &Error{File: file, Msg: fmt.Sprintf("over %d bytes", MaxSize)}
+	}
+	b, err := io.ReadAll(io.LimitReader(f, MaxSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", file, err)
+	}
+	if len(b) > MaxSize {
+		return nil, &Error{File: file, Msg: fmt.Sprintf("over %d bytes", MaxSize)}
+	}
+	return b, nil
+}
+
 // CheckDir refuses a tools folder that is a symlink, not a directory,
-// owned by another user, or writable by group or others.
-func CheckDir(dir string) error { return checkFile(dir, true) }
+// owned by another user, or writable by group or others, or whose state
+// directory (its parent, which may be a symlink) is owned by another
+// user or writable by group or others: whoever can write there can swap
+// the tools folder.
+func CheckDir(dir string) error {
+	parent := filepath.Dir(dir)
+	fi, err := safefs.Stat(parent)
+	if err != nil {
+		return err
+	}
+	if err := trusted(parent, fi, true); err != nil {
+		return err
+	}
+	return checkFile(dir, true)
+}
 
 func checkFile(p string, isDir bool) error {
 	fi, err := safefs.Lstat(p)
 	if err != nil {
 		return err
 	}
+	return trusted(p, fi, isDir)
+}
+
+// trusted checks fi, the file or folder p: not a symlink, of the right
+// type, the user's own, and writable by neither group nor others.
+func trusted(p string, fi fs.FileInfo, isDir bool) error {
 	untrusted := func(why string) error {
-		// TODO(T6753): log tool.def_untrusted.
 		return &Error{File: p, Msg: why, Err: ErrUntrusted}
 	}
 	switch {

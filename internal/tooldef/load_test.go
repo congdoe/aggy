@@ -176,6 +176,13 @@ func TestLoadRefusesDir(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		// T59-15: whoever can write the state dir can swap the folder.
+		{"world-writable state dir", func(t *testing.T, state string) {
+			writeDef(t, filepath.Join(Dir(state), "demo.toml"), base, 0o600)
+			if err := os.Chmod(state, 0o777); err != nil {
+				t.Fatal(err)
+			}
+		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			state := t.TempDir()
