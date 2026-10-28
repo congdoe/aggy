@@ -37,18 +37,23 @@ func allConnected() fakeStatuses {
 	return statuses("claude", "connected", "codex", "connected", "grok", "connected")
 }
 
-// fakeLimits reports the vendors in limited as at their limit.
+// fakeLimits reports the vendors in limited as at their limit, and
+// those in hinted as at a limit only a hook reported.
 type fakeLimits struct {
 	limited map[adapter.Vendor]time.Time // zero time: limited, reset unknown
+	hinted  map[adapter.Vendor]time.Time
 	err     error
 }
 
-func (f fakeLimits) Limited(_ context.Context, v adapter.Vendor, _ time.Time) (bool, time.Time, error) {
+func (f fakeLimits) Limited(_ context.Context, v adapter.Vendor, _ time.Time) (Limit, bool, error) {
 	if f.err != nil {
-		return false, time.Time{}, f.err
+		return Limit{}, false, f.err
+	}
+	if until, ok := f.hinted[v]; ok {
+		return Limit{Until: until, Hint: true}, true, nil
 	}
 	until, ok := f.limited[v]
-	return ok, until, nil
+	return Limit{Until: until}, ok, nil
 }
 
 func repoAllows(v ...adapter.Vendor) func(string) (config.RepoConfig, error) {
@@ -68,6 +73,7 @@ func TestSkipRules(t *testing.T) {
 		want      []adapter.Vendor
 		wantSkip  []Skip
 		wantNotes []string
+		wantWarn  []string
 		wantErr   string // the whole no-vendor error, or a part of another error
 	}{
 		{
@@ -203,6 +209,27 @@ func TestSkipRules(t *testing.T) {
 			wantSkip: []Skip{{grok, "hit its limit recently"}},
 		},
 		{
+			name:     "a hook-only limit skips while another vendor is left",
+			req:      Request{Kind: "image"},
+			deps:     Deps{Statuses: allConnected(), Limits: fakeLimits{hinted: map[adapter.Vendor]time.Time{codex: later}}, Now: func() time.Time { return now }},
+			want:     vs(grok),
+			wantSkip: []Skip{{codex, "a hook reported its limit (unconfirmed); expected back at " + later.Local().Format("Jan 2 15:04")}},
+		},
+		{
+			name:     "a hook-only limit never disables the last vendor",
+			req:      Request{Kind: "image", Parent: grok},
+			deps:     Deps{Statuses: allConnected(), Limits: fakeLimits{hinted: map[adapter.Vendor]time.Time{codex: later}}, Now: func() time.Time { return now }},
+			want:     vs(codex),
+			wantSkip: []Skip{{grok, "the parent is on grok"}},
+			wantWarn: []string{"codex: a hook reported its limit, which aggy cannot confirm; no other vendor is left, so trying it anyway"},
+		},
+		{
+			name:    "a confirmed limit still disables the last vendor",
+			req:     Request{Kind: "image", Parent: grok},
+			deps:    Deps{Statuses: allConnected(), Limits: fakeLimits{limited: map[adapter.Vendor]time.Time{codex: {}}}, Now: func() time.Time { return now }},
+			wantErr: "no vendor available for image: codex: hit its limit recently; grok: the parent is on grok",
+		},
+		{
 			name:    "limit state error fails closed",
 			req:     Request{Kind: "image"},
 			deps:    Deps{Statuses: allConnected(), Limits: fakeLimits{err: errors.New("x")}},
@@ -282,6 +309,9 @@ func TestSkipRules(t *testing.T) {
 			if !slices.Equal(d.Skipped, tt.wantSkip) {
 				t.Errorf("skipped = %v, want %v", d.Skipped, tt.wantSkip)
 			}
+			if !slices.Equal(d.Warnings, tt.wantWarn) {
+				t.Errorf("warnings = %q, want %q", d.Warnings, tt.wantWarn)
+			}
 			if len(d.Notes) != len(tt.wantNotes) {
 				t.Fatalf("notes = %q, want %q", d.Notes, tt.wantNotes)
 			}
@@ -311,8 +341,8 @@ func TestStoreSatisfiesStatuses(t *testing.T) {
 }
 
 func TestNoLimits(t *testing.T) {
-	if l, until, err := (NoLimits{}).Limited(context.Background(), grok, time.Now()); l || !until.IsZero() || err != nil {
-		t.Errorf("NoLimits = %v %v %v", l, until, err)
+	if lim, l, err := (NoLimits{}).Limited(context.Background(), grok, time.Now()); l || lim != (Limit{}) || err != nil {
+		t.Errorf("NoLimits = %v %v %v", lim, l, err)
 	}
 }
 

@@ -194,7 +194,7 @@ aggy walks the list for the kind (or the one `--vendor` named) and skips, checki
 - the vendor the parent is on, which should use its own tools instead (for `review`, it wrote the change)
 - vendors that are not connected, or that `aggy setup` never recorded, in the `vendors` table; an `unknown` sign-in status counts as usable, and aggy says so
 - vendors outside the repo's `allowed_vendors`
-- vendors that hit their limit recently (the limit signal comes with M2)
+- vendors that hit their limit recently (section 11, "Recording limits"); a limit only a hook reported never leaves the list empty: when every vendor would be skipped, those vendors are kept and `aggy borrow` prints a warning naming them
 
 The rest are tried in order. A candidate whose CLI is missing, whose adapter refuses the kind, or whose version the lockdown was not verified on is passed over before anything runs, and the report names it and why; a borrow that started and then failed is the result, with no second vendor. When none is left, the error names each vendor and why it was skipped, for example `no vendor available for research: grok: the parent is on grok; codex: not connected`.
 
@@ -266,6 +266,14 @@ Hooks, checked against claude 2.1.311, codex-cli 0.164.0, and grok 1.0.70:
 | Grok | `Stop`, `StopCancelled` | `StopFailure` with `error: rate_limit`. Grok's error classes mirror Claude Code's. |
 
 Adapters map every plan-limit signal to one class, `rate_limit`, which opens the switch picker and reroutes borrows. Codex detection is weaker without a failure hook; the rollout fields above are source-verified, and a live capture of a real limit is still open (section 21).
+
+**Recording limits** (`internal/limits`). Each signal is an append-only `limit` event in the index (vendor, the time aggy expects the vendor back, and where the signal came from); the router's skip rule reads the events newer than a week. Sources:
+
+- A `StopFailure` hook whose `error` is `rate_limit`, from the vendor on screen (Claude, Grok). Any process the CLI starts can send hook events, so this is a hint: it marks the vendor for one hour whatever it claims, is recorded at most once a minute per session, and never makes the router skip the last vendor left (it warns instead). A confirmed signal for the same vendor wins over it.
+- Codex rollouts. While `aggy run codex` runs, aggy checks every 5 seconds the rollouts in the date folders a session started then could use, written since launch, and reads only those that grew, only their last 256 KiB, through `safefs` with no symlink anywhere below the sessions folder (`transcript.ReadTail`). A limit is the last `task_complete` or `turn_aborted` event written since launch whose `error.codex_error_info` is `usage_limit_exceeded` or whose `error` holds "You've hit your usage limit" (straight or curly apostrophe; never text in a model's message). The reset time is the latest `resets_at` of a `token_count` window at 100%. A Codex limit is the account's, so another terminal's rollout counts too; a resumed session writing to an older date folder is not watched. Source-checked only: TODO(T6617) captures a real limit.
+- A borrow child that failed with `rate_limit`, from the CLI's own headless output.
+
+A reset time aggy does not know, or one already past, counts as one hour; any reset time is capped at eight days ahead, also when read back. Opening the picker on a limit is T6667.
 
 Two hook facts shape the wiring:
 

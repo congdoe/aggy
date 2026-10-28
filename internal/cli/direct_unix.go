@@ -15,6 +15,8 @@ import (
 func runDirect(c adapter.Command, runDir, parentID string, v adapter.Vendor, assigned string) (int, error) {
 	onHook, stopIndex := startIndex(parentID, v, assigned)
 	defer stopIndex()
+	onHook, stopLimits := startLimits(parentID, v, onHook)
+	defer stopLimits()
 	srv, err := supervisor.Listen(runDir, parentID, nil, onHook)
 	if err != nil {
 		return 1, err

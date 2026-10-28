@@ -16,21 +16,27 @@ type Statuses interface {
 	VendorStatuses(ctx context.Context) ([]store.VendorStatus, error)
 }
 
-// LimitState says whether a vendor hit a plan limit recently. Until is
-// when aggy expects it back, or zero when unknown.
-//
-// TODO(T6666): the store records no limit signal yet (limit detection
-// comes with M2), so the default, NoLimits, reports none.
+// Limit is a vendor's recent plan limit.
+type Limit struct {
+	// Until is when aggy expects the vendor back, or zero when unknown.
+	Until time.Time
+	// Hint is true when only a hook reported it. Any process the
+	// on-screen CLI starts can send a hook event, so it is not proof.
+	Hint bool
+}
+
+// LimitState says whether a vendor hit a plan limit recently.
+// internal/limits implements it over the store.
 type LimitState interface {
-	Limited(ctx context.Context, v adapter.Vendor, now time.Time) (limited bool, until time.Time, err error)
+	Limited(ctx context.Context, v adapter.Vendor, now time.Time) (lim Limit, limited bool, err error)
 }
 
 // NoLimits is a LimitState that never reports a limit.
 type NoLimits struct{}
 
 // Limited always reports no limit.
-func (NoLimits) Limited(context.Context, adapter.Vendor, time.Time) (bool, time.Time, error) {
-	return false, time.Time{}, nil
+func (NoLimits) Limited(context.Context, adapter.Vendor, time.Time) (Limit, bool, error) {
+	return Limit{}, false, nil
 }
 
 // Deps are the router's inputs besides config.
@@ -57,17 +63,21 @@ const (
 // skips applies the skip rules to list, in this order: the parent's own
 // vendor, a vendor not connected, a vendor outside the repo's
 // allowed_vendors, and a vendor at its limit. It returns, per vendor, why
-// it is left out (the first rule that matched), and notes on vendors
-// kept. A rule's input that cannot be read is an error: the router never
-// guesses that a repo allows a vendor.
-func (r *Router) skips(ctx context.Context, req Request, _ adapter.Kind, list []adapter.Vendor) (map[adapter.Vendor]string, map[adapter.Vendor]string, error) {
+// it is left out (the first rule that matched), notes on vendors kept,
+// and warnings the caller must show. A rule's input that cannot be read
+// is an error: the router never guesses that a repo allows a vendor.
+//
+// A limit only a hook reported (Limit.Hint) never leaves the list empty:
+// when every vendor would be skipped, those vendors are kept, each with a
+// warning.
+func (r *Router) skips(ctx context.Context, req Request, _ adapter.Kind, list []adapter.Vendor) (skip, notes map[adapter.Vendor]string, warnings []string, err error) {
 	status, err := r.statuses(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read vendor status: %w", err)
+		return nil, nil, nil, fmt.Errorf("read vendor status: %w", err)
 	}
 	allowed, err := r.allowed(req.Repo)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	limits := r.deps.Limits
 	if limits == nil {
@@ -77,8 +87,9 @@ func (r *Router) skips(ctx context.Context, req Request, _ adapter.Kind, list []
 	if r.deps.Now != nil {
 		now = r.deps.Now
 	}
-	skip := map[adapter.Vendor]string{}
-	notes := map[adapter.Vendor]string{}
+	skip = map[adapter.Vendor]string{}
+	notes = map[adapter.Vendor]string{}
+	var hinted []adapter.Vendor
 	for _, v := range list {
 		if req.Parent != "" && v == req.Parent {
 			skip[v] = fmt.Sprintf("the parent is on %s", v)
@@ -103,19 +114,38 @@ func (r *Router) skips(ctx context.Context, req Request, _ adapter.Kind, list []
 			continue
 		}
 		t := now()
-		limited, until, err := limits.Limited(ctx, v, t)
+		lim, limited, err := limits.Limited(ctx, v, t)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s: read limit state: %w", v, err)
+			return nil, nil, nil, fmt.Errorf("%s: read limit state: %w", v, err)
 		}
-		if limited {
-			if until.After(t) {
-				skip[v] = fmt.Sprintf("hit its limit; expected back at %s", until.Local().Format("Jan 2 15:04"))
-			} else {
-				skip[v] = "hit its limit recently"
-			}
+		if !limited {
+			continue
+		}
+		reason := "hit its limit"
+		if lim.Hint {
+			reason = "a hook reported its limit (unconfirmed)"
+			hinted = append(hinted, v)
+		}
+		if lim.Until.After(t) {
+			reason += fmt.Sprintf("; expected back at %s", lim.Until.Local().Format("Jan 2 15:04"))
+		} else if !lim.Hint {
+			reason += " recently"
+		}
+		skip[v] = reason
+	}
+	kept := 0
+	for _, v := range list {
+		if _, ok := skip[v]; !ok {
+			kept++
 		}
 	}
-	return skip, notes, nil
+	if kept == 0 {
+		for _, v := range hinted {
+			delete(skip, v)
+			warnings = append(warnings, fmt.Sprintf("%s: a hook reported its limit, which aggy cannot confirm; no other vendor is left, so trying it anyway", v))
+		}
+	}
+	return skip, notes, warnings, nil
 }
 
 // statuses returns each vendor's recorded sign-in status. Without a

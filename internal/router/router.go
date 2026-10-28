@@ -122,6 +122,9 @@ type Decision struct {
 	Candidates []adapter.Vendor
 	Skipped    []Skip
 	Notes      []string
+	// Warnings must be shown to the person: a vendor kept against an
+	// unconfirmed limit (see skips).
+	Warnings []string
 }
 
 // Choose returns the vendors that may run req, best first. When none is
@@ -160,10 +163,11 @@ func (r *Router) Decide(ctx context.Context, req Request) (Decision, error) {
 	if len(list) == 0 {
 		return Decision{}, &NoVendorError{Kind: k}
 	}
-	skips, notes, err := r.skips(ctx, req, k, list)
+	skips, notes, warnings, err := r.skips(ctx, req, k, list)
 	if err != nil {
 		return Decision{}, err
 	}
+	d.Warnings = warnings
 	for _, v := range list {
 		if reason, ok := skips[v]; ok {
 			d.Skipped = append(d.Skipped, Skip{Vendor: v, Reason: reason})
