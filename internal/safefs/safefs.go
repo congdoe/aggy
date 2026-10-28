@@ -562,11 +562,11 @@ func inParent(op, name, p string, want parentID, fn func(dir *os.Root, base stri
 	return fn(root, base)
 }
 
-// isMultiLinked reports whether fi is a regular file with another name.
 // LinkCount returns the number of hard links to the file fi describes,
 // from metadata safefs returned; 1 where the count is not available.
 func LinkCount(fi fs.FileInfo) uint64 { return linkCount(fi) }
 
+// isMultiLinked reports whether fi is a regular file with another name.
 func isMultiLinked(fi fs.FileInfo) bool {
 	return fi.Mode().IsRegular() && linkCount(fi) > 1
 }
