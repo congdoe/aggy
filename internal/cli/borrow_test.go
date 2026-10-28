@@ -190,7 +190,7 @@ func TestBorrowCommandRefusals(t *testing.T) {
 	}{
 		{"edit", []string{"edit", "fix"}, 2, "edit comes in M3"},
 		{"unknown kind", []string{"chat", "hi"}, 2, "unknown kind"},
-		{"vendor not installed", []string{"image", "a cat", "--vendor", "codex"}, 1, "codex is not connected"},
+		{"vendor not installed", []string{"image", "a cat", "--vendor", "codex"}, 1, "codex: not set up (run aggy setup)"},
 		{"both", []string{"research", "q", "--vendor", "both"}, 1, "only one vendor supports research right now"},
 	}
 	for _, tt := range tests {
@@ -219,13 +219,13 @@ func TestBorrowAllowedVendors(t *testing.T) {
 		wantRuns int
 	}{
 		{"claude only: news never routes to grok", `allowed_vendors = ["claude"]`, "",
-			[]string{"news", "x"}, "no connected vendor can take a news borrow", 0},
+			[]string{"news", "x"}, "grok: not in this repo's allowed_vendors", 0},
 		{"claude only: --vendor grok refused", `allowed_vendors = ["claude"]`, "",
-			[]string{"news", "x", "--vendor", "grok"}, "grok is not allowed for this repo", 0},
+			[]string{"news", "x", "--vendor", "grok"}, "grok: not in this repo's allowed_vendors", 0},
 		{"no vendor at all", `allowed_vendors = []`, "",
-			[]string{"news", "x", "--vendor", "grok"}, "grok is not allowed for this repo", 0},
+			[]string{"news", "x", "--vendor", "grok"}, "grok: not in this repo's allowed_vendors", 0},
 		{"kind turned off in routing", "", "[routing]\nnews = []\n",
-			[]string{"news", "x"}, "no connected vendor can take a news borrow", 0},
+			[]string{"news", "x"}, "[routing] news lists no vendor", 0},
 		{"grok allowed", `allowed_vendors = ["grok"]`, "", []string{"news", "x"}, "", 1},
 	}
 	for _, tt := range tests {
@@ -309,7 +309,8 @@ func TestBorrowSignalKillsChild(t *testing.T) {
 			done := make(chan error, 1)
 			go func() { done <- cmd.Wait() }()
 			select {
-			case <-done:
+			case werr := <-done:
+				t.Logf("aggy borrow exited: %v", werr)
 			case <-time.After(15 * time.Second):
 				t.Fatalf("aggy borrow did not exit after %s:\n%s", sig, out.String())
 			}
@@ -338,5 +339,20 @@ func TestBorrowSignalKillsChild(t *testing.T) {
 				t.Errorf("borrow %s/%s, want killed/interrupted:\n%s", status, outcome, out.String())
 			}
 		})
+	}
+}
+
+// TestBorrowRepoRoot (X-2): run from a subdirectory, aggy borrow reads
+// the repo config at the work tree root, never just the cwd.
+func TestBorrowRepoRoot(t *testing.T) {
+	f := newBorrowFixture(t, adapter.Grok)
+	mustWrite(t, filepath.Join(f.repo, ".git", "HEAD"), "ref: refs/heads/main\n", 0o600)
+	mustWrite(t, filepath.Join(f.repo, ".aggy", "config.toml"), "allowed_vendors = [\"claude\"]\n", 0o600)
+	sub := filepath.Join(f.repo, "pkg", "deep")
+	mustWrite(t, filepath.Join(sub, "x.go"), "package deep\n", 0o600)
+	f.env.cwd = func() (string, error) { return sub, nil }
+	code, _, errOut := f.run(t, "news", "x")
+	if code == 0 || !strings.Contains(errOut, "grok: not in this repo's allowed_vendors") {
+		t.Errorf("code %d stderr %q", code, errOut)
 	}
 }

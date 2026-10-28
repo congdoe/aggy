@@ -20,6 +20,7 @@ import (
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/probe"
+	"github.com/congdoe/aggy/internal/router"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
@@ -219,15 +220,9 @@ func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy borrow: config: %s\n", termsafe.Field(err.Error()))
 		return 1
 	}
-	// The repo's own config narrows the user's: allowed_vendors and
-	// routing lists that leave a kind with no vendor.
+	// The repo root, never just the cwd: the router reads the repo's
+	// config there, and a review runs there.
 	root, _ := repoRoot(cwd)
-	repoCfg, err := config.LoadRepo(root)
-	if err != nil {
-		fmt.Fprintf(stderr, "aggy borrow: repo config: %s\n", termsafe.Field(err.Error()))
-		return 1
-	}
-	eff := config.Merge(cfg, repoCfg)
 	stateDir, err := home.Dir()
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy borrow: %v\n", err)
@@ -240,22 +235,20 @@ func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = s.Close() }()
 
-	w := &borrowWorld{env: env, store: s, eff: eff}
+	w := &borrowWorld{env: env, store: s}
 	parent, _ := adapter.ParseVendor(env.getenv("AGGY_VENDOR"))
 	b := borrow.New(borrow.Deps{
-		Store:     s,
-		Router:    w.defaultRouter(),
-		Adapter:   newAdapter,
-		Locate:    w.locate,
-		Connected: w.connected,
-		Runner:    env.runner,
-		Config:    eff.Config,
-		Allowed:   eff.Allows,
-		StateDir:  stateDir,
-		TempDir:   env.tempDir,
-		Now:       env.now,
-		Getenv:    env.getenv,
-		Guard:     env.guard(),
+		Store:    s,
+		Router:   borrowRouter{router.New(cfg, router.Deps{Statuses: s, Now: env.now})},
+		Adapter:  newAdapter,
+		Locate:   w.locate,
+		Runner:   env.runner,
+		Config:   cfg,
+		StateDir: stateDir,
+		TempDir:  env.tempDir,
+		Now:      env.now,
+		Getenv:   env.getenv,
+		Guard:    env.guard(),
 	})
 	req := borrow.Request{
 		Kind: kind, Task: ba.task, Paths: paths, Constraints: ba.constraints,
@@ -302,6 +295,9 @@ func printResult(w io.Writer, r borrow.Result) {
 	}
 	fmt.Fprintf(w, "borrow %s: %s on %s (%s): %s in %s, %d tokens\n", r.ID, r.Kind, r.Vendor,
 		termsafe.Field(model), r.Outcome, r.Elapsed.Round(time.Second), r.Tokens)
+	for _, a := range r.Tried {
+		fmt.Fprintf(w, "  passed over %s: %s\n", a.Vendor, termsafe.Field(a.Reason))
+	}
 	text := r.Text
 	if r.Status != "done" {
 		text = r.Detail
@@ -336,7 +332,6 @@ func newAdapter(v adapter.Vendor, cli borrow.CLI) adapter.Adapter {
 type borrowWorld struct {
 	env   borrowEnv
 	store *store.Store
-	eff   config.Effective // the user config narrowed by the repo's
 }
 
 // binName is each vendor's program name.
@@ -357,56 +352,16 @@ func (w *borrowWorld) locate(ctx context.Context, v adapter.Vendor) (borrow.CLI,
 	return borrow.CLI{Path: path, Version: res.Version, Caps: res.Capabilities}, nil
 }
 
-// connected reports whether v may take borrows: its CLI is on PATH and
-// aggy setup recorded it as connected or unknown (no vendor has a
-// verified sign-in check yet, so unknown is the usual state of an
-// installed CLI). A vendor setup never checked, or found signed out, is
-// not connected.
-func (w *borrowWorld) connected(ctx context.Context, v adapter.Vendor) bool {
-	if _, err := w.env.lookPath(binName[v]); err != nil {
-		return false
-	}
-	rows, err := w.store.VendorStatuses(ctx)
-	if err != nil {
-		return false
-	}
-	for _, r := range rows {
-		if r.Vendor == string(v) {
-			return r.Connected != string(adapter.SignedOut)
-		}
-	}
-	return false
-}
+// borrowRouter is internal/router behind the borrow package's Router
+// interface, whose kind is an adapter.Kind where the router takes a
+// string.
+type borrowRouter struct{ r *router.Router }
 
-// defaultOrder is the temporary order for a not-author route.
-var defaultOrder = []adapter.Vendor{adapter.Grok, adapter.Codex, adapter.Claude}
-
-// defaultRouter is the stand-in router: the kind's route from the user
-// config narrowed by the repo's (allowed_vendors removes vendors, and an
-// empty list turns the kind off; a not-author route walks grok, codex,
-// claude), skipping the parent's vendor and every vendor that is not
-// connected or does not support the kind.
-//
-// TODO(T6627): replace with router.New once batch 5b merges.
-func (w *borrowWorld) defaultRouter() borrow.Router {
-	return borrow.RouterFunc(func(ctx context.Context, req borrow.RouteRequest) ([]adapter.Vendor, error) {
-		route := w.eff.Routing.For(req.Kind)
-		order := route.Vendors
-		if route.NotAuthor {
-			order = defaultOrder
-		}
-		var out []adapter.Vendor
-		for _, v := range order {
-			if v == req.Parent || !w.eff.Allows(v) || !w.connected(ctx, v) {
-				continue
-			}
-			if borrow.Supports(newAdapter(v, borrow.CLI{}), req.Kind) != nil {
-				continue
-			}
-			out = append(out, v)
-		}
-		return out, nil
-	})
+// Choose asks the router, which applies its skip rules to an override
+// too: --vendor never bypasses the parent skip, allowed_vendors, or the
+// connected check.
+func (b borrowRouter) Choose(ctx context.Context, req borrow.RouteRequest) ([]adapter.Vendor, error) {
+	return b.r.Choose(ctx, router.Request{Kind: string(req.Kind), Parent: req.Parent, Repo: req.Repo, Override: req.Override})
 }
 
 // repoRoot returns the root of the git work tree holding dir (the

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	codexadapter "github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/config"
 )
 
@@ -75,13 +76,9 @@ func Route(routing config.Routing, k adapter.Kind) ([]adapter.Vendor, error) {
 // list, since the table is the user's choice, and reports this reason so
 // the adapter's refusal is not a surprise.
 func Refusal(k adapter.Kind, v adapter.Vendor) error {
-	// TODO(T6638): Codex's apply_patch tool cannot be turned off, and its
-	// error text differs for a right and a wrong guess of a line in a
-	// file at a known path, so a research child can confirm file contents
-	// by guessing (docs/verification.md). Codex research and news stay
-	// out of the defaults and refused until that oracle is closed.
-	if v == adapter.Codex && (k == adapter.Research || k == adapter.News) {
-		return fmt.Errorf("codex: %s: %w until T6638 (its apply_patch tool can confirm guessed file contents)", k, adapter.ErrUnsupported)
+	// TODO(T6638): codexadapter.Refusal holds the one message and the reason.
+	if v == adapter.Codex {
+		return codexadapter.Refusal(k)
 	}
 	return nil
 }

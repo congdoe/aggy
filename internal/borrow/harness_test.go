@@ -16,6 +16,7 @@ import (
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/fakecli"
+	"github.com/congdoe/aggy/internal/router"
 	"github.com/congdoe/aggy/internal/store"
 )
 
@@ -74,17 +75,27 @@ func newWorld(t *testing.T) *world {
 	}
 }
 
-// fakeRouter is the stand-in router of internal/cli, over the world.
+// router is internal/router over the world's config, with the
+// connected map as aggy setup's record.
 func (w *world) router() Router {
-	return RouterFunc(func(_ context.Context, req RouteRequest) ([]adapter.Vendor, error) {
-		var out []adapter.Vendor
-		for _, v := range []adapter.Vendor{adapter.Grok, adapter.Codex, adapter.Claude} {
-			if v != req.Parent && w.connected[v] && Supports(testAdapter(v, CLI{}), req.Kind) == nil {
-				out = append(out, v)
-			}
-		}
-		return out, nil
+	r := router.New(w.cfg, router.Deps{Statuses: worldStatuses{w}})
+	return RouterFunc(func(ctx context.Context, req RouteRequest) ([]adapter.Vendor, error) {
+		return r.Choose(ctx, router.Request{Kind: string(req.Kind), Parent: req.Parent, Repo: req.Repo, Override: req.Override})
 	})
+}
+
+type worldStatuses struct{ w *world }
+
+func (s worldStatuses) VendorStatuses(context.Context) ([]store.VendorStatus, error) {
+	var out []store.VendorStatus
+	for _, v := range adapter.Vendors() {
+		c := "not_connected"
+		if s.w.connected[v] {
+			c = "connected"
+		}
+		out = append(out, store.VendorStatus{Vendor: string(v), Connected: c})
+	}
+	return out, nil
 }
 
 func testAdapter(v adapter.Vendor, cli CLI) adapter.Adapter {
@@ -109,12 +120,11 @@ func (w *world) borrower() *Borrower {
 			}
 			return CLI{Path: w.fakes.For(string(v)), Version: version, Caps: w.caps[v]}, nil
 		},
-		Connected: func(_ context.Context, v adapter.Vendor) bool { return w.connected[v] },
-		Runner:    w.runner,
-		Config:    w.cfg,
-		StateDir:  w.state,
-		Now:       func() time.Time { return w.now },
-		Getenv:    func(string) string { return "" },
+		Runner:   w.runner,
+		Config:   w.cfg,
+		StateDir: w.state,
+		Now:      func() time.Time { return w.now },
+		Getenv:   func(string) string { return "" },
 	})
 }
 
