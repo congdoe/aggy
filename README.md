@@ -4,11 +4,11 @@ One command for the coding agents you already use: Claude Code, Codex, and Grok 
 
 aggy runs the official CLIs, signed in with your own accounts, and lets them work together. From any of them you can hand one bounded task to another (an image, a short video, a web research question, a news check, or a code review) and get a short report back. Each task runs headless in the other vendor's CLI, locked down to the tools that task needs.
 
-> **Status: pre-release, heading for v0.1.0.** Read-only borrows work today. Switching a session between vendors, handoff briefs, shared hooks, and parent sessions are **in progress** (milestone M2) and not shipped. Edit borrows come in M3.
+> **Status: pre-release, heading for v0.1.0.** Read-only borrows work today. Switching a session between vendors, with a handoff brief and a parent session over the vendor sessions, is **in progress** (milestone M2) and not shipped. Its first pieces are merged: `aggy hooks install` (hooks that tell aggy when a session starts, ends a turn, or hits a limit; `aggy unwire` takes them out) and `aggy brief --show` (a preview of the brief, built without a model; writing one comes with switching). Edit borrows come in M3.
 
 ## What aggy never does
 
-- It never reads, copies, or stores vendor credentials. Each CLI signs in with its own flow; aggy only records whether a CLI said it was signed in, its version, and when it checked.
+- It never reads, copies, or stores vendor credentials. Each CLI signs in with its own flow. `aggy setup` records each CLI's version and when it checked; no CLI has a verified way for aggy to ask whether it is signed in, so aggy records that as unknown and tells you how to sign in.
 - It never sends model requests or calls a vendor API. Only the official CLIs talk to their vendors.
 - It runs no proxy and collects no telemetry. aggy's own network use is a local Unix socket in `~/.aggy/run`.
 - It never sets `*_BASE_URL` or API-key variables. Borrow children run with those removed from their environment, and `aggy doctor` warns when such settings could bill an API instead of your subscription.
@@ -27,6 +27,8 @@ Homebrew (from v0.1.0):
 brew install congdoe/aggy/aggy
 ```
 
+The macOS binaries are not notarized yet, so Gatekeeper may block the first run; `go install` builds locally and avoids that.
+
 Go (the version in `go.mod`; no cgo):
 
 ```sh
@@ -42,7 +44,7 @@ git clone https://github.com/congdoe/aggy && cd aggy && make build   # ./bin/agg
 ## Quickstart
 
 ```sh
-aggy setup             # find each CLI, check its version, ask about sign-in
+aggy setup             # find each CLI and check its version
 aggy doctor            # API keys, base URLs, untested versions, config drift
 
 aggy borrow research "What changed in Go 1.27's toolchain?"
@@ -68,7 +70,7 @@ What each borrow kind does on each CLI. "Live" means checked against the real CL
 | image | Not offered. | Supported. Lockdown flags checked live; the end-to-end borrow is not yet verified live. | Supported with `image_gen` only, which takes no local path (source). Not yet verified live. |
 | image `--edit` | Not offered. | Supported (resumes the same thread). Not yet verified live. | **Off by default.** Needs `[media] grok_file_tools = true` in `~/.aggy/config.toml` (a repo's config cannot set it). Grok's `image_edit` reads a local image at any path the model names and uploads it to xAI, so a brief that names a private image, or a child steered to one, sends it off your machine. Not yet verified live. |
 | video | Not offered. | Not offered. | **Off by default**, behind the same `grok_file_tools` opt-in and with the same upload risk (`image_to_video`). Unverified headless. |
-| review | Supported when the CLI has `--setting-sources` (probed), read-only in plan mode. Its tool names are unverified. | Supported, fully locked down; the diff and files are in the prompt. | Supported, read-only in plan mode; the tool list was checked live as the model reported it. Refused in a repo holding config Grok may load and run (such as project hooks), because aggy does not rely on Grok's folder trust. |
+| review | Supported when the CLI has `--setting-sources` (probed), read-only in plan mode. Its tool names are unverified. | Supported, with the Codex lockdown flags, which leave no tool that reads a file, so the diff and files go in the prompt. That lockdown is not leak-proof: `apply_patch`, which no flag removes, can confirm a guessed line of a file at a known path (Live; the same reason research is off on Codex). | Supported, read-only in plan mode; the tool list was checked live as the model reported it. Refused in a repo holding config Grok may load and run (such as project hooks), because aggy does not rely on Grok's folder trust. |
 | edit | M3, not shipped. | M3, not shipped. | M3, not shipped. |
 
 ## Not affiliated
