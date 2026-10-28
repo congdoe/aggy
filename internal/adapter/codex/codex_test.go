@@ -29,22 +29,32 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 	h := fakecli.NewHarness(t, fakecli.Build(t))
 	a := New()
 	ref := filepath.Join(h.Cwd, "style.png")
-	isolated := []string{"exec", "--json", "--sandbox", "read-only",
-		"--disable", "shell_tool", "--disable", "unified_exec", "--disable", "view_image", "-c", `web_search="live"`, "--", "-"}
+	lock := []string{"--ignore-user-config", "--sandbox", "read-only",
+		"--disable", "shell_tool", "--disable", "unified_exec", "--disable", "view_image",
+		"--disable", "apps", "--disable", "plugins", "--disable", "goals",
+		"--disable", "image_generation", "--disable", "sleep_tool"}
+	// image keeps image generation.
+	imageLock := []string{"--ignore-user-config", "--sandbox", "read-only",
+		"--disable", "shell_tool", "--disable", "unified_exec", "--disable", "view_image",
+		"--disable", "apps", "--disable", "plugins", "--disable", "goals", "--disable", "sleep_tool"}
+	skip := []string{"--skip-git-repo-check"}
+	end := []string{"--", "-"}
 	tests := []struct {
 		name     string
 		req      adapter.HeadlessRequest
 		want     []string
 		scenario string
 	}{
-		{"research", adapter.HeadlessRequest{Kind: adapter.Research, IsolatedCwd: true}, isolated, ""},
-		{"news", adapter.HeadlessRequest{Kind: adapter.News, IsolatedCwd: true, WebSearch: true}, isolated, ""},
-		{"image", adapter.HeadlessRequest{Kind: adapter.Image}, []string{"exec", "--json", "--sandbox", "read-only", "--", "-"}, ""},
+		{"image", adapter.HeadlessRequest{Kind: adapter.Image, IsolatedCwd: true},
+			slices.Concat([]string{"exec", "--json"}, imageLock, skip, end), ""},
 		{"image edit with a reference", adapter.HeadlessRequest{Kind: adapter.Image, Resume: tid, RefImages: []string{ref}},
-			[]string{"exec", "-i", ref, "--json", "--sandbox", "read-only", "resume", tid, "--", "-"}, ""},
-		{"review", adapter.HeadlessRequest{Kind: adapter.Review}, []string{"exec", "--json", "--sandbox", "read-only", "--", "-"}, ""},
-		{"review with a model", adapter.HeadlessRequest{Kind: adapter.Review, Model: "gpt-5.5"},
-			[]string{"exec", "--json", "-c", `model="gpt-5.5"`, "--sandbox", "read-only", "--", "-"}, ""},
+			slices.Concat([]string{"exec", "-i", ref, "--json"}, imageLock, skip, []string{"resume", tid}, end), ""},
+		{"review in a repo", adapter.HeadlessRequest{Kind: adapter.Review, GitRepo: true},
+			slices.Concat([]string{"exec", "--json"}, lock, end), ""},
+		{"review outside a repo", adapter.HeadlessRequest{Kind: adapter.Review},
+			slices.Concat([]string{"exec", "--json"}, lock, skip, end), ""},
+		{"review with a model", adapter.HeadlessRequest{Kind: adapter.Review, Model: "gpt-5.5", GitRepo: true},
+			slices.Concat([]string{"exec", "--json", "-c", `model="gpt-5.5"`}, lock, end), ""},
 		{"edit", adapter.HeadlessRequest{Kind: adapter.Edit}, []string{"exec", "--json", "--sandbox", "workspace-write", "--", "-"},
 			`{"extra_values":{"--sandbox":["workspace-write"]}}`},
 	}
@@ -74,6 +84,8 @@ func TestHeadlessUnsupported(t *testing.T) {
 	base := adapter.HeadlessRequest{Kind: adapter.Review, PromptFile: "/p/prompt.md", Cwd: "/w"}
 	for _, mod := range []func(*adapter.HeadlessRequest){
 		func(r *adapter.HeadlessRequest) { r.Kind = adapter.Video },
+		func(r *adapter.HeadlessRequest) { r.Kind, r.IsolatedCwd = adapter.Research, true },
+		func(r *adapter.HeadlessRequest) { r.Kind, r.IsolatedCwd, r.WebSearch = adapter.News, true, true },
 		func(r *adapter.HeadlessRequest) { r.AllowedTools = []string{"shell"} },
 		func(r *adapter.HeadlessRequest) { r.SessionID = "0b9d3c4e-1f2a-4b5c-8d7e-6f5a4b3c2d1e" },
 	} {

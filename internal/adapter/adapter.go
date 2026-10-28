@@ -175,10 +175,38 @@ type HeadlessRequest struct {
 	Env []string
 	// IsolatedCwd says Cwd is a fresh, empty temp dir made for this run.
 	// Adapters cannot check that without touching the disk, so the caller
-	// vouches for it: the M1 borrow runner (T6621) must create one for
-	// every research and news run and set this. Research and news refuse
-	// to build without it.
+	// vouches for it: the borrow runner creates one for every kind but
+	// review and sets this. Research and news refuse to build without it.
 	IsolatedCwd bool
+	// RunDir is a private dir the borrow runner made for this run, outside
+	// Cwd. It holds the files an adapter asks for through ChildFiler (such
+	// as Claude's empty MCP config), which the runner writes before
+	// starting the command. Adapters that need such files refuse to build
+	// without it.
+	RunDir string
+	// GitRepo says Cwd is inside a git work tree. Codex is then not given
+	// --skip-git-repo-check.
+	GitRepo bool
+	// GuardCommand is the PreToolUse guard to wire into the child where
+	// the CLI takes a per-run hook: an absolute program path and its
+	// arguments (aggy hook pretooluse). Empty means none.
+	GuardCommand []string
+}
+
+// ChildFile is a per-run file an adapter needs in HeadlessRequest.RunDir.
+// It is not vendor config: it lives only in the run's temp dir, which the
+// borrow runner removes afterwards, so it does not go through the patch
+// manifest.
+type ChildFile struct {
+	Name string // a base name, no separators
+	Data []byte
+}
+
+// ChildFiler is implemented by adapters whose headless commands read
+// per-run files. The borrow runner writes every returned file into
+// RunDir, through safefs, before it runs the command Headless built.
+type ChildFiler interface {
+	ChildFiles(req HeadlessRequest) ([]ChildFile, error)
 }
 
 // ErrorClass is aggy's classification of a failed run. Adapters map each
@@ -195,7 +223,11 @@ const (
 	ErrInvalidRequest ErrorClass = "invalid_request"
 	ErrMaxTurns       ErrorClass = "max_turns"
 	ErrTimeout        ErrorClass = "timeout" // set by the runner when it kills a run
-	ErrUnknown        ErrorClass = "unknown"
+	// ErrLockdown: the CLI rejected or ignored a lockdown flag (tool
+	// allowlist, MCP lockout, sandbox). The run is a failure, never
+	// retried without the flag.
+	ErrLockdown ErrorClass = "lockdown"
+	ErrUnknown  ErrorClass = "unknown"
 )
 
 // Artifact is a file a run produced, such as a generated image.

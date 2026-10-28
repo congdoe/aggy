@@ -62,7 +62,7 @@ func TestDetectFakes(t *testing.T) {
 		adapter.Grok: {"1.0.70", []string{CapHeadless, CapJSONOutput, CapSessionID, CapResume, CapForkSession,
 			CapPermissionMode, CapNoAltScreen, CapTools, CapDisallowTools, CapMaxTurns}},
 		adapter.Codex: {"0.164.0", []string{CapHeadless, CapResume, CapNoAltScreen, CapConfigOverride,
-			CapJSONOutput, CapSandbox, CapDisable, CapImageInput}},
+			CapJSONOutput, CapSandbox, CapDisable, CapImageInput, CapIgnoreUserConfig}},
 	}
 	run := f.runner(t, "", 10*time.Second)
 	for v, w := range want {

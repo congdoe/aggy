@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -21,7 +22,10 @@ type Adapter struct {
 	Path string
 }
 
-var _ adapter.Adapter = Adapter{}
+var (
+	_ adapter.Adapter    = Adapter{}
+	_ adapter.ChildFiler = Adapter{}
+)
 
 // New returns a Claude Code adapter.
 func New() Adapter { return Adapter{} }
@@ -126,15 +130,43 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 	return adapter.Command{Path: Bin, Args: args, Env: req.Env, Dir: req.Cwd, Stdin: adapter.StdinTerminal}, nil
 }
 
-// Headless builds claude -p --output-format json, with the prompt file as
-// stdin (claude -p reads its prompt from stdin when none is given as an
-// argument). Review runs with --permission-mode plan.
+// MCPConfigFile is the per-run MCP config, written in RunDir: it names
+// no server, and with --strict-mcp-config it is the only MCP config the
+// child reads, which drops every server the user configured, claude.ai
+// connectors included. Live-verified on claude 2.1.312 (2026-10-28).
+const MCPConfigFile = "mcp.json"
+
+// EmptyMCPConfig is the content of MCPConfigFile.
+const EmptyMCPConfig = `{"mcpServers":{}}`
+
+// ReviewTools are the built-in tools a review child keeps, through
+// --tools: read and search only, no shell, no edits, no web. The names
+// are Claude Code's tool names; that --tools takes exactly these is
+// unverified (not recorded in docs/adapters.md). If the CLI rejects them
+// the borrow fails closed (adapter.ErrLockdown).
+var ReviewTools = []string{"Read", "Grep", "Glob"}
+
+// ChildFiles returns the empty MCP config every headless run reads.
+func (Adapter) ChildFiles(adapter.HeadlessRequest) ([]adapter.ChildFile, error) {
+	return []adapter.ChildFile{{Name: MCPConfigFile, Data: []byte(EmptyMCPConfig)}}, nil
+}
+
+// Headless builds
 //
-// Claude's tool, web search, turn-limit, and image-input flags are not
-// recorded in docs/adapters.md, so image, video, research, and news are
-// ErrUnsupported (research isolation could not be enforced), as are
-// AllowedTools, WebSearch, and RefImages. MaxTurns is ignored. Edit runs
-// with --permission-mode acceptEdits, a value that is unconfirmed.
+//	claude -p --output-format json [--model m] --permission-mode <mode>
+//	       --strict-mcp-config --mcp-config <RunDir>/mcp.json [--tools Read,Grep,Glob] [session]
+//
+// with the prompt file as stdin (claude -p reads its prompt from stdin
+// when none is given as an argument). Every run needs RunDir, which holds
+// the empty MCP config (ChildFiles). Review runs with --permission-mode
+// plan and ReviewTools.
+//
+// Claude's web search and image-input flags are not recorded in
+// docs/adapters.md, so image, video, research, and news are
+// ErrUnsupported (research isolation is unverified), as are AllowedTools,
+// WebSearch, and RefImages. MaxTurns is ignored (--max-turns is not
+// recorded). Edit runs with --permission-mode acceptEdits, a value that
+// is unconfirmed.
 func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	if err := adapter.CheckAbs("prompt file", req.PromptFile); err != nil {
 		return adapter.Command{}, err
@@ -154,19 +186,28 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	case len(req.RefImages) > 0:
 		return adapter.Command{}, fmt.Errorf("claude: reference images: %w", adapter.ErrUnsupported)
 	}
+	if err := adapter.CheckAbs("run dir", req.RunDir); err != nil {
+		return adapter.Command{}, err
+	}
 	args := []string{"-p", "--output-format", "json"}
 	m, err := modelArgs(req.Model)
 	if err != nil {
 		return adapter.Command{}, err
 	}
 	args = append(args, m...)
+	var tools []string
 	switch req.Kind {
 	case adapter.Review:
 		args = append(args, "--permission-mode", "plan")
+		tools = ReviewTools
 	case adapter.Edit:
 		args = append(args, "--permission-mode", PermissionEdit)
 	default:
 		return adapter.Command{}, fmt.Errorf("claude: unknown kind %q", req.Kind)
+	}
+	args = append(args, "--strict-mcp-config", "--mcp-config", filepath.Join(req.RunDir, MCPConfigFile))
+	if tools != nil {
+		args = append(args, "--tools", strings.Join(tools, ","))
 	}
 	s, err := sessionArgs(req.SessionID, req.Resume, false)
 	if err != nil {
@@ -203,7 +244,8 @@ type result struct {
 // limitText is the recorded fragment of Claude's plan-limit message.
 const limitText = "hit your limit"
 
-// ParseHeadless reads the JSON reply: final text, session id, tokens, and
+// ParseHeadless first fails closed when the CLI rejected a lockdown flag
+// (ErrLockdown). It then reads the JSON reply: final text, session id, tokens, and
 // the error class. A session id aggy pre-assigned or resumed is kept, and
 // a reply naming another one, or an invalid one, is an error.
 //
@@ -217,6 +259,10 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 		assigned = req.Resume
 	}
 	res := adapter.HeadlessResult{SessionID: assigned}
+	if err := adapter.CheckLockdown(adapter.Claude, out); err != nil {
+		res.Error, res.ErrorDetail = adapter.ErrLockdown, strings.TrimSpace(string(out.Stderr))
+		return res, err
+	}
 	var r result
 	// A JSON object with none of the expected fields is not a reply.
 	parsed := lastJSON(out.Stdout, &r) && (r.Type != "" || r.SessionID != "" || r.Result != "")

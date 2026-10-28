@@ -75,8 +75,9 @@ const (
 	CapImageInput     = "image-input"     // codex exec -i
 	CapConfigOverride = "config-override" // codex -c key=value
 	// CapIgnoreUserConfig is codex --ignore-user-config, which keeps a
-	// research child from loading the user's MCP servers. Not recorded in
-	// docs/adapters.md: present only when help lists it.
+	// borrow child from loading the user's config and MCP servers. Part
+	// of the borrow lockdown (live-verified on 0.164.0, 2026-10-28): the
+	// adapter always passes it, and a CLI that rejects it fails the borrow.
 	CapIgnoreUserConfig = "ignore-user-config"
 )
 
