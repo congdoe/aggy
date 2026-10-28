@@ -171,6 +171,12 @@ type HeadlessRequest struct {
 	SessionID string
 	// RefImages are reference images passed to the CLI where it takes them.
 	RefImages []string
+	// FileTools allows the media tools that read a local file at any path
+	// the model names and upload it to the vendor (Grok's image_edit,
+	// image_to_video, and reference_to_video). Off unless the user opts in
+	// (user config [media] grok_file_tools); without it a request that
+	// needs one fails with ErrFileTools.
+	FileTools bool
 	// Env holds extra KEY=value entries, such as AGGY_DELEGATED=1.
 	Env []string
 	// IsolatedCwd says Cwd is a fresh, empty temp dir made for this run.
@@ -270,6 +276,11 @@ var ErrNoTranscript = errors.New("transcript not available")
 // the flags recorded in docs/adapters.md, such as a pre-assigned session
 // id on Codex or video on Codex. Callers route elsewhere.
 var ErrUnsupported = errors.New("not supported by this CLI")
+
+// ErrFileTools matches a request that needs a media tool reading local
+// files at any path (FileTools) when it is off. It matches ErrUnsupported
+// too, so the borrow passes the vendor over.
+var ErrFileTools = fmt.Errorf("needs a media tool that uploads any local image a path names, which is off (%w)", ErrUnsupported)
 
 // ErrUnparsed matches a headless run whose output the adapter could not
 // read. Its HeadlessResult carries ErrUnknown.

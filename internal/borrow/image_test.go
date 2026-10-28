@@ -236,6 +236,7 @@ func TestEditResumes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(string(tt.vendor), func(t *testing.T) {
 			w := newWorld(t)
+			w.cfg.Media.GrokFileTools = true // image_edit, on Grok
 			w.scenario[tt.vendor] = tt.scenario
 			out := filepath.Join(w.repo, "hero.jpg")
 			req := w.req(adapter.Image, "a hero image")
@@ -359,6 +360,7 @@ func TestImageCap(t *testing.T) {
 // not the still it made on the way.
 func TestVideo(t *testing.T) {
 	w := newWorld(t)
+	w.cfg.Media.GrokFileTools = true
 	w.scenario[adapter.Grok] = `{"images":1,"videos":1,"json":{"result":"videos/1.mp4"}}`
 	req := w.req(adapter.Video, "a logo reveal")
 	out := filepath.Join(w.repo, "intro.mp4")
@@ -382,5 +384,35 @@ func TestVideo(t *testing.T) {
 	recs := w.records()
 	if args := strings.Join(recs[len(recs)-1].Args, " "); !strings.Contains(args, "--tools image_gen,image_to_video") {
 		t.Errorf("args %q", args)
+	}
+}
+
+// TestFileToolsOffByDefault (B15-2): without the user's opt-in, a video
+// borrow and a Grok image edit start nothing, and the refusal names the
+// config key and the upload risk.
+func TestFileToolsOffByDefault(t *testing.T) {
+	id := "5f0c6a2e-9b1d-4e7a-8c3f-2d4b6a8e0c1f"
+	for _, tt := range []struct {
+		name string
+		kind adapter.Kind
+		m    Media
+	}{
+		{"video", adapter.Video, Media{Out: "intro.mp4"}},
+		{"grok edit", adapter.Image, Media{Out: "hero.jpg", Resume: id}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			req := w.req(tt.kind, "a thing")
+			req.Vendor = "grok"
+			tt.m.Out = filepath.Join(w.repo, tt.m.Out)
+			req.Media = &tt.m
+			_, err := w.borrower().Run(context.Background(), req)
+			if err == nil || !strings.Contains(err.Error(), "grok_file_tools = true under [media]") || !strings.Contains(err.Error(), "uploads to xAI") {
+				t.Fatalf("err = %v", err)
+			}
+			if len(w.records()) != 0 {
+				t.Error("a child ran")
+			}
+		})
 	}
 }

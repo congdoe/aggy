@@ -56,9 +56,9 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 			slices.Concat(head, tail("web_search", "web_search"), []string{"--max-turns", "15"}), ""},
 		{"image", adapter.HeadlessRequest{Kind: adapter.Image, SessionID: sid},
 			slices.Concat(head, []string{"--session-id", sid}, tail("image_gen", "image_gen")), ""},
-		{"image edit", adapter.HeadlessRequest{Kind: adapter.Image, Resume: sid},
+		{"image edit", adapter.HeadlessRequest{Kind: adapter.Image, Resume: sid, FileTools: true},
 			slices.Concat(head, []string{"--resume", sid}, tail("image_gen,image_edit", "image_gen", "image_edit")), ""},
-		{"video", adapter.HeadlessRequest{Kind: adapter.Video},
+		{"video", adapter.HeadlessRequest{Kind: adapter.Video, FileTools: true},
 			slices.Concat(head, tail("image_gen,image_to_video", "image_gen", "image_to_video")), ""},
 		{"review", adapter.HeadlessRequest{Kind: adapter.Review},
 			slices.Concat(head, []string{"--permission-mode", "plan"}, tail("read_file,grep,list_dir", "read_file", "grep", "list_dir")), ""},
@@ -120,7 +120,7 @@ func TestHeadlessRefusals(t *testing.T) {
 	}
 	// A permitted tool in another case maps to its own name.
 	r = base
-	r.Kind, r.AllowedTools = adapter.Image, []string{"IMAGE_EDIT"}
+	r.Kind, r.AllowedTools, r.FileTools = adapter.Image, []string{"IMAGE_EDIT"}, true
 	c, err := a.Headless(r)
 	if err != nil || !slices.Contains(c.Args, "image_gen,image_edit") {
 		t.Errorf("image_edit = %q, %v", c.Args, err)
@@ -302,5 +302,47 @@ func TestVideoArtifacts(t *testing.T) {
 	arts, err := a.Artifacts(adapter.HeadlessRequest{Kind: adapter.Video, Cwd: cwd}, adapter.HeadlessResult{SessionID: sid})
 	if err != nil || len(arts) != 1 || arts[0] != (adapter.Artifact{Path: filepath.Join(session, "videos", "1.mp4"), Kind: "video"}) {
 		t.Errorf("Artifacts = %v, %v", arts, err)
+	}
+}
+
+// TestFileToolsOptIn (B15-2): image_edit, image_to_video, and
+// reference_to_video read any local path and upload it, so they need the
+// user's opt-in (FileTools). Without it, video and an image edit fail
+// with ErrFileTools, and AllowedTools cannot name them; reference_to_video
+// is never given.
+func TestFileToolsOptIn(t *testing.T) {
+	a := New()
+	base := adapter.HeadlessRequest{PromptFile: "/p/prompt.md", Cwd: "/w"}
+	for _, r := range []adapter.HeadlessRequest{
+		{Kind: adapter.Video},
+		{Kind: adapter.Image, Resume: sid},
+	} {
+		r.PromptFile, r.Cwd = base.PromptFile, base.Cwd
+		if _, err := a.Headless(r); !errors.Is(err, adapter.ErrFileTools) || !errors.Is(err, adapter.ErrUnsupported) {
+			t.Errorf("%s resume=%q: %v, want ErrFileTools", r.Kind, r.Resume, err)
+		}
+	}
+	for _, r := range []adapter.HeadlessRequest{
+		{Kind: adapter.Image, AllowedTools: []string{"image_edit"}},
+		{Kind: adapter.Image, AllowedTools: []string{"image_to_video"}, FileTools: true},
+		{Kind: adapter.Video, AllowedTools: []string{"reference_to_video"}, FileTools: true},
+	} {
+		r.PromptFile, r.Cwd = base.PromptFile, base.Cwd
+		if _, err := a.Headless(r); err == nil {
+			t.Errorf("%+v accepted", r)
+		}
+	}
+	// A plain image never gets a file tool, opt-in or not.
+	for _, ft := range []bool{false, true} {
+		c, err := a.Headless(adapter.HeadlessRequest{Kind: adapter.Image, PromptFile: base.PromptFile, Cwd: base.Cwd, FileTools: ft})
+		if err != nil || !slices.Contains(c.Args, "image_gen") {
+			t.Fatalf("image: %q, %v", c.Args, err)
+		}
+		deny := c.Args[slices.Index(c.Args, "--disallowed-tools")+1]
+		for _, f := range FileTools {
+			if !strings.Contains(deny, f) {
+				t.Errorf("image (file tools %v) does not deny %s: %q", ft, f, deny)
+			}
+		}
 	}
 }
