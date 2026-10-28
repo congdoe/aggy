@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -126,6 +127,9 @@ func TestPlan(t *testing.T) {
 				req := p.interactiveRequest()
 				if req.Resume != sidA || req.SessionID != "" || req.BriefFile != "" || req.Cwd != dir {
 					t.Errorf("request = %+v", req)
+				}
+				if !slices.Equal(req.Env, []string{"AGGY_VENDOR=claude"}) {
+					t.Errorf("env = %q, want AGGY_VENDOR only (no model set)", req.Env)
 				}
 			},
 		},
@@ -446,5 +450,16 @@ func TestChildIDs(t *testing.T) {
 				t.Error("lease outlived the CLI")
 			}
 		})
+	}
+}
+
+// TestChildEnv (T6692): a child gets AGGY_VENDOR, and AGGY_MODEL only
+// when a model is set.
+func TestChildEnv(t *testing.T) {
+	if got := childEnv("codex", "gpt-5"); !slices.Equal(got, []string{"AGGY_VENDOR=codex", "AGGY_MODEL=gpt-5"}) {
+		t.Errorf("env = %q", got)
+	}
+	if got := childEnv("grok", ""); !slices.Equal(got, []string{"AGGY_VENDOR=grok"}) {
+		t.Errorf("env = %q", got)
 	}
 }
