@@ -358,7 +358,7 @@ The interface is documented in [adapters.md](adapters.md). The interface is unst
 
 CI never signs in to a vendor.
 
-- Unit tests cover routing, briefs, budgets, config patches, and `aggy unwire` restoring files byte for byte.
+- Unit tests cover routing, briefs, budgets, config patches, and `aggy unwire` restoring files byte for byte. Every patch aggy can make has golden diffs (`internal/parity/testdata`). The M0 gate (`TestM0Gate`) builds a temp HOME with realistic vendor config (TOML and JSON, comments, CRLF, no trailing newline, a fake credential), applies setup-style patches through the manifest over several runs, runs `aggy unwire --all`, and requires every file byte-identical with the same mode and no extra file or directory. It runs on macOS and Linux in CI.
 - Fake CLIs (`fake-claude`, `fake-codex`, `fake-grok`) follow scenario files. They honor flags, print terminal output, call hooks with recorded payloads, write session files and images where the real CLI does, and raise limit errors.
 - End-to-end tests drive the supervisor in a pseudo-terminal against the fakes, on macOS and Linux.
 - Fixtures are real outputs scrubbed of home paths, emails, and tokens. CI fails if a fixture holds one.
