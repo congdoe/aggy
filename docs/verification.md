@@ -298,13 +298,15 @@ Docs and source only, not run live (2026-10-28). `aggy run` and
   replacing (`settings.md`, "Change a setting for one session", "Lists
   merge instead of overriding"). A deny wins over any allow; `Read`
   rules use gitignore patterns, so `Read(**/.env)` matches at any depth
-  under the working directory; a `*` in a Bash rule matches any text,
+  under the working directory and `Read(//**/.env)`, anchored at the
+  file-system root, matches a `.env` anywhere; a `*` in a Bash rule matches any text,
   and deny rules apply to every subcommand of a compound command but not
   to the same program written another way (`permissions.md`). Doc-verified.
 - **Grok.** `--deny RULE` (alias `--disallowedTools`) with
   `value_delimiter = ','` and `--allow` (`crates/codegen/xai-grok-pager/src/app/cli.rs`
   at `2bdd1d6a`). Rules from flags and every config source merge, `deny`
-  beats `ask` beats `allow`; `Read(**/.env)` matches anywhere; a Bash
+  beats `ask` beats `allow`; `Read(**/.env)` matches anywhere, and there
+  is no `//` anchor (a leading `//` is literal text); a Bash
   pattern matches as a prefix or a whole-command glob, against every
   segment of a chained command; Read deny rules also cover file paths
   that shell commands such as `cat` name
