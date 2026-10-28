@@ -109,3 +109,69 @@ func TestWriteFileNoFollowIn(t *testing.T) {
 		t.Errorf("wrote outside: %v", es)
 	}
 }
+
+// TestMkdirChain (B15-8): the dirs are made through descriptors from
+// root; a symlink at any level, or one swapped in after the caller
+// looked, is refused, and nothing is made outside root.
+func TestMkdirChain(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root, outside := t.TempDir(), t.TempDir()
+	want, err := os.Lstat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fi, err := MkdirChain(root, want, []string{"a", "b"}, 0o700)
+	if err != nil || !fi.IsDir() {
+		t.Fatalf("MkdirChain = %v, %v", fi, err)
+	}
+	if got, _ := os.Stat(filepath.Join(root, "a", "b")); !os.SameFile(got, fi) {
+		t.Error("identity is not the last dir's")
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "l")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MkdirChain(root, want, []string{"l", "x"}, 0o700); !errors.Is(err, ErrNotDir) {
+		t.Errorf("through a link = %v, want ErrNotDir", err)
+	}
+	for _, bad := range [][]string{{".."}, {"a/b"}, {""}} {
+		if _, err := MkdirChain(root, want, bad, 0o700); err == nil {
+			t.Errorf("elements %q accepted", bad)
+		}
+	}
+	// A level swapped for a link after the caller's check.
+	testHookBeforeAct = func(op string) {
+		if op != "MkdirChain" {
+			return
+		}
+		_ = os.RemoveAll(filepath.Join(root, "a"))
+		_ = os.Symlink(outside, filepath.Join(root, "a"))
+	}
+	t.Cleanup(func() { testHookBeforeAct = nil })
+	if _, err := MkdirChain(root, want, []string{"a", "c"}, 0o700); !errors.Is(err, ErrNotDir) {
+		t.Errorf("swapped level = %v, want ErrNotDir", err)
+	}
+	testHookBeforeAct = nil
+	if es, _ := os.ReadDir(outside); len(es) != 0 {
+		t.Errorf("made %d entries outside root", len(es))
+	}
+	// A root that is not the one the caller looked at.
+	other, _ := os.Lstat(outside)
+	if _, err := MkdirChain(root, other, []string{"z"}, 0o700); !errors.Is(err, ErrChanged) {
+		t.Errorf("wrong root = %v, want ErrChanged", err)
+	}
+}
+
+// TestExpectNamesOp (B15-9): a refusal names the call that made it, not
+// Symlink.
+func TestExpectNamesOp(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	name := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(name, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := WriteFileNoFollow(name, []byte("y"), 0o600, nil)
+	var pe *fs.PathError
+	if !errors.Is(err, fs.ErrExist) || !errors.As(err, &pe) || pe.Op != "WriteFile" {
+		t.Errorf("err = %v, want a WriteFile ErrExist", err)
+	}
+}

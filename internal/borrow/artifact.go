@@ -97,19 +97,27 @@ func readArtifact(a adapter.Artifact, started time.Time) (media, error) {
 	case fi.Size() > limit:
 		return refuse(fmt.Sprintf("it is over the %d MiB cap", limit>>20))
 	}
-	data, err := io.ReadAll(io.LimitReader(f, limit+1))
-	if err != nil {
+	// The magic bytes first: a file that fails them is never read whole.
+	head := make([]byte, sniffLen)
+	n, err := io.ReadFull(f, head)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return refuse(err.Error())
 	}
-	if int64(len(data)) > limit {
-		return refuse(fmt.Sprintf("it is over the %d MiB cap", limit>>20))
-	}
-	typ := sniff(data)
+	head = head[:n]
+	typ := sniff(head)
 	switch {
 	case a.Kind == "video" && typ != MP4:
 		return refuse("it is not an MP4 video")
 	case a.Kind != "video" && typ != PNG && typ != JPEG:
 		return refuse("it is not a PNG or JPEG image")
+	}
+	rest, err := readRest(io.LimitReader(f, limit+1-int64(n)))
+	if err != nil {
+		return refuse(err.Error())
+	}
+	data := append(head, rest...)
+	if int64(len(data)) > limit {
+		return refuse(fmt.Sprintf("it is over the %d MiB cap", limit>>20))
 	}
 	return media{Artifact: a, Type: typ, Data: data}, nil
 }
@@ -131,6 +139,12 @@ func born(fi fs.FileInfo) time.Time {
 	}
 	return fi.ModTime()
 }
+
+// readRest is io.ReadAll; tests wrap it to see which files are read whole.
+var readRest = io.ReadAll
+
+// sniffLen is how many leading bytes sniff needs.
+const sniffLen = 12
 
 // sniff returns the media type of data from its magic bytes, or "".
 func sniff(data []byte) string {
