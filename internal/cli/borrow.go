@@ -300,13 +300,6 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 	}
 	req.Fresh = ba.fresh
 	results, err := b.Run(ctx, req)
-	nctx := context.WithoutCancel(ctx)
-	n := newNotifier(cfg)
-	recordBorrowLimits(nctx, s, results, env.now(), n)
-	if len(results) > 0 {
-		r := results[len(results)-1]
-		n.Show(nctx, "borrow", "aggy", borrowText(r.Kind, r.Vendor, r.Outcome))
-	}
 	code := 0
 	for _, r := range results {
 		printResult(stdout, r)
@@ -316,7 +309,16 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy borrow: %s\n", termsafe.Field(err.Error()))
-		return 1
+		code = 1
+	}
+	// Record and notify once the report is out: the notifier can take
+	// seconds.
+	nctx := context.WithoutCancel(ctx)
+	n := newNotifier(cfg)
+	recordBorrowLimits(nctx, s, results, env.now(), n)
+	if len(results) > 0 {
+		r := results[len(results)-1]
+		n.Show(nctx, "borrow", "aggy", borrowText(r.Kind, r.Vendor, r.Outcome))
 	}
 	return code
 }
