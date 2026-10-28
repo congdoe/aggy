@@ -147,7 +147,7 @@ func TestChooseTable(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := New(tt.cfg, Deps{})
+			r := New(tt.cfg, Deps{Statuses: allConnected()})
 			d, err := r.Decide(context.Background(), tt.req)
 			got, cerr := r.Choose(context.Background(), tt.req)
 			if (err == nil) != (cerr == nil) {
