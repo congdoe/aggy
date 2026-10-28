@@ -1,0 +1,4 @@
+--- /dev/null
++++ b/exclude_missing
+@@ -0,0 +1 @@
++.aggy/

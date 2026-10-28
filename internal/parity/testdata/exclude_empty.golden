@@ -1,0 +1,4 @@
+--- a/exclude_empty
++++ b/exclude_empty
+@@ -0,0 +1 @@
++.aggy/
