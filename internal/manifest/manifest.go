@@ -155,6 +155,10 @@ func (m *Manifest) Apply(ctx context.Context, runID string, p patch.Patch) (stor
 		FileMode:    pl.Mode,
 		CreatedDirs: pl.CreatedDirs,
 		Unlocked:    !locked,
+		Reverse:     p.Reverse,
+	}
+	if _, ok := reversers[p.Reverse]; !ok && p.Reverse != "" {
+		return store.Change{}, fmt.Errorf("manifest: unknown reverse %q", p.Reverse)
 	}
 	if pl.Action == patch.NoOp {
 		c.Status = store.ChangeNoop
