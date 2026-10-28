@@ -3,7 +3,6 @@ package manifest
 import (
 	"context"
 
-	"github.com/congdoe/aggy/internal/patch"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 )
@@ -11,27 +10,37 @@ import (
 // Drift is the state of one file aggy changed whose change is still in
 // effect.
 type Drift struct {
-	Change  store.Change // the newest applied or pending change to the file
-	Drifted bool         // the file no longer holds what aggy last wrote
+	Change store.Change // the newest change to the file that unwire would act on
+	// Drifted: aggy unwire would refuse to undo the change without
+	// --force, because the file changed after aggy changed it.
+	Drifted bool
 	// Err means the file could not be checked: the row is not one aggy
 	// could have written, the path is a credential file, or reading
 	// failed. Drifted is then false.
 	Err error
 }
 
-// Drift compares each file aggy changed with what aggy last wrote to it.
-// For every target, the newest change that is applied or pending (not
-// undone, failed, or a no-op) is the one in effect. An applied change is
-// drifted when the file's hash is not its hash after; a pending one,
-// whose write may or may not have happened, when the hash is neither its
-// hash before nor after. A missing file has the hash patch.NoFile, so a
-// removed file aggy created or changed counts as drifted.
+// Drift reports, for each file aggy changed, whether aggy unwire would
+// call it drifted: refuse to undo it without --force.
+//
+// It decides as Unwire does for the newest change to a file that Unwire
+// acts on (applied, pending, or failed; Unwire undoes newest first, so
+// that one is reached before any older change to the file). The file is
+// not drifted when it holds the change's hash before (restored by hand,
+// or never written; a created file removed counts) or after (as aggy
+// left it), or aggy's change undone by hand as Unwire accepts it
+// (userReverted). Anything else is drifted.
+//
+// TODO(T6612): run Unwire{All: true} as a dry run and map its outcomes,
+// so there is one classifier. That needs a dry run that takes no target
+// locks: lockTarget creates run/patch/ and a lock file per target, which
+// a read-only command must not.
 //
 // Files are read through safefs, so a credential path is never read: a
 // row naming one is reported with an error. Spellings of one file
 // (through a symlinked directory, or in another case where the file
-// system ignores case) are compared as one target. Results are in the
-// order of the changes' ids.
+// system ignores case) are one target. Results are in the order of each
+// target's first change. It writes nothing.
 func (m *Manifest) Drift(ctx context.Context) ([]Drift, error) {
 	cs, err := m.store.Changes(ctx, "")
 	if err != nil {
@@ -40,7 +49,7 @@ func (m *Manifest) Drift(ctx context.Context) ([]Drift, error) {
 	latest := map[string]int{} // target key -> index into cs
 	var order []string
 	for i, c := range cs {
-		if c.Kind == store.KindMarker || (c.Status != store.ChangeApplied && c.Status != store.ChangePending) {
+		if !undoable(c) {
 			continue
 		}
 		key, err := safefs.CanonicalPath(c.File)
@@ -60,10 +69,11 @@ func (m *Manifest) Drift(ctx context.Context) ([]Drift, error) {
 			d.Err = err
 		} else if err := safefs.Check(c.File); err != nil {
 			d.Err = err
-		} else if cur, err := patch.HashFile(c.File); err != nil {
+		} else if cur, curHash, err := readFile(c.File); err != nil {
 			d.Err = err
 		} else {
-			d.Drifted = cur != c.HashAfter && (c.Status != store.ChangePending || cur != c.HashBefore)
+			r := m.undoRecord(c)
+			d.Drifted = curHash != r.BeforeHash && curHash != r.AfterHash && !userReverted(r, cur, curHash)
 		}
 		out = append(out, d)
 	}
