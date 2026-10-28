@@ -39,6 +39,8 @@ Kinds: image, video, research, news, review. (edit comes in M3.)
                    two vendors (research only)
   --base REF       review: diff against REF instead of the merge-base
                    with the default branch
+  --allow-untested run a CLI whose version is outside the versions the
+                   borrow lockdown was verified on
 
 A review runs at the root of the git work tree you are in. Its child gets
 the diff and the --path files in the prompt, as data to review.
@@ -107,13 +109,14 @@ func headlessRunner(timeout time.Duration) adapter.Runner {
 
 // borrowArgs is a parsed aggy borrow command line.
 type borrowArgs struct {
-	kind        string
-	task        string
-	paths       []string
-	constraints []string
-	vendor      string
-	base        string
-	help        bool
+	kind          string
+	task          string
+	paths         []string
+	constraints   []string
+	vendor        string
+	base          string
+	allowUntested bool
+	help          bool
 }
 
 // parseBorrowArgs reads flags anywhere on the line, so the task can come
@@ -129,6 +132,10 @@ func parseBorrowArgs(args []string) (borrowArgs, error) {
 		}
 		if a == "-h" || a == "--help" {
 			b.help = true
+			continue
+		}
+		if a == "--allow-untested" {
+			b.allowUntested = true
 			continue
 		}
 		if !strings.HasPrefix(a, "-") || a == "-" {
@@ -252,7 +259,7 @@ func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 	})
 	req := borrow.Request{
 		Kind: kind, Task: ba.task, Paths: paths, Constraints: ba.constraints,
-		Vendor: ba.vendor, Repo: root, Parent: parent,
+		Vendor: ba.vendor, Repo: root, Parent: parent, AllowUntested: ba.allowUntested,
 	}
 	if kind == adapter.Review {
 		if req.Repo, err = reviewRoot(cwd, env.getenv("HOME"), stateDir); err != nil {
@@ -347,7 +354,7 @@ func (w *borrowWorld) locate(ctx context.Context, v adapter.Vendor) (borrow.CLI,
 	if err != nil && !errors.Is(err, probe.ErrIncomplete) {
 		return borrow.CLI{}, err
 	}
-	return borrow.CLI{Path: path, Caps: res.Capabilities}, nil
+	return borrow.CLI{Path: path, Version: res.Version, Caps: res.Capabilities}, nil
 }
 
 // connected reports whether v may take borrows: its CLI is on PATH and

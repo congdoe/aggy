@@ -102,10 +102,14 @@ var recordedValues = map[string][]string{
 	"--output-format":   {"json"},
 	"--permission-mode": {"plan"},
 	"--sandbox":         {"read-only"},
-	// The codex exec features the borrow lockdown disables, live-verified
-	// on codex-cli 0.164.0 (2026-10-28).
-	"--disable": {"shell_tool", "unified_exec", "view_image", "apps", "plugins", "goals", "image_generation", "sleep_tool"},
 }
+
+// codexFeatures are the codex exec features the fake knows: the ones the
+// borrow lockdown disables, and others live checks accepted (codex-cli
+// 0.164.0, 2026-10-28). Like the real CLI, an unknown --disable feature
+// is ignored, unless --strict-config makes it an error.
+var codexFeatures = []string{"shell_tool", "unified_exec", "view_image", "apps", "plugins", "goals",
+	"image_generation", "sleep_tool", "code_mode", "standalone_web_search", "multi_agent"}
 
 // grokTools are the tool names grok 1.0.70 knows (live-verified
 // 2026-10-28). A --tools list naming any other makes the real CLI warn
@@ -129,6 +133,13 @@ func (f *fake) validate(headless bool) error {
 		for _, v := range f.flags[flag] {
 			if !contains(allowed, v) {
 				return fmt.Errorf("invalid value %q for %s", v, flag)
+			}
+		}
+	}
+	if f.has("--strict-config") {
+		for _, v := range f.flags["--disable"] {
+			if !contains(codexFeatures, v) {
+				return fmt.Errorf("invalid value %q for '--disable': unknown feature (--strict-config)", v)
 			}
 		}
 	}
@@ -235,11 +246,12 @@ var specs = map[string]flagSpec{
 	// lockdown, live-verified on codex-cli 0.164.0 (2026-10-28).
 	"codex exec": {
 		values:   []string{"-c", "--disable", "--sandbox"},
-		switches: []string{"--json", "--ignore-user-config", "--skip-git-repo-check"},
+		switches: []string{"--json", "--ignore-user-config", "--skip-git-repo-check", "--strict-config"},
 		multi:    []string{"-i"},
 	},
 	"codex exec resume": {
-		values: []string{"-c"},
+		values:   []string{"-c"},
+		switches: []string{"--strict-config"},
 	},
 	"codex resume": {
 		values:   []string{"-c"},

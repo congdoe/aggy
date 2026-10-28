@@ -88,3 +88,43 @@ func TestConcurrencyCap(t *testing.T) {
 		t.Error("ran a child past the cap")
 	}
 }
+
+// TestUntestedVersion (#10-5): a CLI outside the tested versions, or
+// with an unreadable version, is refused unless AllowUntested.
+func TestUntestedVersion(t *testing.T) {
+	tests := []struct {
+		version string
+		allow   bool
+		wantErr string
+	}{
+		{"1.0.70", false, ""},
+		{"1.0.99", false, "pass --allow-untested"},
+		{"", false, "cannot read the CLI version"},
+		{"1.0.99", true, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.version, func(t *testing.T) {
+			w := newWorld(t)
+			w.version[adapter.Grok] = tt.version
+			if tt.version == "" {
+				w.version[adapter.Grok] = "unreadable"
+			}
+			w.scenario[adapter.Grok] = `{"json":{"result":"ok"}}`
+			req := w.req(adapter.News, "x")
+			req.AllowUntested = tt.allow
+			_, err := w.borrower().Run(context.Background(), req)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("err = %v", err)
+			}
+			if len(w.records()) != 0 {
+				t.Error("ran an untested CLI")
+			}
+		})
+	}
+}

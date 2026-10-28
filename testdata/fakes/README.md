@@ -25,7 +25,7 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 | `claude` | `--output-format`, `--permission-mode`, `--session-id`, `--mcp-config`, `--tools`; `--resume [value]` | `-p`, `--fork-session`, `--strict-mcp-config` |
 | `grok` | `--output-format`, `--permission-mode`, `--session-id`, `--resume`, `--tools`, `--disallowed-tools`, `--max-turns` | `-p`, `--fork-session`, `--no-alt-screen`, `--continue`, `--no-subagents` |
 | `codex` | `-c` | `--no-alt-screen` |
-| `codex exec [resume <id>]` (the exec flags go before `resume`) | `-c`, `--disable` (repeatable), `--sandbox`, `-i <value>...` | `--json`, `--ignore-user-config`, `--skip-git-repo-check` |
+| `codex exec [resume <id>]` (the exec flags go before `resume`) | `-c`, `--disable` (repeatable), `--sandbox`, `-i <value>...` | `--json`, `--ignore-user-config`, `--skip-git-repo-check`, `--strict-config` |
 | `codex exec resume <id>`, after `resume` | `-c` | |
 | `codex resume <id>` | `-c` | `--no-alt-screen` |
 
@@ -36,7 +36,7 @@ Every command also takes `--version` and `--help` (`-h`). The generated help lis
 Values are checked where docs/adapters.md records them, with exit 2 otherwise:
 
 - `--session-id` must be a UUID.
-- `--output-format` must be `json`, `--permission-mode` must be `plan`, and `--sandbox` must be `read-only`. `--disable` takes only the features the borrow lockdown names (`shell_tool`, `unified_exec`, `view_image`, `apps`, `plugins`, `goals`, `image_generation`, `sleep_tool`). `extra_values` adds values.
+- `--output-format` must be `json`, `--permission-mode` must be `plan`, and `--sandbox` must be `read-only`. `--disable` ignores a feature it does not know, as Codex does, unless `--strict-config` is given; then an unknown feature fails with `invalid value`. Known: the lockdown's eight, plus `code_mode`, `standalone_web_search`, and `multi_agent`. `extra_values` adds values.
 - Grok's `--tools` names are checked against the tools grok 1.0.70 knows. An unknown name makes the fake print a warning containing `name no tool` on stderr, as the real CLI does before it ignores the whole allowlist; the run still succeeds.
 - `claude -p`, `grok -p`, `codex exec`, and `codex exec resume <id>` need a prompt, as an argument or on stdin. A prompt argument of `-` means "read stdin", so it needs a non-empty stdin.
 - An interactive run needs a terminal on stdin, unless `interactive_without_tty` is set.

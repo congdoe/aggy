@@ -50,6 +50,9 @@ type Request struct {
 	Repo string
 	// Parent is the vendor on screen, from AGGY_VENDOR; "" when unknown.
 	Parent adapter.Vendor
+	// AllowUntested runs a CLI whose version is outside the adapter's
+	// tested range (--allow-untested).
+	AllowUntested bool
 	// Material is the review input (required for review, which runs in
 	// Repo, the git work tree root); internal/cli gathers it.
 	Material *Material
@@ -58,8 +61,9 @@ type Request struct {
 // CLI is an installed vendor CLI: its absolute path and the
 // capabilities its probe found.
 type CLI struct {
-	Path string
-	Caps []string
+	Path    string
+	Version string // as the probe read it; "" when unreadable
+	Caps    []string
 }
 
 // Deps is what a borrow needs from the outside world. internal/cli fills
@@ -314,6 +318,12 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 		return Result{}, fmt.Errorf("%s: %w", v, err)
 	}
 	a := b.Adapter(v, cli)
+	// The lockdown flags were verified on the tested versions only: a
+	// newer CLI may take them differently, so it needs the caller's
+	// say-so.
+	if w := adapter.VersionWarning(a, cli.Version); w != "" && !req.AllowUntested {
+		return Result{}, fmt.Errorf("%s; the borrow lockdown was verified only there, so aggy will not borrow on it (pass --allow-untested to run it anyway)", w)
+	}
 	budget := b.Config.Budgets.For(req.Kind)
 	model := b.Config.Vendors.For(v).Model
 	now := b.Now()
