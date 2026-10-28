@@ -260,7 +260,9 @@ func (g *gitWorktrees) owned(wt store.Worktree) error {
 
 // Remove removes wt and its branch with git: git worktree remove, never
 // a recursive delete of a path, then git branch -D on aggy's own branch.
-// A worktree directory already gone is pruned from git's records.
+// A worktree directory already gone has only aggy's own admin entry
+// removed (dropAdmin), never a repo-wide prune, which would also drop the
+// person's own worktrees that happen to be missing (an unmounted disk).
 func (g *gitWorktrees) Remove(ctx context.Context, wt store.Worktree) error {
 	if err := g.owned(wt); err != nil {
 		return err
@@ -270,7 +272,7 @@ func (g *gitWorktrees) Remove(ctx context.Context, wt store.Worktree) error {
 		return err
 	}
 	if _, err := safefs.Lstat(wt.Path); errors.Is(err, fs.ErrNotExist) {
-		if _, _, err := g.env.git(ctx, wt.Repo, "worktree", "prune"); err != nil {
+		if err := g.dropAdmin(ctx, wt); err != nil {
 			return err
 		}
 	} else if _, _, err := g.env.git(ctx, wt.Repo, append(off, "worktree", "remove", "--force", "--", wt.Path)...); err != nil {
@@ -278,4 +280,37 @@ func (g *gitWorktrees) Remove(ctx context.Context, wt store.Worktree) error {
 	}
 	_, _, err = g.env.git(ctx, wt.Repo, "branch", "-D", wt.Branch)
 	return err
+}
+
+// dropAdmin removes the admin entry of aggy's worktree wt, whose
+// directory is gone: <git-common-dir>/worktrees/<id>, only when it is a
+// real directory whose gitdir file points at wt's own .git, so it is the
+// entry git made for this worktree and no other.
+func (g *gitWorktrees) dropAdmin(ctx context.Context, wt store.Worktree) error {
+	out, _, err := g.env.git(ctx, wt.Repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return err
+	}
+	admin := filepath.Join(strings.TrimSpace(out), "worktrees", filepath.Base(wt.Path))
+	if wt.GitDir != "" && filepath.Clean(wt.GitDir) != admin {
+		return fmt.Errorf("refusing: the recorded git dir %s is not %s", wt.GitDir, admin)
+	}
+	fi, err := safefs.Lstat(admin)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil // nothing left to remove
+	}
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("refusing: %s is not a directory", admin)
+	}
+	data, err := safefs.ReadFileLimit(filepath.Join(admin, "gitdir"), 4096)
+	if err != nil {
+		return fmt.Errorf("refusing to remove %s: %w", admin, err)
+	}
+	if got := filepath.Clean(strings.TrimSpace(string(data))); got != filepath.Join(wt.Path, ".git") {
+		return fmt.Errorf("refusing: %s belongs to %s, not aggy's %s", admin, got, wt.Path)
+	}
+	return safefs.RemoveAll(admin)
 }

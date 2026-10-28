@@ -19,14 +19,20 @@ type Worktrees interface {
 	Create(ctx context.Context, repo, id string) (store.Worktree, error)
 	// Remove removes a worktree Create made, and its branch.
 	Remove(ctx context.Context, wt store.Worktree) error
+	// Tree stages everything in wt in its own index and returns the git
+	// tree, which aggy accept compares against so a process the child
+	// left behind cannot change the diff after the borrow ended.
+	Tree(ctx context.Context, wt store.Worktree) (string, error)
 }
 
 // editGate refuses an edit on a vendor whose edit permission mode and
 // sandbox are not recorded in docs/adapters.md and docs/verification.md.
 //
-//   - Codex: --sandbox workspace-write, confirmed live (verification.md,
-//     "Codex resume with sandbox"): the OS sandbox keeps writes in the
-//     worktree, and approval stays at exec's default.
+//   - Codex: codex.EditLockdown: --sandbox workspace-write (confirmed live,
+//     verification.md "Codex resume with sandbox") with the user's
+//     config.toml ignored, so no MCP server, writable_roots, or
+//     network_access from it widens the sandbox; approval stays at exec's
+//     default.
 //   - Claude: --permission-mode acceptEdits is unconfirmed, and nothing
 //     recorded keeps its writes in the worktree. TODO(T6687): a live
 //     check of acceptEdits under -p.
