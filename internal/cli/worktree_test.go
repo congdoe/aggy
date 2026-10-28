@@ -169,6 +169,9 @@ func TestBorrowEditCommand(t *testing.T) {
 		!strings.Contains(args, "--sandbox workspace-write") || !strings.Contains(args, "--ignore-user-config") {
 		t.Errorf("child %+v", child)
 	}
+	if child.Env["AGGY_VENDOR"] != "codex" || child.Env["AGGY_DELEGATED"] != "1" {
+		t.Errorf("child env %v", child.Env)
+	}
 	if !strings.Contains(child.Stdin, "- a.go\n") || strings.Contains(child.Stdin, f.repo) {
 		t.Errorf("prompt paths:\n%s", child.Stdin)
 	}
