@@ -23,5 +23,5 @@ func runDirect(c adapter.Command, runDir, parentID string, v adapter.Vendor, ass
 	}
 	defer func() { _ = srv.Close() }()
 	c.Env = supervisor.SocketEnv(c.Env, srv.Path(), parentID)
-	return execrun.RunDirect(c)
+	return execrun.RunDirectStarted(c, srv.SetRoot)
 }

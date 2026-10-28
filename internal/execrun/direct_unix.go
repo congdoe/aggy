@@ -23,13 +23,20 @@ import (
 // CLI to clean up, so it only catches them. A TERM or HUP sent to aggy
 // alone is passed on. Caught, not ignored: an ignored signal would stay
 // ignored in the CLI.
-func RunDirect(c adapter.Command) (int, error) {
+func RunDirect(c adapter.Command) (int, error) { return RunDirectStarted(c, nil) }
+
+// RunDirectStarted is RunDirect that hands the CLI's pid to started (if
+// set) once it has started, for the supervisor socket's lineage check.
+func RunDirectStarted(c adapter.Command, started func(pid int)) (int, error) {
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(sigs)
 	d, err := StartDirect(c)
 	if err != nil {
 		return 1, err
+	}
+	if started != nil {
+		started(d.cmd.Process.Pid)
 	}
 	done := make(chan struct{})
 	defer close(done)
