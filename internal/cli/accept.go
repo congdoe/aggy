@@ -145,7 +145,7 @@ func gateText(r string) string {
 // nothing was decided).
 func gateEdit(ctx context.Context, s *store.Store, g *gitWorktrees, ce repoCheckEnv, b store.Borrow, wt store.Worktree, run bool, ask func(string) bool, stdout io.Writer) (string, error) {
 	if d := g.env.childWritable(wt.Repo); d != "" {
-		return "", fmt.Errorf("refusing to run the checks: the main checkout %s is under %s, which an edit child's sandbox may write (Codex workspace-write keeps temp dirs writable), so its check list may be the child's; run the edit from a repo outside temp dirs", wt.Repo, d)
+		return "", fmt.Errorf("refusing to run the checks: the main checkout %s is under %s, which an edit child's sandbox may write (Codex workspace-write leaves temp dirs writable unless told otherwise), so its check list may be the child's; run the edit from a repo outside temp dirs", wt.Repo, d)
 	}
 	rc, err := config.LoadRepo(wt.Repo)
 	if err != nil {

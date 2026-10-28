@@ -87,8 +87,9 @@ type borrowEnv struct {
 }
 
 // defaultTmpDirs are /tmp and $TMPDIR, which Codex's workspace-write
-// sandbox is taken to leave writable (unverified: aggy passes no
-// exclude_slash_tmp or exclude_tmpdir_env_var key yet).
+// sandbox leaves writable by default (verified live). codex.EditLockdown
+// excludes them; refusing them here too is defense in depth for older
+// Codex versions and other sandboxes.
 func defaultTmpDirs() []string { return []string{"/tmp", "/private/tmp", os.Getenv("TMPDIR")} }
 
 // childWritable returns the temp dir that holds repo (by real path), or

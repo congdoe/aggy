@@ -117,14 +117,16 @@ func lockdown(k adapter.Kind) []string {
 // with --sandbox SandboxEdit, and the shell kept: with only apply_patch the
 // child could not read the files it edits. Live-verified on codex-cli
 // 0.164.0 (2026-10-28, verification.md "Codex edit lockdown"): a write in
-// the cwd works, one outside it is refused. Unverified: whether exec's default web search
-// is on for an edit child (no recorded flag turns it off), and whether
-// Codex treats a linked worktree as its main repo for project trust; with
-// the user config ignored, no trust entry is loaded either way. Also
-// unverified (K46-2): whether workspace-write leaves /tmp and $TMPDIR
-// writable, and the sandbox_workspace_write exclude_slash_tmp and
-// exclude_tmpdir_env_var keys that would close them; a wrong key fails
-// under --strict-config, so none is passed until a live check.
+// the cwd works, one outside it is refused. workspace-write alone leaves
+// /tmp and $TMPDIR writable; the two sandbox_workspace_write exclude keys
+// close them (live, codex-cli 0.164.0, 2026-10-28, verification.md
+// "Codex edit lockdown": --strict-config accepts both, and with them a
+// shell write to /private/tmp or $TMPDIR fails with "operation not
+// permitted" while one in the repo works). Unverified: whether exec's
+// default web search is on for an edit child (no recorded flag turns it
+// off), and whether Codex treats a linked worktree as its main repo for
+// project trust; with the user config ignored, no trust entry is loaded
+// either way.
 var EditLockdown = editLockdown()
 
 func editLockdown() []string {
@@ -132,7 +134,8 @@ func editLockdown() []string {
 	for i := 0; i < len(Lockdown); i++ {
 		switch {
 		case Lockdown[i] == "--sandbox":
-			out = append(out, "--sandbox", SandboxEdit)
+			out = append(out, "--sandbox", SandboxEdit, "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+				"-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true")
 			i++
 		case Lockdown[i] == "--disable" && (Lockdown[i+1] == "shell_tool" || Lockdown[i+1] == "unified_exec"):
 			i++

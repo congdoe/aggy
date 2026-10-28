@@ -557,13 +557,20 @@ Not checked: whether exec's default web search is on under this set, and
 whether Codex resolves a linked worktree to its main repo for project
 trust (with `--ignore-user-config` no trust entry loads). `codex.EditLockdown` is this set.
 
-Also not checked (K46-2): whether `workspace-write` leaves `/tmp` and
-`$TMPDIR` writable, and whether `-c sandbox_workspace_write.exclude_slash_tmp=true`
-and `-c sandbox_workspace_write.exclude_tmpdir_env_var=true` are valid keys
-at this version (no offline source was at hand, and `--strict-config` makes
-a wrong key fatal). Until then aggy assumes they are writable: the check
-gate refuses a main checkout under them, and accept keeps its patch file in
-its own `run` dir.
+Temp dirs (K46-2), live 2026-10-28, codex-cli 0.164.0, scratch repo, `TMPDIR`
+set to a scratch dir:
+
+| Check | Command | Verdict | Evidence |
+| --- | --- | --- | --- |
+| Run A: temp dirs under workspace-write | the edit lockdown above, unchanged | Writable | The shell tool wrote a file in `/private/tmp/<scratch>`, in `$TMPDIR`, and in the repo, each with exit 0. |
+| Run B: exclude keys | the same plus `-c sandbox_workspace_write.exclude_slash_tmp=true -c sandbox_workspace_write.exclude_tmpdir_env_var=true` | Confirmed | `--strict-config` accepted both keys. The `/private/tmp` and `$TMPDIR` writes failed with `operation not permitted`; the repo write succeeded. |
+
+The key names are fields of the binary's `SandboxWorkspaceWrite` config
+struct (`writable_roots`, `network_access`, `exclude_tmpdir_env_var`,
+`exclude_slash_tmp`). `codex.EditLockdown` passes both exclude keys. aggy's
+check gate still refuses a main checkout under `/tmp`, `/private/tmp`, or
+`$TMPDIR`, and accept keeps its patch file in its own `run` dir, as defense
+in depth for other temp roots and older Codex versions.
 
 ## Codex CLI details
 
