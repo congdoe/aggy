@@ -91,8 +91,8 @@ func editRec(b store.Borrow, wt store.Worktree) diag.Rec {
 // per-record lock accept takes too, so whichever moves it off pending
 // first wins and the other refuses. The removal is then claimed in the
 // store, so a reject and a gc never both act on it. A failure gives both
-// back.
-func discardEdit(ctx context.Context, s *store.Store, g *gitWorktrees, id string, wt store.Worktree, now time.Time) error {
+// back. rule says what happens to the branch.
+func discardEdit(ctx context.Context, s *store.Store, g *gitWorktrees, id string, wt store.Worktree, now time.Time, rule branchRule) error {
 	if err := g.owned(wt); err != nil {
 		return err
 	}
@@ -112,7 +112,7 @@ func discardEdit(ctx context.Context, s *store.Store, g *gitWorktrees, id string
 		undo()
 		return err
 	}
-	if err := g.Remove(ctx, wt); err != nil {
+	if err := g.remove(ctx, wt, rule); err != nil {
 		_ = s.UnclaimWorktreeRemoval(ctx, id)
 		undo()
 		return err
@@ -312,7 +312,7 @@ func rejectWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 	g := &gitWorktrees{env: env, stateDir: stateDir, out: stderr}
 	b, wt, err := editTarget(ctx, s, g, id)
 	if err == nil {
-		err = discardEdit(ctx, s, g, b.ID, wt, env.now())
+		err = discardEdit(ctx, s, g, b.ID, wt, env.now(), branchDelete)
 	}
 	if err != nil {
 		refuse(ctx, stderr, "reject", diag.EvAcceptRefused, codeOf(err, diag.CodeAcceptFailed), err.Error(), editRec(b, wt))

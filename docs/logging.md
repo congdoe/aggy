@@ -142,7 +142,7 @@ The hard rules hold for every record, the export, and the bundle.
   ```sh
   aggy diag sql "SELECT DISTINCT run_id, vendor, borrow_id FROM records WHERE code = 'vendor.rate_limit' AND ts >= unixepoch('now', 'start of day') * 1000"
   ```
-- **Every security refusal this week:** `aggy diag --code 'lockdown.*' --since 7d`, or `aggy diag sql "SELECT ts, code, run_id, borrow_id FROM records WHERE code IN ('borrow.one_hop', 'lockdown.rejected', 'accept.protected_path', 'accept.worktree_changed', 'check.gate_temp_dir', 'check.tree_changed', 'check.edit_worktree')"`, or `aggy log` for the `refusal` rows.
+- **Every security refusal this week:** `aggy diag --code 'lockdown.*' --since 7d`, or `aggy diag sql "SELECT ts, code, run_id, borrow_id FROM records WHERE code IN ('borrow.one_hop', 'lockdown.rejected', 'accept.protected_path', 'accept.worktree_changed', 'accept.state_temp_dir', 'check.gate_temp_dir', 'check.tree_changed', 'check.edit_worktree', 'tool.delegated', 'tool.def_untrusted')"`, or `aggy log` for the `refusal` rows.
 - **Borrows that started and never finished (aggy was killed):**
 
   ```sh

@@ -215,8 +215,11 @@ func Run(o Options) (Exit, error) {
 		case h := <-s.o.Limits:
 			s.onLimit(h)
 		case r := <-s.shares:
+			s.shareBusy = false
 			if r.seq == s.shareSeq {
 				s.share = &r
+			} else {
+				s.readShare() // asked again while this one was read
 			}
 		case <-s.exitBy:
 			s.exitBy = nil
@@ -357,8 +360,10 @@ type session struct {
 	// check (offerWarn) has not run since; warned: the warning was shown
 	// (or a limit hit) and its crossing has not ended, warnedWindow and
 	// warnedReset being the window it was about (T6699). shares brings
-	// askShare's readings; share is the latest ask's, nil until it is in.
+	// askShare's readings; share is the latest ask's, nil until it is in;
+	// shareBusy: a read is in flight.
 	warnDue, warned bool
+	shareBusy       bool
 	warnedWindow    string
 	warnedReset     time.Time
 	shares          chan shareReading
@@ -625,6 +630,7 @@ func (s *session) offerSwitch() {
 // reading of that same window is below WarnAt; a lower share from
 // another window or rollout does not end it (L60-3). After a limit
 // (onLimit), whose window is not known, any reading below WarnAt does.
+// A crossing of another window that resets sooner is a new one (T6778).
 func (s *session) offerWarn() {
 	if !s.warnDue {
 		return
@@ -642,6 +648,7 @@ func (s *session) offerWarn() {
 	}
 	r := *s.share
 	s.warnDue = false
+	warnChecked()
 	if s.warned && !s.warnedReset.IsZero() && !now.Before(s.warnedReset) {
 		s.warned = false
 	}
@@ -654,7 +661,12 @@ func (s *session) offerWarn() {
 		}
 		return
 	}
-	if s.warned {
+	// A crossing of another window that resets sooner is a new one: a
+	// stale weekly reading (another rollout's, read before the session's
+	// own) must not mute the 5-hour window for days. The warned reset
+	// only moves sooner, so two windows never take turns warning.
+	sooner := r.Window != s.warnedWindow && !s.warnedReset.IsZero() && r.Reset.Before(s.warnedReset)
+	if s.warned && !sooner {
 		return
 	}
 	s.warned, s.warnedWindow, s.warnedReset = true, r.Window, r.Reset
@@ -665,6 +677,10 @@ func (s *session) offerWarn() {
 	s.pk.warn(pre, warnForms(s.o.Vendor, int(math.Floor(r.Used*100+1e-9)), keyName(s.pk.key), pre)...)
 	s.openPicker()
 }
+
+// warnChecked runs each time offerWarn takes a share reading, so tests
+// can wait for that rather than for the read (L60-6).
+var warnChecked = func() {}
 
 // warnForms is the near-limit warning's line, from longest to shortest
 // (L60-4): v is at pct% of its limit, and the switch key hands off to
@@ -690,13 +706,23 @@ func warnForms(v adapter.Vendor, pct int, key string, pre adapter.Vendor) []stri
 
 // askShare reads the share used of the vendor on screen off the main
 // loop, at a turn end of the on-screen child (L60-2); the main loop keeps
-// the reading of the latest ask only.
+// the reading of the latest ask only. One read runs at a time: an ask
+// while one is in flight makes that one stale, and the main loop reads
+// again when it lands.
 func (s *session) askShare() {
 	if s.o.Used == nil || s.o.WarnAt <= 0 {
 		return
 	}
 	s.shareSeq++
 	s.share = nil
+	if !s.shareBusy {
+		s.readShare()
+	}
+}
+
+// readShare starts the one read of the share for the latest ask.
+func (s *session) readShare() {
+	s.shareBusy = true
 	seq, v := s.shareSeq, s.o.Vendor
 	s.goSafe(func() {
 		sh, ok := s.o.Used(v)
@@ -884,6 +910,9 @@ func (s *session) closePicker() {
 		s.pk.erase(s.o.Out, s.pickerOverCLI)
 	}
 	s.open = false
+	// A lone Esc still pending was for this prompt: it must not close
+	// the next one (a limit's note that replaced a warning).
+	s.escBy = nil
 	s.outMu.Unlock()
 	if s.pickerOverCLI {
 		s.repaint()
