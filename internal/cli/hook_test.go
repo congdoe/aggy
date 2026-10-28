@@ -62,6 +62,7 @@ func hookServer(t *testing.T) (sock string, got func() []supervisor.Request) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	s.SetRoot(os.Getpid()) // the test plays the CLI; aggy hook runs in it
 	return s.Path(), func() []supervisor.Request {
 		mu.Lock()
 		defer mu.Unlock()

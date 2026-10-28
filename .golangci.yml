@@ -287,7 +287,8 @@ linters:
       # (LOCAL_PEERCRED) or LOCAL_PEERPID on darwin, so golang.org/x/sys/unix,
       # for exactly these calls in these two files: the peer's uid and pid,
       # and, on darwin, a process's parent (sysctl kern.proc.pid) for the
-      # lineage check. Linux reads parents from /proc through safefs.
+      # lineage check, and its start time, which pins the peer process.
+      # Linux reads parents and start times from /proc through safefs.
       - path: ^internal/supervisor/peercred_(darwin|linux)\.go$
         text: "import 'golang.org/x/sys/unix' is not allowed"
         linters: [depguard]
@@ -295,7 +296,12 @@ linters:
         text: "use of `(unix\\.(GetsockoptXucred|GetsockoptUcred|SOL_LOCAL|LOCAL_PEERCRED|SOL_SOCKET|SO_PEERCRED)|[xu]\\.(Uid|Pid))`"
         linters: [forbidigo]
       - path: ^internal/supervisor/peercred_darwin\.go$
-        text: "use of `(unix\\.(GetsockoptInt|LOCAL_PEERPID|SysctlKinfoProc)|k\\.(Proc|Eproc)(\\.(P_pid|Ppid))?|P_pid|Ppid)`"
+        text: "use of `(unix\\.(GetsockoptInt|LOCAL_PEERPID|SysctlKinfoProc|KinfoProc)|k\\.(Proc|Eproc)(\\.(P_pid|Ppid|P_starttime(\\.Nano)?))?|P_pid|Ppid|P_starttime)`"
+        linters: [forbidigo]
+      # Linux: the peer's pidfd (SO_PEERPIDFD, by its number) and closing
+      # it, so the lineage check is bound to the process that connected.
+      - path: ^internal/supervisor/peercred_linux\.go$
+        text: "use of `unix\\.(GetsockoptInt|Close)`"
         linters: [forbidigo]
       - path: ^internal/store/
         text: "`sql\\.(Open|OpenDB)`"

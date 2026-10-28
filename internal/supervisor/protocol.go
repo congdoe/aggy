@@ -92,9 +92,9 @@ func decodeRequest(line []byte) (Request, error) {
 }
 
 // answer handles one request line. onHook, if set, gets each valid
-// hook-event, with FromSession from fromSession. A switch-request must be
-// FromSession.
-func answer(line []byte, fromSession func() bool, onHook func(Request)) Response {
+// hook-event, with FromSession set to fromSession. A switch-request must
+// be FromSession.
+func answer(line []byte, fromSession bool, onHook func(Request)) Response {
 	r, err := decodeRequest(line)
 	if err != nil {
 		return Response{Error: err.Error()}
@@ -108,12 +108,12 @@ func answer(line []byte, fromSession func() bool, onHook func(Request)) Response
 		// FromSession (fail closed). Until then onHook keeps the index
 		// (session ids) and records limits.
 		if onHook != nil {
-			r.FromSession = fromSession()
+			r.FromSession = fromSession
 			onHook(r)
 		}
 		return Response{OK: true}
 	default: // ReqSwitchRequest
-		if !fromSession() {
+		if !fromSession {
 			return Response{Error: "switch-request from outside this session"}
 		}
 		// TODO(T6664): perform the switch at the CLI's turn end.

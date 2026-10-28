@@ -26,24 +26,34 @@ import (
 // switching (T6664), and Codex id claims are further checked against the
 // rollout itself (internal/cli, sessionIndex).
 //
-// Any failure (no pid, a process gone mid-walk, an OS without the calls,
-// no root yet) is "not in the lineage": id claims and switch-triggering
-// requests then fail closed, while informational hook events are still
-// passed on, unmarked.
+// The answer is worked out once per connection, at accept, before any
+// request is read, and bound to the process that connected, not just its
+// pid (G38-1): peerInstance pins that process (a pidfd on Linux, its
+// start time otherwise) before the walk and checks it again after. A pid
+// is otherwise easy to have reused: a process outside the tree connects,
+// hands the connection on, and exits, and pids are handed out again soon
+// (pid_max 99999 on darwin, often 32768 on Linux) to whatever the CLI
+// starts next. A connection that is not from the session is closed after
+// its first request, so it cannot be kept open waiting for that.
+//
+// Any failure (no pid, no identity, a process gone mid-walk, an OS
+// without the calls, no root within rootWait) is "not in the lineage":
+// id claims and switch-triggering requests then fail closed, while
+// informational hook events are still passed on, unmarked.
 
 // maxLineageDepth bounds the parent walk. A hook runs a few levels below
 // the CLI (CLI, shell, aggy hook; a node launcher adds one).
 const maxLineageDepth = 64
 
-// parentPID returns a process's parent pid; tests replace it.
-var parentPID = parentPIDOf
+// parentPID returns a process's parent pid, and peerInstance pins the
+// process that connected (see peerInstanceOf); tests replace them.
+var (
+	parentPID    = parentPIDOf
+	peerInstance = peerInstanceOf
+)
 
-// descends reports whether pid is root or descends from it.
-//
-// shortcut: a pid read at connect time could be reused if the peer exits
-// before the walk; the reuser is a process of the same uid (the uid check
-// came first) that must also descend from the CLI. Upgrade to start-time
-// checks if T6664 needs more.
+// descends reports whether pid is root or descends from it. The caller
+// pins pid's process around it (peerInstance).
 func descends(pid, root int) bool {
 	if pid <= 0 || root <= 0 {
 		return false
@@ -64,17 +74,25 @@ func descends(pid, root int) bool {
 	return false
 }
 
-// parseStatPPID reads the parent pid from a Linux /proc/<pid>/stat line:
-// the fourth field, after the command name in parentheses, which may
-// itself hold spaces and parentheses, so the last ")" ends it.
-func parseStatPPID(b []byte) (int, error) {
+// parseStat reads the parent pid (field 4) and start time (field 22, in
+// clock ticks since boot) from a Linux /proc/<pid>/stat line (proc(5)).
+// They follow the command name in parentheses, which may itself hold
+// spaces and parentheses, so the last ")" ends it.
+func parseStat(b []byte) (ppid int, start uint64, err error) {
+	bad := errors.New("supervisor: bad /proc stat line")
 	i := bytes.LastIndexByte(b, ')')
 	if i < 0 {
-		return -1, errors.New("supervisor: bad /proc stat line")
+		return -1, 0, bad
 	}
-	f := bytes.Fields(b[i+1:]) // state, ppid, ...
-	if len(f) < 2 {
-		return -1, errors.New("supervisor: bad /proc stat line")
+	f := bytes.Fields(b[i+1:]) // field 3 (state) on
+	if len(f) < 20 {
+		return -1, 0, bad
 	}
-	return strconv.Atoi(string(f[1]))
+	if ppid, err = strconv.Atoi(string(f[1])); err != nil {
+		return -1, 0, bad
+	}
+	if start, err = strconv.ParseUint(string(f[19]), 10, 64); err != nil {
+		return -1, 0, bad
+	}
+	return ppid, start, nil
 }

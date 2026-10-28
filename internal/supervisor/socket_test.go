@@ -307,6 +307,7 @@ func TestCloseDoesNotWaitForClients(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			s.SetRoot(os.Getpid()) // the test is the CLI, so its pings keep the connection
 			c, err := net.Dial("unix", s.Path())
 			if err != nil {
 				t.Fatal(err)
@@ -389,22 +390,87 @@ func TestTakeLockAfterUnlink(t *testing.T) {
 	}
 }
 
-func TestParseStatPPID(t *testing.T) {
+func TestParseStat(t *testing.T) {
+	// Fields 5 to 21 are filler; field 22 is the start time.
+	rest := " 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 98765 0 0"
 	tests := []struct {
-		line string
-		want int
-		ok   bool
+		line  string
+		ppid  int
+		start uint64
+		ok    bool
 	}{
-		{"123 (bash) S 45 123 123 0", 45, true},
-		{"123 (a b) c)) R 7 1 1", 7, true},
-		{"123 (x)", -1, false},
-		{"garbage", -1, false},
-		{"1 (x) S notanumber", -1, false},
+		{"123 (bash) S 45" + rest, 45, 98765, true},
+		{"123 (a b) c)) R 7" + rest, 7, 98765, true},
+		{"123 (x)", -1, 0, false},
+		{"garbage", -1, 0, false},
+		{"1 (x) S notanumber" + rest, -1, 0, false},
+		{"1 (x) S 4 1 1", -1, 0, false}, // too short
 	}
 	for _, tt := range tests {
-		got, err := parseStatPPID([]byte(tt.line))
-		if (err == nil) != tt.ok || tt.ok && got != tt.want {
-			t.Errorf("%q: %d, %v; want %d", tt.line, got, err, tt.want)
+		ppid, start, err := parseStat([]byte(tt.line))
+		if (err == nil) != tt.ok || tt.ok && (ppid != tt.ppid || start != tt.start) {
+			t.Errorf("%q: %d, %d, %v; want %d, %d", tt.line, ppid, start, err, tt.ppid, tt.start)
+		}
+	}
+}
+
+func TestPeerInstanceOfRealConnection(t *testing.T) {
+	got := make(chan bool, 1)
+	old := peerInstance
+	peerInstance = func(c *net.UnixConn, pid int) (func() bool, func(), error) {
+		same, release, err := peerInstanceOf(c, pid)
+		if err != nil {
+			t.Error(err)
+			got <- false
+			return nil, nil, err
+		}
+		got <- same()
+		return same, release, nil
+	}
+	t.Cleanup(func() { peerInstance = old })
+	s := listen(t, filepath.Join(shortDir(t), "run"))
+	_ = ask(t, s, `{"type":"ping"}`+"\n")
+	if !<-got {
+		t.Error("the connecting process (this test) is not the same process as itself")
+	}
+}
+
+// TestPidReuseAfterAccept (G38-1): a peer whose pid comes to name another
+// process (one in the CLI's tree) after it connected is not from the
+// session, and a connection not from the session gets one answer only,
+// so it cannot wait with pings for a pid to be reused.
+func TestPidReuseAfterAccept(t *testing.T) {
+	old := peerInstance
+	peerInstance = func(*net.UnixConn, int) (func() bool, func(), error) {
+		return func() bool { return false }, func() {}, nil // reused since accept
+	}
+	t.Cleanup(func() { peerInstance = old })
+	got := make(chan Request, 1)
+	s, err := Listen(filepath.Join(shortDir(t), "run"), pid, nil, func(r Request) { got <- r })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	s.SetRoot(os.Getpid()) // the peer's pid is in the tree
+	if r := ask(t, s, `{"type":"hook-event","vendor":"codex","event":"Stop","payload":{}}`+"\n"); !strings.Contains(r, `"ok":true`) {
+		t.Fatalf("reply %q", r)
+	}
+	if r := <-got; r.FromSession {
+		t.Error("a reused pid made the event FromSession")
+	}
+
+	c, err := net.Dial("unix", s.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	br := bufio.NewReader(c)
+	for i, want := range []bool{true, false} {
+		_, _ = c.Write([]byte(`{"type":"ping"}` + "\n"))
+		_, err := br.ReadString('\n')
+		if (err == nil) != want {
+			t.Errorf("ping %d answered = %v, want %v", i+1, err == nil, want)
 		}
 	}
 }
