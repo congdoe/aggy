@@ -222,10 +222,15 @@ func LoadDefault() (Config, error) {
 	return Load(p)
 }
 
-// Load reads the config at path over the defaults. A missing file gives the
-// defaults. Unknown keys are an error that names them.
+// MaxFileSize caps a config file. Config is small; a larger file is a
+// mistake or an attack.
+const MaxFileSize = 1 << 20
+
+// Load reads the config at path over the defaults: a regular file of at
+// most MaxFileSize, not a symlink. A missing file gives the defaults.
+// Unknown keys are an error that names them.
 func Load(path string) (Config, error) {
-	b, err := safefs.ReadFile(path)
+	b, err := safefs.ReadFileLimit(path, MaxFileSize)
 	if errors.Is(err, fs.ErrNotExist) {
 		return Default(), nil
 	}
