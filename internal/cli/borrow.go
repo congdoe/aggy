@@ -379,7 +379,7 @@ func newAdapter(v adapter.Vendor, cli borrow.CLI) adapter.Adapter {
 	case adapter.Codex:
 		return codex.New()
 	}
-	return grok.New()
+	return grok.Adapter{Caps: cli.Caps}
 }
 
 // borrowWorld answers the borrow package's questions about the CLIs.
@@ -403,7 +403,7 @@ func (w *borrowWorld) locate(ctx context.Context, v adapter.Vendor) (borrow.CLI,
 	if err != nil && !errors.Is(err, probe.ErrIncomplete) {
 		return borrow.CLI{}, err
 	}
-	return borrow.CLI{Path: path, Version: res.Version, Caps: res.Capabilities}, nil
+	return borrow.CLI{Path: path, Version: res.Version, VersionLine: res.VersionLine, Caps: res.Capabilities}, nil
 }
 
 // borrowRouter is internal/router behind the borrow package's Router

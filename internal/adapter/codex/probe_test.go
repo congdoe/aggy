@@ -23,10 +23,10 @@ func TestProbeFake(t *testing.T) {
 // a newer one gets a warning.
 func TestTestedVersions(t *testing.T) {
 	a := New()
-	if w := adapter.VersionWarning(a, "0.164.0"); w != "" {
+	if w := adapter.VersionWarning(a, "0.164.0", ""); w != "" {
 		t.Errorf("tested version warned: %s", w)
 	}
-	if w := adapter.VersionWarning(a, "99.0.0"); w == "" {
+	if w := adapter.VersionWarning(a, "99.0.0", ""); w == "" {
 		t.Error("an untested version gave no warning")
 	}
 }

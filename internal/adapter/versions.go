@@ -101,14 +101,16 @@ func (r VersionRange) Contains(version string) (bool, error) {
 
 // VersionWarning returns a warning when version, as a probe found it, is
 // outside the versions the adapter was tested on, or empty or unreadable
-// (a probe that could not read --version records ""); "" when it is
-// inside. aggy doctor shows it.
-func VersionWarning(a Adapter, version string) string {
+// (a probe that could not read --version records "" and the first line it
+// printed as line); "" when it is inside. aggy doctor shows it.
+func VersionWarning(a Adapter, version, line string) string {
 	r := a.TestedVersions()
 	ok, err := r.Contains(version)
 	switch {
+	case version == "":
+		return fmt.Sprintf("%s: could not parse the CLI version from --version (first line %q); aggy was tested on %s", a.Vendor(), line, r)
 	case err != nil:
-		return fmt.Sprintf("%s: cannot read the CLI version %q; aggy was tested on %s", a.Vendor(), version, r)
+		return fmt.Sprintf("%s: could not parse the CLI version %q; aggy was tested on %s", a.Vendor(), version, r)
 	case !ok:
 		return fmt.Sprintf("%s %s is outside the versions aggy was tested on (%s); flags or output formats may have changed", a.Vendor(), version, r)
 	}

@@ -76,7 +76,7 @@ func TestResearchIsolation(t *testing.T) {
 
 			// What reaches the child: no file contents, no local paths,
 			// no parent secrets.
-			sent := rec.Stdin + "\n" + strings.Join(rec.Args, " ")
+			sent := rec.Stdin + rec.Prompt + "\n" + strings.Join(rec.Args, " ")
 			for _, s := range []string{"REPO-SECRET-CONTENT", w.repo, w.state, w.home, secretFile} {
 				if strings.Contains(sent, s) {
 					t.Errorf("the child was sent %q", s)
@@ -103,7 +103,7 @@ func TestResearchIsolation(t *testing.T) {
 			if _, err := w.borrower().Run(context.Background(), w.req(kind, "Another question")); err != nil {
 				t.Fatal(err)
 			}
-			if recs := w.records(); len(recs) != 2 || strings.Contains(recs[1].Stdin, "IGNORE PREVIOUS") {
+			if recs := w.records(); len(recs) != 2 || strings.Contains(recs[1].Stdin+recs[1].Prompt, "IGNORE PREVIOUS") {
 				t.Errorf("planted text reached a later prompt: %+v", recs)
 			}
 		})

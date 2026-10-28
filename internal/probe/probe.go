@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/redact"
 	"github.com/congdoe/aggy/internal/store"
 )
 
@@ -70,7 +71,7 @@ const (
 	CapTools          = "tools"           // --tools
 	CapDisallowTools  = "disallowed-tools"
 	CapMaxTurns       = "max-turns"
-	CapSandbox        = "sandbox"         // codex exec --sandbox
+	CapSandbox        = "sandbox"         // codex exec --sandbox, or grok --sandbox
 	CapDisable        = "disable"         // codex exec --disable <feature>
 	CapImageInput     = "image-input"     // codex exec -i
 	CapConfigOverride = "config-override" // codex -c key=value
@@ -133,6 +134,7 @@ var Specs = map[adapter.Vendor]Spec{
 			{CapMaxTurns, 0, "--max-turns", Option},
 			{CapRules, 0, "--rules", Option},
 			{CapDeny, 0, "--deny", Option},
+			{CapSandbox, 0, "--sandbox", Option},
 		},
 	},
 	adapter.Codex: {
@@ -168,8 +170,10 @@ var ErrAmbiguousVersion = errors.New("probe: several versions in --version outpu
 const semver = `v?(\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)`
 
 // note is an optional parenthesized remark after the version, such as
-// "(Claude Code)" or "(fake)".
-const note = `(?:\s+\([^)]*\))?`
+// "(Claude Code)" or "(fake)", then an optional bracketed channel tag:
+// grok 1.0.70 prints "grok 1.0.70 (f50904eaee6c) [stable]" (live
+// diagnostic 2026-10-28).
+const note = `(?:\s+\([^)]*\))?(?:\s+\[[\w.-]+\])?`
 
 // anyLine matches a whole --version line: an optional program name of one
 // or more words, the version, and an optional note. The exact --version
@@ -348,6 +352,10 @@ func Detect(ctx context.Context, run adapter.Runner, vendor adapter.Vendor, path
 	if err != nil && !unreadable(err) {
 		return p, err
 	}
+	var ve *VersionError
+	if errors.As(err, &ve) {
+		p.VersionLine = ve.Line
+	}
 	// An unreadable version is not a failed probe: Version stays empty
 	// and adapter.VersionWarning reports it.
 	p.Version = version
@@ -356,8 +364,45 @@ func Detect(ctx context.Context, run adapter.Runner, vendor adapter.Vendor, path
 	return p, nil
 }
 
+// VersionError is a --version that ran but printed no version aggy can
+// read (ErrNoVersion or ErrAmbiguousVersion). Line is its first non-empty
+// output line, trimmed and capped, or "[redacted]" when it looks like a
+// secret, so a warning can show what the CLI printed.
+type VersionError struct {
+	Err  error
+	Line string
+}
+
+func (e *VersionError) Error() string { return fmt.Sprintf("%v (first line %q)", e.Err, e.Line) }
+func (e *VersionError) Unwrap() error { return e.Err }
+
+// maxVersionLine caps VersionError.Line, in runes.
+const maxVersionLine = 80
+
+// firstLine returns the first non-empty line of stdout, else of stderr,
+// trimmed, capped at maxVersionLine runes, and "[redacted]" when it is
+// secret-shaped.
+func firstLine(stdout, stderr []byte) string {
+	for _, out := range [][]byte{stdout, stderr} {
+		for _, l := range strings.Split(string(out), "\n") {
+			l = strings.TrimSpace(l)
+			if l == "" {
+				continue
+			}
+			if redact.Secret(l) {
+				return "[redacted]"
+			}
+			if r := []rune(l); len(r) > maxVersionLine {
+				l = string(r[:maxVersionLine]) + "..."
+			}
+			return l
+		}
+	}
+	return ""
+}
+
 // Version runs path --version and parses it, keyed on the program names
-// (see ParseVersion).
+// (see ParseVersion). An unreadable version is a *VersionError.
 func Version(ctx context.Context, run adapter.Runner, path string, programs []string) (string, error) {
 	out, err := run(ctx, adapter.Command{Path: path, Args: []string{"--version"}})
 	if err != nil {
@@ -366,7 +411,11 @@ func Version(ctx context.Context, run adapter.Runner, path string, programs []st
 	if out.ExitCode != 0 {
 		return "", fmt.Errorf("probe: %s --version exited %d", path, out.ExitCode)
 	}
-	return ParseVersion(out.Stdout, out.Stderr, programs)
+	v, err := ParseVersion(out.Stdout, out.Stderr, programs)
+	if err != nil {
+		return "", &VersionError{Err: err, Line: firstLine(out.Stdout, out.Stderr)}
+	}
+	return v, nil
 }
 
 // unreadable reports whether err means --version ran but printed no
