@@ -130,10 +130,11 @@ aggy routes the kind (section 8), runs that vendor's CLI headless (`claude -p`, 
 
 - The borrow prompt is the task, the paths, the constraints, and today's date. It does not include the parent transcript. The child's exploration stays in that child.
 - A borrow is a child, so it appears in `aggy session` and can be resumed with `/vendor`.
-- Read-only kinds (`image`, `video`, `research`, `news`, `review`) never write the repo. `review` runs in plan mode: `--permission-mode plan` on Claude and Grok, `--sandbox read-only` on Codex.
+- Read-only kinds (`image`, `video`, `research`, `news`, `review`) never write the repo. Every kind but `review` runs in a fresh, empty temp directory with its CLI's lockdown flags (adapters.md). `review` runs at the root of the git work tree in plan mode: `--permission-mode plan` on Claude and Grok, `--sandbox read-only` with the full Codex lockdown on Codex, which leaves Codex no tool that reads a file. So every reviewer gets its input in the prompt: aggy runs `git diff` against the merge-base with the default branch (or `--base <ref>`) and reads the `--path` files, caps the total at 256 KiB, and fences it as data to review, not instructions. Claude and Grok keep their read tools at the work tree root. A review refuses `$HOME`, `/`, a directory outside a git work tree, and a root around aggy's state dir.
 - `edit` gets its own git worktree and never writes the main checkout. Its diff passes `aggy check` before you see it.
-- Each kind has a time limit and, where the CLI supports one, a turn limit. aggy kills a borrow past its time limit and runs at most 2 borrows per vendor and 4 in total.
-- `--vendor <name>` overrides routing for one borrow.
+- Each kind has a time limit and, where the CLI supports one, a turn limit. aggy kills a borrow's whole process group past its time limit, or when `aggy borrow` gets SIGINT, SIGTERM, or SIGHUP (recorded as `interrupted`), and runs at most 2 borrows per vendor and 4 in total, counted across processes through store leases.
+- `--vendor <name>` replaces the routing list for one borrow; the skip rules of section 8 still apply to it. `--vendor both` asks two vendors, for research only.
+- A CLI whose version is outside the versions the adapter was tested on is refused for borrows unless `--allow-untested` is passed: the lockdown flags were verified only there.
 
 **One hop.** The parent's `aggy borrow` works and the child's copy refuses. A child with a shell could still run `claude -p`, `codex exec`, or `grok -p` directly. Delegated children get a `PreToolUse` hook that denies commands calling those or `aggy borrow`. It catches accidents. It is documented as not a security boundary.
 
@@ -150,7 +151,7 @@ The on-screen agent writes the brief (purpose, size, exact text, style reference
 Facts established against codex-cli 0.164.0 and grok 1.0.70:
 
 - Codex: `codex exec --json --sandbox read-only` generates images on the plan. They land in `~/.codex/generated_images/<thread-id>/`. The image tool call is not in the JSON stream, and one request can produce more than one image, so aggy collects and counts every file in that folder and reports the count. Reference images go in with `codex exec -i`.
-- Grok: `image_gen` is verified headless on the plan with `grok -p --tools image_gen --output-format json`. `image_edit` and `video_gen` exist but are unverified headless. All three sit behind `features.image_gen` and `features.video_gen`. Files land in `~/.grok/sessions/<url-encoded cwd>/<sessionId>/images/`, and the reply gives the path relative to the session folder.
+- Grok: `image_gen` is verified headless on the plan with `grok -p --tools image_gen --output-format json`. `image_edit` exists but is unverified headless. There is no `video_gen` tool: a video borrow gets `image_gen` and `image_to_video`, unverified headless (batch 6 owns video). All three sit behind `features.image_gen` and `features.video_gen`. Files land in `~/.grok/sessions/<url-encoded cwd>/<sessionId>/images/`, and the reply gives the path relative to the session folder.
 
 **Research and news.** The child gets the question, today's date, and any versions that matter. The report goes to `.aggy/research/<date>-<slug>.md` with sources, publish dates, an "as of" time, and open questions. The parent gets about ten lines and the path. The same question reuses a cached report for a day (news) or one to two weeks (research). `--fresh` skips the cache. The report is data, and the parent treats it as information, not instructions.
 
@@ -185,7 +186,7 @@ aggy walks the list for the kind (or the one `--vendor` named) and skips, checki
 - vendors outside the repo's `allowed_vendors`
 - vendors that hit their limit recently (the limit signal comes with M2)
 
-The rest are tried in order. When none is left, the error names each vendor and why it was skipped, for example `no vendor available for research: grok: the parent is on grok; codex: not connected`.
+The rest are tried in order. A candidate whose CLI is missing, whose adapter refuses the kind, or whose version the lockdown was not verified on is passed over before anything runs, and the report names it and why; a borrow that started and then failed is the result, with no second vendor. When none is left, the error names each vendor and why it was skipped, for example `no vendor available for research: grok: the parent is on grok; codex: not connected`.
 
 Every borrow is logged with its kind, vendor, model, tokens, time, and outcome. A redo, or the same question re-asked of another vendor, counts against the first. `aggy stats` shows results per kind, and you reorder the table. The switch picker uses the same signals.
 
@@ -402,7 +403,7 @@ CI never signs in to a vendor.
 | Milestone | Delivers | Done when | Status |
 | --- | --- | --- | --- |
 | M0 Foundation | Repo skeleton, CI, fake CLIs, store, config, adapter interface and probes, the patch manifest and `aggy unwire`, and the open vendor checks | `aggy unwire` restores files byte for byte, and the unconfirmed vendor facts are answered | In progress: `safefs`, `patch`, `store`, `config`, `home`, and the `Adapter` interface exist |
-| M1 Read-only borrows | `image`, `video`, `research`, `news`, `review`; routing, budgets, research isolation, inbox, log, the skill, and the Codex `CLAUDE.md` fallback | An image lands at `--out` with its sidecar, and a research borrow costs the on-screen agent under 2,000 tokens. Released as v0.1.0. | Not started |
+| M1 Read-only borrows | `image`, `video`, `research`, `news`, `review`; routing, budgets, research isolation, inbox, log, the skill, and the Codex `CLAUDE.md` fallback | A research borrow costs the on-screen agent under 2,000 tokens, and (batch 6, with `aggy image` and `aggy video`) an image lands at `--out` with its sidecar. Released as v0.1.0. | In progress: `aggy borrow` with isolation, lockdown, budgets, the guard, reports, `aggy inbox`, and the log |
 | M2 Switching | Setup, doctor, the supervisor, the switch key and picker, resume, task file, brief, limit hooks, parity, desktop notifications | The handoff evaluation passes 9 of 10, and the terminal checklist passes | Not started |
 | M3 Edit borrows | Worktrees, `aggy check`, attribution trailers, `aggy gc`, review routed to a non-author vendor | An edit diff reaches you only after the repo checks pass | Not started |
 | M4 Usage and stats | `aggy usage`, `aggy stats` per kind, a near-limit warning where data exists | Routing is tuned from real stats. Released as 1.0. | Not started |
