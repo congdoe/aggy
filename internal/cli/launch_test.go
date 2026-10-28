@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -159,9 +160,11 @@ func TestPlan(t *testing.T) {
 					store.Child{ID: "c", Vendor: "claude", VendorSessionID: sidA})
 				claudeSession(t, sidA, time.Now())
 			},
-			tgt: target{ParentID: "c0000000", Vendor: adapter.Claude, NewChild: true},
+			tgt: target{ParentID: "c0000000", Vendor: adapter.Claude, NewChild: true, Model: "sonnet-x"},
 			check: func(t *testing.T, p launchPlan, dir string) {
-				if !p.newChild || p.child.Vendor != "claude" || p.child.ID == "c" {
+				// O56-7: the one-launch model is on the child before its
+				// row is committed.
+				if !p.newChild || p.child.Vendor != "claude" || p.child.ID == "c" || p.child.Model != "sonnet-x" {
 					t.Errorf("plan = %+v", p)
 				}
 			},
@@ -546,5 +549,13 @@ func TestChildEnv(t *testing.T) {
 	}
 	if got := childEnv("grok", ""); !slices.Equal(got, []string{"AGGY_VENDOR=grok"}) {
 		t.Errorf("env = %q", got)
+	}
+}
+
+// TestPlanBadModel (O56-7): plan checks the one-launch model before
+// anything else, as it may have come over the socket.
+func TestPlanBadModel(t *testing.T) {
+	if _, err := plan(context.Background(), nil, config.Config{}, t.TempDir(), target{Model: "a b"}, time.Now(), io.Discard); err == nil {
+		t.Error("a bad model was planned")
 	}
 }

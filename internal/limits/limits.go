@@ -27,7 +27,10 @@ import (
 
 // Where a signal came from.
 const (
-	ViaHook    = "hook"
+	// ViaHook: a hook event reported it. Any process in the CLI's tree
+	// can send one, so it is unverified (O56-2); rows written before
+	// that say "hook" and read the same.
+	ViaHook    = "hook-unverified"
 	ViaRollout = "rollout"
 	ViaBorrow  = "borrow"
 )

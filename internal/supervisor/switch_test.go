@@ -96,12 +96,12 @@ func TestSwitchWaitsForTurnEnd(t *testing.T) {
 	ts, c, done, sock := switchRun(t, true) // a turn is running
 	ts.typeIn(t, "\x1c2")
 	poll(t, "the picker to close", []byte(altScreenOff), ts.screen)
-	never(t, "mid-turn", []byte("switches to grok"), ts.screen, 300*time.Millisecond)
+	never(t, "mid-turn", []byte("-> grok. "), ts.screen, 300*time.Millisecond)
 
 	if r := request(t, sock, stopLine); !strings.Contains(r, `"ok":true`) {
 		t.Fatalf("hook reply %q", r)
 	}
-	poll(t, "the confirmation", []byte("switches to grok, Esc stays"), ts.screen)
+	poll(t, "the confirmation", []byte("-> grok. Ctrl+"), ts.screen)
 	for _, want := range []string{"See claude's prompt?", "It types /exit"} {
 		if !bytes.Contains(ts.screen(), []byte(want)) {
 			t.Errorf("the confirmation does not say %q", want)
@@ -140,7 +140,7 @@ func TestSwitchTurnEndHints(t *testing.T) {
 				ts.typeIn(t, tt.after)
 				c.waitGot(t, []byte(tt.after))
 			}
-			never(t, "no turn end", []byte("switches to grok"), ts.screen, 300*time.Millisecond)
+			never(t, "no turn end", []byte("-> grok. "), ts.screen, 300*time.Millisecond)
 			finish(t, c, done)
 		})
 	}
@@ -193,17 +193,17 @@ func TestSwitchHolds(t *testing.T) {
 	poll(t, "the picker to close", []byte(altScreenOff), ts.screen)
 	_ = request(t, sock, notifyLine)
 	_ = request(t, sock, stopLine)
-	never(t, "a held switch", []byte("switches to grok, Esc stays"), ts.screen, 300*time.Millisecond)
+	never(t, "a held switch", []byte("-> grok. Ctrl+"), ts.screen, 300*time.Millisecond)
 	// Picking it again cannot get past the hold.
 	ts.typeIn(t, "\x1c2")
 	poll(t, "the hold note", []byte("is waiting for you"), ts.screen)
 	ts.typeIn(t, "\x1b")
-	never(t, "a held switch", []byte("switches to grok, Esc stays"), ts.screen, 300*time.Millisecond)
+	never(t, "a held switch", []byte("-> grok. Ctrl+"), ts.screen, 300*time.Millisecond)
 	// The user answers (keys to the CLI), and the turn ends.
 	ts.typeIn(t, "\r")
 	c.waitGot(t, []byte("\r"))
 	_ = request(t, sock, stopLine)
-	poll(t, "the confirmation", []byte("switches to grok, Esc stays"), ts.screen)
+	poll(t, "the confirmation", []byte("-> grok. Ctrl+"), ts.screen)
 	ts.typeIn(t, "\x1b")
 	finish(t, c, done)
 	if bytes.Contains(c.received(), []byte("/exit")) {
@@ -216,7 +216,7 @@ func TestSwitchHolds(t *testing.T) {
 func TestSwitchConfirmEscStays(t *testing.T) {
 	ts, c, done, _ := switchRun(t, false) // at the prompt from launch
 	ts.typeIn(t, "\x1c2")
-	poll(t, "the confirmation", []byte("switches to grok, Esc stays"), ts.screen)
+	poll(t, "the confirmation", []byte("-> grok. Ctrl+"), ts.screen)
 	ts.typeIn(t, "\x1b")
 	time.Sleep(50 * time.Millisecond) // two reads: Esc alone closes the prompt
 	ts.typeIn(t, "k")
@@ -236,7 +236,7 @@ func TestSwitchBlockedByUnsentText(t *testing.T) {
 	c.waitGot(t, []byte("half a prompt"))
 	ts.typeIn(t, "\x1c2")
 	poll(t, "the note", []byte("you typed text you have not sent"), ts.screen)
-	if bytes.Contains(ts.screen(), []byte("switches to grok, Esc stays")) {
+	if bytes.Contains(ts.screen(), []byte("-> grok. Ctrl+")) {
 		t.Fatal("a confirmation was offered over unsent text")
 	}
 	ts.typeIn(t, "\r")
@@ -254,7 +254,7 @@ func TestSwitchPromptReturnsKeys(t *testing.T) {
 	confirmGuard = time.Hour
 	t.Cleanup(func() { confirmGuard = old })
 	ts.typeIn(t, "\x1c2")
-	poll(t, "the confirmation", []byte("switches to grok, Esc stays"), ts.screen)
+	poll(t, "the confirmation", []byte("-> grok. Ctrl+"), ts.screen)
 	ts.typeIn(t, "\x1c") // too soon: ignored
 	time.Sleep(50 * time.Millisecond)
 	ts.typeIn(t, "please fix the login bug")
@@ -272,7 +272,7 @@ func TestSwitchPromptReturnsKeys(t *testing.T) {
 func TestSwitchLateExit(t *testing.T) {
 	ts, c, done, _ := switchRun(t, false)
 	ts.typeIn(t, "\x1c1")
-	poll(t, "the confirmation", []byte("switches to codex, Esc stays"), ts.screen)
+	poll(t, "the confirmation", []byte("-> codex. Ctrl+"), ts.screen)
 	confirm(t, ts)
 	c.waitGot(t, []byte("/exit\r"))
 	poll(t, "the note", []byte("has not exited"), ts.screen)
@@ -288,7 +288,7 @@ func TestSwitchLateExit(t *testing.T) {
 func TestSwitchCancelAfterExitTyped(t *testing.T) {
 	ts, c, done, _ := switchRun(t, false)
 	ts.typeIn(t, "\x1c1")
-	poll(t, "the confirmation", []byte("switches to codex, Esc stays"), ts.screen)
+	poll(t, "the confirmation", []byte("-> codex. Ctrl+"), ts.screen)
 	confirm(t, ts)
 	c.waitGot(t, []byte("/exit\r"))
 	poll(t, "the note", []byte("has not exited"), ts.screen)
@@ -314,12 +314,12 @@ func TestSwitchRequest(t *testing.T) {
 			t.Errorf("%s: reply %q, want %q", tt.line, r, tt.want)
 		}
 	}
-	never(t, "mid-turn", []byte("switches to grok"), ts.screen, 200*time.Millisecond)
+	never(t, "mid-turn", []byte("-> grok. "), ts.screen, 200*time.Millisecond)
 	if err := pty.Setsize(ts.master, &pty.Winsize{Rows: 24, Cols: 160}); err != nil {
 		t.Fatal(err)
 	}
 	_ = request(t, sock, stopLine)
-	poll(t, "the confirmation", []byte("(The agent asked.)"), ts.screen)
+	poll(t, "the confirmation", []byte("the agent asks"), ts.screen)
 	confirm(t, ts)
 	c.waitGot(t, []byte("/exit\r"))
 	c.quit(0)
@@ -343,7 +343,7 @@ func TestSwitchRepickKeepsUnsentText(t *testing.T) {
 	if got := c.received(); bytes.Contains(got, []byte("/exit")) {
 		t.Fatalf("the CLI got %q", got)
 	}
-	if bytes.Contains(ts.screen(), []byte("switches to grok, Esc stays")) {
+	if bytes.Contains(ts.screen(), []byte("-> grok. Ctrl+")) {
 		t.Error("a confirmation was offered over unsent text")
 	}
 	finish(t, c, done)
@@ -356,9 +356,9 @@ func TestSwitchNeedsChildStop(t *testing.T) {
 	ts.typeIn(t, "\x1c2")
 	poll(t, "the picker to close", []byte(altScreenOff), ts.screen)
 	_ = request(t, sock, nestedStop)
-	never(t, "a nested Stop", []byte("switches to grok, Esc stays"), ts.screen, 300*time.Millisecond)
+	never(t, "a nested Stop", []byte("-> grok. Ctrl+"), ts.screen, 300*time.Millisecond)
 	_ = request(t, sock, stopLine)
-	poll(t, "the confirmation", []byte("switches to grok, Esc stays"), ts.screen)
+	poll(t, "the confirmation", []byte("-> grok. Ctrl+"), ts.screen)
 	confirm(t, ts)
 	c.waitGot(t, []byte("/exit\r"))
 	c.quit(0)
@@ -371,7 +371,7 @@ func TestSwitchNeedsChildStop(t *testing.T) {
 func TestSwitchKeyAtNoteOpensList(t *testing.T) {
 	ts, c, done, _ := switchRun(t, false)
 	ts.typeIn(t, "\x1c1")
-	poll(t, "the confirmation", []byte("switches to codex, Esc stays"), ts.screen)
+	poll(t, "the confirmation", []byte("-> codex. Ctrl+"), ts.screen)
 	confirm(t, ts)
 	c.waitGot(t, []byte("/exit\r"))
 	poll(t, "the note", []byte("has not exited"), ts.screen)
@@ -393,7 +393,7 @@ func TestSwitchSplitEscHandedBack(t *testing.T) {
 	escTimeout = time.Second
 	t.Cleanup(func() { escTimeout = old })
 	ts.typeIn(t, "\x1c2")
-	poll(t, "the confirmation", []byte("switches to grok, Esc stays"), ts.screen)
+	poll(t, "the confirmation", []byte("-> grok. Ctrl+"), ts.screen)
 	ts.typeIn(t, "\x1b")
 	time.Sleep(30 * time.Millisecond)
 	ts.typeIn(t, "[A")
@@ -415,7 +415,7 @@ func TestSwitchConfirmKeepsScreen(t *testing.T) {
 	ts.typeIn(t, "\x1c2")
 	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
 	mark := len(ts.screen())
-	poll(t, "the confirmation", []byte("switches to grok, Esc stays"), ts.screen)
+	poll(t, "the confirmation", []byte("-> grok. Ctrl+"), ts.screen)
 	time.Sleep(50 * time.Millisecond)
 	drawn := ts.screen()[mark:]
 	for _, bad := range []string{altScreenOn, "\x1b[?1049", "\x1b[2J", "\x1b[H"} {
@@ -441,7 +441,7 @@ func TestSwitchCodexAgentRefused(t *testing.T) {
 		t.Errorf("switch-request reply %q", r)
 	}
 	_ = request(t, sock, codexStop) // forged, from the tree
-	never(t, "an agent switch on codex", []byte("switches to"), ts.screen, 300*time.Millisecond)
+	never(t, "an agent switch on codex", []byte("switches, Esc stays"), ts.screen, 300*time.Millisecond)
 	ts.typeIn(t, "\x1c")
 	poll(t, "the list", []byte("aggy: switch vendor"), ts.screen)
 	ts.typeIn(t, "\x1c") // the switch key closes the list; nothing typed
@@ -454,7 +454,7 @@ func TestSwitchCodexAgentRefused(t *testing.T) {
 	ts.typeIn(t, "\x1c2")
 	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
 	_ = request(t, sock, codexStop)
-	poll(t, "the confirmation", []byte("switches to grok, Esc stays. See codex's prompt?"), ts.screen)
+	poll(t, "the confirmation", []byte("-> grok. Ctrl+\\ switches, Esc stays. See codex's prompt?"), ts.screen)
 	confirm(t, ts)
 	c.waitGot(t, []byte("/exit\r"))
 	c.quit(0)
@@ -484,14 +484,22 @@ func TestSendDirty(t *testing.T) {
 		// T6754: an Enter that may only accept a popup entry.
 		{"Enter after @ may accept a file", []string{"read @src/ma", "\r"}, true},
 		{"Enter after a leading / may accept a command", []string{"/mo", "\r"}, true},
-		{"then an Enter on the empty line sends", []string{"read @src/ma", "\r", "\r"}, false},
+		// O56-3: the popup may have added text; only an explicitly
+		// emptied line clears it.
+		{"@src/, Enter, Enter", []string{"@src/", "\r", "\r"}, true},
+		{"Ctrl+U, then Enter", []string{"read @src/ma", "\r", "\x15", "\r"}, false},
+		{"backspaces to zero, then Enter", []string{"/mo", "\x7f\x7f\x7f", "\r"}, false},
+		{"backspaces after a popup Enter", []string{"@a", "\r", "\x7f\x7f\x7f\x7f", "\r"}, true},
+		{"Ctrl+U, then typed again", []string{"@a", "\r", "\x15", "hi", "\r"}, false},
+		{"typed then erased", []string{"hello", "\x7f\x7f\x7f\x7f\x7f"}, false},
+		{"Ctrl+U waits for an Enter", []string{"@a", "\r", "\x15"}, true},
 		{"a / inside a line is a path", []string{"read src/main.go", "\r"}, false},
-		{"a clean send clears the popup mark", []string{"@a", "\r", "\r", "hi", "\r"}, false},
+		{"typing does not clear the popup mark", []string{"@a", "\r", "\r", "hi", "\r"}, true},
 		{"paste end split across reads", []string{"\x1b[200~x\x1b[2", "01~", "\r"}, false},
 		{"paste start split across reads", []string{"\x1b[2", "00~x\r"}, true},
 	}
 	for _, tt := range tests {
-		s := &session{toChild: newByteQueue(maxQueued)}
+		s := &session{toChild: newByteQueue(maxQueued), lenKnown: true}
 		for _, ch := range tt.chunks {
 			s.send([]byte(ch))
 		}
@@ -530,8 +538,9 @@ func TestSwitchMultilineDraft(t *testing.T) {
 	}
 }
 
-// TestSwitchOptionsCarried (T6665): the picker's toggles and a
-// switch-request's options reach the caller with the switch.
+// TestSwitchOptionsCarried (T6665, O56-1): the picker's toggles and a
+// switch-request's brief reach the caller with the switch; an agent's
+// new session or model is refused, as the user's choice.
 func TestSwitchOptionsCarried(t *testing.T) {
 	ts, c, done, _ := switchRun(t, false)
 	ts.typeIn(t, "\x1c")
@@ -542,17 +551,17 @@ func TestSwitchOptionsCarried(t *testing.T) {
 	}
 	poll(t, "the toggles", []byte("brief: on    m  model for this launch: gpt-x"), ts.screen)
 	ts.typeIn(t, "1")
-	poll(t, "the confirmation", []byte("switches to codex, Esc stays"), ts.screen)
+	poll(t, "the confirmation", []byte("-> codex. Ctrl+"), ts.screen)
 	confirm(t, ts)
 	c.waitGot(t, []byte("/exit\r"))
 	c.quit(0)
 	wantExit(t, done, Exit{SwitchTo: adapter.Codex, Next: Choice{Vendor: adapter.Codex, Model: "gpt-x", Brief: true}})
 
 	ts, c, done, sock := switchRun(t, false)
-	if r := request(t, sock, `{"type":"switch-request","vendor":"grok","new":true,"model":"g-1","brief":true}`); !strings.Contains(r, `"ok":true`) {
-		t.Fatalf("reply %q", r)
-	}
 	for _, bad := range []string{
+		`{"type":"switch-request","vendor":"grok","new":true,"model":"g-1","brief":true}`,
+		`{"type":"switch-request","vendor":"grok","new":true}`,
+		`{"type":"switch-request","vendor":"grok","model":"g-1"}`,
 		`{"type":"switch-request","vendor":"grok","model":"a b"}`,
 		`{"type":"hook-event","vendor":"claude","event":"Stop","payload":{},"brief":true}`,
 	} {
@@ -560,15 +569,18 @@ func TestSwitchOptionsCarried(t *testing.T) {
 			t.Errorf("%s: accepted", bad)
 		}
 	}
-	poll(t, "the confirmation", []byte("switches to grok, Esc stays"), ts.screen)
+	if r := request(t, sock, `{"type":"switch-request","vendor":"grok","brief":true}`); !strings.Contains(r, `"ok":true`) {
+		t.Fatalf("reply %q", r)
+	}
+	poll(t, "the confirmation", []byte("the agent asks, brief -> grok. Ctrl+"), ts.screen)
 	confirm(t, ts)
 	c.waitGot(t, []byte("/exit\r"))
 	c.quit(0)
-	wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok, New: true, Model: "g-1", Brief: true}})
+	wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok, Brief: true}})
 }
 
 // limitOpts gives Run a limit channel, and quota to grok only.
-func limitOpts(ch chan adapter.Vendor, quota ...adapter.Vendor) func(*Options) {
+func limitOpts(ch chan LimitHit, quota ...adapter.Vendor) func(*Options) {
 	return func(o *Options) {
 		o.Limits = ch
 		o.HasQuota = func(v adapter.Vendor) bool {
@@ -587,17 +599,17 @@ func limitOpts(ch chan adapter.Vendor, quota ...adapter.Vendor) func(*Options) {
 // for the turn end and the switch key: one key accepts, none is pressed
 // for the user.
 func TestSwitchOnLimit(t *testing.T) {
-	ch := make(chan adapter.Vendor, 1)
+	ch := make(chan LimitHit, 1)
 	ts, c, done, sock := switchRunOn(t, true, adapter.Claude, limitOpts(ch, adapter.Grok))
 	if err := pty.Setsize(ts.master, &pty.Winsize{Rows: 24, Cols: 160}); err != nil {
 		t.Fatal(err)
 	}
-	ch <- adapter.Codex // not the vendor on screen: ignored
-	ch <- adapter.Claude
-	never(t, "mid-turn", []byte("switches to"), ts.screen, 200*time.Millisecond)
+	ch <- LimitHit{Vendor: adapter.Codex} // not the vendor on screen: ignored
+	ch <- LimitHit{Vendor: adapter.Claude}
+	never(t, "mid-turn", []byte("switches, Esc stays"), ts.screen, 200*time.Millisecond)
 	_ = request(t, sock, `{"type":"hook-event","vendor":"claude","event":"StopFailure","payload":{"session_id":"`+childSID+`","error":"rate_limit"}}`)
-	poll(t, "the confirmation", []byte("(claude hit its limit.)"), ts.screen)
-	if !bytes.Contains(ts.screen(), []byte("switches to grok, Esc stays")) {
+	poll(t, "the confirmation", []byte("claude hit its limit, brief -> grok."), ts.screen)
+	if !bytes.Contains(ts.screen(), []byte("-> grok. Ctrl+")) {
 		t.Fatal("codex has no quota; grok should be offered")
 	}
 	time.Sleep(300 * time.Millisecond)
@@ -610,24 +622,64 @@ func TestSwitchOnLimit(t *testing.T) {
 	wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok, Brief: true}})
 }
 
+// TestSwitchOnLimitUnverified (O56-2): a limit only a hook reported is
+// labeled so, and still waits for the turn end and the switch key.
+func TestSwitchOnLimitUnverified(t *testing.T) {
+	ch := make(chan LimitHit, 1)
+	ts, c, done, sock := switchRunOn(t, true, adapter.Claude, limitOpts(ch, adapter.Grok))
+	ch <- LimitHit{Vendor: adapter.Claude, Unverified: true}
+	never(t, "mid-turn", []byte("Esc stays"), ts.screen, 200*time.Millisecond)
+	_ = request(t, sock, `{"type":"hook-event","vendor":"claude","event":"StopFailure","payload":{"session_id":"`+childSID+`","error":"rate_limit"}}`)
+	poll(t, "the confirmation", []byte("claude reports a limit (unverified), brief -> grok."), ts.screen)
+	time.Sleep(300 * time.Millisecond)
+	if bytes.Contains(c.received(), []byte("/exit")) {
+		t.Fatal("/exit typed without the switch key")
+	}
+	confirm(t, ts)
+	c.waitGot(t, []byte("/exit\r"))
+	c.quit(0)
+	wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok, Brief: true}})
+}
+
+// TestPreselectCleared (O56-5): a limit's preselect lasts until a turn
+// of the session ends without a limit, for a vendor with a hold signal.
+func TestPreselectCleared(t *testing.T) {
+	for _, tt := range []struct {
+		vendor adapter.Vendor
+		event  string
+		want   adapter.Vendor
+	}{
+		{adapter.Claude, "StopFailure", adapter.Grok},
+		{adapter.Claude, "Stop", ""},
+		{adapter.Codex, "Stop", adapter.Grok}, // a rollout limit may come before its Stop
+	} {
+		s := &session{o: Options{Vendor: tt.vendor, SessionID: func() string { return "x" }}, pk: &picker{preselect: adapter.Grok}}
+		s.hookEvent(hookEvent{name: "Stop", sessionID: "other"})
+		s.hookEvent(hookEvent{name: tt.event, sessionID: "x"})
+		if s.pk.preselect != tt.want {
+			t.Errorf("%s %s: preselect %q, want %q", tt.vendor, tt.event, s.pk.preselect, tt.want)
+		}
+	}
+}
+
 // TestSwitchOnLimitCodex (T6667, S-12): Codex has no hold signal, so a
 // limit only says so and preselects; the user opens the list, Enter takes
 // the preselected vendor with a brief, and the switch key confirms.
 func TestSwitchOnLimitCodex(t *testing.T) {
-	ch := make(chan adapter.Vendor, 1)
+	ch := make(chan LimitHit, 1)
 	ts, c, done, sock := switchRunOn(t, true, adapter.Codex, limitOpts(ch, adapter.Grok))
-	ch <- adapter.Codex
+	ch <- LimitHit{Vendor: adapter.Codex}
 	poll(t, "the note", []byte("codex hit its limit. grok has quota left"), ts.screen)
 	_ = request(t, sock, `{"type":"hook-event","vendor":"codex","event":"Stop","payload":{"session_id":"`+childSID+`"}}`)
 	time.Sleep(200 * time.Millisecond)
-	if bytes.Contains(c.received(), []byte("/exit")) || bytes.Contains(ts.screen(), []byte("switches to")) {
+	if bytes.Contains(c.received(), []byte("/exit")) || bytes.Contains(ts.screen(), []byte("switches, Esc stays")) {
 		t.Fatal("a limit on codex offered a switch by itself")
 	}
 	ts.typeIn(t, "\x1c") // at the note: opens the list
 	poll(t, "the preselect", []byte(" >2  grok"), ts.screen)
 	poll(t, "brief on", []byte("b  brief: on"), ts.screen)
 	ts.typeIn(t, "\r")
-	poll(t, "the confirmation", []byte("switches to grok, Esc stays"), ts.screen)
+	poll(t, "the confirmation", []byte("-> grok. Ctrl+"), ts.screen)
 	confirm(t, ts)
 	c.waitGot(t, []byte("/exit\r"))
 	c.quit(0)
@@ -637,11 +689,11 @@ func TestSwitchOnLimitCodex(t *testing.T) {
 // TestSwitchOnLimitNoQuota (T6667): with no vendor left, aggy says so
 // and queues nothing.
 func TestSwitchOnLimitNoQuota(t *testing.T) {
-	ch := make(chan adapter.Vendor, 1)
+	ch := make(chan LimitHit, 1)
 	ts, c, done, _ := switchRunOn(t, false, adapter.Claude, limitOpts(ch))
-	ch <- adapter.Claude
+	ch <- LimitHit{Vendor: adapter.Claude}
 	poll(t, "the note", []byte("no other vendor aggy offers has quota left"), ts.screen)
 	ts.typeIn(t, "\x1b")
-	never(t, "no switch", []byte("switches to"), ts.screen, 300*time.Millisecond)
+	never(t, "no switch", []byte("switches, Esc stays"), ts.screen, 300*time.Millisecond)
 	finish(t, c, done)
 }

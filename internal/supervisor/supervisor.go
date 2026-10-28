@@ -81,8 +81,16 @@ type Options struct {
 	// a limit, the first vendor of Vendors with quota is preselected and,
 	// where the vendor on screen has a hold signal, offered at the turn
 	// end with a brief. Either may be nil.
-	Limits   <-chan adapter.Vendor
+	Limits   <-chan LimitHit
 	HasQuota func(v adapter.Vendor) bool
+}
+
+// LimitHit is a plan limit the session recorded for Vendor. Unverified is
+// set for one only a hook reported (O56-2), which any process in the
+// CLI's tree can send.
+type LimitHit struct {
+	Vendor     adapter.Vendor
+	Unverified bool
 }
 
 // ChildChoice is one child the picker offers.
