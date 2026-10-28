@@ -22,6 +22,7 @@ Commands:
   video     Make a short video in Grok's CLI and copy it into the repo
   inbox     List unread borrow reports, or show one
   run       Start a vendor CLI (claude, codex, or grok) under aggy
+  brief     Preview the handoff brief for a vendor session
   setup     Check each vendor CLI's install, version, and sign-in
   doctor    Check the vendor CLIs, API-key and proxy settings, and config drift
   log       Show harnesses, models, switches, borrows, and files changed
@@ -52,6 +53,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runVideo(args[1:], stdout, stderr)
 	case "inbox":
 		return runInbox(args[1:], stdout, stderr)
+	case "brief":
+		return runBrief(args[1:], stdout, stderr)
 	case "hook":
 		return runHook(args[1:], stdout, stderr)
 	case "run":
