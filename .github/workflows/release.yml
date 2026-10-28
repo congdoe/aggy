@@ -4,7 +4,7 @@ name: release
 # by its `if`. To enable it, change the trigger to
 #   push:
 #     tags: ["v*"]
-# and remove the `if`.
+# and remove the `if`. The full checklist is in docs/release.md.
 on:
   workflow_dispatch:
 
@@ -33,6 +33,9 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pushes the Homebrew cask to congdoe/homebrew-aggy. The owner
+          # creates the tap repo and this secret (docs/release.md).
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
       # Signed checksums and build provenance: a Sigstore-signed SLSA
       # provenance attestation for every archive and for checksums.txt.
       # Verify with: gh attestation verify <file> --repo congdoe/aggy

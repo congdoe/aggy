@@ -36,3 +36,18 @@ func TestRun(t *testing.T) {
 		})
 	}
 }
+
+func TestPickVersion(t *testing.T) {
+	tests := []struct{ set, module, want string }{
+		{"v0.1.0", "v0.1.0", "v0.1.0"},
+		{"v0.1.0", "(devel)", "v0.1.0"},
+		{"dev", "v0.1.0", "v0.1.0"},
+		{"dev", "(devel)", "dev"},
+		{"dev", "", "dev"},
+	}
+	for _, tt := range tests {
+		if got := pickVersion(tt.set, tt.module); got != tt.want {
+			t.Errorf("pickVersion(%q, %q) = %q, want %q", tt.set, tt.module, got, tt.want)
+		}
+	}
+}

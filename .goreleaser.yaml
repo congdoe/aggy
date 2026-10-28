@@ -1,6 +1,7 @@
 # goreleaser config. CI builds a snapshot on every pull request
 # (.github/workflows/ci.yml). Publishing is in .github/workflows/release.yml
-# and is disabled until v0.1.0.
+# and is disabled until v0.1.0, which also keeps the Homebrew cask below
+# from being pushed.
 version: 2
 
 project_name: aggy
@@ -43,3 +44,32 @@ changelog:
 
 release:
   draft: true
+
+# Homebrew: `brew install congdoe/aggy/aggy`. goreleaser v2 deprecated
+# `brews` (formulas) in v2.10 and recommends `homebrew_casks` for
+# prebuilt binaries (https://goreleaser.com/deprecations/#brews,
+# https://goreleaser.com/customization/homebrew_casks/).
+#
+# The tap repo congdoe/homebrew-aggy is created by the owner, not by this
+# config, and so is the HOMEBREW_TAP_GITHUB_TOKEN secret the release job
+# passes (a token with contents: write on the tap only). A snapshot build
+# renders the cask into dist/ and pushes nothing; `index` leaves the token
+# empty instead of failing when the variable is unset. Steps:
+# docs/release.md.
+homebrew_casks:
+  - name: aggy
+    ids: [aggy]
+    binaries: [aggy]
+    repository:
+      owner: congdoe
+      name: homebrew-aggy
+      branch: main
+      token: '{{ index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}'
+    directory: Casks
+    homepage: https://github.com/congdoe/aggy
+    description: Run the official Claude Code, Codex, and Grok Build CLIs together
+    license: MIT
+    commit_author:
+      name: congdoe
+      email: 4491869+congdoe@users.noreply.github.com
+    commit_msg_template: "Cask {{ .ProjectName }} {{ .Tag }}"
