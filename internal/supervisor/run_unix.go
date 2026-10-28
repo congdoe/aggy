@@ -48,8 +48,10 @@ func Run(o Options) (int, error) {
 		return 1, errors.New("supervisor: standard input is not a terminal")
 	}
 	t := &tty{fd: fd}
+	var srv *Server
 	if o.RunDir != "" {
-		srv, err := Listen(o.RunDir, o.ParentID, t.restore, o.OnHook)
+		var err error
+		srv, err = Listen(o.RunDir, o.ParentID, t.restore, o.OnHook)
 		if err != nil {
 			return 1, err
 		}
@@ -73,6 +75,9 @@ func Run(o Options) (int, error) {
 		return 1, err
 	}
 	defer func() { _ = child.Close() }()
+	if srv != nil {
+		srv.SetRoot(child.Pid())
+	}
 
 	s := &session{o: o, t: t, child: child}
 	outDone := make(chan struct{})

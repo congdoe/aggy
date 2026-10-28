@@ -390,6 +390,7 @@ func TestChildIDs(t *testing.T) {
 			onID := func(id string) { got = append(got, id); ids.set(id) }
 			x := newSessionIndex(p.parent.ID, v)
 			x.record = func(store.Event) error { return nil }
+			x.verify = func(string, string) rolloutVerdict { return rolloutTUI }
 			x.onID = onID
 			want := p.child.VendorSessionID
 			if v == adapter.Codex {
@@ -398,7 +399,7 @@ func TestChildIDs(t *testing.T) {
 				}
 				want = idA
 				x.hook(hookReq(v, "SessionStart", `{"session_id":"`+idA+`","source":"startup"}`))
-				x.saw([]string{idA})
+				x.saw(rolls(idA))
 				// A /clear or nested session's later id never moves it.
 				ids.set(idB)
 			} else {

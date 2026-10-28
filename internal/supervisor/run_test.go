@@ -51,6 +51,7 @@ func (c *fakeChild) Resize(r, cl int) error {
 	return nil
 }
 func (c *fakeChild) Continue() error { return nil }
+func (c *fakeChild) Pid() int        { return os.Getpid() }
 func (c *fakeChild) Signal(sig syscall.Signal) error {
 	select {
 	case c.sigs <- sig:

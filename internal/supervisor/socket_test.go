@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,6 +39,7 @@ func listen(t *testing.T, runDir string) *Server {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	s.SetRoot(os.Getpid()) // the test is the CLI
 	return s
 }
 
@@ -247,18 +249,18 @@ func TestSocketProtocol(t *testing.T) {
 func TestSocketRefusesOtherUID(t *testing.T) {
 	tests := []struct {
 		name string
-		uid  func(*net.UnixConn) (int, error)
+		uid  func(*net.UnixConn) (int, int, error)
 		want bool // answered
 	}{
-		{"same uid", func(*net.UnixConn) (int, error) { return os.Getuid(), nil }, true},
-		{"other uid", func(*net.UnixConn) (int, error) { return os.Getuid() + 1, nil }, false},
-		{"lookup fails", func(*net.UnixConn) (int, error) { return -1, os.ErrPermission }, false},
+		{"same uid", func(*net.UnixConn) (int, int, error) { return os.Getuid(), 1, nil }, true},
+		{"other uid", func(*net.UnixConn) (int, int, error) { return os.Getuid() + 1, 1, nil }, false},
+		{"lookup fails", func(*net.UnixConn) (int, int, error) { return -1, -1, os.ErrPermission }, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			old := peerUID
-			peerUID = tt.uid
-			t.Cleanup(func() { peerUID = old })
+			old := peerCred
+			peerCred = tt.uid
+			t.Cleanup(func() { peerCred = old })
 			s := listen(t, filepath.Join(shortDir(t), "run"))
 			got := ask(t, s, `{"type":"ping"}`+"\n")
 			if (got != "") != tt.want {
@@ -268,24 +270,24 @@ func TestSocketRefusesOtherUID(t *testing.T) {
 	}
 }
 
-func TestPeerUIDOfRealConnection(t *testing.T) {
-	got := make(chan int, 1)
-	old := peerUID
-	peerUID = func(c *net.UnixConn) (int, error) {
-		uid, err := peerUIDOf(c)
+func TestPeerCredOfRealConnection(t *testing.T) {
+	got := make(chan [2]int, 1)
+	old := peerCred
+	peerCred = func(c *net.UnixConn) (int, int, error) {
+		uid, pid, err := peerCredOf(c)
 		if err != nil {
 			t.Error(err)
 		}
-		got <- uid
-		return uid, err
+		got <- [2]int{uid, pid}
+		return uid, pid, err
 	}
-	t.Cleanup(func() { peerUID = old })
+	t.Cleanup(func() { peerCred = old })
 	s := listen(t, filepath.Join(shortDir(t), "run"))
 	if r := ask(t, s, `{"type":"ping"}`+"\n"); !strings.Contains(r, "pong") {
 		t.Errorf("reply %q", r)
 	}
-	if uid := <-got; uid != os.Getuid() {
-		t.Errorf("peer uid %d, want %d", uid, os.Getuid())
+	if g := <-got; g != [2]int{os.Getuid(), os.Getpid()} {
+		t.Errorf("peer uid, pid %v, want %d, %d", g, os.Getuid(), os.Getpid())
 	}
 }
 
@@ -384,5 +386,124 @@ func TestTakeLockAfterUnlink(t *testing.T) {
 	}
 	if other != nil {
 		_ = other.Close()
+	}
+}
+
+func TestParseStatPPID(t *testing.T) {
+	tests := []struct {
+		line string
+		want int
+		ok   bool
+	}{
+		{"123 (bash) S 45 123 123 0", 45, true},
+		{"123 (a b) c)) R 7 1 1", 7, true},
+		{"123 (x)", -1, false},
+		{"garbage", -1, false},
+		{"1 (x) S notanumber", -1, false},
+	}
+	for _, tt := range tests {
+		got, err := parseStatPPID([]byte(tt.line))
+		if (err == nil) != tt.ok || tt.ok && got != tt.want {
+			t.Errorf("%q: %d, %v; want %d", tt.line, got, err, tt.want)
+		}
+	}
+}
+
+func TestParentPIDOfRealProcess(t *testing.T) {
+	got, err := parentPIDOf(os.Getpid())
+	if err != nil || got != os.Getppid() {
+		t.Errorf("parentPIDOf(self) = %d, %v; want %d", got, err, os.Getppid())
+	}
+	if _, err := parentPIDOf(1 << 30); err == nil {
+		t.Error("parentPIDOf of a pid that does not exist did not fail")
+	}
+}
+
+func TestDescends(t *testing.T) {
+	// 10 <- 11 <- 12; 20 is elsewhere; 30 loops; 40 fails.
+	parents := map[int]int{11: 10, 12: 11, 10: 1, 20: 1, 30: 31, 31: 30}
+	old := parentPID
+	parentPID = func(p int) (int, error) {
+		if pp, ok := parents[p]; ok {
+			return pp, nil
+		}
+		return -1, os.ErrNotExist
+	}
+	t.Cleanup(func() { parentPID = old })
+	tests := []struct {
+		name      string
+		pid, root int
+		want      bool
+	}{
+		{"root itself", 10, 10, true},
+		{"grandchild", 12, 10, true},
+		{"elsewhere", 20, 10, false},
+		{"ancestor of root", 10, 12, false},
+		{"loop is bounded", 30, 10, false},
+		{"lookup fails", 40, 10, false},
+		{"no pid", 0, 10, false},
+		{"no root", 12, 0, false},
+	}
+	for _, tt := range tests {
+		if got := descends(tt.pid, tt.root); got != tt.want {
+			t.Errorf("%s: descends(%d, %d) = %v", tt.name, tt.pid, tt.root, got)
+		}
+	}
+}
+
+// TestLineageMarksRequests (D20-7): a hook event is FromSession only when
+// the sender descends from the CLI (SetRoot); a switch-request from
+// outside is refused. Without SetRoot, both fail closed.
+func TestLineageMarksRequests(t *testing.T) {
+	old := rootWait
+	rootWait = 50 * time.Millisecond
+	t.Cleanup(func() { rootWait = old })
+	// A real process that is not this test's ancestor.
+	other := exec.Command("sleep", "30")
+	if err := other.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = other.Process.Kill(); _ = other.Wait() })
+	tests := []struct {
+		name string
+		root int // 0: SetRoot is never called
+		want bool
+	}{
+		{"sender is the CLI", os.Getpid(), true},
+		{"sender descends from the CLI", os.Getppid(), true},
+		{"sender outside the CLI's tree", other.Process.Pid, false},
+		{"CLI not started", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := make(chan Request, 1)
+			s, err := Listen(filepath.Join(shortDir(t), "run"), pid, nil, func(r Request) { got <- r })
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+			if tt.root != 0 {
+				s.SetRoot(tt.root)
+			}
+			if r := ask(t, s, `{"type":"hook-event","vendor":"codex","event":"Stop","payload":{}}`+"\n"); !strings.Contains(r, `"ok":true`) {
+				t.Fatalf("hook reply %q", r)
+			}
+			if r := <-got; r.FromSession != tt.want {
+				t.Errorf("FromSession = %v, want %v", r.FromSession, tt.want)
+			}
+			r := ask(t, s, `{"type":"switch-request","vendor":"grok"}`+"\n")
+			if refused := strings.Contains(r, "outside this session"); refused == tt.want {
+				t.Errorf("switch-request reply %q", r)
+			}
+		})
+	}
+}
+
+// TestFromSessionNotOnTheWire: a client cannot claim lineage itself.
+func TestFromSessionNotOnTheWire(t *testing.T) {
+	s := listen(t, filepath.Join(shortDir(t), "run"))
+	r := ask(t, s, `{"type":"hook-event","vendor":"codex","event":"Stop","payload":{},"FromSession":true}`+"\n")
+	if !strings.Contains(r, "unknown field") {
+		t.Errorf("reply %q, want an unknown-field error", r)
 	}
 }
