@@ -88,12 +88,14 @@ linters:
         # elsewhere, so only the command layer (internal/cli) and the
         # maintainer capture tool (internal/devfix) may import it; neither
         # can be imported by an adapter (rule adapters below). Tests may.
+        # Only the files of those two packages are exempt, not their
+        # subpackages: internal/cli/x could otherwise re-export it.
         execrun:
           files:
             - "$all"
             - "!$test"
-            - "!**/internal/cli/**"
-            - "!**/internal/devfix/**"
+            - "!**/internal/cli/*.go"
+            - "!**/internal/devfix/*.go"
           deny:
             - pkg: github.com/congdoe/aggy/internal/execrun
               desc: only internal/cli and internal/devfix start CLIs; adapters run commands through the Runner their caller passes
