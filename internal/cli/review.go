@@ -58,23 +58,42 @@ func reviewRoot(cwd string, getenv func(string) string, stateDir string) (string
 		return "", fmt.Errorf("a review runs in a git work tree, and %s is in none", cwd)
 	}
 	root = resolvePath(root)
-	if root == "/" {
+	// Compare canonical forms: symlinks resolved and, where the file
+	// system ignores case, case-folded, so <home>/.CODEX is <home>/.codex
+	// (C17-9).
+	croot, err := safefs.CanonicalPath(root)
+	if err != nil {
+		return "", fmt.Errorf("refusing to review %s: %w", root, err)
+	}
+	if croot == "/" {
 		return "", fmt.Errorf("refusing to review %s: it is the file system root, which the reviewer could read in full", root)
 	}
 	// A root that is or holds the home dir would let the reviewer read
 	// all of it, whatever AGGY_HOME says (#10-7).
-	if h := resolvePath(homeDir); h != "" && within(h, root) {
+	if h := canonicalPath(homeDir); h != "" && within(h, croot) {
 		return "", fmt.Errorf("refusing to review %s: it is or holds your home directory, which the reviewer could read in full", root)
 	}
 	for _, vh := range vendorHomes(getenv) {
-		if vh = resolvePath(vh); within(root, vh) || within(vh, root) {
+		if c := canonicalPath(vh); within(croot, c) || within(c, croot) {
 			return "", fmt.Errorf("refusing to review %s: it is, holds, or is inside the vendor config dir %s, where credentials live", root, vh)
 		}
 	}
-	if st := resolvePath(stateDir); st != "" && (within(root, st) || within(st, root)) {
-		return "", fmt.Errorf("refusing to review %s: it holds or is inside aggy's state dir %s", root, st)
+	if st := canonicalPath(stateDir); st != "" && (within(croot, st) || within(st, croot)) {
+		return "", fmt.Errorf("refusing to review %s: it holds or is inside aggy's state dir %s", root, stateDir)
 	}
 	return root, nil
+}
+
+// canonicalPath is safefs.CanonicalPath, or "" for "" and the cleaned
+// path when it cannot be canonicalized.
+func canonicalPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	if c, err := safefs.CanonicalPath(p); err == nil {
+		return c
+	}
+	return filepath.Clean(p)
 }
 
 func resolvePath(p string) string {
