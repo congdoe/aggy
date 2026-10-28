@@ -126,6 +126,99 @@ grok 1.0.70. Each adapter states the versions it was tested against.
 - Turn end: Claude uses `Stop`. Codex uses `Stop` and the
   `agent-turn-complete` notify. Grok uses `Stop` and `StopCancelled`.
 
+## The adapters as built
+
+Each adapter lives in `internal/adapter/<vendor>` and is tested against
+its fake with golden argv per kind and parsing tests driven by scenario
+files in its `testdata/`.
+
+**Prompts.** A headless prompt is never in argv. Every adapter returns
+`Stdin: StdinFile` with `StdinPath` set to the prompt file. For Codex the
+prompt argument is `-`: `codex exec` reads a non-terminal stdin to EOF,
+and a regular file reaches EOF at once, so it never waits as it would on
+an open pipe. (The recorded rule is "never an open stdin"; `/dev/null`
+also satisfies it but leaves no way to pass a prompt from a file.)
+
+**Briefs.** An interactive session with a brief gets one short first
+message, `adapter.BriefPrompt(path)`, that tells the agent to read the
+file. The brief itself never goes in argv.
+
+**Probes.** `Probe` finds the binary on aggy's absolute `PATH` entries
+(`probe.LookPath`) and runs `probe.Detect` with the vendor's `Spec`.
+`--version` is parsed keyed on the Spec's program names (`Claude Code`,
+`claude`; `codex-cli`, `codex`; `grok`), with an optional `v`; with no
+named line, one unambiguous version line is taken, and several are an
+error. Codex `exec resume` counts as present only when the `exec` help
+lists it under `Commands:` or its own help names a session-id argument; a
+usage error is a cached absence.
+
+Headless argv per kind (`<p>` is the prompt file on stdin, `<id>` a
+session id; `--model <m>` or `-c model="<m>"` is added only when a model
+is given):
+
+| Kind | Claude | Codex | Grok |
+| --- | --- | --- | --- |
+| research | unsupported | `codex exec --json --sandbox read-only --disable shell_tool --disable unified_exec --disable view_image -c web_search="live" -` | `grok -p --output-format json --tools web_search,x_keyword_search,x_semantic_search [--max-turns N]` |
+| news | unsupported | same as research | same as research |
+| image | unsupported | `codex exec --json --sandbox read-only [-i <ref>]... -` | `grok -p --output-format json --tools image_gen` |
+| image `--edit` | unsupported | `codex exec resume <id> --json --sandbox read-only -` | `grok -p --output-format json --resume <id> --tools image_gen,image_edit` |
+| video | unsupported | unsupported | `grok -p --output-format json --tools video_gen` |
+| review | `claude -p --output-format json --permission-mode plan` | `codex exec --json --sandbox read-only -` | `grok -p --output-format json --permission-mode plan --tools read_file,grep,list_dir` |
+| edit | `claude -p --output-format json --permission-mode acceptEdits` | `codex exec --json --sandbox workspace-write -` | `grok -p --output-format json --tools read_file,grep,list_dir,write,search_replace,run_terminal_cmd` |
+
+`WebSearch` adds `-c web_search="live"` on Codex and `web_search` to the
+Grok tool list; Claude refuses it. `SessionID` adds `--session-id` on
+Claude and Grok; Codex refuses it. `Resume` adds `--resume <id>` on
+Claude and Grok, and `exec resume <id>` on Codex. Grok research and news
+refuse any file, shell, or fetch tool in `AllowedTools`, and other
+read-only kinds refuse write tools.
+
+Interactive argv: Claude `claude [--session-id <uuid> | --resume <id>
+[--fork-session [--session-id <uuid>]]] [<brief pointer>]`; Codex `codex
+--no-alt-screen [<brief pointer>]` or `codex resume --no-alt-screen <id>
+[<brief pointer>]`; Grok `grok --no-alt-screen` with the same session
+flags as Claude.
+
+Artifacts are paths only; copying them is the borrow runner's job, through
+`internal/safefs`. Codex: every `*.png` in
+`$CODEX_HOME/generated_images/<thread-id>/` (else `~/.codex/...`). Grok:
+every `*.jpg` in `$GROK_HOME/sessions/<encoded cwd>/<sessionId>/images/`
+(else `~/.grok/...`), falling back to the single `sessions/*/<sessionId>/
+images/` folder; several are an error. Claude has none.
+`TranscriptTail` returns `ErrNoTranscript` for every vendor: no transcript
+path or format is recorded. `ConfigPatches` returns nothing yet; the Codex
+`CLAUDE.md` fallback is built in `internal/parity`.
+
+### Tested versions
+
+Each adapter declares the CLI versions it was tested on, from the verified
+versions above: claude 2.1.311, codex-cli 0.164.0, and grok 1.0.70.
+`adapter.VersionWarning` returns a warning when a probed version falls
+outside that range, for `aggy doctor`.
+
+### Unconfirmed facts and their fallbacks
+
+These are implemented behind named fallbacks and marked `unconfirmed` in
+the code until a live check settles them.
+
+| Fact | Fallback in code |
+| --- | --- |
+| Codex `SessionStart` hook carries the session id (T6616) | Not used; the session folder watch stays the plan. |
+| Headless Codex reports `usage_limit_reached` in `--json`, and interactive Codex writes it to its rollout file (T6617) | `codex.LimitCode` and `codex.LimitText` are matched in any `error` or `turn.failed` event and in stderr. |
+| `--disable shell_tool --disable unified_exec --disable view_image` blocks file reads (T6618) | `codex.Isolation`, always with `--sandbox read-only` in an empty dir. |
+| How Codex and Grok take extra context at session start (T6619) | A positional first message pointing to the brief file (`adapter.BriefPrompt`). |
+| `codex exec -` reads the prompt from stdin | Codex headless passes `-` with the prompt file on stdin. |
+| `claude -p` and `grok -p` read the prompt from stdin | Both pass the prompt file on stdin with no prompt argument. |
+| Model flags | Claude and Grok `--model <m>`, Codex `-c model="<m>"`. |
+| `--permission-mode acceptEdits` (Claude edit) and `--sandbox workspace-write` (Codex edit) | `claude.PermissionEdit`, `codex.SandboxEdit`. |
+| `grok --tools` alone removes every other tool | `grok.SearchTools` and the other per-kind allowlists; the verified isolation run used `--disallowed-tools`. |
+| `image_edit` and `video_gen` work headless on Grok | `grok.ImageTools` plus `image_edit` on resume, `grok.VideoTools`. |
+| Grok's cwd encoding under `sessions/` | `grok.EncodeCwd` (`url.QueryEscape`), then the scan fallback. |
+| Claude's JSON reply fields (`result`, `session_id`, `is_error`, `subtype`, `usage`) | Read when present; a reply with none of them is `ErrUnparsed`. |
+| Codex events after `thread.started` (`item.completed` agent messages, `turn.completed` usage, `error`, `turn.failed`) | Read when present; output with no `thread.started` is `ErrUnparsed`. |
+| Grok's reply text field and error field | `grok.TextFields` (`result`, `text`, `response`); an `error` string mapped with `adapter.ClassifyName`. |
+| Error class names other than `rate_limit` | `adapter.ClassifyName` also accepts Claude Code's likely names (`authentication_failed`, `billing_error`, `server_error`, `error_max_turns`). |
+
 ## Testing an adapter
 
 CI has no vendor logins. Test adapters against the fake CLIs in
