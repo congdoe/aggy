@@ -28,7 +28,8 @@ type target struct {
 	// no parent's id has that prefix, the parent of the one interactive
 	// child whose id does, with that child on screen. Empty, and not New,
 	// reopens the latest parent in the current directory, or starts one
-	// there.
+	// there. With Vendor set (a switch), the parent's latest child of
+	// that vendor goes on screen, or a new one.
 	ParentID string
 	// Direct runs the CLI on aggy's own terminal (aggy run --direct).
 	Direct bool
@@ -122,7 +123,8 @@ func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t 
 	// or the one picked by id.
 	var last *store.Child
 	for i := range children {
-		if children[i].Kind == "" && (pick == "" || children[i].ID == pick) {
+		if children[i].Kind == "" && (pick == "" || children[i].ID == pick) &&
+			(t.Vendor == "" || children[i].Vendor == string(t.Vendor)) {
 			last = &children[i]
 			break
 		}
@@ -131,6 +133,9 @@ func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t 
 	switch {
 	case last == nil:
 		v, _ := adapter.ParseVendor(p.parent.LastVendor)
+		if t.Vendor != "" {
+			v = t.Vendor
+		}
 		return p, p.newChildOf(ctx, s, cfg, v, now)
 	case last.Status == stateClosed || last.Status == stateGone:
 		why := "the vendor has no saved session for it"

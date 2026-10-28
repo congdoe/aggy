@@ -212,7 +212,7 @@ func TestSocketProtocol(t *testing.T) {
 		{"ping", `{"type":"ping"}` + "\n", `{"ok":true,"type":"pong"}`},
 		{"two pings, one connection", `{"type":"ping"}` + "\n" + `{"type":"ping"}` + "\n", `"pong"`},
 		{"hook event", `{"type":"hook-event","vendor":"claude","event":"Stop","payload":{"x":1}}` + "\n", `{"ok":true}`},
-		{"switch request stub", `{"type":"switch-request","vendor":"grok"}` + "\n", `not implemented`},
+		{"switch request without a pass-through", `{"type":"switch-request","vendor":"grok"}` + "\n", `needs aggy's pass-through`},
 		{"exactly the cap", pad(MaxMessage) + "\n", `"pong"`},
 		{"one byte over the cap", pad(MaxMessage+1) + "\n", `longer than 65536 bytes`},
 		{"far over the cap, no newline", strings.Repeat("a", 3*MaxMessage), `longer than`},
@@ -692,4 +692,20 @@ func TestRealChildPeer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// request sends one request line to the socket and returns the reply.
+func request(t *testing.T, sock, line string) string {
+	t.Helper()
+	c, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	_ = c.SetDeadline(time.Now().Add(waitLimit))
+	if _, err := c.Write([]byte(line + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := bufio.NewReader(c).ReadString('\n')
+	return r
 }

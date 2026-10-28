@@ -55,6 +55,34 @@ type Options struct {
 	ParentID string
 	// OnHook gets each hook event the socket accepts (see Listen).
 	OnHook func(Request)
+	// Vendor is the vendor on screen: its turn-end hooks gate a switch,
+	// and its exit command ends it (adapter.ExitCommand).
+	Vendor adapter.Vendor
+	// CanSwitch says why the session may not switch to v now (the repo's
+	// allowed_vendors, the CLI not on PATH), or nil. It is asked when a
+	// switch is picked or requested and again before the exit command is
+	// typed. Nil means the session cannot switch.
+	CanSwitch func(v adapter.Vendor) error
+	// StartsTurn is set when the CLI starts with a turn running (a brief
+	// prompt), so the session is not at its prompt until a turn end.
+	StartsTurn bool
+}
+
+// Exit is how a supervised session ended.
+type Exit struct {
+	// Code is the CLI's exit code.
+	Code int
+	// SwitchTo is set when the CLI exited for a switch: the vendor the
+	// caller launches next.
+	SwitchTo adapter.Vendor
+}
+
+// turnEnd reports whether a hook event ends a turn (design.md section
+// 11): Stop for every vendor, StopCancelled (Grok), and StopFailure
+// (Claude, Grok: "a turn ends because of an API error",
+// docs/verification.md). Codex sends only Stop.
+func turnEnd(event string) bool {
+	return event == "Stop" || event == "StopCancelled" || event == "StopFailure"
 }
 
 // SocketEnv is env plus the variables that lead hooks and skills inside

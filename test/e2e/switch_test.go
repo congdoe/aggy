@@ -1,0 +1,80 @@
+//go:build unix
+
+package e2e
+
+import (
+	"bytes"
+	"os/exec"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/congdoe/aggy/internal/fakecli"
+)
+
+// TestSwitchAtTurnEnd (T6664): a vendor picked mid-session waits for the
+// CLI's Stop hook (sent through aggy hook from the CLI's own tree), asks,
+// types /exit on Enter, and launches the next CLI in the same parent.
+func TestSwitchAtTurnEnd(t *testing.T) {
+	w := newWorld(t)
+	// aggy setup records the vendors the picker offers.
+	setup := exec.Command(buildAggy(t), "setup", "--yes")
+	setup.Dir = w.cwd
+	setup.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
+	if out, err := setup.CombinedOutput(); err != nil {
+		t.Fatalf("aggy setup: %v\n%s", err, out)
+	}
+	sc := map[string]any{
+		"stdout":       "READY>",
+		"hook_command": []string{buildAggy(t), "hook", "--vendor", "claude"},
+		"hooks":        []map[string]any{{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}},
+	}
+	s := w.start(t, sc, "run", "claude")
+	s.waitFor([]byte("READY>"))
+	s.send([]byte("work\r")) // a turn; the fake's Stop hook ends it
+	s.waitFor([]byte("work"))
+	s.send([]byte{0x1c})
+	s.waitFor([]byte("aggy: switch vendor"))
+	s.mu.Lock()
+	key := []byte("2")
+	if bytes.Contains(s.out.Bytes(), []byte("1  grok")) {
+		key = []byte("1")
+	}
+	s.mu.Unlock()
+	s.send(key)
+	s.waitFor([]byte("aggy: switch to grok"))
+	time.Sleep(50 * time.Millisecond)
+	s.send([]byte("\r"))
+	// grok is on screen: end it.
+	deadline := time.Now().Add(timeout)
+	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	runs := interactiveRuns(t, w)
+	if len(runs) != 2 || runs[0].Vendor != "claude" || runs[1].Vendor != "grok" {
+		t.Fatalf("interactive runs = %+v, want claude then grok", runs)
+	}
+	if runs[1].Env["AGGY_PARENT"] != runs[0].Env["AGGY_PARENT"] || runs[1].Env["AGGY_VENDOR"] != "grok" {
+		t.Errorf("grok env %v: want the same parent and AGGY_VENDOR=grok", runs[1].Env)
+	}
+	if len(runs[1].Flags["--session-id"]) != 1 {
+		t.Errorf("grok args %q: want a new pre-assigned session", runs[1].Args)
+	}
+	s.restored("after the switch")
+}
+
+// interactiveRuns returns the fake's records of interactive runs.
+func interactiveRuns(t *testing.T, w *world) []fakecli.Record {
+	t.Helper()
+	var out []fakecli.Record
+	for _, r := range fakecli.Records(t, w.record) {
+		if r.Mode == "interactive" {
+			out = append(out, r)
+		}
+	}
+	return out
+}

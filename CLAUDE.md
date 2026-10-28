@@ -12,7 +12,7 @@ aggy is a Go CLI that runs the official Claude Code, Codex, and Grok Build CLIs 
 - `internal/cli`: argument parsing and command dispatch.
 - `internal/adapter`: the vendor `Adapter` interface, and `claude/`, `codex/`, `grok/`, which build each CLI's commands and parse its output. Adapters never start processes.
 - `internal/router`: the routing table, which picks the vendors a borrow kind may use and says why each other vendor was skipped.
-- `internal/supervisor`: the pseudo-terminal pass-through behind `aggy run <vendor>` (switches come later).
+- `internal/supervisor`: the pseudo-terminal pass-through behind `aggy run <vendor>`, the switch picker, and switching at turn end.
 - `internal/parity`: shared config for each CLI: the Codex `CLAUDE.md` fallback, the git exclude line, the shared memory (`.aggy/memory.md`), and the safety policy (deny rules on the Claude and Grok command line, a Codex rules file), and the public MCP servers copied from Claude into Codex and Grok (`aggy mcp wire`).
 - `internal/brief`: the task file (`.aggy/task.md`) and the handoff brief, built without a model from the task file, the transcript tail, and git state that `internal/cli` gathers (`aggy brief --show`), written to `.aggy/briefs/<child-id>.md` for `aggy resume --brief`; a return to a child gets only the turns other CLIs added since it was last closed.
 - `internal/redact`: secret-shaped text (keys, tokens, private keys, secret settings): the fixture scrubber replaces it, and a brief drops every line that holds it.
