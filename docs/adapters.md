@@ -336,8 +336,11 @@ only when the launch probe finds it in `codex --help` (capability
 
 Shared memory (`<repo>/.aggy/memory.md`, design.md section 10) goes on
 the interactive argv only: Claude `--append-system-prompt-file <file>`
-(live-verified, missing from `--help`), where the file is a private
-temp copy aggy removes after the session; Codex `-c
+(live-verified, missing from `--help`), where the file is a 0600 copy
+in aggy's own 0700 run dir (`~/.aggy/run/<parent-id>.memory/`), removed
+after the session; one a killed session left behind is swept by the
+next `aggy run` once it is a minute old and its supervisor's lock is
+free; Codex `-c
 developer_instructions="<TOML string>"`, before `resume` because `-c` is
 global, when the probe finds `-c`; Grok `--rules <text>` when the probe
 finds `--rules`. The text is cleaned of terminal escapes and other

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/adapter/claude"
@@ -82,7 +83,23 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		Model: cfg.Vendors.For(v).Model,
 		Env:   []string{"AGGY_VENDOR=" + string(v)},
 	}
-	cleanup, warns := addMemory(v, caps, cwd, &req)
+	stateDir, err := home.Dir()
+	if err != nil {
+		fmt.Fprintf(stderr, "aggy run: %v\n", err)
+		return 1
+	}
+	parentID, err := newParentID()
+	if err != nil {
+		fmt.Fprintf(stderr, "aggy run: %v\n", err)
+		return 1
+	}
+	runDir := filepath.Join(stateDir, "run")
+	if err := supervisor.PrivateDir(runDir); err != nil {
+		fmt.Fprintf(stderr, "aggy run: %v\n", err)
+		return 1
+	}
+	sweepMemoryDirs(runDir, time.Now())
+	cleanup, warns := addMemory(v, caps, cwd, memoryDir(runDir, parentID), &req)
 	defer cleanup()
 	if noPolicy {
 		warns = append(warns, "starting without the safety policy (--no-policy)")
@@ -108,22 +125,12 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy run: %v\n", err)
 		return 1
 	}
-	stateDir, err := home.Dir()
-	if err != nil {
-		fmt.Fprintf(stderr, "aggy run: %v\n", err)
-		return 1
-	}
-	parentID, err := newParentID()
-	if err != nil {
-		fmt.Fprintf(stderr, "aggy run: %v\n", err)
-		return 1
-	}
 	code, err := supervisor.Run(supervisor.Options{
 		In: os.Stdin, Out: os.Stdout, Command: cmd,
 		Start:     startPTY,
 		SwitchKey: key,
 		Vendors:   pickerVendors(cfg.Switch.Order, v),
-		RunDir:    filepath.Join(stateDir, "run"),
+		RunDir:    runDir,
 		ParentID:  parentID,
 	})
 	if err != nil {

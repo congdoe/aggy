@@ -32,7 +32,7 @@ func TestAddMemory(t *testing.T) {
 
 	t.Run("claude file", func(t *testing.T) {
 		var req adapter.InteractiveRequest
-		cleanup, warns := addMemory(adapter.Claude, nil, root, &req)
+		cleanup, warns := addMemory(adapter.Claude, nil, root, filepath.Join(t.TempDir(), "m"), &req)
 		if len(warns) > 0 || req.MemoryFile == "" || req.Memory != "" {
 			t.Fatalf("req %+v, warns %v", req, warns)
 		}
@@ -50,7 +50,7 @@ func TestAddMemory(t *testing.T) {
 	})
 	t.Run("codex keeps the person's own instructions", func(t *testing.T) {
 		var req adapter.InteractiveRequest
-		_, warns := addMemory(adapter.Codex, []string{probe.CapConfigOverride}, root, &req)
+		_, warns := addMemory(adapter.Codex, []string{probe.CapConfigOverride}, root, filepath.Join(t.TempDir(), "m"), &req)
 		if len(warns) > 0 || req.Memory != "mine\n\n"+framed {
 			t.Errorf("req %+v, warns %v", req, warns)
 		}
@@ -65,7 +65,7 @@ func TestAddMemory(t *testing.T) {
 			t.Fatal(err)
 		}
 		var req adapter.InteractiveRequest
-		_, warns := addMemory(adapter.Codex, []string{probe.CapConfigOverride}, sub, &req)
+		_, warns := addMemory(adapter.Codex, []string{probe.CapConfigOverride}, sub, filepath.Join(t.TempDir(), "m"), &req)
 		if req.Memory != "" || len(warns) != 1 {
 			t.Errorf("req %+v, warns %v", req, warns)
 		}
@@ -76,7 +76,7 @@ func TestAddMemory(t *testing.T) {
 		writeAt(t, filepath.Join(home, ".codex", "work.config.toml"), `developer_instructions = "w"`, 0o600)
 		defer writeAt(t, cfg, `developer_instructions = "mine"`, 0o600)
 		var req adapter.InteractiveRequest
-		_, warns := addMemory(adapter.Codex, []string{probe.CapConfigOverride}, root, &req)
+		_, warns := addMemory(adapter.Codex, []string{probe.CapConfigOverride}, root, filepath.Join(t.TempDir(), "m"), &req)
 		if req.Memory != "" || len(warns) != 1 {
 			t.Errorf("req %+v, warns %v", req, warns)
 		}
@@ -87,7 +87,7 @@ func TestAddMemory(t *testing.T) {
 	}{{adapter.Codex, nil}, {adapter.Grok, []string{probe.CapTools}}} {
 		t.Run(string(tc.v)+" without the flag", func(t *testing.T) {
 			var req adapter.InteractiveRequest
-			_, warns := addMemory(tc.v, tc.caps, root, &req)
+			_, warns := addMemory(tc.v, tc.caps, root, filepath.Join(t.TempDir(), "m"), &req)
 			if req.Memory != "" || len(warns) != 1 || !strings.Contains(warns[0], "not delivered") {
 				t.Errorf("req %+v, warns %v", req, warns)
 			}
@@ -95,7 +95,7 @@ func TestAddMemory(t *testing.T) {
 	}
 	t.Run("grok", func(t *testing.T) {
 		var req adapter.InteractiveRequest
-		_, warns := addMemory(adapter.Grok, []string{probe.CapRules}, root, &req)
+		_, warns := addMemory(adapter.Grok, []string{probe.CapRules}, root, filepath.Join(t.TempDir(), "m"), &req)
 		if len(warns) > 0 || req.Memory != framed {
 			t.Errorf("req %+v, warns %v", req, warns)
 		}
@@ -109,7 +109,7 @@ func TestAddMemory(t *testing.T) {
 			t.Fatal(err)
 		}
 		var req adapter.InteractiveRequest
-		_, warns := addMemory(adapter.Grok, []string{probe.CapRules}, big, &req)
+		_, warns := addMemory(adapter.Grok, []string{probe.CapRules}, big, filepath.Join(t.TempDir(), "m"), &req)
 		if req.Memory != "" || len(warns) != 1 {
 			t.Errorf("req %+v, warns %v", req, warns)
 		}
