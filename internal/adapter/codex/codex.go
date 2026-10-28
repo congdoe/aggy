@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -24,6 +24,10 @@ type Adapter struct {
 	Path string
 	// Getenv reads HOME and CODEX_HOME for Artifacts. Nil means os.Getenv.
 	Getenv func(string) string
+	// Caps are the capabilities a probe of this CLI found. Headless adds
+	// --ignore-user-config to research and news only when they include
+	// probe.CapIgnoreUserConfig.
+	Caps []string
 }
 
 var _ adapter.Adapter = Adapter{}
@@ -66,11 +70,13 @@ var (
 	Isolation = []string{"--disable", "shell_tool", "--disable", "unified_exec", "--disable", "view_image"}
 )
 
+// IgnoreUserConfig keeps the user's config, and so their MCP servers, out
+// of a research child. Not recorded: used only when a probe found it.
+const IgnoreUserConfig = "--ignore-user-config"
+
 // SandboxEdit is the sandbox of an edit borrow, which writes its own
 // worktree. Unconfirmed: only "read-only" is recorded.
 const SandboxEdit = "workspace-write"
-
-var modelRE = regexp.MustCompile(`^[A-Za-z0-9._:/-]+$`)
 
 // modelArgs passes a model as the config override -c model="<m>". The -c
 // mechanism is recorded; the model key is unconfirmed. An empty model adds
@@ -79,7 +85,7 @@ func modelArgs(model string) ([]string, error) {
 	if model == "" {
 		return nil, nil
 	}
-	if !modelRE.MatchString(model) {
+	if err := adapter.ValidModel(model); err != nil || strings.ContainsAny(model, `"\`) {
 		return nil, fmt.Errorf("codex: model %q has characters a config value cannot hold", model)
 	}
 	return []string{"-c", `model="` + model + `"`}, nil
@@ -87,10 +93,12 @@ func modelArgs(model string) ([]string, error) {
 
 // Interactive builds an on-screen Codex session with --no-alt-screen, so
 // its output stays in the terminal's scrollback: codex for a new session,
-// codex resume <id> to reopen one. Codex cannot be given a session id in
-// advance and fork is not recorded, so both are ErrUnsupported. A brief is
-// passed as a short first message pointing to the file; that Codex takes
-// a prompt argument at session start is unconfirmed (T6619).
+// codex resume <id> to reopen one. The id passes
+// adapter.ValidSessionID, so it cannot be read as a flag. Codex cannot be
+// given a session id in advance and fork is not recorded, so both are
+// ErrUnsupported. A brief is passed as a short first message pointing to
+// the file; that Codex takes a prompt argument at session start is
+// unconfirmed (T6619).
 func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, error) {
 	if req.SessionID != "" {
 		return adapter.Command{}, fmt.Errorf("codex: pre-assigned session id: %w", adapter.ErrUnsupported)
@@ -100,6 +108,9 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 	}
 	var args []string
 	if req.Resume != "" {
+		if err := adapter.ValidSessionID(adapter.Codex, req.Resume); err != nil {
+			return adapter.Command{}, err
+		}
 		args = append(args, "resume")
 	}
 	args = append(args, "--no-alt-screen")
@@ -120,18 +131,23 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 	return adapter.Command{Path: Bin, Args: args, Env: req.Env, Dir: req.Cwd, Stdin: adapter.StdinTerminal}, nil
 }
 
-// Headless builds codex exec --json (or codex exec resume <id> --json).
-// The prompt argument is "-" and stdin is the prompt file: codex exec
-// reads a non-terminal stdin to EOF, and a regular file reaches EOF, so it
-// never waits as it would on an open pipe. That "-" reads the prompt from
-// stdin is unconfirmed.
+// Headless builds
 //
-// Every read-only kind runs with --sandbox read-only; edit uses
-// SandboxEdit. Research and news add Isolation and live web search.
-// WebSearch adds live web search to the other kinds, and RefImages go in
-// with -i. Video, AllowedTools (no recorded tool allowlist), and a
+//	codex exec [-i <ref>]... --json [-c model=...] --sandbox <mode> [isolation] [resume <id>] -- -
+//
+// The exec flags all go before the resume subcommand, which takes only its
+// own flags. -i takes one or more values, so the references come first and
+// --json ends them. The prompt argument is "-" after "--", and stdin is
+// the prompt file: codex exec reads a non-terminal stdin to EOF, and a
+// regular file reaches EOF, so it never waits as it would on an open pipe.
+// The order and "-" are unconfirmed on 0.164.
+//
+// Read-only kinds run with --sandbox read-only, edit with SandboxEdit.
+// Research and news add Isolation, live web search, and, when the probe
+// found it, --ignore-user-config; they need IsolatedCwd. Web search
+// anywhere else, video, AllowedTools (no recorded tool allowlist), and a
 // pre-assigned SessionID are ErrUnsupported. MaxTurns is ignored.
-func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
+func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	if err := adapter.CheckAbs("prompt file", req.PromptFile); err != nil {
 		return adapter.Command{}, err
 	}
@@ -146,9 +162,23 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	case req.SessionID != "":
 		return adapter.Command{}, fmt.Errorf("codex: pre-assigned session id: %w", adapter.ErrUnsupported)
 	}
-	args := []string{"exec"}
+	if err := adapter.CheckWebSearch(adapter.Codex, req); err != nil {
+		return adapter.Command{}, err
+	}
+	if err := adapter.CheckIsolated(adapter.Codex, req); err != nil {
+		return adapter.Command{}, err
+	}
 	if req.Resume != "" {
-		args = append(args, "resume", req.Resume)
+		if err := adapter.ValidSessionID(adapter.Codex, req.Resume); err != nil {
+			return adapter.Command{}, err
+		}
+	}
+	args := []string{"exec"}
+	for _, img := range req.RefImages {
+		if err := adapter.CheckAbs("reference image", img); err != nil {
+			return adapter.Command{}, err
+		}
+		args = append(args, "-i", img)
 	}
 	args = append(args, "--json")
 	m, err := modelArgs(req.Model)
@@ -161,26 +191,20 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 		args = append(args, "--sandbox", "read-only")
 		args = append(args, Isolation...)
 		args = append(args, WebSearchLive...)
+		if slices.Contains(a.Caps, probe.CapIgnoreUserConfig) {
+			args = append(args, IgnoreUserConfig)
+		}
 	case adapter.Image, adapter.Review:
 		args = append(args, "--sandbox", "read-only")
-		if req.WebSearch {
-			args = append(args, WebSearchLive...)
-		}
 	case adapter.Edit:
 		args = append(args, "--sandbox", SandboxEdit)
-		if req.WebSearch {
-			args = append(args, WebSearchLive...)
-		}
 	default:
 		return adapter.Command{}, fmt.Errorf("codex: unknown kind %q", req.Kind)
 	}
-	for _, img := range req.RefImages {
-		if err := adapter.CheckAbs("reference image", img); err != nil {
-			return adapter.Command{}, err
-		}
-		args = append(args, "-i", img)
+	if req.Resume != "" {
+		args = append(args, "resume", req.Resume)
 	}
-	args = append(args, "-")
+	args = append(args, "--", "-")
 	return adapter.Command{
 		Path: Bin, Args: args, Env: req.Env, Dir: req.Cwd,
 		Stdin: adapter.StdinFile, StdinPath: req.PromptFile,
@@ -205,22 +229,50 @@ type event struct {
 	Error   json.RawMessage `json:"error"`
 }
 
+// fields returns the event's error code and message, from the top level
+// or a nested "error" object or string.
+func (e event) fields() (code, msg string) {
+	code, msg = e.Code, e.Message
+	var nested struct {
+		Code    string `json:"code"`
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}
+	var s string
+	switch {
+	case len(e.Error) == 0:
+	case json.Unmarshal(e.Error, &nested) == nil:
+		code = firstNonEmpty(code, nested.Code, nested.Type)
+		msg = firstNonEmpty(msg, nested.Message)
+	case json.Unmarshal(e.Error, &s) == nil:
+		msg = firstNonEmpty(msg, s)
+	}
+	return code, msg
+}
+
 // Limit signals. The code and text are recorded in the binary; whether
-// headless Codex reports them in --json is unconfirmed (T6617), so stderr
-// is read for them too.
+// headless Codex reports them in --json is unconfirmed (T6617).
 const (
 	LimitCode = "usage_limit_reached"
 	LimitText = "You've hit your usage limit"
 )
 
 // ParseHeadless reads the JSON event stream: the session id from the
-// first thread.started event, the final text from the last completed
-// agent message, tokens from turn.completed usage, and errors from error
-// or turn.failed events and stderr. A usage limit maps to rate_limit.
+// first thread.started event (checked with adapter.ValidSessionID), the
+// final text from the last completed agent message, and tokens from
+// turn.completed usage.
+//
+// The error class comes from error and turn.failed events only: their
+// code, or the CLI's own error message, names a usage limit. An error
+// event that a turn.completed follows is a success with a warning in
+// ErrorDetail. Stderr is read for the limit only when the run exited
+// non-zero with no error event, since the --json limit report is
+// unconfirmed.
 func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (adapter.HeadlessResult, error) {
 	res := adapter.HeadlessResult{}
 	var errText []string
-	sawThread := false
+	sawThread, pending, failed, limit := false, false, false, false
+	var idErr error
 	for _, line := range bytes.Split(out.Stdout, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 || line[0] != '{' {
@@ -233,7 +285,8 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 		switch e.Type {
 		case "thread.started":
 			if !sawThread {
-				res.SessionID, sawThread = e.ThreadID, true
+				sawThread = true
+				res.SessionID, idErr = adapter.ParsedSessionID(adapter.Codex, "", e.ThreadID)
 			}
 		case "item.completed":
 			if (e.Item.Type == "agent_message" || e.Item.Type == "") && e.Item.Text != "" {
@@ -241,28 +294,41 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 			}
 		case "turn.completed":
 			res.Tokens += e.Usage.Input + e.Usage.Output
+			pending = false
 		case "error", "turn.failed":
-			errText = append(errText, strings.TrimSpace(e.Code+" "+e.Message+" "+string(e.Error)))
+			code, msg := e.fields()
+			errText = append(errText, strings.TrimSpace(code+" "+msg))
+			if code == LimitCode || strings.Contains(msg, LimitText) {
+				limit = true
+			}
+			pending = true
+			if e.Type == "turn.failed" {
+				failed = true
+			}
 		}
 	}
-	if res.SessionID == "" {
+	if res.SessionID == "" && idErr == nil && req.Resume != "" {
 		res.SessionID = req.Resume
 	}
-	all := strings.Join(errText, "\n") + "\n" + string(out.Stderr)
+	stderr := string(out.Stderr)
 	switch {
-	case strings.Contains(all, LimitCode) || strings.Contains(all, LimitText):
+	case limit && (failed || pending || out.ExitCode != 0):
 		res.Error = adapter.ErrRateLimit
-	case out.ExitCode != 0 || len(errText) > 0:
+	case failed || pending:
+		res.Error = adapter.ErrUnknown
+	case out.ExitCode != 0 && len(errText) == 0 && (strings.Contains(stderr, LimitCode) || strings.Contains(stderr, LimitText)):
+		res.Error = adapter.ErrRateLimit
+	case out.ExitCode != 0:
 		res.Error = adapter.ErrUnknown
 	}
-	if res.Error != adapter.ErrNone {
-		res.ErrorDetail = strings.TrimSpace(firstNonEmpty(strings.Join(errText, "\n"), string(out.Stderr)))
+	if res.Error != adapter.ErrNone || len(errText) > 0 {
+		res.ErrorDetail = strings.TrimSpace(firstNonEmpty(strings.Join(errText, "\n"), stderr))
 	}
 	if !sawThread && out.ExitCode == 0 {
 		res.Error = adapter.ErrUnknown
 		return res, fmt.Errorf("codex: no thread.started event: %w", adapter.ErrUnparsed)
 	}
-	return res, nil
+	return res, idErr
 }
 
 func firstNonEmpty(s ...string) string {
@@ -291,17 +357,20 @@ func (a Adapter) Home() string {
 
 // Artifacts lists every image in generated_images/<thread-id>/ under the
 // Codex home: one request can produce several, and the image tool call is
-// not in the JSON stream. It returns paths only and copies nothing.
+// not in the JSON stream. It returns paths only and copies nothing. An
+// id that fails adapter.ValidSessionID is an error.
 func (a Adapter) Artifacts(_ adapter.HeadlessRequest, res adapter.HeadlessResult) ([]adapter.Artifact, error) {
-	id := res.SessionID
-	if id == "" || id != filepath.Base(id) || id == "." || id == ".." {
+	if res.SessionID == "" {
 		return nil, nil
+	}
+	if err := adapter.ValidSessionID(adapter.Codex, res.SessionID); err != nil {
+		return nil, err
 	}
 	home := a.Home()
 	if !filepath.IsAbs(home) {
 		return nil, fmt.Errorf("codex: cannot locate the Codex home")
 	}
-	return adapter.ListFiles(filepath.Join(home, "generated_images", id), "image", ".png")
+	return adapter.ListFiles(filepath.Join(home, "generated_images", res.SessionID), "image", ".png")
 }
 
 // TranscriptTail returns ErrNoTranscript: the format of Codex's session

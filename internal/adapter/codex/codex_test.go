@@ -11,6 +11,11 @@ import (
 	"github.com/congdoe/aggy/internal/safefs"
 )
 
+const (
+	tid = "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b" // the scenarios' thread id
+	oid = "7c4f1e2a-3b5d-4a6c-9e8f-1a2b3c4d5e6f"
+)
+
 func scenario(t *testing.T, name string) string {
 	t.Helper()
 	b, err := safefs.ReadFile(filepath.Join("testdata", name+".json"))
@@ -25,22 +30,22 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 	a := New()
 	ref := filepath.Join(h.Cwd, "style.png")
 	isolated := []string{"exec", "--json", "--sandbox", "read-only",
-		"--disable", "shell_tool", "--disable", "unified_exec", "--disable", "view_image", "-c", `web_search="live"`, "-"}
+		"--disable", "shell_tool", "--disable", "unified_exec", "--disable", "view_image", "-c", `web_search="live"`, "--", "-"}
 	tests := []struct {
 		name     string
 		req      adapter.HeadlessRequest
 		want     []string
 		scenario string
 	}{
-		{"research", adapter.HeadlessRequest{Kind: adapter.Research}, isolated, ""},
-		{"news", adapter.HeadlessRequest{Kind: adapter.News}, isolated, ""},
-		{"image", adapter.HeadlessRequest{Kind: adapter.Image}, []string{"exec", "--json", "--sandbox", "read-only", "-"}, ""},
-		{"image edit with a reference", adapter.HeadlessRequest{Kind: adapter.Image, Resume: "t-1", RefImages: []string{ref}},
-			[]string{"exec", "resume", "t-1", "--json", "--sandbox", "read-only", "-i", ref, "-"}, ""},
-		{"review", adapter.HeadlessRequest{Kind: adapter.Review}, []string{"exec", "--json", "--sandbox", "read-only", "-"}, ""},
-		{"review with web search and a model", adapter.HeadlessRequest{Kind: adapter.Review, WebSearch: true, Model: "gpt-5.5"},
-			[]string{"exec", "--json", "-c", `model="gpt-5.5"`, "--sandbox", "read-only", "-c", `web_search="live"`, "-"}, ""},
-		{"edit", adapter.HeadlessRequest{Kind: adapter.Edit}, []string{"exec", "--json", "--sandbox", "workspace-write", "-"},
+		{"research", adapter.HeadlessRequest{Kind: adapter.Research, IsolatedCwd: true}, isolated, ""},
+		{"news", adapter.HeadlessRequest{Kind: adapter.News, IsolatedCwd: true, WebSearch: true}, isolated, ""},
+		{"image", adapter.HeadlessRequest{Kind: adapter.Image}, []string{"exec", "--json", "--sandbox", "read-only", "--", "-"}, ""},
+		{"image edit with a reference", adapter.HeadlessRequest{Kind: adapter.Image, Resume: tid, RefImages: []string{ref}},
+			[]string{"exec", "-i", ref, "--json", "--sandbox", "read-only", "resume", tid, "--", "-"}, ""},
+		{"review", adapter.HeadlessRequest{Kind: adapter.Review}, []string{"exec", "--json", "--sandbox", "read-only", "--", "-"}, ""},
+		{"review with a model", adapter.HeadlessRequest{Kind: adapter.Review, Model: "gpt-5.5"},
+			[]string{"exec", "--json", "-c", `model="gpt-5.5"`, "--sandbox", "read-only", "--", "-"}, ""},
+		{"edit", adapter.HeadlessRequest{Kind: adapter.Edit}, []string{"exec", "--json", "--sandbox", "workspace-write", "--", "-"},
 			`{"extra_values":{"--sandbox":["workspace-write"]}}`},
 	}
 	for _, tt := range tests {
@@ -102,7 +107,7 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 	}{
 		{"new", adapter.InteractiveRequest{}, []string{"--no-alt-screen"}},
 		{"new with a brief", adapter.InteractiveRequest{BriefFile: brief}, []string{"--no-alt-screen", adapter.BriefPrompt(brief)}},
-		{"resume", adapter.InteractiveRequest{Resume: "t-1"}, []string{"resume", "--no-alt-screen", "t-1"}},
+		{"resume", adapter.InteractiveRequest{Resume: tid}, []string{"resume", "--no-alt-screen", tid}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -122,7 +127,7 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 	}
 	for _, r := range []adapter.InteractiveRequest{
 		{SessionID: "0b9d3c4e-1f2a-4b5c-8d7e-6f5a4b3c2d1e"},
-		{Resume: "t-1", Fork: true},
+		{Resume: tid, Fork: true},
 	} {
 		if _, err := a.Interactive(r); !errors.Is(err, adapter.ErrUnsupported) {
 			t.Errorf("%+v: %v, want ErrUnsupported", r, err)
@@ -155,7 +160,7 @@ func TestParseHeadlessFromScenarios(t *testing.T) {
 			}
 			out, _ := h.Run(t, c, scenario(t, tt.scenario))
 			res, err := a.ParseHeadless(req, out)
-			if err != nil || res.SessionID != "t-0199" || res.Text != tt.text || res.Error != tt.class || res.Tokens != tt.tokens {
+			if err != nil || res.SessionID != tid || res.Text != tt.text || res.Error != tt.class || res.Tokens != tt.tokens {
 				t.Fatalf("ParseHeadless = %+v, %v", res, err)
 			}
 			arts, err := a.Artifacts(req, res)
@@ -163,7 +168,7 @@ func TestParseHeadlessFromScenarios(t *testing.T) {
 				t.Fatalf("Artifacts = %v, %v", arts, err)
 			}
 			for i, art := range arts {
-				want := filepath.Join(h.Home, ".codex", "generated_images", "t-0199", []string{"1.png", "2.png"}[i])
+				want := filepath.Join(h.Home, ".codex", "generated_images", tid, []string{"1.png", "2.png"}[i])
 				if art.Path != want || art.Kind != "image" {
 					t.Errorf("artifact %d = %+v, want %s", i, art, want)
 				}
@@ -197,18 +202,18 @@ func TestArtifactsUnderCodexHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	arts, err := a.Artifacts(req, res)
-	if err != nil || len(arts) != 2 || filepath.Dir(arts[0].Path) != filepath.Join(codexHome, "generated_images", "t-0199") {
+	if err != nil || len(arts) != 2 || filepath.Dir(arts[0].Path) != filepath.Join(codexHome, "generated_images", tid) {
 		t.Errorf("Artifacts = %v, %v", arts, err)
 	}
-	// A session id that is not one path element finds nothing.
-	if arts, err := a.Artifacts(req, adapter.HeadlessResult{SessionID: "../t-0199"}); err != nil || len(arts) != 0 {
+	// A session id that is not a valid id is an error.
+	if arts, err := a.Artifacts(req, adapter.HeadlessResult{SessionID: "../" + tid}); err == nil || len(arts) != 0 {
 		t.Errorf("escaping id = %v, %v", arts, err)
 	}
 }
 
 func TestTranscriptAndPatches(t *testing.T) {
 	a := New()
-	if _, err := a.TranscriptTail(adapter.SessionRef{ID: "t-1"}, 5); !errors.Is(err, adapter.ErrNoTranscript) {
+	if _, err := a.TranscriptTail(adapter.SessionRef{ID: tid}, 5); !errors.Is(err, adapter.ErrNoTranscript) {
 		t.Errorf("TranscriptTail = %v", err)
 	}
 	if p, err := a.ConfigPatches(adapter.ConfigContext{}); err != nil || len(p) != 0 {
