@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,19 +118,46 @@ func TestDrift(t *testing.T) {
 	}
 }
 
-// TestDriftBlockedBy (T6612 re-review C): an older change behind a
-// drifted newer one is Blocked, and names it.
+// TestDriftBlockedBy (T6612 re-review C, C1): an older change behind a
+// drifted newer one is Blocked, and names the change actually in its
+// way, not a newer one the dry run resolved.
 func TestDriftBlockedBy(t *testing.T) {
-	f := setup(t)
-	createNew(t, f, "a.toml", "x\n")
-	changeExisting(t, f, "a.toml", "x\n", "x\nmore\n")
-	writeDrift(t, filepath.Join(f.dir, "a.toml"), "edited\n")
-	got, err := f.m.Drift(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, f fixture)
+		// blocked and by are indexes into Drift's results, oldest first
+		blocked, by int
+	}{
+		{"behind a drifted change", func(t *testing.T, f fixture) {
+			createNew(t, f, "a.toml", "x\n")
+			changeExisting(t, f, "a.toml", "x\n", "x\nmore\n")
+			writeDrift(t, filepath.Join(f.dir, "a.toml"), "edited\n")
+		}, 0, 1},
+		{"a resolved failed change between them", func(t *testing.T, f fixture) {
+			createNew(t, f, "a.toml", "x\n")
+			insertDrift(t, f, store.Change{ChangeID: "c-failed", File: filepath.Join(f.dir, "a.toml"),
+				HashBefore: patch.Hash([]byte("x\n")), HashAfter: patch.Hash([]byte("y\n")), Status: store.ChangeFailed})
+			changeExisting(t, f, "a.toml", "x\n", "x\nmore\n")
+			writeDrift(t, filepath.Join(f.dir, "a.toml"), "edited\n")
+		}, 0, 2},
 	}
-	if len(got) != 2 || got[0].Outcome != Blocked || got[1].Outcome != Drifted || got[0].BlockedBy != got[1].Change.ChangeID {
-		t.Errorf("drift = %+v", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := setup(t)
+			tt.setup(t, f)
+			got, err := f.m.Drift(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) <= tt.by || got[tt.blocked].Outcome != Blocked || got[tt.by].Outcome != Drifted ||
+				got[tt.blocked].BlockedBy != got[tt.by].Change.ChangeID {
+				t.Fatalf("drift = %+v", got)
+			}
+			// unwire's own error names the same change.
+			if !strings.Contains(got[tt.blocked].Err.Error(), "change "+got[tt.by].Change.ChangeID+";") {
+				t.Errorf("unwire blames another change: %v", got[tt.blocked].Err)
+			}
+		})
 	}
 }
 
