@@ -52,11 +52,15 @@ type repoCheckEnv struct {
 }
 
 func defaultRepoCheckEnv() repoCheckEnv {
-	return repoCheckEnv{getwd: os.Getwd, lookPath: probe.LookPath, runner: execrun.ExecRunner, now: time.Now}
+	return repoCheckEnv{getwd: os.Getwd, lookPath: probe.LookPath, runner: execrun.CheckRunner, now: time.Now}
 }
 
 func runCheck(args []string, stdout, stderr io.Writer) int {
-	return defaultRepoCheckEnv().check(context.Background(), args, stdout, stderr)
+	// Ctrl-C, a kill, or a hangup cancels ctx, and the runner then kills
+	// the running check's whole process group before aggy exits.
+	ctx, stop := execrun.NotifyContext(context.Background())
+	defer stop()
+	return defaultRepoCheckEnv().check(ctx, args, stdout, stderr)
 }
 
 func (e repoCheckEnv) check(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -111,7 +115,8 @@ func (e repoCheckEnv) check(ctx context.Context, args []string, stdout, stderr i
 			}
 		}
 		if ctx.Err() != nil {
-			break
+			fmt.Fprintln(stdout, "aggy check: interrupted")
+			return 1
 		}
 	}
 	if failed > 0 {
@@ -164,8 +169,8 @@ func (e repoCheckEnv) program(root, name string) (string, error) {
 }
 
 // outputTail is the last checkTail lines of a command's stdout then
-// stderr, with every secret-shaped line removed (redact.Lines). execrun
-// already capped each stream.
+// stderr, with every secret-shaped line removed (redact.Lines).
+// execrun.CheckRunner kept the end of each stream.
 func outputTail(out adapter.Output) []string {
 	text := strings.TrimRight(string(out.Stdout), "\n")
 	if s := strings.TrimRight(string(out.Stderr), "\n"); s != "" {

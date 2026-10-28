@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -143,7 +144,19 @@ func ExecRunner(timeout time.Duration) adapter.Runner {
 		if c.Stdin != adapter.StdinNull {
 			return adapter.Output{}, errors.New("execrun: the runner gives commands no stdin")
 		}
-		return run(ctx, c, timeout)
+		return run(ctx, c, timeout, false)
+	}
+}
+
+// CheckRunner returns a Runner for aggy check: ExecRunner, except that
+// it keeps the last MaxOutput bytes of each stream instead of the first,
+// since a failing check reports at the end of its output.
+func CheckRunner(timeout time.Duration) adapter.Runner {
+	return func(ctx context.Context, c adapter.Command) (adapter.Output, error) {
+		if c.Stdin != adapter.StdinNull {
+			return adapter.Output{}, errors.New("execrun: the runner gives commands no stdin")
+		}
+		return run(ctx, c, timeout, true)
 	}
 }
 
@@ -163,7 +176,7 @@ func HeadlessRunner(timeout time.Duration) adapter.Runner {
 		if c.Dir == "" || !filepath.IsAbs(c.Dir) {
 			return adapter.Output{}, fmt.Errorf("execrun: a headless child needs an absolute working dir, got %q", c.Dir)
 		}
-		return run(ctx, c, timeout)
+		return run(ctx, c, timeout, false)
 	}
 }
 
@@ -180,13 +193,21 @@ func NotifyRunner(timeout time.Duration) adapter.Runner {
 		if c.Stdin != adapter.StdinNull || len(c.Env) > 0 {
 			return adapter.Output{}, errors.New("execrun: a notifier gets no stdin and no added environment")
 		}
-		return run(ctx, c, timeout, notifyEnv...)
+		return run(ctx, c, timeout, false, notifyEnv...)
 	}
 }
 
-// run runs c. pass names extra variables c inherits from aggy's
-// environment, beyond Env's.
-func run(ctx context.Context, c adapter.Command, timeout time.Duration, pass ...string) (adapter.Output, error) {
+// run runs c. tail keeps the end of each output stream rather than its
+// start. pass names extra variables c inherits from aggy's environment,
+// beyond Env's.
+//
+// Once the leader exits, run kills its whole process group, so a child
+// it left in the background (sh -c "sleep 1000 &") does not outlive it.
+// A process that left the group (setsid, or a daemon that forks into its
+// own session) escapes that kill and is not tracked.
+// shortcut: no Linux subreaper or cgroup tracking; add one when a
+// vendor CLI or a check is seen escaping its group.
+func run(ctx context.Context, c adapter.Command, timeout time.Duration, tail bool, pass ...string) (adapter.Output, error) {
 	if !filepath.IsAbs(c.Path) || filepath.Clean(c.Path) != c.Path {
 		return adapter.Output{}, fmt.Errorf("execrun: %q is not a clean absolute path", c.Path)
 	}
@@ -233,13 +254,58 @@ func run(ctx context.Context, c adapter.Command, timeout time.Duration, pass ...
 	} else {
 		cmd.Stdin = nil // /dev/null
 	}
-	stdout := &capped{max: MaxOutput}
-	stderr := &capped{max: MaxOutput}
-	cmd.Stdout, cmd.Stderr = stdout, stderr
+	stdout := &capped{max: MaxOutput, tail: tail}
+	stderr := &capped{max: MaxOutput, tail: tail}
+	// The child writes into pipes aggy owns, so Wait returns when the
+	// leader exits, not when the last holder of the pipe does; the group
+	// is killed then, and the copies end.
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		return adapter.Output{}, err
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		_ = outR.Close()
+		_ = outW.Close()
+		return adapter.Output{}, err
+	}
+	cmd.Stdout, cmd.Stderr = outW, errW
 	setProcessGroup(cmd)
-	cmd.WaitDelay = time.Second
-	err = cmd.Run()
-	out := adapter.Output{Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes(), ExitCode: cmd.ProcessState.ExitCode()}
+	err = cmd.Start()
+	_ = outW.Close()
+	_ = errW.Close()
+	copied := make(chan struct{}, 2)
+	for _, p := range []struct {
+		r *os.File
+		w *capped
+	}{{outR, stdout}, {errR, stderr}} {
+		go func() {
+			_, _ = io.Copy(p.w, p.r)
+			copied <- struct{}{}
+		}()
+	}
+	if err == nil {
+		err = cmd.Wait()
+		killGroup(cmd)
+	}
+	// A process that escaped the group may hold the pipes open: stop
+	// reading after a second.
+	grace := time.After(time.Second)
+	for range 2 {
+		select {
+		case <-copied:
+		case <-grace:
+			_ = outR.Close()
+			_ = errR.Close()
+			<-copied
+		}
+	}
+	_ = outR.Close()
+	_ = errR.Close()
+	if cmd.ProcessState == nil {
+		return adapter.Output{}, err
+	}
+	out := adapter.Output{Stdout: stdout.bytes(), Stderr: stderr.bytes(), ExitCode: cmd.ProcessState.ExitCode()}
 	if perr := parent.Err(); perr != nil {
 		return out, perr
 	}
@@ -253,13 +319,35 @@ func run(ctx context.Context, c adapter.Command, timeout time.Duration, pass ...
 	return out, err
 }
 
-// capped keeps the first max bytes written and drops the rest.
+// capped keeps the first max bytes written and drops the rest, or with
+// tail the last max bytes.
 type capped struct {
-	buf bytes.Buffer
-	max int
+	buf  bytes.Buffer
+	max  int
+	tail bool
+}
+
+// bytes returns what c kept.
+func (c *capped) bytes() []byte {
+	b := c.buf.Bytes()
+	if len(b) > c.max {
+		b = b[len(b)-c.max:]
+	}
+	return b
 }
 
 func (c *capped) Write(p []byte) (int, error) {
+	if c.tail {
+		c.buf.Write(p)
+		// Drop the front only once the buffer is twice max, so the
+		// copying stays linear.
+		if c.buf.Len() > 2*c.max {
+			rest := append([]byte(nil), c.bytes()...)
+			c.buf.Reset()
+			c.buf.Write(rest)
+		}
+		return len(p), nil
+	}
 	if room := c.max - c.buf.Len(); room > 0 {
 		if len(p) > room {
 			c.buf.Write(p[:room])

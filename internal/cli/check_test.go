@@ -5,7 +5,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -46,6 +48,7 @@ func TestCheck(t *testing.T) {
 		"fail.sh":  "echo first\necho 'token ghp_abcdefghijklmnopqrstuvwxyz0123456789'\nenv\necho last >&2\nexit 3\n",
 		"slow.sh":  "sleep 5\n",
 		"plain.sh": "echo no exec bit\n",
+		"long.sh":  "echo FIRST\nyes filler | head -c 3000000\necho\necho FINAL\nexit 1\n",
 	}
 	tests := []struct {
 		name     string
@@ -61,6 +64,8 @@ func TestCheck(t *testing.T) {
 			want:     []string{"FAIL ./fail.sh", "exit status 3", "| first", "| last", "ok   ./ok.sh", "1 of 2 failed"},
 			dontWant: []string{"ghp_", "OPENAI_API_KEY", "AGGY_TEST_SECRET"}},
 		{name: "timeout", cfg: `check = [["./slow.sh"]]`, timeout: 300 * time.Millisecond, code: 1, want: []string{"FAIL ./slow.sh", "timed out"}},
+		{name: "long output shows its end", cfg: `check = [["./long.sh"]]`, code: 1,
+			want: []string{"| filler\n", "| FINAL\n"}, dontWant: []string{"FIRST"}},
 		{name: "missing program", cfg: `check = [["aggy-no-such-tool"]]`, code: 1, want: []string{"cannot start"}},
 		{name: "not executable", cfg: `check = [["./plain.sh"]]`, code: 1, want: []string{"not an executable file"}},
 		{name: "none configured", cfg: ``, code: 1},
@@ -74,7 +79,7 @@ func TestCheck(t *testing.T) {
 			e := defaultRepoCheckEnv()
 			e.getwd = func() (string, error) { return root, nil }
 			if tt.timeout > 0 {
-				e.runner = func(time.Duration) adapter.Runner { return execrun.ExecRunner(tt.timeout) }
+				e.runner = func(time.Duration) adapter.Runner { return execrun.CheckRunner(tt.timeout) }
 			}
 			var out, errb bytes.Buffer
 			if code := e.check(context.Background(), nil, &out, &errb); code != tt.code {
@@ -106,5 +111,43 @@ func TestCheckProgramStaysInRepo(t *testing.T) {
 	e := repoCheckEnv{lookPath: probe.LookPath}
 	if _, err := e.program(root, "./out/x.sh"); err == nil || !strings.Contains(err.Error(), "outside the repo") {
 		t.Fatalf("err = %v, want outside the repo", err)
+	}
+}
+
+// TestCheckInterrupt (H-1): Ctrl-C ends aggy check and kills the running
+// check's process group.
+func TestCheckInterrupt(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	root := checkRepo(t, `check = [["./wait.sh", "`+pidFile+`"]]`, map[string]string{
+		"wait.sh": "echo $$ > \"$1\"\nexec sleep 777\n",
+	})
+	t.Chdir(root)
+	go func() {
+		for i := 0; i < 200; i++ {
+			if b, err := os.ReadFile(pidFile); err == nil && len(b) > 0 {
+				_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	}()
+	var out, errb bytes.Buffer
+	start := time.Now()
+	if code := runCheck(nil, &out, &errb); code != 1 || !strings.Contains(out.String(), "interrupted") {
+		t.Fatalf("code %d\n%s%s", code, out.String(), errb.String())
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Errorf("interrupt took %s", d)
+	}
+	b, _ := os.ReadFile(pidFile)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(3 * time.Second); syscall.Kill(pid, 0) == nil; time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatal("the check outlived aggy check")
+		}
 	}
 }
