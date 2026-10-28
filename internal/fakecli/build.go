@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/safefs"
 )
 
@@ -131,4 +132,36 @@ func Records(t testing.TB, path string) []Record {
 		out = append(out, r)
 	}
 	return out
+}
+
+// Run runs an adapter's Command against the fake named by its Path
+// (claude, codex, or grok) and returns its output. env is the whole
+// environment besides cmd.Env: tests pass HOME, PATH, and the fake's
+// variables. StdinFile reads cmd.StdinPath through safefs; StdinNull and
+// StdinTerminal both get /dev/null (an interactive run needs the
+// scenario's interactive_without_tty). It never runs a vendor CLI.
+func (f Fakes) Run(t testing.TB, c adapter.Command, env []string) adapter.Output {
+	t.Helper()
+	if strings.ContainsRune(c.Path, filepath.Separator) {
+		t.Fatalf("fakecli: Run takes a bare vendor name, got %q", c.Path)
+	}
+	cmd := exec.Command(f.For(c.Path), c.Args...)
+	cmd.Dir = c.Dir
+	cmd.Env = append(append([]string{}, env...), c.Env...)
+	if c.Stdin == adapter.StdinFile {
+		fh, err := safefs.Open(c.StdinPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = fh.Close() }()
+		cmd.Stdin = fh
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	var ee *exec.ExitError
+	if err != nil && !errors.As(err, &ee) {
+		t.Fatal(err)
+	}
+	return adapter.Output{Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitCode: cmd.ProcessState.ExitCode()}
 }

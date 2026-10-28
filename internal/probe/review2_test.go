@@ -3,11 +3,13 @@ package probe
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/safefs"
 )
 
 // Regression tests for the PR #4 re-review (N2, N3, N8, L2). Each fails on
@@ -152,6 +154,26 @@ func TestEnvRelativePathUnset(t *testing.T) {
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "PATH=") {
 			t.Errorf("PATH set to %q, want unset", kv)
+		}
+	}
+}
+
+// TestLookPath finds an executable on the absolute PATH entries only.
+func TestLookPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := safefs.WriteFile(filepath.Join(dir, "codex"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := safefs.WriteFile(filepath.Join(dir, "plain"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", "rel:"+dir)
+	if p, err := LookPath("codex"); err != nil || p != filepath.Join(dir, "codex") {
+		t.Errorf("LookPath = %q, %v", p, err)
+	}
+	for _, name := range []string{"plain", "missing", "../codex", ""} {
+		if _, err := LookPath(name); err == nil {
+			t.Errorf("LookPath(%q) succeeded", name)
 		}
 	}
 }
