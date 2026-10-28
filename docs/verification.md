@@ -406,6 +406,44 @@ grok_file_tools = true` in `~/.aggy/config.toml` (never repo config). So
 key; a new Grok image gets `image_gen` only. `reference_to_video` is never
 given, opt-in or not.
 
+## Session file formats (T6670)
+
+Source only; no session file was read. `internal/transcript` follows
+these, and adapters.md lists what it reads.
+
+- **Codex** (rust-v0.164.0): a rollout is
+  `sessions/YYYY/MM/DD/rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl`
+  (`rollout/src/list.rs#L423`). Each line is `{"timestamp", "type",
+  "payload"}` (`history/src/lib.rs#L369`, the `RolloutLine`;
+  `history/src/rollout_payload.rs#L32`, tag `type` in snake case). A
+  `response_item` payload is a `ResponseItem`, whose `message` has `role`
+  and `content` (`protocol/src/models.rs#L1052`, `#L1062`), and content
+  items are `input_text` or `output_text` with `text` (`models.rs#L883`).
+  Messages are always persisted (`rollout/src/policy.rs#L82`); the
+  `event_msg` `user_message` and `agent_message` events are persisted
+  only in the legacy history mode (`policy.rs#L143`), so they are not
+  read.
+- **Grok** (grok-build `2bdd1d6a`): a session folder holds
+  `chat_history.jsonl` ("raw chat messages sent to the model") and
+  `updates.jsonl` (`xai-grok-pager/docs/user-guide/17-sessions.md`,
+  "Storage Layout"). `chat_history.jsonl` gets one `ConversationItem` per
+  line (`xai-grok-shell/src/session/storage/jsonl/mod.rs#L1333`), tagged
+  `type` in snake case: `system`, `user` (`content` a list of `text` or
+  `image` parts, `synthetic_reason` set only on injected messages),
+  `assistant` (`content` a string, plus `tool_calls`), `tool_result`,
+  `backend_tool_call`, `reasoning`
+  (`xai-grok-sampling-types/src/conversation.rs#L71`, `#L239`, `#L266`,
+  `#L379`). The reader skips lines it cannot parse, as Grok's own loader
+  does (`jsonl/mod.rs#L954`).
+- **Claude**: no Claude doc gives the transcript format. Grok's importer
+  of Claude sessions (grok-build `2bdd1d6a`,
+  `xai-grok-foreign-sessions/src/claude/projects.rs#L44`, `claude.rs#L437`)
+  reads `projects/<cwd with every non-alphanumeric ASCII character as
+  ->/<id>.jsonl`, lines with `type` `user`, `message.content` as a string
+  or blocks of `type` `text`, and skips `isMeta`, `isCompactSummary`, and
+  `isSidechain` lines. **Unverified:** assistant lines (read the same way
+  with `type` `assistant`) and how Claude names the folder of a long path.
+
 ## Still open
 
 1. Codex limit event, captured live from an exhausted account: the
