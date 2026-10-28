@@ -130,7 +130,7 @@ func TestDoctor(t *testing.T) {
 				applyAll(t, "run-1", patch.Patch{File: a, ExpectedHash: patch.Hash([]byte("a = 1\n")), Transform: appendOnce("x = 2\n")})
 				return nil
 			},
-			want: []string{"info    no-drift: 1 file aggy changed is as aggy left it"},
+			want: []string{"info    no-drift: 1 change aggy made can be undone cleanly by aggy unwire"},
 		},
 		{
 			name: "a recorded change naming a credential file",

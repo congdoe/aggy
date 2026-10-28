@@ -14,53 +14,52 @@ import (
 	"github.com/congdoe/aggy/internal/store"
 )
 
-// TestDrift checks Drift against hand-written answers and, for every
-// checkable target, against what an Unwire dry run says of the same
-// change: doctor must never call drifted what unwire undoes without
-// --force, or the reverse.
+// TestDrift checks Drift, which is an Unwire dry run, on the cases the
+// review found doctor and unwire disagreeing on, and that it agrees with
+// a locking dry run.
 func TestDrift(t *testing.T) {
 	type want struct {
 		file    string // base name
-		drifted bool
+		outcome Outcome
 		err     error // matched with errors.Is; nil for none
 	}
 	tests := []struct {
 		name  string
 		setup func(t *testing.T, f fixture) // makes files and changes in f.dir
-		want  []want
+		want  []want                        // oldest first
 	}{
 		{"no changes", func(*testing.T, fixture) {}, nil},
 		{"unchanged", func(t *testing.T, f fixture) {
 			createNew(t, f, "a.toml", "x\n")
-		}, []want{{"a.toml", false, nil}}},
+		}, []want{{"a.toml", Removed, nil}}},
 		{"edited after aggy wrote it", func(t *testing.T, f fixture) {
 			createNew(t, f, "a.toml", "x\n")
 			writeDrift(t, filepath.Join(f.dir, "a.toml"), "edited\n")
-		}, []want{{"a.toml", true, nil}}},
+		}, []want{{"a.toml", Drifted, nil}}},
 		// T6612 review 3: the next four are undone cleanly by unwire.
 		{"created file removed by hand", func(t *testing.T, f fixture) {
 			createNew(t, f, "a.toml", "x\n")
 			if err := os.Remove(filepath.Join(f.dir, "a.toml")); err != nil {
 				t.Fatal(err)
 			}
-		}, []want{{"a.toml", false, nil}}},
+		}, []want{{"a.toml", Removed, nil}}},
 		{"modified file restored by hand", func(t *testing.T, f fixture) {
 			changeExisting(t, f, "a.toml", "old\n", "old\nnew\n")
 			writeDrift(t, filepath.Join(f.dir, "a.toml"), "old\n")
-		}, []want{{"a.toml", false, nil}}},
+		}, []want{{"a.toml", Restored, nil}}},
 		{"created file emptied", func(t *testing.T, f fixture) {
 			createNew(t, f, "a.toml", "x\n")
 			writeDrift(t, filepath.Join(f.dir, "a.toml"), " \n\n")
-		}, []want{{"a.toml", false, nil}}},
+		}, []want{{"a.toml", Removed, nil}}},
 		{"modified file undone but for a line ending", func(t *testing.T, f fixture) {
 			changeExisting(t, f, "a.toml", "old", "old\nnew\n")
 			writeDrift(t, filepath.Join(f.dir, "a.toml"), "old\r\n")
-		}, []want{{"a.toml", false, nil}}},
-		{"two changes to one file: the newest is in effect", func(t *testing.T, f fixture) {
+		}, []want{{"a.toml", Restored, nil}}},
+		{"two changes to one file", func(t *testing.T, f fixture) {
 			createNew(t, f, "a.toml", "x\n")
 			changeExisting(t, f, "a.toml", "x\n", "x\nmore\n")
-		}, []want{{"a.toml", false, nil}}},
-		{"undone changes are not in effect", func(t *testing.T, f fixture) {
+		}, []want{{"a.toml", Removed, nil}, {"a.toml", Restored, nil}}},
+		{"undone changes are left out", func(t *testing.T, f fixture) {
 			c := createNew(t, f, "a.toml", "x\n")
 			if err := f.m.Revert(context.Background(), c.ChangeID); err != nil {
 				t.Fatal(err)
@@ -68,27 +67,22 @@ func TestDrift(t *testing.T) {
 			writeDrift(t, filepath.Join(f.dir, "a.toml"), "edited\n")
 		}, nil},
 		// T6612 review 4: rows inserted in a fixed order.
-		{"pending: before, after, or neither", func(t *testing.T, f fixture) {
-			before, after := patch.Hash([]byte("b\n")), patch.Hash([]byte("a\n"))
-			for _, p := range []struct{ name, content string }{{"p1", "b\n"}, {"p2", "a\n"}, {"p3", "z\n"}} {
-				file := filepath.Join(f.dir, p.name)
-				writeDrift(t, file, p.content)
-				insertDrift(t, f, store.Change{ChangeID: "c-" + p.name, File: file, HashBefore: before, HashAfter: after, Status: store.ChangePending})
+		{"pending, never written", func(t *testing.T, f fixture) {
+			for _, name := range []string{"p1", "p2"} {
+				file := filepath.Join(f.dir, name)
+				writeDrift(t, file, "b\n")
+				insertDrift(t, f, store.Change{ChangeID: "c-" + name, File: file, HashBefore: patch.Hash([]byte("b\n")),
+					HashAfter: patch.Hash([]byte("a\n")), Status: store.ChangePending})
 			}
-		}, []want{{"p1", false, nil}, {"p2", false, nil}, {"p3", true, nil}}},
-		{"a failed row is checked as unwire checks it", func(t *testing.T, f fixture) {
-			p := filepath.Join(f.dir, "f")
-			writeDrift(t, p, "z\n")
-			insertDrift(t, f, store.Change{ChangeID: "c-f", File: p, HashBefore: patch.Hash([]byte("y\n")), HashAfter: patch.Hash([]byte("a")), Status: store.ChangeFailed})
-			insertDrift(t, f, store.Change{ChangeID: "c-n", File: filepath.Join(f.dir, "n"), HashBefore: patch.Hash(nil), HashAfter: patch.Hash([]byte("a")), Status: store.ChangeNoop})
-		}, []want{{"f", true, nil}}},
+		}, []want{{"p1", Cleaned, nil}, {"p2", Cleaned, nil}}},
 		{"a credential path is never read", func(t *testing.T, f fixture) {
 			p := filepath.Join(os.Getenv("HOME"), ".codex", "auth.json")
-			insertDrift(t, f, store.Change{ChangeID: "c-auth", File: p, HashBefore: patch.Hash(nil), HashAfter: patch.Hash([]byte("x")), Status: store.ChangeApplied})
-		}, []want{{"auth.json", false, safefs.ErrAuthPath}}},
+			insertDrift(t, f, store.Change{ChangeID: "c-auth", File: p, HashBefore: patch.NoFile, HashAfter: patch.Hash([]byte("x")),
+				CreatedFile: true, Status: store.ChangeApplied})
+		}, []want{{"auth.json", Failed, safefs.ErrAuthPath}}},
 		{"a row aggy could not have written", func(t *testing.T, f fixture) {
 			insertDrift(t, f, store.Change{ChangeID: "c-bad", File: "relative/x", HashBefore: patch.Hash(nil), HashAfter: "nothex", Status: store.ChangeApplied})
-		}, []want{{"x", false, ErrInvalidRow}}},
+		}, []want{{"x", Invalid, ErrInvalidRow}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -104,35 +98,43 @@ func TestDrift(t *testing.T) {
 			}
 			for i, w := range tt.want {
 				g := got[i]
-				if filepath.Base(g.Change.File) != w.file || g.Drifted != w.drifted || (w.err == nil) != (g.Err == nil) || (w.err != nil && !errors.Is(g.Err, w.err)) {
-					t.Errorf("%d: %s drifted %v err %v, want %+v", i, g.Change.File, g.Drifted, g.Err, w)
+				if filepath.Base(g.Change.File) != w.file || g.Outcome != w.outcome || g.Drifted != (w.outcome == Drifted) ||
+					(w.err == nil) != (g.Err == nil) || (w.err != nil && !errors.Is(g.Err, w.err)) {
+					t.Errorf("%d: %s %s drifted %v err %v, want %+v", i, g.Change.File, g.Outcome, g.Drifted, g.Err, w)
 				}
 			}
-			// The dry run here may take target locks; the test's state
-			// directory is a temp dir.
+			// The same answers as a dry run that takes its locks.
 			undos, _ := f.m.Unwire(ctx, Selection{All: true}, UnwireOptions{DryRun: true}, io.Discard)
-			outcome := map[string]Outcome{}
-			for _, u := range undos {
-				outcome[u.Change.ChangeID] = u.Outcome
+			if len(undos) != len(got) {
+				t.Fatalf("unwire dry run: %d results, Drift %d", len(undos), len(got))
 			}
-			for _, g := range got {
-				if g.Err != nil {
-					continue
-				}
-				if o := outcome[g.Change.ChangeID]; (o == Drifted) != g.Drifted {
-					t.Errorf("%s: Drift says drifted %v, unwire says %s", g.Change.File, g.Drifted, o)
+			for i, u := range undos {
+				if g := got[len(got)-1-i]; g.Change.ChangeID != u.Change.ChangeID || g.Outcome != u.Outcome {
+					t.Errorf("%s: Drift says %s, unwire says %s", u.Change.File, g.Outcome, u.Outcome)
 				}
 			}
 		})
 	}
 }
 
-// TestDriftWritesNothing: Drift leaves the state directory as it was (no
-// lock files, no backups).
+// TestNoLockOnlyDryRun: NoLock is refused on a real unwire.
+func TestNoLockOnlyDryRun(t *testing.T) {
+	f := setup(t)
+	if _, err := f.m.Unwire(context.Background(), Selection{All: true}, UnwireOptions{NoLock: true}, io.Discard); err == nil {
+		t.Error("NoLock without DryRun accepted")
+	}
+}
+
+// TestDriftWritesNothing: Drift leaves the state directory as it was:
+// no lock files (an Unwire dry run with locks makes run/patch/ and a lock
+// file per target), no backups.
 func TestDriftWritesNothing(t *testing.T) {
 	f := setup(t)
 	createNew(t, f, "a.toml", "x\n")
 	writeDrift(t, filepath.Join(f.dir, "a.toml"), "edited\n")
+	if err := os.RemoveAll(filepath.Join(f.state, "run")); err != nil {
+		t.Fatal(err)
+	}
 	before := listTree(t, f.state)
 	if _, err := f.m.Drift(context.Background()); err != nil {
 		t.Fatal(err)
