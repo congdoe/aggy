@@ -96,7 +96,7 @@ func Symlink(target, name string, want fs.FileInfo) error {
 	}
 	var syncErr error
 	err = inParent("Symlink", name, t.link, t.linkDir, func(dir *os.Root, base string) error {
-		if err := expect(t.g, name, dir, base, want); err != nil {
+		if err := expect("Symlink", t.g, name, dir, base, want); err != nil {
 			return err
 		}
 		if want == nil {
@@ -113,7 +113,7 @@ func Symlink(target, name string, want fs.FileInfo) error {
 		if err := dir.Symlink(target, tmp); err != nil {
 			return err
 		}
-		if err := expect(t.g, name, dir, base, want); err != nil {
+		if err := expect("Symlink", t.g, name, dir, base, want); err != nil {
 			_ = dir.Remove(tmp)
 			return err
 		}
@@ -198,7 +198,7 @@ func writeFileNoFollow(name string, data []byte, perm fs.FileMode, want, wantDir
 	}
 	var syncErr error
 	err = inParent("WriteFile", name, t.link, t.linkDir, func(dir *os.Root, base string) error {
-		if err := expect(t.g, name, dir, base, want); err != nil {
+		if err := expect("WriteFile", t.g, name, dir, base, want); err != nil {
 			return err
 		}
 		tmpName, tmp, err := createTemp(dir, base)
@@ -224,7 +224,7 @@ func writeFileNoFollow(name string, data []byte, perm fs.FileMode, want, wantDir
 		if err := tmp.Close(); err != nil {
 			return err
 		}
-		if err := expect(t.g, name, dir, base, want); err != nil {
+		if err := expect("WriteFile", t.g, name, dir, base, want); err != nil {
 			return err
 		}
 		if testHookBeforeCommit != nil {
@@ -272,20 +272,20 @@ func RemoveSame(name string, want fs.FileInfo) error {
 		return err
 	}
 	return renamePath(inParent("Remove", name, t.link, t.linkDir, func(dir *os.Root, base string) error {
-		if err := expect(t.g, name, dir, base, want); err != nil {
+		if err := expect("Remove", t.g, name, dir, base, want); err != nil {
 			return err
 		}
 		return dir.Remove(base)
 	}), name)
 }
 
-// expect checks that base in dir has want's identity and type, or does
+// expect checks, for op, that base in dir has want's identity and type, or does
 // not exist when want is nil, and is not a credential file.
-func expect(g *guard, name string, dir *os.Root, base string, want fs.FileInfo) error {
+func expect(op string, g *guard, name string, dir *os.Root, base string, want fs.FileInfo) error {
 	fi, err := dir.Lstat(base)
 	if want == nil {
 		if err == nil {
-			return &fs.PathError{Op: "Symlink", Path: name, Err: fs.ErrExist}
+			return &fs.PathError{Op: op, Path: name, Err: fs.ErrExist}
 		}
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
@@ -296,10 +296,10 @@ func expect(g *guard, name string, dir *os.Root, base string, want fs.FileInfo) 
 		return err
 	}
 	if g.idMatch(fi) {
-		return &AuthPathError{Op: "replace", Path: name}
+		return &AuthPathError{Op: op, Path: name}
 	}
 	if !os.SameFile(want, fi) || want.Mode().Type() != fi.Mode().Type() {
-		return &fs.PathError{Op: "replace", Path: name, Err: ErrChanged}
+		return &fs.PathError{Op: op, Path: name, Err: ErrChanged}
 	}
 	return nil
 }
@@ -329,4 +329,84 @@ func Mkdir(name string, perm fs.FileMode) error {
 	return renamePath(inParent("Mkdir", name, t.link, t.linkDir, func(dir *os.Root, base string) error {
 		return dir.Mkdir(base, perm)
 	}), name)
+}
+
+// ErrNotDir means an element MkdirChain walks is a symlink or something
+// other than a directory.
+var ErrNotDir = errors.New("not a real directory (a symlink?)")
+
+// MkdirChain makes root/elems... one directory at a time through
+// descriptors, and returns the last one's identity for
+// WriteFileNoFollowIn. root is opened once and must have want's identity
+// (the caller's Lstat of it); each element is then looked up without
+// following, made when missing, and opened relative to its parent's
+// descriptor, which must still be the directory just looked up. Every
+// element must be a real directory: a symlink, or anything else, is
+// refused with ErrNotDir, so no directory is ever made outside root,
+// even if a path element is swapped while the chain is made.
+func MkdirChain(root string, want fs.FileInfo, elems []string, perm fs.FileMode) (fs.FileInfo, error) {
+	if want == nil || !want.IsDir() {
+		return nil, &fs.PathError{Op: "MkdirChain", Path: root, Err: errors.New("no directory identity to compare")}
+	}
+	p := root
+	for _, e := range elems {
+		if e == "" || e == "." || e == ".." || filepath.Base(e) != e {
+			return nil, &fs.PathError{Op: "MkdirChain", Path: root, Err: fmt.Errorf("bad path element %q", e)}
+		}
+		p = filepath.Join(p, e)
+		if err := Check(p); err != nil {
+			return nil, err
+		}
+	}
+	if err := Check(root); err != nil {
+		return nil, err
+	}
+	beforeAct("MkdirChain")
+	dir, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	fi, err := dir.Stat(".")
+	if err != nil || !os.SameFile(want, fi) {
+		_ = dir.Close()
+		return nil, &fs.PathError{Op: "MkdirChain", Path: root, Err: ErrChanged}
+	}
+	p = root
+	for _, e := range elems {
+		p = filepath.Join(p, e)
+		got, err := dir.Lstat(e)
+		if errors.Is(err, fs.ErrNotExist) {
+			if err = dir.Mkdir(e, perm); err == nil || errors.Is(err, fs.ErrExist) {
+				got, err = dir.Lstat(e)
+			}
+		}
+		if err == nil && (!got.IsDir() || got.Mode()&fs.ModeSymlink != 0) {
+			err = ErrNotDir
+		}
+		var sub *os.Root
+		if err == nil {
+			sub, err = dir.OpenRoot(e)
+		}
+		_ = dir.Close()
+		if err != nil {
+			return nil, &fs.PathError{Op: "MkdirChain", Path: p, Err: unwrapPath(err)}
+		}
+		dir = sub
+		if fi, err = dir.Stat("."); err != nil || !os.SameFile(got, fi) {
+			_ = dir.Close()
+			return nil, &fs.PathError{Op: "MkdirChain", Path: p, Err: ErrChanged}
+		}
+	}
+	_ = dir.Close()
+	return fi, nil
+}
+
+// unwrapPath returns the error a *fs.PathError holds, so it can be
+// reported under the caller's path.
+func unwrapPath(err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
+	}
+	return err
 }

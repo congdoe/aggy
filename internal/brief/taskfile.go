@@ -4,10 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"path/filepath"
 	"strings"
 
-	"github.com/congdoe/aggy/internal/safefs"
+	"github.com/congdoe/aggy/internal/aggydir"
 )
 
 // TaskFile is the task file's path relative to the working dir.
@@ -49,10 +48,10 @@ func TaskTemplate() string {
 }
 
 // ReadTask reads dir's task file. A missing file is "" with no error. The
-// file is read through safefs, at most 16 KiB, and refused when it or its
-// .aggy folder is a symlink (a cloned repo could point either anywhere).
+// file is read under aggy's .aggy rule (internal/aggydir), at most 16 KiB:
+// a symlink at .aggy or at the file is refused, never followed.
 func ReadTask(dir string) (string, error) {
-	b, err := safefs.ReadConfig(filepath.Join(dir, TaskFile), maxTaskBytes)
+	b, err := aggydir.ReadFile(dir, "task.md", maxTaskBytes)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
 	}

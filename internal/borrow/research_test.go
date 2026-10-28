@@ -114,7 +114,7 @@ func TestResearchReportPlaces(t *testing.T) {
 			t.Fatal(err)
 		}
 		res, err := w.borrower().Run(context.Background(), w.req(adapter.News, "x"))
-		if err == nil || !strings.Contains(err.Error(), "not a directory") || len(res) != 1 || res[0].ResearchPath != "" {
+		if err == nil || !strings.Contains(err.Error(), "a symlink") || len(res) != 1 || res[0].ResearchPath != "" {
 			t.Errorf("results %+v, err %v", res, err)
 		}
 		if left, _ := os.ReadDir(elsewhere); len(left) != 0 {

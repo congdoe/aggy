@@ -51,7 +51,7 @@ func (b *Borrower) cachePath(key string) string {
 
 // cacheStore records r as the answer to its question.
 func (b *Borrower) cacheStore(r researchReport) error {
-	if _, err := mkdirNoLinks(b.StateDir, ResearchDir, CacheDir); err != nil {
+	if _, _, err := b.stateSubdir(ResearchDir, CacheDir); err != nil {
 		return err
 	}
 	data, err := json.Marshal(r)
