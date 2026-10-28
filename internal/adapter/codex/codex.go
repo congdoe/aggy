@@ -160,6 +160,11 @@ func (a Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, e
 		return adapter.Command{}, fmt.Errorf("codex: fork: %w", adapter.ErrUnsupported)
 	}
 	var args []string
+	if req.Memory != "" {
+		// -c is global, so it goes before resume (docs/verification.md,
+		// T6619; utils/cli/src/config_override.rs at rust-v0.164.0).
+		args = append(args, "-c", "developer_instructions="+tomlString(req.Memory))
+	}
 	if req.Resume != "" {
 		if err := adapter.ValidSessionID(adapter.Codex, req.Resume); err != nil {
 			return adapter.Command{}, err
@@ -448,3 +453,31 @@ func (Adapter) TranscriptTail(adapter.SessionRef, int) (adapter.Transcript, erro
 // ConfigPatches returns no patches here. Codex's CLAUDE.md fallback (the
 // project_doc_fallback_filenames patch) is built in internal/parity.
 func (Adapter) ConfigPatches(adapter.ConfigContext) ([]patch.Patch, error) { return nil, nil }
+
+// tomlString quotes s as a TOML basic string, for a Codex -c value, which
+// Codex parses as TOML (utils/cli/src/config_override.rs at
+// rust-v0.164.0).
+func tomlString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\u%04X`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}

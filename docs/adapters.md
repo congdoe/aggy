@@ -334,6 +334,18 @@ text nor a live check in `docs/verification.md` records it. Codex gets it
 only when the launch probe finds it in `codex --help` (capability
 `no-alt-screen`); Grok always gets it, from the Grok session notes above.
 
+Shared memory (`<repo>/.aggy/memory.md`, design.md section 10) goes on
+the interactive argv only: Claude `--append-system-prompt-file <file>`
+(live-verified, missing from `--help`), where the file is a private
+temp copy aggy removes after the session; Codex `-c
+developer_instructions="<TOML string>"`, before `resume` because `-c` is
+global, when the probe finds `-c`; Grok `--rules <text>` when the probe
+finds `--rules`. The text is cleaned of terminal escapes and other
+controls and framed as data. A `-c` value replaces Codex's own
+`developer_instructions`, so aggy puts a top-level value from the user
+`config.toml` first; when a profile or `<repo>/.codex/config.toml` sets
+the key, Codex gets no memory and `aggy run` says why.
+
 Artifacts are paths only; copying them is the borrow runner's job, through
 `internal/safefs`. Codex: every `*.png` in
 `$CODEX_HOME/generated_images/<thread-id>/` (else `~/.codex/...`). Grok:

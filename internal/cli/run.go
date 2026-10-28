@@ -18,6 +18,7 @@ import (
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/supervisor"
+	"github.com/congdoe/aggy/internal/termsafe"
 )
 
 // runRun is `aggy run <vendor>`: a new interactive session of that vendor
@@ -51,26 +52,37 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy run: %v\n", err)
 		return 1
 	}
+	// The probe finds the flags whose presence is only known from help:
+	// Codex --no-alt-screen and -c, Grok --rules.
+	var caps []string
+	probed, err := map[adapter.Vendor]adapter.Adapter{adapter.Claude: claude.Adapter{Path: path},
+		adapter.Codex: codex.Adapter{Path: path}, adapter.Grok: grok.Adapter{Path: path}}[v].Probe(context.Background(), execrun.ExecRunner(probeTimeout))
+	if err != nil {
+		fmt.Fprintf(stderr, "aggy run: probing %s: %s; starting it without the flags help must list\n", v, termsafe.Line(err.Error()))
+	} else {
+		caps = probed.Capabilities
+	}
 	var a adapter.Adapter
 	switch v {
 	case adapter.Claude:
-		a = claude.New()
+		a = claude.Adapter{Caps: caps}
 	case adapter.Codex:
-		// --no-alt-screen is unverified for Codex, so it goes on the
-		// command line only when this CLI's help lists it.
-		p, err := codex.Adapter{Path: path}.Probe(context.Background(), execrun.ExecRunner(probeTimeout))
-		if err != nil {
-			fmt.Fprintf(stderr, "aggy run: probing codex: %v; starting it without --no-alt-screen\n", err)
-		}
-		a = codex.Adapter{Caps: p.Capabilities}
+		a = codex.Adapter{Caps: caps}
 	case adapter.Grok:
 		a = grok.New()
 	}
-	cmd, err := a.Interactive(adapter.InteractiveRequest{
+	req := adapter.InteractiveRequest{
 		Cwd:   cwd,
 		Model: cfg.Vendors.For(v).Model,
 		Env:   []string{"AGGY_VENDOR=" + string(v)},
-	})
+	}
+	root, _ := repoRoot(cwd)
+	cleanup, warns := addMemory(v, caps, root, &req)
+	defer cleanup()
+	for _, w := range warns {
+		fmt.Fprintf(stderr, "aggy run: %s\n", termsafe.Line(w))
+	}
+	cmd, err := a.Interactive(req)
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy run: %v\n", err)
 		return 1

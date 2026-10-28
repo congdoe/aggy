@@ -140,6 +140,8 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 			[]string{"--no-alt-screen", "--session-id", sid, adapter.BriefPrompt(brief)}},
 		{"resume", adapter.InteractiveRequest{Resume: sid}, []string{"--no-alt-screen", "--resume", sid}},
 		{"fork", adapter.InteractiveRequest{Resume: sid, Fork: true}, []string{"--no-alt-screen", "--resume", sid, "--fork-session"}},
+		{"memory and a brief", adapter.InteractiveRequest{Memory: "notes, with a comma", BriefFile: brief},
+			[]string{"--no-alt-screen", "--rules", "notes, with a comma", adapter.BriefPrompt(brief)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
