@@ -27,6 +27,9 @@ type RouteRequest struct {
 	// Override is the --vendor the caller named, "" for none. It replaces
 	// the routing list, and the skip rules still apply to it.
 	Override adapter.Vendor
+	// Authors are the vendors the reviewed commits' Aggy-Vendor trailers
+	// name (see Request.Authors).
+	Authors []adapter.Vendor
 	// IgnoreHints asks the router to keep vendors whose only limit is an
 	// unconfirmed hint (see Borrower.Run).
 	IgnoreHints bool

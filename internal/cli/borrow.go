@@ -290,6 +290,7 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 			fmt.Fprintf(stderr, "aggy borrow: review: %s\n", termsafe.Field(err.Error()))
 			return 1
 		}
+		req.Authors = env.reviewAuthors(ctx, req.Repo, req.Material.Base)
 	} else if ba.base != "" {
 		fmt.Fprintln(stderr, "aggy borrow: --base is for review only")
 		return 2
@@ -418,7 +419,7 @@ type borrowRouter struct {
 // too: --vendor never bypasses the parent skip, allowed_vendors, or the
 // connected check.
 func (b borrowRouter) Choose(ctx context.Context, req borrow.RouteRequest) ([]adapter.Vendor, error) {
-	d, err := b.r.Decide(ctx, router.Request{Kind: string(req.Kind), Parent: req.Parent, Repo: req.Repo, Override: req.Override, IgnoreHints: req.IgnoreHints})
+	d, err := b.r.Decide(ctx, router.Request{Kind: string(req.Kind), Parent: req.Parent, Repo: req.Repo, Override: req.Override, Authors: req.Authors, IgnoreHints: req.IgnoreHints})
 	if err != nil {
 		return nil, err
 	}

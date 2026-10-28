@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/borrow"
 	"github.com/congdoe/aggy/internal/execrun"
+	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/safefs"
 )
 
@@ -230,6 +232,34 @@ func (e borrowEnv) diffBase(ctx context.Context, root, base string) (string, err
 		}
 	}
 	return "", errors.New("no default branch (origin/HEAD, main, or master) to diff against; pass --base <ref>")
+}
+
+// maxAuthorCommits caps the commits whose trailers a review reads.
+const maxAuthorCommits = 1000
+
+// reviewAuthors returns the vendors the Aggy-Vendor trailers of the
+// commits in base..HEAD name, in first-seen order. A trailer is anyone's
+// to write, so the result only steers routing; a value that is not a
+// vendor is ignored, and any git failure gives none (the normal route).
+// git runs with gitSafe and without signature checks, so no program from
+// the repo's config runs.
+func (e borrowEnv) reviewAuthors(ctx context.Context, root, base string) []adapter.Vendor {
+	if !validRef(base) {
+		return nil
+	}
+	out, _, err := e.git(ctx, root, "log", "--no-show-signature", fmt.Sprintf("--max-count=%d", maxAuthorCommits),
+		"--format=%(trailers:key="+parity.TrailerVendor+",valueonly)", base+"..HEAD", "--")
+	if err != nil {
+		return nil
+	}
+	var vs []adapter.Vendor
+	for _, l := range strings.Split(out, "\n") {
+		v, err := adapter.ParseVendor(strings.TrimSpace(l))
+		if err == nil && !slices.Contains(vs, v) {
+			vs = append(vs, v)
+		}
+	}
+	return vs
 }
 
 // maxFile caps one --path file read for a review.
