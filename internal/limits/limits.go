@@ -42,6 +42,10 @@ const (
 	// Max caps any reset time: a little over a week, so a weekly window
 	// fits and a bad or hostile value cannot block a vendor for longer.
 	Max = 8 * 24 * time.Hour
+	// Skew is how far past now a row's own time may be and still count.
+	// A row from further ahead was written while the clock ran ahead, and
+	// clamping it from now would hold the vendor on every read (F31-1).
+	Skew = 5 * time.Minute
 )
 
 // Signal is one report of a vendor at its limit.
@@ -106,9 +110,9 @@ type State struct{ Store Reader }
 // Limited reports v limited while a limit event's until is after now. A
 // confirmed signal (rollout, borrow) wins over a hook-only one; among
 // several, the latest until counts. Each until is clamped again, both
-// from the event's own time and from now, so no row (one written while
-// the clock ran ahead included) holds a vendor longer than its source
-// allows.
+// from the event's own time and from now, so no row holds a vendor longer
+// than its source allows, and a row dated more than Skew ahead of now is
+// skipped as stale.
 func (s State) Limited(ctx context.Context, v adapter.Vendor, now time.Time) (router.Limit, bool, error) {
 	sure, err := s.latest(ctx, v, false, now)
 	if err != nil || !sure.IsZero() {
@@ -135,7 +139,7 @@ func (s State) latest(ctx context.Context, v adapter.Vendor, hook bool, now time
 	var out time.Time
 	for _, e := range rows {
 		ms, _ := e.Detail["until"].(float64)
-		if ms <= 0 {
+		if ms <= 0 || e.At.After(now.Add(Skew)) {
 			continue
 		}
 		until := time.UnixMilli(int64(ms))

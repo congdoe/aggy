@@ -90,8 +90,9 @@ func Build(in Input) string {
 	if in.To == adapter.Grok {
 		keep = min(keep, limit-base-turnSlack)
 	}
+	cloned := false // all is the caller's slice until cloned
 	if n := len(all); n > 0 && (first == n || len(all[n-1].Text) > keep) {
-		all = slices.Clone(all)
+		all, cloned = slices.Clone(all), true
 		all[n-1].Text = tail(all[n-1].Text, keep)
 		first = n - 1
 	}
@@ -128,11 +129,17 @@ func Build(in Input) string {
 			dropped++
 			continue
 		}
+		// A text that stops shrinking (cutNote alone, or one tail cannot
+		// cut) ends the loop with the brief as it is (F29-4).
 		n := len(all) - 1
-		if all[n].Text == "" {
+		cut := tail(all[n].Text, len(all[n].Text)/2)
+		if len(cut) >= len(all[n].Text) {
 			return out
 		}
-		all[n].Text = tail(all[n].Text, len(all[n].Text)/2)
+		if !cloned {
+			all, cloned = slices.Clone(all), true
+		}
+		all[n].Text = cut
 		render(n)
 	}
 }

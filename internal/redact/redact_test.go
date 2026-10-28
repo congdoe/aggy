@@ -46,6 +46,8 @@ var linesTests = []struct {
 	{"table key no end", "| a | -----BEGIN RSA PRIVATE KEY----- |\n| the private key | " + body + " |\n| the private key | " + body + " |\nok", "ok", 3},
 	// C16-12: a value on the next line that is code is kept.
 	{"pending code", "const token =\n  generateToken(user)\nnext", "const token =\n  generateToken(user)\nnext", 0},
+	// F29-2: a lone YAML key's value is dropped even when call-shaped.
+	{"pending pair call", "password:\n  Summer(Fun)\nnext", "password:\nnext", 1},
 }
 
 func TestLines(t *testing.T) {
@@ -116,6 +118,21 @@ var secretLines = []string{
 	"api_key = abc(def)ghi123",
 	"export API_TOKEN=generateToken(x)",
 	"key: welcome.message.title", // C16-12 negative row dropped: a YAML pair is redacted (F28-1)
+	// F29-1: NAME=value with no space around "=" is a shell or env
+	// assignment, whatever ends the line; and a header is not a statement.
+	"DB_PASSWORD=CorrectHorseBatteryStaple ./run.sh;",
+	"docker run -e DB_PASSWORD=CorrectHorseBatteryStaple app;",
+	`curl -H "X-Api-Key: CorrectHorseBatteryStaple" https://x;`,
+	`environment: ["A=b", "DB_PASSWORD=CorrectHorseBatteryStaple"],`,
+	// F29-2: a YAML or INI pair is redacted before the call shape is
+	// looked at. The old C16-12 code row "password = hashPassword(raw)" is
+	// such a pair (an INI line reads the same), so it is redacted now.
+	"password: Summer(Fun)",
+	"password: ENC(...)",
+	"password = hashPassword(raw)",
+	// F29-3: Perl's "=>" and a PowerShell variable.
+	"mysql_password => CorrectHorseBatteryStaple,",
+	"$secret_key = CorrectHorseBatteryStaple;",
 	// C16-17: a JSON-escaped key body with no BEGIN or END.
 	`{"k": "x\n` + body + `\n` + body + `\n"}`,
 }
@@ -145,8 +162,12 @@ func TestSecret(t *testing.T) {
 		"<li key={item.id}>",
 		"const token = generateToken(user)",
 		"token: CancellationToken,",
-		"password = hashPassword(raw)",
 		"this.token = session.accessToken;",
+		"const token = generateToken(user);",
+		"password := hashPassword(raw)",
+		"let apiKey = config.apiKey;",
+		"tokens.map(token => token.trim())",
+		"$token = $request->token;",
 		"apiKey := loadKey(cfg)",
 		"login with the password reset link",
 		"data: " + base64.StdEncoding.EncodeToString([]byte("just some ordinary text here")),

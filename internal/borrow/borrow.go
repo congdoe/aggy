@@ -259,7 +259,7 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 		}
 		rr.Override = v
 	}
-	candidates, err := b.Router.Choose(ctx, rr)
+	candidates, hinted, err := b.Router.Choose(ctx, rr)
 	if err != nil {
 		return nil, err
 	}
@@ -269,13 +269,17 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 	// that started and failed is the result. When none could start, the
 	// router is asked once more with IgnoreHints, so a limit only a hook
 	// reported (which any process the CLI starts can send) never leaves a
-	// borrow with no vendor; a confirmed limit still skips.
+	// borrow with no vendor; a confirmed limit still skips. With no vendor
+	// left out for a hint, there is nothing to ask again for (F31-2).
 	var tried []Attempt
 	done := map[adapter.Vendor]bool{}
 	for pass := 0; pass < 2; pass++ {
 		if pass == 1 {
+			if !hinted {
+				break
+			}
 			rr.IgnoreHints = true
-			if candidates, err = b.Router.Choose(ctx, rr); err != nil {
+			if candidates, _, err = b.Router.Choose(ctx, rr); err != nil {
 				break
 			}
 		}
@@ -345,7 +349,7 @@ func (b *Borrower) both(ctx context.Context, req Request) ([]adapter.Vendor, err
 			continue
 		}
 		supported = append(supported, v)
-		vs, err := b.Router.Choose(ctx, RouteRequest{Kind: req.Kind, Parent: req.Parent, Repo: req.Repo, Override: v})
+		vs, _, err := b.Router.Choose(ctx, RouteRequest{Kind: req.Kind, Parent: req.Parent, Repo: req.Repo, Override: v})
 		if err == nil && len(vs) == 1 {
 			ready = append(ready, v)
 		}

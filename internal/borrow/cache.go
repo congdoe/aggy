@@ -92,7 +92,7 @@ func (b *Borrower) cached(ctx context.Context, req Request) (Result, bool, error
 	if req.Vendor != "" {
 		rr.Override = v // req.Vendor == r.Vendor, checked above
 	}
-	if vs, err := b.Router.Choose(ctx, rr); err != nil || len(vs) == 0 || vs[0] != v || b.Config.Vendors.For(v).Model != r.Model {
+	if vs, _, err := b.Router.Choose(ctx, rr); err != nil || len(vs) == 0 || vs[0] != v || b.Config.Vendors.For(v).Model != r.Model {
 		return Result{}, false, nil
 	}
 	p, err := b.placeResearch(req, r)

@@ -45,3 +45,16 @@ func TestHintedVendorRetried(t *testing.T) {
 		})
 	}
 }
+
+// F31-2: with no vendor left out for a hint, a borrow no candidate can
+// start does not ask the router again.
+func TestNoHintNoSecondPass(t *testing.T) {
+	w := newWorld(t)
+	w.version[adapter.Codex] = "unreadable"
+	w.version[adapter.Grok] = "unreadable"
+	_, err := w.borrower().Run(context.Background(), w.req(adapter.Image, "a cat"))
+	var ns *NoStartError
+	if !errors.As(err, &ns) || w.chooses != 1 {
+		t.Fatalf("err = %v, router asked %d times, want 1", err, w.chooses)
+	}
+}
