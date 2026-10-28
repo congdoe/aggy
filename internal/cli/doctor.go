@@ -26,7 +26,8 @@ const doctorUsage = `Usage: aggy doctor [--report]
 
 Checks each vendor CLI (installed, version against the versions aggy was
 tested on, sign-in), API-key and base-URL variables and vendor config
-settings that can bill an API instead of the subscription, and whether
+settings that can bill an API instead of the subscription, whether each
+CLI gets this repo's shared memory and aggy's safety policy, and whether
 config files aggy changed have changed since. It changes nothing.
 
   --report   print a version safe to paste into a public issue: home
@@ -113,10 +114,12 @@ func doctor(ctx context.Context, env checkEnv) doctorResult {
 	res := doctorResult{versions: map[adapter.Vendor]string{}, home: env.home}
 	envFindings := checkup.Environment(env.environ)
 	installed := 0
+	var vrs []checkup.Vendor
 	for _, a := range env.adapters {
 		v := a.Vendor()
 		name := vendorNames[v]
 		vr := checkup.CheckVendor(ctx, a, env.run)
+		vrs = append(vrs, vr)
 		if vr.Installed {
 			installed++
 			res.versions[v] = vr.Version
@@ -139,6 +142,7 @@ func doctor(ctx context.Context, env checkEnv) doctorResult {
 	if len(general) > 0 {
 		res.sections = append(res.sections, doctorSection{title: "General", findings: general})
 	}
+	res.sections = append(res.sections, doctorSection{title: "Parity", findings: parityFindings(env.cwd, vrs)})
 	res.sections = append(res.sections, doctorSection{title: "Config aggy changed", findings: driftFindings(ctx)})
 	return res
 }

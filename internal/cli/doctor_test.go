@@ -367,3 +367,61 @@ func TestDoctorReportSpacedPaths(t *testing.T) {
 		}
 	}
 }
+
+// TestDoctorParity: doctor reports, per CLI, whether it gets the repo's
+// shared memory and the safety policy, and a Codex rules file that is
+// not aggy's, without writing anything or leaking the memory's text.
+func TestDoctorParity(t *testing.T) {
+	fakes := fakecli.Build(t)
+	home := isolate(t)
+	w := newFakeWorld(t, fakes)
+	repo := filepath.Join(home, "repo")
+	mustWrite(t, filepath.Join(repo, ".aggy", "memory.md"), "secret-ish note "+doctorSecret, 0o644)
+	mustWrite(t, filepath.Join(home, ".codex", "config.toml"), "[profiles.p]\ndeveloper_instructions = \"x\"\n", 0o600)
+	mustWrite(t, filepath.Join(home, ".codex", "rules", "aggy.rules"), "# mine\n", 0o600)
+	env := w.env(home, "", false)
+	env.cwd = repo
+	var out bytes.Buffer
+	doctorWith(nil, env, &out, &out)
+	got := out.String()
+	for _, s := range []string{
+		"Parity\n",
+		"info    memory-delivered: Claude Code gets the shared memory at session start",
+		"info    memory-delivered: Grok Build gets the shared memory",
+		"warning memory-not-delivered: Codex does not get the shared memory: a profile or project config sets developer_instructions",
+		"info    policy-applied: Claude Code gets the safety policy",
+		"info    policy-applied: Grok Build gets the safety policy",
+		"warning policy-not-applied: Codex does not get the safety policy: the Codex rules file is not aggy's current policy",
+	} {
+		if !strings.Contains(got, s) {
+			t.Errorf("doctor lacks %q:\n%s", s, got)
+		}
+	}
+	if strings.Contains(got, "DOCTORSECRET") {
+		t.Errorf("doctor printed the memory's text:\n%s", got)
+	}
+	if b, _ := safefs.ReadFile(filepath.Join(home, ".codex", "rules", "aggy.rules")); string(b) != "# mine\n" {
+		t.Error("doctor changed the rules file")
+	}
+
+	// Over the cap, and the rules file missing.
+	mustWrite(t, filepath.Join(repo, ".aggy", "memory.md"), strings.Repeat("x", 5000), 0o644)
+	if err := safefs.Remove(filepath.Join(home, ".codex", "rules", "aggy.rules")); err != nil {
+		t.Fatal(err)
+	}
+	env.identity = &devfix.Identity{Home: home, User: "alice"}
+	out.Reset()
+	doctorWith([]string{"--report"}, env, &out, &out)
+	got = out.String()
+	for _, s := range []string{
+		"warning memory-refused: ~/repo/.aggy/memory.md: the shared memory is over the 4 KB cap",
+		"info policy-not-wired (codex): Codex does not get the safety policy: the Codex rules file is not written; run aggy policy wire",
+	} {
+		if !strings.Contains(got, s) {
+			t.Errorf("report lacks %q:\n%s", s, got)
+		}
+	}
+	if strings.Contains(got, home) {
+		t.Errorf("report holds the home path:\n%s", got)
+	}
+}
