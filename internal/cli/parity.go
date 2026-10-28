@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/checkup"
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
@@ -99,44 +100,135 @@ func codexConfigs(root string) (user, project []byte, err error) {
 	return user, project, err
 }
 
-// policyDelivery says how vendor v takes the safety policy, given its
-// probed capabilities: ok, or why not. Claude and Grok take it per
+// Why the safety policy does not reach a vendor (policyDelivery).
+const (
+	whyNoSettings  = "claude --help does not list --settings"
+	whyNoDeny      = "grok --help does not list --deny"
+	whyRulesMissed = "the Codex rules file is not written; run aggy policy wire"
+	whyRulesOther  = "the Codex rules file is not aggy's current policy; undo it with aggy unwire, then run aggy policy wire"
+	whyRulesError  = "cannot check the Codex rules file"
+)
+
+// policyDelivery says whether vendor v gets the safety policy, given its
+// probed capabilities: "" when it does, else a fixed reason (and the
+// error behind it, which may name a path). Claude and Grok take it per
 // launch; Codex reads its rules file, which aggy policy wire writes.
-func policyDelivery(v adapter.Vendor, caps []string) (bool, string) {
+func policyDelivery(v adapter.Vendor, caps []string) (why string, err error) {
 	switch v {
 	case adapter.Claude:
 		if !slices.Contains(caps, probe.CapSettings) {
-			return false, "claude --help does not list --settings"
+			return whyNoSettings, nil
 		}
 	case adapter.Grok:
 		if !slices.Contains(caps, probe.CapDeny) {
-			return false, "grok --help does not list --deny"
+			return whyNoDeny, nil
 		}
 	case adapter.Codex:
 		path, err := parity.CodexRulesPath()
 		if err != nil {
-			return false, err.Error()
+			return whyRulesError, err
 		}
 		switch st, err := parity.CodexRulesState(path); {
 		case err != nil:
-			return false, err.Error()
+			return whyRulesError, err
 		case st == parity.RulesMissing:
-			return false, "its rules file is not written; run aggy policy wire"
+			return whyRulesMissed, nil
 		case st == parity.RulesOther:
-			return false, "its rules file is not aggy's current policy; see aggy doctor"
+			return whyRulesOther, nil
 		}
 	}
-	return true, ""
+	return "", nil
 }
 
 // addPolicy puts the safety policy on req for vendor v where it goes on
 // the command line, and warns when the vendor will not get it.
 func addPolicy(v adapter.Vendor, caps []string, req *adapter.InteractiveRequest) []string {
-	if ok, why := policyDelivery(v, caps); !ok {
+	if why, err := policyDelivery(v, caps); why != "" {
+		if err != nil {
+			why += ": " + err.Error()
+		}
 		return []string{"safety policy not applied: " + why}
 	}
 	if v != adapter.Codex {
 		req.Deny = parity.DenyRules
 	}
 	return nil
+}
+
+// Finding codes of doctor's parity section.
+const (
+	codeMemoryRefused      = "memory-refused"       // warning: .aggy/memory.md cannot be delivered
+	codeMemoryNone         = "memory-none"          // info: the repo has no shared memory
+	codeMemoryDelivered    = "memory-delivered"     // info
+	codeMemoryNotDelivered = "memory-not-delivered" // warning: this CLI will not get it
+	codePolicyApplied      = "policy-applied"       // info
+	codePolicyNotWired     = "policy-not-wired"     // info: aggy policy wire has not run
+	codePolicyNotApplied   = "policy-not-applied"   // warning: this CLI will not get it
+)
+
+// parityFindings checks what aggy run would give each installed CLI: the
+// repo's shared memory (when cwd is in one) and the safety policy, and
+// whether the Codex rules file still matches. It only reads. Messages are
+// fixed text; a path goes in Path and an error in Detail, which
+// doctor --report leaves out.
+//
+// TODO(T6681): instructions (nothing wires the Codex CLAUDE.md fallback
+// yet), MCP entries, and hooks (M2-2) are not checked.
+func parityFindings(cwd string, vendors []checkup.Vendor) []checkup.Finding {
+	var out []checkup.Finding
+	add := func(code string, l checkup.Level, v adapter.Vendor, path, msg string, err error) {
+		f := checkup.Finding{Code: code, Level: l, Vendor: v, Path: path, Message: msg}
+		if err != nil {
+			f.Detail = err.Error()
+		}
+		out = append(out, f)
+	}
+	memory, root := "", ""
+	if cwd != "" {
+		root, _ = repoRoot(cwd)
+		var err error
+		switch memory, err = parity.LoadMemory(root); {
+		case errors.Is(err, parity.ErrMemoryTooBig):
+			add(codeMemoryRefused, checkup.LevelWarn, "", parity.MemoryPath(root), "the shared memory is over the 4 KB cap, so no CLI gets it", nil)
+		case err != nil:
+			add(codeMemoryRefused, checkup.LevelWarn, "", parity.MemoryPath(root), "the shared memory cannot be read safely, so no CLI gets it", err)
+		case memory == "":
+			add(codeMemoryNone, checkup.LevelInfo, "", "", "this repo has no shared memory (.aggy/memory.md)", nil)
+		}
+	}
+	for _, vr := range vendors {
+		if !vr.Installed {
+			continue
+		}
+		v, name := vr.Vendor, vendorNames[vr.Vendor]
+		if memory != "" {
+			ok, why := memoryDelivery(v, vr.Capabilities)
+			var err error
+			if ok && v == adapter.Codex {
+				var user, project []byte
+				if user, project, err = codexConfigs(root); err == nil {
+					_, err = parity.CodexInstructions(user, project, memory)
+				}
+				ok, why = err == nil, "cannot read its config to keep its own developer_instructions"
+				if errors.Is(err, parity.ErrCodexInstructionsAmbiguous) {
+					why, err = "a profile or project config sets developer_instructions, which aggy will not replace", nil
+				}
+			}
+			if ok {
+				add(codeMemoryDelivered, checkup.LevelInfo, v, "", name+" gets the shared memory at session start", nil)
+			} else {
+				add(codeMemoryNotDelivered, checkup.LevelWarn, v, "", name+" does not get the shared memory: "+why, err)
+			}
+		}
+		why, err := policyDelivery(v, vr.Capabilities)
+		switch why {
+		case "":
+			add(codePolicyApplied, checkup.LevelInfo, v, "", name+" gets the safety policy", nil)
+		case whyRulesMissed:
+			add(codePolicyNotWired, checkup.LevelInfo, v, "", name+" does not get the safety policy: "+why, nil)
+		default:
+			add(codePolicyNotApplied, checkup.LevelWarn, v, "", name+" does not get the safety policy: "+why, err)
+		}
+	}
+	return out
 }
