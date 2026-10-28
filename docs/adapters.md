@@ -374,9 +374,15 @@ developer_instructions="<TOML string>"`, before `resume` because `-c` is
 global, when the probe finds `-c`; Grok `--rules <text>` when the probe
 finds `--rules`. The text is cleaned of terminal escapes and other
 controls and framed as data. A `-c` value replaces Codex's own
-`developer_instructions`, so aggy puts a top-level value from the user
-`config.toml` first; when a profile or `<repo>/.codex/config.toml` sets
-the key, Codex gets no memory and `aggy run` says why.
+`developer_instructions`, so aggy reads every layer Codex puts below
+`-c` (`/etc/codex/config.toml`, `$CODEX_HOME/config.toml`, the profile
+file `$CODEX_HOME/<name>.config.toml` the user config selects, and
+`.codex/config.toml` in each directory from the project root down to
+cwd; `config/src/loader/mod.rs` at `6aaac69`) and puts the system or
+user value first; when a profile or a project layer sets the key, Codex
+gets no memory and `aggy run` says why. Codex's cloud-managed config
+layers are not files aggy can read, so a value set there is replaced
+without notice.
 
 The safety policy (design.md section 10) is per launch for Claude and
 Grok: Claude `--settings '{"permissions":{"deny":[...]}}'` when the probe
