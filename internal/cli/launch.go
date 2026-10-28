@@ -123,7 +123,7 @@ func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t 
 		v, _ := adapter.ParseVendor(p.parent.LastVendor)
 		return p, p.newChildOf(ctx, s, cfg, v, now)
 	case last.Status == stateClosed || last.Status == stateGone:
-		why := "the vendor no longer has it"
+		why := "the vendor has no saved session for it"
 		if last.Status == stateClosed {
 			why = "its directory was removed"
 		}
@@ -304,18 +304,20 @@ type childIDs struct {
 
 // set is sessionIndex.onID. Errors are dropped: a failed write must not
 // disturb the CLI on screen, and an id another child holds stays off
-// this one.
+// this one. A new id is recorded and leased in one update (D23-11), so a
+// concurrent aggy resume never finds it recorded and unleased.
 func (c *childIDs) set(id string) {
 	ctx := context.Background()
-	if err := c.s.SetChildSessionID(ctx, c.child.ID, id); err != nil || c.child.VendorSessionID != "" {
-		return // the launch already leased a known id
+	if c.child.VendorSessionID != "" {
+		_ = c.s.SetChildSessionID(ctx, c.child.ID, id) // the launch already leased it
+		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.done || c.lease != nil {
 		return
 	}
-	if l, err := c.s.AcquireLease(ctx, c.child.Vendor, id); err == nil {
+	if l, err := c.s.SetChildSessionIDLeased(ctx, c.child.ID, id); err == nil {
 		c.lease = l
 	}
 }

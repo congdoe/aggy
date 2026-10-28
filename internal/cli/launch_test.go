@@ -145,13 +145,16 @@ func TestPlan(t *testing.T) {
 					t.Errorf("plan = %+v", p)
 				}
 			},
-			note: "the vendor no longer has it",
+			note: "the vendor has no saved session for it",
 		},
 		{
-			name: "a claude session file aggy cannot find is unknown, and still resumed",
+			name: "a claude session file aggy saw once and cannot find now is unknown, and still resumed",
 			seed: func(t *testing.T, s *store.Store, dir string) {
 				seedParent(t, s, "p0000000-0000-4000-8000-000000000000", dir,
 					store.Child{ID: "c", Vendor: "claude", VendorSessionID: sidA})
+				if err := s.SetChildFileSeen(context.Background(), "c"); err != nil {
+					t.Fatal(err)
+				}
 				if err := os.MkdirAll(filepath.Join(os.Getenv("HOME"), ".claude", "projects", "-x"), 0o700); err != nil {
 					t.Fatal(err)
 				}
@@ -161,6 +164,25 @@ func TestPlan(t *testing.T) {
 					t.Errorf("plan = %+v", p)
 				}
 			},
+		},
+		{
+			// D23-7: started with --session-id and quit before the first
+			// message, so Claude never wrote the file; it must not be
+			// resumed for good.
+			name: "a claude session never saved starts a new one",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "p0000000-0000-4000-8000-000000000000", dir,
+					store.Child{ID: "c", Vendor: "claude", VendorSessionID: sidA})
+				if err := os.MkdirAll(filepath.Join(os.Getenv("HOME"), ".claude", "projects", "-x"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+			check: func(t *testing.T, p launchPlan, dir string) {
+				if !p.newChild || p.child.Vendor != "claude" || p.resume != "" {
+					t.Errorf("plan = %+v", p)
+				}
+			},
+			note: "the vendor has no saved session for it",
 		},
 		{
 			name: "a child whose directory was removed starts a new one",
