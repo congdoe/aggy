@@ -11,7 +11,7 @@ import (
 )
 
 func TestPTYEnv(t *testing.T) {
-	base := []string{"HOME=/h", "TERM=xterm", "ANTHROPIC_BASE_URL=user-set", "AGGY_VENDOR=old"}
+	base := []string{"HOME=/h", "TERM=xterm", "ANTHROPIC_BASE_URL=user-set", "AGGY_VENDOR=old", "AGGY_MODEL=old"}
 	tests := []struct {
 		name    string
 		extra   []string
@@ -20,12 +20,14 @@ func TestPTYEnv(t *testing.T) {
 	}{
 		{"user env kept, AGGY_ replaced", []string{"AGGY_VENDOR=codex"},
 			[]string{"HOME=/h", "TERM=xterm", "ANTHROPIC_BASE_URL=user-set", "AGGY_VENDOR=codex"}, ""},
-		{"no extra", nil, base, ""},
+		{"no extra drops inherited AGGY_VENDOR", nil, base[:3], ""},
+		{"inherited model dropped", []string{"AGGY_VENDOR=grok"},
+			[]string{"HOME=/h", "TERM=xterm", "ANTHROPIC_BASE_URL=user-set", "AGGY_VENDOR=grok"}, ""},
 		{"base url refused", []string{"OPENAI_BASE_URL=x"}, nil, "only AGGY_"},
 		{"api key refused", []string{"ANTHROPIC_API_KEY=x"}, nil, "only AGGY_"},
 		{"lowercase aggy refused", []string{"aggy_x=1"}, nil, "only AGGY_"},
 		{"socket and parent", []string{"AGGY_SOCKET=/s", "AGGY_PARENT=p"},
-			append(append([]string{}, base...), "AGGY_SOCKET=/s", "AGGY_PARENT=p"), ""},
+			append(append([]string{}, base[:3]...), "AGGY_SOCKET=/s", "AGGY_PARENT=p"), ""},
 		{"vendor and model", []string{"AGGY_VENDOR=codex", "AGGY_MODEL=gpt-5"},
 			[]string{"HOME=/h", "TERM=xterm", "ANTHROPIC_BASE_URL=user-set", "AGGY_VENDOR=codex", "AGGY_MODEL=gpt-5"}, ""},
 		{"delegated marker refused", []string{"AGGY_DELEGATED=1"}, nil, "only AGGY_"},

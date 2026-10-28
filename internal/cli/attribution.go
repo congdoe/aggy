@@ -32,6 +32,11 @@ digits, and . _ : -. aggy never replaces a hook: when a commit-msg hook
 exists or core.hooksPath is set, wire refuses (chaining hooks is not
 supported yet). aggy unwire removes it.
 
+wire reads git config with aggy's scrubbed environment, so a
+core.hooksPath set only through XDG_CONFIG_HOME, GIT_CONFIG_GLOBAL, or
+GIT_CONFIG_COUNT/KEY/VALUE is not seen: the hook is then installed but
+git never runs it.
+
   --dry-run   show the change and make none
 `
 
@@ -102,6 +107,9 @@ func runAttribution(args []string, stdout, stderr io.Writer) int {
 // no work tree, and a repo whose config sets core.hooksPath at any scope,
 // since git would then never run a hook there (or would run another
 // one). git runs with gitSafe, so no program from the repo's config runs.
+// It runs with the scrubbed environment, so a core.hooksPath set only
+// through XDG_CONFIG_HOME, GIT_CONFIG_GLOBAL, or GIT_CONFIG_COUNT is not
+// seen; the usage text says so.
 func (e borrowEnv) attributionHookPath(ctx context.Context, cwd string) (string, error) {
 	root, ok := repoRoot(cwd)
 	if !ok {
