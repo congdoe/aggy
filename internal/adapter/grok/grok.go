@@ -334,6 +334,7 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 		}
 		errName, _ = obj["error"].(string)
 		isError, _ = obj["is_error"].(bool)
+		res.Tokens = tokens(obj)
 	}
 	if out.ExitCode == 0 && errName == "" && !isError && parsed {
 		return res, idErr
@@ -352,6 +353,26 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 		return res, fmt.Errorf("grok: %w", adapter.ErrUnparsed)
 	}
 	return res, idErr
+}
+
+// tokens reads a usage object's input_tokens and output_tokens (or its
+// total_tokens), as Claude Code reports them. Grok's usage field is not
+// recorded (unconfirmed): a reply without one counts 0.
+func tokens(obj map[string]any) int64 {
+	u, ok := obj["usage"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	num := func(k string) int64 {
+		if f, ok := u[k].(float64); ok && f > 0 && f < 1e15 {
+			return int64(f)
+		}
+		return 0
+	}
+	if n := num("input_tokens") + num("output_tokens"); n > 0 {
+		return n
+	}
+	return num("total_tokens")
 }
 
 // lockdownErr fails the run closed when Grok refused a lockdown flag, or

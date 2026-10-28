@@ -390,6 +390,16 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	if err := lease.Finish(ctx, end); err != nil {
 		return res, err
 	}
+	// The per-borrow log behind aggy log and, later, aggy stats.
+	if err := b.Store.AppendEvent(ctx, store.Event{
+		At: end.EndedAt, ParentID: parent.ID, ChildID: child.ID, Type: store.EventBorrow,
+		Detail: map[string]any{
+			"borrow": id, "kind": string(req.Kind), "vendor": string(v), "model": model,
+			"tokens": res.Tokens, "ms": res.Elapsed.Milliseconds(), "outcome": res.Outcome,
+		},
+	}); err != nil {
+		return res, err
+	}
 	if rerr != nil {
 		return res, fmt.Errorf("writing the report: %w", rerr)
 	}
