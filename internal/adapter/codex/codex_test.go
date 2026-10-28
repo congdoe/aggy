@@ -29,12 +29,12 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 	h := fakecli.NewHarness(t, fakecli.Build(t))
 	a := New()
 	ref := filepath.Join(h.Cwd, "style.png")
-	lock := []string{"--ignore-user-config", "--sandbox", "read-only",
+	lock := []string{"--strict-config", "--ignore-user-config", "--sandbox", "read-only",
 		"--disable", "shell_tool", "--disable", "unified_exec", "--disable", "view_image",
 		"--disable", "apps", "--disable", "plugins", "--disable", "goals",
 		"--disable", "image_generation", "--disable", "sleep_tool"}
 	// image keeps image generation.
-	imageLock := []string{"--ignore-user-config", "--sandbox", "read-only",
+	imageLock := []string{"--strict-config", "--ignore-user-config", "--sandbox", "read-only",
 		"--disable", "shell_tool", "--disable", "unified_exec", "--disable", "view_image",
 		"--disable", "apps", "--disable", "plugins", "--disable", "goals", "--disable", "sleep_tool"}
 	skip := []string{"--skip-git-repo-check"}

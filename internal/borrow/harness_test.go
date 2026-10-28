@@ -34,6 +34,7 @@ type world struct {
 	cfg       config.Config
 	connected map[adapter.Vendor]bool
 	caps      map[adapter.Vendor][]string
+	version   map[adapter.Vendor]string // "" means the tested version
 	now       time.Time
 }
 
@@ -68,6 +69,7 @@ func newWorld(t *testing.T) *world {
 		cfg:       config.Default(),
 		connected: map[adapter.Vendor]bool{adapter.Claude: true, adapter.Codex: true, adapter.Grok: true},
 		caps:      map[adapter.Vendor][]string{},
+		version:   map[adapter.Vendor]string{},
 		now:       time.Date(2026, 10, 28, 9, 30, 0, 0, time.UTC),
 	}
 }
@@ -101,7 +103,11 @@ func (w *world) borrower() *Borrower {
 		Router:  w.router(),
 		Adapter: testAdapter,
 		Locate: func(_ context.Context, v adapter.Vendor) (CLI, error) {
-			return CLI{Path: w.fakes.For(string(v)), Caps: w.caps[v]}, nil
+			version := w.version[v]
+			if version == "" {
+				version = testAdapter(v, CLI{}).TestedVersions().Max
+			}
+			return CLI{Path: w.fakes.For(string(v)), Version: version, Caps: w.caps[v]}, nil
 		},
 		Connected: func(_ context.Context, v adapter.Vendor) bool { return w.connected[v] },
 		Runner:    w.runner,

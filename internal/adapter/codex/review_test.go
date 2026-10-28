@@ -112,3 +112,41 @@ func TestRefImageCommas(t *testing.T) {
 		t.Errorf("fake -i = %q (exit %d)", rec.Flags["-i"], out.ExitCode)
 	}
 }
+
+// TestStrictConfig (#10-5): a fake Codex that, like the real one,
+// ignores an unknown --disable feature still fails the borrow, because
+// the lockdown passes --strict-config.
+func TestStrictConfig(t *testing.T) {
+	h := fakecli.NewHarness(t, fakecli.Build(t))
+	req := adapter.HeadlessRequest{Kind: adapter.Review, PromptFile: h.Prompt, Cwd: h.Cwd, GitRepo: true}
+	c, err := New().Headless(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(c.Args, "--strict-config") {
+		t.Fatalf("no --strict-config: %q", c.Args)
+	}
+	// A feature this Codex no longer knows, say a renamed shell_tool.
+	renamed := func(args []string) []string {
+		out := slices.Clone(args)
+		for i := range out {
+			if out[i] == "shell_tool" {
+				out[i] = "shell_tool_v1"
+			}
+		}
+		return out
+	}
+	strict := c
+	strict.Args = renamed(c.Args)
+	out, _ := h.Run(t, strict, "")
+	res, err := New().ParseHeadless(req, out)
+	if !errors.Is(err, adapter.ErrLockdownRejected) || res.Error != adapter.ErrLockdown {
+		t.Errorf("strict: %+v, %v (stderr %q)", res, err, out.Stderr)
+	}
+	// Without --strict-config the same run would pass silently.
+	lax := c
+	lax.Args = slices.DeleteFunc(renamed(c.Args), func(a string) bool { return a == "--strict-config" })
+	if out, _ := h.Run(t, lax, ""); out.ExitCode != 0 {
+		t.Errorf("lax run failed: %s", out.Stderr)
+	}
+}

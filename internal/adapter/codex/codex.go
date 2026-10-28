@@ -75,9 +75,12 @@ var (
 // image-view, apps, plugins, goals, image-generation, and sleep tools are
 // off. Without --disable apps --disable plugins, 52 ChatGPT connector
 // tools load even under --ignore-user-config. The image kind keeps
-// image_generation (see lockdown).
+// image_generation (see lockdown). --strict-config (help-verified on
+// codex exec and exec resume) makes an unknown key an error, and --disable
+// <feature> is a key (features.<feature>=false), so a feature a newer
+// Codex renamed fails the borrow instead of silently staying on.
 var Lockdown = []string{
-	"--ignore-user-config", "--sandbox", "read-only",
+	"--strict-config", "--ignore-user-config", "--sandbox", "read-only",
 	"--disable", "shell_tool", "--disable", "unified_exec", "--disable", "view_image",
 	"--disable", "apps", "--disable", "plugins", "--disable", "goals",
 	"--disable", "image_generation", "--disable", "sleep_tool",

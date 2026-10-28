@@ -41,7 +41,8 @@ func (Adapter) Vendor() adapter.Vendor { return adapter.Claude }
 
 // Tested is the Claude Code CLI version range this adapter was tested on: the
 // version the facts in docs/adapters.md were verified with.
-var Tested = adapter.VersionRange{Min: "2.1.311", Max: "2.1.311"}
+// The borrow lockdown was live-verified on 2.1.312.
+var Tested = adapter.VersionRange{Min: "2.1.311", Max: "2.1.312"}
 
 // TestedVersions returns Tested.
 func (Adapter) TestedVersions() adapter.VersionRange { return Tested }
