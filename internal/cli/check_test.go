@@ -42,7 +42,32 @@ func checkRepo(t *testing.T, cfg string, scripts map[string]string) string {
 	return root
 }
 
+// checkTools puts links to the named system tools on a temp dir at the
+// front of PATH: the isolated test PATH holds only git, sh, cat, and
+// touch, and the check commands these tests run need a few more.
+func checkTools(t *testing.T, names ...string) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, n := range names {
+		found := false
+		for _, d := range []string{"/bin", "/usr/bin"} {
+			if fi, err := os.Stat(filepath.Join(d, n)); err == nil && fi.Mode().IsRegular() {
+				if err := os.Symlink(filepath.Join(d, n), filepath.Join(dir, n)); err != nil {
+					t.Fatal(err)
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Skipf("no %s in /bin or /usr/bin", n)
+		}
+	}
+	t.Setenv("PATH", dir+string(filepath.ListSeparator)+os.Getenv("PATH"))
+}
+
 func TestCheck(t *testing.T) {
+	checkTools(t, "true", "sleep", "yes", "head", "env")
 	scripts := map[string]string{
 		"ok.sh":    "echo fine\n",
 		"fail.sh":  "echo first\necho 'token ghp_abcdefghijklmnopqrstuvwxyz0123456789'\nenv\necho last >&2\nexit 3\n",
@@ -117,6 +142,7 @@ func TestCheckProgramStaysInRepo(t *testing.T) {
 // TestCheckInterrupt (H-1): Ctrl-C ends aggy check and kills the running
 // check's process group.
 func TestCheckInterrupt(t *testing.T) {
+	checkTools(t, "sleep")
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	root := checkRepo(t, `check = [["./wait.sh", "`+pidFile+`"]]`, map[string]string{
 		"wait.sh": "echo $$ > \"$1\"\nexec sleep 777\n",
