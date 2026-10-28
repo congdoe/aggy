@@ -429,7 +429,7 @@ own start and end markers (the list Codex itself matches, in
 `transcript.codexMarkers`), and Codex's compaction summary is kept with
 the role `summary`; a Claude user message that starts with `<` and a
 lowercase letter is context, as in Grok's heuristic. A brief takes at most
-the newest 512 KiB of turn text (`brief.MaxTurnBytes`). The vendor home is `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or
+the newest 512 KiB of turn text (`brief.MaxTurnBytes`). A return brief (`brief.Since`) takes only the turns other CLIs' sessions in the parent added after the child was last closed (its last-active time); only Codex turns carry a time aggy reads, so a Claude or Grok session active since then is taken whole, within that cap. The vendor home is `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or
 `GROK_HOME`, else `~/.<vendor>`. No session file has been recorded as a
 fixture yet; the tests use lines in the shapes below. Sources are in
 [verification.md](verification.md#session-file-formats-t6670).
