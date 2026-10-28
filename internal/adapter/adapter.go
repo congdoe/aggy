@@ -144,6 +144,13 @@ type InteractiveRequest struct {
 	BriefFile string
 	// Env holds extra KEY=value entries, such as AGGY_VENDOR and AGGY_MODEL.
 	Env []string
+	// Memory is the text the session gets at start, framed and cleaned
+	// by internal/parity: Codex takes it with -c developer_instructions
+	// and Grok with --rules. Empty means none.
+	Memory string
+	// MemoryFile is an absolute path holding Memory, for Claude's
+	// --append-system-prompt-file. Empty means none.
+	MemoryFile string
 }
 
 // HeadlessRequest asks for one bounded borrow run.

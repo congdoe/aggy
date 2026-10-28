@@ -88,6 +88,11 @@ const (
 	// the settings files a run loads. Documented, but not in a recorded
 	// help: present only when help lists it.
 	CapSettingSources = "setting-sources"
+	// CapRules is grok --rules <text>, which appends text to the system
+	// prompt: the shared memory goes in it. Source- and doc-verified
+	// (docs/verification.md, T6619), not in a recorded help: present
+	// only when help lists it.
+	CapRules = "rules"
 )
 
 // Specs holds the probe spec of each vendor, from the flags recorded in
@@ -121,6 +126,7 @@ var Specs = map[adapter.Vendor]Spec{
 			{CapTools, 0, "--tools", Option},
 			{CapDisallowTools, 0, "--disallowed-tools", Option},
 			{CapMaxTurns, 0, "--max-turns", Option},
+			{CapRules, 0, "--rules", Option},
 		},
 	},
 	adapter.Codex: {

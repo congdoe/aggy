@@ -128,6 +128,14 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		return adapter.Command{}, err
 	}
 	args = append(args, s...)
+	if req.MemoryFile != "" {
+		// Live-confirmed on 2.1.312 although --help omits it
+		// (docs/verification.md, T6619).
+		if err := adapter.CheckAbs("memory file", req.MemoryFile); err != nil {
+			return adapter.Command{}, err
+		}
+		args = append(args, "--append-system-prompt-file", req.MemoryFile)
+	}
 	if req.BriefFile != "" {
 		if err := adapter.CheckAbs("brief file", req.BriefFile); err != nil {
 			return adapter.Command{}, err
