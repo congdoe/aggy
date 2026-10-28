@@ -10,7 +10,7 @@ default = false
 scope = "global"
 unverified = ["version", "homepage", "install", "skill"]
 
-[skill]
+[[skill]]
 vendors = ["claude", "codex", "grok"]
 path = "~/.aggy/skills/caveman"
 

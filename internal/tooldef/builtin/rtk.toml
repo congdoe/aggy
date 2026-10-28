@@ -3,23 +3,29 @@
 # docs/verification.md yet, so every vendor fact below is unverified
 # until T6712 checks it at a pinned version.
 #
-# TODO(T6712): Grok gets a PostToolUse hook on shell output instead of
-# rtk init. RTK's hook command is not known yet, so the [[hook]] part is
-# left out rather than guessed.
+# aggy never runs rtk init: it edits files aggy cannot undo through the
+# manifest. RTK is wired as a declared hook instead: a PreToolUse hook
+# on Claude's Bash tool, which can rewrite the command and so decides.
+# TODO(T6712): confirm RTK's hook command (the argv below is a
+# placeholder), and add Codex and Grok, whose shell tool names are not
+# verified yet (Grok gets a PostToolUse hook on shell output).
 name = "rtk"
 description = "Compresses shell command output before the model sees it; failures stay"
 homepage = "https://github.com/rtk-ai/rtk"
 version = "unpinned" # TODO(T6712): pin the version aggy installs
 default = false
 scope = "global"
-unverified = ["version", "install", "init", "cost"]
+unverified = ["version", "homepage", "install", "hook", "cost"]
 
 [install]
 check = ["rtk", "--version"]
 
-[[init]]
-vendors = ["claude", "codex"]
-argv = ["rtk", "init"]
+[[hook]]
+vendors = ["claude"]
+event = "PreToolUse"
+matcher = "Bash"
+decides = true
+argv = ["rtk", "hook"]
 
 [cost]
-method = "none" # TODO(T6712): measure what rtk init adds to each CLI
+method = "none" # TODO(T6712): measure what the hook adds to each CLI

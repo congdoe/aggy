@@ -7,8 +7,10 @@
 // same validator, which bounds sizes and counts, refuses control and
 // format characters, takes commands only as argv (never a shell string),
 // takes a program only as a bare PATH name or an absolute path, and
-// refuses base-URL, proxy, and secret environment names. Definitions are
-// never read from a repo.
+// refuses base-URL, proxy, and secret environment names. A program is
+// still arbitrary code: the preview on add and the explicit turn-on are
+// the real gate, and the program checks are defence in depth.
+// Definitions are never read from a repo.
 package tooldef
 
 import (
@@ -16,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -43,8 +44,8 @@ type Def struct {
 	When  string `toml:"when"`
 
 	Install Install `toml:"install"`
-	MCP     *MCP    `toml:"mcp"`
-	Skill   *Skill  `toml:"skill"`
+	MCP     []MCP   `toml:"mcp"`
+	Skills  []Skill `toml:"skill"`
 	Hooks   []Hook  `toml:"hook"`
 	Init    []Init  `toml:"init"`
 	Cost    Cost    `toml:"cost"`
@@ -57,52 +58,70 @@ type Def struct {
 	Unverified []string `toml:"unverified"`
 }
 
-// Install says how to find, install, and prepare the tool. Install and
-// Prebuild run only on an explicit aggy tool install, after asking.
+// Install says how to find, install, and prepare the tool. None of it
+// runs while the tool is off: Check runs on an explicit aggy tool
+// install or check, or once the tool is on; Install and Prebuild run
+// only on an explicit aggy tool install, after asking.
 type Install struct {
 	// Check confirms presence and version. It is required unless the
 	// tool is only a skill.
-	Check    []string `toml:"check"`
-	Install  []string `toml:"install"`
-	Prebuild []string `toml:"prebuild"`
+	Check []string `toml:"check"`
+	// CheckPattern finds the version in Check's output: a regular
+	// expression with exactly one capture group.
+	CheckPattern string   `toml:"check_pattern"`
+	Install      []string `toml:"install"`
+	Prebuild     []string `toml:"prebuild"`
 }
 
-// MCP is a stdio MCP server: Argv is the program and its arguments, and
-// Env names the variables passed through from the user's environment.
-// A definition never holds an environment value.
+// MCP is a stdio MCP server for the vendors listed: Argv is the program
+// and its arguments, and Env names the variables passed through from the
+// user's environment. A definition never holds an environment value.
 type MCP struct {
 	Vendors []adapter.Vendor `toml:"vendors"`
 	Argv    []string         `toml:"argv"`
 	Env     []string         `toml:"env"`
 }
 
-// Skill is a skill folder (holding SKILL.md) linked into each vendor's
-// skill folder. Path is absolute or starts with "~/" (the user's home).
+// Skill is a skill folder (holding SKILL.md) linked into each listed
+// vendor's skill folder. Path starts with "~/" (the user's home).
 type Skill struct {
 	Vendors []adapter.Vendor `toml:"vendors"`
 	Path    string           `toml:"path"`
 }
 
-// Hook is a vendor hook: the event it fires on and the command it runs.
+// Hook is a vendor hook: the event it fires on, an optional tool-name
+// matcher and timeout, and the command it runs. Every CLI runs a hook
+// command through a shell, so its words are limited to characters no
+// shell treats specially. Decides must be set, on a built-in only, for
+// an event whose hook can allow or deny an action.
 type Hook struct {
 	Vendors []adapter.Vendor `toml:"vendors"`
 	Event   string           `toml:"event"`
-	Argv    []string         `toml:"argv"`
+	Matcher string           `toml:"matcher"`
+	// Timeout is in seconds; zero means the CLI's default.
+	Timeout int      `toml:"timeout"`
+	Decides bool     `toml:"decides"`
+	Argv    []string `toml:"argv"`
 }
 
-// Init is a vendor-specific setup step, such as a tool's own init
-// command for one CLI.
+// Init is a vendor-specific setup step of a built-in. It declares what
+// it writes and the command that undoes it.
 type Init struct {
 	Vendors []adapter.Vendor `toml:"vendors"`
 	Argv    []string         `toml:"argv"`
+	Undo    []string         `toml:"undo"`
+	// Writes names the files or config keys the step changes.
+	Writes []string `toml:"writes"`
 }
 
 // Cost says how the tool's token cost per vendor is estimated.
 type Cost struct {
 	// Method is "mcp-schema" (the measured MCP tool schemas), "skill-md"
-	// (the size of SKILL.md), "static" (Tokens), or "none".
-	Method string `toml:"method"`
-	Tokens int    `toml:"tokens"`
+	// (the size of SKILL.md), "static" (Tokens, or Vendor per vendor),
+	// or "none".
+	Method string         `toml:"method"`
+	Tokens int            `toml:"tokens"`
+	Vendor map[string]int `toml:"vendor"`
 }
 
 // Parts is what a tool wires into one vendor.
@@ -118,14 +137,19 @@ func (p Parts) Empty() bool {
 	return p.MCP == nil && p.Skill == nil && len(p.Hooks) == 0 && len(p.Init) == 0
 }
 
-// PartsFor returns the parts of d that support vendor v.
+// PartsFor returns the parts of d that support vendor v. A vendor is in
+// at most one [[mcp]] and one [[skill]] entry.
 func (d Def) PartsFor(v adapter.Vendor) Parts {
 	var p Parts
-	if d.MCP != nil && slices.Contains(d.MCP.Vendors, v) {
-		p.MCP = d.MCP
+	for i := range d.MCP {
+		if slices.Contains(d.MCP[i].Vendors, v) {
+			p.MCP = &d.MCP[i]
+		}
 	}
-	if d.Skill != nil && slices.Contains(d.Skill.Vendors, v) {
-		p.Skill = d.Skill
+	for i := range d.Skills {
+		if slices.Contains(d.Skills[i].Vendors, v) {
+			p.Skill = &d.Skills[i]
+		}
 	}
 	for _, h := range d.Hooks {
 		if slices.Contains(h.Vendors, v) {
@@ -173,18 +197,22 @@ const (
 	maxArgs        = 64
 	maxArg         = 4096
 	maxEnv         = 16
+	maxParts       = 4
 	maxHooks       = 8
 	maxInit        = 8
 	maxPath        = 1024
 	maxTokens      = 1_000_000
 	maxListed      = 16
+	maxPattern     = 256
+	maxMatcher     = 128
+	maxTimeout     = 600
 )
 
 var (
-	nameRE    = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
-	versionRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
-	envRE     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
-	eventRE   = regexp.MustCompile(`^[A-Z][A-Za-z]{1,39}$`)
+	nameRE        = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	versionRE     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
+	userVersionRE = regexp.MustCompile(`^[0-9][A-Za-z0-9._+-]{0,63}$`)
+	matcherRE     = regexp.MustCompile(`^[A-Za-z0-9_|.*]+$`)
 )
 
 // Fixed vocabularies.
@@ -194,9 +222,25 @@ var (
 	costs      = []string{"mcp-schema", "skill-md", "static", "none"}
 	lifecycles = []string{"worktree-copy", "gc", "refresh"}
 	topKeys    = []string{"version", "homepage", "install", "mcp", "skill", "hook", "init", "cost"}
-	// shells would turn an argv back into a shell string.
-	shells = []string{"sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh", "busybox", "env"}
 )
+
+// hookEvents are the hook events each CLI has. Claude: code.claude.com
+// docs hooks.md; Codex 0.164.0: codex-rs/config/src/hook_config.rs#L39
+// (docs/verification.md, "Codex hooks"); Grok (grok-build 2bdd1d6a):
+// 10-hooks.md for SessionStart, Stop, StopFailure, StopCancelled, and
+// Notification, and a live check for PreToolUse (verification.md);
+// Grok's PostToolUse is from the aggy proposal and unverified.
+var hookEvents = map[adapter.Vendor][]string{
+	adapter.Claude: {"SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+		"PermissionRequest", "Notification", "Stop", "StopFailure", "SubagentStop", "PreCompact"},
+	adapter.Codex: {"PreModelRequest", "PostModelRequest", "PreToolUse", "PermissionRequest", "PostToolUse",
+		"PreCompact", "PostCompact", "SessionStart", "SessionEnd", "UserPromptSubmit", "SubagentStart",
+		"SubagentStop", "Stop", "Interrupt"},
+	adapter.Grok: {"SessionStart", "Stop", "StopFailure", "StopCancelled", "Notification", "PreToolUse", "PostToolUse"},
+}
+
+// decidingEvents are events whose hook can allow or deny an action.
+var decidingEvents = []string{"PreToolUse", "PermissionRequest"}
 
 // ValidName reports whether name is a well-formed tool name.
 func ValidName(name string) bool { return nameRE.MatchString(name) }
@@ -225,6 +269,15 @@ func Parse(file string, data []byte, builtIn bool) (Def, error) {
 	if err != nil {
 		return Def{}, bad("", "%v", err)
 	}
+	// The decoder matches keys without case, so [MCP] or ARGV would
+	// merge with or override the lower-case key.
+	for _, k := range md.Keys() {
+		for _, part := range k {
+			if part != strings.ToLower(part) {
+				return Def{}, bad(k.String(), "keys are lower case")
+			}
+		}
+	}
 	if und := md.Undecoded(); len(und) > 0 {
 		return Def{}, bad(und[0].String(), "unknown key")
 	}
@@ -238,7 +291,11 @@ func Parse(file string, data []byte, builtIn bool) (Def, error) {
 	return d, nil
 }
 
-func isCtl(r rune) bool { return unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) }
+// isCtl reports a control, format, line-separator, or
+// paragraph-separator character.
+func isCtl(r rune) bool {
+	return unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp)
+}
 
 // validate checks every rule; the error names the first bad key.
 func (d Def) validate(builtIn bool) error {
@@ -261,6 +318,9 @@ func (d Def) validate(builtIn bool) error {
 	if !versionRE.MatchString(d.Version) {
 		return bad("version", "want a pinned version: 1 to 64 of A-Z, a-z, 0-9, and . _ + -")
 	}
+	if !builtIn && !userVersionRE.MatchString(d.Version) {
+		return bad("version", "want a pinned version starting with a digit, not a tag such as latest")
+	}
 	if !builtIn && d.Default {
 		return bad("default", "a user tool is always off by default")
 	}
@@ -270,75 +330,22 @@ func (d Def) validate(builtIn bool) error {
 	if d.When != "" && (d.Scope != "repo" || !slices.Contains(conditions, d.When)) {
 		return bad("when", "only with scope = \"repo\", one of %q", conditions)
 	}
-	if d.MCP == nil && d.Skill == nil && len(d.Hooks) == 0 && len(d.Init) == 0 {
+	if len(d.MCP) == 0 && len(d.Skills) == 0 && len(d.Hooks) == 0 && len(d.Init) == 0 {
 		return bad("mcp", "a tool needs at least one part: mcp, skill, hook, or init")
 	}
-	if d.MCP != nil {
-		if err := vendors("mcp.vendors", d.MCP.Vendors); err != nil {
-			return err
-		}
-		if err := argv("mcp.argv", d.MCP.Argv, true); err != nil {
-			return err
-		}
-		if len(d.MCP.Env) > maxEnv {
-			return bad("mcp.env", "at most %d names", maxEnv)
-		}
-		for i, n := range d.MCP.Env {
-			key := fmt.Sprintf("mcp.env[%d]", i)
-			if !envRE.MatchString(n) {
-				return bad(key, "want a variable name")
-			}
-			if why := forbiddenEnv(n); why != "" {
-				return bad(key, "%s may not be passed: %s", n, why)
-			}
-			if slices.Contains(d.MCP.Env[:i], n) {
-				return bad(key, "%s listed twice", n)
-			}
-		}
-	}
-	if d.Skill != nil {
-		if err := vendors("skill.vendors", d.Skill.Vendors); err != nil {
-			return err
-		}
-		if err := skillPath(d.Skill.Path); err != nil {
-			return err
-		}
-	}
-	if len(d.Hooks) > maxHooks {
-		return bad("hook", "at most %d hooks", maxHooks)
-	}
-	for i, h := range d.Hooks {
-		key := fmt.Sprintf("hook[%d]", i)
-		if err := vendors(key+".vendors", h.Vendors); err != nil {
-			return err
-		}
-		if !eventRE.MatchString(h.Event) {
-			return bad(key+".event", "want a hook event name, such as PostToolUse")
-		}
-		if err := argv(key+".argv", h.Argv, true); err != nil {
-			return err
-		}
-	}
-	if len(d.Init) > maxInit {
-		return bad("init", "at most %d steps", maxInit)
-	}
-	for i, s := range d.Init {
-		key := fmt.Sprintf("init[%d]", i)
-		if err := vendors(key+".vendors", s.Vendors); err != nil {
-			return err
-		}
-		if err := argv(key+".argv", s.Argv, true); err != nil {
-			return err
-		}
-	}
-	skillOnly := d.MCP == nil && len(d.Hooks) == 0 && len(d.Init) == 0
-	if err := argv("install.check", d.Install.Check, !skillOnly); err != nil {
+	if err := d.validateMCP(builtIn); err != nil {
 		return err
 	}
-	if err := argv("install.install", d.Install.Install, false); err != nil {
+	if err := d.validateSkills(builtIn); err != nil {
 		return err
 	}
-	if err := argv("install.prebuild", d.Install.Prebuild, false); err != nil {
+	if err := d.validateHooks(builtIn); err != nil {
+		return err
+	}
+	if err := d.validateInit(builtIn); err != nil {
+		return err
+	}
+	if err := d.validateInstall(); err != nil {
 		return err
 	}
 	if err := d.Cost.validate(d); err != nil {
@@ -353,19 +360,180 @@ func (d Def) validate(builtIn bool) error {
 	return list("unverified", d.Unverified, topKeys)
 }
 
+func (d Def) validateMCP(builtIn bool) error {
+	if len(d.MCP) > maxParts {
+		return &Error{Key: "mcp", Msg: fmt.Sprintf("at most %d entries", maxParts)}
+	}
+	var seen []adapter.Vendor
+	for i, m := range d.MCP {
+		key := fmt.Sprintf("mcp[%d]", i)
+		if err := partVendors(key+".vendors", m.Vendors, &seen); err != nil {
+			return err
+		}
+		if err := argv(key+".argv", m.Argv, true); err != nil {
+			return err
+		}
+		if len(m.Env) > maxEnv {
+			return &Error{Key: key + ".env", Msg: fmt.Sprintf("at most %d names", maxEnv)}
+		}
+		for j, n := range m.Env {
+			ek := fmt.Sprintf("%s.env[%d]", key, j)
+			if why := envRefused(d.Name, n, builtIn); why != "" {
+				return &Error{Key: ek, Msg: why}
+			}
+			if slices.Contains(m.Env[:j], n) {
+				return &Error{Key: ek, Msg: n + " listed twice"}
+			}
+		}
+	}
+	return nil
+}
+
+func (d Def) validateSkills(builtIn bool) error {
+	if len(d.Skills) > maxParts {
+		return &Error{Key: "skill", Msg: fmt.Sprintf("at most %d entries", maxParts)}
+	}
+	var seen []adapter.Vendor
+	for i, s := range d.Skills {
+		key := fmt.Sprintf("skill[%d]", i)
+		if err := partVendors(key+".vendors", s.Vendors, &seen); err != nil {
+			return err
+		}
+		if err := skillPath(key+".path", d.Name, s.Path, builtIn); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d Def) validateHooks(builtIn bool) error {
+	if len(d.Hooks) > maxHooks {
+		return &Error{Key: "hook", Msg: fmt.Sprintf("at most %d hooks", maxHooks)}
+	}
+	for i, h := range d.Hooks {
+		key := fmt.Sprintf("hook[%d]", i)
+		bad := func(sub, f string, a ...any) error {
+			return &Error{Key: key + sub, Msg: fmt.Sprintf(f, a...)}
+		}
+		if err := vendors(key+".vendors", h.Vendors); err != nil {
+			return err
+		}
+		for _, v := range h.Vendors {
+			if !slices.Contains(hookEvents[v], h.Event) {
+				return bad(".event", "%s has no hook event %q; want one of %q", v, h.Event, hookEvents[v])
+			}
+		}
+		deciding := slices.Contains(decidingEvents, h.Event)
+		switch {
+		case deciding && !builtIn:
+			return bad(".event", "a user tool may not hook %s, whose hook can allow or deny an action", h.Event)
+		case deciding && !h.Decides:
+			return bad(".decides", "%s can allow or deny an action: set decides = true to say this hook does", h.Event)
+		case !deciding && h.Decides:
+			return bad(".decides", "only for %q", decidingEvents)
+		}
+		if h.Matcher != "" {
+			if len(h.Matcher) > maxMatcher || !matcherRE.MatchString(h.Matcher) {
+				return bad(".matcher", "want a tool-name pattern of at most %d of A-Z, a-z, 0-9, and _ | . *", maxMatcher)
+			}
+			if _, err := regexp.Compile(h.Matcher); err != nil {
+				return bad(".matcher", "not a valid pattern")
+			}
+		}
+		if h.Timeout < 0 || h.Timeout > maxTimeout {
+			return bad(".timeout", "want 0 (the CLI's default) to %d seconds", maxTimeout)
+		}
+		if err := argv(key+".argv", h.Argv, true); err != nil {
+			return err
+		}
+		if err := shellSafe(key+".argv", h.Argv); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d Def) validateInit(builtIn bool) error {
+	if len(d.Init) > 0 && !builtIn {
+		return &Error{Key: "init", Msg: "only aggy's built-in tools have init steps"}
+	}
+	if len(d.Init) > maxInit {
+		return &Error{Key: "init", Msg: fmt.Sprintf("at most %d steps", maxInit)}
+	}
+	for i, s := range d.Init {
+		key := fmt.Sprintf("init[%d]", i)
+		if err := vendors(key+".vendors", s.Vendors); err != nil {
+			return err
+		}
+		if err := argv(key+".argv", s.Argv, true); err != nil {
+			return err
+		}
+		if err := argv(key+".undo", s.Undo, true); err != nil {
+			return err
+		}
+		if len(s.Writes) == 0 || len(s.Writes) > maxListed {
+			return &Error{Key: key + ".writes", Msg: fmt.Sprintf("name 1 to %d files or config keys the step changes", maxListed)}
+		}
+		for j, w := range s.Writes {
+			if err := text(fmt.Sprintf("%s.writes[%d]", key, j), w, maxPath, true); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (d Def) validateInstall() error {
+	skillOnly := len(d.MCP) == 0 && len(d.Hooks) == 0 && len(d.Init) == 0
+	if err := argv("install.check", d.Install.Check, !skillOnly); err != nil {
+		return err
+	}
+	if p := d.Install.CheckPattern; p != "" {
+		bad := func(m string) error { return &Error{Key: "install.check_pattern", Msg: m} }
+		if len(d.Install.Check) == 0 {
+			return bad("needs install.check")
+		}
+		if err := text("install.check_pattern", p, maxPattern, true); err != nil {
+			return err
+		}
+		re, err := regexp.Compile(p)
+		if err != nil {
+			return bad("not a valid regular expression")
+		}
+		if re.NumSubexp() != 1 {
+			return bad("want exactly one capture group, for the version")
+		}
+	}
+	if err := argv("install.install", d.Install.Install, false); err != nil {
+		return err
+	}
+	return argv("install.prebuild", d.Install.Prebuild, false)
+}
+
 func (c Cost) validate(d Def) error {
 	bad := func(f string, a ...any) error { return &Error{Key: "cost", Msg: fmt.Sprintf(f, a...)} }
+	static := c.Method == "static"
 	switch {
 	case !slices.Contains(costs, c.Method):
 		return bad("method: want one of %q", costs)
 	case c.Tokens < 0 || c.Tokens > maxTokens:
 		return bad("tokens: want 0 to %d", maxTokens)
-	case (c.Method == "static") != (c.Tokens > 0):
-		return bad("tokens: set with method = \"static\" only, and then above zero")
-	case c.Method == "mcp-schema" && d.MCP == nil:
+	case !static && (c.Tokens != 0 || c.Vendor != nil):
+		return bad("tokens and vendor: only with method = \"static\"")
+	case static && c.Tokens == 0 && len(c.Vendor) == 0:
+		return bad("method static needs tokens, or tokens per vendor in [cost.vendor]")
+	case c.Method == "mcp-schema" && len(d.MCP) == 0:
 		return bad("method mcp-schema needs an mcp part")
-	case c.Method == "skill-md" && d.Skill == nil:
+	case c.Method == "skill-md" && len(d.Skills) == 0:
 		return bad("method skill-md needs a skill part")
+	}
+	for v, n := range c.Vendor {
+		if _, err := adapter.ParseVendor(v); err != nil {
+			return &Error{Key: "cost.vendor." + v, Msg: err.Error()}
+		}
+		if n < 1 || n > maxTokens {
+			return &Error{Key: "cost.vendor." + v, Msg: fmt.Sprintf("want 1 to %d tokens", maxTokens)}
+		}
 	}
 	return nil
 }
@@ -416,82 +584,17 @@ func vendors(key string, vs []adapter.Vendor) error {
 	return nil
 }
 
-// argv checks a command: a program and its arguments, run directly. The
-// program is a bare name looked up on PATH or a clean absolute path, and
-// never a shell or env, which would make the arguments a shell string.
-func argv(key string, a []string, required bool) error {
-	bad := func(f string, x ...any) error { return &Error{Key: key, Msg: fmt.Sprintf(f, x...)} }
-	if len(a) == 0 {
-		if required {
-			return bad("want a program and its arguments")
-		}
-		return nil
-	}
-	if len(a) > maxArgs {
-		return bad("at most %d arguments", maxArgs)
-	}
-	for _, s := range a {
-		if len(s) > maxArg {
-			return bad("an argument is over %d bytes", maxArg)
-		}
-		if strings.ContainsFunc(s, isCtl) {
-			return bad("an argument holds a control or format character")
-		}
-	}
-	p := a[0]
-	switch {
-	case p == "" || strings.ContainsFunc(p, unicode.IsSpace):
-		return bad("the program %q must be one word: a command is argv, never a shell string", p)
-	case strings.HasPrefix(p, "/"):
-		if path.Clean(p) != p {
-			return bad("the program %q must be a clean absolute path", p)
-		}
-	case strings.Contains(p, "/") || p == "." || p == "..":
-		return bad("the program %q must be a bare name found on PATH or an absolute path", p)
-	}
-	if slices.Contains(shells, path.Base(p)) {
-		return bad("the program %q is a shell or env, which would run a shell string", p)
-	}
-	return nil
-}
-
-// skillPath accepts a clean absolute path or one under "~/".
-func skillPath(p string) error {
-	bad := func(m string) error { return &Error{Key: "skill.path", Msg: m} }
-	if err := text("skill.path", p, maxPath, true); err != nil {
+// partVendors is vendors, plus each vendor in at most one entry of a
+// part: the MCP server and the skill link are named after the tool.
+func partVendors(key string, vs []adapter.Vendor, seen *[]adapter.Vendor) error {
+	if err := vendors(key, vs); err != nil {
 		return err
 	}
-	rest, home := strings.CutPrefix(p, "~/")
-	switch {
-	case !home && !strings.HasPrefix(p, "/"):
-		return bad("want an absolute path or one starting with ~/")
-	case home && (rest == "" || path.Clean(rest) != rest || rest == ".." || strings.HasPrefix(rest, "../") || strings.HasPrefix(rest, "/")):
-		return bad("want a clean path under ~/")
-	case !home && path.Clean(p) != p:
-		return bad("want a clean absolute path")
+	for i, v := range vs {
+		if slices.Contains(*seen, v) {
+			return &Error{Key: fmt.Sprintf("%s[%d]", key, i), Msg: string(v) + " is in another entry"}
+		}
+		*seen = append(*seen, v)
 	}
 	return nil
-}
-
-// forbiddenEnv says why a variable may not be passed to a tool, or "".
-// aggy never sets or forwards a base URL, a proxy, a secret, or a vendor
-// CLI's own routing settings.
-func forbiddenEnv(n string) string {
-	u := strings.ToUpper(n)
-	switch {
-	case strings.HasSuffix(u, "BASE_URL"):
-		return "a base-URL variable can send traffic to another endpoint"
-	case strings.Contains(u, "PROXY"):
-		return "aggy sets up no proxy"
-	case strings.Contains(u, "API_KEY"), strings.Contains(u, "APIKEY"), strings.HasSuffix(u, "_KEY"),
-		strings.Contains(u, "TOKEN"), strings.Contains(u, "SECRET"), strings.Contains(u, "PASSWORD"),
-		strings.Contains(u, "CREDENTIAL"), strings.Contains(u, "AUTH"):
-		return "it names a key or secret"
-	}
-	for _, p := range []string{"ANTHROPIC_", "OPENAI_", "XAI_", "GROK_", "CODEX_", "CLAUDE_", "AGGY_"} {
-		if strings.HasPrefix(u, p) {
-			return "it is a vendor CLI's or aggy's own setting"
-		}
-	}
-	return ""
 }

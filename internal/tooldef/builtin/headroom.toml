@@ -14,7 +14,7 @@ unverified = ["version", "homepage", "install", "mcp"]
 [install]
 check = ["headroom", "--version"]
 
-[mcp]
+[[mcp]]
 vendors = ["claude", "codex", "grok"]
 argv = ["headroom", "mcp"]
 

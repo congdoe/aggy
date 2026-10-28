@@ -265,57 +265,71 @@ Whether a tool is on is set per vendor and per repo, in aggy's state in `~/.aggy
 
 The CodeGraph index is built lazily the first time CodeGraph is turned on for a repo, then refreshed incrementally. Worktrees do not share it: a worktree gets a copy of the main checkout's index only when a session aggy launches there has CodeGraph on, the copy is refreshed for its branch, and `aggy gc` removes it with the worktree.
 
-**Tool definitions** (T6752, `internal/tooldef`). Every managed tool is described by one definition, and the switchboard works only from definitions. aggy's built-ins (CodeGraph, RTK, Headroom, Context7, Caveman, Playwright) are definitions embedded in aggy, plus a Go lifecycle hook where a tool needs one; a user adds their own as `~/.aggy/tools/<name>.toml`, and a good one can be proposed for the built-in set (CONTRIBUTING). A definition is TOML:
+**Tool definitions** (T6752, `internal/tooldef`). Every managed tool is described by one definition, and the switchboard works only from definitions. aggy's built-ins (CodeGraph, RTK, Headroom, Context7, Caveman, Playwright) are definitions embedded in aggy, plus a Go lifecycle hook where a tool needs one; a user adds their own as `~/.aggy/tools/<name>.toml`, and a good one can be proposed for the built-in set (CONTRIBUTING). A definition is TOML; keys are lower case, and `mcp`, `skill`, `hook`, and `init` are arrays of tables, each entry listing the vendors it supports:
 
 ```toml
 name = "demo"                       # a-z, 0-9, -; the file is <name>.toml
 description = "What the tool does, in one line"
 homepage = "https://example.com/demo"   # optional; https, no user info
-version = "1.4.2"                   # pinned
+version = "1.4.2"                   # pinned; a user tool's starts with a digit
 default = false                     # user tools are always off
 scope = "repo"                      # "global", or "repo"
 when = "has-ui"                     # repo scope only: a condition
 unverified = ["mcp", "install"]     # keys whose vendor facts are not yet in verification.md
 
-[install]                           # nothing here runs unasked
+[install]                           # nothing here runs while the tool is off
 check = ["demo", "--version"]       # presence and version
+check_pattern = 'demo (\d+\.\d+\.\d+)'   # finds the version; exactly one capture group
 install = ["/usr/local/bin/demo-install", "1.4.2"]   # only on aggy tool install, after asking
-prebuild = ["demo", "index"]        # likewise
+prebuild = ["demo", "index", "{repo}"]               # likewise
 
-[mcp]                               # a stdio MCP server
+[[mcp]]                             # a stdio MCP server; a vendor is in one entry at most
 vendors = ["claude", "codex", "grok"]
-argv = ["demo", "serve", "--mcp"]   # the program and its arguments
+argv = ["demo", "serve", "--root", "{repo}"]   # the program and its arguments
 env = ["DEMO_HOME"]                 # names passed through from the environment; never values
 
-[skill]                             # a folder holding SKILL.md, linked per vendor
+[[skill]]                           # a folder holding SKILL.md, linked per vendor
 vendors = ["claude", "grok"]
-path = "~/.aggy/skills/demo"        # absolute, or under ~/
+path = "~/.aggy/skills/demo"        # a user tool's lives here
 
-[[hook]]                            # only for vendors whose hook can do it
+[[hook]]
 vendors = ["grok"]
-event = "PostToolUse"
+event = "PostToolUse"               # from that vendor's event list
+matcher = "run_terminal_cmd"        # optional tool-name pattern
+timeout = 10                        # optional, seconds, at most 600
 argv = ["demo", "hook"]
 
-[[init]]                            # a vendor-specific setup step
-vendors = ["claude", "codex"]
-argv = ["demo", "init"]
-
 [cost]
-method = "mcp-schema"               # mcp-schema, skill-md, static (with tokens = N), or none
+method = "static"                   # mcp-schema, skill-md, static, or none
+tokens = 400                        # static: one estimate for every vendor...
+[cost.vendor]
+grok = 650                          # ...or per vendor
+
+[[init]]                            # built-ins only: a vendor-specific setup step
+vendors = ["claude"]
+argv = ["demo", "init"]
+undo = ["demo", "uninit"]           # required: the command that reverses it
+writes = ["~/.claude/settings.json: hooks.PreToolUse"]   # required: what it changes
 ```
 
-A tool has at least one part (`mcp`, `skill`, `hook`, `init`), and each part lists the vendors it supports; `install.check` is required unless the tool is only a skill. `lifecycle = ["worktree-copy", "gc", "refresh"]` names the Go hooks of a built-in and is refused in a user definition. The registry gives the switchboard each tool, whether it is built-in or user, its source file, and its parts for one vendor.
+A tool has at least one part. `install.check` is required unless the tool is only a skill. `{repo}` is the one placeholder an argument may hold: the repo or worktree the session runs in, filled in at wiring; any other `{` or `}` is refused. `lifecycle = ["worktree-copy", "gc", "refresh"]` names the Go hooks of a built-in. The registry gives the switchboard each tool, whether it is built-in or user, its source file, and its parts for one vendor.
+
+Hook events are checked against each vendor's list: Claude's from its hooks docs; Codex's from `hook_config.rs` (verification.md, "Codex hooks"); Grok's `SessionStart`, `Stop`, `StopFailure`, `StopCancelled`, `Notification`, and a live-checked `PreToolUse`, plus an unverified `PostToolUse`. `PreToolUse` and `PermissionRequest` hooks can allow or deny an action: a user tool may not hook them, and a built-in must say `decides = true`. Every CLI runs a hook command through a shell (Claude `sh -c`, Codex `$SHELL -lc`, Grok inline), so each word of a hook's argv may hold only letters, digits, and `/ . _ + @ -`.
 
 Trust rules. A definition is untrusted input, validated like the `check` list, and a built-in passes the same validator (a test fails otherwise):
 
+- **A program is arbitrary code.** Whatever its name, a tool's program runs with the user's rights once the tool is on. The real gate is the preview on `aggy tool add` and the user turning the tool on; the program checks below are defence in depth against an argv that is really a shell string.
+- **Nothing runs while a tool is off.** No argv of a user tool (check, install, prebuild, MCP server, hook) runs on add, list, or remove. `check` runs on an explicit `aggy tool install` or `aggy tool check`, or once the tool is on; `install` and `prebuild` run only on an explicit `aggy tool install`, after asking.
 - Definitions come only from aggy itself and from `~/.aggy/tools/` (under `$AGGY_HOME` when set), never from a repo or the working directory. A repo's `.aggy/config.toml` can still only turn tools off.
 - A user file must be a regular file, not a symlink, owned by the user, and writable by neither group nor others, in a tools folder that passes the same checks; it is read through `safefs`.
-- At most 64 KB of UTF-8, with no control or format character anywhere, comments included (a TOML escape in a value is refused too); unknown keys are an error; names, versions, text, argument lists (64 arguments of 4 KB), env names (16), hooks (8), and init steps (8) are bounded.
-- Commands are argv only, never a shell string: the program is one word, a bare name found on `PATH` or a clean absolute path, and never a shell or `env`.
-- The env allowlist holds names only and refuses any `*_BASE_URL`, proxy, key, token, secret, password, credential, or auth name, and the vendor CLIs' and aggy's own variables.
+- At most 64 KB of UTF-8, with no control, format, line-separator, or paragraph-separator character anywhere, comments included (a TOML escape in a value is refused too). Unknown keys, and keys not spelled in lower case, are errors. Names, versions, text, argument lists (64 arguments of 4 KB), env names (16), entries per part (4), hooks (8), and init steps (8) are bounded.
+- Commands are argv only, never a shell string: the program is one word, a bare name found on `PATH` or a clean absolute path. Compared without case and without `.exe`, it is never a shell (any `sh`, `bash*`, `zsh*`, `fish`, `pwsh`, `rbash`, ...), `env`, `sudo`, `ssh`, or another runner of a string; a wrapper such as `nice`, `timeout`, `xargs`, or `npx` is checked through to what it runs; and an interpreter (`python`, `node`, `perl`, `osascript`, ...) is never given inline code with `-c`, `-e`, `-E`, `--eval`, or the like.
+- The env allowlist holds names only. A user tool may name only its own variables, starting with its upper-cased name (`DEMO_` for `demo`). Every tool is refused base URLs, proxies, keys, tokens, secrets, passwords, credentials, DSNs, cookies, loader and runtime injection (`LD_*`, `DYLD_*`, `NODE_OPTIONS`, `PYTHON*`, `GIT_*`, ...), and the vendor CLIs', clouds', and aggy's own variables.
+- A user tool's skill lives under `~/.aggy/skills/<name>`. A built-in's is under `~/`, but not in a dot folder (vendor homes, `~/.ssh`) or in `~/.aggy` outside `skills/`. The resolved path is checked again when it is linked (T6708).
+- Init steps, lifecycle hooks, `default = true`, and an unpinned version are for built-ins only, and a release fails on an unpinned built-in (`AGGY_RELEASE=1`).
 - A name may not collide: a user tool never shadows a built-in, and the file must be named after the tool.
 
-An invalid or untrusted file is refused with the file and the key named, and the rest still load. `aggy tool add <file>` validates a file, prints exactly what would run and be wired per vendor, and copies it into `~/.aggy/tools` (mode 0600) only after a yes, or `--yes` without a terminal. `aggy tool remove <name>` deletes a user definition, a refused one included, and refuses a built-in and a tool that is still wired (the wiring check comes with T6708). `aggy tool list` shows each tool's name, built-in or user, default, source file, and description; the cost columns come later. A borrow child cannot add or remove definitions. Every vendor fact in the built-ins is marked unverified until its tool's task checks it.
+An invalid or untrusted file is refused with the file and the key named, and the rest still load. `aggy tool add <file>` validates a file, prints exactly what would run and be wired per vendor, and copies it into `~/.aggy/tools` (mode 0600) only after a yes at a terminal; `--yes` skips the question there and never works without one. `aggy tool remove <name>` deletes a user definition, a refused one included (even one named like a built-in), refuses a built-in and a tool that is still wired (the wiring check comes with T6708), and never deletes through a symlinked or shared tools folder. `aggy tool list` shows each tool's name, built-in or user, default, source file, and description; the cost columns come later. A borrow child cannot add or remove definitions (the PreToolUse guard denies `aggy tool add` and `remove` too). Every vendor fact in the built-ins is marked unverified until its tool's task checks it; RTK is wired as a declared `PreToolUse` hook, never through `rtk init`.
 
 ## 10. Parity
 

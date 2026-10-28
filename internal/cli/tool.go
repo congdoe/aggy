@@ -30,8 +30,10 @@ own in ~/.aggy/tools/<name>.toml. Definitions are never read from a repo.
 
   list     show each tool: name, built-in or user, default, source file
   add      validate a definition, show what it would run and wire per
-           vendor, and copy it into ~/.aggy/tools after you answer y
-           (--yes without a terminal). A user tool starts off.
+           vendor, and copy it into ~/.aggy/tools after you answer y at a
+           terminal (--yes skips the question; it never works without a
+           terminal). A user tool starts off, and none of its commands
+           runs while it is off.
   remove   delete a user definition; refused while the tool is wired
 `
 
@@ -131,7 +133,7 @@ func toolList(stdout, stderr io.Writer) int {
 }
 
 func toolAdd(src string, yes bool, in io.Reader, tty bool, stdout io.Writer) error {
-	if os.Getenv(borrow.Delegated) != "" {
+	if _, ok := os.LookupEnv(borrow.Delegated); ok {
 		return errToolDelegated
 	}
 	src, err := filepath.Abs(src)
@@ -165,11 +167,10 @@ func toolAdd(src string, yes bool, in io.Reader, tty bool, stdout io.Writer) err
 	dir := tooldef.Dir(state)
 	dest := filepath.Join(dir, d.Name+".toml")
 	previewTool(stdout, d, dest)
+	if !tty {
+		return errors.New("not added: adding a tool needs you at a terminal, because its commands run as you once it is on; --yes only skips the question there")
+	}
 	if !yes {
-		if !tty {
-			fmt.Fprintln(stdout, "Not added: run again with --yes, or in a terminal, to add it.")
-			return nil
-		}
 		fmt.Fprintf(stdout, "Add %s? [y/N] ", d.Name)
 		line, _ := bufio.NewReader(io.LimitReader(in, maxAnswer)).ReadString('\n')
 		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
@@ -221,6 +222,9 @@ func previewTool(w io.Writer, d tooldef.Def, dest string) {
 		}
 	}
 	cmd("check", d.Install.Check)
+	if d.Install.CheckPattern != "" {
+		fmt.Fprintf(w, "    version pattern: %s\n", strconv.Quote(d.Install.CheckPattern))
+	}
 	cmd("install", d.Install.Install)
 	cmd("prebuild", d.Install.Prebuild)
 	for _, v := range adapter.Vendors() {
@@ -241,10 +245,24 @@ func previewTool(w io.Writer, d tooldef.Def, dest string) {
 		}
 		for _, h := range p.Hooks {
 			fmt.Fprintf(w, "    %s hook: %s\n", h.Event, quoteArgv(h.Argv))
+			if h.Matcher != "" {
+				fmt.Fprintf(w, "      on tools matching %s\n", h.Matcher)
+			}
+			if h.Timeout > 0 {
+				fmt.Fprintf(w, "      timeout %ds\n", h.Timeout)
+			}
+			if h.Decides {
+				fmt.Fprintln(w, "      can allow or deny the action")
+			}
 		}
 		for _, s := range p.Init {
 			cmd("init step", s.Argv)
+			fmt.Fprintf(w, "      writes: %s\n", termsafe.Field(strings.Join(s.Writes, "; ")))
+			cmd("  undone by", s.Undo)
 		}
+	}
+	if strings.Contains(fmt.Sprint(d.MCP, d.Hooks, d.Init, d.Install), tooldef.Placeholder) {
+		fmt.Fprintf(w, "  %s is the repo or worktree the session runs in\n", tooldef.Placeholder)
 	}
 	if len(d.Unverified) > 0 {
 		fmt.Fprintf(w, "  unverified: %s\n", strings.Join(d.Unverified, ", "))
@@ -261,7 +279,7 @@ func quoteArgv(a []string) string {
 }
 
 func toolRemove(name string, stdout io.Writer) error {
-	if os.Getenv(borrow.Delegated) != "" {
+	if _, ok := os.LookupEnv(borrow.Delegated); ok {
 		return errToolDelegated
 	}
 	if !tooldef.ValidName(name) {
@@ -271,12 +289,25 @@ func toolRemove(name string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	r, _, err := tooldef.Load(state)
-	if err != nil {
-		return err
+	dir := tooldef.Dir(state)
+	dest := filepath.Join(dir, name+".toml")
+	// A refused definition (invalid, or named like a built-in) is
+	// removed too, by its file name; a built-in never is.
+	_, statErr := safefs.Lstat(dest)
+	if errors.Is(statErr, fs.ErrNotExist) {
+		if r, err := tooldef.Builtins(); err == nil {
+			if _, ok := r.Get(name); ok {
+				return fmt.Errorf("%s is a built-in tool and cannot be removed", name)
+			}
+		}
+		return fmt.Errorf("no user tool %s", name)
 	}
-	if t, ok := r.Get(name); ok && t.BuiltIn {
-		return fmt.Errorf("%s is a built-in tool and cannot be removed", name)
+	if statErr != nil {
+		return statErr
+	}
+	// Never delete through a symlinked or shared tools folder.
+	if err := tooldef.CheckDir(dir); err != nil {
+		return err
 	}
 	wired, err := toolWired(name)
 	if err != nil {
@@ -285,14 +316,6 @@ func toolRemove(name string, stdout io.Writer) error {
 	if wired {
 		// TODO(T6753): log tool.remove_wired.
 		return fmt.Errorf("%s is wired into a CLI; turn it off first", name)
-	}
-	// A refused (invalid) definition is removed too, by its file name.
-	dest := filepath.Join(tooldef.Dir(state), name+".toml")
-	if _, err := safefs.Lstat(dest); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("no user tool %s", name)
-		}
-		return err
 	}
 	if err := safefs.Remove(dest); err != nil {
 		return err

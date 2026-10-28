@@ -9,13 +9,13 @@ version = "unpinned" # TODO(T6711): pin the version aggy installs
 default = false
 scope = "repo"
 lifecycle = ["worktree-copy", "gc", "refresh"]
-unverified = ["version", "install", "mcp"]
+unverified = ["version", "homepage", "install", "mcp"]
 
 [install]
 check = ["codegraph", "--version"]
 prebuild = ["codegraph", "init"]
 
-[mcp]
+[[mcp]]
 vendors = ["claude", "codex", "grok"]
 argv = ["codegraph", "serve", "--mcp"]
 
