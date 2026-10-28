@@ -416,7 +416,7 @@ func TestGCAcceptedKept(t *testing.T) {
 	f.env.now = func() time.Time { return time.Now().Add(31 * 24 * time.Hour) }
 	code, out, errOut := gc(f, "--yes")
 	if code != 0 || !strings.Contains(out, "changes made after the accept") || !strings.Contains(out, "new files made after the accept") ||
-		!strings.Contains(out, "has commits past the accepted edit") {
+		!strings.Contains(out, "has commits past the recorded edit") || !strings.Contains(out, "deletes 1 commit(s)") {
 		t.Fatalf("code %d: %s %s", code, out, errOut)
 	}
 	for i, wt := range wts[:3] {
@@ -429,42 +429,80 @@ func TestGCAcceptedKept(t *testing.T) {
 	}
 }
 
-// TestGCLeftoverGone (T6750, GC-6): a removal cut short after the
-// worktree's directory went leaves its git admin entry and branch; the
-// next gc removes both, and a run after that has nothing to do.
+// TestGCLeftoverGone (T6750): a removal cut short after the worktree's
+// directory went leaves its git admin entry and branch.
+//   - plain (GC-6): the next gc removes both, and a run after that has
+//     nothing to remove.
+//   - committed (M61-1): the person checked the branch out in the main
+//     checkout and committed on it; gc drops the admin entry but keeps
+//     the branch and its commit, and says so.
+//   - foreign admin (M61-3): the admin entry's gitdir points at another
+//     worktree and the branch is gone; gc lists nothing and leaves it.
 func TestGCLeftoverGone(t *testing.T) {
-	f, _ := editFixture(t)
-	gitIn(t, f.repo, "checkout", "--", "a.go")
-	id, wt := editBorrow(t, f, map[string]string{"a.go": "package a\n// accepted\n"})
-	if code, _, errOut := accept(f, "", false, id, "--yes"); code != 0 {
-		t.Fatal(errOut)
-	}
-	ctx := context.Background()
-	s, err := store.OpenDefault(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.ClaimWorktreeRemoval(ctx, id, store.WorktreeAccepted, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	_ = s.Close()
-	// The crash: the directory is gone, git's admin entry and the branch
-	// are not.
-	if err := os.RemoveAll(wt); err != nil {
-		t.Fatal(err)
-	}
-	admin := filepath.Join(f.repo, ".git", "worktrees", id)
-	if !exists(t, admin) {
-		t.Fatalf("no admin entry at %s", admin)
-	}
-	code, out, errOut := gc(f, "--yes")
-	if code != 0 || !strings.Contains(out, "cut short") {
-		t.Fatalf("code %d: %s %s", code, out, errOut)
-	}
-	if exists(t, admin) || gitIn(t, f.repo, "branch", "--list", "aggy/edit-"+id) != "" {
-		t.Error("admin entry or branch left")
-	}
-	if _, out, _ := gc(f); !strings.Contains(out, "Nothing to remove.") {
-		t.Errorf("second run: %s", out)
+	for _, tc := range []string{"plain", "committed", "foreign admin"} {
+		t.Run(tc, func(t *testing.T) {
+			f, _ := editFixture(t)
+			gitIn(t, f.repo, "checkout", "--", "a.go")
+			id, wt := editBorrow(t, f, map[string]string{"a.go": "package a\n// accepted\n"})
+			if code, _, errOut := accept(f, "", false, id, "--yes"); code != 0 {
+				t.Fatal(errOut)
+			}
+			ctx := context.Background()
+			s, err := store.OpenDefault(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.ClaimWorktreeRemoval(ctx, id, store.WorktreeAccepted, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			_ = s.Close()
+			// The crash: the directory is gone, git's admin entry and the
+			// branch are not.
+			if err := os.RemoveAll(wt); err != nil {
+				t.Fatal(err)
+			}
+			branch := "aggy/edit-" + id
+			admin := filepath.Join(f.repo, ".git", "worktrees", id)
+			if !exists(t, admin) {
+				t.Fatalf("no admin entry at %s", admin)
+			}
+			switch tc {
+			case "committed":
+				gitIn(t, f.repo, "checkout", "--", ".")
+				gitIn(t, f.repo, "checkout", "-q", "--ignore-other-worktrees", branch)
+				mustWrite(t, filepath.Join(f.repo, "mine.go"), "package a\n", 0o600)
+				gitIn(t, f.repo, "add", "mine.go")
+				gitIn(t, f.repo, "commit", "-q", "-m", "my own work")
+				gitIn(t, f.repo, "checkout", "-q", "-")
+			case "foreign admin":
+				mustWrite(t, filepath.Join(admin, "gitdir"), filepath.Join(t.TempDir(), "other", ".git")+"\n", 0o600)
+				gitIn(t, f.repo, "update-ref", "-d", "refs/heads/"+branch)
+			}
+			code, out, errOut := gc(f, "--yes")
+			if code != 0 {
+				t.Fatalf("code %d: %s %s", code, out, errOut)
+			}
+			hasBranch := gitIn(t, f.repo, "branch", "--list", branch) != ""
+			switch tc {
+			case "plain":
+				if !strings.Contains(out, "cut short") || exists(t, admin) || hasBranch {
+					t.Errorf("admin entry or branch left: %s", out)
+				}
+			case "committed":
+				if !strings.Contains(out, "its branch "+branch+" is kept") || !strings.Contains(out, "kept: its branch "+branch+" has commits") {
+					t.Errorf("not listed as kept: %s", out)
+				}
+				if exists(t, admin) || !hasBranch || !strings.Contains(gitIn(t, f.repo, "log", "--format=%s", branch), "my own work") {
+					t.Errorf("admin entry left, or the branch or its commit lost: %s", out)
+				}
+			case "foreign admin":
+				if !strings.Contains(out, "Nothing to remove.") || !exists(t, admin) {
+					t.Errorf("foreign admin entry listed or removed: %s", out)
+				}
+			}
+			if _, out, _ := gc(f); !strings.Contains(out, "Nothing to remove.") {
+				t.Errorf("second run: %s", out)
+			}
+		})
 	}
 }

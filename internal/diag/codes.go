@@ -131,6 +131,8 @@ var (
 	CodeTreeChanged    = Code{"accept.worktree_changed"}
 	CodeDirty          = Code{"accept.checkout_dirty"}
 	CodeAcceptFailed   = Code{"accept.failed"}
+	CodeStateTempDir   = Code{"accept.state_temp_dir"}
+	CodeAcceptOS       = Code{"accept.unsupported_os"}
 	CodeGateTempDir    = Code{"check.gate_temp_dir"}
 	CodeChecksChanged  = Code{"check.tree_changed"}
 	CodeGateFailed     = Code{"check.gate_failed"}
@@ -203,6 +205,8 @@ var codes = []CodeInfo{
 	{CodeTreeChanged, true, "The worktree changed after the borrow ended (a process the child left behind?).", "Review the worktree by hand."},
 	{CodeDirty, false, "The main checkout has changes in the paths the diff touches.", "Commit or stash them, then accept again."},
 	{CodeAcceptFailed, false, "Another accept error: git failed, or the diff no longer applies.", "The record's msg; git status."},
+	{CodeStateTempDir, true, "aggy's state dir, where accept writes the patch, is under a temp dir an edit child's sandbox may write.", "Set AGGY_HOME to a dir outside temp dirs."},
+	{CodeAcceptOS, false, "aggy accept is not supported on this OS yet.", "Review the worktree and apply its diff by hand."},
 	{CodeGateTempDir, true, "The main checkout is under a temp dir an edit child's sandbox may write, so its check list may be the child's.", "Run edits from a repo outside temp dirs."},
 	{CodeChecksChanged, true, "The checks changed files in the worktree, so it no longer matches the diff the child left.", "Review the worktree by hand."},
 	{CodeGateFailed, false, "Another check gate error.", "The record's msg."},
