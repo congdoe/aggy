@@ -145,7 +145,7 @@ func TestStrictConfig(t *testing.T) {
 	}
 	// R-6: the fake prints the real CLI's message, and that message
 	// alone is classified as a rejected lockdown.
-	const real = "unknown configuration field `features.shell_tool_v1` in -c/--config override"
+	const real = "Error loading config.toml: unknown configuration field `features.shell_tool_v1` in -c/--config override"
 	if got := strings.TrimSpace(string(out.Stderr)); got != real {
 		t.Errorf("stderr %q, want %q", got, real)
 	}
