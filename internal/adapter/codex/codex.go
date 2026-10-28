@@ -106,10 +106,20 @@ func lockdown(k adapter.Kind) []string {
 	return out
 }
 
-// ErrSearchOracle is why research and news are unsupported on Codex: its
-// apply_patch tool cannot be removed, and its answers reveal whether a
-// file exists, so a planted instruction could probe the disk.
-const ErrSearchOracle = "apply_patch cannot be removed and works as a file-guess oracle"
+// Refusal returns the one refusal of research and news on Codex, which
+// the adapter and internal/router both give, or nil for other kinds.
+//
+// TODO(T6638): Codex's apply_patch tool cannot be turned off, and its
+// error text differs for a right and a wrong guess of a line in a file at
+// a known path, so a research child can confirm file contents by guessing
+// (docs/verification.md). Research and news stay refused until that
+// oracle is closed.
+func Refusal(k adapter.Kind) error {
+	if k == adapter.Research || k == adapter.News {
+		return fmt.Errorf("codex: %s: %w until T6638 (its apply_patch tool can confirm guessed file contents)", k, adapter.ErrUnsupported)
+	}
+	return nil
+}
 
 // SandboxEdit is the sandbox of an edit borrow, which writes its own
 // worktree. Unconfirmed: only "read-only" is recorded.
@@ -181,7 +191,7 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 // Image and review get the Lockdown flag set (image keeps image
 // generation); --skip-git-repo-check is added unless GitRepo. Edit runs
 // with --sandbox SandboxEdit (M3). Research and news are ErrUnsupported
-// (ErrSearchOracle; TODO(T6638)), as are video, AllowedTools (no recorded
+// (Refusal; TODO(T6638)), as are video, AllowedTools (no recorded
 // tool allowlist), and a pre-assigned SessionID. MaxTurns is ignored:
 // codex exec has no turn limit. Codex hooks need hash trust and hooks
 // passed with -c do not run untrusted, so GuardCommand is not wired:
@@ -196,10 +206,8 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 	switch {
 	case req.Kind == adapter.Video:
 		return adapter.Command{}, fmt.Errorf("codex: video: %w", adapter.ErrUnsupported)
-	case req.Kind == adapter.Research || req.Kind == adapter.News:
-		// TODO(T6638): support research and news once apply_patch can be
-		// removed or contained.
-		return adapter.Command{}, fmt.Errorf("codex: %s: %w: %s", req.Kind, adapter.ErrUnsupported, ErrSearchOracle)
+	case Refusal(req.Kind) != nil:
+		return adapter.Command{}, Refusal(req.Kind)
 	case req.AllowedTools != nil:
 		return adapter.Command{}, fmt.Errorf("codex: allowed tools: %w (no recorded tool allowlist)", adapter.ErrUnsupported)
 	case req.SessionID != "":

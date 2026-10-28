@@ -6,9 +6,10 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 )
 
-// Router picks the vendors for a borrow, best first. The real router
-// (internal/router, T6627) reads the routing table; this package depends
-// only on the interface, so it never imports it.
+// Router picks the vendors for a borrow, best first, after its skip
+// rules (the parent's vendor, not connected, outside the repo's
+// allowed_vendors, at its limit). internal/cli wires internal/router in;
+// this package depends only on the interface.
 type Router interface {
 	Choose(ctx context.Context, req RouteRequest) ([]adapter.Vendor, error)
 }
@@ -19,10 +20,11 @@ type RouteRequest struct {
 	// Parent is the vendor on screen, which should use its own tools;
 	// "" when unknown.
 	Parent adapter.Vendor
-	// Repo is the directory the borrow was run from.
+	// Repo is the repo root the borrow may see: the git work tree root,
+	// or the directory aggy borrow ran in when it is in none.
 	Repo string
-	// Override is the --vendor the caller named, "" for none. The borrow
-	// runner handles an override itself; a Router may ignore it.
+	// Override is the --vendor the caller named, "" for none. It replaces
+	// the routing list, and the skip rules still apply to it.
 	Override adapter.Vendor
 }
 

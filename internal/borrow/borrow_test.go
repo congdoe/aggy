@@ -131,7 +131,7 @@ func TestRouterSkipsParent(t *testing.T) {
 		t.Errorf("image from grok = %v, %v", vs, err)
 	}
 	w.connected[adapter.Codex] = false
-	if _, err := w.borrower().Run(context.Background(), Request{Kind: adapter.Image, Task: "x", Repo: w.repo, Parent: adapter.Grok}); err == nil || !strings.Contains(err.Error(), "no connected vendor") {
+	if _, err := w.borrower().Run(context.Background(), Request{Kind: adapter.Image, Task: "x", Repo: w.repo, Parent: adapter.Grok}); err == nil || !strings.Contains(err.Error(), "no vendor available") {
 		t.Errorf("no vendor: %v", err)
 	}
 }

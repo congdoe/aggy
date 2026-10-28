@@ -76,14 +76,6 @@ type Deps struct {
 	// Locate finds v's CLI and its capabilities, or fails when it is not
 	// installed.
 	Locate func(ctx context.Context, v adapter.Vendor) (CLI, error)
-	// Connected reports whether v may take borrows: installed and not
-	// known to be signed out.
-	Connected func(ctx context.Context, v adapter.Vendor) bool
-	// Allowed reports whether the repo may be sent to v (allowed_vendors).
-	// Nil allows every vendor.
-	//
-	// TODO(T6627): the router applies it once batch 5b merges.
-	Allowed func(v adapter.Vendor) bool
 	// Runner returns the process runner for one child, which kills the
 	// child's whole process group past timeout and then returns an error
 	// matching ErrTimeout.
@@ -133,6 +125,8 @@ type Result struct {
 	Tokens     int64
 	Elapsed    time.Duration
 	ReportPath string
+	// Tried are the candidates passed over before Vendor, and why.
+	Tried []Attempt
 }
 
 // Borrower runs borrows.
@@ -204,81 +198,109 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 	if err := req.validate(); err != nil {
 		return nil, err
 	}
-	vendors, err := b.vendors(ctx, req)
+	if req.Vendor == Both {
+		vs, err := b.both(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		var out []Result
+		for _, v := range vs {
+			res, err := b.runOne(ctx, req, v)
+			if err != nil {
+				return out, err
+			}
+			out = append(out, res)
+		}
+		return out, nil
+	}
+	rr := RouteRequest{Kind: req.Kind, Parent: req.Parent, Repo: req.Repo}
+	if req.Vendor != "" {
+		v, err := adapter.ParseVendor(req.Vendor)
+		if err != nil {
+			return nil, fmt.Errorf("--vendor: %w (or %q for research)", err, Both)
+		}
+		rr.Override = v
+	}
+	candidates, err := b.Router.Choose(ctx, rr)
 	if err != nil {
 		return nil, err
 	}
-	var out []Result
-	for _, v := range vendors {
+	// Try the candidates in order. A vendor that cannot start this borrow
+	// (its CLI is missing, its adapter refuses the kind, or the lockdown
+	// was not verified on its version) is skipped for the next; a run
+	// that started and failed is the result.
+	var tried []Attempt
+	for _, v := range candidates {
 		res, err := b.runOne(ctx, req, v)
-		if err != nil {
-			return out, err
+		var pre *preStartError
+		if errors.As(err, &pre) {
+			tried = append(tried, Attempt{Vendor: v, Reason: pre.Error()})
+			continue
 		}
-		out = append(out, res)
+		res.Tried = tried
+		if err != nil {
+			return []Result{res}, err
+		}
+		return []Result{res}, nil
 	}
-	return out, nil
+	return nil, &NoStartError{Kind: req.Kind, Tried: tried}
 }
 
 // Both is the --vendor value that asks two vendors (research only).
 const Both = "both"
 
-// vendors returns the vendors to run req on: the router's first choice;
-// or, with --vendor, the named vendor, which bypasses routing but must
-// still be connected and support the kind; or, with --vendor both, every
-// connected vendor that supports research, which must be at least two.
-func (b *Borrower) vendors(ctx context.Context, req Request) ([]adapter.Vendor, error) {
-	switch req.Vendor {
-	case "":
-	case Both:
-		return b.both(ctx, req.Kind)
-	default:
-		v, err := adapter.ParseVendor(req.Vendor)
-		if err != nil {
-			return nil, fmt.Errorf("--vendor: %w (or %q for research)", err, Both)
-		}
-		if !b.allowed(v) {
-			return nil, fmt.Errorf("%s is not allowed for this repo (allowed_vendors in .aggy/config.toml)", v)
-		}
-		if !b.Connected(ctx, v) {
-			return nil, fmt.Errorf("%s is not connected: install it and run aggy setup", v)
-		}
-		if err := Supports(b.Adapter(v, CLI{}), req.Kind); err != nil {
-			return nil, fmt.Errorf("%s cannot take a %s borrow: %w", v, req.Kind, err)
-		}
-		return []adapter.Vendor{v}, nil
-	}
-	vs, err := b.Router.Choose(ctx, RouteRequest{Kind: req.Kind, Parent: req.Parent, Repo: req.Repo})
-	if err != nil {
-		return nil, err
-	}
-	if len(vs) == 0 {
-		return nil, fmt.Errorf("no connected vendor can take a %s borrow (run aggy setup)", req.Kind)
-	}
-	return vs[:1], nil
+// Attempt is a vendor tried before the one that ran, and why it could
+// not start the borrow.
+type Attempt struct {
+	Vendor adapter.Vendor
+	Reason string
 }
 
-func (b *Borrower) allowed(v adapter.Vendor) bool { return b.Allowed == nil || b.Allowed(v) }
+// NoStartError says that no candidate could start the borrow, and why
+// each was passed over.
+type NoStartError struct {
+	Kind  adapter.Kind
+	Tried []Attempt
+}
 
-// both returns the two or more vendors --vendor both runs on.
-func (b *Borrower) both(ctx context.Context, k adapter.Kind) ([]adapter.Vendor, error) {
-	if k != adapter.Research {
+func (e *NoStartError) Error() string {
+	parts := make([]string, len(e.Tried))
+	for i, a := range e.Tried {
+		parts[i] = a.Reason
+	}
+	return fmt.Sprintf("no vendor could start the %s borrow: %s", e.Kind, strings.Join(parts, "; "))
+}
+
+// preStartError is a vendor's refusal before anything ran or was
+// recorded: the next candidate may try.
+type preStartError struct{ err error }
+
+func (e *preStartError) Error() string { return e.err.Error() }
+func (e *preStartError) Unwrap() error { return e.err }
+
+// both returns the vendors --vendor both runs on: every vendor the
+// router accepts as an override (parent, connected, allowed_vendors)
+// whose adapter supports research. There must be two.
+func (b *Borrower) both(ctx context.Context, req Request) ([]adapter.Vendor, error) {
+	if req.Kind != adapter.Research {
 		return nil, fmt.Errorf("--vendor %s is for research only", Both)
 	}
 	var supported, ready []adapter.Vendor
 	for _, v := range adapter.Vendors() {
-		if Supports(b.Adapter(v, CLI{}), k) != nil {
+		if Supports(b.Adapter(v, CLI{}), req.Kind) != nil {
 			continue
 		}
 		supported = append(supported, v)
-		if b.allowed(v) && b.Connected(ctx, v) {
+		vs, err := b.Router.Choose(ctx, RouteRequest{Kind: req.Kind, Parent: req.Parent, Repo: req.Repo, Override: v})
+		if err == nil && len(vs) == 1 {
 			ready = append(ready, v)
 		}
 	}
 	switch {
 	case len(supported) < 2:
-		return nil, fmt.Errorf("--vendor %s: only one vendor supports %s right now (%s)", Both, k, names(supported))
+		return nil, fmt.Errorf("--vendor %s: only one vendor supports %s right now (%s)", Both, req.Kind, names(supported))
 	case len(ready) < 2:
-		return nil, fmt.Errorf("--vendor %s: %s needs two connected, allowed vendors, and only %s is", Both, k, names(ready))
+		return nil, fmt.Errorf("--vendor %s: %s needs two vendors the router accepts, and only %s is", Both, req.Kind, names(ready))
 	}
 	return ready, nil
 }
@@ -315,14 +337,18 @@ func title(task string) string {
 func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (Result, error) {
 	cli, err := b.Locate(ctx, v)
 	if err != nil {
-		return Result{}, fmt.Errorf("%s: %w", v, err)
+		return Result{}, &preStartError{fmt.Errorf("%s: %w", v, err)}
 	}
 	a := b.Adapter(v, cli)
+	// The adapter may refuse the kind (ErrUnsupported).
+	if err := Supports(a, req.Kind); err != nil {
+		return Result{}, &preStartError{err}
+	}
 	// The lockdown flags were verified on the tested versions only: a
 	// newer CLI may take them differently, so it needs the caller's
 	// say-so.
 	if w := adapter.VersionWarning(a, cli.Version); w != "" && !req.AllowUntested {
-		return Result{}, fmt.Errorf("%s; the borrow lockdown was verified only there, so aggy will not borrow on it (pass --allow-untested to run it anyway)", w)
+		return Result{}, &preStartError{fmt.Errorf("%s; the borrow lockdown was verified only there, so aggy will not borrow on it (pass --allow-untested to run it anyway)", w)}
 	}
 	budget := b.Config.Budgets.For(req.Kind)
 	model := b.Config.Vendors.For(v).Model
