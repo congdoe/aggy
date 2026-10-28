@@ -50,29 +50,31 @@ func kinfo(pid int) (*unix.KinfoProc, error) {
 	return k, nil
 }
 
-// parentPIDOf reads pid's parent.
-func parentPIDOf(pid int) (int, error) {
+// procInfoOf reads pid's parent and start time (p_starttime, in ns).
+func procInfoOf(pid int) (ppid int, start int64, err error) {
 	k, err := kinfo(pid)
 	if err != nil {
-		return -1, err
+		return -1, 0, err
 	}
-	return int(k.Eproc.Ppid), nil
+	return int(k.Eproc.Ppid), k.Proc.P_starttime.Nano(), nil
 }
 
 // peerInstanceOf pins the process at pid by its start time, read now (at
 // accept): same reports whether pid still names that process, so a pid
 // reused later, by any process, does not count.
 //
-// shortcut: darwin has no pidfd, and its audit token (LOCAL_PEERTOKEN)
-// needs a raw getsockopt aggy has no call for; a pid freed and reused
-// between the peer's connect and this read (microseconds) is not caught.
+// shortcut: a pid freed and reused between the peer's connect and this
+// read is not caught (G38-8). The gap is normally microseconds, but has
+// no bound: a process of the user's can SIGSTOP aggy, which --direct does
+// not show. darwin has no pidfd. Its audit token (LOCAL_PEERTOKEN) holds
+// the peer's pidversion and can be read without unsafe (a 32-byte
+// getsockopt), but nothing aggy may call reads a live pid's pidversion
+// to compare it with (proc_pidinfo is libproc, cgo). Upgrade when x/sys
+// gains one. The lineage is a hint either way (T6664).
 func peerInstanceOf(_ *net.UnixConn, pid int) (same func() bool, release func(), err error) {
 	start := func() (int64, error) {
-		k, err := kinfo(pid)
-		if err != nil {
-			return 0, err
-		}
-		return k.Proc.P_starttime.Nano(), nil
+		_, st, err := procInfoOf(pid)
+		return st, err
 	}
 	t0, err := start()
 	if err != nil {

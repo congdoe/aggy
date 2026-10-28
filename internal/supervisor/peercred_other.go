@@ -13,9 +13,9 @@ func peerCredOf(*net.UnixConn) (uid, pid int, err error) {
 	return -1, -1, errors.New("supervisor: peer credentials are not supported on this OS")
 }
 
-// parentPIDOf fails closed: no peer is in the lineage.
-func parentPIDOf(int) (int, error) {
-	return -1, errors.New("supervisor: process parents are not supported on this OS")
+// procInfoOf fails closed: no peer is in the lineage.
+func procInfoOf(int) (ppid int, start int64, err error) {
+	return -1, 0, errors.New("supervisor: process parents are not supported on this OS")
 }
 
 // peerInstanceOf fails closed: no peer is in the lineage.

@@ -478,27 +478,38 @@ func TestPidReuseAfterAccept(t *testing.T) {
 	}
 }
 
-func TestParentPIDOfRealProcess(t *testing.T) {
-	got, err := parentPIDOf(os.Getpid())
+func TestProcInfoOfRealProcess(t *testing.T) {
+	got, start, err := procInfoOf(os.Getpid())
 	if err != nil || got != os.Getppid() {
-		t.Errorf("parentPIDOf(self) = %d, %v; want %d", got, err, os.Getppid())
+		t.Errorf("procInfoOf(self) = %d, %v; want %d", got, err, os.Getppid())
 	}
-	if _, err := parentPIDOf(1 << 30); err == nil {
-		t.Error("parentPIDOf of a pid that does not exist did not fail")
+	// A parent cannot start after its child (G38-9).
+	if _, pstart, err := procInfoOf(os.Getppid()); err != nil || pstart > start {
+		t.Errorf("parent start %d, child start %d, %v", pstart, start, err)
+	}
+	if _, _, err := procInfoOf(1 << 30); err == nil {
+		t.Error("procInfoOf of a pid that does not exist did not fail")
 	}
 }
 
 func TestDescends(t *testing.T) {
-	// 10 <- 11 <- 12; 20 is elsewhere; 30 loops; 40 fails.
-	parents := map[int]int{11: 10, 12: 11, 10: 1, 20: 1, 30: 31, 31: 30}
-	old := parentPID
-	parentPID = func(p int) (int, error) {
-		if pp, ok := parents[p]; ok {
-			return pp, nil
-		}
-		return -1, os.ErrNotExist
+	// 10 <- 11 <- 12; 20 is elsewhere; 30 loops; 40 fails. 51's parent
+	// 50 started after it: 50 was freed and reused mid-walk (G38-9), as
+	// was 61's grandparent 60.
+	type proc struct {
+		ppid  int
+		start int64
 	}
-	t.Cleanup(func() { parentPID = old })
+	procs := map[int]proc{10: {1, 100}, 11: {10, 110}, 12: {11, 120}, 20: {1, 5}, 30: {31, 300}, 31: {30, 300},
+		50: {1, 600}, 51: {50, 510}, 60: {1, 700}, 61: {62, 610}, 62: {60, 620}, 70: {71, 700}, 71: {1, 700}}
+	old := procInfo
+	procInfo = func(p int) (int, int64, error) {
+		if pr, ok := procs[p]; ok {
+			return pr.ppid, pr.start, nil
+		}
+		return -1, 0, os.ErrNotExist
+	}
+	t.Cleanup(func() { procInfo = old })
 	tests := []struct {
 		name      string
 		pid, root int
@@ -512,6 +523,9 @@ func TestDescends(t *testing.T) {
 		{"lookup fails", 40, 10, false},
 		{"no pid", 0, 10, false},
 		{"no root", 12, 0, false},
+		{"parent reused, newer than its child", 51, 50, false},
+		{"grandparent reused", 61, 60, false},
+		{"parent started in the same tick", 70, 71, true},
 	}
 	for _, tt := range tests {
 		if got := descends(tt.pid, tt.root); got != tt.want {
@@ -592,5 +606,90 @@ func TestPidfdFallback(t *testing.T) {
 		if got := pidfdFallback(tt.err); got != tt.want {
 			t.Errorf("pidfdFallback(%v) = %v", tt.err, got)
 		}
+	}
+}
+
+// envPeerSock names the socket TestHelperPeer connects to; envPeerWait
+// makes it wait for the answer before it exits.
+const (
+	envPeerSock = "AGGY_TEST_PEER_SOCK"
+	envPeerWait = "AGGY_TEST_PEER_WAIT"
+)
+
+// TestHelperPeer is not a test: TestRealChildPeer runs it as a child
+// process, which sends one hook event and exits.
+func TestHelperPeer(t *testing.T) {
+	sock := os.Getenv(envPeerSock)
+	if sock == "" {
+		t.Skip("helper process for TestRealChildPeer")
+	}
+	c, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Write([]byte(`{"type":"hook-event","vendor":"claude","event":"Stop","payload":{}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv(envPeerWait) != "" {
+		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+		_, _ = bufio.NewReader(c).ReadString('\n')
+	}
+}
+
+// TestRealChildPeer (G38-11): a real child of the CLI (this test) that
+// connects and has exited, and been reaped, by the time the server pins
+// it is not from the session, with the real peerInstanceOf: on darwin the
+// pid has no process left, and on Linux the pidfd call fails (EINVAL on
+// 6.5 to 6.14) or the pidfd shows the process gone. A child that waits
+// for its answer is from the session, so the check is not vacuous.
+func TestRealChildPeer(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		wait bool
+	}{{"exits before the check", false}, {"alive during the check", true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			exited := make(chan struct{})
+			pinned := make(chan error, 1)
+			old := peerInstance
+			peerInstance = func(c *net.UnixConn, pid int) (func() bool, func(), error) {
+				if !tt.wait {
+					<-exited
+				}
+				same, release, err := peerInstanceOf(c, pid)
+				if err == nil && !same() {
+					err = errors.New("pinned process is gone")
+				}
+				pinned <- err
+				return same, release, err
+			}
+			t.Cleanup(func() { peerInstance = old })
+			got := make(chan Request, 1)
+			s, err := Listen(filepath.Join(shortDir(t), "run"), pid, nil, func(r Request) { got <- r })
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+			s.SetRoot(os.Getpid())
+			cmd := exec.Command(os.Args[0], "-test.run=^TestHelperPeer$")
+			cmd.Env = append(os.Environ(), envPeerSock+"="+s.Path())
+			if tt.wait {
+				cmd.Env = append(cmd.Env, envPeerWait+"=1")
+			}
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("helper: %v\n%s", err, out)
+			}
+			close(exited) // Wait has reaped it
+			select {
+			case r := <-got:
+				if r.FromSession != tt.wait {
+					t.Errorf("FromSession = %v, want %v", r.FromSession, tt.wait)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("no hook event reached the server")
+			}
+			if err := <-pinned; (err == nil) != tt.wait {
+				t.Errorf("peerInstanceOf: %v, want an identity only for a live peer", err)
+			}
+		})
 	}
 }
