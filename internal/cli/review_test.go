@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -160,6 +161,46 @@ func TestBorrowReviewCommand(t *testing.T) {
 		if !strings.Contains(child.Stdin, s) {
 			t.Errorf("prompt lacks %q", s)
 		}
+	}
+}
+
+// TestReviewAuthorsOnlyForNotAuthor (T6779): aggy borrow review reads the
+// Aggy-Vendor trailers (git log) only when the review route is
+// "not-author"; the default route and an explicit list never run it.
+func TestReviewAuthorsOnlyForNotAuthor(t *testing.T) {
+	tests := []struct {
+		name    string
+		userCfg string
+		wantLog bool
+	}{
+		{"default route", "", false},
+		{"explicit list", "[routing]\nreview = [\"codex\"]\n", false},
+		{"on-screen skip", "[routing]\nreview_skip_on_screen = true\n", false},
+		{"not-author", "[routing]\nreview = \"not-author\"\n", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newBorrowFixture(t, adapter.Codex)
+			gitRepo(t, f.repo)
+			if tt.userCfg != "" {
+				mustWrite(t, filepath.Join(f.state, "config.toml"), tt.userCfg, 0o600)
+			}
+			var calls []string
+			run := execrun.ExecRunner(gitTimeout)
+			f.env.gitPath = func() (string, error) { return probe.LookPath("git") }
+			f.env.gitRun = func(ctx context.Context, c adapter.Command) (adapter.Output, error) {
+				calls = append(calls, strings.Join(c.Args, " "))
+				return run(ctx, c)
+			}
+			f.scenario["codex"] = `{"events":[{"type":"item.completed","item":{"type":"agent_message","text":"LGTM"}}]}`
+			if code, out, errOut := f.run(t, "review", "review the change"); code != 0 {
+				t.Fatalf("code %d: %s %s", code, out, errOut)
+			}
+			got := slices.ContainsFunc(calls, func(a string) bool { return strings.Contains(a, " log --no-show-signature") })
+			if got != tt.wantLog {
+				t.Errorf("trailer read ran = %v, want %v (calls %q)", got, tt.wantLog, calls)
+			}
+		})
 	}
 }
 

@@ -50,6 +50,7 @@ func TestGrokTrustGate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			w := newWorld(t)
+			w.cfg.Routing.Review.Vendors = []adapter.Vendor{adapter.Grok, adapter.Claude} // grok before claude (T6779 put claude first)
 			for _, v := range adapter.Vendors() {
 				w.connected[v] = v == adapter.Grok || v == adapter.Claude
 			}
@@ -98,6 +99,7 @@ func TestGrokTrustGate(t *testing.T) {
 // hook still refuses it, and the reason names the hook alone.
 func TestGrokReviewWithInstructions(t *testing.T) {
 	w := newWorld(t)
+	w.cfg.Routing.Review.Vendors = []adapter.Vendor{adapter.Grok, adapter.Claude} // grok before claude (T6779 put claude first)
 	for _, v := range adapter.Vendors() {
 		w.connected[v] = v == adapter.Grok || v == adapter.Claude
 	}
@@ -166,6 +168,7 @@ func TestGrokInstructionLinks(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			w := newWorld(t)
+			w.cfg.Routing.Review.Vendors = []adapter.Vendor{adapter.Grok, adapter.Claude} // grok before claude (T6779 put claude first)
 			for _, v := range adapter.Vendors() {
 				w.connected[v] = v == adapter.Grok || v == adapter.Claude
 			}

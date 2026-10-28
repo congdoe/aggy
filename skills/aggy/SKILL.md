@@ -1,6 +1,6 @@
 ---
 name: aggy
-description: Borrow a bounded task to another vendor's CLI with aggy (image, video, research, news, review). Use for anything that may have changed since training, for images or video, or for a second-vendor code review.
+description: Borrow a bounded task to another vendor's CLI with aggy (image, video, research, news, review). Use for anything that may have changed since training, for images or video, or for a fresh-context code review.
 ---
 
 # aggy: borrow a task
@@ -28,7 +28,7 @@ aggy inbox            # unread borrow reports; aggy inbox <id> shows one
 - **Context7, not research**: library or framework docs at the version
   this repo uses. Use Context7 if it is available; research is for
   questions docs do not settle.
-- **review**: another vendor reviews the current diff. Use it before
+- **review**: a fresh session reviews the current diff. Use it before
   you call non-trivial work done. It runs at the root of the git work
   tree, read-only.
 - **image**, **video**: generate media. Write a brief that covers:

@@ -102,9 +102,11 @@ func TestSkipRules(t *testing.T) {
 			deps:    Deps{Statuses: allConnected()},
 			wantErr: "no vendor available for image: claude: the parent is on claude",
 		},
-		// T6693: the vendors the reviewed commits' trailers name.
+		// T6693: the vendors the reviewed commits' trailers name, on the
+		// opt-in "not-author" route (T6779).
 		{
 			name:     "review skips trailer authors",
+			routing:  func(r *config.Routing) { r.Review = config.Route{NotAuthor: true} },
 			req:      Request{Kind: "review", Parent: claude, Authors: vs(codex)},
 			deps:     Deps{Statuses: allConnected()},
 			want:     vs(grok),
@@ -112,6 +114,7 @@ func TestSkipRules(t *testing.T) {
 		},
 		{
 			name:     "trailer authors never empty the list",
+			routing:  func(r *config.Routing) { r.Review = config.Route{NotAuthor: true} },
 			req:      Request{Kind: "review", Parent: claude, Authors: vs(codex, grok)},
 			deps:     Deps{Statuses: allConnected()},
 			want:     vs(codex, grok),
@@ -120,6 +123,7 @@ func TestSkipRules(t *testing.T) {
 		},
 		{
 			name:     "a not connected vendor stays skipped for its own reason",
+			routing:  func(r *config.Routing) { r.Review = config.Route{NotAuthor: true} },
 			req:      Request{Kind: "review", Authors: vs(codex)},
 			deps:     Deps{Statuses: statuses("codex", "connected", "grok", "not_connected", "claude", "connected")},
 			want:     vs(claude),
@@ -132,11 +136,64 @@ func TestSkipRules(t *testing.T) {
 			want: vs(codex, grok),
 		},
 		{
-			name:     "review skips its author",
+			name:     "not-author review skips the parent",
+			routing:  func(r *config.Routing) { r.Review = config.Route{NotAuthor: true} },
 			req:      Request{Kind: "review", Parent: claude},
 			deps:     Deps{Statuses: allConnected()},
 			want:     vs(codex, grok),
 			wantSkip: []Skip{{claude, "the parent is on claude"}},
+		},
+		// T6779: the default review route and its opt-ins.
+		{
+			name: "default review keeps the parent and ignores trailers",
+			req:  Request{Kind: "review", Parent: claude, Authors: vs(claude, codex)},
+			deps: Deps{Statuses: allConnected()},
+			want: vs(claude, codex, grok),
+		},
+		{
+			name:     "review_skip_on_screen skips the parent",
+			routing:  func(r *config.Routing) { r.ReviewSkipOnScreen = true },
+			req:      Request{Kind: "review", Parent: claude},
+			deps:     Deps{Statuses: allConnected()},
+			want:     vs(codex, grok),
+			wantSkip: []Skip{{claude, "the parent is on claude"}},
+		},
+		{
+			name:    "review_skip_on_screen skips an override to the parent",
+			routing: func(r *config.Routing) { r.ReviewSkipOnScreen = true },
+			req:     Request{Kind: "review", Parent: codex, Override: codex},
+			deps:    Deps{Statuses: allConnected()},
+			wantErr: "no vendor available for review: codex: the parent is on codex",
+		},
+		{
+			name:     "review_skip_on_screen leaves other kinds alone",
+			routing:  func(r *config.Routing) { r.ReviewSkipOnScreen = true },
+			req:      Request{Kind: "image", Parent: grok},
+			deps:     Deps{Statuses: allConnected()},
+			want:     vs(codex),
+			wantSkip: []Skip{{grok, "the parent is on grok"}},
+		},
+		{
+			name: "explicit review list is honoured, trailers ignored",
+			routing: func(r *config.Routing) {
+				r.Review = config.Route{Vendors: vs(grok, codex)}
+			},
+			req:  Request{Kind: "review", Parent: grok, Authors: vs(grok)},
+			deps: Deps{Statuses: allConnected()},
+			want: vs(grok, codex),
+		},
+		{
+			name:    "default review still skips limits, connection and allowed_vendors",
+			req:     Request{Kind: "review", Parent: claude, Repo: "/r"},
+			deps:    Deps{Statuses: statuses("claude", "connected", "codex", "not_connected", "grok", "connected"), RepoConfig: repoAllows(claude, codex), Limits: fakeLimits{limited: map[adapter.Vendor]time.Time{claude: {}}}},
+			wantErr: "no vendor available for review: claude: hit its limit recently; codex: not connected; grok: not in this repo's allowed_vendors",
+		},
+		{
+			name:     "default review falls past a limited claude",
+			req:      Request{Kind: "review", Parent: claude},
+			deps:     Deps{Statuses: allConnected(), Limits: fakeLimits{limited: map[adapter.Vendor]time.Time{claude: {}}}},
+			want:     vs(codex, grok),
+			wantSkip: []Skip{{claude, "hit its limit recently"}},
 		},
 		// Rule 2: connection.
 		{
@@ -321,10 +378,9 @@ func TestSkipRules(t *testing.T) {
 			routing: func(r *config.Routing) {
 				r.Review = config.Route{Vendors: vs(grok, claude, codex)}
 			},
-			req:      Request{Kind: "review", Parent: codex, Repo: "/r"},
-			deps:     Deps{Statuses: allConnected(), RepoConfig: repoAllows(claude, codex, grok)},
-			want:     vs(grok, claude),
-			wantSkip: []Skip{{codex, "the parent is on codex"}},
+			req:  Request{Kind: "review", Parent: codex, Repo: "/r"},
+			deps: Deps{Statuses: allConnected(), RepoConfig: repoAllows(claude, codex, grok)},
+			want: vs(grok, claude, codex),
 		},
 	}
 	for _, tt := range tests {

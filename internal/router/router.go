@@ -29,8 +29,8 @@ type Request struct {
 	// this one borrow. The skip rules still apply to it.
 	Override adapter.Vendor
 	// Authors are the vendors the reviewed commits name in their
-	// Aggy-Vendor trailers. A review skips them where another vendor is
-	// left. Anyone can write a trailer, so they only steer the order:
+	// Aggy-Vendor trailers. A review on a "not-author" route skips them
+	// where another vendor is left; any other route ignores them. Anyone can write a trailer, so they only steer the order:
 	// when they would leave no vendor, they are kept with a warning.
 	Authors []adapter.Vendor
 	// IgnoreHints keeps every vendor whose only limit is a hook's hint,
@@ -39,8 +39,8 @@ type Request struct {
 	IgnoreHints bool
 }
 
-// NotAuthorOrder is the order a "not-author" review route walks. The
-// parent's vendor, which wrote the change, is then skipped.
+// NotAuthorOrder is the order an opt-in "not-author" review route walks.
+// The parent's vendor and the trailer authors are then skipped.
 var NotAuthorOrder = []adapter.Vendor{adapter.Codex, adapter.Grok, adapter.Claude}
 
 // Router picks vendors for borrows from the routing table.

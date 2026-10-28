@@ -8,7 +8,8 @@ import (
 )
 
 // Router picks the vendors for a borrow, best first, after its skip
-// rules (the parent's vendor, not connected, outside the repo's
+// rules (the parent's vendor, except for a review unless the config opts
+// in, not connected, outside the repo's
 // allowed_vendors, at its limit). internal/cli wires internal/router in;
 // this package depends only on the interface. Choose also reports
 // whether a vendor was left out only for a hook's unconfirmed limit,
@@ -30,7 +31,8 @@ type RouteRequest struct {
 	// the routing list, and the skip rules still apply to it.
 	Override adapter.Vendor
 	// Authors are the vendors the reviewed commits' Aggy-Vendor trailers
-	// name (see Request.Authors).
+	// name, read only for a "not-author" review route (see
+	// router.Request.Authors).
 	Authors []adapter.Vendor
 	// IgnoreHints asks the router to keep vendors whose only limit is an
 	// unconfirmed hint (see Borrower.Run).

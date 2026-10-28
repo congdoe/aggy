@@ -347,7 +347,9 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 		if req.Material, err = env.reviewMaterial(ctx, req.Repo, ba.base, paths); err != nil {
 			return fail(diag.CodeBorrowStart, "review: "+err.Error())
 		}
-		req.Authors = env.reviewAuthors(ctx, req.Repo, req.Material.Base)
+		if cfg.Routing.Review.NotAuthor { // only that route reads trailers; skip the history walk otherwise
+			req.Authors = env.reviewAuthors(ctx, req.Repo, req.Material.Base)
+		}
 	} else if ba.base != "" {
 		fail(diag.CodeUsage, "--base is for review only")
 		return 2
