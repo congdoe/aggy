@@ -328,6 +328,8 @@ Lint bans the main file-system entry points (`os`, `io/ioutil`, `io/fs`, `filepa
 - a borrow prompt: the task, paths, constraints, and date, never the parent transcript
 - for research and news, only what the task needs; those children run in an empty temp directory, never see copied secret files, and have built-in file and shell tools removed (Codex research and news are refused until its `apply_patch` oracle is closed; see section 7)
 
+**What other local users can see.** A process's arguments are readable by every local user through `ps` and, on Linux without `hidepid`, `/proc/<pid>/cmdline`. So the shared memory goes on Codex's and Grok's command line in the clear: Codex as `-c developer_instructions=…` (with the user's own system or user `developer_instructions` in front) and Grok as `--rules …`. Neither CLI has a file variant: Codex's only file key, `model_instructions_file`, replaces its built-in prompt (`config/src/config_toml.rs` at `6aaac69`), and Grok's `--rules` takes inline text only (`src/app/cli.rs` at `2bdd1d6a`). Claude reads a 0600 file instead. Codex's legacy `notify` hook is the same: Codex passes its JSON payload, the turn's last assistant message included, as the hook command's last argument (`hooks/src/legacy_notify.rs`). Keep secrets out of `.aggy/memory.md`, and on a shared machine use `hidepid=2` on Linux or skip the memory for Codex and Grok.
+
 **What aggy stores.** Ids, paths, status, CLI versions, and connection status. Never tokens.
 
 **Threats and controls:**

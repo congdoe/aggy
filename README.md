@@ -16,6 +16,11 @@ aggy runs the official CLIs you already pay for and adds three things:
 - It never sends model requests or proxies vendor traffic. Only the official CLIs talk to their vendors.
 - It collects no telemetry. Everything aggy writes stays on your machine.
 
+## Known limits
+
+- The shared memory (`.aggy/memory.md`) reaches Codex and Grok on their command line, which other local users can read with `ps`. So does the payload Codex passes to its legacy `notify` hook. Keep secrets out of the memory; see [docs/design.md](docs/design.md), section 13.
+- The safety policy is a guardrail against an agent's mistakes, not a sandbox.
+
 aggy is not affiliated with Anthropic, OpenAI, or xAI. You are responsible for following each vendor's terms.
 
 ## Development
