@@ -240,7 +240,12 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 			fmt.Fprintf(stdout, "Unverified vendor facts: %s.\n", strings.Join(t.Unverified, ", "))
 		}
 	}
-	// TODO(T6708): wire at launch; until then a switch changes no CLI.
+	// Wired at launch (addTools): MCP servers today.
+	// TODO(T6708): hooks and skills (m5-wire-2).
+	if on && !slices.ContainsFunc(adapter.Vendors(), func(v adapter.Vendor) bool { return t.PartsFor(v).MCP != nil }) {
+		fmt.Fprintln(stdout, "aggy does not wire hooks or skills at launch yet, so this changes no session for now.")
+		return nil
+	}
 	fmt.Fprintln(stdout, "It takes effect at the next launch.")
 	return nil
 }

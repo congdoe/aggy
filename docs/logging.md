@@ -236,6 +236,8 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `hook.event.ignored` | info | hook | A turn end from the CLI's tree named another session, such as a nested claude -p, so it did not end the on-screen turn. Recorded once a minute per session, and when the session ends (attrs.repeats: how many more came since the last record; attrs.tail: the record holds only the repeats of a session let go or ended; attrs.over_cap: counted with every session past the first 64 seen in a minute; attrs.no_session: it named no session, which this vendor's hook may do). | Nothing, unless every turn end of the on-screen CLI is ignored: then its session id is not the one aggy recorded. |
 | `hook.forward.failed` | warn | hook | aggy hook could not hand a vendor hook event to the supervisor; the CLI went on undisturbed. | The code's entry; aggy diag --trace &lt;trace id&gt; for the session. |
 | `diag.queue.dropped` | warn | diag | The supervisor's diagnostic queue was full, so records were dropped (attrs.dropped is how many). | The state dir's disk: a slow or full disk makes the log fall behind. |
+| `tool.wire.refused` | warn | tool | A launch did not wire a tool that is on (attrs: tool, or none for every tool of the vendor); the session started without it. | The code's entry; aggy tool status. |
+| `tool.wire.done` | info | tool | A launch wired the tools that are on into the CLI it started (attrs: tools, the names wired). | aggy tool status shows why each is on. |
 
 | Code | Security | Meaning | What to check next |
 | --- | --- | --- | --- |
@@ -312,5 +314,9 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `peer.cred_failed` |  | aggy could not tell which user or process opened a connection to the supervisor's socket, so it was closed unanswered. | Usually a process that connected and exited at once; nothing, unless hooks stop arriving. |
 | `hook.wrong_vendor` | yes | A hook event from the CLI's tree came from another vendor's hook than the one on screen, so it did not gate a switch. | A nested CLI of another vendor in the session; nothing else. |
 | `hook.bad_payload` |  | aggy hook could not read the vendor's hook payload, or it was not a JSON object. | The vendor CLI's version; aggy doctor. |
+| `tool.name_clash` |  | A tool that is on was not wired: the CLI already loads an MCP server of that name from the user's or the repo's config, and aggy never replaces or merges into one. | Rename or remove that server in the CLI's config, or turn the tool off. |
+| `tool.repo_path` |  | A tool that is on was not wired: its arguments hold {repo}, and the session is not in a repo, or the repo's path holds a character other than letters, digits, and / . _ + @ -. | Run the session in a repo whose path has only those characters. |
+| `tool.no_launch_flag` |  | Tools that are on were not wired: the CLI's --help lacks the launch flag they need (Codex -c). | Update the CLI; aggy setup shows its version. |
+| `tool.wire_failed` |  | Tools that are on were not wired: the CLI's own MCP config could not be read to check names, or the session's tool file could not be written. | The record's msg; aggy doctor. |
 | `tool.changed_since_add` | yes | aggy tool on refused: the user definition is not the file aggy tool add showed. | aggy tool remove &lt;name&gt;, then aggy tool add the file again and read what it runs. |
 <!-- registry:end -->

@@ -120,6 +120,9 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 			[]string{"--resume", rid, "--append-system-prompt-file", brief + ".mem", adapter.BriefPrompt(brief)}},
 		{"policy", adapter.InteractiveRequest{Deny: []string{"Read(**/.env)", "Bash(git push * main)"}},
 			[]string{"--settings", `{"permissions":{"deny":["Read(**/.env)","Bash(git push * main)"]}}`}},
+		// T6708: additive, never --strict-mcp-config; re-passed on resume.
+		{"tools on resume", adapter.InteractiveRequest{Resume: rid, MCPConfigFile: brief + ".mcp.json"},
+			[]string{"--resume", rid, "--mcp-config", brief + ".mcp.json"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -142,6 +145,7 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 		{Resume: rid, SessionID: sid},
 		{BriefFile: "brief.md"},
 		{MemoryFile: "memory.md"},
+		{MCPConfigFile: "mcp.json"},
 	} {
 		if _, err := a.Interactive(r); err == nil {
 			t.Errorf("%+v accepted", r)

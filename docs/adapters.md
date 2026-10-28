@@ -109,6 +109,9 @@ was tested against.
   `-c mcp_servers.<name>.default_tools_approval_mode="approve"`, because
   `exec` denies MCP calls otherwise. Pass them again on resume. Flags such
   as `--sandbox` go before `resume`, and they apply to the resumed thread.
+  On screen, aggy sets no approval mode, and adds `.cwd` and `.env_vars`
+  (fields of `RawMcpServerConfig`, `config/src/mcp_types.rs#L373-L389` at
+  6aaac69; source only).
 - MCP in config: `[mcp_servers.<name>]` in `config.toml` with `command`
   and `args`, or `url` (streamable HTTP; no SSE). `codex mcp login <name>`
   is Codex's own OAuth sign-in (`aggy mcp wire`, verification.md).
@@ -252,7 +255,10 @@ was tested against.
   `open_page*` with it: a live review run listed only its read tools
   (`docs/verification.md` C3).
 - MCP at launch: no flag. `--agent <file>` whose frontmatter lists
-  `mcpServers` works, with `--allow 'MCPTool(<server>__<tool>)'`.
+  `mcpServers` works, with `--allow 'MCPTool(<server>__<tool>)'`. A stdio
+  entry also takes `cwd` (`McpServerTransportConfig::Stdio`,
+  `xai-grok-config/src/mcp_server_config.rs:27-41` at 559751f; source
+  only). On screen and on resume, `--agent` is unverified.
 - MCP in config: `[mcp_servers.<name>]` in `config.toml` with `command`
   and `args`, or `url` (`type = "sse"` for SSE). Grok also loads
   `~/.claude.json`'s servers unless its Claude compatibility is off
@@ -279,7 +285,9 @@ was tested against.
   naming is not recorded.
 - MCP at launch: `--mcp-config <file> --strict-mcp-config`; it is not kept
   with the session, so pass it again on resume. With an empty
-  `{"mcpServers":{}}` no MCP or connector tool is left.
+  `{"mcpServers":{}}` no MCP or connector tool is left. On screen, aggy
+  passes `--mcp-config <file>` alone, so the person's own servers stay
+  (design.md section 9, "Launch wiring").
 - Extra context: `--append-system-prompt-file <path>` works although
   `--help` omits it. The system prompt is snapshotted on the first
   request, so a new value is ignored on resume.
