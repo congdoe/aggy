@@ -30,8 +30,9 @@ type Media struct {
 	Resume string
 }
 
-// MaxImages caps the variants one image borrow asks for. Image turns use
-// a plan's limits several times faster than text.
+// MaxImages caps the variants one image borrow asks for, and the files
+// one borrow keeps. Image turns use a plan's limits several times faster
+// than text.
 const MaxImages = 4
 
 // MaxRefs caps the reference images of one borrow.
