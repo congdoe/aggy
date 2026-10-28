@@ -50,6 +50,7 @@ const (
 	codeIndex          = "index-unreadable" // error: the index cannot be read
 	codeIndexOld       = "index-old"        // warning: the index predates drift checks
 	codeNoIndex        = "no-index"         // info: aggy has recorded nothing yet
+	codeHooks          = "hooks"            // info, or warning when aggy cannot install them as is
 )
 
 // driftSchema is the oldest index schema whose changes have a kind.
@@ -128,6 +129,9 @@ func doctor(ctx context.Context, env checkEnv) doctorResult {
 		}
 		fs := checkup.VendorFindings(vr, name, a.SignIn().Steps)
 		fs = append(fs, checkup.ForVendor(envFindings, v)...)
+		if vr.Installed {
+			fs = append(fs, hookFinding(v, name))
+		}
 		res.sections = append(res.sections, doctorSection{title: name, findings: fs})
 	}
 	var general []checkup.Finding
@@ -141,6 +145,26 @@ func doctor(ctx context.Context, env checkEnv) doctorResult {
 	}
 	res.sections = append(res.sections, doctorSection{title: "Config aggy changed", findings: driftFindings(ctx)})
 	return res
+}
+
+// hookFinding says whether aggy's hooks are installed for v. Its
+// message holds no path; a reason with one goes in Detail, which a
+// report leaves out.
+func hookFinding(v adapter.Vendor, name string) checkup.Finding {
+	f := checkup.Finding{Code: codeHooks, Level: checkup.LevelInfo, Vendor: v}
+	bin, err := aggyBin()
+	if err != nil {
+		f.Message, f.Detail = "cannot tell whether aggy's hooks are installed", err.Error()
+		return f
+	}
+	state, note := hookStatus(v, bin)
+	f.Message = name + " hooks: " + state
+	if state == hookError {
+		f.Level, f.Detail = checkup.LevelWarn, strings.TrimPrefix(note, ": ")
+	} else {
+		f.Message += note
+	}
+	return f
 }
 
 // driftFindings checks the files aggy changed, reading the index
