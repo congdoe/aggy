@@ -1,9 +1,14 @@
 package redact
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// body is one 64-character line of a PEM key body.
+const body = "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun"
 
 func TestLines(t *testing.T) {
 	for _, tc := range []struct {
@@ -16,8 +21,8 @@ func TestLines(t *testing.T) {
 		{"json secret", `{"client_secret": "hunter2hunter2"}` + "\nz", "z", 1},
 		{"codex auth.json shape", "{\n  \"tokens\": {\n    \"id_token\": \"eyJhbGciOi.eyJzdWIi.sig\",\n    \"refresh_token\": \"rt_abcdefghijklmnopqrstu\"\n  }\n}", "{\n  \"tokens\": {\n  }\n}", 2},
 		{"pem block", "a\n-----BEGIN RSA PRIVATE KEY-----\nMIIabc\ndef\n-----END RSA PRIVATE KEY-----\nb", "a\nb", 4},
-		{"pem unterminated", "a\n-----BEGIN PRIVATE KEY-----\nMIIabc\nmore", "a", 3},
-		{"short values stay", "max_tokens: 4096\npassword: no\nmonkey: bananas12345\nmax_tokens = 200000000", "max_tokens: 4096\npassword: no\nmonkey: bananas12345\nmax_tokens = 200000000", 0},
+		{"pem unterminated", "a\n-----BEGIN PRIVATE KEY-----\n" + body + "\n" + body + "\nmore", "a\nmore", 3},
+		{"short values stay", "max_tokens: 4096\npassword: no\nmax_tokens = 200000000", "max_tokens: 4096\npassword: no\nmax_tokens = 200000000", 0},
 		{"bearer", "curl -H 'Authorization: Bearer abcdefghijklmnopqrst'", "", 1},
 
 		// C16-3: a BEGIN marker inside prose drops that line only.
@@ -26,6 +31,13 @@ func TestLines(t *testing.T) {
 		// C16-4: an END with no BEGIN in view takes the key lines before it,
 		// and long base64 lines anywhere in the same text.
 		{"orphan end", "earlier\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\nabcDEF==\n-----END PRIVATE KEY-----\nafter", "earlier\nafter", 3},
+		// C16-10: key lines with a prefix, and a BEGIN mid-line with no END.
+		{"quoted key", "> -----BEGIN RSA PRIVATE KEY-----\n> " + body + "\n> " + body + "\n> -----END RSA PRIVATE KEY-----\nok", "ok", 4},
+		{"commented key no end", "# -----BEGIN RSA PRIVATE KEY-----\n# " + body + "\n// " + body + "\nnext", "next", 3},
+		{"numbered key", "   11\t-----BEGIN RSA PRIVATE KEY-----\n   12\t" + body + "\n   13\t" + body + "\n   14\tdone", "   14\tdone", 3},
+		{"python key no end", "key = \"\"\"-----BEGIN RSA PRIVATE KEY-----\n" + body + "\n" + body, "", 3},
+		{"json key no end", "\"pem\": \"-----BEGIN RSA PRIVATE KEY-----\\n\"\n  \"" + body + "\\n\" +\nprose\n  \"" + body + "\\n\"", "prose", 3},
+		{"prefixed orphan end", "> " + body + "\n> " + body + "\n> -----END RSA PRIVATE KEY-----\nthanks", "thanks", 3},
 		{"orphan end far body", "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\nprose line\n-----END OPENSSH PRIVATE KEY-----", "prose line", 2},
 	} {
 		got, n := Lines(tc.in)
@@ -63,6 +75,15 @@ func TestSecret(t *testing.T) {
 		"mysql -u root -pS3cretPass prod",
 		"mysqldump --password=S3cretPass prod",
 		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		// C16-9: secret names with no separator, camelCase or run together.
+		`clientSecret: "Zx9QwErTyUiOp1234"`,
+		`accessToken = "Zx9QwErTyUiOp1234"`,
+		`"dbPassword": "Zx9QwErTyUiOp1234"`,
+		`privateKey: "Zx9QwErTyUiOp1234"`,
+		"GITHUBTOKEN=Zx9QwErTyUiOp1234",
+		"DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=Zx9QwErTyUiOp1234abcd==",
+		"PGPASSWORD=Zx9QwErTyUiOp1234",
+		"export PGPASSWORD=Zx9QwErTyUiOp1234",
 	} {
 		if !Secret(line) {
 			t.Errorf("Secret(%q) = false", line)
@@ -97,5 +118,27 @@ func TestEach(t *testing.T) {
 	got, n := Each("a\n-----BEGIN RSA PRIVATE KEY-----\nb\nsk-abcdefghijklmnop1234")
 	if got != "a\nb" || n != 2 {
 		t.Errorf("Each = %q, %d", got, n)
+	}
+}
+
+// TestHints: every line a pattern matches holds a hint, so the prefilter
+// never hides a match. Checked on the positive rows and on aggy's sources.
+func TestHints(t *testing.T) {
+	lines := []string{
+		"curl https://u:p@h/x", "mysql -u r -pX", "--password=x", "Authorization: Basic YWJjZGVm",
+		"sk-abcdefghijklmnop1234", "AKIAABCDEFGHIJKLMNOP", "eyJa.eyJb.c", "SG.abcdefghijklmnopqrst.abcdefghijklmnopqrst",
+	}
+	files, _ := filepath.Glob("../*/*.go")
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, strings.Split(string(b), "\n")...)
+	}
+	for _, l := range lines {
+		if (Token.MatchString(l) || other.MatchString(l) || pendingKey.MatchString(l)) && !hinted(l) {
+			t.Errorf("match without a hint: %q", l)
+		}
 	}
 }
