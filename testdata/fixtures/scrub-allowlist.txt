@@ -1,0 +1,8 @@
+# Documented false positives for the fixture check
+# (internal/devfix TestFixturesHoldNoSecrets).
+#
+# One entry per line: <path glob relative to testdata/fixtures><TAB><exact match>.
+# Put a comment line above each entry saying why the match is safe.
+
+# README.md documents which home paths scrub replaces, /root among them.
+README.md	/root

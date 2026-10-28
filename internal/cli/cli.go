@@ -37,6 +37,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "log":
 		return runLog(args[1:], stdout, stderr)
+	case "dev":
+		return runDev(args[1:], stdout, stderr)
 	case "help", "--help", "-h":
 		fmt.Fprint(stdout, usage)
 		return 0
