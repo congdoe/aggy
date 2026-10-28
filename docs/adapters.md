@@ -156,10 +156,33 @@ was tested against.
   writes only to Grok's sessions dir, and blocks child networking (live
   diagnostic 2026-10-28, grok 1.0.70; grok-src
   `crates/codegen/xai-grok-sandbox/src/profiles.rs:463-488`). Gaps: files
-  under `/tmp` and `/private` stay readable, `~/.grok` (Grok's own home)
-  is readable, and only paths under `$HOME` outside those are denied.
-  aggy refuses these kinds on a Grok whose `--help` does not list
-  `--sandbox` (`adapter.ErrNoCapability`). Image and video do not use it
+  under `/tmp` and `/private` (which holds `$TMPDIR` and aggy's run dirs
+  on macOS) stay readable, `~/.grok` (Grok's own home) is readable,
+  `~/Library` (browser cookies, app tokens) is readable to the sandbox,
+  and only paths under `$HOME` outside those are denied. aggy narrows
+  the `~/Library` gap with `--deny 'Read(<HOME>/Library/**)' --deny
+  'Grep(<HOME>/Library/**)'`, `$HOME` expanded by aggy and refused when
+  it is not a clean absolute path free of glob and rule syntax. A deny
+  outranks any allow (`decision_rank`,
+  `xai-grok-permission-rules/src/policy.rs:791` at 2bdd1d6a), and live
+  (2026-10-28, grok 1.0.70) `read_file` of a canary under
+  `~/Library/Caches` was refused, `Denied by permission policy: deny rule
+  on read matching "~/Library/**"`, while the in-repo README still read.
+  That is a permission rule, not the kernel sandbox.
+- Grok's sandbox fails open: where the platform cannot apply it, Grok
+  logs "Sandbox not supported on this platform, continuing without
+  sandbox" or "Sandbox could not be applied, continuing without sandbox"
+  and runs unsandboxed (`xai-grok-sandbox/src/lib.rs:206-216`,
+  `:236-247`; also "Sandbox enforcement unavailable (built without
+  'enforce' feature)"). So aggy refuses these kinds
+  (`adapter.ErrNoCapability`) unless the probed `--help` lists
+  `--sandbox` and the host has a kernel sandbox: macOS (Seatbelt), or
+  Linux whose `/sys/kernel/security/lsm` names `landlock` (read through
+  safefs, capped; checked per borrow, never cached); any other OS is
+  refused. After a run, any of those messages on stderr fails it closed
+  (`ErrLockdownRejected`) and its output is discarded. Whether those
+  tracing events reach stderr in headless mode is unverified, so the host
+  check is the main guard. Image and video do not use the sandbox
   yet: their output write under strict is unchecked (TODO(T6742)).
   Research and news under strict have not been run live (web search is
   Grok's own tool, not a child process, so it should be unaffected).
@@ -326,7 +349,9 @@ optional `(note)`, and an optional bracketed channel tag such as Grok's
 named line, one unambiguous version line is taken, and several are an
 error, never a guess. Codex `exec resume` counts as present only when the `exec` help
 lists it under `Commands:` or its own help names a session-id argument; a
-usage error is a cached absence.
+usage error is a cached absence. A cached probe also carries a stamp of
+the spec it was made with, so a newer aggy that looks for more features
+(such as Grok's `--sandbox`) probes a cached CLI again, once.
 
 Headless argv per kind, as built (the prompt file is stdin, or Grok's
 `--prompt-file <p>`, shown as `grok …` below; `<id>` a
@@ -336,13 +361,14 @@ by default is news 15 and research 30; `<run>` is `HeadlessRequest.RunDir`):
 
 | Kind | Claude | Codex | Grok |
 | --- | --- | --- | --- |
-| research, news | unsupported | unsupported until T6638 (`codex.Refusal`: apply_patch can confirm guessed file contents) | `grok --prompt-file <p> --output-format json --sandbox strict --tools web_search --disallowed-tools <D> --no-subagents` |
+| research, news | unsupported | unsupported until T6638 (`codex.Refusal`: apply_patch can confirm guessed file contents) | `grok --prompt-file <p> --output-format json --sandbox strict --deny <Lib> --tools web_search --disallowed-tools <D> --no-subagents` |
 | image | unsupported | `codex exec [-i <ref>]... --json <L without --disable image_generation> --skip-git-repo-check -- -` | `grok --prompt-file <p> --output-format json [--session-id <uuid>] --tools image_gen --disallowed-tools <D> --no-subagents` |
 | image `--edit` | unsupported | `codex exec [-i <ref>]... --json <L without image_generation> --skip-git-repo-check resume <id> -- -` | only with `[media] grok_file_tools`: `grok --prompt-file <p> --output-format json --resume <id> --tools image_gen,image_edit --disallowed-tools <D> --no-subagents` |
 | video | unsupported | unsupported | only with `[media] grok_file_tools`: `grok --prompt-file <p> --output-format json --tools image_gen,image_to_video --disallowed-tools <D> --no-subagents` (unverified headless) |
-| review | `claude -p --output-format json --permission-mode plan --strict-mcp-config --mcp-config <run>/mcp.json --tools Read,Grep,Glob [--setting-sources user] [--settings <run>/settings.json] [--session-id <uuid> \| --resume <id>]` | `codex exec --json <L> -- -` (in a git work tree, so no `--skip-git-repo-check`) | `grok --prompt-file <p> --output-format json --permission-mode plan --sandbox strict --tools read_file,grep,list_dir --disallowed-tools <D> --no-subagents` |
+| review | `claude -p --output-format json --permission-mode plan --strict-mcp-config --mcp-config <run>/mcp.json --tools Read,Grep,Glob [--setting-sources user] [--settings <run>/settings.json] [--session-id <uuid> \| --resume <id>]` | `codex exec --json <L> -- -` (in a git work tree, so no `--skip-git-repo-check`) | `grok --prompt-file <p> --output-format json --permission-mode plan --sandbox strict --deny <Lib> --tools read_file,grep,list_dir --disallowed-tools <D> --no-subagents` |
 | edit (M3; refused by `aggy borrow`) | `claude -p --output-format json --permission-mode acceptEdits --strict-mcp-config --mcp-config <run>/mcp.json` | `codex exec --json --sandbox workspace-write -- -` | `grok --prompt-file <p> --output-format json --tools read_file,grep,list_dir,write,search_replace --disallowed-tools <D> --no-subagents` |
 
+`--deny <Lib>` is `--deny 'Read(<HOME>/Library/**)' --deny 'Grep(<HOME>/Library/**)'`.
 `L` is `codex.Lockdown`: `--strict-config --ignore-user-config --sandbox
 read-only --disable shell_tool --disable unified_exec --disable view_image
 --disable apps --disable plugins --disable goals --disable image_generation

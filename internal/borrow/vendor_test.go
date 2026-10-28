@@ -71,7 +71,7 @@ func TestBothRunsEach(t *testing.T) {
 		return inner(v, cli)
 	}
 	b.Locate = func(context.Context, adapter.Vendor) (CLI, error) {
-		return CLI{Path: w.fakes.Grok, Version: "1.0.70", Caps: []string{"sandbox"}}, nil
+		return CLI{Path: w.fakes.Grok, Version: "1.0.70", Caps: []string{"sandbox", "kernel-sandbox"}}, nil
 	}
 	w.scenario[adapter.Grok] = `{"json":{"result":"ok"}}`
 	req := w.req(adapter.Research, "x")

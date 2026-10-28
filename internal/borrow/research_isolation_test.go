@@ -76,7 +76,15 @@ func TestResearchIsolation(t *testing.T) {
 
 			// What reaches the child: no file contents, no local paths,
 			// no parent secrets.
-			sent := rec.Stdin + rec.Prompt + "\n" + strings.Join(rec.Args, " ")
+			// The --deny values name <HOME>/Library on purpose (G32-3):
+			// they are rules for the CLI, so they are left out here.
+			var args []string
+			for i, a := range rec.Args {
+				if a != "--deny" && (i == 0 || rec.Args[i-1] != "--deny") {
+					args = append(args, a)
+				}
+			}
+			sent := rec.Stdin + rec.Prompt + "\n" + strings.Join(args, " ")
 			for _, s := range []string{"REPO-SECRET-CONTENT", w.repo, w.state, w.home, secretFile} {
 				if strings.Contains(sent, s) {
 					t.Errorf("the child was sent %q", s)

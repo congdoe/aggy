@@ -69,6 +69,9 @@ type borrowEnv struct {
 	now     func() time.Time
 	// executable is aggy's own absolute path, for the guard hook.
 	executable func() (string, error)
+	// kernelSandbox is probe.HostKernelSandbox: nil when the host can
+	// apply Grok's sandbox. A nil func means it cannot.
+	kernelSandbox func() error
 }
 
 // guard is the PreToolUse guard command: this aggy binary, resolved, with
@@ -90,15 +93,17 @@ func (e borrowEnv) guard() []string {
 
 func defaultBorrowEnv() borrowEnv {
 	return borrowEnv{
-		getenv:     os.Getenv,
-		cwd:        os.Getwd,
-		lookPath:   probe.LookPath,
-		probeRun:   execrun.ExecRunner(probeTimeout),
-		gitPath:    func() (string, error) { return probe.LookPath("git") },
-		gitRun:     execrun.ExecRunner(gitTimeout),
-		runner:     headlessRunner,
-		now:        time.Now,
-		executable: os.Executable,
+		getenv:   os.Getenv,
+		cwd:      os.Getwd,
+		lookPath: probe.LookPath,
+		probeRun: execrun.ExecRunner(probeTimeout),
+		// Checked per borrow, never cached: the kernel can change.
+		kernelSandbox: probe.HostKernelSandbox,
+		gitPath:       func() (string, error) { return probe.LookPath("git") },
+		gitRun:        execrun.ExecRunner(gitTimeout),
+		runner:        headlessRunner,
+		now:           time.Now,
+		executable:    os.Executable,
 	}
 }
 
@@ -403,7 +408,11 @@ func (w *borrowWorld) locate(ctx context.Context, v adapter.Vendor) (borrow.CLI,
 	if err != nil && !errors.Is(err, probe.ErrIncomplete) {
 		return borrow.CLI{}, err
 	}
-	return borrow.CLI{Path: path, Version: res.Version, VersionLine: res.VersionLine, Caps: res.Capabilities}, nil
+	caps := res.Capabilities
+	if v == adapter.Grok && w.env.kernelSandbox != nil && w.env.kernelSandbox() == nil {
+		caps = append(slices.Clone(caps), probe.CapKernelSandbox)
+	}
+	return borrow.CLI{Path: path, Version: res.Version, VersionLine: res.VersionLine, Caps: caps}, nil
 }
 
 // borrowRouter is internal/router behind the borrow package's Router
