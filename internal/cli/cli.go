@@ -17,6 +17,7 @@ Usage:
   aggy <command>
 
 Commands:
+  run       Start a vendor CLI (claude, codex, or grok) under aggy
   setup     Check each vendor CLI's install, version, and sign-in
   doctor    Check the vendor CLIs, API-key and proxy settings, and config drift
   log       Show harnesses, models, switches, borrows, and files changed
@@ -38,6 +39,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "version", "--version", "-v":
 		fmt.Fprintf(stdout, "aggy %s\n", Version)
 		return 0
+	case "run":
+		return runRun(args[1:], stdout, stderr)
 	case "setup":
 		return runSetup(args[1:], stdout, stderr)
 	case "doctor":
