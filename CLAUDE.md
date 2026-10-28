@@ -23,6 +23,7 @@ aggy is a Go CLI that runs the official Claude Code, Codex, and Grok Build CLIs 
 - `internal/execrun`: the only runner that starts vendor CLI processes (no stdin, or a borrow's prompt file opened through `safefs.OpenRegular`; a scrubbed env whose only additions are `AGGY_DELEGATED`, `AGGY_VENDOR`, `AGGY_MODEL`, and the fakes' `AGGY_FAKE_*`; a time limit that kills the process group). Separately, `StartPTY` starts the on-screen CLI in a pseudo-terminal with the user's own environment plus `AGGY_*` variables only; it never uses or loosens the borrow allowlist. Only the files of `internal/cli` and `internal/devfix` (not their subpackages) and tests may import it.
 - `internal/patch`: guarded, reversible config changes recorded for `aggy unwire`.
 - `internal/safefs`: the only file I/O layer; refuses vendor credential files by path and file identity.
+- `internal/aggydir`: the one rule for a repo's `.aggy` folder: no symlink anywhere under it, directories made through descriptors, and nothing read from it trusted as aggy's record unless the store confirms it.
 - `internal/store`: the SQLite index at `~/.aggy/aggy.db` and its migrations; the only package that may call `sql.Open`.
 - `internal/config`: user and repo config with generic defaults.
 - `internal/home`: locates the state directory (`$AGGY_HOME` or `~/.aggy`).

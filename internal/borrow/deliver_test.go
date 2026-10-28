@@ -46,7 +46,14 @@ func TestDeliverNeverWritesThroughLinks(t *testing.T) {
 		}, "public/hero.png", "not a regular file"},
 		{"assets dir is a link", func(t *testing.T, repo, outside string) {
 			link(t, outside, filepath.Join(repo, ".aggy", "assets"))
-		}, "public/a/b/hero.png", "outside"},
+		}, "public/a/b/hero.png", "a symlink"},
+		// F2: no symlink under .aggy, even one that stays in the repo.
+		{"assets dir links inside the repo", func(t *testing.T, repo, _ string) {
+			if err := os.MkdirAll(filepath.Join(repo, "elsewhere"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			link(t, filepath.Join(repo, "elsewhere"), filepath.Join(repo, ".aggy", "assets"))
+		}, "hero.png", "a symlink"},
 		{"out dir is a link out", func(t *testing.T, repo, outside string) {
 			link(t, outside, filepath.Join(repo, "public"))
 		}, "public/a/b/hero.png", "outside"},
@@ -120,7 +127,7 @@ func TestEditOnlyOwnSessions(t *testing.T) {
 	req := w.req(adapter.Image, "darker")
 	req.Vendor = "codex"
 	req.Media = &Media{Out: filepath.Join(w.repo, "hero.png"), Resume: "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b"}
-	if _, err := w.borrower().Run(context.Background(), req); err == nil || !strings.Contains(err.Error(), "not made by an aggy image or video borrow") {
+	if _, err := w.borrower().Run(context.Background(), req); err == nil || !strings.Contains(err.Error(), "not made by an aggy image borrow") {
 		t.Fatalf("err = %v", err)
 	}
 	if len(w.records()) != 0 {

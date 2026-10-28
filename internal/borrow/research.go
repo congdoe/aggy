@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/aggydir"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/termsafe"
 )
@@ -21,35 +22,30 @@ const ResearchDir = "research"
 // web reports whether k is a kind whose child searches the web.
 func web(k adapter.Kind) bool { return k == adapter.Research || k == adapter.News }
 
-// researchDir returns the directory research reports of req go in, as
-// the root it must stay under and the path elements below it.
-func (b *Borrower) researchDir(req Request) (root string, elems []string) {
+// researchDir makes the directory research reports of req go in and
+// returns it with its identity: <repo>/.aggy/research under aggy's .aggy
+// rule (internal/aggydir) when the borrow ran in a git work tree, else
+// research in the state dir. No level below the repo or the state dir may
+// be a symlink.
+func (b *Borrower) researchDir(req Request) (string, fs.FileInfo, error) {
 	if inGitRepo(req.Repo) {
-		return req.Repo, []string{".aggy", ResearchDir}
+		return aggydir.MkdirAll(req.Repo, 0o700, ResearchDir)
 	}
-	return b.StateDir, []string{ResearchDir}
+	return b.stateSubdir(ResearchDir)
 }
 
-// mkdirNoLinks makes root/elems... one level at a time, refusing any
-// level that exists as something other than a real directory. A repo
-// could check in .aggy as a symlink, and MkdirAll would follow it.
-func mkdirNoLinks(root string, elems ...string) (string, error) {
-	dir := root
-	for _, e := range elems {
-		dir = filepath.Join(dir, e)
-		fi, err := safefs.Lstat(dir)
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			if err := safefs.MkdirAll(dir, 0o700); err != nil {
-				return "", err
-			}
-		case err != nil:
-			return "", err
-		case !fi.IsDir() || fi.Mode()&fs.ModeSymlink != 0:
-			return "", fmt.Errorf("%s is not a directory (a symlink?), so aggy will not write reports through it", dir)
-		}
+// stateSubdir makes the state dir and elems... below it, none of them a
+// symlink, and returns the path and its identity.
+func (b *Borrower) stateSubdir(elems ...string) (string, fs.FileInfo, error) {
+	if err := safefs.MkdirAll(b.StateDir, 0o700); err != nil {
+		return "", nil, err
 	}
-	return dir, nil
+	fi, err := safefs.Lstat(b.StateDir)
+	if err != nil {
+		return "", nil, err
+	}
+	dir, err := safefs.MkdirChain(b.StateDir, fi, elems, 0o700)
+	return filepath.Join(append([]string{b.StateDir}, elems...)...), dir, err
 }
 
 // slug is a file-name form of the task's first line: its runs of
@@ -126,14 +122,15 @@ func (r researchReport) markdown() string {
 
 // placeReport writes data to dir/base, or to dir/alt when base holds
 // something else, and returns the path. A file that already holds data
-// is reused as is.
-func placeReport(dir, base, alt string, data []byte) (string, error) {
+// is reused as is. A new file is only ever created, in the directory
+// whose identity is dirID, never written over anything.
+func placeReport(dir string, dirID fs.FileInfo, base, alt string, data []byte) (string, error) {
 	for _, n := range []string{base, alt} {
 		p := filepath.Join(dir, n)
 		fi, err := safefs.Lstat(p)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			return p, safefs.WriteFile(p, data, 0o600)
+			return p, safefs.WriteFileNoFollowIn(dirID, p, data, 0o600, nil)
 		case err != nil:
 			return "", err
 		case fi.Mode().IsRegular() && fi.Size() == int64(len(data)):
@@ -160,11 +157,10 @@ func (b *Borrower) saveResearch(req Request, res Result, asOf time.Time) (string
 
 // placeResearch writes r's Markdown into req's research dir.
 func (b *Borrower) placeResearch(req Request, r researchReport) (string, error) {
-	root, elems := b.researchDir(req)
-	dir, err := mkdirNoLinks(root, elems...)
+	dir, id, err := b.researchDir(req)
 	if err != nil {
 		return "", err
 	}
 	base, alt := r.fileName()
-	return placeReport(dir, base, alt, []byte(r.markdown()))
+	return placeReport(dir, id, base, alt, []byte(r.markdown()))
 }

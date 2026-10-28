@@ -3,6 +3,7 @@
 package borrow
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,5 +147,23 @@ func write(data []byte) func(t *testing.T, p string) {
 		if err := os.WriteFile(p, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// TestReadArtifactSniffsFirst (B15-11): a file whose first bytes are not
+// the kind's magic is refused without being read whole.
+func TestReadArtifactSniffsFirst(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	reads := 0
+	defer func(f func(io.Reader) ([]byte, error)) { readRest = f }(readRest)
+	readRest = func(r io.Reader) ([]byte, error) { reads++; return io.ReadAll(r) }
+	p := filepath.Join(t.TempDir(), "1.png")
+	write([]byte(strings.Repeat("not an image ", 1000)))(t, p)
+	if _, err := readArtifact(adapter.Artifact{Path: p, Kind: "image"}, time.Time{}); err == nil || reads != 0 {
+		t.Errorf("err %v, %d whole reads", err, reads)
+	}
+	write(pngBytes)(t, p)
+	if m, err := readArtifact(adapter.Artifact{Path: p, Kind: "image"}, time.Time{}); err != nil || reads != 1 || string(m.Data) != string(pngBytes) {
+		t.Errorf("png: %v, %d reads", err, reads)
 	}
 }
