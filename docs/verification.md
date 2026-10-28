@@ -121,6 +121,18 @@ is `startup`.
     and `resets_at` in unix seconds (`protocol/src/protocol.rs#L2472`,
     `#L2478`, `#L2521`; persisted per `policy.rs#L133`). This is the best
     structured reset time.
+  - Each snapshot belongs to one quota (T6741): `rate_limits.limit_id`,
+    `limit_name`, and `normal_model_slug` (`protocol.rs#L2479-L2483`). A
+    missing `limit_id` is the ordinary `codex` quota
+    (`core/src/state/session.rs#L446-L453`), and ids are lowercased with
+    `-` as `_` (`codex-api/src/rate_limits.rs#L270`). Codex's TUI treats
+    the ordinary quota and the one whose `limit_name` is the current model
+    as the session's (`tui/src/chatwidget/rate_limits.rs#L196-L202`);
+    `normal_model_slug` is metadata of a quota alias, "never a replacement
+    for the request model" (`protocol.rs#L2481-L2483`). The model is
+    `turn_context`'s `payload.model` (`protocol.rs#L3451`,
+    `history/src/rollout_payload.rs#L32`, `#L51`). Source-checked only: no
+    rollout with a second quota has been seen live.
   - `event_msg` with `payload.type == "task_complete"`, whose
     `error.codex_error_info` is `"usage_limit_exceeded"`
     (`protocol.rs#L2273`, `#L2195`; `core/src/tasks/mod.rs#L865`). That
