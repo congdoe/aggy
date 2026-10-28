@@ -293,8 +293,14 @@ func (s *session) suspend(childStopped bool) {
 	s.outMu.Lock()
 	defer s.outMu.Unlock()
 	s.t.restore()
-	// SIGSTOP cannot be caught, so this stops aggy; kill returns after fg.
+	// SIGSTOP cannot be caught, so this stops aggy. On Linux kill can
+	// return before the stop takes hold (another thread takes the
+	// signal), so wait for the SIGCONT that fg sends, not for kill.
+	cont := make(chan os.Signal, 1)
+	signal.Notify(cont, syscall.SIGCONT)
+	defer signal.Stop(cont)
 	_ = syscall.Kill(os.Getpid(), syscall.SIGSTOP)
+	<-cont
 	_ = s.t.raw()
 	s.resize()
 	if childStopped {
