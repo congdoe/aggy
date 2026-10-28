@@ -63,9 +63,10 @@ func (b *Borrower) cacheStore(r researchReport) error {
 
 // cached returns the cached answer to req and true when there is a
 // fresh one, after writing its Markdown copy to req's research dir. A
-// cached report is used only when routing would still pick its vendor
-// (or it is the --vendor asked for), so allowed_vendors and the parent
-// skip apply to it as to a run.
+// cached report is used only when it is what a run would do now: its
+// vendor is the first one routing picks (with --vendor applied, and the
+// parent skip and allowed_vendors), and its model is that vendor's
+// configured one.
 func (b *Borrower) cached(ctx context.Context, req Request) (Result, bool, error) {
 	if !web(req.Kind) || req.Fresh || req.Vendor == Both {
 		return Result{}, false, nil
@@ -87,7 +88,11 @@ func (b *Borrower) cached(ctx context.Context, req Request) (Result, bool, error
 	if age := b.Now().Sub(r.AsOf); age < -5*time.Minute || age >= cacheTTL(req.Kind) {
 		return Result{}, false, nil
 	}
-	if vs, err := b.Router.Choose(ctx, RouteRequest{Kind: req.Kind, Parent: req.Parent, Repo: req.Repo, Override: v}); err != nil || len(vs) != 1 {
+	rr := RouteRequest{Kind: req.Kind, Parent: req.Parent, Repo: req.Repo}
+	if req.Vendor != "" {
+		rr.Override = v // req.Vendor == r.Vendor, checked above
+	}
+	if vs, err := b.Router.Choose(ctx, rr); err != nil || len(vs) == 0 || vs[0] != v || b.Config.Vendors.For(v).Model != r.Model {
 		return Result{}, false, nil
 	}
 	p, err := b.placeResearch(req, r)
