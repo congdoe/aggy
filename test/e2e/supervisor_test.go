@@ -3,15 +3,18 @@
 package e2e
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -234,6 +237,15 @@ func TestPassThrough(t *testing.T) {
 	banner := "\x1b[?2004h\x1b[38;2;1;2;3mREADY 漢🙂\x1b]8;;https://x\x1b\\l\x1b]8;;\x1b\\\x1b[0m>"
 	s := w.start(t, map[string]any{"raw_echo": true, "stdout": banner, "exit_code": 7}, "run", "codex")
 	s.waitFor([]byte(banner))
+
+	// The CLI is told where the supervisor socket is, and it answers.
+	sock := interactiveRecord(t, w).Env["AGGY_SOCKET"]
+	if filepath.Dir(sock) != filepath.Join(w.home, ".aggy", "run") {
+		t.Errorf("AGGY_SOCKET = %q, want it in the state dir's run/", sock)
+	}
+	if got := ping(t, sock); got != `{"ok":true,"type":"pong"}` {
+		t.Errorf("ping = %q", got)
+	}
 	s.send(sample)
 	s.waitFor(sample)
 
@@ -248,15 +260,12 @@ func TestPassThrough(t *testing.T) {
 	}
 	s.restored("after exit")
 
-	recs := fakecli.Records(t, w.record)
-	var rec *fakecli.Record
-	for i := range recs {
-		if recs[i].Mode == "interactive" {
-			rec = &recs[i]
-		}
+	if _, err := os.Lstat(sock); !os.IsNotExist(err) {
+		t.Errorf("the socket outlived aggy: %v", err)
 	}
-	if rec == nil {
-		t.Fatalf("no interactive run recorded: %+v", recs)
+	rec := interactiveRecord(t, w)
+	if p := rec.Env["AGGY_PARENT"]; filepath.Base(sock) != p+".sock" {
+		t.Errorf("AGGY_PARENT = %q does not name the socket %s", p, sock)
 	}
 	if !rec.StdinTerminal {
 		t.Error("the CLI's stdin was not a terminal")
@@ -273,6 +282,35 @@ func TestPassThrough(t *testing.T) {
 	if rec.Cwd != w.cwd {
 		t.Errorf("cwd = %q, want %q", rec.Cwd, w.cwd)
 	}
+}
+
+// interactiveRecord returns the fake's record of the interactive run.
+func interactiveRecord(t *testing.T, w *world) fakecli.Record {
+	t.Helper()
+	recs := fakecli.Records(t, w.record)
+	for _, r := range recs {
+		if r.Mode == "interactive" {
+			return r
+		}
+	}
+	t.Fatalf("no interactive run recorded: %+v", recs)
+	return fakecli.Record{}
+}
+
+// ping sends a ping on the supervisor socket and returns the reply line.
+func ping(t *testing.T, sock string) string {
+	t.Helper()
+	c, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	_ = c.SetDeadline(time.Now().Add(timeout))
+	if _, err := c.Write([]byte(`{"type":"ping"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	line, _ := bufio.NewReader(c).ReadString('\n')
+	return strings.TrimSpace(line)
 }
 
 func TestSuspendResume(t *testing.T) {

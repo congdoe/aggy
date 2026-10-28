@@ -2,9 +2,11 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/adapter/claude"
@@ -12,6 +14,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/grok"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/execrun"
+	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/supervisor"
@@ -78,11 +81,23 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy run: %v\n", err)
 		return 1
 	}
+	stateDir, err := home.Dir()
+	if err != nil {
+		fmt.Fprintf(stderr, "aggy run: %v\n", err)
+		return 1
+	}
+	parentID, err := newParentID()
+	if err != nil {
+		fmt.Fprintf(stderr, "aggy run: %v\n", err)
+		return 1
+	}
 	code, err := supervisor.Run(supervisor.Options{
 		In: os.Stdin, Out: os.Stdout, Command: cmd,
 		Start:     startPTY,
 		SwitchKey: key,
 		Vendors:   pickerVendors(cfg.Switch.Order, v),
+		RunDir:    filepath.Join(stateDir, "run"),
+		ParentID:  parentID,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy run: %v\n", err)
@@ -122,4 +137,18 @@ func pickerVendors(order []adapter.Vendor, on adapter.Vendor) []adapter.Vendor {
 		}
 	}
 	return out
+}
+
+// newParentID returns a random (version 4) UUID.
+//
+// TODO(T6661): record the parent in the store; for now the id only names
+// the supervisor socket.
+func newParentID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:]), nil
 }
