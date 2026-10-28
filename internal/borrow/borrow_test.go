@@ -156,6 +156,10 @@ func TestDelegated(t *testing.T) {
 	if got := w.records()[0].Env[Delegated]; got != "1" {
 		t.Errorf("child %s = %q, want 1", Delegated, got)
 	}
+	// T6692: the child knows the vendor it runs as, for the commit trailer.
+	if got := w.records()[0].Env["AGGY_VENDOR"]; got != "grok" {
+		t.Errorf("child AGGY_VENDOR = %q, want grok", got)
+	}
 	b := w.borrower()
 	b.Getenv = func(k string) string {
 		if k == Delegated {

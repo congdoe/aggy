@@ -26,6 +26,17 @@ var Kinds = []adapter.Kind{adapter.Image, adapter.Video, adapter.Research, adapt
 // with Delegated=1, and aggy borrow refuses to run under it: one hop.
 const Delegated = "AGGY_DELEGATED"
 
+// childEnv is a child's added environment: Delegated=1, and the vendor
+// and model it runs as (AGGY_VENDOR, AGGY_MODEL when one is set), which
+// the attribution hook writes into a commit's trailers.
+func childEnv(v adapter.Vendor, model string) []string {
+	env := []string{Delegated + "=1", "AGGY_VENDOR=" + string(v)}
+	if model != "" {
+		env = append(env, "AGGY_MODEL="+model)
+	}
+	return env
+}
+
 // ErrDelegated is the refusal of a borrow from inside a borrow child.
 var ErrDelegated = errors.New("aggy borrow does not run inside a borrow child (" + Delegated + " is set): borrows are one hop")
 
@@ -448,7 +459,7 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 		// The turn limit, where the CLI takes one (Grok's --max-turns;
 		// Codex has none, and Claude's is not recorded).
 		MaxTurns:     budget.Turns,
-		Env:          []string{Delegated + "=1"},
+		Env:          childEnv(v, model),
 		GuardCommand: b.Guard,
 		RefImages:    refs,
 		// The user's opt-in only; see config.Media.
