@@ -401,3 +401,40 @@ func (s *Store) MarkBorrowRead(ctx context.Context, id string, at time.Time) err
 	_, err := s.db.ExecContext(ctx, `UPDATE borrows SET read_at = ? WHERE id = ? AND read_at IS NULL`, millis(at), id)
 	return err
 }
+
+// BorrowUsage is what aggy itself saw one vendor's finished borrows use:
+// the CLI's own token counts and wall time. It is never the vendor's
+// count, bill, or allowance.
+type BorrowUsage struct {
+	Vendor string
+	// Borrows is the number of finished borrows; WithTokens, how many of
+	// them reported tokens (a CLI that reports none records 0).
+	Borrows, WithTokens int
+	Tokens              int64
+	Time                time.Duration
+}
+
+// BorrowUsageSince sums the borrows that started at or after since and
+// have finished, per vendor, by vendor name.
+func (s *Store) BorrowUsageSince(ctx context.Context, since time.Time) ([]BorrowUsage, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT vendor, COUNT(*), SUM(CASE WHEN tokens > 0 THEN 1 ELSE 0 END),
+		        SUM(MAX(tokens, 0)), SUM(MAX(ended_at - started_at, 0))
+		 FROM borrows WHERE started_at >= ? AND ended_at IS NOT NULL
+		 GROUP BY vendor ORDER BY vendor`, millis(since))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []BorrowUsage
+	for rows.Next() {
+		var u BorrowUsage
+		var ms int64
+		if err := rows.Scan(&u.Vendor, &u.Borrows, &u.WithTokens, &u.Tokens, &ms); err != nil {
+			return nil, err
+		}
+		u.Time = time.Duration(ms) * time.Millisecond
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
