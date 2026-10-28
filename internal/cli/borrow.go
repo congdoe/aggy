@@ -20,6 +20,7 @@ import (
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/probe"
+	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
 )
@@ -197,6 +198,15 @@ func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy borrow: config: %s\n", termsafe.Field(err.Error()))
 		return 1
 	}
+	// The repo's own config narrows the user's: allowed_vendors and
+	// routing lists that leave a kind with no vendor.
+	root, _ := repoRoot(cwd)
+	repoCfg, err := config.LoadRepo(root)
+	if err != nil {
+		fmt.Fprintf(stderr, "aggy borrow: repo config: %s\n", termsafe.Field(err.Error()))
+		return 1
+	}
+	eff := config.Merge(cfg, repoCfg)
 	stateDir, err := home.Dir()
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy borrow: %v\n", err)
@@ -209,7 +219,7 @@ func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = s.Close() }()
 
-	w := &borrowWorld{env: env, store: s}
+	w := &borrowWorld{env: env, store: s, eff: eff}
 	parent, _ := adapter.ParseVendor(env.getenv("AGGY_VENDOR"))
 	b := borrow.New(borrow.Deps{
 		Store:     s,
@@ -218,7 +228,8 @@ func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 		Locate:    w.locate,
 		Connected: w.connected,
 		Runner:    env.runner,
-		Config:    cfg,
+		Config:    eff.Config,
+		Allowed:   eff.Allows,
 		StateDir:  stateDir,
 		TempDir:   env.tempDir,
 		Now:       env.now,
@@ -290,6 +301,7 @@ func newAdapter(v adapter.Vendor, cli borrow.CLI) adapter.Adapter {
 type borrowWorld struct {
 	env   borrowEnv
 	store *store.Store
+	eff   config.Effective // the user config narrowed by the repo's
 }
 
 // binName is each vendor's program name.
@@ -331,19 +343,26 @@ func (w *borrowWorld) connected(ctx context.Context, v adapter.Vendor) bool {
 	return false
 }
 
-// defaultOrder is the temporary routing order.
+// defaultOrder is the temporary order for a not-author route.
 var defaultOrder = []adapter.Vendor{adapter.Grok, adapter.Codex, adapter.Claude}
 
-// defaultRouter is the stand-in router: every connected vendor that
-// supports the kind, in grok, codex, claude order, skipping the parent's
-// vendor.
+// defaultRouter is the stand-in router: the kind's route from the user
+// config narrowed by the repo's (allowed_vendors removes vendors, and an
+// empty list turns the kind off; a not-author route walks grok, codex,
+// claude), skipping the parent's vendor and every vendor that is not
+// connected or does not support the kind.
 //
 // TODO(T6627): replace with router.New once batch 5b merges.
 func (w *borrowWorld) defaultRouter() borrow.Router {
 	return borrow.RouterFunc(func(ctx context.Context, req borrow.RouteRequest) ([]adapter.Vendor, error) {
+		route := w.eff.Routing.For(req.Kind)
+		order := route.Vendors
+		if route.NotAuthor {
+			order = defaultOrder
+		}
 		var out []adapter.Vendor
-		for _, v := range defaultOrder {
-			if v == req.Parent || !w.connected(ctx, v) {
+		for _, v := range order {
+			if v == req.Parent || !w.eff.Allows(v) || !w.connected(ctx, v) {
 				continue
 			}
 			if borrow.Supports(newAdapter(v, borrow.CLI{}), req.Kind) != nil {
@@ -353,4 +372,18 @@ func (w *borrowWorld) defaultRouter() borrow.Router {
 		}
 		return out, nil
 	})
+}
+
+// repoRoot returns the root of the git work tree holding dir (the
+// nearest directory with a .git entry) and true, or dir and false when
+// dir is in none.
+func repoRoot(dir string) (string, bool) {
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		if _, err := safefs.Lstat(filepath.Join(d, ".git")); err == nil {
+			return d, true
+		}
+		if filepath.Dir(d) == d {
+			return dir, false
+		}
+	}
 }

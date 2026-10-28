@@ -63,6 +63,8 @@ type borrowFixture struct {
 	record   string
 	scenario map[string]string
 	env      borrowEnv
+	repo     string
+	state    string
 }
 
 func newBorrowFixture(t *testing.T, vendors ...adapter.Vendor) *borrowFixture {
@@ -70,7 +72,8 @@ func newBorrowFixture(t *testing.T, vendors ...adapter.Vendor) *borrowFixture {
 	f := &borrowFixture{fakes: fakecli.Build(t), bin: t.TempDir(), record: filepath.Join(t.TempDir(), "rec.jsonl"), scenario: map[string]string{}}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("AGGY_HOME", filepath.Join(t.TempDir(), "aggy"))
+	f.state = filepath.Join(t.TempDir(), "aggy")
+	t.Setenv("AGGY_HOME", f.state)
 	for _, v := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME", "AGGY_DELEGATED", "AGGY_VENDOR"} {
 		t.Setenv(v, "")
 	}
@@ -96,6 +99,7 @@ func newBorrowFixture(t *testing.T, vendors ...adapter.Vendor) *borrowFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.repo = repo
 	withFake := func(run adapter.Runner) adapter.Runner {
 		return func(ctx context.Context, c adapter.Command) (adapter.Output, error) {
 			c.Env = append(append([]string{}, c.Env...), fakecli.EnvRecord+"="+f.record, fakecli.EnvVendor+"="+filepath.Base(c.Path))
@@ -190,5 +194,57 @@ func TestBorrowCommandRefusals(t *testing.T) {
 	}
 	if recs := fakecli.Records(t, f.record); slices.ContainsFunc(recs, func(r fakecli.Record) bool { return r.Mode == "headless" }) {
 		t.Error("a refused borrow ran a child")
+	}
+}
+
+// TestBorrowAllowedVendors (#10-1): the repo's allowed_vendors and the
+// routing table bind routing and --vendor alike. A refused borrow runs
+// nothing.
+func TestBorrowAllowedVendors(t *testing.T) {
+	tests := []struct {
+		name     string
+		repoCfg  string
+		userCfg  string
+		args     []string
+		wantErr  string
+		wantRuns int
+	}{
+		{"claude only: news never routes to grok", `allowed_vendors = ["claude"]`, "",
+			[]string{"news", "x"}, "no connected vendor can take a news borrow", 0},
+		{"claude only: --vendor grok refused", `allowed_vendors = ["claude"]`, "",
+			[]string{"news", "x", "--vendor", "grok"}, "grok is not allowed for this repo", 0},
+		{"no vendor at all", `allowed_vendors = []`, "",
+			[]string{"news", "x", "--vendor", "grok"}, "grok is not allowed for this repo", 0},
+		{"kind turned off in routing", "", "[routing]\nnews = []\n",
+			[]string{"news", "x"}, "no connected vendor can take a news borrow", 0},
+		{"grok allowed", `allowed_vendors = ["grok"]`, "", []string{"news", "x"}, "", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newBorrowFixture(t, adapter.Grok, adapter.Claude)
+			f.scenario["grok"] = `{"json":{"result":"ok"}}`
+			if tt.repoCfg != "" {
+				mustWrite(t, filepath.Join(f.repo, ".aggy", "config.toml"), tt.repoCfg+"\n", 0o600)
+			}
+			if tt.userCfg != "" {
+				mustWrite(t, filepath.Join(f.state, "config.toml"), tt.userCfg, 0o600)
+			}
+			code, _, errOut := f.run(t, tt.args...)
+			if tt.wantErr != "" && (code == 0 || !strings.Contains(errOut, tt.wantErr)) {
+				t.Errorf("code %d stderr %q", code, errOut)
+			}
+			if tt.wantErr == "" && code != 0 {
+				t.Errorf("code %d stderr %q", code, errOut)
+			}
+			runs := 0
+			for _, r := range fakecli.Records(t, f.record) {
+				if r.Mode == "headless" {
+					runs++
+				}
+			}
+			if runs != tt.wantRuns {
+				t.Errorf("runs = %d, want %d", runs, tt.wantRuns)
+			}
+		})
 	}
 }
