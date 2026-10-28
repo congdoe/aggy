@@ -43,10 +43,26 @@ func (f Fakes) For(vendor string) string {
 	return filepath.Join(f.Dir, "fake-"+vendor)
 }
 
+// envGoTool passes goTool to a test's helper processes.
+const envGoTool = "AGGY_TEST_GO"
+
 // buildEnv is the environment at process start, before any test changes
 // HOME, so the go tool keeps using its real build cache and never runs
 // with a test's temp HOME.
 var buildEnv = os.Environ()
+
+// goTool is the go command, found on the PATH at process start, before
+// any test (or IsolatedMain) points PATH elsewhere. A test's helper
+// process, started with the isolated PATH, gets it from envGoTool.
+var goTool = func() string {
+	if p := os.Getenv(envGoTool); filepath.IsAbs(p) {
+		return p
+	}
+	if p, err := exec.LookPath("go"); err == nil {
+		return p
+	}
+	return "go"
+}()
 
 // Build compiles the fakes into a temp dir for t. It runs the go tool, never
 // a vendor CLI.
@@ -59,7 +75,7 @@ func Build(t testing.TB) Fakes {
 	src := filepath.Join(filepath.Dir(file), "..", "..", "testdata", "fakes", "fake")
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-claude")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	cmd := exec.Command(goTool, "build", "-o", bin, ".")
 	cmd.Dir = src
 	cmd.Env = append(append([]string{}, buildEnv...), "CGO_ENABLED=0", "GOTOOLCHAIN=local")
 	if out, err := cmd.CombinedOutput(); err != nil {
