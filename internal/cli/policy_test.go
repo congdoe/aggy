@@ -64,7 +64,8 @@ func TestAddPolicy(t *testing.T) {
 	for _, tt := range tests {
 		var req adapter.InteractiveRequest
 		warns := addPolicy(tt.v, tt.caps, &req)
-		if got := slices.Equal(req.Deny, parity.DenyRules); got != tt.deny || (len(warns) == 0) != tt.deny {
+		want := map[adapter.Vendor][]string{adapter.Claude: parity.ClaudeDeny, adapter.Grok: parity.GrokDeny}[tt.v]
+		if got := len(req.Deny) > 0 && slices.Equal(req.Deny, want); got != tt.deny || (len(warns) == 0) != tt.deny {
 			t.Errorf("%s %v: deny %v, warns %v", tt.v, tt.caps, req.Deny, warns)
 		}
 	}
