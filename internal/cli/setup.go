@@ -130,24 +130,24 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 			fmt.Fprint(stdout, setupUsage)
 			return 0
 		}
-		refuse(context.Background(), stderr, "setup", diag.EvSetupFailed, diag.CodeUsage, err.Error(), diag.Rec{})
+		refuse(context.Background(), stderr, "setup", diag.EvSetupFailed(), diag.CodeUsage(), err.Error(), diag.Rec{})
 		fmt.Fprintf(stderr, "\n%s", setupUsage)
 		return 2
 	}
 	if fl.NArg() > 0 {
-		refuse(context.Background(), stderr, "setup", diag.EvSetupFailed, diag.CodeUsage, "unexpected arguments", diag.Rec{})
+		refuse(context.Background(), stderr, "setup", diag.EvSetupFailed(), diag.CodeUsage(), "unexpected arguments", diag.Rec{})
 		fmt.Fprintf(stderr, "\n%s", setupUsage)
 		return 2
 	}
 	selected, err := parseOnly(*only, env.adapters)
 	if err != nil {
-		refuse(context.Background(), stderr, "setup", diag.EvSetupFailed, diag.CodeUsage, err.Error(), diag.Rec{})
+		refuse(context.Background(), stderr, "setup", diag.EvSetupFailed(), diag.CodeUsage(), err.Error(), diag.Rec{})
 		return 2
 	}
 	ctx := context.Background()
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
-		refuse(ctx, stderr, "setup", diag.EvSetupFailed, diag.CodeStore, err.Error(), diag.Rec{})
+		refuse(ctx, stderr, "setup", diag.EvSetupFailed(), diag.CodeStore(), err.Error(), diag.Rec{})
 		return 1
 	}
 	defer func() { _ = s.Close() }()
@@ -165,7 +165,7 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 	code := 0
 	for _, a := range selected {
 		if c := st.vendor(ctx, a); c != 0 {
-			refuse(ctx, stderr, "setup", diag.EvSetupFailed, diag.CodeStore, st.err.Error(), diag.Rec{Vendor: string(a.Vendor())})
+			refuse(ctx, stderr, "setup", diag.EvSetupFailed(), diag.CodeStore(), st.err.Error(), diag.Rec{Vendor: string(a.Vendor())})
 			code = c
 		}
 	}
@@ -279,7 +279,7 @@ func (r *setupRun) vendor(ctx context.Context, a adapter.Adapter) int {
 		r.err = err
 		return 1
 	}
-	dlog.Log(ctx, diag.Rec{Event: diag.EvSetupChecked, Vendor: string(v),
+	dlog.Log(ctx, diag.Rec{Event: diag.EvSetupChecked(), Vendor: string(v),
 		Attrs: map[string]any{"installed": res.Installed, "connected": rec.Connected, "version": rec.Version}})
 	fmt.Fprintf(r.out, "  recorded: %s\n", recordText(rec))
 	return 0

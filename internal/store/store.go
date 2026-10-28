@@ -18,7 +18,7 @@ import (
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/safefs"
 
-	_ "modernc.org/sqlite" // registers the pure-Go "sqlite" driver
+	"modernc.org/sqlite"
 )
 
 //go:embed migrations/*.sql diagmigrations/*.sql
@@ -99,17 +99,37 @@ func openRW(ctx context.Context, path, dir string) (*Store, error) {
 	} else if err != nil {
 		return nil, err
 	}
+	// safefs.OpenFile follows a symlink at path (and would create its
+	// target), so refuse one before it runs (see pin.go).
+	if fi, err := safefs.Lstat(path); err == nil {
+		if err := plainFile(path, fi); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
 	// Create the file here, through safefs, so it starts 0600 and is
 	// checked; SQLite gives the -wal and -shm files the same mode.
 	f, err := safefs.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	if err := f.Close(); err != nil {
+	ffi, err := f.Stat()
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
 		return nil, err
 	}
 	if err := safefs.Chmod(path, 0o600); err != nil {
 		return nil, err
+	}
+	want, err := pinDB(path)
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(ffi, want) {
+		return nil, &fs.PathError{Op: "store", Path: path, Err: safefs.ErrChanged}
 	}
 
 	// Serialize first-time setup (the WAL switch and migrations) across
@@ -124,22 +144,17 @@ func openRW(ctx context.Context, path, dir string) (*Store, error) {
 	}
 	defer unlock()
 
-	db, err := sql.Open("sqlite", dsn(path))
+	base, err := sqlite.NewConnector(dsn(path))
 	if err != nil {
 		return nil, err
 	}
+	// Every connection confirms SQLite opened the pinned file and that
+	// safefs clears it and its WAL files (pin.go).
+	db := sql.OpenDB(pinned{base, []dbPin{{path, want}}})
 	s := &Store{db: db, path: path, warnings: warnings}
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: open %s: %w", path, err)
-	}
-	// SQLite opened the file itself, outside safefs. Confirm by identity
-	// that neither it nor its WAL files is a vendor credential file.
-	for _, p := range []string{path, path + "-wal", path + "-shm"} {
-		if err := safefs.Check(p); err != nil {
-			_ = db.Close()
-			return nil, err
-		}
 	}
 	if err := s.migrate(ctx, dir); err != nil {
 		_ = db.Close()
@@ -170,28 +185,26 @@ func OpenExisting(ctx context.Context, path string) (*Store, error) {
 			return nil, err
 		}
 	}
+	want, err := pinDB(path)
+	if err != nil {
+		return nil, err
+	}
 	q := url.Values{}
 	q.Add("mode", "rw") // never create
 	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeout.Milliseconds()))
 	q.Add("_pragma", "foreign_keys(1)")
 	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: q.Encode()}
-	db, err := sql.Open("sqlite", u.String())
+	base, err := sqlite.NewConnector(u.String())
 	if err != nil {
 		return nil, err
 	}
+	db := sql.OpenDB(pinned{base, []dbPin{{path, want}}})
 	s := &Store{db: db, path: path}
 	known, err := KnownVersion()
 	if err == nil {
 		var v int
 		if v, err = s.Version(ctx); err == nil && (v == 0 || v > known) {
 			err = fmt.Errorf("store: %s is at schema version %d, which this aggy cannot write", path, v)
-		}
-	}
-	if err == nil {
-		for _, p := range []string{path, path + "-wal", path + "-shm"} {
-			if err = safefs.Check(p); err != nil {
-				break
-			}
 		}
 	}
 	if err != nil {

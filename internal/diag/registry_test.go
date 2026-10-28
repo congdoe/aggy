@@ -77,7 +77,7 @@ func tokens(t *testing.T, name, src string) []tok {
 }
 
 // uses counts, per identifier, the references to the registry's
-// variables in code (never in comments): diag.X outside the package, X
+// accessors in code (never in comments): diag.X outside the package, X
 // inside it. It also returns where package diag builds an Event or Code
 // from a value outside codes.go (Event{} and Code{}, the zero values, are
 // allowed).
@@ -120,12 +120,15 @@ func builds(ts []tok) bool {
 }
 
 var (
-	varRE   = regexp.MustCompile(`(?m)^\s+((?:Ev|Code)[A-Z]\w*)\s*=\s*(Event|Code)\{"([^"]+)"\}`)
+	varRE = regexp.MustCompile(`(?m)^func ((?:Ev|Code)[A-Z]\w*)\(\) (Event|Code)\s+\{ return (?:Event|Code)\{"([^"]+)"\} \}$`)
+	// sealRE finds a registry entry declared as a variable, which any
+	// package could reassign.
+	sealRE  = regexp.MustCompile(`(?m)^\s*(?:var\s+)?(?:Ev|Code)[A-Z]\w*\s*(?:Event|Code)?\s*=`)
 	eventRE = regexp.MustCompile(`^[a-z]+(\.[a-z]+)?\.[a-z_]+\.[a-z_]+$`)
 	codeRE  = regexp.MustCompile(`^[a-z]+\.[a-z_]+$`)
 )
 
-// TestRegistry: every event and code variable is registered once, with a
+// TestRegistry: every event and code accessor is registered once, with a
 // name that follows the naming rules, a level, a meaning, and a next
 // step; every one is used in code outside the registry (a mention in a
 // comment does not count); and nothing outside codes.go builds an Event
@@ -135,7 +138,10 @@ func TestRegistry(t *testing.T) {
 	src := sources(t, repoRoot(t))
 	vars := varRE.FindAllStringSubmatch(src["internal/diag/codes.go"], -1)
 	if len(vars) != len(events)+len(codes) {
-		t.Errorf("codes.go declares %d variables, the registry has %d entries", len(vars), len(events)+len(codes))
+		t.Errorf("codes.go declares %d accessors, the registry has %d entries", len(vars), len(events)+len(codes))
+	}
+	if m := sealRE.FindAllString(src["internal/diag/codes.go"], -1); len(m) > 0 {
+		t.Errorf("registry entries must be accessor functions, not variables: %q", m)
 	}
 	used, built := uses(t, src)
 	if len(built) > 0 {
@@ -180,7 +186,7 @@ func TestRegistry(t *testing.T) {
 // is caught.
 func TestRegistryUses(t *testing.T) {
 	src := map[string]string{
-		"internal/cli/a.go":  "package cli\n// diag.EvGCRemoved in a comment\n/* diag.CodeUsage */\nvar _ = diag.CodeStore\n",
+		"internal/cli/a.go":  "package cli\n// diag.EvGCRemoved() in a comment\n/* diag.CodeUsage() */\nvar _ = diag.CodeStore()\n",
 		"internal/diag/b.go": "package diag\n// EvGCRefused\nvar _ = EvGCRemoved\nvar _ = Event{\"x.y.z\"}\nvar _ = Code{}\n",
 	}
 	used, built := uses(t, src)
