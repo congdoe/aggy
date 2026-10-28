@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/fakecli"
@@ -15,15 +16,33 @@ import (
 )
 
 // sandboxed is an adapter whose probe found --sandbox, on a darwin host
-// that can apply Grok's sandbox, with HOME /home/u.
+// that can apply Grok's sandbox, with HOME /home/u and no symlinks.
 func sandboxed() Adapter {
 	return Adapter{Caps: []string{probe.CapSandbox, probe.CapKernelSandbox}, GOOS: "darwin", Getenv: func(k string) string {
 		if k == "HOME" {
 			return "/home/u"
 		}
 		return ""
-	}}
+	}, Realpath: func(p string) (string, error) { return p, nil }}
 }
+
+// denyArgs is --deny Read(p) --deny Grep(p) for each pattern.
+func denyArgs(pats ...string) []string {
+	var out []string
+	for _, p := range pats {
+		out = append(out, "--deny", "Read("+p+")", "--deny", "Grep("+p+")")
+	}
+	return out
+}
+
+// spellingPats are the spelling-independent patterns every deny set ends
+// with: any ~ path, and any path with a quote- or space-led component.
+var spellingPats = []string{"~*", "~*/**", "**/[" + leadChars + "]*", "**/[" + leadChars + "]*/**"}
+
+// sandboxedDenies is readDeny's argv for sandboxed().
+var sandboxedDenies = denyArgs(slices.Concat([]string{"/home/u/Library/**", "/home/u/.grok/**", "/System/Volumes/Data/**",
+	"/[Hh][Oo][Mm][Ee]/[Uu]/[Ll][Ii][Bb][Rr][Aa][Rr][Yy]/**", "/[Hh][Oo][Mm][Ee]/[Uu]/.[Gg][Rr][Oo][Kk]/**",
+	"/[Ss][Yy][Ss][Tt][Ee][Mm]/[Vv][Oo][Ll][Uu][Mm][Ee][Ss]/[Dd][Aa][Tt][Aa]/**"}, spellingPats)...)
 
 const sid = "5f0c6a2e-9b1d-4e7a-8c3f-2d4b6a8e0c1f"
 
@@ -56,9 +75,7 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 		return []string{"--tools", tools, "--disallowed-tools", deny(keep...), "--no-subagents"}
 	}
 	head := []string{"--prompt-file", h.Prompt, "--output-format", "json"}
-	denies := []string{"--deny", "Read(/home/u/Library/**)", "--deny", "Grep(/home/u/Library/**)",
-		"--deny", "Read(/home/u/.grok/**)", "--deny", "Grep(/home/u/.grok/**)",
-		"--deny", "Read(/System/Volumes/Data/**)", "--deny", "Grep(/System/Volumes/Data/**)"}
+	denies := sandboxedDenies
 	strict := slices.Concat([]string{"--sandbox", "strict"}, denies)
 	tests := []struct {
 		name     string
@@ -125,7 +142,8 @@ func TestSandboxFailsClosed(t *testing.T) {
 		}
 	}
 	// G32-3: a HOME that cannot be named in a deny rule refuses every
-	// kind that takes the denies.
+	// sandboxed kind. Image and video without strict (N54-4) run without
+	// the denies instead: they match none of their tools.
 	home := func(h string) Adapter {
 		a := sandboxed()
 		a.Getenv = func(string) string { return h }
@@ -134,7 +152,8 @@ func TestSandboxFailsClosed(t *testing.T) {
 	for _, a := range []Adapter{home(""), home("rel/home"), home("/"), home("/home/u*"), home("/home/[u]"), home("/home/a,b"), home("/home/u)"), home("/home/../u")} {
 		for _, k := range all {
 			req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true, FileTools: true}
-			if c, err := a.Headless(req); usesDeny(k) != errors.Is(err, adapter.ErrNoCapability) {
+			c, err := a.Headless(req)
+			if usesSandbox(k) != errors.Is(err, adapter.ErrNoCapability) || (!usesSandbox(k) && (err != nil || slices.Contains(c.Args, "--deny"))) {
 				t.Errorf("%s with HOME %q: %q, %v", k, a.Getenv("HOME"), c.Args, err)
 			}
 		}
@@ -169,9 +188,7 @@ func TestStrictMediaSwitch(t *testing.T) {
 		t.Error("strictMedia is on by default")
 	}
 	defer func(old bool) { strictMedia = old }(strictMedia)
-	denies := "--deny Read(/home/u/Library/**) --deny Grep(/home/u/Library/**) " +
-		"--deny Read(/home/u/.grok/**) --deny Grep(/home/u/.grok/**) " +
-		"--deny Read(/System/Volumes/Data/**) --deny Grep(/System/Volumes/Data/**) "
+	denies := strings.Join(sandboxedDenies, " ") + " "
 	tests := []struct {
 		req  adapter.HeadlessRequest
 		tail string // the argv after --output-format json
@@ -590,6 +607,10 @@ func TestFirmlinkDeny(t *testing.T) {
 			if has != (goos == "darwin") || !strings.Contains(args, "--deny Read(/home/u/Library/**) --deny Grep(/home/u/Library/**)") {
 				t.Errorf("%s %s: %q", goos, k, c.Args)
 			}
+			// Case folding is for APFS only.
+			if folded := strings.Contains(args, "[Ll][Ii]"); folded != (goos == "darwin") {
+				t.Errorf("%s %s: case-folded rules %v", goos, k, folded)
+			}
 		}
 	}
 }
@@ -634,18 +655,13 @@ func TestGrokHomeDeny(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s, GROK_HOME %q: %v", k, tt.grokHome, err)
 			}
-			var got []string
-			for i, a := range c.Args {
-				if a == "--deny" && i+1 < len(c.Args) && !strings.Contains(c.Args[i+1], "/Library/") && !strings.Contains(c.Args[i+1], "/System/Volumes/Data/") {
-					got = append(got, c.Args[i+1])
-				}
-			}
 			var want []string
 			for _, h := range tt.want {
-				want = append(want, "Read("+h+"/**)", "Grep("+h+"/**)")
+				want = append(want, "--deny", "Read("+h+"/**)", "--deny", "Grep("+h+"/**)")
 			}
-			if !slices.Equal(got, want) {
-				t.Errorf("%s, GROK_HOME %q: Grok home denies %q, want %q", k, tt.grokHome, got, want)
+			args := strings.Join(c.Args, " ")
+			if !strings.Contains(args, strings.Join(want, " ")) || strings.Contains(args, "Write(") || strings.Contains(args, "Edit(") {
+				t.Errorf("%s, GROK_HOME %q: %q, want %q", k, tt.grokHome, c.Args, want)
 			}
 		}
 	}
@@ -657,9 +673,96 @@ func TestGrokHomeDeny(t *testing.T) {
 	for _, bad := range []string{"rel/grok", "/", "/g*", "/g,h", "/g)"} {
 		for _, k := range denyKinds {
 			req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true, FileTools: true}
-			if c, err := env(bad).Headless(req); !errors.Is(err, adapter.ErrNoCapability) {
+			c, err := env(bad).Headless(req)
+			if usesSandbox(k) != errors.Is(err, adapter.ErrNoCapability) || (!usesSandbox(k) && (err != nil || slices.Contains(c.Args, "--deny"))) {
 				t.Errorf("%s, GROK_HOME %q: %q, %v", k, bad, c.Args, err)
 			}
+		}
+	}
+}
+
+// TestPhysicalDeny (N54-3): a HOME or Grok home reached through a symlink
+// is denied in its physical form too; a physical path that cannot be
+// found or named refuses a sandboxed kind.
+func TestPhysicalDeny(t *testing.T) {
+	a := sandboxed()
+	a.GOOS = "linux"
+	a.Realpath = func(p string) (string, error) { return strings.Replace(p, "/home/u", "/mnt/home/u", 1), nil }
+	c, err := a.Headless(adapter.HeadlessRequest{Kind: adapter.Review, PromptFile: "/p/prompt.md", Cwd: "/w"})
+	want := denyArgs(slices.Concat([]string{"/home/u/Library/**", "/home/u/.grok/**", "/mnt/home/u/Library/**", "/mnt/home/u/.grok/**"}, spellingPats)...)
+	if err != nil || !strings.Contains(strings.Join(c.Args, " "), strings.Join(want, " ")) {
+		t.Errorf("argv %q, %v\nwant %q", c.Args, err, want)
+	}
+	for _, rp := range []func(string) (string, error){
+		func(string) (string, error) { return "", errors.New("loop") },
+		func(string) (string, error) { return "/mnt/*", nil },
+	} {
+		a.Realpath = rp
+		if _, err := a.Headless(adapter.HeadlessRequest{Kind: adapter.Review, PromptFile: "/p/prompt.md", Cwd: "/w"}); !errors.Is(err, adapter.ErrNoCapability) {
+			t.Errorf("review: %v", err)
+		}
+		if c, err := a.Headless(adapter.HeadlessRequest{Kind: adapter.Image, PromptFile: "/p/prompt.md", Cwd: "/w"}); err != nil || slices.Contains(c.Args, "--deny") {
+			t.Errorf("image: %q, %v", c.Args, err)
+		}
+	}
+}
+
+// TestDenyPatternShape: every deny pattern compiles the way Grok's glob
+// crate wants (a ** is a whole path component, or Pattern::new fails and
+// the rule silently matches nothing), and holds no rule syntax.
+func TestDenyPatternShape(t *testing.T) {
+	c, err := sandboxed().Headless(adapter.HeadlessRequest{Kind: adapter.Review, PromptFile: "/p/prompt.md", Cwd: "/w"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, arg := range c.Args {
+		if arg != "--deny" {
+			continue
+		}
+		rule := c.Args[i+1]
+		pat := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(rule, "Read("), "Grep("), ")")
+		if strings.ContainsAny(pat, "(),\\") || pat == rule {
+			t.Errorf("rule %q", rule)
+		}
+		for j := strings.Index(pat, "**"); j >= 0; j = next(pat, j) {
+			if (j > 0 && pat[j-1] != '/') || (j+2 < len(pat) && pat[j+2] != '/') {
+				t.Errorf("** not a whole component in %q", pat)
+			}
+		}
+	}
+}
+
+func next(s string, j int) int {
+	k := strings.Index(s[j+2:], "**")
+	if k < 0 {
+		return -1
+	}
+	return j + 2 + k
+}
+
+// TestLeadChars: the class holds the quotes and every rune Rust's
+// str::trim strips (Unicode White_Space, which Go's unicode table shares).
+func TestLeadChars(t *testing.T) {
+	in := func(r rune) bool {
+		rs := []rune(leadChars)
+		for i := 0; i < len(rs); i++ {
+			if i+2 < len(rs) && rs[i+1] == '-' {
+				if r >= rs[i] && r <= rs[i+2] {
+					return true
+				}
+				i += 2
+				continue
+			}
+			if rs[i] == r {
+				return true
+			}
+		}
+		return false
+	}
+	for r := rune(0); r <= 0x10FFFF; r++ {
+		want := r == '"' || r == '\'' || unicode.Is(unicode.White_Space, r)
+		if in(r) != want {
+			t.Errorf("rune %U in class: %v, want %v", r, in(r), want)
 		}
 	}
 }

@@ -180,6 +180,28 @@ func TestCanonicalPath(t *testing.T) {
 	}
 }
 
+// TestRealPath: a symlinked dir resolves to its target, a missing tail is
+// kept as written (case included), and a credential path is refused.
+func TestRealPath(t *testing.T) {
+	home := fakeHome(t)
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	must(t, err)
+	a := filepath.Join(base, "Real")
+	must(t, os.MkdirAll(a, 0o700))
+	must(t, os.Symlink(a, filepath.Join(base, "link")))
+	for _, tt := range []struct{ in, want string }{
+		{filepath.Join(base, "link", "Missing", "X"), filepath.Join(a, "Missing", "X")},
+		{a, a},
+	} {
+		if got, err := RealPath(tt.in); err != nil || got != tt.want {
+			t.Errorf("RealPath(%s) = %q, %v, want %q", tt.in, got, err, tt.want)
+		}
+	}
+	if _, err := RealPath(filepath.Join(home, ".grok", "auth.json")); err == nil {
+		t.Error("a credential path was not refused")
+	}
+}
+
 // TestFirmlinkSpelling (PR #6 finding 9): on macOS,
 // /System/Volumes/Data/Users/x is /Users/x through a firmlink that
 // EvalSymlinks does not follow. A credential that does not exist yet must

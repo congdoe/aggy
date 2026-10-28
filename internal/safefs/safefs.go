@@ -299,6 +299,20 @@ func CanonicalPath(name string) (string, error) {
 	return normPath(t.real), nil
 }
 
+// RealPath returns name made absolute and resolved through symlinks the
+// way the kernel resolves them (the deepest existing ancestor, then the
+// rest appended), with its case and spelling otherwise kept: unlike
+// CanonicalPath, it is a path another program can be told about, such as
+// the physical form of a dir a vendor CLI must deny. It refuses a
+// credential path like every other call.
+func RealPath(name string) (string, error) {
+	t, err := resolve("RealPath", name)
+	if err != nil {
+		return "", err
+	}
+	return t.real, nil
+}
+
 // under reports whether the normalized path d is p or lies below it.
 func under(d, p string) bool {
 	if p == string(filepath.Separator) {

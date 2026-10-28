@@ -287,6 +287,7 @@ found every Grok borrow failing. Minimal runs in a scratch directory.
 | S7, sandbox logging | a successful sandboxed run with `RUST_LOG=xai_grok_sandbox=info` | Recorded | No sandbox line on stderr: headless tracing does not reach stderr, so the source's "continuing without sandbox" warnings are a weak guard. aggy does not set `RUST_LOG`. |
 | S4, `~/Library` denied | S3 plus `--deny "Read(<HOME>/Library/**)" --deny "Grep(<HOME>/Library/**)"`, `$HOME` expanded | **Confined** | `read_file` was refused, `Denied by permission policy: deny rule on read matching "~/Library/**"`; the in-repo README still read. aggy's argv since G32-3. |
 | S8, Grok home denied (T6742) | every sandboxed kind, and image and video, adds `--deny "Read(<Grok home>/**)" --deny "Grep(<Grok home>/**)"`: `$GROK_HOME`, else `<HOME>/.grok`, and `<HOME>/.grok` as well when `GROK_HOME` points elsewhere | **Grok works with it; the deny itself is inferred** | Strict leaves the Grok home readable, and it holds `auth.json`. Live smoke (2026-10-28, grok 1.0.70, 807f323): Grok starts and works with the deny for review (`grok-review-untrusted`, `aggy-grok-review-refused`) and research (`research-borrow-grok`, canary 0). Whether it refuses a read is not checked directly: no canary is planted in the real `~/.grok`. It is the same mechanism as S4 and S5, which are live-verified, so it is inferred to refuse `read_file` and `grep` there. On darwin, the `/System/Volumes/Data/**` deny (S5) already covers the firmlink spelling of the Grok home. Read and Grep only: Grok's media tools write there in their own code, and `image_edit` and `image_to_video`, which take their input still from the session folder there, are checked as `AccessKind::Tool`, which Read and Grep rules do not match (grok-src 559751fd, `xai-grok-tools/src/permission_access.rs:38-41`, `xai-grok-permission-rules/src/policy.rs:571`). So the deny does not get in their way, and it does not confine them either. |
+| S9, other spellings (N54-1, N54-3) | the denies of S4, S5 and S8, plus: `Read`/`Grep` of `~*` and `~*/**` (every `~` path); of `**/[<quotes and white space>]*` and `**/[...]*/**` (every path with a part that starts with a quote or Unicode white space); on darwin a case-folded copy of each dir rule (`/[Uu][Ss]...`); and the physical form of `~/Library` and the Grok home when a symlink makes it differ | **Source only; the owner's live canary check is pending** | From grok-src 559751fd. Grok's gate matches a `~` path literally and unnormalized, and the tool expands `~` after it (`xai-grok-permission-rules/src/policy/path_match.rs:91-112`, test `policy.rs:2221`). So `~/.grok/x`, `~//.grok/x` and `~/a/../.grok/x` would match no absolute rule, and a `~/.grok/**` rule would still miss the last two. Hence every `~` path is denied. Under strict nothing else in `$HOME` is readable anyway. A quote- or space-wrapped path is relative to the gate, which joins it to the cwd, and the tool strips the quotes and `str::trim` white space afterwards (`xai-grok-tools/src/types/resources.rs:404-445`). So `"~/.grok/auth.json"` or `" ../.grok/x"` match no path rule, and only a rule on the leading character catches them. Grok's glob match is case-sensitive (`policy.rs:825-835`) and APFS is not, hence the folded copies. Grok re-checks a symlink it follows (`policy.rs:222-263`), but a path already in its physical form has nothing to follow, hence the physical rules. Not covered: other Unicode spellings of a non-ASCII home path (APFS also ignores normalization). Nothing here was run live. |
 
 The strict profile (grok-src `crates/codegen/xai-grok-sandbox/src/profiles.rs:463-488`,
 kernel-enforced) allows reads of system dirs (`/usr`, `/etc`, `/tmp`,
@@ -300,7 +301,9 @@ run dirs) stay readable, `~/.grok` (Grok's own home) is readable
 `~/Library` is readable (S3; aggy's deny rules close it for `read_file`
 and `grep`, S4), and only vendor homes and other paths under `$HOME` are
 denied, and the `~/Library` deny is lexical, so on darwin the
-`/System/Volumes/Data` firmlink is denied too (S5). When the profile
+`/System/Volumes/Data` firmlink is denied too (S5), as are `~`, quoted,
+case-varied and physical spellings (S9, pending a canary check). Those
+two dirs are guarded by permission rules only. When the profile
 cannot be applied, grok 1.0.70 refused to start (S6); the source also has
 paths, `xai-grok-sandbox/src/lib.rs:206-216` and `:236-247`, that log
 "continuing without sandbox" and return Ok when the platform has none
@@ -315,10 +318,10 @@ Status of each kind under strict, and of image and video, which run without it:
 
 | Kind | Status |
 | --- | --- |
-| review | Live-verified: S2, S4, S5; `grok-review-untrusted` passed under strict (b972adf re-run below), and again with the Grok home deny (S8, 807f323). |
+| review | Live-verified: S2, S4, S5; `grok-review-untrusted` passed under strict (b972adf re-run below), and again with the Grok home deny (S8, 807f323). The S9 spelling rules are not yet run live. |
 | research | Live-verified: `research-borrow-grok` passed under strict plus the denies (b972adf), and again with the Grok home deny (807f323). |
 | news | **Not yet run live** under strict. Same argv as research. |
-| image | **Live FAIL under strict** (smoke `image-borrow-grok`, 2026-10-28, grok 1.0.70, at 25b89ee and again at 807f323): `aggy image` exited 1 after about 5 s, "the child left no file that passed the artifact gate"; the child only said it would generate the image (about 3.3K tokens). The same check passed on main without strict. Cause not determined (TODO(T6751)). From source the output write should be allowed: `image_gen` saves to `<Grok home>/sessions/<encoded cwd>/<id>/images/<n>.jpg` (grok-src `559751fd`, `xai-grok-tools/src/implementations/grok_build/image_gen/mod.rs:13`, `storage.rs:54-69`), which strict keeps writable (`paths.rs:74-78`; `profiles.rs:463-488`). So `strictMedia` in `internal/adapter/grok/grok.go` is off: image runs without `--sandbox strict` and without the sandbox host check, as on main, but keeps the read denies (S4, S5, S8), which are permission rules, not part of the sandbox. Its tools (`image_gen`, `image_edit`) are checked as `AccessKind::Tool`, so those denies match nothing of image's today. |
+| image | **Live FAIL under strict** (smoke `image-borrow-grok`, 2026-10-28, grok 1.0.70, at 25b89ee and again at 807f323): `aggy image` exited 1 after about 5 s, "the child left no file that passed the artifact gate"; the child only said it would generate the image (about 3.3K tokens). The same check passed on main without strict. Cause not determined (TODO(T6751)). From source the output write should be allowed: `image_gen` saves to `<Grok home>/sessions/<encoded cwd>/<id>/images/<n>.jpg` (grok-src `559751fd`, `xai-grok-tools/src/implementations/grok_build/image_gen/mod.rs:13`, `storage.rs:54-69`), which strict keeps writable (`paths.rs:74-78`; `profiles.rs:463-488`). So `strictMedia` in `internal/adapter/grok/grok.go` is off: image runs without `--sandbox strict` and without the sandbox host check, as on main, but keeps the read denies (S4, S5, S8, S9), which are permission rules, not part of the sandbox. Its tools (`image_gen`, `image_edit`) are checked as `AccessKind::Tool`, so those denies match nothing of image's today. For the same reason, a HOME or Grok home that cannot be named in a rule drops the denies for image and video instead of refusing them (N54-4). |
 | video | **Untested**: the test account has zero data retention, under which Grok's video tools are unavailable (b972adf re-run below); turning ZDR off, or a user-hosted bucket, is an owner item. Runs like image: no strict while `strictMedia` is off, read denies kept. |
 
 ## Smoke run, 2026-10-28 (main 2383c13)
@@ -428,12 +431,31 @@ repo's instructions could once have had a reviewer read and echo a file
 outside the repo. A Grok review now runs under `--sandbox strict` with
 the `~/Library` and `/System/Volumes/Data` denies, which kept
 `read_file` and `grep` out of `$HOME` whoever asked (S2, S4, S5 above,
-all live), and the Grok home deny (S8: Grok works with it live; the
-refusal itself is inferred).
+all live), the Grok home deny (S8: Grok works with it live; the
+refusal itself is inferred), and the other spellings (S9, pending).
 What strict still leaves readable (system dirs, the temp dirs) a hostile
 diff, which is attacker text in every review, could ask for just the
 same, so a gate on instruction files never closed it. aggy still keeps an edit diff off them
-(`borrow.TrustMarker`). The instruction names are `INSTRUCTION_FILENAMES`
+(`borrow.TrustMarker`).
+
+One case stays refused (N54-2). Grok loads instruction files with no
+permission check and follows symlinks to do it
+(`xai-grok-agent/src/prompt/agents_md.rs:46-79`, grok-src 559751fd). So
+a committed `AGENTS.md -> ../../.grok/auth.json` would put the token in
+the prompt: the sandbox allows that read, and the deny rules never see
+it. Source only, not run live. A Grok review is refused, and Grok
+passed over, when any instruction, rules, or skill path below, in a dir
+from the cwd to the repo root:
+- is a symlink, or has one on its way down (a linked `.claude`);
+- holds one anywhere inside a rules or skill dir;
+- is neither a regular file nor a dir, or cannot be checked
+  (`grokInstructionLinks`).
+Plain files pass. Not covered: Grok also reads `.cursor/rules` under any
+dir above a file it reads, anywhere in the repo, and follows a linked
+`.cursor` or `rules` dir there, though not a linked rule file
+(`xai-grok-tools/src/implementations/cursor_rules_on_read.rs:191-272`).
+Only `.md` and `.mdc` files load that way. Those are not scanned for
+across the repo. The instruction names are `INSTRUCTION_FILENAMES`
 and `.claude/CLAUDE*.md` (`xai-grok-config/src/compat.rs:311-318`,
 `:431-438`) and the `.grok`, `.claude`, and `.cursor` `rules` dirs
 (`:418-427`); skills are `skills/` or `commands/` under `.grok`,

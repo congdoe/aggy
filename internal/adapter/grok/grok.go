@@ -16,6 +16,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/patch"
 	"github.com/congdoe/aggy/internal/probe"
+	"github.com/congdoe/aggy/internal/safefs"
 )
 
 // Bin is the program name of the Grok Build CLI.
@@ -34,6 +35,9 @@ type Adapter struct {
 	Caps []string
 	// GOOS picks the OS-specific deny rules. Empty means runtime.GOOS.
 	GOOS string
+	// Realpath resolves a dir the deny rules name to its physical form.
+	// Nil means safefs.RealPath.
+	Realpath func(string) (string, error)
 }
 
 var _ adapter.Adapter = Adapter{}
@@ -331,10 +335,14 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 	}
 	var denyRules []string
 	if usesDeny(req.Kind) {
-		var err error
-		if denyRules, err = a.readDeny(); err != nil {
+		rules, err := a.readDeny()
+		if err != nil && sandbox {
 			return adapter.Command{}, err
 		}
+		// Image and video without strict have no Read- or Grep-checked
+		// tool, so the denies match nothing there; one that cannot be
+		// named is no reason to refuse them, and they run without it.
+		denyRules = rules
 	}
 	for _, t := range req.AllowedTools {
 		c, ok := canonical(req.Kind, req.FileTools, t)
@@ -422,56 +430,133 @@ func usesDeny(k adapter.Kind) bool {
 // the rule's own parentheses, the comma --deny splits on, and escapes.
 const globMeta = "*?[]{}()!,\\\x00\n\r"
 
-// readDeny returns the deny rules a kind adds (usesDeny): Read and Grep
-// of <HOME>/Library/**, which the strict profile leaves readable (browser
-// cookies, app tokens), and on darwin of /System/Volumes/Data/**, the
-// firmlink spelling of the same files. A deny outranks any allow (decision_rank,
-// xai-grok-permission-rules/src/policy.rs:791 at grok-build 2bdd1d6a);
-// live-verified to refuse read_file there (2026-10-28, grok 1.0.70).
+// readDeny returns the deny rules a kind adds (usesDeny), each as a Read
+// and a Grep rule (a Read rule also covers grep, policy.rs:571, but the
+// Grep one is kept as live-verified). A deny outranks any allow
+// (decision_rank, xai-grok-permission-rules/src/policy.rs:791 at
+// grok-build 2bdd1d6a).
 //
-// They also deny Read and Grep of Grok's own home (Home: $GROK_HOME, else
-// <HOME>/.grok, and <HOME>/.grok too when GROK_HOME points elsewhere),
-// which strict leaves readable (profiles.rs:463-488) and which holds
-// Grok's auth.json. Inferred from the ~/Library deny, the same mechanism;
-// not checked live with a canary there. Read and Grep only: Grok's media
-// tools write their output there in their own code, and image_edit and
-// image_to_video, which read the still they reuse from there, are checked
-// as AccessKind::Tool, which Read and Grep rules do not match
-// (xai-grok-tools/src/permission_access.rs:38-41,
-// xai-grok-permission-rules/src/policy.rs:571, grok-src 559751fd).
+//   - <HOME>/Library/**, which the strict profile leaves readable (browser
+//     cookies, app tokens); live-verified to refuse read_file (S4).
+//   - Grok's own home (Home: $GROK_HOME, else <HOME>/.grok, and
+//     <HOME>/.grok too when GROK_HOME points elsewhere), which strict also
+//     leaves readable (profiles.rs:463-488) and which holds auth.json.
+//     Grok works with it live (S8); the refusal is inferred from S4.
+//   - The physical form of each of those dirs when symlinks make it
+//     differ (Realpath): Grok matches rules on the lexical path, and
+//     re-checks a symlink it follows (policy.rs:222-263), but a path that
+//     is already physical has nothing to follow.
+//   - On darwin, /System/Volumes/Data/**, the firmlink spelling, which
+//     read past the lexical ~/Library rule live (S5), and a case-folded
+//     copy of every rule above, since APFS ignores case and Grok's glob
+//     match does not (policy.rs:825-835).
+//   - Every path that starts with ~ (~* and ~*/**). Grok's gate matches a
+//     ~ path literally, unnormalized, and the tool expands it after the
+//     gate (policy/path_match.rs:91-112, policy.rs:2221), so ~//.grok or
+//     ~/x/../.grok would pass a ~/.grok/** rule. Under strict nothing
+//     else in $HOME is readable, so a review or research child loses
+//     nothing by it.
+//   - Every path with a component that starts with a quote or Unicode
+//     white space (leadChars). Grok's gate sees such a path as relative,
+//     joins it to the cwd, and the tool strips the quotes and white space
+//     only after the gate (xai-grok-tools/src/types/resources.rs:404-445,
+//     sanitize_model_path_arg), so "~/.grok/auth.json" or " ../.grok/x"
+//     would match no rule above.
 //
-// HOME and the Grok home must be clean absolute paths with no glob or
-// rule syntax, else the kind is refused.
+// Not covered: a home or Grok home spelled with other Unicode forms of
+// its letters (APFS also ignores normalization; ASCII ~/Library and
+// ~/.grok are not affected). Source only (grok-src 559751fd); the canary
+// check of the tilde, quote, case and physical forms is pending.
+//
+// Read and Grep only: Grok's media tools write into the Grok home in
+// their own code, and image_edit and image_to_video, which read the still
+// they reuse from there, are checked as AccessKind::Tool, which Read and
+// Grep rules do not match (xai-grok-tools/src/permission_access.rs:38-41).
+//
+// HOME, the Grok home, and their physical forms must be clean absolute
+// paths with no glob or rule syntax, else it returns ErrNoCapability.
 func (a Adapter) readDeny() ([]string, error) {
 	getenv := a.Getenv
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	home := getenv("HOME")
-	if err := adapter.CheckAbs("HOME", home); err != nil || home == "/" || strings.ContainsAny(home, globMeta) {
-		return nil, fmt.Errorf("grok: HOME %q cannot be named in a --deny rule, so ~/Library cannot be denied: %w", home, adapter.ErrNoCapability)
-	}
-	rules := []string{"Read(" + home + "/Library/**)", "Grep(" + home + "/Library/**)"}
-	for _, gh := range slices.Compact([]string{a.Home(), filepath.Join(home, ".grok")}) {
-		if err := adapter.CheckAbs("Grok home", gh); err != nil || gh == "/" || strings.ContainsAny(gh, globMeta) {
-			return nil, fmt.Errorf("grok: the Grok home %q cannot be named in a --deny rule, so it cannot be denied: %w", gh, adapter.ErrNoCapability)
+	named := func(what, p string) error {
+		if err := adapter.CheckAbs(what, p); err != nil || p == "/" || strings.ContainsAny(p, globMeta) {
+			return fmt.Errorf("grok: %s %q cannot be named in a --deny rule: %w", what, p, adapter.ErrNoCapability)
 		}
-		rules = append(rules, "Read("+gh+"/**)", "Grep("+gh+"/**)")
+		return nil
+	}
+	home := getenv("HOME")
+	if err := named("HOME", home); err != nil {
+		return nil, err
+	}
+	dirs := []string{filepath.Join(home, "Library")}
+	for _, gh := range slices.Compact([]string{a.Home(), filepath.Join(home, ".grok")}) {
+		if err := named("the Grok home", gh); err != nil {
+			return nil, err
+		}
+		dirs = append(dirs, gh)
+	}
+	realpath := a.Realpath
+	if realpath == nil {
+		realpath = safefs.RealPath
+	}
+	for _, d := range slices.Clone(dirs) {
+		r, err := realpath(d)
+		if err != nil {
+			return nil, fmt.Errorf("grok: the physical path of %q cannot be found (%v): %w", d, err, adapter.ErrNoCapability)
+		}
+		if r != d && !slices.Contains(dirs, r) {
+			if err := named("the physical path", r); err != nil {
+				return nil, err
+			}
+			dirs = append(dirs, r)
+		}
+	}
+	var pats []string
+	for _, d := range dirs {
+		pats = append(pats, d+"/**")
 	}
 	goos := a.GOOS
 	if goos == "" {
 		goos = runtime.GOOS
 	}
 	if goos == "darwin" {
-		// Grok matches deny rules on the lexical path, and a firmlink is
-		// not a symlink: /System/Volumes/Data<HOME>/Library/... read the
-		// canary past the rule above, live (G32-9, 2026-10-28, grok
-		// 1.0.70). Nothing aggy names lives under that spelling. It also
-		// covers the firmlink spelling of the Grok home, so that needs no
-		// rule of its own.
-		rules = append(rules, "Read(/System/Volumes/Data/**)", "Grep(/System/Volumes/Data/**)")
+		pats = append(pats, "/System/Volumes/Data/**")
+		for _, p := range slices.Clone(pats) {
+			if f := foldCase(p); f != p && !slices.Contains(pats, f) {
+				pats = append(pats, f)
+			}
+		}
+	}
+	pats = append(pats, "~*", "~*/**", "**/["+leadChars+"]*", "**/["+leadChars+"]*/**")
+	var rules []string
+	for _, p := range pats {
+		rules = append(rules, "Read("+p+")", "Grep("+p+")")
 	}
 	return rules, nil
+}
+
+// leadChars are what Grok strips from the ends of a model's path after
+// its permission gate: quotes, and str::trim's Unicode White_Space
+// (resources.rs:433-445), as a glob class body.
+const leadChars = "\"'\t\n\v\f\r \u0085   -     　"
+
+// foldCase makes every ASCII letter of p a two-case glob class, so the
+// rule matches every case spelling of the same APFS path.
+func foldCase(p string) string {
+	var b strings.Builder
+	for _, r := range p {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteString("[" + string(r-'a'+'A') + string(r) + "]")
+		case r >= 'A' && r <= 'Z':
+			b.WriteString("[" + string(r) + string(r-'A'+'a') + "]")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // TextFields are the reply fields read for the final text, in order.
