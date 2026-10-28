@@ -57,6 +57,20 @@ type Child struct {
 	Status     string
 	CreatedAt  time.Time
 	LastActive time.Time
+	// Worktree is an edit child's git worktree; zero for every other
+	// child.
+	Worktree Worktree
+}
+
+// Worktree is an edit child's own git worktree and branch (schema
+// version 12).
+type Worktree struct {
+	Path   string // the worktree, under the state dir
+	Branch string // aggy's branch for it
+	Base   string // the commit it was made from
+	Repo   string // the main checkout it came from
+	GitDir string // its admin dir in the repo's .git
+	State  string // pending, accepted, or rejected
 }
 
 // InsertChild adds a child. The parent must exist. An empty Status means

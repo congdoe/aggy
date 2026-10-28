@@ -34,7 +34,7 @@ Runs one bounded task headless in another vendor's CLI and prints a short
 report. The child gets the task, the paths and constraints given here,
 and today's date; never this conversation.
 
-Kinds: image, video, research, news, review. (edit comes in M3.)
+Kinds: image, video, research, news, review, edit.
 
   --path P         a file or directory the task is about (repeatable)
   --constraint C   a rule for the child, such as "cite primary sources" (repeatable)
@@ -50,6 +50,11 @@ Kinds: image, video, research, news, review. (edit comes in M3.)
 
 A review runs at the root of the git work tree you are in. Its child gets
 the diff and the --path files in the prompt, as data to review.
+
+An edit runs in a git worktree of its own, on a new branch aggy/edit-<id>
+made from HEAD, under aggy's state dir; it never writes this checkout,
+and its CLI's own sandbox stays on. aggy accept <id> applies its diff
+here; aggy reject <id> discards it.
 `
 
 // borrowEnv is what aggy borrow needs from the outside world, so tests
@@ -276,6 +281,7 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 				stop()
 			}
 		},
+		Worktrees: &gitWorktrees{env: env, stateDir: stateDir, out: stderr},
 	})
 	req := borrow.Request{
 		Kind: kind, Task: ba.task, Paths: paths, Constraints: ba.constraints,
@@ -363,6 +369,11 @@ func printResult(w io.Writer, r borrow.Result) {
 	}
 	for _, x := range r.Refused {
 		fmt.Fprintf(w, "  %s\n", termsafe.Line(x))
+	}
+	if wt := r.Worktree; wt.Path != "" {
+		fmt.Fprintf(w, "  worktree %s on branch %s\n", termsafe.Field(wt.Path), termsafe.Field(wt.Branch))
+		// TODO(T6691): run aggy check on the diff before showing it.
+		fmt.Fprintf(w, "  aggy accept %s shows the diff and applies it to %s; aggy reject %s discards it\n", r.ID, termsafe.Field(wt.Repo), r.ID)
 	}
 	if r.ResearchPath != "" {
 		fmt.Fprintf(w, "Report: %s\n", termsafe.Field(r.ResearchPath))

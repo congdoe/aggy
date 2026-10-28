@@ -19,8 +19,8 @@ import (
 	"github.com/congdoe/aggy/internal/store"
 )
 
-// Kinds are the borrow kinds M1 runs. edit comes in M3.
-var Kinds = []adapter.Kind{adapter.Image, adapter.Video, adapter.Research, adapter.News, adapter.Review}
+// Kinds are the borrow kinds aggy borrow runs.
+var Kinds = []adapter.Kind{adapter.Image, adapter.Video, adapter.Research, adapter.News, adapter.Review, adapter.Edit}
 
 // Delegated is the variable that marks a borrow child. Every child runs
 // with Delegated=1, and aggy borrow refuses to run under it: one hop.
@@ -28,9 +28,6 @@ const Delegated = "AGGY_DELEGATED"
 
 // ErrDelegated is the refusal of a borrow from inside a borrow child.
 var ErrDelegated = errors.New("aggy borrow does not run inside a borrow child (" + Delegated + " is set): borrows are one hop")
-
-// ErrEditLater is the refusal of the edit kind.
-var ErrEditLater = errors.New("edit comes in M3")
 
 // MaxTask caps the task text: a borrow is one bounded task.
 const MaxTask = 64 << 10
@@ -104,6 +101,8 @@ type Deps struct {
 	// (its process group killed if ctx ended), before the outcome is
 	// recorded.
 	ChildDone func()
+	// Worktrees makes an edit child's worktree; nil refuses edit.
+	Worktrees Worktrees
 }
 
 // Caps are the concurrency limits of design section 7: at most 2 borrows
@@ -149,6 +148,9 @@ type Result struct {
 	// Made counts every file an image or video child left in its
 	// vendor's store, kept or refused.
 	Made int
+	// Worktree is an edit child's worktree, kept for aggy accept or
+	// aggy reject.
+	Worktree store.Worktree
 }
 
 // Borrower runs borrows.
@@ -165,17 +167,9 @@ func New(d Deps) *Borrower {
 	return &Borrower{d}
 }
 
-// ParseKind returns the M1 borrow kind named s. edit is refused with
-// ErrEditLater.
+// ParseKind returns the borrow kind named s.
 func ParseKind(s string) (adapter.Kind, error) {
-	k, err := adapter.ParseKind(s)
-	if err != nil {
-		return "", err
-	}
-	if k == adapter.Edit {
-		return "", ErrEditLater
-	}
-	return k, nil
+	return adapter.ParseKind(s)
 }
 
 // validate checks req before anything is recorded.
@@ -195,6 +189,8 @@ func (r Request) validate() error {
 		return errors.New("a review needs its material (the diff and files)")
 	case r.Kind == adapter.Review && !inGitRepo(r.Repo):
 		return fmt.Errorf("a review runs in a git work tree, and %s is in none", r.Repo)
+	case r.Kind == adapter.Edit && !inGitRepo(r.Repo):
+		return fmt.Errorf("an edit gets its own git worktree, and %s is in no git work tree", r.Repo)
 	case (r.Kind == adapter.Research || r.Kind == adapter.News) && len(r.Paths) > 0:
 		// The child cannot read them, and its queries go to the web, where
 		// a local path would leak the user name and layout (#10-13).
@@ -411,11 +407,17 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	if err := grokTrustGate(v, req); err != nil {
 		return Result{}, &preStartError{err}
 	}
+	if req.Kind == adapter.Edit {
+		if err := editGate(v); err != nil {
+			return Result{}, &preStartError{err}
+		}
+	}
 	budget := b.Config.Budgets.For(req.Kind)
 	model := b.Config.Vendors.For(v).Model
 	now := b.Now()
 	id := newID()
 	res := Result{ID: id, Kind: req.Kind, Vendor: v, Model: model}
+	markRecorded := func() {}
 
 	dirs, err := b.makeDirs(req)
 	if err != nil {
@@ -423,6 +425,29 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	}
 	defer dirs.remove()
 	prompt := Prompt{Kind: req.Kind, Task: req.Task, Paths: req.Paths, Constraints: req.Constraints, Today: now}
+	if req.Kind == adapter.Edit {
+		if prompt.Paths, err = editPaths(req); err != nil {
+			return Result{}, err
+		}
+		if b.Worktrees == nil {
+			return Result{}, errors.New("edit: no worktree maker")
+		}
+		wt, err := b.Worktrees.Create(ctx, req.Repo, id)
+		if err != nil {
+			return Result{}, fmt.Errorf("edit: making the worktree: %w", err)
+		}
+		// Until the borrow is recorded, a failure removes the worktree;
+		// after, it stays for aggy accept or aggy reject.
+		recorded := false
+		defer func() {
+			if !recorded {
+				_ = b.Worktrees.Remove(context.WithoutCancel(ctx), wt)
+			}
+		}()
+		markRecorded = func() { recorded = true }
+		res.Worktree = wt
+		dirs.cwd, dirs.isolated, dirs.gitRepo = wt.Path, false, true
+	}
 	if req.Kind == adapter.Review {
 		prompt.Material = req.Material
 	}
@@ -477,7 +502,7 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	sum := sha256.Sum256([]byte(req.Task))
 	child := store.Child{
 		ID: newID(), ParentID: parent.ID, Vendor: string(v), Kind: string(req.Kind), Title: title(req.Task),
-		Model: model, Cwd: dirs.cwd, CreatedAt: now, LastActive: now,
+		Model: model, Cwd: dirs.cwd, CreatedAt: now, LastActive: now, Worktree: res.Worktree,
 	}
 	row := store.Borrow{
 		ID: id, Kind: string(req.Kind), Vendor: string(v), Model: model,
@@ -488,6 +513,7 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	if err != nil {
 		return Result{}, err
 	}
+	markRecorded()
 
 	// The time limit: past it the runner kills the child's whole
 	// process group.
