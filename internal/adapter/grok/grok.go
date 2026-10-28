@@ -350,9 +350,11 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 	return adapter.Command{Path: Bin, Args: args, Env: req.Env, Dir: req.Cwd, Stdin: adapter.StdinNull}, nil
 }
 
-// TextFields are the reply fields read for the final text, in order. Only
-// sessionId is recorded in Grok's JSON; these names are unconfirmed.
-var TextFields = []string{"result", "text", "response"}
+// TextFields are the reply fields read for the final text, in order.
+// grok 1.0.70 puts the answer in text (live 2026-10-28); result and
+// response are unconfirmed fallbacks. thought, the model's reasoning, is
+// never the text.
+var TextFields = []string{"text", "result", "response"}
 
 // ParseHeadless first fails closed when the CLI rejected a lockdown flag
 // or printed UnknownToolWarning (ErrLockdown). It then reads the JSON reply: sessionId (recorded; checked with
@@ -374,13 +376,7 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 		res.Error, res.ErrorDetail = adapter.ErrLockdown, strings.TrimSpace(string(out.Stderr))
 		return res, err
 	}
-	var obj map[string]any
-	parsed := false
-	lines := bytes.Split(bytes.TrimSpace(out.Stdout), []byte("\n"))
-	for i := len(lines) - 1; i >= 0 && !parsed; i-- {
-		l := bytes.TrimSpace(lines[i])
-		parsed = len(l) > 0 && l[0] == '{' && json.Unmarshal(l, &obj) == nil
-	}
+	obj, parsed := decodeReply(out.Stdout)
 	errName := ""
 	isError := false
 	var idErr error
@@ -417,9 +413,29 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 	return res, idErr
 }
 
+// decodeReply reads Grok's JSON reply. grok 1.0.70 prints one
+// pretty-printed object over many lines (live 2026-10-28), so all of
+// stdout is tried first; then the last line that holds a whole object.
+func decodeReply(stdout []byte) (map[string]any, bool) {
+	var obj map[string]any
+	all := bytes.TrimSpace(stdout)
+	if len(all) > 0 && all[0] == '{' && json.Unmarshal(all, &obj) == nil {
+		return obj, true
+	}
+	lines := bytes.Split(all, []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		l := bytes.TrimSpace(lines[i])
+		obj = nil
+		if len(l) > 0 && l[0] == '{' && json.Unmarshal(l, &obj) == nil {
+			return obj, true
+		}
+	}
+	return nil, false
+}
+
 // tokens reads a usage object's input_tokens and output_tokens (or its
-// total_tokens), as Claude Code reports them. Grok's usage field is not
-// recorded (unconfirmed): a reply without one counts 0.
+// total_tokens), as Claude Code reports them, and as grok 1.0.70 does
+// (live 2026-10-28). A reply without one counts 0.
 func tokens(obj map[string]any) int64 {
 	u, ok := obj["usage"].(map[string]any)
 	if !ok {

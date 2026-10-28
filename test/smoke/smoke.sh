@@ -202,6 +202,23 @@ run_to() {
 # version V: the CLI's version number only.
 version() { env -i "${CLEAN_ENV[@]}" "$1" --version </dev/null 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1; }
 
+# json_text F: the text field of Grok's JSON reply in F, one object that
+# grok 1.0.70 pretty-prints over many lines (verification.md, T6740).
+# Without python3, all of F, which can only add false FAILs.
+json_text() {
+	if command -v python3 >/dev/null 2>&1; then
+		python3 -I -c 'import json, sys
+try:
+    o = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+t = o.get("text", o.get("result", "")) if isinstance(o, dict) else ""
+print(t if isinstance(t, str) else "")' "$1"
+	else
+		cat "$1"
+	fi
+}
+
 # is_image F / is_mp4 F: the file starts with PNG or JPEG / MP4 magic.
 is_image() {
 	local m
@@ -382,23 +399,24 @@ EOF
 	fi
 
 	if want grok; then
-		# The frontmatter layout is unverified: verification.md records only
-		# that an agent file with mcpServers in its frontmatter worked.
+		# mcpServers is a YAML list; each entry a name, a one-key
+		# {name: config} map, or an object with a name (grok-src 2bdd1d6a,
+		# xai-grok-agent/src/config.rs:1121-1163, McpServerRef). A stdio
+		# config is {command, args} with no type key: McpServerTransportConfig
+		# is untagged (xai-grok-config/src/mcp_server_config.rs:27-41).
 		cat >"$d/agent.md" <<EOF
 ---
 name: aggy-smoke
 description: aggy smoke check agent
 mcpServers:
-  aggy:
-    command: python3
-    args: ["$d/server.py"]
+  - aggy: {command: python3, args: ["$d/server.py"]}
 ---
 Answer the user's request.
 EOF
 		scn '{"extra_flags":["--agent","--allow"],"json":{"result":"'"$tok"'"}}'
 		call grok
 		(cd "$d/work" && run_to "$TO" "$d/grok.out" "$d/grok.err" /dev/null \
-			grok -p "$ask" --agent ../agent.md --allow 'MCPTool(aggy__aggy_ping)' --output-format json --max-turns 3)
+			grok -p "$ask" --agent ../agent.md --allow 'MCPTool(aggy__aggy_ping)' --output-format json)
 		rc=$?
 		mcp_result grok $rc "$d/grok.out" "$tok" "$d/grok.err"
 	else
@@ -473,10 +491,14 @@ check_grok_trust() {
 	# shellcheck disable=SC2086 # the argv is split on purpose
 	(cd "$d/untrusted" && run_to "$TO" "$d/out" "$d/err" /dev/null grok --prompt-file "$d/prompt.txt" $GROK_REVIEW_ARGS)
 	rc=$?
+	# The control drops --sandbox strict: the sandbox allows writes only
+	# to Grok's sessions dir, so it blocked the hooks' marker writes in the
+	# 7c86f6c run. Without it the control still shows a hook would fire;
+	# the untrusted run above keeps aggy's exact argv.
 	scn '{"json":{"result":"README.md f-'"$tok"'.txt DONE"},"hook_payload_in":"arg","hooks":[{"event":"x","payload":{}}],"hook_command":["/usr/bin/touch","'"$d"'/control-markers/grok-PreToolUse"]}'
 	call grok
 	# shellcheck disable=SC2086 # the argv is split on purpose
-	(cd "$d/control" && run_to "$TO" "$d/cout" "$d/cerr" /dev/null GROK_FOLDER_TRUST=0 grok --prompt-file "$d/prompt.txt" $GROK_REVIEW_ARGS)
+	(cd "$d/control" && run_to "$TO" "$d/cout" "$d/cerr" /dev/null GROK_FOLDER_TRUST=0 grok --prompt-file "$d/prompt.txt" ${GROK_REVIEW_ARGS/--sandbox strict /})
 	crc=$?
 	for m in claude-SessionStart claude-PreToolUse grok-SessionStart grok-PreToolUse; do
 		[ -e "$d/untrusted-markers/$m" ] && ran="$ran $m"
@@ -530,10 +552,13 @@ check_grok_image_tools() {
 	# shellcheck disable=SC2086 # the argv is split on purpose
 	(cd "$d/work" && run_to "$TO" "$d/out" "$d/err" /dev/null grok --prompt-file "$d/prompt.txt" $GROK_IMAGE_ARGS)
 	rc=$?
+	# Only the reply's text: thought, the model's reasoning, may name
+	# tools it does not have.
+	json_text "$d/out" >"$d/text"
 	# Distinctive names only: "grep" and "write" are common words.
 	for t in read_file list_dir search_replace run_terminal_cmd web_fetch web_search open_page \
 		search_tool use_tool image_edit image_to_video reference_to_video workflow monitor; do
-		grep -q "$t" "$d/out" && extra="$extra $t"
+		grep -q "$t" "$d/text" && extra="$extra $t"
 	done
 	if [ $rc -ne 0 ]; then
 		result $n FAIL "exit $rc" "$d/err"
@@ -541,7 +566,7 @@ check_grok_image_tools() {
 		result $n FAIL "grok warned of an unknown tool name" "$d/err"
 	elif [ -n "$extra" ]; then
 		result $n FAIL "also reported:$extra"
-	elif ! grep -q image_gen "$d/out"; then
+	elif ! grep -q image_gen "$d/text"; then
 		result $n FAIL "image_gen not reported"
 	else
 		result $n PASS "reported image_gen and no file tool"
