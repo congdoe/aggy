@@ -251,17 +251,30 @@ newrepo() {
 	)
 }
 
-# Kept in step with internal/adapter/grok Headless (checked by
+# Kept in step with internal/adapter/grok Headless on macOS (checked by
 # argv_test.go): the review and the image argv aggy passes, after its
-# leading "--prompt-file <file>", which each check passes itself.
-GROK_REVIEW_ARGS="--output-format json --permission-mode plan --sandbox strict --deny Read(@HOME@/Library/**) --deny Grep(@HOME@/Library/**) --deny Read(@HOME@/.grok/**) --deny Grep(@HOME@/.grok/**) --deny Read(/System/Volumes/Data/**) --deny Grep(/System/Volumes/Data/**) --tools read_file,grep,list_dir --disallowed-tools write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_gen,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents"
-GROK_IMAGE_ARGS="--output-format json --deny Read(@HOME@/Library/**) --deny Grep(@HOME@/Library/**) --deny Read(@HOME@/.grok/**) --deny Grep(@HOME@/.grok/**) --deny Read(/System/Volumes/Data/**) --deny Grep(/System/Volumes/Data/**) --tools image_gen --disallowed-tools read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents"
-# aggy denies Read and Grep of $HOME/Library, the Grok home, and on macOS
-# the /System/Volumes/Data firmlink, on the sandboxed kinds and on image
-# (which runs without --sandbox strict while grok.go strictMedia is off). The
-# argv holds globs, so every run that splits it does so under set -f.
-GROK_REVIEW_ARGS=${GROK_REVIEW_ARGS//@HOME@/$HOME}
-GROK_IMAGE_ARGS=${GROK_IMAGE_ARGS//@HOME@/$HOME}
+# leading "--prompt-file <file>", which each check passes itself. They
+# are arrays: some deny rules hold quotes and white space. aggy denies
+# Read and Grep of $HOME/Library, the Grok home, the
+# /System/Volumes/Data firmlink, case-folded copies of those (APFS
+# ignores case), every ~ path, and every path with a quote- or
+# space-led part, on the sandboxed kinds and on image (which runs
+# without --sandbox strict while grok.go strictMedia is off). @HOME@ is
+# $HOME and @HOMEFOLD@ its case-folded glob form. A $HOME or Grok home
+# reached through a symlink, or a GROK_HOME elsewhere, gets more rules
+# from aggy than these.
+GROK_REVIEW_ARGS=(--output-format json --permission-mode plan --sandbox strict --deny $'Read(@HOME@/Library/**)' --deny $'Grep(@HOME@/Library/**)' --deny $'Read(@HOME@/.grok/**)' --deny $'Grep(@HOME@/.grok/**)' --deny $'Read(/System/Volumes/Data/**)' --deny $'Grep(/System/Volumes/Data/**)' --deny $'Read(@HOMEFOLD@/[Ll][Ii][Bb][Rr][Aa][Rr][Yy]/**)' --deny $'Grep(@HOMEFOLD@/[Ll][Ii][Bb][Rr][Aa][Rr][Yy]/**)' --deny $'Read(@HOMEFOLD@/.[Gg][Rr][Oo][Kk]/**)' --deny $'Grep(@HOMEFOLD@/.[Gg][Rr][Oo][Kk]/**)' --deny $'Read(/[Ss][Yy][Ss][Tt][Ee][Mm]/[Vv][Oo][Ll][Uu][Mm][Ee][Ss]/[Dd][Aa][Tt][Aa]/**)' --deny $'Grep(/[Ss][Yy][Ss][Tt][Ee][Mm]/[Vv][Oo][Ll][Uu][Mm][Ee][Ss]/[Dd][Aa][Tt][Aa]/**)' --deny $'Read(~*)' --deny $'Grep(~*)' --deny $'Read(~*/**)' --deny $'Grep(~*/**)' --deny $'Read(**/["\'\x09\x0a\x0b\x0c\x0d \xc2\x85\xc2\xa0\xe1\x9a\x80\xe2\x80\x80-\xe2\x80\x8a\xe2\x80\xa8\xe2\x80\xa9\xe2\x80\xaf\xe2\x81\x9f\xe3\x80\x80]*)' --deny $'Grep(**/["\'\x09\x0a\x0b\x0c\x0d \xc2\x85\xc2\xa0\xe1\x9a\x80\xe2\x80\x80-\xe2\x80\x8a\xe2\x80\xa8\xe2\x80\xa9\xe2\x80\xaf\xe2\x81\x9f\xe3\x80\x80]*)' --deny $'Read(**/["\'\x09\x0a\x0b\x0c\x0d \xc2\x85\xc2\xa0\xe1\x9a\x80\xe2\x80\x80-\xe2\x80\x8a\xe2\x80\xa8\xe2\x80\xa9\xe2\x80\xaf\xe2\x81\x9f\xe3\x80\x80]*/**)' --deny $'Grep(**/["\'\x09\x0a\x0b\x0c\x0d \xc2\x85\xc2\xa0\xe1\x9a\x80\xe2\x80\x80-\xe2\x80\x8a\xe2\x80\xa8\xe2\x80\xa9\xe2\x80\xaf\xe2\x81\x9f\xe3\x80\x80]*/**)' --tools read_file,grep,list_dir --disallowed-tools write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_gen,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents)
+GROK_IMAGE_ARGS=(--output-format json --deny $'Read(@HOME@/Library/**)' --deny $'Grep(@HOME@/Library/**)' --deny $'Read(@HOME@/.grok/**)' --deny $'Grep(@HOME@/.grok/**)' --deny $'Read(/System/Volumes/Data/**)' --deny $'Grep(/System/Volumes/Data/**)' --deny $'Read(@HOMEFOLD@/[Ll][Ii][Bb][Rr][Aa][Rr][Yy]/**)' --deny $'Grep(@HOMEFOLD@/[Ll][Ii][Bb][Rr][Aa][Rr][Yy]/**)' --deny $'Read(@HOMEFOLD@/.[Gg][Rr][Oo][Kk]/**)' --deny $'Grep(@HOMEFOLD@/.[Gg][Rr][Oo][Kk]/**)' --deny $'Read(/[Ss][Yy][Ss][Tt][Ee][Mm]/[Vv][Oo][Ll][Uu][Mm][Ee][Ss]/[Dd][Aa][Tt][Aa]/**)' --deny $'Grep(/[Ss][Yy][Ss][Tt][Ee][Mm]/[Vv][Oo][Ll][Uu][Mm][Ee][Ss]/[Dd][Aa][Tt][Aa]/**)' --deny $'Read(~*)' --deny $'Grep(~*)' --deny $'Read(~*/**)' --deny $'Grep(~*/**)' --deny $'Read(**/["\'\x09\x0a\x0b\x0c\x0d \xc2\x85\xc2\xa0\xe1\x9a\x80\xe2\x80\x80-\xe2\x80\x8a\xe2\x80\xa8\xe2\x80\xa9\xe2\x80\xaf\xe2\x81\x9f\xe3\x80\x80]*)' --deny $'Grep(**/["\'\x09\x0a\x0b\x0c\x0d \xc2\x85\xc2\xa0\xe1\x9a\x80\xe2\x80\x80-\xe2\x80\x8a\xe2\x80\xa8\xe2\x80\xa9\xe2\x80\xaf\xe2\x81\x9f\xe3\x80\x80]*)' --deny $'Read(**/["\'\x09\x0a\x0b\x0c\x0d \xc2\x85\xc2\xa0\xe1\x9a\x80\xe2\x80\x80-\xe2\x80\x8a\xe2\x80\xa8\xe2\x80\xa9\xe2\x80\xaf\xe2\x81\x9f\xe3\x80\x80]*/**)' --deny $'Grep(**/["\'\x09\x0a\x0b\x0c\x0d \xc2\x85\xc2\xa0\xe1\x9a\x80\xe2\x80\x80-\xe2\x80\x8a\xe2\x80\xa8\xe2\x80\xa9\xe2\x80\xaf\xe2\x81\x9f\xe3\x80\x80]*/**)' --tools image_gen --disallowed-tools read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents)
+HOMEFOLD=$(printf '%s' "$HOME" | perl -pe 's/([A-Za-z])/"[".uc($1).lc($1)."]"/ge')
+GROK_REVIEW_ARGS=("${GROK_REVIEW_ARGS[@]//@HOMEFOLD@/$HOMEFOLD}")
+GROK_REVIEW_ARGS=("${GROK_REVIEW_ARGS[@]//@HOME@/$HOME}")
+GROK_IMAGE_ARGS=("${GROK_IMAGE_ARGS[@]//@HOMEFOLD@/$HOMEFOLD}")
+GROK_IMAGE_ARGS=("${GROK_IMAGE_ARGS[@]//@HOME@/$HOME}")
+# GROK_CONTROL_ARGS is the review argv without --sandbox strict.
+GROK_CONTROL_ARGS=()
+for a in "${GROK_REVIEW_ARGS[@]}"; do
+	case $a in --sandbox | strict) ;; *) GROK_CONTROL_ARGS+=("$a") ;; esac
+done
 
 # The verified Codex research lockdown (docs/verification.md, "Codex
 # research isolation"), less the web_search -c, which needs its quotes.
@@ -506,8 +519,7 @@ check_grok_trust() {
 
 	scn '{"json":{"result":"README.md f-'"$tok"'.txt DONE"}}'
 	call grok
-	# shellcheck disable=SC2086 # the argv is split on purpose
-	(set -f && cd "$d/untrusted" && run_to "$TO" "$d/out" "$d/err" /dev/null grok --prompt-file "$d/prompt.txt" $GROK_REVIEW_ARGS)
+	(cd "$d/untrusted" && run_to "$TO" "$d/out" "$d/err" /dev/null grok --prompt-file "$d/prompt.txt" "${GROK_REVIEW_ARGS[@]}")
 	rc=$?
 	# The control drops --sandbox strict: the sandbox allows writes only
 	# to Grok's sessions dir, so it blocked the hooks' marker writes in the
@@ -515,8 +527,7 @@ check_grok_trust() {
 	# the untrusted run above keeps aggy's exact argv.
 	scn '{"json":{"result":"README.md f-'"$tok"'.txt DONE"},"hook_payload_in":"arg","hooks":[{"event":"x","payload":{}}],"hook_command":["/usr/bin/touch","'"$d"'/control-markers/grok-PreToolUse"]}'
 	call grok
-	# shellcheck disable=SC2086 # the argv is split on purpose
-	(set -f && cd "$d/control" && run_to "$TO" "$d/cout" "$d/cerr" /dev/null GROK_FOLDER_TRUST=0 grok --prompt-file "$d/prompt.txt" ${GROK_REVIEW_ARGS/--sandbox strict /})
+	(cd "$d/control" && run_to "$TO" "$d/cout" "$d/cerr" /dev/null GROK_FOLDER_TRUST=0 grok --prompt-file "$d/prompt.txt" "${GROK_CONTROL_ARGS[@]}")
 	crc=$?
 	for m in claude-SessionStart claude-PreToolUse grok-SessionStart grok-PreToolUse; do
 		[ -e "$d/untrusted-markers/$m" ] && ran="$ran $m"
@@ -567,8 +578,7 @@ check_grok_image_tools() {
 	printf 'Do not call any tool. List every tool you have by its exact name, one per line, and nothing else.\n' >"$d/prompt.txt"
 	scn '{"json":{"result":"image_gen"}}'
 	call grok
-	# shellcheck disable=SC2086 # the argv is split on purpose
-	(set -f && cd "$d/work" && run_to "$TO" "$d/out" "$d/err" /dev/null grok --prompt-file "$d/prompt.txt" $GROK_IMAGE_ARGS)
+	(cd "$d/work" && run_to "$TO" "$d/out" "$d/err" /dev/null grok --prompt-file "$d/prompt.txt" "${GROK_IMAGE_ARGS[@]}")
 	rc=$?
 	# Only the reply's text: thought, the model's reasoning, may name
 	# tools it does not have.

@@ -190,6 +190,20 @@ was tested against.
   `grep` there in a live re-check (2026-10-28, grok 1.0.70; verification
   S5). The same firmlink read of a home folder outside `~/Library` was
   refused by the sandbox itself.
+- Because Grok matches deny rules on the path as the model spelled it,
+  aggy also denies other spellings of `~/Library` and the Grok home
+  (verification.md S9; source only, the live canary check is pending):
+  - every `~` path (`~*`, `~*/**`): Grok matches a `~` path literally and
+    unnormalized and expands it after the gate;
+  - every path with a part that starts with a quote or Unicode white
+    space: the tool strips those after the gate;
+  - on darwin, a case-folded copy of each dir rule (APFS ignores case,
+    Grok's glob does not);
+  - the physical form of each dir when a symlink makes it differ.
+- A Grok review is also refused when an instruction, rules, or skill
+  file Grok would load is a symlink or sits under one: Grok loads it with
+  no permission check (verification.md, "Grok project config and folder
+  trust").
 - When grok 1.0.70 cannot apply the profile it was asked for, it refuses
   to start, exit 1 (live, 2026-10-28, nested in `sandbox-exec -p
   '(version 1)(allow default)'`): `sandbox initialization failed:
@@ -406,7 +420,7 @@ by default is news 15 and research 30; `<run>` is `HeadlessRequest.RunDir`):
 | review | `claude -p --output-format json --permission-mode plan --strict-mcp-config --mcp-config <run>/mcp.json --tools Read,Grep,Glob [--setting-sources user] [--settings <run>/settings.json] [--session-id <uuid> \| --resume <id>]` | `codex exec --json <L> -- -` (in a git work tree, so no `--skip-git-repo-check`) | `grok --prompt-file <p> --output-format json --permission-mode plan --sandbox strict --deny <Lib> --tools read_file,grep,list_dir --disallowed-tools <D> --no-subagents` |
 | edit (M3; `aggy borrow` runs Codex only, see below) | `claude -p --output-format json --permission-mode acceptEdits --strict-mcp-config --mcp-config <run>/mcp.json` | `codex exec --json <L with --sandbox workspace-write, keeping shell_tool and unified_exec> -- -` (`codex.EditLockdown`) | `grok --prompt-file <p> --output-format json --tools read_file,grep,list_dir,write,search_replace --disallowed-tools <D> --no-subagents` |
 
-`--deny <Lib>` is `--deny 'Read(<HOME>/Library/**)' --deny 'Grep(<HOME>/Library/**)' --deny 'Read(<Grok home>/**)' --deny 'Grep(<Grok home>/**)'` (and the same pair for `<HOME>/.grok` when `GROK_HOME` points elsewhere), plus on darwin `--deny 'Read(/System/Volumes/Data/**)' --deny 'Grep(/System/Volumes/Data/**)'`.
+`--deny <Lib>` is `--deny 'Read(<HOME>/Library/**)' --deny 'Grep(<HOME>/Library/**)' --deny 'Read(<Grok home>/**)' --deny 'Grep(<Grok home>/**)'` (and the same pair for `<HOME>/.grok` when `GROK_HOME` points elsewhere), and the same pairs for their physical forms when a symlink makes them differ. On darwin, add `--deny 'Read(/System/Volumes/Data/**)' --deny 'Grep(/System/Volumes/Data/**)'` and a case-folded copy of every pair above. Last come the spelling pairs for `~*`, `~*/**`, `**/[<quotes, white space>]*` and `**/[<quotes, white space>]*/**`. For image and video, a HOME or Grok home that cannot be named in a rule drops `<Lib>` rather than refusing them.
 `L` is `codex.Lockdown`: `--strict-config --ignore-user-config --sandbox
 read-only --disable shell_tool --disable unified_exec --disable view_image
 --disable apps --disable plugins --disable goals --disable image_generation

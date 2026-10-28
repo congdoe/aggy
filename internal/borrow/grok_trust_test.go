@@ -141,6 +141,102 @@ func TestGrokReviewWithInstructions(t *testing.T) {
 	}
 }
 
+// TestGrokInstructionLinks (N54-2): an instruction, rules, or skill file
+// Grok would load that is a symlink, sits under a linked dir, or is
+// linked anywhere inside a rules or skill dir refuses a Grok review, and
+// Grok is passed over, wherever the link points; plain files pass.
+func TestGrokInstructionLinks(t *testing.T) {
+	tests := []struct {
+		name   string
+		files  []string    // regular files, relative to the repo
+		links  [][2]string // link, target ("@out" is a file outside the repo)
+		reason string      // "" means the review runs on Grok
+	}{
+		{"plain files", []string{"AGENTS.md", ".claude/rules/a.md", ".agents/skills/x/SKILL.md", ".cursor/rules/sub/b.mdc"}, nil, ""},
+		{"AGENTS.md link", nil, [][2]string{{"AGENTS.md", "@out"}}, "AGENTS.md"},
+		{"CLAUDE.md link inside the repo", []string{"docs/real.md"}, [][2]string{{"CLAUDE.md", "docs/real.md"}}, "CLAUDE.md"},
+		{"dangling link", nil, [][2]string{{"CLAUDE.local.md", "/nonexistent/x"}}, "CLAUDE.local.md"},
+		{"rules file link", []string{".claude/rules/a.md"}, [][2]string{{".claude/rules/b.md", "@out"}}, filepath.FromSlash(".claude/rules/b.md")},
+		{"linked .claude dir", nil, [][2]string{{".claude", "@outdir"}}, ".claude"},
+		{"linked rules dir", nil, [][2]string{{".grok/rules", "@outdir"}}, filepath.FromSlash(".grok/rules")},
+		{"deep skill link", []string{".agents/skills/x/SKILL.md"}, [][2]string{{".agents/skills/x/ref/key.md", "@out"}}, filepath.FromSlash(".agents/skills/x/ref/key.md")},
+		{"nested cursor rule link", nil, [][2]string{{".cursor/rules/sub/c.mdc", "@out"}}, filepath.FromSlash(".cursor/rules/sub/c.mdc")},
+		{"link elsewhere in the repo", []string{"AGENTS.md"}, [][2]string{{"src/link.md", "@out"}}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			for _, v := range adapter.Vendors() {
+				w.connected[v] = v == adapter.Grok || v == adapter.Claude
+			}
+			w.scenario[adapter.Grok] = `{"json":{"result":"grok reviewed"}}`
+			w.scenario[adapter.Claude] = `{"json":{"type":"result","result":"claude reviewed"}}`
+			out := filepath.Join(t.TempDir(), "secret.md")
+			outDir := filepath.Join(t.TempDir(), "rules")
+			for _, d := range []string{outDir, filepath.Join(outDir, "x")} {
+				if err := os.MkdirAll(d, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, p := range []string{out, filepath.Join(outDir, "x.md"), filepath.Join(outDir, "rules", "y.md")} {
+				if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte("secret\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			mk := func(rel string) string {
+				p := filepath.Join(w.repo, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				return p
+			}
+			for _, f := range tt.files {
+				if err := os.WriteFile(mk(f), []byte("x\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, lt := range tt.links {
+				l, target := lt[0], lt[1]
+				switch target {
+				case "@out":
+					target = out
+				case "@outdir":
+					target = outDir
+				default:
+					if !filepath.IsAbs(target) {
+						target = filepath.Join(w.repo, filepath.FromSlash(target))
+					}
+				}
+				if err := os.Symlink(target, mk(l)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			res, err := w.borrower().Run(context.Background(), w.req(adapter.Review, "review it"))
+			if err != nil || len(res) != 1 {
+				t.Fatalf("results %+v, %v", res, err)
+			}
+			if tt.reason == "" {
+				if res[0].Vendor != adapter.Grok {
+					t.Errorf("grok was passed over: %+v", res[0])
+				}
+				return
+			}
+			if res[0].Vendor != adapter.Claude || len(res[0].Tried) != 1 || res[0].Tried[0].Vendor != adapter.Grok ||
+				!strings.Contains(res[0].Tried[0].Reason, tt.reason) || !strings.Contains(res[0].Tried[0].Reason, "symlink") {
+				t.Errorf("want grok passed over naming %s: %+v", tt.reason, res[0])
+			}
+			for _, r := range w.records() {
+				if r.Vendor == "grok" {
+					t.Error("grok ran")
+				}
+			}
+		})
+	}
+}
+
 // TestGrokProjectSourcesChain: sources in a dir between the cwd and the
 // git root count; ones above the git root do not.
 func TestGrokProjectSourcesChain(t *testing.T) {
