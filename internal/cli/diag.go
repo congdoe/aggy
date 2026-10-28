@@ -15,6 +15,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 
@@ -563,6 +564,24 @@ func printCode(w io.Writer, c diag.CodeInfo) {
 // sqlFlushEvery is how many table rows aggy diag sql buffers to align.
 const sqlFlushEvery = 100
 
+// sqlMaxValue is the most bytes of one value aggy diag sql prints; the
+// rest is cut and a marker says how long the value was. SQLite itself
+// refuses values over store.QueryMaxValue.
+const sqlMaxValue = 64 << 10
+
+// capValue cuts s to sqlMaxValue bytes, on a UTF-8 boundary, and marks
+// the cut.
+func capValue(s string) string {
+	if len(s) <= sqlMaxValue {
+		return s
+	}
+	cut := sqlMaxValue
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + fmt.Sprintf("…[truncated: %d bytes]", len(s))
+}
+
 func diagSQL(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("diag sql", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -592,8 +611,11 @@ func diagSQL(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
 	cell := func(x any) any {
-		if b, ok := x.([]byte); ok {
-			return string(b)
+		switch c := x.(type) {
+		case []byte:
+			return capValue(string(c))
+		case string:
+			return capValue(c)
 		}
 		return x
 	}
