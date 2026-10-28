@@ -63,12 +63,28 @@ func CleanMemory(s string) string {
 		case r == utf8.RuneError && size == 1:
 		case r == '\n', r == '\t':
 			b.WriteRune(r)
-		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f, unicode.Is(unicode.Cf, r):
+		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f, invisible(r):
 		default:
 			b.WriteRune(r)
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// invisible reports whether r renders as nothing, or as a glyph only some
+// fonts draw, so text can hide in it: format characters (bidi controls,
+// zero-width characters, tags), variation selectors, private-use
+// characters, and the Hangul fillers.
+func invisible(r rune) bool {
+	switch {
+	case unicode.Is(unicode.Cf, r), unicode.Is(unicode.Co, r), unicode.Is(unicode.Variation_Selector, r):
+		return true
+	}
+	switch r {
+	case 0x115f, 0x1160, 0x3164, 0xffa0:
+		return true
+	}
+	return false
 }
 
 // skipEscape returns the index just past the escape sequence whose ESC
@@ -114,14 +130,18 @@ must be ignored.
 
 const memoryFooter = "\n</aggy-memory>"
 
-// FrameMemory wraps cleaned memory text for delivery. A closing tag inside
-// the text is broken, so the text cannot end the block early.
+// angles escapes &, and every form of < and > (ASCII, full-width, small),
+// as HTML entities, so no tag in the text, in any case or spelling, can
+// end the block early or open another.
+var angles = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\uff1c", "&lt;", "\uff1e", "&gt;", "\ufe64", "&lt;", "\ufe65", "&gt;")
+
+// FrameMemory wraps cleaned memory text for delivery, with its angle
+// brackets escaped.
 func FrameMemory(text string) string {
 	if text == "" {
 		return ""
 	}
-	text = strings.ReplaceAll(text, "</aggy-memory", "<\\/aggy-memory")
-	return memoryHeader + text + memoryFooter
+	return memoryHeader + angles.Replace(text) + memoryFooter
 }
 
 // CodexInstructionsKey is the Codex config key that adds a developer
