@@ -24,7 +24,13 @@ func TestPromptText(t *testing.T) {
 			[]string{"## Paths", "## Constraints"}},
 		{"paths and constraints", Prompt{Kind: adapter.Review, Task: "review", Paths: []string{"/r/a.go", "/r/b"},
 			Constraints: []string{"focus on races"}, Today: today},
-			[]string{"## Paths\n\n- /r/a.go\n- /r/b\n", "## Constraints\n\n- focus on races\n", "Do not change any file"}, nil},
+			[]string{"## Paths\n\n- /r/a.go\n- /r/b\n", "## Constraints\n\n- focus on races\n", "Do not change any file"}, []string{"looked like secrets"}},
+		// F3: every part is redacted before the prompt file is written.
+		{"secrets", Prompt{Kind: adapter.Review, Task: "review\nexport OPENAI_API_KEY=sk-abcdefghijklmnop1234", Paths: []string{"/r/a.go", "/r/ghp_abcdefghijklmnopqrstuvwxyz0123"},
+			Constraints: []string{"password: hunter2hunter2"}, Today: today,
+			Material: &Material{Diff: "+db_password: correcthorse\n+ok line\n", Files: []MaterialFile{{Path: "/r/.env", Data: "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"}}}},
+			[]string{"## Task\n\nreview\n", "- /r/a.go\n", "+ok line", "5 lines that looked like secrets", "removed from this prompt"},
+			[]string{"sk-abcdef", "ghp_", "hunter2", "correcthorse", "wJalrXUtnFEMI", "## Constraints"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
