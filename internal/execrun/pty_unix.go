@@ -65,11 +65,13 @@ func StartPTY(c adapter.Command, rows, cols int) (*PTY, error) {
 // gets the socket.
 var ptyExtraNames = []string{"AGGY_VENDOR", "AGGY_MODEL", "AGGY_SOCKET", "AGGY_PARENT"}
 
-// PTYEnv is base, without any variable extra sets, followed by extra. An
-// extra entry must be KEY=value with a key in ptyExtraNames: aggy never
-// adds API keys, base URLs, or anything else to the user's session.
+// PTYEnv is base, without any variable extra sets and without
+// AGGY_VENDOR and AGGY_MODEL (a child's own, never inherited: a stale
+// one would land in its commits' trailers), followed by extra. An extra
+// entry must be KEY=value with a key in ptyExtraNames: aggy never adds
+// API keys, base URLs, or anything else to the user's session.
 func PTYEnv(base, extra []string) ([]string, error) {
-	set := map[string]bool{}
+	set := map[string]bool{"AGGY_VENDOR": true, "AGGY_MODEL": true}
 	for _, kv := range extra {
 		k, _, ok := strings.Cut(kv, "=")
 		if !ok || k == "" {
