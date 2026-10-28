@@ -20,6 +20,7 @@ import (
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/limits"
+	"github.com/congdoe/aggy/internal/notify"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/router"
 	"github.com/congdoe/aggy/internal/safefs"
@@ -299,7 +300,13 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 	}
 	req.Fresh = ba.fresh
 	results, err := b.Run(ctx, req)
-	recordBorrowLimits(context.WithoutCancel(ctx), s, results, env.now())
+	nctx := context.WithoutCancel(ctx)
+	n := newNotifier(cfg)
+	recordBorrowLimits(nctx, s, results, env.now(), n)
+	if len(results) > 0 {
+		r := results[len(results)-1]
+		n.Show(nctx, "borrow", "aggy", borrowText(r.Kind, r.Vendor, r.Outcome))
+	}
 	code := 0
 	for _, r := range results {
 		printResult(stdout, r)
@@ -420,13 +427,17 @@ func (b borrowRouter) Choose(ctx context.Context, req borrow.RouteRequest) ([]ad
 }
 
 // recordBorrowLimits records a limit for each vendor whose child failed
-// with rate_limit. The class comes from the vendor CLI's own headless
-// output, which aggy ran, so it is not a hint. A failed write loses the
-// signal, not the borrow.
-func recordBorrowLimits(ctx context.Context, a limits.Appender, results []borrow.Result, now time.Time) {
+// with rate_limit, and notifies it through n (nil shows nothing). The
+// class comes from the vendor CLI's own headless output, which aggy ran,
+// so it is not a hint. A failed write loses the signal, not the borrow.
+func recordBorrowLimits(ctx context.Context, a limits.Appender, results []borrow.Result, now time.Time, n *notify.Notifier) {
 	for _, r := range results {
-		if r.Outcome == string(adapter.ErrRateLimit) {
-			_, _ = limits.Record(ctx, a, limits.Signal{Vendor: r.Vendor, Via: limits.ViaBorrow}, "", now)
+		if r.Outcome != string(adapter.ErrRateLimit) {
+			continue
+		}
+		sig := limits.Signal{Vendor: r.Vendor, Via: limits.ViaBorrow}
+		if until, err := limits.Record(ctx, a, sig, "", now); err == nil {
+			showLimit(ctx, n, sig, until)
 		}
 	}
 }

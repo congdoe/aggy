@@ -41,6 +41,7 @@ setup = ["npm", "ci"]
 		{name: "unknown key", text: "allowed_vendors = []\nmodel = \"x\"\n", wantErr: "unknown key model"},
 		{name: "unknown table", text: "[routing]\nimage = [\"grok\"]\n", wantErr: "unknown key routing"},
 		{name: "user-only key", text: `default_vendor = "grok"`, wantErr: "unknown key default_vendor"},
+		{name: "a repo cannot turn notifications on", text: "[notify]\ndesktop = true\n", wantErr: "unknown key notify"},
 		{name: "bad vendor", text: `allowed_vendors = ["gemini"]`, wantErr: "unknown vendor"},
 		{name: "duplicate vendor", text: `allowed_vendors = ["grok", "grok"]`, wantErr: "listed twice"},
 		{name: "shell string check", text: `check = ["make test"]`, wantErr: "check"},
