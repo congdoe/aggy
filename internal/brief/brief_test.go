@@ -191,3 +191,26 @@ func TestBuildGrokGuardLinear(t *testing.T) {
 		t.Error("guard result wrong")
 	}
 }
+
+// C16-13: a brief for any CLI takes at most MaxTurnBytes of the newest
+// turns, and older turns are never redacted, so a long session cannot
+// stall a switch.
+func TestBuildTurnCap(t *testing.T) {
+	var turns []adapter.Turn
+	for i := range 40 {
+		turns = append(turns, adapter.Turn{Role: "user", Text: fmt.Sprintf("turn %d %s", i, strings.Repeat("q ", 16<<10))})
+	}
+	redacted := 0
+	defer func(f func(string) (string, int)) { redactLines = f }(redactLines)
+	redactLines = func(s string) (string, int) {
+		redacted += len(s)
+		return redact.Lines(s)
+	}
+	got := Build(Input{To: adapter.Codex, Transcript: adapter.Transcript{Path: "/t", Turns: turns}})
+	if redacted > MaxTurnBytes+16<<10 {
+		t.Errorf("redacted %d bytes, cap %d", redacted, MaxTurnBytes)
+	}
+	if !strings.Contains(got, "turn 39 ") || strings.Contains(got, "turn 0 ") || !strings.Contains(got, "older turns were left out") {
+		t.Error("did not keep only the newest turns, with a note")
+	}
+}

@@ -21,7 +21,8 @@
 // Context the CLI injects as a user message (Codex's AGENTS.md text,
 // environment context, and the output of a shell command the user ran;
 // Claude's bash-mode and slash-command output) is skipped: at most the
-// command line of a user shell command is kept, never its output.
+// command line of a user shell command is kept, never its output. Codex's
+// compaction summary comes through with the role SummaryRole.
 package transcript
 
 import (
@@ -379,10 +380,10 @@ func claudeContext(s string) string {
 	return s
 }
 
-// tagged reports whether t starts like an injected block: "<" and a
-// letter or underscore.
+// tagged reports whether t starts like a tag Claude Code injects: "<" and
+// a lowercase letter (grok-build claude.rs#L482).
 func tagged(t string) bool {
-	return len(t) > 1 && t[0] == '<' && (t[1] == '_' || 'a' <= t[1] && t[1] <= 'z' || 'A' <= t[1] && t[1] <= 'Z')
+	return len(t) > 1 && t[0] == '<' && 'a' <= t[1] && t[1] <= 'z'
 }
 
 // between returns the trimmed text between the first open and the close
@@ -419,43 +420,117 @@ func codexTurn(line []byte) (adapter.Turn, bool) {
 	if l.Type != "response_item" || l.Payload.Type != "message" || l.Payload.Role != "user" && l.Payload.Role != "assistant" {
 		return adapter.Turn{}, true
 	}
-	text := joinText(l.Payload.Content, "input_text", "output_text")
-	if l.Payload.Role == "user" {
-		text = codexContext(l.Payload.Content)
+	role, text := l.Payload.Role, joinText(l.Payload.Content, "input_text", "output_text")
+	if role == "user" {
+		role, text = codexContext(l.Payload.Content)
 	}
 	// The timestamp's layout is not recorded; an unreadable one stays zero.
 	ts, _ := time.Parse(time.RFC3339Nano, l.Timestamp)
-	return adapter.Turn{Role: l.Payload.Role, Text: text, Time: ts}, true
+	return adapter.Turn{Role: role, Text: text, Time: ts}, true
 }
 
-// codexContext returns the text of a Codex user message, or "" when Codex
-// injected it. Codex itself treats a user message as context when any of
-// its input_text items is a marked fragment: the text, trimmed, starts
-// with the fragment's start marker and ends with its end marker
-// (core/src/event_mapping.rs#L64, context/contextual_user_message.rs#L24,
-// context-fragments/src/fragment.rs#L163). The markers include
-// "# AGENTS.md instructions" (context/user_instructions.rs#L31),
-// <user_shell_command> (context/user_shell_command.rs#L46), and
-// <turn_aborted> (context/turn_aborted.rs#L36); aggy treats any text
-// starting with a tag as context, which also covers markers it does not
-// list. A user shell command keeps only "! <command>", never its output.
-func codexContext(parts []textPart) string {
+// codexMarkers are the start and end markers of the context fragments
+// Codex writes as user messages (rust-v0.164.0,
+// core/src/context/contextual_user_message.rs#L24): AGENTS.md text
+// (user_instructions.rs#L31), environment context
+// (world_state/environment.rs#L532, protocol/src/protocol.rs#L126),
+// the agent message board (agent_message_board_notification.rs#L21),
+// skills (ext/skills/src/fragments.rs#L59, protocol.rs#L132), a user
+// shell command (user_shell_command.rs#L45), turn notes
+// (turn_aborted.rs#L35), subagent notes (subagent_notification.rs#L36),
+// internal context (internal_model_context.rs#L10), recommended plugins
+// (recommended_plugins_instructions.rs#L44), and hook prompts
+// (protocol/src/items.rs#L120). Codex compares them ignoring ASCII case
+// (context-fragments/src/fragment.rs#L163).
+var codexMarkers = [][2]string{
+	{"# AGENTS.md instructions", "</INSTRUCTIONS>"},
+	{"<environment_context>", "</environment_context>"},
+	{"<agent_message_board_notification>", "</agent_message_board_notification>"},
+	{"<skills_instructions>", "</skills_instructions>"},
+	{"<user_shell_command>", "</user_shell_command>"},
+	{"<turn_aborted>", "</turn_aborted>"},
+	{"<subagent_notification>", "</subagent_notification>"},
+	{"<codex_internal_context", "</codex_internal_context>"},
+	{"<goal_context>", "</goal_context>"},
+	{"<recommended_plugins>", "</recommended_plugins>"},
+	{"<hook_prompt ", "</hook_prompt>"},
+}
+
+// codexWarnings start the legacy warnings Codex also treats as context
+// (legacy_unified_exec_process_limit_warning.rs#L27,
+// legacy_apply_patch_exec_command_warning.rs#L27,
+// legacy_model_mismatch_warning.rs#L27).
+var codexWarnings = []string{
+	"Warning: The maximum number of unified exec processes you can keep open is",
+	"Warning: apply_patch was requested via ",
+	"Warning: Your account was flagged for potentially high-risk cyber activity",
+}
+
+// codexSummaryPrefix starts the compaction summary, which Codex writes as
+// a user message with empty markers (context/compaction_summary.rs#L34;
+// core/src/compact.rs#L403, #L618;
+// prompts/templates/compact/summary_prefix.md).
+const codexSummaryPrefix = "Another language model started to solve this problem and produced a summary of its thinking process."
+
+// SummaryRole is the role of a turn that is a CLI's own summary of
+// earlier turns, not something the user said.
+const SummaryRole = "summary"
+
+// hasFold reports whether s starts with prefix, ignoring ASCII case.
+func hasFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+// codexMarked reports whether t, trimmed, is a fragment Codex marks as
+// context.
+func codexMarked(t string) bool {
+	for _, m := range codexMarkers {
+		if hasFold(t, m[0]) && len(t) >= len(m[1]) && strings.EqualFold(t[len(t)-len(m[1]):], m[1]) {
+			return true
+		}
+	}
+	if hasFold(t, "<external_") {
+		// <external_KEY>...</external_KEY>
+		// (context-fragments/src/additional_context.rs#L44).
+		if key, _, ok := strings.Cut(t[len("<external_"):], ">"); ok && strings.HasSuffix(t, "</external_"+key+">") {
+			return true
+		}
+	}
+	for _, w := range codexWarnings {
+		if strings.HasPrefix(t, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// codexContext returns the role and text of a Codex user message: "" when
+// Codex injected it, as Codex itself decides (any input_text item that,
+// trimmed, starts with a fragment's start marker and ends with its end
+// marker; core/src/event_mapping.rs#L64). A user shell command keeps only
+// "! <command>", never its output. The compaction summary is labeled
+// SummaryRole, without its fixed preamble.
+func codexContext(parts []textPart) (string, string) {
 	for _, p := range parts {
 		if p.Type != "input_text" {
 			continue
 		}
 		t := strings.TrimSpace(p.Text)
-		if len(t) >= len("<user_shell_command>") && strings.EqualFold(t[:len("<user_shell_command>")], "<user_shell_command>") {
+		if hasFold(t, "<user_shell_command>") && codexMarked(t) {
 			if cmd, ok := between(t, "<command>", "</command>"); ok {
-				return "! " + cmd
+				return "user", "! " + cmd
 			}
-			return ""
+			return "user", ""
 		}
-		if tagged(t) || strings.HasPrefix(strings.ToLower(t), "# agents.md instructions") {
-			return ""
+		if codexMarked(t) {
+			return "user", ""
+		}
+		if strings.HasPrefix(t, codexSummaryPrefix) {
+			_, rest, _ := strings.Cut(t, "\n")
+			return SummaryRole, strings.TrimSpace(rest)
 		}
 	}
-	return joinText(parts, "input_text")
+	return "user", joinText(parts, "input_text")
 }
 
 // grokTurn reads one line of Grok's chat_history.jsonl, one
