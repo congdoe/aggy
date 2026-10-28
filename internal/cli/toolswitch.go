@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +14,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/diag"
+	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/switchboard"
@@ -40,25 +40,64 @@ func toolSwitches(ctx context.Context) ([]store.ToolSwitch, error) {
 	return sws, withCode(diag.CodeStore, err)
 }
 
-// toolRepo is the repo a switch is about: the work-tree root holding
-// dir, and its key in tool_switches (the canonical path). Outside a git
-// work tree both are "".
-func toolRepo(dir string) (root, key string, err error) {
+// clearToolSwitches deletes every setting of name, when there is an
+// index that has them.
+func clearToolSwitches(ctx context.Context, name string) error {
+	s, err := openIndex(ctx)
+	if err != nil || s == nil {
+		return withCode(diag.CodeStore, err)
+	}
+	defer func() { _ = s.Close() }()
+	return withCode(diag.CodeStore, s.DeleteToolSwitches(ctx, name))
+}
+
+// toolRepoAt is the repo a switch is about.
+type toolRepoAt struct {
+	root string // the work-tree root holding the directory
+	main string // the main checkout: root itself, or the one a linked worktree belongs to
+	key  string // main's canonical path, the repo key in tool_switches
+}
+
+// toolRepo finds the repo holding dir: its work-tree root, and the main
+// checkout from git's common dir, so a setting follows the repo into its
+// worktrees. Outside a git work tree it is the zero value.
+func toolRepo(dir string) (toolRepoAt, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return "", "", err
+		return toolRepoAt{}, err
 	}
 	root, ok := repoRoot(abs)
 	if !ok {
-		return "", "", nil
+		return toolRepoAt{}, nil
 	}
-	key, err = safefs.CanonicalPath(root)
-	return root, key, err
+	common, err := parity.GitCommonDir(root)
+	if err != nil {
+		return toolRepoAt{}, withCode(diag.CodeToolScope, err)
+	}
+	main := common
+	if filepath.Base(common) == ".git" {
+		main = filepath.Dir(common)
+	}
+	key, err := safefs.CanonicalPath(main)
+	return toolRepoAt{root: root, main: main, key: key}, err
 }
 
-// toolBoard loads the definitions, the settings, and the tools_off of
-// the repo at root ("" for none).
-func toolBoard(ctx context.Context, root string) (switchboard.Board, *tooldef.Registry, []error, error) {
+// repoToolsOff is the union of tools_off in the main checkout's config
+// and, in a linked worktree, the worktree's own.
+func repoToolsOff(r toolRepoAt) ([]string, error) {
+	var off []string
+	for _, dir := range slices.Compact([]string{r.main, r.root}) {
+		rc, err := config.LoadRepo(dir)
+		if err != nil {
+			return nil, withCode(diag.CodeConfig, fmt.Errorf("read repo config: %w", err))
+		}
+		off = append(off, rc.ToolsOff...)
+	}
+	return off, nil
+}
+
+// toolBoard loads the definitions and the settings.
+func toolBoard(ctx context.Context) (switchboard.Board, *tooldef.Registry, []error, error) {
 	r, refused, err := tooldef.LoadDefault()
 	if err != nil {
 		return switchboard.Board{}, nil, nil, err
@@ -66,14 +105,6 @@ func toolBoard(ctx context.Context, root string) (switchboard.Board, *tooldef.Re
 	b := switchboard.Board{Tools: r.List()}
 	if b.Switches, err = toolSwitches(ctx); err != nil {
 		return b, nil, nil, err
-	}
-	if root != "" {
-		rc, err := config.LoadRepo(root)
-		if err != nil {
-			// A repo config that cannot be read never lets a tool on.
-			return b, nil, nil, withCode(diag.CodeConfig, fmt.Errorf("read repo config: %w", err))
-		}
-		b.RepoOff = rc.ToolsOff
 	}
 	return b, r, refused, nil
 }
@@ -91,42 +122,53 @@ func toolVendors(name string) ([]adapter.Vendor, error) {
 }
 
 // toolSwitch is aggy tool on|off: it records one setting. Nothing runs
-// and nothing is wired here; the next launch wires what is on.
+// and nothing is wired here; the next launch wires what is on. Off takes
+// any tool name, loaded or not, and never reads the repo's config.
 func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) error {
 	if err := delegated(); err != nil {
 		return err
 	}
 	name := a.pos[0]
+	if !tooldef.ValidName(name) {
+		return withCode(diag.CodeToolUnknown, fmt.Errorf("%q is not a tool name", name))
+	}
 	vendors, err := toolVendors(a.vendor)
 	if err != nil {
 		return err
 	}
-	root, key := "", ""
+	var repo toolRepoAt
 	if a.hasRepo {
-		if root, key, err = toolRepo(a.repo); err != nil {
+		if repo, err = toolRepo(a.repo); err != nil {
 			return err
 		}
-		if root == "" {
+		if repo.root == "" {
 			return withCode(diag.CodeToolScope, fmt.Errorf("--repo %s is not in a git work tree", a.repo))
 		}
 	}
-	b, r, _, err := toolBoard(ctx, root)
+	b, r, _, err := toolBoard(ctx)
 	if err != nil {
 		return err
 	}
-	t, ok := r.Get(name)
-	if !ok {
-		return withCode(diag.CodeToolUnknown, fmt.Errorf("no tool %q; aggy tool list shows the tools, and any user file it refused", name))
-	}
+	t, loaded := r.Get(name)
 	if on {
+		if !loaded {
+			return withCode(diag.CodeToolUnknown, fmt.Errorf("no tool %q; aggy tool list shows the tools, and any user file it refused", name))
+		}
 		if !slices.ContainsFunc(vendors, func(v adapter.Vendor) bool { return !t.PartsFor(v).Empty() }) {
 			return withCode(diag.CodeToolScope, fmt.Errorf("%s has nothing for %s", name, a.vendor))
 		}
 		if t.Scope == "repo" && !a.hasRepo {
 			return withCode(diag.CodeToolScope, fmt.Errorf("%s is a per-repo tool: turn it on with --repo DIR", name))
 		}
-		if slices.Contains(b.RepoOff, name) {
-			return withCode(diag.CodeToolRepoOff, fmt.Errorf("%s/.aggy/config.toml lists %s in tools_off, and a repo's config always wins", root, name))
+		if a.hasRepo {
+			// Strict only here: a repo config that cannot be read never
+			// lets a tool on.
+			if b.RepoOff, err = repoToolsOff(repo); err != nil {
+				return err
+			}
+			if slices.Contains(b.RepoOff, name) {
+				return withCode(diag.CodeToolRepoOff, fmt.Errorf("the repo's .aggy/config.toml lists %s in tools_off, and a repo's config always wins", name))
+			}
 		}
 	}
 	s, err := store.OpenDefault(ctx)
@@ -134,28 +176,30 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 		return withCode(diag.CodeStore, err)
 	}
 	defer func() { _ = s.Close() }()
-	sw := store.ToolSwitch{Tool: name, Vendor: a.vendor, Repo: key, On: on, At: time.Now()}
+	sw := store.ToolSwitch{Tool: name, Vendor: a.vendor, Repo: repo.key, On: on, At: time.Now()}
+	if on {
+		sw.Digest = t.Digest
+	}
 	if err := s.PutToolSwitch(ctx, sw); err != nil {
 		return withCode(diag.CodeStore, err)
 	}
 	dlog.Log(ctx, diag.Rec{Event: diag.EvToolSwitched, Vendor: a.vendor,
-		Attrs: map[string]any{"tool": name, "repo": key != "", "on": on}})
+		Attrs: map[string]any{"tool": name, "repo": repo.key != "", "on": on}})
 
-	b.Switches, err = s.ToolSwitches(ctx)
-	if err != nil {
+	if !loaded {
+		fmt.Fprintf(stdout, "%s is not loaded; its settings say off.\n", name)
+		return nil
+	}
+	if b.Switches, err = s.ToolSwitches(ctx); err != nil {
 		return withCode(diag.CodeStore, err)
 	}
 	where := "every repo"
-	if root != "" {
-		where = termsafe.Field(root)
+	if repo.root != "" {
+		where = termsafe.Field(repo.main)
 	}
 	for _, v := range adapter.Vendors() {
-		st := b.State(t, v, key)
-		state := "off"
-		if st.On {
-			state = "on"
-		}
-		fmt.Fprintf(stdout, "%s for %s in %s: %s (%s)\n", name, v, where, state, st.Why)
+		st := b.State(t, v, repo.key)
+		fmt.Fprintf(stdout, "%s for %s in %s: %s (%s)\n", name, v, where, onOff(st.On), st.Why)
 	}
 	if on {
 		if !a.hasRepo {
@@ -173,9 +217,18 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 	return nil
 }
 
+func onOff(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
+}
+
 // toolStatus is aggy tool status: whether each tool is on per vendor in
-// this repo (or --repo DIR), and why. It writes nothing.
-func toolStatus(ctx context.Context, a toolArgs, stdout io.Writer) error {
+// this repo (or --repo DIR), and why. It writes nothing. A repo config
+// that cannot be read is a warning, and every tool is shown off there,
+// as a launch would treat it.
+func toolStatus(ctx context.Context, a toolArgs, stdout, stderr io.Writer) error {
 	vendors, err := toolVendors(a.vendor)
 	if err != nil {
 		return err
@@ -186,16 +239,24 @@ func toolStatus(ctx context.Context, a toolArgs, stdout io.Writer) error {
 			return err
 		}
 	}
-	root, key, err := toolRepo(dir)
+	repo, err := toolRepo(dir)
 	if err != nil {
 		return err
 	}
-	if a.hasRepo && root == "" {
+	if a.hasRepo && repo.root == "" {
 		return withCode(diag.CodeToolScope, fmt.Errorf("--repo %s is not in a git work tree", a.repo))
 	}
-	b, r, refused, err := toolBoard(ctx, root)
+	b, r, refused, err := toolBoard(ctx)
 	if err != nil {
 		return err
+	}
+	if repo.root != "" {
+		if b.RepoOff, err = repoToolsOff(repo); err != nil {
+			fmt.Fprintf(stderr, "aggy tool status: warning: %s; every tool is off in this repo until it is fixed\n", termsafe.Line(err.Error()))
+			for _, t := range b.Tools {
+				b.RepoOff = append(b.RepoOff, t.Name)
+			}
+		}
 	}
 	tools := r.List()
 	if len(a.pos) == 1 {
@@ -205,10 +266,13 @@ func toolStatus(ctx context.Context, a toolArgs, stdout io.Writer) error {
 		}
 		tools = []tooldef.Tool{t}
 	}
-	if root == "" {
+	switch {
+	case repo.root == "":
 		fmt.Fprintln(stdout, "Outside a repo: per-repo tools are off.")
-	} else {
-		fmt.Fprintf(stdout, "Repo %s\n", termsafe.Field(root))
+	case repo.root != repo.main:
+		fmt.Fprintf(stdout, "Repo %s (worktree %s)\n", termsafe.Field(repo.main), termsafe.Field(repo.root))
+	default:
+		fmt.Fprintf(stdout, "Repo %s\n", termsafe.Field(repo.main))
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	head := []string{"TOOL"}
@@ -220,19 +284,16 @@ func toolStatus(ctx context.Context, a toolArgs, stdout io.Writer) error {
 		row := []string{t.Name}
 		var whys []string
 		for _, v := range vendors {
-			st := b.State(t, v, key)
-			row = append(row, map[bool]string{true: "on", false: "off"}[st.On])
+			st := b.State(t, v, repo.key)
+			row = append(row, onOff(st.On))
 			whys = append(whys, string(v)+": "+st.Why)
 		}
 		fmt.Fprintln(tw, strings.Join(append(row, sameWhy(whys)), "\t"))
 	}
 	_ = tw.Flush()
 	if len(refused) > 0 {
-		var es []string
-		for _, e := range refused {
-			es = append(es, e.Error())
-		}
-		return withCode(toolCode(refused[0]), errors.New("refused: "+strings.Join(es, "; ")))
+		logRefusedDefs(ctx, stderr, "tool status", refused)
+		return errDefsRefused
 	}
 	return nil
 }

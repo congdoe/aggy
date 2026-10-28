@@ -2,19 +2,32 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/congdoe/aggy/internal/home"
 )
 
-// switchRepo makes a git work tree (a .git folder is enough for
-// repoRoot) with the given .aggy/config.toml, or none.
+// runGit runs git in dir, with no system or user config.
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main"}, args...)...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// switchRepo makes a git repo with one commit and the given
+// .aggy/config.toml (untracked), or none.
 func switchRepo(t *testing.T, cfg string) string {
 	t.Helper()
 	r := t.TempDir()
-	if err := os.Mkdir(filepath.Join(r, ".git"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	runGit(t, r, "init", "-q")
+	runGit(t, r, "commit", "-q", "--allow-empty", "-m", "one")
 	if cfg != "" {
 		writeAt(t, filepath.Join(r, ".aggy", "config.toml"), cfg, 0o600)
 	}
@@ -97,6 +110,8 @@ func TestToolRepoCannotTurnOn(t *testing.T) {
 		t.Errorf("on in a tools_off repo: exit %d %q", code, errOut)
 	}
 
+	// A config that cannot be read: on refuses, status warns and shows
+	// every tool off there (S63-5), and off still works.
 	for _, cfg := range []string{
 		`tools_on = ["demo"]`,
 		"[tools]\ndemo = true\n",
@@ -107,9 +122,107 @@ func TestToolRepoCannotTurnOn(t *testing.T) {
 		r := switchRepo(t, cfg)
 		t.Chdir(r)
 		code, out, errOut := toolRun("", false, "status")
-		if code != 1 || !strings.Contains(errOut, "cli.config_invalid") || strings.Contains(out, " on ") {
-			t.Errorf("%q: exit %d, stdout %q, stderr %q", cfg, code, out, errOut)
+		if code != 0 || !strings.Contains(errOut, "warning") || !strings.HasPrefix(statusLine(t, out, "demo"), "demo off off off") {
+			t.Errorf("status %q: exit %d, stdout %q, stderr %q", cfg, code, out, errOut)
 		}
+		if code, _, errOut := toolRun("", false, "on", "demo", "--repo", "."); code != 1 || !strings.Contains(errOut, "cli.config_invalid") {
+			t.Errorf("on %q: exit %d %q", cfg, code, errOut)
+		}
+		if code, _, errOut := toolRun("", false, "off", "demo", "--repo", "."); code != 0 {
+			t.Errorf("off %q: exit %d %q", cfg, code, errOut)
+		}
+	}
+}
+
+// TestToolSwitchWorktree (S63-2): a repo setting, and the main
+// checkout's tools_off, follow the repo into a linked worktree, and the
+// worktree's own tools_off adds to them.
+func TestToolSwitchWorktree(t *testing.T) {
+	_, dest := toolHome(t, demoTool)
+	writeAt(t, dest, demoTool, 0o600)
+	main := switchRepo(t, "")
+	wt := filepath.Join(t.TempDir(), "wt")
+	runGit(t, main, "worktree", "add", "-q", wt)
+
+	steps := []struct {
+		args []string
+		dir  string
+		want string
+	}{
+		{[]string{"on", "demo"}, wt, "demo on on on"},
+		{[]string{"off", "demo", "--repo", main}, wt, "demo off off off"},
+		{[]string{"on", "demo", "--repo", wt, "--vendor", "grok"}, main, "demo off off on"},
+		{[]string{"on", "codegraph", "--repo", main}, wt, "codegraph on on on"},
+	}
+	for _, s := range steps {
+		if code, _, errOut := toolRun("", false, s.args...); code != 0 {
+			t.Fatalf("%v: exit %d %q", s.args, code, errOut)
+		}
+		_, out, _ := toolRun("", false, "status", "--repo", s.dir)
+		f := strings.Fields(s.want)
+		if got := statusLine(t, out, f[0]); !strings.HasPrefix(got, s.want) {
+			t.Errorf("after %v, in %s: %q, want %q", s.args, s.dir, got, s.want)
+		}
+	}
+	// tools_off: the main checkout's applies in the worktree, and the
+	// worktree's own adds to it.
+	writeAt(t, filepath.Join(main, ".aggy", "config.toml"), `tools_off = ["codegraph"]`, 0o600)
+	writeAt(t, filepath.Join(wt, ".aggy", "config.toml"), `tools_off = ["demo"]`, 0o600)
+	_, out, _ := toolRun("", false, "status", "--repo", wt)
+	for _, tool := range []string{"codegraph", "demo"} {
+		if got := statusLine(t, out, tool); !strings.Contains(got, "off off off") {
+			t.Errorf("worktree %s: %q", tool, got)
+		}
+	}
+	if _, out, _ := toolRun("", false, "status", "--repo", main); !strings.HasPrefix(statusLine(t, out, "demo"), "demo off off on") {
+		t.Errorf("the worktree's tools_off reached the main checkout:\n%s", out)
+	}
+}
+
+// TestToolSwitchStale (S63-1): an "on" never carries to another or an
+// edited definition, and a refused definition can be turned off and
+// removed.
+func TestToolSwitchStale(t *testing.T) {
+	src, dest := toolHome(t, demoTool)
+	t.Chdir(t.TempDir())
+	if code, _, errOut := toolRun("", true, "add", src, "--yes"); code != 0 {
+		t.Fatalf("add: %d %q", code, errOut)
+	}
+	if code, _, errOut := toolRun("", false, "on", "demo"); code != 0 {
+		t.Fatalf("on: %d %q", code, errOut)
+	}
+	// A: the file removed by hand, and another demo added.
+	if err := os.Remove(dest); err != nil {
+		t.Fatal(err)
+	}
+	writeAt(t, src, strings.Replace(demoTool, `"--stdio"`, `"--other"`, 1), 0o644)
+	if code, _, errOut := toolRun("", true, "add", src, "--yes"); code != 0 {
+		t.Fatalf("add again: %d %q", code, errOut)
+	}
+	if _, out, _ := toolRun("", false, "status"); !strings.HasPrefix(statusLine(t, out, "demo"), "demo off off off") {
+		t.Errorf("a new demo took the old one's on:\n%s", out)
+	}
+	// An edit after on turns it off, and says why.
+	if code, _, _ := toolRun("", false, "on", "demo"); code != 0 {
+		t.Fatal("on")
+	}
+	writeAt(t, dest, demoTool+"\n# edited\n", 0o600)
+	if _, out, _ := toolRun("", false, "status"); !strings.HasPrefix(statusLine(t, out, "demo"), "demo off off off") || !strings.Contains(out, "changed since") {
+		t.Errorf("an edited definition stayed on:\n%s", out)
+	}
+	// B: an invalid file can be turned off and removed.
+	if code, _, _ := toolRun("", false, "on", "demo"); code != 0 {
+		t.Fatal("on")
+	}
+	writeAt(t, dest, "name = 1\n", 0o600)
+	if code, out, errOut := toolRun("", false, "off", "demo"); code != 0 || !strings.Contains(out, "not loaded") {
+		t.Errorf("off a refused tool: %d %q %q", code, out, errOut)
+	}
+	if code, _, _ := toolRun("", false, "on", "demo"); code != 1 {
+		t.Error("on a refused tool")
+	}
+	if code, _, errOut := toolRun("", false, "remove", "demo"); code != 0 || exists(t, dest) {
+		t.Errorf("remove a refused tool: %d %q", code, errOut)
 	}
 }
 
@@ -144,5 +257,31 @@ func TestToolOnRefuses(t *testing.T) {
 	// A per-repo tool turns on with --repo.
 	if code, out, errOut := toolRun("", false, "on", "codegraph", "--repo", "."); code != 0 || !strings.Contains(out, "codegraph for claude") {
 		t.Errorf("codegraph --repo: exit %d %q %q", code, out, errOut)
+	}
+}
+
+// TestToolDiagNoArgv (S63-8): a refused definition is recorded by its
+// file's base name and key, never with the argv words its error quotes.
+func TestToolDiagNoArgv(t *testing.T) {
+	const canary = "quince-argv-canary"
+	bad := strings.Replace(demoTool, `"demo", "serve", "--stdio"`, `"npx", "`+canary+`"`, 1)
+	src, dest := toolHome(t, bad)
+	freshRun(t)
+	if code, _, errOut := toolRun("", true, "add", src, "--yes"); code != 1 || !strings.Contains(errOut, canary) || !strings.Contains(errOut, "tool.def_invalid") {
+		t.Fatalf("add: %d %q", code, errOut)
+	}
+	writeAt(t, dest, bad, 0o600)
+	freshRun(t)
+	if code, _, errOut := toolRun("", false, "list"); code != 1 || !strings.Contains(errOut, canary) {
+		t.Fatalf("list: %d %q", code, errOut)
+	}
+	text := allDiagText(t, os.Getenv(home.Env))
+	if strings.Contains(text, canary) {
+		t.Errorf("diag.db holds the argv: %s", text)
+	}
+	for _, want := range []string{"tool.def.refused", "proposed.toml", `"file":"demo.toml"`, "mcp[0].argv"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("diag.db lacks %q:\n%s", want, text)
+		}
 	}
 }

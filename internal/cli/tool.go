@@ -112,7 +112,9 @@ func toolWith(args []string, in io.Reader, tty bool, stdout, stderr io.Writer) i
 		return 2
 	}
 	fail := func(err error) int {
-		refuse(ctx, stderr, cmd, diag.EvToolRefused, toolCode(err), err.Error(), diag.Rec{})
+		if !errors.Is(err, errDefsRefused) { // already printed, one line each
+			toolRefuse(ctx, stderr, cmd, diag.EvToolRefused, err)
+		}
 		return 1
 	}
 	a, ok := parseToolArgs(args[1:])
@@ -133,7 +135,7 @@ func toolWith(args []string, in io.Reader, tty bool, stdout, stderr io.Writer) i
 		if len(a.pos) > 1 || a.yes {
 			return usageErr()
 		}
-		if err := toolStatus(ctx, a, stdout); err != nil {
+		if err := toolStatus(ctx, a, stdout, stderr); err != nil {
 			return fail(err)
 		}
 		return 0
@@ -194,7 +196,7 @@ func delegated() error {
 func toolList(ctx context.Context, stdout, stderr io.Writer) int {
 	r, refused, err := tooldef.LoadDefault()
 	if err != nil {
-		refuse(ctx, stderr, "tool list", diag.EvToolRefused, toolCode(err), err.Error(), diag.Rec{})
+		toolRefuse(ctx, stderr, "tool list", diag.EvToolRefused, err)
 		return 1
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
@@ -220,9 +222,37 @@ func toolList(ctx context.Context, stdout, stderr io.Writer) int {
 // logRefusedDefs prints and records each user definition Load left out.
 func logRefusedDefs(ctx context.Context, stderr io.Writer, cmd string, refused []error) {
 	for _, e := range refused {
-		refuse(ctx, stderr, cmd, diag.EvToolDefRefused, toolCode(e), "refused "+e.Error(), diag.Rec{})
+		toolRefuse(ctx, stderr, cmd, diag.EvToolDefRefused, fmt.Errorf("refused %w", e))
 	}
 }
+
+// errDefsRefused says logRefusedDefs has printed the refused files.
+var errDefsRefused = errors.New("user tool definitions refused")
+
+// toolRefuse prints err in full with its [code · run id] tag, and
+// records it. A definition's error can quote its argv, so the record
+// holds only the file's base name and the key (attrs file and key).
+func toolRefuse(ctx context.Context, stderr io.Writer, cmd string, ev diag.Event, err error) {
+	code := toolCode(err)
+	rec := diag.Rec{Event: ev, Code: code, Msg: err.Error()}
+	var te *tooldef.Error
+	if errors.As(err, &te) {
+		file := filepath.Base(te.File)
+		rec.Msg = file + ": refused"
+		rec.Attrs = map[string]any{"file": file}
+		if te.Key != "" {
+			rec.Msg = file + ": " + te.Key + ": refused"
+			rec.Attrs["key"] = te.Key
+		}
+	}
+	dlog.Log(ctx, rec)
+	msg := termsafe.Field(err.Error())
+	if tag := dlog.Tag(code); tag != "" {
+		msg += " " + tag
+	}
+	fmt.Fprintf(stderr, "aggy %s: %s\n", cmd, msg)
+}
+
 func toolAdd(src string, yes bool, in io.Reader, tty bool, stdout io.Writer) error {
 	if err := delegated(); err != nil {
 		return err
@@ -282,6 +312,11 @@ func toolAdd(src string, yes bool, in io.Reader, tty bool, stdout io.Writer) err
 			err = errExists
 		}
 		return err
+	}
+	// Settings left from an earlier tool of this name never apply to
+	// this one (their digest differs too).
+	if err := clearToolSwitches(context.Background(), d.Name); err != nil {
+		fmt.Fprintf(stdout, "warning: earlier settings for %s were not cleared: %s; they do not apply to this file\n", d.Name, termsafe.Line(err.Error()))
 	}
 	fmt.Fprintf(stdout, "Added %s (off). aggy tool remove %s deletes it.\n", termsafe.Field(dest), d.Name)
 	return nil
@@ -420,16 +455,27 @@ func toolRemove(ctx context.Context, name string, stdout io.Writer) error {
 	if err := tooldef.CheckDir(dir); err != nil {
 		return err
 	}
-	sws, err := toolSwitches(ctx)
+	// Refused while this very file is on somewhere. A refused or changed
+	// definition is off already, so it can always be removed.
+	r, _, err := tooldef.Load(state)
 	if err != nil {
 		return err
 	}
-	if slices.ContainsFunc(sws, func(s store.ToolSwitch) bool { return s.Tool == name && s.On }) {
-		return withCode(diag.CodeToolStillOn, fmt.Errorf("%s is on; aggy tool off %s first", name, name))
+	if t, ok := r.Get(name); ok && !t.BuiltIn && t.Source == dest {
+		sws, err := toolSwitches(ctx)
+		if err != nil {
+			return err
+		}
+		if slices.ContainsFunc(sws, func(s store.ToolSwitch) bool { return s.Tool == name && s.On && s.Digest == t.Digest }) {
+			return withCode(diag.CodeToolStillOn, fmt.Errorf("%s is on; aggy tool off %s first", name, name))
+		}
 	}
 	if err := safefs.Remove(dest); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "Removed %s.\n", termsafe.Field(dest))
+	if err := clearToolSwitches(ctx, name); err != nil {
+		fmt.Fprintf(stdout, "warning: its settings were not cleared: %s; they apply to no file\n", termsafe.Line(err.Error()))
+	}
 	return nil
 }

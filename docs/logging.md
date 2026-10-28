@@ -189,7 +189,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `doctor.finding.error` | error | doctor | aggy doctor reported an error-level finding (attrs.finding is its doctor code). | aggy doctor shows the finding in full. |
 | `doctor.run.refused` | error | doctor | aggy doctor did not run. | The code's entry. |
 | `tool.request.refused` | error | tool | aggy tool refused or failed; no definition or switch changed. | The code's entry. |
-| `tool.def.refused` | warn | tool | A user tool definition was left out: invalid, untrusted, or colliding (attrs.file names it). | aggy tool list names the file and the key; fix or remove it. |
+| `tool.def.refused` | warn | tool | A user tool definition was left out: invalid, untrusted, or colliding (attrs: file, its base name in ~/.aggy/tools, and key; never its argv). | aggy tool list names the file and the key; fix or remove it. |
 | `tool.switch.changed` | info | tool | aggy tool on or off recorded a switch (attrs: tool, vendor, repo, on). | aggy tool status shows what is on where. |
 
 | Code | Security | Meaning | What to check next |

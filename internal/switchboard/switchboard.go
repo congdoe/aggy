@@ -1,8 +1,10 @@
 // Package switchboard decides which managed tools are on, for one vendor
-// in one repo, from three inputs only: the tool definitions
+// in one repo, from these inputs only: the tool definitions
 // (internal/tooldef), the person's aggy tool on and off settings (the
-// index's tool_switches), and the repo's tools_off. A repo's config can
-// only turn a tool off. A user tool is off until the person turns it on.
+// index's tool_switches), the tools turned on for one session (--tool),
+// and the repo's tools_off. A repo's config can only turn a tool off. A
+// user tool is off until the person turns it on, and off again once its
+// definition changes.
 //
 // An off tool contributes nothing: On never returns it, so no MCP entry,
 // skill link, hook, init step, or line of text of it reaches any CLI, and
@@ -21,7 +23,12 @@ import (
 type Board struct {
 	Tools    []tooldef.Tool
 	Switches []store.ToolSwitch
-	// RepoOff is the tools_off of the repo the session runs in.
+	// Session names the tools turned on for one session only (aggy
+	// switch or borrow --tool). It never beats RepoOff or the per-repo
+	// scope rule.
+	Session []string
+	// RepoOff is the tools_off of the repo the session runs in: its main
+	// checkout's and, in a linked worktree, the worktree's own.
 	RepoOff []string
 }
 
@@ -35,8 +42,11 @@ type State struct {
 	Parts tooldef.Parts
 }
 
-// State decides tool t for vendor v in repo, the real path of the repo's
-// work-tree root ("" outside a repo).
+// Changed is the reason a user tool turned on is off again.
+const Changed = "off: the definition changed since it was turned on"
+
+// State decides tool t for vendor v in repo, the key of the repo's main
+// checkout ("" outside a repo).
 func (b Board) State(t tooldef.Tool, v adapter.Vendor, repo string) State {
 	st := State{Tool: t, Vendor: v}
 	off := func(why string) State { st.Why = why; return st }
@@ -49,8 +59,20 @@ func (b Board) State(t tooldef.Tool, v adapter.Vendor, repo string) State {
 	case t.Scope == "repo" && repo == "":
 		return off("a per-repo tool, outside a repo")
 	}
-	on, why, set := b.setting(t, v, repo)
-	if !set {
+	var on bool
+	var why string
+	if slices.Contains(b.Session, t.Name) {
+		on, why = true, "on for this session"
+	} else if sw, set := b.setting(t, v, repo); set {
+		on, why = sw.On, "off: "+sw.why
+		if on {
+			why = "on: " + sw.why
+			// A user file edited or replaced after it was turned on.
+			if !t.BuiltIn && sw.digest != t.Digest {
+				on, why = false, Changed
+			}
+		}
+	} else {
 		// User tools are always off by default; the validator also
 		// refuses default = true on one.
 		on, why = t.Default && t.BuiltIn && t.Scope == "global", "off by default"
@@ -65,10 +87,15 @@ func (b Board) State(t tooldef.Tool, v adapter.Vendor, repo string) State {
 	return st
 }
 
+type setting struct {
+	On          bool
+	why, digest string
+}
+
 // setting finds the most specific switch for the tool: this repo and
 // vendor, this repo, every repo and this vendor, then every repo. A
 // per-repo tool takes no "on" from a setting for every repo.
-func (b Board) setting(t tooldef.Tool, v adapter.Vendor, repo string) (on bool, why string, ok bool) {
+func (b Board) setting(t tooldef.Tool, v adapter.Vendor, repo string) (setting, bool) {
 	type key struct{ repo, vendor, why string }
 	keys := []key{{"", "", "set for every vendor and repo"}, {"", string(v), "set for " + string(v)}}
 	if repo != "" {
@@ -82,17 +109,13 @@ func (b Board) setting(t tooldef.Tool, v adapter.Vendor, repo string) (on bool, 
 		if j < 0 {
 			continue
 		}
-		on := b.Switches[j].On
-		if on && t.Scope == "repo" && k.repo == "" {
+		sw := b.Switches[j]
+		if sw.On && t.Scope == "repo" && k.repo == "" {
 			continue
 		}
-		state := "off"
-		if on {
-			state = "on"
-		}
-		return on, state + ": " + k.why, true
+		return setting{sw.On, k.why, sw.Digest}, true
 	}
-	return false, "", false
+	return setting{}, false
 }
 
 // On returns the tools on for vendor v in repo, by name. Wiring is

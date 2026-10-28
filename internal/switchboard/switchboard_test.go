@@ -9,13 +9,16 @@ import (
 )
 
 func tool(name, scope string, builtIn, def bool, vendors ...adapter.Vendor) tooldef.Tool {
-	return tooldef.Tool{BuiltIn: builtIn, Def: tooldef.Def{Name: name, Scope: scope, Default: def,
+	return tooldef.Tool{BuiltIn: builtIn, Digest: "d1", Def: tooldef.Def{Name: name, Scope: scope, Default: def,
 		MCP: []tooldef.MCP{{Vendors: vendors, Argv: []string{name, "serve"}}}}}
 }
 
 func sw(tool, vendor, repo string, on bool) store.ToolSwitch {
-	return store.ToolSwitch{Tool: tool, Vendor: vendor, Repo: repo, On: on}
+	return store.ToolSwitch{Tool: tool, Vendor: vendor, Repo: repo, On: on, Digest: "d1"}
 }
+
+// changed is a setting made for an earlier version of the definition.
+func changed(s store.ToolSwitch) store.ToolSwitch { s.Digest = "d0"; return s }
 
 const repo = "/r/app"
 
@@ -32,28 +35,38 @@ func TestState(t *testing.T) {
 		v       adapter.Vendor
 		repo    string
 		on      bool
+		session []string
 	}{
-		{"user tool off by default", user, nil, nil, adapter.Claude, repo, false},
-		{"user tool claiming default on", tool("demo", "global", false, true, all...), nil, nil, adapter.Claude, repo, false},
-		{"built-in default on", tool("b", "global", true, true, all...), nil, nil, adapter.Claude, repo, true},
-		{"on everywhere", user, []store.ToolSwitch{sw("demo", "", "", true)}, nil, adapter.Grok, repo, true},
-		{"on for claude only", user, []store.ToolSwitch{sw("demo", "claude", "", true)}, nil, adapter.Grok, repo, false},
-		{"repo off beats global on", user, []store.ToolSwitch{sw("demo", "", "", true), sw("demo", "", repo, false)}, nil, adapter.Codex, repo, false},
-		{"repo on beats global off", user, []store.ToolSwitch{sw("demo", "", "", false), sw("demo", "", repo, true)}, nil, adapter.Codex, repo, true},
-		{"vendor in repo beats repo", user, []store.ToolSwitch{sw("demo", "", repo, true), sw("demo", "codex", repo, false)}, nil, adapter.Codex, repo, false},
-		{"another repo's on", user, []store.ToolSwitch{sw("demo", "", "/r/other", true)}, nil, adapter.Codex, repo, false},
+		// S63-1: an edited or replaced user file is off until turned on again.
+		{"user file changed", user, []store.ToolSwitch{changed(sw("demo", "", "", true))}, nil, adapter.Claude, repo, false, nil},
+		{"built-in updated", tool("b", "global", true, false, all...), []store.ToolSwitch{changed(sw("b", "", "", true))}, nil, adapter.Claude, repo, true, nil},
+		// S63-10: one session's --tool, under the repo's rules.
+		{"session on", user, nil, nil, adapter.Claude, repo, true, []string{"demo"}},
+		{"session beats a setting off", user, []store.ToolSwitch{sw("demo", "", "", false)}, nil, adapter.Claude, repo, true, []string{"demo"}},
+		{"tools_off beats session", user, nil, []string{"demo"}, adapter.Claude, repo, false, []string{"demo"}},
+		{"per-repo tool outside a repo, session", perRepo, nil, nil, adapter.Claude, "", false, []string{"idx"}},
+		{"session, no part for the vendor", claudeOnly, nil, nil, adapter.Grok, repo, false, []string{"demo"}},
+		{"user tool off by default", user, nil, nil, adapter.Claude, repo, false, nil},
+		{"user tool claiming default on", tool("demo", "global", false, true, all...), nil, nil, adapter.Claude, repo, false, nil},
+		{"built-in default on", tool("b", "global", true, true, all...), nil, nil, adapter.Claude, repo, true, nil},
+		{"on everywhere", user, []store.ToolSwitch{sw("demo", "", "", true)}, nil, adapter.Grok, repo, true, nil},
+		{"on for claude only", user, []store.ToolSwitch{sw("demo", "claude", "", true)}, nil, adapter.Grok, repo, false, nil},
+		{"repo off beats global on", user, []store.ToolSwitch{sw("demo", "", "", true), sw("demo", "", repo, false)}, nil, adapter.Codex, repo, false, nil},
+		{"repo on beats global off", user, []store.ToolSwitch{sw("demo", "", "", false), sw("demo", "", repo, true)}, nil, adapter.Codex, repo, true, nil},
+		{"vendor in repo beats repo", user, []store.ToolSwitch{sw("demo", "", repo, true), sw("demo", "codex", repo, false)}, nil, adapter.Codex, repo, false, nil},
+		{"another repo's on", user, []store.ToolSwitch{sw("demo", "", "/r/other", true)}, nil, adapter.Codex, repo, false, nil},
 		// A repo's tools_off wins over every setting of the person's.
-		{"tools_off beats repo on", user, []store.ToolSwitch{sw("demo", "claude", repo, true)}, []string{"demo"}, adapter.Claude, repo, false},
-		{"tools_off beats default", tool("b", "global", true, true, all...), nil, []string{"b"}, adapter.Claude, repo, false},
-		{"no part for the vendor", claudeOnly, []store.ToolSwitch{sw("demo", "", "", true)}, nil, adapter.Grok, repo, false},
-		{"per-repo tool outside a repo", perRepo, []store.ToolSwitch{sw("idx", "", "", true)}, nil, adapter.Claude, "", false},
-		{"per-repo tool takes no global on", perRepo, []store.ToolSwitch{sw("idx", "", "", true)}, nil, adapter.Claude, repo, false},
-		{"per-repo tool on in its repo", perRepo, []store.ToolSwitch{sw("idx", "", repo, true)}, nil, adapter.Claude, repo, true},
-		{"per-repo tool global off", perRepo, []store.ToolSwitch{sw("idx", "", repo, true), sw("idx", "claude", "", false)}, nil, adapter.Claude, repo, true},
+		{"tools_off beats repo on", user, []store.ToolSwitch{sw("demo", "claude", repo, true)}, []string{"demo"}, adapter.Claude, repo, false, nil},
+		{"tools_off beats default", tool("b", "global", true, true, all...), nil, []string{"b"}, adapter.Claude, repo, false, nil},
+		{"no part for the vendor", claudeOnly, []store.ToolSwitch{sw("demo", "", "", true)}, nil, adapter.Grok, repo, false, nil},
+		{"per-repo tool outside a repo", perRepo, []store.ToolSwitch{sw("idx", "", "", true)}, nil, adapter.Claude, "", false, nil},
+		{"per-repo tool takes no global on", perRepo, []store.ToolSwitch{sw("idx", "", "", true)}, nil, adapter.Claude, repo, false, nil},
+		{"per-repo tool on in its repo", perRepo, []store.ToolSwitch{sw("idx", "", repo, true)}, nil, adapter.Claude, repo, true, nil},
+		{"per-repo tool global off", perRepo, []store.ToolSwitch{sw("idx", "", repo, true), sw("idx", "claude", "", false)}, nil, adapter.Claude, repo, true, nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			b := Board{Tools: []tooldef.Tool{c.t}, Switches: c.sws, RepoOff: c.repoOff}
+			b := Board{Tools: []tooldef.Tool{c.t}, Switches: c.sws, RepoOff: c.repoOff, Session: c.session}
 			st := b.State(c.t, c.v, c.repo)
 			if st.On != c.on || st.Why == "" {
 				t.Fatalf("On = %v (%s), want %v", st.On, st.Why, c.on)

@@ -186,7 +186,7 @@ var events = []EventInfo{
 	{EvDoctorError, LevelError, "doctor", "aggy doctor reported an error-level finding (attrs.finding is its doctor code).", "aggy doctor shows the finding in full."},
 	{EvDoctorRefused, LevelError, "doctor", "aggy doctor did not run.", "The code's entry."},
 	{EvToolRefused, LevelError, "tool", "aggy tool refused or failed; no definition or switch changed.", "The code's entry."},
-	{EvToolDefRefused, LevelWarn, "tool", "A user tool definition was left out: invalid, untrusted, or colliding (attrs.file names it).", "aggy tool list names the file and the key; fix or remove it."},
+	{EvToolDefRefused, LevelWarn, "tool", "A user tool definition was left out: invalid, untrusted, or colliding (attrs: file, its base name in ~/.aggy/tools, and key; never its argv).", "aggy tool list names the file and the key; fix or remove it."},
 	{EvToolSwitched, LevelInfo, "tool", "aggy tool on or off recorded a switch (attrs: tool, vendor, repo, on).", "aggy tool status shows what is on where."},
 }
 
