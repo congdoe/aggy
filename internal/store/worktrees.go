@@ -46,12 +46,17 @@ var ErrWorktreeState = errors.New("store: the worktree is no longer in that stat
 
 // SetWorktreeState moves borrow id's worktree from one state to another,
 // and only from it, so two accepts or an accept and a reject cannot both
-// win.
+// win. A move to accepted records when (schema version 14); any other
+// move clears that.
 func (s *Store) SetWorktreeState(ctx context.Context, id, from, to string) error {
+	var accepted sql.NullInt64
+	if to == WorktreeAccepted {
+		accepted = sql.NullInt64{Int64: millis(time.Now()), Valid: true}
+	}
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE children SET worktree_state = ?
+		`UPDATE children SET worktree_state = ?, worktree_accepted_at = ?
 		 WHERE id = (SELECT child_id FROM borrows WHERE id = ?) AND worktree <> '' AND worktree_state = ?`,
-		to, id, from)
+		to, accepted, id, from)
 	if err != nil {
 		return err
 	}

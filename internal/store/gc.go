@@ -16,18 +16,19 @@ import (
 // gcSchema is the version that records worktree removals.
 const gcSchema = 14
 
-// removedExpr is c.worktree_removed_at, or, on an index from before
-// version 14 that a read-only caller (aggy gc --dry-run) cannot migrate,
-// what the migration will set: reject removed its worktrees already.
-func (s *Store) removedExpr(ctx context.Context) (string, error) {
+// gcExprs are c.worktree_removed_at and c.worktree_accepted_at, or, on
+// an index from before version 14 that a read-only caller (aggy gc
+// --dry-run) cannot migrate, what the migration will set: reject removed
+// its worktrees already, and no acceptance time was kept.
+func (s *Store) gcExprs(ctx context.Context) (removed, accepted string, err error) {
 	v, err := s.Version(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if v < gcSchema {
-		return `(CASE WHEN c.worktree_state = 'rejected' THEN c.last_active END)`, nil
+		return `(CASE WHEN c.worktree_state = 'rejected' THEN c.last_active END)`, `NULL`, nil
 	}
-	return `c.worktree_removed_at`, nil
+	return `c.worktree_removed_at`, `c.worktree_accepted_at`, nil
 }
 
 // GCWorktree is an edit worktree, with what aggy gc decides on.
@@ -39,6 +40,7 @@ type GCWorktree struct {
 	Running  bool      // its borrow is still marked running
 	Held     bool      // its child's lease is held by a live process
 	Ended    time.Time // when the borrow ended, or started if it never did
+	Accepted time.Time // when it was accepted; zero if not, or not known
 }
 
 // GCWorktrees returns every edit worktree, removed ones included, by
@@ -61,13 +63,13 @@ func (s *Store) GCWorktree(ctx context.Context, id string) (GCWorktree, error) {
 }
 
 func (s *Store) gcWorktrees(ctx context.Context, id string) ([]GCWorktree, error) {
-	removed, err := s.removedExpr(ctx)
+	removed, accepted, err := s.gcExprs(ctx)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT b.id, c.worktree, c.branch, c.worktree_base, c.worktree_repo, c.worktree_git_dir,
-		        c.worktree_state, c.worktree_tree, `+removed+`, b.status, COALESCE(b.ended_at, b.started_at),
+		        c.worktree_state, c.worktree_tree, `+removed+`, `+accepted+`, b.status, COALESCE(b.ended_at, b.started_at),
 		        c.lease_pid, c.lease_nonce
 		 FROM children c JOIN borrows b ON b.child_id = c.id
 		 WHERE c.worktree <> '' AND (? = '' OR b.id = ?) ORDER BY b.id`, id, id)
@@ -80,14 +82,14 @@ func (s *Store) gcWorktrees(ctx context.Context, id string) ([]GCWorktree, error
 		var g GCWorktree
 		var status string
 		var ended int64
-		var pid, gone sql.NullInt64
+		var pid, gone, acc sql.NullInt64
 		var nonce sql.NullString
 		w := &g.Worktree
 		if err := rows.Scan(&g.BorrowID, &w.Path, &w.Branch, &w.Base, &w.Repo, &w.GitDir,
-			&w.State, &w.Tree, &gone, &status, &ended, &pid, &nonce); err != nil {
+			&w.State, &w.Tree, &gone, &acc, &status, &ended, &pid, &nonce); err != nil {
 			return nil, err
 		}
-		w.Removed = fromNull(gone)
+		w.Removed, g.Accepted = fromNull(gone), fromNull(acc)
 		g.Running = status == "running"
 		g.Held = nonce.Valid && s.alive(nonce.String, int(pid.Int64))
 		g.Ended = fromMillis(ended)
@@ -114,7 +116,7 @@ const pruneWhere = `c.status = 'closed' AND c.kind <> ''
 
 // GCChildren returns the prunable children last active before before.
 func (s *Store) GCChildren(ctx context.Context, before time.Time) ([]GCChild, error) {
-	removed, err := s.removedExpr(ctx)
+	removed, _, err := s.gcExprs(ctx)
 	if err != nil {
 		return nil, err
 	}

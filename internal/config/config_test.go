@@ -62,15 +62,16 @@ func TestParse(t *testing.T) {
 			name: "gc retention defaults to 30 days, user config sets it",
 			text: "[gc]\npending_worktree_days = 90\ninbox_days = 7\n",
 			check: func(t *testing.T, c Config) {
-				if d := Default().GC; d.PendingWorktreeDays != 30 || d.ClosedChildDays != 30 || d.InboxDays != 30 {
+				if d := Default().GC; d.PendingWorktreeDays != 30 || d.AcceptedWorktreeDays != 30 || d.ClosedChildDays != 30 || d.InboxDays != 30 {
 					t.Errorf("default gc = %+v", d)
 				}
-				if c.GC != (GC{PendingWorktreeDays: 90, ClosedChildDays: 30, InboxDays: 7}) {
+				if c.GC != (GC{PendingWorktreeDays: 90, AcceptedWorktreeDays: 30, ClosedChildDays: 30, InboxDays: 7}) {
 					t.Errorf("gc = %+v", c.GC)
 				}
 			},
 		},
 		{name: "gc days below 1", text: "[gc]\ninbox_days = 0\n", wantErr: "gc.inbox_days must be 1 to 3650"},
+		{name: "gc accepted days below 1", text: "[gc]\naccepted_worktree_days = 0\n", wantErr: "gc.accepted_worktree_days must be 1 to 3650"},
 		{name: "gc days too large", text: "[gc]\nclosed_child_days = 3651\n", wantErr: "gc.closed_child_days must be 1 to 3650"},
 		{name: "gc unknown key", text: "[gc]\nresearch_days = 1\n", wantErr: "unknown key gc.research_days"},
 		{
