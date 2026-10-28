@@ -3,6 +3,8 @@ package router
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -137,6 +139,9 @@ func (r *Router) skips(ctx context.Context, req Request, k adapter.Kind, list []
 		}
 		skip[v] = reason
 	}
+	if k == adapter.Review {
+		warnings = append(warnings, skipAuthors(req.Authors, k, list, skip)...)
+	}
 	kept := 0
 	for _, v := range list {
 		if _, ok := skip[v]; !ok && Refusal(k, v) == nil {
@@ -150,6 +155,42 @@ func (r *Router) skips(ctx context.Context, req Request, k adapter.Kind, list []
 		}
 	}
 	return skip, notes, warnings, nil
+}
+
+// skipAuthors skips, in skip, the vendors left in list that authors
+// names, unless that would leave no vendor that can run kind k; then it
+// keeps them and returns a warning.
+func skipAuthors(authors []adapter.Vendor, k adapter.Kind, list []adapter.Vendor, skip map[adapter.Vendor]string) []string {
+	var authored []adapter.Vendor
+	others := 0
+	for _, v := range list {
+		if _, ok := skip[v]; ok {
+			continue
+		}
+		if slices.Contains(authors, v) {
+			authored = append(authored, v)
+		} else if Refusal(k, v) == nil {
+			others++
+		}
+	}
+	if len(authored) == 0 {
+		return nil
+	}
+	if others == 0 {
+		return []string{fmt.Sprintf("every vendor left wrote part of the change (Aggy-Vendor trailers name %s); reviewing with it anyway", vendorNames(authored))}
+	}
+	for _, v := range authored {
+		skip[v] = "an Aggy-Vendor trailer says it wrote part of the change"
+	}
+	return nil
+}
+
+func vendorNames(vs []adapter.Vendor) string {
+	s := make([]string, len(vs))
+	for i, v := range vs {
+		s[i] = string(v)
+	}
+	return strings.Join(s, ", ")
 }
 
 // statuses returns each vendor's recorded sign-in status. Without a
