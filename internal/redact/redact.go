@@ -39,10 +39,16 @@ var Token = regexp.MustCompile(strings.Join([]string{
 	`(?i)["']?\b(?:access_token|refresh_token|id_token|api_key|apikey|secret|password|auth_token)["']?\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{16,}`,
 }, "|"))
 
-// secretName is a key, variable, or header name with a secret word as
-// one of its segments: API_KEY, x-api-key, client_secret, DB_PASSWORD,
-// "token", SIGNING_KEY. "monkey" or "max_tokens" do not count.
-const secretName = `(?i)(?:^|[^A-Za-z0-9])(?:[A-Za-z0-9]+[_.-])*(?:apikey|key|token|secret|password|passwd|pwd|passphrase|credentials?)["']?\s*[:=]`
+// secretName is a key, variable, or header name that holds a secret
+// word, run together or not, in any case: API_KEY, x-api-key,
+// clientSecret, PGPASSWORD, GITHUBTOKEN, AccountKey, "token". The word
+// may have suffix segments (API_KEY_ID) but not a bare suffix, so
+// "max_tokens" does not count.
+const secretName = `(?i)[A-Za-z0-9_.-]*(?:apikey|key|token|secret|password|passwd|pwd|passphrase|credentials?)(?:[_.-][A-Za-z0-9]+)*["']?\s*[:=]`
+
+// keyPrefix is what may stand before a key line: quoting, a comment
+// marker, or a line number, up to 12 characters.
+const keyPrefix = `^.{0,12}?`
 
 var (
 	// other matches secrets that are not token-shaped on their own.
@@ -60,20 +66,64 @@ var (
 	// bare40 is a candidate AWS secret access key: 40 base64 characters
 	// standing alone.
 	bare40   = regexp.MustCompile(`(?:^|[^A-Za-z0-9/+=])([A-Za-z0-9/+]{40})(?:$|[^A-Za-z0-9/+=])`)
-	keyBegin = regexp.MustCompile(`^\s*["']?-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----`)
+	keyBegin = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----`)
 	keyEnd   = regexp.MustCompile(`-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----`)
-	// keyBody is a line of an armored key: base64 of 16 or more
-	// characters, a short last line padded with "=", or a header such as
-	// Proc-Type: or Comment:. A short plain word does not count.
-	keyBody = regexp.MustCompile(`^\s*(?:[A-Za-z0-9+/]{16,}={0,2}|[A-Za-z0-9+/]*={1,2}|[A-Za-z-]+: .*)\s*$`)
-	// longBase64 is a line of 40 or more base64 characters.
-	longBase64 = regexp.MustCompile(`^\s*[A-Za-z0-9+/=]{40,}\s*$`)
+	// keyBody is a line of an armored key, after an optional short
+	// prefix: base64 of 16 or more characters, or a short last line padded
+	// with "=", with trailing quotes, commas, or a written "\n"; or an
+	// armor header. A short plain word does not count.
+	keyBody = regexp.MustCompile(keyPrefix + `(?:[A-Za-z0-9+/]{16,}={0,2}|[A-Za-z0-9+/]*={1,2})[\s"',+;\\n]*$|^\s*(?:Proc-Type|DEK-Info|Comment|Version|Hash|Charset): `)
+	// longBase64 is a line whose rest, after a short prefix, is 40 or
+	// more base64 characters.
+	longBase64 = regexp.MustCompile(keyPrefix + `[A-Za-z0-9+/]{40,}={0,2}[\s"',+;\\n]*$`)
 )
+
+// hints are lowercase substrings at least one of which every pattern in
+// Token, other, and pendingKey needs; a line with none skips the
+// regexps, which are slow on long text. TestHints checks that every
+// match holds one.
+var hints = []string{
+	"sk-", "xai-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "gl", "npm_", "hf_",
+	"sg.", "age-secret-key-", "xox", "xapp-", "akia", "asia", "aws", "aiza", "ya29.", "_live_",
+	"_test_", "whsec_", "-----begin", "eyj", "authorization", "bearer",
+	"key", "token", "secret", "password", "passwd", "pwd", "passphrase", "credential",
+	"://", "mysql", "mariadb", "--pass",
+}
+
+// hinted reports whether line holds one of hints.
+func hinted(line string) bool {
+	l := strings.ToLower(line)
+	for _, h := range hints {
+		if strings.Contains(l, h) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasRun40 reports whether line holds 40 base64 characters in a row.
+func hasRun40(line string) bool {
+	run := 0
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '+' || c == '/' {
+			if run++; run >= 40 {
+				return true
+			}
+		} else {
+			run = 0
+		}
+	}
+	return false
+}
 
 // Secret reports whether line holds secret-shaped text.
 func Secret(line string) bool {
-	if Token.MatchString(line) || other.MatchString(line) {
+	if hinted(line) && (Token.MatchString(line) || other.MatchString(line)) {
 		return true
+	}
+	if !hasRun40(line) {
+		return false
 	}
 	for _, m := range bare40.FindAllStringSubmatch(line, -1) {
 		// A git SHA is 40 hex characters; a secret key mixes cases and digits.
@@ -98,47 +148,79 @@ func Each(text string) (string, int) {
 	return strings.Join(out, "\n"), len(lines) - len(out)
 }
 
+// endAfter returns the index of the first END line after line i, or -1.
+func endAfter(lines []string, i int) int {
+	for j := i + 1; j < len(lines); j++ {
+		if strings.Contains(lines[j], "-----") && keyEnd.MatchString(lines[j]) {
+			return j
+		}
+	}
+	return -1
+}
+
 // Lines removes the secrets in one piece of text, such as one transcript
 // turn, and returns the rest and how many lines it removed:
 //
 //   - every line Secret matches
 //   - the value line after a secret name that ends its line
-//   - a private key block whole, from a BEGIN line (at the start of a
-//     line) to its END line, or to the end of text when there is none
-//   - an END line with no BEGIN in view, with the key lines just before
-//     it, and every line of 40 or more base64 characters in the same text
+//   - a private key: from a BEGIN line (the marker anywhere on the line)
+//     to the next END line in text; with no END, the BEGIN line and the
+//     key lines after it, which may carry a short prefix such as "> ",
+//     "# ", "// ", a quote, or a line number
+//   - an END line with no BEGIN in view, with the key lines just before it
+//   - with a BEGIN that has no END, or an END that has no BEGIN, every
+//     line of 40 or more base64 characters in the same text
 func Lines(text string) (string, int) {
 	lines := strings.Split(text, "\n")
 	drop := make([]bool, len(lines))
-	orphanEnd := false
+	unpaired := false // a BEGIN with no END, or an END with no BEGIN
 	inKey, pending := false, false
+	skip := -1 // lines up to skip are already dropped as one block
 	for i, l := range lines {
+		if i <= skip {
+			continue
+		}
+		dashes := strings.Contains(l, "-----")
 		switch {
-		case inKey:
+		case inKey && dashes && keyEnd.MatchString(l):
+			drop[i], inKey, unpaired = true, false, false
+		case inKey && (strings.TrimSpace(l) == "" || keyBody.MatchString(l)):
 			drop[i] = true
-			inKey = !keyEnd.MatchString(l)
-		case keyBegin.MatchString(l):
+		case dashes && keyBegin.MatchString(l):
 			drop[i] = true
-			inKey = !keyEnd.MatchString(l)
-		case keyEnd.MatchString(l):
-			drop[i] = true
-			orphanEnd = true
-			for j := i - 1; j >= 0 && !drop[j] && keyBody.MatchString(lines[j]) && strings.TrimSpace(lines[j]) != ""; j-- {
+			if keyEnd.MatchString(l) {
+				break
+			}
+			// With its END further on in this text, the whole block goes;
+			// without one, only the key-looking lines that follow.
+			if end := endAfter(lines, i); end > 0 {
+				for j := i + 1; j <= end; j++ {
+					drop[j] = true
+				}
+				skip = end
+				break
+			}
+			inKey, unpaired = true, true
+		case dashes && keyEnd.MatchString(l):
+			drop[i], unpaired = true, true
+			for j := i - 1; j >= 0 && !drop[j] && strings.TrimSpace(lines[j]) != "" && keyBody.MatchString(lines[j]); j-- {
 				drop[j] = true
 			}
 		case pending && strings.TrimSpace(l) != "":
 			drop[i] = true
 		default:
+			// A key block ends at the first line that is not key text.
+			inKey = false
 			drop[i] = Secret(l)
 		}
 		if strings.TrimSpace(l) != "" || !pending {
-			pending = !drop[i] && pendingKey.MatchString(l)
+			pending = !drop[i] && hinted(l) && pendingKey.MatchString(l)
 		}
 	}
 	out := lines[:0]
 	removed := 0
 	for i, l := range lines {
-		if drop[i] || orphanEnd && longBase64.MatchString(l) {
+		if drop[i] || unpaired && hasRun40(l) && longBase64.MatchString(l) {
 			removed++
 			continue
 		}
