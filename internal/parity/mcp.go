@@ -316,12 +316,29 @@ func mixedRun(s string) bool {
 }
 
 // oddRun reports whether s holds key-like text the other checks miss
-// (I43-7): 16 or more digits in a row; 4 or more digits with letters
-// right before and after (abcd1234efgh); or 10 or more letters in a row
-// of which under a fifth are vowels (y counts), which words and names
-// almost never are (kqzvtwmrjxhplbn). shortcut: a random run with more
-// vowels gets through; a pronounceability model would catch more.
+// (I43-7): 12 or more digits in a row (I43-11); 4 or more digits with
+// letters right before and after (abcd1234efgh); 10 or more letters in a
+// row of which under a fifth are vowels (y counts), which words and names
+// almost never are (kqzvtwmrjxhplbn); or a word with a digit and 6 or
+// more capitals in a row, as short base64 has (QUJDREVGR0g, I43-11).
+// shortcut: a random lower-case run with more vowels (kaqizuvoteb) gets
+// through, since words such as typescript look the same to these rules; a
+// pronounceability model would catch more.
 func oddRun(s string) bool {
+	for _, w := range strings.FieldsFunc(s, func(r rune) bool { return !isAlnum(r) }) {
+		run, most := 0, 0
+		for k := 0; k < len(w); k++ {
+			if 'A' <= w[k] && w[k] <= 'Z' {
+				run++
+				most = max(most, run)
+			} else {
+				run = 0
+			}
+		}
+		if most >= 6 && strings.ContainsAny(w, "0123456789") {
+			return true
+		}
+	}
 	for i := 0; i < len(s); {
 		j := i
 		switch c := s[i]; {
@@ -329,7 +346,7 @@ func oddRun(s string) bool {
 			for j < len(s) && '0' <= s[j] && s[j] <= '9' {
 				j++
 			}
-			if j-i >= 16 || j-i >= 4 && i > 0 && isLetter(s[i-1]) && j < len(s) && isLetter(s[j]) {
+			if j-i >= 12 || j-i >= 4 && i > 0 && isLetter(s[i-1]) && j < len(s) && isLetter(s[j]) {
 				return true
 			}
 		case isLetter(c):

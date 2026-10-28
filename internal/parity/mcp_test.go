@@ -64,6 +64,9 @@ func TestClaudeServer(t *testing.T) {
 		"https://mcp.example.com/s/kqzvtwmrjxhplbnaqzvt",
 		"https://abcd1234efgh.mcp.example.com/mcp",
 		"https://kqzvtwmrjxhplbn.mcp.example.com/mcp",
+		// I43-11: 15 digits, and short base64.
+		"https://mcp.example.com/s/123456789012345/mcp",
+		"https://mcp.example.com/s/QUJDREVGR0g/mcp",
 	} {
 		cases = append(cases, struct {
 			name, entry string
