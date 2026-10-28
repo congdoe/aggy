@@ -17,6 +17,7 @@ import (
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/switchboard"
+	"github.com/congdoe/aggy/internal/tooldef"
 	"github.com/congdoe/aggy/internal/toolwire"
 )
 
@@ -58,6 +59,11 @@ func addTools(ctx context.Context, v adapter.Vendor, caps []string, cwd, dir str
 	}
 	b.Session = session
 	var warns []string
+	for _, n := range session {
+		if !slices.ContainsFunc(b.Tools, func(t tooldef.Tool) bool { return t.Name == n }) {
+			warns = append(warns, refuse(n, diag.CodeToolUnknown, "no tool of that name is loaded (aggy tool list)"))
+		}
+	}
 	if repo.root != "" {
 		if b.RepoOff, err = repoToolsOff(repo); err != nil {
 			// As aggy tool status shows it: every tool off in this repo.

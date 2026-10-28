@@ -22,6 +22,29 @@ func wireOnce(t *testing.T, v adapter.Vendor, caps []string, cwd string) (adapte
 	return req, warns, dir
 }
 
+// TestAddToolsSession: aggy run --tool turns a tool on for one session,
+// changes no setting, and never beats the repo's tools_off; an unknown
+// name is a warning.
+func TestAddToolsSession(t *testing.T) {
+	_, dest := toolHome(t, demoTool)
+	writeAt(t, dest, demoTool, 0o600)
+	repo := switchRepo(t, "")
+	var req adapter.InteractiveRequest
+	warns := addTools(context.Background(), adapter.Claude, nil, repo, filepath.Join(t.TempDir(), "l"), []string{"demo", "nope"}, &req)
+	b, _ := os.ReadFile(req.MCPConfigFile)
+	if len(warns) != 1 || !strings.Contains(warns[0], "tool.unknown") || !strings.Contains(string(b), `"demo"`) {
+		t.Errorf("session: %q\n%s", warns, b)
+	}
+	if _, out, _ := toolRun("", false, "status"); !strings.HasPrefix(statusLine(t, out, "demo"), "demo off off off") {
+		t.Errorf("--tool changed a setting:\n%s", out)
+	}
+	writeAt(t, filepath.Join(repo, ".aggy", "config.toml"), `tools_off = ["demo"]`, 0o600)
+	req = adapter.InteractiveRequest{}
+	if addTools(context.Background(), adapter.Claude, nil, repo, filepath.Join(t.TempDir(), "l"), []string{"demo"}, &req); req.MCPConfigFile != "" {
+		t.Error("--tool beat the repo's tools_off")
+	}
+}
+
 // TestAddTools: the tools that are on reach each CLI's launch as its own
 // form (a Claude MCP file, Grok agent file, Codex -c servers); an off
 // tool leaves no flag and no file; a name the user's config already has

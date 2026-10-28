@@ -63,6 +63,22 @@ func (w *world) traces(t *testing.T, server string) []string {
 	return found
 }
 
+// TestToolForOneSession: aggy run --tool wires an off tool for that
+// session only.
+func TestToolForOneSession(t *testing.T) {
+	w := newWorld(t)
+	s := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "run", "--tool", "context7", "claude")
+	s.waitFor([]byte("READY>"))
+	s.send([]byte{0x04})
+	s.exit()
+	if f := interactiveRecord(t, w).Flags["--mcp-config"]; len(f) != 1 {
+		t.Errorf("--tool: --mcp-config %q", f)
+	}
+	if r := w.launchRecord(t, "claude"); slices.Contains(r.Args, "--mcp-config") {
+		t.Errorf("--tool outlived its session: %q", r.Args)
+	}
+}
+
 // TestToolsWiredAtLaunch (T6708): a tool turned on reaches the CLI aggy
 // starts on its command line only, for that session; turned off, it
 // leaves no flag, no file, and nothing in any vendor config.

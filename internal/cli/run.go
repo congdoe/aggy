@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,21 +26,46 @@ import (
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/supervisor"
 	"github.com/congdoe/aggy/internal/termsafe"
+	"github.com/congdoe/aggy/internal/tooldef"
 )
 
-// runRun is `aggy run [--direct] [--no-policy] <vendor>`: a new parent in
-// the current directory with an interactive session of that vendor, under
-// the supervisor, or with --direct on aggy's own terminal (runDirect).
-// --no-policy starts it without the safety policy (launch).
+// runRun is `aggy run [--direct] [--no-policy] [--tool NAME]... <vendor>`:
+// a new parent in the current directory with an interactive session of
+// that vendor, under the supervisor, or with --direct on aggy's own
+// terminal (runDirect). --no-policy starts it without the safety policy
+// (launch). --tool turns a tool on for this session only (target.Tools).
 func runRun(args []string, stdout, stderr io.Writer) int {
+	const usage = "usage: aggy run [--direct] [--no-policy] [--tool NAME]... <claude|codex|grok>\n"
 	var direct, noPolicy bool
-	for len(args) > 0 && (args[0] == "--direct" || args[0] == "--no-policy") {
-		direct = direct || args[0] == "--direct"
-		noPolicy = noPolicy || args[0] == "--no-policy"
+	var tools []string
+	for len(args) > 0 && strings.HasPrefix(args[0], "--") {
+		name, val, hasVal := strings.Cut(args[0], "=")
+		switch {
+		case args[0] == "--direct":
+			direct = true
+		case args[0] == "--no-policy":
+			noPolicy = true
+		case name == "--tool":
+			if !hasVal {
+				if len(args) < 2 {
+					fmt.Fprint(stderr, usage)
+					return 2
+				}
+				args, val = args[1:], args[1]
+			}
+			if !tooldef.ValidName(val) {
+				fmt.Fprintf(stderr, "aggy run: %q is not a tool name\n", val)
+				return 2
+			}
+			tools = append(tools, val)
+		default:
+			fmt.Fprint(stderr, usage)
+			return 2
+		}
 		args = args[1:]
 	}
 	if len(args) != 1 {
-		fmt.Fprint(stderr, "usage: aggy run [--direct] [--no-policy] <claude|codex|grok>\n")
+		fmt.Fprint(stderr, usage)
 		return 2
 	}
 	v, err := adapter.ParseVendor(args[0])
@@ -47,7 +73,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy run: %v\n", err)
 		return 2
 	}
-	return launch("aggy run", target{New: true, Vendor: v, Direct: direct, NoPolicy: noPolicy}, stderr)
+	return launch("aggy run", target{New: true, Vendor: v, Direct: direct, NoPolicy: noPolicy, Tools: tools}, stderr)
 }
 
 // launch opens the parent t names and puts its child on screen under the
@@ -182,7 +208,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	// The tools that are on, for this child's own vendor and repo: a
 	// switch or resume is wired again for the CLI it starts. Their files
 	// share the launch's private folder, removed when the CLI exits.
-	tw := addTools(ctx, v, caps, pl.child.Cwd, memDir, nil, &req)
+	tw := addTools(ctx, v, caps, pl.child.Cwd, memDir, t.Tools, &req)
 	defer func() { _ = safefs.RemoveAll(memDir) }()
 	for _, w := range append(append(warns, mw...), tw...) {
 		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
