@@ -1,7 +1,7 @@
 // Package probe finds what an installed vendor CLI can do. It runs the CLI's
 // --version and --help through an adapter.Runner, records the result in
 // the store's probes table, and reuses that record until the CLI at that
-// path reports a different version.
+// path reports a different version, or aggy's spec for the vendor changes.
 //
 // A missing or unrecognized feature is recorded as an absent capability,
 // never a crash: adapters check capabilities and degrade. Probing never
@@ -11,15 +11,19 @@ package probe
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/redact"
+	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 )
 
@@ -99,7 +103,46 @@ const (
 	// grok-build 2bdd1d6a, not in a recorded help: present only when help
 	// lists it.
 	CapDeny = "deny"
+	// CapKernelSandbox is not read from help: the host can apply Grok's
+	// kernel sandbox (KernelSandbox). Grok's --sandbox fails open, so
+	// aggy checks the host itself; callers add it at locate time, never
+	// to the cache, since the kernel can change under the same CLI.
+	CapKernelSandbox = "kernel-sandbox"
 )
+
+// lsmPath lists the Linux security modules the kernel runs.
+const lsmPath = "/sys/kernel/security/lsm"
+
+// KernelSandbox returns nil when the host on goos can apply Grok's kernel
+// sandbox, and why not otherwise. Grok applies no sandbox, and only logs
+// "continuing without sandbox", when the platform lacks one
+// (xai-grok-sandbox/src/lib.rs:206-216 and :236-247 at grok-build
+// 2bdd1d6a). darwin has Seatbelt; Linux needs Landlock, which readLSM's
+// comma-separated module list must name; any other OS has none.
+func KernelSandbox(goos string, readLSM func() ([]byte, error)) error {
+	switch goos {
+	case "darwin":
+		return nil
+	case "linux":
+		b, err := readLSM()
+		if err != nil {
+			return fmt.Errorf("probe: cannot read %s to check for Landlock: %w", lsmPath, err)
+		}
+		for _, m := range strings.Split(strings.TrimSpace(string(b)), ",") {
+			if strings.TrimSpace(m) == "landlock" {
+				return nil
+			}
+		}
+		return fmt.Errorf("probe: Landlock is not among the kernel's security modules (%s)", lsmPath)
+	}
+	return fmt.Errorf("probe: Grok has no kernel sandbox on %s", goos)
+}
+
+// HostKernelSandbox is KernelSandbox for this host, reading lsmPath
+// through safefs, capped at 4 KiB.
+func HostKernelSandbox() error {
+	return KernelSandbox(runtime.GOOS, func() ([]byte, error) { return safefs.ReadFileLimit(lsmPath, 4096) })
+}
 
 // Specs holds the probe spec of each vendor, from the flags recorded in
 // docs/adapters.md.
@@ -497,14 +540,18 @@ func (p *Prober) Probe(ctx context.Context, vendor adapter.Vendor, path string) 
 		}
 		return res, false, err
 	}
+	stamp := specStamp(spec)
 	row, err := p.Store.LatestProbe(ctx, string(vendor), path, version)
-	if err == nil {
+	switch {
+	case err == nil && slices.Contains(row.Capabilities, stamp):
 		return adapter.Probe{
 			Vendor: vendor, Path: path, Version: version, Connected: row.Connected,
-			Capabilities: row.Capabilities, ProbedAt: row.ProbedAt,
+			Capabilities: unstamped(row.Capabilities), ProbedAt: row.ProbedAt,
 		}, true, nil
-	}
-	if !errors.Is(err, store.ErrNotFound) {
+	case err == nil:
+		// Recorded under another spec (an older aggy, before a feature
+		// such as Grok's --sandbox was looked for): probe again, once.
+	case !errors.Is(err, store.ErrNotFound):
 		return adapter.Probe{}, false, err
 	}
 	now := time.Now
@@ -523,11 +570,33 @@ func (p *Prober) Probe(ctx context.Context, vendor adapter.Vendor, path string) 
 	}
 	if err := p.Store.InsertProbe(ctx, store.Probe{
 		Vendor: string(vendor), CLIPath: path, Version: version,
-		Capabilities: res.Capabilities, ProbedAt: res.ProbedAt,
+		Capabilities: append(slices.Clone(res.Capabilities), stamp), ProbedAt: res.ProbedAt,
 	}); err != nil {
 		return res, false, err
 	}
 	return res, false, nil
+}
+
+// stampPrefix marks the stored pseudo-capability that names the spec a
+// cached probe was made with.
+const stampPrefix = "spec:"
+
+// specStamp is stampPrefix and a hash of spec, so a cached probe made
+// with another spec (other features or help invocations) is not reused.
+func specStamp(spec Spec) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%#v", spec)))
+	return stampPrefix + hex.EncodeToString(sum[:8])
+}
+
+// unstamped returns caps without the spec stamp.
+func unstamped(caps []string) []string {
+	out := []string{}
+	for _, c := range caps {
+		if !strings.HasPrefix(c, stampPrefix) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // Has reports whether a probe found capability name.

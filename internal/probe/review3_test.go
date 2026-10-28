@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -71,6 +72,34 @@ func TestIgnoreUserConfigCapability(t *testing.T) {
 		p, err := Detect(context.Background(), codexRun(tt.exec, adapter.Output{}), adapter.Codex, "/x/codex")
 		if err != nil || Has(p, CapIgnoreUserConfig) != tt.want {
 			t.Errorf("caps = %v, %v; want ignore-user-config %v", p.Capabilities, err, tt.want)
+		}
+	}
+}
+
+// TestKernelSandbox (G32-1): Grok's sandbox fails open, so aggy accepts
+// only a host that has one: darwin, or Linux with Landlock listed.
+func TestKernelSandbox(t *testing.T) {
+	lsm := func(s string, err error) func() ([]byte, error) {
+		return func() ([]byte, error) { return []byte(s), err }
+	}
+	tests := []struct {
+		goos string
+		read func() ([]byte, error)
+		ok   bool
+	}{
+		{"darwin", nil, true},
+		{"linux", lsm("lockdown,capability,landlock,yama,apparmor\n", nil), true},
+		{"linux", lsm("landlock", nil), true},
+		{"linux", lsm("lockdown,capability,yama,apparmor\n", nil), false},
+		{"linux", lsm("lockdown,capability,notlandlock", nil), false},
+		{"linux", lsm("", nil), false},
+		{"linux", lsm("", errors.New("no securityfs")), false},
+		{"freebsd", nil, false},
+		{"windows", nil, false},
+	}
+	for _, tt := range tests {
+		if err := KernelSandbox(tt.goos, tt.read); (err == nil) != tt.ok {
+			t.Errorf("%s: %v, want ok %v", tt.goos, err, tt.ok)
 		}
 	}
 }

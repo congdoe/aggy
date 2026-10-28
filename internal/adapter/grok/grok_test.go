@@ -14,8 +14,16 @@ import (
 	"github.com/congdoe/aggy/internal/safefs"
 )
 
-// sandboxed is an adapter whose probe found --sandbox.
-func sandboxed() Adapter { return Adapter{Caps: []string{probe.CapSandbox}} }
+// sandboxed is an adapter whose probe found --sandbox, on a host that
+// can apply Grok's sandbox, with HOME /home/u.
+func sandboxed() Adapter {
+	return Adapter{Caps: []string{probe.CapSandbox, probe.CapKernelSandbox}, Getenv: func(k string) string {
+		if k == "HOME" {
+			return "/home/u"
+		}
+		return ""
+	}}
+}
 
 const sid = "5f0c6a2e-9b1d-4e7a-8c3f-2d4b6a8e0c1f"
 
@@ -48,7 +56,7 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 		return []string{"--tools", tools, "--disallowed-tools", deny(keep...), "--no-subagents"}
 	}
 	head := []string{"--prompt-file", h.Prompt, "--output-format", "json"}
-	strict := []string{"--sandbox", "strict"}
+	strict := []string{"--sandbox", "strict", "--deny", "Read(/home/u/Library/**)", "--deny", "Grep(/home/u/Library/**)"}
 	tests := []struct {
 		name     string
 		req      adapter.HeadlessRequest
@@ -102,6 +110,23 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 // (ErrNoCapability, which is ErrUnsupported); image, video, and edit do
 // not use it yet (TODO(T6742)).
 func TestSandboxFailsClosed(t *testing.T) {
+	// G32-1, G32-3: no kernel sandbox on the host, or a HOME that cannot
+	// be named in a deny rule, refuses the sandboxed kinds too.
+	noKernel := sandboxed()
+	noKernel.Caps = []string{probe.CapSandbox}
+	home := func(h string) Adapter {
+		a := sandboxed()
+		a.Getenv = func(string) string { return h }
+		return a
+	}
+	for _, a := range []Adapter{noKernel, home(""), home("rel/home"), home("/"), home("/home/u*"), home("/home/[u]"), home("/home/a,b"), home("/home/u)"), home("/home/../u")} {
+		for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News} {
+			req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true}
+			if c, err := a.Headless(req); !errors.Is(err, adapter.ErrNoCapability) {
+				t.Errorf("%s with caps %v, HOME %q: %q, %v", k, a.Caps, a.Getenv("HOME"), c.Args, err)
+			}
+		}
+	}
 	for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video, adapter.Edit} {
 		req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true, FileTools: true}
 		_, err := New().Headless(req)
@@ -452,5 +477,31 @@ func TestParseLiveReplyShape(t *testing.T) {
 	res, err := a.ParseHeadless(req, out)
 	if err != nil || res.Text != "from the fake" || strings.Contains(res.Text, "THOUGHT") {
 		t.Errorf("ParseHeadless = %+v, %v", res, err)
+	}
+}
+
+// TestSandboxNotAppliedFailsClosed (G32-1): a sandboxed run whose stderr
+// says Grok ran without its sandbox is ErrLockdownRejected, whatever it
+// printed; the same text in the reply, or on an unsandboxed kind, is not.
+func TestSandboxNotAppliedFailsClosed(t *testing.T) {
+	for _, msg := range []string{
+		"WARN Sandbox not supported on this platform, continuing without sandbox details=no landlock",
+		"WARN Sandbox could not be applied, continuing without sandbox profile=strict",
+		"INFO Sandbox enforcement unavailable (built without 'enforce' feature)",
+	} {
+		out := adapter.Output{Stdout: []byte(liveReply), Stderr: []byte("ok\n" + msg + "\n")}
+		for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News} {
+			res, err := sandboxed().ParseHeadless(adapter.HeadlessRequest{Kind: k}, out)
+			if !errors.Is(err, adapter.ErrLockdownRejected) || res.Error != adapter.ErrLockdown || res.Text != "" {
+				t.Errorf("%s, %q: %+v, %v", k, msg, res, err)
+			}
+		}
+		if _, err := sandboxed().ParseHeadless(adapter.HeadlessRequest{Kind: adapter.Image}, out); err != nil {
+			t.Errorf("image (no sandbox asked) with %q: %v", msg, err)
+		}
+	}
+	quoted := strings.Replace(liveReply, `"the answer"`, `"the docs say: continuing without sandbox"`, 1)
+	if res, err := sandboxed().ParseHeadless(adapter.HeadlessRequest{Kind: adapter.Review}, adapter.Output{Stdout: []byte(quoted)}); err != nil || res.Error != adapter.ErrNone {
+		t.Errorf("the message in the reply text failed the run: %+v, %v", res, err)
 	}
 }

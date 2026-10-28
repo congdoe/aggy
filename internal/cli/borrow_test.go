@@ -134,6 +134,8 @@ func newBorrowFixture(t *testing.T, vendors ...adapter.Vendor) *borrowFixture {
 		},
 		runner: func(timeout time.Duration) adapter.Runner { return withFake(headlessRunner(timeout)) },
 		now:    time.Now,
+		// The host's kernel is not under test here (probe.TestKernelSandbox).
+		kernelSandbox: func() error { return nil },
 	}
 	return f
 }

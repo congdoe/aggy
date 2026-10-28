@@ -138,15 +138,27 @@ want() {
 # call V: count one model-calling run of V.
 call() { eval "CALLS_$1=\$((CALLS_$1 + 1))"; }
 
-# scrub: stdin with key-shaped text (a known key prefix, a bearer token,
-# a secret-named assignment, or a run of 24 or more key characters)
-# replaced, the temp dir shown as $WORK, and the home directory as ~.
+# scrub: stdin made safe to show. First whole OSC and CSI escape
+# sequences (such as an OSC 52 clipboard write) are removed, then every
+# remaining ESC and other control character but tab and newline, so no
+# terminal escape survives. Then key-shaped text is replaced:
+# an Authorization value, a Bearer/Basic/Token credential, the value of a
+# secret-named flag (--token VALUE, --api-key=VALUE) or key (api_key=…,
+# "token": "…", {'password': '…'}) of any length, a known key prefix, and
+# any run of 24 or more key characters. The temp dir is shown as $WORK,
+# and the home directory as ~.
 scrub() {
-	sed -E \
-		-e 's#(sk-|xai-|ghp_|gho_|github_pat_|AKIA|eyJ)[A-Za-z0-9_./+=-]*#[redacted]#g' \
-		-e 's#([Bb]earer|[Bb]asic)[[:space:]]+[^[:space:]]+#\1 [redacted]#g' \
-		-e 's#([A-Za-z_]*([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd])[A-Za-z_]*["]?[[:space:]]*[:=][[:space:]]*)[^[:space:],}]+#\1[redacted]#g' \
-		-e 's#[A-Za-z0-9_+/=-]{24,}#[redacted]#g' |
+	local n q="'" e=$'\033' bel=$'\007'
+	n='[A-Za-z_-]*([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss]([Ww][Oo][Rr][Dd]|[Ww][Dd])|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll])[A-Za-z_-]*'
+	LC_ALL=C sed -E -e "s#$e\\][^$bel$e]*($bel|$e\\\\)?##g" -e "s#$e\\[[0-9;?]*[ -/]*[@-~]##g" |
+		LC_ALL=C tr -d '\000-\010\013-\037\177' |
+		LC_ALL=C sed -E \
+			-e "s#([Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn][\"$q]?[[:space:]]*[:=][[:space:]]*).*#\\1[redacted]#" \
+			-e 's#([Bb][Ee][Aa][Rr][Ee][Rr]|[Bb][Aa][Ss][Ii][Cc]|[Tt][Oo][Kk][Ee][Nn])[[:space:]]+[^[:space:]]+#\1 [redacted]#g' \
+			-e "s#(--?$n)([[:space:]]+|=)[^[:space:]]+#\\1\\4[redacted]#g" \
+			-e "s#($n[\"$q]?[[:space:]]*[:=][[:space:]]*)[\"$q]?[^[:space:],}\"$q]*[\"$q]?#\\1[redacted]#g" \
+			-e 's#(sk-|xai-|ghp_|gho_|github_pat_|AKIA|eyJ)[A-Za-z0-9_./+=-]*#[redacted]#g' \
+			-e 's#[A-Za-z0-9_+/=-]{24,}#[redacted]#g' |
 		awk -v w="$WORK" -v h="$HOME" '{
 			while ((i = index($0, w)) > 0) $0 = substr($0, 1, i - 1) "$WORK" substr($0, i + length(w))
 			while ((i = index($0, h)) > 0) $0 = substr($0, 1, i - 1) "~" substr($0, i + length(h))
@@ -242,8 +254,11 @@ newrepo() {
 # Kept in step with internal/adapter/grok Headless (checked by
 # argv_test.go): the review and the image argv aggy passes, after its
 # leading "--prompt-file <file>", which each check passes itself.
-GROK_REVIEW_ARGS="--output-format json --permission-mode plan --sandbox strict --tools read_file,grep,list_dir --disallowed-tools write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_gen,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents"
+GROK_REVIEW_ARGS="--output-format json --permission-mode plan --sandbox strict --deny Read(@HOME@/Library/**) --deny Grep(@HOME@/Library/**) --tools read_file,grep,list_dir --disallowed-tools write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_gen,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents"
 GROK_IMAGE_ARGS="--output-format json --tools image_gen --disallowed-tools read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents"
+# aggy denies Read and Grep of $HOME/Library on the sandboxed kinds. The
+# argv holds globs, so every run that splits it does so under set -f.
+GROK_REVIEW_ARGS=${GROK_REVIEW_ARGS//@HOME@/$HOME}
 
 # The verified Codex research lockdown (docs/verification.md, "Codex
 # research isolation"), less the web_search -c, which needs its quotes.
@@ -489,7 +504,7 @@ check_grok_trust() {
 	scn '{"json":{"result":"README.md f-'"$tok"'.txt DONE"}}'
 	call grok
 	# shellcheck disable=SC2086 # the argv is split on purpose
-	(cd "$d/untrusted" && run_to "$TO" "$d/out" "$d/err" /dev/null grok --prompt-file "$d/prompt.txt" $GROK_REVIEW_ARGS)
+	(set -f && cd "$d/untrusted" && run_to "$TO" "$d/out" "$d/err" /dev/null grok --prompt-file "$d/prompt.txt" $GROK_REVIEW_ARGS)
 	rc=$?
 	# The control drops --sandbox strict: the sandbox allows writes only
 	# to Grok's sessions dir, so it blocked the hooks' marker writes in the
@@ -498,7 +513,7 @@ check_grok_trust() {
 	scn '{"json":{"result":"README.md f-'"$tok"'.txt DONE"},"hook_payload_in":"arg","hooks":[{"event":"x","payload":{}}],"hook_command":["/usr/bin/touch","'"$d"'/control-markers/grok-PreToolUse"]}'
 	call grok
 	# shellcheck disable=SC2086 # the argv is split on purpose
-	(cd "$d/control" && run_to "$TO" "$d/cout" "$d/cerr" /dev/null GROK_FOLDER_TRUST=0 grok --prompt-file "$d/prompt.txt" ${GROK_REVIEW_ARGS/--sandbox strict /})
+	(set -f && cd "$d/control" && run_to "$TO" "$d/cout" "$d/cerr" /dev/null GROK_FOLDER_TRUST=0 grok --prompt-file "$d/prompt.txt" ${GROK_REVIEW_ARGS/--sandbox strict /})
 	crc=$?
 	for m in claude-SessionStart claude-PreToolUse grok-SessionStart grok-PreToolUse; do
 		[ -e "$d/untrusted-markers/$m" ] && ran="$ran $m"
@@ -550,7 +565,7 @@ check_grok_image_tools() {
 	scn '{"json":{"result":"image_gen"}}'
 	call grok
 	# shellcheck disable=SC2086 # the argv is split on purpose
-	(cd "$d/work" && run_to "$TO" "$d/out" "$d/err" /dev/null grok --prompt-file "$d/prompt.txt" $GROK_IMAGE_ARGS)
+	(set -f && cd "$d/work" && run_to "$TO" "$d/out" "$d/err" /dev/null grok --prompt-file "$d/prompt.txt" $GROK_IMAGE_ARGS)
 	rc=$?
 	# Only the reply's text: thought, the model's reasoning, may name
 	# tools it does not have.
