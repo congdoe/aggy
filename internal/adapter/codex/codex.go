@@ -27,6 +27,9 @@ type Adapter struct {
 	// Caps are the capabilities a probe of this CLI found. Headless adds
 	// --ignore-user-config to research and news only when they include
 	// probe.CapIgnoreUserConfig.
+	//
+	// TODO(T6621): the borrow runner must build the adapter with the
+	// probe's Caps; without them --ignore-user-config is never passed.
 	Caps []string
 }
 
@@ -178,6 +181,11 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 		if err := adapter.CheckAbs("reference image", img); err != nil {
 			return adapter.Command{}, err
 		}
+		// -i splits its values on commas, so "/b,c.png" would be two
+		// images, the second relative to the cwd.
+		if strings.ContainsRune(img, ',') {
+			return adapter.Command{}, fmt.Errorf("codex: reference image %q holds a comma, which -i splits on", img)
+		}
 		args = append(args, "-i", img)
 	}
 	args = append(args, "--json")
@@ -286,7 +294,8 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 		case "thread.started":
 			if !sawThread {
 				sawThread = true
-				res.SessionID, idErr = adapter.ParsedSessionID(adapter.Codex, "", e.ThreadID)
+				// On a resume the thread keeps the resumed id.
+				res.SessionID, idErr = adapter.ParsedSessionID(adapter.Codex, req.Resume, e.ThreadID)
 			}
 		case "item.completed":
 			if (e.Item.Type == "agent_message" || e.Item.Type == "") && e.Item.Text != "" {
