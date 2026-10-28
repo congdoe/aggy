@@ -70,6 +70,10 @@ type Rec struct {
 	// takes the trace of that borrow's first record, and any other the
 	// writer's own.
 	Trace string
+	// id and at are set by Queue.Log: the record's id, and when it was
+	// queued.
+	id string
+	at time.Time
 }
 
 // Writer writes records for one aggy process. Its zero value is not
@@ -255,9 +259,14 @@ func (w *Writer) Log(ctx context.Context, r Rec) string {
 	if !w.stores(ev.Level) {
 		return ""
 	}
-	now := w.now().UTC()
+	now, id := r.at, r.id
+	if id == "" {
+		now = w.now()
+		id = w.ids.next(now)
+	}
+	now = now.UTC()
 	rec := store.DiagRecord{
-		ID: w.ids.next(now), Schema: Schema, TS: now, Level: string(ev.Level), Component: ev.Component,
+		ID: id, Schema: Schema, TS: now, Level: string(ev.Level), Component: ev.Component,
 		Event: ev.Name.String(), Code: r.Code.String(), Msg: w.scrub(r.Msg, maxMsg), Attrs: w.attrs(r.Attrs),
 		Signal: r.Signal, AggyVersion: w.version, OS: runtime.GOOS + "/" + runtime.GOARCH,
 		RunID: w.run, TraceID: r.Trace, CauseID: r.Cause, ParentID: r.Parent, ChildID: r.Child,

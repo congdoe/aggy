@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/diag"
 )
 
 // Child is a vendor CLI running in a pseudo-terminal. Read and Write
@@ -90,6 +91,12 @@ type Options struct {
 	// handoff, once per crossing. A nil Used or a zero WarnAt never warns.
 	Used   func(v adapter.Vendor) (s Share, ok bool)
 	WarnAt float64
+	// Diag gets the session's diagnostic records (docs/logging.md):
+	// switches, the picker, limits, and the socket's hook events. It only
+	// queues, so the terminal loop never waits on the disk; nil records
+	// nothing. ChildID is the on-screen child's id in the index, for them.
+	Diag    *diag.Queue
+	ChildID string
 }
 
 // Share is how much of a vendor's limit is used: Used, 0 to 1, of the

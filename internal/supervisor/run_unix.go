@@ -18,6 +18,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/hook"
 )
 
@@ -112,6 +113,7 @@ func Run(o Options) (Exit, error) {
 			return Exit{Code: 1}, err
 		}
 		defer func() { _ = srv.Close() }()
+		srv.SetLog(func(r diag.Rec) { s.log(r) })
 		if o.CanSwitch != nil {
 			srv.SetSwitch(s.onSwitch)
 		}
@@ -206,6 +208,9 @@ func Run(o Options) (Exit, error) {
 		case c := <-s.asks:
 			if s.sw.to == "" { // a switch the user picked wins
 				s.setSwitch(pendingSwitch{to: c.Vendor, asked: true, choice: c})
+				s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Attrs: switchAttrs(c, map[string]any{"origin": "agent", "to": string(c.Vendor)})})
+			} else {
+				s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchBusy, Msg: "the agent's switch came after the user's pick", Attrs: map[string]any{"to": string(c.Vendor)}})
 			}
 		case <-check:
 			if s.sw.to != "" && !s.sw.typed {
@@ -220,6 +225,9 @@ func Run(o Options) (Exit, error) {
 			}
 		case <-s.exitBy:
 			s.exitBy = nil
+			if s.sw.typed {
+				s.log(diag.Rec{Event: diag.EvSwitchExitLate, Code: diag.CodeExitTimeout, Cause: s.sw.rec, Attrs: map[string]any{"to": string(s.sw.to)}})
+			}
 			if s.sw.typed && !s.open {
 				s.pk.tell(fmt.Sprintf("%s has not exited after aggy typed its exit command, so it is still running.", s.o.Vendor),
 					fmt.Sprintf("If it exits, aggy switches to %s. To cancel, press the switch key, then Esc in the list.", s.sw.to))
@@ -268,6 +276,7 @@ func Run(o Options) (Exit, error) {
 				if s.sw.typed {
 					ex.SwitchTo, ex.Next = s.sw.to, s.sw.choice
 					ex.Next.Vendor = s.sw.to
+					s.log(diag.Rec{Event: diag.EvSwitchCompleted, Cause: s.sw.rec, Exit: diag.Int(w.code), Attrs: switchAttrs(ex.Next, map[string]any{"to": string(s.sw.to)})})
 				}
 				return ex, nil
 			}
@@ -364,6 +373,9 @@ type session struct {
 	shares          chan shareReading
 	share           *shareReading
 	shareSeq        int
+	// lastHook is the id of the latest record of a hook event or limit
+	// from the session, the cause of what it sets off.
+	lastHook string
 }
 
 // setSwitch sets the switch state.
@@ -383,6 +395,9 @@ type pendingSwitch struct {
 	typed      bool // the exit command has been typed
 	// choice is what was picked or asked for with the vendor (T6665).
 	choice Choice
+	// rec is the id of the switch's latest diagnostic record, the cause
+	// of its next.
+	rec string
 }
 
 // hookEvent is a hook event from the session: its name and the vendor
@@ -398,6 +413,15 @@ type hookEvent struct {
 func (s *session) onHook(r Request) {
 	if s.o.OnHook != nil {
 		s.o.OnHook(r)
+	}
+	switch {
+	case !r.FromSession:
+		// The socket recorded it (peer.lineage_failed).
+	case r.Vendor != string(s.o.Vendor):
+		s.log(diag.Rec{Event: diag.EvHookRejected, Code: diag.CodeWrongVendor, Msg: "a hook event of another vendor than the one on screen",
+			Attrs: map[string]any{"event": hookName(r.Event), "from": r.Vendor}})
+	case r.Event == "SessionStart":
+		s.log(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(r.Event)}})
 	}
 	if r.FromSession && r.Vendor == string(s.o.Vendor) && r.Event != "SessionStart" {
 		ev := hookEvent{name: r.Event, sessionID: hook.Parse(s.o.Vendor, r.Payload).SessionID}
@@ -419,7 +443,22 @@ func (s *session) onHook(r Request) {
 // is not verified, so every one counts.
 func (s *session) hookEvent(ev hookEvent) {
 	if turnEnd(ev.name) {
-		if ev.sessionID != "" && s.o.SessionID != nil && ev.sessionID == s.o.SessionID() {
+		own := ""
+		if s.o.SessionID != nil {
+			own = s.o.SessionID()
+		}
+		// Neither session id is stored: the payload's could be any text.
+		switch {
+		case own == "":
+			s.lastHook = s.log(diag.Rec{Event: diag.EvHookAccepted, Msg: "the on-screen session's id is not known yet, so the turn end is not counted",
+				Attrs: map[string]any{"event": hookName(ev.name), "counted": false}})
+		case ev.sessionID != own:
+			s.lastHook = s.log(diag.Rec{Event: diag.EvHookRejected, Code: diag.CodeForeignSession, Msg: "a turn end of another session, or of none",
+				Attrs: map[string]any{"event": hookName(ev.name), "names_session": ev.sessionID != ""}})
+		default:
+			s.lastHook = s.log(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(ev.name), "counted": true, "held": s.held}})
+		}
+		if ev.sessionID != "" && ev.sessionID == own {
 			s.atPrompt = !s.held
 			s.warnDue = true
 			s.askShare()
@@ -429,6 +468,7 @@ func (s *session) hookEvent(ev hookEvent) {
 		}
 		return
 	}
+	s.lastHook = s.log(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(ev.name), "holds": true}})
 	s.atPrompt, s.held = false, true
 }
 
@@ -439,21 +479,19 @@ func (s *session) hookEvent(ev hookEvent) {
 func (s *session) onSwitch(r Request) error {
 	v := adapter.Vendor(r.Vendor)
 	if !holdSignal(s.o.Vendor) {
-		// TODO(T6753): log switch.agent_no_hold.
-		return fmt.Errorf("an agent cannot ask for a switch away from %s: aggy cannot tell when %s waits for an approval, so only the user may start one, with aggy's switch key",
-			s.o.Vendor, s.o.Vendor)
+		return coded(diag.CodeAgentNoHold, fmt.Errorf("an agent cannot ask for a switch away from %s: aggy cannot tell when %s waits for an approval, so only the user may start one, with aggy's switch key",
+			s.o.Vendor, s.o.Vendor))
 	}
 	if r.New || r.Model != "" {
 		// O56-1: a new session or a model is the user's choice, in the
 		// picker; the agent may ask for a vendor and a brief only.
-		// TODO(T6753): log switch.agent_options.
-		return errors.New("an agent may ask for a vendor and a brief only; a new session or a model for the launch is the user's choice, in aggy's picker")
+		return coded(diag.CodeAgentOptions, errors.New("an agent may ask for a vendor and a brief only; a new session or a model for the launch is the user's choice, in aggy's picker"))
 	}
 	if err := s.offered(v); err != nil && !errors.Is(err, ErrChecking) {
-		return err
+		return coded(diag.CodeSwitchVendor, err)
 	}
 	if !s.waiting.CompareAndSwap(false, true) {
-		return errors.New("a switch is already waiting")
+		return coded(diag.CodeSwitchBusy, errors.New("a switch is already waiting"))
 	}
 	// The only one past the swap; the channel holds one.
 	s.asks <- Choice{Vendor: v, Brief: r.Brief}
@@ -569,6 +607,8 @@ func (s *session) offerSwitch() {
 		// both, so the switch waits; the user is told once.
 		if !s.toldDirty {
 			s.toldDirty = true
+			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeUnsentText, Cause: s.lastHook,
+				Msg: "the switch waits: text the user typed is not sent", Attrs: map[string]any{"to": string(v)}})
 			s.pk.tell(fmt.Sprintf("aggy is ready to switch to %s, but you typed text you have not sent to %s.", v, on),
 				"Send it, or clear it (Ctrl+U or Backspace) and press Enter on the empty prompt; aggy asks again at the",
 				fmt.Sprintf("next turn end, or when you pick %s again after that Enter.", v))
@@ -579,6 +619,7 @@ func (s *session) offerSwitch() {
 	if err := s.offered(v); errors.Is(err, ErrChecking) {
 		return // offered once the check is done
 	} else if err != nil {
+		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchVendor, Cause: s.lastHook, Msg: err.Error(), Attrs: map[string]any{"to": string(v)}})
 		s.setSwitch(pendingSwitch{})
 		s.pk.tell(fmt.Sprintf("Cannot switch to %s: %v", v, err))
 		s.openPicker()
@@ -605,6 +646,11 @@ func (s *session) offerSwitch() {
 		line += fmt.Sprintf(" (%s is unverified.)", cmd)
 	}
 	lines := []string{line}
+	cause := s.lastHook
+	if cause == "" {
+		cause = s.sw.rec
+	}
+	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: cause, Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "asked": s.sw.asked, "limit": s.sw.limit})})
 	s.pk.preselect = "" // offered once (O56-5)
 	s.pk.ask(v, lines...)
 	s.openPicker()
@@ -658,11 +704,16 @@ func (s *session) offerWarn() {
 		return
 	}
 	s.warned, s.warnedWindow, s.warnedReset = true, r.Window, r.Reset
-	// TODO(T6753): log switch.near_limit_warned (vendor, share, warn_at).
 	// The epsilon keeps 0.29*100 (28.999...) at 29%.
-	// TODO(T6753): log switch.near_limit_no_quota when pre is "".
+	pct := int(math.Floor(r.Used*100 + 1e-9))
 	pre := s.withQuota()
-	s.pk.warn(pre, warnForms(s.o.Vendor, int(math.Floor(r.Used*100+1e-9)), keyName(s.pk.key), pre)...)
+	rec := diag.Rec{Event: diag.EvNearLimitWarned, Cause: s.lastHook,
+		Attrs: map[string]any{"used_pct": pct, "warn_at_pct": int(math.Floor(s.o.WarnAt*100 + 1e-9)), "window": r.Window, "to": string(pre)}}
+	if pre == "" {
+		rec.Code = diag.CodeNearNoQuota
+	}
+	s.log(rec)
+	s.pk.warn(pre, warnForms(s.o.Vendor, pct, keyName(s.pk.key), pre)...)
 	s.openPicker()
 }
 
@@ -746,6 +797,7 @@ func (s *session) onLimit(h LimitHit) {
 	if v != s.o.Vendor {
 		return
 	}
+	s.lastHook = s.log(diag.Rec{Event: diag.EvLimitReceived, Code: diag.CodeRateLimit, Attrs: map[string]any{"unverified": h.Unverified}})
 	// L60-1: a limit ends any near-limit warning: none follows for this
 	// crossing, and one on screen gives way to the limit's own note.
 	s.warned, s.warnDue, s.warnedWindow, s.warnedReset = true, false, "", time.Time{}
@@ -759,16 +811,18 @@ func (s *session) onLimit(h LimitHit) {
 	}
 	switch {
 	case pre == "":
-		// TODO(T6753): log picker.no_quota.
+		s.log(diag.Rec{Event: diag.EvLimitNotOffered, Code: diag.CodeNoQuota, Cause: s.lastHook})
 		s.pk.tell(fmt.Sprintf("%s, and no other vendor aggy offers has quota left.", limitWho(h)))
 		s.openPicker()
 	case !holdSignal(v):
-		// TODO(T6753): log picker.limit_no_hold.
+		s.log(diag.Rec{Event: diag.EvLimitNotOffered, Code: diag.CodeLimitNoHold, Cause: s.lastHook, Attrs: map[string]any{"to": string(pre)}})
 		s.pk.tell(fmt.Sprintf("%s. %s has quota left: press %s, then Enter, to switch to it with a brief.", limitWho(h), pre, keyName(s.pk.key)),
 			fmt.Sprintf("aggy cannot tell when %s waits for an approval, so it does not offer the switch itself.", v))
 		s.openPicker()
 	default:
 		s.setSwitch(pendingSwitch{to: pre, limit: true, unverified: h.Unverified, choice: Choice{Vendor: pre, Brief: true}})
+		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Cause: s.lastHook,
+			Attrs: switchAttrs(s.sw.choice, map[string]any{"origin": "limit", "to": string(pre), "unverified": h.Unverified})})
 	}
 }
 
@@ -802,12 +856,18 @@ func choiceNote(c Choice) []string {
 // It sends no Esc first to clear a menu: what Esc does at each CLI's
 // prompt and approval menus is not in docs/verification.md (S-3).
 func (s *session) typeExit() {
-	if s.dirty || s.held {
+	switch {
+	case s.dirty:
+		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeUnsentText, Cause: s.sw.rec, Msg: "the switch key was pressed, but text the user typed is not sent"})
+		return
+	case s.held:
+		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "the switch key was pressed, but the CLI waits for the user"})
 		return
 	}
 	cmd, _ := adapter.ExitCommand(s.o.Vendor)
 	s.toChild.push([]byte(cmd + "\r"))
 	s.sw.typed = true
+	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchConfirmed, Cause: s.sw.rec, Attrs: map[string]any{"to": string(s.sw.to)}})
 	s.exitBy = time.After(exitWait)
 }
 
@@ -833,6 +893,7 @@ func (s *session) openList() {
 			}
 		}
 	}
+	s.log(diag.Rec{Event: diag.EvPickerOpened, Attrs: map[string]any{"preselect": string(s.pk.preselect), "waiting": string(s.sw.to)}})
 	s.openPicker()
 }
 
@@ -923,6 +984,14 @@ func (s *session) pickerInput(b []byte) {
 	picked := c.Vendor
 	s.pk.preselect = "" // used, or turned down (O56-5)
 	s.closePicker()
+	if picked == "" {
+		s.log(diag.Rec{Event: diag.EvPickerDismissed, Attrs: map[string]any{"waiting": string(s.sw.to)}})
+		if s.sw.to != "" {
+			s.log(diag.Rec{Event: diag.EvSwitchCancelled, Cause: s.sw.rec, Attrs: map[string]any{"how": "esc_list", "to": string(s.sw.to), "exit_typed": s.sw.typed}})
+		}
+	} else {
+		s.log(diag.Rec{Event: diag.EvPickerChosen, Attrs: switchAttrs(c, map[string]any{"to": string(picked), "again": picked == s.sw.to})})
+	}
 	switch {
 	case s.sw.typed:
 		// The exit command is typed: Esc cancels the switch, so a late
@@ -937,6 +1006,7 @@ func (s *session) pickerInput(b []byte) {
 		// stays until the user's next Enter, which offerSwitch reports.
 		// The new pick's options replace the old.
 		if s.held {
+			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "picked again, but the CLI waits for the user"})
 			s.pk.tell(fmt.Sprintf("%s said it is waiting for you (a permission prompt or another notice).", s.o.Vendor),
 				fmt.Sprintf("Answer it, or send a message; aggy switches to %s at the next turn end.", picked))
 			s.openPicker()
@@ -944,14 +1014,16 @@ func (s *session) pickerInput(b []byte) {
 		}
 		s.atPrompt, s.toldDirty = true, false
 		s.sw.choice, s.sw.asked = c, false
+		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Cause: s.sw.rec, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked), "again": true})})
 	case picked != "":
 		if err := s.offered(picked); err != nil && !errors.Is(err, ErrChecking) {
-			// TODO(T6753): log picker.refused.
+			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchVendor, Msg: err.Error(), Attrs: map[string]any{"to": string(picked)}})
 			s.pk.tell(fmt.Sprintf("Cannot switch to %s: %v", picked, err))
 			s.openPicker()
 			return
 		}
 		s.setSwitch(pendingSwitch{to: picked, choice: c})
+		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked)})})
 	default: // Esc on the list cancels a waiting switch
 		s.setSwitch(pendingSwitch{})
 	}
@@ -1006,6 +1078,7 @@ func (s *session) promptEsc() {
 	confirming := s.pk.confirm != ""
 	s.closePicker()
 	if confirming {
+		s.log(diag.Rec{Event: diag.EvSwitchCancelled, Cause: s.sw.rec, Attrs: map[string]any{"how": "esc_confirm", "to": string(s.sw.to)}})
 		s.setSwitch(pendingSwitch{})
 	}
 }

@@ -69,7 +69,9 @@ Codex cannot ask; there the user presses aggy's switch key.
 
 ## Troubleshooting
 
-When aggy refuses or fails, its message ends with `[<code> · run <id>]`.
-Run `aggy diag show <run id>` (or a borrow id) for the timeline, then
-`aggy diag codes <code>` for what it means and what to check next. For
-the user or an issue, `aggy diag bundle` prints a scrubbed report.
+When aggy refuses or fails, its message ends with `[<code> · run <id>]`;
+a refused `aggy switch` does too. Run `aggy diag show <run id>` (or a
+borrow id) for the timeline, or `aggy diag bundle` for a scrubbed report
+of the last day, then `aggy diag codes <code>` for what each code means
+and what to check next. Give the bundle to the user, or attach it to an
+issue; never paste diag output into a borrow's task.
