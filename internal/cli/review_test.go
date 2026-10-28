@@ -269,6 +269,10 @@ func TestReviewRootVendorHomes(t *testing.T) {
 		{"holds CLAUDE_CONFIG_DIR", mk(filepath.Join(base, "work")), envMap{"CLAUDE_CONFIG_DIR": filepath.Join(base, "work", "cfg")}, false},
 		{"GROK_HOME", mk(filepath.Join(base, "gh")), envMap{"GROK_HOME": filepath.Join(base, "gh")}, false},
 		{"a plain repo", mk(filepath.Join(base, "plain")), envMap{}, true},
+		// C17-9: the same dirs in another case, where the file system
+		// ignores case.
+		{"~/.CODEX", caseVariant(t, mk(filepath.Join(home, ".codex")), ".CODEX"), envMap{}, false},
+		{"CODEX_HOME in another case", mk(filepath.Join(base, "ch2")), envMap{"CODEX_HOME": filepath.Join(base, "CH2")}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -281,5 +285,33 @@ func TestReviewRootVendorHomes(t *testing.T) {
 				t.Errorf("reviewRoot(%s) = %q, %v", tt.repo, got, err)
 			}
 		})
+	}
+}
+
+// caseVariant returns dir with its last element spelled as name, and
+// skips the test where the file system tells the two apart.
+func caseVariant(t *testing.T, dir, name string) string {
+	t.Helper()
+	v := filepath.Join(filepath.Dir(dir), name)
+	a, errA := os.Stat(dir)
+	b, errB := os.Stat(v)
+	if errA != nil || errB != nil || !os.SameFile(a, b) {
+		t.Skip("case-sensitive file system")
+	}
+	return v
+}
+
+// TestReviewRootHomeCase (C17-9): $HOME given in another case still
+// counts as the home dir where the file system ignores case.
+func TestReviewRootHomeCase(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	home := filepath.Join(base, "Home")
+	mustWrite(t, filepath.Join(home, ".git", "HEAD"), "ref", 0o600)
+	upper := caseVariant(t, home, "HOME")
+	if _, err := reviewRoot(home, envMap{"HOME": upper}.get, "/nostate"); err == nil || !strings.Contains(err.Error(), "home directory") {
+		t.Errorf("home in another case accepted: %v", err)
+	}
+	if _, err := reviewRoot(upper, envMap{"HOME": home}.get, "/nostate"); err == nil {
+		t.Error("root in another case accepted")
 	}
 }
