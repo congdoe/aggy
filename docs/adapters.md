@@ -327,9 +327,12 @@ a shell, so it is a backstop.
 
 Interactive argv: Claude `claude [--session-id <uuid> | --resume <id>
 [--fork-session [--session-id <uuid>]]] [<brief pointer>]`; Codex `codex
---no-alt-screen [<brief pointer>]` or `codex resume --no-alt-screen <id>
-[<brief pointer>]`; Grok `grok --no-alt-screen` with the same session
-flags as Claude.
+[--no-alt-screen] [<brief pointer>]` or `codex resume [--no-alt-screen]
+<id> [<brief pointer>]`; Grok `grok --no-alt-screen` with the same session
+flags as Claude. `--no-alt-screen` is unverified for both: neither help
+text nor a live check in `docs/verification.md` records it. Codex gets it
+only when the launch probe finds it in `codex --help` (capability
+`no-alt-screen`); Grok always gets it, from the Grok session notes above.
 
 Artifacts are paths only; copying them is the borrow runner's job, through
 `internal/safefs`. Codex: every `*.png` in
