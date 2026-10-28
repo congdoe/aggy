@@ -5,7 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"time"
+
+	"github.com/congdoe/aggy/internal/safefs"
 )
 
 // ParentForDir returns the most recently active parent whose directory is
@@ -104,15 +108,148 @@ func (s *Store) GetBorrow(ctx context.Context, id string) (Borrow, error) {
 	return b, err
 }
 
-// StartBorrow records a new borrow and its child in one transaction. The
-// child's parent must exist.
-func (s *Store) StartBorrow(ctx context.Context, c Child, b Borrow) error {
+// BorrowCaps bound the borrows running at once, across every aggy
+// process.
+type BorrowCaps struct {
+	PerVendor int
+	Total     int
+}
+
+// CapError says a borrow was refused because too many are running.
+type CapError struct {
+	Vendor        string
+	VendorRunning int // running now on Vendor
+	TotalRunning  int // running now in all
+	Caps          BorrowCaps
+}
+
+func (e *CapError) Error() string {
+	if e.Caps.PerVendor > 0 && e.VendorRunning >= e.Caps.PerVendor {
+		return fmt.Sprintf("%d %s borrows are already running (at most %d per vendor); wait for one to finish",
+			e.VendorRunning, e.Vendor, e.Caps.PerVendor)
+	}
+	return fmt.Sprintf("%d borrows are already running (at most %d in all); wait for one to finish", e.TotalRunning, e.Caps.Total)
+}
+
+// ErrCap matches a *CapError.
+var ErrCap = errors.New("store: too many borrows running")
+
+// Is reports whether target is ErrCap.
+func (e *CapError) Is(target error) bool { return target == ErrCap }
+
+// BorrowLease is this process's hold on a running borrow. It counts
+// against the caps until Finish, or until the process dies: the holder
+// keeps an flock on run/leases/<nonce>.lock, which the kernel drops with
+// the process, so a crashed borrow stops counting.
+type BorrowLease struct {
+	s      *Store
+	id     string
+	unlock func()
+	lock   string
+}
+
+// ID returns the borrow's id.
+func (l *BorrowLease) ID() string { return l.id }
+
+// StartBorrow records a new borrow and its child in one write
+// transaction, after counting the borrows running now. A running borrow
+// whose holder is dead is marked killed (outcome "abandoned") and not
+// counted. When caps would be exceeded nothing is recorded and the error
+// is a *CapError. The child's parent must exist.
+func (s *Store) StartBorrow(ctx context.Context, c Child, b Borrow, caps BorrowCaps) (*BorrowLease, error) {
+	if err := safefs.MkdirAll(s.leaseDir(), 0o700); err != nil {
+		return nil, err
+	}
+	nonce, err := newNonce()
+	if err != nil {
+		return nil, err
+	}
+	lock := s.lockPath(nonce)
+	unlock, err := takeLock(lock)
+	if err != nil {
+		return nil, err
+	}
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
-		return err
+		unlock()
+		_ = safefs.Remove(lock)
+		return nil, err
 	}
 	defer func() { _ = conn.Close() }()
-	return immediate(ctx, conn, func() error { return insertBorrow(ctx, conn, c, b, 0, "") })
+	err = immediate(ctx, conn, func() error {
+		vendorN, total, err := s.countRunning(ctx, conn, b.Vendor, b.StartedAt)
+		if err != nil {
+			return err
+		}
+		if (caps.PerVendor > 0 && vendorN >= caps.PerVendor) || (caps.Total > 0 && total >= caps.Total) {
+			return &CapError{Vendor: b.Vendor, VendorRunning: vendorN, TotalRunning: total, Caps: caps}
+		}
+		return insertBorrow(ctx, conn, c, b, os.Getpid(), nonce)
+	})
+	if err != nil {
+		unlock()
+		_ = safefs.Remove(lock)
+		return nil, err
+	}
+	return &BorrowLease{s: s, id: b.ID, unlock: unlock, lock: lock}, nil
+}
+
+// countRunning counts live running borrows, on vendor and in all, and
+// marks the dead ones killed.
+func (s *Store) countRunning(ctx context.Context, conn *sql.Conn, vendor string, now time.Time) (vendorN, total int, err error) {
+	rows, err := conn.QueryContext(ctx, `SELECT id, vendor, lease_pid, lease_nonce FROM borrows WHERE status = 'running'`)
+	if err != nil {
+		return 0, 0, err
+	}
+	type run struct {
+		id, vendor string
+		pid        sql.NullInt64
+		nonce      sql.NullString
+	}
+	var runs []run
+	for rows.Next() {
+		var r run
+		if err := rows.Scan(&r.id, &r.vendor, &r.pid, &r.nonce); err != nil {
+			_ = rows.Close()
+			return 0, 0, err
+		}
+		runs = append(runs, r)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+	for _, r := range runs {
+		live := r.nonce.Valid && s.alive(r.nonce.String, int(r.pid.Int64))
+		if !live {
+			if _, err := conn.ExecContext(ctx,
+				`UPDATE borrows SET status = 'killed', outcome = 'abandoned', ended_at = ?,
+				        lease_pid = NULL, lease_nonce = NULL WHERE id = ?`, millis(now), r.id); err != nil {
+				return 0, 0, err
+			}
+			if r.nonce.Valid {
+				_ = safefs.Remove(s.lockPath(r.nonce.String))
+			}
+			continue
+		}
+		total++
+		if r.vendor == vendor {
+			vendorN++
+		}
+	}
+	return vendorN, total, nil
+}
+
+// Finish records how the borrow ended and gives up the lease. Calling it
+// twice is an error from the second update only.
+func (l *BorrowLease) Finish(ctx context.Context, e BorrowEnd) error {
+	err := l.s.FinishBorrow(ctx, l.id, e)
+	if l.unlock != nil {
+		l.unlock()
+		l.unlock = nil
+		_ = safefs.Remove(l.lock)
+	}
+	return err
 }
 
 // immediate runs fn in a BEGIN IMMEDIATE transaction on conn, so another

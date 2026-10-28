@@ -76,6 +76,11 @@ type Deps struct {
 	Now     func() time.Time
 }
 
+// Caps are the concurrency limits of design section 7: at most 2 borrows
+// per vendor and 4 in total, across every aggy process (counted through
+// store leases).
+var Caps = store.BorrowCaps{PerVendor: 2, Total: 4}
+
 // ErrTimeout matches a child killed at its time limit. The Runner from
 // Deps wraps its own timeout error with it.
 var ErrTimeout = errors.New("borrow: time limit reached")
@@ -228,6 +233,9 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 		Kind: req.Kind, PromptFile: promptFile, Model: model, Cwd: dirs.cwd,
 		IsolatedCwd: dirs.isolated, WebSearch: req.Kind == adapter.Research || req.Kind == adapter.News,
 		RunDir: dirs.run, GitRepo: dirs.gitRepo,
+		// The turn limit, where the CLI takes one (Grok's --max-turns;
+		// Codex has none, and Claude's is not recorded).
+		MaxTurns: budget.Turns,
 	}
 	cmd, err := a.Headless(hreq)
 	if err != nil {
@@ -252,10 +260,13 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 		TaskHash: hex.EncodeToString(sum[:]), Budget: store.BorrowBudget{Minutes: budget.Minutes, Turns: budget.Turns},
 		StartedAt: now,
 	}
-	if err := b.Store.StartBorrow(ctx, child, row); err != nil {
+	lease, err := b.Store.StartBorrow(ctx, child, row, Caps)
+	if err != nil {
 		return Result{}, err
 	}
 
+	// The time limit: past it the runner kills the child's whole
+	// process group.
 	timeout := time.Duration(budget.Minutes) * time.Minute
 	out, runErr := b.Runner(timeout)(ctx, cmd)
 	res.Elapsed = b.Now().Sub(now)
@@ -277,7 +288,7 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 		res.Status, res.Outcome = "done", "ok"
 	}
 	end.Status, end.Outcome = res.Status, res.Outcome
-	if err := b.Store.FinishBorrow(ctx, id, end); err != nil {
+	if err := lease.Finish(ctx, end); err != nil {
 		return res, err
 	}
 	return res, nil
