@@ -57,6 +57,10 @@ type Patch struct {
 	// itself, never what it points to. Transform must be nil and Link
 	// empty. Undo puts back the same file or the same link.
 	Remove bool
+	// Reverse is not used here: the manifest records it, and aggy unwire
+	// uses it to take the change out of a file that changed since
+	// (manifest.ReverseAggyHooks), instead of refusing.
+	Reverse string
 }
 
 // kinds counts the change kinds p asks for; exactly one is valid.

@@ -16,9 +16,11 @@ const testBin = "/opt/aggy/bin/aggy"
 func hooksHome(t *testing.T) string {
 	t.Helper()
 	h := isolate(t)
-	old := hookBin
+	oldBin, oldPath, oldCheck := hookBin, pathAggy, checkTrusted
 	hookBin = func() (string, error) { return testBin, nil }
-	t.Cleanup(func() { hookBin = old })
+	pathAggy = func() (string, error) { return "", os.ErrNotExist }
+	checkTrusted = func(string) error { return nil }
+	t.Cleanup(func() { hookBin, pathAggy, checkTrusted = oldBin, oldPath, oldCheck })
 	return h
 }
 
@@ -48,7 +50,7 @@ func TestHooksInstallClaude(t *testing.T) {
 	mustRun(t, "hooks", "install", "--vendor", "claude")
 	b, _ := os.ReadFile(settings)
 	for _, s := range []string{"afplay done.aiff", `"model": "opus"`,
-		"'" + testBin + "' hook --vendor claude Stop", "hook --vendor claude StopFailure",
+		"test -x " + testBin + " && " + testBin + " hook --vendor claude Stop || true", "hook --vendor claude StopFailure",
 		"hook --vendor claude SessionStart", "hook --vendor claude Notification"} {
 		if !strings.Contains(string(b), s) {
 			t.Errorf("settings.json lacks %q:\n%s", s, b)
@@ -70,10 +72,10 @@ func TestHooksInstallClaude(t *testing.T) {
 func TestHooksInstallRefusesAmbiguous(t *testing.T) {
 	h := hooksHome(t)
 	settings := filepath.Join(h, ".claude", "settings.json")
-	src := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/old/bin/aggy hook --vendor claude Stop"}]}]}}`
+	src := `{"hooks":{"Stop":[{"hooks":[{"command":"/a/aggy hook --vendor claude Stop"},{"command":"/b/aggy hook --vendor claude Stop"}]}]}}`
 	writeAt(t, settings, src, 0o644)
 	code, _, errOut := run("hooks", "install", "--vendor", "claude")
-	if code != 1 || !strings.Contains(errOut, "another path") {
+	if code != 1 || !strings.Contains(errOut, "remove all but one") {
 		t.Errorf("exit %d: %s", code, errOut)
 	}
 	if b, _ := os.ReadFile(settings); string(b) != src {
@@ -102,7 +104,7 @@ func TestHooksInstallCodex(t *testing.T) {
 	ch := filepath.Join(h, "ch")
 	t.Setenv("CODEX_HOME", ch)
 	cfg := filepath.Join(ch, "config.toml")
-	writeAt(t, cfg, "model = \"o3\"\n[tui]\nx = 1\n", 0o600)
+	writeAt(t, cfg, "model = \"o3\"\n", 0o600)
 	before := snapshot(t, h)
 
 	out := mustRun(t, "hooks", "install", "--vendor", "codex")
@@ -118,9 +120,9 @@ func TestHooksInstallCodex(t *testing.T) {
 	if strings.Contains(string(b), "StopFailure") {
 		t.Error("Codex has no StopFailure hook")
 	}
-	c, _ := os.ReadFile(cfg)
-	if !strings.HasPrefix(string(c), "notify = ['"+testBin+"', 'hook', '--vendor', 'codex', 'notify']\n") {
-		t.Errorf("config.toml:\n%s", c)
+	// No notify: it would put every turn's prompts in aggy's argv.
+	if c, _ := os.ReadFile(cfg); string(c) != "model = \"o3\"\n" {
+		t.Errorf("config.toml changed:\n%s", c)
 	}
 	if out := mustRun(t, "hooks", "status"); !strings.Contains(out, "codex   installed: Codex runs its hooks only once you approve them") {
 		t.Errorf("status: %s", out)
@@ -128,22 +130,6 @@ func TestHooksInstallCodex(t *testing.T) {
 	mustRun(t, "unwire", "--all")
 	if d := diffSnapshots(before, snapshot(t, h)); len(d) > 0 {
 		t.Errorf("unwire left: %v", d)
-	}
-}
-
-func TestHooksCodexKeepsUserNotify(t *testing.T) {
-	h := hooksHome(t)
-	cfg := filepath.Join(h, ".codex", "config.toml")
-	writeAt(t, cfg, "notify = [\"notify-send\", \"done\"]\n", 0o600)
-	out := mustRun(t, "hooks", "install", "--vendor", "codex")
-	if !strings.Contains(out, "already sets notify") {
-		t.Errorf("no note:\n%s", out)
-	}
-	if c, _ := os.ReadFile(cfg); string(c) != "notify = [\"notify-send\", \"done\"]\n" {
-		t.Errorf("config.toml changed:\n%s", c)
-	}
-	if _, err := os.Stat(filepath.Join(h, ".codex", "hooks.json")); err != nil {
-		t.Error("hooks.json was not written")
 	}
 }
 
@@ -156,7 +142,7 @@ func TestHooksInstallGrok(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range []string{"Stop", "StopFailure", "StopCancelled", "SessionStart", "Notification"} {
-		if !strings.Contains(string(b), "hook --vendor grok "+e+`"`) {
+		if !strings.Contains(string(b), "hook --vendor grok "+e+" || true") {
 			t.Errorf("aggy.json lacks %s:\n%s", e, b)
 		}
 	}
@@ -166,5 +152,72 @@ func TestHooksInstallGrok(t *testing.T) {
 	mustRun(t, "unwire", "--all")
 	if d := diffSnapshots(before, snapshot(t, h)); len(d) > 0 {
 		t.Errorf("unwire left: %v", d)
+	}
+}
+
+// TestUnwireKeepsLaterEdits: Claude rewrites settings.json after the
+// install (here: the person adds a deny rule). aggy unwire takes out only
+// aggy's hooks and keeps the rule, rather than refusing or restoring the
+// pre-install bytes over it.
+func TestUnwireKeepsLaterEdits(t *testing.T) {
+	h := hooksHome(t)
+	settings := filepath.Join(h, ".claude", "settings.json")
+	writeAt(t, settings, userSettings, 0o644)
+	mustRun(t, "hooks", "install", "--vendor", "claude")
+	b, _ := os.ReadFile(settings)
+	edited := strings.Replace(string(b), `"model": "opus",`, `"model": "opus",
+  "permissions": {"deny": ["Bash(curl *)"]},`, 1)
+	writeAt(t, settings, edited, 0o644)
+
+	if out := mustRun(t, "unwire", "--all", "--dry-run"); !strings.Contains(out, "-") || !strings.Contains(out, "hook --vendor claude") {
+		t.Errorf("dry run:\n%s", out)
+	}
+	if b, _ := os.ReadFile(settings); string(b) != edited {
+		t.Fatal("the dry run wrote")
+	}
+	mustRun(t, "unwire", "--all")
+	want := strings.Replace(userSettings, `"model": "opus",`, `"model": "opus",
+  "permissions": {"deny": ["Bash(curl *)"]},`, 1)
+	if b, _ := os.ReadFile(settings); string(b) != want {
+		t.Errorf("after unwire:\n%s\nwant\n%s", b, want)
+	}
+}
+
+// TestHooksReinstallAfterUpgrade: aggy's entries from an older path are
+// updated in place, not refused.
+func TestHooksReinstallAfterUpgrade(t *testing.T) {
+	h := hooksHome(t)
+	mustRun(t, "hooks", "install", "--vendor", "claude")
+	hookBin = func() (string, error) { return "/opt/aggy2/bin/aggy", nil }
+	mustRun(t, "hooks", "install", "--vendor", "claude")
+	b, _ := os.ReadFile(filepath.Join(h, ".claude", "settings.json"))
+	if strings.Contains(string(b), testBin) || strings.Count(string(b), "/opt/aggy2/bin/aggy hook --vendor claude Stop ") != 1 {
+		t.Errorf("settings.json:\n%s", b)
+	}
+	if out := mustRun(t, "hooks", "status"); !strings.Contains(out, "claude  installed") {
+		t.Errorf("status: %s", out)
+	}
+}
+
+func TestAggyBinPrefersPath(t *testing.T) {
+	hooksHome(t)
+	d := t.TempDir()
+	real := filepath.Join(d, "Cellar", "aggy", "1.0", "bin", "aggy")
+	writeAt(t, real, "x", 0o755)
+	link := filepath.Join(d, "bin", "aggy")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(d, "other", "aggy")
+	writeAt(t, other, "x", 0o755)
+	hookBin = func() (string, error) { return real, nil }
+	for _, tt := range []struct{ onPath, want string }{{link, link}, {other, real}} {
+		pathAggy = func() (string, error) { return tt.onPath, nil }
+		if got, err := aggyBin(); err != nil || got != tt.want {
+			t.Errorf("PATH %s: %s, %v", tt.onPath, got, err)
+		}
 	}
 }
