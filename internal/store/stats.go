@@ -11,6 +11,10 @@ import (
 // redo of it (docs/design.md, section 8).
 const RedoWindow = 24 * time.Hour
 
+// maxBorrowSpan bounds how long a borrow can have run: the longest
+// budget (config.MaxMinutes, 24 hours) and an hour for aggy's own work.
+const maxBorrowSpan = 25 * time.Hour
+
 // StatsSchema is the oldest schema BorrowStats reads: it needs the
 // children's worktree state (version 12).
 const StatsSchema = 12
@@ -144,9 +148,10 @@ func markRedone(rows []statRow, window time.Duration) []bool {
 			continue
 		}
 		// B starts at or after A's end, so at or after A's start: only
-		// later rows can match.
+		// later rows can match. An end far past any budget (a clock set
+		// forward) must not make this scan the whole table.
 		for _, b := range rows[i+1:] {
-			if b.start.Sub(a.end) > window {
+			if b.start.Sub(a.end) > window || b.start.Sub(a.start) > window+maxBorrowSpan {
 				break
 			}
 			if b.start.Before(a.end) || b.parent != a.parent || b.kind != a.kind ||
