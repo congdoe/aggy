@@ -22,8 +22,8 @@ func TestProjectAndParse(t *testing.T) {
 			`{"error":"rate_limit","session_id":"a"}`, Event{SessionID: "a", Error: "rate_limit"}},
 		{"grok camel case", adapter.Grok, `{"sessionId":"g","session_id":"no","error":"rate_limit"}`,
 			`{"error":"rate_limit","sessionId":"g"}`, Event{SessionID: "g", Error: "rate_limit"}},
-		{"codex notify", adapter.Codex, `{"type":"agent-turn-complete","thread-id":"t","last-assistant-message":"m"}`,
-			`{"thread-id":"t","type":"agent-turn-complete"}`, Event{SessionID: "t"}},
+		{"codex stop", adapter.Codex, `{"session_id":"t","turn_id":"u","last_assistant_message":"m"}`,
+			`{"session_id":"t","turn_id":"u"}`, Event{SessionID: "t"}},
 		{"non-string id ignored", adapter.Codex, `{"session_id":5}`, `{"session_id":5}`, Event{}},
 	}
 	for _, tt := range tests {

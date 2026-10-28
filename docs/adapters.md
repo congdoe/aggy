@@ -13,8 +13,7 @@ Implementations live in `internal/adapter/<vendor>`.
 **The interface is unstable until M1.** It will change as the first vendor
 adapters are built. These gaps are known:
 
-- Parsing hook payloads: `Stop`, `StopFailure`, and the Codex
-  `agent-turn-complete` notify.
+- Parsing hook payloads: `Stop` and `StopFailure`.
 - Discovering the session id of an interactive launch. Codex cannot be
   given an id in advance.
 - Detecting a plan limit in an interactive session.
@@ -167,15 +166,18 @@ was tested against.
 - Claude and Grok both have a `StopFailure` hook. Its error classes include
   `rate_limit`, and Grok says its classes mirror Claude Code's. Claude's
   payload also carries `error_details`.
-- Turn end: Claude uses `Stop`. Codex uses `Stop` and the
-  `agent-turn-complete` notify. Grok uses `Stop` and `StopCancelled`.
+- Turn end: Claude uses `Stop`. Codex uses `Stop` (aggy installs no
+  legacy `notify`, which would pass each turn's prompts as argv). Grok
+  uses `Stop` and `StopCancelled`.
 - Codex has Claude-style hooks (`hooks.json` or `[[hooks.<Event>]]`), and
   `SessionStart` carries `session_id` (the thread id) and `source`. A
   hook runs only once its hash is trusted; one passed with `-c` is
   skipped silently (checked live). Whether it fires in `exec` is still
   open. `aggy hooks install` writes `Stop` and `SessionStart` to
-  `$CODEX_HOME/hooks.json` and the legacy `notify` (not trust-gated) to
-  `config.toml`; the person approves the hooks once in `/hooks`.
+  `$CODEX_HOME/hooks.json`; the person approves them once in `/hooks`.
+  Codex runs a hook command as `$SHELL -lc <command>`, or `/bin/sh -lc`
+  without `SHELL` (`hooks/src/engine/command_runner.rs`,
+  `build_command`).
 - Grok runs the hooks in Claude's `settings.json` by default. Its payload
   has `sessionId` and its environment `GROK_SESSION_ID`, which is how
   aggy tells a Grok call from a Claude one. aggy installs Grok's own
