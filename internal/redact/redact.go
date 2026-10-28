@@ -38,6 +38,8 @@ var Token = regexp.MustCompile(strings.Join([]string{
 	`(?i)\bauthorization\s*:\s*basic\s+[A-Za-z0-9+/=]{6,}`,               // HTTP basic auth
 	`(?i)\bbearer\s+[A-Za-z0-9._~+/-]{16,}=*`,                            // bearer tokens
 	`(?i)["']?\b(?:access_token|refresh_token|id_token|api_key|apikey|secret|password|auth_token)["']?\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{16,}`,
+	`\bhooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9_/-]{16,}`, // Slack webhook URLs (I43-5)
+	`\bdiscord(?:app)?\.com/api/webhooks/[0-9]{8,}/[A-Za-z0-9_-]{16,}`,        // Discord webhook URLs
 }, "|"))
 
 // secretName is a key, variable, or header name that holds a secret
@@ -62,6 +64,15 @@ const (
 const (
 	q   = "[\"'`]"
 	lit = q + "[^\"'`\\s]"
+	// longLit is a quoted literal of eight characters or more, as long as
+	// assign's shortest value.
+	longLit = q + "[^\"'`\\s][^\"'`]{7}"
+	// authLit is an Authorization or Cookie value: a scheme and a value
+	// (Token abc), or one word of six or more characters, but not a bare
+	// scheme ("Bearer "+token).
+	authLit = q + `(?:[A-Za-z]+\s+[^\s"'` + "`" + `]|[^\s"'` + "`" + `]{6,}(?:` + q + `|$))`
+	// xmlName is nameRe as an XML element name, but not a bare "key".
+	xmlName = `(?:[\w.:-]*(?:apikey|token|secret|password|passwd|pwd|passphrase|credentials?)|[\w.:-]+key|(?:[\w.:-]*[_.-])?pass)(?:[_.-]\w+)*`
 	// blockMark ends a key line whose value follows on the next lines: a
 	// YAML block scalar indicator (|, >-, |2) or a TOML triple quote.
 	blockMark = `[|>][-+0-9]*|"""|'''`
@@ -75,6 +86,12 @@ const (
 	flagName = `(?:[A-Za-z0-9]+[-_])*(?:[A-Za-z0-9]*(?:key|token|secret)|pass(?:word|wd|phrase)?|requirepass|masterauth)`
 )
 
+// typeRe is a type annotation after a name: ": T" in TypeScript, Rust,
+// Kotlin, Swift, or Python (an optional "?" before the ":", a Rust
+// reference and lifetime, generics and paths), or Go's " string" or
+// " []byte".
+const typeRe = `\??\s*:\s*&?(?:'[A-Za-z_]+\s+)?[A-Za-z_\[\]][\w.:<>\[\]]*\??|\s+(?:string|\[\]byte)`
+
 // keyPrefix is what may stand before a key line: quoting, a comment
 // marker, or a line number, up to 12 characters.
 const keyPrefix = `^.{0,12}?`
@@ -84,8 +101,11 @@ var (
 	// name, the space before the separator, the separator, the space
 	// after it, the quotes before the value if any (three for a TOML or
 	// Python triple quote), and the value. codeValue decides whether an
-	// unquoted value counts.
-	assign = regexp.MustCompile(`(?i)(` + nameRe + `)["']?(\s*)(` + sepRe + `)(\s*)([\"'` + "`" + `]{0,3})([^\s\"',;` + "`" + `]{8,})`)
+	// unquoted value counts. A type may stand between the name and the
+	// separator (apiKey: string =, API_KEY: &'static str =, Go's var
+	// key []byte =), and the quotes may follow a conversion or a string
+	// prefix: []byte("..."), ("..."), Python's b"..." and r"..." (I43-5).
+	assign = regexp.MustCompile(`(?i)(` + nameRe + `)["']?(?:` + typeRe + `)?(\s*)(` + sepRe + `)(\s*)((?:\[\]byte\(|\(|[bru]{1,2})?` + q + `{1,3}|` + q + `{0,3})([^\s\"',;` + "`" + `]{8,})`)
 	// other matches secrets that are not token-shaped on their own.
 	other = regexp.MustCompile(strings.Join([]string{
 		`(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]*:[^/\s@]+@`,             // credentials in a URL
@@ -96,18 +116,22 @@ var (
 		`(?i)^\s*password\s+\S{6,}\s*$`,                             // .netrc, one token a line
 		// G34-1: a secret name as a call's first argument with a literal
 		// second, as a header setter takes it: Header.Set("X-Api-Key", "...").
-		`(?i)\(\s*` + q + `(?:` + nameRe + `|authorization|cookie)` + q + `\s*,\s*` + lit,
-		// A literal set at a secret-named subscript: os.environ["API_KEY"] = "...".
-		`(?i)\[\s*` + q + nameRe + q + `\s*\]\s*(?:\|\||&&|\?\?)?=\s*` + lit,
+		// A short literal (setenv("API_KEY", "test")) or a bare scheme
+		// ("Bearer "+token) is not a secret (I43-6).
+		`(?i)\(\s*` + q + nameRe + q + `\s*,\s*` + longLit,
+		`(?i)\(\s*` + q + `(?:authorization|cookie)` + q + `\s*,\s*` + authLit,
+		// A literal set at a secret-named subscript: os.environ["API_KEY"] =
+		// "...", headers["Authorization"] = "Token ..." (I43-5).
+		`(?i)\[\s*` + q + nameRe + q + `\s*\]\s*(?:\|\||&&|\?\?)?=\s*` + longLit,
+		`(?i)\[\s*` + q + `(?:authorization|cookie)` + q + `\s*\]\s*(?:\|\||&&|\?\?)?=\s*` + authLit,
+		// XML (I43-5): <password>...</password>, and .NET's <add
+		// key="ApiKey" value="..."/>. A plist's bare <key> names a key.
+		`(?i)<\s*` + xmlName + `(?:\s[^<>]*)?>\s*[^<\s]`,
+		`(?i)\b(?:key|name)\s*=\s*["'](?:[\w.-]*:)*` + nameRe + `["']\s+value\s*=\s*["'][^"'\s]`,
 		`(?i)basic_?auth\s*\(\s*[^,()]*,\s*` + lit,                            // SetBasicAuth("bob", "...")
 		`(?i)\bauth\s*=\s*\(\s*` + q + "[^\"'`]*" + q + `\s*,\s*` + lit,       // auth=("bob", "...")
 		`(?i)\|\s*` + q + `*` + nameRe + q + `*\s*\|\s*[^\s|]{8,}\s*(?:\||$)`, // | DB_PASSWORD | value |
 		`(?i)\bcookie["']?\s*[:=,]\s*["']?[^\s"';=]+=[^\s"';]`,                // Cookie: session=...
-		// --token X, and --password -Hunter2: a value may start with one
-		// "-" (I43-2), but not "--", which starts the next flag.
-		`(?i)--` + flagName + `(?:=|\s+)["']?-?[^\s"'-]`,
-		// An args array: ["--api-key", "..."] (I43-4).
-		`(?i)` + q + `--` + flagName + q + `\s*,\s*` + lit,
 		// A JSON or YAML flow env entry on one line, in either order
 		// (I43-3): {name: DB_PASSWORD, value: ...}.
 		`(?i)\bname["']?\s*:\s*["']?` + nameRe + `["']?\s*,\s*["']?value["']?\s*:\s*["']?[^\s"',}]`,
@@ -123,15 +147,28 @@ var (
 	// JSON or YAML split across lines.
 	// A YAML block scalar indicator (password: |) or a TOML triple quote
 	// may end the line too.
-	pendingKey = regexp.MustCompile(secretName + `\s*(?:` + blockEnd + `)?\s*$`)
+	// So may "(", which opens a value over several lines (I43-5).
+	pendingKey = regexp.MustCompile(secretName + `\s*(?:` + blockEnd + `|\()?\s*$`)
 	// nameKey is a list entry's name line whose value line follows, as in
 	// Kubernetes env: "- name: API_TOKEN", then "value: ...", or JSON env
 	// ("name": "DB_PASSWORD", then "value": ...).
 	nameKey = regexp.MustCompile(`(?i)^\s*(?:-\s+)?["']?name["']?\s*:\s*["']?` + nameRe + `["']?\s*,?\s*$`)
 	// flagKey is a secret-named flag alone on its line, its value on the
 	// next: "- --token" in a YAML list, or "--api-key", in a JSON array
-	// (I43-4).
-	flagKey = regexp.MustCompile(`(?i)^\s*(?:-\s+)?["']?--` + flagName + `["']?\s*,?\s*$`)
+	// (I43-4). Its group is the flag's name.
+	flagKey = regexp.MustCompile(`(?i)^\s*(?:-\s+)?["']?--(` + flagName + `)["']?\s*,?\s*$`)
+	// flagArg is a secret-named flag with its value. Its groups: an args
+	// array's flag name and value (["--api-key", "..."], I43-4); then a
+	// command line's flag name, separator, and value (--token X), which
+	// may start with one "-" (--password -Hunter2, I43-2) but not "--",
+	// which starts the next flag.
+	flagArg = regexp.MustCompile(`(?i)` + q + `--(` + flagName + `)` + q + `\s*,\s*` + q + "([^\\s\"'`][^\"'`]*)" + `|--(` + flagName + `)(=|\s+)["']?(-?[^\s"'-][^\s"']*)`)
+	// envRef is a value that only names one held elsewhere: $TOKEN,
+	// ${TOKEN}, $(API_KEY), %TOKEN%, or a {{ template }}.
+	envRef = regexp.MustCompile(`^(?:\$\{?\w+\}?|\$\(\w+\)|%\w+%|\$?\{\{[^{}]*\}\})$`)
+	// authB64 is a Docker config.json "auth" or an npmrc _auth value,
+	// which is user:password in base64 (I43-5). Its group is the value.
+	authB64 = regexp.MustCompile(`(?i)(?:^|[^\w-])_?auth["']?\s*[:=]\s*["']?([A-Za-z0-9+/]{8,}={0,2})`)
 	// blockKey is a key line that opens a YAML block scalar.
 	blockKey = regexp.MustCompile(`[:=]\s*(?:!\S*\s+)?[|>][-+0-9]*\s*(?:#.*)?$`)
 	// tripleKey is a key line that opens a TOML or Python triple-quoted
@@ -189,6 +226,7 @@ var hints = []string{
 	"_test_", "whsec_", "-----begin", "eyj", "auth", "bearer",
 	"key", "token", "secret", "pass", "pwd", "credential",
 	"://", "mysql", "mariadb", "cookie", "curl", "login", "redis-cli", "asplaintext",
+	"hooks.slack", "webhooks",
 }
 
 // hinted reports whether line holds one of hints. The patterns' (?i)
@@ -339,6 +377,9 @@ func assigned(line string) bool {
 		if work != nil {
 			work.bytes += ix[1] - ix[0]
 		}
+		if passCount(m[1]) {
+			continue
+		}
 		if m[5] != "" {
 			return true
 		}
@@ -363,7 +404,7 @@ type workCount struct{ facts, bytes int }
 func Secret(line string) bool { return secret(line, true) }
 
 func secret(line string, decode bool) bool {
-	if hinted(line) && (Token.MatchString(line) || assigned(line) || other.MatchString(line)) {
+	if hinted(line) && (Token.MatchString(line) || assigned(line) || other.MatchString(line) || flagged(line) || basicAuth(line)) {
 		return true
 	}
 	if decode && hasRun(line, 24, true) && wrapped(line) {
@@ -401,9 +442,7 @@ func wrapped(line string) bool {
 			s = s[:len(s)-1]
 		}
 		b, err := enc.DecodeString(s)
-		if err != nil || !utf8.Valid(b) || strings.ContainsFunc(string(b), func(r rune) bool {
-			return r < ' ' && r != '\n' && r != '\r' && r != '\t' || r == 0x7f
-		}) {
+		if err != nil || !text(b) {
 			continue
 		}
 		for _, l := range strings.Split(string(b), "\n") {
@@ -413,6 +452,134 @@ func wrapped(line string) bool {
 		}
 	}
 	return false
+}
+
+// text reports whether b is UTF-8 text with no control characters but
+// line ends and tabs.
+func text(b []byte) bool {
+	return utf8.Valid(b) && !strings.ContainsFunc(string(b), func(r rune) bool {
+		return r < ' ' && r != '\n' && r != '\r' && r != '\t' || r == 0x7f
+	})
+}
+
+// basicAuth reports whether line sets a Docker or npm "auth" to base64
+// text of the form user:password. Other base64 (auth: required) is kept.
+func basicAuth(line string) bool {
+	for _, ix := range authB64.FindAllStringSubmatchIndex(line, -1) {
+		if work != nil {
+			work.bytes += ix[1] - ix[0]
+		}
+		s := strings.TrimRight(line[ix[2]:ix[3]], "=")
+		if len(s)%4 == 1 {
+			continue
+		}
+		b, err := base64.RawStdEncoding.DecodeString(s)
+		if err == nil && text(b) && strings.IndexByte(string(b), ':') > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// flagged reports whether line passes a secret-named flag a value. It
+// keeps a flag whose name is a word that only ends in "key" (--monkey,
+// --hotkey), an args array's next flag, and, after a space, a prose word
+// (Pass the --token flag to, Use --token to pass) (I43-6, I43-11).
+func flagged(line string) bool {
+	for _, ix := range flagArg.FindAllStringSubmatchIndex(line, -1) {
+		if work != nil {
+			work.bytes += ix[1] - ix[0]
+		}
+		g := func(n int) string {
+			if ix[2*n] < 0 {
+				return ""
+			}
+			return line[ix[2*n]:ix[2*n+1]]
+		}
+		if ix[2] >= 0 {
+			if !wordFlag(g(1)) && !strings.HasPrefix(g(2), "--") {
+				return true
+			}
+			continue
+		}
+		if !wordFlag(g(3)) && (g(4) == "=" || !prose[strings.ToLower(strings.TrimRight(g(5), ".,;:!?)"))]) {
+			return true
+		}
+	}
+	return false
+}
+
+// wordFlag reports whether a flag name's last word is an English word
+// that only ends in "key".
+func wordFlag(name string) bool {
+	return keyWords[strings.ToLower(name[strings.LastIndexAny(name, "-_")+1:])]
+}
+
+// keyWords are English words that end in "key" but name no key.
+var keyWords = map[string]bool{
+	"monkey": true, "donkey": true, "turkey": true, "hockey": true, "jockey": true, "whiskey": true,
+	"hotkey": true, "turnkey": true, "lackey": true, "flunkey": true, "malarkey": true,
+}
+
+// prose are words that follow a flag in prose, not as its value.
+var prose = map[string]bool{
+	"a": true, "an": true, "and": true, "are": true, "as": true, "at": true, "be": true, "by": true,
+	"can": true, "flag": true, "for": true, "from": true, "if": true, "in": true, "instead": true,
+	"is": true, "it": true, "must": true, "of": true, "on": true, "option": true, "or": true,
+	"argument": true, "parameter": true, "should": true, "that": true, "the": true, "to": true,
+	"was": true, "when": true, "which": true, "will": true, "with": true,
+}
+
+// passCount reports whether name is a secret name only by a "pass"
+// segment followed by a count-like word (pass_count, PASS_RATE), which
+// names no password (I43-6).
+func passCount(name string) bool {
+	l := strings.ToLower(name)
+	for _, w := range []string{"key", "token", "secret", "pwd", "passw", "passphrase", "credential"} {
+		if strings.Contains(l, w) {
+			return false
+		}
+	}
+	segs := strings.FieldsFunc(l, func(r rune) bool { return r == '_' || r == '.' || r == '-' })
+	for i := 0; i+1 < len(segs); i++ {
+		if segs[i] == "pass" && countWords[segs[i+1]] {
+			return true
+		}
+	}
+	return false
+}
+
+// countWords are words after "pass" in a name that counts or measures.
+var countWords = map[string]bool{
+	"count": true, "cnt": true, "num": true, "number": true, "total": true, "rate": true,
+	"ratio": true, "pct": true, "percent": true, "threshold": true, "through": true, "thru": true,
+	"fail": true, "status": true, "result": true, "results": true, "score": true, "len": true,
+	"length": true, "limit": true, "mark": true, "level": true, "mode": true, "time": true,
+}
+
+// loneFlag reports whether l is a secret-named flag alone on its line.
+func loneFlag(l string) bool {
+	m := flagKey.FindStringSubmatch(l)
+	return m != nil && !wordFlag(m[1])
+}
+
+// flagValue reports whether l, the line after a lone secret flag, is the
+// flag's value: not the next flag, a reference to a value held elsewhere
+// ($(API_KEY), "${TOKEN}"), help text (unquoted words), or a closing
+// bracket (I43-11). Anything else, such as one bare word, is a value.
+func flagValue(l string) bool {
+	t := strings.TrimSpace(l)
+	if strings.HasPrefix(t, "-") && len(t) > 1 && (t[1] == ' ' || t[1] == '\t') {
+		t = strings.TrimSpace(t[1:])
+	}
+	t = strings.TrimRight(t, ",")
+	quoted := t != "" && strings.IndexByte("\"'`", t[0]) >= 0
+	v := strings.Trim(t, "\"'`")
+	switch {
+	case strings.Trim(v, "])}") == "", strings.HasPrefix(v, "--"), envRef.MatchString(v):
+		return false
+	}
+	return quoted || !strings.ContainsAny(v, " \t")
 }
 
 // Each removes every line of text that Secret matches, with no state
@@ -453,8 +620,12 @@ func endAfter(lines []string, i int) int {
 //   - every line Secret matches
 //   - the value line after a secret name that ends its line, or after a
 //     list entry's secret name ("- name: API_TOKEN", then "value: ...",
-//     or JSON env), or after a secret flag alone on its line ("- --token"),
-//     with any comment lines between them
+//     or JSON env), or after a secret flag alone on its line ("- --token")
+//     when that line is a value (flagValue), with any comment lines
+//     between them
+//   - the value lines of a secret name ending its line with "(", up to the
+//     matching ")" (at most maxTriple lines): every line but a call with
+//     no quoted literal
 //   - every line of a YAML block scalar under a secret name (password: |),
 //     and a triple-quoted value up to its closing quotes (at most
 //     maxTriple lines)
@@ -470,8 +641,12 @@ func Lines(text string) (string, int) {
 	drop := make([]bool, len(lines))
 	unpaired := false // a BEGIN with no END, or an END with no BEGIN
 	// pending is a secret name ending the line before; pair, that it was
-	// a lone key (pairKey), whose value is never kept (F29-2).
-	inKey, pending, pair := false, false, false
+	// a lone key (pairKey), whose value is never kept (F29-2); flag, that
+	// it was a lone flag, whose next line may not be its value.
+	inKey, pending, pair, flag := false, false, false, false
+	// depth is how many "(" a secret value opened with "(" has open, and
+	// left how many more of its lines are looked at.
+	depth := 0
 	skip := -1  // lines up to skip are already dropped as one block
 	block := -1 // the indent of a secret key opening a YAML block scalar
 	// triple is the closing quotes of a triple-quoted secret value, and
@@ -485,6 +660,16 @@ func Lines(text string) (string, int) {
 			drop[i] = true
 			if left--; strings.Contains(l, triple) || left == 0 {
 				triple = ""
+			}
+			continue
+		}
+		if depth > 0 {
+			depth += strings.Count(l, "(") - strings.Count(l, ")")
+			left--
+			v := strings.TrimRight(strings.TrimSpace(l), ",;")
+			drop[i] = strings.Trim(v, ")") != "" && (!call.MatchString(v) || strings.ContainsAny(v, "\"'`")) || Secret(l)
+			if left == 0 {
+				depth = 0
 			}
 			continue
 		}
@@ -535,7 +720,7 @@ func Lines(text string) (string, int) {
 			// The value on its own line is kept only when it is a call
 			// continuing a statement, with no quoted literal in it.
 			v := strings.TrimRight(strings.TrimSpace(l), ",;")
-			drop[i] = pair || !call.MatchString(v) || strings.ContainsAny(v, "\"'`") || Secret(l)
+			drop[i] = !flag && (pair || !call.MatchString(v) || strings.ContainsAny(v, "\"'`")) || flag && flagValue(l) || Secret(l)
 		default:
 			// A key block ends at the first line that is not key text.
 			inKey = false
@@ -545,9 +730,13 @@ func Lines(text string) (string, int) {
 			// A key line that is itself dropped (api_key: !!binary |) still
 			// makes its value go.
 			key := hinted(l)
-			named := key && (nameKey.MatchString(l) || flagKey.MatchString(l))
+			flag = key && loneFlag(l)
+			named := flag || key && nameKey.MatchString(l)
 			pending = key && (named || pendingKey.MatchString(l))
 			pair = pending && (named || pairKey.MatchString(l))
+			if pending && !named && strings.HasSuffix(strings.TrimSpace(l), "(") {
+				depth, left, pending = 1, maxTriple, false
+			}
 			if pending && !named && blockKey.MatchString(l) {
 				block, pending = indent(l), false
 			}

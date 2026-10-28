@@ -66,6 +66,17 @@ var linesTests = []struct {
 	// I43-4: a secret flag's value on the next line of a list or array.
 	{"yaml flag list", "args:\n  - --token\n  - hunter2hunter2\n  - --verbose", "args:\n  - --token\n  - --verbose", 1},
 	{"json flag array", "\"args\": [\n  \"--api-key\",\n  \"hunter2hunter2\"\n]", "\"args\": [\n  \"--api-key\",\n]", 1},
+	{"flag bare word", "--token\nhunter2hunter2\nnext", "--token\nnext", 1},
+	{"flag quoted words", "- --password\n- \"correct horse battery\"\nnext", "- --password\nnext", 1},
+	// I43-11: the line after a lone flag is kept when it is not its value.
+	{"flag help", "  --token\n      The API token to use.\n  --verbose", "  --token\n      The API token to use.\n  --verbose", 0},
+	{"flag then flag", "args:\n  - --token\n  - --verbose", "args:\n  - --token\n  - --verbose", 0},
+	{"flag env ref", "- --api-key\n- $(API_KEY)\n- --token\n- \"${TOKEN}\"", "- --api-key\n- $(API_KEY)\n- --token\n- \"${TOKEN}\"", 0},
+	{"flag word", "  --monkey\n  banana\n", "  --monkey\n  banana\n", 0},
+	// I43-5: a value in parentheses over several lines.
+	{"paren value", "API_KEY = (\n    \"hunter2\"\n    \"hunter2\"\n)\nnext = 1", "API_KEY = (\n)\nnext = 1", 2},
+	{"paren value close", "API_KEY = (\n    \"hunter2\"\n    \"hunter2\")\nnext = 1", "API_KEY = (\nnext = 1", 2},
+	{"paren code", "password = (\n    hashPassword(raw)\n)\nnext", "password = (\n    hashPassword(raw)\n)\nnext", 0},
 }
 
 func TestLines(t *testing.T) {
@@ -194,6 +205,38 @@ var secretLines = []string{
 	"some-cli --apikey hunter2hunter2",
 	"some-cli --authtoken hunter2hunter2",
 	"some-cli --clientsecret hunter2hunter2",
+	// I43-5: byte strings, typed declarations, an Authorization subscript,
+	// XML, Docker and npm auth, and webhook URLs.
+	`var jwtKey = []byte("hunter2hunter2")`,
+	`jwtSecret := []byte("hunter2hunter2")`,
+	`api_key = b"hunter2hunter2"`,
+	`password = r"hunter2\hunter2"`,
+	`TOKEN = ("hunter2hunter2")`,
+	`const apiKey: string = "hunter2hunter2";`,
+	`apiKey?: string = "hunter2hunter2"`,
+	`const API_KEY: &str = "hunter2hunter2";`,
+	`static API_TOKEN: &'static str = "hunter2hunter2";`,
+	`val apiKey: String = "hunter2hunter2"`,
+	`api_key: str = "hunter2hunter2"`,
+	`var apiKey string = "hunter2hunter2"`,
+	`headers["Authorization"] = "Token hunter2hunter2"`,
+	`headers['Authorization'] = 'Bearer hunter2hunter2'`,
+	"<password>hunter2hunter2</password>",
+	`<apiKey type="prod">hunter2hunter2</apiKey>`,
+	`<add key="ApiKey" value="hunter2hunter2" />`,
+	`<add key="Stripe:SecretKey" value="hunter2hunter2"/>`,
+	`"auth": "` + base64.StdEncoding.EncodeToString([]byte("bob:hunter2")) + `"`,
+	"//registry.npmjs.org/:_auth=" + base64.StdEncoding.EncodeToString([]byte("bob:hunter2")),
+	"_auth = " + base64.StdEncoding.EncodeToString([]byte("bob:hunter2hunter2")),
+	// Built here, so no scanner takes them for live webhooks.
+	"SLACK_HOOK=https://hooks.slack.com/services/" + "T0000000/B0000000/" + strings.Repeat("x", 24),
+	"post to hooks.slack.com/services/" + "T0000000/B0000000/" + strings.Repeat("x", 24),
+	"https://discord.com/api/webhooks/" + "123456789012345678/" + strings.Repeat("y", 30),
+	// I43-6: a long setenv value, and a flag value that is no prose word.
+	`monkeypatch.setenv("API_KEY", "hunter2hunter2")`,
+	"some-cli --token toTheMoon99",
+	"some-cli --token=to",
+	"some-cli --api-key flagged123",
 }
 
 // C16-11: base64-wrapped secrets, in either alphabet.
@@ -252,6 +295,25 @@ func TestSecret(t *testing.T) {
 		"- {name: MODE, value: production}",
 		`"args": ["--verbose", "hunter2hunter2"]`,
 		"data: " + base64.StdEncoding.EncodeToString([]byte("just some ordinary text here")),
+		// I43-6 and I43-11: prose about a flag, a short setenv value, a
+		// bare scheme, a count, and words that only end in "key".
+		"Pass the --token flag to authenticate",
+		"Use --token to pass the key.",
+		"set --api-key or --password, which take precedence",
+		`monkeypatch.setenv("API_KEY","test")`,
+		`req.Header.Set("Authorization","Bearer "+token)`,
+		`req.Header.Set("Authorization", "Bearer " + token)`,
+		`headers["Authorization"] = "Bearer " + token`,
+		"pass_count = 12345678",
+		"PASS_RATE=0.95123456",
+		"some-cli --monkey 3",
+		"xdotool --hotkey ctrlaltdel",
+		`"args": ["--monkey", "banana"]`,
+		`"args": ["--token", "--verbose"]`,
+		"<key>CFBundleIdentifier</key>",
+		`"auth": "required"`,
+		"auth: anonymous",
+		`const apiKey: string = getKey();`,
 	} {
 		if Secret(line) {
 			t.Errorf("Secret(%q) = true", line)
@@ -316,7 +378,7 @@ func TestHints(t *testing.T) {
 			continue
 		}
 		seen[l] = true
-		if Token.MatchString(l) || assign.MatchString(l) || other.MatchString(l) || pendingKey.MatchString(l) || nameKey.MatchString(l) || flagKey.MatchString(l) {
+		if Token.MatchString(l) || assign.MatchString(l) || other.MatchString(l) || pendingKey.MatchString(l) || nameKey.MatchString(l) || flagKey.MatchString(l) || flagArg.MatchString(l) || authB64.MatchString(l) {
 			t.Errorf("match without a hint: %q", l)
 		}
 	}
@@ -344,14 +406,21 @@ func TestTripleCap(t *testing.T) {
 // TestLinear (I43-1, I43-10): on lines built to have many assign
 // matches, factsOf runs at most once a line, and the bytes factsOf and
 // the assign loop examine stay within a small multiple of the input; the
-// old code rescanned the rest of the line once per match.
+// old code rescanned the rest of the line once per match. The counts do
+// not depend on the line's length, and rescanning would examine some n/2
+// times the input, so 100 repeats show it as well as more would; fewer
+// keep the package fast under -race (T6749).
 func TestLinear(t *testing.T) {
 	defer func() { work = nil }()
 	for _, unit := range []string{
 		"{key:f(bbbbbbbb),", "token := f(x) ", "name: DB_PASSWORD, value: ",
 		`"--token", `, "key: !a ", `password = ("`, "--api-key -x ", "token = '''x ",
+		// T6749: the new shapes.
+		`k = []byte("`, "apiKey: string = f(x) ", "--token to ", "--monkey x ", `"--hotkey", "x", `,
+		`"auth": "Ym9iOmh1bnRlcjI=", `, `_auth=YWJj `, "<password>x ", `headers["Authorization"] = "Bearer " + `,
+		`pass_count = 12345678 `, "API_KEY = (",
 	} {
-		for _, n := range []int{50, 400} {
+		for _, n := range []int{25, 100} {
 			in := strings.Repeat(unit, n)
 			in += "\n" + in
 			work = &workCount{}
