@@ -39,6 +39,21 @@ func TestPreToolUse(t *testing.T) {
 		{"aggy inbox", payload(t, "Bash", map[string]any{"command": "aggy inbox"}), false},
 		{"a file that mentions it", payload(t, "Write", map[string]any{"file_path": "/x", "content": "claude -p"}), false},
 		{"no input", payload(t, "Read", nil), false},
+		// Review finding #10-8.
+		{"codex value flag before exec", payload(t, "Bash", map[string]any{"command": "codex -c k=v -m o3 --cd /x exec hi"}), true},
+		{"grok --prompt-file", payload(t, "Bash", map[string]any{"command": "grok --prompt-file /tmp/p"}), true},
+		{"npx claude-code", payload(t, "Bash", map[string]any{"command": "npx -y @anthropic-ai/claude-code@latest -p hi"}), true},
+		{"npm exec codex", payload(t, "Bash", map[string]any{"command": "npm exec @openai/codex -- exec hi"}), true},
+		{"pnpm dlx codex", payload(t, "Bash", map[string]any{"command": "pnpm dlx @openai/codex exec hi"}), true},
+		{"IFS", payload(t, "Bash", map[string]any{"command": "claude${IFS}-p${IFS}hi"}), true},
+		{"bare IFS", payload(t, "Bash", map[string]any{"command": "codex$IFS" + "exec x"}), true},
+		{"env and timeout", payload(t, "Bash", map[string]any{"command": "env -u X A=1 timeout -s KILL 30 grok -p q"}), true},
+		{"sudo -u", payload(t, "Bash", map[string]any{"command": "sudo -u me aggy borrow news x"}), true},
+		{"find -print", payload(t, "Bash", map[string]any{"command": "find . -name claude -print"}), false},
+		{"git log -S claude -p", payload(t, "Bash", map[string]any{"command": "git log -S claude -p"}), false},
+		{"echo mention", payload(t, "Bash", map[string]any{"command": "echo use claude -p"}), false},
+		{"null payload", []byte("null"), true},
+		{"array payload", []byte("[]"), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
