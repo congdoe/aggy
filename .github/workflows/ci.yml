@@ -46,8 +46,9 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
-      # Lint cannot see a cgo file when it cross-compiles; cgo is banned.
-      - run: make nocgo
+      # Lint cannot see a cgo file when it cross-compiles, or assembly at
+      # all; both are banned.
+      - run: make nocgo noasm
       # Keep the version in step with GOLANGCI_LINT_VERSION in the Makefile.
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:

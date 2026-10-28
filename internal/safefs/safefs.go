@@ -36,6 +36,9 @@
 // A credential file that does not exist has nothing to protect and matches
 // only by path.
 //
+// On macOS, a path in /.vol (which names any file by device and inode)
+// is refused outright, with ErrAuthPath.
+//
 // safefs fails closed. When no absolute home directory can be found, or
 // CLAUDE_CONFIG_DIR, CODEX_HOME, or GROK_HOME is set to a relative path,
 // every call returns an error matching ErrLocate.
@@ -221,16 +224,34 @@ func (g *guard) pathMatch(path string) bool {
 // strings.ToLower would leave all three alone.
 func normPath(p string) string {
 	p = norm.NFC.String(p)
-	if stripFirmlink && len(p) > len(dataVolume) && strings.EqualFold(p[:len(dataVolume)], dataVolume) &&
-		p[len(dataVolume)] == filepath.Separator {
-		// /System/Volumes/Data/Users/x is /Users/x through a firmlink.
-		p = p[len(dataVolume):]
-	}
+	prefix := dataVolume
 	if foldCase {
+		// Fold first, so every spelling APFS takes for the prefix
+		// ("/Syſtem/Volumes/Data") is stripped too.
 		p = norm.NFC.String(cases.Fold().String(p))
+		prefix = foldedDataVolume
+	}
+	if stripFirmlink && strings.HasPrefix(p, prefix+string(filepath.Separator)) {
+		// /System/Volumes/Data/Users/x is /Users/x through a firmlink.
+		p = p[len(prefix):]
 	}
 	return p
 }
+
+// foldedDataVolume is dataVolume case-folded.
+var foldedDataVolume = norm.NFC.String(cases.Fold().String(dataVolume))
+
+// volPrefix is macOS's volfs: /.vol/<device>/<inode> names any file by
+// its identity, bypassing every path a check could compare. safefs
+// refuses it outright where it exists.
+const volPrefix = "/.vol"
+
+// refuseVol is true where /.vol exists. It is a variable so tests can
+// exercise it on any OS.
+var refuseVol = runtime.GOOS == "darwin"
+
+// isVol reports whether the normalized path p is in /.vol.
+func isVol(p string) bool { return refuseVol && under(p, volPrefix) }
 
 // dataVolume is where macOS keeps the writable half of the file system.
 // Its firmlinks (/Users, /private, /Applications, ...) make
@@ -376,14 +397,14 @@ func resolve(op, name string) (*target, error) {
 	if err != nil {
 		return nil, &fs.PathError{Op: op, Path: name, Err: err}
 	}
-	if g.pathMatch(filepath.Clean(raw)) {
+	if g.pathMatch(filepath.Clean(raw)) || isVol(normPath(filepath.Clean(raw))) {
 		return nil, &AuthPathError{Op: op, Path: name}
 	}
 	real, err := resolveExisting(raw)
 	if err != nil {
 		return nil, &fs.PathError{Op: op, Path: name, Err: err}
 	}
-	if g.pathMatch(real) {
+	if g.pathMatch(real) || isVol(normPath(real)) {
 		return nil, &AuthPathError{Op: op, Path: name}
 	}
 	t := &target{g: g, real: real, link: real}

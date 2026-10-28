@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"net/url"
@@ -10,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/congdoe/aggy/internal/safefs"
+
+	"modernc.org/sqlite"
 )
 
 // ErrSchemaTooOld means the database predates what a read-only caller
@@ -38,6 +41,12 @@ var ErrUnreadable = errors.New("store: cannot read the index")
 //     checkpoints the -wal into the main file (the same pages, no row
 //     changes) and deletes both, as every aggy writer does on close.
 //
+// Callers may only run SELECT statements (and read PRAGMA user_version)
+// through it. Every connection carries a SQLite authorizer that refuses
+// anything else when the statement is compiled: writes, other PRAGMAs,
+// ATTACH (which would open another file outside safefs), VACUUM, and so
+// on.
+//
 // The paths are checked through safefs before the open and, as Open does,
 // again after it, by identity. A read that meets a writer's checkpoint
 // can fail with a "malformed" error; it is reported as the index being
@@ -61,10 +70,11 @@ func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", roDSN(path, !writable))
+	base, err := sqlite.NewConnector(roDSN(path, !writable))
 	if err != nil {
 		return nil, err
 	}
+	db := sql.OpenDB(selectOnly{base})
 	// Ping opens a connection; a query proves the file can be read.
 	err = db.PingContext(ctx)
 	if err == nil {
@@ -83,6 +93,44 @@ func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
 		}
 	}
 	return &Store{db: db, path: path}, nil
+}
+
+// selectOnly opens connections that may only read: an authorizer is
+// installed on each before database/sql uses it. The DSN's own pragmas
+// run before it, while the connection opens.
+type selectOnly struct{ driver.Connector }
+
+// Connect opens a connection and installs the read-only authorizer.
+func (c selectOnly) Connect(ctx context.Context) (driver.Conn, error) {
+	conn, err := c.Connector.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	reg, ok := conn.(sqlite.AuthorizerRegisterer)
+	if !ok {
+		_ = conn.Close()
+		return nil, errors.New("store: the SQLite driver has no authorizer")
+	}
+	if err := reg.RegisterAuthorizer(readOnlyAuthorizer); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// readOnlyAuthorizer allows reading tables, functions, and recursive
+// queries, and the one PRAGMA read aggy uses, user_version, without a
+// value. Everything else is denied when the statement is compiled.
+func readOnlyAuthorizer(action sqlite.AuthorizerActionCode, arg1, arg2, _, _ string) sqlite.AuthorizerReturnCode {
+	switch action {
+	case sqlite.AuthSelect, sqlite.AuthRead, sqlite.AuthFunction, sqlite.AuthRecursive:
+		return sqlite.AuthorizerOK
+	case sqlite.AuthPragma:
+		if strings.EqualFold(arg1, "user_version") && arg2 == "" {
+			return sqlite.AuthorizerOK
+		}
+	}
+	return sqlite.AuthorizerDeny
 }
 
 // ErrBusyWriting matches a read that met a writer mid-checkpoint.
