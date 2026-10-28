@@ -45,6 +45,7 @@ type Server struct {
 	// onPanic restores the terminal before a panic in a server goroutine
 	// ends the process.
 	onPanic func()
+	onHook  func(Request) // gets each valid hook-event; may be nil
 	wg      sync.WaitGroup
 	once    sync.Once
 	mu      sync.Mutex
@@ -58,6 +59,8 @@ func (s *Server) Path() string { return s.path }
 // Listen creates runDir (0700) if needed and listens on
 // runDir/<parentID>.sock (0600). parentID must be a UUID. onPanic, if
 // set, runs before a panic in a server goroutine ends the process.
+// onHook, if set, gets each valid hook-event, on the connection's
+// goroutine: it must be quick and safe for concurrent use.
 //
 // A socket left by a supervisor that died is removed first. Liveness is
 // an flock on runDir/<parentID>.lock, held while the server runs: the
@@ -65,7 +68,7 @@ func (s *Server) Path() string { return s.path }
 // fooled by pid reuse. If another live supervisor holds it, Listen fails.
 // Anything at the socket path that is not a socket is left alone and
 // Listen fails.
-func Listen(runDir, parentID string, onPanic func()) (*Server, error) {
+func Listen(runDir, parentID string, onPanic func(), onHook func(Request)) (*Server, error) {
 	if !adapter.IsUUID(parentID) {
 		return nil, fmt.Errorf("supervisor: parent id %q is not a UUID", parentID)
 	}
@@ -109,7 +112,7 @@ func Listen(runDir, parentID string, onPanic func()) (*Server, error) {
 		_ = safefs.Remove(path)
 		return fail(err)
 	}
-	s := &Server{ln: ln, path: path, lock: lock, peer: peerUID, onPanic: onPanic,
+	s := &Server{ln: ln, path: path, lock: lock, peer: peerUID, onPanic: onPanic, onHook: onHook,
 		conns: map[*net.UnixConn]struct{}{}}
 	s.goSafe(s.accept)
 	return s, nil
@@ -258,7 +261,7 @@ func (s *Server) serve(c *net.UnixConn) {
 		if err != nil {
 			return // closed, idle, or a last line without a newline
 		}
-		resp := answer(line[:len(line)-1])
+		resp := answer(line[:len(line)-1], s.onHook)
 		reply(c, resp)
 		if !resp.OK {
 			return

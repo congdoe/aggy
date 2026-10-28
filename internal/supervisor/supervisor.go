@@ -51,6 +51,14 @@ type Options struct {
 	// ParentID is the parent session's id, a UUID: it names the socket
 	// and reaches the CLI as AGGY_PARENT.
 	ParentID string
+	// OnHook gets each hook event the socket accepts (see Listen).
+	OnHook func(Request)
+}
+
+// SocketEnv is env plus the variables that lead hooks and skills inside
+// the CLI to the socket: AGGY_SOCKET and AGGY_PARENT.
+func SocketEnv(env []string, socket, parentID string) []string {
+	return append(append([]string(nil), env...), "AGGY_SOCKET="+socket, "AGGY_PARENT="+parentID)
 }
 
 // DefaultDoublePress is the default Options.DoublePress.

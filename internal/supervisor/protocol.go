@@ -86,8 +86,9 @@ func decodeRequest(line []byte) (Request, error) {
 	return r, nil
 }
 
-// answer handles one request line.
-func answer(line []byte) Response {
+// answer handles one request line. onHook, if set, gets each valid
+// hook-event.
+func answer(line []byte, onHook func(Request)) Response {
 	r, err := decodeRequest(line)
 	if err != nil {
 		return Response{Error: err.Error()}
@@ -97,8 +98,11 @@ func answer(line []byte) Response {
 		return Response{OK: true, Type: "pong"}
 	case ReqHookEvent:
 		// TODO(T6664): turn-end hooks gate a pending switch, and a
-		// rate_limit StopFailure opens the picker. Accepted and dropped
-		// until then.
+		// rate_limit StopFailure opens the picker. Until then onHook
+		// only keeps the index (session ids).
+		if onHook != nil {
+			onHook(r)
+		}
 		return Response{OK: true}
 	default: // ReqSwitchRequest
 		// TODO(T6664): perform the switch at the CLI's turn end.
