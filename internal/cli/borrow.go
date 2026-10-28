@@ -32,8 +32,8 @@ import (
 
 const borrowUsage = `Usage: aggy borrow <kind> "<task>" [--path P]... [--constraint C]... [--vendor V] [--base REF] [--fresh]
 
-Runs one bounded task headless in another vendor's CLI and prints a short
-report. The child gets the task, the paths and constraints given here,
+Runs one bounded task headless in a vendor's CLI (for review, possibly the
+one on screen, in a fresh session) and prints a short report. The child gets the task, the paths and constraints given here,
 and today's date; never this conversation.
 
 Kinds: image, video, research, news, review, edit.
@@ -507,8 +507,9 @@ type borrowRouter struct {
 }
 
 // Choose asks the router, which applies its skip rules to an override
-// too: --vendor never bypasses the parent skip, allowed_vendors, or the
-// connected check.
+// too: --vendor never bypasses the parent skip (where the kind has one;
+// a review allows the parent unless the config opts in), allowed_vendors,
+// or the connected check.
 func (b borrowRouter) Choose(ctx context.Context, req borrow.RouteRequest) ([]adapter.Vendor, bool, error) {
 	d, err := b.r.Decide(ctx, router.Request{Kind: string(req.Kind), Parent: req.Parent, Repo: req.Repo, Override: req.Override, Authors: req.Authors, IgnoreHints: req.IgnoreHints})
 	if err != nil {

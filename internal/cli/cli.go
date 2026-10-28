@@ -39,7 +39,7 @@ Usage:
   aggy <command>
 
 Commands:
-  borrow    Run one bounded task headless in another vendor's CLI
+  borrow    Run one bounded task headless in a vendor's CLI
   image     Make an image in another vendor's CLI and copy it into the repo
   video     Make a short video in Grok's CLI and copy it into the repo
   inbox     List unread borrow reports, or show one
