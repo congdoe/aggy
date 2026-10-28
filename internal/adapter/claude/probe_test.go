@@ -17,3 +17,15 @@ func TestProbeFake(t *testing.T) {
 		t.Errorf("Probe = %+v, %v", p, err)
 	}
 }
+
+// TestTestedVersions (T6603): the probed fake's version is in range, and
+// a newer one gets a warning.
+func TestTestedVersions(t *testing.T) {
+	a := New()
+	if w := adapter.VersionWarning(a, "2.1.311"); w != "" {
+		t.Errorf("tested version warned: %s", w)
+	}
+	if w := adapter.VersionWarning(a, "99.0.0"); w == "" {
+		t.Error("an untested version gave no warning")
+	}
+}

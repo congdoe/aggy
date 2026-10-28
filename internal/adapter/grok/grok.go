@@ -36,6 +36,13 @@ func New() Adapter { return Adapter{} }
 // Vendor returns adapter.Grok.
 func (Adapter) Vendor() adapter.Vendor { return adapter.Grok }
 
+// Tested is the Grok Build CLI version range this adapter was tested on: the
+// version the facts in docs/adapters.md were verified with.
+var Tested = adapter.VersionRange{Min: "1.0.70", Max: "1.0.70"}
+
+// TestedVersions returns Tested.
+func (Adapter) TestedVersions() adapter.VersionRange { return Tested }
+
 // Probe reports the CLI's path, version, and capabilities through run,
 // using probe.Specs[adapter.Grok].
 func (a Adapter) Probe(ctx context.Context, run adapter.Runner) (adapter.Probe, error) {

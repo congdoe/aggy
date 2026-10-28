@@ -21,6 +21,8 @@ var _ Adapter = stub{}
 
 func (stub) Vendor() Vendor { return Grok }
 
+func (stub) TestedVersions() VersionRange { return VersionRange{Min: "1.0.70", Max: "1.0.70"} }
+
 func (stub) Probe(ctx context.Context, run Runner) (Probe, error) {
 	out, err := run(ctx, Command{Path: "fake-vendor", Args: []string{"--version"}})
 	if err != nil {
