@@ -47,6 +47,12 @@ type Input struct {
 // aggy does not know (docs/verification.md).
 const GrokBriefTokens = 100_000
 
+// MaxTurnBytes caps the transcript text a brief takes, newest turns
+// first, so redacting it stays well under a second on an interactive
+// switch (C16-13: about 0.6 s per MiB measured at worst). A turn past the
+// cap is left out whole.
+const MaxTurnBytes = 512 << 10
+
 // EstimateTokens is a conservative token count for s: one token per two
 // bytes, where English prose and code average about four. There is no
 // local Grok tokenizer.
@@ -61,26 +67,34 @@ func EstimateTokens(s string) int { return (len(s) + 1) / 2 }
 // (termsafe), so neither the reading agent nor a terminal showing the
 // brief acts on them.
 //
-// A brief for Grok drops the oldest turns, never summarizing them, until
-// it fits GrokBriefTokens, and says how many it dropped; the transcript
-// path stays for the reader to fetch them.
+// Turns older than the newest MaxTurnBytes of text are left out unread,
+// and a brief for Grok drops more of the oldest turns until it fits
+// GrokBriefTokens. Turns are never summarized: the brief says how many it
+// dropped, and the transcript path stays for the reader to fetch them.
 func Build(in Input) string {
+	// The newest turns that fit MaxTurnBytes are the only ones redacted,
+	// which bounds the time a brief takes on a long session.
+	first, size := len(in.Transcript.Turns), 0
+	for first > 0 && size+len(in.Transcript.Turns[first-1].Text) <= MaxTurnBytes {
+		first--
+		size += len(in.Transcript.Turns[first].Text)
+	}
 	// Each turn is redacted and fenced once, so the Grok guard can sum
 	// sizes instead of rebuilding the brief per dropped turn.
 	turns := make([]string, len(in.Transcript.Turns))
 	removed := make([]int, len(turns))
-	for i, t := range in.Transcript.Turns {
+	for i, t := range in.Transcript.Turns[first:] {
 		var w writer
 		w.WriteString("\n### " + oneLine(t.Role) + "\n\n")
 		w.data("text", t.Text)
-		turns[i], removed[i] = w.String(), w.removed
+		turns[first+i], removed[first+i] = w.String(), w.removed
 	}
-	dropped := 0
+	dropped := first
 	if in.To == adapter.Grok {
 		limit := 2 * GrokBriefTokens // EstimateTokens counts two bytes a token
 		size := len(build(in, nil, nil, len(turns)))
 		dropped = len(turns)
-		for dropped > 0 && size+len(turns[dropped-1]) <= limit {
+		for dropped > first && size+len(turns[dropped-1]) <= limit {
 			dropped--
 			size += len(turns[dropped])
 		}
@@ -149,13 +163,13 @@ func build(in Input, turns []string, removed []int, dropped int) string {
 	case in.TranscriptErr != nil:
 		b.failed("The previous session's transcript", in.TranscriptErr)
 	case len(turns) == 0 && dropped > 0:
-		fmt.Fprintf(&b, "All %d turns read were left out to keep this brief under Grok's long-context threshold; the full transcript has them.\n", dropped)
+		fmt.Fprintf(&b, "All %d turns read were left out to keep this brief within its size limit; the full transcript has them.\n", dropped)
 	case len(turns) == 0:
 		b.WriteString("The previous session has no turns yet.\n")
 	default:
 		fmt.Fprintf(&b, "The last %d turns of the %s session, oldest first, verbatim.\n", len(turns), in.From)
 		if dropped > 0 {
-			fmt.Fprintf(&b, "%d older turns were left out to keep this brief under Grok's long-context threshold; the full transcript has them.\n", dropped)
+			fmt.Fprintf(&b, "%d older turns were left out to keep this brief within its size limit; the full transcript has them.\n", dropped)
 		}
 		for _, t := range turns {
 			b.WriteString(t)
