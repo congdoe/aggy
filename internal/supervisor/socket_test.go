@@ -33,7 +33,7 @@ func shortDir(t *testing.T) string {
 
 func listen(t *testing.T, runDir string) *Server {
 	t.Helper()
-	s, err := Listen(runDir, pid)
+	s, err := Listen(runDir, pid, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestSocketRefusesBadSetup(t *testing.T) {
 			if tt.pre != nil {
 				tt.pre(t, run)
 			}
-			s, err := Listen(run, tt.id)
+			s, err := Listen(run, tt.id, nil)
 			if err == nil {
 				_ = s.Close()
 				t.Fatal("Listen succeeded")
@@ -171,7 +171,7 @@ func TestStaleSocketCleanup(t *testing.T) {
 
 	// A live supervisor holds the lock: a second one is refused and the
 	// live socket stays.
-	if s2, err := Listen(run, pid); err == nil {
+	if s2, err := Listen(run, pid, nil); err == nil {
 		_ = s2.Close()
 		t.Fatal("a second supervisor took a live session's socket")
 	} else if !strings.Contains(err.Error(), "another aggy") {
@@ -286,5 +286,71 @@ func TestPeerUIDOfRealConnection(t *testing.T) {
 	}
 	if uid := <-got; uid != os.Getuid() {
 		t.Errorf("peer uid %d, want %d", uid, os.Getuid())
+	}
+}
+
+// TestCloseDoesNotWaitForClients (B13-1): a connected client, idle or
+// chatty, must not keep Close (and so aggy's exit) waiting.
+func TestCloseDoesNotWaitForClients(t *testing.T) {
+	tests := []struct {
+		name  string
+		every time.Duration // ping interval; 0 means idle after one ping
+	}{
+		{"idle client", 0},
+		{"client pinging every 50ms", 50 * time.Millisecond},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, err := Listen(filepath.Join(shortDir(t), "run"), pid, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, err := net.Dial("unix", s.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = c.Close() }()
+			r := bufio.NewReader(c)
+			ping := func() bool {
+				if _, err := c.Write([]byte(`{"type":"ping"}` + "\n")); err != nil {
+					return false
+				}
+				_, err := r.ReadString('\n')
+				return err == nil
+			}
+			if !ping() {
+				t.Fatal("first ping failed")
+			}
+			stop := make(chan struct{})
+			defer close(stop)
+			if tt.every > 0 {
+				go func() {
+					for {
+						select {
+						case <-stop:
+							return
+						case <-time.After(tt.every):
+							if !ping() {
+								return
+							}
+						}
+					}
+				}()
+			}
+			start := time.Now()
+			closed := make(chan error, 1)
+			go func() { closed <- s.Close() }()
+			select {
+			case err := <-closed:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("Close waited on a connected client")
+			}
+			if d := time.Since(start); d > time.Second {
+				t.Errorf("Close took %v", d)
+			}
+		})
 	}
 }
