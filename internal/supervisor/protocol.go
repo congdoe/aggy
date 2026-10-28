@@ -19,6 +19,10 @@ import (
 // MaxMessage caps one request line, newline excluded.
 const MaxMessage = 64 << 10
 
+// maxModel caps a model name a switch carries, from the socket or typed
+// in the picker.
+const maxModel = 128
+
 // Request types.
 const (
 	ReqPing          = "ping"
@@ -41,6 +45,11 @@ type Request struct {
 	// includes the CLI's own tool subprocesses, so it is a hint, not
 	// proof that the CLI itself sent it.
 	FromSession bool `json:"-"`
+	// New, Model, and Brief qualify a switch-request (T6665): a new child
+	// instead of the latest, a model for that one launch, a brief.
+	New   bool   `json:"new,omitempty"`
+	Model string `json:"model,omitempty"`
+	Brief bool   `json:"brief,omitempty"`
 }
 
 // Response answers one Request.
@@ -63,6 +72,9 @@ func decodeRequest(line []byte) (Request, error) {
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return r, errors.New("bad request: more than one JSON value on the line")
 	}
+	if r.Type != ReqSwitchRequest && (r.New || r.Model != "" || r.Brief) {
+		return r, errors.New("bad request: new, model, and brief are for switch-request")
+	}
 	switch r.Type {
 	case ReqPing:
 		if r.Vendor != "" || r.Event != "" || r.Payload != nil {
@@ -83,7 +95,13 @@ func decodeRequest(line []byte) (Request, error) {
 			return r, err
 		}
 		if r.Event != "" || r.Payload != nil {
-			return r, errors.New("bad request: switch-request takes only vendor")
+			return r, errors.New("bad request: switch-request takes only vendor, new, model, and brief")
+		}
+		if len(r.Model) > maxModel {
+			return r, fmt.Errorf("bad request: a model name is at most %d bytes", maxModel)
+		}
+		if err := adapter.ValidModel(r.Model); err != nil {
+			return r, err
 		}
 	default:
 		return r, fmt.Errorf("bad request: unknown type %q", r.Type)

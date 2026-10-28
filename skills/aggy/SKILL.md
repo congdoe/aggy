@@ -44,7 +44,7 @@ aggy inbox            # unread borrow reports; aggy inbox <id> shows one
 
 ## Switching vendors
 
-`aggy switch <claude|codex|grok>` asks aggy to hand this session to
+`aggy switch [--new] [--brief] <claude|codex|grok>` asks aggy to hand this session to
 another vendor's CLI when your turn ends. Run it only when the user asks
 for that vendor, then end your turn: aggy asks the user, who decides.
 Codex cannot ask; there the user presses aggy's switch key.

@@ -110,7 +110,7 @@ func TestSwitchWaitsForTurnEnd(t *testing.T) {
 	confirm(t, ts)
 	c.waitGot(t, []byte("/exit\r"))
 	c.quit(0)
-	wantExit(t, done, Exit{Code: 0, SwitchTo: adapter.Grok})
+	wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok}})
 }
 
 // TestSwitchTurnEndHints: only a turn end of the vendor on screen, from
@@ -277,7 +277,7 @@ func TestSwitchLateExit(t *testing.T) {
 		t.Error("aggy signalled the CLI")
 	}
 	c.quit(0)
-	wantExit(t, done, Exit{SwitchTo: adapter.Codex})
+	wantExit(t, done, Exit{SwitchTo: adapter.Codex, Next: Choice{Vendor: adapter.Codex}})
 }
 
 // TestSwitchCancelAfterExitTyped (S-4): Esc in the picker after /exit was
@@ -320,7 +320,7 @@ func TestSwitchRequest(t *testing.T) {
 	confirm(t, ts)
 	c.waitGot(t, []byte("/exit\r"))
 	c.quit(0)
-	wantExit(t, done, Exit{SwitchTo: adapter.Grok})
+	wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok}})
 }
 
 // TestSwitchRepickKeepsUnsentText (S-8): picking the waiting vendor again
@@ -359,7 +359,7 @@ func TestSwitchNeedsChildStop(t *testing.T) {
 	confirm(t, ts)
 	c.waitGot(t, []byte("/exit\r"))
 	c.quit(0)
-	wantExit(t, done, Exit{SwitchTo: adapter.Grok})
+	wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok}})
 }
 
 // TestSwitchKeyAtNoteOpensList (S-7): at the late-exit note the switch
@@ -455,7 +455,7 @@ func TestSwitchCodexAgentRefused(t *testing.T) {
 	confirm(t, ts)
 	c.waitGot(t, []byte("/exit\r"))
 	c.quit(0)
-	wantExit(t, done, Exit{SwitchTo: adapter.Grok})
+	wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok}})
 }
 
 // TestSendDirty (S-13): only a plain Enter sends; Claude's newline keys
@@ -517,4 +517,41 @@ func TestSwitchMultilineDraft(t *testing.T) {
 		}
 		finish(t, c, done)
 	}
+}
+
+// TestSwitchOptionsCarried (T6665): the picker's toggles and a
+// switch-request's options reach the caller with the switch.
+func TestSwitchOptionsCarried(t *testing.T) {
+	ts, c, done, _ := switchRun(t, false)
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list", []byte("aggy: switch vendor"), ts.screen)
+	for _, k := range []string{"b", "m", "gpt-x", "\r"} {
+		ts.typeIn(t, k)
+		time.Sleep(20 * time.Millisecond)
+	}
+	poll(t, "the toggles", []byte("brief: on    m  model for this launch: gpt-x"), ts.screen)
+	ts.typeIn(t, "1")
+	poll(t, "the confirmation", []byte("aggy: switch to codex?"), ts.screen)
+	confirm(t, ts)
+	c.waitGot(t, []byte("/exit\r"))
+	c.quit(0)
+	wantExit(t, done, Exit{SwitchTo: adapter.Codex, Next: Choice{Vendor: adapter.Codex, Model: "gpt-x", Brief: true}})
+
+	ts, c, done, sock := switchRun(t, false)
+	if r := request(t, sock, `{"type":"switch-request","vendor":"grok","new":true,"model":"g-1","brief":true}`); !strings.Contains(r, `"ok":true`) {
+		t.Fatalf("reply %q", r)
+	}
+	for _, bad := range []string{
+		`{"type":"switch-request","vendor":"grok","model":"a b"}`,
+		`{"type":"hook-event","vendor":"claude","event":"Stop","payload":{},"brief":true}`,
+	} {
+		if r := request(t, sock, bad); strings.Contains(r, `"ok":true`) {
+			t.Errorf("%s: accepted", bad)
+		}
+	}
+	poll(t, "the confirmation", []byte("aggy: switch to grok?"), ts.screen)
+	confirm(t, ts)
+	c.waitGot(t, []byte("/exit\r"))
+	c.quit(0)
+	wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok, New: true, Model: "g-1", Brief: true}})
 }

@@ -72,6 +72,28 @@ type Options struct {
 	// it). Only a turn-end hook whose payload names this id counts (S-9):
 	// a nested CLI in the session's tree has its own. Nil counts none.
 	SessionID func() string
+	// Children lists the open parent's interactive children of v, latest
+	// first, for the picker (T6665): with more than one, picking v asks
+	// which. Nil lists none (the latest is resumed).
+	Children func(v adapter.Vendor) []ChildChoice
+}
+
+// ChildChoice is one child the picker offers.
+type ChildChoice struct {
+	ID    string // the child's id in the index
+	Label string // what the picker shows: safe for a terminal
+}
+
+// Choice is a switch as picked or requested (T6665): the vendor, and
+// optionally which of its children (empty: the latest), a new child
+// instead, a model for this one launch (never written to config), and a
+// brief for the child.
+type Choice struct {
+	Vendor adapter.Vendor
+	Child  string
+	New    bool
+	Model  string
+	Brief  bool
 }
 
 // ErrChecking is what CanSwitch returns while a check that takes time
@@ -84,8 +106,10 @@ type Exit struct {
 	// Code is the CLI's exit code.
 	Code int
 	// SwitchTo is set when the CLI exited for a switch: the vendor the
-	// caller launches next.
+	// caller launches next; Next is the whole choice, Next.Vendor equal to
+	// SwitchTo.
 	SwitchTo adapter.Vendor
+	Next     Choice
 }
 
 // holdSignal reports whether vendor v tells aggy, by a hook, when it

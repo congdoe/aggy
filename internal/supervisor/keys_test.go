@@ -78,6 +78,54 @@ func TestKeyFilter(t *testing.T) {
 	}
 }
 
+// TestPickerOptions (T6665): the toggles, the model edit, and the child
+// list of a vendor with several children in the parent.
+func TestPickerOptions(t *testing.T) {
+	two := []adapter.Vendor{adapter.Codex, adapter.Grok}
+	kids := func(v adapter.Vendor) []ChildChoice {
+		if v == adapter.Grok {
+			return []ChildChoice{{"g2", "latest"}, {"g1", "older"}}
+		}
+		return []ChildChoice{{"c1", "only"}}
+	}
+	tests := []struct {
+		name string
+		in   []string
+		done bool
+		want Choice
+	}{
+		{"one child resumes the latest", []string{"1"}, true, Choice{Vendor: adapter.Codex}},
+		{"new and brief", []string{"n", "b", "1"}, true, Choice{Vendor: adapter.Codex, New: true, Brief: true}},
+		{"several children ask which", []string{"2"}, false, Choice{}},
+		{"Enter takes the latest", []string{"2", "\r"}, true, Choice{Vendor: adapter.Grok, Child: "g2"}},
+		{"a digit takes that child", []string{"2", "2"}, true, Choice{Vendor: adapter.Grok, Child: "g1"}},
+		{"n in the child list starts one", []string{"2", "n"}, true, Choice{Vendor: adapter.Grok, New: true}},
+		{"Esc in the child list goes back", []string{"2", "\x1b", "1"}, true, Choice{Vendor: adapter.Codex}},
+		{"new skips the child list", []string{"n", "2"}, true, Choice{Vendor: adapter.Grok, New: true}},
+		{"a model", []string{"m", "gpt-5.5", "\x7f5", "\r", "1"}, true, Choice{Vendor: adapter.Codex, Model: "gpt-5.5"}},
+		{"a bad model is not taken", []string{"m", "a b;c", "\r", "1"}, false, Choice{}},
+		{"Esc drops the model edit", []string{"m", "x", "\x1b", "1"}, true, Choice{Vendor: adapter.Codex}},
+		{"a preselect is what Enter picks", []string{"P", "\r", "\r"}, true, Choice{Vendor: adapter.Grok, Child: "g2"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &picker{vendors: two, key: 0x1c, children: kids}
+			var done bool
+			var c Choice
+			for _, in := range tt.in {
+				if in == "P" {
+					p.preselect = adapter.Grok
+					continue
+				}
+				done, c = p.handle([]byte(in))
+			}
+			if done != tt.done || c != tt.want {
+				t.Errorf("got %v %+v, want %v %+v", done, c, tt.done, tt.want)
+			}
+		})
+	}
+}
+
 func TestPickerHandle(t *testing.T) {
 	two := []adapter.Vendor{adapter.Codex, adapter.Grok}
 	tests := []struct {
@@ -101,12 +149,13 @@ func TestPickerHandle(t *testing.T) {
 		{"letters ignored", two, "xyz", false, ""},
 		{"enter with no vendors ignored", nil, "\r", false, ""},
 		{"esc with no vendors cancels", nil, "\x1b", true, ""},
+		{"toggles do not pick", two, "nbn", false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := &picker{vendors: tt.vendors, key: 0x1c}
-			done, picked := p.handle([]byte(tt.in))
-			if done != tt.done || picked != tt.picked {
+			done, c := p.handle([]byte(tt.in))
+			if picked := c.Vendor; done != tt.done || picked != tt.picked {
 				t.Errorf("got %v %q, want %v %q", done, picked, tt.done, tt.picked)
 			}
 		})

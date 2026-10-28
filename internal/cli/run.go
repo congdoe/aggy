@@ -58,8 +58,9 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 // When the CLI exits for a switch (T6664), the next vendor's child of the
 // same parent goes on screen the same way, through launchOnce, so it gets
 // its own lease, the repo's allowed_vendors, the policy, and memory. Like
-// /vendor without flags it gets no brief: --brief, --new, and --model
-// for a switch are TODO(T6665). --no-policy is not carried over (S-6):
+// /vendor it gets a brief, a new child, a chosen child, or a one-launch
+// model only when the switch asked for one (T6665). --no-policy is not
+// carried over (S-6):
 // the next child gets the policy unless [policy] required = false, and a
 // switch to a CLI the policy cannot reach is refused before the exit
 // command is typed (CanSwitch).
@@ -70,14 +71,17 @@ func launch(name string, t target, stderr io.Writer) int {
 		if next.vendor == "" {
 			return code
 		}
-		t = target{ParentID: next.parentID, Vendor: next.vendor}
+		c := next.choice
+		t = target{ParentID: next.parentID, Vendor: next.vendor, Child: c.Child, NewChild: c.New, Model: c.Model, Brief: c.Brief}
 	}
 }
 
-// switchTo is the vendor a CLI exited for, and its parent.
+// switchTo is the vendor a CLI exited for, its parent, and the switch's
+// options.
 type switchTo struct {
 	vendor   adapter.Vendor
 	parentID string
+	choice   supervisor.Choice
 }
 
 // launchOnce is one launch. It returns the CLI's exit code, and sets next
@@ -108,6 +112,14 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	pl, err := plan(ctx, s, cfg, cwd, t, time.Now(), stderr)
 	if err != nil {
 		return fail(err)
+	}
+	if t.Model != "" {
+		// A switch's one-launch model (T6665): checked again here, as it
+		// may have come over the socket, and never written to config.
+		if err := adapter.ValidModel(t.Model); err != nil {
+			return fail(err)
+		}
+		pl.child.Model = t.Model
 	}
 	v := adapter.Vendor(pl.child.Vendor)
 	// The child's repo decides which vendors may see it, the one on
@@ -255,6 +267,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 		CanSwitch:  canSwitch,
 		StartsTurn: t.Brief,
 		SessionID:  ids.current,
+		Children:   func(v adapter.Vendor) []supervisor.ChildChoice { return childChoices(pl.parent.ID, v, time.Now()) },
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", name, err)
@@ -264,7 +277,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 		return ex.Code
 	}
 	if ex.SwitchTo != "" {
-		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID}
+		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next}
 	}
 	return ex.Code
 }
@@ -326,6 +339,41 @@ func switchCheck(ctx context.Context, cfg config.Config, cwd string) func(adapte
 		}
 		return nil
 	}
+}
+
+// childChoices lists the parent's interactive children of v, latest
+// first, for the picker: a short id, the title, and when it was last
+// active, made safe for the terminal. Without an index, none.
+func childChoices(parentID string, v adapter.Vendor, now time.Time) []supervisor.ChildChoice {
+	path, err := store.DefaultPath()
+	if err != nil {
+		return nil
+	}
+	ctx := context.Background()
+	s, err := store.OpenReadOnly(ctx, path)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = s.Close() }()
+	cs, err := s.Children(ctx, parentID)
+	if err != nil {
+		return nil
+	}
+	var out []supervisor.ChildChoice
+	for _, c := range cs {
+		if c.Kind != "" || c.Vendor != string(v) {
+			continue
+		}
+		label := shortID(c.ID) + "  " + now.Sub(c.LastActive).Round(time.Minute).String() + " ago"
+		if c.Title != "" {
+			label += "  " + termsafe.Field(c.Title)
+		}
+		if r := []rune(label); len(r) > 70 {
+			label = string(r[:70])
+		}
+		out = append(out, supervisor.ChildChoice{ID: c.ID, Label: label})
+	}
+	return out
 }
 
 // probeCaps probes v's CLI at path for the flags whose presence is only

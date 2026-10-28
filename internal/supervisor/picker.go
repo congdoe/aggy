@@ -29,6 +29,20 @@ const (
 type picker struct {
 	vendors []adapter.Vendor
 	key     byte
+	// children lists a vendor's children in the open parent (T6665).
+	children func(adapter.Vendor) []ChildChoice
+	// opts are the list's toggles for the next pick: n (new child), b
+	// (brief), m (model, typed in edit mode).
+	opts    Choice
+	editing bool
+	edit    []byte
+	editErr string
+	// stage, when set, is the vendor whose children the list shows.
+	stage adapter.Vendor
+	kids  []ChildChoice
+	// preselect is the vendor Enter picks (a limit's suggestion, T6667);
+	// empty means the first.
+	preselect adapter.Vendor
 	// waiting is a picked switch waiting for the turn end, shown in the
 	// list; Esc there cancels it.
 	waiting adapter.Vendor
@@ -40,8 +54,11 @@ type picker struct {
 	lines   []string
 }
 
-// list sets the picker to the vendor list.
-func (p *picker) list() { p.confirm, p.note, p.lines = "", false, nil }
+// list sets the picker to the vendor list, its toggles cleared.
+func (p *picker) list() {
+	p.confirm, p.note, p.lines = "", false, nil
+	p.opts, p.editing, p.edit, p.editErr, p.stage, p.kids = Choice{}, false, nil, "", "", nil
+}
 
 // ask sets the picker to confirm a switch to v, explained by lines.
 func (p *picker) ask(v adapter.Vendor, lines ...string) { p.confirm, p.note, p.lines = v, false, lines }
@@ -59,18 +76,44 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 			"", fmt.Sprintf("Press %s to switch, Esc to stay. Anything else you type goes to the CLI.", keyName(p.key)))
 	case p.note:
 		lines = append(append([]string{"aggy", ""}, p.lines...), "", "Esc closes this. Anything else you type goes to the CLI.")
+	case p.stage != "":
+		lines = []string{fmt.Sprintf("aggy: switch to %s: which session?", p.stage), ""}
+		for i, k := range p.kids {
+			if i == 9 {
+				break
+			}
+			lines = append(lines, fmt.Sprintf("  %d  %s", i+1, k.Label))
+		}
+		lines = append(lines, fmt.Sprintf("  n  a new %s session", p.stage), "",
+			"Number to pick, Enter for the latest, Esc to go back.")
 	default:
 		lines = []string{"aggy: switch vendor", ""}
 		if len(p.vendors) == 0 {
 			lines = append(lines, "  No other connected vendor. `aggy setup` checks them.")
 		}
 		for i, v := range p.vendors {
-			lines = append(lines, fmt.Sprintf("  %d  %s", i+1, v))
+			mark := " "
+			if v == p.preselect {
+				mark = ">"
+			}
+			lines = append(lines, fmt.Sprintf(" %s%d  %s", mark, i+1, v))
 		}
 		if p.waiting != "" {
 			lines = append(lines, "", fmt.Sprintf("Switching to %s when this turn ends; Esc cancels it, picking it again says no turn is running.", p.waiting))
 			if p.checking {
 				lines = append(lines, fmt.Sprintf("Checking that %s can get the safety policy...", p.waiting))
+			}
+		}
+		model := "the vendor's default"
+		if p.opts.Model != "" {
+			model = p.opts.Model
+		}
+		lines = append(lines, "", fmt.Sprintf("n  new session: %s    b  brief: %s    m  model for this launch: %s",
+			onOff(p.opts.New), onOff(p.opts.Brief), model))
+		if p.editing {
+			lines = append(lines, fmt.Sprintf("Model: %s_   (Enter sets it, Esc cancels)", p.edit))
+			if p.editErr != "" {
+				lines = append(lines, p.editErr)
 			}
 		}
 		lines = append(lines, "", "Number or Enter to switch at the turn end, Esc to go back.")
@@ -147,40 +190,128 @@ func (p *picker) isKey(b []byte) bool {
 	return ok && r.n == len(b) && r.code == kittyCode(p.key) && r.mods == 5
 }
 
+// onOff names a toggle's state.
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
 // handle reads one chunk of input. It returns done when the picker should
-// close, and the vendor picked, if any. It reads the list only; a
-// confirmation or note is session.promptInput's.
-func (p *picker) handle(b []byte) (done bool, picked adapter.Vendor) {
+// close, and the switch chosen, if any (Vendor empty for none). It reads
+// the list only; a confirmation or note is session.promptInput's. Toggles
+// and the model edit change the picker, which the caller redraws.
+func (p *picker) handle(b []byte) (done bool, c Choice) {
+	if p.editing {
+		p.editKeys(b)
+		return false, Choice{}
+	}
 	if len(b) == 1 && b[0] == esc {
-		return true, ""
+		if p.stage != "" {
+			p.stage, p.kids = "", nil
+			return false, Choice{}
+		}
+		return true, Choice{}
 	}
 	for i := 0; i < len(b); i++ {
-		c := b[i]
-		if c == esc {
+		ch := b[i]
+		if ch == esc {
 			r, ok := parseCSIu(b[i:])
 			if !ok {
-				return false, "" // another escape sequence: ignore the rest
+				return false, Choice{} // another escape sequence: ignore the rest
 			}
 			i += r.n - 1
 			switch {
 			case r.code == 27 || r.code == 'c' && r.mods == 5 || r.code == kittyCode(p.key) && r.mods == 5:
-				return true, ""
+				return true, Choice{}
 			case r.code == 13 || r.code == 57414: // Enter, keypad Enter
-				c = '\r'
-			case r.code >= '1' && r.code <= '9':
-				c = byte(r.code)
+				ch = '\r'
+			case r.code >= '1' && r.code <= '9' || r.code == 'n' || r.code == 'b' || r.code == 'm':
+				ch = byte(r.code)
 			default:
 				continue
 			}
 		}
 		switch {
-		case c == 0x03 || c == p.key:
-			return true, ""
-		case c == '\r' && len(p.vendors) > 0:
-			return true, p.vendors[0]
-		case c >= '1' && c <= '9' && int(c-'0') <= len(p.vendors):
-			return true, p.vendors[c-'1']
+		case ch == 0x03 || ch == p.key:
+			return true, Choice{}
+		case p.stage != "":
+			n := min(len(p.kids), 9)
+			switch {
+			case ch == '\r' && n > 0:
+				return p.pick(p.stage, p.kids[0].ID, false)
+			case ch == 'n':
+				return p.pick(p.stage, "", true)
+			case ch >= '1' && ch <= '9' && int(ch-'0') <= n:
+				return p.pick(p.stage, p.kids[ch-'1'].ID, false)
+			}
+		case ch == 'n':
+			p.opts.New = !p.opts.New
+		case ch == 'b':
+			p.opts.Brief = !p.opts.Brief
+		case ch == 'm':
+			p.editing, p.edit, p.editErr = true, []byte(p.opts.Model), ""
+			p.editKeys(b[i+1:])
+			return false, Choice{}
+		case ch == '\r' && len(p.vendors) > 0:
+			v := p.vendors[0]
+			if p.preselect != "" {
+				v = p.preselect
+			}
+			return p.choose(v)
+		case ch >= '1' && ch <= '9' && int(ch-'0') <= len(p.vendors):
+			return p.choose(p.vendors[ch-'1'])
 		}
 	}
-	return false, ""
+	return false, Choice{}
+}
+
+// choose picks v with the list's toggles, or, when v has several
+// children in the parent and no new one is asked for, shows them.
+func (p *picker) choose(v adapter.Vendor) (bool, Choice) {
+	if !p.opts.New && p.children != nil {
+		if kids := p.children(v); len(kids) > 1 {
+			p.stage, p.kids = v, kids
+			return false, Choice{}
+		}
+	}
+	return p.pick(v, "", p.opts.New)
+}
+
+// pick is the choice of v's child (empty: the latest) or a new one.
+func (p *picker) pick(v adapter.Vendor, child string, isNew bool) (bool, Choice) {
+	c := p.opts
+	c.Vendor, c.Child, c.New = v, child, isNew
+	if isNew {
+		c.Child = ""
+	}
+	return true, c
+}
+
+// editKeys edits the model name: printable ASCII appends, Backspace
+// deletes, Enter sets it once adapter.ValidModel accepts it, and Esc
+// leaves it as it was. The name goes to the CLI's argv, so nothing else
+// is taken.
+func (p *picker) editKeys(b []byte) {
+	for _, ch := range b {
+		switch {
+		case ch == esc:
+			p.editing, p.edit, p.editErr = false, nil, ""
+			return
+		case ch == '\r':
+			if err := adapter.ValidModel(string(p.edit)); err != nil {
+				p.editErr = "Not a model name: letters, digits, and . _ : / [ ] - only."
+				continue
+			}
+			p.opts.Model, p.editing, p.edit, p.editErr = string(p.edit), false, nil, ""
+			return
+		case ch == 0x7f || ch == 0x08:
+			if len(p.edit) > 0 {
+				p.edit = p.edit[:len(p.edit)-1]
+			}
+		case ch > 0x20 && ch < 0x7f && len(p.edit) < maxModel:
+			p.edit = append(p.edit, ch)
+		}
+	}
 }

@@ -151,6 +151,38 @@ func TestPlan(t *testing.T) {
 			},
 		},
 		{
+			// T6665: --new from the picker starts another child even
+			// though one of that vendor exists.
+			name: "a switch with new starts another child",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "c0000000-0000-4000-8000-000000000000", dir,
+					store.Child{ID: "c", Vendor: "claude", VendorSessionID: sidA})
+				claudeSession(t, sidA, time.Now())
+			},
+			tgt: target{ParentID: "c0000000", Vendor: adapter.Claude, NewChild: true},
+			check: func(t *testing.T, p launchPlan, dir string) {
+				if !p.newChild || p.child.Vendor != "claude" || p.child.ID == "c" {
+					t.Errorf("plan = %+v", p)
+				}
+			},
+		},
+		{
+			name: "a switch to a picked child resumes it, not the latest",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "c0000000-0000-4000-8000-000000000000", dir,
+					store.Child{ID: "old", Vendor: "claude", VendorSessionID: sidA},
+					store.Child{ID: "new", Vendor: "claude", VendorSessionID: sidB})
+				claudeSession(t, sidA, time.Now().Add(-time.Hour))
+				claudeSession(t, sidB, time.Now())
+			},
+			tgt: target{ParentID: "c0000000", Vendor: adapter.Claude, Child: "old"},
+			check: func(t *testing.T, p launchPlan, dir string) {
+				if p.newChild || p.child.ID != "old" || p.resume != sidA {
+					t.Errorf("plan = %+v", p)
+				}
+			},
+		},
+		{
 			name: "a switch to a vendor with no child here starts one",
 			seed: func(t *testing.T, s *store.Store, dir string) {
 				seedParent(t, s, "c0000000-0000-4000-8000-000000000000", dir,
