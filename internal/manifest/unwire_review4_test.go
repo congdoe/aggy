@@ -120,12 +120,17 @@ func TestUnwrittenRowsAreCleaned(t *testing.T) {
 		name    string
 		pending bool // set the failed row back to pending
 		noBak   bool // remove its backup
+		edit    bool // the person edits the file afterwards
 		want    Outcome
 	}{
-		{"failed, backup kept", false, false, Cleaned},
-		{"failed, no backup", false, true, Cleaned},
-		{"pending, no backup", true, true, Cleaned},
-		{"pending, backup kept", true, false, Drifted},
+		{"failed, backup kept", false, false, true, Cleaned},
+		{"failed, no backup", false, true, true, Cleaned},
+		{"pending, no backup, unedited", true, true, false, Cleaned},
+		// The cost of trusting a missing backup only on unchanged bytes:
+		// a pending row that stopped before its backup, then edited, is
+		// drift until the edit is undone.
+		{"pending, no backup, edited", true, true, true, Drifted},
+		{"pending, backup kept", true, false, true, Drifted},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -149,13 +154,17 @@ func TestUnwrittenRowsAreCleaned(t *testing.T) {
 			if tt.noBak {
 				must(t, os.RemoveAll(filepath.Join(f.state, BackupDirName, a.ChangeID)))
 			}
-			must(t, os.WriteFile(file, []byte("X\nmine\n"), 0o600))
+			want := "X\n"
+			if tt.edit {
+				want = "X\nmine\n"
+				must(t, os.WriteFile(file, []byte(want), 0o600))
+			}
 			undos, err := f.m.Unwire(ctx, Selection{All: true}, UnwireOptions{}, io.Discard)
 			if got := outcomeOf(undos, a.ChangeID); got != tt.want {
 				t.Fatalf("A = %q (%v), want %q", got, err, tt.want)
 			}
-			if b, _ := os.ReadFile(file); string(b) != "X\nmine\n" {
-				t.Errorf("file = %q, want the person's edit kept", b)
+			if b, _ := os.ReadFile(file); string(b) != want {
+				t.Errorf("file = %q, want %q", b, want)
 			}
 			if tt.want == Cleaned {
 				if err != nil {
@@ -227,5 +236,62 @@ func TestLostBackupWithAggysWrite(t *testing.T) {
 				t.Errorf("file = %q", b)
 			}
 		})
+	}
+}
+
+// TestLostBackupNotProofOnChangedFile (re-review A'): a pending change
+// wrote and lost its backup. Unless the file is back at its hash before,
+// the missing backup proves nothing: a newer change built on the write,
+// or a hand edit on top of it, is reported, never marked undone. Fails
+// on 63053a5.
+func TestLostBackupNotProofOnChangedFile(t *testing.T) {
+	for _, newer := range []bool{true, false} {
+		t.Run(map[bool]string{true: "newer change on its result", false: "hand edit"}[newer], func(t *testing.T) {
+			f := setup(t)
+			ctx := context.Background()
+			file := filepath.Join(f.dir, "c.toml")
+			must(t, os.WriteFile(file, []byte("X\n"), 0o600))
+			c := pendingWritten(t, f, "C", file, "A\n")
+			must(t, os.RemoveAll(filepath.Join(f.state, BackupDirName, c.ChangeID)))
+			if newer {
+				apply(t, f, "P", file, "P\n")
+				undos, _ := f.m.Unwire(ctx, Selection{RunID: "C"}, UnwireOptions{}, io.Discard)
+				if got := outcomeOf(undos, c.ChangeID); got == Cleaned {
+					t.Errorf("--run C: C = %q", got)
+				}
+			} else {
+				must(t, os.WriteFile(file, []byte("X\nA\nuser\n"), 0o600))
+			}
+			undos, err := f.m.Unwire(ctx, Selection{All: true}, UnwireOptions{}, io.Discard)
+			if err == nil || outcomeOf(undos, c.ChangeID) == Cleaned {
+				t.Errorf("--all: C = %q, %v; want it reported", outcomeOf(undos, c.ChangeID), err)
+			}
+			if s := status(t, f, c.ChangeID); s != store.ChangePending {
+				t.Errorf("C = %s, want still pending", s)
+			}
+		})
+	}
+}
+
+// TestFailedRowOnUnreadableFile (re-review A'): a failed row's proof is
+// its status; the file is not read, so an unreadable file still cleans.
+// Fails on 63053a5.
+func TestFailedRowOnUnreadableFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode 000 file")
+	}
+	f := setup(t)
+	ctx := context.Background()
+	file := filepath.Join(f.dir, "c.toml")
+	must(t, os.WriteFile(file, []byte("X\n"), 0o600))
+	restore := patch.SetTestHookBeforeWrite(func(string) error { return errors.New("boom") })
+	_, _ = f.m.Apply(ctx, "A", patch.Patch{File: file, ExpectedHash: patch.Hash([]byte("X\n")), Transform: appendText("A\n")})
+	restore()
+	must(t, os.Chmod(file, 0))
+	t.Cleanup(func() { _ = os.Chmod(file, 0o600) })
+	cs, _ := f.s.Changes(ctx, "A")
+	undos, err := f.m.Unwire(ctx, Selection{All: true}, UnwireOptions{}, io.Discard)
+	if got := outcomeOf(undos, cs[0].ChangeID); got != Cleaned || err != nil {
+		t.Errorf("A = %q, %v, want cleaned", got, err)
 	}
 }
