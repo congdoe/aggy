@@ -180,8 +180,10 @@ type setupRun struct {
 	findings []checkup.Finding
 }
 
-// maxAnswer caps an answer line. A person types a few bytes; a device
-// that never sends a newline (</dev/zero) must not be read forever.
+// maxAnswer caps an answer line: a line of maxAnswer bytes or more
+// before its newline is refused, so the longest answer taken is
+// maxAnswer-1 bytes. A person types a few bytes; a device that never
+// sends a newline (</dev/zero) must not be read forever.
 const maxAnswer = 4 << 10
 
 // errNotTerminal means the input ran past maxAnswer with no newline.

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -465,4 +466,18 @@ func safefsReadAll(path string) ([]byte, error) {
 		all = append(all, b...)
 	}
 	return all, nil
+}
+
+// TestReadAnswerLimit: the longest answer taken is maxAnswer-1 bytes.
+func TestReadAnswerLimit(t *testing.T) {
+	for _, tt := range []struct {
+		n  int
+		ok bool
+	}{{maxAnswer - 1, true}, {maxAnswer, false}} {
+		r := &setupRun{in: bufio.NewReader(strings.NewReader(strings.Repeat("y", tt.n) + "\n"))}
+		line, err := r.readAnswer()
+		if (err == nil) != tt.ok || (tt.ok && len(line) != tt.n) {
+			t.Errorf("%d bytes: %d, %v", tt.n, len(line), err)
+		}
+	}
 }
