@@ -92,12 +92,12 @@ func Record(ctx context.Context, a Appender, sig Signal, parentID string, now ti
 		Detail: map[string]any{"vendor": string(sig.Vendor), "until": until.UnixMilli(), "via": sig.Via}})
 }
 
-// Reader reads events. *store.Store implements it.
+// Reader reads limit events. *store.Store implements it.
 type Reader interface {
-	EventsSince(ctx context.Context, typ string, since time.Time, limit int) ([]store.Event, error)
+	LimitEvents(ctx context.Context, vendor string, hook bool, since time.Time, limit int) ([]store.Event, error)
 }
 
-// maxRows bounds the limit events read per check.
+// maxRows bounds the limit events read per vendor and kind of source.
 const maxRows = 500
 
 // State is router.LimitState over the store's limit events.
@@ -105,46 +105,50 @@ type State struct{ Store Reader }
 
 // Limited reports v limited while a limit event's until is after now. A
 // confirmed signal (rollout, borrow) wins over a hook-only one; among
-// several, the latest until counts. Each until is clamped again, from
-// the event's own time, so no row can hold a vendor longer than its
-// source allows.
+// several, the latest until counts. Each until is clamped again, both
+// from the event's own time and from now, so no row (one written while
+// the clock ran ahead included) holds a vendor longer than its source
+// allows.
 func (s State) Limited(ctx context.Context, v adapter.Vendor, now time.Time) (router.Limit, bool, error) {
-	rows, err := s.Store.EventsSince(ctx, store.EventLimit, now.Add(-Max), maxRows)
-	if err != nil {
+	sure, err := s.latest(ctx, v, false, now)
+	if err != nil || !sure.IsZero() {
+		return router.Limit{Until: sure}, !sure.IsZero(), err
+	}
+	hint, err := s.latest(ctx, v, true, now)
+	if err != nil || hint.IsZero() {
 		return router.Limit{}, false, err
 	}
-	var hint, sure time.Time
+	return router.Limit{Until: hint, Hint: true}, true, nil
+}
+
+// latest returns the latest clamped until of v's hook or other limit
+// events that is after now, or zero.
+func (s State) latest(ctx context.Context, v adapter.Vendor, hook bool, now time.Time) (time.Time, error) {
+	rows, err := s.Store.LimitEvents(ctx, string(v), hook, now.Add(-Max), maxRows)
+	if err != nil {
+		return time.Time{}, err
+	}
+	span := Max
+	if hook {
+		span = HintWindow
+	}
+	var out time.Time
 	for _, e := range rows {
-		vendor, _ := e.Detail["vendor"].(string)
 		ms, _ := e.Detail["until"].(float64)
-		via, _ := e.Detail["via"].(string)
-		if vendor != string(v) || ms <= 0 {
+		if ms <= 0 {
 			continue
 		}
 		until := time.UnixMilli(int64(ms))
-		limit := e.At.Add(Max)
-		if via == ViaHook {
-			limit = e.At.Add(HintWindow)
+		for _, limit := range []time.Time{e.At.Add(span), now.Add(span)} {
+			if until.After(limit) {
+				until = limit
+			}
 		}
-		if until.After(limit) {
-			until = limit
-		}
-		if !until.After(now) {
-			continue
-		}
-		if via == ViaHook {
-			hint = later(hint, until)
-		} else {
-			sure = later(sure, until)
+		if until.After(now) {
+			out = later(out, until)
 		}
 	}
-	switch {
-	case !sure.IsZero():
-		return router.Limit{Until: sure}, true, nil
-	case !hint.IsZero():
-		return router.Limit{Until: hint, Hint: true}, true, nil
-	}
-	return router.Limit{}, false, nil
+	return out, nil
 }
 
 func later(a, b time.Time) time.Time {

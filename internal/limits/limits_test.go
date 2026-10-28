@@ -170,6 +170,9 @@ func TestCodexRollout(t *testing.T) {
 			line(after, "response_item", `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"You've hit your usage limit"}]}`), false, time.Time{}},
 		{"a later turn succeeded", limitDone + line(after, "event_msg", `{"type":"task_complete"}`), false, time.Time{}},
 		{"old limit before launch", line(before, "event_msg", `{"type":"task_complete","error":{"codex_error_info":"usage_limit_exceeded"}}`), false, time.Time{}},
+		{"text inside another class is not a limit", line(after, "event_msg", `{"type":"task_complete","error":{"codex_error_info":"sandbox_error","message":"stdout: You've hit your usage limit."}}`), false, time.Time{}},
+		{"text outside message is not a limit", line(after, "event_msg", `{"type":"task_complete","error":{"details":"You've hit your usage limit."}}`), false, time.Time{}},
+		{"limit as an object variant", line(after, "event_msg", `{"type":"task_complete","error":{"codex_error_info":{"usage_limit_exceeded":{}}}}`), true, time.Time{}},
 		{"other error", line(after, "event_msg", `{"type":"task_complete","error":{"codex_error_info":"context_window_exceeded"}}`), false, time.Time{}},
 		{"garbage", "not json\n{\n", false, time.Time{}},
 	}
@@ -229,5 +232,49 @@ func TestCodexWatch(t *testing.T) {
 	w.Poll(time.Now())
 	if len(got) != 1 {
 		t.Errorf("a symlinked rollout was read: %+v", got)
+	}
+}
+
+// F27-2: a row written while the clock ran ahead is clamped from now
+// too, not only from its own time.
+func TestStateClampsFutureRows(t *testing.T) {
+	s := openStore(t)
+	ahead := now.Add(60 * 24 * time.Hour)
+	for _, d := range []map[string]any{
+		{"vendor": "claude", "until": ahead.Add(time.Hour).UnixMilli(), "via": ViaHook},
+		{"vendor": "codex", "until": ahead.Add(time.Hour).UnixMilli(), "via": ViaRollout},
+	} {
+		if err := s.AppendEvent(context.Background(), store.Event{At: ahead, Type: store.EventLimit, Detail: d}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st := State{Store: s}
+	if got, _, _ := st.Limited(context.Background(), adapter.Claude, now); !got.Until.Equal(now.Add(HintWindow)) {
+		t.Errorf("hook row until = %v, want %v", got.Until, now.Add(HintWindow))
+	}
+	if got, _, _ := st.Limited(context.Background(), adapter.Codex, now); !got.Until.Equal(now.Add(Max)) {
+		t.Errorf("rollout row until = %v, want %v", got.Until, now.Add(Max))
+	}
+}
+
+// F27-3: hook rows, however many and however new, never push a
+// confirmed limit out of the rows read.
+func TestHintsCannotHideConfirmedLimit(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	weekly := now.Add(6 * 24 * time.Hour)
+	if _, err := Record(ctx, s, Signal{Vendor: adapter.Codex, Until: weekly, Via: ViaRollout}, "", now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxRows+5; i++ {
+		for _, v := range []adapter.Vendor{adapter.Codex, adapter.Claude} {
+			if _, err := Record(ctx, s, Signal{Vendor: v, Via: ViaHook}, "", now.Add(-time.Duration(i)*time.Second)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	got, limited, err := State{Store: s}.Limited(ctx, adapter.Codex, now)
+	if err != nil || !limited || got.Hint || !got.Until.Equal(weekly) {
+		t.Errorf("Limited = %+v %v %v, want the confirmed weekly limit", got, limited, err)
 	}
 }

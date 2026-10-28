@@ -100,12 +100,18 @@ func (s *Store) Events(ctx context.Context, f EventFilter) ([]Event, error) {
 	return out, nil
 }
 
-// EventsSince returns up to limit events of type typ at or after since,
-// newest first.
-func (s *Store) EventsSince(ctx context.Context, typ string, since time.Time, limit int) ([]Event, error) {
+// LimitEvents returns up to limit limit events of vendor at or after
+// since, either those from a hook (hook true) or the others, latest
+// "until" first. Hook rows are kept apart so that any number of them
+// cannot push a confirmed row out of the window.
+func (s *Store) LimitEvents(ctx context.Context, vendor string, hook bool, since time.Time, limit int) ([]Event, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, at, parent_id, child_id, type, detail FROM events WHERE type = ? AND at >= ?
-		 ORDER BY at DESC, id DESC LIMIT ?`, typ, millis(since), limit)
+		`SELECT id, at, parent_id, child_id, type, detail FROM events
+		 WHERE type = ? AND at >= ? AND json_valid(detail)
+		   AND json_extract(detail, '$.vendor') = ?
+		   AND (coalesce(json_extract(detail, '$.via'), '') = 'hook') = ?
+		 ORDER BY json_extract(detail, '$.until') DESC, id DESC LIMIT ?`,
+		EventLimit, millis(since), vendor, hook, limit)
 	if err != nil {
 		return nil, err
 	}

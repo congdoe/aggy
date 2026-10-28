@@ -75,6 +75,9 @@ func CodexRollout(tail []byte, since, now time.Time) (sig Signal, at string, ok 
 			limited = codexLimitError(l.Payload.Error) && (err != nil || !ts.Before(since))
 			at = l.Timestamp
 		case "token_count":
+			// TODO(T6741): RateLimitSnapshot also has limit_id and
+			// normal_model_slug; a snapshot for another limit or model may
+			// not be the one that stopped this session.
 			if rl := l.Payload.RateLimits; rl != nil {
 				until = time.Time{}
 				for _, w := range []*struct {
@@ -97,25 +100,33 @@ func CodexRollout(tail []byte, since, now time.Time) (sig Signal, at string, ok 
 	return Signal{Vendor: adapter.Codex, Until: until, Via: ViaRollout}, at, true
 }
 
-// codexLimitError reports whether an event's error names a usage limit.
+// codexLimitError reports whether an event's error names a usage limit:
+// codex_error_info is usage_limit_exceeded (a string, or an object whose
+// variant is that key). Only when codex_error_info is absent is the
+// error's message matched against the CLI's limit text: other classes
+// (sandbox_error among them) carry command output a model controls.
 func codexLimitError(raw json.RawMessage) bool {
 	var e struct {
-		Info json.RawMessage `json:"codex_error_info"`
+		Info    json.RawMessage `json:"codex_error_info"`
+		Message string          `json:"message"`
 	}
 	if len(raw) == 0 || json.Unmarshal(raw, &e) != nil {
 		return false
 	}
-	var info string
-	if json.Unmarshal(e.Info, &info) == nil && info == codexLimitInfo {
-		return true
-	}
-	// codex_error_info may be an object for other errors; its variant
-	// name is then the key.
-	if bytes.Contains(e.Info, []byte(`"`+codexLimitInfo+`"`)) {
-		return true
+	if len(e.Info) > 0 && !bytes.Equal(e.Info, []byte("null")) {
+		var info string
+		if json.Unmarshal(e.Info, &info) == nil {
+			return info == codexLimitInfo
+		}
+		var variant map[string]json.RawMessage
+		if json.Unmarshal(e.Info, &variant) == nil {
+			_, ok := variant[codexLimitInfo]
+			return ok
+		}
+		return false
 	}
 	for _, t := range codexLimitTexts {
-		if bytes.Contains(raw, []byte(t)) {
+		if strings.Contains(e.Message, t) {
 			return true
 		}
 	}
