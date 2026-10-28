@@ -67,7 +67,6 @@ func TestReviewRecord(t *testing.T) {
 	// The person commits the edit from a Claude session (or forges it):
 	// the trailer names claude, not codex.
 	gitIn(t, f.repo, "commit", "-q", "-am", "edit\n\nAggy-Vendor: claude")
-	edited := gitIn(t, f.repo, "rev-parse", "HEAD")
 	m := material(f.repo, "")
 	check("accepted and committed", f.repo, m, codex)
 
@@ -131,19 +130,34 @@ func TestReviewRecord(t *testing.T) {
 	check("rewritten", f.repo, material(f.repo, ""), nil)
 	gitIn(t, f.repo, "checkout", "--", "a.go")
 
+	// N53-6: main moves and the branch is rebased onto it, then squashed:
+	// the edit's base commit is rewritten, its lines are not.
+	gitIn(t, f.repo, "checkout", "-q", "main")
+	mustWrite(t, filepath.Join(f.repo, "m.go"), "package a\n\nfunc OnMain() {}\n", 0o600)
+	gitIn(t, f.repo, "add", "m.go")
+	gitIn(t, f.repo, "commit", "-q", "-m", "main moves")
+	gitIn(t, f.repo, "checkout", "-q", "feature")
+	gitIn(t, f.repo, "rebase", "-q", "main")
+	check("rebased", f.repo, material(f.repo, ""), codex)
+	gitIn(t, f.repo, "reset", "-q", "--soft", "main")
+	gitIn(t, f.repo, "commit", "-q", "-m", "squashed")
+	squashed := gitIn(t, f.repo, "rev-parse", "HEAD")
+	check("squashed", f.repo, material(f.repo, ""), codex)
+
 	// N53-1: a later change of the person's own, with the same lines,
-	// reviewed from after the edit: the edit predates the range.
+	// reviewed from a base that holds the edit: it landed there.
 	mustWrite(t, filepath.Join(f.repo, "e.go"), "package a\n\n"+strings.ReplaceAll(codexLines, "Codex", "Mine"), 0o600)
 	mustWrite(t, filepath.Join(f.repo, "f.go"), "package a\n\n"+codexLines, 0o600)
 	gitIn(t, f.repo, "add", "e.go", "f.go")
 	gitIn(t, f.repo, "commit", "-q", "-m", "mine")
-	check("an edit made before the reviewed range", f.repo, material(f.repo, edited), nil)
+	check("an edit that landed in the base", f.repo, material(f.repo, squashed), nil)
 	noMarkers(t, markers)
 }
 
 // TestEditIn (T6747): an edit is in a review on three distinct lines the
-// review adds once and the base tree lacks (one for an edit of fewer
-// lines), in any file, or on a file of the edit with no long line.
+// review adds once and the base tree lacks (all of them, for an edit with
+// fewer such lines), in any file, or on a file of the edit with no long
+// line; never when every line it added is in the base tree.
 func TestEditIn(t *testing.T) {
 	file := func(path string, lines ...string) string {
 		s := "diff --git a/" + path + " b/" + path + "\n--- a/" + path + "\n+++ b/" + path + "\n@@ -0,0 +1 @@\n"
@@ -168,11 +182,17 @@ func TestEditIn(t *testing.T) {
 		{"moved to another file", five, file("z.go", l1, l2, l3), nil, true},
 		{"common lines in the base tree", five, file("a.go", l1, l2, l3), []string{l2}, false},
 		{"lines the review adds twice", five, file("a.go", l1, l2, l3) + file("b.go", l3), nil, false},
-		{"one of a two-line edit", file("a.go", l1, l2), file("b.go", l2), nil, true},
+		{"one of a two-line edit", file("a.go", l1, l2), file("b.go", l2), nil, false},
+		{"both of a two-line edit", file("a.go", l1, l2), file("b.go", l2, l1), nil, true},
 		{"short lines only", file("a.go", "x := 1", "}"), file("a.go", "y := 2"), nil, true},
 		{"short lines, other file", file("a.go", "x := 1"), file("b.go", "x := 1"), nil, false},
 		{"binary file touched", five + bin("img.png"), bin("img.png"), nil, true},
 		{"binary file untouched", five + bin("img.png"), bin("other.png"), nil, false},
+		// N53-7: common lines padding an edit lower what it needs.
+		{"two distinctive lines padded with three common ones", five, file("a.go", l1, l2), []string{l3, l4, l5}, true},
+		{"one distinctive line", five, file("b.go", l5), []string{l1, l2, l3, l4}, true},
+		// Every line in the base: the edit landed there, files and all.
+		{"landed", five + bin("img.png"), file("a.go", l1, l2, l3) + bin("img.png"), []string{l1, l2, l3, l4, l5}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -180,8 +200,10 @@ func TestEditIn(t *testing.T) {
 			for _, l := range tt.inBase {
 				in[l] = true
 			}
-			if got := editIn(readDiff(tt.edit), readDiff(tt.review), in); got != tt.want {
-				t.Errorf("editIn = %v, want %v", got, tt.want)
+			// A file match also needs filesLanded to say no; here it is
+			// taken as no.
+			if got, files := editIn(readDiff(tt.edit), readDiff(tt.review), in); (got || len(files) > 0) != tt.want {
+				t.Errorf("editIn = %v, %q, want %v", got, files, tt.want)
 			}
 		})
 	}
@@ -199,6 +221,25 @@ func TestDiffPath(t *testing.T) {
 		if got := diffPath(h); got != want {
 			t.Errorf("diffPath(%q) = %q, want %q", h, got, want)
 		}
+	}
+}
+
+// TestInBase (N53-8): a line is in the base tree only as a whole line,
+// compared normalized, never as part of a longer one.
+func TestInBase(t *testing.T) {
+	repo, _ := filepath.EvalSymlinks(t.TempDir())
+	gitIn(t, repo, "init", "-q")
+	mustWrite(t, filepath.Join(repo, "x.go"), "x := alpha(one) + beta(two)\n\t\tgamma := delta(three)  \n", 0o600)
+	gitIn(t, repo, "add", "x.go")
+	gitIn(t, repo, "commit", "-q", "-m", "base")
+	lines := []string{"alpha(one) + beta(two)", "gamma := delta(three)", "absent := line(four)"}
+	text := map[string]string{}
+	for _, l := range lines {
+		text[l] = l
+	}
+	got := gitEnv().inBase(context.Background(), repo, "HEAD", lines, text)
+	if len(got) != 1 || !got["gamma := delta(three)"] {
+		t.Errorf("inBase = %v, want only the whole line", got)
 	}
 }
 

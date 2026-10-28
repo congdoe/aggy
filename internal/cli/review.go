@@ -290,12 +290,10 @@ const (
 	// needs to tie a recorded edit to a review.
 	minMatchLine = 10
 	// minMatches is how many distinct lines an edit must share with a
-	// review to be in it, unless it has fewer.
+	// review to be in it, unless it has fewer distinctive ones.
 	minMatches = 3
 	// maxEdits caps the recorded edits a review diffs, newest first.
 	maxEdits = 50
-	// maxRange caps the commits of base..HEAD a review lists.
-	maxRange = 1000
 	// maxGrepBytes caps the lines one git grep looks for in the base tree.
 	maxGrepBytes = 64 << 10
 )
@@ -365,23 +363,24 @@ func diffPath(h string) string {
 // edit in the reviewed change, for the router to skip whatever the
 // trailers say (T6747), and notes for the person. It considers the edits
 // made in this repo (this work tree, or a linked worktree of the same
-// repo) from a commit in the reviewed range (reviewRange): an edit made
-// before base is in base, not in the change. Of those, the newest
-// maxEdits are diffed; any older ones count. An edit is in the change
-// when editIn says so, or, when the reviewed diff was cut short, when
-// the review touches a file it touched. It fails closed: an edit git
-// cannot diff counts, and so does every edit when the touched files
-// cannot be listed.
+// repo), whatever the commits since: a rebase, squash, or cherry-pick
+// rewrites them, never the edit's lines. The newest maxEdits are
+// diffed; any older ones count. An edit is in the change when editIn
+// says so, or, when the reviewed diff was cut short, when the review
+// touches a file of it that the base does not already hold as the edit
+// left it. An edit whose lines are all in the base tree landed before
+// the base (or holds only common lines), so it does not count. It fails
+// closed: an edit git cannot diff counts, and so does every edit when
+// the touched files cannot be listed.
 func (e borrowEnv) recordAuthors(ctx context.Context, s *store.Store, root string, m *borrow.Material) (vs []adapter.Vendor, notes []string, err error) {
 	recs, err := s.EditRecords(ctx)
 	if err != nil || len(recs) == 0 {
 		return nil, nil, err
 	}
-	inRange := e.reviewRange(ctx, root, m.Base)
 	common, croot := e.commonDir(ctx, root), canonicalPath(root)
 	var edits []store.EditRecord
 	for _, r := range recs {
-		if _, err := adapter.ParseVendor(r.Vendor); err == nil && sameRepo(r.Worktree, croot, common) && inRange(r.Worktree.Base) {
+		if _, err := adapter.ParseVendor(r.Vendor); err == nil && sameRepo(r.Worktree, croot, common) {
 			edits = append(edits, r)
 		}
 	}
@@ -393,7 +392,7 @@ func (e borrowEnv) recordAuthors(ctx context.Context, s *store.Store, root strin
 		}
 	}
 	if len(edits) > maxEdits {
-		note(fmt.Sprintf("more than %d of aggy's recorded edits were made in the reviewed range, and the older ones were not compared", maxEdits), edits[maxEdits:])
+		note(fmt.Sprintf("this repo has more than %d recorded edits, and the older ones were not compared", maxEdits), edits[maxEdits:])
 		edits = edits[:maxEdits]
 	}
 	type diffed struct {
@@ -410,30 +409,57 @@ func (e borrowEnv) recordAuthors(ctx context.Context, s *store.Store, root strin
 		}
 		ds = append(ds, diffed{r, d})
 	}
-	note("git could not give the diff of a recorded edit made in the reviewed range", unread)
+	note("git could not give the diff of a recorded edit", unread)
+	var review diffLines
+	if !m.DiffTruncated {
+		review = readDiff(m.Diff)
+	}
+	// Which edit lines the base tree holds: the ones the review adds
+	// first, as they decide a match, then the rest.
+	var first, rest []string
+	text := map[string]string{}
+	for _, x := range ds {
+		for l, t := range x.d.text {
+			if _, ok := text[l]; ok {
+				continue
+			}
+			text[l] = t
+			if review.added[l] == 1 {
+				first = append(first, l)
+			} else {
+				rest = append(rest, l)
+			}
+		}
+	}
+	slices.Sort(first)
+	slices.Sort(rest)
+	inBase := e.inBase(ctx, root, m.Base, append(first, rest...), text)
 	if m.DiffTruncated {
 		files, err := e.reviewFiles(ctx, root, m.Base)
 		var hit []store.EditRecord
 		for _, x := range ds {
-			if err != nil || overlaps(x.d.files, files) {
+			if err != nil {
+				hit = append(hit, x.r)
+				continue
+			}
+			if landed(x.d, inBase) {
+				continue
+			}
+			var touched []string
+			for f := range x.d.files {
+				if files[f] {
+					touched = append(touched, f)
+				}
+			}
+			if len(touched) > 0 && !e.filesLanded(ctx, root, m.Base, x.r.Worktree, touched) {
 				hit = append(hit, x.r)
 			}
 		}
 		note("the reviewed diff is over the size cap, so aggy matched its recorded edits by the files they touch", hit)
 	} else {
-		review := readDiff(m.Diff)
-		var cands []string
 		for _, x := range ds {
-			for l := range x.d.added {
-				if review.added[l] == 1 && !slices.Contains(cands, l) {
-					cands = append(cands, l)
-				}
-			}
-		}
-		slices.Sort(cands)
-		common := e.inBase(ctx, root, m.Base, cands, review.text)
-		for _, x := range ds {
-			if editIn(x.d, review, common) {
+			in, files := editIn(x.d, review, inBase)
+			if in || (len(files) > 0 && !e.filesLanded(ctx, root, m.Base, x.r.Worktree, files)) {
 				counted = append(counted, x.r)
 			}
 		}
@@ -446,42 +472,60 @@ func (e borrowEnv) recordAuthors(ctx context.Context, s *store.Store, root strin
 	return vs, notes, nil
 }
 
-// editIn reports whether the edit d is in the review: at least
-// minMatches of its added lines (one, when it has fewer: 30% of one or
-// two lines is one) are added exactly once by the review, in any file
-// (code moved or pasted elsewhere still counts), and are in no file of
-// the base tree (common lines, such as "if err != nil {", say nothing of
-// who wrote them); or the review touches a file of the edit that has no
-// such line (binary, short lines, or removals only).
-func editIn(d, review diffLines, inBase map[string]bool) bool {
-	n := 0
+// landed reports whether every long line the edit d added is in the base
+// tree: the edit landed before the base, or holds only common lines.
+func landed(d diffLines, inBase map[string]bool) bool {
 	for l := range d.added {
-		if review.added[l] == 1 && !inBase[l] {
-			n++
+		if !inBase[l] {
+			return false
 		}
 	}
-	need := minMatches
-	if len(d.added) < minMatches {
-		need = 1
-	}
-	if len(d.added) > 0 && n >= need {
-		return true
-	}
-	for f, long := range d.files {
-		if _, touched := review.files[f]; touched && !long {
-			return true
-		}
-	}
-	return false
+	return len(d.added) > 0
 }
 
-func overlaps(a, b map[string]bool) bool {
-	for f := range a {
-		if _, ok := b[f]; ok {
-			return true
+// editIn reports whether the edit d is in the review by its lines: of its
+// distinctive lines (long added lines in no file of the base tree, since
+// common lines such as "if err != nil {" say nothing of who wrote them),
+// at least minMatches, or all of them when it has fewer, are added
+// exactly once by the review, in any file (code moved or pasted
+// elsewhere still counts). An edit that landed has none. Otherwise it
+// returns the files of the edit with no long line (binary, short lines,
+// or removals only) that the review touches, for filesLanded.
+func editIn(d, review diffLines, inBase map[string]bool) (bool, []string) {
+	if landed(d, inBase) {
+		return false, nil
+	}
+	dist, n := 0, 0
+	for l := range d.added {
+		if !inBase[l] {
+			dist++
+			if review.added[l] == 1 {
+				n++
+			}
 		}
 	}
-	return false
+	if dist > 0 && n >= min(minMatches, dist) {
+		return true, nil
+	}
+	var files []string
+	for f, long := range d.files {
+		if _, touched := review.files[f]; touched && !long {
+			files = append(files, f)
+		}
+	}
+	slices.Sort(files)
+	return false, files
+}
+
+// filesLanded reports whether the base already holds files exactly as
+// the edit in wt left them. Any doubt (a git error) is no.
+func (e borrowEnv) filesLanded(ctx context.Context, root, base string, wt store.Worktree, files []string) bool {
+	if !validRef(base) || !validRef(wt.Tree) {
+		return false
+	}
+	args := append([]string{"--literal-pathspecs", "diff", "--quiet", "--no-ext-diff", "--no-textconv", "--no-renames", base, wt.Tree, "--"}, files...)
+	o, err := e.gitOutput(ctx, root, args...)
+	return err == nil && o.ExitCode == 0
 }
 
 func editNames(rs []store.EditRecord) string {
@@ -490,30 +534,6 @@ func editNames(rs []store.EditRecord) string {
 		s[i] = fmt.Sprintf("%s (borrow %s)", r.Vendor, r.BorrowID)
 	}
 	return strings.Join(s, ", ")
-}
-
-// reviewRange returns whether a commit is in the reviewed range: base
-// itself or a commit of base..HEAD. When git cannot say (an error, or
-// more than maxRange commits), every commit is.
-func (e borrowEnv) reviewRange(ctx context.Context, root, base string) func(string) bool {
-	all := func(string) bool { return true }
-	if !validRef(base) {
-		return all
-	}
-	out, _, err := e.git(ctx, root, "rev-parse", "--verify", "--quiet", base+"^{commit}")
-	if err != nil {
-		return all
-	}
-	set := map[string]bool{strings.TrimSpace(out): true}
-	out, _, err = e.git(ctx, root, "rev-list", fmt.Sprintf("--max-count=%d", maxRange+1), base+"..HEAD", "--")
-	cs := strings.Fields(out)
-	if err != nil || len(cs) > maxRange {
-		return all
-	}
-	for _, c := range cs {
-		set[c] = true
-	}
-	return func(c string) bool { return set[c] }
 }
 
 // commonDir is the canonical common git dir of the work tree at root, or
@@ -577,17 +597,21 @@ func (e borrowEnv) reviewFiles(ctx context.Context, root, base string) (map[stri
 	return files, err
 }
 
-// inBase returns which of lines (diffLines keys, with their text) are in
-// some file of the base tree. Lines past maxGrepBytes, or all of them
-// when git grep fails, count as not in it (fail closed). git grep reads
-// only git's own objects, with fixed strings and no textconv.
+// inBase returns which of lines (diffLines keys, with their text) are a
+// whole line of some file of the base tree, compared normalized: git grep
+// finds the files' lines that hold each text, and only a line equal to it
+// counts. Lines past maxGrepBytes, or all of them when git grep fails,
+// count as not in it (fail closed), as does a line whose matches were cut
+// off, or that the base holds only with other spacing inside it (grep's
+// fixed string is the text as written, trimmed). git grep reads only git's own objects, with fixed strings and no
+// textconv.
 func (e borrowEnv) inBase(ctx context.Context, root, base string, lines []string, text map[string]string) map[string]bool {
 	found := map[string]bool{}
 	if len(lines) == 0 || !validRef(base) {
 		return found
 	}
 	args := []string{"-c", "grep.lineNumber=false", "-c", "grep.column=false", "-c", "grep.fullName=false",
-		"grep", "-I", "-F", "-h", "-o", "--no-color"}
+		"grep", "-I", "-F", "-h", "--no-color"}
 	size := 0
 	for _, l := range lines {
 		if size += len(text[l]); size > maxGrepBytes {
@@ -599,13 +623,13 @@ func (e borrowEnv) inBase(ctx context.Context, root, base string, lines []string
 	if err != nil || o.ExitCode != 0 {
 		return found
 	}
-	seen := map[string]bool{}
-	for _, s := range strings.Split(string(o.Stdout), "\n") {
-		seen[s] = true
-	}
+	want := map[string]bool{}
 	for _, l := range lines {
-		if seen[text[l]] {
-			found[l] = true
+		want[l] = true
+	}
+	for _, s := range strings.Split(string(o.Stdout), "\n") {
+		if n := strings.Join(strings.Fields(s), " "); want[n] {
+			found[n] = true
 		}
 	}
 	return found
