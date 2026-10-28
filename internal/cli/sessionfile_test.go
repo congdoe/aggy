@@ -50,8 +50,9 @@ func TestSessionFileLastChanged(t *testing.T) {
 			setup: func(t *testing.T, home, _ string) {
 				touch(t, filepath.Join(home, ".claude", "projects", "-work", sidB+".jsonl"), mod)
 			},
-			// The layout is unverified: a miss is never "gone".
-			wantErr: errUnknownSession,
+			// The layout is unverified: a miss is "gone" only for a
+			// child whose file was never seen (refreshChildren).
+			wantErr: errNotInScan,
 		},
 		{
 			name: "no vendor home", vendor: adapter.Grok, id: sidA,
@@ -76,7 +77,7 @@ func TestSessionFileLastChanged(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			wantErr: errUnknownSession,
+			wantErr: errNotInScan,
 		},
 		{
 			name: "claude session file that is a symlink", vendor: adapter.Claude, id: sidA,
@@ -90,7 +91,7 @@ func TestSessionFileLastChanged(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			wantErr: errUnknownSession,
+			wantErr: errNotInScan,
 		},
 		{
 			name: "codex rollout in its date folder", vendor: adapter.Codex, id: sidA,
@@ -241,6 +242,7 @@ func TestRefreshChildren(t *testing.T) {
 		sidD = "dddddddd-0000-4000-8000-000000000000"
 		sidE = "eeeeeeee-0000-4000-8000-000000000000"
 		sidF = "ffffffff-0000-4000-8000-000000000000"
+		sidG = "99999999-0000-4000-8000-000000000000"
 	)
 	seedParent(t, s, p, dir,
 		store.Child{ID: "active", Vendor: "claude", VendorSessionID: sidA},
@@ -248,6 +250,7 @@ func TestRefreshChildren(t *testing.T) {
 		store.Child{ID: "missing", Vendor: "grok", VendorSessionID: sidC},
 		store.Child{ID: "held", Vendor: "grok", VendorSessionID: sidD, Cwd: removed},
 		store.Child{ID: "unsure", Vendor: "claude", VendorSessionID: sidE},
+		store.Child{ID: "unsaved", Vendor: "claude", VendorSessionID: sidG},
 		store.Child{ID: "elsewhere", Vendor: "claude", VendorSessionID: sidF, VendorHome: otherHome},
 		store.Child{ID: "codex", Vendor: "codex"},
 		store.Child{ID: "borrow", Vendor: "grok", Kind: "research", Cwd: removed})
@@ -263,6 +266,11 @@ func TestRefreshChildren(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = lease.Release(ctx) }()
+	// D23-7: a Claude file once seen and now missing is unknown; one
+	// never seen (quit before the first message) is gone.
+	if err := s.SetChildFileSeen(ctx, "unsure"); err != nil {
+		t.Fatal(err)
+	}
 
 	cs, err := refreshChildren(ctx, s, p, &sessionFiles{})
 	if err != nil {
@@ -273,7 +281,7 @@ func TestRefreshChildren(t *testing.T) {
 		got[c.ID] = c
 	}
 	want := map[string]string{"active": "open", "wt": "closed", "missing": "gone", "held": "running",
-		"unsure": "unknown", "elsewhere": "open", "codex": "open", "borrow": "open"}
+		"unsure": "unknown", "unsaved": "gone", "elsewhere": "open", "codex": "open", "borrow": "open"}
 	for id, st := range want {
 		if got[id].Status != st {
 			t.Errorf("%s status = %q, want %q", id, got[id].Status, st)
@@ -295,6 +303,9 @@ func TestRefreshChildren(t *testing.T) {
 	for _, c := range raw {
 		if c.Status != "open" {
 			t.Errorf("%s stored status = %q", c.ID, c.Status)
+		}
+		if seen := c.ID == "active" || c.ID == "elsewhere" || c.ID == "unsure"; c.FileSeen != seen {
+			t.Errorf("%s file seen = %v, want %v", c.ID, c.FileSeen, seen)
 		}
 	}
 	if err := os.MkdirAll(removed, 0o700); err != nil {

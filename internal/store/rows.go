@@ -54,6 +54,9 @@ type Child struct {
 	// VendorHome is the vendor's home folder at launch, where its session
 	// files are looked for; empty means the current environment's.
 	VendorHome string
+	// FileSeen is set once the child's session file has been found on
+	// disk (schema version 11).
+	FileSeen   bool
 	Status     string
 	CreatedAt  time.Time
 	LastActive time.Time
