@@ -31,40 +31,45 @@ func Path(dir, childID string) (string, error) {
 // symlink, and a brief left there before for the child is replaced, never
 // written through. The briefs folder gets a .gitignore of "*", so briefs,
 // which hold transcripts, stay out of git (G34-4); the repo's own
-// .gitignore and .git are left alone. It returns the file's path. The
-// brief is never an argument: the child is told to read this file
-// (adapter.BriefPrompt).
-func WriteFile(dir, childID, text string) (string, error) {
+// .gitignore and .git are left alone. A .gitignore already there that is
+// not "*" (a cloned repo may ship an empty one, or "!*") is kept, and
+// warn says so (G34-6). It returns the file's path. The brief is never an
+// argument: the child is told to read this file (adapter.BriefPrompt).
+func WriteFile(dir, childID, text string) (path, warn string, err error) {
 	if _, err := Path(dir, childID); err != nil {
-		return "", err
+		return "", "", err
 	}
 	d, di, err := aggydir.MkdirAll(dir, 0o700, BriefsDir)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	ignore := filepath.Join(d, ".gitignore")
 	switch fi, err := safefs.Lstat(ignore); {
 	case errors.Is(err, fs.ErrNotExist):
 		if err := safefs.WriteFileNoFollowIn(di, ignore, []byte("*\n"), 0o600, nil); err != nil && !errors.Is(err, fs.ErrExist) {
-			return "", err
+			return "", "", err
 		}
 	case err != nil:
-		return "", err
+		return "", "", err
 	case !fi.Mode().IsRegular():
-		return "", fmt.Errorf("%s: %w; aggy will not write through it", ignore, aggydir.ErrLink)
+		return "", "", fmt.Errorf("%s: %w; aggy will not write through it", ignore, aggydir.ErrLink)
+	default:
+		if b, err := safefs.ReadFileLimit(ignore, 64); err != nil || strings.TrimSpace(string(b)) != "*" {
+			warn = ignore + " is not \"*\", so git may pick up the briefs, which hold transcripts; set it to \"*\""
+		}
 	}
 	name := filepath.Join(d, childID+".md")
 	var want fs.FileInfo
 	switch fi, err := safefs.Lstat(name); {
 	case err == nil && !fi.Mode().IsRegular():
-		return "", fmt.Errorf("%s: %w; aggy will not write through it", name, aggydir.ErrLink)
+		return "", "", fmt.Errorf("%s: %w; aggy will not write through it", name, aggydir.ErrLink)
 	case err == nil:
 		want = fi
 	case !errors.Is(err, fs.ErrNotExist):
-		return "", err
+		return "", "", err
 	}
 	if err := safefs.WriteFileNoFollowIn(di, name, []byte(text), 0o600, want); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return name, nil
+	return name, warn, nil
 }

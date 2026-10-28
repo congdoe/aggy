@@ -181,8 +181,14 @@ func launch(name string, t target, stderr io.Writer) int {
 		_, _ = refreshChildren(ctx, s, pl.parent.ID, &sessionFiles{})
 	}()
 	if t.Brief {
-		if _, err := brief.WriteFile(pl.child.Cwd, pl.child.ID, briefText); err != nil {
+		// G34-7: a failure here leaves the committed child row with no
+		// session behind it. That is benign: the next plan marks it gone.
+		_, warn, err := brief.WriteFile(pl.child.Cwd, pl.child.ID, briefText)
+		if err != nil {
 			return fail(err)
+		}
+		if warn != "" {
+			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(warn))
 		}
 	}
 	// The child's id when known at launch: Claude's and Grok's

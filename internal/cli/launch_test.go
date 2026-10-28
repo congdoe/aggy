@@ -271,6 +271,28 @@ func TestPlan(t *testing.T) {
 			want: "2 sessions start with abc",
 		},
 		{
+			name: "a prefix of a parent and a child is ambiguous",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "abc00000-0000-4000-8000-000000000000", dir)
+				seedParent(t, s, "p0000000-0000-4000-8000-000000000000", dir,
+					store.Child{ID: "abc99999-0000-4000-8000-000000000000", Vendor: "claude", VendorSessionID: sidA})
+			},
+			tgt:  target{ParentID: "abc"},
+			want: "2 sessions start with abc",
+		},
+		{
+			name: "a picked child missing after refresh is an error",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "p0000000-0000-4000-8000-000000000000", dir,
+					store.Child{ID: "abc99999-0000-4000-8000-000000000000", Vendor: "claude", VendorSessionID: sidA})
+				orig := planRefresh
+				t.Cleanup(func() { planRefresh = orig })
+				planRefresh = func(context.Context, *store.Store, string, *sessionFiles) ([]store.Child, error) { return nil, nil }
+			},
+			tgt:  target{ParentID: "abc9"},
+			want: "session abc99999 is no longer recorded",
+		},
+		{
 			name: "a parent whose directory is gone",
 			seed: func(t *testing.T, s *store.Store, dir string) {
 				seedParent(t, s, "abc00000-0000-4000-8000-000000000000", filepath.Join(dir, "removed"))

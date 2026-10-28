@@ -2,6 +2,7 @@ package parity
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -48,6 +49,53 @@ func TestClaudeServer(t *testing.T) {
 		{"mixed", `{"type":"http","url":"https://a.example/mcp","command":"x"}`, MCPServer{}, "no command"},
 		{"bad name!", `{"command":"x"}`, MCPServer{}, "name"},
 		{"notjson", `[1]`, MCPServer{}, "not understood"},
+	}
+	// G2 re-review: a key in a host label, a short key, and a key split
+	// across short segments are refused; common public servers are not.
+	for i, u := range []string{
+		"https://k7xp2qwz9a8b4c6d1e3f.mcp.example.com/mcp",
+		"https://mcp.example.com/mcp/k7Xp2QwZ9a",
+		"https://mcp.example.com/ab12/CD34/ef56/GH78",
+		"https://6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f.mcp.example.com/mcp",
+		"https://qwhzkrtplmnbvcxzjgfd.mcp.example.com/mcp",
+	} {
+		cases = append(cases, struct {
+			name, entry string
+			want        MCPServer
+			why         string
+		}{
+			fmt.Sprintf("leak%d", i), `{"type":"http","url":"` + u + `"}`, MCPServer{}, "looks like a key"})
+	}
+	for i, u := range []string{
+		"https://mcp.linear.app/sse",
+		"https://mcp.linear.app/mcp",
+		"https://mcp.notion.com/mcp",
+		"https://api.githubcopilot.com/mcp/",
+		"https://api.githubcopilot.com/mcp/x/repos/readonly",
+		"https://mcp.sentry.dev/mcp",
+		"https://mcp.atlassian.com/v1/sse",
+		"https://mcp.stripe.com",
+		"https://mcp.supabase.com/mcp",
+		"https://mcp.context7.com/mcp",
+		"https://docs.mcp.cloudflare.com/sse",
+		"https://docs.mcp.cloudflare.com/mcp",
+		"https://mcp.deepwiki.com/mcp",
+		"http://127.0.0.1:3845/mcp",
+		"http://127.0.0.1:3845/sse",
+		"https://evalstate-flux1-schnell.hf.space/gradio_api/mcp/sse",
+		"https://huggingface.co/mcp",
+		"https://gitmcp.io/microsoft/TypeScript",
+		"https://gitmcp.io/modelcontextprotocol/typescript-sdk",
+		"https://gitmcp.io/congdoe/aggy",
+		"https://gitmcp.io/docs",
+	} {
+		name := fmt.Sprintf("public%d", i)
+		cases = append(cases, struct {
+			name, entry string
+			want        MCPServer
+			why         string
+		}{
+			name, `{"type":"http","url":"` + u + `"}`, MCPServer{Name: name, Type: "http", URL: u}, ""})
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
