@@ -1,29 +1,91 @@
 # aggy
 
-One command for Claude Code, Codex, and Grok Build.
+One command for the coding agents you already use: Claude Code, Codex, and Grok Build.
 
-aggy runs the official CLIs you already pay for and adds three things:
+aggy runs the official CLIs, signed in with your own accounts, and lets them work together. From any of them you can hand one bounded task to another (an image, a short video, a web research question, a news check, or a code review) and get a short report back. Each task runs headless in the other vendor's CLI, locked down to the tools that task needs.
 
-- **Switch.** When one vendor hits its limit, continue in another with a handoff brief. Come back later with only what changed.
-- **Borrow.** Hand one task to the vendor best suited to it (image, video, research, news, review, or edit) and get a short report back.
-- **Parity.** Every CLI sees the same project rules, memory, task state, and safety settings.
-
-> **Status: pre-alpha.** Nothing works yet. The first usable release is v0.1.0, which adds read-only borrows.
+> **Status: pre-release, heading for v0.1.0.** Read-only borrows work today. Switching a session between vendors, handoff briefs, shared hooks, and parent sessions are **in progress** (milestone M2) and not shipped. Edit borrows come in M3.
 
 ## What aggy never does
 
-- It never reads, copies, or stores credentials. Each CLI signs in with its own flow.
-- It never sends model requests or proxies vendor traffic. Only the official CLIs talk to their vendors.
-- It collects no telemetry. Everything aggy writes stays on your machine.
+- It never reads, copies, or stores vendor credentials. Each CLI signs in with its own flow; aggy only records whether a CLI said it was signed in, its version, and when it checked.
+- It never sends model requests or calls a vendor API. Only the official CLIs talk to their vendors.
+- It runs no proxy and collects no telemetry. aggy's own network use is a local Unix socket in `~/.aggy/run`.
+- It never sets `*_BASE_URL` or API-key variables. Borrow children run with those removed from their environment, and `aggy doctor` warns when such settings could bill an API instead of your subscription.
 
-aggy is not affiliated with Anthropic, OpenAI, or xAI. You are responsible for following each vendor's terms.
+What aggy does change, it records: every config change goes through one guarded layer and `aggy unwire` undoes it.
+
+What a task contains does leave your machine, through the vendor CLI that runs it, as with any prompt you type into that CLI.
+
+## Install
+
+aggy runs on macOS and Linux and needs at least one of the vendor CLIs installed and signed in.
+
+Homebrew (from v0.1.0):
+
+```sh
+brew install congdoe/aggy/aggy
+```
+
+Go (the version in `go.mod`; no cgo):
+
+```sh
+go install github.com/congdoe/aggy/cmd/aggy@latest
+```
+
+From source:
+
+```sh
+git clone https://github.com/congdoe/aggy && cd aggy && make build   # ./bin/aggy
+```
+
+## Quickstart
+
+```sh
+aggy setup             # find each CLI, check its version, ask about sign-in
+aggy doctor            # API keys, base URLs, untested versions, config drift
+
+aggy borrow research "What changed in Go 1.27's toolchain?"
+aggy borrow news "Latest stable release of SQLite"
+aggy borrow review "Check this change for bugs"          # run inside a git work tree
+aggy image "Hero image, 1200x630, the text 'aggy'" --out docs/hero.png
+aggy inbox             # unread borrow reports
+
+aggy run claude        # start a vendor CLI under aggy (pass-through; switching is M2)
+aggy skill link        # let each CLI call aggy itself
+aggy log               # borrows, vendors, models, files changed
+```
+
+`aggy <command> --help` gives the details. Routing picks a vendor for each kind and says why it skipped the others; `--vendor` picks one yourself.
+
+## Vendor support
+
+What each borrow kind does on each CLI. "Live" means checked against the real CLI and recorded, with commands and evidence, in [docs/verification.md](docs/verification.md); everything else is built from vendor docs or source and tested against fake CLIs only. Tested versions: Claude Code 2.1.311 to 2.1.312, codex-cli 0.164.0, grok 1.0.70. Borrows refuse other versions unless you pass `--allow-untested`.
+
+| Kind | Claude Code | Codex | Grok Build |
+| --- | --- | --- | --- |
+| research, news | Not offered. | **Unsupported** for now (T6638): even fully locked down, Codex's `apply_patch` tool can confirm guesses of a local file's contents. Live. | Supported, with web search as the only tool. The tool list was checked live as the model reported it; the exact flag set aggy passes has not yet been run live. |
+| image | Not offered. | Supported. Lockdown flags checked live; the end-to-end borrow is not yet verified live. | Supported with `image_gen` only, which takes no local path (source). Not yet verified live. |
+| image `--edit` | Not offered. | Supported (resumes the same thread). Not yet verified live. | **Off by default.** Needs `[media] grok_file_tools = true` in `~/.aggy/config.toml` (a repo's config cannot set it). Grok's `image_edit` reads a local image at any path the model names and uploads it to xAI, so a brief that names a private image, or a child steered to one, sends it off your machine. Not yet verified live. |
+| video | Not offered. | Not offered. | **Off by default**, behind the same `grok_file_tools` opt-in and with the same upload risk (`image_to_video`). Unverified headless. |
+| review | Supported when the CLI has `--setting-sources` (probed), read-only in plan mode. Its tool names are unverified. | Supported, fully locked down; the diff and files are in the prompt. | Supported, read-only in plan mode; the tool list was checked live as the model reported it. Refused in a repo holding config Grok may load and run (such as project hooks), because aggy does not rely on Grok's folder trust. |
+| edit | M3, not shipped. | M3, not shipped. | M3, not shipped. |
+
+## Not affiliated
+
+aggy is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by Anthropic, OpenAI, or xAI. Claude Code, Codex, and Grok Build are their respective owners' products and trademarks, named here only to say what aggy works with.
+
+The vendor CLIs and subscriptions are yours: aggy runs the CLIs you installed, signed in with your own accounts, and every task it starts uses your plan. You are responsible for following each vendor's terms.
 
 ## Development
 
 ```sh
 make test    # go vet and go test -race
+make lint    # golangci-lint (make lint-install once)
 make build   # builds ./bin/aggy
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), [docs/design.md](docs/design.md), and [docs/adapters.md](docs/adapters.md). Releases: [docs/release.md](docs/release.md). Opt-in live checks: [test/smoke](test/smoke/README.md).
 
 ## License
 
