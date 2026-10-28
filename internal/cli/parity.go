@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -191,6 +192,7 @@ const (
 	codePolicyApplied      = "policy-applied"       // info
 	codePolicyNotWired     = "policy-not-wired"     // info: aggy policy wire has not run
 	codePolicyNotApplied   = "policy-not-applied"   // warning: this CLI will not get it
+	codePolicyFragile      = "policy-fragile"       // warning: another Codex rules file can switch aggy's off
 )
 
 // parityFindings checks what aggy run would give each installed CLI: the
@@ -245,6 +247,21 @@ func parityFindings(cwd string, vendors []checkup.Vendor) []checkup.Finding {
 				add(codeMemoryDelivered, checkup.LevelInfo, v, "", name+" gets the shared memory at session start", nil)
 			} else {
 				add(codeMemoryNotDelivered, checkup.LevelWarn, v, "", name+" does not get the shared memory: "+why, err)
+			}
+		}
+		if v == adapter.Codex {
+			// Without a cwd, only the system and user folders: HOME's
+			// .codex is the user folder, which the tree walk skips.
+			dir, top := cwd, root
+			if cwd == "" {
+				dir, top = os.Getenv("HOME"), os.Getenv("HOME")
+			}
+			others, err := parity.OtherCodexRules(dir, top)
+			if err != nil {
+				add(codePolicyFragile, checkup.LevelWarn, v, "", "cannot list Codex's other rules files", err)
+			}
+			for _, p := range others {
+				add(codePolicyFragile, checkup.LevelWarn, v, p, "Codex loads this rules file with aggy's, and a parse error in it makes Codex drop every rules file, aggy's safety policy included", nil)
 			}
 		}
 		why, err := policyDelivery(v, vr.Capabilities)

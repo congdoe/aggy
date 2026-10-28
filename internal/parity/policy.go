@@ -17,7 +17,8 @@ import (
 // command text or tool path it sees, so `git -C . push origin main`,
 // `/bin/rm -rf x`, or a script that opens .env itself gets past them.
 // aggy only ever adds denials: nothing here allows a tool, and a repo
-// cannot change the policy.
+// cannot edit these rules. A trusted repo can still switch the Codex
+// part off with a rules file Codex cannot parse (OtherCodexRules).
 
 // DenyRules are the policy's deny rules in the syntax Claude Code and
 // Grok Build share. Claude takes them as permissions.deny in an inline
