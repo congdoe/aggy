@@ -45,6 +45,12 @@ type Options struct {
 	// to be sent to the CLI instead of opening the picker. Zero means
 	// DefaultDoublePress.
 	DoublePress time.Duration
+	// RunDir is the state directory's run/ folder, where the supervisor
+	// socket lives. Empty means no socket (tests of the pass-through).
+	RunDir string
+	// ParentID is the parent session's id, a UUID: it names the socket
+	// and reaches the CLI as AGGY_PARENT.
+	ParentID string
 }
 
 // DefaultDoublePress is the default Options.DoublePress.
