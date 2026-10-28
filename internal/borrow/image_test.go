@@ -353,3 +353,34 @@ func TestImageCap(t *testing.T) {
 		t.Errorf("image count %d", row.ImageCount)
 	}
 }
+
+// TestVideo (T6637): a video borrow runs on Grok with image_gen and
+// image_to_video, and keeps the MP4 from the session's videos folder,
+// not the still it made on the way.
+func TestVideo(t *testing.T) {
+	w := newWorld(t)
+	w.scenario[adapter.Grok] = `{"images":1,"videos":1,"json":{"result":"videos/1.mp4"}}`
+	req := w.req(adapter.Video, "a logo reveal")
+	out := filepath.Join(w.repo, "intro.mp4")
+	req.Media = &Media{Out: out}
+	res, err := w.borrower().Run(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := res[0]
+	if r.Vendor != adapter.Grok || r.Status != "done" || r.Made != 1 || len(r.Artifacts) != 1 || r.Artifacts[0] != (adapter.Artifact{Path: out, Kind: "video"}) {
+		t.Fatalf("result %+v", r)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil || sniff(data) != MP4 {
+		t.Errorf("intro.mp4: %v, %q", err, sniff(data))
+	}
+	sc, err := os.ReadFile(filepath.Join(w.repo, ".aggy", "assets", "intro.mp4.json"))
+	if err != nil || !strings.Contains(string(sc), `"kind": "video"`) {
+		t.Errorf("sidecar %s, %v", sc, err)
+	}
+	recs := w.records()
+	if args := strings.Join(recs[len(recs)-1].Args, " "); !strings.Contains(args, "--tools image_gen,image_to_video") {
+		t.Errorf("args %q", args)
+	}
+}
