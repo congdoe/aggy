@@ -110,9 +110,13 @@ func launch(name string, t target, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	if lease != nil {
-		defer func() { _ = lease.Release(ctx) }()
-	}
+	defer func() {
+		if lease != nil {
+			_ = lease.Release(ctx)
+		}
+		// Record the session file's time now the CLI has exited.
+		_, _ = refreshChildren(ctx, s, pl.parent.ID, &sessionFiles{})
+	}()
 	parentID := pl.parent.ID
 	runDir := filepath.Join(stateDir, "run")
 	// Claude and Grok run with the child's id (pre-assigned or resumed),

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -56,6 +57,23 @@ func seedParent(t *testing.T, s *store.Store, id, dir string, children ...store.
 	}
 }
 
+// claudeSession writes the session file Claude keeps for id under the
+// temp HOME, modified at mod.
+func claudeSession(t *testing.T, id string, mod time.Time) string {
+	t.Helper()
+	p := filepath.Join(os.Getenv("HOME"), ".claude", "projects", "-work", id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(p, mod, mod); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func TestPlan(t *testing.T) {
 	cfg := config.Default()
 	cfg.DefaultVendor = adapter.Claude
@@ -96,6 +114,7 @@ func TestPlan(t *testing.T) {
 					store.Child{ID: "old", Vendor: "grok", VendorSessionID: sidB},
 					store.Child{ID: "borrow", Vendor: "codex", Kind: "research"},
 					store.Child{ID: "last", Vendor: "claude", VendorSessionID: sidA})
+				claudeSession(t, sidA, time.Now().Add(-time.Hour))
 				// A borrow is newer, but only interactive children resume.
 				_ = s.SetChildActivity(context.Background(), "borrow", time.Now(), "")
 			},
@@ -151,6 +170,7 @@ func TestPlan(t *testing.T) {
 			seed: func(t *testing.T, s *store.Store, dir string) {
 				seedParent(t, s, "abcdef00-0000-4000-8000-000000000000", t.TempDir(),
 					store.Child{ID: "c", Vendor: "claude", VendorSessionID: sidA})
+				claudeSession(t, sidA, time.Now().Add(-time.Hour))
 			},
 			tgt: target{ParentID: "abcdef"},
 			check: func(t *testing.T, p launchPlan, dir string) {
@@ -216,6 +236,7 @@ func TestCommitLease(t *testing.T) {
 	dir := t.TempDir()
 	seedParent(t, s, "p0000000-0000-4000-8000-000000000000", dir,
 		store.Child{ID: "c", Vendor: "claude", VendorSessionID: sidA})
+	claudeSession(t, sidA, time.Now().Add(-time.Hour))
 	cfg := config.Default()
 	p, err := plan(ctx, s, cfg, dir, target{}, time.Now(), &bytes.Buffer{})
 	if err != nil {
