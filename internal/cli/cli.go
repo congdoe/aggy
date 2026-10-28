@@ -18,6 +18,7 @@ Usage:
 
 Commands:
   setup     Check each vendor CLI's install, version, and sign-in
+  doctor    Check the vendor CLIs, API-key and proxy settings, and config drift
   log       Show harnesses, models, switches, borrows, and files changed
   unwire    Undo the config changes aggy made to other tools
   version   Print the aggy version
@@ -39,6 +40,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "setup":
 		return runSetup(args[1:], stdout, stderr)
+	case "doctor":
+		return runDoctor(args[1:], stdout, stderr)
 	case "log":
 		return runLog(args[1:], stdout, stderr)
 	case "dev":
