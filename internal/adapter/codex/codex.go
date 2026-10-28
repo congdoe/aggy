@@ -24,6 +24,10 @@ type Adapter struct {
 	Path string
 	// Getenv reads HOME and CODEX_HOME for Artifacts. Nil means os.Getenv.
 	Getenv func(string) string
+	// Caps are the capabilities a probe of this CLI found. Interactive
+	// adds --no-alt-screen only when they include probe.CapNoAltScreen:
+	// the flag is not verified for Codex.
+	Caps []string
 }
 
 var _ adapter.Adapter = Adapter{}
@@ -139,14 +143,16 @@ func modelArgs(model string) ([]string, error) {
 }
 
 // Interactive builds an on-screen Codex session with --no-alt-screen, so
-// its output stays in the terminal's scrollback: codex for a new session,
+// its output stays in the terminal's scrollback. The flag is not verified
+// for Codex (docs/verification.md), so it is passed only when the probe found
+// it in help (Caps has probe.CapNoAltScreen): codex for a new session,
 // codex resume <id> to reopen one. The id passes
 // adapter.ValidSessionID, so it cannot be read as a flag. Codex cannot be
 // given a session id in advance and fork is not recorded, so both are
 // ErrUnsupported. A brief is passed as a short first message pointing to
 // the file; that Codex takes a prompt argument at session start is
 // unconfirmed (T6619).
-func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, error) {
+func (a Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, error) {
 	if req.SessionID != "" {
 		return adapter.Command{}, fmt.Errorf("codex: pre-assigned session id: %w", adapter.ErrUnsupported)
 	}
@@ -160,7 +166,9 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		}
 		args = append(args, "resume")
 	}
-	args = append(args, "--no-alt-screen")
+	if slices.Contains(a.Caps, probe.CapNoAltScreen) {
+		args = append(args, "--no-alt-screen")
+	}
 	m, err := modelArgs(req.Model)
 	if err != nil {
 		return adapter.Command{}, err
