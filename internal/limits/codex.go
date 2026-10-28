@@ -284,8 +284,8 @@ func (w *CodexWatch) Poll(now time.Time) {
 			}
 			sig, at, ok := CodexRollout(tail, w.Start, now)
 			if !ok {
-				// TODO(T6699): a near-limit warning would read
-				// CodexQuotas(tail) here, once the picker exists.
+				// The near-limit warning (T6699) reads CodexAllowance
+				// instead: the account's newest rollout, any age.
 				delete(w.last, p)
 				continue
 			}
@@ -361,6 +361,27 @@ func CodexAllowance(sessionsDir string, now time.Time) []CodexQuota {
 		}
 	}
 	return nil
+}
+
+// CodexUsed returns the largest share used, 0 to 1, of the ordinary
+// quota's windows whose reset is still ahead of now. Only the ordinary
+// quota counts: Codex's own TUI warns off it alone (see CodexQuotas). A
+// window with no reset time, or one already past, says nothing about now
+// and is skipped; ok is false when no window is left. The near-limit
+// warning (T6699) and aggy usage share it.
+func CodexUsed(quotas []CodexQuota, now time.Time) (used float64, ok bool) {
+	for _, q := range quotas {
+		if q.ID != codexOrdinary {
+			continue
+		}
+		for _, w := range []*CodexWindow{q.Primary, q.Secondary} {
+			if w == nil || w.ResetsAt <= 0 || !time.Unix(w.ResetsAt, 0).After(now) {
+				continue
+			}
+			used, ok = max(used, min(max(w.UsedPercent/100, 0), 1)), true
+		}
+	}
+	return used, ok
 }
 
 // Run polls every interval until stop closes.

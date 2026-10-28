@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/limits"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -22,7 +23,8 @@ import (
 const usageUsage = `Usage: aggy usage
 
 Shows what each vendor has left, only where its CLI writes that on this
-machine (today: Codex's rate limits in its session files), and what
+machine (today: Codex's rate limits in its session files; "near limit"
+at or past [switch] warn_at), and what
 aggy's own borrows used in the last 7 days. The second part is what aggy
 saw, not the vendor's count, bill, or allowance.
 `
@@ -48,6 +50,12 @@ func runUsage(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy usage: unexpected arguments\n\n%s", usageUsage)
 		return 2
 	}
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		fmt.Fprintf(stderr, "aggy usage: %v\n", err)
+		return 1
+	}
+	warnAt := cfg.Switch.WarnAt
 	now := time.Now()
 	ctx := context.Background()
 	s, version, err := openIndexReadOnly(ctx)
@@ -90,6 +98,9 @@ func runUsage(args []string, stdout, stderr io.Writer) int {
 		}
 		for _, line := range codexAllowanceLines(quotas, now) {
 			fmt.Fprintf(stdout, "  %-7s %s\n", v, line)
+		}
+		if used, ok := limits.CodexUsed(quotas, now); ok && warnAt > 0 && used >= warnAt {
+			fmt.Fprintf(stdout, "  %-7s near limit: %d%% used, at or past switch.warn_at %v\n", v, int(math.Floor(used*100+1e-9)), warnAt)
 		}
 	}
 
@@ -192,6 +203,26 @@ func codexAllowanceLines(quotas []limits.CodexQuota, now time.Time) []string {
 		}
 	}
 	return out
+}
+
+// usedShare is the share, 0 to 1, of v's limit used, where its CLI
+// writes that on this machine (Codex: limits.CodexUsed over
+// limits.CodexAllowance), or -1. Claude and Grok write none that
+// docs/verification.md records, so they never warn (T6699).
+func usedShare(v adapter.Vendor) float64 {
+	if v != adapter.Codex {
+		return -1
+	}
+	dir, err := codexSessionsDir()
+	if err != nil {
+		return -1
+	}
+	now := time.Now()
+	used, ok := limits.CodexUsed(limits.CodexAllowance(dir, now), now)
+	if !ok {
+		return -1
+	}
+	return used
 }
 
 // shareLeft renders what a window has left, floored to a tenth so it is

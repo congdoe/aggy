@@ -83,6 +83,13 @@ type Options struct {
 	// end with a brief. Either may be nil.
 	Limits   <-chan LimitHit
 	HasQuota func(v adapter.Vendor) bool
+	// Used returns the share, 0 to 1, of v's limit used, where v's CLI
+	// writes what it has left on this machine; ok is false elsewhere
+	// (T6699). WarnAt is the share at which a turn end of the on-screen
+	// child suggests a handoff, once per crossing. A nil Used or a zero
+	// WarnAt never warns.
+	Used   func(v adapter.Vendor) (used float64, ok bool)
+	WarnAt float64
 }
 
 // LimitHit is a plan limit the session recorded for Vendor. Unverified is

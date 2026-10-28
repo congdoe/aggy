@@ -10,9 +10,41 @@ import (
 	"testing"
 	"time"
 
+	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/store"
 )
+
+// TestUsedShare (T6699): the near-limit warning's share comes from Codex's
+// rollout only; Claude and Grok write none, so they never warn.
+func TestUsedShare(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv(home.Env, t.TempDir())
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	if got := usedShare(adapter.Codex); got != -1 {
+		t.Errorf("codex with no rollout: %v, want -1", got)
+	}
+	now := time.Now()
+	day := filepath.Join(codexHome, "sessions", now.Format("2006"), now.Format("01"), now.Format("02"))
+	if err := os.MkdirAll(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"timestamp":%q,"type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":92,"window_minutes":300,"resets_at":%d}}}}`+"\n",
+		now.UTC().Format(time.RFC3339Nano), now.Add(time.Hour).Unix())
+	if err := os.WriteFile(filepath.Join(day, "rollout-2026-10-28T12-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := usedShare(adapter.Codex); got < 0.919 || got > 0.921 {
+		t.Errorf("codex: %v, want 0.92", got)
+	}
+	for _, v := range []adapter.Vendor{adapter.Claude, adapter.Grok} {
+		if got := usedShare(v); got != -1 {
+			t.Errorf("%s: %v, want -1", v, got)
+		}
+	}
+}
 
 // TestUsage (T6698): Codex's allowance from its rollout (the session's
 // quotas only, no credits), consumption from aggy's own borrows for every
@@ -23,6 +55,8 @@ func TestUsage(t *testing.T) {
 		name     string
 		seeded   bool
 		rollout  bool
+		used     int    // the ordinary 5h window's used_percent; 0 means 30
+		config   string // the user config, if any
 		want     []string
 		wantNot  []string
 		wantCode int
@@ -42,7 +76,16 @@ func TestUsage(t *testing.T) {
 			"Not the vendor's count, bill, or allowance",
 			"  claude  2        100 (1 of 2 borrows reported tokens)  3m0s\n",
 			"  codex   0        0                                     0s\n",
-		}, wantNot: []string{"grok", "spark", "12.50", "$", "7d window: 0%"}},
+		}, wantNot: []string{"grok", "spark", "12.50", "$", "7d window: 0%", "near limit"}},
+		// T6699: past warn_at on the live window; the stale 100% window
+		// and the model quota at 100% do not count.
+		{name: "near limit", rollout: true, used: 92, want: []string{
+			"  codex   ordinary quota, 5h window: 8% left",
+			"  codex   near limit: 92% used, at or past switch.warn_at 0.9\n",
+		}},
+		{name: "below warn_at", rollout: true, used: 92, config: "[switch]\nwarn_at = 0.95\n", wantNot: []string{"near limit"}},
+		{name: "warning off", rollout: true, used: 99, config: "[switch]\nwarn_at = 0\n", wantNot: []string{"near limit"}},
+		{name: "bad config", config: "[switch]\nwarn_at = 2\n", wantCode: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -51,6 +94,15 @@ func TestUsage(t *testing.T) {
 			state := t.TempDir()
 			t.Setenv(home.Env, state)
 			codexHome := t.TempDir()
+			if tt.config != "" {
+				if err := os.WriteFile(filepath.Join(state, "config.toml"), []byte(tt.config), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			used := tt.used
+			if used == 0 {
+				used = 30
+			}
 			t.Setenv("CODEX_HOME", codexHome)
 			if tt.rollout {
 				day := filepath.Join(codexHome, "sessions", now.Format("2006"), now.Format("01"), now.Format("02"))
@@ -59,8 +111,8 @@ func TestUsage(t *testing.T) {
 				}
 				at := now.UTC().Format(time.RFC3339Nano)
 				body := fmt.Sprintf(`{"timestamp":%q,"type":"turn_context","payload":{"model":"gpt-5.5"}}`+"\n", at) +
-					fmt.Sprintf(`{"timestamp":%q,"type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":30,"window_minutes":300,"resets_at":%d},"secondary":{"used_percent":100,"window_minutes":10080,"resets_at":%d},"credits":{"has_credits":true,"unlimited":false,"balance":"12.50"}}}}`+"\n",
-						at, now.Add(2*time.Hour).Unix(), now.Add(-time.Hour).Unix()) +
+					fmt.Sprintf(`{"timestamp":%q,"type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":%d,"window_minutes":300,"resets_at":%d},"secondary":{"used_percent":100,"window_minutes":10080,"resets_at":%d},"credits":{"has_credits":true,"unlimited":false,"balance":"12.50"}}}}`+"\n",
+						at, used, now.Add(2*time.Hour).Unix(), now.Add(-time.Hour).Unix()) +
 					fmt.Sprintf(`{"timestamp":%q,"type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex_bengalfox","limit_name":"gpt-5.3-codex-spark","primary":{"used_percent":100,"window_minutes":300,"resets_at":%d}}}}`+"\n",
 						at, now.Add(time.Hour).Unix())
 				if err := os.WriteFile(filepath.Join(day, "rollout-2026-10-28T12-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl"), []byte(body), 0o600); err != nil {

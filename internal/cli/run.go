@@ -268,6 +268,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	parent := pl.parent.ID
 	children := refreshed(pctx, vendors, func(o adapter.Vendor) []supervisor.ChildChoice { return childChoices(parent, o, time.Now()) }, nil)
 	quota := refreshed(pctx, vendors, hasQuota, true)
+	share := refreshed(pctx, []adapter.Vendor{v}, usedShare, -1)
 	ex, err := supervisor.Run(supervisor.Options{
 		In: os.Stdin, Out: os.Stdout, Command: cmd,
 		Start:      startPTY,
@@ -283,6 +284,8 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 		Children:   children,
 		Limits:     limitHit,
 		HasQuota:   quota,
+		Used:       func(o adapter.Vendor) (float64, bool) { u := share(o); return u, u >= 0 },
+		WarnAt:     eff.Switch.WarnAt,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", name, err)

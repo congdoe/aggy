@@ -18,7 +18,7 @@ aggy is a Go CLI that runs the official Claude Code, Codex, and Grok Build CLIs 
 - `internal/redact`: secret-shaped text (keys, tokens, private keys, secret settings): the fixture scrubber replaces it, and a brief drops every line that holds it.
 - `internal/transcript`: reads the tail of a Claude, Codex, or Grok session file for a brief.
 - `internal/borrow`: headless borrows (routing with fall-through, isolation, budgets and leases, reports, the per-borrow log). `internal/hook`: the PreToolUse guard that stops a delegated child from starting another vendor CLI.
-- `internal/limits`: plan-limit signals (StopFailure hints, the Codex rollout tail, borrow failures), recorded as `limit` events and read back for the router's skip rule; and the Codex quotas behind `aggy usage`.
+- `internal/limits`: plan-limit signals (StopFailure hints, the Codex rollout tail, borrow failures), recorded as `limit` events and read back for the router's skip rule; and the Codex quotas behind `aggy usage` and the near-limit warning.
 - `internal/notify`: desktop notifications (osascript, notify-send), off unless the user config turns them on; the text goes as argv, never as script or markup.
 - `internal/tooldef`: managed tool definitions: the format, its validator, the built-ins embedded from `builtin/*.toml`, the loader for `~/.aggy/tools/*.toml` (never a repo), and the registry behind `aggy tool`.
 - `internal/checkup`: the checks `aggy setup` and `aggy doctor` share: API-key variables and proxy routes, by name only.
