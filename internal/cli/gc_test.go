@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -274,5 +275,104 @@ func TestGCDryRunAndAsk(t *testing.T) {
 	}
 	if code, out, _ := gc(f, "--dry-run"); code != 0 || !strings.Contains(out, "Nothing to remove.") {
 		t.Errorf("after: %d %s", code, out)
+	}
+}
+
+// onRead runs fn on the first read, then reads as r: a person who
+// answers the prompt after something else happened meanwhile.
+type onRead struct {
+	fn func()
+	r  io.Reader
+}
+
+func (o *onRead) Read(p []byte) (int, error) {
+	if o.fn != nil {
+		o.fn()
+		o.fn = nil
+	}
+	return o.r.Read(p)
+}
+
+// TestGCRecheckLease (T6694, GC-1): a lease taken while the prompt waits
+// keeps the worktree.
+func TestGCRecheckLease(t *testing.T) {
+	f, _ := editFixture(t)
+	gitIn(t, f.repo, "checkout", "--", "a.go")
+	id, wt := editBorrow(t, f, map[string]string{"a.go": "package a\n// accepted\n"})
+	if code, _, errOut := accept(f, "", false, id, "--yes"); code != 0 {
+		t.Fatal(errOut)
+	}
+	ctx := context.Background()
+	s, err := store.OpenDefault(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	b, err := s.GetBorrow(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var session string
+	ps, _ := s.Parents(ctx)
+	for _, p := range ps {
+		kids, _ := s.Children(ctx, p.ID)
+		for _, k := range kids {
+			if k.ID == b.ChildID {
+				session = k.VendorSessionID
+			}
+		}
+	}
+	if session == "" {
+		if err := s.SetChildSessionID(ctx, b.ChildID, "s-edit"); err != nil {
+			t.Fatal(err)
+		}
+		session = "s-edit"
+	}
+	var lease *store.Lease
+	in := &onRead{r: strings.NewReader("y\n"), fn: func() {
+		if lease, err = s.AcquireLease(ctx, "codex", session); err != nil {
+			t.Error(err)
+		}
+	}}
+	var out, errb strings.Builder
+	code := gcWith(nil, f.env, in, true, &out, &errb)
+	if lease != nil {
+		defer func() { _ = lease.Release(ctx) }()
+	}
+	if code != 1 || !strings.Contains(errb.String(), "lease was taken since") || !exists(t, wt) {
+		t.Fatalf("code %d: %s %s", code, out.String(), errb.String())
+	}
+	if gitIn(t, f.repo, "branch", "--list", "aggy/edit-"+id) == "" {
+		t.Error("branch deleted under a held lease")
+	}
+}
+
+// TestGCLeftover (T6694, GC-3): a removal claimed but cut short (a
+// crash) leaves a worktree that the next gc removes.
+func TestGCLeftover(t *testing.T) {
+	f, _ := editFixture(t)
+	gitIn(t, f.repo, "checkout", "--", "a.go")
+	id, wt := editBorrow(t, f, map[string]string{"a.go": "package a\n// accepted\n"})
+	if code, _, errOut := accept(f, "", false, id, "--yes"); code != 0 {
+		t.Fatal(errOut)
+	}
+	ctx := context.Background()
+	s, err := store.OpenDefault(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ClaimWorktreeRemoval(ctx, id, store.WorktreeAccepted, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	code, out, errOut := gc(f, "--yes")
+	if code != 0 || !strings.Contains(out, "cut short") || exists(t, wt) {
+		t.Fatalf("code %d: %s %s", code, out, errOut)
+	}
+	if gitIn(t, f.repo, "branch", "--list", "aggy/edit-"+id) != "" {
+		t.Error("branch left")
+	}
+	if _, out, _ := gc(f); !strings.Contains(out, "Nothing to remove.") {
+		t.Errorf("second run: %s", out)
 	}
 }

@@ -42,7 +42,7 @@ func TestStrayLeases(t *testing.T) {
 }
 
 // TestGCWorktreesBeforeV14 (T6695): a dry run reads an index it cannot
-// migrate; there a rejected worktree counts as removed, as the
+// migrate; there a rejected worktree reads as removed, as the
 // migration will mark it.
 func TestGCWorktreesBeforeV14(t *testing.T) {
 	s, _ := openTemp(t)
@@ -73,11 +73,9 @@ func TestGCWorktreesBeforeV14(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := 2 // version 14: the reject never claimed its removal here
-		if v < gcSchema {
-			want = 1
-		}
-		if len(got) != want || got[len(got)-1].BorrowID != "bbbbbbbbbbbbbbbb" {
+		// Version 14: the reject never claimed its removal here; before
+		// it, a rejected worktree reads as removed.
+		if len(got) != 2 || got[0].Worktree.Removed.IsZero() != (v >= gcSchema) || !got[1].Worktree.Removed.IsZero() {
 			t.Errorf("version %d: %+v", v, got)
 		}
 	}

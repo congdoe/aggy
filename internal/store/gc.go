@@ -30,27 +30,47 @@ func (s *Store) removedExpr(ctx context.Context) (string, error) {
 	return `c.worktree_removed_at`, nil
 }
 
-// GCWorktree is an edit worktree that has not been removed.
+// GCWorktree is an edit worktree, with what aggy gc decides on.
 type GCWorktree struct {
 	BorrowID string
+	// Worktree.Removed is set once a removal was claimed; a claim whose
+	// removal was cut short (a crash) leaves the directory behind.
 	Worktree Worktree
 	Running  bool      // its borrow is still marked running
 	Held     bool      // its child's lease is held by a live process
 	Ended    time.Time // when the borrow ended, or started if it never did
 }
 
-// GCWorktrees returns the edit worktrees not yet removed, by borrow id.
+// GCWorktrees returns every edit worktree, removed ones included, by
+// borrow id.
 func (s *Store) GCWorktrees(ctx context.Context) ([]GCWorktree, error) {
+	return s.gcWorktrees(ctx, "")
+}
+
+// GCWorktree returns borrow id's worktree as GCWorktrees would, read
+// again just before aggy gc removes it, or ErrNotFound.
+func (s *Store) GCWorktree(ctx context.Context, id string) (GCWorktree, error) {
+	ws, err := s.gcWorktrees(ctx, id)
+	if err != nil {
+		return GCWorktree{}, err
+	}
+	if len(ws) != 1 {
+		return GCWorktree{}, ErrNotFound
+	}
+	return ws[0], nil
+}
+
+func (s *Store) gcWorktrees(ctx context.Context, id string) ([]GCWorktree, error) {
 	removed, err := s.removedExpr(ctx)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT b.id, c.worktree, c.branch, c.worktree_base, c.worktree_repo, c.worktree_git_dir,
-		        c.worktree_state, c.worktree_tree, b.status, COALESCE(b.ended_at, b.started_at),
+		        c.worktree_state, c.worktree_tree, `+removed+`, b.status, COALESCE(b.ended_at, b.started_at),
 		        c.lease_pid, c.lease_nonce
 		 FROM children c JOIN borrows b ON b.child_id = c.id
-		 WHERE c.worktree <> '' AND `+removed+` IS NULL ORDER BY b.id`)
+		 WHERE c.worktree <> '' AND (? = '' OR b.id = ?) ORDER BY b.id`, id, id)
 	if err != nil {
 		return nil, err
 	}
@@ -60,13 +80,14 @@ func (s *Store) GCWorktrees(ctx context.Context) ([]GCWorktree, error) {
 		var g GCWorktree
 		var status string
 		var ended int64
-		var pid sql.NullInt64
+		var pid, gone sql.NullInt64
 		var nonce sql.NullString
 		w := &g.Worktree
 		if err := rows.Scan(&g.BorrowID, &w.Path, &w.Branch, &w.Base, &w.Repo, &w.GitDir,
-			&w.State, &w.Tree, &status, &ended, &pid, &nonce); err != nil {
+			&w.State, &w.Tree, &gone, &status, &ended, &pid, &nonce); err != nil {
 			return nil, err
 		}
+		w.Removed = fromNull(gone)
 		g.Running = status == "running"
 		g.Held = nonce.Valid && s.alive(nonce.String, int(pid.Int64))
 		g.Ended = fromMillis(ended)
