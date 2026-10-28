@@ -240,6 +240,22 @@ linters:
       - path: ^internal/(execrun|store)/
         text: "use of `(Setpgid|Setsid|Pgid|Pdeathsig|Noctty)`"
         linters: [forbidigo]
+      # The supervisor socket, ~/.aggy/run/<parent-id>.sock, needs net: a
+      # Unix socket in a 0700 dir that only listens (net.Dial stays
+      # banned) and answers only its own uid. Only these files may import
+      # net (and later the hook client, which dials it). Tests dial it.
+      - path: ^(internal/supervisor/(socket(_test)?|peercred_(darwin|linux|other))|test/e2e/[a-z_]+_test)\.go$
+        text: "import 'net' is not allowed"
+        linters: [depguard]
+      # The socket's peer-uid check: the stdlib has no getpeereid
+      # (LOCAL_PEERCRED) on darwin, so golang.org/x/sys/unix, for exactly
+      # these calls in these two files.
+      - path: ^internal/supervisor/peercred_(darwin|linux)\.go$
+        text: "import 'golang.org/x/sys/unix' is not allowed"
+        linters: [depguard]
+      - path: ^internal/supervisor/peercred_(darwin|linux)\.go$
+        text: "use of `(unix\\.(GetsockoptXucred|GetsockoptUcred|SOL_LOCAL|LOCAL_PEERCRED|SOL_SOCKET|SO_PEERCRED)|[xu]\\.Uid)`"
+        linters: [forbidigo]
       - path: ^internal/store/
         text: "`sql\\.(Open|OpenDB)`"
         linters: [forbidigo]

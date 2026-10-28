@@ -27,7 +27,7 @@ aggy is a Go CLI that runs the official Claude Code, Codex, and Grok Build CLIs 
 ## Hard rules
 
 - **Never read, copy, or store vendor credentials.** All file I/O goes through `internal/safefs`. Lint bans the main file-system entry points (`os`, `io/ioutil`, `io/fs`, `filepath` walks, `syscall` opens) outside `internal/safefs` and test files, and `sql.Open` outside `internal/store`. A `nolint` comment must name the linter and give a reason. Processes start only in `internal/execrun` (and the planned supervisor and borrow runner): lint bans `os/exec` elsewhere and keeps `internal/execrun` out of adapters, which run commands only through the `Runner` their caller passes. Other packages that open files are covered by review, not lint. Tests set `HOME` to a temp dir.
-- **No telemetry, no model requests, no vendor API calls, no proxy.** Only the vendor CLIs talk to their vendors. Never set `*_BASE_URL` or API-key variables.
+- **No telemetry, no model requests, no vendor API calls, no proxy.** Only the vendor CLIs talk to their vendors. Never set `*_BASE_URL` or API-key variables. Lint bans `net` except in the supervisor socket's files (`internal/supervisor/socket.go` and `peercred_*.go`), which only listen on a Unix socket in `~/.aggy/run`, and `golang.org/x/sys/unix` except for the peer-uid calls there.
 - **Every config change goes through `internal/patch`** and must be undoable with `aggy unwire`.
 
 ## Commands

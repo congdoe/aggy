@@ -47,6 +47,16 @@ func Run(o Options) (int, error) {
 	if !term.IsTerminal(fd) {
 		return 1, errors.New("supervisor: standard input is not a terminal")
 	}
+	if o.RunDir != "" {
+		srv, err := Listen(o.RunDir, o.ParentID)
+		if err != nil {
+			return 1, err
+		}
+		defer func() { _ = srv.Close() }()
+		// Hooks and skills inside the CLI reach aggy through these.
+		o.Command.Env = append(append([]string(nil), o.Command.Env...),
+			"AGGY_SOCKET="+srv.Path(), "AGGY_PARENT="+o.ParentID)
+	}
 	t := &tty{fd: fd}
 	if err := t.raw(); err != nil {
 		return 1, err
