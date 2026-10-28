@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -203,5 +204,70 @@ func TestHome(t *testing.T) {
 	}
 	if _, err := Home(adapter.Grok, func(string) string { return "rel" }); err == nil {
 		t.Error("relative home accepted")
+	}
+}
+
+// C16-2: context the CLI injected as a user message never reaches a
+// brief; of a user shell command only the command line is kept.
+func TestSkipsInjectedContext(t *testing.T) {
+	codex := func(text string) string {
+		return `{"timestamp":"2026-10-27T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":` + strconv.Quote(text) + `}]}}`
+	}
+	claude := func(text string) string {
+		return `{"type":"user","message":{"content":` + strconv.Quote(text) + `}}`
+	}
+	for _, tc := range []struct {
+		v    adapter.Vendor
+		line string
+		want string
+	}{
+		{adapter.Codex, codex("<user_shell_command>\n<command>\ncat .env\n</command>\n<result>\nExit code: 0\nDuration: 0.1 seconds\nOutput:\nSECRET_OUTPUT\n</result>\n</user_shell_command>"), "! cat .env"},
+		{adapter.Codex, codex("# AGENTS.md instructions for /w\n\n<INSTRUCTIONS>\nSECRET_OUTPUT\n</INSTRUCTIONS>"), ""},
+		{adapter.Codex, codex("<environment_context>\n  <cwd>/w</cwd>\n</environment_context>"), ""},
+		{adapter.Codex, codex("<turn_aborted>\nThe user interrupted\n</turn_aborted>"), ""},
+		{adapter.Codex, codex("fix the bug"), "fix the bug"},
+		{adapter.Claude, claude("<bash-input>cat .env</bash-input>"), "! cat .env"},
+		{adapter.Claude, claude("<bash-stdout>SECRET_OUTPUT</bash-stdout><bash-stderr></bash-stderr>"), ""},
+		{adapter.Claude, claude("<local-command-stdout>SECRET_OUTPUT</local-command-stdout>"), ""},
+		{adapter.Claude, claude("<command-name>/cost</command-name>\n<command-message>cost</command-message>\n<command-args></command-args>"), ""},
+		{adapter.Claude, claude("[Request interrupted by user]"), ""},
+		{adapter.Claude, claude("fix the bug"), "fix the bug"},
+	} {
+		turns, ok := parse(tc.v, []byte(tc.line+"\n"))
+		got := texts(turns)
+		if tc.want != "" {
+			if got != "user:"+tc.want {
+				t.Errorf("%s %q: got %q", tc.v, tc.line, got)
+			}
+		} else if !ok || got != "" {
+			t.Errorf("%s %q: got %q, %v", tc.v, tc.line, got, ok)
+		}
+		if strings.Contains(got, "SECRET_OUTPUT") {
+			t.Errorf("%s: output leaked", tc.v)
+		}
+	}
+}
+
+// C16-5: a sidechain line is skipped wherever it is; the project folder
+// maps a non-ASCII character to one "-", as grok-build does.
+func TestClaudeDetails(t *testing.T) {
+	data := `{"type":"user","message":{"content":"main"}}` + "\n" + `{"type":"assistant","isSidechain":true,"message":{"content":"side"}}` + "\n"
+	if turns, _ := parse(adapter.Claude, []byte(data)); texts(turns) != "user:main" {
+		t.Errorf("got %q", texts(turns))
+	}
+	if got := ClaudeProjectDir("/Users/é/a.b"); got != "-Users---a-b" {
+		t.Errorf("ClaudeProjectDir = %q", got)
+	}
+}
+
+// C16-6: a last line longer than the read window is an error that says
+// so, not an empty session.
+func TestTailLineTooLarge(t *testing.T) {
+	home := t.TempDir()
+	p := filepath.Join(home, "sessions", "2026", "01", "02", "rollout-x-"+id+".jsonl")
+	write(t, p, codexLines+`{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"`+strings.Repeat("a", MaxTail+10)+`"}]}}`+"\n")
+	_, err := Tail(adapter.Codex, home, adapter.SessionRef{ID: id}, 0)
+	if !errors.Is(err, adapter.ErrNoTranscript) || !strings.Contains(err.Error(), "too large") {
+		t.Errorf("err = %v", err)
 	}
 }
