@@ -412,7 +412,11 @@ the fields named here.
   (`rate_limit`, `overloaded`, `authentication_failed`, ..., `unknown`),
   optional `error_details` and `last_assistant_message`; its output and
   exit code are ignored. `Notification` adds `message`, `title`, and
-  `notification_type`.
+  `notification_type`. A command hook that exits with anything
+  but 0 or 2, including one that cannot start (the shell's 127), is a
+  non-blocking error: a "`<hook> hook error`" notice, and the action goes
+  on ("Other exit codes"; `onFailure: "block"` changes that, and has no
+  effect on `Stop`).
 - **Codex** 0.164.0. `Stop` input, all required:
   `cwd`, `hook_event_name`, `last_assistant_message`, `model`,
   `permission_mode`, `session_id`, `stop_hook_active`, `transcript_path`,
@@ -421,8 +425,13 @@ the fields named here.
   argv plus one final argument, `{"type":"agent-turn-complete",
   "thread-id", "turn-id", "cwd", "client"?, "input-messages",
   "last-assistant-message"}`; stdin, stdout, and stderr are null, and
-  Codex does not wait for it. It is not a hook, so no trust hash gates it
-  (Inferred: the trust check is in hook discovery, `engine/discovery.rs`).
+  Codex does not wait for it. aggy does not install it: the prompts and
+  reply in that argument would be visible in the process table.
+  Hook commands (`hooks/src/engine/command_runner.rs`, `build_command`):
+  `$SHELL -lc <command>` from the session environment, `/bin/sh -lc`
+  when `SHELL` is unset, in a new session; a spawn failure is recorded as
+  outcome `spawn_error` and a non-zero exit as `completed` with its exit
+  code, neither stopping the session.
   Rollouts (`rollout/src/recorder.rs`, `precompute_new_rollout_path`):
   `sessions/<YYYY>/<MM>/<DD>/rollout-<timestamp>-<thread id>.jsonl`
   under the Codex home, **created lazily** at the first persist, not at
@@ -594,7 +603,8 @@ does not set it yet (TODO(T6673)).
 8. Grok's `auto_compact_threshold_percent` at 1.0.70, and the context
    window of the user's model, before aggy sets Grok's compaction below
    200,000 tokens (T6673).
-9. aggy's installed hooks firing live in each CLI (T6616 for Codex):
-   that Codex runs a `hooks.json` `command` holding arguments
-   (`'<aggy>' hook --vendor codex Stop`) through a shell, as Claude and
-   Grok do, is unverified; the live check used a bare script path.
+9. aggy's installed hooks firing live in each CLI (T6616 for Codex).
+   How each runs the command is source- or doc-verified (Claude `sh -c`,
+   Codex `$SHELL -lc`, Grok "an inline shell command"); what Grok does
+   with a hook that cannot start is not stated (aggy's command exits 0
+   either way).
