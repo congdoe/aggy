@@ -544,6 +544,19 @@ the brief's missing-tools list rely on these:
   variable's value is unverified; aggy counts any value but `1` or
   `true` as off. Source/Doc-verified at `2bdd1d6a`.
 
+## Codex edit lockdown (T6687, W-1)
+
+Live (2026-10-28, codex-cli 0.164.0), in a scratch git repo with `env -i`
+and only `HOME` and `PATH` set:
+
+| Check | Command | Verdict | Evidence |
+| --- | --- | --- | --- |
+| Edit lockdown | `codex exec --strict-config --ignore-user-config --sandbox workspace-write --disable view_image --disable apps --disable plugins --disable goals --disable image_generation --disable sleep_tool "<prompt>"` | Confirmed | Exit 0. The shell tool created `./inside.txt` holding "OK" in the cwd. A write to `$HOME/<scratch canary dir>/out.txt`, outside the cwd, failed with `operation not permitted`, and the file was not created. |
+
+Not checked: whether exec's default web search is on under this set, and
+whether Codex resolves a linked worktree to its main repo for project
+trust (with `--ignore-user-config` no trust entry loads). `codex.EditLockdown` is this set.
+
 ## Codex CLI details
 
 - `codex exec resume [SESSION_ID] [PROMPT]` with `--last` and `--all`
