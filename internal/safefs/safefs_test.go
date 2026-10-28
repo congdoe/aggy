@@ -16,6 +16,7 @@ func fakeHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("AGGY_HOME", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CODEX_HOME", "")
 	t.Setenv("GROK_HOME", "")

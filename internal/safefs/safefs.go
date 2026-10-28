@@ -36,6 +36,12 @@
 // A credential file that does not exist has nothing to protect and matches
 // only by path.
 //
+// safefs also remembers every device and inode it has seen for a
+// credential file, in $AGGY_HOME/credential-ids (see HistoryFile), and
+// refuses a file with any of them, so a hard link made before a token
+// rotation is still refused after it. A corrupt history fails every call
+// with ErrHistory; a missing one is rebuilt from the current files.
+//
 // safefs fails closed. When no absolute home directory can be found, or
 // CLAUDE_CONFIG_DIR, CODEX_HOME, or GROK_HOME is set to a relative path,
 // every call returns an error matching ErrLocate.
@@ -52,6 +58,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -156,6 +163,7 @@ func homeDirs() ([]string, error) {
 type guard struct {
 	paths []string      // credential paths, normalized by normPath
 	ids   []fs.FileInfo // identities of the credential files that exist
+	hist  []id          // every identity seen for a credential file (history.go)
 }
 
 func loadGuard() (*guard, error) {
@@ -194,6 +202,15 @@ func loadGuard() (*guard, error) {
 		if fi, err := os.Stat(p); err == nil {
 			g.ids = append(g.ids, fi)
 		}
+	}
+	var seen []id
+	for _, fi := range g.ids {
+		if i, ok := fileID(fi); ok && fi.Mode().IsRegular() {
+			seen = append(seen, i)
+		}
+	}
+	if g.hist, err = g.loadHistory(seen); err != nil {
+		return nil, err
 	}
 	return g, nil
 }
@@ -250,12 +267,16 @@ func under(d, p string) bool {
 	return d == p || strings.HasPrefix(d, p+string(filepath.Separator))
 }
 
-// idMatch reports whether fi is a credential file.
+// idMatch reports whether fi is a credential file, or has the identity a
+// credential file had before a rotation (history.go).
 func (g *guard) idMatch(fi fs.FileInfo) bool {
 	for _, id := range g.ids {
 		if os.SameFile(id, fi) {
 			return true
 		}
+	}
+	if i, ok := fileID(fi); ok && slices.Contains(g.hist, i) {
+		return true
 	}
 	return false
 }
@@ -405,11 +426,11 @@ func Check(name string) error {
 // refusing every multiply-linked file closes that. aggy never hard-links
 // its own files.
 //
-// It does not cover a hard link made to a credential before a token
-// rotation that replaces the credential by rename: the old inode then has
-// one link left, holds the old token, and is no longer the credential's
-// identity.
-// TODO(T6724): close the hard-link-before-rotation case.
+// A hard link made to a credential before a token rotation that replaces
+// the credential by rename keeps the old inode, which then has one link
+// left and holds the old token. That file is refused by identity, with
+// ErrAuthPath, through the identity history (history.go), as long as
+// safefs saw the old inode before the rotation.
 var ErrHardLink = errors.New("refusing a file with more than one hard link")
 
 // ErrChanged means the file system changed between the checks and the

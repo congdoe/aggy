@@ -260,8 +260,9 @@ aggy runs with your privileges next to agents that can run shell commands. Every
 - reads through an opened descriptor, opened with `O_NOFOLLOW`, whose identity is checked before any byte is returned
 - refuses a `RemoveAll` whose tree holds a credential path, or any entry with a credential's identity, before removing anything
 - fails closed: when it cannot find an absolute home directory, or a relocation variable is a relative path, every call is refused
+- remembers every device and inode it has seen for a credential file, in `~/.aggy/credential-ids` (mode 0600, written atomically, capped at the newest 1,024), and refuses a file with any of them, so a hard link made before a vendor rotates its token still names a refused file after the rotation. A missing history is rebuilt from the current files; a corrupt one fails every call until it is deleted. A token rotated away before any aggy call saw it is not covered, and a new file that reuses a forgotten inode is refused, which fails closed.
 
-Hardening is still in progress for a few known gaps, such as a hard link made before a vendor rotates its token file, and check-then-act races in the path-based calls (`Chmod`, `Remove`, `MkdirAll`).
+Hardening is still in progress for check-then-act races in the path-based calls (`Chmod`, `Remove`, `MkdirAll`).
 
 Lint bans the main file-system entry points (`os`, `io/ioutil`, `io/fs`, `filepath` walks) outside `internal/safefs` and test files; every `syscall` name except an explicit allowlist (errno values, the open flags safefs needs, `Stat_t`, flock, and process attributes), in safefs too; every `net/` package except `net/url` and `net/netip`, `log/syslog`, `debug/*`, `go/parser`, and `go/build`; the SQLite driver and `sql.Open` outside `internal/store`; and requires every `nolint` comment to name the linter and give a reason. Process launches and other packages that open files are covered by review. The SQLite driver is the one exception to the wrapper: it opens the database and its `-wal` and `-shm` files itself, so the store checks those paths through `safefs` after opening.
 
