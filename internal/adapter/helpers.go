@@ -204,6 +204,9 @@ var ErrLockdownRejected = errors.New("the CLI rejected a lockdown flag")
 // commander's (Claude), clap's (Codex), and the generic forms.
 var rejectedFlag = []string{"unknown option", "unexpected argument", "unrecognized option", "unknown flag", "invalid value"}
 
+// TODO(T6737): match each CLI's own rejection format, not substrings of
+// any stderr line (review finding #10-9).
+//
 // CheckLockdown returns an error matching ErrLockdownRejected when a run
 // exited non-zero and its stderr says the CLI refused an option: one of
 // the lockdown flags aggy depends on may be gone from this version.

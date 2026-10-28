@@ -44,6 +44,11 @@ func resolve(p string) string {
 	return p
 }
 
+// TODO(T6737): check that the isolated cwd is outside any git work tree
+// (a TMPDIR inside some other repo), and keep absolute --path values out
+// of research and news prompts, which go to the web (review finding
+// #10-13).
+//
 // makeDirs makes the child's directories for req.
 func (b *Borrower) makeDirs(req Request) (childDirs, error) {
 	root, err := safefs.MkdirTemp(b.TempDir, "aggy-borrow-")
