@@ -98,7 +98,10 @@ func words(cmd string) []string {
 // that have a value. The words after it (its flags, then any VAR=value
 // for env) lead to the command it runs.
 var wrappers = map[string][]string{
-	"env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}, "exec": {"-a"}, "command": nil,
+	// env -S's value is the command line itself, so it is not skipped.
+	"env": {"-u", "--unset", "-C", "--chdir"}, "exec": {"-a"}, "command": nil, "eval": nil, "busybox": nil,
+	"parallel": {"-j", "--jobs", "-S", "--sshlogin", "--joblog", "-a", "--arg-file", "--delay", "--timeout",
+		"-n", "--max-args", "-L", "--max-lines", "--colsep", "-d", "--delimiter", "-I", "--results", "--tmpdir"},
 	"builtin": nil, "nohup": nil, "time": {"-f", "-o"}, "nice": {"-n", "--adjustment"},
 	"timeout": {"-s", "--signal", "-k", "--kill-after"}, "stdbuf": {"-i", "-o", "-e"},
 	"sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U"}, "doas": {"-u", "-C"},
@@ -186,13 +189,41 @@ func Nested(cmd string) string {
 func nestedIn(ws []string) string {
 	i := 0
 	for i < len(ws) {
-		for i < len(ws) && assignment(ws[i]) {
+		// "--" ends a wrapper's options (env --, ssh host --).
+		for i < len(ws) && (assignment(ws[i]) || ws[i] == "--") {
 			i++
 		}
 		if i >= len(ws) {
 			return ""
 		}
 		prog, rest := program(ws[i]), ws[i+1:]
+		if prog == "env" {
+			// -S<cmd> and --split-string=<cmd> carry the command.
+			ws = slices.Clone(ws)
+			for k := i + 1; k < len(ws) && strings.HasPrefix(ws[k], "-"); k++ {
+				if v, ok := strings.CutPrefix(ws[k], "--split-string="); ok {
+					ws[k] = v
+					break
+				}
+				if len(ws[k]) > 2 && strings.HasPrefix(ws[k], "-S") {
+					ws[k] = ws[k][2:]
+					break
+				}
+			}
+		}
+		if prog == "script" {
+			// script -c <cmd> <file> (util-linux), or script [file [cmd...]] (BSD).
+			for k, w := range rest {
+				if w == "-c" || w == "--command" {
+					return nestedIn(rest[k+1:])
+				}
+			}
+			j := skipFlags(rest, 0, []string{"-t", "-T", "-I", "-O", "-B", "-F", "-E", "-m"})
+			if j < len(rest) {
+				return nestedIn(rest[j+1:])
+			}
+			return ""
+		}
 		if vals, ok := wrappers[prog]; ok {
 			i = skipFlags(ws, i+1, vals)
 			if (prog == "timeout" || prog == "ssh") && i < len(ws) {
