@@ -55,6 +55,32 @@ func TestAddMemory(t *testing.T) {
 			t.Errorf("req %+v, warns %v", req, warns)
 		}
 	})
+	t.Run("codex, a project layer between cwd and the root sets the key", func(t *testing.T) {
+		repo := filepath.Join(t.TempDir(), "repo")
+		sub := filepath.Join(repo, "pkg", "x")
+		writeAt(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n", 0o644)
+		writeAt(t, parity.MemoryPath(repo), "note", 0o644)
+		writeAt(t, filepath.Join(repo, "pkg", ".codex", "config.toml"), `developer_instructions = "proj"`, 0o644)
+		if err := os.MkdirAll(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		var req adapter.InteractiveRequest
+		_, warns := addMemory(adapter.Codex, []string{probe.CapConfigOverride}, sub, &req)
+		if req.Memory != "" || len(warns) != 1 {
+			t.Errorf("req %+v, warns %v", req, warns)
+		}
+	})
+	t.Run("codex, the selected profile file sets the key", func(t *testing.T) {
+		cfg := filepath.Join(home, ".codex", "config.toml")
+		writeAt(t, cfg, "profile = \"work\"\n", 0o600)
+		writeAt(t, filepath.Join(home, ".codex", "work.config.toml"), `developer_instructions = "w"`, 0o600)
+		defer writeAt(t, cfg, `developer_instructions = "mine"`, 0o600)
+		var req adapter.InteractiveRequest
+		_, warns := addMemory(adapter.Codex, []string{probe.CapConfigOverride}, root, &req)
+		if req.Memory != "" || len(warns) != 1 {
+			t.Errorf("req %+v, warns %v", req, warns)
+		}
+	})
 	for _, tc := range []struct {
 		v    adapter.Vendor
 		caps []string
