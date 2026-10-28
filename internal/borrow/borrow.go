@@ -198,8 +198,31 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 	return out, nil
 }
 
-// vendors returns the vendors to run req on.
+// Both is the --vendor value that asks two vendors (research only).
+const Both = "both"
+
+// vendors returns the vendors to run req on: the router's first choice;
+// or, with --vendor, the named vendor, which bypasses routing but must
+// still be connected and support the kind; or, with --vendor both, every
+// connected vendor that supports research, which must be at least two.
 func (b *Borrower) vendors(ctx context.Context, req Request) ([]adapter.Vendor, error) {
+	switch req.Vendor {
+	case "":
+	case Both:
+		return b.both(ctx, req.Kind)
+	default:
+		v, err := adapter.ParseVendor(req.Vendor)
+		if err != nil {
+			return nil, fmt.Errorf("--vendor: %w (or %q for research)", err, Both)
+		}
+		if !b.Connected(ctx, v) {
+			return nil, fmt.Errorf("%s is not connected: install it and run aggy setup", v)
+		}
+		if err := Supports(b.Adapter(v, CLI{}), req.Kind); err != nil {
+			return nil, fmt.Errorf("%s cannot take a %s borrow: %w", v, req.Kind, err)
+		}
+		return []adapter.Vendor{v}, nil
+	}
 	vs, err := b.Router.Choose(ctx, RouteRequest{Kind: req.Kind, Parent: req.Parent, Repo: req.Repo})
 	if err != nil {
 		return nil, err
@@ -208,6 +231,41 @@ func (b *Borrower) vendors(ctx context.Context, req Request) ([]adapter.Vendor, 
 		return nil, fmt.Errorf("no connected vendor can take a %s borrow (run aggy setup)", req.Kind)
 	}
 	return vs[:1], nil
+}
+
+// both returns the two or more vendors --vendor both runs on.
+func (b *Borrower) both(ctx context.Context, k adapter.Kind) ([]adapter.Vendor, error) {
+	if k != adapter.Research {
+		return nil, fmt.Errorf("--vendor %s is for research only", Both)
+	}
+	var supported, ready []adapter.Vendor
+	for _, v := range adapter.Vendors() {
+		if Supports(b.Adapter(v, CLI{}), k) != nil {
+			continue
+		}
+		supported = append(supported, v)
+		if b.Connected(ctx, v) {
+			ready = append(ready, v)
+		}
+	}
+	switch {
+	case len(supported) < 2:
+		return nil, fmt.Errorf("--vendor %s: only one vendor supports %s right now (%s)", Both, k, names(supported))
+	case len(ready) < 2:
+		return nil, fmt.Errorf("--vendor %s: %s need two connected vendors, and only %s is connected", Both, k, names(ready))
+	}
+	return ready, nil
+}
+
+func names(vs []adapter.Vendor) string {
+	if len(vs) == 0 {
+		return "none"
+	}
+	s := make([]string, len(vs))
+	for i, v := range vs {
+		s[i] = string(v)
+	}
+	return strings.Join(s, ", ")
 }
 
 // newID returns a random id of 16 hex digits.
