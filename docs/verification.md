@@ -328,6 +328,41 @@ so its rejection lines have clap's form.
   unknown. Grok reads `AGENTS.md`, `CLAUDE.md`, and `.grok/rules/*.md`
   (also `.claude/rules/`) from the repo root to cwd.
 
+## Safety policy rendering (T6678)
+
+Docs and source only, not run live (2026-10-28). `aggy run` and
+`aggy policy wire` rely on these:
+
+- **Claude.** `--settings <file-or-json>` takes inline JSON and applies
+  for the session only, above the user, project, and local files; list
+  keys such as `permissions.deny` merge across layers instead of
+  replacing (`settings.md`, "Change a setting for one session", "Lists
+  merge instead of overriding"). A deny wins over any allow; `Read`
+  rules use gitignore patterns, so `Read(**/.env)` matches at any depth
+  under the working directory; a `*` in a Bash rule matches any text,
+  and deny rules apply to every subcommand of a compound command but not
+  to the same program written another way (`permissions.md`). Doc-verified.
+- **Grok.** `--deny RULE` (alias `--disallowedTools`) with
+  `value_delimiter = ','` and `--allow` (`crates/codegen/xai-grok-pager/src/app/cli.rs`
+  at `2bdd1d6a`). Rules from flags and every config source merge, `deny`
+  beats `ask` beats `allow`; `Read(**/.env)` matches anywhere; a Bash
+  pattern matches as a prefix or a whole-command glob, against every
+  segment of a chained command; Read deny rules also cover file paths
+  that shell commands such as `cat` name
+  (`user-guide/22-permissions-and-safety.md`). Source/Doc-verified;
+  `--allow` was live-confirmed with an MCP rule (T6734), `--deny` was not
+  run.
+- **Codex.** Every regular `*.rules` file in `<config folder>/rules` of
+  each config layer is loaded, the user layer's folder being
+  `$CODEX_HOME` (`core/src/exec_policy.rs`, `load_exec_policy`,
+  `collect_policy_files`). `prefix_rule(pattern, decision,
+  justification)` with `decision = "forbidden"`; a list in a pattern is
+  a set of alternatives; the strictest decision of all matching rules
+  wins (`execpolicy/README.md`, `execpolicy/src/parser.rs`). A file that
+  fails to parse makes Codex fall back to no user rules at all
+  (`load_exec_policy_with_warning`). `-s`/`-a` replace the configured
+  sandbox and approval policy. Source-verified at `6aaac69`.
+
 ## Launch-time MCP (T6734)
 
 Live (2026-10-27), with a 25-line stdlib stdio MCP server exposing

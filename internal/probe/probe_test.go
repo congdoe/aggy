@@ -58,9 +58,9 @@ func TestDetectFakes(t *testing.T) {
 		version string
 		caps    []string
 	}{
-		adapter.Claude: {"2.1.311", []string{CapHeadless, CapJSONOutput, CapSessionID, CapResume, CapForkSession, CapPermissionMode, CapSettingSources}},
+		adapter.Claude: {"2.1.311", []string{CapHeadless, CapJSONOutput, CapSessionID, CapResume, CapForkSession, CapPermissionMode, CapSettings, CapSettingSources}},
 		adapter.Grok: {"1.0.70", []string{CapHeadless, CapJSONOutput, CapSessionID, CapResume, CapForkSession,
-			CapPermissionMode, CapNoAltScreen, CapTools, CapDisallowTools, CapMaxTurns, CapRules}},
+			CapPermissionMode, CapNoAltScreen, CapTools, CapDisallowTools, CapMaxTurns, CapRules, CapDeny}},
 		adapter.Codex: {"0.164.0", []string{CapHeadless, CapResume, CapNoAltScreen, CapConfigOverride,
 			CapJSONOutput, CapSandbox, CapDisable, CapImageInput, CapIgnoreUserConfig}},
 	}
