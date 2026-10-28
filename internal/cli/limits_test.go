@@ -18,7 +18,9 @@ import (
 )
 
 func TestSessionLimitsHook(t *testing.T) {
-	limit := supervisor.Request{Type: supervisor.ReqHookEvent, Vendor: "claude", Event: "StopFailure", Payload: []byte(`{"error":"rate_limit"}`)}
+	limit := supervisor.Request{Type: supervisor.ReqHookEvent, Vendor: "claude", Event: "StopFailure", Payload: []byte(`{"error":"rate_limit"}`), FromSession: true}
+	outside := limit
+	outside.FromSession = false
 	tests := []struct {
 		name string
 		reqs []supervisor.Request
@@ -26,8 +28,9 @@ func TestSessionLimitsHook(t *testing.T) {
 	}{
 		{"one limit", []supervisor.Request{limit}, 1},
 		{"a burst is recorded once", []supervisor.Request{limit, limit, limit}, 1},
-		{"another vendor's event", []supervisor.Request{{Vendor: "grok", Event: "StopFailure", Payload: []byte(`{"error":"rate_limit"}`)}}, 0},
-		{"another error", []supervisor.Request{{Vendor: "claude", Event: "StopFailure", Payload: []byte(`{"error":"overloaded"}`)}}, 0},
+		{"from outside the CLI's process tree", []supervisor.Request{outside}, 0},
+		{"another vendor's event", []supervisor.Request{{Vendor: "grok", Event: "StopFailure", Payload: []byte(`{"error":"rate_limit"}`), FromSession: true}}, 0},
+		{"another error", []supervisor.Request{{Vendor: "claude", Event: "StopFailure", Payload: []byte(`{"error":"overloaded"}`), FromSession: true}}, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

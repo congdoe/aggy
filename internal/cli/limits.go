@@ -70,6 +70,11 @@ func (l *sessionLimits) hook(r supervisor.Request) {
 		go l.notifier.Show(context.Background(), "waiting", "aggy", waitingText(l.vendor))
 		return
 	}
+	// A limit feeds routing and the switch picker, so it counts only
+	// from the CLI's process tree (peer-pid lineage, fail closed).
+	if !r.FromSession {
+		return
+	}
 	sig, ok := limits.FromHook(l.vendor, r.Event, r.Payload)
 	if !ok {
 		return
