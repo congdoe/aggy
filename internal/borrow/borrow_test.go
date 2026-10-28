@@ -1,0 +1,136 @@
+package borrow
+
+import (
+	"context"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/congdoe/aggy/internal/adapter"
+)
+
+func TestPromptText(t *testing.T) {
+	today := time.Date(2026, 10, 28, 23, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name    string
+		p       Prompt
+		want    []string
+		notWant []string
+	}{
+		{"task and date", Prompt{Kind: adapter.News, Task: "what shipped in go 1.27?", Today: today},
+			[]string{"Kind: news", "Today's date: 2026-10-28", "## Task\n\nwhat shipped in go 1.27?\n", "publish date"},
+			[]string{"## Paths", "## Constraints"}},
+		{"paths and constraints", Prompt{Kind: adapter.Review, Task: "review", Paths: []string{"/r/a.go", "/r/b"},
+			Constraints: []string{"focus on races"}, Today: today},
+			[]string{"## Paths\n\n- /r/a.go\n- /r/b\n", "## Constraints\n\n- focus on races\n", "Do not change any file"}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.p.Text()
+			for _, w := range tt.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("prompt lacks %q:\n%s", w, got)
+				}
+			}
+			for _, w := range tt.notWant {
+				if strings.Contains(got, w) {
+					t.Errorf("prompt has %q:\n%s", w, got)
+				}
+			}
+		})
+	}
+}
+
+func TestParseKind(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    adapter.Kind
+		wantErr string
+	}{
+		{"image", adapter.Image, ""}, {"video", adapter.Video, ""}, {"research", adapter.Research, ""},
+		{"news", adapter.News, ""}, {"review", adapter.Review, ""},
+		{"edit", "", "comes in M3"}, {"chat", "", "unknown kind"},
+	}
+	for _, tt := range tests {
+		k, err := ParseKind(tt.in)
+		if k != tt.want || (tt.wantErr == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tt.wantErr)) {
+			t.Errorf("ParseKind(%q) = %q, %v", tt.in, k, err)
+		}
+	}
+}
+
+func TestRequestRefused(t *testing.T) {
+	w := newWorld(t)
+	b := w.borrower()
+	tests := []struct {
+		name string
+		req  Request
+	}{
+		{"empty task", w.req(adapter.News, "  ")},
+		{"edit", w.req(adapter.Edit, "fix it")},
+		{"relative path", Request{Kind: adapter.News, Task: "x", Repo: w.repo, Paths: []string{"a.go"}}},
+		{"multi-line constraint", Request{Kind: adapter.News, Task: "x", Repo: w.repo, Constraints: []string{"a\nb"}}},
+		{"huge task", w.req(adapter.News, strings.Repeat("x", MaxTask+1))},
+	}
+	for _, tt := range tests {
+		if _, err := b.Run(context.Background(), tt.req); err == nil {
+			t.Errorf("%s: accepted", tt.name)
+		}
+	}
+	if len(w.records()) != 0 {
+		t.Error("a refused borrow ran a CLI")
+	}
+}
+
+// TestPromptOnStdin (T6620): the prompt reaches the CLI on stdin, never in
+// argv, and the borrow and its child are recorded.
+func TestPromptOnStdin(t *testing.T) {
+	w := newWorld(t)
+	w.scenario[adapter.Grok] = `{"json":{"result":"Go 1.27 shipped."}}`
+	task := "what shipped in go 1.27? SECRET-TASK-MARKER"
+	req := w.req(adapter.News, task)
+	req.Paths, req.Constraints = []string{"/r/go.mod"}, []string{"cite primary sources"}
+	res, err := w.borrower().Run(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 1 || res[0].Status != "done" || res[0].Vendor != adapter.Grok || res[0].Text != "Go 1.27 shipped." {
+		t.Fatalf("results = %+v", res)
+	}
+	recs := w.records()
+	if len(recs) != 1 {
+		t.Fatalf("runs = %d", len(recs))
+	}
+	r := recs[0]
+	for _, a := range r.Args {
+		if strings.Contains(a, "SECRET-TASK-MARKER") {
+			t.Errorf("task in argv: %q", r.Args)
+		}
+	}
+	for _, s := range []string{task, "/r/go.mod", "cite primary sources", "2026-10-28"} {
+		if !strings.Contains(r.Stdin, s) {
+			t.Errorf("stdin lacks %q: %q", s, r.Stdin)
+		}
+	}
+	got, err := w.store.GetBorrow(context.Background(), res[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "done" || got.Kind != "news" || got.Vendor != "grok" || got.ChildID == "" || got.Title == "" {
+		t.Errorf("row = %+v", got)
+	}
+}
+
+// TestRouterSkipsParent: the stand-in order skips the vendor on screen.
+func TestRouterSkipsParent(t *testing.T) {
+	w := newWorld(t)
+	vs, err := w.router().Choose(context.Background(), RouteRequest{Kind: adapter.Image, Parent: adapter.Grok})
+	if err != nil || !slices.Equal(vs, []adapter.Vendor{adapter.Codex}) {
+		t.Errorf("image from grok = %v, %v", vs, err)
+	}
+	w.connected[adapter.Codex] = false
+	if _, err := w.borrower().Run(context.Background(), Request{Kind: adapter.Image, Task: "x", Repo: w.repo, Parent: adapter.Grok}); err == nil || !strings.Contains(err.Error(), "no connected vendor") {
+		t.Errorf("no vendor: %v", err)
+	}
+}
