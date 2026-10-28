@@ -79,8 +79,8 @@ Rules every adapter follows:
 
 These were checked on 2026-10-27 with claude 2.1.311, codex-cli 0.164.0, and
 grok 1.0.70 (help and source). The live checks of 2026-10-27 and
-2026-10-28 ran claude 2.1.312, codex-cli 0.164.0, and grok 1.0.70; the
-Claude adapter still declares 2.1.311 as tested. They are recorded, with commands and evidence, in
+2026-10-28 ran claude 2.1.312, codex-cli 0.164.0, and grok 1.0.70, and
+the Claude adapter declares 2.1.311 to 2.1.312 as tested. They are recorded, with commands and evidence, in
 [verification.md](verification.md). Each adapter states the versions it
 was tested against.
 
@@ -187,10 +187,11 @@ prompt argument is `-` after `--`: `codex exec` reads a non-terminal stdin
 to EOF, and a regular file reaches EOF at once, so it never waits as it
 would on an open pipe. (The recorded rule is "never an open stdin";
 `/dev/null` also satisfies it but leaves no way to pass a prompt from a
-file.) The runner that starts the command (T6621) must open `StdinPath`
-through `internal/safefs` with no-follow and non-blocking flags, refuse
-anything but a regular file (a FIFO or device could block or feed the CLI
-forever), and only then hand the descriptor to the child.
+file.) The borrow runner (`execrun.HeadlessRunner`) opens `StdinPath`
+with `safefs.OpenRegular`: no-follow and non-blocking flags, and anything
+but a regular file refused before and after the open (a FIFO or device
+could block or feed the CLI forever). O_NONBLOCK has no effect on reads of
+a regular file, so the descriptor goes to the child as is.
 
 **Session ids and models.** Every session id an adapter puts in argv,
 and every id `ParseHeadless` returns, passes `adapter.ValidSessionID`: it
@@ -204,16 +205,37 @@ keeps it and returns an error if the CLI reports another. Models pass `adapter.V
 
 **Web search and isolation.** Web search is only for research and news:
 any other kind with `WebSearch` is `ErrUnsupported`, because a child that
-can read files must not also have web egress. Research and news require
-`HeadlessRequest.IsolatedCwd`: the caller vouches that `Cwd` is a fresh,
-empty temp dir, which the M1 borrow runner (T6621) must create, since an
-adapter cannot check it without touching the disk. On Codex they also
-pass `--ignore-user-config` when the probe found it in `codex --help` or
-`codex exec --help` (capability `ignore-user-config`, through
-`codex.Adapter.Caps`, which the T6621 borrow runner must fill from the
-probe), which keeps the user's MCP servers out. When it is
-absent, user-configured MCP servers remain an open isolation gap on Codex,
-and on every vendor tool deny lists cover only built-in tools.
+can read files must not also have web egress. Every kind but review runs
+in a fresh, empty temp dir from the OS temp location, which the borrow
+runner makes and vouches for with `HeadlessRequest.IsolatedCwd` (research
+and news refuse to build without it); review runs read-only at the root of
+the git work tree. Per-run files an adapter needs (`adapter.ChildFiler`)
+go in `HeadlessRequest.RunDir`, a separate private dir; they are not vendor
+config, live only for the run, and do not go through the manifest.
+
+Every child gets its CLI's lockdown flag set (the table below), checked
+live on 2026-10-28. A CLI that rejects any of these flags, Codex under
+`--strict-config` meeting an unknown feature, or Grok warning `name no
+tool` (it then ignores the whole `--tools` allowlist, or removes nothing
+for a `--disallowed-tools` name) fails the borrow closed with the error
+class `lockdown` (`adapter.CheckLockdown`, `adapter.ErrLockdownRejected`);
+aggy never retries without the flag. A CLI whose version is outside the
+adapter's tested range, or unreadable, is refused for borrows unless
+`--allow-untested` is passed, since the lockdown was verified only there.
+
+**Review input.** Codex keeps the full lockdown for review, which leaves it
+no tool that reads a file, so every vendor's reviewer gets its input in
+the prompt: `internal/cli` runs `git diff` of the work tree (committed and
+uncommitted changes) against the merge-base of `HEAD` with the default
+branch (`origin/HEAD`, else `main`, else `master`), or against `--base
+<ref>`, through `execrun` with no fsmonitor, hooks, pager, external diff,
+or textconv from the repo's config; and it reads the `--path` files inside
+the repo through `safefs`. The material is capped at 256 KiB and says
+where it was cut. It sits under a "Material" heading in fences longer than
+any backtick run inside, marked as data to review, not instructions.
+Claude and Grok keep their read tools, at the work tree root. A review
+refuses a directory outside a git work tree, `$HOME`, `/`, and a root
+that holds or is inside aggy's state dir.
 
 **Errors.** The error class comes from structured fields only: Claude's
 `error`, `subtype`, and `is_error`; Grok's JSON `error`; Codex's `error`
@@ -237,29 +259,58 @@ error, never a guess. Codex `exec resume` counts as present only when the `exec`
 lists it under `Commands:` or its own help names a session-id argument; a
 usage error is a cached absence.
 
-Headless argv per kind (the prompt file is stdin; `<id>` a session id;
-`--model <m>`, or `-c model="<m>"` on Codex, is added only when a model is
-given; Grok's `[--max-turns N]` when `MaxTurns` is set):
+Headless argv per kind, as built (the prompt file is stdin; `<id>` a
+session id; `--model <m>`, or `-c model="<m>"` on Codex, only when a model
+is given; Grok's `[--max-turns N]` when the kind has a turn budget, which
+by default is news 15 and research 30; `<run>` is `HeadlessRequest.RunDir`):
 
 | Kind | Claude | Codex | Grok |
 | --- | --- | --- | --- |
-| research, news | unsupported | `codex exec --json --sandbox read-only --disable shell_tool --disable unified_exec --disable view_image -c web_search="live" [--ignore-user-config] -- -` | `grok -p --output-format json --tools web_search,x_keyword_search,x_semantic_search --disallowed-tools read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent` |
-| image | unsupported | `codex exec [-i <ref>]... --json --sandbox read-only -- -` | `grok -p --output-format json [--session-id <uuid>] --tools image_gen --disallowed-tools <all 8>` |
-| image `--edit` | unsupported | `codex exec [-i <ref>]... --json --sandbox read-only resume <id> -- -` | `grok -p --output-format json --resume <id> --tools image_gen,image_edit --disallowed-tools <all 8>` |
-| video | unsupported | unsupported | `grok -p --output-format json --tools video_gen --disallowed-tools <all 8>` |
-| review | `claude -p --output-format json --permission-mode plan [--session-id <uuid> \| --resume <id>]` | `codex exec --json --sandbox read-only -- -` | `grok -p --output-format json --permission-mode plan --tools read_file,grep,list_dir --disallowed-tools write,search_replace,run_terminal_cmd,web_fetch,Agent` |
-| edit | `claude -p --output-format json --permission-mode acceptEdits` | `codex exec --json --sandbox workspace-write -- -` | `grok -p --output-format json --tools read_file,grep,list_dir,write,search_replace --disallowed-tools run_terminal_cmd,web_fetch,Agent` |
+| research, news | unsupported | unsupported until T6638 (`codex.Refusal`: apply_patch can confirm guessed file contents) | `grok -p --output-format json --tools web_search --disallowed-tools <D> --no-subagents` |
+| image | unsupported | `codex exec [-i <ref>]... --json <L without --disable image_generation> --skip-git-repo-check -- -` | `grok -p --output-format json [--session-id <uuid>] --tools image_gen --disallowed-tools <D> --no-subagents` |
+| image `--edit` | unsupported | `codex exec [-i <ref>]... --json <L without image_generation> --skip-git-repo-check resume <id> -- -` | `grok -p --output-format json --resume <id> --tools image_gen,image_edit --disallowed-tools <D> --no-subagents` |
+| video | unsupported | unsupported | `grok -p --output-format json --tools image_gen,image_to_video --disallowed-tools <D> --no-subagents` (unverified headless) |
+| review | `claude -p --output-format json --permission-mode plan --strict-mcp-config --mcp-config <run>/mcp.json --tools Read,Grep,Glob [--setting-sources user] [--settings <run>/settings.json] [--session-id <uuid> \| --resume <id>]` | `codex exec --json <L> -- -` (in a git work tree, so no `--skip-git-repo-check`) | `grok -p --output-format json --permission-mode plan --tools read_file,grep,list_dir --disallowed-tools <D> --no-subagents` |
+| edit (M3; refused by `aggy borrow`) | `claude -p --output-format json --permission-mode acceptEdits --strict-mcp-config --mcp-config <run>/mcp.json` | `codex exec --json --sandbox workspace-write -- -` | `grok -p --output-format json --tools read_file,grep,list_dir,write,search_replace --disallowed-tools <D> --no-subagents` |
+
+`L` is `codex.Lockdown`: `--strict-config --ignore-user-config --sandbox
+read-only --disable shell_tool --disable unified_exec --disable view_image
+--disable apps --disable plugins --disable goals --disable image_generation
+--disable sleep_tool`. `--strict-config` makes an unknown `--disable`
+feature an error instead of a silent no-op. `D` is `grok.Lockdown` minus
+the kind's own tools, with `search_tool`, `use_tool`, and `Agent` always
+in it: `read_file, grep, list_dir, write, search_replace,
+run_terminal_cmd, web_fetch, Agent, search_tool, use_tool, image_gen,
+image_edit, image_to_video, reference_to_video, send_feedback, monitor,
+workflow, todo_write, ask_user_question, enter_plan_mode, exit_plan_mode,
+web_search`. `open_page` and `open_page_with_find` are not in it: they
+cannot be removed by name. Whether denying `web_search` takes them along,
+and `--disable-web-search` (not in a recorded help), are unverified
+(TODO(T6737)). Claude's `<run>/mcp.json` is `{"mcpServers":{}}`; the
+`--tools` names are unverified. `--setting-sources user` (so a review does
+not run the reviewed repo's own `.claude/settings.json` hooks) and
+`--settings` (the PreToolUse guard) are passed only when the probe found
+them in `claude --help` (capabilities `setting-sources` and `settings`);
+without the first, that gap is open (TODO(T6643)).
 
 Codex puts every exec flag before the `resume` subcommand, which takes
 only its own flags; `-i` takes one or more values, so the references come
 right after `exec` and `--json` ends them. `-i` also splits values on
 commas, so a reference path holding a comma is refused. `SessionID` adds `--session-id`
 on Claude and Grok; Codex refuses it. On Grok, `AllowedTools` may only
-name tools the kind already permits, compared case-insensitively:
-research and news get the three search tools and nothing else, review the
-three read tools, edit no shell (`aggy check` runs the tests). Every Grok
-run also passes the verified deny list, minus the kind's own tools, so
-isolation holds even if `--tools` is not a strict allowlist.
+name tools the kind already permits, compared case-insensitively, and
+never the MCP meta-tools: research and news get `web_search`, review the
+three read tools, edit no shell (`aggy check` runs the tests).
+
+**The PreToolUse guard.** Each child runs with `AGGY_DELEGATED=1`, so its
+own `aggy borrow` refuses (one hop). Where a CLI takes a per-run hook,
+the child also gets `aggy hook pretooluse`, which denies a shell command
+that runs `claude -p`, `codex exec`, `grok -p`, or `aggy borrow` at
+command position. It is an accident guard, not a security boundary.
+Claude gets it through `--settings`; Codex (hooks need a trusted hash,
+and `-c` hooks are skipped) and Grok (no per-run hook flag; it does load
+Claude's `settings.json` hooks) do not: TODO(M2 hooks). No M1 kind keeps
+a shell, so it is a backstop.
 
 Interactive argv: Claude `claude [--session-id <uuid> | --resume <id>
 [--fork-session [--session-id <uuid>]]] [<brief pointer>]`; Codex `codex
@@ -339,11 +390,13 @@ passes any of these variables to a CLI (`execrun.Env`).
 ### Tested versions
 
 Each adapter declares the CLI versions it was tested on, from the verified
-versions above: claude 2.1.311, codex-cli 0.164.0, and grok 1.0.70.
+versions above: claude 2.1.311 to 2.1.312, codex-cli 0.164.0, and grok
+1.0.70.
 Each declares it as `Tested` and through `TestedVersions()`.
 `adapter.VersionWarning(a, version)` returns a warning when a probed
 version falls outside that range or cannot be read, and "" inside it, for
-`aggy doctor` to show. Versions compare the semver way (pre-release
+`aggy doctor` to show, and `aggy borrow` refuses such a CLI unless
+`--allow-untested` is passed. Versions compare the semver way (pre-release
 identifiers numerically where both are numbers, build metadata ignored),
 and `x.y` means `x.y.0`. A `--version` aggy cannot read does not fail the
 probe: `Version` stays empty, nothing is cached, and the warning reports
@@ -358,17 +411,18 @@ the code until a live check settles them.
 | --- | --- |
 | Codex `SessionStart` hook fires in `exec` with `session_id` (T6616; source-verified, and hooks need a trusted hash) | Not used; the session folder watch stays the plan. |
 | Codex limit signals (T6617). Source shows `--json` has no limit code, only the text; the rollout has `task_complete.error.codex_error_info` and `token_count.rate_limits`. A real limit was not captured live | `codex.LimitCode` and `codex.LimitText` are matched in the code and message of `error` and `turn.failed` events, and in stderr only on a non-zero exit with no error event. |
-| Settled (T6618): those flags leave no file-read tool, but `apply_patch` is a file-guess oracle, and `apps`, `plugins`, `goals`, `image_generation`, and `sleep_tool` must be disabled too; Codex research and news are refused until T6638 | `codex.Isolation`, always with `--sandbox read-only` in an empty dir. |
+| Settled (T6618): those flags leave no file-read tool, but `apply_patch` is a file-guess oracle, and `apps`, `plugins`, `goals`, `image_generation`, and `sleep_tool` must be disabled too; Codex research and news are refused until T6638 | `codex.Lockdown` for image and review; research and news refused by `codex.Refusal`. |
 | Extra context at session start (T6619): settled as Claude `--append-system-prompt-file`, Codex `-c developer_instructions`, Grok `--rules`; resume behavior of the last two is open | A positional first message pointing to the brief file (`adapter.BriefPrompt`). |
 | `codex exec -` reads the prompt from stdin | Codex headless passes `-- -` with the prompt file on stdin. Confirmed live with `codex exec -i <png> ... -- - < prompt`. |
 | Codex exec flags go before `resume`, which takes only its own flags; `-i` takes several values | `codex exec [-i <ref>]... --json ... resume <id> -- -`. Confirmed by help and live: flags before `resume` apply to the resumed thread. |
-| `codex exec --ignore-user-config` keeps user MCP servers out (confirmed live; ChatGPT connector tools stay unless `--disable apps --disable plugins`) | Passed to research and news only when the probe found it in help. |
+| `codex exec --ignore-user-config` keeps user MCP servers out (confirmed live; ChatGPT connector tools stay unless `--disable apps --disable plugins`) | Always passed, in `codex.Lockdown`; a CLI that rejects it fails the borrow. |
 | The Codex thread-id format | Held to a UUID by `adapter.ValidSessionID`. |
 | `claude -p` and `grok -p` read the prompt from stdin | Both pass the prompt file on stdin with no prompt argument. |
 | Model flags | Claude and Grok `--model <m>`, Codex `-c model="<m>"`, all after `adapter.ValidModel`. |
 | `--permission-mode acceptEdits` (Claude edit) and `--sandbox workspace-write` (Codex edit) | `claude.PermissionEdit`, `codex.SandboxEdit`. |
-| `grok --tools` alone removes every other tool, and it combines with `--disallowed-tools` | The per-kind `--tools` allowlists, plus `grok.VerifiedDeny` minus the kind's tools as `--disallowed-tools`. |
-| `image_edit` and `video_gen` work headless on Grok | `grok.ImageTools` plus `image_edit` on resume, `grok.VideoTools`. |
+| `grok --tools` alone removes every other tool, and it combines with `--disallowed-tools` | The per-kind `--tools` allowlists, plus `grok.Lockdown` minus the kind's tools as `--disallowed-tools`, and `--no-subagents`; a `name no tool` warning fails the borrow. |
+| `image_edit`, `image_gen` plus `image_to_video` for video, work headless on Grok (there is no `video_gen`) | `grok.ImageTools` plus `image_edit` on resume, `grok.VideoTools`. |
+| Claude `--tools Read,Grep,Glob` names, and whether `--setting-sources user` keeps the `--settings` layer | `claude.ReviewTools`; `--setting-sources` only with the probed capability. |
 | Grok's cwd encoding under `sessions/` | `grok.EncodeCwd` (`url.QueryEscape`), then the scan fallback. |
 | Claude's JSON reply fields (`result`, `session_id`, `is_error`, `subtype`, `usage`) | Read when present; a reply with none of them is `ErrUnparsed`. |
 | Codex events after `thread.started` (`item.completed` agent messages, `turn.completed` usage, `error`, `turn.failed`) | Read when present; output with no `thread.started` is `ErrUnparsed`. |
