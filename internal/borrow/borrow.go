@@ -3,7 +3,6 @@ package borrow
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -521,17 +520,13 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 	if err != nil {
 		return Result{}, err
 	}
-	// The task hash compares questions for the redo rule (store.BorrowStats):
-	// the normalized task, as the research cache compares it. No task text
-	// is stored.
-	sum := sha256.Sum256([]byte(norm(req.Task)))
 	child := store.Child{
 		ID: newID(), ParentID: parent.ID, Vendor: string(v), Kind: string(req.Kind), Title: title(req.Task),
 		Model: model, Cwd: dirs.cwd, CreatedAt: now, LastActive: now, Worktree: res.Worktree,
 	}
 	row := store.Borrow{
 		ID: id, Kind: string(req.Kind), Vendor: string(v), Model: model,
-		TaskHash: hex.EncodeToString(sum[:]), Budget: store.BorrowBudget{Minutes: budget.Minutes, Turns: budget.Turns},
+		TaskHash: taskKey(req, res.Worktree.Base), Budget: store.BorrowBudget{Minutes: budget.Minutes, Turns: budget.Turns},
 		StartedAt: now,
 	}
 	lease, err := b.Store.StartBorrow(ctx, child, row, Caps)
