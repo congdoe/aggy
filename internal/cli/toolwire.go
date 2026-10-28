@@ -16,6 +16,7 @@ import (
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/switchboard"
+	"github.com/congdoe/aggy/internal/tooldef"
 	"github.com/congdoe/aggy/internal/toolwire"
 )
 
@@ -76,33 +77,38 @@ func addTools(ctx context.Context, v adapter.Vendor, caps []string, cwd, dir str
 		return failed("settings", fmt.Errorf("the tool settings could not be read: %w", err))
 	}
 	b.Session = session
+	var warns []string
+	for _, n := range session {
+		if !slices.ContainsFunc(b.Tools, func(t tooldef.Tool) bool { return t.Name == n }) {
+			warns = append(warns, refuse(n, diag.CodeToolUnknown, "unknown", "no tool of that name is loaded (aggy tool list)"))
+		}
+	}
 	if repo.root != "" {
 		if b.RepoOff, err = repoToolsOff(repo); err != nil {
 			// As aggy tool status shows it: every tool off in this repo.
-			return failed("repo_config", fmt.Errorf("the repo's config cannot be read, so every tool is off here: %w", err))
+			return append(warns, failed("repo_config", fmt.Errorf("the repo's config cannot be read, so every tool is off here: %w", err))...)
 		}
 	}
 	on := b.On(v, repo.key)
 	if !slices.ContainsFunc(on, func(st switchboard.State) bool { return st.Parts.MCP != nil }) {
-		return nil
+		return warns
 	}
 	switch {
 	case v == adapter.Grok && !grokToolsVerified:
-		return []string{refuse("", diag.CodeToolUnverified, "unverified", grokUnverified)}
+		return append(warns, refuse("", diag.CodeToolUnverified, "unverified", grokUnverified))
 	case v == adapter.Codex && !slices.Contains(caps, probe.CapConfigOverride):
-		return []string{refuse("", diag.CodeToolNoFlag, "no_flag", "codex --help does not list -c")}
+		return append(warns, refuse("", diag.CodeToolNoFlag, "no_flag", "codex --help does not list -c"))
 	}
 	taken, err := takenMCPNames(v, cwd, repo.root)
 	if err != nil {
 		// Fail closed: a name aggy cannot check is never wired over.
-		return failed("names", fmt.Errorf("the CLI's own MCP servers could not be listed to check names: %w", err))
+		return append(warns, failed("names", fmt.Errorf("the CLI's own MCP servers could not be listed to check names: %w", err))...)
 	}
 	bin, err := aggyBin()
 	if err != nil {
-		return failed("bin", err)
+		return append(warns, failed("bin", err)...)
 	}
 	servers, refused := toolwire.MCP(on, repo.root, dir, bin, taken)
-	var warns []string
 	for _, r := range refused {
 		warns = append(warns, refuse(r.Tool, r.Code, r.Code.String(), r.Why))
 	}
