@@ -368,6 +368,9 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	if w := adapter.VersionWarning(a, cli.Version); w != "" && !req.AllowUntested {
 		return Result{}, &preStartError{fmt.Errorf("%s; the borrow lockdown was verified only there, so aggy will not borrow on it (pass --allow-untested to run it anyway)", w)}
 	}
+	if err := grokTrustGate(v, req); err != nil {
+		return Result{}, &preStartError{err}
+	}
 	budget := b.Config.Budgets.For(req.Kind)
 	model := b.Config.Vendors.For(v).Model
 	now := b.Now()
