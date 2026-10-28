@@ -6,6 +6,7 @@ body:
     attributes:
       value: |
         **Never paste credentials.** No tokens, API keys, auth files, or anything from `~/.claude`, `~/.codex`, or `~/.grok`. The two outputs asked for below are scrubbed for a public issue, but read them before you paste.
+        Do not paste prompts, transcripts, or session files, and check vendor error lines before you paste them: they can hold your account email or an org id.
   - type: textarea
     id: what
     attributes:
@@ -22,9 +23,7 @@ body:
     attributes:
       label: aggy diag bundle
       description: |
-        Run `aggy diag bundle > aggy-bundle.md` (or `aggy diag bundle --trace <id>` for one flow; see [docs/logging.md](https://github.com/congdoe/aggy/blob/main/docs/logging.md)) and attach the file or paste it here. It holds the versions, the recent diagnostic timeline, and `aggy doctor --report`, scrubbed of home paths, user and host names, emails, and token-shaped text.
-    validations:
-      required: true
+        Run `aggy diag bundle > aggy-bundle.md` (or `aggy diag bundle --trace <id>` for one flow; see [docs/logging.md](https://github.com/congdoe/aggy/blob/main/docs/logging.md)) and attach the file or paste it here. It holds the versions, the recent diagnostic timeline, and `aggy doctor --report`, scrubbed of home paths, user and host names, emails, and token-shaped text. Read it before you attach it.
   - type: textarea
     id: doctor
     attributes:

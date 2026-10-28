@@ -6,6 +6,7 @@ body:
     attributes:
       value: |
         Read [Propose a tool for the default set](https://github.com/congdoe/aggy/blob/main/CONTRIBUTING.md#propose-a-tool-for-the-default-set) first. A tool that needs a proxy, a base URL, an API key in the environment, or a shell string is out of scope. Never paste credentials.
+        Do not paste prompts, transcripts, or session files, and check vendor error lines before you paste them: they can hold your account email or an org id.
   - type: input
     id: tool
     attributes:

@@ -224,12 +224,17 @@ var (
 	codexUnknownField = regexp.MustCompile("^(?:Error loading config\\.toml: |[Ee]rror: )?unknown configuration field `[^`]+` in -c/--config override")
 )
 
-// rejected returns the formats vendor v prints for a flag it refuses.
+// rejected returns the formats vendor v prints for a flag it refuses,
+// or nil for a vendor it does not know, whose failed runs CheckLockdown
+// then treats as rejected (fail closed).
 func rejected(v Vendor) []*regexp.Regexp {
-	if v == Claude {
+	switch v {
+	case Claude:
 		return commanderRejected
+	case Codex, Grok:
+		return clapRejected
 	}
-	return clapRejected
+	return nil
 }
 
 // CheckLockdown returns an error matching ErrLockdownRejected when a run
@@ -237,9 +242,14 @@ func rejected(v Vendor) []*regexp.Regexp {
 // for a refused option: one of the lockdown flags aggy depends on may be
 // gone from this version. Only the vendor's exact formats count, so an
 // unrelated failure that mentions "invalid value" keeps its own class.
+// A vendor with no known formats fails closed: every non-zero exit is
+// reported as rejected.
 func CheckLockdown(v Vendor, out Output) error {
 	if out.ExitCode == 0 {
 		return nil
+	}
+	if rejected(v) == nil {
+		return fmt.Errorf("%s: %w: no known rejection format for this vendor", v, ErrLockdownRejected)
 	}
 	for i, stream := range [][]byte{out.Stderr, out.Stdout} {
 		pats := rejected(v)

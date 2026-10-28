@@ -37,6 +37,10 @@ func TestCheckLockdownFormats(t *testing.T) {
 		{"a model's reply on stdout", Claude, 1, "", `{"result":"error: unknown option is a phrase"}`, false},
 		{"commander form on codex", Codex, 2, "error: unknown option '--x'\n", "", false},
 		{"exit 0", Claude, 0, "error: unknown option '--x'\n", "", false},
+		// C65-1: a vendor rejected() does not know fails closed on any
+		// failed run, and still passes a clean one.
+		{"unknown vendor fails closed", Vendor("other"), 1, "some failure\n", "", true},
+		{"unknown vendor, exit 0", Vendor("other"), 0, "", "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
