@@ -116,11 +116,12 @@ func TestBuildGrokGuard(t *testing.T) {
 	if got := Build(in); !strings.Contains(got, "turn0 ") {
 		t.Error("a codex brief dropped turns")
 	}
-	// One turn larger than the whole budget is left out too.
+	// F28-3: the newest turn is kept even when it alone is over the
+	// budget, cut from its start to fit.
 	in.To = adapter.Grok
-	in.Transcript.Turns = []adapter.Turn{{Role: "user", Text: strings.Repeat("y", 2*GrokBriefTokens+10)}}
-	if got := Build(in); EstimateTokens(got) > GrokBriefTokens || !strings.Contains(got, "All 1 turns read were left out") {
-		t.Errorf("oversized single turn kept (%d tokens)", EstimateTokens(got))
+	in.Transcript.Turns = []adapter.Turn{{Role: "user", Text: "OLDSTART" + strings.Repeat("y", 2*GrokBriefTokens+10) + "NEWEND"}}
+	if got := Build(in); EstimateTokens(got) > GrokBriefTokens || !strings.Contains(got, "NEWEND") || strings.Contains(got, "OLDSTART") || !strings.Contains(got, cutNote) {
+		t.Errorf("oversized single turn not cut to fit (%d tokens)", EstimateTokens(got))
 	}
 }
 
@@ -212,5 +213,32 @@ func TestBuildTurnCap(t *testing.T) {
 	}
 	if !strings.Contains(got, "turn 39 ") || strings.Contains(got, "turn 0 ") || !strings.Contains(got, "older turns were left out") {
 		t.Error("did not keep only the newest turns, with a note")
+	}
+}
+
+// F28-3: a newest turn over MaxTurnBytes on its own is kept, cut from its
+// start, for any CLI; the older turns are left out with a note.
+func TestBuildKeepsNewestTurn(t *testing.T) {
+	big := "OLDSTART\n" + strings.Repeat("line of text\n", MaxTurnBytes/10) + "NEWEND"
+	for _, to := range []adapter.Vendor{adapter.Codex, adapter.Grok} {
+		got := Build(Input{To: to, Transcript: adapter.Transcript{Path: "/t", Turns: []adapter.Turn{
+			{Role: "user", Text: "older turn"}, {Role: "assistant", Text: big},
+		}}})
+		if !strings.Contains(got, "NEWEND") || strings.Contains(got, "OLDSTART") || !strings.Contains(got, cutNote) ||
+			!strings.Contains(got, "1 older turns were left out") || strings.Contains(got, "All ") {
+			t.Errorf("%s: newest turn not kept and cut:\n%s", to, got[:min(len(got), 600)])
+		}
+		if to == adapter.Grok && EstimateTokens(got) > GrokBriefTokens {
+			t.Errorf("grok brief at %d tokens", EstimateTokens(got))
+		}
+		if to == adapter.Codex && len(got) > MaxTurnBytes+8<<10 {
+			t.Errorf("codex brief is %d bytes", len(got))
+		}
+	}
+	// Escape growth: control bytes that termsafe quadruples still fit.
+	esc := strings.Repeat("\x01", 3*GrokBriefTokens)
+	got := Build(Input{To: adapter.Grok, Transcript: adapter.Transcript{Turns: []adapter.Turn{{Role: "user", Text: esc + "END"}}}})
+	if EstimateTokens(got) > GrokBriefTokens || !strings.Contains(got, "END") {
+		t.Errorf("escaped turn: %d tokens", EstimateTokens(got))
 	}
 }

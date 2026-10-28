@@ -2,7 +2,9 @@ package brief
 
 import (
 	"fmt"
+	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/redact"
@@ -72,41 +74,95 @@ func EstimateTokens(s string) int { return (len(s) + 1) / 2 }
 // GrokBriefTokens. Turns are never summarized: the brief says how many it
 // dropped, and the transcript path stays for the reader to fetch them.
 func Build(in Input) string {
+	all := in.Transcript.Turns
 	// The newest turns that fit MaxTurnBytes are the only ones redacted,
 	// which bounds the time a brief takes on a long session.
-	first, size := len(in.Transcript.Turns), 0
-	for first > 0 && size+len(in.Transcript.Turns[first-1].Text) <= MaxTurnBytes {
+	first, size := len(all), 0
+	for first > 0 && size+len(all[first-1].Text) <= MaxTurnBytes {
 		first--
-		size += len(in.Transcript.Turns[first].Text)
+		size += len(all[first].Text)
+	}
+	limit := 2 * GrokBriefTokens // EstimateTokens counts two bytes a token
+	base := len(build(in, nil, nil, len(all)))
+	// The newest turn is always kept: one too large on its own is cut
+	// from its start to fit (F28-3).
+	keep := MaxTurnBytes
+	if in.To == adapter.Grok {
+		keep = min(keep, limit-base-turnSlack)
+	}
+	if n := len(all); n > 0 && (first == n || len(all[n-1].Text) > keep) {
+		all = slices.Clone(all)
+		all[n-1].Text = tail(all[n-1].Text, keep)
+		first = n - 1
 	}
 	// Each turn is redacted and fenced once, so the Grok guard can sum
 	// sizes instead of rebuilding the brief per dropped turn.
-	turns := make([]string, len(in.Transcript.Turns))
+	turns := make([]string, len(all))
 	removed := make([]int, len(turns))
-	for i, t := range in.Transcript.Turns[first:] {
+	render := func(i int) {
 		var w writer
-		w.WriteString("\n### " + oneLine(t.Role) + "\n\n")
-		w.data("text", t.Text)
-		turns[first+i], removed[first+i] = w.String(), w.removed
+		w.WriteString("\n### " + oneLine(all[i].Role) + "\n\n")
+		w.data("text", all[i].Text)
+		turns[i], removed[i] = w.String(), w.removed
+	}
+	for i := first; i < len(all); i++ {
+		render(i)
 	}
 	dropped := first
-	if in.To == adapter.Grok {
-		limit := 2 * GrokBriefTokens // EstimateTokens counts two bytes a token
-		size := len(build(in, nil, nil, len(turns)))
+	if in.To == adapter.Grok && len(all) > 0 {
+		size := base
 		dropped = len(turns)
-		for dropped > first && size+len(turns[dropped-1]) <= limit {
+		for dropped > first && (dropped == len(turns) || size+len(turns[dropped-1]) <= limit) {
 			dropped--
 			size += len(turns[dropped])
 		}
 	}
 	for {
 		out := build(in, turns[dropped:], removed[dropped:], dropped)
-		// Escaping can grow the text a little past the sum; drop one more.
-		if in.To != adapter.Grok || EstimateTokens(out) <= GrokBriefTokens || dropped == len(turns) {
+		if in.To != adapter.Grok || EstimateTokens(out) <= GrokBriefTokens || len(all) == 0 {
 			return out
 		}
-		dropped++
+		// Escaping can grow the text a little past the sum: drop one more
+		// old turn, or, with only the newest left, cut it shorter.
+		if dropped < len(all)-1 {
+			dropped++
+			continue
+		}
+		n := len(all) - 1
+		if all[n].Text == "" {
+			return out
+		}
+		all[n].Text = tail(all[n].Text, len(all[n].Text)/2)
+		render(n)
 	}
+}
+
+// turnSlack is room left in a Grok brief for the newest turn's header,
+// fence, and note.
+const turnSlack = 1 << 10
+
+// cutNote starts a turn cut to fit.
+const cutNote = "(cut: only the end of this turn is shown)\n"
+
+// tail returns s cut from its start to at most n bytes, starting at a
+// line or, failing that, a rune, with cutNote before it. s that fits is
+// returned as is.
+func tail(s string, n int) string {
+	n -= len(cutNote)
+	if len(s) <= n+len(cutNote) {
+		return s
+	}
+	if n <= 0 {
+		return cutNote
+	}
+	s = s[len(s)-n:]
+	if i := strings.IndexByte(s, '\n'); i >= 0 && i < 4<<10 && i < len(s)-1 {
+		s = s[i+1:]
+	}
+	for len(s) > 0 && !utf8.RuneStart(s[0]) {
+		s = s[1:]
+	}
+	return cutNote + s
 }
 
 // redactLines is redact.Lines; tests wrap it to count the bytes redacted.
