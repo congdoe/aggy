@@ -42,6 +42,7 @@ func (f RouterFunc) Choose(ctx context.Context, req RouteRequest) ([]adapter.Ven
 func Supports(a adapter.Adapter, k adapter.Kind) error {
 	req := adapter.HeadlessRequest{
 		Kind: k, PromptFile: "/aggy-support-check/run/prompt.md", Cwd: "/aggy-support-check/work",
+		RunDir:      "/aggy-support-check/run",
 		IsolatedCwd: true, WebSearch: k == adapter.Research || k == adapter.News,
 	}
 	_, err := a.Headless(req)

@@ -15,14 +15,14 @@ import (
 func TestSessionIDsCannotBeFlags(t *testing.T) {
 	a := New()
 	for _, id := range []string{"--permission-mode=bypassPermissions", "-x", "abc def", "not-a-uuid", "0b9d3c4e-1f2a-4b5c-8d7e-6f5a4b3c2d1e;x"} {
-		if c, err := a.Headless(adapter.HeadlessRequest{Kind: adapter.Review, PromptFile: "/p", Cwd: "/w", Resume: id}); err == nil {
+		if c, err := a.Headless(adapter.HeadlessRequest{Kind: adapter.Review, PromptFile: "/p", Cwd: "/w", RunDir: "/r", Resume: id}); err == nil {
 			t.Errorf("headless resume %q accepted: %q", id, c.Args)
 		}
 		if c, err := a.Interactive(adapter.InteractiveRequest{Resume: id}); err == nil {
 			t.Errorf("interactive resume %q accepted: %q", id, c.Args)
 		}
 	}
-	if _, err := a.Headless(adapter.HeadlessRequest{Kind: adapter.Review, PromptFile: "/p", Cwd: "/w", Model: "--dangerously-skip-permissions"}); err == nil {
+	if _, err := a.Headless(adapter.HeadlessRequest{Kind: adapter.Review, PromptFile: "/p", Cwd: "/w", RunDir: "/r", Model: "--dangerously-skip-permissions"}); err == nil {
 		t.Error("a flag-shaped model was accepted")
 	}
 }
@@ -76,7 +76,7 @@ func TestErrorClassFromStructuredFields(t *testing.T) {
 // TestWebSearchRefused (5): no web search for a kind that reads files.
 func TestWebSearchRefused(t *testing.T) {
 	for _, k := range []adapter.Kind{adapter.Review, adapter.Edit} {
-		_, err := New().Headless(adapter.HeadlessRequest{Kind: k, PromptFile: "/p", Cwd: "/w", WebSearch: true})
+		_, err := New().Headless(adapter.HeadlessRequest{Kind: k, PromptFile: "/p", Cwd: "/w", RunDir: "/r", WebSearch: true})
 		if !errors.Is(err, adapter.ErrUnsupported) {
 			t.Errorf("%s: %v", k, err)
 		}

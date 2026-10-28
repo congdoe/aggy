@@ -194,3 +194,30 @@ func ValidModel(model string) error {
 	}
 	return nil
 }
+
+// ErrLockdownRejected matches a headless run whose CLI rejected or
+// ignored one of the lockdown flags. The borrow fails closed: aggy never
+// retries without the flag.
+var ErrLockdownRejected = errors.New("the CLI rejected a lockdown flag")
+
+// rejectedFlag are the CLIs' messages for an option they do not take:
+// commander's (Claude), clap's (Codex), and the generic forms.
+var rejectedFlag = []string{"unknown option", "unexpected argument", "unrecognized option", "unknown flag", "invalid value"}
+
+// CheckLockdown returns an error matching ErrLockdownRejected when a run
+// exited non-zero and its stderr says the CLI refused an option: one of
+// the lockdown flags aggy depends on may be gone from this version.
+func CheckLockdown(v Vendor, out Output) error {
+	if out.ExitCode == 0 {
+		return nil
+	}
+	for _, line := range strings.Split(string(out.Stderr), "\n") {
+		low := strings.ToLower(line)
+		for _, p := range rejectedFlag {
+			if strings.Contains(low, p) {
+				return fmt.Errorf("%s: %w: %s", v, ErrLockdownRejected, strings.TrimSpace(line))
+			}
+		}
+	}
+	return nil
+}

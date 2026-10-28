@@ -102,6 +102,21 @@ var recordedValues = map[string][]string{
 	"--output-format":   {"json"},
 	"--permission-mode": {"plan"},
 	"--sandbox":         {"read-only"},
+	// The codex exec features the borrow lockdown disables, live-verified
+	// on codex-cli 0.164.0 (2026-10-28).
+	"--disable": {"shell_tool", "unified_exec", "view_image", "apps", "plugins", "goals", "image_generation", "sleep_tool"},
+}
+
+// grokTools are the tool names grok 1.0.70 knows (live-verified
+// 2026-10-28). A --tools list naming any other makes the real CLI warn
+// "name no tool" on stderr and ignore the whole allowlist; the fake
+// prints the same warning.
+var grokTools = []string{
+	"read_file", "grep", "list_dir", "write", "search_replace", "run_terminal_cmd", "web_fetch",
+	"Agent", "search_tool", "use_tool", "image_gen", "image_edit", "image_to_video",
+	"reference_to_video", "send_feedback", "monitor", "workflow", "todo_write",
+	"ask_user_question", "enter_plan_mode", "exit_plan_mode",
+	"web_search", "open_page", "open_page_with_find",
 }
 
 var uuidRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -195,24 +210,31 @@ type flagSpec struct {
 // Flags recorded in docs/adapters.md and docs/design.md, per vendor and
 // codex subcommand.
 var specs = map[string]flagSpec{
+	// --strict-mcp-config and --mcp-config: the borrow lockdown,
+	// live-verified on claude 2.1.312 (2026-10-28). --tools narrows the
+	// built-ins (tool names unverified).
 	"claude": {
-		values:   []string{"--output-format", "--permission-mode", "--session-id"},
-		switches: []string{"-p", "--fork-session"},
+		values:   []string{"--output-format", "--permission-mode", "--session-id", "--mcp-config", "--tools"},
+		switches: []string{"-p", "--fork-session", "--strict-mcp-config"},
 		optional: []string{"--resume"},
 	},
 	"grok": {
 		values: []string{"--output-format", "--permission-mode", "--session-id", "--resume",
 			"--tools", "--disallowed-tools", "--max-turns"},
-		switches: []string{"-p", "--fork-session", "--no-alt-screen", "--continue"}, // --continue: proposal §3
+		// --continue: proposal §3. --no-subagents: the borrow lockdown,
+		// live-verified on grok 1.0.70 (2026-10-28).
+		switches: []string{"-p", "--fork-session", "--no-alt-screen", "--continue", "--no-subagents"},
 	},
 	"codex": {
 		values:   []string{"-c"},
 		switches: []string{"--no-alt-screen"},
 	},
 	// codex exec flags go before the resume subcommand; -c is global.
+	// --ignore-user-config and --skip-git-repo-check: the borrow
+	// lockdown, live-verified on codex-cli 0.164.0 (2026-10-28).
 	"codex exec": {
 		values:   []string{"-c", "--disable", "--sandbox"},
-		switches: []string{"--json"},
+		switches: []string{"--json", "--ignore-user-config", "--skip-git-repo-check"},
 		multi:    []string{"-i"},
 	},
 	"codex exec resume": {
@@ -524,6 +546,15 @@ func (f *fake) main(args []string) int {
 		return fail(2, "%s: %v", f.vendor, err)
 	}
 	f.id = f.sessionID()
+	if f.vendor == "grok" {
+		for _, list := range f.flags["--tools"] {
+			for _, name := range strings.Split(list, ",") {
+				if !contains(grokTools, strings.TrimSpace(name)) {
+					fmt.Fprintf(os.Stderr, "warning: --tools: name no tool %q; ignoring the allowlist\n", name)
+				}
+			}
+		}
+	}
 	mode := "interactive"
 	if headless {
 		mode = "headless"

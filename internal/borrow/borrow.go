@@ -227,9 +227,13 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	hreq := adapter.HeadlessRequest{
 		Kind: req.Kind, PromptFile: promptFile, Model: model, Cwd: dirs.cwd,
 		IsolatedCwd: dirs.isolated, WebSearch: req.Kind == adapter.Research || req.Kind == adapter.News,
+		RunDir: dirs.run, GitRepo: dirs.gitRepo,
 	}
 	cmd, err := a.Headless(hreq)
 	if err != nil {
+		return Result{}, err
+	}
+	if err := writeChildFiles(a, hreq, dirs.run); err != nil {
 		return Result{}, err
 	}
 	cmd.Path = cli.Path
@@ -284,36 +288,4 @@ func classOr(c, def adapter.ErrorClass) adapter.ErrorClass {
 		return def
 	}
 	return c
-}
-
-// childDirs are one child's directories.
-type childDirs struct {
-	root     string // the temp dir holding the others, removed afterwards
-	run      string // aggy's own files for the run: the prompt
-	cwd      string // the child's working dir
-	isolated bool   // cwd is a fresh, empty temp dir
-}
-
-func (d childDirs) remove() { _ = safefs.RemoveAll(d.root) }
-
-// makeDirs makes a fresh temp dir with run/ for the prompt and work/,
-// empty, for the child's working dir.
-func (b *Borrower) makeDirs(_ Request) (childDirs, error) {
-	root, err := safefs.MkdirTemp(b.TempDir, "aggy-borrow-")
-	if err != nil {
-		return childDirs{}, err
-	}
-	// The CLIs see the cwd with symlinks resolved (/var is /private/var
-	// on macOS), so aggy names it the same way.
-	if r, err := filepath.EvalSymlinks(root); err == nil {
-		root = r
-	}
-	d := childDirs{root: root, run: filepath.Join(root, "run"), cwd: filepath.Join(root, "work"), isolated: true}
-	for _, p := range []string{d.run, d.cwd} {
-		if err := safefs.MkdirAll(p, 0o700); err != nil {
-			d.remove()
-			return childDirs{}, err
-		}
-	}
-	return d, nil
 }

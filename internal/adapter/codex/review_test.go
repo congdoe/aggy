@@ -3,11 +3,11 @@ package codex
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/fakecli"
-	"github.com/congdoe/aggy/internal/probe"
 )
 
 // Regression tests for the PR #5 review. Each fails on ed38103.
@@ -54,27 +54,24 @@ func TestFakeExecResumeOwnFlags(t *testing.T) {
 	}
 }
 
-// TestResearchIsolation (6): research needs an isolated cwd, and passes
-// --ignore-user-config when the probe found it.
-func TestResearchIsolation(t *testing.T) {
-	req := adapter.HeadlessRequest{Kind: adapter.Research, PromptFile: "/p", Cwd: "/w"}
-	if _, err := New().Headless(req); err == nil {
-		t.Error("research without IsolatedCwd accepted")
+// TestResearchUnsupported (T6621): research and news are refused on
+// Codex with the reason, since apply_patch cannot be removed.
+func TestResearchUnsupported(t *testing.T) {
+	for _, k := range []adapter.Kind{adapter.Research, adapter.News} {
+		_, err := New().Headless(adapter.HeadlessRequest{Kind: k, PromptFile: "/p", Cwd: "/w", IsolatedCwd: true, WebSearch: true})
+		if !errors.Is(err, adapter.ErrUnsupported) || !strings.Contains(err.Error(), "apply_patch") {
+			t.Errorf("%s: %v", k, err)
+		}
 	}
-	req.IsolatedCwd = true
-	c, err := New().Headless(req)
-	if err != nil || slices.Contains(c.Args, IgnoreUserConfig) {
-		t.Errorf("without the capability: %q, %v", c.Args, err)
-	}
-	c, err = Adapter{Caps: []string{probe.CapIgnoreUserConfig}}.Headless(req)
-	if err != nil || !slices.Contains(c.Args, IgnoreUserConfig) {
-		t.Errorf("with the capability: %q, %v", c.Args, err)
-	}
-	h := fakecli.NewHarness(t, fakecli.Build(t))
-	req.PromptFile, req.Cwd = h.Prompt, h.Cwd
-	c, _ = Adapter{Caps: []string{probe.CapIgnoreUserConfig}}.Headless(req)
-	if out, _ := h.Run(t, c, `{"extra_switches":["--ignore-user-config"]}`); out.ExitCode != 0 {
-		t.Errorf("fake: exit %d %q", out.ExitCode, out.Stderr)
+}
+
+// TestLockdownRejected (T6621): a CLI that rejects a lockdown flag fails
+// the borrow closed, whatever else it printed.
+func TestLockdownRejected(t *testing.T) {
+	out := adapter.Output{ExitCode: 2, Stderr: []byte("error: unexpected argument '--ignore-user-config' found\n")}
+	res, err := New().ParseHeadless(adapter.HeadlessRequest{Kind: adapter.Review}, out)
+	if !errors.Is(err, adapter.ErrLockdownRejected) || res.Error != adapter.ErrLockdown {
+		t.Errorf("ParseHeadless = %+v, %v", res, err)
 	}
 }
 
