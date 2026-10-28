@@ -1,10 +1,21 @@
-# Review owners. The security-sensitive packages are named on their own
-# so they keep an owner if the catch-all changes. The last match wins.
-*                    @congdoe
+# Review owners. The security-sensitive paths are named on their own so
+# they keep an owner if the catch-all changes. The last match wins.
+#
+# With a sole owner, do not turn on "Require review from Code Owners" in
+# branch protection: GitHub does not count an author's own approval, so
+# it would block every PR the owner opens.
+*                       @congdoe
 
-/internal/adapter/   @congdoe
-/internal/execrun/   @congdoe
-/internal/safefs/    @congdoe
-/internal/redact/    @congdoe
-/internal/hook/      @congdoe
-/internal/tooldef/   @congdoe
+/internal/adapter/      @congdoe
+/internal/execrun/      @congdoe
+/internal/safefs/       @congdoe
+/internal/redact/       @congdoe
+/internal/hook/         @congdoe
+/internal/tooldef/      @congdoe
+/internal/store/        @congdoe
+/internal/aggydir/      @congdoe
+/internal/patch/        @congdoe
+/internal/parity/       @congdoe
+/internal/borrow/       @congdoe
+/.golangci.yml          @congdoe
+/.github/workflows/     @congdoe

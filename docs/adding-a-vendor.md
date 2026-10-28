@@ -34,6 +34,11 @@ rest of it is.
   `adapter.Runner` its caller passes. The processes themselves start in
   `internal/execrun`, which lint keeps out of adapters; lint bans
   `os/exec` elsewhere.
+- **Config changes go through `internal/patch`.** Anything aggy writes
+  into a vendor's config (parity, MCP wiring, skill links, tool toggles)
+  is a guarded `patch.Patch` recorded in the manifest, so `aggy unwire`
+  can undo it. An adapter returns patches from `ConfigPatches`; it never
+  writes a vendor file itself.
 - **Vendor facts need a source.** See [below](#every-vendor-fact-needs-a-verificationmd-entry).
 
 ## The interface
@@ -56,15 +61,36 @@ package `internal/adapter/<vendor>` with:
   `review_test.go`, and `lockdown_test.go` where the CLI has lockdown
   flags.
 
-Then the vendor is wired in where the other three are named. Search for
-`adapter.Grok` to find them; today they include the `Vendor` constant
-and `Vendors()` in `internal/adapter/adapter.go`, the probe spec
-(`probe.Specs` in `internal/probe/probe.go`), the transcript reader
-(`internal/transcript`), the API-key and route checks
-(`internal/checkup/routes.go`), the PreToolUse guard's list of vendor
-headless commands (`internal/hook/pretooluse.go`), the routing order
-(`internal/router`), and the adapter choice in `internal/cli`
-(`run.go`, `borrow.go`, `setup.go`).
+Then the vendor is wired in where the other three are named. Today
+that is:
+
+- `internal/adapter/adapter.go`: the `Vendor` constant, `Vendors()`, and
+  `ParseVendor`'s message.
+- `internal/safefs/safefs.go`: the credential deny list (above).
+- `internal/probe/probe.go`: `probe.Specs`.
+- `internal/transcript`: the session-file reader.
+- `internal/checkup/routes.go` and `finding.go`: the API-key and route
+  checks.
+- `internal/hook/pretooluse.go` (the one-hop guard's list of vendor
+  headless commands) and `internal/hook/event.go`.
+- `internal/parity/policy.go` (the safety policy's deny rules) and
+  `internal/parity/mcp.go`.
+- `internal/diag/writer.go`: `LockdownEvent`, plus the vendor's
+  `adapter.<vendor>.lockdown_rejected` event in the registry
+  (`internal/diag/codes.go`, docs/logging.md).
+- `internal/config/config.go`: `VendorConfig`.
+- `internal/router`: the routing order.
+- `internal/borrow`: `borrow.go`, and `grok_trust.go` for a vendor with
+  folder trust.
+- `internal/brief`, `internal/tooldef/def.go`, and
+  `internal/devfix/capture.go`.
+- `internal/cli`: `run.go`, `borrow.go`, `setup.go`, `hooks.go`,
+  `mcp.go`, `parity.go`, and `sessionfile.go`.
+- `internal/fakecli/build.go` and `testdata/fakes` (below).
+
+This list goes stale. To find the rest, grep for `adapter.Grok`,
+`"grok"`, and `Grok[A-Z]`, and give the new vendor a case wherever Grok
+has one.
 
 The rules every method follows are in
 [adapters.md, "Contract"](adapters.md#contract): prompts go in files,
@@ -77,28 +103,48 @@ default; an unrecognized format returns `ErrNoTranscript` or
 
 ## Lockdown flags
 
-Every headless child except review runs in an empty temp directory
-(`HeadlessRequest.IsolatedCwd`; review runs read-only at the work-tree
-root), with its vendor's lockdown flags. They take away whatever the
-borrow's kind does not need: file and shell tools, MCP servers, user
-config, subagents, and web search except for research and news. Look at
-how each adapter does it:
+Image, video, research, and news children run in an empty temp
+directory (`HeadlessRequest.IsolatedCwd`), edit children in their own
+git worktree, and review read-only at the work-tree root, each with its
+vendor's lockdown flags. They take away whatever the borrow's kind does
+not need: file and shell tools, MCP servers, user config, subagents, and
+web search except for research and news. Look at how each adapter does
+it:
 
 - Claude: `--strict-mcp-config` with an empty `--mcp-config` written to
-  `RunDir` through `ChildFiles`, `--permission-mode plan` for review,
-  and a `--tools` allowlist.
+  `RunDir` through `ChildFiles`; for review, `--permission-mode plan`,
+  the `--tools` allowlist (`claude.ReviewTools`, review only), and
+  `--setting-sources user`; and the one-hop borrow guard, a PreToolUse
+  hook in a per-run `--settings` layer (`claude.GuardSettings`), when
+  the probe found `--settings`.
 - Codex: `codex.Lockdown` (`--strict-config`, `--ignore-user-config`,
   `--sandbox read-only`, and the `--disable` features), and
   `codex.EditLockdown` for edit.
 - Grok: a per-kind `--tools` allowlist, `grok.Lockdown` minus the kind's
-  tools as `--disallowed-tools`, `--no-subagents`, and
-  `--sandbox strict`.
+  tools as `--disallowed-tools`, `--no-subagents`,
+  `--permission-mode plan` for review, and `--deny` read rules
+  (`readDeny`). `--sandbox strict` depends on the kind and the host:
+  review, research, and news need it and the host's kernel sandbox
+  (`probe.CapSandbox` and `probe.CapKernelSandbox`) and are refused
+  without them; image and video run without it (`strictMedia` is off).
+
+**A review child must not load the reviewed repo's config or hooks**:
+the repo is someone else's change, and its hooks would run with no trust
+prompt. Claude gets `--setting-sources user`, and a review is refused on
+a CLI whose help does not list it. **A child must install the one-hop
+guard** where the CLI takes a per-run hook, so it cannot start another
+vendor CLI or `aggy borrow` (`HeadlessRequest.GuardCommand`,
+`internal/hook`).
 
 **Fail closed.** If the CLI rejects a lockdown flag, the run is
 discarded, not retried without it. `ParseHeadless` calls
 `adapter.CheckLockdown(vendor, out)` first, which matches only the CLI's
-own rejection formats (`internal/adapter/lockdown_check_test.go` lists
-them); add the new CLI's format there. If the CLI ignores a whole
+own rejection formats: they are in `internal/adapter/helpers.go`
+(`commanderRejected`, `clapRejected`), and `rejected(v)` picks them per
+vendor. A vendor `rejected` does not know gets no formats, and
+`CheckLockdown` then treats every failed run as a rejected lockdown, so
+it fails closed; add the new CLI's case to `rejected` and its lines to
+`lockdown_check_test.go`. If the CLI ignores a whole
 allowlist on one bad name, as Grok does, detect that warning and fail
 too. A kind the CLI cannot lock down is refused (see `codex.Refusal`
 for research and news), not run open.

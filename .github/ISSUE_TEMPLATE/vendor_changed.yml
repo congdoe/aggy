@@ -6,6 +6,7 @@ body:
     attributes:
       value: |
         **Never paste credentials.** No tokens, API keys, auth files, session files, or anything from `~/.claude`, `~/.codex`, or `~/.grok`. Do not run a vendor CLI with a `--dangerously-*` or other permission-skipping flag to reproduce this.
+        Do not paste prompts, transcripts, or session files, and check vendor error lines before you paste them: they can hold your account email or an org id.
   - type: dropdown
     id: vendor
     attributes:
