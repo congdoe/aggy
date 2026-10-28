@@ -35,11 +35,12 @@ aggy inbox            # unread borrow reports; aggy inbox <id> shows one
   1. purpose: where it appears and what it must do;
   2. size: pixels or aspect ratio (and length, for video);
   3. exact text, in quotes, or "no text";
-  4. style refs: `--path` to reference files, or named styles;
+  4. style refs: `--ref style.png` (Codex only), or named styles;
   5. target path, such as `public/hero.png`.
-  `aggy image` and `aggy video`, which copy the result to `--out`, are
-  coming; until then use `aggy borrow image|video`. Look at the result
-  and ask for an edit if it is wrong.
+  Run `aggy image "<brief>" --out <path>`; aggy copies the result there.
+  Look at it, and run `aggy image --edit <path> "<change>"` if it is
+  wrong. `aggy video` and Grok edits are off unless the user sets
+  `grok_file_tools`: those tools can upload local images. Ask first.
 
 ## Rules
 
