@@ -12,7 +12,14 @@ import (
 // InboxDir is where reports go, inside the state dir.
 const InboxDir = "inbox"
 
-// ReportPath is the report file of borrow id in stateDir.
+// ValidID reports whether id is a borrow id: 16 lowercase hex digits,
+// as newID makes. Only a valid id is ever joined into a path.
+func ValidID(id string) bool {
+	return len(id) == 16 && strings.Trim(id, "0123456789abcdef") == ""
+}
+
+// ReportPath is the report file of borrow id in stateDir. Callers check
+// ValidID first.
 func ReportPath(stateDir, id string) string {
 	return filepath.Join(stateDir, InboxDir, id+".md")
 }
@@ -50,6 +57,9 @@ func reportText(r Result, req Request, sessionID string, started time.Time) stri
 // writeReport writes the report to the inbox, through safefs, 0600 in a
 // 0700 dir.
 func (b *Borrower) writeReport(r Result, req Request, sessionID string, started time.Time) (string, error) {
+	if !ValidID(r.ID) {
+		return "", fmt.Errorf("borrow id %q is not 16 hex digits", r.ID)
+	}
 	dir := filepath.Join(b.StateDir, InboxDir)
 	if err := safefs.MkdirAll(dir, 0o700); err != nil {
 		return "", err

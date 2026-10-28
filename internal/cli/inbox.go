@@ -125,6 +125,12 @@ func showReport(ctx context.Context, s *store.Store, prefix string, now func() t
 		return 1
 	}
 	b := rows[0]
+	// The id is joined into a path below: it must be exactly what aggy
+	// makes, whatever the row holds.
+	if !borrow.ValidID(b.ID) {
+		fmt.Fprintf(stderr, "aggy inbox: borrow id %s is not 16 hex digits\n", termsafe.Field(b.ID))
+		return 1
+	}
 	if b.ReportPath == "" {
 		fmt.Fprintf(stderr, "aggy inbox: borrow %s has no report (status %s)\n", b.ID, termsafe.Field(b.Status))
 		return 1

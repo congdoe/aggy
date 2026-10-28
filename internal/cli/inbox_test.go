@@ -118,3 +118,25 @@ func TestInboxNoStore(t *testing.T) {
 		t.Errorf("code %d out %q", code, out.String())
 	}
 }
+
+// TestInboxRefusesBadID (#10-12): a row whose id is not 16 hex digits is
+// never joined into a path, even when its prefix matches.
+func TestInboxRefusesBadID(t *testing.T) {
+	seedInbox(t)
+	dir, _ := home.Dir()
+	secret := filepath.Join(dir, "secret.md")
+	mustWrite(t, secret, "SECRET\n", 0o600)
+	s, err := store.OpenDefault(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(`UPDATE borrows SET id = 'cccc/../../secret' WHERE id = 'aaaa000000000001'`); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	var out, errb bytes.Buffer
+	code := inboxWith([]string{"cccc"}, time.Now, &out, &errb)
+	if code == 0 || strings.Contains(out.String(), "SECRET") || !strings.Contains(errb.String(), "not 16 hex digits") {
+		t.Errorf("code %d out %q err %q", code, out.String(), errb.String())
+	}
+}
