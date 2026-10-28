@@ -281,13 +281,24 @@ func TestBorrowHelperProcess(t *testing.T) {
 
 // TestBorrowSignalKillsChild (#10-2): SIGTERM, SIGINT, or SIGHUP to aggy
 // borrow kills the child, records the borrow as killed (interrupted),
-// and removes the child's temp dir.
+// and removes the child's temp dir. Two signals close together (R-5,
+// C17-7) still kill the child before aggy can end.
 func TestBorrowSignalKillsChild(t *testing.T) {
 	if os.Getenv("AGGY_TEST_BORROW_HELPER") != "" {
 		t.Skip()
 	}
-	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP} {
-		t.Run(sig.String(), func(t *testing.T) {
+	tests := []struct {
+		name string
+		sigs []syscall.Signal
+	}{
+		{"terminated", []syscall.Signal{syscall.SIGTERM}},
+		{"interrupt", []syscall.Signal{syscall.SIGINT}},
+		{"hangup", []syscall.Signal{syscall.SIGHUP}},
+		{"hangup then terminated", []syscall.Signal{syscall.SIGHUP, syscall.SIGTERM}},
+		{"two terminated", []syscall.Signal{syscall.SIGTERM, syscall.SIGTERM}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			state := filepath.Join(t.TempDir(), "aggy")
 			record := filepath.Join(t.TempDir(), "rec.jsonl")
 			cmd := exec.Command(os.Args[0], "-test.run=^TestBorrowHelperProcess$", "-test.v")
@@ -312,8 +323,9 @@ func TestBorrowSignalKillsChild(t *testing.T) {
 					}
 				}
 			}
-			if err := cmd.Process.Signal(sig); err != nil {
-				t.Fatal(err)
+			for _, sig := range tt.sigs {
+				// A second signal may find aggy already gone.
+				_ = cmd.Process.Signal(sig)
 			}
 			done := make(chan error, 1)
 			go func() { done <- cmd.Wait() }()
@@ -321,7 +333,7 @@ func TestBorrowSignalKillsChild(t *testing.T) {
 			case werr := <-done:
 				t.Logf("aggy borrow exited: %v", werr)
 			case <-time.After(15 * time.Second):
-				t.Fatalf("aggy borrow did not exit after %s:\n%s", sig, out.String())
+				t.Fatalf("aggy borrow did not exit after %v:\n%s", tt.sigs, out.String())
 			}
 			gone := time.Now().Add(5 * time.Second)
 			for syscall.Kill(child.PID, 0) == nil {
@@ -330,6 +342,9 @@ func TestBorrowSignalKillsChild(t *testing.T) {
 					t.Fatalf("child %d outlived aggy borrow", child.PID)
 				}
 				time.Sleep(20 * time.Millisecond)
+			}
+			if len(tt.sigs) > 1 {
+				return // the second signal may end aggy before its cleanup
 			}
 			if _, err := os.Stat(child.Cwd); !os.IsNotExist(err) {
 				t.Errorf("temp dir %s left behind: %v", child.Cwd, err)

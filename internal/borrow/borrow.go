@@ -96,6 +96,10 @@ type Deps struct {
 	// Getenv reads aggy's own environment, for Delegated. Nil means
 	// os.Getenv.
 	Getenv func(string) string
+	// ChildDone, when set, is called once each child has been reaped
+	// (its process group killed if ctx ended), before the outcome is
+	// recorded.
+	ChildDone func()
 }
 
 // Caps are the concurrency limits of design section 7: at most 2 borrows
@@ -432,6 +436,9 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	// process group.
 	timeout := time.Duration(budget.Minutes) * time.Minute
 	out, runErr := b.Runner(timeout)(ctx, cmd)
+	if b.ChildDone != nil {
+		b.ChildDone()
+	}
 	res.Elapsed = b.Now().Sub(now)
 	end := store.BorrowEnd{EndedAt: b.Now()}
 	parsed, perr := a.ParseHeadless(hreq, out)
