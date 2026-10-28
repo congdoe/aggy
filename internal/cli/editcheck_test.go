@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -228,5 +229,27 @@ func TestGateRefusesTmpRepo(t *testing.T) {
 	}
 	if _, err := os.Stat(ran); err == nil {
 		t.Error("the checks ran")
+	}
+}
+
+// TestAcceptRefusesTmpState (T6750, K46-4): accept writes its patch under
+// aggy's state dir, so a state dir in a temp dir the child's sandbox may
+// write is refused before anything is shown or applied. On darwin the
+// comparison ignores case.
+func TestAcceptRefusesTmpState(t *testing.T) {
+	f, _ := editFixture(t)
+	gitIn(t, f.repo, "checkout", "--", "a.go")
+	id, _ := editBorrow(t, f, map[string]string{"a.go": "package a\n// edited\n"})
+	tmp := filepath.Dir(f.state)
+	if runtime.GOOS == "darwin" {
+		tmp = strings.ToUpper(tmp)
+	}
+	f.env.tmpDirs = func() []string { return []string{"", tmp} }
+	code, out, errOut := accept(f, "", false, id, "--yes")
+	if code != 1 || !strings.Contains(errOut, "aggy's state dir") || !strings.Contains(errOut, "set AGGY_HOME") || strings.Contains(out, "Applied") {
+		t.Errorf("code %d: %s %s", code, out, errOut)
+	}
+	if data, _ := os.ReadFile(filepath.Join(f.repo, "a.go")); strings.Contains(string(data), "edited") {
+		t.Errorf("applied: a.go = %q", data)
 	}
 }
