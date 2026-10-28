@@ -11,9 +11,10 @@ import (
 	"github.com/congdoe/aggy/internal/config"
 )
 
-// Request asks for the vendors that may run one borrow. It has the same
-// shape as the borrow package's route request, so the borrow runner can
-// pass its own value through when the two are wired together.
+// Request asks for the vendors that may run one borrow. It mirrors the
+// borrow package's route request field for field, but that one types Kind
+// as adapter.Kind where this one takes a string (parsed by Choose), so
+// the wiring converts it.
 type Request struct {
 	// Kind is the borrow kind, such as "research".
 	Kind string
