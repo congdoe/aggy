@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"sync"
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -128,9 +129,8 @@ func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t 
 			last.Vendor, short, why, last.Vendor)
 		return p, p.newChildOf(ctx, s, cfg, adapter.Vendor(last.Vendor), now)
 	case last.VendorSessionID == "":
-		// TODO(T6660): Codex's interactive id arrives from its hooks or
-		// sessions folder (sessionIndex) once the hooks branch merges and
-		// records it with SetChildSessionID.
+		// A Codex child whose id the session index never confirmed (its
+		// hooks not installed or not approved, or no turn saved).
 		fmt.Fprintf(stderr, "aggy: the last %s session of %s has no recorded session id; starting a new %s session.\n",
 			last.Vendor, short, last.Vendor)
 		return p, p.newChildOf(ctx, s, cfg, adapter.Vendor(last.Vendor), now)
@@ -285,4 +285,46 @@ func shortID(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+// childIDs records the on-screen child's vendor session id once the
+// session index knows it. The row keeps the first id (a /clear does not
+// move it). A Codex child gets no id at launch, so its lease is taken
+// here, when the id is confirmed, and held until the CLI exits.
+type childIDs struct {
+	s     *store.Store
+	child store.Child
+
+	mu    sync.Mutex
+	lease *store.Lease
+	done  bool
+}
+
+// set is sessionIndex.onID. Errors are dropped: a failed write must not
+// disturb the CLI on screen, and an id another child holds stays off
+// this one.
+func (c *childIDs) set(id string) {
+	ctx := context.Background()
+	if err := c.s.SetChildSessionID(ctx, c.child.ID, id); err != nil || c.child.VendorSessionID != "" {
+		return // the launch already leased a known id
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.done || c.lease != nil {
+		return
+	}
+	if l, err := c.s.AcquireLease(ctx, c.child.Vendor, id); err == nil {
+		c.lease = l
+	}
+}
+
+// release gives up a lease set took; later ids are not leased.
+func (c *childIDs) release(ctx context.Context) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.done = true
+	if c.lease != nil {
+		_ = c.lease.Release(ctx)
+		c.lease = nil
+	}
 }

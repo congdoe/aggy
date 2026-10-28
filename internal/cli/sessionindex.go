@@ -33,13 +33,16 @@ import (
 //     a borrow sharing CODEX_HOME) is never recorded, and neither is a
 //     later claim. Once recorded, the id is not replaced.
 //
-// TODO(T6661): record the parent and child rows; until then the id goes
-// to the events log under the parent id.
+// The id goes to the events log under the parent id, and to onID, which
+// records it on the child row (childIDs.set): first wins there too, so
+// after a /clear the child still names the conversation it started with.
 type sessionIndex struct {
 	parentID string
 	vendor   adapter.Vendor
 	// record writes one event; tests replace it.
 	record func(store.Event) error
+	// onID gets the recorded id, once; nil means nothing more to do.
+	onID func(id string)
 
 	mu    sync.Mutex
 	id    string          // recorded
@@ -119,19 +122,24 @@ func (x *sessionIndex) set(id, source, via string) {
 	}
 	// A failed write loses one index line; it must not disturb the CLI.
 	_ = x.record(store.Event{At: time.Now(), ParentID: x.parentID, Type: store.EventSession, Detail: d})
+	if x.onID != nil {
+		x.onID(id)
+	}
 }
 
-// startIndex returns the OnHook for a session of v under parentID. A
-// pre-assigned id (Claude, Grok) is recorded at once; for Codex it
-// starts the sessions folder watch. stop ends the watch once the CLI has
-// exited.
-func startIndex(parentID string, v adapter.Vendor, assigned string) (onHook func(supervisor.Request), stop func()) {
+// startIndex returns the OnHook for a session of v under parentID. An id
+// known at launch (Claude's and Grok's pre-assigned or resumed one, a
+// resumed Codex thread) is recorded at once; otherwise, for Codex, it
+// starts the sessions folder watch. onID (may be nil) gets the recorded
+// id. stop ends the watch once the CLI has exited.
+func startIndex(parentID string, v adapter.Vendor, assigned string, onID func(string)) (onHook func(supervisor.Request), stop func()) {
 	x := newSessionIndex(parentID, v)
+	x.onID = onID
 	done := make(chan struct{})
 	if assigned != "" {
 		x.set(assigned, "", "assigned")
 	}
-	if v == adapter.Codex {
+	if v == adapter.Codex && assigned == "" {
 		if dir, err := codexSessionsDir(); err == nil {
 			start := time.Now()
 			before := codexRollouts(dir, start, start)

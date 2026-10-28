@@ -119,11 +119,15 @@ func launch(name string, t target, stderr io.Writer) int {
 	}()
 	parentID := pl.parent.ID
 	runDir := filepath.Join(stateDir, "run")
-	// Claude and Grok run with the child's id (pre-assigned or resumed),
-	// the only id the index records for them (sessionIndex).
+	// The child's id when known at launch: Claude's and Grok's
+	// pre-assigned or resumed one (the only id the index records for
+	// them), or a resumed Codex thread. A new Codex child's id comes from
+	// the session index, which ids hands to the child row.
 	assigned := pl.child.VendorSessionID
+	ids := &childIDs{s: s, child: pl.child}
+	defer ids.release(ctx)
 	if t.Direct {
-		code, err := runDirect(cmd, runDir, parentID, v, assigned)
+		code, err := runDirect(cmd, runDir, parentID, v, assigned, ids.set)
 		if err != nil {
 			fmt.Fprintf(stderr, "%s: %v\n", name, err)
 			if code == 0 {
@@ -132,7 +136,7 @@ func launch(name string, t target, stderr io.Writer) int {
 		}
 		return code
 	}
-	onHook, stopIndex := startIndex(parentID, v, assigned)
+	onHook, stopIndex := startIndex(parentID, v, assigned, ids.set)
 	defer stopIndex()
 	code, err := supervisor.Run(supervisor.Options{
 		In: os.Stdin, Out: os.Stdout, Command: cmd,

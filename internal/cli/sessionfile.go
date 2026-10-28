@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -30,12 +31,10 @@ import (
 //     every project folder. A miss is "unknown", never "gone".
 //   - Codex: <$CODEX_HOME or ~/.codex>/sessions/<YYYY>/<MM>/<DD>/
 //     rollout-<timestamp>-<thread id>.jsonl, created at the first persist
-//     (source-verified in the hooks work: codex-rs/rollout/src/recorder.rs
-//     at 6aaac694). Which clock names the date folder is not recorded, so
-//     every day from the child's start through today is searched, in
-//     local time and UTC. TODO(T6660): share codex.RolloutThreadID and
-//     RolloutDirs once the hooks branch merges; internal/transcript
-//     (T6639) may also take this.
+//     (codex.RolloutThreadID). Which clock names the date folder is not
+//     recorded, so every date folder from the day before the child's
+//     start through the day after today is searched. codex.RolloutDirs
+//     covers only the days around one session, so it is not used here.
 //   - Grok: <$GROK_HOME or ~/.grok>/sessions/<url-encoded cwd>/<session
 //     id>/, a folder (docs/adapters.md, Grok); its newest entry counts.
 //
@@ -189,9 +188,8 @@ func codexRollout(root, id string, started, now time.Time) (time.Time, error) {
 			continue
 		}
 		for _, e := range es {
-			n := e.Name()
-			if strings.HasPrefix(n, "rollout-") && strings.HasSuffix(n, "-"+id+".jsonl") {
-				if t, ok := regularMtime(filepath.Join(d, n)); ok {
+			if got, ok := codex.RolloutThreadID(e.Name()); ok && got == id {
+				if t, ok := regularMtime(filepath.Join(d, e.Name())); ok {
 					return t, nil
 				}
 			}
