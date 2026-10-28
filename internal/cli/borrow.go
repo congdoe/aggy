@@ -89,6 +89,8 @@ func defaultBorrowEnv() borrowEnv {
 		cwd:        os.Getwd,
 		lookPath:   probe.LookPath,
 		probeRun:   execrun.ExecRunner(probeTimeout),
+		gitPath:    func() (string, error) { return probe.LookPath("git") },
+		gitRun:     execrun.ExecRunner(gitTimeout),
 		runner:     headlessRunner,
 		now:        time.Now,
 		executable: os.Executable,

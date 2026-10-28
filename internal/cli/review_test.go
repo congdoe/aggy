@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/execrun"
@@ -154,5 +157,82 @@ func TestBorrowReviewCommand(t *testing.T) {
 		if !strings.Contains(child.Stdin, s) {
 			t.Errorf("prompt lacks %q", s)
 		}
+	}
+}
+
+// TestReviewFilterDriver (R-2): a filter driver from the repo's config,
+// named by its attributes, never runs while aggy diffs a stat-dirty work
+// tree, whether through clean or process, and whatever the attributes
+// file.
+func TestReviewFilterDriver(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo, _ := filepath.EvalSymlinks(t.TempDir())
+	gitRepo(t, repo)
+	marker := filepath.Join(t.TempDir(), "pwned")
+	evil := "sh -c 'echo PWNED >> " + marker + "; cat'"
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("config", "filter.evil.clean", evil)
+	git("config", "filter.evil.required", "true")
+	git("config", "filter.dot.ted.process", evil)
+	mustWrite(t, filepath.Join(repo, ".gitattributes"), "* filter=evil\n", 0o600)
+	mustWrite(t, filepath.Join(repo, ".git", "info", "attributes"), "*.go filter=evil\n*.txt filter=dot.ted\n", 0o600)
+	mustWrite(t, filepath.Join(repo, "b.txt"), "b\n", 0o600)
+	git("add", "b.txt")
+	git("-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "filter.evil.clean=cat", "-c", "filter.dot.ted.process=", "commit", "-q", "-m", "b")
+	_ = os.Remove(marker)
+	// Stat-dirty: same content, new mtime.
+	later := time.Now().Add(time.Minute)
+	if err := os.Chtimes(filepath.Join(repo, "b.txt"), later, later); err != nil {
+		t.Fatal(err)
+	}
+	m, err := gitEnv().reviewMaterial(context.Background(), repo, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(m.Diff, "+func Uncommitted()") {
+		t.Errorf("diff lacks the change:\n%s", m.Diff)
+	}
+	if data, err := os.ReadFile(marker); err == nil || strings.Contains(m.Diff, "PWNED") {
+		t.Errorf("a filter driver ran: %q", data)
+	}
+}
+
+// TestDefaultBorrowEnvWired (R-1): the env aggy borrow really runs with
+// sets every func it may call, so no command reaches a nil func.
+func TestDefaultBorrowEnvWired(t *testing.T) {
+	v := reflect.ValueOf(defaultBorrowEnv())
+	for i := 0; i < v.NumField(); i++ {
+		if f := v.Field(i); f.Kind() == reflect.Func && f.IsNil() {
+			t.Errorf("defaultBorrowEnv().%s is nil", v.Type().Field(i).Name)
+		}
+	}
+}
+
+// TestBorrowReviewDefaultEnv (R-1): aggy borrow review with the default
+// env, not a test one, against a real git repo and the fake Codex found
+// on PATH.
+func TestBorrowReviewDefaultEnv(t *testing.T) {
+	f := newBorrowFixture(t, adapter.Codex)
+	gitRepo(t, f.repo)
+	gitBin, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git")
+	}
+	t.Setenv("PATH", f.bin+string(filepath.ListSeparator)+filepath.Dir(gitBin))
+	sub := filepath.Join(f.repo, "sub")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(sub)
+	var out, errb bytes.Buffer
+	if code := borrowWith([]string{"review", "review the change"}, defaultBorrowEnv(), &out, &errb); code != 0 {
+		t.Fatalf("code %d:\n%s\n%s", code, out.String(), errb.String())
 	}
 }
