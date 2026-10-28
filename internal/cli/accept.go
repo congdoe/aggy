@@ -8,9 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/congdoe/aggy/internal/borrow"
+	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/safefs"
@@ -18,12 +20,14 @@ import (
 	"github.com/congdoe/aggy/internal/termsafe"
 )
 
-const acceptUsage = `Usage: aggy accept <borrow-id> [--yes]
+const acceptUsage = `Usage: aggy accept <borrow-id> [--check] [--yes]
        aggy reject <borrow-id>
 
 accept shows the stat of an edit borrow's diff against the commit its
-worktree was made from, then applies the diff to the main checkout on y
-(or --yes). It refuses a diff that touches .git, a symlink or submodule,
+worktree was made from and what the repo's checks said about it, offers
+to run them first (--check runs them without asking; see aggy check),
+then applies the diff to the main checkout on y (or --yes). A failed
+check does not stop an accept, but it is shown as a warning. It refuses a diff that touches .git, a symlink or submodule,
 any top-level dot dir, the repo's core.hooksPath, or a file that holds
 hooks, CI, config, or instructions a tool or CLI loads, and a main
 checkout with changes in the paths the diff touches.
@@ -64,27 +68,153 @@ func editTarget(ctx context.Context, s *store.Store, g *gitWorktrees, id string)
 	return b, wt, g.owned(wt)
 }
 
-// openEdit parses <id> [--yes] and opens the store and the worktree
-// maker for an accept or reject.
-func openEdit(args []string, allowYes bool) (id string, yes bool, s *store.Store, stateDir string, err error) {
+// openEdit parses <id> and any of the flags allowed, and opens the store
+// and finds the state dir for an accept, reject, or check.
+func openEdit(args []string, allowed ...string) (id string, flags map[string]bool, s *store.Store, stateDir string, err error) {
+	flags = map[string]bool{}
 	for _, a := range args {
 		switch {
-		case a == "--yes" && allowYes:
-			yes = true
+		case slices.Contains(allowed, a):
+			flags[a] = true
 		case strings.HasPrefix(a, "-") || id != "":
-			return "", false, nil, "", fmt.Errorf("unexpected %s", termsafe.Field(a))
+			return "", nil, nil, "", fmt.Errorf("unexpected %s", termsafe.Field(a))
 		default:
 			id = a
 		}
 	}
 	if id == "" {
-		return "", false, nil, "", errors.New("want a borrow id")
+		return "", nil, nil, "", errors.New("want a borrow id")
 	}
 	if stateDir, err = home.Dir(); err != nil {
-		return "", false, nil, "", err
+		return "", nil, nil, "", err
 	}
 	s, err = store.OpenDefault(context.Background())
-	return id, yes, s, stateDir, err
+	return id, flags, s, stateDir, err
+}
+
+// asker reads y/n answers from one reader, so two questions in a row
+// do not lose buffered input.
+func asker(in io.Reader, stdout io.Writer) func(q string) bool {
+	r := bufio.NewReader(io.LimitReader(in, 2*maxAnswer))
+	return func(q string) bool {
+		fmt.Fprintf(stdout, "%s [y/N] ", q)
+		line, _ := r.ReadString('\n')
+		a := strings.ToLower(strings.TrimSpace(line))
+		return a == "y" || a == "yes"
+	}
+}
+
+// showEdit checks the edit's diff (editDiff) and prints its stat and the
+// check gate's result so far. It returns the patch.
+func showEdit(ctx context.Context, g *gitWorktrees, b store.Borrow, wt store.Worktree, stdout io.Writer) (string, error) {
+	if _, err := safefs.Lstat(wt.Path); err != nil {
+		return "", fmt.Errorf("the worktree is gone: %w", err)
+	}
+	stat, patch, err := g.editDiff(ctx, wt)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(stdout, "borrow %s: diff against %.12s\n", b.ID, wt.Base)
+	for _, l := range strings.Split(strings.TrimRight(stat, "\n"), "\n") {
+		fmt.Fprintf(stdout, "  %s\n", termsafe.Line(l))
+	}
+	fmt.Fprintf(stdout, "checks: %s\n", gateText(wt.Check))
+	return patch, nil
+}
+
+func gateText(r string) string {
+	switch r {
+	case store.CheckPass:
+		return "passed"
+	case store.CheckFail:
+		return "FAILED"
+	case store.CheckSkipped:
+		return "skipped"
+	}
+	return "not run"
+}
+
+// gateEdit is the check gate on an edit's diff (W-5), run only after
+// showEdit printed its stat. The check list comes from the main
+// checkout's config, never from the worktree, where the child could have
+// written one; the commands run in the worktree, on the child's code,
+// only when run is true or ask says yes. It records pass or fail, or
+// skipped when the person said no, and returns the result ("" when
+// nothing was decided).
+func gateEdit(ctx context.Context, s *store.Store, g *gitWorktrees, ce repoCheckEnv, b store.Borrow, wt store.Worktree, run bool, ask func(string) bool, stdout io.Writer) (string, error) {
+	rc, err := config.LoadRepo(wt.Repo)
+	if err != nil {
+		return "", err
+	}
+	if len(rc.Check) == 0 {
+		fmt.Fprintf(stdout, "No checks configured in %s.\n", termsafe.Field(config.RepoPath(wt.Repo)))
+		return "", nil
+	}
+	fmt.Fprintf(stdout, "The repo's checks, from %s (the main checkout, not the worktree), %d minutes each at most:\n",
+		termsafe.Field(config.RepoPath(wt.Repo)), checkMinutes(rc))
+	for _, c := range rc.Check {
+		fmt.Fprintf(stdout, "  %s\n", showCommand(c))
+	}
+	fmt.Fprintf(stdout, "They run in %s, outside the child's sandbox, as you. That worktree is the borrow child's work: its tests, scripts, and build files are code the child wrote.\n",
+		termsafe.Field(wt.Path))
+	if !run {
+		if ask == nil {
+			fmt.Fprintf(stdout, "Checks not run: run aggy check %s --yes, or in a terminal, to run them.\n", b.ID)
+			return "", nil
+		}
+		if !ask("Run them?") {
+			fmt.Fprintln(stdout, "Checks skipped.")
+			return store.CheckSkipped, s.SetWorktreeCheck(ctx, b.ID, store.CheckSkipped)
+		}
+	}
+	res := store.CheckPass
+	if ce.runList(ctx, wt.Path, rc, stdout) != 0 {
+		res = store.CheckFail
+	}
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if err := s.SetWorktreeCheck(context.WithoutCancel(ctx), b.ID, res); err != nil {
+		return "", err
+	}
+	// A check that wrote files the diff would hold makes accept refuse the
+	// worktree (editDiff), so say so now.
+	if tree, err := g.Tree(ctx, wt); err != nil || tree != wt.Tree {
+		fmt.Fprintln(stdout, "Warning: the checks changed files in the worktree, so aggy accept will refuse it until they are undone.")
+	}
+	return res, nil
+}
+
+// checkEditWith is aggy check <borrow-id> [--yes]: the check gate on an
+// edit's diff, on its own.
+func checkEditWith(ctx context.Context, args []string, env borrowEnv, ce repoCheckEnv, in io.Reader, tty bool, stdout, stderr io.Writer) int {
+	id, flags, s, stateDir, err := openEdit(args, "--yes")
+	if err != nil {
+		fmt.Fprintf(stderr, "aggy check: %s\n\n%s", termsafe.Field(err.Error()), checkUsage)
+		return 2
+	}
+	defer func() { _ = s.Close() }()
+	g := &gitWorktrees{env: env, stateDir: stateDir, out: stderr}
+	b, wt, err := editTarget(ctx, s, g, id)
+	if err == nil {
+		_, err = showEdit(ctx, g, b, wt, stdout)
+	}
+	var ask func(string) bool
+	if tty {
+		ask = asker(in, stdout)
+	}
+	res := ""
+	if err == nil {
+		res, err = gateEdit(ctx, s, g, ce, b, wt, flags["--yes"], ask, stdout)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "aggy check: %s\n", termsafe.Field(err.Error()))
+		return 1
+	}
+	if res != store.CheckPass {
+		return 1
+	}
+	return 0
 }
 
 func rejectWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
@@ -92,7 +222,7 @@ func rejectWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, acceptUsage)
 		return 0
 	}
-	id, _, s, stateDir, err := openEdit(args, false)
+	id, _, s, stateDir, err := openEdit(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy reject: %s\n\n%s", termsafe.Field(err.Error()), acceptUsage)
 		return 2
@@ -124,7 +254,7 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 		fmt.Fprint(stdout, acceptUsage)
 		return 0
 	}
-	id, yes, s, stateDir, err := openEdit(args, true)
+	id, flags, s, stateDir, err := openEdit(args, "--yes", "--check")
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy accept: %s\n\n%s", termsafe.Field(err.Error()), acceptUsage)
 		return 2
@@ -134,34 +264,45 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 		fmt.Fprintf(stderr, "aggy accept: %s\n", termsafe.Field(err.Error()))
 		return 1
 	}
-	ctx := context.Background()
+	// Ctrl-C, a kill, or a hangup during the checks kills their process
+	// group (execrun.CheckRunner).
+	ctx, stop := execrun.NotifyContext(context.Background())
+	defer stop()
+	yes := flags["--yes"]
 	g := &gitWorktrees{env: env, stateDir: stateDir, out: stderr}
 	b, wt, err := editTarget(ctx, s, g, id)
 	if err != nil {
 		return fail(err)
 	}
-	if _, err := safefs.Lstat(wt.Path); err != nil {
-		return fail(fmt.Errorf("the worktree is gone: %w", err))
-	}
-	stat, patch, err := g.editDiff(ctx, wt)
+	patch, err := showEdit(ctx, g, b, wt, stdout)
 	if err != nil {
 		return fail(err)
 	}
-	fmt.Fprintf(stdout, "borrow %s: diff against %.12s\n", b.ID, wt.Base)
-	for _, l := range strings.Split(strings.TrimRight(stat, "\n"), "\n") {
-		fmt.Fprintf(stdout, "  %s\n", termsafe.Line(l))
+	var ask func(string) bool
+	if tty {
+		ask = asker(in, stdout)
+	}
+	if flags["--check"] || (wt.Check == "" && tty && !yes) {
+		if wt.Check, err = gateEdit(ctx, s, g, defaultRepoCheckEnv(), b, wt, flags["--check"], ask, stdout); err != nil {
+			return fail(err)
+		}
+	}
+	if wt.Check == store.CheckFail {
+		fmt.Fprintln(stdout, "Warning: the repo's checks FAILED on this diff.")
 	}
 	if !yes {
 		if !tty {
 			fmt.Fprintln(stdout, "Not applied: run again with --yes, or in a terminal, to apply it.")
 			return 1
 		}
-		fmt.Fprintf(stdout, "Apply this to %s? [y/N] ", termsafe.Field(wt.Repo))
-		line, _ := bufio.NewReader(io.LimitReader(in, maxAnswer)).ReadString('\n')
-		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+		if !ask(fmt.Sprintf("Apply this to %s?", termsafe.Field(wt.Repo))) {
 			fmt.Fprintln(stdout, "Not applied.")
 			return 1
 		}
+	}
+	if wt.Check == "" {
+		// Applied without the checks: recorded, so the record says so.
+		_ = s.SetWorktreeCheck(ctx, b.ID, store.CheckSkipped)
 	}
 	// Claimed before the write (the per-record lock reject takes too), so
 	// a second accept or a reject cannot act on it meanwhile.
