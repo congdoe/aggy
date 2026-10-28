@@ -280,3 +280,50 @@ func must(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+// TestReadStateRefusesSwap (B14-1): a path swapped after ReadState's
+// Lstat, for a symlink to another file or for another file renamed into
+// place, is refused; the other file's bytes are never recorded as this
+// path's state. The read is a no-follow open checked against the Lstat.
+func TestReadStateRefusesSwap(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		swap func(path, other string) error
+	}{
+		{"symlink", func(path, other string) error {
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+			return os.Symlink(other, path)
+		}},
+		{"rename", func(path, other string) error {
+			b, err := os.ReadFile(other)
+			if err != nil {
+				return err
+			}
+			tmp := path + ".new"
+			if err := os.WriteFile(tmp, b, 0o600); err != nil {
+				return err
+			}
+			return os.Rename(tmp, path)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := setup(t, ptr("mine\n"))
+			other := filepath.Join(e.dir, "other")
+			must(t, os.WriteFile(other, []byte("someone else's\n"), 0o600))
+			testHookAfterLstat = func(p string) {
+				testHookAfterLstat = nil
+				must(t, tc.swap(p, other))
+			}
+			t.Cleanup(func() { testHookAfterLstat = nil })
+			st, err := ReadState(e.file)
+			if err == nil {
+				t.Fatalf("ReadState = %q, want an error", st.Data)
+			}
+			if string(st.Data) == "someone else's\n" {
+				t.Error("recorded the other file's bytes")
+			}
+		})
+	}
+}
