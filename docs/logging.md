@@ -191,6 +191,8 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `tool.request.refused` | error | tool | aggy tool refused or failed; no definition or switch changed. | The code's entry. |
 | `tool.def.refused` | warn | tool | A user tool definition was left out: invalid, untrusted, or colliding (attrs: file, its base name in ~/.aggy/tools, and key; never its argv). | aggy tool list names the file and the key; fix or remove it. |
 | `tool.switch.changed` | info | tool | aggy tool on or off recorded a switch (attrs: tool, vendor, repo, on). | aggy tool status shows what is on where. |
+| `tool.wire.refused` | warn | tool | A launch did not wire a tool that is on (attrs: tool, or none for every tool of the vendor); the session started without it. | The code's entry; aggy tool status. |
+| `tool.wire.done` | info | tool | A launch wired the tools that are on into the CLI it started (attrs: tools, the names wired). | aggy tool status shows why each is on. |
 
 | Code | Security | Meaning | What to check next |
 | --- | --- | --- | --- |
@@ -243,5 +245,9 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `tool.def_untrusted` | yes | A user tool definition, its tools folder, or the state dir is a symlink, not the user's own, or writable by group or others. | chmod go-w and check the owner of ~/.aggy, ~/.aggy/tools, and the file. |
 | `tool.still_on` |  | aggy tool remove refused: the tool is still on somewhere. | aggy tool off &lt;name&gt;, then remove it. |
 | `tool.failed` |  | Another aggy tool error: a file or the index could not be read or written. | The record's msg; aggy doctor. |
+| `tool.name_clash` |  | A tool that is on was not wired: the CLI already loads an MCP server of that name from the user's or the repo's config, and aggy never replaces or merges into one. | Rename or remove that server in the CLI's config, or turn the tool off. |
+| `tool.repo_path` |  | A tool that is on was not wired: its arguments hold {repo}, and the session is not in a repo, or the repo's path holds a character other than letters, digits, and / . _ + @ -. | Run the session in a repo whose path has only those characters. |
+| `tool.no_launch_flag` |  | Tools that are on were not wired: the CLI's --help lacks the launch flag they need (Codex -c). | Update the CLI; aggy setup shows its version. |
+| `tool.wire_failed` |  | Tools that are on were not wired: the CLI's own MCP config could not be read to check names, or the session's tool file could not be written. | The record's msg; aggy doctor. |
 | `tool.changed_since_add` | yes | aggy tool on refused: the user definition is not the file aggy tool add showed. | aggy tool remove &lt;name&gt;, then aggy tool add the file again and read what it runs. |
 <!-- registry:end -->

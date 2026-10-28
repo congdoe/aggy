@@ -201,6 +201,13 @@ func (a Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, e
 		// T6619; utils/cli/src/config_override.rs at rust-v0.164.0).
 		args = append(args, "-c", "developer_instructions="+tomlString(req.Memory))
 	}
+	for _, s := range req.MCP {
+		m, err := mcpOverrides(s)
+		if err != nil {
+			return adapter.Command{}, err
+		}
+		args = append(args, m...)
+	}
 	if req.Resume != "" {
 		if err := adapter.ValidSessionID(adapter.Codex, req.Resume); err != nil {
 			return adapter.Command{}, err
@@ -496,6 +503,40 @@ func (Adapter) ConfigPatches(adapter.ConfigContext) ([]patch.Patch, error) { ret
 // tomlString quotes s as a TOML basic string, for a Codex -c value, which
 // Codex parses as TOML (utils/cli/src/config_override.rs at
 // rust-v0.164.0).
+// mcpOverrides is one stdio MCP server as -c mcp_servers.<name>.* overrides
+// (docs/verification.md, T6734: the key path is live-confirmed; command,
+// args, cwd, and env_vars are RawMcpServerConfig's fields,
+// config/src/mcp_types.rs#L373-L389 at 6aaac69). No approval mode is
+// set: the person approves its calls as Codex asks.
+func mcpOverrides(s adapter.MCPServer) ([]string, error) {
+	if s.Name == "" || strings.Trim(s.Name, "abcdefghijklmnopqrstuvwxyz0123456789-") != "" {
+		return nil, fmt.Errorf("codex: MCP server name %q is not a bare key", s.Name)
+	}
+	if s.Command == "" {
+		return nil, fmt.Errorf("codex: MCP server %s has no command", s.Name)
+	}
+	k := "mcp_servers." + s.Name + "."
+	out := []string{"-c", k + "command=" + tomlString(s.Command), "-c", k + "args=" + tomlArray(s.Args)}
+	if s.Cwd != "" {
+		if err := adapter.CheckAbs("MCP server dir", s.Cwd); err != nil {
+			return nil, err
+		}
+		out = append(out, "-c", k+"cwd="+tomlString(s.Cwd))
+	}
+	if len(s.EnvVars) > 0 {
+		out = append(out, "-c", k+"env_vars="+tomlArray(s.EnvVars))
+	}
+	return out, nil
+}
+
+func tomlArray(xs []string) string {
+	q := make([]string, len(xs))
+	for i, x := range xs {
+		q[i] = tomlString(x)
+	}
+	return "[" + strings.Join(q, ", ") + "]"
+}
+
 func tomlString(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')

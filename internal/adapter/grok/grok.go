@@ -243,6 +243,17 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		}
 		args = append(args, "--deny", r)
 	}
+	if req.AgentFile != "" {
+		// Grok has no per-session MCP flag; an agent file's mcpServers
+		// is the launch-time way (docs/verification.md, T6734, headless).
+		// TODO(T6708): unverified on screen and on resume: whether the
+		// agent changes more than the servers (its prompt extends the
+		// default one), and whether a resumed session keeps them.
+		if err := adapter.CheckAbs("agent file", req.AgentFile); err != nil {
+			return adapter.Command{}, err
+		}
+		args = append(args, "--agent", req.AgentFile)
+	}
 	if req.BriefFile != "" {
 		if err := adapter.CheckAbs("brief file", req.BriefFile); err != nil {
 			return adapter.Command{}, err
