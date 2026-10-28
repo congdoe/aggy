@@ -52,14 +52,15 @@ func TestDoctor(t *testing.T) {
 			prepare: func(t *testing.T, home string, w *fakeWorld) []adapter.Adapter {
 				w.environ = []string{"HOME=" + home, "XAI_API_KEY=" + doctorSecret, "OPENAI_BASE_URL=http://" + doctorSecret}
 				mustWrite(t, filepath.Join(home, ".claude", "settings.json"), `{"env":{"ANTHROPIC_API_KEY":"`+doctorSecret+`"}}`, 0o600)
-				mustWrite(t, filepath.Join(home, ".grok", "config.toml"), "[toolset.video_gen]\nbase_url = \""+doctorSecret+"\"\n", 0o600)
+				mustWrite(t, filepath.Join(home, ".grok", "config.toml"), "[endpoints]\nxai_api_base_url = \""+doctorSecret+"\"\n", 0o600)
 				return nil
 			},
 			want: []string{
 				"warning api-key-env: XAI_API_KEY is set: the CLI may bill the API instead of the subscription",
 				"warning base-url-env: OPENAI_BASE_URL is set",
 				"warning route-config: ~/.claude/settings.json: env.ANTHROPIC_API_KEY is set",
-				"warning route-config: ~/.grok/config.toml: toolset.video_gen.base_url is set",
+				"warning route-config: ~/.grok/config.toml: endpoints.xai_api_base_url is set",
+				"General\n  warning base-url-env: OPENAI_BASE_URL is set: Codex does not read it",
 				"0 errors, 4 warnings",
 			},
 			notWant: []string{"DOCTORSECRET"},
@@ -267,7 +268,7 @@ func TestReportScrub(t *testing.T) {
 		{"probe: /home/alice/x/codex --version exited 1", "probe: ~/x/codex --version exited 1"},
 		{"/home/alice", "~"},
 		{"/home/alicebob/x", "<path>/x"},
-		{"~/.grok/config.toml: toolset.image_gen.env_key is set", "~/.grok/config.toml: toolset.image_gen.env_key is set"},
+		{"~/.grok/config.toml: endpoints.xai_api_base_url is set", "~/.grok/config.toml: endpoints.xai_api_base_url is set"},
 		{"run `claude`, then type `/login`", "run `claude`, then type `/login`"},
 		{"cc-alice: set; alice.smith and Alice_x and malice", "cc-fixture-user: set; fixture-user.smith and Alice_x and malice"},
 		{"/tmp/cc-alice/settings.json: env.X is set", "<path>/settings.json: env.X is set"},

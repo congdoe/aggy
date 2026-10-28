@@ -253,21 +253,35 @@ command through a scenario `replies` entry.
 variable name, file, and key, never by value. `aggy setup` shows these as
 warnings and `aggy doctor` reports them:
 
-Each is marked by where it comes from: **design** is docs/design.md
-section 2, **unverified** is a name taken from the vendors' public docs
-that this repo has not recorded or checked live. Unverified names are
-checked anyway: a false warning costs less than a missed API bill.
+Each is marked by where it comes from. **Source** is the vendor's source
+at a pinned revision: Codex at tag `rust-v0.164.0` (commit `6aaac69`),
+which matches the tested 0.164.0; Grok at `xai-org/grok-build` commit
+`2bdd1d6a` (2026-09-29), possibly newer than the tested 1.0.70. **Docs**
+is the vendor's published docs (Claude Code: env-vars, settings).
+**Design** is docs/design.md section 2 only.
 
 | What | Vendor | Source |
 | --- | --- | --- |
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY` set and non-empty | Claude, Codex, Grok | design |
-| `ANTHROPIC_AUTH_TOKEN`, `CODEX_API_KEY` set and non-empty | Claude, Codex | unverified |
-| `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` set and non-empty | Claude | unverified |
-| `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GROK_MODELS_BASE_URL` | Claude, Codex, Grok | design |
-| any other `*_BASE_URL` starting `ANTHROPIC_`, `OPENAI_`, `CODEX_`, `GROK_`, or `XAI_` | by prefix | a catch-all, not a recorded name |
-| Claude `settings.json` and `settings.local.json` (in `$CLAUDE_CONFIG_DIR`, else `~/.claude`): an `env` block setting any variable above, or an `apiKeyHelper` | Claude | unverified (file names, `env`, `apiKeyHelper`) |
-| Grok `toolset.image_gen` and `toolset.video_gen` `base_url` or `env_key`, in `config.toml` in `$GROK_HOME`, else `~/.grok` | Grok | design (keys); the file name is unverified |
-| Codex config file | Codex | **not checked**: the key that sets a base URL for its OpenAI provider is not recorded here or in the fixtures |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_BASE_URL` | Claude | docs (env-vars) |
+| `CODEX_API_KEY`: `codex exec` prefers it over any stored login, and it bills the API | Codex | source: `login/src/auth/manager.rs` (`load_auth`), `exec/src/lib.rs` |
+| `OPENAI_API_KEY` | Codex? | design; whether Codex reads it is unknown |
+| `OPENAI_BASE_URL`, and any `OPENAI_*_BASE_URL` | none | source: **Codex does not read it** (only its network-proxy code mentions it). Still flagged, under no vendor, since other OpenAI tools may |
+| `CODEX_*_BASE_URL` | Codex | a catch-all; no such variable is in the source |
+| `XAI_API_KEY` | Grok | design; docs |
+| `GROK_MODELS_BASE_URL` | Grok | source/docs: custom inference base URL |
+| `GROK_XAI_API_BASE_URL` (by the `GROK_*_BASE_URL` rule) | Grok | source/docs: overrides `endpoints.xai_api_base_url` |
+| Codex `config.toml` (in `$CODEX_HOME`, else `~/.codex`): top-level `openai_base_url`, or `base_url` in any `[model_providers.<id>]` | Codex | source: `config/src/config_toml.rs`, `model-provider-info/src/lib.rs` |
+| Claude `settings.json` and `settings.local.json` (in `$CLAUDE_CONFIG_DIR`, else `~/.claude`): an `env` block setting any variable above, or an `apiKeyHelper` | Claude | docs (settings) |
+| Grok `config.toml` (in `$GROK_HOME`, else `~/.grok`): `endpoints.xai_api_base_url` (the base URL Grok's image and video tools use), `endpoints.models_base_url`, and `base_url`, `env_key`, or `api_key` in any `[model.<id>]` (a bring-your-own-key model) | Grok | source: `xai-grok-shell/src/agent/media_tool_config.rs`; docs: config reference |
+
+Grok's `toolset.image_gen` and `toolset.video_gen` `base_url` and
+`env_key`, which docs/design.md once named, **do not exist** in Grok's
+source or docs (the documented `[toolset.*]` tables are `bash`,
+`ask_user_question`, `web_fetch`, `web_search`, and `file_toolset`), so
+they are not checked. Not checked yet: Claude's managed settings
+(`/Library/Application Support/ClaudeCode/managed-settings.json`,
+`/etc/claude-code/`), Grok's `managed_config.toml`, and
+`CODEX_ACCESS_TOKEN`.
 
 Config files are read through `safefs`. A symlinked file (as dotfile
 managers make) is resolved, its target must pass the credential check,

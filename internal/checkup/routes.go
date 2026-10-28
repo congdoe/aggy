@@ -81,10 +81,14 @@ func RouteEnv(environ []string) []Finding {
 	var out []Finding
 	for _, k := range names {
 		v, _ := BaseURLVar(k)
-		out = append(out, Finding{
-			Code: CodeBaseURLEnv, Level: LevelWarn, Vendor: v,
-			Message: k + " is set: the CLI may send its requests to another endpoint, which can bill an API key or sit in the middle of plan traffic",
-		})
+		msg := k + " is set: the CLI may send its requests to another endpoint, which can bill an API key or sit in the middle of plan traffic"
+		if strings.HasPrefix(k, "OPENAI_") {
+			// Codex 0.164 does not read OPENAI_BASE_URL (its config key
+			// openai_base_url does that), but other OpenAI tools may.
+			v = ""
+			msg = k + " is set: Codex does not read it, but other OpenAI tools may send their requests to another endpoint, which can bill an API key"
+		}
+		out = append(out, Finding{Code: CodeBaseURLEnv, Level: LevelWarn, Vendor: v, Message: msg})
 	}
 	return out
 }
@@ -111,11 +115,16 @@ func vendorHome(get func(string) string, relocate, name string) (string, bool) {
 //     $CLAUDE_CONFIG_DIR or ~/.claude: an apiKeyHelper, or an "env"
 //     block setting a base-URL variable (BaseURLVar), an API-key variable
 //     (see APIKeyEnv), or CLAUDE_CODE_USE_BEDROCK or _VERTEX.
-//   - Grok: config.toml in $GROK_HOME or ~/.grok, whose
-//     toolset.image_gen or toolset.video_gen sets base_url or env_key.
+//   - Codex: config.toml in $CODEX_HOME or ~/.codex: a top-level
+//     openai_base_url, or a base_url in any [model_providers.<id>]
+//     (source-verified at codex rust-v0.164.0). auth.json, next to it,
+//     is a credential file and is never read.
+//   - Grok: config.toml in $GROK_HOME or ~/.grok: endpoints.xai_api_base_url
+//     (which media tools use) or endpoints.models_base_url, and a
+//     base_url, env_key, or api_key in any [model.<id>] (a bring-your-own
+//     API model) (source-verified at grok-build 2bdd1d6a).
 //
-// Codex is not checked: the key that sets its OpenAI provider's base URL
-// is not recorded in docs/adapters.md. A missing file is not a finding;
+// A missing file is not a finding;
 // one that cannot be read or parsed is a warning. Each finding's Path is
 // the file.
 func RouteFiles(environ []string) []Finding {
@@ -125,6 +134,9 @@ func RouteFiles(environ []string) []Finding {
 		for _, name := range []string{"settings.json", "settings.local.json"} {
 			out = append(out, claudeSettings(filepath.Join(dir, name))...)
 		}
+	}
+	if dir, ok := vendorHome(get, "CODEX_HOME", ".codex"); ok {
+		out = append(out, codexConfig(filepath.Join(dir, "config.toml"))...)
 	}
 	if dir, ok := vendorHome(get, "GROK_HOME", ".grok"); ok {
 		out = append(out, grokConfig(filepath.Join(dir, "config.toml"))...)
@@ -247,28 +259,78 @@ func claudeSettings(path string) []Finding {
 	return out
 }
 
-func grokConfig(path string) []Finding {
-	b, f := readConfig(path, adapter.Grok)
+// tomlConfig reads and decodes a vendor TOML config into v. done is true
+// when the caller has nothing more to check: no file, or the findings
+// returned.
+func tomlConfig(path string, vendor adapter.Vendor, v any) (out []Finding, done bool) {
+	b, f := readConfig(path, vendor)
 	if f != nil {
-		return []Finding{*f}
+		return []Finding{*f}, true
 	}
 	if b == nil {
-		return nil
+		return nil, true
 	}
+	if _, err := toml.Decode(string(b), v); err != nil {
+		return []Finding{{Code: CodeConfigUnreadable, Level: LevelWarn, Vendor: vendor, Path: path,
+			Message: "cannot be checked for base URLs and API keys (not valid TOML)"}}, true
+	}
+	return nil, false
+}
+
+// tableKeys returns the keys of a TOML table, sorted.
+func tableKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func codexConfig(path string) []Finding {
 	var c struct {
-		Toolset map[string]any `toml:"toolset"`
+		OpenAIBaseURL  any            `toml:"openai_base_url"`
+		ModelProviders map[string]any `toml:"model_providers"`
 	}
-	if _, err := toml.Decode(string(b), &c); err != nil {
-		return []Finding{{Code: CodeConfigUnreadable, Level: LevelWarn, Vendor: adapter.Grok, Path: path,
-			Message: "cannot be checked for media API settings (not valid TOML)"}}
+	if out, done := tomlConfig(path, adapter.Codex, &c); done {
+		return out
+	}
+	const what = "Codex may send its requests to another endpoint, which can bill an API key or sit in the middle of plan traffic"
+	var out []Finding
+	if set(c.OpenAIBaseURL) {
+		out = append(out, routeConfig(path, adapter.Codex, "openai_base_url", what))
+	}
+	for _, id := range tableKeys(c.ModelProviders) {
+		if p, _ := c.ModelProviders[id].(map[string]any); set(p["base_url"]) {
+			out = append(out, routeConfig(path, adapter.Codex, "model_providers."+id+".base_url", what))
+		}
+	}
+	return out
+}
+
+func grokConfig(path string) []Finding {
+	var c struct {
+		Endpoints map[string]any `toml:"endpoints"`
+		Model     map[string]any `toml:"model"`
+	}
+	if out, done := tomlConfig(path, adapter.Grok, &c); done {
+		return out
 	}
 	var out []Finding
-	for _, tool := range []string{"image_gen", "video_gen"} {
-		tbl, _ := c.Toolset[tool].(map[string]any)
-		for _, key := range []string{"base_url", "env_key"} {
-			if set(tbl[key]) {
-				out = append(out, routeConfig(path, adapter.Grok, "toolset."+tool+"."+key,
-					"Grok may send media requests to an API key instead of the subscription"))
+	if set(c.Endpoints["xai_api_base_url"]) {
+		out = append(out, routeConfig(path, adapter.Grok, "endpoints.xai_api_base_url",
+			"Grok, and its image and video tools, may send requests to another endpoint, which can bill an API key"))
+	}
+	if set(c.Endpoints["models_base_url"]) {
+		out = append(out, routeConfig(path, adapter.Grok, "endpoints.models_base_url",
+			"Grok may send its requests to another endpoint, which can bill an API key"))
+	}
+	for _, id := range tableKeys(c.Model) {
+		m, _ := c.Model[id].(map[string]any)
+		for _, key := range []string{"base_url", "env_key", "api_key"} {
+			if set(m[key]) {
+				out = append(out, routeConfig(path, adapter.Grok, "model."+id+"."+key,
+					"this model may bill an API key instead of the subscription"))
 			}
 		}
 	}

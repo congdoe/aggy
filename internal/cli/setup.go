@@ -151,6 +151,11 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 	if st.ask {
 		fmt.Fprintln(stdout, "aggy setup checks each vendor CLI in turn. Answer n to skip one; run aggy setup again any time.")
 	}
+	// Findings no one vendor owns, such as OPENAI_BASE_URL, which Codex
+	// does not read but other OpenAI tools may.
+	for _, f := range checkup.ForVendor(st.findings, "") {
+		fmt.Fprintf(stdout, "%s: %s\n", f.Level, termsafe.Field(f.Text(env.home)))
+	}
 	code := 0
 	for _, a := range selected {
 		if c := st.vendor(ctx, a); c != 0 {

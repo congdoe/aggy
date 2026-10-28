@@ -21,6 +21,7 @@ func TestBaseURLVar(t *testing.T) {
 		{"OPENAI_BASE_URL", adapter.Codex},
 		{"CODEX_API_BASE_URL", adapter.Codex},
 		{"GROK_MODELS_BASE_URL", adapter.Grok},
+		{"GROK_XAI_API_BASE_URL", adapter.Grok},
 		{"XAI_BASE_URL", adapter.Grok},
 		{"GEMINI_BASE_URL", ""},
 		{"OPENAI_BASE_URL_X", ""},
@@ -82,10 +83,15 @@ func TestRouteFiles(t *testing.T) {
 		{"claude apiKeyHelper and cloud switch (T6611 review 7)",
 			`{"apiKeyHelper":"/bin/` + secret + `","env":{"CLAUDE_CODE_USE_VERTEX":"1","ANTHROPIC_AUTH_TOKEN":"` + secret + `"}}`, "",
 			[]string{"route-config claude ~/.claude/settings.json: apiKeyHelper is set", "route-config claude ~/.claude/settings.json: env.ANTHROPIC_AUTH_TOKEN is set", "route-config claude ~/.claude/settings.json: env.CLAUDE_CODE_USE_VERTEX is set: Claude Code may use Google Vertex AI"}},
-		{"grok media keys", "",
-			"[toolset.image_gen]\nbase_url = \"https://" + secret + "\"\n[toolset.video_gen]\nenv_key = \"XAI_API_KEY\"\nbase_url = \"\"\n",
-			[]string{"route-config grok ~/.grok/config.toml: toolset.image_gen.base_url is set", "route-config grok ~/.grok/config.toml: toolset.video_gen.env_key is set"}},
-		{"grok toolset odd shape", "", "toolset = 3\n", nil},
+		{"grok endpoints and BYOK models (T6611 D)", "",
+			"[endpoints]\nxai_api_base_url = \"https://" + secret + "\"\nmodels_base_url = \"u\"\n[model.mine]\nbase_url = \"u\"\napi_key = \"" + secret + "\"\nenv_key = \"\"\n",
+			[]string{"route-config grok ~/.grok/config.toml: endpoints.xai_api_base_url is set: Grok, and its image and video tools,",
+				"route-config grok ~/.grok/config.toml: endpoints.models_base_url is set",
+				"route-config grok ~/.grok/config.toml: model.mine.base_url is set",
+				"route-config grok ~/.grok/config.toml: model.mine.api_key is set"}},
+		{"grok toolset keys do not exist and are not flagged", "",
+			"[toolset.image_gen]\nbase_url = \"u\"\nenv_key = \"XAI_API_KEY\"\n", nil},
+		{"grok odd shapes", "", "endpoints = 3\nmodel = \"x\"\n", nil},
 		{"grok bad toml", "", "[toolset\n", []string{"config-unreadable grok ~/.grok/config.toml: cannot be checked"}},
 	}
 	for _, tt := range tests {
@@ -120,10 +126,10 @@ func TestRouteFilesRelocated(t *testing.T) {
 	home := t.TempDir()
 	cdir, gdir := filepath.Join(t.TempDir(), "c"), filepath.Join(t.TempDir(), "g")
 	write(t, filepath.Join(cdir, "settings.json"), `{"env":{"ANTHROPIC_BASE_URL":"u"}}`)
-	write(t, filepath.Join(gdir, "config.toml"), "[toolset.video_gen]\nbase_url = \"u\"\n")
+	write(t, filepath.Join(gdir, "config.toml"), "[endpoints]\nxai_api_base_url = \"u\"\n")
 	write(t, filepath.Join(home, ".claude", "settings.json"), `{"env":{"OPENAI_BASE_URL":"u"}}`)
 	got := RouteFiles([]string{"HOME=" + home, "CLAUDE_CONFIG_DIR=" + cdir, "GROK_HOME=" + gdir})
-	if len(got) != 2 || !strings.Contains(got[0].Message, "env.ANTHROPIC_BASE_URL") || !strings.Contains(got[1].Message, "toolset.video_gen.base_url") {
+	if len(got) != 2 || !strings.Contains(got[0].Message, "env.ANTHROPIC_BASE_URL") || !strings.Contains(got[1].Message, "endpoints.xai_api_base_url") {
 		t.Errorf("findings = %+v", got)
 	}
 	if got := RouteFiles([]string{"HOME=" + home, "CLAUDE_CONFIG_DIR=rel"}); len(got) != 0 {
@@ -187,5 +193,58 @@ func TestRouteFilesSymlinks(t *testing.T) {
 				t.Errorf("findings = %+v, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestRouteFilesCodex (T6611 D): Codex's config.toml, in $CODEX_HOME or
+// ~/.codex, is checked for openai_base_url and model provider base URLs;
+// auth.json next to it is never read.
+func TestRouteFilesCodex(t *testing.T) {
+	tests := []struct {
+		name, config string
+		relocate     bool
+		want         []string
+	}{
+		{"clean", "model = \"gpt-5\"\n[mcp_servers.docs]\ncommand = \"npx\"\n", false, nil},
+		{"openai_base_url", "openai_base_url = \"https://" + secret + "\"\n", false,
+			[]string{"~/.codex/config.toml: openai_base_url is set: Codex may send its requests to another endpoint"}},
+		{"model providers", "model_provider = \"proxy\"\n[model_providers.proxy]\nbase_url = \"u\"\nenv_key = \"K\"\n[model_providers.other]\nname = \"x\"\n", false,
+			[]string{"~/.codex/config.toml: model_providers.proxy.base_url is set"}},
+		{"relocated", "openai_base_url = \"u\"\n", true, []string{"openai_base_url is set"}},
+		{"bad toml", "openai_base_url = \n", false, []string{"~/.codex/config.toml: cannot be checked"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			dir := filepath.Join(home, ".codex")
+			env := []string{"HOME=" + home}
+			if tt.relocate {
+				dir = filepath.Join(t.TempDir(), "ch")
+				env = append(env, "CODEX_HOME="+dir)
+			}
+			write(t, filepath.Join(dir, "config.toml"), tt.config)
+			if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte("openai_base_url = \"u\""), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got := RouteFiles(env)
+			if len(got) != len(tt.want) {
+				t.Fatalf("findings = %+v, want %v", got, tt.want)
+			}
+			for i, f := range got {
+				if f.Vendor != adapter.Codex || !strings.Contains(f.Text(home), tt.want[i]) || strings.Contains(f.Text(home), secret) || strings.Contains(f.Text(home), "auth.json") {
+					t.Errorf("finding %d = %q, want %q", i, f.Text(home), tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestRouteEnvOpenAI (T6611 D): Codex does not read OPENAI_BASE_URL, so
+// it is flagged without naming Codex as the reader.
+func TestRouteEnvOpenAI(t *testing.T) {
+	got := RouteEnv([]string{"OPENAI_BASE_URL=u", "GROK_XAI_API_BASE_URL=u"})
+	if len(got) != 2 || got[0].Vendor != adapter.Grok || got[1].Vendor != "" ||
+		!strings.HasPrefix(got[1].Message, "OPENAI_BASE_URL is set: Codex does not read it, but other OpenAI tools may") {
+		t.Errorf("findings = %+v", got)
 	}
 }
