@@ -19,6 +19,7 @@ import (
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
+	"github.com/congdoe/aggy/internal/limits"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/supervisor"
@@ -247,7 +248,14 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	}
 	onHook, stopIndex := startIndex(parentID, v, assigned, ids.set)
 	defer stopIndex()
-	onHook, stopLimits := startLimits(parentID, v, onHook)
+	// A limit reaches the picker (T6667) without ever blocking the watch.
+	limitHit := make(chan adapter.Vendor, 1)
+	onHook, stopLimits := startLimits(parentID, v, onHook, func(lv adapter.Vendor) {
+		select {
+		case limitHit <- lv:
+		default:
+		}
+	})
 	defer stopLimits()
 	// A switch is checked when picked or asked for, and again before the
 	// CLI is told to exit; launch checks everything once more.
@@ -268,6 +276,8 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 		StartsTurn: t.Brief,
 		SessionID:  ids.current,
 		Children:   func(v adapter.Vendor) []supervisor.ChildChoice { return childChoices(pl.parent.ID, v, time.Now()) },
+		Limits:     limitHit,
+		HasQuota:   hasQuota,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", name, err)
@@ -339,6 +349,24 @@ func switchCheck(ctx context.Context, cfg config.Config, cwd string) func(adapte
 		}
 		return nil
 	}
+}
+
+// hasQuota reports whether v has no plan limit recorded now
+// (limits.State, the router's skip rule). An index aggy cannot read
+// counts as quota: the user still confirms the switch.
+func hasQuota(v adapter.Vendor) bool {
+	path, err := store.DefaultPath()
+	if err != nil {
+		return true
+	}
+	ctx := context.Background()
+	s, err := store.OpenReadOnly(ctx, path)
+	if err != nil {
+		return true
+	}
+	defer func() { _ = s.Close() }()
+	_, limited, err := limits.State{Store: s}.Limited(ctx, v, time.Now())
+	return err != nil || !limited
 }
 
 // childChoices lists the parent's interactive children of v, latest

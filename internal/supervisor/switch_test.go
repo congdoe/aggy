@@ -24,7 +24,7 @@ func switchRun(t *testing.T, startsTurn bool) (*termSide, *fakeChild, <-chan Exi
 
 // switchRunOn is switchRun with vendor on screen; the picker offers the
 // other two, in claude, codex, grok order.
-func switchRunOn(t *testing.T, startsTurn bool, vendor adapter.Vendor) (*termSide, *fakeChild, <-chan Exit, string) {
+func switchRunOn(t *testing.T, startsTurn bool, vendor adapter.Vendor, more ...func(*Options)) (*termSide, *fakeChild, <-chan Exit, string) {
 	t.Helper()
 	oldQ, oldW, oldG, oldE := switchQuiet, exitWait, confirmGuard, escTimeout
 	switchQuiet, exitWait, confirmGuard, escTimeout = 50*time.Millisecond, 300*time.Millisecond, 100*time.Millisecond, 20*time.Millisecond
@@ -38,6 +38,9 @@ func switchRunOn(t *testing.T, startsTurn bool, vendor adapter.Vendor) (*termSid
 			if v != vendor {
 				o.Vendors = append(o.Vendors, v)
 			}
+		}
+		for _, f := range more {
+			f(o)
 		}
 	})
 	return ts, c, done, filepath.Join(run, pid+".sock")
@@ -554,4 +557,83 @@ func TestSwitchOptionsCarried(t *testing.T) {
 	c.waitGot(t, []byte("/exit\r"))
 	c.quit(0)
 	wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok, New: true, Model: "g-1", Brief: true}})
+}
+
+// limitOpts gives Run a limit channel, and quota to grok only.
+func limitOpts(ch chan adapter.Vendor, quota ...adapter.Vendor) func(*Options) {
+	return func(o *Options) {
+		o.Limits = ch
+		o.HasQuota = func(v adapter.Vendor) bool {
+			for _, q := range quota {
+				if q == v {
+					return true
+				}
+			}
+			return false
+		}
+	}
+}
+
+// TestSwitchOnLimit (T6667): a limit of the vendor on screen queues a
+// switch to the first vendor with quota, with a brief, which still waits
+// for the turn end and the switch key: one key accepts, none is pressed
+// for the user.
+func TestSwitchOnLimit(t *testing.T) {
+	ch := make(chan adapter.Vendor, 1)
+	ts, c, done, sock := switchRunOn(t, true, adapter.Claude, limitOpts(ch, adapter.Grok))
+	if err := pty.Setsize(ts.master, &pty.Winsize{Rows: 24, Cols: 160}); err != nil {
+		t.Fatal(err)
+	}
+	ch <- adapter.Codex // not the vendor on screen: ignored
+	ch <- adapter.Claude
+	never(t, "mid-turn", []byte("aggy: switch to"), ts.screen, 200*time.Millisecond)
+	_ = request(t, sock, `{"type":"hook-event","vendor":"claude","event":"StopFailure","payload":{"session_id":"`+childSID+`","error":"rate_limit"}}`)
+	poll(t, "the confirmation", []byte("(claude hit its limit.)"), ts.screen)
+	if !bytes.Contains(ts.screen(), []byte("aggy: switch to grok?")) {
+		t.Fatal("codex has no quota; grok should be offered")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if bytes.Contains(c.received(), []byte("/exit")) {
+		t.Fatal("/exit typed without the switch key")
+	}
+	confirm(t, ts)
+	c.waitGot(t, []byte("/exit\r"))
+	c.quit(0)
+	wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok, Brief: true}})
+}
+
+// TestSwitchOnLimitCodex (T6667, S-12): Codex has no hold signal, so a
+// limit only says so and preselects; the user opens the list, Enter takes
+// the preselected vendor with a brief, and the switch key confirms.
+func TestSwitchOnLimitCodex(t *testing.T) {
+	ch := make(chan adapter.Vendor, 1)
+	ts, c, done, sock := switchRunOn(t, true, adapter.Codex, limitOpts(ch, adapter.Grok))
+	ch <- adapter.Codex
+	poll(t, "the note", []byte("codex hit its limit. grok has quota left"), ts.screen)
+	_ = request(t, sock, `{"type":"hook-event","vendor":"codex","event":"Stop","payload":{"session_id":"`+childSID+`"}}`)
+	time.Sleep(200 * time.Millisecond)
+	if bytes.Contains(c.received(), []byte("/exit")) || bytes.Contains(ts.screen(), []byte("aggy: switch to")) {
+		t.Fatal("a limit on codex offered a switch by itself")
+	}
+	ts.typeIn(t, "\x1c") // at the note: opens the list
+	poll(t, "the preselect", []byte(" >2  grok"), ts.screen)
+	poll(t, "brief on", []byte("b  brief: on"), ts.screen)
+	ts.typeIn(t, "\r")
+	poll(t, "the confirmation", []byte("aggy: switch to grok?"), ts.screen)
+	confirm(t, ts)
+	c.waitGot(t, []byte("/exit\r"))
+	c.quit(0)
+	wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok, Brief: true}})
+}
+
+// TestSwitchOnLimitNoQuota (T6667): with no vendor left, aggy says so
+// and queues nothing.
+func TestSwitchOnLimitNoQuota(t *testing.T) {
+	ch := make(chan adapter.Vendor, 1)
+	ts, c, done, _ := switchRunOn(t, false, adapter.Claude, limitOpts(ch))
+	ch <- adapter.Claude
+	poll(t, "the note", []byte("no other vendor aggy offers has quota left"), ts.screen)
+	ts.typeIn(t, "\x1b")
+	never(t, "no switch", []byte("aggy: switch to"), ts.screen, 300*time.Millisecond)
+	finish(t, c, done)
 }

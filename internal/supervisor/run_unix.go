@@ -206,6 +206,8 @@ func Run(o Options) (Exit, error) {
 			}
 		case <-check:
 			s.offerSwitch()
+		case v := <-s.o.Limits:
+			s.onLimit(v)
 		case <-s.exitBy:
 			s.exitBy = nil
 			if s.sw.typed && !s.open {
@@ -342,6 +344,7 @@ func (s *session) setSwitch(p pendingSwitch) {
 type pendingSwitch struct {
 	to    adapter.Vendor
 	asked bool // the agent asked for it (a skill), not the user
+	limit bool // a limit of the vendor on screen suggested it (T6667)
 	typed bool // the exit command has been typed
 	// choice is what was picked or asked for with the vendor (T6665).
 	choice Choice
@@ -499,12 +502,57 @@ func (s *session) offerSwitch() {
 	if s.sw.asked {
 		lines = append(lines, "(The agent asked.)")
 	}
+	if s.sw.limit {
+		lines = append(lines, fmt.Sprintf("(%s hit its limit.)", on))
+	}
 	if !verified {
 		lines = append(lines, fmt.Sprintf("(%s is unverified.)", cmd))
 	}
 	lines = append(lines, choiceNote(s.sw.choice)...)
 	s.pk.ask(v, lines...)
 	s.openPicker()
+}
+
+// onLimit handles a limit the vendor on screen reported (T6667). The
+// first vendor the picker offers that has quota left is preselected:
+// Enter in the list takes it, with a brief. Where the vendor on screen
+// has a hold signal it is also queued as a switch with a brief, which,
+// like any, waits for the turn end and the user's switch key on the
+// status line: one key accepts, and nothing is ever confirmed for the
+// user. Without a hold signal (Codex) a limit, like an agent's request,
+// could be forged from the CLI's tree (S-12), so aggy only says so and
+// leaves the pick to the user.
+//
+// TODO(T6617): a model-quota limit (one model out, others not) is not
+// verified; any limit counts for the whole vendor.
+func (s *session) onLimit(v adapter.Vendor) {
+	if v != s.o.Vendor {
+		return
+	}
+	var pre adapter.Vendor
+	for _, o := range s.o.Vendors {
+		if s.o.HasQuota == nil || s.o.HasQuota(o) {
+			pre = o
+			break
+		}
+	}
+	s.pk.preselect = pre
+	if s.open || s.sw.to != "" {
+		return // the picker is up, or a switch already waits
+	}
+	switch {
+	case pre == "":
+		// TODO(T6753): log picker.no_quota.
+		s.pk.tell(fmt.Sprintf("%s hit its limit, and no other vendor aggy offers has quota left.", v))
+		s.openPicker()
+	case !holdSignal(v):
+		// TODO(T6753): log picker.limit_no_hold.
+		s.pk.tell(fmt.Sprintf("%s hit its limit. %s has quota left: press %s, then Enter, to switch to it with a brief.", v, pre, keyName(s.pk.key)),
+			fmt.Sprintf("aggy cannot tell when %s waits for an approval, so it does not offer the switch itself.", v))
+		s.openPicker()
+	default:
+		s.setSwitch(pendingSwitch{to: pre, limit: true, choice: Choice{Vendor: pre, Brief: true}})
+	}
 }
 
 // choiceNote describes a switch's options, for the status line's end.
@@ -548,6 +596,8 @@ const altSettle = 50 * time.Millisecond
 func (s *session) openList() {
 	s.pk.list()
 	s.pk.waiting, s.pk.checking = s.sw.to, false
+	// After a limit, Enter takes the suggested vendor, with a brief.
+	s.pk.opts.Brief = s.pk.preselect != ""
 	// Starts the checks that take time (the policy probe) for every
 	// vendor offered, in the background, so a pick rarely waits.
 	if s.o.CanSwitch != nil {
