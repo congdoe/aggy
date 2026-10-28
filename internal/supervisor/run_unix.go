@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -191,8 +192,9 @@ func Run(o Options) (Exit, error) {
 	}
 	for {
 		// check polls a switch that waits for the turn end.
+		// It also polls a near-limit warning due at a turn end.
 		var check <-chan time.Time
-		if s.sw.to != "" && !s.sw.typed && !s.open {
+		if (s.sw.to != "" && !s.sw.typed || s.warnDue) && !s.open {
 			check = time.After(switchPoll)
 		}
 		select {
@@ -206,7 +208,10 @@ func Run(o Options) (Exit, error) {
 				s.setSwitch(pendingSwitch{to: c.Vendor, asked: true, choice: c})
 			}
 		case <-check:
-			s.offerSwitch()
+			if s.sw.to != "" && !s.sw.typed {
+				s.offerSwitch()
+			}
+			s.offerWarn()
 		case h := <-s.o.Limits:
 			s.onLimit(h)
 		case <-s.exitBy:
@@ -344,6 +349,10 @@ type session struct {
 	// waiting mirrors sw.to != "" for the socket's goroutines, so a
 	// second switch-request is refused rather than dropped.
 	waiting atomic.Bool
+	// warnDue: a turn of the on-screen child ended and the near-limit
+	// check (offerWarn) has not run since; warned: the warning was shown
+	// and the share used has not dropped below WarnAt since (T6699).
+	warnDue, warned bool
 }
 
 // setSwitch sets the switch state.
@@ -401,6 +410,7 @@ func (s *session) hookEvent(ev hookEvent) {
 	if turnEnd(ev.name) {
 		if ev.sessionID != "" && s.o.SessionID != nil && ev.sessionID == s.o.SessionID() {
 			s.atPrompt = !s.held
+			s.warnDue = true
 			if ev.name == "Stop" && holdSignal(s.o.Vendor) && s.pk != nil {
 				s.pk.preselect = "" // a turn ended without a limit (O56-5)
 			}
@@ -588,6 +598,71 @@ func (s *session) offerSwitch() {
 	s.openPicker()
 }
 
+// offerWarn shows the near-limit warning (T6699) after a turn end of the
+// on-screen child, once the CLI is at its prompt and quiet, as a switch
+// is offered: when the vendor on screen has used WarnAt of its limit or
+// more (Options.Used, only where its CLI writes that locally), once per
+// crossing. It never switches: the switch key opens the list with the
+// first vendor with quota preselected, and a pick there waits for a turn
+// end and the user's confirmation like any, unsent text included. A turn
+// started, a switch already waiting, or the picker up drops it until the
+// next turn end.
+//
+// shortcut: Used is the cache cli.refreshed reads every 2 seconds; the
+// quiet wait (switchQuiet) is usually longer, but a share the CLI wrote
+// just before the turn end can still show at the next one.
+func (s *session) offerWarn() {
+	if !s.warnDue {
+		return
+	}
+	if !s.atPrompt || s.sw.to != "" || s.open {
+		s.warnDue = false
+		return
+	}
+	now := time.Now()
+	if now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
+		return
+	}
+	s.warnDue = false
+	if s.o.Used == nil || s.o.WarnAt <= 0 {
+		return
+	}
+	used, ok := s.o.Used(s.o.Vendor)
+	if !ok {
+		return
+	}
+	if used < s.o.WarnAt {
+		s.warned = false // below again (a reset): the next crossing warns
+		return
+	}
+	if s.warned {
+		return
+	}
+	s.warned = true
+	// TODO(T6753): log switch.near_limit_warned (vendor, share, warn_at).
+	// The epsilon keeps 0.29*100 (28.999...) at 29%.
+	line := fmt.Sprintf("%s is at %d%% of its limit.", s.o.Vendor, int(math.Floor(used*100+1e-9)))
+	pre := s.withQuota()
+	tail := fmt.Sprintf(" %s hands off to %s, Esc dismisses.", keyName(s.pk.key), pre)
+	if pre == "" {
+		// TODO(T6753): log switch.near_limit_no_quota.
+		tail = " No vendor with quota left; Esc dismisses."
+	}
+	s.pk.warn(pre, line, tail)
+	s.openPicker()
+}
+
+// withQuota is the first vendor the picker offers that has quota left
+// (HasQuota), or "".
+func (s *session) withQuota() adapter.Vendor {
+	for _, o := range s.o.Vendors {
+		if s.o.HasQuota == nil || s.o.HasQuota(o) {
+			return o
+		}
+	}
+	return ""
+}
+
 // onLimit handles a limit the vendor on screen reported (T6667). The
 // first vendor the picker offers that has quota left is preselected:
 // Enter in the list takes it, with a brief. Where the vendor on screen
@@ -609,13 +684,7 @@ func (s *session) onLimit(h LimitHit) {
 	if v != s.o.Vendor {
 		return
 	}
-	var pre adapter.Vendor
-	for _, o := range s.o.Vendors {
-		if s.o.HasQuota == nil || s.o.HasQuota(o) {
-			pre = o
-			break
-		}
-	}
+	pre := s.withQuota()
 	s.pk.preselect = pre
 	if s.open || s.sw.to != "" {
 		return // the picker is up, or a switch already waits
@@ -715,7 +784,7 @@ func (s *session) openPicker() {
 	s.openedAt = time.Now()
 	s.pickerOverCLI = s.alt.on
 	s.statusRows = 0
-	if s.pk.confirm != "" {
+	if s.pk.confirm != "" || s.pk.warning {
 		if rows, cols := s.t.size(); rows > 1 {
 			s.statusRows, s.pickerOverCLI = rows, true
 			s.pk.drawStatus(s.o.Out, rows, cols, s.alt.on)
@@ -848,7 +917,11 @@ func (s *session) promptInput(b []byte) {
 		s.closePicker()
 		s.typeExit()
 	case s.pk.isKey(b):
+		to := s.pk.warnTo // a near-limit warning's suggestion (T6699)
 		s.closePicker()
+		if to != "" {
+			s.pk.preselect = to
+		}
 		s.openList()
 	default:
 		s.closePicker()

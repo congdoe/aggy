@@ -3,6 +3,7 @@ package limits
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -371,5 +372,35 @@ func TestHintsCannotHideConfirmedLimit(t *testing.T) {
 	got, limited, err := State{Store: s}.Limited(ctx, adapter.Codex, now)
 	if err != nil || !limited || got.Hint || !got.Until.Equal(weekly) {
 		t.Errorf("Limited = %+v %v %v, want the confirmed weekly limit", got, limited, err)
+	}
+}
+
+// TestCodexUsed (T6699): the ordinary quota's live windows only.
+func TestCodexUsed(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ahead, past := now.Add(time.Hour).Unix(), now.Add(-time.Hour).Unix()
+	win := func(used float64, reset int64) *CodexWindow {
+		return &CodexWindow{UsedPercent: used, WindowMinutes: 300, ResetsAt: reset}
+	}
+	tests := []struct {
+		name   string
+		quotas []CodexQuota
+		want   float64
+		wantOK bool
+	}{
+		{"none", nil, 0, false},
+		{"largest live window", []CodexQuota{{ID: "codex", Primary: win(30, ahead), Secondary: win(92, ahead)}}, 0.92, true},
+		{"stale window skipped", []CodexQuota{{ID: "codex", Primary: win(10, ahead), Secondary: win(99, past)}}, 0.10, true},
+		{"no reset time skipped", []CodexQuota{{ID: "codex", Primary: win(95, 0)}}, 0, false},
+		{"model quota ignored", []CodexQuota{{ID: "codex_x", Name: "m", Primary: win(99, ahead)}, {ID: "codex", Primary: win(5, ahead)}}, 0.05, true},
+		{"clamped", []CodexQuota{{ID: "codex", Primary: win(130, ahead)}}, 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := CodexUsed(tt.quotas, now)
+			if ok != tt.wantOK || math.Abs(got-tt.want) > 1e-9 {
+				t.Errorf("CodexUsed = %v, %v; want %v, %v", got, ok, tt.want, tt.wantOK)
+			}
+		})
 	}
 }

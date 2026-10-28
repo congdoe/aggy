@@ -52,19 +52,39 @@ type picker struct {
 	confirm adapter.Vendor
 	note    bool
 	lines   []string
+	// warning: the note is a near-limit warning (T6699), drawn on the
+	// status line with tail, its keys, kept in view; the switch key opens
+	// the list with warnTo, if any, preselected.
+	warning bool
+	warnTo  adapter.Vendor
+	tail    string
 }
 
 // list sets the picker to the vendor list, its toggles cleared.
 func (p *picker) list() {
 	p.confirm, p.note, p.lines = "", false, nil
+	p.warning, p.warnTo, p.tail = false, "", ""
 	p.opts, p.editing, p.edit, p.editErr, p.stage, p.kids = Choice{}, false, nil, "", "", nil
 }
 
 // ask sets the picker to confirm a switch to v, explained by lines.
-func (p *picker) ask(v adapter.Vendor, lines ...string) { p.confirm, p.note, p.lines = v, false, lines }
+func (p *picker) ask(v adapter.Vendor, lines ...string) {
+	p.confirm, p.note, p.lines = v, false, lines
+	p.warning, p.warnTo, p.tail = false, "", ""
+}
 
 // tell sets the picker to show a note.
-func (p *picker) tell(lines ...string) { p.confirm, p.note, p.lines = "", true, lines }
+func (p *picker) tell(lines ...string) {
+	p.confirm, p.note, p.lines = "", true, lines
+	p.warning, p.warnTo, p.tail = false, "", ""
+}
+
+// warn sets the picker to a near-limit warning (T6699): a note on the
+// status line, line then tail, whose switch key preselects to.
+func (p *picker) warn(to adapter.Vendor, line, tail string) {
+	p.tell(line)
+	p.warning, p.warnTo, p.tail = true, to, tail
+}
 
 // draw writes the picker: on the alternate screen, or, when the CLI is
 // already on it (overCLI), over the top lines of the CLI's screen.
@@ -132,11 +152,16 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 	_, _ = io.WriteString(w, b.String())
 }
 
-// statusLine is the confirmation's one line (S-12): it never hides the
-// CLI's screen, so an approval prompt or menu the CLI shows stays in
-// view while the user decides.
+// statusLine is the one line of a confirmation (S-12) or a near-limit
+// warning: it never hides the CLI's screen, so an approval prompt or menu
+// the CLI shows stays in view while the user decides. A narrow terminal
+// cuts the end of the text before tail, so the keys in tail stay in view.
 func (p *picker) statusLine(cols int) string {
 	line := "aggy: " + strings.Join(p.lines, " ")
+	if cols > 1 && len(line)+len(p.tail) > cols-1 {
+		line = line[:max(cols-1-len(p.tail), 0)]
+	}
+	line += p.tail
 	if cols > 1 && len(line) > cols-1 {
 		line = line[:cols-1] // ASCII only; never writes the last column, so no wrap or scroll
 	}

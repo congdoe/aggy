@@ -171,6 +171,15 @@ image    = { minutes = 5 }
 		}},
 		{name: "not-author outside review", text: "[routing]\nnews = \"not-author\"\n", wantErr: "routing.news: \"not-author\" is only valid for review"},
 		{name: "empty switch order", text: "[switch]\norder = []\n", wantErr: "switch.order must list at least one vendor"},
+		{name: "warn_at default", text: "", check: func(t *testing.T, c Config) { equal(t, c.Switch.WarnAt, 0.9) }},
+		{name: "warn_at set", text: "[switch]\nwarn_at = 0.75\n", check: func(t *testing.T, c Config) { equal(t, c.Switch.WarnAt, 0.75) }},
+		{name: "warn_at off", text: "[switch]\nwarn_at = 0\n", check: func(t *testing.T, c Config) { equal(t, c.Switch.WarnAt, 0.0) }},
+		{name: "warn_at one", text: "[switch]\nwarn_at = 1\n", check: func(t *testing.T, c Config) { equal(t, c.Switch.WarnAt, 1.0) }},
+		{name: "warn_at above one", text: "[switch]\nwarn_at = 1.5\n", wantErr: "switch.warn_at must be 0 (off) to 1, got 1.5"},
+		{name: "warn_at as percent", text: "[switch]\nwarn_at = 90\n", wantErr: "switch.warn_at must be 0 (off) to 1, got 90"},
+		{name: "warn_at negative", text: "[switch]\nwarn_at = -0.1\n", wantErr: "switch.warn_at must be 0 (off) to 1"},
+		{name: "warn_at nan", text: "[switch]\nwarn_at = nan\n", wantErr: "switch.warn_at must be 0 (off) to 1"},
+		{name: "warn_at string", text: "[switch]\nwarn_at = \"90%\"\n", wantErr: "warn_at"},
 		{name: "syntax error", text: "[routing\n", wantErr: "toml"},
 	}
 	for _, tt := range tests {

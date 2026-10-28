@@ -145,7 +145,14 @@ type Switch struct {
 	// Key opens the picker, e.g. "ctrl+\\" (the default); pressed twice
 	// quickly, it is sent to the CLI. See ParseKey.
 	Key string `toml:"key"`
+	// WarnAt is the share of a vendor's limit used, 0 to 1, at which aggy
+	// suggests a handoff at a turn end, where the vendor writes what it
+	// has left on this machine (T6699). Zero turns the warning off.
+	WarnAt float64 `toml:"warn_at"`
 }
+
+// DefaultWarnAt is the default switch.warn_at.
+const DefaultWarnAt = 0.9
 
 // DefaultSwitchKey is the default switch.key: Ctrl+\, which none of the
 // three CLIs is known to use.
@@ -313,7 +320,7 @@ func vendors(vs ...adapter.Vendor) Route { return Route{Vendors: vs} }
 // tools, not benchmarks; budgets follow the build plan.
 func Default() Config {
 	return Config{
-		Switch: Switch{Order: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok}, Key: DefaultSwitchKey},
+		Switch: Switch{Order: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok}, Key: DefaultSwitchKey, WarnAt: DefaultWarnAt},
 		Policy: Policy{Required: true},
 		GC:     GC{PendingWorktreeDays: 30, AcceptedWorktreeDays: 30, ClosedChildDays: 30, InboxDays: 30},
 		Routing: Routing{
@@ -430,6 +437,9 @@ func (c Config) Validate() error {
 	}
 	if _, err := ParseKey(c.Switch.Key); err != nil {
 		return err
+	}
+	if !(c.Switch.WarnAt >= 0 && c.Switch.WarnAt <= 1) { // NaN fails too
+		return fmt.Errorf("switch.warn_at must be 0 (off) to 1, got %v", c.Switch.WarnAt)
 	}
 	for i, a := range c.Worktree.AllowSetup {
 		if !filepath.IsAbs(a.Repo) || len(a.Command) == 0 || a.Command[0] == "" {
