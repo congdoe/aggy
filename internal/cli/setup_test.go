@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -184,10 +185,25 @@ func TestSetup(t *testing.T) {
 			want:     map[string]row{"claude": {"not_connected", "2.1.311"}},
 		},
 		{
-			name:  "interactive: input ends",
+			name:  "interactive: input ends, the rest are recorded without asking",
 			tty:   true,
 			input: "y\n",
-			want:  map[string]row{"claude": {"unknown", "2.1.311"}},
+			want:  map[string]row{"claude": {"unknown", "2.1.311"}, "codex": {"unknown", "0.164.0"}, "grok": {"unknown", "1.0.70"}},
+			out:   []string{"no more input: checking the rest without asking"},
+		},
+		{
+			// T6609 review 1: a "terminal" with no input at all (as
+			// </dev/null looked) still records every vendor.
+			name: "interactive: no input at all",
+			tty:  true,
+			want: map[string]row{"claude": {"unknown", "2.1.311"}, "codex": {"unknown", "0.164.0"}, "grok": {"unknown", "1.0.70"}},
+		},
+		{
+			name: "interactive: input ends at the re-check",
+			tty:  true, check: true,
+			input:    "y\n",
+			scenario: func(string, int) string { return `{"replies":[{"args":["fake-auth-status"],"exit_code":1}]}` },
+			want:     map[string]row{"claude": {"not_connected", "2.1.311"}, "codex": {"not_connected", "0.164.0"}, "grok": {"not_connected", "1.0.70"}},
 		},
 		{
 			name: "odd versions are warned about and escaped",
@@ -360,6 +376,30 @@ func TestSetupRoutes(t *testing.T) {
 	}
 	if strings.Contains(out, secret) {
 		t.Error("a value leaked")
+	}
+}
+
+// TestIsTerminal (T6609 review 1): /dev/null is a character device but
+// not a terminal, and a regular file is neither.
+func TestIsTerminal(t *testing.T) {
+	null, err := safefs.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = null.Close() }()
+	p := filepath.Join(t.TempDir(), "f")
+	if err := safefs.WriteFile(p, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := safefs.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reg.Close() }()
+	for name, f := range map[string]*os.File{"/dev/null": null, "regular file": reg} {
+		if isTerminal(f) {
+			t.Errorf("%s is taken as a terminal", name)
+		}
 	}
 }
 
