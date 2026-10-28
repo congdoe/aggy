@@ -56,6 +56,7 @@ func CodexConfigPath() (string, error) {
 //   - a list without CLAUDE.md: "CLAUDE.md" is appended inside its
 //     brackets, after the last entry, and the other entries are kept
 //   - a list with CLAUDE.md: nothing changes
+//   - a leading UTF-8 byte order mark is kept in front, in every case
 //
 // The result is decoded and compared with the original: every other
 // value must be unchanged and the key must be the old list plus
@@ -213,7 +214,12 @@ var errNotFound = fmt.Errorf("cannot find the top-level %s line to edit", Fallba
 func findArray(src []byte) (int, error) {
 	depth := 0
 	lineStart := true
-	for i := 0; i < len(src); {
+	// A UTF-8 byte order mark is not part of the first line's key.
+	start := 0
+	if bytes.HasPrefix(src, bom) {
+		start = len(bom)
+	}
+	for i := start; i < len(src); {
 		c := src[i]
 		switch {
 		case c == '\n':
