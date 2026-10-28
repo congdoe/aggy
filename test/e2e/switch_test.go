@@ -42,7 +42,7 @@ func TestSwitchAtTurnEnd(t *testing.T) {
 	}
 	s.mu.Unlock()
 	s.send(key)
-	s.waitFor([]byte("aggy: switch to grok"))
+	s.waitFor([]byte("switches to grok, Esc stays"))
 	time.Sleep(600 * time.Millisecond) // past the confirmation's guard
 	s.send([]byte{0x1c})
 	// grok is on screen: end it.
@@ -85,7 +85,7 @@ func TestSkillRequestedSwitch(t *testing.T) {
 		"hooks":        []map[string]any{{"event": "grok", "payload": map[string]any{}}},
 	}
 	s := w.start(t, sc, "run", "claude")
-	s.waitFor([]byte("aggy: switch to grok?"))
+	s.waitFor([]byte("switches to grok, Esc stays"))
 	time.Sleep(600 * time.Millisecond) // past the confirmation's guard
 	s.send([]byte{0x1c})
 	deadline := time.Now().Add(timeout)
