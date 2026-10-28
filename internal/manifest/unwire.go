@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -126,12 +125,10 @@ type Undo struct {
 // read from the current backup root, so a state directory spelled
 // differently than when the change was made still works.
 //
-// A change proven never to have written its file is Cleaned first,
-// whatever came after it: a failed row, whatever the file holds, or a
-// pending row of an existing file whose backup is missing while the file
-// is at its hash before and no newer change to it is in effect (see
-// provenUnwritten). The file is left as it is, only empty directories
-// made for it are removed, and the row is marked undone.
+// A failed row never wrote its file and is Cleaned first, whatever came
+// after it and whatever the file holds (see provenUnwritten). The file is
+// left as it is, only empty directories its Apply made are removed, and
+// the row is marked undone.
 //
 // Any other change can only be undone after every newer change to the
 // same file (by canonical path) that is still applied, pending, or
@@ -361,7 +358,8 @@ func isHash(h string) bool {
 // file as c found it: c's write had not happened (or had been taken out
 // by hand). The proof holds only while that change is in effect: while
 // it is, no older change to the file can have been undone, since unwire
-// undoes newer changes first. Once it is undone, undoing the changes
+// undoes newer changes first. A change planned without the lock
+// (store.Change.Unlocked) is no such proof. Once it is undone, undoing the changes
 // between can bring c's write back, so an undone change proves nothing.
 func (m *Manifest) newerChange(ctx context.Context, c store.Change, run *unwireRun) (first *store.Change, builtOn, notWritten bool, err error) {
 	newer, err := m.store.UndoableAfter(ctx, c.ID)
@@ -381,7 +379,9 @@ func (m *Manifest) newerChange(ctx context.Context, c store.Change, run *unwireR
 			if n.HashBefore == c.HashAfter && c.HashAfter != c.HashBefore {
 				builtOn = true
 			}
-			if n.HashBefore == c.HashBefore {
+			// A plan made without the target lock may have raced c's
+			// live write, so it proves nothing.
+			if n.HashBefore == c.HashBefore && !n.Unlocked {
 				notWritten = true
 			}
 		}
@@ -404,14 +404,24 @@ func (m *Manifest) newerChange(ctx context.Context, c store.Change, run *unwireR
 //   - a birth time was recorded and matches, which on its own tells
 //     aggy's directory from one made later at the same path; or
 //   - this Unwire call is related to it: it undid the change that created
-//     the directory, or it undid a change that created a file inside it
-//     (removing that file, or finding it already gone, as after an undo
-//     that stopped before it was recorded). An unrelated later run never
-//     sweeps a directory known only by device and inode.
+//     the directory, or it removed, itself, a file aggy created inside
+//     it. A file found already gone relates the call to nothing: the
+//     person may have removed it with the directory and made the
+//     directory again. An unrelated later run never sweeps a directory
+//     known only by device and inode.
 //
-// Known limit, without birth times: a directory the person removed with
+// When this call undid the change that created the directory, a device
+// and inode match is enough even if the recorded birth time differs:
+// APFS can rewrite a birth time and never reuses an inode number (see
+// sameDevIno). A related run that did not undo that change still needs
+// the birth time to match.
+//
+// Known limits, without birth times: a directory the person removed with
 // aggy's file in it and made again, empty, at the same path with the
-// same inode number, is swept by the unwire of that file's change. Once
+// same inode number, is swept by the unwire of that file's change when
+// it removes the file. And an undo that removed aggy's file and stopped
+// before recording it leaves the directory of an earlier, undone change
+// behind: the next unwire finds the file gone and cannot tell. Once
 // a recorded directory is gone, or has another identity, its identity is
 // cleared in the row, so a later directory that happens to get the same
 // inode number is never taken for it.
@@ -446,14 +456,20 @@ func (m *Manifest) sweepDirs(ctx context.Context, run *unwireRun) error {
 			continue
 		}
 		ids := append([]store.DirID(nil), c.CreatedDirIDs...)
+		// ours reports whether the k-th directory still has its recorded
+		// identity, or, when this call undid c itself, its device and
+		// inode with a birth time rewritten since. A directory that has
+		// neither is gone or another one: its identity is cleared.
 		ours := func(k int) bool {
-			if k >= len(ids) || !sameDir(c.CreatedDirs[k], ids[k]) {
-				if k < len(ids) {
-					ids[k] = store.DirID{}
-				}
+			if k >= len(ids) {
 				return false
 			}
-			return true
+			d := c.CreatedDirs[k]
+			if sameDir(d, ids[k]) || (run.undoneNow[c.ChangeID] && sameDevIno(d, ids[k])) {
+				return true
+			}
+			ids[k] = store.DirID{}
+			return false
 		}
 		var dirs []string
 		for k, d := range c.CreatedDirs {
@@ -479,95 +495,72 @@ func (m *Manifest) sweepDirs(ctx context.Context, run *unwireRun) error {
 // sameDir reports whether dir has the recorded identity id: the same
 // device and inode, and the same birth time when one was recorded. A zero
 // id matches nothing.
-//
-// TODO(T6735): APFS may rewrite a directory's birth time (a restore, or
-// tools that set it), which would make aggy keep its own directory.
 func sameDir(dir string, id store.DirID) bool {
+	cur, ok := devIno(dir, id)
+	return ok && (id.Birth == 0 || cur.Birth == id.Birth)
+}
+
+// sameDevIno reports whether dir has id's device and inode, whatever its
+// birth time. APFS can rewrite a directory's birth time (a restore, or a
+// tool that sets it), and APFS never hands out an inode number again (its
+// object ids only grow), so a device and inode match there is still the
+// same directory. It is used only during the undo of the change that
+// made the directory (removeOwnDirs, and sweepDirs for a change this call
+// undid), so a later run, even one related through a file, never relies
+// on it.
+func sameDevIno(dir string, id store.DirID) bool {
+	_, ok := devIno(dir, id)
+	return ok
+}
+
+func devIno(dir string, id store.DirID) (store.DirID, bool) {
 	if id == (store.DirID{}) {
-		return false
+		return store.DirID{}, false
 	}
 	cur, ok := dirIdentity(dir)
-	return ok && cur.Dev == id.Dev && cur.Ino == id.Ino && (id.Birth == 0 || cur.Birth == id.Birth)
+	return cur, ok && cur.Dev == id.Dev && cur.Ino == id.Ino
 }
 
 // removeOwnDirs removes, while empty, the directories c created, during
 // the undo of c itself. A directory whose identity was recorded is
-// removed only while it still has it; one recorded with none (a pending
-// row) is removed while empty, as patch.Revert does.
+// removed only while it still has its device and inode (its birth time
+// may have been rewritten; see sameDevIno). One recorded with none is
+// removed while empty only for a pending row, which stopped before it
+// could record any, as patch.Revert does; a failed row recorded the
+// identity of every directory its Apply made, so a directory it has none
+// for is not known to be aggy's and is kept.
 func removeOwnDirs(c store.Change) error {
 	var dirs []string
 	for k, d := range c.CreatedDirs {
-		if k < len(c.CreatedDirIDs) && c.CreatedDirIDs[k] != (store.DirID{}) && !sameDir(d, c.CreatedDirIDs[k]) {
+		var id store.DirID
+		if k < len(c.CreatedDirIDs) {
+			id = c.CreatedDirIDs[k]
+		}
+		if id == (store.DirID{}) {
+			if c.Status == store.ChangePending {
+				dirs = append(dirs, d)
+			}
 			continue
 		}
-		dirs = append(dirs, d)
+		if sameDevIno(d, id) {
+			dirs = append(dirs, d)
+		}
 	}
 	return patch.RemoveEmptyDirs(dirs)
 }
 
 // provenUnwritten reports whether c is known never to have written its
-// file:
+// file from its status alone: a failed row, whatever the file holds now;
+// the file is not read. Apply records failed only when patch.Apply wrote
+// nothing. The target write is atomic (a rename) and the only error after
+// the rename is a directory sync, which is recorded as applied. A drift
+// refusal at patch.Apply's re-check also lands here, with no backup.
 //
-//   - A failed row, whatever the file holds now; the file is not read.
-//     Apply records failed only when patch.Apply wrote nothing. The
-//     target write is atomic (a rename) and the only error after the
-//     rename is a directory sync, which is recorded as applied. A drift
-//     refusal at patch.Apply's re-check also lands here, with no backup.
-//   - A pending row of a file that existed, whose backup is missing,
-//     while the file is exactly as it was before the change (its hash
-//     now, simulated in a dry run, is the row's hash before). patch.Apply
-//     writes and fsyncs the backup, and renames it into place, before it
-//     writes the target, so a stop before the backup is a stop before
-//     the write; but a backup can also be lost (deleted by hand, alone or
-//     with the whole backups folder, or by a power cut after its
-//     directory sync failed). With the file at its hash before, nothing
-//     of the change is in it either way. Any other content goes to the
-//     normal path, which reports it (Blocked, Drifted, or Failed): a
-//     row is never marked undone while the file may hold its write.
-//     Nor while a newer change to the file is still in effect: it may
-//     have taken the write out (an off toggle), and undoing it would put
-//     the write back, so the row goes to the newer-change rules instead.
-//     The cost: a pending row that stopped before its backup and was then
-//     edited by hand is reported as drifted until the edit is undone.
-//
-// TODO(T6735): the backups/<change-id> entry is not synced into backups/
-// before the target write, so a power cut can lose it while keeping the
-// target; requiring the hash before keeps that case loud.
-func (m *Manifest) provenUnwritten(ctx context.Context, c store.Change, run *unwireRun) (bool, error) {
-	switch {
-	case c.Status == store.ChangeFailed:
-		return true, nil
-	case c.Status != store.ChangePending || c.HashBefore == patch.NoFile:
-		return false, nil
-	}
-	if newer, _, _, err := m.newerChange(ctx, c, run); err != nil || newer != nil {
-		return false, err
-	}
-	_, curHash, err := patch.Current(Record(c))
-	if err != nil {
-		return false, err
-	}
-	if f, ok := run.sim[simKey(Record(c))]; ok {
-		curHash = f.hash
-	}
-	if curHash != c.HashBefore {
-		return false, nil
-	}
-	if _, err := safefs.Lstat(m.backupRoot); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return false, nil
-		}
-		return false, err
-	}
-	_, err = safefs.Lstat(filepath.Join(m.backupRoot, c.ChangeID, c.HashBefore+".bak"))
-	switch {
-	case err == nil:
-		return false, nil
-	case errors.Is(err, fs.ErrNotExist):
-		return true, nil
-	}
-	return false, err
-}
+// A pending row is never proven this way. One whose file is still at its
+// hash before, with no newer change in effect, is Cleaned by the normal
+// path anyway, and one whose file holds its hash after is undone from its
+// backup, or fails loudly when the backup is gone.
+func provenUnwritten(c store.Change) bool { return c.Status == store.ChangeFailed }
 
 // userReverted reports whether cur is aggy's change undone by hand: a
 // created file left holding only white space, or the old content plus
@@ -639,7 +632,7 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 	}
 	unlock, err := func() {}, error(nil)
 	if !opt.NoLock {
-		unlock, err = m.lockTarget(ctx, c.File, Record(c).NoFollow())
+		unlock, _, err = m.lockTarget(ctx, c.File, Record(c).NoFollow())
 	}
 	if err != nil {
 		return fail(err)
@@ -672,11 +665,7 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 
 	// A change that never wrote has nothing in the file to undo, whatever
 	// came after it.
-	unwritten, err := m.provenUnwritten(ctx, c, run)
-	if err != nil {
-		return fail(err)
-	}
-	if unwritten {
+	if provenUnwritten(c) {
 		u.Outcome = Cleaned
 		if opt.DryRun {
 			fmt.Fprintf(w, "# %s: change %s never wrote; would leave the file\n",
@@ -781,9 +770,11 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 		return u
 	}
 	u.Err = err
-	if u.Outcome == Removed {
-		// Removed now, or found already gone: either way this undo is
-		// what leaves the file's directory without it.
+	if u.Outcome == Removed && curHash != patch.NoFile {
+		// This undo removed the file itself, so it is what leaves the
+		// file's directory without it. A file found already gone relates
+		// this call to nothing: whoever removed it may also have removed
+		// and made the directory again.
 		run.emptied = append(run.emptied, r.File)
 	}
 	return done()

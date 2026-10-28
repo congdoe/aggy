@@ -157,8 +157,10 @@ func noBirth(t *testing.T) {
 // file in it. After R1 is undone and the person deletes R2's file by
 // hand, the directory looks, by device and inode alone (no birth time,
 // as on Linux), like the one aggy made, as one the person made again
-// would on ext4. An unwire unrelated to it must not sweep it; R2's own
-// undo does. Fails on 45fa3fa.
+// would on ext4. An unwire unrelated to it must not sweep it. Nor does
+// R2's own undo since T6735: it finds y.toml already gone, which does not
+// relate it to the directory (the person may have made it again), so
+// without birth times the empty directory stays.
 func TestSweepSkipsUnrelatedRun(t *testing.T) {
 	f := setup(t)
 	noBirth(t)
@@ -180,8 +182,8 @@ func TestSweepSkipsUnrelatedRun(t *testing.T) {
 	if _, err := f.m.Unwire(ctx, Selection{RunID: "R2"}, UnwireOptions{}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Lstat(dir); err == nil {
-		t.Error("R2's undo left aggy's directory behind")
+	if _, err := os.Lstat(dir); err != nil {
+		t.Errorf("R2's undo, finding its file already gone, swept the directory: %v", err)
 	}
 }
 
@@ -205,7 +207,9 @@ func TestSweepInodeReuse(t *testing.T) {
 		// aggy's file in a directory made again around it takes the
 		// directory when that leaves it empty.
 		{"no birth time, related unwire", false, true, "R2", true},
-		{"no birth time, related unwire, file gone", false, false, "R2", true},
+		// T6735: a file found already gone relates the unwire to
+		// nothing, so the directory made again is kept.
+		{"no birth time, related unwire, file gone", false, false, "R2", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

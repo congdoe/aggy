@@ -398,7 +398,12 @@ func SetTestHookBeforeWrite(fn func(file string) error) (restore func()) {
 // ErrNotSynced (and safefs.ErrDirSync), and the caller must still record
 // the change, or aggy unwire could not undo it. A sync failure on the
 // backup is not an error: the backup exists. Every other error comes with
-// a zero Record.
+// a Record holding only File and the CreatedDirs Apply made itself before
+// it failed, so the caller can record exactly those for removal.
+//
+// For a new file, CreatedDirs is the directories Apply made, which can be
+// fewer than Plan listed: one that another process made in the meantime
+// is not aggy's.
 func Apply(p Patch, backupDir string) (Record, error) {
 	pl, err := Plan(p)
 	if err != nil {
@@ -414,28 +419,31 @@ func Apply(p Patch, backupDir string) (Record, error) {
 	if pl.Action == Modify && backupDir == "" {
 		return Record{}, errors.New("patch: backup directory is required")
 	}
+	var made []string
+	fail := func(err error) (Record, error) { return Record{File: rec.File, CreatedDirs: made}, err }
 	if pl.Action == Create {
-		if err := safefs.MkdirAll(filepath.Dir(rec.File), 0o700); err != nil {
-			return Record{}, err
+		if made, err = mkdirs(rec.CreatedDirs); err != nil {
+			return fail(err)
 		}
+		rec.CreatedDirs = made
 	}
 	// Re-check right before writing to narrow the window for a concurrent
 	// edit between the plan and the write.
 	if h, err := HashFile(rec.File); err != nil {
-		return Record{}, err
+		return fail(err)
 	} else if h != rec.BeforeHash {
-		return Record{}, &DriftError{File: rec.File, Expected: rec.BeforeHash, Actual: h}
+		return fail(&DriftError{File: rec.File, Expected: rec.BeforeHash, Actual: h})
 	}
 	// The backup is taken only once the write is going ahead, so a refused
 	// patch leaves nothing behind.
 	if pl.Action == Modify {
 		if rec.BackupPath, err = backup(backupDir, pl.Before); err != nil {
-			return Record{}, err
+			return fail(err)
 		}
 	}
 	if testHookBeforeWrite != nil {
 		if err := testHookBeforeWrite(rec.File); err != nil {
-			return Record{}, err
+			return fail(err)
 		}
 	}
 	if err := writeFile(rec.File, pl.After, rec.Mode); err != nil {
@@ -443,7 +451,7 @@ func Apply(p Patch, backupDir string) (Record, error) {
 			rec.Changed = true
 			return rec, fmt.Errorf("patch: %s: target %w: %w", rec.File, ErrNotSynced, err)
 		}
-		return Record{}, err
+		return fail(err)
 	}
 	rec.Changed = true
 	return rec, nil
@@ -454,26 +462,30 @@ func applyNoFollow(p Patch, rec Record, backupDir string) (Record, error) {
 	if rec.BeforeHash != NoFile && backupDir == "" {
 		return Record{}, errors.New("patch: backup directory is required")
 	}
+	var made []string
+	fail := func(err error) (Record, error) { return Record{File: rec.File, CreatedDirs: made}, err }
 	if rec.Created {
-		if err := safefs.MkdirAll(filepath.Dir(rec.File), 0o700); err != nil {
-			return Record{}, err
+		var err error
+		if made, err = mkdirs(rec.CreatedDirs); err != nil {
+			return fail(err)
 		}
+		rec.CreatedDirs = made
 	}
 	st, err := ReadState(rec.File)
 	if err != nil {
-		return Record{}, err
+		return fail(err)
 	}
 	if st.Hash != rec.BeforeHash {
-		return Record{}, &DriftError{File: rec.File, Expected: rec.BeforeHash, Actual: st.Hash}
+		return fail(&DriftError{File: rec.File, Expected: rec.BeforeHash, Actual: st.Hash})
 	}
 	if rec.BeforeHash != NoFile {
 		if rec.BackupPath, err = backupAs(backupDir, rec.BeforeHash, st.Data); err != nil {
-			return Record{}, err
+			return fail(err)
 		}
 	}
 	if testHookBeforeWrite != nil {
 		if err := testHookBeforeWrite(rec.File); err != nil {
-			return Record{}, err
+			return fail(err)
 		}
 	}
 	if p.Remove {
@@ -486,10 +498,46 @@ func applyNoFollow(p Patch, rec Record, backupDir string) (Record, error) {
 			rec.Changed = true
 			return rec, fmt.Errorf("patch: %s: target %w: %w", rec.File, ErrNotSynced, err)
 		}
-		return Record{}, err
+		return fail(err)
 	}
 	rec.Changed = true
 	return rec, nil
+}
+
+// testHookBeforeMkdir, set through SetTestHookBeforeMkdir, runs right
+// before Apply makes the directories a new file needs.
+var testHookBeforeMkdir func(dirs []string)
+
+// SetTestHookBeforeMkdir installs fn to run right before Apply makes the
+// missing directories it planned, to simulate another process making one
+// first. It panics outside a test binary.
+func SetTestHookBeforeMkdir(fn func(dirs []string)) (restore func()) {
+	if !testing.Testing() {
+		panic("patch: SetTestHookBeforeMkdir outside a test")
+	}
+	old := testHookBeforeMkdir
+	testHookBeforeMkdir = fn
+	return func() { testHookBeforeMkdir = old }
+}
+
+// mkdirs makes the planned missing directories, outermost first, one at
+// a time, and returns those it made itself. One that exists by then was
+// made by someone else and is not aggy's to remove, so it is left out.
+func mkdirs(dirs []string) ([]string, error) {
+	if testHookBeforeMkdir != nil {
+		testHookBeforeMkdir(dirs)
+	}
+	var made []string
+	for _, d := range dirs {
+		err := safefs.Mkdir(d, 0o700)
+		switch {
+		case err == nil:
+			made = append(made, d)
+		case !errors.Is(err, fs.ErrExist):
+			return made, err
+		}
+	}
+	return made, nil
 }
 
 // missingDirs lists the directories that do not exist on the way to dir,
