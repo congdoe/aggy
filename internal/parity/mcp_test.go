@@ -58,6 +58,12 @@ func TestClaudeServer(t *testing.T) {
 		"https://mcp.example.com/ab12/CD34/ef56/GH78",
 		"https://6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f.mcp.example.com/mcp",
 		"https://qwhzkrtplmnbvcxzjgfd.mcp.example.com/mcp",
+		// I43-7: all digits, lower case with repeats, and short labels.
+		"https://mcp.example.com/s/12345678901234567890/mcp",
+		"https://12345678901234567890.mcp.example.com/mcp",
+		"https://mcp.example.com/s/kqzvtwmrjxhplbnaqzvt",
+		"https://abcd1234efgh.mcp.example.com/mcp",
+		"https://kqzvtwmrjxhplbn.mcp.example.com/mcp",
 	} {
 		cases = append(cases, struct {
 			name, entry string
