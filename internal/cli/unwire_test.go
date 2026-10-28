@@ -165,6 +165,10 @@ func TestUnwireChangeRefusesWhileNewer(t *testing.T) {
 			t.Fatalf("%v changed the file: %q", args, got)
 		}
 	}
+	// --force cannot help a blocked change, so it is not suggested.
+	if _, _, errOut := run("unwire", "--change", a[0].ChangeID, "--force"); strings.Contains(errOut, "--force --yes") {
+		t.Errorf("a blocked change got the --force --yes advice: %q", errOut)
+	}
 	if code, _, errOut := run("unwire", "--all"); code != 0 {
 		t.Fatalf("--all: exit %d: %s", code, errOut)
 	}
