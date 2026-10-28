@@ -71,6 +71,7 @@ func TestImageCommandRefusals(t *testing.T) {
 		{"out in .git", []string{"a cat", "--out", ".git/cat.png"}, 1, "outside its .git"},
 		{"wrong extension", []string{"a cat", "--out", "cat.txt"}, 1, "must end in .png"},
 		{"both", []string{"a cat", "--out", "cat.png", "--vendor", "both"}, 1, "research only"},
+		{"edit without a sidecar", []string{"--edit", "cat.png", "darker"}, 1, "no sidecar aggy wrote"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
