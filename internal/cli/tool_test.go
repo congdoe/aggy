@@ -179,12 +179,15 @@ func TestToolRemove(t *testing.T) {
 		t.Errorf("remove a missing tool: exit %d %q", code, errOut)
 	}
 
-	old := toolWired
-	toolWired = func(string) (bool, error) { return true, nil }
+	if code, _, errOut := toolRun("", false, "on", "demo", "--vendor", "claude"); code != 0 {
+		t.Fatalf("on: exit %d %q", code, errOut)
+	}
 	code, _, errOut := toolRun("", false, "remove", "demo")
-	toolWired = old
-	if code != 1 || !strings.Contains(errOut, "wired") || !exists(t, dest) {
-		t.Fatalf("remove while wired: exit %d %q", code, errOut)
+	if code != 1 || !strings.Contains(errOut, "tool.still_on") || !exists(t, dest) {
+		t.Fatalf("remove while on: exit %d %q", code, errOut)
+	}
+	if code, _, errOut := toolRun("", false, "off", "demo"); code != 0 {
+		t.Fatalf("off: exit %d %q", code, errOut)
 	}
 
 	if code, _, errOut := toolRun("", false, "remove", "demo"); code != 0 || exists(t, dest) {
@@ -207,8 +210,8 @@ func TestToolDelegated(t *testing.T) {
 	for _, val := range []string{"1", ""} {
 		src, dest := toolHome(t, demoTool)
 		t.Setenv(borrow.Delegated, val)
-		for _, args := range [][]string{{"add", src, "--yes"}, {"remove", "demo"}} {
-			if code, _, errOut := toolRun("", true, args...); code != 1 || !strings.Contains(errOut, "borrow child") {
+		for _, args := range [][]string{{"add", src, "--yes"}, {"remove", "demo"}, {"on", "rtk"}, {"off", "rtk"}} {
+			if code, _, errOut := toolRun("", true, args...); code != 1 || !strings.Contains(errOut, "borrow child") || !strings.Contains(errOut, "tool.delegated") {
 				t.Errorf("%q=%q %v: exit %d %q", borrow.Delegated, val, args, code, errOut)
 			}
 		}
@@ -259,7 +262,9 @@ func TestToolCommandsNeverRunWhileOff(t *testing.T) {
 	t.Setenv("PATH", bin)
 	def := strings.Replace(demoTool, `"/usr/local/bin/demo-install", "1.2.3"`, `"demo-install"]`+"\nprebuild = [\"demo\", \"index\"", 1)
 	writeAt(t, src, def, 0o644)
-	for _, args := range [][]string{{"add", src, "--yes"}, {"list"}, {"remove", "demo"}} {
+	// T59-11: on and off record a setting; nothing runs until a launch
+	// wires the tool.
+	for _, args := range [][]string{{"add", src, "--yes"}, {"list"}, {"status"}, {"on", "demo"}, {"status", "demo"}, {"off", "demo"}, {"remove", "demo"}} {
 		if code, _, errOut := toolRun("", true, args...); code != 0 {
 			t.Fatalf("%v: exit %d %q", args, code, errOut)
 		}

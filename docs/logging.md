@@ -152,7 +152,7 @@ The hard rules hold for every record, the export, and the bundle.
 
 ## What is instrumented
 
-Now: borrow (start, the child's exit, the end, vendors passed over, refusals), the adapters' lockdown rejections and Grok's sandbox refusal, accept and reject, the check gate, `aggy check`, `aggy gc`, `aggy setup`, and `aggy doctor`.
+Now: borrow (start, the child's exit, the end, vendors passed over, refusals), the adapters' lockdown rejections and Grok's sandbox refusal, accept and reject, the check gate, `aggy check`, `aggy gc`, `aggy setup`, `aggy doctor`, and `aggy tool` (refusals, refused user definitions, and each on or off).
 
 Next phase (T6753 phase 2): the supervisor and switch paths, and the hook handler (which adopts the trace of the supervisor it reports to, and records forged or foreign hook events as security refusals). On-screen CLIs already get `AGGY_TRACE`.
 
@@ -188,6 +188,9 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `setup.run.failed` | error | setup | aggy setup failed. | The code's entry. |
 | `doctor.finding.error` | error | doctor | aggy doctor reported an error-level finding (attrs.finding is its doctor code). | aggy doctor shows the finding in full. |
 | `doctor.run.refused` | error | doctor | aggy doctor did not run. | The code's entry. |
+| `tool.request.refused` | error | tool | aggy tool refused or failed; no definition or switch changed. | The code's entry. |
+| `tool.def.refused` | warn | tool | A user tool definition was left out: invalid, untrusted, or colliding (attrs.file names it). | aggy tool list names the file and the key; fix or remove it. |
+| `tool.switch.changed` | info | tool | aggy tool on or off recorded a switch (attrs: tool, vendor, repo, on). | aggy tool status shows what is on where. |
 
 | Code | Security | Meaning | What to check next |
 | --- | --- | --- | --- |
@@ -232,4 +235,12 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `gc.remove_failed` |  | aggy gc could not remove one item. | The record's msg; aggy gc --dry-run. |
 | `doctor.error_finding` |  | aggy doctor found an error-level finding. | aggy doctor. |
 | `diag.write_failed` |  | aggy could not write its diagnostic log; the command went on without it. | The state dir's permissions and free space; aggy gc prunes the log. |
+| `tool.unknown` |  | No built-in or loaded user tool has that name. | aggy tool list; a refused user file is named there. |
+| `tool.not_applicable` |  | The tool has nothing for that vendor, or is a per-repo tool turned on without --repo. | aggy tool status &lt;name&gt;; aggy tool on &lt;name&gt; --repo . |
+| `tool.repo_off` |  | The repo's .aggy/config.toml lists the tool in tools_off; a repo config always wins, and can only turn tools off. | Edit that repo's tools_off if it is your repo. |
+| `tool.delegated` | yes | aggy tool add, remove, on, or off ran inside a borrow child (AGGY_DELEGATED is set). | Run it from your own shell. A child that tries this was steered to; read its task. |
+| `tool.def_invalid` |  | A tool definition failed validation; the message names the file and the key. | Fix the key; docs/design.md section 9 has the rules. |
+| `tool.def_untrusted` | yes | A user tool definition, its tools folder, or the state dir is a symlink, not the user's own, or writable by group or others. | chmod go-w and check the owner of ~/.aggy, ~/.aggy/tools, and the file. |
+| `tool.still_on` |  | aggy tool remove refused: the tool is still on somewhere. | aggy tool off &lt;name&gt;, then remove it. |
+| `tool.failed` |  | Another aggy tool error: a file or the index could not be read or written. | The record's msg; aggy doctor. |
 <!-- registry:end -->
