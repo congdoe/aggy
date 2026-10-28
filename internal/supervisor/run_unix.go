@@ -16,6 +16,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/hook"
 )
 
 // drainWait bounds how long Run waits, after the CLI exits, for its last
@@ -52,6 +53,11 @@ var exitWait = 10 * time.Second
 // the switch key, so a key meant for the CLI as it appears cannot
 // confirm (S-2). Tests shorten it.
 var confirmGuard = 500 * time.Millisecond
+
+// escTimeout is how long a lone Esc at a prompt aggy opened waits for
+// more bytes before it counts as Esc: a key's escape sequence can arrive
+// split across reads (S-11). Tests shorten it.
+var escTimeout = 50 * time.Millisecond
 
 // Run supervises one CLI: it puts In in raw mode, starts the CLI at In's
 // size, and copies bytes both ways unchanged until the CLI exits. It
@@ -94,7 +100,7 @@ func Run(o Options) (Exit, error) {
 		return Exit{Code: 1}, errors.New("supervisor: standard input is not a terminal")
 	}
 	t := &tty{fd: fd}
-	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, events: make(chan string, 16), asks: make(chan adapter.Vendor, 1), quit: make(chan struct{})}
+	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, events: make(chan hookEvent, 16), asks: make(chan adapter.Vendor, 1), quit: make(chan struct{})}
 	defer close(s.quit)
 	var srv *Server
 	if o.RunDir != "" {
@@ -157,6 +163,31 @@ func Run(o Options) (Exit, error) {
 	// pending is a first switch-key press waiting to see whether a second
 	// follows within double; it fires when none does.
 	var pending <-chan time.Time
+	// input takes the user's keys while no picker is up, and the keys a
+	// prompt aggy opened hands back (S-11): through the one key filter,
+	// so its paste and split-sequence state stays right.
+	s.input = func(b []byte) {
+		for _, ev := range filter.feed(b) {
+			switch {
+			case s.open:
+				s.pickerInput(ev.data)
+			case ev.press && pending != nil:
+				// A double press: the CLI gets one switch key.
+				pending = nil
+				s.send(ev.data)
+			case ev.press:
+				pending = time.After(double)
+			case pending != nil:
+				// Other input after one press: the picker opens and
+				// takes it, so Ctrl+\ 2 picks the second vendor.
+				pending = nil
+				s.openList()
+				s.pickerInput(ev.data)
+			default:
+				s.send(ev.data)
+			}
+		}
+	}
 	for {
 		// check polls a switch that waits for the turn end.
 		var check <-chan time.Time
@@ -166,6 +197,9 @@ func Run(o Options) (Exit, error) {
 		select {
 		case ev := <-s.events:
 			s.hookEvent(ev)
+		case <-s.escBy:
+			s.escBy = nil
+			s.promptEsc()
 		case v := <-s.asks:
 			if s.sw.to == "" { // a switch the user picked wins
 				s.setSwitch(pendingSwitch{to: v, asked: true})
@@ -176,7 +210,7 @@ func Run(o Options) (Exit, error) {
 			s.exitBy = nil
 			if s.sw.typed && !s.open {
 				s.pk.tell(fmt.Sprintf("%s has not exited after aggy typed its exit command, so it is still running.", s.o.Vendor),
-					fmt.Sprintf("If it exits, aggy switches to %s. To cancel, press the switch key, then Esc.", s.sw.to))
+					fmt.Sprintf("If it exits, aggy switches to %s. To cancel, press the switch key, then Esc in the list.", s.sw.to))
 				s.openPicker()
 			}
 		case b, ok := <-input:
@@ -191,26 +225,7 @@ func Run(o Options) (Exit, error) {
 				s.pickerInput(b)
 				continue
 			}
-			for _, ev := range filter.feed(b) {
-				switch {
-				case s.open:
-					s.pickerInput(ev.data)
-				case ev.press && pending != nil:
-					// A double press: the CLI gets one switch key.
-					pending = nil
-					s.send(ev.data)
-				case ev.press:
-					pending = time.After(double)
-				case pending != nil:
-					// Other input after one press: the picker opens and
-					// takes it, so Ctrl+\ 2 picks the second vendor.
-					pending = nil
-					s.openList()
-					s.pickerInput(ev.data)
-				default:
-					s.send(ev.data)
-				}
-			}
+			s.input(b)
 		case <-pending:
 			pending = nil
 			s.openList()
@@ -276,7 +291,7 @@ type session struct {
 	// agent's switch requests from the socket; quit closes when Run
 	// returns.
 	sw     pendingSwitch
-	events chan string
+	events chan hookEvent
 	asks   chan adapter.Vendor
 	quit   chan struct{}
 	// atPrompt: a turn end from the session came after the last Enter the
@@ -294,6 +309,10 @@ type session struct {
 	dirty, toldDirty bool
 	// openedAt is when the picker last opened.
 	openedAt time.Time
+	// input feeds keys through the key filter (set by Run).
+	input func([]byte)
+	// escBy fires escTimeout after a lone Esc at a prompt aggy opened.
+	escBy <-chan time.Time
 	// lastIn is when the user last typed to the CLI; lastOut (unix ns),
 	// written by copyOut, when the CLI last drew.
 	lastIn  time.Time
@@ -318,6 +337,12 @@ type pendingSwitch struct {
 	typed bool // the exit command has been typed
 }
 
+// hookEvent is a hook event from the session: its name and the vendor
+// session id its payload names.
+type hookEvent struct {
+	name, sessionID string
+}
+
 // onHook is the socket's hook callback: it passes the event on, and
 // hands an event of the vendor on screen from the session to the main
 // loop, in order (none is dropped: a lost hold would let a switch through).
@@ -327,21 +352,28 @@ func (s *session) onHook(r Request) {
 		s.o.OnHook(r)
 	}
 	if r.FromSession && r.Vendor == string(s.o.Vendor) && r.Event != "SessionStart" {
+		ev := hookEvent{name: r.Event, sessionID: hook.Parse(s.o.Vendor, r.Payload).SessionID}
 		select {
-		case s.events <- r.Event:
+		case s.events <- ev:
 		case <-s.quit:
 		}
 	}
 }
 
-// hookEvent applies one hook event from the session. A turn end puts the
-// CLI at its prompt unless a hold stands. Every other event (SessionStart
-// excepted, which onHook skips) holds the switch: Notification is how
-// Claude and Grok say they wait for the user, a permission prompt among
-// others, and its type field is not verified, so every one counts.
-func (s *session) hookEvent(ev string) {
-	if turnEnd(ev) {
-		s.atPrompt = !s.held
+// hookEvent applies one hook event from the session. A turn end of the
+// on-screen child itself (its payload names the child's session id, S-9)
+// puts the CLI at its prompt unless a hold stands; a turn end of another
+// session, such as a nested claude -p or codex exec in the agent's shell,
+// or one whose id is not known yet, is ignored. Every other event
+// (SessionStart excepted, which onHook skips), from any session in the
+// tree, holds the switch: Notification is how Claude and Grok say they
+// wait for the user, a permission prompt among others, and its type field
+// is not verified, so every one counts.
+func (s *session) hookEvent(ev hookEvent) {
+	if turnEnd(ev.name) {
+		if ev.sessionID != "" && s.o.SessionID != nil && ev.sessionID == s.o.SessionID() {
+			s.atPrompt = !s.held
+		}
 		return
 	}
 	s.atPrompt, s.held = false, true
@@ -353,7 +385,7 @@ func (s *session) hookEvent(ev string) {
 // turn end. It runs on a connection's goroutine.
 func (s *session) onSwitch(r Request) error {
 	v := adapter.Vendor(r.Vendor)
-	if err := s.offered(v); err != nil {
+	if err := s.offered(v); err != nil && !errors.Is(err, ErrChecking) {
 		return err
 	}
 	if !s.waiting.CompareAndSwap(false, true) {
@@ -410,13 +442,15 @@ func (s *session) offerSwitch() {
 		if !s.toldDirty {
 			s.toldDirty = true
 			s.pk.tell(fmt.Sprintf("aggy is ready to switch to %s, but you typed text you have not sent to %s.", v, on),
-				"Send it or clear it. aggy asks again at the next turn end; once the prompt is empty,",
-				fmt.Sprintf("you can also pick %s again in the picker.", v))
+				"Send it, or clear it and press Enter on the empty prompt; aggy asks again at the",
+				fmt.Sprintf("next turn end, or when you pick %s again after that Enter.", v))
 			s.openPicker()
 		}
 		return
 	}
-	if err := s.offered(v); err != nil {
+	if err := s.offered(v); errors.Is(err, ErrChecking) {
+		return // offered once the check is done
+	} else if err != nil {
 		s.setSwitch(pendingSwitch{})
 		s.pk.tell(fmt.Sprintf("Cannot switch to %s: %v", v, err))
 		s.openPicker()
@@ -461,7 +495,16 @@ const altSettle = 50 * time.Millisecond
 // openList opens the picker on the vendor list.
 func (s *session) openList() {
 	s.pk.list()
-	s.pk.waiting = s.sw.to
+	s.pk.waiting, s.pk.checking = s.sw.to, false
+	// Starts the checks that take time (the policy probe) for every
+	// vendor offered, in the background, so a pick rarely waits.
+	if s.o.CanSwitch != nil {
+		for _, v := range s.o.Vendors {
+			if err := s.o.CanSwitch(v); errors.Is(err, ErrChecking) && v == s.sw.to {
+				s.pk.checking = true
+			}
+		}
+	}
 	s.openPicker()
 }
 
@@ -546,17 +589,18 @@ func (s *session) pickerInput(b []byte) {
 		}
 	case picked != "" && picked == s.sw.to:
 		// Picked again while it waits: the user says no turn is running
-		// and the prompt is empty (an Enter that started no turn leaves
-		// no turn end to wait for). Not past a hold (S-3).
+		// (an Enter that started none leaves no turn end to wait for).
+		// Not past a hold (S-3), and not past unsent text (S-8): that
+		// stays until the user's next Enter, which offerSwitch reports.
 		if s.held {
 			s.pk.tell(fmt.Sprintf("%s said it is waiting for you (a permission prompt or another notice).", s.o.Vendor),
 				fmt.Sprintf("Answer it, or send a message; aggy switches to %s at the next turn end.", picked))
 			s.openPicker()
 			return
 		}
-		s.atPrompt, s.dirty = true, false
+		s.atPrompt, s.toldDirty = true, false
 	case picked != "":
-		if err := s.offered(picked); err != nil {
+		if err := s.offered(picked); err != nil && !errors.Is(err, ErrChecking) {
 			s.pk.tell(fmt.Sprintf("Cannot switch to %s: %v", picked, err))
 			s.openPicker()
 			return
@@ -570,26 +614,49 @@ func (s *session) pickerInput(b []byte) {
 // promptInput handles a key at a prompt aggy opened on its own (a
 // confirmation or a note), which the user may have been typing into when
 // it appeared (S-2). Esc closes it (and, at a confirmation, drops the
-// switch). At a confirmation, the switch key, once confirmGuard has
-// passed, types the exit command. Any other input closes it and goes to
-// the CLI as typed: nothing is lost, and the switch, if any, still waits.
+// switch), once escTimeout shows it is not the start of a longer key
+// (S-11). The switch key confirms a confirmation once confirmGuard has
+// passed, and at a note opens the list (S-7); neither reaches the CLI.
+// Any other input closes the prompt and goes to the CLI as typed, through
+// the key filter: nothing is lost, and the switch, if any, still waits.
 func (s *session) promptInput(b []byte) {
+	if s.escBy != nil {
+		// The Esc was the start of a longer key: hand it all back.
+		s.escBy = nil
+		b = append([]byte{esc}, b...)
+		s.closePicker()
+		s.input(b)
+		return
+	}
 	confirming := s.pk.confirm != ""
 	switch {
 	case isEsc(b):
-		s.closePicker()
-		if confirming {
-			s.setSwitch(pendingSwitch{})
-		}
-	case confirming && s.pk.isKey(b):
+		s.escBy = time.After(escTimeout)
+	case s.pk.isKey(b) && confirming:
 		if time.Since(s.openedAt) < confirmGuard {
 			return // too soon to be meant: ignored
 		}
 		s.closePicker()
 		s.typeExit()
+	case s.pk.isKey(b):
+		s.closePicker()
+		s.openList()
 	default:
 		s.closePicker()
-		s.send(b)
+		s.input(b)
+	}
+}
+
+// promptEsc is a lone Esc at a prompt aggy opened, once nothing followed
+// it within escTimeout.
+func (s *session) promptEsc() {
+	if !s.open || (s.pk.confirm == "" && !s.pk.note) {
+		return
+	}
+	confirming := s.pk.confirm != ""
+	s.closePicker()
+	if confirming {
+		s.setSwitch(pendingSwitch{})
 	}
 }
 

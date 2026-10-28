@@ -17,17 +17,26 @@ import (
 // FromSession. It returns the socket's path too.
 func switchRun(t *testing.T, startsTurn bool) (*termSide, *fakeChild, <-chan Exit, string) {
 	t.Helper()
-	oldQ, oldW, oldG := switchQuiet, exitWait, confirmGuard
-	switchQuiet, exitWait, confirmGuard = 50*time.Millisecond, 300*time.Millisecond, 100*time.Millisecond
-	t.Cleanup(func() { switchQuiet, exitWait, confirmGuard = oldQ, oldW, oldG })
+	oldQ, oldW, oldG, oldE := switchQuiet, exitWait, confirmGuard, escTimeout
+	switchQuiet, exitWait, confirmGuard, escTimeout = 50*time.Millisecond, 300*time.Millisecond, 100*time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() { switchQuiet, exitWait, confirmGuard, escTimeout = oldQ, oldW, oldG, oldE })
 	run := filepath.Join(shortDir(t), "run")
 	ts, c, done := startRunOpts(t, 20*time.Millisecond, nil, func(o *Options) {
 		o.RunDir, o.ParentID, o.StartsTurn = run, pid, startsTurn
+		o.SessionID = func() string { return childSID }
 	})
 	return ts, c, done, filepath.Join(run, pid+".sock")
 }
 
-const stopLine = `{"type":"hook-event","vendor":"claude","event":"Stop","payload":{}}`
+// childSID is the on-screen child's session id in switchRun.
+const childSID = "11111111-2222-4333-8444-555555555555"
+
+// stopLine is the on-screen child's Stop; nestedStop another session's.
+const (
+	stopLine   = `{"type":"hook-event","vendor":"claude","event":"Stop","payload":{"session_id":"` + childSID + `"}}`
+	nestedStop = `{"type":"hook-event","vendor":"claude","event":"Stop","payload":{"session_id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}}`
+	idlessStop = `{"type":"hook-event","vendor":"claude","event":"Stop","payload":{}}`
+)
 
 // never fails if get ever shows want within d.
 func never(t *testing.T, what string, want []byte, get func() []byte, d time.Duration) {
@@ -97,7 +106,9 @@ func TestSwitchTurnEndHints(t *testing.T) {
 		hook  string
 		after string // typed after the hook
 	}{
-		{"another vendor's Stop", `{"type":"hook-event","vendor":"codex","event":"Stop","payload":{}}`, ""},
+		{"another vendor's Stop", `{"type":"hook-event","vendor":"codex","event":"Stop","payload":{"session_id":"` + childSID + `"}}`, ""},
+		{"a nested CLI's Stop (S-9)", nestedStop, ""},
+		{"a Stop naming no session", idlessStop, ""},
 		{"not a turn end", notifyLine, ""},
 		{"Enter after the Stop starts a turn", stopLine, "go on\r"},
 	}
@@ -120,16 +131,16 @@ func TestSwitchTurnEndHints(t *testing.T) {
 // TestSwitchFromOutsideSessionIgnored: a Stop that is not FromSession is
 // passed on but does not reach the switch.
 func TestSwitchFromOutsideSessionIgnored(t *testing.T) {
-	s := &session{o: Options{Vendor: adapter.Claude}, events: make(chan string, 1), quit: make(chan struct{})}
+	s := &session{o: Options{Vendor: adapter.Claude}, events: make(chan hookEvent, 1), quit: make(chan struct{})}
 	s.onHook(Request{Type: ReqHookEvent, Vendor: "claude", Event: "Stop"})
 	select {
 	case <-s.events:
 		t.Error("a Stop from outside the session reached the switch")
 	default:
 	}
-	s.onHook(Request{Type: ReqHookEvent, Vendor: "claude", Event: "Stop", FromSession: true})
-	if ev := <-s.events; ev != "Stop" {
-		t.Errorf("event %q", ev)
+	s.onHook(Request{Type: ReqHookEvent, Vendor: "claude", Event: "Stop", FromSession: true, Payload: []byte(`{"session_id":"x"}`)})
+	if ev := <-s.events; ev != (hookEvent{"Stop", "x"}) {
+		t.Errorf("event %+v", ev)
 	}
 }
 
@@ -138,16 +149,19 @@ func TestSwitchFromOutsideSessionIgnored(t *testing.T) {
 // nested CLI can send, and through "pick again", until the user has typed
 // to the CLI and a turn has ended.
 func TestSwitchHolds(t *testing.T) {
-	s := &session{toChild: newByteQueue(maxQueued)}
+	s := &session{toChild: newByteQueue(maxQueued), o: Options{SessionID: func() string { return "me" }}}
+	stop := func(id string) func() { return func() { s.hookEvent(hookEvent{"Stop", id}) } }
 	steps := []struct {
 		do   func()
 		want bool
 	}{
-		{func() { s.hookEvent("Stop") }, true},
-		{func() { s.hookEvent("Notification") }, false},
-		{func() { s.hookEvent("Stop") }, false}, // a nested CLI's Stop
-		{func() { s.hookEvent("StopFailure") }, false},
-		{func() { s.send(nil); s.hookEvent("Stop") }, true}, // the user answered
+		{stop("me"), true},
+		{func() { s.hookEvent(hookEvent{"Notification", "other"}) }, false},
+		{stop("me"), false}, // held
+		{func() { s.hookEvent(hookEvent{"StopFailure", "me"}) }, false},
+		{func() { s.send(nil); stop("other")() }, false}, // a nested CLI's Stop (S-9)
+		{stop(""), false},
+		{stop("me"), true}, // the user answered, and the child's turn ended
 	}
 	for i, st := range steps {
 		st.do()
@@ -289,4 +303,82 @@ func TestSwitchRequest(t *testing.T) {
 	c.waitGot(t, []byte("/exit\r"))
 	c.quit(0)
 	wantExit(t, done, Exit{SwitchTo: adapter.Grok})
+}
+
+// TestSwitchRepickKeepsUnsentText (S-8): picking the waiting vendor again
+// does not clear unsent text, so the switch key never sends draft+/exit.
+func TestSwitchRepickKeepsUnsentText(t *testing.T) {
+	ts, c, done, _ := switchRun(t, false)
+	ts.typeIn(t, "half a draft")
+	c.waitGot(t, []byte("half a draft"))
+	ts.typeIn(t, "\x1c2")
+	poll(t, "the note", []byte("you typed text you have not sent"), ts.screen)
+	ts.typeIn(t, "\x1b")
+	time.Sleep(60 * time.Millisecond)
+	ts.typeIn(t, "\x1c2") // pick it again
+	time.Sleep(600 * time.Millisecond)
+	ts.typeIn(t, "\x1c")
+	time.Sleep(200 * time.Millisecond)
+	if got := c.received(); bytes.Contains(got, []byte("/exit")) {
+		t.Fatalf("the CLI got %q", got)
+	}
+	if bytes.Contains(ts.screen(), []byte("aggy: switch to grok")) {
+		t.Error("a confirmation was offered over unsent text")
+	}
+	finish(t, c, done)
+}
+
+// TestSwitchNeedsChildStop (S-9): a Stop naming another session does not
+// open the confirmation; the child's own does.
+func TestSwitchNeedsChildStop(t *testing.T) {
+	ts, c, done, sock := switchRun(t, true)
+	ts.typeIn(t, "\x1c2")
+	poll(t, "the picker to close", []byte(altScreenOff), ts.screen)
+	_ = request(t, sock, nestedStop)
+	never(t, "a nested Stop", []byte("aggy: switch to grok"), ts.screen, 300*time.Millisecond)
+	_ = request(t, sock, stopLine)
+	poll(t, "the confirmation", []byte("aggy: switch to grok"), ts.screen)
+	confirm(t, ts)
+	c.waitGot(t, []byte("/exit\r"))
+	c.quit(0)
+	wantExit(t, done, Exit{SwitchTo: adapter.Grok})
+}
+
+// TestSwitchKeyAtNoteOpensList (S-7): at the late-exit note the switch
+// key opens the list, as the note says, and neither it nor the Esc that
+// cancels reaches the CLI.
+func TestSwitchKeyAtNoteOpensList(t *testing.T) {
+	ts, c, done, _ := switchRun(t, false)
+	ts.typeIn(t, "\x1c1")
+	poll(t, "the confirmation", []byte("aggy: switch to codex"), ts.screen)
+	confirm(t, ts)
+	c.waitGot(t, []byte("/exit\r"))
+	poll(t, "the note", []byte("has not exited"), ts.screen)
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list", []byte("Switching to codex"), ts.screen)
+	ts.typeIn(t, "\x1b")
+	time.Sleep(60 * time.Millisecond)
+	if got := c.received(); string(got) != "/exit\r" {
+		t.Errorf("the CLI got %q", got)
+	}
+	finish(t, c, done) // cancelled: no switch
+}
+
+// TestSwitchSplitEscHandedBack (S-11): an Esc that starts a longer key
+// at a confirmation is handed to the CLI whole and does not cancel.
+func TestSwitchSplitEscHandedBack(t *testing.T) {
+	ts, c, done, _ := switchRun(t, false)
+	old := escTimeout
+	escTimeout = time.Second
+	t.Cleanup(func() { escTimeout = old })
+	ts.typeIn(t, "\x1c2")
+	poll(t, "the confirmation", []byte("aggy: switch to grok"), ts.screen)
+	ts.typeIn(t, "\x1b")
+	time.Sleep(30 * time.Millisecond)
+	ts.typeIn(t, "[A")
+	c.waitGot(t, []byte("\x1b[A"))
+	ts.typeIn(t, "\x1c") // the switch still waits: the list shows it
+	poll(t, "the list", []byte("Switching to grok"), ts.screen)
+	ts.typeIn(t, "\x1b")
+	finish(t, c, done)
 }

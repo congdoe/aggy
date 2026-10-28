@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"errors"
 	"io"
 	"os"
 	"syscall"
@@ -66,7 +67,17 @@ type Options struct {
 	// StartsTurn is set when the CLI starts with a turn running (a brief
 	// prompt), so the session is not at its prompt until a turn end.
 	StartsTurn bool
+	// SessionID returns the on-screen child's vendor session id, or ""
+	// while it is not known (a new Codex child before the index confirms
+	// it). Only a turn-end hook whose payload names this id counts (S-9):
+	// a nested CLI in the session's tree has its own. Nil counts none.
+	SessionID func() string
 }
+
+// ErrChecking is what CanSwitch returns while a check that takes time
+// (the safety policy's probe) is still running: the switch may wait, but
+// it is not offered yet.
+var ErrChecking = errors.New("still checking that vendor")
 
 // Exit is how a supervised session ended.
 type Exit struct {

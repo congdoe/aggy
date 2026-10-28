@@ -251,6 +251,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 		Vendor:     v,
 		CanSwitch:  canSwitch,
 		StartsTurn: t.Brief,
+		SessionID:  ids.current,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", name, err)
@@ -268,11 +269,20 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 // switchCheck says why the session in cwd may not switch to a vendor:
 // the repo's allowed_vendors, its CLI not on PATH, or, unless [policy]
 // required = false, a safety policy that cannot reach it (S-6; a switch
-// never carries --no-policy over). The policy check probes the CLI's help
-// once per vendor, cached for this launch.
+// never carries --no-policy over). The policy needs a probe of the CLI's
+// help, which can take up to probeTimeout, so it runs in the background
+// (S-10): until it is done the check says supervisor.ErrChecking. A
+// probe that succeeded is kept for this launch; a failed one, or a policy
+// it cannot reach, is reported once and forgotten, so a later pick probes
+// again.
 func switchCheck(ctx context.Context, cfg config.Config, cwd string) func(adapter.Vendor) error {
+	type result struct {
+		done bool
+		caps []string
+		err  error
+	}
 	var mu sync.Mutex
-	probed := map[adapter.Vendor][]string{}
+	probed := map[adapter.Vendor]*result{}
 	return func(next adapter.Vendor) error {
 		if _, err := allowedIn(cfg, cwd, next); err != nil {
 			return err
@@ -285,13 +295,27 @@ func switchCheck(ctx context.Context, cfg config.Config, cwd string) func(adapte
 			return nil
 		}
 		mu.Lock()
-		caps, ok := probed[next]
-		if !ok {
-			caps, _ = probeCaps(ctx, next, path) // a failed probe has no caps, which policyDelivery reports
-			probed[next] = caps
+		defer mu.Unlock()
+		r := probed[next]
+		if r == nil {
+			r = &result{}
+			probed[next] = r
+			go func() {
+				caps, err := probeCaps(ctx, next, path)
+				mu.Lock()
+				defer mu.Unlock()
+				r.done, r.caps, r.err = true, caps, err
+			}()
 		}
-		mu.Unlock()
-		if why, perr := policyDelivery(next, caps); why != "" {
+		if !r.done {
+			return supervisor.ErrChecking
+		}
+		if r.err != nil {
+			delete(probed, next)
+			return fmt.Errorf("probing %s for the safety policy failed (%s); pick it again to retry", next, termsafe.Line(r.err.Error()))
+		}
+		if why, perr := policyDelivery(next, r.caps); why != "" {
+			delete(probed, next)
 			if perr != nil {
 				why += ": " + perr.Error()
 			}

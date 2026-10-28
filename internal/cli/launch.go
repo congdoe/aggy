@@ -369,6 +369,19 @@ type childIDs struct {
 	mu    sync.Mutex
 	lease *store.Lease
 	done  bool
+	id    string // a new Codex child's id, once recorded and leased
+}
+
+// current is the child's vendor session id: the one given at launch, or
+// a new Codex child's once the index recorded it; "" until then. The
+// supervisor counts only turn ends that name it (S-9).
+func (c *childIDs) current() string {
+	if c.child.VendorSessionID != "" {
+		return c.child.VendorSessionID
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.id
 }
 
 // set is sessionIndex.onID. Errors are dropped: a failed write must not
@@ -387,7 +400,7 @@ func (c *childIDs) set(id string) {
 		return
 	}
 	if l, err := c.s.SetChildSessionIDLeased(ctx, c.child.ID, id); err == nil {
-		c.lease = l
+		c.lease, c.id = l, id
 	}
 }
 
