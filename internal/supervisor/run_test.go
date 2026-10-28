@@ -210,6 +210,19 @@ func startRunOpts(t *testing.T, double time.Duration, setup func(*fakeChild), op
 		}
 		done <- ex
 	}()
+	// Run ends before the test does, even when the test failed before
+	// finish: otherwise it reads package vars the cleanups restore and
+	// reports after the test (this runs before the cleanups above).
+	t.Cleanup(func() {
+		select {
+		case c.exit <- 0:
+		default:
+		}
+		select {
+		case <-ran:
+		case <-time.After(waitLimit):
+		}
+	})
 	select {
 	case <-started:
 	case <-ran:

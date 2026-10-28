@@ -67,7 +67,7 @@ func TestBorrowSignalKillsChild(t *testing.T) {
 			// once nothing writes to it.
 			stop := func() string {
 				_ = cmd.Process.Kill()
-				<-done
+				t.Logf("aggy borrow killed: %v", <-done)
 				return out.String()
 			}
 			var child fakecli.Record
