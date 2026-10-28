@@ -1,18 +1,20 @@
 # CodeGraph: a local code index the agent queries instead of grepping.
-# Source: the aggy proposal, section 17, and docs/design.md section 9.
-# None of its commands is in docs/verification.md yet, so every vendor
-# fact below is unverified until T6711 checks it at a pinned version.
+# Source: docs/verification.md, "Managed tools (2026-10-28)":
+# @colbymchenry/codegraph 1.6.2, codegraph serve --mcp (stdio).
+# codegraph init writes .codegraph/ inside the repo; it runs only on an
+# explicit aggy tool install, after asking.
 name = "codegraph"
 description = "Local code index: the agent asks where a symbol lives instead of grepping"
 homepage = "https://github.com/colbymchenry/codegraph"
-version = "unpinned" # TODO(T6711): pin the version aggy installs
+version = "1.6.2"
 default = false
 scope = "repo"
 lifecycle = ["worktree-copy", "gc", "refresh"]
-unverified = ["version", "homepage", "install", "mcp"]
+unverified = ["homepage"]
 
 [install]
 check = ["codegraph", "--version"]
+check_pattern = '^(\d+\.\d+\.\d+)'
 prebuild = ["codegraph", "init"]
 
 [[mcp]]

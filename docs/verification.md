@@ -59,6 +59,7 @@ Confidence words: *Source-verified*, *Help-verified*, *Doc-verified*,
 | Grok headless prompt and version | `-p` is `--single <PROMPT>` and takes the prompt as its value, so aggy passes `--prompt-file <absolute path>`; `--version` ends in a `[stable]` channel tag. | Live-confirmed (T6740) |
 | Grok read confinement | Reads are auto-allowed in every permission mode; only `--sandbox strict` kept `read_file` out of `$HOME`. | Live-confirmed (T6740) |
 | Launch-time MCP | Claude `--mcp-config` (re-pass on resume); Codex `-c mcp_servers.*` plus per-server approval; Grok has no flag, use `--agent <file>` with `mcpServers`. | Live-confirmed |
+| Managed tools | Pinned versions, binaries, `--version` output, and MCP or hook commands of RTK, CodeGraph, Context7, Playwright MCP, and Headroom; Caveman's skill folder. | Live-confirmed (2026-10-28) |
 | Codex CLI details | `codex exec resume`, `--ignore-user-config` on `exec` only, greedy `-i`. | Help/Source-verified; parts Live-confirmed |
 | API and route settings | Listed in adapters.md. | Source/Doc-verified |
 
@@ -871,6 +872,43 @@ the model's context window, default 85
 the context window of the user's Grok model is not recorded, so no
 percent can be computed that keeps a session under 200,000 tokens. aggy
 does not set it yet (TODO(T6673)).
+
+## Managed tools (2026-10-28)
+
+Live, by a maintainer with the owner's approval to install, on macOS
+arm64 with `DO_NOT_TRACK=1`. No vendor config was edited, and no tool's
+`init` or `install` subcommand was run. The built-in definitions in
+`internal/tooldef/builtin` use these facts.
+
+| Tool | Package, pinned | Binary | `--version` prints | MCP server or hook |
+| --- | --- | --- | --- | --- |
+| RTK | 1.1.0 (Homebrew) | `rtk` | `rtk 1.1.0` | hooks `rtk hook claude` (Claude `PreToolUse`) and `rtk hook codex` (Codex `PreToolUse`); there is no Grok subcommand |
+| CodeGraph | npm `@colbymchenry/codegraph@1.6.2` | `codegraph` | `1.6.2` | `codegraph serve --mcp` (stdio; takes `--path`, `--no-watch`) |
+| Context7 | npm `@upstash/context7-mcp@4.4.4` (`--ignore-scripts`) | `context7-mcp` | `4.4.4` | `context7-mcp` (stdio by default; `--transport stdio\|http`) |
+| Playwright MCP | npm `@playwright/mcp@0.0.83` (`--ignore-scripts`) | `playwright-mcp` (not `mcp-server-playwright`) | `Version 0.0.83` | `playwright-mcp` |
+| Headroom | `uv tool install headroom-ai==0.42.0` (Python 3.10 or later) | `headroom` | `headroom, version 0.42.0` (about 7 s cold) | `headroom mcp serve` (not `headroom mcp`) |
+| Caveman | git tag v4.0.1 (d262ab3), read only | none | n/a | skill `skills/caveman/SKILL.md` (4.7 KB) |
+
+- **RTK's hook does not approve (#59 F-6).** `rtk hook claude` answers a
+  command it rewrites with `hookSpecificOutput` holding
+  `permissionDecisionReason: "RTK auto-rewrite"` and `updatedInput`, and
+  no `permissionDecision`, so the CLI still asks as it would have. It
+  prints nothing for a command it does not rewrite.
+- **CodeGraph** `codegraph init [path]` writes `.codegraph/` inside the
+  repo, and `uninit` deletes it.
+- **Context7** works without an API key (anonymous calls to its API);
+  `--api-key` or `CONTEXT7_API_KEY` raises its rate limits.
+- **Playwright MCP** downloads no browser with `--ignore-scripts`; the
+  first real use needs `npx playwright install`.
+- **Headroom.** Homepage <https://docs.headroomlabs.ai>, source
+  <https://github.com/headroomlabs-ai/headroom>. Its full value needs
+  `headroom proxy` and `ANTHROPIC_BASE_URL`, which aggy never uses; the
+  MCP server alone offers compress, retrieve, and stats on demand.
+  `headroom mcp install` edits every agent config it finds: never run it.
+- **Caveman.** Its installers (`npx @caveman-ai/cli`, `install.sh`) find
+  the agents and their logins, edit vendor configs, add a proxy, and
+  send telemetry by default. aggy uses only the `skills/caveman/` folder
+  at the pinned tag (T6715).
 
 ## Still open
 

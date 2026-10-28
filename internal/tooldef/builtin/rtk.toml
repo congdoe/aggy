@@ -1,35 +1,38 @@
 # RTK: compresses shell output before the model sees it; failures stay.
-# Source: the aggy proposal, section 17. None of its commands is in
-# docs/verification.md yet, so every vendor fact below is unverified
-# until T6712 checks it at a pinned version.
+# Source: docs/verification.md, "Managed tools (2026-10-28)": rtk 1.1.0,
+# rtk hook claude and rtk hook codex (there is no Grok subcommand).
 #
 # aggy never runs rtk init: it edits files aggy cannot undo through the
-# manifest. RTK is wired as a declared hook instead: a PreToolUse hook
-# on Claude's Bash tool, which can rewrite the command and so decides.
-# TODO(T6712): confirm RTK's hook command (the argv below is a
-# placeholder), and add Codex and Grok, whose shell tool names are not
-# verified yet (Grok gets a PostToolUse hook on shell output).
-# TODO(T6712): #59 F-6, unverified: if RTK's Claude hook answers
-# permissionDecision "allow" together with updatedInput, it would
-# approve every Bash command it rewrites. Check its output at the pinned
-# version; the wiring must refuse such a hook or strip the allow.
+# manifest. RTK is wired as declared PreToolUse hooks instead, which can
+# rewrite the command and so are marked as deciding.
+# #59 F-6, cleared: rtk hook claude answers updatedInput with a
+# permissionDecisionReason and no permissionDecision, so it never
+# approves a command it rewrites (verified live at 1.1.0).
+# TODO(T6712): Codex's matcher for its shell tool, and the token cost.
 name = "rtk"
 description = "Compresses shell command output before the model sees it; failures stay"
 homepage = "https://github.com/rtk-ai/rtk"
-version = "unpinned" # TODO(T6712): pin the version aggy installs
+version = "1.1.0"
 default = false
 scope = "global"
-unverified = ["version", "homepage", "install", "hook", "cost"]
+unverified = ["homepage", "cost"]
 
 [install]
 check = ["rtk", "--version"]
+check_pattern = 'rtk (\d+\.\d+\.\d+)'
 
 [[hook]]
 vendors = ["claude"]
 event = "PreToolUse"
 matcher = "Bash"
 decides = true
-argv = ["rtk", "hook"]
+argv = ["rtk", "hook", "claude"]
+
+[[hook]]
+vendors = ["codex"]
+event = "PreToolUse"
+decides = true
+argv = ["rtk", "hook", "codex"]
 
 [cost]
 method = "none" # TODO(T6712): measure what the hook adds to each CLI
