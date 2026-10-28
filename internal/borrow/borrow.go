@@ -311,8 +311,29 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 		res.Status, res.Outcome = "done", "ok"
 	}
 	end.Status, end.Outcome = res.Status, res.Outcome
+	if res.Status == "done" && (req.Kind == adapter.Image || req.Kind == adapter.Video) {
+		// Paths in the vendor's own store; nothing is copied here.
+		arts, err := a.Artifacts(hreq, parsed)
+		if err != nil {
+			res.Detail = "listing artifacts: " + err.Error()
+		}
+		res.Artifacts = arts
+		for _, x := range arts {
+			end.Artifacts = append(end.Artifacts, x.Path)
+			if x.Kind == "image" {
+				end.ImageCount++
+			}
+		}
+	}
+	path, rerr := b.writeReport(res, req, parsed.SessionID, now)
+	if rerr == nil {
+		res.ReportPath, end.ReportPath = path, path
+	}
 	if err := lease.Finish(ctx, end); err != nil {
 		return res, err
+	}
+	if rerr != nil {
+		return res, fmt.Errorf("writing the report: %w", rerr)
 	}
 	return res, nil
 }

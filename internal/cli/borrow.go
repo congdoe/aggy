@@ -243,7 +243,11 @@ func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 	return code
 }
 
-// printResult prints a short report. Everything from the child goes
+// maxArtifactLines caps the artifact lines of the short report.
+const maxArtifactLines = 3
+
+// printResult prints a short report: a header, up to 8 lines of the
+// child's reply (or its error), a few artifacts, and the report's path. Everything from the child goes
 // through termsafe: it is untrusted text.
 func printResult(w io.Writer, r borrow.Result) {
 	model := r.Model
@@ -259,7 +263,11 @@ func printResult(w io.Writer, r borrow.Result) {
 	for _, l := range borrow.Excerpt(text, 8, 160) {
 		fmt.Fprintf(w, "  %s\n", termsafe.Line(l))
 	}
-	for _, a := range r.Artifacts {
+	for i, a := range r.Artifacts {
+		if i == maxArtifactLines {
+			fmt.Fprintf(w, "  and %d more\n", len(r.Artifacts)-i)
+			break
+		}
 		fmt.Fprintf(w, "  %s: %s\n", termsafe.Field(a.Kind), termsafe.Field(a.Path))
 	}
 	if r.ReportPath != "" {
