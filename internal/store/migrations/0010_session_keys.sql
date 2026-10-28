@@ -1,4 +1,4 @@
--- aggy index schema, version 9: sessions (M2).
+-- aggy index schema, version 10: sessions (M2).
 -- dir_key is the parent directory's canonical form (safefs.CanonicalPath:
 -- symlinks resolved, case-folded where the file system ignores case), so
 -- two spellings of one directory find the same parent. dir_id is the
