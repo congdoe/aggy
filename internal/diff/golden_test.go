@@ -2,9 +2,11 @@ package diff
 
 import (
 	"flag"
+	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -52,43 +54,86 @@ func TestGolden(t *testing.T) {
 	}
 }
 
-// apply rebuilds b from a and a unified diff, to check any diff is correct.
+// splitLines is an independent line splitter for the checker: it keeps
+// each "\n", and a last line without one.
+func splitLines(s string) []string {
+	ls := strings.SplitAfter(s, "\n")
+	if ls[len(ls)-1] == "" {
+		ls = ls[:len(ls)-1]
+	}
+	return ls
+}
+
+// apply rebuilds b from a and a unified diff, trusting only the @@ counts:
+// each hunk must hold exactly as many old and new lines as its header
+// says, start where it says, and match a's lines.
 func apply(t *testing.T, a, d string) string {
 	t.Helper()
-	al := lines([]byte(a))
+	al := splitLines(a)
+	dl := splitLines(d)
+	if len(dl) < 2 || !strings.HasPrefix(dl[0], "--- ") || !strings.HasPrefix(dl[1], "+++ ") {
+		t.Fatalf("bad header: %q", d)
+	}
 	var out []string
 	pos := 0
-	dl := strings.SplitAfter(d, "\n")
-	for i := 2; i < len(dl); i++ {
-		l := dl[i]
-		if l == "" {
-			continue
+	i := 2
+	for i < len(dl) {
+		var as, ac, bs, bc int
+		if !strings.HasPrefix(dl[i], "@@ ") {
+			t.Fatalf("want a hunk header, got %q", dl[i])
 		}
-		switch l[0] {
-		case '@':
-			var as, ac, bs, bc int
-			parseHunk(t, l, &as, &ac, &bs, &bc)
-			start := as - 1
-			if ac == 0 {
-				start = as
+		parseHunk(t, dl[i], &as, &ac, &bs, &bc)
+		i++
+		start := as - 1
+		if ac == 0 {
+			start = as
+		}
+		if start < pos {
+			t.Fatalf("hunk at %d overlaps the previous one (at %d)", start, pos)
+		}
+		// The new side starts where the old one does, shifted by the
+		// earlier hunks; with no new lines, diff -u names the line before.
+		wantBS := len(out) + (start - pos)
+		if bc > 0 {
+			wantBS++
+		}
+		if bs != wantBS {
+			t.Fatalf("hunk new start %d, want %d", bs, wantBS)
+		}
+		out = append(out, al[pos:start]...)
+		pos = start
+		oldN, newN := 0, 0
+		for oldN < ac || newN < bc {
+			if i >= len(dl) {
+				t.Fatalf("hunk ends early: %d/%d old, %d/%d new", oldN, ac, newN, bc)
 			}
-			out = append(out, al[pos:start]...)
-			pos = start
-		case ' ', '-', '+':
+			l := dl[i]
+			i++
 			text := l[1:]
-			if i+1 < len(dl) && strings.HasPrefix(dl[i+1], "\\ No newline") {
+			if i < len(dl) && strings.HasPrefix(dl[i], "\\ No newline") {
 				text = strings.TrimSuffix(text, "\n")
 				i++
 			}
-			if l[0] != '+' {
-				if al[pos] != text {
-					t.Fatalf("context mismatch at %d: %q vs %q", pos, al[pos], text)
+			switch l[0] {
+			case ' ', '-':
+				if pos >= len(al) || al[pos] != text {
+					t.Fatalf("old line %d is not %q", pos+1, text)
 				}
 				pos++
-			}
-			if l[0] != '-' {
+				oldN++
+				if l[0] == ' ' {
+					out = append(out, text)
+					newN++
+				}
+			case '+':
 				out = append(out, text)
+				newN++
+			default:
+				t.Fatalf("bad hunk line %q", l)
 			}
+		}
+		if oldN != ac || newN != bc {
+			t.Fatalf("hunk counts %d,%d, header says %d,%d", oldN, newN, ac, bc)
 		}
 	}
 	out = append(out, al[pos:]...)
@@ -125,8 +170,25 @@ func atoi(t *testing.T, s string) int {
 func TestRoundTrip(t *testing.T) {
 	r := rand.New(rand.NewSource(1))
 	words := []string{"a\n", "b\n", "c\n", "d\n", "x = 1\n", "\n"}
-	gen := func() string {
+	gen := func(base []string) string {
 		var s strings.Builder
+		if base != nil && r.Intn(2) == 0 {
+			// Long runs of equal lines with sparse edits, so hunks split
+			// and merge around the context limit.
+			for _, l := range base {
+				switch r.Intn(12) {
+				case 0:
+				case 1:
+					s.WriteString(words[r.Intn(len(words))])
+					s.WriteString(l)
+				case 2:
+					s.WriteString(words[r.Intn(len(words))])
+				default:
+					s.WriteString(l)
+				}
+			}
+			return s.String()
+		}
 		for range r.Intn(30) {
 			s.WriteString(words[r.Intn(len(words))])
 		}
@@ -135,8 +197,22 @@ func TestRoundTrip(t *testing.T) {
 		}
 		return s.String()
 	}
-	for i := range 2000 {
-		a, b := gen(), gen()
+	long := func() []string {
+		var ls []string
+		for i := range 40 + r.Intn(80) {
+			ls = append(ls, fmt.Sprintf("line %d\n", i))
+		}
+		return ls
+	}
+	for i := range 3000 {
+		var a, b string
+		if i%2 == 0 {
+			base := long()
+			a = strings.Join(base, "")
+			b = gen(base)
+		} else {
+			a, b = gen(nil), gen(nil)
+		}
 		d := Unified("a", "b", []byte(a), []byte(b))
 		if a == b {
 			if d != "" {
@@ -147,5 +223,31 @@ func TestRoundTrip(t *testing.T) {
 		if got := apply(t, a, d); got != b {
 			t.Fatalf("case %d: applying the diff gave %q, want %q\na=%q\ndiff:\n%s", i, got, b, a, d)
 		}
+	}
+}
+
+// TestLargeDiffMemory (C4): a whole-file change of 20,000 lines stays
+// within a fixed memory budget and is still a correct diff.
+func TestLargeDiffMemory(t *testing.T) {
+	var a, b strings.Builder
+	for i := range 20000 {
+		fmt.Fprintf(&a, "key_%d = %d\n", i, i)
+		fmt.Fprintf(&b, "    key_%d = %d\n", i, i) // re-indented: every line differs
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	d := Unified("a", "b", []byte(a.String()), []byte(b.String()))
+	runtime.ReadMemStats(&after)
+	if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 64<<20 {
+		t.Errorf("diff allocated %d MB, want under 64", alloc>>20)
+	}
+	if got := apply(t, a.String(), d); got != b.String() {
+		t.Error("the large diff does not rebuild the target")
+	}
+	// Small edits in a large file still get the shortest diff.
+	c := strings.Replace(a.String(), "key_100 = 100\n", "key_100 = 101\n", 1)
+	if d := Unified("a", "b", []byte(a.String()), []byte(c)); strings.Count(d, "\n-") != 1 || strings.Count(d, "\n+") != 2 {
+		t.Errorf("one-line change gave:\n%s", d)
 	}
 }
