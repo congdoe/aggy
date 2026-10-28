@@ -420,6 +420,9 @@ func (a Adapter) Home() string {
 // %2F) is unconfirmed, so Artifacts falls back to a scan.
 func EncodeCwd(cwd string) string { return url.QueryEscape(cwd) }
 
+// TODO(T6737): list video files for the video kind too; batch 6 owns
+// video (review finding #10-10).
+//
 // Artifacts lists the images in sessions/<encoded cwd>/<sessionId>/images/
 // under the Grok home. When that folder is missing (the cwd encoding is
 // unconfirmed, or the CLI saw the cwd with symlinks resolved), it falls
