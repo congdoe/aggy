@@ -58,6 +58,8 @@ Commands:
             the child a brief file, --brief --show previews it
   sessions  List every session: directory, last vendor, last active
   session   List this session's children: vendor, kind, title, model
+  switch    From inside a CLI aggy runs: ask aggy to switch to a vendor
+            at the turn end (the user confirms)
   setup     Check each vendor CLI's install, version, and sign-in
   doctor    Check the vendor CLIs, API-key and proxy settings, and config drift
   log       Show harnesses, models, switches, borrows, and files changed
@@ -103,6 +105,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runBrief(args[1:], stdout, stderr)
 	case "hook":
 		return runHook(args[1:], stdout, stderr)
+	case "switch":
+		return runSwitch(args[1:], stdout, stderr)
 	case "run":
 		return runRun(args[1:], stdout, stderr)
 	case "--direct":

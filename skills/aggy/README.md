@@ -14,6 +14,6 @@ description matches the task.
 
 Estimated offline as bytes / 4, rounded up (`skills.Estimate`; no
 tokenizer or model call): about 60 tokens every turn for the frontmatter
-a CLI keeps loaded, and about 640 more when the skill is invoked. A test
+a CLI keeps loaded, and about 720 more when the skill is invoked. A test
 holds them under 150 and 1,500; `aggy skill status` prints the current
 numbers.
