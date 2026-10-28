@@ -297,6 +297,10 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 		fmt.Fprint(stdout, acceptUsage)
 		return 0
 	}
+	if err := acceptOS(); err != nil {
+		fmt.Fprintf(stderr, "aggy accept: %s\n", termsafe.Field(err.Error()))
+		return 1
+	}
 	id, flags, s, stateDir, err := openEdit(args, "--yes", "--check")
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy accept: %s\n\n%s", termsafe.Field(err.Error()), acceptUsage)
@@ -313,6 +317,11 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 	defer stop()
 	yes := flags["--yes"]
 	g := &gitWorktrees{env: env, stateDir: stateDir, out: stderr}
+	// The patch is written under the state dir: not in a temp dir an edit
+	// child's sandbox may write (K46-4).
+	if d := env.childWritable(stateDir); d != "" {
+		return fail(fmt.Errorf("refusing: aggy's state dir %s is under %s, which an edit child's sandbox may write, so the patch accept writes there could be changed before it is applied; set AGGY_HOME to a dir outside temp dirs", stateDir, d))
+	}
 	b, wt, err := editTarget(ctx, s, g, id)
 	if err != nil {
 		return fail(err)
