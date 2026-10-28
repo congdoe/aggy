@@ -31,7 +31,8 @@ type Tool struct {
 	Digest string
 }
 
-func digest(b []byte) string {
+// Digest is the sha256 of a definition file, in hex.
+func Digest(b []byte) string {
 	s := sha256.Sum256(b)
 	return hex.EncodeToString(s[:])
 }
@@ -88,7 +89,7 @@ func Builtins() (*Registry, error) {
 		if e.Name() != d.Name+".toml" {
 			return nil, &Error{File: src, Key: "name", Msg: "the file must be named <name>.toml"}
 		}
-		if err := r.add(Tool{Def: d, BuiltIn: true, Source: src, Digest: digest(b)}); err != nil {
+		if err := r.add(Tool{Def: d, BuiltIn: true, Source: src, Digest: Digest(b)}); err != nil {
 			return nil, err
 		}
 	}
@@ -162,7 +163,7 @@ func loadUser(file string) (Tool, error) {
 	if filepath.Base(file) != d.Name+".toml" {
 		return Tool{}, &Error{File: file, Key: "name", Msg: fmt.Sprintf("the file must be named %s.toml", d.Name)}
 	}
-	return Tool{Def: d, Source: file, Digest: digest(b)}, nil
+	return Tool{Def: d, Source: file, Digest: Digest(b)}, nil
 }
 
 // readTrusted reads file through one no-follow descriptor and checks the

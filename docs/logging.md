@@ -243,4 +243,5 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `tool.def_untrusted` | yes | A user tool definition, its tools folder, or the state dir is a symlink, not the user's own, or writable by group or others. | chmod go-w and check the owner of ~/.aggy, ~/.aggy/tools, and the file. |
 | `tool.still_on` |  | aggy tool remove refused: the tool is still on somewhere. | aggy tool off &lt;name&gt;, then remove it. |
 | `tool.failed` |  | Another aggy tool error: a file or the index could not be read or written. | The record's msg; aggy doctor. |
+| `tool.changed_since_add` | yes | aggy tool on refused: the user definition is not the file aggy tool add showed. | aggy tool remove &lt;name&gt;, then aggy tool add the file again and read what it runs. |
 <!-- registry:end -->

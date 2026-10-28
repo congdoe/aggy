@@ -155,6 +155,7 @@ var (
 	CodeToolUntrusted  = Code{"tool.def_untrusted"}
 	CodeToolStillOn    = Code{"tool.still_on"}
 	CodeToolFailed     = Code{"tool.failed"}
+	CodeToolChanged    = Code{"tool.changed_since_add"}
 )
 
 const showRun = "aggy diag show <run id> for what led to it"
@@ -240,6 +241,7 @@ var codes = []CodeInfo{
 	{CodeToolUntrusted, true, "A user tool definition, its tools folder, or the state dir is a symlink, not the user's own, or writable by group or others.", "chmod go-w and check the owner of ~/.aggy, ~/.aggy/tools, and the file."},
 	{CodeToolStillOn, false, "aggy tool remove refused: the tool is still on somewhere.", "aggy tool off <name>, then remove it."},
 	{CodeToolFailed, false, "Another aggy tool error: a file or the index could not be read or written.", "The record's msg; aggy doctor."},
+	{CodeToolChanged, true, "aggy tool on refused: the user definition is not the file aggy tool add showed.", "aggy tool remove <name>, then aggy tool add the file again and read what it runs."},
 }
 
 // LookupEvent returns event e's entry.

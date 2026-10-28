@@ -56,6 +56,22 @@ func TestArgvRefusesRunners(t *testing.T) {
 		// S63-6: more runners.
 		{"sandbox-exec", "-p", "x", "demo"}, {"expect", "-c", "x"}, {"xcrun", "demo"}, {"launchctl", "submit"},
 		{"tmux", "new", "x"}, {"screen", "-dm", "x"},
+		// S63-12: fetcher flags outside the known ones swallow the pin.
+		{"npx", "--globalconfig", "demo@1.0.0", "demo"}, {"npx", "--node-options", "x", "demo@1.0.0"},
+		{"npx", "--before", "2020-01-01", "demo@1.0.0"}, {"uvx", "--allow-insecure-host", "evil", "demo==1.0.0"},
+		{"npx", "--cache", "/tmp/c", "demo@1.0.0"}, {"npm", "exec", "--userconfig", "/tmp/rc", "demo@1.0.0"},
+		{"uvx", "--python", "{repo}/venv/bin/python", "demo==1.0.0"},
+		// S63-13: package-manager subcommands outside the runners.
+		{"uv", "pip", "install", "x"}, {"uv", "tool", "install", "x==1.0.0"}, {"uv", "sync"}, {"npm", "init", "x"},
+		{"npm", "create", "x"}, {"pnpm", "create", "x"}, {"yarn", "create", "x"}, {"pip", "wheel", "x"},
+		{"npm", "restart"}, {"cargo", "build"}, {"go", "generate"}, {"pnpm", "exec", "demo"},
+		{"npm", "--prefix", "/tmp/p", "exec", "demo@1.0.0"},
+		// S63-14: {repo} as code that runs, and relative scripts.
+		{"deno", "run", "{repo}/x.ts"}, {"bun", "run", "{repo}/x.ts"}, {"ruby", "-C", "{repo}", "/opt/x.rb"},
+		{"perl", "-I{repo}", "-MEvil", "/opt/x.pl"}, {"git", "--exec-path", "{repo}", "x"},
+		{"npx", "-p", "demo@1.0.0", "--", "{repo}/evil"}, {"npx", "-p", "demo@1.0.0", "./evil"},
+		{"node", "server.js"}, {"python3", "x.py"}, {"python3", "-m", "demo"}, {"bun", "x", "demo"},
+		{"node", "--require", "hook", "/opt/s.js"}, {"node", "-r", "./hook.js", "/opt/s.js"}, {"deno", "run", "npm:demo"},
 	} {
 		if err := argv("argv", a, true); err == nil {
 			t.Errorf("%q passed", a)
@@ -64,12 +80,14 @@ func TestArgvRefusesRunners(t *testing.T) {
 	for _, a := range [][]string{
 		{"demo"}, {"shasum", "-a", "256"}, {"ashby"}, {"nudge"}, {"npx", "@demo/server@1.0.0"},
 		{"npx", "demo@1.2.3-beta.1", "--stdio"}, {"uvx", "demo==1.2.3"}, {"uvx", "--from", "demo==1.2.0", "demo"},
-		{"uvx", "-p", "3.12", "demo==1.2.3"}, {"npx", "--cache", "/tmp/c", "demo@1.0.0"}, {"npm", "--version"},
-		{"python3", "-Wignore", "-m", "demo"}, {"perl", "-MO=Deparse", "x.pl"}, {"ruby", "-I/opt/lib", "x.rb"},
-		{"node", "server.js", "--root", "{repo}"}, {"python3", "-m", "demo", "{repo}"}, {"python3", "/opt/x.py", "{repo}"},
+		{"uvx", "-p", "3.12", "demo==1.2.3"}, {"npx", "-q", "demo@1.0.0"}, {"npm", "--version"},
+		{"python3", "-Wignore", "-I", "-m", "demo"}, {"perl", "-MO=Deparse", "/opt/x.pl"}, {"ruby", "-I/opt/lib", "/opt/x.rb"},
+		{"node", "/opt/server.js", "--root", "{repo}"}, {"python3", "-I", "-m", "demo", "{repo}"}, {"python3", "/opt/x.py", "{repo}"},
 		{"git", "--exec-path=/opt/git", "log"},
 		{"npm", "exec", "demo@1.0.0"}, {"find", ".", "-name", "x"}, {"git", "log"}, {"/usr/bin/arch"},
-		{"node", "/opt/demo/server.js"}, {"python3", "-m", "demo"}, {"nice", "-n", "5", "demo"},
+		{"node", "/opt/demo/server.js"}, {"python3", "-P", "-m", "demo"}, {"python3", "-IB", "-m", "demo"}, {"nice", "-n", "5", "demo"},
+		{"deno", "run", "/opt/x.ts", "{repo}"}, {"node", "--require", "/opt/hook.js", "/opt/s.js"}, {"uvx", "--offline", "demo==1.2.3"},
+		{"npx", "-p", "demo@1.0.0", "--", "demo-server", "{repo}"}, {"pipx", "run", "--spec", "demo==1.0.0", "demo"},
 		{"/usr/local/bin/demo", "{repo}"},
 	} {
 		if err := argv("argv", a, true); err != nil {

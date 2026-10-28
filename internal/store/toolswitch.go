@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -39,11 +41,36 @@ func (s *Store) PutToolSwitch(ctx context.Context, sw ToolSwitch) error {
 	return tx.Commit()
 }
 
-// DeleteToolSwitches removes every setting of tool, as when its user
-// definition is added anew or removed.
+// DeleteToolSwitches removes every setting of tool, and the digest aggy
+// tool add recorded for it, as when its user definition is added anew
+// or removed.
 func (s *Store) DeleteToolSwitches(ctx context.Context, tool string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM tool_switches WHERE tool = ?`, tool)
+	if err == nil {
+		_, err = s.db.ExecContext(ctx, `DELETE FROM tool_added WHERE tool = ?`, tool)
+	}
 	return err
+}
+
+// PutToolAdded records the digest of the definition aggy tool add showed
+// and copied for tool.
+func (s *Store) PutToolAdded(ctx context.Context, tool, digest string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO tool_added (tool, digest, added_at) VALUES (?, ?, ?)
+		 ON CONFLICT (tool) DO UPDATE SET digest = excluded.digest, added_at = excluded.added_at`,
+		tool, digest, millis(at))
+	return err
+}
+
+// ToolAdded returns the digest aggy tool add recorded for tool, and
+// whether there is one.
+func (s *Store) ToolAdded(ctx context.Context, tool string) (string, bool, error) {
+	var d string
+	err := s.db.QueryRowContext(ctx, `SELECT digest FROM tool_added WHERE tool = ?`, tool).Scan(&d)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return d, err == nil, err
 }
 
 // ToolSwitches returns every setting, by tool, repo, and vendor.
