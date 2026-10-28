@@ -29,6 +29,7 @@ var kindGuide = map[adapter.Kind]string{
 	adapter.Image:    "Generate the image the task describes. Say how many images you made and describe each in one line.",
 	adapter.Video:    "Generate the video the task describes. Say what you made in one line.",
 	adapter.Review:   "Review the change in the Material section read-only. Do not change any file. List findings by severity with file:line and a concrete failure scenario.",
+	adapter.Edit:     "Make the change in this working directory, a git worktree of its own; paths are relative to it. Do not commit, push, or touch files outside it. Say what you changed, file by file, and what you did not get to.",
 }
 
 // webReport is the report shape of research and news: aggy shows the

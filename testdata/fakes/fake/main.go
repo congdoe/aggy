@@ -111,7 +111,8 @@ func (f *fake) reply(args []string) (Reply, bool) {
 var recordedValues = map[string][]string{
 	"--output-format":   {"json"},
 	"--permission-mode": {"plan"},
-	"--sandbox":         {"read-only"},
+	// workspace-write: Codex edit, live in verification.md ("Codex resume with sandbox").
+	"--sandbox": {"read-only", "workspace-write"},
 }
 
 // grokValues replace recordedValues for grok: its --sandbox profile is

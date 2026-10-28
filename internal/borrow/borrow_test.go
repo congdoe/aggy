@@ -57,7 +57,7 @@ func TestParseKind(t *testing.T) {
 	}{
 		{"image", adapter.Image, ""}, {"video", adapter.Video, ""}, {"research", adapter.Research, ""},
 		{"news", adapter.News, ""}, {"review", adapter.Review, ""},
-		{"edit", "", "comes in M3"}, {"chat", "", "unknown kind"},
+		{"edit", adapter.Edit, ""}, {"chat", "", "unknown kind"},
 	}
 	for _, tt := range tests {
 		k, err := ParseKind(tt.in)
@@ -75,7 +75,7 @@ func TestRequestRefused(t *testing.T) {
 		req  Request
 	}{
 		{"empty task", w.req(adapter.News, "  ")},
-		{"edit", w.req(adapter.Edit, "fix it")},
+		{"edit outside a git work tree", Request{Kind: adapter.Edit, Task: "x", Repo: "/"}},
 		{"relative path", Request{Kind: adapter.News, Task: "x", Repo: w.repo, Paths: []string{"a.go"}}},
 		{"multi-line constraint", Request{Kind: adapter.News, Task: "x", Repo: w.repo, Constraints: []string{"a\nb"}}},
 		{"huge task", w.req(adapter.News, strings.Repeat("x", MaxTask+1))},

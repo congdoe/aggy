@@ -283,10 +283,12 @@ func insertBorrow(ctx context.Context, conn *sql.Conn, c Child, b Borrow, pid in
 	}
 	if _, err := conn.ExecContext(ctx,
 		`INSERT INTO children (id, parent_id, vendor, vendor_session_id, kind, title, model, cwd,
-		                       transcript_path, status, created_at, last_active)
-		 VALUES (?, ?, ?, '', ?, ?, ?, ?, '', ?, ?, ?)`,
+		                       transcript_path, status, created_at, last_active,
+		                       worktree, branch, worktree_base, worktree_repo, worktree_git_dir, worktree_state)
+		 VALUES (?, ?, ?, '', ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.ParentID, c.Vendor, c.Kind, c.Title, c.Model, c.Cwd, c.Status,
-		millis(c.CreatedAt), millis(c.LastActive)); err != nil {
+		millis(c.CreatedAt), millis(c.LastActive),
+		c.Worktree.Path, c.Worktree.Branch, c.Worktree.Base, c.Worktree.Repo, c.Worktree.GitDir, c.Worktree.State); err != nil {
 		return err
 	}
 	budget, err := json.Marshal(b.Budget)
