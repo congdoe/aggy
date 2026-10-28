@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Check gate results on a worktree's recorded tree.
@@ -25,14 +26,17 @@ const (
 // ErrNotFound when the borrow has no child with a worktree.
 func (s *Store) BorrowWorktree(ctx context.Context, id string) (Worktree, error) {
 	var w Worktree
+	var removed sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT c.worktree, c.branch, c.worktree_base, c.worktree_repo, c.worktree_git_dir, c.worktree_state, c.worktree_tree, c.worktree_check
+		`SELECT c.worktree, c.branch, c.worktree_base, c.worktree_repo, c.worktree_git_dir, c.worktree_state, c.worktree_tree, c.worktree_check,
+		        c.worktree_removed_at
 		 FROM borrows b JOIN children c ON c.id = b.child_id
 		 WHERE b.id = ? AND c.worktree <> ''`, id).
-		Scan(&w.Path, &w.Branch, &w.Base, &w.Repo, &w.GitDir, &w.State, &w.Tree, &w.Check)
+		Scan(&w.Path, &w.Branch, &w.Base, &w.Repo, &w.GitDir, &w.State, &w.Tree, &w.Check, &removed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Worktree{}, ErrNotFound
 	}
+	w.Removed = fromNull(removed)
 	return w, err
 }
 
@@ -91,4 +95,31 @@ func (s *Store) SetWorktreeCheck(ctx context.Context, id, result string) error {
 		return fmt.Errorf("%w (borrow %s: not pending)", ErrWorktreeState, id)
 	}
 	return nil
+}
+
+// ClaimWorktreeRemoval marks borrow id's worktree removed as of at, only
+// while it is in state and not yet marked, so two removals (aggy reject
+// and aggy gc, or two gc runs) never both act on it. A removal that
+// fails gives the claim back with UnclaimWorktreeRemoval.
+func (s *Store) ClaimWorktreeRemoval(ctx context.Context, id, state string, at time.Time) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE children SET worktree_removed_at = ?
+		 WHERE id = (SELECT child_id FROM borrows WHERE id = ?) AND worktree <> ''
+		   AND worktree_state = ? AND worktree_removed_at IS NULL`,
+		millis(at), id, state)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("%w (borrow %s: not %s, or already removed)", ErrWorktreeState, id, state)
+	}
+	return nil
+}
+
+// UnclaimWorktreeRemoval clears the mark ClaimWorktreeRemoval set.
+func (s *Store) UnclaimWorktreeRemoval(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(context.WithoutCancel(ctx),
+		`UPDATE children SET worktree_removed_at = NULL
+		 WHERE id = (SELECT child_id FROM borrows WHERE id = ?) AND worktree <> ''`, id)
+	return err
 }

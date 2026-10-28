@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/congdoe/aggy/internal/borrow"
 	"github.com/congdoe/aggy/internal/config"
@@ -66,8 +67,44 @@ func editTarget(ctx context.Context, s *store.Store, g *gitWorktrees, id string)
 		return b, wt, fmt.Errorf("borrow %s is still running", b.ID)
 	case wt.State != store.WorktreePending:
 		return b, wt, fmt.Errorf("borrow %s was already %s", b.ID, wt.State)
+	case !wt.Removed.IsZero():
+		return b, wt, fmt.Errorf("borrow %s: its worktree was removed (aggy gc)", b.ID)
 	}
 	return b, wt, g.owned(wt)
+}
+
+// discardEdit removes borrow id's worktree and branch (aggy reject, and
+// aggy gc). A pending one moves to rejected first: the state is the
+// per-record lock accept takes too, so whichever moves it off pending
+// first wins and the other refuses. The removal is then claimed in the
+// store, so a reject and a gc never both act on it. A failure gives both
+// back.
+func discardEdit(ctx context.Context, s *store.Store, g *gitWorktrees, id string, wt store.Worktree, now time.Time) error {
+	if err := g.owned(wt); err != nil {
+		return err
+	}
+	pending := wt.State == store.WorktreePending
+	if pending {
+		if err := s.SetWorktreeState(ctx, id, store.WorktreePending, store.WorktreeRejected); err != nil {
+			return err
+		}
+		wt.State = store.WorktreeRejected
+	}
+	undo := func() {
+		if pending {
+			_ = s.SetWorktreeState(context.WithoutCancel(ctx), id, store.WorktreeRejected, store.WorktreePending)
+		}
+	}
+	if err := s.ClaimWorktreeRemoval(ctx, id, wt.State, now); err != nil {
+		undo()
+		return err
+	}
+	if err := g.Remove(ctx, wt); err != nil {
+		_ = s.UnclaimWorktreeRemoval(ctx, id)
+		undo()
+		return err
+	}
+	return nil
 }
 
 // openEdit parses <id> and any of the flags allowed, and opens the store
@@ -244,15 +281,8 @@ func rejectWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	g := &gitWorktrees{env: env, stateDir: stateDir, out: stderr}
 	b, wt, err := editTarget(ctx, s, g, id)
-	// The state is the per-record lock accept takes too: whichever moves
-	// it off pending first wins, and the other refuses.
 	if err == nil {
-		err = s.SetWorktreeState(ctx, b.ID, store.WorktreePending, store.WorktreeRejected)
-	}
-	if err == nil {
-		if err = g.Remove(ctx, wt); err != nil {
-			_ = s.SetWorktreeState(ctx, b.ID, store.WorktreeRejected, store.WorktreePending)
-		}
+		err = discardEdit(ctx, s, g, b.ID, wt, env.now())
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy reject: %s\n", termsafe.Field(err.Error()))
