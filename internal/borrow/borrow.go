@@ -72,6 +72,11 @@ type Deps struct {
 	// Connected reports whether v may take borrows: installed and not
 	// known to be signed out.
 	Connected func(ctx context.Context, v adapter.Vendor) bool
+	// Allowed reports whether the repo may be sent to v (allowed_vendors).
+	// Nil allows every vendor.
+	//
+	// TODO(T6627): the router applies it once batch 5b merges.
+	Allowed func(v adapter.Vendor) bool
 	// Runner returns the process runner for one child, which kills the
 	// child's whole process group past timeout and then returns an error
 	// matching ErrTimeout.
@@ -215,6 +220,9 @@ func (b *Borrower) vendors(ctx context.Context, req Request) ([]adapter.Vendor, 
 		if err != nil {
 			return nil, fmt.Errorf("--vendor: %w (or %q for research)", err, Both)
 		}
+		if !b.allowed(v) {
+			return nil, fmt.Errorf("%s is not allowed for this repo (allowed_vendors in .aggy/config.toml)", v)
+		}
 		if !b.Connected(ctx, v) {
 			return nil, fmt.Errorf("%s is not connected: install it and run aggy setup", v)
 		}
@@ -233,6 +241,8 @@ func (b *Borrower) vendors(ctx context.Context, req Request) ([]adapter.Vendor, 
 	return vs[:1], nil
 }
 
+func (b *Borrower) allowed(v adapter.Vendor) bool { return b.Allowed == nil || b.Allowed(v) }
+
 // both returns the two or more vendors --vendor both runs on.
 func (b *Borrower) both(ctx context.Context, k adapter.Kind) ([]adapter.Vendor, error) {
 	if k != adapter.Research {
@@ -244,7 +254,7 @@ func (b *Borrower) both(ctx context.Context, k adapter.Kind) ([]adapter.Vendor, 
 			continue
 		}
 		supported = append(supported, v)
-		if b.Connected(ctx, v) {
+		if b.allowed(v) && b.Connected(ctx, v) {
 			ready = append(ready, v)
 		}
 	}
@@ -252,7 +262,7 @@ func (b *Borrower) both(ctx context.Context, k adapter.Kind) ([]adapter.Vendor, 
 	case len(supported) < 2:
 		return nil, fmt.Errorf("--vendor %s: only one vendor supports %s right now (%s)", Both, k, names(supported))
 	case len(ready) < 2:
-		return nil, fmt.Errorf("--vendor %s: %s need two connected vendors, and only %s is connected", Both, k, names(ready))
+		return nil, fmt.Errorf("--vendor %s: %s needs two connected, allowed vendors, and only %s is", Both, k, names(ready))
 	}
 	return ready, nil
 }
