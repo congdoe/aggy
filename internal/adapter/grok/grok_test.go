@@ -27,25 +27,29 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 	h := fakecli.NewHarness(t, fakecli.Build(t))
 	a := New()
 	search := "web_search,x_keyword_search,x_semantic_search"
+	denyAll := "read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent"
 	tests := []struct {
 		name     string
 		req      adapter.HeadlessRequest
 		want     []string
 		scenario string
 	}{
-		{"research", adapter.HeadlessRequest{Kind: adapter.Research, MaxTurns: 30},
-			[]string{"-p", "--output-format", "json", "--tools", search, "--max-turns", "30"}, ""},
-		{"news", adapter.HeadlessRequest{Kind: adapter.News}, []string{"-p", "--output-format", "json", "--tools", search}, ""},
+		{"research", adapter.HeadlessRequest{Kind: adapter.Research, MaxTurns: 30, IsolatedCwd: true},
+			[]string{"-p", "--output-format", "json", "--tools", search, "--disallowed-tools", denyAll, "--max-turns", "30"}, ""},
+		{"news", adapter.HeadlessRequest{Kind: adapter.News, IsolatedCwd: true, WebSearch: true},
+			[]string{"-p", "--output-format", "json", "--tools", search, "--disallowed-tools", denyAll}, ""},
 		{"image", adapter.HeadlessRequest{Kind: adapter.Image, SessionID: sid},
-			[]string{"-p", "--output-format", "json", "--session-id", sid, "--tools", "image_gen"}, ""},
+			[]string{"-p", "--output-format", "json", "--session-id", sid, "--tools", "image_gen", "--disallowed-tools", denyAll}, ""},
 		{"image edit", adapter.HeadlessRequest{Kind: adapter.Image, Resume: sid},
-			[]string{"-p", "--output-format", "json", "--resume", sid, "--tools", "image_gen,image_edit"}, ""},
-		{"video", adapter.HeadlessRequest{Kind: adapter.Video}, []string{"-p", "--output-format", "json", "--tools", "video_gen"}, ""},
+			[]string{"-p", "--output-format", "json", "--resume", sid, "--tools", "image_gen,image_edit", "--disallowed-tools", denyAll}, ""},
+		{"video", adapter.HeadlessRequest{Kind: adapter.Video},
+			[]string{"-p", "--output-format", "json", "--tools", "video_gen", "--disallowed-tools", denyAll}, ""},
 		{"review", adapter.HeadlessRequest{Kind: adapter.Review},
-			[]string{"-p", "--output-format", "json", "--permission-mode", "plan", "--tools", "read_file,grep,list_dir"}, ""},
-		{"edit with web search and a model", adapter.HeadlessRequest{Kind: adapter.Edit, WebSearch: true, Model: "grok-4.7"},
+			[]string{"-p", "--output-format", "json", "--permission-mode", "plan", "--tools", "read_file,grep,list_dir",
+				"--disallowed-tools", "write,search_replace,run_terminal_cmd,web_fetch,Agent"}, ""},
+		{"edit with a model", adapter.HeadlessRequest{Kind: adapter.Edit, Model: "grok-4.7"},
 			[]string{"-p", "--output-format", "json", "--model", "grok-4.7", "--tools",
-				"read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_search"}, `{"extra_flags":["--model"]}`},
+				"read_file,grep,list_dir,write,search_replace", "--disallowed-tools", "run_terminal_cmd,web_fetch,Agent"}, `{"extra_flags":["--model"]}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -78,6 +82,7 @@ func TestHeadlessRefusals(t *testing.T) {
 		{Kind: adapter.Review, AllowedTools: []string{"write"}},
 		{Kind: adapter.Image, AllowedTools: []string{"run_terminal_cmd"}},
 		{Kind: adapter.Edit, AllowedTools: []string{"a,b"}},
+		{Kind: adapter.Research, AllowedTools: []string{"x_semantic_search", "extra_search"}, IsolatedCwd: true},
 		{Kind: adapter.Review, SessionID: "nope"},
 		{Kind: adapter.Review, Resume: "r", SessionID: sid},
 		{Kind: "chat"},
@@ -92,12 +97,12 @@ func TestHeadlessRefusals(t *testing.T) {
 	if _, err := a.Headless(r); !errors.Is(err, adapter.ErrUnsupported) {
 		t.Errorf("reference images: %v, want ErrUnsupported", err)
 	}
-	// A search tool the kind lacks may be added to research.
+	// A permitted tool in another case maps to its own name.
 	r = base
-	r.Kind, r.AllowedTools = adapter.Research, []string{"x_semantic_search", "extra_search"}
+	r.Kind, r.AllowedTools = adapter.Image, []string{"IMAGE_EDIT"}
 	c, err := a.Headless(r)
-	if err != nil || !slices.Contains(c.Args, "web_search,x_keyword_search,x_semantic_search,extra_search") {
-		t.Errorf("research extra tool = %q, %v", c.Args, err)
+	if err != nil || !slices.Contains(c.Args, "image_gen,image_edit") {
+		t.Errorf("image_edit = %q, %v", c.Args, err)
 	}
 }
 
