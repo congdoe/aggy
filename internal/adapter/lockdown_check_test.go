@@ -30,6 +30,8 @@ func TestCheckLockdownFormats(t *testing.T) {
 		{"codex config message quoted", Codex, 1, "turn failed: unknown configuration field `x` in -c/--config override\n", "", false},
 		{"codex config message on stdout", Codex, 1, "", "unknown configuration field `x` in -c/--config override\n", false},
 		{"codex bare config message", Codex, 1, "unknown configuration field `features.x` in -c/--config override\n", "", true},
+		// C17-8: the line codex exec really prints.
+		{"codex exec config message", Codex, 1, "Error loading config.toml: unknown configuration field `features.shell_tool` in -c/--config override\n", "", true},
 		{"unrelated invalid value", Codex, 1, "stream error: invalid value in response body\n", "", false},
 		{"unrelated unknown option text", Claude, 1, "API Error: the model said unknown option '--x'\n", "", false},
 		{"a model's reply on stdout", Claude, 1, "", `{"result":"error: unknown option is a phrase"}`, false},
