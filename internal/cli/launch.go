@@ -46,6 +46,11 @@ type target struct {
 	Child    string
 	NewChild bool
 	Model    string
+	// Tools are turned on for this one launch only (aggy run --tool),
+	// never written to the settings; a repo's tools_off and a per-repo
+	// tool's scope still win (switchboard.Board.Session). A switch from
+	// this session does not carry them.
+	Tools []string
 }
 
 // launchPlan is what a launch puts on screen.
