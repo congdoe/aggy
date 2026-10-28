@@ -1,0 +1,4 @@
+# $DIR/new/aggy: nothing -> symlink to ../store/aggy
+# $DIR/old.md: file (4 bytes, 01d09d19c213) -> symlink to ../store/aggy
+# $DIR/old.md: file (4 bytes, 01d09d19c213) -> nothing
+# 3 files would change
