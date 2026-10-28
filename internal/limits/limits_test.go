@@ -264,12 +264,45 @@ func TestCodexAllowance(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(day, "rollout-2026-10-28T12-00-00-0199a213-81c0-7800-8aa1-bbab2a035a54.jsonl")); err != nil {
 		t.Fatal(err)
 	}
-	got := CodexAllowance(sessions, clock)
-	if len(got) != 1 || got[0].ID != "codex" || got[0].Primary == nil || got[0].Primary.UsedPercent != 42 {
-		t.Fatalf("CodexAllowance = %+v, want the 42%% snapshot", got)
+	write("55", quota(77), -time.Hour) // dated an hour ahead (L60-3)
+	write("56", quota(60), 2*time.Hour)
+	used := func(q []CodexQuota) float64 {
+		if len(q) != 1 || q[0].ID != "codex" || q[0].Primary == nil {
+			t.Fatalf("quotas %+v", q)
+		}
+		return q[0].Primary.UsedPercent
 	}
-	if got := CodexAllowance(t.TempDir(), clock); got != nil {
+	if got := used(CodexAllowance(sessions, clock, "")); got != 42 {
+		t.Fatalf("CodexAllowance = %v%%, want the 42%% snapshot", got)
+	}
+	// The on-screen session's own rollout first, when its thread is known.
+	if got := used(CodexAllowance(sessions, clock, "0199a213-81c0-7800-8aa1-bbab2a035a56")); got != 60 {
+		t.Errorf("preferred thread: %v%%, want 60", got)
+	}
+	if got := CodexAllowance(t.TempDir(), clock, ""); got != nil {
 		t.Errorf("empty sessions folder: %+v", got)
+	}
+
+	// L60-2: the cache reads again only when the first rollout changed.
+	var c AllowanceCache
+	if got := used(c.Get(sessions, clock, "")); got != 42 {
+		t.Fatalf("cache: %v%%", got)
+	}
+	p52 := filepath.Join(day, "rollout-2026-10-28T12-00-00-0199a213-81c0-7800-8aa1-bbab2a035a52.jsonl")
+	if err := os.WriteFile(p52, []byte(quota(43)), 0o600); err != nil { // same size
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(p52, clock.Add(-time.Hour), clock.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got := used(c.Get(sessions, clock, "")); got != 42 {
+		t.Errorf("cache read again for an unchanged key: %v%%", got)
+	}
+	if err := os.Chtimes(p52, clock.Add(-30*time.Minute), clock.Add(-30*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if got := used(c.Get(sessions, clock, "")); got != 43 {
+		t.Errorf("cache missed a newer write: %v%%", got)
 	}
 }
 
@@ -394,13 +427,21 @@ func TestCodexUsed(t *testing.T) {
 		{"no reset time skipped", []CodexQuota{{ID: "codex", Primary: win(95, 0)}}, 0, false},
 		{"model quota ignored", []CodexQuota{{ID: "codex_x", Name: "m", Primary: win(99, ahead)}, {ID: "codex", Primary: win(5, ahead)}}, 0.05, true},
 		{"clamped", []CodexQuota{{ID: "codex", Primary: win(130, ahead)}}, 1, true},
+		// L60-3: a reset further ahead than the window lasts is stale or
+		// forged; a window of unknown length says nothing.
+		{"reset past the window's length", []CodexQuota{{ID: "codex", Primary: win(99, now.Add(6*time.Hour).Unix()), Secondary: win(20, ahead)}}, 0.20, true},
+		{"no window length", []CodexQuota{{ID: "codex", Primary: &CodexWindow{UsedPercent: 99, ResetsAt: ahead}}}, 0, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, ok := CodexUsed(tt.quotas, now)
-			if ok != tt.wantOK || math.Abs(got-tt.want) > 1e-9 {
-				t.Errorf("CodexUsed = %v, %v; want %v, %v", got, ok, tt.want, tt.wantOK)
+			if ok != tt.wantOK || math.Abs(got.Used-tt.want) > 1e-9 {
+				t.Errorf("CodexUsed = %+v, %v; want %v, %v", got, ok, tt.want, tt.wantOK)
 			}
 		})
+	}
+	got, _ := CodexUsed([]CodexQuota{{ID: "codex", Primary: win(30, ahead), Secondary: &CodexWindow{UsedPercent: 92, WindowMinutes: 120, ResetsAt: ahead}}}, now)
+	if got != (CodexUse{Used: 0.92, Minutes: 120, ResetsAt: ahead}) {
+		t.Errorf("CodexUsed names %+v, want the 120-minute window", got)
 	}
 }

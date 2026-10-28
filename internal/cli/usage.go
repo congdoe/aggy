@@ -17,6 +17,7 @@ import (
 	"github.com/congdoe/aggy/internal/limits"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/supervisor"
 	"github.com/congdoe/aggy/internal/termsafe"
 )
 
@@ -50,12 +51,13 @@ func runUsage(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy usage: unexpected arguments\n\n%s", usageUsage)
 		return 2
 	}
-	cfg, err := config.LoadDefault()
-	if err != nil {
-		fmt.Fprintf(stderr, "aggy usage: %v\n", err)
-		return 1
+	// An unreadable config only changes the near-limit mark (L60-5).
+	warnAt := config.DefaultWarnAt
+	if cfg, err := config.LoadDefault(); err != nil {
+		fmt.Fprintf(stderr, "aggy usage: %s; near limit uses switch.warn_at %v\n", termsafe.Line(err.Error()), warnAt)
+	} else {
+		warnAt = cfg.Switch.WarnAt
 	}
-	warnAt := cfg.Switch.WarnAt
 	now := time.Now()
 	ctx := context.Background()
 	s, version, err := openIndexReadOnly(ctx)
@@ -90,7 +92,7 @@ func runUsage(args []string, stdout, stderr io.Writer) int {
 		}
 		var quotas []limits.CodexQuota
 		if dir, err := codexSessionsDir(); err == nil {
-			quotas = limits.CodexAllowance(dir, now)
+			quotas = limits.CodexAllowance(dir, now, "")
 		}
 		if len(quotas) == 0 {
 			fmt.Fprintf(stdout, "  %-7s nothing written in the last %d days\n", v, int(limits.Max.Hours()/24))
@@ -99,8 +101,8 @@ func runUsage(args []string, stdout, stderr io.Writer) int {
 		for _, line := range codexAllowanceLines(quotas, now) {
 			fmt.Fprintf(stdout, "  %-7s %s\n", v, line)
 		}
-		if used, ok := limits.CodexUsed(quotas, now); ok && warnAt > 0 && used >= warnAt {
-			fmt.Fprintf(stdout, "  %-7s near limit: %d%% used, at or past switch.warn_at %v\n", v, int(math.Floor(used*100+1e-9)), warnAt)
+		if u, ok := limits.CodexUsed(quotas, now); ok && warnAt > 0 && u.Used >= warnAt {
+			fmt.Fprintf(stdout, "  %-7s near limit: %d%% used, at or past switch.warn_at %v\n", v, int(math.Floor(u.Used*100+1e-9)), warnAt)
 		}
 	}
 
@@ -205,24 +207,25 @@ func codexAllowanceLines(quotas []limits.CodexQuota, now time.Time) []string {
 	return out
 }
 
-// usedShare is the share, 0 to 1, of v's limit used, where its CLI
-// writes that on this machine (Codex: limits.CodexUsed over
-// limits.CodexAllowance), or -1. Claude and Grok write none that
-// docs/verification.md records, so they never warn (T6699).
-func usedShare(v adapter.Vendor) float64 {
+// usedShare is how much of v's limit is used, where its CLI writes that
+// on this machine (Codex: limits.CodexUsed over the rollouts, read through
+// cache, the rollout of thread first when known); ok is false elsewhere.
+// Claude and Grok write none that docs/verification.md records, so they
+// never warn (T6699).
+func usedShare(v adapter.Vendor, cache *limits.AllowanceCache, thread string) (supervisor.Share, bool) {
 	if v != adapter.Codex {
-		return -1
+		return supervisor.Share{}, false
 	}
 	dir, err := codexSessionsDir()
 	if err != nil {
-		return -1
+		return supervisor.Share{}, false
 	}
 	now := time.Now()
-	used, ok := limits.CodexUsed(limits.CodexAllowance(dir, now), now)
+	u, ok := limits.CodexUsed(cache.Get(dir, now, thread), now)
 	if !ok {
-		return -1
+		return supervisor.Share{}, false
 	}
-	return used
+	return supervisor.Share{Used: u.Used, Window: fmt.Sprintf("%dm@%d", u.Minutes, u.ResetsAt), Reset: time.Unix(u.ResetsAt, 0)}, true
 }
 
 // shareLeft renders what a window has left, floored to a tenth so it is

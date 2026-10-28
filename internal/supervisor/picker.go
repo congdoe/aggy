@@ -53,37 +53,38 @@ type picker struct {
 	note    bool
 	lines   []string
 	// warning: the note is a near-limit warning (T6699), drawn on the
-	// status line with tail, its keys, kept in view; the switch key opens
-	// the list with warnTo, if any, preselected.
+	// status line as the first of forms that fits the width; the switch
+	// key opens the list with warnTo, if any, preselected.
 	warning bool
 	warnTo  adapter.Vendor
-	tail    string
+	forms   []string
 }
 
 // list sets the picker to the vendor list, its toggles cleared.
 func (p *picker) list() {
 	p.confirm, p.note, p.lines = "", false, nil
-	p.warning, p.warnTo, p.tail = false, "", ""
+	p.warning, p.warnTo, p.forms = false, "", nil
 	p.opts, p.editing, p.edit, p.editErr, p.stage, p.kids = Choice{}, false, nil, "", "", nil
 }
 
 // ask sets the picker to confirm a switch to v, explained by lines.
 func (p *picker) ask(v adapter.Vendor, lines ...string) {
 	p.confirm, p.note, p.lines = v, false, lines
-	p.warning, p.warnTo, p.tail = false, "", ""
+	p.warning, p.warnTo, p.forms = false, "", nil
 }
 
 // tell sets the picker to show a note.
 func (p *picker) tell(lines ...string) {
 	p.confirm, p.note, p.lines = "", true, lines
-	p.warning, p.warnTo, p.tail = false, "", ""
+	p.warning, p.warnTo, p.forms = false, "", nil
 }
 
 // warn sets the picker to a near-limit warning (T6699): a note on the
-// status line, line then tail, whose switch key preselects to.
-func (p *picker) warn(to adapter.Vendor, line, tail string) {
-	p.tell(line)
-	p.warning, p.warnTo, p.tail = true, to, tail
+// status line whose switch key preselects to. forms are the line from
+// longest to shortest, each ASCII and ending in its keys.
+func (p *picker) warn(to adapter.Vendor, forms ...string) {
+	p.tell(forms[0])
+	p.warning, p.warnTo, p.forms = true, to, forms
 }
 
 // draw writes the picker: on the alternate screen, or, when the CLI is
@@ -154,14 +155,16 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 
 // statusLine is the one line of a confirmation (S-12) or a near-limit
 // warning: it never hides the CLI's screen, so an approval prompt or menu
-// the CLI shows stays in view while the user decides. A narrow terminal
-// cuts the end of the text before tail, so the keys in tail stay in view.
+// the CLI shows stays in view while the user decides. A warning takes the
+// first of its forms that fits, so a narrow terminal gets a shorter line
+// that still ends in its keys (L60-4); anything else is cut at the end.
 func (p *picker) statusLine(cols int) string {
 	line := "aggy: " + strings.Join(p.lines, " ")
-	if cols > 1 && len(line)+len(p.tail) > cols-1 {
-		line = line[:max(cols-1-len(p.tail), 0)]
+	for _, f := range p.forms {
+		if line = f; cols <= 1 || len(f) <= cols-1 {
+			return f
+		}
 	}
-	line += p.tail
 	if cols > 1 && len(line) > cols-1 {
 		line = line[:cols-1] // ASCII only; never writes the last column, so no wrap or scroll
 	}
