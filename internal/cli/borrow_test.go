@@ -197,7 +197,7 @@ func TestBorrowCommandRefusals(t *testing.T) {
 		code int
 		want string
 	}{
-		{"edit", []string{"edit", "fix"}, 2, "edit comes in M3"},
+		{"edit outside a git work tree", []string{"edit", "fix"}, 1, "in no git work tree"},
 		{"unknown kind", []string{"chat", "hi"}, 2, "unknown kind"},
 		{"vendor not installed", []string{"image", "a cat", "--vendor", "codex"}, 1, "codex: not set up (run aggy setup)"},
 		{"both", []string{"research", "q", "--vendor", "both"}, 1, "only one vendor supports research right now"},

@@ -282,7 +282,8 @@ func Default() Config {
 			// parent's vendor, which wrote the change: a different model
 			// catches different things.
 			Review: Route{NotAuthor: true},
-			// Accepted in config; borrow refuses edit until M3.
+			// Grok is passed over until its writing mode is verified
+			// (borrow.editGate).
 			Edit: vendors(adapter.Codex, adapter.Grok),
 		},
 		Budgets: Budgets{
