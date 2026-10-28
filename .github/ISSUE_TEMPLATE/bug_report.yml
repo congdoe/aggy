@@ -1,0 +1,33 @@
+name: Bug report
+description: aggy did something wrong or failed.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste credentials.** No tokens, API keys, auth files, or anything from `~/.claude`, `~/.codex`, or `~/.grok`. The two outputs asked for below are scrubbed for a public issue, but read them before you paste.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command you ran, what you expected, and what happened instead. Include the `[<code> · run <id>]` tag that ends aggy's error, if there was one.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+  - type: textarea
+    id: bundle
+    attributes:
+      label: aggy diag bundle
+      description: |
+        Run `aggy diag bundle > aggy-bundle.md` (or `aggy diag bundle --trace <id>` for one flow; see [docs/logging.md](https://github.com/congdoe/aggy/blob/main/docs/logging.md)) and attach the file or paste it here. It holds the versions, the recent diagnostic timeline, and `aggy doctor --report`, scrubbed of home paths, user and host names, emails, and token-shaped text.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: aggy doctor --report
+      description: Only if `aggy diag bundle` failed. Paste the output of `aggy doctor --report`.
+      render: text

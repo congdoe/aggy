@@ -1,0 +1,10 @@
+# Review owners. The security-sensitive packages are named on their own
+# so they keep an owner if the catch-all changes. The last match wins.
+*                    @congdoe
+
+/internal/adapter/   @congdoe
+/internal/execrun/   @congdoe
+/internal/safefs/    @congdoe
+/internal/redact/    @congdoe
+/internal/hook/      @congdoe
+/internal/tooldef/   @congdoe

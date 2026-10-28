@@ -1,0 +1,48 @@
+name: Vendor CLI behaviour changed
+description: A Claude Code, Codex, or Grok update broke aggy, or a vendor CLI does something docs/adapters.md does not expect.
+labels: [vendor-change]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste credentials.** No tokens, API keys, auth files, session files, or anything from `~/.claude`, `~/.codex`, or `~/.grok`. Do not run a vendor CLI with a `--dangerously-*` or other permission-skipping flag to reproduce this.
+  - type: dropdown
+    id: vendor
+    attributes:
+      label: Vendor CLI
+      options: [Claude Code, Codex, Grok]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Vendor CLI version
+      description: The first line of `claude --version`, `codex --version`, or `grok --version`.
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: What changed
+      description: The flag, output field, tool name, hook payload, or error format that changed, and the fact in docs/adapters.md or docs/verification.md it contradicts. A `lockdown.rejected` code means the CLI refused one of aggy's lockdown flags or reported a tool it does not know.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Scrubbed `--help` output, a vendor changelog or source link, or the vendor's error line. Remove home paths, session ids, and anything secret-shaped.
+      render: text
+  - type: textarea
+    id: doctor
+    attributes:
+      label: aggy doctor --report
+      description: Paste the output of `aggy doctor --report`. It shows each CLI's version against the range aggy was tested on.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: bundle
+    attributes:
+      label: aggy diag bundle
+      description: If a command failed, run `aggy diag bundle > aggy-bundle.md` and attach the file (see [docs/logging.md](https://github.com/congdoe/aggy/blob/main/docs/logging.md)).
