@@ -275,8 +275,11 @@ func (m *Manifest) validRow(c store.Change) error {
 	if !filepath.IsAbs(c.File) || filepath.Clean(c.File) != c.File {
 		return bad("the file %q is not an absolute, clean path", c.File)
 	}
-	if !isHash(c.HashAfter) || (c.HashBefore != patch.NoFile && !isHash(c.HashBefore)) {
+	if !isState(c.HashAfter) || (c.HashBefore != patch.NoFile && !isState(c.HashBefore)) {
 		return bad("the hashes are not sha256 hashes")
+	}
+	if c.HashAfter == patch.NoFile && c.HashBefore == patch.NoFile {
+		return bad("the change neither found nor left anything")
 	}
 	if (c.HashBefore == patch.NoFile) != c.CreatedFile {
 		return bad("created_file does not match the hash before")
@@ -322,6 +325,18 @@ func homeDirs() []string {
 	return hs
 }
 
+// isState reports whether h is a state hash a change can record: a
+// file's hash, a symlink's patch.LinkHash, or patch.NoFile.
+func isState(h string) bool {
+	if h == patch.NoFile {
+		return true
+	}
+	if patch.IsLinkHash(h) {
+		return isHash(strings.TrimPrefix(h, "link-"))
+	}
+	return isHash(h)
+}
+
 func isHash(h string) bool {
 	if len(h) != 64 {
 		return false
@@ -353,13 +368,13 @@ func (m *Manifest) newerChange(ctx context.Context, c store.Change, run *unwireR
 	if err != nil {
 		return nil, false, false, err
 	}
-	key := simKey(c.File)
+	key := simKey(Record(c))
 	for i := range newer {
 		n := newer[i]
 		if run.simUndone[n.ChangeID] {
 			continue
 		}
-		if n.File == c.File || simKey(n.File) == key {
+		if n.File == c.File || simKey(Record(n)) == key {
 			if first == nil {
 				first = &n
 			}
@@ -528,11 +543,11 @@ func (m *Manifest) provenUnwritten(ctx context.Context, c store.Change, run *unw
 	if newer, _, _, err := m.newerChange(ctx, c, run); err != nil || newer != nil {
 		return false, err
 	}
-	_, curHash, err := readFile(c.File)
+	_, curHash, err := patch.Current(Record(c))
 	if err != nil {
 		return false, err
 	}
-	if f, ok := run.sim[simKey(c.File)]; ok {
+	if f, ok := run.sim[simKey(Record(c))]; ok {
 		curHash = f.hash
 	}
 	if curHash != c.HashBefore {
@@ -558,7 +573,7 @@ func (m *Manifest) provenUnwritten(ctx context.Context, c store.Change, run *unw
 // created file left holding only white space, or the old content plus
 // the one line ending aggy added before its own line.
 func userReverted(r patch.Record, cur []byte, curHash string) bool {
-	if curHash == patch.NoFile {
+	if curHash == patch.NoFile || r.NoFollow() {
 		return false
 	}
 	if r.BeforeHash == patch.NoFile {
@@ -605,13 +620,13 @@ type simFile struct {
 	hash string
 }
 
-// simKey names a file in a dry run's simulation, the same for every
-// spelling of it where that can be found.
-func simKey(file string) string {
-	if k, err := safefs.CanonicalPath(file); err == nil {
+// simKey names a change's path in a dry run's simulation, the same for
+// every spelling of it where that can be found (see pathKey).
+func simKey(r patch.Record) string {
+	if k, err := pathKey(r.File, r.NoFollow()); err == nil {
 		return k
 	}
-	return file
+	return r.File
 }
 
 // undo undoes one change under its target's lock. It returns a zero Undo
@@ -624,7 +639,7 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 	}
 	unlock, err := func() {}, error(nil)
 	if !opt.NoLock {
-		unlock, err = m.lockTarget(ctx, c.File)
+		unlock, err = m.lockTarget(ctx, c.File, Record(c).NoFollow())
 	}
 	if err != nil {
 		return fail(err)
@@ -711,11 +726,11 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 		return done()
 	}
 
-	cur, curHash, err := readFile(r.File)
+	cur, curHash, err := patch.Current(r)
 	if err != nil {
 		return fail(err)
 	}
-	if f, ok := run.sim[simKey(r.File)]; ok {
+	if f, ok := run.sim[simKey(r)]; ok {
 		cur, curHash = f.data, f.hash
 	}
 	byHand := false
@@ -750,11 +765,7 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 		if err != nil {
 			return fail(err)
 		}
-		f := simFile{data: target, hash: patch.NoFile}
-		if exists {
-			f.hash = patch.Hash(target)
-		}
-		run.sim[simKey(r.File)] = f
+		run.sim[simKey(r)] = simFile{data: target, hash: stateHash(r, target, exists)}
 		return done()
 	}
 	if (opt.Force || byHand) && curHash != r.AfterHash && curHash != r.BeforeHash {
@@ -785,16 +796,16 @@ func printDirs(w io.Writer, dirs []string) {
 	}
 }
 
-// readFile returns the file's bytes and hash, or nil and patch.NoFile.
-func readFile(path string) ([]byte, string, error) {
-	b, err := safefs.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, patch.NoFile, nil
+// stateHash is the hash of what an undo of r leaves: nothing, r's link
+// target, or a file's bytes.
+func stateHash(r patch.Record, data []byte, exists bool) string {
+	switch {
+	case !exists:
+		return patch.NoFile
+	case patch.IsLinkHash(r.BeforeHash):
+		return patch.LinkHash(string(data))
 	}
-	if err != nil {
-		return nil, "", err
-	}
-	return b, patch.Hash(b), nil
+	return patch.Hash(data)
 }
 
 // previewUndo writes the diff from the file's current content to what the
@@ -810,6 +821,14 @@ func previewUndo(w io.Writer, r patch.Record, cur []byte, curHash string) ([]byt
 		if target, exists, err = patch.Target(r); err != nil {
 			return nil, false, err
 		}
+	}
+	if r.NoFollow() {
+		fmt.Fprintf(w, "# %s: %s -> %s\n", termsafe.Line(r.File),
+			termsafe.Line(patch.Describe(curHash, cur)), termsafe.Line(patch.Describe(stateHash(r, target, exists), target)))
+		if !exists {
+			printDirs(w, r.CreatedDirs)
+		}
+		return target, exists, nil
 	}
 	from, to := r.File, r.File
 	if curHash == patch.NoFile {

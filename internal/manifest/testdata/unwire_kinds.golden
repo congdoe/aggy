@@ -1,0 +1,6 @@
+# $DIR/stale.md: nothing -> file (6 bytes, 44ea8ede9025)
+# $DIR/claude/skills/aggy: symlink to $DIR/store/aggy -> file (7 bytes, d0350f0bef26)
+# $DIR/agents/skills/aggy: symlink to $DIR/store/aggy -> symlink to ../../old/aggy
+# $DIR/grok/skills/aggy: symlink to $DIR/store/aggy -> nothing
+# $DIR/grok/skills: would remove the directory if empty
+# $DIR/grok: would remove the directory if empty

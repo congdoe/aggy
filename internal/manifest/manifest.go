@@ -60,14 +60,34 @@ func NewRunID() string { return "run-" + newID(time.Now()) }
 // lockWait bounds the wait for another process changing the same file.
 const lockWait = 30 * time.Second
 
+// pathKey is the one spelling of a change's path that every other
+// spelling shares: safefs.CanonicalPath, which resolves symlinks through
+// the deepest existing ancestor and normalizes and case-folds where the
+// file system ignores case. For a link or removal change (noFollow) the
+// final element is not followed, since the change is to the link itself:
+// its directory is made canonical and its base name kept. Two links to
+// one target are then two paths, as they are on disk.
+//
+// shortcut: a noFollow key keeps the base name's case, so on a
+// case-insensitive file system two spellings of one link differ; aggy
+// spells its own link paths one way.
+func pathKey(file string, noFollow bool) (string, error) {
+	if !noFollow {
+		return safefs.CanonicalPath(file)
+	}
+	dir, err := safefs.CanonicalPath(filepath.Dir(file))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, filepath.Base(file)), nil
+}
+
 // lockPath is the per-target lock file: run/patch/<sha256(key)>.lock next
-// to the database. The key is the target's canonical path
-// (safefs.CanonicalPath): symlinks resolved through the deepest existing
-// ancestor, then normalized and case-folded where the file system ignores
-// case. Every spelling of one file, through a linked directory or in
-// another case, therefore takes the same lock.
-func (m *Manifest) lockPath(file string) (string, error) {
-	key, err := safefs.CanonicalPath(file)
+// to the database. The key is the target's pathKey, so every spelling of
+// one file, through a linked directory or in another case, takes the same
+// lock.
+func (m *Manifest) lockPath(file string, noFollow bool) (string, error) {
+	key, err := pathKey(file, noFollow)
 	if err != nil {
 		return "", err
 	}
@@ -76,8 +96,8 @@ func (m *Manifest) lockPath(file string) (string, error) {
 
 // lockTarget takes the per-target lock. Where file locks are unsupported
 // it goes on unlocked; the hash guard then still refuses most races.
-func (m *Manifest) lockTarget(ctx context.Context, file string) (func(), error) {
-	lock, err := m.lockPath(file)
+func (m *Manifest) lockTarget(ctx context.Context, file string, noFollow bool) (func(), error) {
+	lock, err := m.lockPath(file, noFollow)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +134,7 @@ func (m *Manifest) Apply(ctx context.Context, runID string, p patch.Patch) (stor
 	if err != nil {
 		return store.Change{}, err
 	}
-	unlock, err := m.lockTarget(ctx, file)
+	unlock, err := m.lockTarget(ctx, file, p.Transform == nil)
 	if err != nil {
 		return store.Change{}, err
 	}

@@ -110,6 +110,11 @@ func Preview(w io.Writer, patches []patch.Patch) (int, error) {
 			continue
 		}
 		changed++
+		if p.Transform == nil {
+			fmt.Fprintf(w, "# %s: %s -> %s\n", termsafe.Line(pl.File),
+				termsafe.Line(patch.Describe(pl.BeforeHash, pl.Before)), termsafe.Line(patch.Describe(pl.AfterHash, pl.After)))
+			continue
+		}
 		from := pl.File
 		if pl.Action == patch.Create {
 			from = diff.DevNull

@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 
-	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 )
 
@@ -37,12 +36,6 @@ func (m *Manifest) Drift(ctx context.Context) ([]Drift, error) {
 	if len(undos) == 0 && err != nil {
 		return nil, err
 	}
-	key := func(file string) string {
-		if k, err := safefs.CanonicalPath(file); err == nil {
-			return k
-		}
-		return file
-	}
 	out := make([]Drift, 0, len(undos))
 	for i := len(undos) - 1; i >= 0; i-- {
 		u := undos[i]
@@ -58,7 +51,7 @@ func (m *Manifest) Drift(ctx context.Context) ([]Drift, error) {
 			// nearest one left in place.
 			for j := i - 1; j >= 0; j-- {
 				n := undos[j]
-				if key(n.Change.File) == key(u.Change.File) && unresolved(n.Outcome) {
+				if simKey(Record(n.Change)) == simKey(Record(u.Change)) && unresolved(n.Outcome) {
 					d.BlockedBy = n.Change.ChangeID
 					break
 				}
