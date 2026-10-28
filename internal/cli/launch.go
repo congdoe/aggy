@@ -62,8 +62,23 @@ type launchPlan struct {
 // plan decides the parent and child a launch opens. It writes only what
 // refreshChildren finds on disk; the launch itself is recorded by commit.
 // Notes for the user (a session the vendor no longer has, an id never
-// recorded) go to stderr.
+// recorded) go to stderr. A switch's one-launch model (T6665) is set on
+// the child here, so a new child's index row records it (O56-7); it is
+// checked again, as it may have come over the socket, and never written
+// to config.
 func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t target, now time.Time, stderr io.Writer) (launchPlan, error) {
+	if err := adapter.ValidModel(t.Model); err != nil {
+		return launchPlan{}, err
+	}
+	p, err := planChild(ctx, s, cfg, cwd, t, now, stderr)
+	if err == nil && t.Model != "" {
+		p.child.Model = t.Model
+	}
+	return p, err
+}
+
+// planChild is plan without the one-launch model.
+func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t target, now time.Time, stderr io.Writer) (launchPlan, error) {
 	var p launchPlan
 	pick := "" // a child t.ParentID named, put on screen instead of the latest
 	switch {

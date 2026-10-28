@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -100,7 +101,7 @@ func Run(o Options) (Exit, error) {
 		return Exit{Code: 1}, errors.New("supervisor: standard input is not a terminal")
 	}
 	t := &tty{fd: fd}
-	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, events: make(chan hookEvent, 16), asks: make(chan Choice, 1), quit: make(chan struct{})}
+	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, lenKnown: true, events: make(chan hookEvent, 16), asks: make(chan Choice, 1), quit: make(chan struct{})}
 	defer close(s.quit)
 	var srv *Server
 	if o.RunDir != "" {
@@ -206,8 +207,8 @@ func Run(o Options) (Exit, error) {
 			}
 		case <-check:
 			s.offerSwitch()
-		case v := <-s.o.Limits:
-			s.onLimit(v)
+		case h := <-s.o.Limits:
+			s.onLimit(h)
 		case <-s.exitBy:
 			s.exitBy = nil
 			if s.sw.typed && !s.open {
@@ -317,13 +318,17 @@ type session struct {
 	// paste was opened and not closed.
 	lastByte byte
 	inPaste  bool
-	// pasteTail is the end of the last read, for a paste marker split
-	// across reads; lineLen counts the bytes since the last Enter, and
-	// popup is set once a line since the last clean send had an @ or began
-	// with / (T6754).
+	// pasteTail is the last bytes sent, for a paste marker split across
+	// reads. compLen counts the bytes in the composer since the last
+	// clean send, while lenKnown (an Enter a popup may have taken leaves
+	// it unknown); popup is set once an @ or a leading / was typed since
+	// then; cleared is set when the user emptied the line, until the
+	// Enter that confirms it (T6754, O56-3).
 	pasteTail []byte
-	lineLen   int
+	compLen   int
+	lenKnown  bool
 	popup     bool
+	cleared   bool
 	// openedAt is when the picker last opened.
 	openedAt time.Time
 	// input feeds keys through the key filter (set by Run).
@@ -352,7 +357,10 @@ type pendingSwitch struct {
 	to    adapter.Vendor
 	asked bool // the agent asked for it (a skill), not the user
 	limit bool // a limit of the vendor on screen suggested it (T6667)
-	typed bool // the exit command has been typed
+	// unverified: that limit came from a hook, which any process in the
+	// CLI's tree can send (O56-2), so it is labeled like an agent's ask.
+	unverified bool
+	typed      bool // the exit command has been typed
 	// choice is what was picked or asked for with the vendor (T6665).
 	choice Choice
 }
@@ -393,6 +401,9 @@ func (s *session) hookEvent(ev hookEvent) {
 	if turnEnd(ev.name) {
 		if ev.sessionID != "" && s.o.SessionID != nil && ev.sessionID == s.o.SessionID() {
 			s.atPrompt = !s.held
+			if ev.name == "Stop" && holdSignal(s.o.Vendor) && s.pk != nil {
+				s.pk.preselect = "" // a turn ended without a limit (O56-5)
+			}
 		}
 		return
 	}
@@ -410,6 +421,12 @@ func (s *session) onSwitch(r Request) error {
 		return fmt.Errorf("an agent cannot ask for a switch away from %s: aggy cannot tell when %s waits for an approval, so only the user may start one, with aggy's switch key",
 			s.o.Vendor, s.o.Vendor)
 	}
+	if r.New || r.Model != "" {
+		// O56-1: a new session or a model is the user's choice, in the
+		// picker; the agent may ask for a vendor and a brief only.
+		// TODO(T6753): log switch.agent_options.
+		return errors.New("an agent may ask for a vendor and a brief only; a new session or a model for the launch is the user's choice, in aggy's picker")
+	}
 	if err := s.offered(v); err != nil && !errors.Is(err, ErrChecking) {
 		return err
 	}
@@ -417,7 +434,7 @@ func (s *session) onSwitch(r Request) error {
 		return errors.New("a switch is already waiting")
 	}
 	// The only one past the swap; the channel holds one.
-	s.asks <- Choice{Vendor: v, New: r.New, Model: r.Model, Brief: r.Brief}
+	s.asks <- Choice{Vendor: v, Brief: r.Brief}
 	return nil
 }
 
@@ -442,15 +459,20 @@ func (s *session) offered(v adapter.Vendor) error {
 // send queues the user's input for the CLI and notes what it may start:
 // an Enter may start a turn, and text after the last Enter may be unsent.
 //
-// Only a plain Enter sends (S-13): a chunk that ends in a \r not preceded
-// by ESC (Option+Enter, a newline in Claude) and not by a backslash (also
-// a newline in Claude), even one in the chunk before, and not inside a
-// bracketed paste, whose markers are found across reads too (T6754).
-// Nor does an Enter on a line that had an @ or began with / (T6754): it
-// may only accept an entry in the CLI's file or command popup, leaving the
-// text in the composer, so it counts as unsent until an Enter on an empty
-// line. Anything else leaves text that may be unsent. When in doubt it
-// stays dirty: the user can press Enter on an empty prompt.
+// It follows the composer byte by byte. Only a plain Enter sends (S-13):
+// a \r not preceded by ESC (Option+Enter, a newline in Claude) and not by
+// a backslash (also a newline in Claude), even one in the read before,
+// and not inside a bracketed paste, whose markers are found across reads
+// too (T6754). After an @ or a leading / (T6754, O56-3) an Enter may only
+// accept an entry in the CLI's file or command popup and leave the text,
+// with more than was typed, in the composer: from then on every Enter
+// counts as unsent until one on a line the user explicitly emptied, with
+// Ctrl+U (unverified: it is the readline kill-line key and is assumed to
+// clear the composer) or with backspaces down to zero while aggy still
+// knew the length. When in doubt it stays dirty.
+// TODO(O56-3): aggy installs no UserPromptSubmit hook yet; a turn-start
+// hook could confirm a send, but any process in the CLI's tree can send
+// one, so it would need care before clearing this.
 // shortcut: a CLI that turns on kitty's all-keys-as-escapes mode gets
 // Enter as CSI 13 u, which never clears it, so it cannot be switched
 // from by aggy. Upgrade if T6684 finds one.
@@ -460,41 +482,55 @@ func (s *session) send(b []byte) {
 	if len(b) == 0 {
 		return
 	}
-	// The paste markers, found with the last bytes of the read before, so
-	// one split across reads still counts.
-	seen := append(append([]byte(nil), s.pasteTail...), b...)
-	if i, j := bytes.LastIndex(seen, pasteStart), bytes.LastIndex(seen, pasteEnd); i > j {
-		s.inPaste = true
-	} else if j >= 0 {
-		s.inPaste = false
-	}
-	s.pasteTail = seen[max(0, len(seen)-len(pasteEnd)+1):]
 	if bytes.IndexByte(b, '\r') >= 0 {
 		s.atPrompt, s.toldDirty = false, false // an Enter may start a turn
 	}
-	// The line so far: its length and whether it may have opened a popup.
-	popup := s.popup
 	for _, c := range b {
-		if c == '\r' {
-			popup = s.lineLen > 0 && s.popup
-			s.lineLen = 0
-			continue
+		s.compose(c)
+	}
+	s.dirty = !s.lenKnown || s.compLen > 0 || s.popup || s.cleared
+	s.toChild.push(b)
+}
+
+// compose follows one byte the user sent (see send).
+func (s *session) compose(c byte) {
+	prev := s.lastByte
+	s.lastByte = c
+	// The paste markers, found with the bytes before, so one split
+	// across reads still counts.
+	s.pasteTail = append(s.pasteTail, c)
+	if bytes.HasSuffix(s.pasteTail, pasteStart) {
+		s.inPaste = true
+	} else if bytes.HasSuffix(s.pasteTail, pasteEnd) {
+		s.inPaste = false
+	}
+	if n := len(pasteEnd); len(s.pasteTail) >= n {
+		s.pasteTail = append(s.pasteTail[:0], s.pasteTail[len(s.pasteTail)-n+1:]...)
+	}
+	switch {
+	case c == '\r' && (prev == esc || prev == '\\' || s.inPaste):
+		s.compLen++ // a newline in the composer
+	case c == '\r' && s.popup:
+		s.lenKnown = false // the popup may have taken it and added text
+	case c == '\r':
+		s.compLen, s.lenKnown, s.cleared = 0, true, false // sent
+	case c == ctrlU:
+		// The line is empty, but it counts only once an Enter confirms
+		// it: in a multiline draft Ctrl+U may clear one line only.
+		s.compLen, s.lenKnown, s.popup, s.cleared = 0, true, false, true
+	case c == 0x7f || c == 0x08:
+		if s.compLen > 0 {
+			s.compLen--
+			if s.compLen == 0 && s.lenKnown && s.popup {
+				s.popup, s.cleared = false, true
+			}
 		}
-		if c == '@' || c == '/' && s.lineLen == 0 {
+	default:
+		if c == '@' || c == '/' && s.compLen == 0 {
 			s.popup = true
 		}
-		s.lineLen++
+		s.compLen++
 	}
-	prev := s.lastByte
-	if len(b) > 1 {
-		prev = b[len(b)-2]
-	}
-	s.dirty = b[len(b)-1] != '\r' || prev == esc || prev == '\\' || s.inPaste || popup
-	if !s.dirty {
-		s.popup = false // a clean send empties the composer
-	}
-	s.lastByte = b[len(b)-1]
-	s.toChild.push(b)
 }
 
 // offerSwitch asks the user to confirm the waiting switch once the CLI
@@ -512,7 +548,7 @@ func (s *session) offerSwitch() {
 		if !s.toldDirty {
 			s.toldDirty = true
 			s.pk.tell(fmt.Sprintf("aggy is ready to switch to %s, but you typed text you have not sent to %s.", v, on),
-				"Send it, or clear it and press Enter on the empty prompt; aggy asks again at the",
+				"Send it, or clear it (Ctrl+U or Backspace) and press Enter on the empty prompt; aggy asks again at the",
 				fmt.Sprintf("next turn end, or when you pick %s again after that Enter.", v))
 			s.openPicker()
 		}
@@ -526,20 +562,28 @@ func (s *session) offerSwitch() {
 		s.openPicker()
 		return
 	}
-	// One status line (S-12): the keys first, as a narrow terminal cuts
-	// the end (it fits 80 columns up to "It types /exit.").
+	// One status line (S-12, O56-1): who or what asked and the switch's
+	// options first, then the keys, then the check; a narrow terminal
+	// cuts the end.
 	cmd, verified := adapter.ExitCommand(on)
-	lines := []string{fmt.Sprintf("%s switches to %s, Esc stays. See %s's prompt? It types %s.", keyName(s.pk.key), v, on, cmd)}
-	if s.sw.asked {
-		lines = append(lines, "(The agent asked.)")
+	var why []string
+	switch {
+	case s.sw.asked:
+		why = append(why, "the agent asks")
+	case s.sw.limit:
+		why = append(why, limitWho(LimitHit{Vendor: on, Unverified: s.sw.unverified}))
 	}
-	if s.sw.limit {
-		lines = append(lines, fmt.Sprintf("(%s hit its limit.)", on))
+	why = append(why, choiceNote(s.sw.choice)...)
+	head := "-> " + string(v) // the full line fits 80 columns without an origin
+	if len(why) > 0 {
+		head = strings.Join(why, ", ") + " " + head
 	}
+	line := fmt.Sprintf("%s. %s switches, Esc stays. See %s's prompt? It types %s.", head, keyName(s.pk.key), on, cmd)
 	if !verified {
-		lines = append(lines, fmt.Sprintf("(%s is unverified.)", cmd))
+		line += fmt.Sprintf(" (%s is unverified.)", cmd)
 	}
-	lines = append(lines, choiceNote(s.sw.choice)...)
+	lines := []string{line}
+	s.pk.preselect = "" // offered once (O56-5)
 	s.pk.ask(v, lines...)
 	s.openPicker()
 }
@@ -556,7 +600,12 @@ func (s *session) offerSwitch() {
 //
 // TODO(T6617): a model-quota limit (one model out, others not) is not
 // verified; any limit counts for the whole vendor.
-func (s *session) onLimit(v adapter.Vendor) {
+//
+// A limit from a hook (Unverified) could be forged by any process in the
+// CLI's tree (O56-2): it gets the rules of an agent's ask and is labeled
+// unverified; a vendor without a hold signal never queues either.
+func (s *session) onLimit(h LimitHit) {
+	v := h.Vendor
 	if v != s.o.Vendor {
 		return
 	}
@@ -574,29 +623,38 @@ func (s *session) onLimit(v adapter.Vendor) {
 	switch {
 	case pre == "":
 		// TODO(T6753): log picker.no_quota.
-		s.pk.tell(fmt.Sprintf("%s hit its limit, and no other vendor aggy offers has quota left.", v))
+		s.pk.tell(fmt.Sprintf("%s, and no other vendor aggy offers has quota left.", limitWho(h)))
 		s.openPicker()
 	case !holdSignal(v):
 		// TODO(T6753): log picker.limit_no_hold.
-		s.pk.tell(fmt.Sprintf("%s hit its limit. %s has quota left: press %s, then Enter, to switch to it with a brief.", v, pre, keyName(s.pk.key)),
+		s.pk.tell(fmt.Sprintf("%s. %s has quota left: press %s, then Enter, to switch to it with a brief.", limitWho(h), pre, keyName(s.pk.key)),
 			fmt.Sprintf("aggy cannot tell when %s waits for an approval, so it does not offer the switch itself.", v))
 		s.openPicker()
 	default:
-		s.setSwitch(pendingSwitch{to: pre, limit: true, choice: Choice{Vendor: pre, Brief: true}})
+		s.setSwitch(pendingSwitch{to: pre, limit: true, unverified: h.Unverified, choice: Choice{Vendor: pre, Brief: true}})
 	}
 }
 
-// choiceNote describes a switch's options, for the status line's end.
+// limitWho says who reported h: a hook's report is labeled unverified
+// (O56-2).
+func limitWho(h LimitHit) string {
+	if h.Unverified {
+		return string(h.Vendor) + " reports a limit (unverified)"
+	}
+	return string(h.Vendor) + " hit its limit"
+}
+
+// choiceNote names a switch's options, for the status line.
 func choiceNote(c Choice) []string {
 	var out []string
 	if c.New {
-		out = append(out, "(A new session.)")
+		out = append(out, "new session")
 	}
 	if c.Model != "" {
-		out = append(out, "(Model "+c.Model+".)")
+		out = append(out, "model "+c.Model)
 	}
 	if c.Brief {
-		out = append(out, "(With a brief.)")
+		out = append(out, "brief")
 	}
 	return out
 }
@@ -726,6 +784,7 @@ func (s *session) pickerInput(b []byte) {
 		return
 	}
 	picked := c.Vendor
+	s.pk.preselect = "" // used, or turned down (O56-5)
 	s.closePicker()
 	switch {
 	case s.sw.typed:

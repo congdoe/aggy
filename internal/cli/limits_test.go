@@ -137,19 +137,20 @@ func TestNotificationTexts(t *testing.T) {
 }
 
 // TestStartLimitsHit (T6667): a recorded limit also reaches the switch
-// picker's channel.
+// picker's channel, marked unverified when only a hook reported it
+// (O56-2).
 func TestStartLimitsHit(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("AGGY_HOME", filepath.Join(t.TempDir(), "aggy"))
-	got := make(chan adapter.Vendor, 1)
-	onHook, stop := startLimits("11111111-2222-4333-8444-555555555555", adapter.Claude, nil, func(v adapter.Vendor) { got <- v })
+	got := make(chan supervisor.LimitHit, 1)
+	onHook, stop := startLimits("11111111-2222-4333-8444-555555555555", adapter.Claude, nil, func(h supervisor.LimitHit) { got <- h })
 	defer stop()
 	onHook(supervisor.Request{Type: supervisor.ReqHookEvent, Vendor: "claude", Event: "StopFailure",
 		Payload: []byte(`{"error":"rate_limit"}`), FromSession: true})
 	select {
-	case v := <-got:
-		if v != adapter.Claude {
-			t.Errorf("hit %q", v)
+	case h := <-got:
+		if h != (supervisor.LimitHit{Vendor: adapter.Claude, Unverified: true}) {
+			t.Errorf("hit %+v", h)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the limit never reached the picker")

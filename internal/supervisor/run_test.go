@@ -4,6 +4,7 @@ package supervisor
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"sync"
@@ -98,6 +99,33 @@ func poll(t *testing.T, what string, want []byte, get func() []byte) {
 	t.Fatalf("waited for %s %q; have %q", what, want, get())
 }
 
+// openPTY opens a test terminal of 24 rows and 80 columns. On darwin
+// the kernel can hand out the index of a pair a test just closed while
+// that pair's slave is still being torn down, and opening or sizing it
+// then fails with ENXIO ("device not configured"); that is retried for a
+// while, as anything else fails at once.
+func openPTY(t *testing.T) (master, slave *os.File) {
+	t.Helper()
+	var err error
+	for wait := 5 * time.Millisecond; ; wait *= 2 {
+		master, slave, err = pty.Open()
+		if err == nil {
+			if err = pty.Setsize(master, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
+				_ = slave.Close()
+				_ = master.Close()
+			}
+		}
+		if err == nil || !errors.Is(err, syscall.ENXIO) || wait > time.Second {
+			break
+		}
+		time.Sleep(wait)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return master, slave
+}
+
 // startRun runs Run on a test terminal against a fake CLI.
 func startRun(t *testing.T, double time.Duration) (*termSide, *fakeChild, <-chan Exit) {
 	t.Helper()
@@ -113,16 +141,21 @@ func startRunWith(t *testing.T, double time.Duration, setup func(*fakeChild)) (*
 // startRunOpts is startRunWith with opts applied to the Options first.
 func startRunOpts(t *testing.T, double time.Duration, setup func(*fakeChild), opts func(*Options)) (*termSide, *fakeChild, <-chan Exit) {
 	t.Helper()
-	master, slave, err := pty.Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = master.Close(); _ = slave.Close() })
-	if err := pty.Setsize(master, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
-		t.Fatal(err)
-	}
+	master, slave := openPTY(t)
 	ts := &termSide{master: master}
+	read := make(chan struct{})
+	t.Cleanup(func() {
+		// The pair is torn down before the next test opens one: the slave
+		// first, then the master, whose reader then ends.
+		_ = slave.Close()
+		_ = master.Close()
+		select {
+		case <-read:
+		case <-time.After(waitLimit):
+		}
+	})
 	go func() {
+		defer close(read)
 		buf := make([]byte, 4096)
 		for {
 			n, err := master.Read(buf)

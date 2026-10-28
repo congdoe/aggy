@@ -65,3 +65,23 @@ func TestSwitchCheckPolicy(t *testing.T) {
 		t.Errorf("grok not on PATH: %v", err)
 	}
 }
+
+// TestRefreshed (O56-6): reads run in the background; until the first is
+// done the default is given.
+func TestRefreshed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	release := make(chan struct{})
+	get := refreshed(ctx, []adapter.Vendor{adapter.Grok}, func(adapter.Vendor) bool { <-release; return false }, true)
+	if !get(adapter.Grok) {
+		t.Error("the default was not given while the read ran")
+	}
+	close(release)
+	deadline := time.Now().Add(10 * time.Second)
+	for get(adapter.Grok) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if get(adapter.Grok) {
+		t.Error("the read never landed")
+	}
+}

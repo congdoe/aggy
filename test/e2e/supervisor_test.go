@@ -175,7 +175,17 @@ func (w *world) start(t *testing.T, scenario map[string]any, args ...string) *se
 // waitFor waits until the terminal has shown want, byte for byte.
 func (s *session) waitFor(want []byte) {
 	s.t.Helper()
-	deadline := time.Now().Add(timeout)
+	s.waitWithin(want, timeout)
+}
+
+// offerTimeout bounds the wait for a switch offer, which waits for the
+// vendor's policy probe; under load that can take most of a minute.
+const offerTimeout = 60 * time.Second
+
+// waitWithin is waitFor with its own budget.
+func (s *session) waitWithin(want []byte, d time.Duration) {
+	s.t.Helper()
+	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
 		s.mu.Lock()
 		ok := bytes.Contains(s.out.Bytes(), want)

@@ -22,8 +22,8 @@ const (
 	// vendor, session, source, via ("hook" or "sessions folder").
 	EventSession = "session"
 	// EventLimit: a vendor reported a plan limit. Detail: vendor, until
-	// (unix ms, when aggy expects it back), via (hook, rollout, or
-	// borrow). internal/limits writes and reads it.
+	// (unix ms, when aggy expects it back), via (hook-unverified, or
+	// "hook" in older rows; rollout; or borrow). internal/limits writes and reads it.
 	EventLimit = "limit"
 )
 
@@ -109,7 +109,7 @@ func (s *Store) LimitEvents(ctx context.Context, vendor string, hook bool, since
 		`SELECT id, at, parent_id, child_id, type, detail FROM events
 		 WHERE type = ? AND at >= ? AND json_valid(detail)
 		   AND json_extract(detail, '$.vendor') = ?
-		   AND (coalesce(json_extract(detail, '$.via'), '') = 'hook') = ?
+		   AND (coalesce(json_extract(detail, '$.via'), '') IN ('hook', 'hook-unverified')) = ?
 		 ORDER BY json_extract(detail, '$.until') DESC, id DESC LIMIT ?`,
 		EventLimit, millis(since), vendor, hook, limit)
 	if err != nil {

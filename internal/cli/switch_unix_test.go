@@ -50,8 +50,9 @@ func TestSwitchCommand(t *testing.T) {
 		stderr string
 	}{
 		{"queued", []string{"grok"}, srv.Path(), 0, "when this turn ends", ""},
-		{"with options", []string{"--new", "--model", "grok-5", "--brief", "grok"}, srv.Path(), 0, "when this turn ends", ""},
-		{"bad model", []string{"--model", "a;b", "grok"}, srv.Path(), 2, "", "not a model name"},
+		{"with a brief", []string{"--brief", "grok"}, srv.Path(), 0, "when this turn ends", ""},
+		{"no --new for agents", []string{"--new", "grok"}, srv.Path(), 2, "", "user's choice"},
+		{"no --model for agents", []string{"--model", "grok-5", "grok"}, srv.Path(), 2, "", "user's choice"},
 		{"unknown flag", []string{"--fork", "grok"}, srv.Path(), 2, "", "usage"},
 		{"refused", []string{"codex"}, srv.Path(), 1, "", "not offered here"},
 		{"unknown vendor", []string{"gpt"}, srv.Path(), 2, "", "unknown vendor"},
@@ -68,8 +69,7 @@ func TestSwitchCommand(t *testing.T) {
 			}
 		})
 	}
-	if len(asked) != 2 || asked[0].Vendor != "grok" || asked[0].New ||
-		!asked[1].New || asked[1].Model != "grok-5" || !asked[1].Brief {
-		t.Errorf("switch requests = %+v, want grok, then grok with --new --model grok-5 --brief", asked)
+	if len(asked) != 2 || asked[0].Vendor != "grok" || asked[0].Brief || !asked[1].Brief {
+		t.Errorf("switch requests = %+v, want grok, then grok with --brief", asked)
 	}
 }

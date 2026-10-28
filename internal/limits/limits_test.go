@@ -138,6 +138,20 @@ func TestStateClampsRows(t *testing.T) {
 	}
 }
 
+// A row an older aggy wrote with via "hook" still reads as a hook-only
+// hint (O56-2 renamed it hook-unverified).
+func TestStateLegacyHookRow(t *testing.T) {
+	s := openStore(t)
+	d := map[string]any{"vendor": "grok", "until": now.Add(30 * 24 * time.Hour).UnixMilli(), "via": "hook"}
+	if err := s.AppendEvent(context.Background(), store.Event{At: now, Type: store.EventLimit, Detail: d}); err != nil {
+		t.Fatal(err)
+	}
+	got, limited, _ := State{Store: s}.Limited(context.Background(), adapter.Grok, now)
+	if !limited || !got.Hint || !got.Until.Equal(now.Add(HintWindow)) {
+		t.Errorf("legacy hook row = %+v %v, want a hint until %v", got, limited, now.Add(HintWindow))
+	}
+}
+
 func line(ts, typ string, payload string) string {
 	return fmt.Sprintf(`{"timestamp":%q,"type":%q,"payload":%s}`, ts, typ, payload) + "\n"
 }

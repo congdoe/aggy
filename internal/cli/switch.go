@@ -13,14 +13,16 @@ import (
 	"github.com/congdoe/aggy/internal/termsafe"
 )
 
-const switchUsage = "usage: aggy switch [--new] [--model M] [--brief] <claude|codex|grok>\n"
+const switchUsage = "usage: aggy switch [--brief] <claude|codex|grok>\n"
 
 // runSwitch is `aggy switch <vendor>`, which a linked skill runs inside a
 // CLI aggy supervises: it asks the supervisor to switch to vendor at the
 // turn end (T6668). The supervisor accepts it only from the CLI's own
 // process tree, checks the vendor against the picker's list, the repo's
 // allowed_vendors, and PATH, and still asks the user before it types
-// anything.
+// anything. An agent asks for a vendor and a brief only (O56-1): a new
+// session or a model for the launch is the user's choice, in the picker,
+// and the supervisor refuses them too.
 func runSwitch(args []string, stdout, stderr io.Writer) int {
 	return switchWith(args, os.Getenv, stdout, stderr)
 }
@@ -30,13 +32,11 @@ func switchWith(args []string, getenv func(string) string, stdout, stderr io.Wri
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
-		case a == "--new":
-			req.New = true
 		case a == "--brief":
 			req.Brief = true
-		case a == "--model" && i+1 < len(args):
-			i++
-			req.Model = args[i]
+		case a == "--new" || a == "--model":
+			fmt.Fprintf(stderr, "aggy switch: %s is the user's choice, in aggy's picker; an agent may ask for a vendor and --brief only\n", a)
+			return 2
 		case strings.HasPrefix(a, "-"):
 			fmt.Fprint(stderr, switchUsage)
 			return 2
@@ -46,10 +46,6 @@ func switchWith(args []string, getenv func(string) string, stdout, stderr io.Wri
 	}
 	if len(rest) != 1 {
 		fmt.Fprint(stderr, switchUsage)
-		return 2
-	}
-	if err := adapter.ValidModel(req.Model); err != nil {
-		fmt.Fprintf(stderr, "aggy switch: %s\n", termsafe.Line(err.Error()))
 		return 2
 	}
 	v, err := adapter.ParseVendor(rest[0])

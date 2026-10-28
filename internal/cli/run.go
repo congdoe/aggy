@@ -114,14 +114,6 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	if err != nil {
 		return fail(err)
 	}
-	if t.Model != "" {
-		// A switch's one-launch model (T6665): checked again here, as it
-		// may have come over the socket, and never written to config.
-		if err := adapter.ValidModel(t.Model); err != nil {
-			return fail(err)
-		}
-		pl.child.Model = t.Model
-	}
 	v := adapter.Vendor(pl.child.Vendor)
 	// The child's repo decides which vendors may see it, the one on
 	// screen and the ones the switch picker offers.
@@ -249,8 +241,8 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	onHook, stopIndex := startIndex(parentID, v, assigned, ids.set)
 	defer stopIndex()
 	// A limit reaches the picker (T6667) without ever blocking the watch.
-	limitHit := make(chan adapter.Vendor, 1)
-	onHook, stopLimits := startLimits(parentID, v, onHook, func(lv adapter.Vendor) {
+	limitHit := make(chan supervisor.LimitHit, 1)
+	onHook, stopLimits := startLimits(parentID, v, onHook, func(lv supervisor.LimitHit) {
 		select {
 		case limitHit <- lv:
 		default:
@@ -263,11 +255,24 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	pctx, cancelProbes := context.WithCancel(ctx)
 	defer cancelProbes()
 	canSwitch := switchCheck(pctx, cfg, pl.child.Cwd)
+	vendors := pickerVendors(eff.Switch.Order, v)
+	// The policy probes start now, so a switch later is not kept waiting
+	// on them.
+	go func() {
+		for _, o := range vendors {
+			_ = canSwitch(o)
+		}
+	}()
+	// The picker's index reads run in the background too (O56-6), so the
+	// supervisor's loop never waits on SQLite.
+	parent := pl.parent.ID
+	children := refreshed(pctx, vendors, func(o adapter.Vendor) []supervisor.ChildChoice { return childChoices(parent, o, time.Now()) }, nil)
+	quota := refreshed(pctx, vendors, hasQuota, true)
 	ex, err := supervisor.Run(supervisor.Options{
 		In: os.Stdin, Out: os.Stdout, Command: cmd,
 		Start:      startPTY,
 		SwitchKey:  key,
-		Vendors:    pickerVendors(eff.Switch.Order, v),
+		Vendors:    vendors,
 		RunDir:     runDir,
 		ParentID:   parentID,
 		OnHook:     onHook,
@@ -275,9 +280,9 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 		CanSwitch:  canSwitch,
 		StartsTurn: t.Brief,
 		SessionID:  ids.current,
-		Children:   func(v adapter.Vendor) []supervisor.ChildChoice { return childChoices(pl.parent.ID, v, time.Now()) },
+		Children:   children,
 		Limits:     limitHit,
-		HasQuota:   hasQuota,
+		HasQuota:   quota,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", name, err)
@@ -290,6 +295,40 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next}
 	}
 	return ex.Code
+}
+
+// refreshEvery is how often refreshed reads again.
+var refreshEvery = 2 * time.Second
+
+// refreshed returns fn's latest answer for each of vendors, read again
+// in the background every refreshEvery until ctx ends; def until the
+// first read is done.
+func refreshed[T any](ctx context.Context, vendors []adapter.Vendor, fn func(adapter.Vendor) T, def T) func(adapter.Vendor) T {
+	var mu sync.Mutex
+	got := map[adapter.Vendor]T{}
+	go func() {
+		for {
+			for _, v := range vendors {
+				r := fn(v)
+				mu.Lock()
+				got[v] = r
+				mu.Unlock()
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(refreshEvery):
+			}
+		}
+	}()
+	return func(v adapter.Vendor) T {
+		mu.Lock()
+		defer mu.Unlock()
+		if r, ok := got[v]; ok {
+			return r
+		}
+		return def
+	}
 }
 
 // switchCheck says why the session in cwd may not switch to a vendor:
