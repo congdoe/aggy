@@ -29,6 +29,16 @@ type Config struct {
 	Budgets       Budgets        `toml:"budgets"`
 	Media         Media          `toml:"media"`
 	Policy        Policy         `toml:"policy"`
+	Notify        Notify         `toml:"notify"`
+}
+
+// Notify holds notification settings. It is user config only: a repo's
+// .aggy/config.toml can never turn notifications on.
+type Notify struct {
+	// Desktop shows a desktop notification when the CLI on screen waits
+	// for the person, a borrow finishes, or a vendor hits its limit
+	// (internal/notify). Off by default.
+	Desktop bool `toml:"desktop"`
 }
 
 // Media holds opt-ins for media tools. It is user config only: a repo's

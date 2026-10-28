@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/limits"
+	"github.com/congdoe/aggy/internal/notify"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/supervisor"
 )
@@ -26,16 +28,20 @@ type sessionLimits struct {
 	vendor   adapter.Vendor
 	// record writes one signal; tests replace it.
 	record func(limits.Signal)
+	// notifier shows desktop notifications; nil shows none.
+	notifier *notify.Notifier
 
 	mu       sync.Mutex
 	lastHint time.Time
 }
 
 // startLimits wraps next, the session's other OnHook, so StopFailure
-// rate_limit events are recorded too, and for Codex starts the rollout
-// watch. stop ends the watch once the CLI has exited.
+// rate_limit events are recorded too and Notification events notify
+// (when the user config turns desktop notifications on), and for Codex
+// starts the rollout watch. stop ends the watch once the CLI has exited.
 func startLimits(parentID string, v adapter.Vendor, next func(supervisor.Request)) (onHook func(supervisor.Request), stop func()) {
-	l := &sessionLimits{parentID: parentID, vendor: v}
+	cfg, _ := config.LoadDefault() // an unreadable config leaves notifications off
+	l := &sessionLimits{parentID: parentID, vendor: v, notifier: newNotifier(cfg)}
 	l.record = l.save
 	done := make(chan struct{})
 	if v == adapter.Codex {
@@ -53,9 +59,15 @@ func startLimits(parentID string, v adapter.Vendor, next func(supervisor.Request
 }
 
 // hook records a StopFailure rate_limit from the vendor on screen, at
-// most once per hintEvery.
+// most once per hintEvery, and notifies a Notification event (the CLI
+// waits for the person, for example on an approval). Like every hook
+// event, the latter is a hint; its text is aggy's own.
 func (l *sessionLimits) hook(r supervisor.Request) {
 	if r.Vendor != string(l.vendor) {
+		return
+	}
+	if r.Event == "Notification" && l.notifier != nil {
+		go l.notifier.Show(context.Background(), "waiting", "aggy", waitingText(l.vendor))
 		return
 	}
 	sig, ok := limits.FromHook(l.vendor, r.Event, r.Payload)
@@ -82,5 +94,8 @@ func (l *sessionLimits) save(sig limits.Signal) {
 		return
 	}
 	defer func() { _ = s.Close() }()
-	_, _ = limits.Record(ctx, s, sig, l.parentID, time.Now())
+	until, err := limits.Record(ctx, s, sig, l.parentID, time.Now())
+	if err == nil && l.notifier != nil {
+		go showLimit(ctx, l.notifier, sig, until)
+	}
 }

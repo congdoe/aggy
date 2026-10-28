@@ -11,6 +11,7 @@ import (
 	"github.com/congdoe/aggy/internal/borrow"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/limits"
+	"github.com/congdoe/aggy/internal/notify"
 	"github.com/congdoe/aggy/internal/router"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/supervisor"
@@ -60,7 +61,7 @@ func TestRecordBorrowLimits(t *testing.T) {
 		{Vendor: adapter.Codex, Outcome: string(adapter.ErrRateLimit)},
 		{Vendor: adapter.Grok, Outcome: "ok"},
 		{Vendor: adapter.Claude, Outcome: string(adapter.ErrServer)},
-	}, time.Now())
+	}, time.Now(), nil)
 	if len(a) != 1 || a[0].Type != store.EventLimit || a[0].Detail["vendor"] != "codex" || a[0].Detail["via"] != limits.ViaBorrow {
 		t.Errorf("events = %+v", a)
 	}
@@ -88,5 +89,45 @@ func TestBorrowRouterShowsWarnings(t *testing.T) {
 	}
 	if !strings.Contains(warn.String(), "aggy borrow: warning: codex: a hook reported its limit") {
 		t.Errorf("warning = %q", warn.String())
+	}
+}
+
+// A Notification hook from the vendor on screen shows aggy's own text,
+// whatever the payload says.
+func TestSessionWaitingNotification(t *testing.T) {
+	shown := make(chan adapter.Command, 4)
+	n := &notify.Notifier{GOOS: "linux", Path: "/usr/bin/notify-send", Every: time.Minute,
+		Run: func(_ context.Context, c adapter.Command) (adapter.Output, error) {
+			shown <- c
+			return adapter.Output{}, nil
+		}}
+	l := &sessionLimits{vendor: adapter.Claude, notifier: n, record: func(limits.Signal) { t.Error("recorded a limit") }}
+	l.hook(supervisor.Request{Vendor: "grok", Event: "Notification", Payload: []byte(`{}`)})
+	l.hook(supervisor.Request{Vendor: "claude", Event: "Notification", Payload: []byte(`{"message":"<b>/Users/x/secret</b>"}`)})
+	select {
+	case c := <-shown:
+		if body := c.Args[len(c.Args)-1]; body != "Claude is waiting for you." {
+			t.Errorf("body = %q", body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("nothing shown")
+	}
+	select {
+	case c := <-shown:
+		t.Errorf("another vendor's event was shown: %+v", c)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestNotificationTexts(t *testing.T) {
+	until := time.Date(2026, 10, 28, 15, 4, 0, 0, time.Local)
+	for _, tt := range []struct{ got, want string }{
+		{limitText(limits.Signal{Vendor: adapter.Codex, Via: limits.ViaRollout}, until), "Codex hit its usage limit; aggy expects it back about Oct 28 15:04."},
+		{limitText(limits.Signal{Vendor: adapter.Claude, Via: limits.ViaHook}, until), "Claude reported a usage limit; aggy expects it back about Oct 28 15:04."},
+		{borrowText(adapter.Image, adapter.Grok, "ok"), "The image borrow on Grok finished: ok."},
+	} {
+		if tt.got != tt.want {
+			t.Errorf("text = %q, want %q", tt.got, tt.want)
+		}
 	}
 }
