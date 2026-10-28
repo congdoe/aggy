@@ -50,10 +50,14 @@ const RolloutTail = 256 << 10
 // CodexRollout reads a rollout's tail. It reports a limit when the last
 // task_complete or turn_aborted event in it ended on a usage limit and
 // was written after since (an unreadable timestamp counts); at is that
-// event's timestamp as written. Until is the latest resets_at of a
-// rate-limit window at 100% or more among the session's quotas
-// (CodexQuotas), when that is after now; else zero (unknown). A window
-// of another quota never gives the reset time, even at 100%.
+// event's timestamp as written. Until comes from a rate-limit window at
+// 100% or more among the session's quotas (CodexQuotas), when that is
+// after now; else zero (unknown). When the ordinary "codex" quota has a
+// full window, Until is its latest reset: that is the quota Codex's TUI
+// treats as limiting (see CodexQuotas). A model quota's reset counts only
+// when the ordinary quota has no full window, so a full weekly model
+// quota cannot hold Codex for a week past the ordinary reset (L49-2). A
+// window of another quota never gives the reset time, even at 100%.
 func CodexRollout(tail []byte, since, now time.Time) (sig Signal, at string, ok bool) {
 	var limited bool
 	for _, line := range bytes.Split(tail, []byte{'\n'}) {
@@ -78,13 +82,28 @@ func CodexRollout(tail []byte, since, now time.Time) (sig Signal, at string, ok 
 	if !limited {
 		return Signal{}, "", false
 	}
-	var until time.Time
+	var ordinary, model time.Time
+	ordinaryFull := false
 	for _, q := range CodexQuotas(tail) {
 		for _, w := range []*CodexWindow{q.Primary, q.Secondary} {
-			if w != nil && w.UsedPercent >= 100 && w.ResetsAt > 0 {
-				until = later(until, time.Unix(w.ResetsAt, 0))
+			if w == nil || w.UsedPercent < 100 {
+				continue
+			}
+			var reset time.Time
+			if w.ResetsAt > 0 {
+				reset = time.Unix(w.ResetsAt, 0)
+			}
+			if q.ID == codexOrdinary {
+				ordinaryFull = true
+				ordinary = later(ordinary, reset)
+			} else {
+				model = later(model, reset)
 			}
 		}
+	}
+	until := model
+	if ordinaryFull {
+		until = ordinary
 	}
 	if !until.After(now) {
 		until = time.Time{}
@@ -121,10 +140,18 @@ const codexOrdinary = "codex"
 //   - a missing limit_id is the ordinary "codex" quota
 //     (core/src/state/session.rs#L446-L453), and ids are compared
 //     lowercased with '-' read as '_' (codex-api/src/rate_limits.rs#L270);
-//   - a session draws on the ordinary quota and on the quota whose
-//     limit_name is its model slug: Codex's own TUI watches exactly
-//     these (tui/src/chatwidget/rate_limits.rs#L196-L202). The model is
-//     the last turn_context's in the tail.
+//   - Codex's TUI picks buckets for its refresh-poll cadence only, as
+//     limit_id == "codex" or limit_name == the current model, exactly and
+//     case-sensitively (tui/src/chatwidget/rate_limits.rs#L196-L202).
+//     Its usage warnings and its rate-limit-reached state key off the
+//     "codex" limit alone, matched with eq_ignore_ascii_case
+//     (on_rate_limit_snapshot_from, #L252-L265, #L325, #L350).
+//
+// So the ordinary quota is source-checked as the one that limits a
+// session. That a model-scoped quota (limit_name == the model of the last
+// turn_context in the tail) limits it too is an inference from that poll
+// filter, unverified: TODO(T6617) checks it on a live usage limit.
+// CodexRollout prefers the ordinary quota's reset for that reason.
 //
 // normal_model_slug is not matched: it is metadata of a quota alias,
 // "never a replacement for the request model" (protocol.rs#L2481-L2483,
