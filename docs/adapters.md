@@ -178,7 +178,9 @@ was tested against.
   `config.toml`; the person approves the hooks once in `/hooks`.
 - Grok runs the hooks in Claude's `settings.json` by default. Its payload
   has `sessionId` and its environment `GROK_SESSION_ID`, which is how
-  aggy tells a Grok call from a Claude one.
+  aggy tells a Grok call from a Claude one. aggy installs Grok's own
+  hooks in `~/.grok/hooks/aggy.json` and drops the Claude-labeled ones
+  inside Grok (`hook.Forward`), so each event is forwarded once.
 
 ## The adapters as built
 
