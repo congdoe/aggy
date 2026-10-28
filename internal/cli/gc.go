@@ -23,12 +23,13 @@ import (
 
 const gcUsage = `Usage: aggy gc [--dry-run] [--yes]
 
-Removes what aggy made and no longer needs: edit worktrees that were
-accepted (rejected ones are already gone), and pending ones left
-untouched for gc.pending_worktree_days; closed borrow children in aggy's
-index after gc.closed_child_days (never the vendor's own session files);
-inbox reports older than gc.inbox_days; and expired research cache
-entries. The days (30 by default) are set in your own config.toml only.
+Removes what aggy made and no longer needs: edit worktrees accepted
+gc.accepted_worktree_days ago (unless changed or committed on since),
+and pending ones left untouched for gc.pending_worktree_days; closed
+borrow children in aggy's index after gc.closed_child_days (never the
+vendor's own session files); inbox reports older than gc.inbox_days;
+and expired research cache entries. The days (30 by default) are set in
+your own config.toml only.
 It lists stale leases whose pid is in use again, but kills nothing it
 cannot prove it started.
 
@@ -41,15 +42,16 @@ terminal it removes nothing unless given --yes.
 
 // gcRetention is how long aggy gc keeps what it may remove.
 type gcRetention struct {
-	pendingWorktree, closedChild, inbox time.Duration
+	pendingWorktree, acceptedWorktree, closedChild, inbox time.Duration
 }
 
 func retention(c config.GC) gcRetention {
 	day := 24 * time.Hour
 	return gcRetention{
-		pendingWorktree: time.Duration(c.PendingWorktreeDays) * day,
-		closedChild:     time.Duration(c.ClosedChildDays) * day,
-		inbox:           time.Duration(c.InboxDays) * day,
+		pendingWorktree:  time.Duration(c.PendingWorktreeDays) * day,
+		acceptedWorktree: time.Duration(c.AcceptedWorktreeDays) * day,
+		closedChild:      time.Duration(c.ClosedChildDays) * day,
+		inbox:            time.Duration(c.InboxDays) * day,
 	}
 }
 
@@ -275,6 +277,8 @@ func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktre
 		case leftover:
 		case wt.State == store.WorktreePending && now.Sub(w.Ended) < r.pendingWorktree:
 			continue // waiting for accept or reject
+		case wt.State == store.WorktreeAccepted && now.Sub(acceptedAt(w)) < r.acceptedWorktree:
+			continue // kept for aggy pr
 		case wt.State != store.WorktreePending && wt.State != store.WorktreeAccepted && wt.State != store.WorktreeRejected:
 			continue
 		}
@@ -294,6 +298,16 @@ func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktre
 		default:
 			size = dirSize(wt.Path)
 		}
+		accepted := !leftover && wt.State == store.WorktreeAccepted
+		if accepted {
+			if why, err := g.keptAccepted(ctx, wt); err != nil || why != "" {
+				if err != nil {
+					why = err.Error()
+				}
+				p.skip("worktree of borrow %s: kept: %s", id, why)
+				continue
+			}
+		}
 		what := fmt.Sprintf("%s (%s, branch %s)", wt.Path, wt.State, wt.Branch)
 		if leftover {
 			what = fmt.Sprintf("%s (left by a removal cut short, branch %s)", wt.Path, wt.Branch)
@@ -305,10 +319,68 @@ func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktre
 			if leftover {
 				return g.Remove(ctx, wt) // the removal is claimed already
 			}
+			if accepted {
+				if why, err := g.keptAccepted(ctx, wt); err != nil || why != "" {
+					if err == nil {
+						err = errors.New("skipped: " + why)
+					}
+					return err
+				}
+			}
 			return discardEdit(ctx, s, g, id, wt, now)
 		}})
 	}
 	return nil
+}
+
+// acceptedAt is when w was accepted, or, when that is not known (an
+// index from before version 14), when its borrow ended.
+func acceptedAt(w store.GCWorktree) time.Time {
+	if w.Accepted.IsZero() {
+		return w.Ended
+	}
+	return w.Accepted
+}
+
+// keptAccepted says why an accepted worktree must stay, "" if it may go:
+// a change in it since the accept (tracked files that differ from the
+// accepted tree, or new files that are not ignored), or commits on
+// aggy's branch past the commit it was made from. Ignored files such as
+// node_modules are not work and do not count. Every git call names the
+// worktree's admin dir and runs no filter or diff program.
+func (g *gitWorktrees) keptAccepted(ctx context.Context, wt store.Worktree) (string, error) {
+	if wt.Tree == "" {
+		return "no tree was recorded for it", nil
+	}
+	if _, err := safefs.Lstat(wt.Path); err == nil {
+		run, err := g.wtRun(ctx, wt)
+		if err != nil {
+			return "", err
+		}
+		out, _, err := run("diff", "--no-color", "--no-ext-diff", "--no-textconv", "--name-only", "-z", wt.Tree, "--")
+		if err != nil {
+			return "", err
+		}
+		if out != "" {
+			return "it has changes made after the accept", nil
+		}
+		if out, _, err = run("ls-files", "-z", "--others", "--exclude-standard"); err != nil {
+			return "", err
+		}
+		if out != "" {
+			return "it has new files made after the accept", nil
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	o, err := g.env.gitOutput(ctx, wt.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+wt.Branch+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	if head := strings.TrimSpace(string(o.Stdout)); o.ExitCode == 0 && head != wt.Base {
+		return "its branch " + wt.Branch + " has commits past the accepted edit", nil
+	}
+	return "", nil
 }
 
 // unchanged reads w's record again just before its removal, since the

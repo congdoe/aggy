@@ -29,9 +29,10 @@ func exists(t *testing.T, p string) bool {
 	return err == nil
 }
 
-// TestGCWorktrees (T6694): gc removes an accepted worktree and its
-// branch, and a pending one only once it is old; a worktree whose path
-// became a symlink is refused, and the tree it points at is untouched.
+// TestGCWorktrees (T6694, T6695): gc removes an accepted worktree and
+// its branch once past accepted_worktree_days, and a pending one past
+// pending_worktree_days; a worktree whose path became a symlink is
+// refused, and the tree it points at is untouched.
 func TestGCWorktrees(t *testing.T) {
 	f, markers := editFixture(t)
 	gitIn(t, f.repo, "checkout", "--", "a.go")
@@ -53,6 +54,13 @@ func TestGCWorktrees(t *testing.T) {
 	if err := os.Symlink(moved, wtL); err != nil {
 		t.Fatal(err)
 	}
+
+	// Freshly accepted: kept for aggy pr.
+	if code, out, _ := gc(f); code != 0 || !strings.Contains(out, "Nothing to remove.") {
+		t.Fatalf("fresh: code %d: %s", code, out)
+	}
+	mustWrite(t, filepath.Join(f.state, "config.toml"), "[gc]\npending_worktree_days = 90\n", 0o600)
+	f.env.now = func() time.Time { return time.Now().Add(31 * 24 * time.Hour) }
 
 	// Without --yes nothing goes.
 	code, out, _ := gc(f)
@@ -84,7 +92,7 @@ func TestGCWorktrees(t *testing.T) {
 		t.Errorf("removed twice: %s", out)
 	}
 	// Past the pending age, the pending one goes, as a reject would.
-	f.env.now = func() time.Time { return time.Now().Add(31 * 24 * time.Hour) }
+	f.env.now = func() time.Time { return time.Now().Add(91 * 24 * time.Hour) }
 	if code, out, errOut := gc(f, "--yes"); code != 0 || exists(t, wtP) {
 		t.Fatalf("old pending: code %d: %s %s", code, out, errOut)
 	}
@@ -126,6 +134,7 @@ func TestGCNotAggysBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = s.Close()
+	f.env.now = func() time.Time { return time.Now().Add(31 * 24 * time.Hour) }
 	code, out, errOut := gc(f, "--yes")
 	if code != 0 || !strings.Contains(out, "not a worktree aggy made") {
 		t.Fatalf("code %d: %s %s", code, out, errOut)
@@ -244,10 +253,11 @@ func TestGCDryRunAndAsk(t *testing.T) {
 	}
 	report := filepath.Join(f.state, "inbox", "aaaaaaaaaaaaaaaa.md")
 	mustWrite(t, report, "two days old", 0o600)
-	at := time.Now().Add(-48 * time.Hour)
+	at := time.Now().Add(31*24*time.Hour - 48*time.Hour) // 2 days old on the test's clock
 	if err := os.Chtimes(report, at, at); err != nil {
 		t.Fatal(err)
 	}
+	f.env.now = func() time.Time { return time.Now().Add(31 * 24 * time.Hour) }
 	db := filepath.Join(f.state, "aggy.db")
 	before, err := os.Stat(db)
 	if err != nil {
@@ -273,7 +283,8 @@ func TestGCDryRunAndAsk(t *testing.T) {
 	if code, out, errOut := gcIn(f, "y\n", true); code != 0 || exists(t, wt) || exists(t, report) {
 		t.Fatalf("answered y: code %d: %s %s", code, out, errOut)
 	}
-	if code, out, _ := gc(f, "--dry-run"); code != 0 || !strings.Contains(out, "Nothing to remove.") {
+	// What is left is the edit's child row, now that its worktree is gone.
+	if code, out, _ := gc(f, "--dry-run"); code != 0 || strings.Contains(out, wt) || !strings.Contains(out, "codex edit borrow") {
 		t.Errorf("after: %d %s", code, out)
 	}
 }
@@ -335,6 +346,7 @@ func TestGCRecheckLease(t *testing.T) {
 		}
 	}}
 	var out, errb strings.Builder
+	f.env.now = func() time.Time { return time.Now().Add(31 * 24 * time.Hour) }
 	code := gcWith(nil, f.env, in, true, &out, &errb)
 	if lease != nil {
 		defer func() { _ = lease.Release(ctx) }()
@@ -374,5 +386,36 @@ func TestGCLeftover(t *testing.T) {
 	}
 	if _, out, _ := gc(f); !strings.Contains(out, "Nothing to remove.") {
 		t.Errorf("second run: %s", out)
+	}
+}
+
+// TestGCAcceptedKept (T6695, GC-2): an accepted worktree changed after
+// the accept, or whose branch was committed on, is listed and kept.
+func TestGCAcceptedKept(t *testing.T) {
+	f, _ := editFixture(t)
+	gitIn(t, f.repo, "checkout", "--", "a.go")
+	var ids, wts []string
+	for _, file := range []string{"a.go", "b.go", "c.go"} {
+		id, wt := editBorrow(t, f, map[string]string{file: "package a\n// edited\n"})
+		if code, _, errOut := accept(f, "", false, id, "--yes"); code != 0 {
+			t.Fatal(errOut)
+		}
+		gitIn(t, f.repo, "checkout", "--", ".")
+		gitIn(t, f.repo, "clean", "-fdq")
+		ids, wts = append(ids, id), append(wts, wt)
+	}
+	mustWrite(t, filepath.Join(wts[0], "a.go"), "package a\n// changed later\n", 0o600)
+	mustWrite(t, filepath.Join(wts[1], "new.go"), "package a\n", 0o600)
+	gitIn(t, wts[2], "commit", "-q", "-m", "keep me")
+	f.env.now = func() time.Time { return time.Now().Add(31 * 24 * time.Hour) }
+	code, out, errOut := gc(f, "--yes")
+	if code != 0 || !strings.Contains(out, "changes made after the accept") || !strings.Contains(out, "new files made after the accept") ||
+		!strings.Contains(out, "has commits past the accepted edit") {
+		t.Fatalf("code %d: %s %s", code, out, errOut)
+	}
+	for i, wt := range wts {
+		if !exists(t, wt) || gitIn(t, f.repo, "branch", "--list", "aggy/edit-"+ids[i]) == "" {
+			t.Errorf("worktree %d or its branch removed", i)
+		}
 	}
 }
