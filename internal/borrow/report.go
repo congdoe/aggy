@@ -38,6 +38,9 @@ func reportText(r Result, req Request, sessionID string, started time.Time) stri
 	if sessionID != "" {
 		fmt.Fprintf(&b, "- Child session: %s\n", sessionID)
 	}
+	if r.ResearchPath != "" {
+		fmt.Fprintf(&b, "- %s report: %s\n", r.Kind, r.ResearchPath)
+	}
 	for _, a := range r.Artifacts {
 		fmt.Fprintf(&b, "- %s: %s\n", a.Kind, a.Path)
 	}

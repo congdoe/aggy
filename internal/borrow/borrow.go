@@ -125,6 +125,8 @@ type Result struct {
 	Tokens     int64
 	Elapsed    time.Duration
 	ReportPath string
+	// ResearchPath is the research or news report (research.go).
+	ResearchPath string
 	// Tried are the candidates passed over before Vendor, and why.
 	Tried []Attempt
 }
@@ -454,6 +456,10 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 			}
 		}
 	}
+	var serr error
+	if res.Status == "done" && web(req.Kind) {
+		res.ResearchPath, serr = b.saveResearch(req, res, now)
+	}
 	path, rerr := b.writeReport(res, req, parsed.SessionID, now)
 	if rerr == nil {
 		res.ReportPath, end.ReportPath = path, path
@@ -473,6 +479,9 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	}
 	if rerr != nil {
 		return res, fmt.Errorf("writing the report: %w", rerr)
+	}
+	if serr != nil {
+		return res, fmt.Errorf("writing the %s report: %w", req.Kind, serr)
 	}
 	return res, nil
 }

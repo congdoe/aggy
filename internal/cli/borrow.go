@@ -318,7 +318,9 @@ func printResult(w io.Writer, r borrow.Result) {
 		}
 		fmt.Fprintf(w, "  %s: %s\n", termsafe.Field(a.Kind), termsafe.Field(a.Path))
 	}
-	if r.ReportPath != "" {
+	if r.ResearchPath != "" {
+		fmt.Fprintf(w, "Report: %s\n", termsafe.Field(r.ResearchPath))
+	} else if r.ReportPath != "" {
 		fmt.Fprintf(w, "Full report: %s\n", termsafe.Field(r.ReportPath))
 	}
 }
