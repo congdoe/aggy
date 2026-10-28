@@ -78,7 +78,10 @@ Rules every adapter follows:
 ## Verified vendor facts
 
 These were checked on 2026-10-27 with claude 2.1.311, codex-cli 0.164.0, and
-grok 1.0.70. Each adapter states the versions it was tested against.
+grok 1.0.70, and the later live checks of 2026-10-27 and 2026-10-28 (with
+claude 2.1.312) are recorded, with commands and evidence, in
+[verification.md](verification.md). Each adapter states the versions it
+was tested against.
 
 ### Codex
 
@@ -89,9 +92,21 @@ grok 1.0.70. Each adapter states the versions it was tested against.
   once (see "Prompts" below).
 - Web search: `-c 'web_search="live"'`. `exec` has no `--search` flag. Each
   query appears as a `web_search` item in the JSON stream.
-- Isolation: `--disable shell_tool --disable unified_exec --disable view_image`,
-  plus `--sandbox read-only` in an empty temp dir. Whether this fully stops
-  file reads still has to be checked live.
+- Isolation: `--ignore-user-config --sandbox read-only --disable shell_tool
+  --disable unified_exec --disable view_image --disable apps --disable
+  plugins --disable goals --disable image_generation --disable sleep_tool`
+  in an empty temp dir leaves no tool that reads a file (checked live).
+  `--disable unified_exec` alone does not remove the shell; `shell_tool`
+  does. `apps` and `plugins` must go too, or 52 ChatGPT connector tools
+  stay even with `--ignore-user-config`. But `apply_patch`, which no flag
+  removes, is a file-guess oracle: its errors differ for a right and a
+  wrong guess of a line. So Codex research and news are unsupported for
+  now (T6638).
+- MCP at launch: `-c mcp_servers.<name>.command=…` and `.args=…`, plus
+  `-c mcp_servers.<name>.default_tools_approval_mode="approve"`, because
+  `exec` denies MCP calls otherwise. Pass them again on resume. Flags such
+  as `--sandbox` go before `resume`, and they apply to the resumed thread.
+- Extra context: `-c developer_instructions="…"`, on every subcommand.
 - Images land in `~/.codex/generated_images/<thread-id>/*.png`, which is
   `$CODEX_HOME/generated_images/...` when `CODEX_HOME` is set. The image tool
   call does not appear in the JSON stream, and one request can produce more
@@ -99,8 +114,13 @@ grok 1.0.70. Each adapter states the versions it was tested against.
 - Reference images: `codex exec -i <file>`.
 - Resume: `codex resume <id>` and `codex exec resume <id>`. A new session
   cannot be given an id in advance.
-- Limit: there is no failure hook. The binary has a `usage_limit_reached`
-  error code and the text "You've hit your usage limit".
+- Limit: there is no failure hook, and `exec --json` has no machine code:
+  the `error` and `turn.failed` events carry only the text "You've hit
+  your usage limit … try again at <local time>". (`usage_limit_reached`
+  is only the backend's HTTP body type.) The rollout file has
+  `task_complete` with `error.codex_error_info: "usage_limit_exceeded"` and
+  `token_count` with `rate_limits.primary|secondary.resets_at` (unix
+  seconds); it does not keep the `error` event.
 
 ### Grok
 
@@ -108,9 +128,15 @@ grok 1.0.70. Each adapter states the versions it was tested against.
   `sessionId`.
 - Flags: `--tools`, `--disallowed-tools`, `--max-turns`, and
   `--permission-mode plan`.
-- An isolated news run worked with `--disallowed-tools
-  "read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent"`.
-  It kept `web_search`, `x_keyword_search`, and `x_semantic_search`.
+- Research and news: `--tools web_search --no-subagents --disallowed-tools
+  "read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_gen,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode"`
+  leaves exactly `web_search`, `open_page`, and `open_page_with_find`
+  (checked live). There is no `x_keyword_search` or `x_semantic_search`
+  tool: naming them made Grok warn and ignore the whole `--tools`
+  allowlist. `open_page*` cannot be named in `--disallowed-tools`.
+- MCP at launch: no flag. `--agent <file>` whose frontmatter lists
+  `mcpServers` works, with `--allow 'MCPTool(<server>__<tool>)'`.
+- Extra context: `--rules "<text>"`, inline only.
 - Images land in `~/.grok/sessions/<url-encoded cwd>/<sessionId>/images/*.jpg`,
   or the same path under `$GROK_HOME`. The reply gives the path relative to
   the session folder (`images/1.jpg`).
@@ -123,6 +149,12 @@ grok 1.0.70. Each adapter states the versions it was tested against.
 - Headless is `claude -p --output-format json`. Read-only uses
   `--permission-mode plan`.
 - Sessions: `--session-id <uuid>`, `--resume <id>`, and `--fork-session`.
+- MCP at launch: `--mcp-config <file> --strict-mcp-config`; it is not kept
+  with the session, so pass it again on resume. With an empty
+  `{"mcpServers":{}}` no MCP or connector tool is left.
+- Extra context: `--append-system-prompt-file <path>` works although
+  `--help` omits it. The system prompt is snapshotted on the first
+  request, so a new value is ignored on resume.
 
 ### Hooks and limits
 
@@ -131,6 +163,14 @@ grok 1.0.70. Each adapter states the versions it was tested against.
   payload also carries `error_details`.
 - Turn end: Claude uses `Stop`. Codex uses `Stop` and the
   `agent-turn-complete` notify. Grok uses `Stop` and `StopCancelled`.
+- Codex has Claude-style hooks (`hooks.json` or `[[hooks.<Event>]]`), and
+  `SessionStart` carries `session_id` (the thread id) and `source`. A
+  hook runs only once its hash is trusted; one passed with `-c` is
+  skipped silently (checked live). Whether it fires in `exec` is still
+  open.
+- Grok runs the hooks in Claude's `settings.json` by default. Its payload
+  has `sessionId` and its environment `GROK_SESSION_ID`, which is how
+  aggy tells a Grok call from a Claude one.
 
 ## The adapters as built
 
@@ -313,13 +353,13 @@ the code until a live check settles them.
 
 | Fact | Fallback in code |
 | --- | --- |
-| Codex `SessionStart` hook carries the session id (T6616) | Not used; the session folder watch stays the plan. |
-| Headless Codex reports `usage_limit_reached` in `--json`, and interactive Codex writes it to its rollout file (T6617) | `codex.LimitCode` and `codex.LimitText` are matched in the code and message of `error` and `turn.failed` events, and in stderr only on a non-zero exit with no error event. |
-| `--disable shell_tool --disable unified_exec --disable view_image` blocks file reads (T6618) | `codex.Isolation`, always with `--sandbox read-only` in an empty dir. |
-| How Codex and Grok take extra context at session start (T6619) | A positional first message pointing to the brief file (`adapter.BriefPrompt`). |
-| `codex exec -` reads the prompt from stdin | Codex headless passes `-- -` with the prompt file on stdin. To check on 0.164: `codex exec -i a.png -- - </dev/null`. |
-| Codex exec flags go before `resume`, which takes only its own flags; `-i` takes several values | `codex exec [-i <ref>]... --json ... resume <id> -- -`. To check on 0.164: `codex exec resume --help`. |
-| `codex --ignore-user-config` keeps user MCP servers out | Passed to research and news only when the probe found it in help. |
+| Codex `SessionStart` hook fires in `exec` with `session_id` (T6616; source-verified, and hooks need a trusted hash) | Not used; the session folder watch stays the plan. |
+| Codex limit signals (T6617). Source shows `--json` has no limit code, only the text; the rollout has `task_complete.error.codex_error_info` and `token_count.rate_limits`. A real limit was not captured live | `codex.LimitCode` and `codex.LimitText` are matched in the code and message of `error` and `turn.failed` events, and in stderr only on a non-zero exit with no error event. |
+| Settled (T6618): those flags leave no file-read tool, but `apply_patch` is a file-guess oracle, and `apps`, `plugins`, `goals`, `image_generation`, and `sleep_tool` must be disabled too; Codex research and news are refused until T6638 | `codex.Isolation`, always with `--sandbox read-only` in an empty dir. |
+| Extra context at session start (T6619): settled as Claude `--append-system-prompt-file`, Codex `-c developer_instructions`, Grok `--rules`; resume behavior of the last two is open | A positional first message pointing to the brief file (`adapter.BriefPrompt`). |
+| `codex exec -` reads the prompt from stdin | Codex headless passes `-- -` with the prompt file on stdin. Confirmed live with `codex exec -i <png> ... -- - < prompt`. |
+| Codex exec flags go before `resume`, which takes only its own flags; `-i` takes several values | `codex exec [-i <ref>]... --json ... resume <id> -- -`. Confirmed by help and live: flags before `resume` apply to the resumed thread. |
+| `codex exec --ignore-user-config` keeps user MCP servers out (confirmed live; ChatGPT connector tools stay unless `--disable apps --disable plugins`) | Passed to research and news only when the probe found it in help. |
 | The Codex thread-id format | Held to a UUID by `adapter.ValidSessionID`. |
 | `claude -p` and `grok -p` read the prompt from stdin | Both pass the prompt file on stdin with no prompt argument. |
 | Model flags | Claude and Grok `--model <m>`, Codex `-c model="<m>"`, all after `adapter.ValidModel`. |
