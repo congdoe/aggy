@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -132,5 +133,25 @@ func TestNotificationTexts(t *testing.T) {
 		if tt.got != tt.want {
 			t.Errorf("text = %q, want %q", tt.got, tt.want)
 		}
+	}
+}
+
+// TestStartLimitsHit (T6667): a recorded limit also reaches the switch
+// picker's channel.
+func TestStartLimitsHit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGGY_HOME", filepath.Join(t.TempDir(), "aggy"))
+	got := make(chan adapter.Vendor, 1)
+	onHook, stop := startLimits("11111111-2222-4333-8444-555555555555", adapter.Claude, nil, func(v adapter.Vendor) { got <- v })
+	defer stop()
+	onHook(supervisor.Request{Type: supervisor.ReqHookEvent, Vendor: "claude", Event: "StopFailure",
+		Payload: []byte(`{"error":"rate_limit"}`), FromSession: true})
+	select {
+	case v := <-got:
+		if v != adapter.Claude {
+			t.Errorf("hit %q", v)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the limit never reached the picker")
 	}
 }

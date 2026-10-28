@@ -76,6 +76,13 @@ type Options struct {
 	// first, for the picker (T6665): with more than one, picking v asks
 	// which. Nil lists none (the latest is resumed).
 	Children func(v adapter.Vendor) []ChildChoice
+	// Limits gets the vendor on screen each time it reports its plan
+	// limit (T6667); HasQuota says whether a vendor has none recorded. On
+	// a limit, the first vendor of Vendors with quota is preselected and,
+	// where the vendor on screen has a hold signal, offered at the turn
+	// end with a brief. Either may be nil.
+	Limits   <-chan adapter.Vendor
+	HasQuota func(v adapter.Vendor) bool
 }
 
 // ChildChoice is one child the picker offers.

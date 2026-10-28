@@ -30,6 +30,9 @@ type sessionLimits struct {
 	record func(limits.Signal)
 	// notifier shows desktop notifications; nil shows none.
 	notifier *notify.Notifier
+	// hit, if set, gets the vendor of each signal, for the switch picker
+	// (T6667); it must not block.
+	hit func(adapter.Vendor)
 
 	mu       sync.Mutex
 	lastHint time.Time
@@ -39,10 +42,16 @@ type sessionLimits struct {
 // rate_limit events are recorded too and Notification events notify
 // (when the user config turns desktop notifications on), and for Codex
 // starts the rollout watch. stop ends the watch once the CLI has exited.
-func startLimits(parentID string, v adapter.Vendor, next func(supervisor.Request)) (onHook func(supervisor.Request), stop func()) {
+// hit, if set, also gets each signal's vendor (see sessionLimits.hit).
+func startLimits(parentID string, v adapter.Vendor, next func(supervisor.Request), hit func(adapter.Vendor)) (onHook func(supervisor.Request), stop func()) {
 	cfg, _ := config.LoadDefault() // an unreadable config leaves notifications off
-	l := &sessionLimits{parentID: parentID, vendor: v, notifier: newNotifier(cfg)}
-	l.record = l.save
+	l := &sessionLimits{parentID: parentID, vendor: v, notifier: newNotifier(cfg), hit: hit}
+	l.record = func(sig limits.Signal) {
+		l.save(sig)
+		if l.hit != nil {
+			l.hit(sig.Vendor)
+		}
+	}
 	done := make(chan struct{})
 	if v == adapter.Codex {
 		if dir, err := codexSessionsDir(); err == nil {
