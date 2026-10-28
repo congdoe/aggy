@@ -163,7 +163,8 @@ func TestGrokIgnoreTransforms(t *testing.T) {
 	}{
 		{"no file", "", "[skills]\nignore = ['/s/aggy']\n", false},
 		{"no skills table", "a = 1\n", "a = 1\n\n[skills]\nignore = ['/s/aggy']\n", false},
-		{"no trailing newline, CRLF", "a = 1\r\n[x]\r\nb = 2", "a = 1\r\n[x]\r\nb = 2\r\n\r\n[skills]\r\nignore = ['/s/aggy']\r\n", false},
+		{"no trailing newline, CRLF", "a = 1\r\n[x]\r\nb = 2", "a = 1\r\n[x]\r\nb = 2\r\n[skills]\r\nignore = ['/s/aggy']\r\n", false},
+		{"no trailing newline", "x = 1", "x = 1\n[skills]\nignore = ['/s/aggy']\n", false},
 		{"skills table without ignore", "[skills]\npaths = [\"~/t\"]\n[y]\n", "[skills]\nignore = ['/s/aggy']\npaths = [\"~/t\"]\n[y]\n", false},
 		{"ignore list already", "[skills]\nignore = [\"~/wip\"]\n", "", true},
 		{"dotted keys", "skills.paths = [\"~/t\"]\n", "", true},
@@ -193,9 +194,6 @@ func TestGrokIgnoreTransforms(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := tt.src
-			if want != "" && !strings.HasSuffix(want, "\n") {
-				want += "\r\n" // the line ending add put before its table stays
-			}
 			if tt.src == "" {
 				want = "[skills]\nignore = ['/s/aggy']\n" // a whole-file block goes by a removal patch instead
 				back = got
@@ -218,5 +216,21 @@ func TestSkillStatusShowsCost(t *testing.T) {
 	want := fmt.Sprintf("about %d tokens every turn in a CLI that loads it, %d more when invoked", always, body)
 	if !strings.Contains(out, want) || !strings.Contains(out, "claude: not linked; loads nothing") {
 		t.Errorf("status = %q", out)
+	}
+}
+
+// TestSkillGrokIgnoreNoTrailingNewline (B14-3): a Grok config without a
+// final line ending comes back byte for byte after Grok is off (only
+// Claude linked) and then linked again.
+func TestSkillGrokIgnoreNoTrailingNewline(t *testing.T) {
+	h, l := skillHome(t)
+	writeAt(t, filepath.Join(h, ".grok", "config.toml"), "x = 1", 0o600)
+	mustRun(t, "skill", "link", "--vendor", "claude")
+	if b, _ := os.ReadFile(l.grokConfig); !strings.Contains(string(b), l.store) {
+		t.Fatalf("no ignore entry while only Claude is linked: %q", b)
+	}
+	mustRun(t, "skill", "link", "--vendor", "grok")
+	if b, _ := os.ReadFile(l.grokConfig); string(b) != "x = 1" {
+		t.Errorf("grok config = %q, want %q", b, "x = 1")
 	}
 }
