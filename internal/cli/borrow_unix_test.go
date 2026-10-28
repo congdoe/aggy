@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -54,19 +55,35 @@ func TestBorrowSignalKillsChild(t *testing.T) {
 			cmd := exec.Command(os.Args[0], "-test.run=^TestBorrowHelperProcess$", "-test.v")
 			cmd.Env = append(os.Environ(), "AGGY_TEST_BORROW_HELPER=1", "AGGY_TEST_STATE="+state,
 				"AGGY_TEST_RECORD="+record, "HOME="+t.TempDir())
-			var out bytes.Buffer
+			var out lockedBuffer
 			cmd.Stdout, cmd.Stderr = &out, &out
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
 			defer func() { _ = cmd.Process.Kill() }()
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
+			// stop kills aggy borrow and waits for it, so out is read only
+			// once nothing writes to it.
+			stop := func() string {
+				_ = cmd.Process.Kill()
+				<-done
+				return out.String()
+			}
 			var child fakecli.Record
-			deadline := time.Now().Add(60 * time.Second)
+			// The child's record is the readiness marker. Under load the
+			// start can take long, so the wait ends early only when aggy
+			// borrow exits first; the deadline is a backstop.
+			deadline := time.Now().Add(3 * time.Minute)
 			for child.PID == 0 {
-				if time.Now().After(deadline) {
-					t.Fatalf("the child never started:\n%s", out.String())
+				select {
+				case werr := <-done:
+					t.Fatalf("aggy borrow exited (%v) before the child started:\n%s", werr, out.String())
+				case <-time.After(50 * time.Millisecond):
 				}
-				time.Sleep(50 * time.Millisecond)
+				if time.Now().After(deadline) {
+					t.Fatalf("the child never started:\n%s", stop())
+				}
 				for _, r := range fakecli.Records(t, record) {
 					if r.Mode == "headless" {
 						child = r
@@ -77,13 +94,11 @@ func TestBorrowSignalKillsChild(t *testing.T) {
 				// A second signal may find aggy already gone.
 				_ = cmd.Process.Signal(sig)
 			}
-			done := make(chan error, 1)
-			go func() { done <- cmd.Wait() }()
 			select {
 			case werr := <-done:
 				t.Logf("aggy borrow exited: %v", werr)
 			case <-time.After(15 * time.Second):
-				t.Fatalf("aggy borrow did not exit after %v:\n%s", tt.sigs, out.String())
+				t.Fatalf("aggy borrow did not exit after %v:\n%s", tt.sigs, stop())
 			}
 			gone := time.Now().Add(5 * time.Second)
 			for syscall.Kill(child.PID, 0) == nil {
@@ -114,4 +129,23 @@ func TestBorrowSignalKillsChild(t *testing.T) {
 			}
 		})
 	}
+}
+
+// lockedBuffer is a bytes.Buffer that the exec copy goroutines and the
+// test can share.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

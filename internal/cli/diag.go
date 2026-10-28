@@ -278,15 +278,18 @@ func diagList(ctx context.Context, args []string, now func() time.Time, export b
 		}
 		if !v.HasDiag() {
 			// diag.db did not exist when the view opened; look again.
-			_ = v.Close()
-			if v, err = openDiagView(ctx); err != nil {
-				return err
+			nv, err := openDiagView(ctx)
+			if err != nil {
+				return followErr(ctx, err)
 			}
+			// v stays open until nv replaces it: the deferred Close needs one.
+			_ = v.Close()
+			v = nv
 		}
 		flt.AfterRow = last
 		recs, err := v.Records(ctx, flt)
 		if err != nil {
-			return err
+			return followErr(ctx, err)
 		}
 		if len(recs) == 0 {
 			continue
@@ -301,6 +304,15 @@ func diagList(ctx context.Context, args []string, now func() time.Time, export b
 			return err
 		}
 	}
+}
+
+// followErr is err from a --follow poll, or nil when the poll failed
+// because the follow was ended (Ctrl-C), which is how --follow ends.
+func followErr(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+	return err
 }
 
 func writeJSONL(w io.Writer, recs []store.DiagRecord) error {

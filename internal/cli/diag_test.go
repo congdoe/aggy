@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -526,5 +527,27 @@ func TestDiagSQLCaps(t *testing.T) {
 	}
 	if d := time.Since(start); d > 20*time.Second {
 		t.Errorf("--timeout took %s", d)
+	}
+}
+
+// TestFollowErr: a --follow poll that fails because Ctrl-C ended the
+// follow is a clean end (code 0), as CI saw when the cancel landed
+// during a poll; any other failure is still an error.
+func TestFollowErr(t *testing.T) {
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	boom := errors.New("boom")
+	tests := []struct {
+		name string
+		ctx  context.Context
+		want error
+	}{
+		{"ended", ended, nil},
+		{"live", context.Background(), boom},
+	}
+	for _, tt := range tests {
+		if got := followErr(tt.ctx, boom); got != tt.want {
+			t.Errorf("%s: followErr = %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }

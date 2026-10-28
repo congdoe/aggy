@@ -19,6 +19,10 @@ import (
 
 const waitLimit = 5 * time.Second
 
+// startLimit bounds Run's start: Listen and raw mode took over 5 s on a
+// loaded macOS CI runner under -race.
+const startLimit = 60 * time.Second
+
 // fakeChild is a CLI that records what it is sent and prints what the
 // test writes to out.
 type fakeChild struct {
@@ -144,7 +148,16 @@ func startRunOpts(t *testing.T, double time.Duration, setup func(*fakeChild), op
 	master, slave := openPTY(t)
 	ts := &termSide{master: master}
 	read := make(chan struct{})
+	started := make(chan struct{})
+	ran := make(chan struct{})
 	t.Cleanup(func() {
+		// Run reads the slave's Fd before it starts the CLI, and os.File's
+		// Fd races with Close: the slave is closed only once Run is past it.
+		select {
+		case <-started:
+		case <-ran:
+		case <-time.After(startLimit):
+		}
 		// The pair is torn down before the next test opens one: the slave
 		// first, then the master, whose reader then ends.
 		_ = slave.Close()
@@ -173,7 +186,6 @@ func startRunOpts(t *testing.T, double time.Duration, setup func(*fakeChild), op
 	if setup != nil {
 		setup(c)
 	}
-	started := make(chan struct{})
 	done := make(chan Exit, 1)
 	o := Options{
 		In: slave, Out: slave,
@@ -191,6 +203,7 @@ func startRunOpts(t *testing.T, double time.Duration, setup func(*fakeChild), op
 		opts(&o)
 	}
 	go func() {
+		defer close(ran)
 		ex, err := Run(o)
 		if err != nil {
 			t.Error(err)
@@ -199,7 +212,9 @@ func startRunOpts(t *testing.T, double time.Duration, setup func(*fakeChild), op
 	}()
 	select {
 	case <-started:
-	case <-time.After(waitLimit):
+	case <-ran:
+		t.Fatal("Run ended before it started the CLI")
+	case <-time.After(startLimit):
 		t.Fatal("Run did not start the CLI")
 	}
 	return ts, c, done
