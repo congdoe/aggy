@@ -56,9 +56,10 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 		return []string{"--tools", tools, "--disallowed-tools", deny(keep...), "--no-subagents"}
 	}
 	head := []string{"--prompt-file", h.Prompt, "--output-format", "json"}
-	strict := []string{"--sandbox", "strict", "--deny", "Read(/home/u/Library/**)", "--deny", "Grep(/home/u/Library/**)",
+	denies := []string{"--deny", "Read(/home/u/Library/**)", "--deny", "Grep(/home/u/Library/**)",
 		"--deny", "Read(/home/u/.grok/**)", "--deny", "Grep(/home/u/.grok/**)",
 		"--deny", "Read(/System/Volumes/Data/**)", "--deny", "Grep(/System/Volumes/Data/**)"}
+	strict := slices.Concat([]string{"--sandbox", "strict"}, denies)
 	tests := []struct {
 		name     string
 		req      adapter.HeadlessRequest
@@ -70,11 +71,11 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 		{"news", adapter.HeadlessRequest{Kind: adapter.News, IsolatedCwd: true, WebSearch: true, MaxTurns: 15},
 			slices.Concat(head, strict, tail("web_search", "web_search"), []string{"--max-turns", "15"}), ""},
 		{"image", adapter.HeadlessRequest{Kind: adapter.Image, SessionID: sid},
-			slices.Concat(head, []string{"--session-id", sid}, strict, tail("image_gen", "image_gen")), ""},
+			slices.Concat(head, []string{"--session-id", sid}, denies, tail("image_gen", "image_gen")), ""},
 		{"image edit", adapter.HeadlessRequest{Kind: adapter.Image, Resume: sid, FileTools: true},
-			slices.Concat(head, []string{"--resume", sid}, strict, tail("image_gen,image_edit", "image_gen", "image_edit")), ""},
+			slices.Concat(head, []string{"--resume", sid}, denies, tail("image_gen,image_edit", "image_gen", "image_edit")), ""},
 		{"video", adapter.HeadlessRequest{Kind: adapter.Video, FileTools: true},
-			slices.Concat(head, strict, tail("image_gen,image_to_video", "image_gen", "image_to_video")), ""},
+			slices.Concat(head, denies, tail("image_gen,image_to_video", "image_gen", "image_to_video")), ""},
 		{"review", adapter.HeadlessRequest{Kind: adapter.Review},
 			slices.Concat(head, []string{"--permission-mode", "plan"}, strict, tail("read_file,grep,list_dir", "read_file", "grep", "list_dir")), ""},
 		{"edit with a model", adapter.HeadlessRequest{Kind: adapter.Edit, Model: "grok-4.7"},
@@ -107,26 +108,34 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 	}
 }
 
-// TestSandboxFailsClosed: review, research, and news, and image and
-// video while strictMedia is on, need --sandbox strict, so without the
+// TestSandboxFailsClosed: review, research, and news (and image and
+// video if strictMedia is on) need --sandbox strict, so without the
 // probe's sandbox capability, or on a host without a kernel sandbox,
-// they are refused (ErrNoCapability, which is ErrUnsupported); edit does
-// not use it.
+// they are refused (ErrNoCapability, which is ErrUnsupported); edit, and
+// image and video while strictMedia is off, do not use it.
 func TestSandboxFailsClosed(t *testing.T) {
-	// G32-1, G32-3: no kernel sandbox on the host, or a HOME that cannot
-	// be named in a deny rule, refuses the sandboxed kinds too.
+	all := []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video, adapter.Edit}
+	// G32-1: no kernel sandbox on the host refuses the sandboxed kinds.
 	noKernel := sandboxed()
 	noKernel.Caps = []string{probe.CapSandbox}
+	for _, k := range all {
+		req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true, FileTools: true}
+		if c, err := noKernel.Headless(req); usesSandbox(k) != errors.Is(err, adapter.ErrNoCapability) {
+			t.Errorf("%s with no kernel sandbox: %q, %v", k, c.Args, err)
+		}
+	}
+	// G32-3: a HOME that cannot be named in a deny rule refuses every
+	// kind that takes the denies.
 	home := func(h string) Adapter {
 		a := sandboxed()
 		a.Getenv = func(string) string { return h }
 		return a
 	}
-	for _, a := range []Adapter{noKernel, home(""), home("rel/home"), home("/"), home("/home/u*"), home("/home/[u]"), home("/home/a,b"), home("/home/u)"), home("/home/../u")} {
-		for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video} {
+	for _, a := range []Adapter{home(""), home("rel/home"), home("/"), home("/home/u*"), home("/home/[u]"), home("/home/a,b"), home("/home/u)"), home("/home/../u")} {
+		for _, k := range all {
 			req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true, FileTools: true}
-			if c, err := a.Headless(req); !errors.Is(err, adapter.ErrNoCapability) {
-				t.Errorf("%s with caps %v, HOME %q: %q, %v", k, a.Caps, a.Getenv("HOME"), c.Args, err)
+			if c, err := a.Headless(req); usesDeny(k) != errors.Is(err, adapter.ErrNoCapability) {
+				t.Errorf("%s with HOME %q: %q, %v", k, a.Getenv("HOME"), c.Args, err)
 			}
 		}
 	}
@@ -135,8 +144,8 @@ func TestSandboxFailsClosed(t *testing.T) {
 		_, err := New().Headless(req)
 		c, cerr := sandboxed().Headless(req)
 		strict := slices.Contains(c.Args, "--sandbox") && c.Args[slices.Index(c.Args, "--sandbox")+1] == "strict"
-		switch k {
-		case adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video:
+		switch {
+		case usesSandbox(k):
 			if !errors.Is(err, adapter.ErrNoCapability) || !errors.Is(err, adapter.ErrUnsupported) {
 				t.Errorf("%s without the sandbox capability: %v", k, err)
 			}
@@ -151,13 +160,16 @@ func TestSandboxFailsClosed(t *testing.T) {
 	}
 }
 
-// TestStrictMediaSwitch: strictMedia on puts image and video under
-// --sandbox strict with review's deny rules and host check; off (if the
-// pending live check fails, TODO(T6742)) builds them as before T6742,
-// with no sandbox capability needed.
+// TestStrictMediaSwitch: strictMedia is off by default, since image
+// under strict failed live (TODO(T6751)); image and video then run with
+// no --sandbox and no sandbox capability needed, but keep review's read
+// denies. On, they also get --sandbox strict and its host check.
 func TestStrictMediaSwitch(t *testing.T) {
+	if strictMedia {
+		t.Error("strictMedia is on by default")
+	}
 	defer func(old bool) { strictMedia = old }(strictMedia)
-	strict := "--sandbox strict --deny Read(/home/u/Library/**) --deny Grep(/home/u/Library/**) " +
+	denies := "--deny Read(/home/u/Library/**) --deny Grep(/home/u/Library/**) " +
 		"--deny Read(/home/u/.grok/**) --deny Grep(/home/u/.grok/**) " +
 		"--deny Read(/System/Volumes/Data/**) --deny Grep(/System/Volumes/Data/**) "
 	tests := []struct {
@@ -182,9 +194,9 @@ func TestStrictMediaSwitch(t *testing.T) {
 			if tt.req.Resume != "" {
 				head += "--resume " + sid + " "
 			}
-			want := head + tt.tail
+			want := head + denies + tt.tail
 			if on {
-				want = head + strict + tt.tail
+				want = head + "--sandbox strict " + denies + tt.tail
 			}
 			c, err := sandboxed().Headless(tt.req)
 			if err != nil || strings.Join(c.Args, " ") != want {
@@ -544,14 +556,15 @@ func TestSandboxNotAppliedFailsClosed(t *testing.T) {
 		"INFO Sandbox enforcement unavailable (built without 'enforce' feature)",
 	} {
 		out := adapter.Output{Stdout: []byte(liveReply), Stderr: []byte("ok\n" + msg + "\n")}
-		for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video} {
+		for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video, adapter.Edit} {
 			res, err := sandboxed().ParseHeadless(adapter.HeadlessRequest{Kind: k}, out)
-			if !errors.Is(err, adapter.ErrLockdownRejected) || res.Error != adapter.ErrLockdown || res.Text != "" {
-				t.Errorf("%s, %q: %+v, %v", k, msg, res, err)
+			if usesSandbox(k) {
+				if !errors.Is(err, adapter.ErrLockdownRejected) || res.Error != adapter.ErrLockdown || res.Text != "" {
+					t.Errorf("%s, %q: %+v, %v", k, msg, res, err)
+				}
+			} else if err != nil {
+				t.Errorf("%s (no sandbox asked) with %q: %v", k, msg, err)
 			}
-		}
-		if _, err := sandboxed().ParseHeadless(adapter.HeadlessRequest{Kind: adapter.Edit}, out); err != nil {
-			t.Errorf("edit (no sandbox asked) with %q: %v", msg, err)
 		}
 	}
 	quoted := strings.Replace(liveReply, `"the answer"`, `"the docs say: continuing without sandbox"`, 1)
@@ -581,10 +594,11 @@ func TestFirmlinkDeny(t *testing.T) {
 	}
 }
 
-// TestGrokHomeDeny (T6742): every sandboxed kind denies Read and Grep of
-// Grok's own home (its auth file lives there), and of ~/.grok too when
-// GROK_HOME points elsewhere; never a write rule. A Grok home that
-// cannot be named in a rule refuses the kind.
+// TestGrokHomeDeny (T6742): every sandboxed kind, and image and video
+// with or without strict, denies Read and Grep of Grok's own home (its
+// auth file lives there), and of ~/.grok too when GROK_HOME points
+// elsewhere; never a write rule. A Grok home that cannot be named in a
+// rule refuses the kind.
 func TestGrokHomeDeny(t *testing.T) {
 	env := func(grokHome string) Adapter {
 		a := sandboxed()
@@ -599,10 +613,10 @@ func TestGrokHomeDeny(t *testing.T) {
 		}
 		return a
 	}
-	sandboxedKinds := []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video}
+	denyKinds := []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video}
 	for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video, adapter.Edit} {
-		if usesSandbox(k) != slices.Contains(sandboxedKinds, k) {
-			t.Fatalf("usesSandbox(%s) = %v", k, usesSandbox(k))
+		if usesDeny(k) != slices.Contains(denyKinds, k) {
+			t.Fatalf("usesDeny(%s) = %v", k, usesDeny(k))
 		}
 	}
 	tests := []struct {
@@ -614,7 +628,7 @@ func TestGrokHomeDeny(t *testing.T) {
 		{"/data/grok/", []string{"/data/grok", "/home/u/.grok"}},
 	}
 	for _, tt := range tests {
-		for _, k := range sandboxedKinds {
+		for _, k := range denyKinds {
 			req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true, FileTools: true}
 			c, err := env(tt.grokHome).Headless(req)
 			if err != nil {
@@ -641,7 +655,7 @@ func TestGrokHomeDeny(t *testing.T) {
 		t.Errorf("edit: %q, %v", c.Args, err)
 	}
 	for _, bad := range []string{"rel/grok", "/", "/g*", "/g,h", "/g)"} {
-		for _, k := range sandboxedKinds {
+		for _, k := range denyKinds {
 			req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true, FileTools: true}
 			if c, err := env(bad).Headless(req); !errors.Is(err, adapter.ErrNoCapability) {
 				t.Errorf("%s, GROK_HOME %q: %q, %v", k, bad, c.Args, err)

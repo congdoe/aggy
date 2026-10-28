@@ -29,8 +29,8 @@ type Adapter struct {
 	Getenv func(string) string
 	// Caps are the capabilities a probe of this CLI found, plus
 	// probe.CapKernelSandbox when the host can apply Grok's sandbox.
-	// Review, research, and news (and image and video while strictMedia
-	// is on) need both and are refused without them.
+	// Review, research, and news (and image and video if strictMedia is
+	// turned on) need both and are refused without them.
 	Caps []string
 	// GOOS picks the OS-specific deny rules. Empty means runtime.GOOS.
 	GOOS string
@@ -251,13 +251,13 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 // Headless builds
 //
 //	grok --prompt-file <abs prompt file> --output-format json [--model m] [session] [--permission-mode plan]
-//	     [--sandbox strict --deny Read(<HOME>/Library/**) --deny Grep(<HOME>/Library/**) --deny Read(<Grok home>/**) --deny Grep(<Grok home>/**) [--deny Read(/System/Volumes/Data/**) --deny Grep(/System/Volumes/Data/**)]] --tools <kind's tools> --disallowed-tools <Lockdown minus them> --no-subagents [--max-turns N]
+//	     [--sandbox strict] [--deny Read(<HOME>/Library/**) --deny Grep(<HOME>/Library/**) --deny Read(<Grok home>/**) --deny Grep(<Grok home>/**) [--deny Read(/System/Volumes/Data/**) --deny Grep(/System/Volumes/Data/**)]] --tools <kind's tools> --disallowed-tools <Lockdown minus them> --no-subagents [--max-turns N]
 //
 // with no stdin, so the prompt never goes in argv. Not -p: in grok 1.0.70
 // -p is --single <PROMPT>, which takes the prompt itself as its value
 // (live diagnostic 2026-10-28, grok 1.0.70; docs/verification.md).
 //
-// Review, research, and news (and image and video, see strictMedia) run
+// Review, research, and news (not image and video: see strictMedia) run
 // with --sandbox strict: Grok auto-allows
 // file reads in every permission mode, and the strict sandbox kept
 // read_file out of $HOME in a live check (live diagnostic 2026-10-28,
@@ -272,7 +272,7 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 // guard, on those log lines (sandboxErr). Strict still allows reads of
 // ~/Library and of Grok's own home, so they also deny Read and Grep
 // there, and on darwin under the /System/Volumes/Data firmlink
-// (sandboxDeny). AllowedTools may only name tools the
+// (readDeny; image and video get those denies too). AllowedTools may only name tools the
 // kind already permits (compared case-insensitively), and never the MCP
 // meta-tools. Review runs with --permission-mode plan, MaxTurns sets
 // --max-turns, and research and news need IsolatedCwd. Web search outside
@@ -321,7 +321,6 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 	default:
 		return adapter.Command{}, fmt.Errorf("grok: unknown kind %q", req.Kind)
 	}
-	var denyRules []string
 	if sandbox {
 		switch {
 		case !slices.Contains(a.Caps, probe.CapSandbox):
@@ -329,8 +328,11 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 		case !slices.Contains(a.Caps, probe.CapKernelSandbox):
 			return adapter.Command{}, fmt.Errorf("grok: %s runs only under Grok's kernel sandbox, which this host cannot apply (macOS, or Linux with Landlock in /sys/kernel/security/lsm): %w", req.Kind, adapter.ErrNoCapability)
 		}
+	}
+	var denyRules []string
+	if usesDeny(req.Kind) {
 		var err error
-		if denyRules, err = a.sandboxDeny(); err != nil {
+		if denyRules, err = a.readDeny(); err != nil {
 			return adapter.Command{}, err
 		}
 	}
@@ -365,9 +367,9 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 	}
 	if sandbox {
 		args = append(args, "--sandbox", "strict")
-		for _, r := range denyRules {
-			args = append(args, "--deny", r)
-		}
+	}
+	for _, r := range denyRules {
+		args = append(args, "--deny", r)
 	}
 	args = append(args, "--tools", strings.Join(tools, ","), "--disallowed-tools", strings.Join(deny, ","), NoSubagents)
 	if req.MaxTurns > 0 {
@@ -377,7 +379,12 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 }
 
 // strictMedia runs image and video under --sandbox strict with the same
-// deny rules and host check as review. Grok's media tools save their
+// host check as review. It is off: the live check failed (2026-10-28,
+// grok 1.0.70, smoke image-borrow-grok at 25b89ee and 807f323): under
+// strict the child made no image (it only said it would, about 3.3K
+// tokens, exit after about 5 s), while the same check passed on main
+// without strict. The cause is not determined; TODO(T6751). The reasoning
+// that led us to expect it to work, from source: Grok's media tools save their
 // output in the session folder, <Grok home>/sessions/<encoded cwd>/<id>/
 // images or videos (xai-grok-tools/src/implementations/grok_build/
 // image_gen/mod.rs:13, video_gen/mod.rs:1126, storage.rs:54-69). The
@@ -385,11 +392,10 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 // dirs (xai-grok-sandbox/src/paths.rs:74-78; profiles.rs:463-488), and
 // the Grok home readable, which image_edit and image_to_video need for
 // the still they reuse. aggy copies the output out of there itself
-// (Artifacts), outside the sandbox. Source only (grok-src 559751fd): the
-// live check that the output is still written under strict is pending,
-// TODO(T6742). If it fails, set this to false. A var, not a const, so
+// (Artifacts), outside the sandbox (grok-src 559751fd). Image and video
+// keep the read denies either way (usesDeny). A var, not a const, so
 // tests can check both settings.
-var strictMedia = true
+var strictMedia = false
 
 // usesSandbox reports whether Headless runs kind under --sandbox strict.
 func usesSandbox(k adapter.Kind) bool {
@@ -402,11 +408,21 @@ func usesSandbox(k adapter.Kind) bool {
 	return false
 }
 
+// usesDeny reports whether Headless adds readDeny's rules for kind: every
+// sandboxed kind, and image and video whether strict is on or not. The
+// rules are permission rules, not part of the sandbox. Image and video
+// have no Read- or Grep-checked tool today (image_gen, image_edit and
+// image_to_video are AccessKind::Tool), so for them the rules are a
+// backstop that matches nothing yet.
+func usesDeny(k adapter.Kind) bool {
+	return usesSandbox(k) || k == adapter.Image || k == adapter.Video
+}
+
 // globMeta are the characters a --deny path may not hold: glob syntax,
 // the rule's own parentheses, the comma --deny splits on, and escapes.
 const globMeta = "*?[]{}()!,\\\x00\n\r"
 
-// sandboxDeny returns the deny rules a sandboxed kind adds: Read and Grep
+// readDeny returns the deny rules a kind adds (usesDeny): Read and Grep
 // of <HOME>/Library/**, which the strict profile leaves readable (browser
 // cookies, app tokens), and on darwin of /System/Volumes/Data/**, the
 // firmlink spelling of the same files. A deny outranks any allow (decision_rank,
@@ -426,7 +442,7 @@ const globMeta = "*?[]{}()!,\\\x00\n\r"
 //
 // HOME and the Grok home must be clean absolute paths with no glob or
 // rule syntax, else the kind is refused.
-func (a Adapter) sandboxDeny() ([]string, error) {
+func (a Adapter) readDeny() ([]string, error) {
 	getenv := a.Getenv
 	if getenv == nil {
 		getenv = os.Getenv

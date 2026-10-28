@@ -147,8 +147,8 @@ was tested against.
   last line that holds a whole object.
 - `--version` prints `grok 1.0.70 (f50904eaee6c) [stable]`: version, build
   hash, channel tag (live diagnostic 2026-10-28).
-- Read-only kinds (review, research, news, and image and video while
-  `strictMedia` is on) run with `--sandbox strict`.
+- Review, research, and news run with `--sandbox strict` (image and
+  video do not; see below).
   Grok auto-allows file reads in every permission mode, so neither
   `--permission-mode plan` nor `--allow 'Read(./**)'` keeps `read_file`
   in the workspace; the strict sandbox does, kernel-enforced: it allows
@@ -170,7 +170,9 @@ was tested against.
   for `$GROK_HOME`, else `<HOME>/.grok`, and for `<HOME>/.grok` too when
   `GROK_HOME` points elsewhere. Read and Grep only, so Grok's own writes
   of media output there are untouched. That deny is inferred from the
-  `~/Library` one, and its smoke run is pending (verification.md S8). A deny
+  `~/Library` one; Grok starts and works with it for review and research
+  (live smoke, 2026-10-28), but no canary check was possible
+  (verification.md S8). A deny
   outranks any allow (`decision_rank`,
   `xai-grok-permission-rules/src/policy.rs:791` at 2bdd1d6a), and live
   (2026-10-28, grok 1.0.70) `read_file` of a canary under
@@ -208,16 +210,17 @@ was tested against.
   main ones. aggy does not set `RUST_LOG`. Research under strict plus the
   denies passed live (smoke, b972adf); news under strict has not been
   run live.
-- Image and video run under the same strict argv, denies, and host check
-  while `strictMedia` (`internal/adapter/grok/grok.go`) is on. Grok's
-  media tools save into the session folder under `<Grok home>/sessions`
-  (below), which strict keeps writable, and aggy copies the files out
-  itself, outside the sandbox (source only, grok-src 559751fd:
-  `image_gen/mod.rs:13`, `video_gen/mod.rs:1126`, `storage.rs:54-69`).
-  The live check that the output is still written under strict is
-  pending (TODO(T6742)); if it fails, the switch goes off. Video cannot
-  be checked live on the test account until its zero data retention is
-  off (owner item).
+- Image and video run without `--sandbox strict` and without the
+  sandbox host check: `strictMedia` (`internal/adapter/grok/grok.go`) is
+  off. Under strict, the live image smoke (2026-10-28, grok 1.0.70) made
+  no image, the child only saying it would, though from source the
+  output write into `<Grok home>/sessions` is allowed
+  (grok-src 559751fd: `image_gen/mod.rs:13`, `storage.rs:54-69`;
+  `paths.rs:74-78`). Cause not determined, TODO(T6751). They keep the
+  read denies (`<Lib>` below), which are permission rules, not part of
+  the sandbox; their tools are checked as `AccessKind::Tool`, so those
+  rules match none of them today. Video is untested: the test account's
+  zero data retention turns Grok's video tools off (owner item).
 - Flags: `--tools`, `--disallowed-tools`, `--max-turns`, and
   `--permission-mode plan`.
 - Research and news: `--tools web_search --no-subagents --disallowed-tools
@@ -394,9 +397,9 @@ by default is news 15 and research 30; `<run>` is `HeadlessRequest.RunDir`):
 | Kind | Claude | Codex | Grok |
 | --- | --- | --- | --- |
 | research, news | unsupported | unsupported until T6638 (`codex.Refusal`: apply_patch can confirm guessed file contents) | `grok --prompt-file <p> --output-format json --sandbox strict --deny <Lib> --tools web_search --disallowed-tools <D> --no-subagents` |
-| image | unsupported | `codex exec [-i <ref>]... --json <L without --disable image_generation> --skip-git-repo-check -- -` | `grok --prompt-file <p> --output-format json [--session-id <uuid>] --sandbox strict --deny <Lib> --tools image_gen --disallowed-tools <D> --no-subagents` (strict while `strictMedia` is on, live check pending) |
-| image `--edit` | unsupported | `codex exec [-i <ref>]... --json <L without image_generation> --skip-git-repo-check resume <id> -- -` | only with `[media] grok_file_tools`: `grok --prompt-file <p> --output-format json --resume <id> --sandbox strict --deny <Lib> --tools image_gen,image_edit --disallowed-tools <D> --no-subagents` |
-| video | unsupported | unsupported | only with `[media] grok_file_tools`: `grok --prompt-file <p> --output-format json --sandbox strict --deny <Lib> --tools image_gen,image_to_video --disallowed-tools <D> --no-subagents` (unverified headless; strict while `strictMedia` is on) |
+| image | unsupported | `codex exec [-i <ref>]... --json <L without --disable image_generation> --skip-git-repo-check -- -` | `grok --prompt-file <p> --output-format json [--session-id <uuid>] --deny <Lib> --tools image_gen --disallowed-tools <D> --no-subagents` (no `--sandbox strict`: it failed live, `strictMedia` off) |
+| image `--edit` | unsupported | `codex exec [-i <ref>]... --json <L without image_generation> --skip-git-repo-check resume <id> -- -` | only with `[media] grok_file_tools`: `grok --prompt-file <p> --output-format json --resume <id> --deny <Lib> --tools image_gen,image_edit --disallowed-tools <D> --no-subagents` |
+| video | unsupported | unsupported | only with `[media] grok_file_tools`: `grok --prompt-file <p> --output-format json --deny <Lib> --tools image_gen,image_to_video --disallowed-tools <D> --no-subagents` (unverified headless; no `--sandbox strict`) |
 | review | `claude -p --output-format json --permission-mode plan --strict-mcp-config --mcp-config <run>/mcp.json --tools Read,Grep,Glob [--setting-sources user] [--settings <run>/settings.json] [--session-id <uuid> \| --resume <id>]` | `codex exec --json <L> -- -` (in a git work tree, so no `--skip-git-repo-check`) | `grok --prompt-file <p> --output-format json --permission-mode plan --sandbox strict --deny <Lib> --tools read_file,grep,list_dir --disallowed-tools <D> --no-subagents` |
 | edit (M3; `aggy borrow` runs Codex only, see below) | `claude -p --output-format json --permission-mode acceptEdits --strict-mcp-config --mcp-config <run>/mcp.json` | `codex exec --json <L with --sandbox workspace-write, keeping shell_tool and unified_exec> -- -` (`codex.EditLockdown`) | `grok --prompt-file <p> --output-format json --tools read_file,grep,list_dir,write,search_replace --disallowed-tools <D> --no-subagents` |
 
