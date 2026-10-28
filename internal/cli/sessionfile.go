@@ -48,7 +48,7 @@ type sessionFiles struct {
 	getenv func(string) string // nil means os.Getenv
 	now    func() time.Time    // nil means time.Now
 
-	claudeDirs map[string][]string                // project folders per root, listed once
+	claudeDirs map[string][]string                  // project folders per root, listed once
 	rollouts   map[string]map[string]codexRolloutAt // Codex rollouts per root, by thread id, listed once
 }
 

@@ -93,6 +93,12 @@ func TestMergeShapes(t *testing.T) {
 			`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"` + cmdFor("claude", "Stop") + `","timeout":10}]}]}}`},
 		{"already there", `{"hooks":{"Stop":[{"hooks":[{"command":"` + cmdFor("claude", "Stop") + `"}]}]}}`,
 			`{"hooks":{"Stop":[{"hooks":[{"command":"` + cmdFor("claude", "Stop") + `"}]}]}}`},
+		// D20-8: what Claude's /hooks UI can leave behind.
+		{"empty hooks object", `{"hooks": {}}`, `{"hooks": {"Stop": [{"hooks":[{"type":"command","command":"` + cmdFor("claude", "Stop") + `","timeout":10}]}]}}`},
+		{"empty event list", `{"hooks": {"Stop": []}}`, `{"hooks": {"Stop": [{"hooks":[{"type":"command","command":"` + cmdFor("claude", "Stop") + `","timeout":10}]}]}}`},
+		{"escaped hooks key", `{"hook\u0073": {}}`, `{"hook\u0073": {"Stop": [{"hooks":[{"type":"command","command":"` + cmdFor("claude", "Stop") + `","timeout":10}]}]}}`},
+		// D20-9: a CRLF file keeps CRLF.
+		{"crlf", "{\r\n  \"a\": 1\r\n}\r\n", "{\r\n  \"a\": 1,\r\n  \"hooks\": {\r\n    \"Stop\": [\r\n      {\r\n        \"hooks\": [\r\n          {\r\n            \"type\": \"command\",\r\n            \"command\": \"" + cmdFor("claude", "Stop") + "\",\r\n            \"timeout\": 10\r\n          }\r\n        ]\r\n      }\r\n    ]\r\n  }\r\n}\r\n"},
 	}
 	for _, tt := range tests {
 		out, err := Merge(bin, stop)([]byte(tt.src))
