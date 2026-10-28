@@ -192,7 +192,10 @@ func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 		}
 		paths = append(paths, filepath.Clean(p))
 	}
-	ctx := context.Background()
+	// Ctrl-C, a kill, or a hangup cancels ctx, and the runner then kills
+	// the child's whole process group before the outcome is recorded.
+	ctx, stop := execrun.NotifyContext(context.Background())
+	defer stop()
 	cfg, err := config.LoadDefault()
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy borrow: config: %s\n", termsafe.Field(err.Error()))

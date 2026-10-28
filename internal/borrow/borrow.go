@@ -101,6 +101,11 @@ type Deps struct {
 // store leases).
 var Caps = store.BorrowCaps{PerVendor: 2, Total: 4}
 
+// Interrupted is the outcome of a borrow whose aggy got SIGINT, SIGTERM,
+// or SIGHUP: the child's process group is killed, and the borrow is
+// recorded as killed.
+const Interrupted = "interrupted"
+
 // ErrTimeout matches a child killed at its time limit. The Runner from
 // Deps wraps its own timeout error with it.
 var ErrTimeout = errors.New("borrow: time limit reached")
@@ -365,7 +370,13 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	parsed, perr := a.ParseHeadless(hreq, out)
 	res.Text, res.Tokens = parsed.Text, parsed.Tokens
 	end.VendorSessionID, end.Tokens = parsed.SessionID, parsed.Tokens
+	// The run may have ended because aggy was interrupted: what follows
+	// still records the outcome and removes the dirs.
+	interrupted := ctx.Err() != nil
+	ctx = context.WithoutCancel(ctx)
 	switch {
+	case interrupted:
+		res.Status, res.Outcome, res.Detail = "killed", Interrupted, "aggy was interrupted, and the child was killed"
 	case errors.Is(runErr, ErrTimeout):
 		res.Status, res.Outcome, res.Detail = "killed", string(adapter.ErrTimeout), runErr.Error()
 	case runErr != nil:

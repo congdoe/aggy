@@ -15,7 +15,7 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 | Variable | Meaning |
 | --- | --- |
 | `AGGY_FAKE_SCENARIO` | Path of the scenario JSON file. Unset means the defaults: success, no output. |
-| `AGGY_FAKE_RECORD` | A file each run appends one JSON line to: vendor, mode, args, parsed flags, positionals, cwd, stdin, whether stdin was a terminal, the session id, the names of every environment variable, and the values of `AGGY_*` ones. `fakecli.Records` reads it. |
+| `AGGY_FAKE_RECORD` | A file each run appends one JSON line to: vendor, mode, pid, args, parsed flags, positionals, cwd, stdin, whether stdin was a terminal, the session id, the names of every environment variable, and the values of `AGGY_*` ones. `fakecli.Records` reads it. |
 | `AGGY_FAKE_VENDOR` | Overrides the vendor taken from the binary name. |
 
 ## Flags honored
