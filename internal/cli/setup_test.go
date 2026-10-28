@@ -403,6 +403,40 @@ func TestIsTerminal(t *testing.T) {
 	}
 }
 
+// zeros is an endless input with no newline, like </dev/zero.
+type zeros struct{ n int }
+
+func (z *zeros) Read(p []byte) (int, error) {
+	z.n += len(p)
+	clear(p)
+	return len(p), nil
+}
+
+// TestSetupEndlessLine (T6609 re-review B): an input that never sends a
+// newline is read only up to maxAnswer, then taken as no terminal, and
+// every vendor is recorded.
+func TestSetupEndlessLine(t *testing.T) {
+	fakes := fakecli.Build(t)
+	home := isolate(t)
+	w := newFakeWorld(t, fakes)
+	env := w.env(home, "", true)
+	z := &zeros{}
+	env.in = z
+	var stdout, stderr bytes.Buffer
+	if code := setupWith(nil, env, &stdout, &stderr); code != 0 {
+		t.Fatal(stderr.String())
+	}
+	if z.n > 64<<10 {
+		t.Errorf("read %d bytes of an endless line", z.n)
+	}
+	if !strings.Contains(stdout.String(), "the input is not a terminal: checking the rest without asking") {
+		t.Errorf("output:\n%s", stdout.String())
+	}
+	if rows := vendorRows(t); len(rows) != 3 {
+		t.Errorf("rows = %+v", rows)
+	}
+}
+
 func TestSetupArgs(t *testing.T) {
 	isolate(t)
 	for _, tt := range []struct {

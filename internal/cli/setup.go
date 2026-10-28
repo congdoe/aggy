@@ -77,8 +77,9 @@ func defaultCheckEnv() checkEnv {
 // that is not /dev/null. /dev/null is a character device too, and a
 // setup run with </dev/null must not prompt. Without a termios ioctl
 // (golang.org/x/sys and raw syscalls are banned) this is a heuristic:
-// another character device such as /dev/zero passes, and then the first
-// prompt reads no line, which setup treats as no terminal.
+// another character device such as /dev/zero passes. Its first answer
+// then runs past maxAnswer with no newline, which setup, like the end of
+// input, takes as no terminal.
 func isTerminal(f *os.File) bool {
 	fi, err := f.Stat()
 	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
@@ -174,14 +175,45 @@ type setupRun struct {
 	findings []checkup.Finding
 }
 
-// answer prints prompt and reads one line, lower-cased and trimmed. At
-// the end of input it returns ok false and stops asking: setup goes on
-// as with --yes, checking and recording the rest without prompts, so an
-// input that ends never leaves vendors unrecorded.
+// maxAnswer caps an answer line. A person types a few bytes; a device
+// that never sends a newline (</dev/zero) must not be read forever.
+const maxAnswer = 4 << 10
+
+// errNotTerminal means the input ran past maxAnswer with no newline.
+var errNotTerminal = errors.New("an answer longer than any a person types")
+
+// readAnswer reads one line of at most maxAnswer bytes, without its
+// newline.
+func (r *setupRun) readAnswer() (string, error) {
+	var b []byte
+	for len(b) < maxAnswer {
+		c, err := r.in.ReadByte()
+		if err != nil {
+			return string(b), err
+		}
+		if c == '\n' {
+			return string(b), nil
+		}
+		b = append(b, c)
+	}
+	return "", errNotTerminal
+}
+
+// answer prints prompt and reads one answer, lower-cased and trimmed. At
+// the end of input, or on a line longer than maxAnswer, it returns ok
+// false and stops asking: setup goes on as with --yes, checking and
+// recording the rest without prompts, so an input that ends never leaves
+// vendors unrecorded.
 func (r *setupRun) answer(prompt string) (string, bool) {
 	fmt.Fprint(r.out, prompt)
-	line, err := r.in.ReadString('\n')
-	if err != nil && line == "" {
+	line, err := r.readAnswer()
+	switch {
+	case errors.Is(err, errNotTerminal):
+		fmt.Fprintln(r.out)
+		fmt.Fprintln(r.out, "  (the input is not a terminal: checking the rest without asking)")
+		r.ask = false
+		return "", false
+	case err != nil && line == "":
 		fmt.Fprintln(r.out)
 		fmt.Fprintln(r.out, "  (no more input: checking the rest without asking)")
 		r.ask = false
