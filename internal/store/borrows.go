@@ -228,6 +228,12 @@ func (s *Store) countRunning(ctx context.Context, conn *sql.Conn, vendor string,
 				        lease_pid = NULL, lease_nonce = NULL WHERE id = ?`, millis(now), r.id); err != nil {
 				return 0, 0, err
 			}
+			// Its child is no longer running either.
+			if _, err := conn.ExecContext(ctx,
+				`UPDATE children SET status = 'closed', last_active = ?
+				 WHERE id = (SELECT child_id FROM borrows WHERE id = ?) AND status = 'running'`, millis(now), r.id); err != nil {
+				return 0, 0, err
+			}
 			if r.nonce.Valid {
 				_ = safefs.Remove(s.lockPath(r.nonce.String))
 			}
