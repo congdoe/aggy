@@ -206,15 +206,15 @@ Defaults, chosen from what each CLI has built in, not from benchmarks:
 | `research` | Grok | Web search with sources, with the same clean flag set. | 10 min, 30 turns |
 | `image` | Codex, Grok | Built-in image generation. | 5 min |
 | `video` | Grok | Only Grok has video tools. | 10 min |
-| `review` | Not the author: Codex, Grok, Claude | Any connected vendor except the one that wrote the change (the parent's vendor). | 15 min |
+| `review` | Claude, Codex, Grok | Any connected vendor, Claude first by default; the vendor on screen included, since a review is a fresh session with its own context. Opt-in `not-author`, or `review_skip_on_screen` (section 9). | 15 min |
 | `edit` | Codex, Grok | Moves edit work off the on-screen vendor. Grok is passed over until its writing mode is verified (section 7). | 45 min |
 
 Codex is deliberately not in the `news` and `research` defaults. Its `apply_patch` tool cannot be turned off, and its error text tells a right guess of a line in a file at a known path from a wrong one, so a research child could confirm file contents by guessing ([verification.md](verification.md), 2026-10-28). Until that oracle is closed (T6638), the Codex adapter refuses both kinds. A user config may still list `codex` for them: the router keeps it in the list with a note naming the reason, and the adapter refuses it with `ErrUnsupported`.
 
 aggy walks the list for the kind (or the one `--vendor` named) and skips, checking in this order:
 
-- the vendor the parent is on, which should use its own tools instead (for `review`, it wrote the change)
-- for `review`, the vendors named by the `Aggy-Vendor` trailers (section 16) of the commits in the reviewed range (`<base>..HEAD`, at most 1,000 commits, read with `git log` under the same safe options as the diff and no signature check); a value that is not a vendor is ignored, and a git failure means no authors. Trailers are best-effort and forgeable: anyone can commit with `AGGY_VENDOR` set, or skip the hook (`--no-verify`) and write one by hand, and so steer a review back to the real author; they can never get a vendor past `allowed_vendors` or any other rule. So they only steer: when skipping the authors would leave no vendor, they are kept and `aggy borrow` prints a warning naming them. Routing on aggy's own record of which vendor made an edit is a follow-up (T6747). The other rules below still apply to them
+- the vendor the parent is on, which should use its own tools instead; for `review` only with `[routing] review_skip_on_screen = true` or a `"not-author"` route, since by default a review is a fresh session and the same vendor may run it
+- for a `"not-author"` review route only, the vendors named by the `Aggy-Vendor` trailers (section 16) of the commits in the reviewed range (`<base>..HEAD`, at most 1,000 commits, read with `git log` under the same safe options as the diff and no signature check); a value that is not a vendor is ignored, and a git failure means no authors. Trailers are best-effort and forgeable: anyone can commit with `AGGY_VENDOR` set, or skip the hook (`--no-verify`) and write one by hand, and so steer a review back to the real author; they can never get a vendor past `allowed_vendors` or any other rule. So they only steer: when skipping the authors would leave no vendor, they are kept and `aggy borrow` prints a warning naming them. Any other review route never reads the trailers (no `git log` runs). Routing on aggy's own record of which vendor made an edit is a follow-up (T6747). The other rules below still apply to them
 - vendors that are not connected, or that `aggy setup` never recorded, in the `vendors` table; an `unknown` sign-in status counts as usable, and aggy says so
 - vendors outside the repo's `allowed_vendors`
 - vendors that hit their limit recently (section 11, "Recording limits"); a limit only a hook reported never leaves the list empty: when every vendor would be skipped, those vendors are kept and `aggy borrow` prints a warning naming them
@@ -248,7 +248,8 @@ warn_at = 0.9               # near-limit warning at 90% used; 0 turns it off
 
 [routing]
 image = ["grok", "codex"]
-review = ["grok", "claude"]  # or "not-author": codex, grok, claude minus the author
+review = ["grok", "claude"]  # default claude, codex, grok; or "not-author": codex, grok, claude minus the parent's vendor and the trailer authors
+review_skip_on_screen = true  # a review skips the vendor on screen too (default false)
 
 [budgets]
 research = { minutes = 15, turns = 40 }
@@ -260,7 +261,7 @@ Per repo, `<repo>/.aggy/config.toml` holds `allowed_vendors`, `tools_off` (tools
 
 Defaults are generic. No model is set for any vendor, so each CLI uses its own default. `switch.order` defaults to claude, codex, grok, and the picker skips the vendor on screen. Routing and budgets default to the table in section 8, and no tool is wired in.
 
-`[routing]` takes one key per kind (`news`, `research`, `image`, `video`, `review`, `edit`), each an ordered vendor list; an empty list turns the kind off, and `review` also takes `"not-author"`. An unknown kind or vendor is an error that names the key, and a vendor listed twice keeps its first place. A setting replaces that kind's default list; it is not merged with it. Listing `codex` for `research` or `news` is accepted, but the Codex adapter refuses those kinds for now (section 8).
+`[routing]` takes one key per kind (`news`, `research`, `image`, `video`, `review`, `edit`), each an ordered vendor list; an empty list turns the kind off, and `review` also takes `"not-author"` (opt-in: skip the parent's vendor and the vendors the reviewed commits' trailers name). `review_skip_on_screen` (a boolean, default false) makes a review skip the parent's vendor, as every other kind does; it applies to `--vendor` too. A repo config cannot set routing; its `allowed_vendors` only narrows it. An unknown kind or vendor is an error that names the key, and a vendor listed twice keeps its first place. A setting replaces that kind's default list; it is not merged with it. Listing `codex` for `research` or `news` is accepted, but the Codex adapter refuses those kinds for now (section 8).
 
 **Tools.** Every tool, plugin, skill, and MCP server aggy manages, aggy's own skill included, can be turned off cleanly per vendor, and off costs zero tokens: an off tool leaves no MCP entry, no skill link, no hook that injects text, and no line in memory, the brief, or the missing-tools list, and a CLI that scans shared skill folders (Grok scans `~/.claude/skills` and `~/.agents/skills`) gets the skill on its ignore list. A test proves it per vendor. `aggy tool list` and `aggy doctor` show each tool's estimated token cost per vendor. Tools are installed once at a pinned version, with any index built ahead of time, and stay ready while off, so `on` and `off` only rewire: the next session aggy launches or resumes gets the new set on its command line, and a config edit through the manifest is made only for a CLI without a launch flag (below). A switch takes effect at the next turn end: aggy resumes that harness on the same session where the CLI allows it, and never interrupts a turn.
 
@@ -552,7 +553,7 @@ CI never signs in to a vendor.
 | M0 Foundation | Repo skeleton, CI, fake CLIs, store, config, adapter interface and probes, the patch manifest and `aggy unwire`, and the open vendor checks | `aggy unwire` restores files byte for byte, and the unconfirmed vendor facts are answered | In progress: `safefs`, `patch`, `store`, `config`, `home`, and the `Adapter` interface exist |
 | M1 Read-only borrows | `image`, `video`, `research`, `news`, `review`; routing, budgets, research isolation, inbox, log, the skill, and the Codex `CLAUDE.md` fallback | A research borrow costs the on-screen agent under 2,000 tokens, and (batch 6, with `aggy image` and `aggy video`) an image lands at `--out` with its sidecar. Released as v0.1.0. | In progress: `aggy borrow` with isolation, lockdown, budgets, the guard, reports, `aggy inbox`, and the log |
 | M2 Switching | Setup, doctor, the supervisor, the switch key and picker, resume, task file, brief, limit hooks, parity, desktop notifications | The handoff evaluation passes 9 of 10, and the terminal checklist passes | Not started |
-| M3 Edit borrows | Worktrees, `aggy check`, attribution trailers, `aggy gc`, review routed to a non-author vendor | An edit diff reaches you only after the repo checks pass | Not started |
+| M3 Edit borrows | Worktrees, `aggy check`, attribution trailers, `aggy gc`, review routed to a fresh session (Claude first; `not-author` opt-in) | An edit diff reaches you only after the repo checks pass | Not started |
 | M4 Usage and stats | `aggy usage`, `aggy stats` per kind, a near-limit warning where data exists | Routing is tuned from real stats. Released as 1.0. | In progress: `aggy stats` and the redo rule |
 | M5 Tool wiring | Skill links, shared MCP entries, a per-vendor off switch; CodeGraph, RTK, Headroom MCP, Context7, Caveman, all off by default | An off tool leaves no schema or skill text in that vendor | Not started |
 | M6 Parallel work | One task to two vendors in separate worktrees, you pick one diff; diff comments, `aggy pr` (opens, never merges), one recipe | Nothing lands on the main checkout until you accept a diff | Not started |

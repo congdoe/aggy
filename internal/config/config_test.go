@@ -175,6 +175,23 @@ image    = { minutes = 5 }
 		}},
 		{name: "bad routing string", text: "[routing]\nreview = \"anyone\"\n", wantErr: "not-author"},
 		{name: "routing wrong type", text: "[routing]\nnews = 3\n", wantErr: "vendor list"},
+		// T6779: the opt-in on-screen skip for review.
+		{name: "review_skip_on_screen default off", text: "", check: func(t *testing.T, c Config) {
+			if c.Routing.ReviewSkipOnScreen || c.Routing.SkipsParent(adapter.Review) || !c.Routing.SkipsParent(adapter.Image) {
+				t.Errorf("routing = %+v", c.Routing)
+			}
+		}},
+		{name: "review_skip_on_screen set", text: "[routing]\nreview_skip_on_screen = true\n", check: func(t *testing.T, c Config) {
+			if !c.Routing.SkipsParent(adapter.Review) {
+				t.Error("review does not skip the parent")
+			}
+		}},
+		{name: "not-author skips the parent", text: "[routing]\nreview = \"not-author\"\n", check: func(t *testing.T, c Config) {
+			if !c.Routing.SkipsParent(adapter.Review) {
+				t.Error("not-author review does not skip the parent")
+			}
+		}},
+		{name: "review_skip_on_screen wrong type", text: "[routing]\nreview_skip_on_screen = \"yes\"\n", wantErr: "review_skip_on_screen"},
 		{name: "zero minutes", text: "[budgets]\nedit = { minutes = 0 }\n", wantErr: "budgets.edit.minutes must be 1 to 1440"},
 		{name: "negative turns", text: "[budgets]\nnews = { minutes = 5, turns = -1 }\n", wantErr: "budgets.news.turns must be 0 to 1000"},
 		// Regression rows for the PR #2 review.
@@ -288,7 +305,7 @@ func TestDefaultRouting(t *testing.T) {
 		{adapter.Research, Route{Vendors: []adapter.Vendor{adapter.Grok}}},
 		{adapter.Image, Route{Vendors: []adapter.Vendor{adapter.Codex, adapter.Grok}}},
 		{adapter.Video, Route{Vendors: []adapter.Vendor{adapter.Grok}}},
-		{adapter.Review, Route{NotAuthor: true}},
+		{adapter.Review, Route{Vendors: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok}}},
 		{adapter.Edit, Route{Vendors: []adapter.Vendor{adapter.Codex, adapter.Grok}}},
 	}
 	for _, tt := range tests {

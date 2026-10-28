@@ -217,8 +217,9 @@ var reservedKeys = map[byte]string{
 	'o': "line editing (discard output)",
 }
 
-// NotAuthor is the routing value meaning any connected vendor except the
-// one that wrote the change.
+// NotAuthor is the opt-in review routing value meaning any connected
+// vendor except the ones that wrote the change: the parent's vendor and
+// those the reviewed commits' Aggy-Vendor trailers name.
 const NotAuthor = "not-author"
 
 // Route is one kind's routing: an ordered vendor list, or NotAuthor.
@@ -266,6 +267,17 @@ type Routing struct {
 	News     Route `toml:"news"`
 	Review   Route `toml:"review"`
 	Edit     Route `toml:"edit"`
+	// ReviewSkipOnScreen skips the parent's (on-screen) vendor for a
+	// review, as every other kind does. Off by default: a review is a
+	// fresh session with its own context, so the same vendor may run it.
+	// A "not-author" review route skips that vendor either way.
+	ReviewSkipOnScreen bool `toml:"review_skip_on_screen"`
+}
+
+// SkipsParent reports whether a borrow of kind k skips the parent's
+// vendor.
+func (r Routing) SkipsParent(k adapter.Kind) bool {
+	return k != adapter.Review || r.ReviewSkipOnScreen || r.Review.NotAuthor
 }
 
 // For returns the route for kind k.
@@ -352,10 +364,10 @@ func Default() Config {
 			Research: vendors(adapter.Grok),                // web search with sources, clean tool list
 			Image:    vendors(adapter.Codex, adapter.Grok), // built-in image generation
 			Video:    vendors(adapter.Grok),                // only Grok has video tools
-			// "not-author" walks codex, grok, claude and skips the
-			// parent's vendor, which wrote the change: a different model
-			// catches different things.
-			Review: Route{NotAuthor: true},
+			// Any usable vendor, Claude first; the on-screen vendor is
+			// allowed, since a review is a fresh session. "not-author"
+			// and review_skip_on_screen are opt-ins.
+			Review: vendors(adapter.Claude, adapter.Codex, adapter.Grok),
 			// Grok is passed over until its writing mode is verified
 			// (borrow.editGate).
 			Edit: vendors(adapter.Codex, adapter.Grok),

@@ -67,11 +67,13 @@ const (
 const hintReason = "a hook reported its limit (unconfirmed)"
 
 // skips applies the skip rules to list, in this order: the parent's own
-// vendor, a vendor not connected, a vendor outside the repo's
+// vendor (for a review, only with review_skip_on_screen or a "not-author"
+// route), a vendor not connected, a vendor outside the repo's
 // allowed_vendors, and a vendor at its limit. It returns, per vendor, why
 // it is left out (the first rule that matched), notes on vendors kept,
 // and warnings the caller must show. A rule's input that cannot be read
-// is an error: the router never guesses that a repo allows a vendor.
+// is an error: the router never guesses that a repo allows a vendor. A
+// "not-author" review route then also skips req.Authors (skipAuthors).
 //
 // A limit only a hook reported (Limit.Hint) never leaves the list empty:
 // when every vendor would be skipped or refuses the kind (Refusal), or
@@ -97,7 +99,7 @@ func (r *Router) skips(ctx context.Context, req Request, k adapter.Kind, list []
 	notes = map[adapter.Vendor]string{}
 	var hinted []adapter.Vendor
 	for _, v := range list {
-		if req.Parent != "" && v == req.Parent {
+		if req.Parent != "" && v == req.Parent && r.cfg.Routing.SkipsParent(k) {
 			skip[v] = fmt.Sprintf("the parent is on %s", v)
 			continue
 		}
@@ -139,7 +141,7 @@ func (r *Router) skips(ctx context.Context, req Request, k adapter.Kind, list []
 		}
 		skip[v] = reason
 	}
-	if k == adapter.Review {
+	if k == adapter.Review && r.cfg.Routing.Review.NotAuthor {
 		warnings = append(warnings, skipAuthors(req.Authors, k, list, skip)...)
 	}
 	kept := 0
