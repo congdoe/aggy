@@ -5,6 +5,9 @@ import (
 	"io/fs"
 	"path/filepath"
 	"slices"
+	"strings"
+
+	"github.com/BurntSushi/toml"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/checkup"
@@ -34,12 +37,14 @@ func memoryDelivery(v adapter.Vendor, caps []string) (bool, string) {
 	return true, ""
 }
 
-// addMemory puts the repo's shared memory on req for vendor v. For
+// addMemory puts the shared memory of the repo holding cwd on req for
+// vendor v. For
 // Claude it writes the framed text to a private temp file; cleanup
 // removes it after the session. Warnings say what was not delivered and
 // why; none of them stops the launch.
-func addMemory(v adapter.Vendor, caps []string, root string, req *adapter.InteractiveRequest) (cleanup func(), warns []string) {
+func addMemory(v adapter.Vendor, caps []string, cwd string, req *adapter.InteractiveRequest) (cleanup func(), warns []string) {
 	cleanup = func() {}
+	root, _ := repoRoot(cwd)
 	text, err := parity.LoadMemory(root)
 	if err != nil {
 		return cleanup, []string{"shared memory not delivered: " + err.Error()}
@@ -65,9 +70,9 @@ func addMemory(v adapter.Vendor, caps []string, root string, req *adapter.Intera
 		}
 		req.MemoryFile = f
 	case adapter.Codex:
-		user, project, err := codexConfigs(root)
+		layers, err := codexConfigs(cwd, root)
 		if err == nil {
-			framed, err = parity.CodexInstructions(user, project, framed)
+			framed, err = parity.CodexInstructions(layers, framed)
 		}
 		if err != nil {
 			return cleanup, []string{"shared memory not delivered: " + err.Error()}
@@ -79,25 +84,47 @@ func addMemory(v adapter.Vendor, caps []string, root string, req *adapter.Intera
 	return cleanup, nil
 }
 
-// codexConfigs reads Codex's user config and the repo's project config
-// (<root>/.codex/config.toml), nil when absent.
-func codexConfigs(root string) (user, project []byte, err error) {
-	path, err := parity.CodexConfigPath()
+// codexConfigs reads the config.toml of every Codex layer folder
+// (parity.CodexLayerDirs), lowest precedence first, and the profile file
+// the user config selects with profile = "<name>" ($CODEX_HOME/<name>.config.toml,
+// config/src/loader/mod.rs), which counts as ambiguous like a project
+// layer. An absent file has nil Data.
+func codexConfigs(cwd, root string) ([]parity.CodexConfig, error) {
+	dirs, err := parity.CodexLayerDirs(cwd, root)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	read := func(p string) ([]byte, error) {
 		b, err := safefs.ReadFileLimit(p, maxCodexConfig)
-		if errors.Is(err, fs.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission) && strings.HasPrefix(p, parity.CodexSystemDir+"/") {
 			return nil, nil
 		}
 		return b, err
 	}
-	if user, err = read(path); err != nil {
-		return nil, nil, err
+	var out []parity.CodexConfig
+	for i, d := range dirs {
+		b, err := read(filepath.Join(d.Dir, "config.toml"))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, parity.CodexConfig{Data: b, Project: d.Project})
+		if i != 1 || b == nil {
+			continue
+		}
+		// The user layer may select a profile file.
+		var doc struct{ Profile string }
+		if _, err := toml.Decode(string(b), &doc); err == nil && doc.Profile != "" {
+			if strings.ContainsAny(doc.Profile, `/\`) || strings.HasPrefix(doc.Profile, ".") {
+				return nil, parity.ErrCodexInstructionsAmbiguous
+			}
+			pb, err := read(filepath.Join(d.Dir, doc.Profile+".config.toml"))
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, parity.CodexConfig{Data: pb, Project: true})
+		}
 	}
-	project, err = read(filepath.Join(root, ".codex", "config.toml"))
-	return user, project, err
+	return out, nil
 }
 
 // Why the safety policy does not reach a vendor (policyDelivery).
@@ -205,9 +232,9 @@ func parityFindings(cwd string, vendors []checkup.Vendor) []checkup.Finding {
 			ok, why := memoryDelivery(v, vr.Capabilities)
 			var err error
 			if ok && v == adapter.Codex {
-				var user, project []byte
-				if user, project, err = codexConfigs(root); err == nil {
-					_, err = parity.CodexInstructions(user, project, memory)
+				var layers []parity.CodexConfig
+				if layers, err = codexConfigs(cwd, root); err == nil {
+					_, err = parity.CodexInstructions(layers, memory)
 				}
 				ok, why = err == nil, "cannot read its config to keep its own developer_instructions"
 				if errors.Is(err, parity.ErrCodexInstructionsAmbiguous) {

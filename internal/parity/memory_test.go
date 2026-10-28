@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -135,34 +136,53 @@ func TestFrameMemory(t *testing.T) {
 }
 
 func TestCodexInstructions(t *testing.T) {
+	type L = CodexConfig
 	tests := []struct {
-		name          string
-		user, project string
-		want          string
-		err           error
+		name   string
+		layers []L
+		want   string
+		err    error
 	}{
-		{"no config", "", "", "M", nil},
-		{"own value kept first", `developer_instructions = "mine"`, "", "mine\n\nM", nil},
-		{"other keys only", `model = "x"`, `model = "y"`, "M", nil},
-		{"profile sets it", "[profiles.p]\ndeveloper_instructions = \"p\"", "", "", ErrCodexInstructionsAmbiguous},
-		{"project sets it", "", `developer_instructions = "proj"`, "", ErrCodexInstructionsAmbiguous},
-		{"not a string", `developer_instructions = 3`, "", "", ErrCodexInstructionsAmbiguous},
-	}
-	b := func(s string) []byte {
-		if s == "" {
-			return nil
-		}
-		return []byte(s)
+		{"no config", []L{{}, {}}, "M", nil},
+		{"own value kept first", []L{{}, {Data: []byte(`developer_instructions = "mine"`)}}, "mine\n\nM", nil},
+		{"system value kept", []L{{Data: []byte(`developer_instructions = "sys"`)}, {}}, "sys\n\nM", nil},
+		{"user beats system", []L{{Data: []byte(`developer_instructions = "sys"`)}, {Data: []byte(`developer_instructions = "mine"`)}}, "mine\n\nM", nil},
+		{"other keys only", []L{{Data: []byte(`model = "x"`)}, {Data: []byte(`model = "y"`), Project: true}}, "M", nil},
+		{"profile table sets it", []L{{Data: []byte("[profiles.p]\ndeveloper_instructions = \"p\"")}}, "", ErrCodexInstructionsAmbiguous},
+		{"a project layer sets it", []L{{}, {}, {Data: []byte(`developer_instructions = "proj"`), Project: true}}, "", ErrCodexInstructionsAmbiguous},
+		{"not a string", []L{{Data: []byte(`developer_instructions = 3`)}}, "", ErrCodexInstructionsAmbiguous},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := CodexInstructions(b(tt.user), b(tt.project), "M")
+			got, err := CodexInstructions(tt.layers, "M")
 			if got != tt.want || !errors.Is(err, tt.err) {
 				t.Errorf("= %q, %v; want %q, %v", got, err, tt.want, tt.err)
 			}
 		})
 	}
-	if _, err := CodexInstructions([]byte("not = = toml"), nil, "M"); err == nil {
+	if _, err := CodexInstructions([]L{{Data: []byte("not = = toml")}}, "M"); err == nil {
 		t.Error("invalid TOML accepted")
+	}
+}
+
+func TestCodexLayerDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	root := filepath.Join(home, "repo")
+	cwd := filepath.Join(root, "a", "b")
+	got, err := CodexLayerDirs(cwd, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []CodexLayerDir{{Dir: "/etc/codex"}, {Dir: filepath.Join(home, ".codex")},
+		{filepath.Join(root, ".codex"), true}, {filepath.Join(root, "a", ".codex"), true}, {filepath.Join(cwd, ".codex"), true}}
+	if !slices.Equal(got, want) {
+		t.Errorf("= %v\nwant %v", got, want)
+	}
+	// Home as the project root: its .codex is the user folder, skipped.
+	got, _ = CodexLayerDirs(home, home)
+	if len(got) != 2 {
+		t.Errorf("home: %v", got)
 	}
 }

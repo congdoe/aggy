@@ -151,22 +151,33 @@ const CodexInstructionsKey = "developer_instructions"
 
 // ErrCodexInstructionsAmbiguous means a Codex profile or project config
 // sets developer_instructions. A -c override replaces the value Codex
-// would use, and aggy cannot tell which one that is, so it delivers no
-// memory to Codex rather than drop the person's own text.
+// would use, and aggy cannot tell which one that is (a project layer
+// applies only in a trusted folder, a profile only when selected), so it
+// delivers no memory to Codex rather than drop the person's own text.
 var ErrCodexInstructionsAmbiguous = errors.New("parity: a Codex profile or project config sets " + CodexInstructionsKey + ", so aggy cannot add memory without replacing it")
 
+// CodexConfig is one Codex config file: its bytes (nil when absent) and
+// whether it is a project layer.
+type CodexConfig struct {
+	Data    []byte
+	Project bool
+}
+
 // CodexInstructions returns the developer_instructions value for a launch
-// that delivers memory: the person's own top-level value from user
-// config.toml, if any, then the memory. user and project are the bytes of
-// $CODEX_HOME/config.toml and <repo>/.codex/config.toml, nil when absent.
-func CodexInstructions(user, project []byte, memory string) (string, error) {
+// that delivers memory: the value the system and user layers give (the
+// higher one wins, as in Codex), if any, then the memory. layers are the
+// config files of CodexLayerDirs, lowest precedence first, plus any
+// selected profile file marked Project (it is as ambiguous). A project
+// layer, a profile, or a [profiles.*] table that sets the key is
+// ErrCodexInstructionsAmbiguous. Cloud-managed layers cannot be read.
+func CodexInstructions(layers []CodexConfig, memory string) (string, error) {
 	own := ""
-	for i, src := range [][]byte{user, project} {
-		if src == nil {
+	for _, l := range layers {
+		if l.Data == nil {
 			continue
 		}
 		var doc map[string]any
-		if _, err := toml.Decode(string(src), &doc); err != nil {
+		if _, err := toml.Decode(string(l.Data), &doc); err != nil {
 			return "", fmt.Errorf("parity: a Codex config.toml is not valid TOML: %w", err)
 		}
 		if profiles, ok := doc["profiles"].(map[string]any); ok {
@@ -181,7 +192,7 @@ func CodexInstructions(user, project []byte, memory string) (string, error) {
 			continue
 		}
 		s, ok := v.(string)
-		if i == 1 || !ok {
+		if l.Project || !ok {
 			return "", ErrCodexInstructionsAmbiguous
 		}
 		own = s

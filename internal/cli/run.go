@@ -76,8 +76,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		Model: cfg.Vendors.For(v).Model,
 		Env:   []string{"AGGY_VENDOR=" + string(v)},
 	}
-	root, _ := repoRoot(cwd)
-	cleanup, warns := addMemory(v, caps, root, &req)
+	cleanup, warns := addMemory(v, caps, cwd, &req)
 	defer cleanup()
 	warns = append(warns, addPolicy(v, caps, &req)...)
 	for _, w := range warns {
