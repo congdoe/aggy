@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -65,8 +66,8 @@ type DiagRecord struct {
 	VendorSessionID string          `json:"vendor_session_id,omitempty"`
 }
 
-// diagCols are the records columns in DiagRecord's order, rowid first.
-const diagCols = `rowid, id, schema, ts, level, component, event, code, msg, attrs, duration_ms, exit_code, signal,
+// diagCols are the records columns in DiagRecord's order after seq.
+const diagCols = `id, schema, ts, level, component, event, code, msg, attrs, duration_ms, exit_code, signal,
 	aggy_version, os, run_id, trace_id, cause_id, parent_id, child_id, borrow_id, worktree_id, vendor, vendor_session_id`
 
 // DiagDB is the diagnostic log opened for writing.
@@ -107,34 +108,39 @@ func (d *DiagDB) Insert(ctx context.Context, r DiagRecord) error {
 func (d *DiagDB) BorrowTrace(ctx context.Context, id string) (string, error) {
 	var t string
 	err := d.s.db.QueryRowContext(ctx,
-		`SELECT trace_id FROM records WHERE borrow_id = ? AND trace_id <> '' ORDER BY ts, rowid LIMIT 1`, id).Scan(&t)
+		`SELECT trace_id FROM records WHERE borrow_id = ? AND trace_id <> '' ORDER BY ts, seq LIMIT 1`, id).Scan(&t)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	return t, err
 }
 
-// Prune deletes the records older than before, then the oldest records
-// until the log's pages in use fit in maxBytes (0: no size cap), and
-// compacts the file when it deleted any. It returns how many it deleted.
+// Prune deletes the records older than before; then, when the log's
+// pages in use are over maxBytes (0: no size cap), the oldest records:
+// the share of them that holds the excess, worked out from the size of
+// the rows (the pages in use less the empty schema's), in one pass. It
+// compacts the file after each delete and returns how many it deleted.
+// Should the compacted file still be over (pages are not filled evenly),
+// it deletes again, at most sizePasses times in all.
 func (d *DiagDB) Prune(ctx context.Context, before time.Time, maxBytes int64) (int64, error) {
 	res, err := d.s.db.ExecContext(ctx, `DELETE FROM records WHERE ts < ?`, millis(before))
 	if err != nil {
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
-	for maxBytes > 0 {
-		used, err := d.used(ctx)
-		if err != nil {
+	if n > 0 {
+		// Compacted first, so the size measured next is the data's.
+		if _, err := d.s.db.ExecContext(ctx, `VACUUM`); err != nil {
 			return n, err
 		}
-		if used <= maxBytes {
-			break
+	}
+	for pass := 0; maxBytes > 0 && pass < sizePasses; pass++ {
+		drop, err := d.overBy(ctx, maxBytes)
+		if err != nil || drop == 0 {
+			return n, err
 		}
-		// A tenth of what is left at a time, at least one row.
 		res, err := d.s.db.ExecContext(ctx,
-			`DELETE FROM records WHERE rowid IN (SELECT rowid FROM records ORDER BY ts, rowid
-			  LIMIT max(1, (SELECT count(*) FROM records) / 10))`)
+			`DELETE FROM records WHERE seq IN (SELECT seq FROM records ORDER BY ts, seq LIMIT ?)`, drop)
 		if err != nil {
 			return n, err
 		}
@@ -143,13 +149,40 @@ func (d *DiagDB) Prune(ctx context.Context, before time.Time, maxBytes int64) (i
 			break
 		}
 		n += k
-	}
-	if n > 0 {
 		if _, err := d.s.db.ExecContext(ctx, `VACUUM`); err != nil {
 			return n, err
 		}
 	}
 	return n, nil
+}
+
+// sizePasses bounds Prune's deletes by size.
+const sizePasses = 3
+
+// overBy is how many of the oldest records to delete to bring the log's
+// pages in use down to maxBytes; 0 when it fits.
+func (d *DiagDB) overBy(ctx context.Context, maxBytes int64) (int64, error) {
+	used, err := d.used(ctx)
+	if err != nil || used <= maxBytes {
+		return 0, err
+	}
+	var count, trees, size int64
+	if err := d.s.db.QueryRowContext(ctx, `SELECT count(*) FROM records`).Scan(&count); err != nil {
+		return 0, err
+	}
+	// An empty log is one page for the schema and one per table and index.
+	if err := d.s.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE rootpage > 0`).Scan(&trees); err != nil {
+		return 0, err
+	}
+	if err := d.s.db.QueryRowContext(ctx, `PRAGMA page_size`).Scan(&size); err != nil {
+		return 0, err
+	}
+	rows := used - (trees+1)*size
+	if rows <= 0 || maxBytes <= (trees+1)*size {
+		return count, nil
+	}
+	drop := int64(math.Ceil(float64(count) * float64(used-maxBytes) / float64(rows)))
+	return min(max(drop, 1), count), nil
 }
 
 // used is the bytes of the log's pages that hold data.
@@ -337,7 +370,7 @@ type DiagFilter struct {
 	Event, Code                           string
 	Component, Vendor, Run, Trace, Parent string
 	Child, Borrow                         string
-	// AfterRow keeps rows inserted after this rowid (aggy diag --follow).
+	// AfterRow keeps records written after this seq (aggy diag --follow).
 	AfterRow int64
 	// Limit keeps the latest Limit records; 0 keeps all.
 	Limit int
@@ -381,14 +414,18 @@ func (v *DiagView) Records(ctx context.Context, f DiagFilter) ([]DiagRecord, err
 	if f.Code != "" {
 		add("code GLOB ?", f.Code)
 	}
-	if f.AfterRow > 0 {
-		add("rowid > ?", f.AfterRow)
+	seq, err := v.seqCol(ctx)
+	if err != nil {
+		return nil, err
 	}
-	q := `SELECT ` + diagCols + ` FROM diag.records`
+	if f.AfterRow > 0 {
+		add(seq+" > ?", f.AfterRow)
+	}
+	q := `SELECT ` + seq + `, ` + diagCols + ` FROM diag.records`
 	if len(where) > 0 {
 		q += ` WHERE ` + strings.Join(where, " AND ")
 	}
-	q += ` ORDER BY ts DESC, rowid DESC`
+	q += ` ORDER BY ts DESC, ` + seq + ` DESC`
 	if f.Limit > 0 {
 		q += ` LIMIT ?`
 		args = append(args, f.Limit)
@@ -406,8 +443,27 @@ func (v *DiagView) RecordsAbout(ctx context.Context, id string) ([]DiagRecord, e
 	if !v.diag {
 		return nil, nil
 	}
-	return v.scanRecords(ctx, `SELECT `+diagCols+` FROM diag.records
-		WHERE ? IN (id, run_id, trace_id, parent_id, child_id, borrow_id, worktree_id) ORDER BY ts, rowid`, id)
+	seq, err := v.seqCol(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return v.scanRecords(ctx, `SELECT `+seq+`, `+diagCols+` FROM diag.records
+		WHERE ? IN (id, run_id, trace_id, parent_id, child_id, borrow_id, worktree_id) ORDER BY ts, `+seq, id)
+}
+
+// seqCol is the records' sequence column: seq from diag.db version 2,
+// and before it (a log no aggy has written since the upgrade, which a
+// read-only view cannot migrate) the rowid, which version 2 keeps as
+// seq. It is read per query: a writer may migrate the log meanwhile.
+func (v *DiagView) seqCol(ctx context.Context) (string, error) {
+	n, err := v.DiagVersion(ctx)
+	if err != nil {
+		return "", err
+	}
+	if n < 2 {
+		return "rowid", nil
+	}
+	return "seq", nil
 }
 
 func (v *DiagView) scanRecords(ctx context.Context, q string, args ...any) ([]DiagRecord, error) {
@@ -462,31 +518,46 @@ func (v *DiagView) DiagVersion(ctx context.Context) (int, error) {
 	return n, ReadError(err)
 }
 
-// Query runs one read-only statement (aggy diag sql) and returns its
-// column names and rows, each value as SQLite gave it.
-func (v *DiagView) Query(ctx context.Context, q string) ([]string, [][]any, error) {
+// Query runs one read-only statement (aggy diag sql) and calls row for
+// each result row as it is read, at most limit rows (0: no cap), each
+// value as SQLite gave it; cols is called first with the column names.
+// It reports whether it stopped at limit. ctx bounds the query: SQLite
+// is interrupted when it ends.
+func (v *DiagView) Query(ctx context.Context, q string, limit int, cols func([]string) error, row func([]any) error) (bool, error) {
 	rows, err := v.db.QueryContext(ctx, q)
 	if err != nil {
-		return nil, nil, ReadError(err)
+		return false, ReadError(err)
 	}
 	defer func() { _ = rows.Close() }()
-	cols, err := rows.Columns()
+	names, err := rows.Columns()
 	if err != nil {
-		return nil, nil, err
+		return false, err
 	}
-	var out [][]any
+	if err := cols(names); err != nil {
+		return false, err
+	}
+	n := 0
 	for rows.Next() {
-		vals := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
+		if limit > 0 && n == limit {
+			return true, nil
+		}
+		vals := make([]any, len(names))
+		ptrs := make([]any, len(names))
 		for i := range vals {
 			ptrs[i] = &vals[i]
 		}
 		if err := rows.Scan(ptrs...); err != nil {
-			return nil, nil, err
+			return false, err
 		}
-		out = append(out, vals)
+		if err := row(vals); err != nil {
+			return false, err
+		}
+		n++
 	}
-	return cols, out, ReadError(rows.Err())
+	if err := rows.Err(); err != nil {
+		return false, ReadError(err)
+	}
+	return false, ctx.Err()
 }
 
 // EventsAbout returns, oldest first, the index's events about any of the

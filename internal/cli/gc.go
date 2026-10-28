@@ -97,8 +97,13 @@ func gcWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, stderr
 		fmt.Fprintf(stderr, "\n%s", gcUsage)
 		return 2
 	}
+	// A dry run has no side effects: not even a diagnostic record.
+	log := dlog
+	if *dry {
+		log = nil
+	}
 	fail := func(code diag.Code, err error) int {
-		refuse(context.Background(), stderr, "gc", diag.EvGCRefused, code, err.Error(), diag.Rec{})
+		refuseWith(log, context.Background(), stderr, "gc", diag.EvGCRefused, code, err.Error(), diag.Rec{})
 		return 1
 	}
 	// A borrow child never cleans up after its parent.
@@ -134,11 +139,13 @@ func gcWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, stderr
 	defer func() { _ = s.Close() }()
 	g := &gitWorktrees{env: env, stateDir: stateDir, out: stderr}
 	plan, err := planGC(ctx, s, g, stateDir, retention(cfg.GC), env.now())
-	if err == nil {
-		err = planDiag(ctx, &plan, cfg.Log, env.now())
-	}
 	if err != nil {
 		return fail(diag.CodeGCFailed, store.ReadError(err))
+	}
+	// diag.db is aggy's own log: one it cannot read never stops the rest
+	// of gc.
+	if err := planDiag(ctx, &plan, cfg.Log, env.now()); err != nil {
+		fmt.Fprintf(stderr, "aggy gc: warning: skipping the diagnostic log (diag.db), which cannot be read: %s\n", termsafe.Field(err.Error()))
 	}
 	showPlan(stdout, plan)
 	if len(plan.items) == 0 {
@@ -235,7 +242,7 @@ func planGC(ctx context.Context, s *store.Store, g *gitWorktrees, stateDir strin
 		}
 		c := c
 		p.items = append(p.items, gcItem{
-			kind: "child", ids: diag.Rec{Child: c.ID, Vendor: c.Vendor},
+			kind: "child", ids: diag.Rec{Child: c.ID, Vendor: c.Vendor, Trace: c.TraceID},
 			what: fmt.Sprintf("%s (%s %s borrow, last active %s; index row only)", c.ID, c.Vendor, c.Kind, c.LastActive.Format("2006-01-02")),
 			remove: func(ctx context.Context) error {
 				ok, err := s.PruneChild(ctx, c)
@@ -324,7 +331,7 @@ func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktre
 		if leftover {
 			what = fmt.Sprintf("%s (left by a removal cut short, branch %s)", wt.Path, wt.Branch)
 		}
-		ids := diag.Rec{Borrow: id, Worktree: filepath.Base(wt.Path)}
+		ids := diag.Rec{Borrow: id, Worktree: filepath.Base(wt.Path), Trace: w.TraceID}
 		p.items = append(p.items, gcItem{kind: "worktree", what: what, bytes: size, ids: ids, remove: func(ctx context.Context) error {
 			if err := unchanged(ctx, s, w); err != nil {
 				return err

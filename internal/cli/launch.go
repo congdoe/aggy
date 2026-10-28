@@ -224,7 +224,7 @@ func (p *launchPlan) newChildOf(ctx context.Context, s *store.Store, cfg config.
 	if err != nil {
 		return err
 	}
-	c := store.Child{ID: id, ParentID: p.parent.ID, Vendor: string(v), Model: cfg.Vendors.For(v).Model,
+	c := store.Child{ID: id, ParentID: p.parent.ID, Vendor: string(v), Model: cfg.Vendors.For(v).Model, TraceID: dlog.Trace(),
 		Cwd: p.parent.Dir, Status: "open", CreatedAt: now, LastActive: now}
 	// Where its session files are looked for later, whatever that
 	// shell's CLAUDE_CONFIG_DIR, CODEX_HOME, or GROK_HOME.

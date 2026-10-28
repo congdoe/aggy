@@ -157,7 +157,7 @@ func (e repoCheckEnv) runList(ctx context.Context, root string, rc config.RepoCo
 			rec.Attrs = map[string]any{"index": i}
 			dlog.Log(ctx, rec)
 			failed++
-			fmt.Fprintf(stdout, "     %s\n", termsafe.Line(res))
+			fmt.Fprintf(stdout, "     %s %s\n", termsafe.Line(res), dlog.Tag(diag.CodeChecksFailed))
 			for _, l := range tail {
 				fmt.Fprintf(stdout, "     | %s\n", termsafe.Line(l))
 			}
@@ -168,7 +168,7 @@ func (e repoCheckEnv) runList(ctx context.Context, root string, rc config.RepoCo
 		}
 	}
 	if failed > 0 {
-		fmt.Fprintf(stdout, "aggy check: %d of %d failed\n", failed, len(rc.Check))
+		fmt.Fprintf(stdout, "aggy check: %d of %d failed %s\n", failed, len(rc.Check), dlog.Tag(diag.CodeChecksFailed))
 		return 1
 	}
 	fmt.Fprintf(stdout, "aggy check: all %d passed\n", len(rc.Check))

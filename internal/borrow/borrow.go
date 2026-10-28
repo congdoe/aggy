@@ -540,11 +540,12 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 	child := store.Child{
 		ID: newID(), ParentID: parent.ID, Vendor: string(v), Kind: string(req.Kind), Title: title(req.Task),
 		Model: model, Cwd: dirs.cwd, CreatedAt: now, LastActive: now, Worktree: res.Worktree,
+		TraceID: b.Diag.Trace(),
 	}
 	row := store.Borrow{
 		ID: id, Kind: string(req.Kind), Vendor: string(v), Model: model,
 		TaskHash: taskKey(req, res.Worktree.Base), Budget: store.BorrowBudget{Minutes: budget.Minutes, Turns: budget.Turns},
-		StartedAt: now,
+		StartedAt: now, TraceID: b.Diag.Trace(),
 	}
 	lease, err := b.Store.StartBorrow(ctx, child, row, Caps)
 	if err != nil {

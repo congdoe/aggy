@@ -78,7 +78,8 @@ func editTarget(ctx context.Context, s *store.Store, g *gitWorktrees, id string)
 
 // editRec is the diagnostic log's ids for edit borrow b.
 func editRec(b store.Borrow, wt store.Worktree) diag.Rec {
-	r := diag.Rec{Borrow: b.ID, Child: b.ChildID, Vendor: b.Vendor}
+	// The trace on the borrow's row; the writer falls back to diag.db.
+	r := diag.Rec{Borrow: b.ID, Child: b.ChildID, Vendor: b.Vendor, Trace: b.TraceID}
 	if wt.Path != "" {
 		r.Worktree = filepath.Base(wt.Path)
 	}

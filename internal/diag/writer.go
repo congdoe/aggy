@@ -12,9 +12,12 @@ package diag
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -23,6 +26,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/redact"
+	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
 )
@@ -244,7 +248,7 @@ func (w *Writer) Log(ctx context.Context, r Rec) string {
 		return ""
 	}
 	code, ok := LookupCode(r.Code)
-	if r.Code != "" && !ok {
+	if !r.Code.IsZero() && !ok {
 		w.warnOnce(fmt.Errorf("unregistered code %q", r.Code))
 		return ""
 	}
@@ -254,7 +258,7 @@ func (w *Writer) Log(ctx context.Context, r Rec) string {
 	now := w.now().UTC()
 	rec := store.DiagRecord{
 		ID: w.ids.next(now), Schema: Schema, TS: now, Level: string(ev.Level), Component: ev.Component,
-		Event: string(ev.Name), Code: string(r.Code), Msg: w.scrub(r.Msg, maxMsg), Attrs: w.attrs(r.Attrs),
+		Event: ev.Name.String(), Code: r.Code.String(), Msg: w.scrub(r.Msg, maxMsg), Attrs: w.attrs(r.Attrs),
 		Signal: r.Signal, AggyVersion: w.version, OS: runtime.GOOS + "/" + runtime.GOARCH,
 		RunID: w.run, TraceID: r.Trace, CauseID: r.Cause, ParentID: r.Parent, ChildID: r.Child,
 		BorrowID: r.Borrow, WorktreeID: r.Worktree, Vendor: r.Vendor, VendorSessionID: r.VendorSession,
@@ -270,7 +274,9 @@ func (w *Writer) Log(ctx context.Context, r Rec) string {
 	// The command may be ending on a signal; the record still goes out.
 	ctx = context.WithoutCancel(ctx)
 	if err := w.insert(ctx, &rec); err != nil {
-		w.warnOnce(err)
+		if !errors.Is(err, errNoState) {
+			w.warnOnce(err)
+		}
 		return ""
 	}
 	if code.Security {
@@ -287,6 +293,12 @@ func (w *Writer) insert(ctx context.Context, rec *store.DiagRecord) (err error) 
 	path, err := w.diagPath()
 	if err != nil {
 		return err
+	}
+	// The log never makes the state dir: without one, aggy has kept no
+	// state here (a first run's refusal, or a borrow child whose HOME is
+	// not aggy's), and a record is not worth leaving one behind.
+	if _, err := safefs.Stat(filepath.Dir(path)); errors.Is(err, fs.ErrNotExist) {
+		return errNoState
 	}
 	w.dbMu.Lock()
 	defer w.dbMu.Unlock()
@@ -318,13 +330,21 @@ func (w *Writer) insert(ctx context.Context, rec *store.DiagRecord) (err error) 
 	return db.Insert(ctx, *rec)
 }
 
-// refusal appends rec to the index's events as a refusal. A failure is
-// warned once, like a diag write.
+// errNoState is a record not written because the state dir does not
+// exist; it is not warned about.
+var errNoState = errors.New("diag: no state dir")
+
+// refusal appends rec to the index's events as a refusal, only when the
+// index exists: it is opened without being made or migrated
+// (store.OpenExisting). Any other failure is warned once, like a diag
+// write.
 func (w *Writer) refusal(ctx context.Context, rec store.DiagRecord) {
 	path, err := w.indexPath()
 	if err == nil {
 		var s *store.Store
-		if s, err = store.Open(ctx, path); err == nil {
+		if s, err = store.OpenExisting(ctx, path); errors.Is(err, store.ErrNoIndex) {
+			return
+		} else if err == nil {
 			detail := map[string]any{"code": rec.Code, "event": rec.Event, "run": rec.RunID, "record": rec.ID}
 			for k, v := range map[string]string{"borrow": rec.BorrowID, "vendor": rec.Vendor, "trace": rec.TraceID} {
 				if v != "" {
@@ -360,7 +380,7 @@ func LockdownEvent(vendor string) Event {
 	case "grok":
 		return EvGrokLockdown
 	}
-	return ""
+	return Event{}
 }
 
 // Int returns a pointer to n, for Rec.Exit.

@@ -148,6 +148,59 @@ func openRW(ctx context.Context, path, dir string) (*Store, error) {
 	return s, nil
 }
 
+// ErrNoIndex matches OpenExisting on a path with no database.
+var ErrNoIndex = errors.New("store: no index there")
+
+// OpenExisting opens the database at path for writing only when it
+// exists and is at a version this binary knows: it never creates the
+// file or its directory and never migrates. For writers that must not
+// leave state behind, such as the diagnostic log's refusal rows.
+func OpenExisting(ctx context.Context, path string) (*Store, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := safefs.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("%w: %s", ErrNoIndex, path)
+	} else if err != nil {
+		return nil, err
+	}
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if err := safefs.Check(p); err != nil {
+			return nil, err
+		}
+	}
+	q := url.Values{}
+	q.Add("mode", "rw") // never create
+	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeout.Milliseconds()))
+	q.Add("_pragma", "foreign_keys(1)")
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: q.Encode()}
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		return nil, err
+	}
+	s := &Store{db: db, path: path}
+	known, err := KnownVersion()
+	if err == nil {
+		var v int
+		if v, err = s.Version(ctx); err == nil && (v == 0 || v > known) {
+			err = fmt.Errorf("store: %s is at schema version %d, which this aggy cannot write", path, v)
+		}
+	}
+	if err == nil {
+		for _, p := range []string{path, path + "-wal", path + "-shm"} {
+			if err = safefs.Check(p); err != nil {
+				break
+			}
+		}
+	}
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
 // dsn builds a file: URI that names exactly path. SQLite percent-decodes
 // the URI path and splits it at '?' and '#', so the path is escaped rather
 // than concatenated: "auth.jso%6E" must open a file of that name, not

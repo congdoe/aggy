@@ -16,6 +16,19 @@ import (
 // gcSchema is the version that records worktree removals.
 const gcSchema = 14
 
+// traceSchema is the version that records traces on borrows and children.
+const traceSchema = 15
+
+// traceExpr is col, or ” on an index from before version 15 that a
+// read-only caller cannot migrate.
+func (s *Store) traceExpr(ctx context.Context, col string) (string, error) {
+	v, err := s.Version(ctx)
+	if err != nil || v < traceSchema {
+		return "''", err
+	}
+	return "COALESCE(" + col + ", '')", nil
+}
+
 // gcExprs are c.worktree_removed_at and c.worktree_accepted_at, or, on
 // an index from before version 14 that a read-only caller (aggy gc
 // --dry-run) cannot migrate, what the migration will set: reject removed
@@ -37,6 +50,7 @@ type GCWorktree struct {
 	// Worktree.Removed is set once a removal was claimed; a claim whose
 	// removal was cut short (a crash) leaves the directory behind.
 	Worktree Worktree
+	TraceID  string    // its borrow's diagnostic trace; "" if none
 	Running  bool      // its borrow is still marked running
 	Held     bool      // its child's lease is held by a live process
 	Ended    time.Time // when the borrow ended, or started if it never did
@@ -67,10 +81,14 @@ func (s *Store) gcWorktrees(ctx context.Context, id string) ([]GCWorktree, error
 	if err != nil {
 		return nil, err
 	}
+	trace, err := s.traceExpr(ctx, "b.trace_id")
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT b.id, c.worktree, c.branch, c.worktree_base, c.worktree_repo, c.worktree_git_dir,
 		        c.worktree_state, c.worktree_tree, `+removed+`, `+accepted+`, b.status, COALESCE(b.ended_at, b.started_at),
-		        c.lease_pid, c.lease_nonce
+		        c.lease_pid, c.lease_nonce, `+trace+`
 		 FROM children c JOIN borrows b ON b.child_id = c.id
 		 WHERE c.worktree <> '' AND (? = '' OR b.id = ?) ORDER BY b.id`, id, id)
 	if err != nil {
@@ -86,7 +104,7 @@ func (s *Store) gcWorktrees(ctx context.Context, id string) ([]GCWorktree, error
 		var nonce sql.NullString
 		w := &g.Worktree
 		if err := rows.Scan(&g.BorrowID, &w.Path, &w.Branch, &w.Base, &w.Repo, &w.GitDir,
-			&w.State, &w.Tree, &gone, &acc, &status, &ended, &pid, &nonce); err != nil {
+			&w.State, &w.Tree, &gone, &acc, &status, &ended, &pid, &nonce, &g.TraceID); err != nil {
 			return nil, err
 		}
 		w.Removed, g.Accepted = fromNull(gone), fromNull(acc)
@@ -101,6 +119,7 @@ func (s *Store) gcWorktrees(ctx context.Context, id string) ([]GCWorktree, error
 // GCChild is a closed borrow child old enough to prune from the index.
 type GCChild struct {
 	ID, Kind, Vendor string
+	TraceID          string // its diagnostic trace; "" if none
 	LastActive       time.Time
 	Held             bool // its lease is held by a live process
 	pid              int
@@ -120,8 +139,12 @@ func (s *Store) GCChildren(ctx context.Context, before time.Time) ([]GCChild, er
 	if err != nil {
 		return nil, err
 	}
+	trace, err := s.traceExpr(ctx, "c.trace_id")
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT c.id, c.kind, c.vendor, c.last_active, c.lease_pid, c.lease_nonce FROM children c
+		`SELECT c.id, c.kind, c.vendor, c.last_active, c.lease_pid, c.lease_nonce, `+trace+` FROM children c
 		 WHERE c.last_active < ? AND `+fmt.Sprintf(pruneWhere, removed)+` ORDER BY c.last_active, c.id`,
 		millis(before))
 	if err != nil {
@@ -133,7 +156,7 @@ func (s *Store) GCChildren(ctx context.Context, before time.Time) ([]GCChild, er
 		var c GCChild
 		var active int64
 		var pid sql.NullInt64
-		if err := rows.Scan(&c.ID, &c.Kind, &c.Vendor, &active, &pid, &c.nonce); err != nil {
+		if err := rows.Scan(&c.ID, &c.Kind, &c.Vendor, &active, &pid, &c.nonce, &c.TraceID); err != nil {
 			return nil, err
 		}
 		c.LastActive, c.pid = fromMillis(active), int(pid.Int64)

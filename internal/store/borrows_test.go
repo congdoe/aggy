@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -100,6 +101,10 @@ func TestBorrowUsageSince(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// u4's lease stays held while it runs: a lease the collector
+	// finalizes drops its lock, and the next start reaps u4 as abandoned.
+	var leases []*BorrowLease
+	defer func() { runtime.KeepAlive(leases) }()
 	for _, b := range []struct {
 		id, vendor string
 		started    time.Time
@@ -118,6 +123,7 @@ func TestBorrowUsageSince(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		leases = append(leases, l)
 		if b.took > 0 {
 			if err := l.Finish(ctx, BorrowEnd{Status: "done", Outcome: "ok", Tokens: b.tokens, EndedAt: b.started.Add(b.took)}); err != nil {
 				t.Fatal(err)

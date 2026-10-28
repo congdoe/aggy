@@ -31,7 +31,7 @@ import (
 const diagUsage = `Usage: aggy diag [filters] [--json | --jsonl] [--follow] [-n N]
        aggy diag show <id> [--json]
        aggy diag codes [code]
-       aggy diag sql "<SELECT ...>" [--json]
+       aggy diag sql "<SELECT ...>" [--json] [--timeout D] [--limit N]
        aggy diag export --jsonl [filters]
        aggy diag bundle [--trace ID] [--since WHEN]
 
@@ -45,7 +45,8 @@ writes either file. docs/logging.md is the guide.
   codes       every reason code (or one, or an event) with its meaning
               and what to check next
   sql         one SELECT on the records table (diag.records), with the
-              index attached read-only as idx (idx.events, idx.borrows)
+              index attached read-only as idx (idx.events, idx.borrows);
+              --timeout (30s) and --limit rows (10000; 0 for no cap)
   export      the records as JSON lines, for jq or an agent
   bundle      one scrubbed Markdown file to hand to an agent or attach
               to an issue: the timeline, its codes, aggy doctor --report,
@@ -86,7 +87,7 @@ func diagWith(ctx context.Context, args []string, now func() time.Time, stdout, 
 	case "codes":
 		err = diagCodes(args, stdout)
 	case "sql":
-		err = diagSQL(ctx, args, stdout)
+		err = diagSQL(ctx, args, stdout, stderr)
 	case "bundle":
 		err = diagBundle(ctx, args, now, stdout)
 	case "help":
@@ -525,11 +526,11 @@ func diagCodes(args []string, stdout io.Writer) error {
 		return usageError{errors.New("codes takes at most one code")}
 	}
 	if len(args) == 1 {
-		if c, ok := diag.LookupCode(diag.Code(args[0])); ok {
+		if c, ok := diag.CodeNamed(args[0]); ok {
 			printCode(stdout, c)
 			return nil
 		}
-		if e, ok := diag.LookupEvent(diag.Event(args[0])); ok {
+		if e, ok := diag.EventNamed(args[0]); ok {
 			fmt.Fprintf(stdout, "%s (event, %s, component %s)\n  %s\n  next: %s\n", e.Name, e.Level, e.Component, e.Meaning, e.Next)
 			return nil
 		}
@@ -552,10 +553,15 @@ func printCode(w io.Writer, c diag.CodeInfo) {
 	fmt.Fprintf(w, "%s%s\n  %s\n  next: %s\n", c.Name, sec, c.Meaning, c.Next)
 }
 
-func diagSQL(ctx context.Context, args []string, stdout io.Writer) error {
+// sqlFlushEvery is how many table rows aggy diag sql buffers to align.
+const sqlFlushEvery = 100
+
+func diagSQL(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("diag sql", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	asJSON := fs.Bool("json", false, "")
+	timeout := fs.Duration("timeout", 30*time.Second, "")
+	limit := fs.Int("limit", 10000, "")
 	var q string
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		q, args = args[0], args[1:]
@@ -568,39 +574,59 @@ func diagSQL(ctx context.Context, args []string, stdout io.Writer) error {
 	} else if fs.NArg() > 0 || strings.TrimSpace(q) == "" {
 		return usageError{errors.New(`sql takes one quoted SELECT`)}
 	}
+	if *timeout <= 0 || *limit < 0 {
+		return usageError{errors.New("--timeout must be more than 0, and --limit 0 (no cap) or more")}
+	}
 	v, err := openDiagView(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = v.Close() }()
-	cols, rows, err := v.Query(ctx, q)
-	if err != nil {
-		return err
-	}
+	ctx, cancel := context.WithTimeout(ctx, *timeout)
+	defer cancel()
 	cell := func(x any) any {
 		if b, ok := x.([]byte); ok {
 			return string(b)
 		}
 		return x
 	}
-	if *asJSON {
-		out := make([]map[string]any, 0, len(rows))
-		for _, r := range rows {
-			m := map[string]any{}
-			for i, c := range cols {
+	// Rows are printed as they come: a table in blocks of sqlFlushEvery
+	// rows, or a JSON array written element by element.
+	var names []string
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	n := 0
+	cols := func(c []string) error {
+		names = c
+		if *asJSON {
+			_, err := io.WriteString(stdout, "[")
+			return err
+		}
+		esc := make([]string, len(c))
+		for i, x := range c {
+			esc[i] = termsafe.Field(x)
+		}
+		_, err := fmt.Fprintln(tw, strings.Join(esc, "\t"))
+		return err
+	}
+	row := func(r []any) error {
+		n++
+		if *asJSON {
+			m := make(map[string]any, len(names))
+			for i, c := range names {
 				m[c] = cell(r[i])
 			}
-			out = append(out, m)
+			b, err := json.Marshal(m)
+			if err != nil {
+				return err
+			}
+			sep := ",\n  "
+			if n == 1 {
+				sep = "\n  "
+			}
+			_, err = io.WriteString(stdout, sep+string(b))
+			return err
 		}
-		return writeJSON(stdout, out)
-	}
-	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	esc := make([]string, len(cols))
-	for i, c := range cols {
-		esc[i] = termsafe.Field(c)
-	}
-	fmt.Fprintln(tw, strings.Join(esc, "\t"))
-	for _, r := range rows {
+		esc := make([]string, len(r))
 		for i, x := range r {
 			if x == nil {
 				esc[i] = "NULL"
@@ -608,9 +634,29 @@ func diagSQL(ctx context.Context, args []string, stdout io.Writer) error {
 				esc[i] = termsafe.Field(fmt.Sprint(cell(x)))
 			}
 		}
-		fmt.Fprintln(tw, strings.Join(esc, "\t"))
+		if _, err := fmt.Fprintln(tw, strings.Join(esc, "\t")); err != nil {
+			return err
+		}
+		if n%sqlFlushEvery == 0 {
+			return tw.Flush()
+		}
+		return nil
 	}
-	return tw.Flush()
+	capped, err := v.Query(ctx, q, *limit, cols, row)
+	if names != nil {
+		if *asJSON {
+			_, _ = io.WriteString(stdout, "\n]\n")
+		} else {
+			_ = tw.Flush()
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) || (err != nil && ctx.Err() != nil) {
+		return fmt.Errorf("the query ran past --timeout %s and was stopped", *timeout)
+	}
+	if capped {
+		fmt.Fprintf(stderr, "aggy diag: stopped at %d rows (--limit; 0 for no cap)\n", *limit)
+	}
+	return err
 }
 
 // configKeys lists the keys of the TOML file at path, never its values:
@@ -711,7 +757,7 @@ func diagBundle(ctx context.Context, args []string, now func() time.Time, stdout
 		b.WriteString("None in this timeline.\n")
 	}
 	for _, c := range seenCodes {
-		if info, ok := diag.LookupCode(diag.Code(c)); ok {
+		if info, ok := diag.CodeNamed(c); ok {
 			fmt.Fprintf(&b, "- `%s`: %s Next: %s\n", info.Name, info.Meaning, info.Next)
 		}
 	}

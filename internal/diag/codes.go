@@ -9,7 +9,8 @@ import (
 // meaning, and what to check next. docs/logging.md's registry tables are
 // generated from it (Markdown), and TestRegistry fails on an event or
 // code used in code but not registered, or registered but never used.
-// Code refers to these by their constants only, never by a string.
+// Code refers to these by the variables below only: Event and Code have
+// an unexported field, so no other package can make one from a string.
 
 // Level is a record's severity.
 type Level string
@@ -36,10 +37,21 @@ func AtLeast(l Level) []Level {
 }
 
 // Event is a stable dotted name, <component>.<thing>.<what happened>.
-type Event string
+// Only this file makes one.
+type Event struct{ name string }
 
-// Code is a stable reason code, <area>.<reason>.
-type Code string
+// String is the event's name.
+func (e Event) String() string { return e.name }
+
+// Code is a stable reason code, <area>.<reason>. Only this file makes
+// one; the zero Code is no code.
+type Code struct{ name string }
+
+// String is the code's name.
+func (c Code) String() string { return c.name }
+
+// IsZero reports whether c is no code.
+func (c Code) IsZero() bool { return c.name == "" }
 
 // EventInfo is a registered event.
 type EventInfo struct {
@@ -61,75 +73,75 @@ type CodeInfo struct {
 }
 
 // Events.
-const (
-	EvBorrowRefused       Event = "borrow.request.refused"
-	EvBorrowVendorSkipped Event = "borrow.vendor.skipped"
-	EvBorrowChildStarted  Event = "borrow.child.started"
-	EvBorrowChildExited   Event = "borrow.child.exited"
-	EvBorrowFailed        Event = "borrow.run.failed"
-	EvBorrowFinished      Event = "borrow.run.finished"
-	EvClaudeLockdown      Event = "adapter.claude.lockdown_rejected"
-	EvCodexLockdown       Event = "adapter.codex.lockdown_rejected"
-	EvGrokLockdown        Event = "adapter.grok.lockdown_rejected"
-	EvGrokSandboxRefused  Event = "adapter.grok.sandbox_refused"
-	EvAcceptRefused       Event = "accept.request.refused"
-	EvAcceptApplied       Event = "accept.diff.applied"
-	EvAcceptDeclined      Event = "accept.diff.declined"
-	EvGateRefused         Event = "check.gate.refused"
-	EvGateDecided         Event = "check.gate.decided"
-	EvCheckRefused        Event = "check.run.refused"
-	EvCheckCommandFailed  Event = "check.command.failed"
-	EvCheckFinished       Event = "check.run.finished"
-	EvGCRefused           Event = "gc.run.refused"
-	EvGCRemoved           Event = "gc.item.removed"
-	EvGCRemoveFailed      Event = "gc.item.failed"
-	EvSetupChecked        Event = "setup.vendor.checked"
-	EvSetupFailed         Event = "setup.run.failed"
-	EvDoctorError         Event = "doctor.finding.error"
-	EvDoctorRefused       Event = "doctor.run.refused"
+var (
+	EvBorrowRefused       = Event{"borrow.request.refused"}
+	EvBorrowVendorSkipped = Event{"borrow.vendor.skipped"}
+	EvBorrowChildStarted  = Event{"borrow.child.started"}
+	EvBorrowChildExited   = Event{"borrow.child.exited"}
+	EvBorrowFailed        = Event{"borrow.run.failed"}
+	EvBorrowFinished      = Event{"borrow.run.finished"}
+	EvClaudeLockdown      = Event{"adapter.claude.lockdown_rejected"}
+	EvCodexLockdown       = Event{"adapter.codex.lockdown_rejected"}
+	EvGrokLockdown        = Event{"adapter.grok.lockdown_rejected"}
+	EvGrokSandboxRefused  = Event{"adapter.grok.sandbox_refused"}
+	EvAcceptRefused       = Event{"accept.request.refused"}
+	EvAcceptApplied       = Event{"accept.diff.applied"}
+	EvAcceptDeclined      = Event{"accept.diff.declined"}
+	EvGateRefused         = Event{"check.gate.refused"}
+	EvGateDecided         = Event{"check.gate.decided"}
+	EvCheckRefused        = Event{"check.run.refused"}
+	EvCheckCommandFailed  = Event{"check.command.failed"}
+	EvCheckFinished       = Event{"check.run.finished"}
+	EvGCRefused           = Event{"gc.run.refused"}
+	EvGCRemoved           = Event{"gc.item.removed"}
+	EvGCRemoveFailed      = Event{"gc.item.failed"}
+	EvSetupChecked        = Event{"setup.vendor.checked"}
+	EvSetupFailed         = Event{"setup.run.failed"}
+	EvDoctorError         = Event{"doctor.finding.error"}
+	EvDoctorRefused       = Event{"doctor.run.refused"}
 )
 
 // Codes.
-const (
-	CodeUsage          Code = "cli.usage"
-	CodeConfig         Code = "cli.config_invalid"
-	CodeStore          Code = "store.unavailable"
-	CodeOneHop         Code = "borrow.one_hop"
-	CodeBorrowInvalid  Code = "borrow.invalid_request"
-	CodeNoVendor       Code = "borrow.no_vendor"
-	CodeBorrowStart    Code = "borrow.start_failed"
-	CodeCLIMissing     Code = "vendor.cli_missing"
-	CodeUnsupported    Code = "adapter.unsupported"
-	CodeNoCapability   Code = "adapter.no_capability"
-	CodeFileTools      Code = "adapter.file_tools_off"
-	CodeNoSandbox      Code = "sandbox.missing"
-	CodeUntested       Code = "lockdown.untested_version"
-	CodeLockdown       Code = "lockdown.rejected"
-	CodeRateLimit      Code = "vendor.rate_limit"
-	CodeAuth           Code = "vendor.auth"
-	CodeBilling        Code = "vendor.billing"
-	CodeServer         Code = "vendor.server"
-	CodeVendorInvalid  Code = "vendor.invalid_request"
-	CodeMaxTurns       Code = "borrow.max_turns"
-	CodeTimeout        Code = "borrow.timeout"
-	CodeInterrupted    Code = "borrow.interrupted"
-	CodeChildFailed    Code = "borrow.child_failed"
-	CodeAcceptTarget   Code = "accept.target_invalid"
-	CodeProtected      Code = "accept.protected_path"
-	CodeTreeChanged    Code = "accept.worktree_changed"
-	CodeDirty          Code = "accept.checkout_dirty"
-	CodeAcceptFailed   Code = "accept.failed"
-	CodeGateTempDir    Code = "check.gate_temp_dir"
-	CodeChecksChanged  Code = "check.tree_changed"
-	CodeGateFailed     Code = "check.gate_failed"
-	CodeChecksFailed   Code = "check.failed"
-	CodeNotGit         Code = "check.not_git"
-	CodeEditWorktree   Code = "check.edit_worktree"
-	CodeNoChecks       Code = "check.no_checks"
-	CodeGCFailed       Code = "gc.failed"
-	CodeGCRemoveFailed Code = "gc.remove_failed"
-	CodeDoctorError    Code = "doctor.error_finding"
-	CodeDiagWrite      Code = "diag.write_failed"
+var (
+	CodeUsage          = Code{"cli.usage"}
+	CodeConfig         = Code{"cli.config_invalid"}
+	CodeStore          = Code{"store.unavailable"}
+	CodeOneHop         = Code{"borrow.one_hop"}
+	CodeBorrowInvalid  = Code{"borrow.invalid_request"}
+	CodeNoVendor       = Code{"borrow.no_vendor"}
+	CodeBorrowStart    = Code{"borrow.start_failed"}
+	CodeCLIMissing     = Code{"vendor.cli_missing"}
+	CodeUnsupported    = Code{"adapter.unsupported"}
+	CodeNoCapability   = Code{"adapter.no_capability"}
+	CodeFileTools      = Code{"adapter.file_tools_off"}
+	CodeNoSandbox      = Code{"sandbox.missing"}
+	CodeUntested       = Code{"lockdown.untested_version"}
+	CodeLockdown       = Code{"lockdown.rejected"}
+	CodeRateLimit      = Code{"vendor.rate_limit"}
+	CodeAuth           = Code{"vendor.auth"}
+	CodeBilling        = Code{"vendor.billing"}
+	CodeServer         = Code{"vendor.server"}
+	CodeVendorInvalid  = Code{"vendor.invalid_request"}
+	CodeMaxTurns       = Code{"borrow.max_turns"}
+	CodeTimeout        = Code{"borrow.timeout"}
+	CodeInterrupted    = Code{"borrow.interrupted"}
+	CodeChildFailed    = Code{"borrow.child_failed"}
+	CodeAcceptTarget   = Code{"accept.target_invalid"}
+	CodeProtected      = Code{"accept.protected_path"}
+	CodeTreeChanged    = Code{"accept.worktree_changed"}
+	CodeDirty          = Code{"accept.checkout_dirty"}
+	CodeAcceptFailed   = Code{"accept.failed"}
+	CodeGateTempDir    = Code{"check.gate_temp_dir"}
+	CodeChecksChanged  = Code{"check.tree_changed"}
+	CodeGateFailed     = Code{"check.gate_failed"}
+	CodeChecksFailed   = Code{"check.failed"}
+	CodeNotGit         = Code{"check.not_git"}
+	CodeEditWorktree   = Code{"check.edit_worktree"}
+	CodeNoChecks       = Code{"check.no_checks"}
+	CodeGCFailed       = Code{"gc.failed"}
+	CodeGCRemoveFailed = Code{"gc.remove_failed"}
+	CodeDoctorError    = Code{"doctor.error_finding"}
+	CodeDiagWrite      = Code{"diag.write_failed"}
 )
 
 const showRun = "aggy diag show <run id> for what led to it"
@@ -223,6 +235,12 @@ func LookupCode(c Code) (CodeInfo, bool) {
 	}
 	return CodeInfo{}, false
 }
+
+// EventNamed returns the event named s.
+func EventNamed(s string) (EventInfo, bool) { return LookupEvent(Event{s}) }
+
+// CodeNamed returns the code named s.
+func CodeNamed(s string) (CodeInfo, bool) { return LookupCode(Code{s}) }
 
 // Events returns every registered event, in registry order.
 func Events() []EventInfo { return append([]EventInfo(nil), events...) }

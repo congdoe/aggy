@@ -87,7 +87,7 @@ func TestWriterRecord(t *testing.T) {
 		t.Fatalf("got %d records", len(recs))
 	}
 	r := recs[0]
-	if r.ID != id || r.Level != "error" || r.Component != "borrow" || r.Code != string(CodeBorrowStart) ||
+	if r.ID != id || r.Level != "error" || r.Component != "borrow" || r.Code != CodeBorrowStart.String() ||
 		r.RunID != w.RunID() || r.TraceID != w.Trace() || r.BorrowID != "b1" || r.Schema != Schema ||
 		*r.ExitCode != 2 || *r.DurationMS != 1500 || r.AggyVersion != "v-test" {
 		t.Errorf("record = %+v", r)
@@ -144,7 +144,7 @@ func TestWriterLevel(t *testing.T) {
 	w, _, dir := testWriter(t, "warn")
 	w.Log(context.Background(), Rec{Event: EvBorrowChildStarted}) // info
 	w.Log(context.Background(), Rec{Event: EvBorrowFailed})       // warn
-	if recs := records(t, dir); len(recs) != 1 || recs[0].Event != string(EvBorrowFailed) {
+	if recs := records(t, dir); len(recs) != 1 || recs[0].Event != EvBorrowFailed.String() {
 		t.Errorf("records = %+v", recs)
 	}
 	if w.stores(LevelDebug) {
@@ -178,6 +178,9 @@ func TestWriterFailure(t *testing.T) {
 	// A path that works again (the kept handle follows the path).
 	for _, sub := range []string{"a", "b"} {
 		p := filepath.Join(dir, sub, "diag.db")
+		if err := os.Mkdir(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
 		w.diagPath = func() (string, error) { return p, nil }
 		if id := w.Log(context.Background(), Rec{Event: EvGCRemoved}); id == "" {
 			t.Errorf("%s: not written", sub)
@@ -190,10 +193,10 @@ func TestWriterFailure(t *testing.T) {
 
 func TestWriterUnregistered(t *testing.T) {
 	w, warn, dir := testWriter(t, "info")
-	if id := w.Log(context.Background(), Rec{Event: "made.up.event"}); id != "" {
+	if id := w.Log(context.Background(), Rec{Event: Event{"made.up.event"}}); id != "" {
 		t.Errorf("unregistered event stored: %q", id)
 	}
-	if id := w.Log(context.Background(), Rec{Event: EvGCRemoved, Code: "made.up"}); id != "" {
+	if id := w.Log(context.Background(), Rec{Event: EvGCRemoved, Code: Code{"made.up"}}); id != "" {
 		t.Errorf("unregistered code stored: %q", id)
 	}
 	if !strings.Contains(warn.String(), "unregistered event") {
@@ -212,10 +215,15 @@ func TestWriterUnregistered(t *testing.T) {
 // in the index's events; another code does not.
 func TestWriterSecurityRefusal(t *testing.T) {
 	w, warn, dir := testWriter(t, "info")
+	idx, err := store.Open(context.Background(), filepath.Join(dir, "aggy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = idx.Close()
 	rid := w.Log(context.Background(), Rec{Event: EvGrokLockdown, Code: CodeLockdown, Borrow: "b1", Child: "c1", Vendor: "grok"})
 	w.Log(context.Background(), Rec{Event: EvBorrowFailed, Code: CodeRateLimit})
 	s, err := store.OpenReadOnly(context.Background(), filepath.Join(dir, "aggy.db"))
-	if err != nil {
+	if err != nil || warn.Len() != 0 {
 		t.Fatalf("%v (warn %q)", err, warn)
 	}
 	defer func() { _ = s.Close() }()
@@ -224,8 +232,35 @@ func TestWriterSecurityRefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(evs) != 1 || evs[0].Type != store.EventRefusal || evs[0].ChildID != "c1" ||
-		evs[0].Detail["code"] != string(CodeLockdown) || evs[0].Detail["record"] != rid || evs[0].Detail["run"] != w.RunID() {
+		evs[0].Detail["code"] != CodeLockdown.String() || evs[0].Detail["record"] != rid || evs[0].Detail["run"] != w.RunID() {
 		t.Errorf("events = %+v", evs)
+	}
+}
+
+// TestWriterNoState (P58-1): with no state dir, a record, a security
+// refusal included, makes no file and warns nothing; with a state dir
+// but no index, the refusal goes to diag.db only and makes no index.
+func TestWriterNoState(t *testing.T) {
+	w, warn, dir := testWriter(t, "info")
+	state := filepath.Join(dir, "state")
+	w.diagPath = func() (string, error) { return filepath.Join(state, "diag.db"), nil }
+	w.indexPath = func() (string, error) { return filepath.Join(state, "aggy.db"), nil }
+	for _, r := range []Rec{{Event: EvGCRemoved}, {Event: EvAcceptRefused, Code: CodeProtected, Borrow: "b1"}} {
+		if id := w.Log(context.Background(), r); id != "" {
+			t.Errorf("Log(%v) = %q", r.Event, id)
+		}
+	}
+	if ents, err := os.ReadDir(dir); err != nil || len(ents) != 0 || warn.Len() != 0 {
+		t.Fatalf("files %v, %v; warn %q", ents, err, warn)
+	}
+	if err := os.Mkdir(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if id := w.Log(context.Background(), Rec{Event: EvAcceptRefused, Code: CodeProtected, Borrow: "b1"}); id == "" {
+		t.Errorf("not written; warn %q", warn)
+	}
+	if _, err := os.Stat(filepath.Join(state, "aggy.db")); !errors.Is(err, os.ErrNotExist) || warn.Len() != 0 {
+		t.Errorf("index: %v; warn %q", err, warn)
 	}
 }
 
