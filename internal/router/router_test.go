@@ -28,7 +28,7 @@ func TestRouteDefaults(t *testing.T) {
 		{adapter.Research, vs(grok)},
 		{adapter.Image, vs(codex, grok)},
 		{adapter.Video, vs(grok)},
-		{adapter.Review, vs(codex, grok, claude)},
+		{adapter.Review, vs(claude, codex, grok)},
 		{adapter.Edit, vs(codex, grok)},
 	}
 	for _, tt := range tests {
@@ -134,8 +134,10 @@ func TestChooseTable(t *testing.T) {
 	}{
 		{name: "default news", cfg: config.Default(), req: Request{Kind: "news"}, want: vs(grok)},
 		{name: "default image", cfg: config.Default(), req: Request{Kind: "image"}, want: vs(codex, grok)},
-		{name: "review minus the author", cfg: config.Default(), req: Request{Kind: "review", Parent: grok}, want: vs(codex, claude)},
-		{name: "review with no parent", cfg: config.Default(), req: Request{Kind: "review"}, want: vs(codex, grok, claude)},
+		// T6779: the default review keeps the on-screen vendor, Claude first.
+		{name: "review keeps the parent", cfg: config.Default(), req: Request{Kind: "review", Parent: grok}, want: vs(claude, codex, grok)},
+		{name: "review picks claude when claude is the parent", cfg: config.Default(), req: Request{Kind: "review", Parent: claude}, want: vs(claude, codex, grok)},
+		{name: "review with no parent", cfg: config.Default(), req: Request{Kind: "review"}, want: vs(claude, codex, grok)},
 		{name: "edit is routed", cfg: config.Default(), req: Request{Kind: "edit"}, want: vs(codex, grok)},
 		{name: "user codex research is kept with a note", cfg: user, req: Request{Kind: "research"}, want: vs(codex, grok), wantNotes: []string{"codex: research: not supported by this CLI until T6638"}},
 		{name: "override replaces the list", cfg: config.Default(), req: Request{Kind: "image", Override: grok}, want: vs(grok)},

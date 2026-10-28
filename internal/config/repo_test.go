@@ -166,7 +166,7 @@ func TestMergeNarrowsNeverWidens(t *testing.T) {
 			if len(e.Routing.Video.Vendors) != 0 {
 				t.Errorf("video = %v, want none (grok not allowed)", e.Routing.Video.Vendors)
 			}
-			if !e.Routing.Review.NotAuthor || e.Allows(adapter.Grok) || !e.Allows(adapter.Codex) {
+			if !slices.Equal(e.Routing.Review.Vendors, []adapter.Vendor{adapter.Claude, adapter.Codex}) || e.Allows(adapter.Grok) || !e.Allows(adapter.Codex) {
 				t.Errorf("review or Allows wrong: %+v", e.Routing.Review)
 			}
 		}},
