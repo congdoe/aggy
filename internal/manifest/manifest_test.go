@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -164,4 +165,53 @@ func TestFailedWriteMarkedFailed(t *testing.T) {
 	if b, _ := os.ReadFile(file); string(b) != "x\n" {
 		t.Errorf("file changed: %q", b)
 	}
+}
+
+// TestLockSharedThroughSymlink (B14-5): a content patch through a
+// symlink and a link or removal change of that symlink take a common
+// lock, and so do two content patches through two links to one file.
+func TestLockSharedThroughSymlink(t *testing.T) {
+	f := setup(t)
+	target := filepath.Join(f.dir, "real.toml")
+	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link, link2 := filepath.Join(f.dir, "link.toml"), filepath.Join(f.dir, "link2.toml")
+	for _, l := range []string{link, link2} {
+		if err := os.Symlink(target, l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	shared := func(a, b []string) bool {
+		for _, x := range a {
+			if slices.Contains(b, x) {
+				return true
+			}
+		}
+		return false
+	}
+	content, _ := f.m.lockPaths(link, false)
+	removal, _ := f.m.lockPaths(link, true)
+	content2, _ := f.m.lockPaths(link2, false)
+	if !shared(content, removal) {
+		t.Error("a content patch and a removal of one symlink take different locks")
+	}
+	if !shared(content, content2) {
+		t.Error("two content patches of one file take different locks")
+	}
+	if !slices.IsSorted(content) {
+		t.Errorf("locks not in order: %v", content)
+	}
+	// Both locks can be taken and released in turn.
+	ctx := context.Background()
+	u, locked, err := f.m.lockTarget(ctx, link, false)
+	if err != nil || !locked {
+		t.Fatal(err)
+	}
+	u()
+	u, _, err = f.m.lockTarget(ctx, link, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u()
 }

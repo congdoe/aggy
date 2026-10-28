@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/congdoe/aggy/internal/home"
@@ -82,39 +83,71 @@ func pathKey(file string, noFollow bool) (string, error) {
 	return filepath.Join(dir, filepath.Base(file)), nil
 }
 
-// lockPath is the per-target lock file: run/patch/<sha256(key)>.lock next
-// to the database. The key is the target's pathKey, so every spelling of
-// one file, through a linked directory or in another case, takes the same
-// lock.
-func (m *Manifest) lockPath(file string, noFollow bool) (string, error) {
-	key, err := pathKey(file, noFollow)
+// lockPaths are the per-target lock files: run/patch/<sha256(key)>.lock
+// next to the database, sorted. The keys are the target's
+// pathKeys, so every spelling of one file, through a linked directory or
+// in another case, takes the same lock. Every change takes the lock of
+// the path itself (its noFollow key); a content change also takes the
+// lock of the file the path resolves to, so a content patch and a link
+// or removal change on one symlinked path share a lock (B14-5).
+func (m *Manifest) lockPaths(file string, noFollow bool) ([]string, error) {
+	keys := []string{}
+	k, err := pathKey(file, true)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return filepath.Join(filepath.Dir(m.store.Path()), "run", "patch", patch.Hash([]byte(key))+".lock"), nil
+	keys = append(keys, k)
+	if !noFollow {
+		if k, err = pathKey(file, false); err != nil {
+			return nil, err
+		}
+		if k != keys[0] {
+			keys = append(keys, k)
+		}
+	}
+	var out []string
+	for _, k := range keys {
+		out = append(out, filepath.Join(filepath.Dir(m.store.Path()), "run", "patch", patch.Hash([]byte(k))+".lock"))
+	}
+	slices.Sort(out) // one order everywhere, so two takers cannot deadlock
+	return out, nil
 }
 
 // lockFile is store.LockFile; tests replace it to simulate a file system
 // without locks.
 var lockFile = store.LockFile
 
-// lockTarget takes the per-target lock. Where file locks are unsupported
-// it goes on unlocked, and locked is false; the hash guard then still
-// refuses most races, and Apply marks the row Unlocked, so unwire does
-// not take its plan as proof about an older change.
+// lockTarget takes the per-target locks (lockPaths). Where file locks
+// are unsupported it goes on unlocked, and locked is false; the hash
+// guard then still refuses most races, and Apply marks the row Unlocked,
+// so unwire does not take its plan as proof about an older change.
 func (m *Manifest) lockTarget(ctx context.Context, file string, noFollow bool) (unlock func(), locked bool, err error) {
-	lock, err := m.lockPath(file, noFollow)
+	locks, err := m.lockPaths(file, noFollow)
 	if err != nil {
 		return nil, false, err
 	}
-	if err := safefs.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+	if err := safefs.MkdirAll(filepath.Dir(locks[0]), 0o700); err != nil {
 		return nil, false, err
 	}
-	unlock, err = lockFile(ctx, lock, lockWait)
-	if errors.Is(err, store.ErrLockUnsupported) {
-		return func() {}, false, nil
+	var held []func()
+	release := func() {
+		for i := len(held) - 1; i >= 0; i-- {
+			held[i]()
+		}
 	}
-	return unlock, err == nil, err
+	for _, l := range locks {
+		u, err := lockFile(ctx, l, lockWait)
+		if errors.Is(err, store.ErrLockUnsupported) {
+			release()
+			return func() {}, false, nil
+		}
+		if err != nil {
+			release()
+			return nil, false, err
+		}
+		held = append(held, u)
+	}
+	return release, true, nil
 }
 
 // Apply applies p as part of run runID and records it.

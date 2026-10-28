@@ -69,8 +69,20 @@ func TestUnwireUnlockedPlanProvesNothing(t *testing.T) {
 // TestUnwireFailedRowRewrittenBirth (T6735 2): APFS rewrote the birth
 // time of the directory a failed create made. Its device and inode still
 // match, and this is the undo of the change that made it, so the empty
-// directory goes. Fails on 7a6c6a4.
+// directory goes. Fails on 7a6c6a4. B14-7: off APFS, where inode numbers
+// are reused, a device and inode match is not enough, and it stays.
 func TestUnwireFailedRowRewrittenBirth(t *testing.T) {
+	for _, apfs := range []bool{true, false} {
+		t.Run(map[bool]string{true: "apfs", false: "other"}[apfs], func(t *testing.T) {
+			old := isAPFS
+			isAPFS = func(string) bool { return apfs }
+			t.Cleanup(func() { isAPFS = old })
+			unwireRewrittenBirth(t, apfs)
+		})
+	}
+}
+
+func unwireRewrittenBirth(t *testing.T, gone bool) {
 	f := setup(t)
 	ctx := context.Background()
 	real := dirIdentity
@@ -94,8 +106,14 @@ func TestUnwireFailedRowRewrittenBirth(t *testing.T) {
 	if _, err := f.m.Unwire(ctx, Selection{All: true}, UnwireOptions{}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Lstat(dir); err == nil {
-		t.Error("the directory the failed create made is still there")
+	if _, err := os.Lstat(dir); (err != nil) != gone {
+		t.Errorf("directory removed = %v, want %v", err != nil, gone)
+	}
+}
+
+func TestIsAPFSFailsClosed(t *testing.T) {
+	if isAPFS("/no/such/dir") {
+		t.Error("a missing path counts as APFS")
 	}
 }
 
