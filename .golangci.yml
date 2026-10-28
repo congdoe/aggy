@@ -24,6 +24,11 @@ linters:
             - modernc.org/sqlite
             - golang.org/x/text/unicode/norm
             - golang.org/x/text/cases
+            # The pseudo-terminal (internal/execrun) and raw mode
+            # (internal/supervisor): the stdlib has neither, and both need
+            # ioctls that the syscall and unsafe bans keep out of aggy.
+            - github.com/creack/pty
+            - golang.org/x/term
             # The only net packages allowed: they parse, and never connect.
             - "net/url$"
             - "net/netip$"
@@ -221,6 +226,15 @@ linters:
       - path: ^internal/(execrun|store)/
         text: "use of `syscall\\.(Kill|SIG[A-Z0-9]+|Signal|SysProcAttr|WaitStatus)`"
         linters: [forbidigo]
+      # The supervisor forwards signals to the CLI, stops itself on a
+      # suspend, and handles SIGWINCH.
+      - path: ^internal/supervisor/
+        text: "use of `syscall\\.(Kill|SIG[A-Z0-9]+|Signal)`"
+        linters: [forbidigo]
+      # The pseudo-terminal runner reaps its CLI itself, to see a stop.
+      - path: ^internal/execrun/pty_unix\.go$
+        text: "use of `syscall\\.(Wait4|WUNTRACED)`"
+        linters: [forbidigo]
       # Field keys in a syscall.SysProcAttr literal are reported by their
       # bare name.
       - path: ^internal/(execrun|store)/
@@ -232,10 +246,10 @@ linters:
       - path: ^internal/(supervisor|borrow)/
         text: "`(exec\\.(Command|CommandContext)|os\\.StartProcess)`"
         linters: [forbidigo]
-      - path: ^internal/execrun/execrun\.go$
-        text: "`exec\\.CommandContext`"
+      - path: ^internal/execrun/(execrun|pty_unix)\.go$
+        text: "`exec\\.(Command|CommandContext)`"
         linters: [forbidigo]
-      - path: ^internal/execrun/execrun(_unix|_other)?\.go$
+      - path: ^internal/execrun/(execrun(_unix|_other)?|pty_unix)\.go$
         text: "`exec\\.Cmd`"
         linters: [forbidigo]
       - path: ^internal/fakecli/build\.go$
