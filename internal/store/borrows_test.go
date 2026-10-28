@@ -83,4 +83,9 @@ func TestBorrowCapsReclaimDead(t *testing.T) {
 	if b.Status != "killed" || b.Outcome != "abandoned" {
 		t.Errorf("dead borrow = %+v", b)
 	}
+	// #10-11: its child is closed too.
+	var status string
+	if err := s.DB().QueryRow(`SELECT status FROM children WHERE id = 'c-dead'`).Scan(&status); err != nil || status != "closed" {
+		t.Errorf("child of the dead borrow is %q, %v", status, err)
+	}
 }
