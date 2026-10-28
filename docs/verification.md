@@ -449,3 +449,7 @@ relies on these:
    re-enable Codex research (open: the existence oracle and the readable
    `~/.codex`).
 6. Greedy `codex exec -i a.png -` without `--`.
+7. aggy's installed hooks firing live in each CLI (T6616 for Codex):
+   that Codex runs a `hooks.json` `command` holding arguments
+   (`'<aggy>' hook --vendor codex Stop`) through a shell, as Claude and
+   Grok do, is unverified; the live check used a bare script path.
