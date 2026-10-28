@@ -180,6 +180,10 @@ type session struct {
 	outMu sync.Mutex
 	pk    *picker
 	open  bool // the picker is on screen, holding outMu
+	// alt follows the CLI's alternate screen; guarded by outMu.
+	alt altTracker
+	// pickerOverCLI is how the open picker was drawn.
+	pickerOverCLI bool
 	// toChild holds input for the CLI. The main loop only ever pushes,
 	// which never blocks, so a CLI that stops reading cannot stall signal
 	// handling, the picker, or the terminal-closed check.
@@ -191,7 +195,8 @@ type session struct {
 func (s *session) openPicker() {
 	s.outMu.Lock()
 	s.open = true
-	s.pk.draw(s.o.Out)
+	s.pickerOverCLI = s.alt.on
+	s.pk.draw(s.o.Out, s.pickerOverCLI)
 }
 
 // closePicker restores the vendor's screen and resumes its output.
@@ -199,9 +204,32 @@ func (s *session) closePicker() {
 	if !s.open {
 		return
 	}
-	s.pk.erase(s.o.Out)
+	s.pk.erase(s.o.Out, s.pickerOverCLI)
 	s.open = false
 	s.outMu.Unlock()
+	if s.pickerOverCLI {
+		s.repaint()
+	}
+}
+
+// repaintNudge is how long the CLI sees a size one row smaller before
+// it gets its own size back.
+//
+// shortcut: a fixed gap, so a CLI that reads its size only once per
+// burst of SIGWINCH still sees a change; upgrade if T6684 shows a CLI
+// that does not repaint.
+const repaintNudge = 50 * time.Millisecond
+
+// repaint makes the CLI redraw its screen, which the picker drew over:
+// a resize to one row fewer and back, each a SIGWINCH. The kernel sends
+// none for an unchanged size, so a plain resize would not do.
+func (s *session) repaint() {
+	rows, cols := s.t.size()
+	if rows < 2 || cols < 1 {
+		return
+	}
+	_ = s.child.Resize(rows-1, cols)
+	time.AfterFunc(repaintNudge, s.resize)
 }
 
 func (s *session) pickerInput(b []byte) {
@@ -235,6 +263,7 @@ func (s *session) copyOut() {
 		n, err := s.child.Read(buf)
 		if n > 0 {
 			s.outMu.Lock()
+			s.alt.feed(buf[:n])
 			_, werr := s.o.Out.Write(buf[:n])
 			s.outMu.Unlock()
 			if werr != nil {

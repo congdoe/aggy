@@ -71,24 +71,46 @@ type Switch struct {
 const DefaultSwitchKey = `ctrl+\`
 
 // ParseKey returns the control byte of a switch key named "ctrl+<k>",
-// where k is a letter or one of \ ] ^ _ (case-insensitive). Ctrl+I, J, M
-// (Tab, Enter, Enter) and Ctrl+[ (Esc, which starts every escape
-// sequence) are refused: they are typed far too often.
+// where k is a letter or one of \\ ] ^ _ (case-insensitive). Keys that
+// terminals, line editing, or the CLIs already give a meaning are
+// refused (see reservedKeys).
 func ParseKey(s string) (byte, error) {
 	k, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(s)), "ctrl+")
 	if !ok || len(k) != 1 {
 		return 0, fmt.Errorf("switch.key %q: want ctrl+ and one letter or one of \\ ] ^ _", s)
 	}
 	c := k[0]
+	if why, ok := reservedKeys[c]; ok {
+		return 0, fmt.Errorf("switch.key %q: Ctrl+%s is %s; pick another key", s, strings.ToUpper(k), why)
+	}
 	switch {
-	case c == 'i' || c == 'j' || c == 'm':
-		return 0, fmt.Errorf("switch.key %q: Ctrl+%c is Tab or Enter", s, c-32)
 	case c >= 'a' && c <= 'z':
 		return c - 'a' + 1, nil
 	case c == '\\' || c == ']' || c == '^' || c == '_':
 		return c & 0x1f, nil
 	}
 	return 0, fmt.Errorf("switch.key %q: want ctrl+ and one letter or one of \\ ] ^ _", s)
+}
+
+// reservedKeys are the Ctrl keys a switch key may not take, with what
+// they already do.
+var reservedKeys = map[byte]string{
+	'c': "interrupt",
+	'd': "end of input",
+	'z': "suspend",
+	'y': "delayed suspend",
+	'h': "Backspace",
+	'i': "Tab",
+	'j': "Enter (line feed)",
+	'm': "Enter",
+	'[': "Esc, which starts every escape sequence",
+	's': "flow control (XOFF)",
+	'q': "flow control (XON)",
+	'u': "line editing (kill line)",
+	'w': "line editing (erase word)",
+	'v': "line editing (literal next)",
+	'r': "line editing (reprint)",
+	'o': "line editing (discard output)",
 }
 
 // NotAuthor is the routing value meaning any connected vendor except the
