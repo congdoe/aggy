@@ -14,6 +14,9 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/adapter/claude"
+	"github.com/congdoe/aggy/internal/adapter/codex"
+	"github.com/congdoe/aggy/internal/adapter/grok"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
 )
@@ -124,6 +127,35 @@ func snapshot(root string) map[string]stamp {
 	return out
 }
 
+// adapters parse a run's output for its session id.
+var adapters = map[adapter.Vendor]adapter.Adapter{
+	adapter.Claude: claude.New(), adapter.Codex: codex.New(), adapter.Grok: grok.New(),
+}
+
+// sessionIDs returns the run's session id: from the vendor's structured
+// field (Claude session_id, Codex thread.started, Grok sessionId) through
+// the adapter's ParseHeadless, else the one UUID the output holds. With
+// none, or several candidates, it returns no id and why, so no vendor-home
+// file is copied: a reply that mentions another session must not copy
+// that session's transcript.
+func sessionIDs(v adapter.Vendor, out adapter.Output) ([]string, string) {
+	if a, ok := adapters[v]; ok {
+		if res, err := a.ParseHeadless(adapter.HeadlessRequest{}, out); err == nil && res.SessionID != "" {
+			return []string{res.SessionID}, ""
+		}
+	}
+	var cands []string
+	for _, m := range uuidRE.FindAllString(string(out.Stdout)+"\n"+string(out.Stderr), -1) {
+		if !slices.ContainsFunc(cands, func(c string) bool { return strings.EqualFold(c, m) }) {
+			cands = append(cands, m)
+		}
+	}
+	if len(cands) == 1 {
+		return cands, ""
+	}
+	return nil, fmt.Sprintf(" (no session id: %d candidates in the output)", len(cands))
+}
+
 // sessionFile reports whether rel, under the vendor home, matches one of
 // the vendor's SessionPaths for one of ids.
 func sessionFile(v adapter.Vendor, rel string, ids []string) bool {
@@ -193,7 +225,7 @@ func Capture(ctx context.Context, opts CaptureOptions) (Meta, error) {
 		return meta, err
 	}
 	meta.ExitCode = out.ExitCode
-	ids := slices.Compact(uuidRE.FindAllString(string(out.Stdout)+"\n"+string(out.Stderr), -1))
+	ids, why := sessionIDs(opts.Vendor, out)
 
 	if err := safefs.MkdirAll(opts.Out, 0o755); err != nil {
 		return meta, err
@@ -213,7 +245,7 @@ func Capture(ctx context.Context, opts CaptureOptions) (Meta, error) {
 			}
 			dest := path.Join(name, s.String(rel))
 			if name == "vendor_home" && !sessionFile(opts.Vendor, rel, ids) {
-				meta.Skipped = append(meta.Skipped, dest+": not a file of this run's session")
+				meta.Skipped = append(meta.Skipped, dest+": not a file of this run's session"+why)
 				continue
 			}
 			if len(meta.Files) >= maxCopiedFiles {
@@ -313,8 +345,20 @@ func resolve(p string) (string, error) {
 }
 
 // UnderFixtures returns p resolved, or an error unless it is strictly
-// inside the repo's testdata/fixtures.
+// inside the repo's testdata/fixtures, which, with testdata, must be a
+// real directory and not a symlink.
 func UnderFixtures(root, p string) (string, error) {
+	// A symlinked testdata or testdata/fixtures would lead the limit
+	// anywhere, so neither may be a link.
+	for _, d := range []string{filepath.Join(root, "testdata"), FixturesDir(root)} {
+		fi, err := safefs.Lstat(d)
+		if err != nil {
+			return "", err
+		}
+		if fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir() {
+			return "", fmt.Errorf("devfix: %s must be a real directory, not a symlink", d)
+		}
+	}
 	fx, err := resolve(FixturesDir(root))
 	if err != nil {
 		return "", err
