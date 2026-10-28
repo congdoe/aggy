@@ -1,6 +1,7 @@
 package checkup
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -78,6 +79,9 @@ func TestRouteFiles(t *testing.T) {
 		{"claude env not an object", `{"env":"x"}`, "", nil},
 		{"claude bad json", `{"env":`, "", []string{"config-unreadable claude ~/.claude/settings.json: cannot be checked"}},
 		{"claude BOM", "\ufeff{\"env\":{\"OPENAI_BASE_URL\":\"u\"}}", "", []string{"route-config claude ~/.claude/settings.json: env.OPENAI_BASE_URL is set"}},
+		{"claude apiKeyHelper and cloud switch (T6611 review 7)",
+			`{"apiKeyHelper":"/bin/` + secret + `","env":{"CLAUDE_CODE_USE_VERTEX":"1","ANTHROPIC_AUTH_TOKEN":"` + secret + `"}}`, "",
+			[]string{"route-config claude ~/.claude/settings.json: apiKeyHelper is set", "route-config claude ~/.claude/settings.json: env.ANTHROPIC_AUTH_TOKEN is set", "route-config claude ~/.claude/settings.json: env.CLAUDE_CODE_USE_VERTEX is set: Claude Code may use Google Vertex AI"}},
 		{"grok media keys", "",
 			"[toolset.image_gen]\nbase_url = \"https://" + secret + "\"\n[toolset.video_gen]\nenv_key = \"XAI_API_KEY\"\nbase_url = \"\"\n",
 			[]string{"route-config grok ~/.grok/config.toml: toolset.image_gen.base_url is set", "route-config grok ~/.grok/config.toml: toolset.video_gen.env_key is set"}},
@@ -124,5 +128,64 @@ func TestRouteFilesRelocated(t *testing.T) {
 	}
 	if got := RouteFiles([]string{"HOME=" + home, "CLAUDE_CONFIG_DIR=rel"}); len(got) != 0 {
 		t.Errorf("a relative CLAUDE_CONFIG_DIR was read: %+v", got)
+	}
+}
+
+// TestRouteFilesLocalSettings (T6611 review 7): settings.local.json is
+// checked like settings.json.
+func TestRouteFilesLocalSettings(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, ".claude", "settings.local.json"), `{"env":{"ANTHROPIC_BASE_URL":"u"}}`)
+	got := RouteFiles([]string{"HOME=" + home})
+	if len(got) != 1 || got[0].Message != "~/.claude/settings.local.json: env.ANTHROPIC_BASE_URL is set: Claude Code may send its requests to another endpoint, which can bill an API key or sit in the middle of plan traffic" {
+		t.Errorf("findings = %+v", got)
+	}
+}
+
+// TestRouteFilesSymlinks (T6611 review 6): a linked config file, as
+// dotfile managers make, is read through its target; a link to a
+// credential file or to nothing is a warning, and never read.
+func TestRouteFilesSymlinks(t *testing.T) {
+	tests := []struct {
+		name   string
+		target func(t *testing.T, home string) string // the link's target
+		want   string                                 // prefix of the one finding
+		level  Level
+	}{
+		{"linked settings", func(t *testing.T, _ string) string {
+			p := filepath.Join(t.TempDir(), "dotfiles", "settings.json")
+			write(t, p, `{"env":{"OPENAI_BASE_URL":"u"}}`)
+			return p
+		}, "~/.claude/settings.json: env.OPENAI_BASE_URL is set", LevelWarn},
+		{"link to a credential file", func(t *testing.T, home string) string {
+			p := filepath.Join(home, ".codex", "auth.json")
+			if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(`{"env":{"OPENAI_BASE_URL":"u"}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}, "~/.claude/settings.json: cannot be checked for base URLs and API keys (a credential file)", LevelWarn},
+		{"dangling link", func(t *testing.T, _ string) string {
+			return filepath.Join(t.TempDir(), "gone.json")
+		}, "~/.claude/settings.json: cannot be checked for base URLs and API keys (a symlink whose target cannot be found)", LevelWarn},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			link := filepath.Join(home, ".claude", "settings.json")
+			if err := safefs.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(tt.target(t, home), link); err != nil {
+				t.Fatal(err)
+			}
+			got := RouteFiles([]string{"HOME=" + home})
+			if len(got) != 1 || !strings.HasPrefix(got[0].Message, tt.want) || got[0].Level != tt.level {
+				t.Errorf("findings = %+v, want %q", got, tt.want)
+			}
+		})
 	}
 }
