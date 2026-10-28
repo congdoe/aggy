@@ -64,9 +64,6 @@ const (
 const (
 	q   = "[\"'`]"
 	lit = q + "[^\"'`\\s]"
-	// longLit is a quoted literal of eight characters or more, as long as
-	// assign's shortest value.
-	longLit = q + "[^\"'`\\s][^\"'`]{7}"
 	// authLit is an Authorization or Cookie value: a scheme and a value
 	// (Token abc), or one word of six or more characters, but not a bare
 	// scheme ("Bearer "+token).
@@ -114,15 +111,11 @@ var (
 		`\b(?:mysql|mysqldump|mysqladmin|mariadb)\b.*\s-p\S+`,       // mysql -pPASS
 		`(?i)^\s*(?:machine\s+\S+|default)\b.*\bpassword\s+\S+`,     // .netrc on one line
 		`(?i)^\s*password\s+\S{6,}\s*$`,                             // .netrc, one token a line
-		// G34-1: a secret name as a call's first argument with a literal
-		// second, as a header setter takes it: Header.Set("X-Api-Key", "...").
-		// A short literal (setenv("API_KEY", "test")) or a bare scheme
-		// ("Bearer "+token) is not a secret (I43-6).
-		`(?i)\(\s*` + q + nameRe + q + `\s*,\s*` + longLit,
+		// G34-1: an Authorization or Cookie header set by a call
+		// (Header.Set("Authorization", "...")) or at a subscript
+		// (headers["Authorization"] = "Token ...", I43-5), but not a bare
+		// scheme ("Bearer "+token, I43-6). setLit does secret names.
 		`(?i)\(\s*` + q + `(?:authorization|cookie)` + q + `\s*,\s*` + authLit,
-		// A literal set at a secret-named subscript: os.environ["API_KEY"] =
-		// "...", headers["Authorization"] = "Token ..." (I43-5).
-		`(?i)\[\s*` + q + nameRe + q + `\s*\]\s*(?:\|\||&&|\?\?)?=\s*` + longLit,
 		`(?i)\[\s*` + q + `(?:authorization|cookie)` + q + `\s*\]\s*(?:\|\||&&|\?\?)?=\s*` + authLit,
 		// XML (I43-5): <password>...</password>, and .NET's <add
 		// key="ApiKey" value="..."/>. A plist's bare <key> names a key.
@@ -159,10 +152,16 @@ var (
 	flagKey = regexp.MustCompile(`(?i)^\s*(?:-\s+)?["']?--(` + flagName + `)["']?\s*,?\s*$`)
 	// flagArg is a secret-named flag with its value. Its groups: an args
 	// array's flag name and value (["--api-key", "..."], I43-4); then a
-	// command line's flag name, separator, and value (--token X), which
+	// command line's flag name, separator, opening quote, and value
+	// (--token X), which
 	// may start with one "-" (--password -Hunter2, I43-2) but not "--",
 	// which starts the next flag.
-	flagArg = regexp.MustCompile(`(?i)` + q + `--(` + flagName + `)` + q + `\s*,\s*` + q + "([^\\s\"'`][^\"'`]*)" + `|--(` + flagName + `)(=|\s+)["']?(-?[^\s"'-][^\s"']*)`)
+	flagArg = regexp.MustCompile(`(?i)` + q + `--(` + flagName + `)` + q + `\s*,\s*` + q + "([^\\s\"'`][^\"'`]*)" + `|--(` + flagName + `)(=|\s+)(["']?)(-?[^\s"'-][^\s"']*)`)
+	// setLit is a literal given to a secret name as a call's first
+	// argument, as a header setter or setenv takes it
+	// (Header.Set("X-Api-Key", "...")), or set at a secret-named subscript
+	// (os.environ["API_KEY"] = "..."). Its group is the literal's text.
+	setLit = regexp.MustCompile(`(?i)(?:\(\s*` + q + nameRe + q + `\s*,|\[\s*` + q + nameRe + q + `\s*\]\s*(?:\|\||&&|\?\?)?=)\s*` + q + "([^\"'`]*)")
 	// envRef is a value that only names one held elsewhere: $TOKEN,
 	// ${TOKEN}, $(API_KEY), %TOKEN%, or a {{ template }}.
 	envRef = regexp.MustCompile(`^(?:\$\{?\w+\}?|\$\(\w+\)|%\w+%|\$?\{\{[^{}]*\}\})$`)
@@ -404,7 +403,7 @@ type workCount struct{ facts, bytes int }
 func Secret(line string) bool { return secret(line, true) }
 
 func secret(line string, decode bool) bool {
-	if hinted(line) && (Token.MatchString(line) || assigned(line) || other.MatchString(line) || flagged(line) || basicAuth(line)) {
+	if hinted(line) && (Token.MatchString(line) || assigned(line) || other.MatchString(line) || flagged(line) || basicAuth(line) || setLiteral(line)) {
 		return true
 	}
 	if decode && hasRun(line, 24, true) && wrapped(line) {
@@ -483,8 +482,9 @@ func basicAuth(line string) bool {
 
 // flagged reports whether line passes a secret-named flag a value. It
 // keeps a flag whose name is a word that only ends in "key" (--monkey,
-// --hotkey), an args array's next flag, and, after a space, a prose word
-// (Pass the --token flag to, Use --token to pass) (I43-6, I43-11).
+// --hotkey), an args array's next flag, and, after a space and not
+// quoted, a prose word (Pass the --token flag to, Use --token to pass)
+// (I43-6, I43-11, N55-2).
 func flagged(line string) bool {
 	for _, ix := range flagArg.FindAllStringSubmatchIndex(line, -1) {
 		if work != nil {
@@ -502,11 +502,32 @@ func flagged(line string) bool {
 			}
 			continue
 		}
-		if !wordFlag(g(3)) && (g(4) == "=" || !prose[strings.ToLower(strings.TrimRight(g(5), ".,;:!?)"))]) {
+		if !wordFlag(g(3)) && (g(4) == "=" || g(5) != "" || !prose[strings.ToLower(strings.TrimRight(g(6), ".,;:!?)"))]) {
 			return true
 		}
 	}
 	return false
+}
+
+// setLiteral reports whether line gives a secret name a literal (setLit)
+// that is not empty, a reference ("${TOKEN}"), or a placeholder such as
+// "test" (I43-6, N55-3).
+func setLiteral(line string) bool {
+	for _, ix := range setLit.FindAllStringSubmatchIndex(line, -1) {
+		if work != nil {
+			work.bytes += ix[1] - ix[0]
+		}
+		v := line[ix[2]:ix[3]]
+		if v != "" && !placeholders[strings.ToLower(v)] && !envRef.MatchString(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// placeholders are literals that tests and examples use for a secret.
+var placeholders = map[string]bool{
+	"test": true, "dummy": true, "fake": true, "xxx": true, "changeme": true, "example": true,
 }
 
 // wordFlag reports whether a flag name's last word is an English word
@@ -549,12 +570,10 @@ func passCount(name string) bool {
 	return false
 }
 
-// countWords are words after "pass" in a name that counts or measures.
+// countWords are words after "pass" in a name that counts (N55-4).
 var countWords = map[string]bool{
-	"count": true, "cnt": true, "num": true, "number": true, "total": true, "rate": true,
-	"ratio": true, "pct": true, "percent": true, "threshold": true, "through": true, "thru": true,
-	"fail": true, "status": true, "result": true, "results": true, "score": true, "len": true,
-	"length": true, "limit": true, "mark": true, "level": true, "mode": true, "time": true,
+	"count": true, "counter": true, "num": true, "total": true, "max": true, "min": true,
+	"attempts": true, "retries": true, "len": true,
 }
 
 // loneFlag reports whether l is a secret-named flag alone on its line.
@@ -564,22 +583,16 @@ func loneFlag(l string) bool {
 }
 
 // flagValue reports whether l, the line after a lone secret flag, is the
-// flag's value: not the next flag, a reference to a value held elsewhere
-// ($(API_KEY), "${TOKEN}"), help text (unquoted words), or a closing
-// bracket (I43-11). Anything else, such as one bare word, is a value.
+// flag's value: anything but the next flag or a reference to a value held
+// elsewhere ($(API_KEY), "${TOKEN}") (I43-11). Help text under the flag is
+// dropped too, the safe direction (N55-1).
 func flagValue(l string) bool {
 	t := strings.TrimSpace(l)
 	if strings.HasPrefix(t, "-") && len(t) > 1 && (t[1] == ' ' || t[1] == '\t') {
 		t = strings.TrimSpace(t[1:])
 	}
-	t = strings.TrimRight(t, ",")
-	quoted := t != "" && strings.IndexByte("\"'`", t[0]) >= 0
-	v := strings.Trim(t, "\"'`")
-	switch {
-	case strings.Trim(v, "])}") == "", strings.HasPrefix(v, "--"), envRef.MatchString(v):
-		return false
-	}
-	return quoted || !strings.ContainsAny(v, " \t")
+	v := strings.Trim(strings.TrimRight(t, ","), "\"'`")
+	return !strings.HasPrefix(v, "--") && !envRef.MatchString(v)
 }
 
 // Each removes every line of text that Secret matches, with no state
@@ -612,6 +625,27 @@ func endAfter(lines []string, i int) int {
 		}
 	}
 	return -1
+}
+
+// parens is how many more "(" than ")" l has outside quoted literals
+// (N55-5).
+func parens(l string) int {
+	n, quote := 0, byte(0)
+	for i := 0; i < len(l); i++ {
+		switch c := l[i]; {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'' || c == '`':
+			quote = c
+		case c == '(':
+			n++
+		case c == ')':
+			n--
+		}
+	}
+	return n
 }
 
 // Lines removes the secrets in one piece of text, such as one transcript
@@ -664,7 +698,7 @@ func Lines(text string) (string, int) {
 			continue
 		}
 		if depth > 0 {
-			depth += strings.Count(l, "(") - strings.Count(l, ")")
+			depth += parens(l)
 			left--
 			v := strings.TrimRight(strings.TrimSpace(l), ",;")
 			drop[i] = strings.Trim(v, ")") != "" && (!call.MatchString(v) || strings.ContainsAny(v, "\"'`")) || Secret(l)

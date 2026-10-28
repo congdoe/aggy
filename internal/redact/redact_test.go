@@ -69,13 +69,18 @@ var linesTests = []struct {
 	{"flag bare word", "--token\nhunter2hunter2\nnext", "--token\nnext", 1},
 	{"flag quoted words", "- --password\n- \"correct horse battery\"\nnext", "- --password\nnext", 1},
 	// I43-11: the line after a lone flag is kept when it is not its value.
-	{"flag help", "  --token\n      The API token to use.\n  --verbose", "  --token\n      The API token to use.\n  --verbose", 0},
+	// N55-1: any other line after it is its value, help text too.
+	{"flag help dropped", "  --token\n      The API token to use.\n  --verbose", "  --token\n  --verbose", 1},
+	{"flag words", "- --password\n- correct horse battery staple\nnext", "- --password\nnext", 1},
+	{"flag words digits", "- --password\n- Tr0ub4dor and 3 more\nnext", "- --password\nnext", 1},
 	{"flag then flag", "args:\n  - --token\n  - --verbose", "args:\n  - --token\n  - --verbose", 0},
 	{"flag env ref", "- --api-key\n- $(API_KEY)\n- --token\n- \"${TOKEN}\"", "- --api-key\n- $(API_KEY)\n- --token\n- \"${TOKEN}\"", 0},
 	{"flag word", "  --monkey\n  banana\n", "  --monkey\n  banana\n", 0},
 	// I43-5: a value in parentheses over several lines.
 	{"paren value", "API_KEY = (\n    \"hunter2\"\n    \"hunter2\"\n)\nnext = 1", "API_KEY = (\n)\nnext = 1", 2},
 	{"paren value close", "API_KEY = (\n    \"hunter2\"\n    \"hunter2\")\nnext = 1", "API_KEY = (\nnext = 1", 2},
+	// N55-5: a ")" inside a literal does not end the value.
+	{"paren in literal", "API_KEY = (\n    \"ab)cd\"\n    \"hunter2\"\n)\nnext", "API_KEY = (\n)\nnext", 2},
 	{"paren code", "password = (\n    hashPassword(raw)\n)\nnext", "password = (\n    hashPassword(raw)\n)\nnext", 0},
 }
 
@@ -237,6 +242,14 @@ var secretLines = []string{
 	"some-cli --token toTheMoon99",
 	"some-cli --token=to",
 	"some-cli --api-key flagged123",
+	// N55-2: a quoted flag value is never prose.
+	`some-cli --passphrase "the cat sat on the mat 42"`,
+	`some-cli --password 'a Zx9!pQ2#r'`,
+	// N55-3: short literals count; only placeholders are kept.
+	`os.Setenv("DB_PASSWORD", "s3cr3t!")`,
+	`env["API_TOKEN"] = "abc1234"`,
+	// N55-4: a pass name with a word that is not a count.
+	`DB_PASS_MODE = "Zk29fjQ0aLm3ppQ7"`,
 }
 
 // C16-11: base64-wrapped secrets, in either alphabet.
@@ -305,7 +318,11 @@ func TestSecret(t *testing.T) {
 		`req.Header.Set("Authorization", "Bearer " + token)`,
 		`headers["Authorization"] = "Bearer " + token`,
 		"pass_count = 12345678",
-		"PASS_RATE=0.95123456",
+		"PASS_MAX=12345678",
+		// N55-3: placeholders and references stay.
+		`monkeypatch.setenv("API_KEY", "dummy")`,
+		`os.Setenv("API_KEY", "${API_KEY}")`,
+		`os.environ["API_KEY"] = ""`,
 		"some-cli --monkey 3",
 		"xdotool --hotkey ctrlaltdel",
 		`"args": ["--monkey", "banana"]`,
@@ -378,7 +395,7 @@ func TestHints(t *testing.T) {
 			continue
 		}
 		seen[l] = true
-		if Token.MatchString(l) || assign.MatchString(l) || other.MatchString(l) || pendingKey.MatchString(l) || nameKey.MatchString(l) || flagKey.MatchString(l) || flagArg.MatchString(l) || authB64.MatchString(l) {
+		if Token.MatchString(l) || assign.MatchString(l) || other.MatchString(l) || pendingKey.MatchString(l) || nameKey.MatchString(l) || flagKey.MatchString(l) || flagArg.MatchString(l) || authB64.MatchString(l) || setLit.MatchString(l) {
 			t.Errorf("match without a hint: %q", l)
 		}
 	}
@@ -419,6 +436,8 @@ func TestLinear(t *testing.T) {
 		`k = []byte("`, "apiKey: string = f(x) ", "--token to ", "--monkey x ", `"--hotkey", "x", `,
 		`"auth": "Ym9iOmh1bnRlcjI=", `, `_auth=YWJj `, "<password>x ", `headers["Authorization"] = "Bearer " + `,
 		`pass_count = 12345678 `, "API_KEY = (",
+		// N55: placeholders and quoted flag values.
+		`f("API_KEY", "test", `, `env["API_KEY"] = "", `, `--password "the `,
 	} {
 		for _, n := range []int{25, 100} {
 			in := strings.Repeat(unit, n)
