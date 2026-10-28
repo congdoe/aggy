@@ -515,6 +515,50 @@ func TestGCCorruptDiag(t *testing.T) {
 	}
 }
 
+// TestDiagSQLValueCap (T6777): one value prints at most sqlMaxValue
+// bytes and a marker, in the table and in JSON, and a value past
+// store.QueryMaxValue (randomblob(5e8)), a row wider than
+// store.QueryMaxColumns, and the json_group aggregates are refused before
+// they use the memory.
+func TestDiagSQLValueCap(t *testing.T) {
+	newBorrowFixture(t)
+	big := "SELECT hex(zeroblob(50000)) AS v" // 100000 bytes
+	marker := "…[truncated: 100000 bytes]"
+	for _, args := range [][]string{{"sql", big}, {"sql", big, "--json"}} {
+		code, out, errOut := runDiagCmd(args...)
+		if code != 0 || !strings.Contains(out, marker) || len(out) > sqlMaxValue+200 {
+			t.Errorf("%v: code %d, %d bytes out, marker %v: %q", args[2:], code, len(out), strings.Contains(out, marker), errOut)
+		}
+		if len(args) == 3 {
+			var rows []map[string]string
+			if err := json.Unmarshal([]byte(out), &rows); err != nil || len(rows) != 1 || len(rows[0]["v"]) != sqlMaxValue+len(marker) {
+				t.Errorf("--json: %v", err)
+			}
+		}
+	}
+	// D64-1: memory stays bounded. Each of these fails at once, with an
+	// error, instead of building a value or row far past the limits.
+	twenty := "SELECT " + strings.TrimSuffix(strings.Repeat("randomblob(16e6), ", 20), ", ")
+	wide := "SELECT " + strings.TrimSuffix(strings.Repeat("1, ", store.QueryMaxColumns+1), ", ")
+	cte := "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 1000000) "
+	for _, tc := range []struct{ name, q, want string }{
+		{"randomblob(5e8)", "SELECT length(randomblob(5e8)) AS n, randomblob(5e8) AS b", "too big"},
+		{"20 x randomblob(16e6)", twenty, "too big"},
+		{"json_group_array", cte + "SELECT length(json_group_array(hex(zeroblob(1000)))) FROM n", "not authorized"},
+		{"json_group_object", cte + "SELECT length(json_group_object(x, x)) FROM n", "not authorized"},
+		{"too many columns", wide, "too many columns"},
+	} {
+		start := time.Now()
+		code, out, errOut := runDiagCmd("sql", tc.q)
+		if code == 0 || !strings.Contains(errOut, tc.want) {
+			t.Errorf("%s: code %d: %.200q %q, want %q", tc.name, code, out, errOut, tc.want)
+		}
+		if d := time.Since(start); d > 20*time.Second {
+			t.Errorf("%s took %s", tc.name, d)
+		}
+	}
+}
+
 // TestDiagSQLCaps (P58-6): --limit stops at that many rows and says so;
 // --timeout stops a query that runs on.
 func TestDiagSQLCaps(t *testing.T) {

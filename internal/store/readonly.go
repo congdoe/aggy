@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/congdoe/aggy/internal/safefs"
@@ -48,7 +49,7 @@ var ErrUnreadable = errors.New("store: cannot read the index")
 // on.
 //
 // The paths are checked through safefs before the open and, as Open does,
-// again after it, by identity. A read that meets a writer's checkpoint
+// again after each connection opens, by identity (pin.go). A read that meets a writer's checkpoint
 // can fail with a "malformed" error; it is reported as the index being
 // written, to be retried, never as damage (see ReadError).
 func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
@@ -66,6 +67,10 @@ func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
 			return nil, err
 		}
 	}
+	want, err := pinDB(path)
+	if err != nil {
+		return nil, err
+	}
 	writable, err := safefs.DirWritable(filepath.Dir(path))
 	if err != nil {
 		return nil, err
@@ -74,7 +79,9 @@ func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	db := sql.OpenDB(selectOnly{base})
+	// Every connection confirms SQLite opened the pinned file and that
+	// safefs clears it and its WAL files (pin.go).
+	db := sql.OpenDB(pinned{selectOnly{base}, []dbPin{{path, want}}})
 	// Ping opens a connection; a query proves the file can be read.
 	err = db.PingContext(ctx)
 	if err == nil {
@@ -83,14 +90,6 @@ func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("%w %s: %w", ErrUnreadable, path, ReadError(err))
-	}
-	// SQLite opened the files itself, outside safefs. Confirm by identity
-	// that none of them is a vendor credential file.
-	for _, p := range []string{path, path + "-wal", path + "-shm"} {
-		if err := safefs.Check(p); err != nil {
-			_ = db.Close()
-			return nil, err
-		}
 	}
 	return &Store{db: db, path: path}, nil
 }
@@ -118,12 +117,24 @@ func (c selectOnly) Connect(ctx context.Context) (driver.Conn, error) {
 	return conn, nil
 }
 
-// readOnlyAuthorizer allows reading tables, functions, and recursive
-// queries, and the one PRAGMA read aggy uses, user_version, without a
-// value. Everything else is denied when the statement is compiled.
+// unboundedFuncs are the aggregates that build one value from every row
+// and are not stopped by SQLite's length limit until they have used
+// memory far past it (aggy diag sql, T6777 D64-1). aggy never calls them.
+var unboundedFuncs = []string{"json_group_array", "json_group_object", "jsonb_group_array", "jsonb_group_object"}
+
+// readOnlyAuthorizer allows reading tables, functions (but not
+// unboundedFuncs), and recursive queries, and the one PRAGMA read aggy
+// uses, user_version, without a value. Everything else is denied when
+// the statement is compiled.
 func readOnlyAuthorizer(action sqlite.AuthorizerActionCode, arg1, arg2, _, _ string) sqlite.AuthorizerReturnCode {
 	switch action {
-	case sqlite.AuthSelect, sqlite.AuthRead, sqlite.AuthFunction, sqlite.AuthRecursive:
+	case sqlite.AuthFunction:
+		// arg2 is the function's name.
+		if slices.ContainsFunc(unboundedFuncs, func(f string) bool { return strings.EqualFold(f, arg2) }) {
+			return sqlite.AuthorizerDeny
+		}
+		return sqlite.AuthorizerOK
+	case sqlite.AuthSelect, sqlite.AuthRead, sqlite.AuthRecursive:
 		return sqlite.AuthorizerOK
 	case sqlite.AuthPragma:
 		if strings.EqualFold(arg1, "user_version") && arg2 == "" {
