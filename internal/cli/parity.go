@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
+	"github.com/congdoe/aggy/internal/supervisor"
 )
 
 // maxCodexConfig caps the Codex config files read to merge
@@ -43,7 +45,7 @@ func memoryDelivery(v adapter.Vendor, caps []string) (bool, string) {
 // Claude it writes the framed text to a private temp file; cleanup
 // removes it after the session. Warnings say what was not delivered and
 // why; none of them stops the launch.
-func addMemory(v adapter.Vendor, caps []string, cwd string, req *adapter.InteractiveRequest) (cleanup func(), warns []string) {
+func addMemory(v adapter.Vendor, caps []string, cwd, memDir string, req *adapter.InteractiveRequest) (cleanup func(), warns []string) {
 	cleanup = func() {}
 	root, _ := repoRoot(cwd)
 	text, err := parity.LoadMemory(root)
@@ -59,8 +61,8 @@ func addMemory(v adapter.Vendor, caps []string, cwd string, req *adapter.Interac
 	framed := parity.FrameMemory(text)
 	switch v {
 	case adapter.Claude:
-		dir, err := safefs.MkdirTemp("", "aggy-memory-")
-		if err != nil {
+		dir := memDir
+		if err := safefs.Mkdir(dir, 0o700); err != nil {
 			return cleanup, []string{"shared memory not delivered: " + err.Error()}
 		}
 		cleanup = func() { _ = safefs.RemoveAll(dir) }
@@ -283,4 +285,43 @@ func parityFindings(cwd string, vendors []checkup.Vendor) []checkup.Finding {
 		}
 	}
 	return out
+}
+
+// memorySuffix names a session's memory folder in the run dir:
+// <parent-id>.memory, beside the supervisor's <parent-id>.lock.
+const memorySuffix = ".memory"
+
+// memoryDir is the memory folder of session parentID.
+func memoryDir(runDir, parentID string) string {
+	return filepath.Join(runDir, parentID+memorySuffix)
+}
+
+// staleAfter is how old a memory folder must be before a sweep may take
+// it: longer than any launch takes to reach its supervisor's lock.
+const staleAfter = time.Minute
+
+// sweepMemoryDirs removes the memory folders that sessions killed before
+// their cleanup left in runDir (aggy's own 0700 run dir, checked by
+// supervisor.PrivateDir): a <uuid>.memory folder, not a symlink, older
+// than staleAfter, whose supervisor no longer holds its lock. Errors are
+// ignored; the next run tries again.
+func sweepMemoryDirs(runDir string, now time.Time) {
+	des, err := safefs.ReadDir(runDir)
+	if err != nil {
+		return
+	}
+	for _, de := range des {
+		id, ok := strings.CutSuffix(de.Name(), memorySuffix)
+		if !ok || !adapter.IsUUID(id) || !de.IsDir() {
+			continue
+		}
+		dir := filepath.Join(runDir, de.Name())
+		fi, err := safefs.Lstat(dir)
+		if err != nil || !fi.IsDir() || now.Sub(fi.ModTime()) < staleAfter {
+			continue
+		}
+		if live, err := supervisor.Live(runDir, id); err == nil && !live {
+			_ = safefs.RemoveAll(dir)
+		}
+	}
 }

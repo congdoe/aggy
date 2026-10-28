@@ -141,6 +141,38 @@ func privateDir(dir string) error {
 	return nil
 }
 
+// PrivateDir makes dir (0700) if needed and checks that it is a real
+// directory this user owns, as Listen does for the run dir.
+func PrivateDir(dir string) error { return privateDir(dir) }
+
+// Live reports whether the supervisor of session parentID is running:
+// whether something holds the flock on runDir/<parentID>.lock. A missing
+// lock file is not live. The check takes a shared lock for an instant;
+// call it only for a session whose supervisor could not be starting.
+func Live(runDir, parentID string) (bool, error) {
+	f, err := safefs.OpenFile(filepath.Join(runDir, parentID+".lock"), os.O_RDONLY, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+	for {
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB)
+		if !errors.Is(err, syscall.EINTR) {
+			break
+		}
+	}
+	switch {
+	case errors.Is(err, syscall.EWOULDBLOCK):
+		return true, nil
+	case err != nil:
+		return false, err
+	}
+	return false, syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+}
+
 // takeLock opens path and takes an exclusive flock on it without waiting.
 func takeLock(path string) (*os.File, error) {
 	f, err := safefs.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
