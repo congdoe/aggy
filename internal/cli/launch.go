@@ -40,7 +40,8 @@ type launchPlan struct {
 	resume string
 }
 
-// plan decides the parent and child a launch opens, writing nothing.
+// plan decides the parent and child a launch opens. It writes only what
+// refreshChildren finds on disk; the launch itself is recorded by commit.
 // Notes for the user (a session the vendor no longer has, an id never
 // recorded) go to stderr.
 func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t target, now time.Time, stderr io.Writer) (launchPlan, error) {
@@ -81,7 +82,7 @@ func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t 
 		return p, p.newChildOf(ctx, s, cfg, t.Vendor, now)
 	}
 
-	children, err := s.Children(ctx, p.parent.ID)
+	children, err := refreshChildren(ctx, s, p.parent.ID, &sessionFiles{})
 	if err != nil {
 		return p, err
 	}
