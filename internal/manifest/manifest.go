@@ -86,6 +86,9 @@ func (m *Manifest) lockTarget(ctx context.Context, file string) (func(), error) 
 	}
 	unlock, err := store.LockFile(ctx, lock, lockWait)
 	if errors.Is(err, store.ErrLockUnsupported) {
+		// TODO(T6735): unwire's proofs that a pending change never wrote
+		// (a newer change planned on its hash before) assume this lock
+		// was held; unlocked, a newer plan can race a live write.
 		return func() {}, nil
 	}
 	return unlock, err
@@ -96,12 +99,14 @@ func (m *Manifest) lockTarget(ctx context.Context, file string) (func(), error) 
 // It holds a lock on the target file from the plan to the final manifest
 // update, so two processes changing one file cannot both pass the hash
 // check and lose an update. A patch that would change nothing is not
-// recorded and comes back with Status store.ChangeNoop. A refused patch
-// (drift, a credential path, a transform error) records nothing.
-// Otherwise a pending row is written first, holding the expected hashes
+// recorded and comes back with Status store.ChangeNoop. A patch refused
+// at the plan (drift, a credential path, a transform error) records
+// nothing. Otherwise a pending row is written first, holding the expected hashes
 // and the directories a new file needs, then the backup and the file, then
 // the row is marked applied with the undo facts, or failed (keeping the
-// directories, which Apply may already have made). When only the directory
+// directories, which Apply may already have made). A failed row never
+// wrote the file: that includes drift found by patch.Apply's re-check
+// just before the write, which leaves a failed row with no backup. When only the directory
 // sync after the target write failed, the change is recorded as applied
 // and the error matching patch.ErrNotSynced is returned with it.
 func (m *Manifest) Apply(ctx context.Context, runID string, p patch.Patch) (store.Change, error) {
