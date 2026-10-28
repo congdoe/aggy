@@ -22,7 +22,21 @@ publishing stays off until the owner turns it on.
 
 ## Owner checklist for v0.1.0
 
-1. Make the repo public (`go install` and the release URLs need it).
+1. **Decide before tagging: macOS Gatekeeper.** The binaries are not
+   code-signed or notarized, and the cask does nothing about quarantine,
+   so on macOS a `brew install` of the cask will likely be blocked by
+   Gatekeeper on first run. Pick one, and note it in the README's
+   install section:
+   - sign and notarize the darwin binaries in the release job (goreleaser
+     v2 has a `notarize` section; it needs an Apple Developer ID
+     certificate and API key as secrets);
+   - add a cask post-install hook that removes the quarantine attribute
+     from the installed binary (goreleaser's `homebrew_casks.hooks`),
+     documented as a choice to skip Gatekeeper for aggy; or
+   - ship as is and document the manual step
+     (`xattr -d com.apple.quarantine "$(brew --prefix)/bin/aggy"`), or
+     point macOS users at `go install`, which builds locally and is not
+     quarantined.
 2. Create the tap repo `congdoe/homebrew-aggy` (public, default branch
    `main`, any README). Homebrew finds it as `congdoe/aggy`.
 3. Create a fine-grained token with **Contents: read and write** on
@@ -34,26 +48,28 @@ publishing stays off until the owner turns it on.
 5. Enable the release workflow: in `release.yml`, change the trigger to
    `push: tags: ["v*"]` and remove the job's `if: ${{ false }}`. Merge
    that change.
-6. Tag and push: `git tag -s v0.1.0 -m v0.1.0 && git push origin v0.1.0`.
-7. The workflow makes a draft release and pushes the cask to the tap.
-   The cask's download URLs work only once the release is published, so
-   check the draft's assets and attestations
-   (`gh attestation verify <file> --repo congdoe/aggy`) and publish it
-   right away.
-8. Check both install paths on a clean machine:
+6. Test a release candidate first:
+   `git tag -s v0.1.0-rc.1 -m v0.1.0-rc.1 && git push origin v0.1.0-rc.1`.
+   The workflow makes a draft release and pushes the cask to the tap.
+   Check the draft's assets and attestations
+   (`gh attestation verify <file> --repo congdoe/aggy`), then publish it
+   **as a pre-release** (the cask's download URLs work only once it is
+   published; a pre-release is not shown as the latest release).
+7. On a clean Mac and a Linux machine, install the candidate both ways,
    `brew install congdoe/aggy/aggy` and
-   `go install github.com/congdoe/aggy/cmd/aggy@v0.1.0`, then
-   `aggy version`.
-
-The binaries are not code-signed or notarized. Homebrew may quarantine
-a cask's binary on macOS; signing, or a cask `postflight` hook that
-removes the quarantine attribute, is an owner decision not made here.
+   `go install github.com/congdoe/aggy/cmd/aggy@v0.1.0-rc.1`, and run
+   `aggy version` and `aggy setup`. On the Mac, confirm the step 1
+   decision works. Fix and repeat with `-rc.2` as needed. The tap holds
+   the candidate's cask until the final tag replaces it.
+8. Tag the release: `git tag -s v0.1.0 -m v0.1.0 && git push origin v0.1.0`,
+   check the draft as in step 6, and publish it as the latest release.
+9. Check `brew upgrade congdoe/aggy/aggy` and
+   `go install github.com/congdoe/aggy/cmd/aggy@latest` pick up v0.1.0.
 
 ## go install
 
-`go install github.com/congdoe/aggy/cmd/aggy@latest` works once the repo
-is public: the module path is `github.com/congdoe/aggy`, the module has
+`go install github.com/congdoe/aggy/cmd/aggy@latest` works: the module path is `github.com/congdoe/aggy`, the module has
 no `replace` directives, and no package uses cgo (`make nocgo` checks
 it), so it builds with any C toolchain or none. It needs the Go version
-in `go.mod`. A binary built this way reports the module version Go
-records (`aggy version`), since it has no release ldflags.
+in `go.mod`. A binary built this way has no release ldflags, so `aggy version`
+reports the module version Go recorded.
