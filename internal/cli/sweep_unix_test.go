@@ -37,6 +37,8 @@ func TestSweepMemoryDirs(t *testing.T) {
 		return d
 	}
 	deadDir, liveDir, freshDir, otherDir := mk(dead+".memory", old), mk(live+".memory", old), mk(fresh+".memory", time.Now()), mk("notes.memory", old)
+	// Per-launch folders (D19-8) go by their parent.
+	deadLaunch, liveLaunch, badNonce := mk(dead+".0a1b2c3d.memory", old), mk(live+".0a1b2c3d.memory", old), mk(dead+".x.memory", old)
 	link := filepath.Join(run, "44444444-4444-4444-8444-444444444444.memory")
 	if err := os.Symlink(t.TempDir(), link); err != nil {
 		t.Fatal(err)
@@ -50,12 +52,38 @@ func TestSweepMemoryDirs(t *testing.T) {
 	}
 	defer func() { _ = srv.Close() }()
 	sweepMemoryDirs(run, time.Now())
-	if _, err := os.Stat(deadDir); !os.IsNotExist(err) {
-		t.Errorf("the dead session's folder is still there: %v", err)
+	for _, d := range []string{deadDir, deadLaunch} {
+		if _, err := os.Stat(d); !os.IsNotExist(err) {
+			t.Errorf("the dead session's folder %s is still there: %v", d, err)
+		}
 	}
-	for _, d := range []string{liveDir, freshDir, otherDir, link} {
+	for _, d := range []string{liveDir, freshDir, otherDir, link, liveLaunch, badNonce} {
 		if _, err := os.Lstat(d); err != nil {
 			t.Errorf("%s was removed: %v", d, err)
+		}
+	}
+}
+
+// TestMemoryDirPerLaunch (D19-8): two launches of one parent get their
+// own folders, both swept by the parent's id.
+func TestMemoryDirPerLaunch(t *testing.T) {
+	const p = "11111111-1111-4111-8111-111111111111"
+	a, err := memoryDir("/r", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := memoryDir("/r", p)
+	if a == b {
+		t.Fatalf("two launches share %s", a)
+	}
+	for _, d := range []string{a, b} {
+		if id, ok := memoryParent(filepath.Base(d)); !ok || id != p {
+			t.Errorf("memoryParent(%s) = %q, %v", d, id, ok)
+		}
+	}
+	for _, bad := range []string{"notes.memory", p + ".ABCDEF12.memory", p + ".1234.memory", p + ".lock", p + ".0a1b2c3d.x.memory"} {
+		if _, ok := memoryParent(bad); ok {
+			t.Errorf("memoryParent(%s) matched", bad)
 		}
 	}
 }
