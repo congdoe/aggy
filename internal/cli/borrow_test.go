@@ -138,13 +138,16 @@ func TestBorrowCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code %d, stderr %q, stdout %q", code, errOut, out)
 	}
-	for _, w := range []string{"news on grok (default model): ok", "Summary: Go 1.27 shipped.", `\x1b[31mred`} {
+	for _, w := range []string{"news on grok (default model): ok", "Summary: Go 1.27 shipped.", `\x1b[31mred`, "Full report: ", "/inbox/"} {
 		if !strings.Contains(out, w) {
 			t.Errorf("stdout lacks %q:\n%s", w, out)
 		}
 	}
 	if strings.Contains(out, "\x1b") {
 		t.Errorf("raw escape reached the terminal: %q", out)
+	}
+	if n := strings.Count(strings.TrimSpace(out), "\n") + 1; n > 12 {
+		t.Errorf("short report is %d lines", n)
 	}
 }
 
