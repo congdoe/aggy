@@ -131,11 +131,18 @@ func (m *Manifest) Unwire(ctx context.Context, sel Selection, opt UnwireOptions,
 	}
 	var out []Undo
 	var errs []error
+	// A dry run changes nothing, so an older change to a file must be
+	// previewed against what the newer undos would leave, not against the
+	// file on disk.
+	var sim map[string]simFile
+	if opt.DryRun {
+		sim = map[string]simFile{}
+	}
 	for _, c := range rows {
 		if !undoable(c) {
 			continue
 		}
-		u := m.undo(ctx, c, opt, w)
+		u := m.undo(ctx, c, opt, w, sim)
 		if u.Change.ChangeID == "" {
 			continue // no longer undoable once locked
 		}
@@ -171,9 +178,26 @@ func (m *Manifest) undoRecord(c store.Change) patch.Record {
 	return r
 }
 
+// simFile is a file's content as a dry run's earlier undos would leave it.
+type simFile struct {
+	data []byte
+	hash string
+}
+
+// simKey names a file in a dry run's simulation, the same for every
+// spelling of it where that can be found.
+func simKey(file string) string {
+	if k, err := safefs.CanonicalPath(file); err == nil {
+		return k
+	}
+	return file
+}
+
 // undo undoes one change under its target's lock. It returns a zero Undo
-// when the row, read again under the lock, is no longer undoable.
-func (m *Manifest) undo(ctx context.Context, c store.Change, opt UnwireOptions, w io.Writer) Undo {
+// when the row, read again under the lock, is no longer undoable. In a
+// dry run, sim holds the files earlier previewed undos changed, and gets
+// this undo's result.
+func (m *Manifest) undo(ctx context.Context, c store.Change, opt UnwireOptions, w io.Writer, sim map[string]simFile) Undo {
 	fail := func(err error) Undo { return Undo{Change: c, Outcome: Failed, Err: err} }
 	unlock, err := m.lockTarget(ctx, c.File)
 	if err != nil {
@@ -190,6 +214,9 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, opt UnwireOptions, 
 	cur, curHash, err := readFile(r.File)
 	if err != nil {
 		return fail(err)
+	}
+	if f, ok := sim[simKey(r.File)]; ok {
+		cur, curHash = f.data, f.hash
 	}
 	u := Undo{Change: c}
 	switch {
@@ -218,9 +245,15 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, opt UnwireOptions, 
 		return u
 	}
 	if opt.DryRun {
-		if err := previewUndo(w, r, cur, curHash); err != nil {
+		target, exists, err := previewUndo(w, r, cur, curHash)
+		if err != nil {
 			return fail(err)
 		}
+		f := simFile{data: target, hash: patch.NoFile}
+		if exists {
+			f.hash = patch.Hash(target)
+		}
+		sim[simKey(r.File)] = f
 		return u
 	}
 	if opt.Force && curHash != r.AfterHash {
@@ -253,11 +286,18 @@ func readFile(path string) ([]byte, string, error) {
 }
 
 // previewUndo writes the diff from the file's current content to what the
-// undo leaves, and the directories it would remove.
-func previewUndo(w io.Writer, r patch.Record, cur []byte, curHash string) error {
-	target, exists, err := patch.Target(r)
-	if err != nil {
-		return err
+// undo leaves, and the directories it would remove, and returns what the
+// undo leaves.
+func previewUndo(w io.Writer, r patch.Record, cur []byte, curHash string) ([]byte, bool, error) {
+	// Already as before (a pending or failed change that never wrote, or
+	// an undo done by hand): the content stays, and a change that failed
+	// before its backup has none to read.
+	target, exists := cur, curHash != patch.NoFile
+	if curHash != r.BeforeHash {
+		var err error
+		if target, exists, err = patch.Target(r); err != nil {
+			return nil, false, err
+		}
 	}
 	from, to := r.File, r.File
 	if curHash == patch.NoFile {
@@ -277,5 +317,5 @@ func previewUndo(w io.Writer, r patch.Record, cur []byte, curHash string) error 
 			fmt.Fprintf(w, "# %s: would remove the directory if empty\n", termsafe.Line(r.CreatedDirs[i]))
 		}
 	}
-	return nil
+	return target, exists, nil
 }

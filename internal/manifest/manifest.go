@@ -196,7 +196,7 @@ func (m *Manifest) Revert(ctx context.Context, changeID string) error {
 	if err != nil {
 		return err
 	}
-	u := m.undo(ctx, c, UnwireOptions{}, io.Discard)
+	u := m.undo(ctx, c, UnwireOptions{}, io.Discard, nil)
 	if u.Change.ChangeID == "" {
 		return fmt.Errorf("manifest: change %s is not applied, pending, or failed", changeID)
 	}
