@@ -113,6 +113,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runBrief(args[1:], stdout, stderr)
 	case "hook":
 		return runHook(args[1:], stdout, stderr)
+	case "hook-tool":
+		return runHookTool(args[1:], stdout, stderr)
 	case "switch":
 		return runSwitch(args[1:], stdout, stderr)
 	case "run":

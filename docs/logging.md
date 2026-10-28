@@ -192,6 +192,8 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `tool.def.refused` | warn | tool | A user tool definition was left out: invalid, untrusted, or colliding (attrs: file, its base name in ~/.aggy/tools, and key; never its argv). | aggy tool list names the file and the key; fix or remove it. |
 | `tool.switch.changed` | info | tool | aggy tool on or off recorded a switch (attrs: tool, vendor, repo, on). | aggy tool status shows what is on where. |
 | `tool.wire.refused` | warn | tool | A launch did not wire a tool that is on (attrs: tool, or none for every tool of the vendor); the session started without it. | The code's entry; aggy tool status. |
+| `hook.tool.filtered` | info | hook | aggy hook-tool dropped part of a tool hook's answer: an allow, or keys outside its allowlist (attrs: tool, dropped, the key names only). | Nothing; a tool's hook may never approve an action. |
+| `hook.tool.failed` | warn | hook | aggy hook-tool passed nothing on for a tool's hook; the CLI went on as without the hook (attrs.tool). | The code's entry. |
 | `tool.wire.done` | info | tool | A launch wired the tools that are on into the CLI it started (attrs: tools, the names wired). | aggy tool status shows why each is on. |
 
 | Code | Security | Meaning | What to check next |
@@ -249,5 +251,9 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `tool.repo_path` |  | A tool that is on was not wired: its arguments hold {repo}, and the session is not in a repo, or the repo's path holds a character other than letters, digits, and / . _ + @ -. | Run the session in a repo whose path has only those characters. |
 | `tool.no_launch_flag` |  | Tools that are on were not wired: the CLI's --help lacks the launch flag they need (Codex -c). | Update the CLI; aggy setup shows its version. |
 | `tool.wire_failed` |  | Tools that are on were not wired: the CLI's own MCP config could not be read to check names, or the session's tool file could not be written. | The record's msg; aggy doctor. |
+| `tool.hook_approves` | yes | A tool's hook was not wired: its definition, or a verified fact about it, says it approves actions the person would be asked about. | Nothing; aggy never wires such a hook. docs/verification.md, Managed tools. |
+| `tool.hook_output` | yes | aggy hook-tool passed nothing on: the tool's hook printed more than 64 KiB, not one JSON object, or an answer for another event. | Run the tool's hook by hand with the same input; aggy tool status. |
+| `tool.hook_failed` |  | aggy hook-tool passed nothing on: the tool's hook timed out, exited non-zero, could not start, or its definition changed or went since the session started. | The tool's install (aggy tool status); a new session picks up a changed definition. |
+| `tool.skill_missing` |  | aggy tool on refused: the tool's skill folder is not installed under ~/.aggy/skills, or resolves outside it. aggy never fetches a skill. | Copy the skill folder into ~/.aggy/skills/&lt;name&gt; as aggy tool on says, then turn the tool on again. |
 | `tool.changed_since_add` | yes | aggy tool on refused: the user definition is not the file aggy tool add showed. | aggy tool remove &lt;name&gt;, then aggy tool add the file again and read what it runs. |
 <!-- registry:end -->

@@ -136,11 +136,20 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		}
 		args = append(args, "--append-system-prompt-file", req.MemoryFile)
 	}
-	if len(req.Deny) > 0 {
+	if len(req.Deny) > 0 || len(req.Hooks) > 0 {
 		// An inline settings layer: its permissions.deny list merges with
 		// every settings file's, and a deny wins over any allow
-		// (code.claude.com/docs settings.md, permissions.md).
-		js, err := json.Marshal(map[string]any{"permissions": map[string]any{"deny": req.Deny}})
+		// (code.claude.com/docs settings.md, permissions.md). The tools'
+		// hooks ride in the same layer, for this session only, as the
+		// borrow guard's do (GuardSettings).
+		layer := map[string]any{}
+		if len(req.Deny) > 0 {
+			layer["permissions"] = map[string]any{"deny": req.Deny}
+		}
+		if len(req.Hooks) > 0 {
+			layer["hooks"] = req.Hooks
+		}
+		js, err := json.Marshal(layer)
 		if err != nil {
 			return adapter.Command{}, err
 		}

@@ -120,6 +120,10 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 			[]string{"--resume", rid, "--append-system-prompt-file", brief + ".mem", adapter.BriefPrompt(brief)}},
 		{"policy", adapter.InteractiveRequest{Deny: []string{"Read(**/.env)", "Bash(git push * main)"}},
 			[]string{"--settings", `{"permissions":{"deny":["Read(**/.env)","Bash(git push * main)"]}}`}},
+		// T6708: the tools' hooks share the policy's settings layer.
+		{"policy and hooks", adapter.InteractiveRequest{Deny: []string{"Read(**/.env)"}, Hooks: map[string][]adapter.HookGroup{
+			"PreToolUse": {{Matcher: "Bash", Hooks: []adapter.HookCommand{{Type: "command", Command: "x", Timeout: 10}}}}}},
+			[]string{"--settings", `{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"x","timeout":10}]}]},"permissions":{"deny":["Read(**/.env)"]}}`}},
 		// T6708: additive, never --strict-mcp-config; re-passed on resume.
 		{"tools on resume", adapter.InteractiveRequest{Resume: rid, MCPConfigFile: brief + ".mcp.json"},
 			[]string{"--resume", rid, "--mcp-config", brief + ".mcp.json"}},

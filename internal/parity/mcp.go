@@ -458,6 +458,89 @@ func readTOML(path string) (map[string]any, []byte, error) {
 	return doc, b, nil
 }
 
+// ProjectMCPNames lists the MCP servers v may load, by name, from
+// config outside its user config (which MCPNames covers) for a session
+// in cwd under the repo at root (root "" outside a repo, which is then
+// cwd alone):
+//
+//   - Claude: the repo's .mcp.json (code.claude.com/docs mcp.md,
+//     project scope).
+//   - Codex: config.toml of the system layer and of each project layer
+//     (CodexLayerDirs; loaded only when the project is trusted, which
+//     aggy cannot see, so it is counted). A system layer aggy may not
+//     read counts as none.
+//   - Grok: .mcp.json and .grok/config.toml in each folder from cwd up
+//     to root (verification.md, "Grok project config and folder trust").
+//
+// A file that exists but cannot be read or parsed is an error: the
+// caller wires nothing rather than guess.
+func ProjectMCPNames(v adapter.Vendor, cwd, root string) ([]string, error) {
+	if root == "" {
+		root = cwd
+	}
+	var names []string
+	addJSON := func(path string) error {
+		b, err := safefs.ReadFileLimit(path, maxClaudeJSON)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var doc struct {
+			MCPServers map[string]json.RawMessage `json:"mcpServers"`
+		}
+		if err := json.Unmarshal(b, &doc); err != nil {
+			return fmt.Errorf("%s is not valid JSON: %w", path, err)
+		}
+		names = append(names, slices.Collect(maps.Keys(doc.MCPServers))...)
+		return nil
+	}
+	addTOML := func(path string) error {
+		doc, _, err := readTOML(path)
+		if err != nil {
+			return err
+		}
+		servers, err := tomlServers(doc)
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		names = append(names, slices.Collect(maps.Keys(servers))...)
+		return nil
+	}
+	switch v {
+	case adapter.Claude:
+		return names, addJSON(filepath.Join(root, ".mcp.json"))
+	case adapter.Codex:
+		dirs, err := CodexLayerDirs(cwd, root)
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range dirs {
+			if !d.Project && d.Dir != CodexSystemDir {
+				continue // the user layer: MCPNames
+			}
+			err := addTOML(filepath.Join(d.Dir, "config.toml"))
+			if err != nil && !(d.Dir == CodexSystemDir && errors.Is(err, fs.ErrPermission)) {
+				return nil, err
+			}
+		}
+	case adapter.Grok:
+		for d := filepath.Clean(cwd); ; d = filepath.Dir(d) {
+			if err := addJSON(filepath.Join(d, ".mcp.json")); err != nil {
+				return nil, err
+			}
+			if err := addTOML(filepath.Join(d, ".grok", "config.toml")); err != nil {
+				return nil, err
+			}
+			if d == filepath.Clean(root) || filepath.Dir(d) == d {
+				break
+			}
+		}
+	}
+	return names, nil
+}
+
 // tomlServers returns the mcp_servers table of doc.
 func tomlServers(doc map[string]any) (map[string]any, error) {
 	v, ok := doc["mcp_servers"]

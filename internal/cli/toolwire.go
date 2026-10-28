@@ -2,11 +2,9 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -27,8 +25,6 @@ const (
 	toolAgentFile = "agent.md" // Grok's --agent
 )
 
-// maxProjectMCP caps a repo's .mcp.json read for its server names.
-const maxProjectMCP = 1 << 20
 
 // addTools wires the tools that are on for vendor v in the repo holding
 // cwd (switchboard.Board.On) into req, at launch and for this session
@@ -46,7 +42,7 @@ func addTools(ctx context.Context, v adapter.Vendor, caps []string, cwd, dir str
 		if tool != "" {
 			attrs["tool"] = tool
 		}
-		dlog.Log(ctx, diag.Rec{Event: diag.EvToolWireRefused, Vendor: string(v), Code: code, Msg: why, Attrs: attrs})
+		dlog.Log(ctx, diag.Rec{Event: diag.EvToolWireRefused, Vendor: string(v), Code: code, Msg: registryText(code), Attrs: attrs})
 		if tool == "" {
 			return fmt.Sprintf("tools not wired: %s (%s)", why, code)
 		}
@@ -71,13 +67,14 @@ func addTools(ctx context.Context, v adapter.Vendor, caps []string, cwd, dir str
 		}
 	}
 	on := b.On(v, repo.key)
+	warns = append(warns, addHooks(v, caps, on, req, refuse)...)
 	if !slices.ContainsFunc(on, func(st switchboard.State) bool { return st.Parts.MCP != nil }) {
 		return warns
 	}
 	if v == adapter.Codex && !slices.Contains(caps, probe.CapConfigOverride) {
 		return append(warns, refuse("", diag.CodeToolNoFlag, "codex --help does not list -c"))
 	}
-	taken, err := takenMCPNames(v, repo.root)
+	taken, err := takenMCPNames(v, cwd, repo.root)
 	if err != nil {
 		return append(warns, refuse("", diag.CodeToolWireFailed, "the CLI's own MCP servers could not be listed to check names: "+err.Error()))
 	}
@@ -120,29 +117,49 @@ func addTools(ctx context.Context, v adapter.Vendor, caps []string, cwd, dir str
 	return warns
 }
 
-// takenMCPNames are the MCP servers vendor v already loads by name: its
-// user config (parity.MCPNames: for Grok also ~/.claude.json's unless
-// that is off; for Claude also its local scope for the repo) and, for
-// Claude, the repo's .mcp.json.
-// TODO(T6708): Codex's and Grok's project config layers are not read;
-// unverified whether they may hold MCP servers.
-func takenMCPNames(v adapter.Vendor, root string) ([]string, error) {
+// toolHookBin is the aggy path a tool's hook entry calls; a test swaps
+// it, since a test binary is a go build.
+var toolHookBin = aggyBin
+
+// addHooks puts the hooks of the tools in on into req, for Claude's
+// inline --settings layer: each runs aggy hook-tool, which never passes
+// an "allow" on (toolwire.Hooks). A hook that approves, and any hook
+// for Codex or Grok, is refused.
+func addHooks(v adapter.Vendor, caps []string, on []switchboard.State, req *adapter.InteractiveRequest, refuse func(string, diag.Code, string) string) []string {
+	if !slices.ContainsFunc(on, func(st switchboard.State) bool { return len(st.Parts.Hooks) > 0 }) {
+		return nil
+	}
+	bin := ""
+	if v == adapter.Claude {
+		if !slices.Contains(caps, probe.CapSettings) {
+			return []string{refuse("", diag.CodeToolNoFlag, "claude --help does not list --settings, which carries the hooks")}
+		}
+		var err error
+		if bin, err = toolHookBin(); err != nil {
+			return []string{refuse("", diag.CodeToolWireFailed, "aggy's own path cannot go in a hook command: "+err.Error())}
+		}
+	}
+	hooks, refused := toolwire.Hooks(on, v, bin)
+	var warns []string
+	for _, r := range refused {
+		warns = append(warns, refuse(r.Tool, r.Code, r.Why))
+	}
+	req.Hooks = hooks
+	return warns
+}
+
+
+// takenMCPNames are the MCP servers vendor v already loads by name, for
+// a session in cwd under the repo at root: its user config
+// (parity.MCPNames: for Grok also ~/.claude.json's unless that is off;
+// for Claude also its local scope for the repo) and its project config
+// (parity.ProjectMCPNames). Any that cannot be read is an error, so
+// nothing is wired.
+func takenMCPNames(v adapter.Vendor, cwd, root string) ([]string, error) {
 	names, err := parity.MCPNames(v, root, os.Getenv)
-	if err != nil || v != adapter.Claude || root == "" {
-		return names, err
-	}
-	b, err := safefs.ReadFileLimit(filepath.Join(root, ".mcp.json"), maxProjectMCP)
-	if errors.Is(err, fs.ErrNotExist) {
-		return names, nil
-	}
 	if err != nil {
 		return nil, err
 	}
-	var doc struct {
-		MCPServers map[string]json.RawMessage `json:"mcpServers"`
-	}
-	if err := json.Unmarshal(b, &doc); err != nil {
-		return nil, fmt.Errorf("the repo's .mcp.json: %w", err)
-	}
-	return append(names, slices.Collect(maps.Keys(doc.MCPServers))...), nil
+	more, err := parity.ProjectMCPNames(v, cwd, root)
+	return append(names, more...), err
 }

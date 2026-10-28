@@ -18,6 +18,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/diag"
+	"github.com/congdoe/aggy/internal/hook"
 	"github.com/congdoe/aggy/internal/switchboard"
 	"github.com/congdoe/aggy/internal/tooldef"
 )
@@ -83,6 +84,82 @@ func fill(args []string, repo string) ([]string, error) {
 		out[i] = strings.ReplaceAll(a, tooldef.Placeholder, repo)
 	}
 	return out, nil
+}
+
+// approvingHooks are hook commands verified to answer "allow" to every
+// action they touch: rtk hook codex (docs/verification.md, "Managed
+// tools", S63-9). Like a hook whose definition says approves, they are
+// never wired, whatever aggy hook-tool would strip.
+var approvingHooks = [][]string{{"rtk", "hook", "codex"}}
+
+// ToolHookTimeout is how long aggy hook-tool lets a tool's hook run when
+// its definition sets no timeout, in seconds; the CLI's own timeout for
+// the entry is two seconds longer.
+const ToolHookTimeout = 8
+
+// Hooks returns the hooks of the tools in on for vendor v, as
+// Claude-format matcher groups by event, each running aggy hook-tool at
+// bin: the wrapper runs the tool's argv and passes on only what
+// hook.FilterToolOutput lets through, never an "allow". Only Claude
+// takes hooks for one session (an inline --settings layer); for Codex
+// and Grok a hook is refused (tool.no_launch_flag): their hook config
+// is global, and Codex runs a hook only once trusted by hand. A hook
+// known to approve is refused (tool.hook_approves).
+func Hooks(on []switchboard.State, v adapter.Vendor, bin string) (map[string][]adapter.HookGroup, []Refusal) {
+	var out map[string][]adapter.HookGroup
+	var refused []Refusal
+	for _, st := range on {
+		name := st.Tool.Name
+		for i, h := range st.Tool.Hooks {
+			if !slices.Contains(h.Vendors, v) {
+				continue
+			}
+			switch {
+			case h.Approves || slices.ContainsFunc(approvingHooks, func(a []string) bool { return slices.Equal(a, h.Argv) }):
+				refused = append(refused, Refusal{name, diag.CodeToolHookApproves,
+					fmt.Sprintf("its %s hook approves actions you would be asked about, so aggy never wires it", h.Event)})
+				continue
+			case v != adapter.Claude:
+				refused = append(refused, Refusal{name, diag.CodeToolNoFlag,
+					fmt.Sprintf("%s takes no hook for one session, so its %s hook is not wired", v, h.Event)})
+				continue
+			}
+			cmd, err := HookCommand(bin, v, name, i, st.Tool.Digest)
+			if err != nil {
+				refused = append(refused, Refusal{name, diag.CodeToolWireFailed, err.Error()})
+				continue
+			}
+			timeout := h.Timeout
+			if timeout == 0 {
+				timeout = ToolHookTimeout
+			}
+			if out == nil {
+				out = map[string][]adapter.HookGroup{}
+			}
+			out[h.Event] = append(out[h.Event], adapter.HookGroup{Matcher: h.Matcher,
+				Hooks: []adapter.HookCommand{{Type: "command", Command: cmd, Timeout: timeout + 2}}})
+		}
+	}
+	return out, refused
+}
+
+// HookCommand is the shell command a hook entry runs for hook i of tool:
+//
+//	test -x <aggy> && <aggy> hook-tool --vendor <v> <tool> <i> <digest> || true
+//
+// as aggy's own hook entries are written (hook.Command): bin passes
+// hook.CheckBin, and every other word is a vendor, a tool name, a
+// number, or 16 hex digits of the definition's digest, so no word needs
+// quoting in any shell. aggy hook-tool runs nothing once the definition
+// no longer has that digest.
+func HookCommand(bin string, v adapter.Vendor, tool string, i int, digest string) (string, error) {
+	if err := hook.CheckBin(bin); err != nil {
+		return "", err
+	}
+	if !tooldef.ValidName(tool) || len(digest) < 16 || strings.Trim(digest[:16], "0123456789abcdef") != "" {
+		return "", fmt.Errorf("tool %q or its digest cannot go in a hook command", tool)
+	}
+	return fmt.Sprintf("test -x %s && %s hook-tool --vendor %s %s %d %s || true", bin, bin, v, tool, i, digest[:16]), nil
 }
 
 // Names returns the servers' names.

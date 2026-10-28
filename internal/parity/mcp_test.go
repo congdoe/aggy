@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -286,4 +287,40 @@ func TestMCPNames(t *testing.T) {
 	delete(env, "GROK_CLAUDE_MCPS_ENABLED")
 	write(filepath.Join(home, ".grok", "config.toml"), "[compat.claude]\nmcps = false\n")
 	check(adapter.Grok)
+}
+
+// TestProjectMCPNames: the servers a repo's own config gives each CLI,
+// for name clashes (T6708); a file that cannot be parsed is an error.
+func TestProjectMCPNames(t *testing.T) {
+	isolate(t)
+	root := t.TempDir()
+	sub := filepath.Join(root, "a", "b")
+	w := func(p, s string) {
+		t.Helper()
+		must(t, os.MkdirAll(filepath.Dir(p), 0o700))
+		must(t, os.WriteFile(p, []byte(s), 0o600))
+	}
+	w(filepath.Join(root, ".mcp.json"), `{"mcpServers":{"top":{"command":"x"}}}`)
+	w(filepath.Join(sub, ".mcp.json"), `{"mcpServers":{"low":{"command":"x"}}}`)
+	w(filepath.Join(root, "a", ".grok", "config.toml"), "[mcp_servers.mid]\ncommand = \"x\"\n")
+	w(filepath.Join(root, "a", ".codex", "config.toml"), "[mcp_servers.cx]\ncommand = \"x\"\n")
+	for _, c := range []struct {
+		v    adapter.Vendor
+		want string
+	}{
+		{adapter.Claude, "top"}, {adapter.Codex, "cx"}, {adapter.Grok, "low mid top"},
+	} {
+		got, err := ProjectMCPNames(c.v, sub, root)
+		slices.Sort(got)
+		if err != nil || strings.Join(got, " ") != c.want {
+			t.Errorf("%s: %q %v, want %q", c.v, got, err, c.want)
+		}
+	}
+	w(filepath.Join(root, "a", ".codex", "config.toml"), "[mcp_servers\n")
+	w(filepath.Join(sub, ".mcp.json"), `{`)
+	for _, v := range []adapter.Vendor{adapter.Codex, adapter.Grok} {
+		if _, err := ProjectMCPNames(v, sub, root); err == nil {
+			t.Errorf("%s: a broken file read as none", v)
+		}
+	}
 }

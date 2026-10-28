@@ -45,6 +45,37 @@ func TestAddToolsSession(t *testing.T) {
 	}
 }
 
+// TestAddToolsHooks: RTK's Claude PreToolUse hook is wired through aggy
+// hook-tool in the session's --settings layer only when the probe found
+// --settings; off, it is gone.
+func TestAddToolsHooks(t *testing.T) {
+	isolate(t)
+	old := toolHookBin
+	toolHookBin = func() (string, error) { return "/opt/bin/aggy", nil }
+	defer func() { toolHookBin = old }()
+	repo := switchRepo(t, "")
+	if code, _, errOut := toolRun("", false, "on", "rtk"); code != 0 {
+		t.Fatalf("on: %d %q", code, errOut)
+	}
+	req, warns, _ := wireOnce(t, adapter.Claude, []string{probe.CapSettings}, repo)
+	g := req.Hooks["PreToolUse"]
+	if len(warns) != 0 || len(g) != 1 || g[0].Matcher != "Bash" || !strings.Contains(g[0].Hooks[0].Command, "/opt/bin/aggy hook-tool --vendor claude rtk 0 ") {
+		t.Errorf("hooks %+v %q", req.Hooks, warns)
+	}
+	if req, warns, _ := wireOnce(t, adapter.Claude, nil, repo); req.Hooks != nil || len(warns) != 1 || !strings.Contains(warns[0], "tool.no_launch_flag") {
+		t.Errorf("without --settings: %+v %q", req.Hooks, warns)
+	}
+	if req, warns, _ := wireOnce(t, adapter.Codex, []string{probe.CapConfigOverride}, repo); req.Hooks != nil || len(warns) != 0 {
+		t.Errorf("codex has no rtk hook: %+v %q", req.Hooks, warns)
+	}
+	if code, _, _ := toolRun("", false, "off", "rtk"); code != 0 {
+		t.Fatal("off")
+	}
+	if req, _, _ := wireOnce(t, adapter.Claude, []string{probe.CapSettings}, repo); req.Hooks != nil {
+		t.Errorf("off: %+v", req.Hooks)
+	}
+}
+
 // TestAddTools: the tools that are on reach each CLI's launch as its own
 // form (a Claude MCP file, Grok agent file, Codex -c servers); an off
 // tool leaves no flag and no file; a name the user's config already has
@@ -89,9 +120,9 @@ func TestAddTools(t *testing.T) {
 
 	req, warns, dir = wireOnce(t, adapter.Grok, nil, repo)
 	b, _ = os.ReadFile(req.AgentFile)
-	if len(warns) != 0 || !strings.Contains(string(b), `- {"context7":{"command":"context7-mcp","args":[],"cwd":"`+dir+`"}}`) ||
+	if len(warns) != 1 || !strings.Contains(warns[0], "PostToolUse hook is not wired") || !strings.Contains(string(b), `- {"context7":{"command":"context7-mcp","args":[],"cwd":"`+dir+`"}}`) ||
 		strings.Contains(string(b), "demo") {
-		t.Errorf("grok (demo has no grok MCP part): %q\n%s", warns, b)
+		t.Errorf("grok (demo has no grok MCP part, and Grok takes no hook per session): %q\n%s", warns, b)
 	}
 
 	req, warns, _ = wireOnce(t, adapter.Codex, nil, repo)
