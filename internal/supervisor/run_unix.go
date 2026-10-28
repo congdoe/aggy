@@ -41,10 +41,17 @@ var switchQuiet = time.Second
 // switchPoll is how often a waiting switch checks whether it may go on.
 const switchPoll = 100 * time.Millisecond
 
-// exitWait bounds how long a CLI has to exit after aggy types its exit
-// command. Past it, aggy leaves the CLI running and drops the switch.
-// Tests shorten it.
+// exitWait is how long a CLI has to exit after aggy types its exit
+// command before aggy tells the user it has not. The switch still stands
+// (S-4): a CLI that exits later, say after a turn it had queued the exit
+// behind, is switched from, unless the user cancels in the picker. Tests
+// shorten it.
 var exitWait = 10 * time.Second
+
+// confirmGuard is how long a confirmation aggy opened on its own ignores
+// the switch key, so a key meant for the CLI as it appears cannot
+// confirm (S-2). Tests shorten it.
+var confirmGuard = 500 * time.Millisecond
 
 // Run supervises one CLI: it puts In in raw mode, starts the CLI at In's
 // size, and copies bytes both ways unchanged until the CLI exits. It
@@ -56,11 +63,17 @@ var exitWait = 10 * time.Second
 // switch-request from the session). It never interrupts a turn: it waits
 // for the vendor's turn-end hook, from the CLI's own process tree
 // (FromSession), with no Enter typed since, and for the CLI's output and
-// the user's typing to go quiet. A marked hook is still only a hint (a
-// nested CLI's Stop can arrive mid-turn), so aggy then asks the user, and
-// only on Enter types the exit command (adapter.ExitCommand) through the
-// input queue. A CLI that has not exited within exitWait is left running
-// and the switch dropped, with a note.
+// the user's typing to go quiet. Any other hook from the session, such as
+// a Notification (a permission prompt, among others), holds the switch
+// until the user has typed to the CLI and a turn has ended since. A
+// marked hook is still only a hint (a nested CLI's Stop can arrive
+// mid-turn), so aggy then asks the user, and only the switch key, not
+// Enter and not within confirmGuard, types the exit command
+// (adapter.ExitCommand) through the input queue. Text the user typed and
+// did not send blocks the switch outright. Any other key at a prompt aggy
+// opened on its own closes it and goes to the CLI, so nothing typed is
+// lost. A CLI that has not exited within exitWait is left running, and the
+// user told; the switch stands until it exits or the user cancels.
 //
 //   - SIGWINCH: In's new size is passed to the CLI.
 //   - SIGINT, SIGQUIT, SIGTERM, SIGHUP sent to aggy are forwarded to the
@@ -81,7 +94,8 @@ func Run(o Options) (Exit, error) {
 		return Exit{Code: 1}, errors.New("supervisor: standard input is not a terminal")
 	}
 	t := &tty{fd: fd}
-	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, turnEnds: make(chan struct{}, 1), asks: make(chan adapter.Vendor, 1)}
+	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, events: make(chan string, 16), asks: make(chan adapter.Vendor, 1), quit: make(chan struct{})}
+	defer close(s.quit)
 	var srv *Server
 	if o.RunDir != "" {
 		var err error
@@ -150,8 +164,8 @@ func Run(o Options) (Exit, error) {
 			check = time.After(switchPoll)
 		}
 		select {
-		case <-s.turnEnds:
-			s.atPrompt = true
+		case ev := <-s.events:
+			s.hookEvent(ev)
 		case v := <-s.asks:
 			if s.sw.to == "" { // a switch the user picked wins
 				s.setSwitch(pendingSwitch{to: v, asked: true})
@@ -160,10 +174,9 @@ func Run(o Options) (Exit, error) {
 			s.offerSwitch()
 		case <-s.exitBy:
 			s.exitBy = nil
-			if s.sw.typed {
-				v := s.o.Vendor
-				s.setSwitch(pendingSwitch{})
-				s.pk.tell(fmt.Sprintf("%s did not exit after aggy typed its exit command, so it is still running and aggy did not switch.", v))
+			if s.sw.typed && !s.open {
+				s.pk.tell(fmt.Sprintf("%s has not exited after aggy typed its exit command, so it is still running.", s.o.Vendor),
+					fmt.Sprintf("If it exits, aggy switches to %s. To cancel, press the switch key, then Esc.", s.sw.to))
 				s.openPicker()
 			}
 		case b, ok := <-input:
@@ -258,17 +271,29 @@ type session struct {
 	// handling, the picker, or the terminal-closed check.
 	toChild *byteQueue
 
-	// The switch state, owned by the main loop. turnEnds and asks bring
-	// it hook turn ends and the agent's switch requests from the socket.
-	sw       pendingSwitch
-	turnEnds chan struct{}
-	asks     chan adapter.Vendor
+	// The switch state, owned by the main loop. events and asks bring
+	// it the session's hook event names, in arrival order, and the
+	// agent's switch requests from the socket; quit closes when Run
+	// returns.
+	sw     pendingSwitch
+	events chan string
+	asks   chan adapter.Vendor
+	quit   chan struct{}
 	// atPrompt: a turn end from the session came after the last Enter the
-	// user typed (or none was typed since a launch that started no turn).
+	// user typed (or none was typed since a launch that started no turn),
+	// and no hold since.
 	atPrompt bool
+	// held: a hook other than a turn end (a Notification: maybe a
+	// permission prompt) came from the session, and the user has not
+	// typed to the CLI since. A turn end does not clear it: a nested
+	// CLI's Stop can follow a prompt that is still open (S-3).
+	held bool
 	// dirty: the user typed something after their last Enter, which the
-	// CLI may still hold unsent.
-	dirty bool
+	// CLI may still hold unsent; toldDirty: they were told it blocks the
+	// switch.
+	dirty, toldDirty bool
+	// openedAt is when the picker last opened.
+	openedAt time.Time
 	// lastIn is when the user last typed to the CLI; lastOut (unix ns),
 	// written by copyOut, when the CLI last drew.
 	lastIn  time.Time
@@ -293,19 +318,33 @@ type pendingSwitch struct {
 	typed bool // the exit command has been typed
 }
 
-// onHook is the socket's hook callback: it passes the event on, and a
-// turn end of the vendor on screen from the session tells the main loop.
+// onHook is the socket's hook callback: it passes the event on, and
+// hands an event of the vendor on screen from the session to the main
+// loop, in order (none is dropped: a lost hold would let a switch through).
 // It runs on a connection's goroutine.
 func (s *session) onHook(r Request) {
 	if s.o.OnHook != nil {
 		s.o.OnHook(r)
 	}
-	if r.FromSession && r.Vendor == string(s.o.Vendor) && turnEnd(r.Event) {
+	if r.FromSession && r.Vendor == string(s.o.Vendor) && r.Event != "SessionStart" {
 		select {
-		case s.turnEnds <- struct{}{}:
-		default:
+		case s.events <- r.Event:
+		case <-s.quit:
 		}
 	}
+}
+
+// hookEvent applies one hook event from the session. A turn end puts the
+// CLI at its prompt unless a hold stands. Every other event (SessionStart
+// excepted, which onHook skips) holds the switch: Notification is how
+// Claude and Grok say they wait for the user, a permission prompt among
+// others, and its type field is not verified, so every one counts.
+func (s *session) hookEvent(ev string) {
+	if turnEnd(ev) {
+		s.atPrompt = !s.held
+		return
+	}
+	s.atPrompt, s.held = false, true
 }
 
 // onSwitch takes a switch-request from the session (the socket refuses
@@ -346,8 +385,9 @@ func (s *session) offered(v adapter.Vendor) error {
 // an Enter may start a turn, and text after the last Enter may be unsent.
 func (s *session) send(b []byte) {
 	s.lastIn = time.Now()
+	s.held = false
 	if i := bytes.LastIndexByte(b, '\r'); i >= 0 {
-		s.atPrompt = false
+		s.atPrompt, s.toldDirty = false, false
 		s.dirty = i < len(b)-1
 	} else {
 		s.dirty = true
@@ -364,6 +404,18 @@ func (s *session) offerSwitch() {
 		return
 	}
 	v, on := s.sw.to, s.o.Vendor
+	if s.dirty {
+		// S-1: the exit command would go after the unsent text and send
+		// both, so the switch waits; the user is told once.
+		if !s.toldDirty {
+			s.toldDirty = true
+			s.pk.tell(fmt.Sprintf("aggy is ready to switch to %s, but you typed text you have not sent to %s.", v, on),
+				"Send it or clear it. aggy asks again at the next turn end; once the prompt is empty,",
+				fmt.Sprintf("you can also pick %s again in the picker.", v))
+			s.openPicker()
+		}
+		return
+	}
 	if err := s.offered(v); err != nil {
 		s.setSwitch(pendingSwitch{})
 		s.pk.tell(fmt.Sprintf("Cannot switch to %s: %v", v, err))
@@ -379,17 +431,20 @@ func (s *session) offerSwitch() {
 	if !verified {
 		lines = append(lines, fmt.Sprintf("(%s is not yet verified to end %s.)", cmd, on))
 	}
-	if s.dirty {
-		lines = append(lines, "You typed text you have not sent; it would go before "+cmd+". Esc, clear it, and switch again.")
-	}
-	lines = append(lines, "If a turn is still running, press Esc.")
+	lines = append(lines, "If a turn is still running or "+string(on)+" is asking you something, press Esc.")
 	s.pk.ask(v, lines...)
 	s.openPicker()
 }
 
 // typeExit types the on-screen CLI's exit command, through the input
 // queue, after anything the user typed before it.
+//
+// It sends no Esc first to clear a menu: what Esc does at each CLI's
+// prompt and approval menus is not in docs/verification.md (S-3).
 func (s *session) typeExit() {
+	if s.dirty || s.held {
+		return
+	}
 	cmd, _ := adapter.ExitCommand(s.o.Vendor)
 	s.toChild.push([]byte(cmd + "\r"))
 	s.sw.typed = true
@@ -406,10 +461,7 @@ const altSettle = 50 * time.Millisecond
 // openList opens the picker on the vendor list.
 func (s *session) openList() {
 	s.pk.list()
-	s.pk.waiting = ""
-	if !s.sw.typed {
-		s.pk.waiting = s.sw.to
-	}
+	s.pk.waiting = s.sw.to
 	s.openPicker()
 }
 
@@ -426,6 +478,7 @@ func (s *session) openPicker() {
 		s.outMu.Lock()
 	}
 	s.open = true
+	s.openedAt = time.Now()
 	s.pickerOverCLI = s.alt.on
 	s.pk.draw(s.o.Out, s.pickerOverCLI)
 }
@@ -475,22 +528,33 @@ func (s *session) repaint() {
 }
 
 func (s *session) pickerInput(b []byte) {
-	confirming, note := s.pk.confirm != "", s.pk.note
+	if s.pk.confirm != "" || s.pk.note {
+		s.promptInput(b)
+		return
+	}
 	done, picked := s.pk.handle(b)
 	if !done {
 		return
 	}
 	s.closePicker()
 	switch {
-	case note || s.sw.typed:
-	case confirming && picked != "":
-		s.typeExit()
-	case confirming: // Esc: stay
-		s.setSwitch(pendingSwitch{})
+	case s.sw.typed:
+		// The exit command is typed: Esc cancels the switch, so a late
+		// exit ends aggy; a pick changes nothing.
+		if picked == "" {
+			s.setSwitch(pendingSwitch{})
+		}
 	case picked != "" && picked == s.sw.to:
 		// Picked again while it waits: the user says no turn is running
-		// (an Enter that started none leaves no turn end to wait for).
-		s.atPrompt = true
+		// and the prompt is empty (an Enter that started no turn leaves
+		// no turn end to wait for). Not past a hold (S-3).
+		if s.held {
+			s.pk.tell(fmt.Sprintf("%s said it is waiting for you (a permission prompt or another notice).", s.o.Vendor),
+				fmt.Sprintf("Answer it, or send a message; aggy switches to %s at the next turn end.", picked))
+			s.openPicker()
+			return
+		}
+		s.atPrompt, s.dirty = true, false
 	case picked != "":
 		if err := s.offered(picked); err != nil {
 			s.pk.tell(fmt.Sprintf("Cannot switch to %s: %v", picked, err))
@@ -501,6 +565,42 @@ func (s *session) pickerInput(b []byte) {
 	default: // Esc on the list cancels a waiting switch
 		s.setSwitch(pendingSwitch{})
 	}
+}
+
+// promptInput handles a key at a prompt aggy opened on its own (a
+// confirmation or a note), which the user may have been typing into when
+// it appeared (S-2). Esc closes it (and, at a confirmation, drops the
+// switch). At a confirmation, the switch key, once confirmGuard has
+// passed, types the exit command. Any other input closes it and goes to
+// the CLI as typed: nothing is lost, and the switch, if any, still waits.
+func (s *session) promptInput(b []byte) {
+	confirming := s.pk.confirm != ""
+	switch {
+	case isEsc(b):
+		s.closePicker()
+		if confirming {
+			s.setSwitch(pendingSwitch{})
+		}
+	case confirming && s.pk.isKey(b):
+		if time.Since(s.openedAt) < confirmGuard {
+			return // too soon to be meant: ignored
+		}
+		s.closePicker()
+		s.typeExit()
+	default:
+		s.closePicker()
+		s.send(b)
+	}
+}
+
+// isEsc reports whether b is a lone Esc press, as a byte or a kitty
+// report.
+func isEsc(b []byte) bool {
+	if len(b) == 1 {
+		return b[0] == esc
+	}
+	r, ok := parseCSIu(b)
+	return ok && r.n == len(b) && r.code == 27
 }
 
 // goSafe runs f in a goroutine that restores the terminal before a panic
