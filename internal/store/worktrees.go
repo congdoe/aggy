@@ -19,10 +19,10 @@ const (
 func (s *Store) BorrowWorktree(ctx context.Context, id string) (Worktree, error) {
 	var w Worktree
 	err := s.db.QueryRowContext(ctx,
-		`SELECT c.worktree, c.branch, c.worktree_base, c.worktree_repo, c.worktree_git_dir, c.worktree_state
+		`SELECT c.worktree, c.branch, c.worktree_base, c.worktree_repo, c.worktree_git_dir, c.worktree_state, c.worktree_tree
 		 FROM borrows b JOIN children c ON c.id = b.child_id
 		 WHERE b.id = ? AND c.worktree <> ''`, id).
-		Scan(&w.Path, &w.Branch, &w.Base, &w.Repo, &w.GitDir, &w.State)
+		Scan(&w.Path, &w.Branch, &w.Base, &w.Repo, &w.GitDir, &w.State, &w.Tree)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Worktree{}, ErrNotFound
 	}
@@ -50,6 +50,22 @@ func (s *Store) SetWorktreeState(ctx context.Context, id, from, to string) error
 	}
 	if n != 1 {
 		return fmt.Errorf("%w (borrow %s, want %s)", ErrWorktreeState, id, from)
+	}
+	return nil
+}
+
+// SetWorktreeTree records the tree of borrow id's worktree, once, while
+// it is pending.
+func (s *Store) SetWorktreeTree(ctx context.Context, id, tree string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE children SET worktree_tree = ?
+		 WHERE id = (SELECT child_id FROM borrows WHERE id = ?) AND worktree <> '' AND worktree_tree = '' AND worktree_state = 'pending'`,
+		tree, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("%w (borrow %s: tree already set or not pending)", ErrWorktreeState, id)
 	}
 	return nil
 }

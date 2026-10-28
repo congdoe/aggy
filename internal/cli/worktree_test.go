@@ -2,11 +2,14 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -162,7 +165,8 @@ func TestBorrowEditCommand(t *testing.T) {
 		}
 	}
 	wtRoot := resolvePath(filepath.Join(f.state, worktreesDir))
-	if !strings.HasPrefix(child.Cwd, wtRoot+string(filepath.Separator)) || !strings.Contains(strings.Join(child.Args, " "), "--sandbox workspace-write") {
+	if args := strings.Join(child.Args, " "); !strings.HasPrefix(child.Cwd, wtRoot+string(filepath.Separator)) ||
+		!strings.Contains(args, "--sandbox workspace-write") || !strings.Contains(args, "--ignore-user-config") {
 		t.Errorf("child %+v", child)
 	}
 	if !strings.Contains(child.Stdin, "- a.go\n") || strings.Contains(child.Stdin, f.repo) {
@@ -311,10 +315,20 @@ setup = ["/bin/sh", "-c", "echo ran > setup.out; exit $FAIL"]
 	})
 }
 
-// editBorrow runs an edit borrow on the fake Codex and returns its id
-// and worktree path.
-func editBorrow(t *testing.T, f *borrowFixture) (string, string) {
+// editBorrow runs an edit borrow on the fake Codex, which writes files
+// (path to content) in its worktree, and returns the borrow id and the
+// worktree path.
+func editBorrow(t *testing.T, f *borrowFixture, files map[string]string) (string, string) {
 	t.Helper()
+	var cf []map[string]string
+	for _, p := range slices.Sorted(maps.Keys(files)) {
+		cf = append(cf, map[string]string{"path": p, "content": files[p]})
+	}
+	sc, _ := json.Marshal(map[string]any{
+		"events":    []any{map[string]any{"type": "item.completed", "item": map[string]any{"type": "agent_message", "text": "done"}}},
+		"cwd_files": cf,
+	})
+	f.scenario["codex"] = string(sc)
 	before := len(fakecli.Records(t, f.record))
 	if code, out, errOut := f.run(t, "edit", "change a.go", "--vendor", "codex"); code != 0 {
 		t.Fatalf("code %d: %s %s", code, out, errOut)
@@ -341,7 +355,6 @@ func editFixture(t *testing.T) (*borrowFixture, []string) {
 	markers := editRepo(t, f.repo)
 	f.env.gitPath = func() (string, error) { return gitBin, nil }
 	f.env.gitRun = execrun.ExecRunner(gitTimeout)
-	f.scenario["codex"] = `{"events":[{"type":"item.completed","item":{"type":"agent_message","text":"done"}}]}`
 	// PATH holds git alone, for the test's own git calls.
 	bin := t.TempDir()
 	if err := os.Symlink(gitBin, filepath.Join(bin, "git")); err != nil {
@@ -362,9 +375,8 @@ func accept(f *borrowFixture, in string, tty bool, args ...string) (int, string,
 // applies once; nothing from the repo's config runs.
 func TestAccept(t *testing.T) {
 	f, markers := editFixture(t)
-	id, wt := editBorrow(t, f)
-	mustWrite(t, filepath.Join(wt, "a.go"), "package a\n\nfunc Edited() {}\n", 0o600)
-	mustWrite(t, filepath.Join(wt, "b.go"), "package a\n", 0o600)
+	edited := "package a\n\nfunc Edited() {}\n"
+	id, wt := editBorrow(t, f, map[string]string{"a.go": edited, "b.go": "package a\n"})
 
 	// The main checkout's a.go has an uncommitted change.
 	if code, out, errOut := accept(f, "", false, id, "--yes"); code != 1 || !strings.Contains(errOut, "has changes in paths the diff touches (a.go)") {
@@ -380,6 +392,13 @@ func TestAccept(t *testing.T) {
 	if data, _ := os.ReadFile(filepath.Join(f.repo, "a.go")); strings.Contains(string(data), "Edited") {
 		t.Fatal("applied without a yes")
 	}
+	// W-4: a change after the borrow ended (a process the child left
+	// behind) is refused, until the worktree is back as it was.
+	mustWrite(t, filepath.Join(wt, "a.go"), "package a\n\nfunc Sneaky() {}\n", 0o600)
+	if code, out, errOut := accept(f, "", false, id, "--yes"); code != 1 || !strings.Contains(errOut, "changed after the borrow ended") {
+		t.Errorf("changed later: code %d: %s %s", code, out, errOut)
+	}
+	mustWrite(t, filepath.Join(wt, "a.go"), edited, 0o600)
 	// The child can rewrite the worktree's .git file; aggy never reads it.
 	evil := t.TempDir()
 	gitIn(t, evil, "init", "-q")
@@ -398,6 +417,11 @@ func TestAccept(t *testing.T) {
 	if code, _, errOut := accept(f, "", false, id, "--yes"); code != 1 || !strings.Contains(errOut, "already accepted") {
 		t.Errorf("second accept: code %d: %s", code, errOut)
 	}
+	// W-6: the state is the lock reject takes too.
+	var rout, rerr strings.Builder
+	if code := rejectWith([]string{id}, f.env, &rout, &rerr); code != 1 || !strings.Contains(rerr.String(), "already accepted") {
+		t.Errorf("reject after accept: code %d: %s", code, rerr.String())
+	}
 	noMarkers(t, markers)
 }
 
@@ -407,34 +431,30 @@ func TestAcceptRefuses(t *testing.T) {
 	f, markers := editFixture(t)
 	gitIn(t, f.repo, "checkout", "--", "a.go")
 	before := gitIn(t, f.repo, "status", "--porcelain")
+	gitIn(t, f.repo, "config", "core.hooksPath", "tools/hooks")
 	tests := []struct {
 		name string
-		make func(wt string)
-		want string
+		file string
 	}{
-		{"claude settings", func(wt string) { mustWrite(t, filepath.Join(wt, ".claude", "settings.json"), "{}", 0o600) }, ".claude/settings.json"},
-		{"nested grok hooks", func(wt string) { mustWrite(t, filepath.Join(wt, "sub", ".grok", "hooks", "h.json"), "{}", 0o600) }, "sub/.grok/hooks/h.json"},
-		{"aggy config", func(wt string) { mustWrite(t, filepath.Join(wt, ".aggy", "config.toml"), "", 0o600) }, ".aggy/config.toml"},
-		{"agents file", func(wt string) { mustWrite(t, filepath.Join(wt, "AGENTS.md"), "x", 0o600) }, "AGENTS.md"},
-		{"gitattributes", func(wt string) { mustWrite(t, filepath.Join(wt, ".gitattributes"), "* filter=evil\n", 0o600) }, ".gitattributes"},
-		{"symlink", func(wt string) {
-			if err := os.Symlink("/etc", filepath.Join(wt, "etc")); err != nil {
-				t.Fatal(err)
-			}
-		}, "symlink"},
-		{"nested repo", func(wt string) {
-			gitIn(t, wt, "init", "-q", "inner")
-			mustWrite(t, filepath.Join(wt, "inner", "x"), "x", 0o600)
-			gitIn(t, filepath.Join(wt, "inner"), "add", "x")
-			gitIn(t, filepath.Join(wt, "inner"), "commit", "-q", "-m", "x")
-		}, "submodule"},
+		{"claude settings", ".claude/settings.json"},
+		{"claude hook", ".claude/hooks/h.sh"},
+		{"nested grok hooks", "sub/.grok/hooks/h.json"},
+		{"aggy config", ".aggy/config.toml"},
+		{"agents file", "AGENTS.md"},
+		{"gemini file", "pkg/GEMINI.md"},
+		{"gitattributes", ".gitattributes"},
+		{"husky", ".husky/pre-commit"},
+		{"workflow", ".github/workflows/ci.yml"},
+		{"vscode tasks", ".vscode/tasks.json"},
+		{"pre-commit config", ".pre-commit-config.yaml"},
+		{"any dot dir", ".tool/run.sh"},
+		{"the repo's hooksPath", "tools/hooks/pre-commit"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id, wt := editBorrow(t, f)
-			tt.make(wt)
+			id, _ := editBorrow(t, f, map[string]string{"a.go": "package a\n", tt.file: "x\n"})
 			code, out, errOut := accept(f, "", false, id, "--yes")
-			if code != 1 || !strings.Contains(errOut, "refusing") || !strings.Contains(errOut, tt.want) {
+			if code != 1 || !strings.Contains(errOut, "refusing") || !strings.Contains(errOut, tt.file) {
 				t.Errorf("code %d: %s %s", code, out, errOut)
 			}
 		})
@@ -449,8 +469,7 @@ func TestAcceptRefuses(t *testing.T) {
 // git, once, and leaves the main checkout alone.
 func TestReject(t *testing.T) {
 	f, markers := editFixture(t)
-	id, wt := editBorrow(t, f)
-	mustWrite(t, filepath.Join(wt, "a.go"), "package a\n// edited\n", 0o600)
+	id, wt := editBorrow(t, f, map[string]string{"a.go": "package a\n// edited\n"})
 	var out, errb strings.Builder
 	if code := rejectWith([]string{id}, f.env, &out, &errb); code != 0 {
 		t.Fatalf("code %d: %s %s", code, out.String(), errb.String())
@@ -472,4 +491,78 @@ func TestReject(t *testing.T) {
 		t.Errorf("accept after reject: code %d: %s", code, errOut)
 	}
 	noMarkers(t, markers)
+}
+
+// TestCheckTouched (T6689): symlinks and submodules on either side and
+// .git paths are refused from git's raw diff; plain files pass.
+func TestCheckTouched(t *testing.T) {
+	z := "0000000000000000000000000000000000000000"
+	entry := func(old, new, st, p string) string {
+		return ":" + old + " " + new + " " + z + " " + z + " " + st + "\x00" + p + "\x00"
+	}
+	tests := []struct {
+		raw, hooks, want string
+	}{
+		{entry("000000", "120000", "A", "etc"), "", "symlink"},
+		{entry("120000", "100644", "T", "x"), "", "symlink"},
+		{entry("000000", "160000", "A", "inner"), "", "submodule"},
+		{entry("100644", "100644", "M", "sub/.git/config"), "", "sub/.git/config"},
+		{entry("000000", "100644", "A", "pre-commit"), ".", "pre-commit"},
+		{entry("100644", "100644", "M", "a.go") + entry("000000", "100755", "A", "bin/x"), "", ""},
+	}
+	for _, tt := range tests {
+		paths, err := checkTouched(tt.raw, tt.hooks)
+		if tt.want == "" {
+			if err != nil || len(paths) != 2 {
+				t.Errorf("%q: %v, %v", tt.raw, paths, err)
+			}
+		} else if err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("%q: %v", tt.raw, err)
+		}
+	}
+}
+
+// TestRemoveKeepsOtherWorktrees (W-3): removing aggy's worktree whose
+// directory is gone drops only aggy's admin entry, never the person's
+// own worktree that is missing for a while.
+func TestRemoveKeepsOtherWorktrees(t *testing.T) {
+	g, _ := newWorktrees(t)
+	repo, _ := filepath.EvalSymlinks(t.TempDir())
+	gitRepo(t, repo)
+	mine := filepath.Join(t.TempDir(), "mine")
+	gitIn(t, repo, "worktree", "add", "-q", mine)
+	if err := os.Rename(mine, mine+".away"); err != nil { // an unmounted disk
+		t.Fatal(err)
+	}
+	wt, err := g.Create(context.Background(), repo, "5123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(wt.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Remove(context.Background(), wt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".git", "worktrees", "mine")); err != nil {
+		t.Errorf("the person's worktree entry was pruned: %v", err)
+	}
+	if _, err := os.Stat(wt.GitDir); !os.IsNotExist(err) {
+		t.Errorf("aggy's entry left: %v", err)
+	}
+	// An admin entry that points elsewhere is never removed.
+	wt2, err := g.Create(context.Background(), repo, "6123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(wt2.Path); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(wt2.GitDir, "gitdir"), filepath.Join(mine, ".git")+"\n", 0o600)
+	if err := g.Remove(context.Background(), wt2); err == nil || !strings.Contains(err.Error(), "refusing") {
+		t.Errorf("err = %v", err)
+	}
+	if _, err := os.Stat(wt2.GitDir); err != nil {
+		t.Errorf("entry removed: %v", err)
+	}
 }

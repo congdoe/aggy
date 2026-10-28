@@ -56,7 +56,9 @@ type Scenario struct {
 	Images        int               `json:"images"`
 	Videos        int               `json:"videos"`
 	SessionFiles  []SessionFile     `json:"session_files"`
-	SleepMS       int               `json:"sleep_ms"`
+	// CwdFiles are files an edit child writes under its working dir.
+	CwdFiles []SessionFile `json:"cwd_files"`
+	SleepMS  int           `json:"sleep_ms"`
 	// ExtraValues adds accepted values to a flag with a recorded value
 	// set, e.g. {"--sandbox": ["workspace-write"]}.
 	ExtraValues map[string][]string `json:"extra_values"`
@@ -969,6 +971,23 @@ func (f *fake) writeFiles() error {
 			return err
 		}
 		if err := os.WriteFile(p, []byte(f.expand(sf.Content)), 0o600); err != nil {
+			return err
+		}
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	for _, cf := range f.sc.CwdFiles {
+		rel := filepath.Clean(cf.Path)
+		if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("cwd file %q must stay inside the working dir", cf.Path)
+		}
+		p := filepath.Join(cwd, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(p, []byte(cf.Content), 0o600); err != nil {
 			return err
 		}
 	}

@@ -5,10 +5,13 @@
 -- made from, worktree_repo the main checkout, worktree_git_dir its admin
 -- dir in the repo's .git (aggy's git calls on the worktree name it, never
 -- the .git file the child could rewrite), and worktree_state is pending
--- until the person accepts or rejects the diff.
+-- until the person accepts or rejects the diff. worktree_tree is the git
+-- tree of everything the child left, taken when the borrow ended; accept
+-- refuses a worktree that no longer matches it.
 ALTER TABLE children ADD COLUMN branch TEXT NOT NULL DEFAULT '';
 ALTER TABLE children ADD COLUMN worktree_base TEXT NOT NULL DEFAULT '';
 ALTER TABLE children ADD COLUMN worktree_repo TEXT NOT NULL DEFAULT '';
 ALTER TABLE children ADD COLUMN worktree_git_dir TEXT NOT NULL DEFAULT '';
+ALTER TABLE children ADD COLUMN worktree_tree TEXT NOT NULL DEFAULT '';
 ALTER TABLE children ADD COLUMN worktree_state TEXT NOT NULL DEFAULT ''
     CHECK (worktree_state IN ('', 'pending', 'accepted', 'rejected'));
