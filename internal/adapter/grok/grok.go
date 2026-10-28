@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,6 +31,8 @@ type Adapter struct {
 	// probe.CapKernelSandbox when the host can apply Grok's sandbox.
 	// Review, research, and news need both and are refused without them.
 	Caps []string
+	// GOOS picks the OS-specific deny rules. Empty means runtime.GOOS.
+	GOOS string
 }
 
 var _ adapter.Adapter = Adapter{}
@@ -256,14 +259,17 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 // Review, research, and news run with --sandbox strict: Grok auto-allows
 // file reads in every permission mode, and the strict sandbox kept
 // read_file out of $HOME in a live check (live diagnostic 2026-10-28,
-// grok 1.0.70; grok-src profiles.rs). Grok's sandbox fails open: where
-// the platform cannot apply it, Grok runs unsandboxed and only logs it
-// (xai-grok-sandbox/src/lib.rs:206-216, :236-247). So these kinds are
-// ErrNoCapability unless Caps holds both probe.CapSandbox (help lists
-// --sandbox) and probe.CapKernelSandbox (the host has Seatbelt or
-// Landlock), and ParseHeadless fails closed on Grok's "continuing without
-// sandbox" messages. Strict still allows reads of ~/Library, so they also
-// deny Read and Grep there (sandboxDeny). AllowedTools may only name tools the
+// grok 1.0.70; grok-src profiles.rs). When applying the profile failed
+// (nested in another Seatbelt sandbox), grok 1.0.70 refused to start,
+// exit 1 (live, 2026-10-28); the source also has paths that log
+// "continuing without sandbox" and run on (xai-grok-sandbox/src/lib.rs:
+// 206-216, :236-247). So these kinds are ErrNoCapability unless Caps
+// holds both probe.CapSandbox (help lists --sandbox) and
+// probe.CapKernelSandbox (the host has Seatbelt or Landlock), and
+// ParseHeadless fails closed on Grok's refusal and, as a weak extra
+// guard, on those log lines (sandboxErr). Strict still allows reads of
+// ~/Library, so they also deny Read and Grep there, and on darwin under
+// the /System/Volumes/Data firmlink (sandboxDeny). AllowedTools may only name tools the
 // kind already permits (compared case-insensitively), and never the MCP
 // meta-tools. Review runs with --permission-mode plan, MaxTurns sets
 // --max-turns, and research and news need IsolatedCwd. Web search outside
@@ -380,7 +386,8 @@ const globMeta = "*?[]{}()!,\\\x00\n\r"
 
 // sandboxDeny returns the deny rules a sandboxed kind adds: Read and Grep
 // of <HOME>/Library/**, which the strict profile leaves readable (browser
-// cookies, app tokens). A deny outranks any allow (decision_rank,
+// cookies, app tokens), and on darwin of /System/Volumes/Data/**, the
+// firmlink spelling of the same files. A deny outranks any allow (decision_rank,
 // xai-grok-permission-rules/src/policy.rs:791 at grok-build 2bdd1d6a);
 // live-verified to refuse read_file there (2026-10-28, grok 1.0.70). HOME
 // must be a clean absolute path with no glob or rule syntax, else the
@@ -394,8 +401,19 @@ func (a Adapter) sandboxDeny() ([]string, error) {
 	if err := adapter.CheckAbs("HOME", home); err != nil || home == "/" || strings.ContainsAny(home, globMeta) {
 		return nil, fmt.Errorf("grok: HOME %q cannot be named in a --deny rule, so ~/Library cannot be denied: %w", home, adapter.ErrNoCapability)
 	}
-	lib := home + "/Library/**"
-	return []string{"Read(" + lib + ")", "Grep(" + lib + ")"}, nil
+	rules := []string{"Read(" + home + "/Library/**)", "Grep(" + home + "/Library/**)"}
+	goos := a.GOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	if goos == "darwin" {
+		// Grok matches deny rules on the lexical path, and a firmlink is
+		// not a symlink: /System/Volumes/Data<HOME>/Library/... read the
+		// canary past the rule above, live (G32-9, 2026-10-28, grok
+		// 1.0.70). Nothing aggy names lives under that spelling.
+		rules = append(rules, "Read(/System/Volumes/Data/**)", "Grep(/System/Volumes/Data/**)")
+	}
+	return rules, nil
 }
 
 // TextFields are the reply fields read for the final text, in order.
@@ -405,8 +423,8 @@ func (a Adapter) sandboxDeny() ([]string, error) {
 var TextFields = []string{"text", "result", "response"}
 
 // ParseHeadless first fails closed when the CLI rejected a lockdown flag,
-// printed UnknownToolWarning, or (on a sandboxed kind) said it ran
-// without its sandbox (ErrLockdown). It then reads the JSON reply: sessionId (recorded; checked with
+// printed UnknownToolWarning, refused to start for want of its sandbox,
+// or (on a sandboxed kind) said it ran without it (ErrLockdown). It then reads the JSON reply: sessionId (recorded; checked with
 // adapter.ValidSessionID, and a pre-assigned or resumed id is kept, with
 // an error if the reply names another), and the final text from the first of
 // TextFields present.
@@ -422,8 +440,8 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 	}
 	res := adapter.HeadlessResult{SessionID: assigned}
 	err := lockdownErr(out)
-	if err == nil && usesSandbox(req.Kind) {
-		err = sandboxErr(out)
+	if err == nil {
+		err = sandboxErr(out, usesSandbox(req.Kind))
 	}
 	if err != nil {
 		res.Error, res.ErrorDetail = adapter.ErrLockdown, strings.TrimSpace(string(out.Stderr))
@@ -522,23 +540,40 @@ func lockdownErr(out adapter.Output) error {
 	return nil
 }
 
-// SandboxNotApplied are the messages Grok logs when it runs without the
-// sandbox it was asked for (xai-grok-sandbox/src/lib.rs at grok-build
+// SandboxRefused are the stderr lines of a grok that could not apply the
+// sandbox profile it was asked for and refused to start, exit 1: live,
+// grok 1.0.70 nested in sandbox-exec (2026-10-28), "sandbox
+// initialization failed: Operation not permitted" then "error: could not
+// apply the 'strict' sandbox profile; see the warning above for the
+// cause. Refusing to start with its protections missing."
+var SandboxRefused = []string{"Refusing to start with its protections missing", "could not apply the '"}
+
+// SandboxNotApplied are the messages the source logs when it runs on
+// without the sandbox (xai-grok-sandbox/src/lib.rs at grok-build
 // 2bdd1d6a): ":209-210" "Sandbox not supported on this platform,
 // continuing without sandbox", ":240-241" "Sandbox could not be applied,
 // continuing without sandbox", and ":252" "Sandbox enforcement
 // unavailable (built without 'enforce' feature)". They are tracing
-// events; that they reach stderr in headless mode is unverified, so the
-// host check before the run (probe.CapKernelSandbox) is the main guard.
+// events, and headless tracing is off by default (live, grok 1.0.70: a
+// sandboxed run printed no sandbox line on stderr, even with RUST_LOG),
+// so this is a weak guard: the host check before the run
+// (probe.CapKernelSandbox) is the main one.
 var SandboxNotApplied = []string{"continuing without sandbox", "Sandbox enforcement unavailable"}
 
-// sandboxErr fails a sandboxed run closed when Grok said it ran without
-// the sandbox: its output was produced with unconfined file reads.
-func sandboxErr(out adapter.Output) error {
+// sandboxErr fails a run closed (ErrLockdownRejected) when Grok refused
+// to start because it could not apply its sandbox, or, on a sandboxed
+// kind, said it ran without it: that output came from unconfined reads.
+func sandboxErr(out adapter.Output, sandboxed bool) error {
 	// stderr only: the reply text is the model's, and may quote these.
 	for _, line := range strings.Split(string(out.Stderr), "\n") {
-		for _, m := range SandboxNotApplied {
+		for _, m := range SandboxRefused {
 			if strings.Contains(line, m) {
+				return fmt.Errorf("grok: %w: Grok could not apply its sandbox and refused to start (%s); this often means aggy itself runs inside another sandbox",
+					adapter.ErrLockdownRejected, strings.TrimSpace(line))
+			}
+		}
+		for _, m := range SandboxNotApplied {
+			if sandboxed && strings.Contains(line, m) {
 				return fmt.Errorf("grok: %w: Grok ran without its sandbox (%s), so the output is discarded",
 					adapter.ErrLockdownRejected, strings.TrimSpace(line))
 			}
