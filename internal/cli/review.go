@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -165,8 +166,11 @@ func (e borrowEnv) gitOutput(ctx context.Context, root string, args ...string) (
 // from the repo itself (.gitattributes, .git/info/attributes), so the
 // only safe way is to empty each defined driver. A driver name aggy
 // cannot pass back to git -c is refused.
-func (e borrowEnv) filterOff(ctx context.Context, root string) ([]string, error) {
-	out, err := e.gitOutput(ctx, root, "config", "-z", "--get-regexp", `^filter\.`)
+//
+// pre are git options that come before config, such as a worktree's
+// --git-dir and --work-tree.
+func (e borrowEnv) filterOff(ctx context.Context, root string, pre ...string) ([]string, error) {
+	out, err := e.gitOutput(ctx, root, append(slices.Clone(pre), "config", "-z", "--get-regexp", `^filter\.`)...)
 	if err != nil {
 		return nil, err
 	}
