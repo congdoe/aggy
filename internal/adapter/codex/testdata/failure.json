@@ -1,0 +1,1 @@
+{"session_id": "t-0199", "exit_code": 1, "stderr": "boom\n", "events": [{"type": "turn.failed", "error": {"message": "stream error"}}]}
