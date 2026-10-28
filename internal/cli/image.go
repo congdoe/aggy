@@ -33,6 +33,18 @@ and style.
                    borrow lockdown was verified on
 `
 
+const videoUsage = `Usage: aggy video "<brief>" --out PATH.mp4 [--vendor grok]
+
+Makes a short video in Grok's CLI (only Grok has video tools: it makes a
+still with image_gen and animates it with image_to_video), read-only in
+an empty temp dir, and copies it to --out, inside this repo.
+
+  --out PATH       where the video goes, inside this repo (.mp4)
+  --vendor V       grok, skipping routing
+  --allow-untested run a CLI whose version is outside the versions the
+                   borrow lockdown was verified on
+`
+
 // mediaArgs is a parsed aggy image or aggy video command line.
 type mediaArgs struct {
 	brief         string
@@ -110,10 +122,17 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 	return mediaWith(adapter.Image, args, defaultBorrowEnv(), stdout, stderr)
 }
 
+func runVideo(args []string, stdout, stderr io.Writer) int {
+	return mediaWith(adapter.Video, args, defaultBorrowEnv(), stdout, stderr)
+}
+
 // mediaWith runs aggy image or aggy video: a borrow of kind with file
 // arguments.
 func mediaWith(kind adapter.Kind, args []string, env borrowEnv, stdout, stderr io.Writer) int {
 	name, usage, flags := "aggy image", imageUsage, []string{"--out", "--edit", "--ref", "--n", "--vendor"}
+	if kind == adapter.Video {
+		name, usage, flags = "aggy video", videoUsage, []string{"--out", "--vendor"}
+	}
 	ma, err := parseMediaArgs(args, flags)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %s\n\n%s", name, termsafe.Field(err.Error()), usage)

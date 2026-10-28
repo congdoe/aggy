@@ -54,6 +54,7 @@ type Scenario struct {
 	HookPayloadIn string            `json:"hook_payload_in"`
 	Hooks         []Hook            `json:"hooks"`
 	Images        int               `json:"images"`
+	Videos        int               `json:"videos"`
 	SessionFiles  []SessionFile     `json:"session_files"`
 	SleepMS       int               `json:"sleep_ms"`
 	// ExtraValues adds accepted values to a flag with a recorded value
@@ -793,6 +794,7 @@ func compact(s string) string {
 var (
 	png = []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82")
 	jpg = []byte("\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9")
+	mp4 = []byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
 )
 
 // writeFiles writes images where each CLI writes them, and the scenario's
@@ -814,6 +816,20 @@ func (f *fake) writeFiles() error {
 		}
 		for i := 1; i <= f.sc.Images; i++ {
 			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%d%s", i, ext)), data, 0o600); err != nil {
+				return err
+			}
+		}
+	}
+	if f.sc.Videos > 0 {
+		if f.vendor != "grok" {
+			return fmt.Errorf("%s has no video tools", f.vendor)
+		}
+		dir := filepath.Join(f.grokSessionDir(), "videos")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		for i := 1; i <= f.sc.Videos; i++ {
+			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%d.mp4", i)), mp4, 0o600); err != nil {
 				return err
 			}
 		}

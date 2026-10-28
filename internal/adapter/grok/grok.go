@@ -421,18 +421,21 @@ func (a Adapter) Home() string {
 // %2F) is unconfirmed, so Artifacts falls back to a scan.
 func EncodeCwd(cwd string) string { return url.QueryEscape(cwd) }
 
-// TODO(T6737): list video files for the video kind too; batch 6 owns
-// video (review finding #10-10).
-//
 // Artifacts lists every file in sessions/<encoded cwd>/<sessionId>/images/
 // under the Grok home (Grok replies with the path relative to the session
-// folder, images/1.jpg), for the borrow's artifact gate to judge. When
+// folder, images/1.jpg), or, for the video kind, in .../videos/, where
+// Grok's video tools write <n>.mp4 (grok-build 2bdd1d6a,
+// xai-grok-tools/src/implementations/grok_build/video_gen/mod.rs), for the
+// borrow's artifact gate to judge. When
 // that folder is missing (the cwd encoding is unconfirmed, or the CLI saw
 // the cwd with symlinks resolved), it falls back to the one
 // sessions/*/<sessionId>/images folder; several matches are an error, not
 // a guess. An id that fails adapter.ValidSessionID is an error. It
 // returns paths only and copies nothing.
 func (a Adapter) Artifacts(req adapter.HeadlessRequest, res adapter.HeadlessResult) ([]adapter.Artifact, error) {
+	if req.Kind == adapter.Video {
+		return a.sessionFiles(req, res, "videos", "video")
+	}
 	return a.sessionFiles(req, res, "images", "image")
 }
 

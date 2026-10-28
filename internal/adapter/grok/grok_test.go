@@ -278,3 +278,29 @@ func TestArtifactsEveryFile(t *testing.T) {
 		t.Errorf("Artifacts = %v, %v", arts, err)
 	}
 }
+
+// TestVideoArtifacts (T6637): the video kind lists the session's videos
+// folder, where Grok's video tools save <n>.mp4.
+func TestVideoArtifacts(t *testing.T) {
+	home := t.TempDir()
+	cwd := "/tmp/work"
+	session := filepath.Join(home, "sessions", EncodeCwd(cwd), sid)
+	for _, p := range []string{"images/1.jpg", "videos/1.mp4"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(session, p)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(session, p), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := Adapter{Getenv: func(k string) string {
+		if k == "GROK_HOME" {
+			return home
+		}
+		return ""
+	}}
+	arts, err := a.Artifacts(adapter.HeadlessRequest{Kind: adapter.Video, Cwd: cwd}, adapter.HeadlessResult{SessionID: sid})
+	if err != nil || len(arts) != 1 || arts[0] != (adapter.Artifact{Path: filepath.Join(session, "videos", "1.mp4"), Kind: "video"}) {
+		t.Errorf("Artifacts = %v, %v", arts, err)
+	}
+}

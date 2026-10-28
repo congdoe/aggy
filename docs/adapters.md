@@ -145,7 +145,10 @@ was tested against.
 - Extra context: `--rules "<text>"`, inline only.
 - Images land in `~/.grok/sessions/<url-encoded cwd>/<sessionId>/images/*.jpg`,
   or the same path under `$GROK_HOME`. The reply gives the path relative to
-  the session folder (`images/1.jpg`).
+  the session folder (`images/1.jpg`). Videos land in the same session
+  folder as `videos/<n>.mp4` (source-verified, grok-build 2bdd1d6a,
+  `xai-grok-tools/src/implementations/grok_build/video_gen/mod.rs`; not
+  seen live).
 - Sessions: `--session-id <uuid>`, `--resume <id>` (also with `-p`), and
   `--fork-session`. `--continue` takes the latest session in the current
   directory. Use `--no-alt-screen` to keep scrollback.
@@ -340,6 +343,7 @@ PNG or JPEG or MP4 by magic bytes, under a size cap; design section 13). Codex: 
 only `*.png`) in `$CODEX_HOME/generated_images/<thread-id>/` (else
 `~/.codex/...`), all counted as made; the gate keeps the real images. Grok:
 every file in `$GROK_HOME/sessions/<encoded cwd>/<sessionId>/images/`
+(`videos/` for the video kind)
 (else `~/.grok/...`), falling back to the single `sessions/*/<sessionId>/
 images/` folder; several are an error. Claude has none.
 `TranscriptTail` returns `ErrNoTranscript` for every vendor: no transcript
