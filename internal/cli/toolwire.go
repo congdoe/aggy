@@ -90,6 +90,7 @@ func addTools(ctx context.Context, v adapter.Vendor, caps []string, cwd, dir str
 		}
 	}
 	on := b.On(v, repo.key)
+	warns = append(warns, addHooks(v, caps, on, req, refuse)...)
 	if !slices.ContainsFunc(on, func(st switchboard.State) bool { return st.Parts.MCP != nil }) {
 		return warns
 	}
@@ -167,8 +168,9 @@ func addTools(ctx context.Context, v adapter.Vendor, caps []string, cwd, dir str
 //     a selected profile, and each project .codex/config.toml from the
 //     project root down to cwd), servers with enabled = false and those
 //     under [profiles.*] included (W71-3).
-//   - Grok: user config and Claude compatibility (parity.MCPNames); its
-//     wiring is off (grokToolsVerified).
+//   - Grok: user config and Claude compatibility (parity.MCPNames), and
+//     its project config (parity.ProjectMCPNames); its wiring is off
+//     (grokToolsVerified).
 func takenMCPNames(v adapter.Vendor, cwd, root string) (map[string]string, error) {
 	out := map[string]string{}
 	switch v {
@@ -225,6 +227,11 @@ func takenMCPNames(v adapter.Vendor, cwd, root string) (map[string]string, error
 		if err != nil {
 			return nil, err
 		}
+		more, err := parity.ProjectMCPNames(v, cwd, root)
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, more...)
 		for _, n := range names {
 			out[n] = string(v) + "'s config"
 		}
@@ -253,4 +260,35 @@ func projectMCPNames(f string) ([]string, error) {
 		names = append(names, n)
 	}
 	return names, nil
+}
+
+// toolHookBin is the aggy path a tool's hook entry calls; a test swaps
+// it, since a test binary is a go build.
+var toolHookBin = aggyBin
+
+// addHooks puts the hooks of the tools in on into req, for Claude's
+// inline --settings layer: each runs aggy hook-tool, which never passes
+// an "allow" on (toolwire.Hooks). A hook that approves, and any hook
+// for Codex or Grok, is refused.
+func addHooks(v adapter.Vendor, caps []string, on []switchboard.State, req *adapter.InteractiveRequest, refuse func(tool string, code diag.Code, class, why string) string) []string {
+	if !slices.ContainsFunc(on, func(st switchboard.State) bool { return len(st.Parts.Hooks) > 0 }) {
+		return nil
+	}
+	bin := ""
+	if v == adapter.Claude {
+		if !slices.Contains(caps, probe.CapSettings) {
+			return []string{refuse("", diag.CodeToolNoFlag, "no_settings", "claude --help does not list --settings, which carries the hooks")}
+		}
+		var err error
+		if bin, err = toolHookBin(); err != nil {
+			return []string{refuse("", diag.CodeToolWireFailed, "hook_bin", "aggy's own path cannot go in a hook command: "+err.Error())}
+		}
+	}
+	hooks, refused := toolwire.Hooks(on, v, bin)
+	var warns []string
+	for _, r := range refused {
+		warns = append(warns, refuse(r.Tool, r.Code, r.Code.String(), r.Why))
+	}
+	req.Hooks = hooks
+	return warns
 }

@@ -179,6 +179,23 @@ type InteractiveRequest struct {
 	// AgentFile is an absolute path holding a Grok agent definition whose
 	// frontmatter lists the MCP servers, for --agent. Empty means none.
 	AgentFile string
+	// Hooks are the managed tools' hooks, by event, for this session
+	// only: Claude takes them in its inline --settings layer, next to
+	// Deny. Each command runs aggy hook-tool, never a tool directly.
+	Hooks map[string][]HookGroup
+}
+
+// HookGroup is one matcher group of a Claude-format hooks config.
+type HookGroup struct {
+	Matcher string        `json:"matcher,omitempty"`
+	Hooks   []HookCommand `json:"hooks"`
+}
+
+// HookCommand is one command hook of a HookGroup.
+type HookCommand struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Timeout int    `json:"timeout,omitempty"`
 }
 
 // MCPServer is one stdio MCP server a session gets at launch.

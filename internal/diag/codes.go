@@ -126,90 +126,96 @@ var (
 	EvToolWireRefused     = Event{"tool.wire.refused"}
 	EvToolWired           = Event{"tool.wire.done"}
 	EvToolExecRefused     = Event{"tool.exec.refused"}
+	EvHookToolFiltered    = Event{"hook.tool.filtered"}
+	EvHookToolFailed      = Event{"hook.tool.failed"}
 )
 
 // Codes.
 var (
-	CodeUsage          = Code{"cli.usage"}
-	CodeConfig         = Code{"cli.config_invalid"}
-	CodeStore          = Code{"store.unavailable"}
-	CodeOneHop         = Code{"borrow.one_hop"}
-	CodeBorrowInvalid  = Code{"borrow.invalid_request"}
-	CodeNoVendor       = Code{"borrow.no_vendor"}
-	CodeBorrowStart    = Code{"borrow.start_failed"}
-	CodeCLIMissing     = Code{"vendor.cli_missing"}
-	CodeUnsupported    = Code{"adapter.unsupported"}
-	CodeNoCapability   = Code{"adapter.no_capability"}
-	CodeFileTools      = Code{"adapter.file_tools_off"}
-	CodeNoSandbox      = Code{"sandbox.missing"}
-	CodeUntested       = Code{"lockdown.untested_version"}
-	CodeLockdown       = Code{"lockdown.rejected"}
-	CodeRateLimit      = Code{"vendor.rate_limit"}
-	CodeAuth           = Code{"vendor.auth"}
-	CodeBilling        = Code{"vendor.billing"}
-	CodeServer         = Code{"vendor.server"}
-	CodeVendorInvalid  = Code{"vendor.invalid_request"}
-	CodeMaxTurns       = Code{"borrow.max_turns"}
-	CodeTimeout        = Code{"borrow.timeout"}
-	CodeInterrupted    = Code{"borrow.interrupted"}
-	CodeChildFailed    = Code{"borrow.child_failed"}
-	CodeAcceptTarget   = Code{"accept.target_invalid"}
-	CodeProtected      = Code{"accept.protected_path"}
-	CodeTreeChanged    = Code{"accept.worktree_changed"}
-	CodeDirty          = Code{"accept.checkout_dirty"}
-	CodeAcceptFailed   = Code{"accept.failed"}
-	CodeStateTempDir   = Code{"accept.state_temp_dir"}
-	CodeAcceptOS       = Code{"accept.unsupported_os"}
-	CodeGateTempDir    = Code{"check.gate_temp_dir"}
-	CodeChecksChanged  = Code{"check.tree_changed"}
-	CodeGateFailed     = Code{"check.gate_failed"}
-	CodeChecksFailed   = Code{"check.failed"}
-	CodeNotGit         = Code{"check.not_git"}
-	CodeEditWorktree   = Code{"check.edit_worktree"}
-	CodeNoChecks       = Code{"check.no_checks"}
-	CodeGCFailed       = Code{"gc.failed"}
-	CodeGCRemoveFailed = Code{"gc.remove_failed"}
-	CodeDoctorError    = Code{"doctor.error_finding"}
-	CodeDiagWrite      = Code{"diag.write_failed"}
-	CodeToolUnknown    = Code{"tool.unknown"}
-	CodeToolScope      = Code{"tool.not_applicable"}
-	CodeToolRepoOff    = Code{"tool.repo_off"}
-	CodeToolDelegated  = Code{"tool.delegated"}
-	CodeToolInvalid    = Code{"tool.def_invalid"}
-	CodeToolUntrusted  = Code{"tool.def_untrusted"}
-	CodeToolStillOn    = Code{"tool.still_on"}
-	CodeToolFailed     = Code{"tool.failed"}
-	CodeQueueFull      = Code{"diag.queue_full"}
-	CodeNoTerminal     = Code{"supervisor.no_terminal"}
-	CodeLaunchFailed   = Code{"supervisor.launch_failed"}
-	CodeUnreachable    = Code{"supervisor.unreachable"}
-	CodePolicy         = Code{"policy.unreachable"}
-	CodeUnsentText     = Code{"switch.unsent_text"}
-	CodeAgentNoHold    = Code{"switch.agent_no_hold"}
-	CodeAgentOptions   = Code{"switch.agent_options"}
-	CodeSwitchVendor   = Code{"switch.vendor_unavailable"}
-	CodeSwitchBusy     = Code{"switch.already_waiting"}
-	CodeSwitchHeld     = Code{"switch.held"}
-	CodeNotSupervised  = Code{"switch.not_supervised"}
-	CodeExitTimeout    = Code{"switch.exit_timeout"}
-	CodeNoQuota        = Code{"switch.no_quota"}
-	CodeLimitNoHold    = Code{"switch.limit_no_hold"}
-	CodeNearNoQuota    = Code{"switch.near_limit_no_quota"}
-	CodeLineage        = Code{"peer.lineage_failed"}
-	CodePeerUID        = Code{"peer.uid_mismatch"}
-	CodeBadRequest     = Code{"socket.bad_request"}
-	CodeForeignSession = Code{"hook.foreign_session"}
-	CodeNoSession      = Code{"hook.no_session"}
-	CodePeerUnknown    = Code{"peer.cred_failed"}
-	CodeWrongVendor    = Code{"hook.wrong_vendor"}
-	CodeBadPayload     = Code{"hook.bad_payload"}
-	CodeToolChanged    = Code{"tool.changed_since_add"}
-	CodeToolNameClash  = Code{"tool.name_clash"}
-	CodeToolRepoPath   = Code{"tool.repo_path"}
-	CodeToolNoFlag     = Code{"tool.no_launch_flag"}
-	CodeToolWireFailed = Code{"tool.wire_failed"}
-	CodeToolUnverified = Code{"tool.vendor_unverified"}
-	CodeToolExec       = Code{"tool.exec_refused"}
+	CodeUsage            = Code{"cli.usage"}
+	CodeConfig           = Code{"cli.config_invalid"}
+	CodeStore            = Code{"store.unavailable"}
+	CodeOneHop           = Code{"borrow.one_hop"}
+	CodeBorrowInvalid    = Code{"borrow.invalid_request"}
+	CodeNoVendor         = Code{"borrow.no_vendor"}
+	CodeBorrowStart      = Code{"borrow.start_failed"}
+	CodeCLIMissing       = Code{"vendor.cli_missing"}
+	CodeUnsupported      = Code{"adapter.unsupported"}
+	CodeNoCapability     = Code{"adapter.no_capability"}
+	CodeFileTools        = Code{"adapter.file_tools_off"}
+	CodeNoSandbox        = Code{"sandbox.missing"}
+	CodeUntested         = Code{"lockdown.untested_version"}
+	CodeLockdown         = Code{"lockdown.rejected"}
+	CodeRateLimit        = Code{"vendor.rate_limit"}
+	CodeAuth             = Code{"vendor.auth"}
+	CodeBilling          = Code{"vendor.billing"}
+	CodeServer           = Code{"vendor.server"}
+	CodeVendorInvalid    = Code{"vendor.invalid_request"}
+	CodeMaxTurns         = Code{"borrow.max_turns"}
+	CodeTimeout          = Code{"borrow.timeout"}
+	CodeInterrupted      = Code{"borrow.interrupted"}
+	CodeChildFailed      = Code{"borrow.child_failed"}
+	CodeAcceptTarget     = Code{"accept.target_invalid"}
+	CodeProtected        = Code{"accept.protected_path"}
+	CodeTreeChanged      = Code{"accept.worktree_changed"}
+	CodeDirty            = Code{"accept.checkout_dirty"}
+	CodeAcceptFailed     = Code{"accept.failed"}
+	CodeStateTempDir     = Code{"accept.state_temp_dir"}
+	CodeAcceptOS         = Code{"accept.unsupported_os"}
+	CodeGateTempDir      = Code{"check.gate_temp_dir"}
+	CodeChecksChanged    = Code{"check.tree_changed"}
+	CodeGateFailed       = Code{"check.gate_failed"}
+	CodeChecksFailed     = Code{"check.failed"}
+	CodeNotGit           = Code{"check.not_git"}
+	CodeEditWorktree     = Code{"check.edit_worktree"}
+	CodeNoChecks         = Code{"check.no_checks"}
+	CodeGCFailed         = Code{"gc.failed"}
+	CodeGCRemoveFailed   = Code{"gc.remove_failed"}
+	CodeDoctorError      = Code{"doctor.error_finding"}
+	CodeDiagWrite        = Code{"diag.write_failed"}
+	CodeToolUnknown      = Code{"tool.unknown"}
+	CodeToolScope        = Code{"tool.not_applicable"}
+	CodeToolRepoOff      = Code{"tool.repo_off"}
+	CodeToolDelegated    = Code{"tool.delegated"}
+	CodeToolInvalid      = Code{"tool.def_invalid"}
+	CodeToolUntrusted    = Code{"tool.def_untrusted"}
+	CodeToolStillOn      = Code{"tool.still_on"}
+	CodeToolFailed       = Code{"tool.failed"}
+	CodeQueueFull        = Code{"diag.queue_full"}
+	CodeNoTerminal       = Code{"supervisor.no_terminal"}
+	CodeLaunchFailed     = Code{"supervisor.launch_failed"}
+	CodeUnreachable      = Code{"supervisor.unreachable"}
+	CodePolicy           = Code{"policy.unreachable"}
+	CodeUnsentText       = Code{"switch.unsent_text"}
+	CodeAgentNoHold      = Code{"switch.agent_no_hold"}
+	CodeAgentOptions     = Code{"switch.agent_options"}
+	CodeSwitchVendor     = Code{"switch.vendor_unavailable"}
+	CodeSwitchBusy       = Code{"switch.already_waiting"}
+	CodeSwitchHeld       = Code{"switch.held"}
+	CodeNotSupervised    = Code{"switch.not_supervised"}
+	CodeExitTimeout      = Code{"switch.exit_timeout"}
+	CodeNoQuota          = Code{"switch.no_quota"}
+	CodeLimitNoHold      = Code{"switch.limit_no_hold"}
+	CodeNearNoQuota      = Code{"switch.near_limit_no_quota"}
+	CodeLineage          = Code{"peer.lineage_failed"}
+	CodePeerUID          = Code{"peer.uid_mismatch"}
+	CodeBadRequest       = Code{"socket.bad_request"}
+	CodeForeignSession   = Code{"hook.foreign_session"}
+	CodeNoSession        = Code{"hook.no_session"}
+	CodePeerUnknown      = Code{"peer.cred_failed"}
+	CodeWrongVendor      = Code{"hook.wrong_vendor"}
+	CodeBadPayload       = Code{"hook.bad_payload"}
+	CodeToolChanged      = Code{"tool.changed_since_add"}
+	CodeToolNameClash    = Code{"tool.name_clash"}
+	CodeToolRepoPath     = Code{"tool.repo_path"}
+	CodeToolNoFlag       = Code{"tool.no_launch_flag"}
+	CodeToolWireFailed   = Code{"tool.wire_failed"}
+	CodeToolUnverified   = Code{"tool.vendor_unverified"}
+	CodeToolExec         = Code{"tool.exec_refused"}
+	CodeToolHookApproves = Code{"tool.hook_approves"}
+	CodeToolHookOutput   = Code{"tool.hook_output"}
+	CodeToolHookFailed   = Code{"tool.hook_failed"}
+	CodeToolSkillMissing = Code{"tool.skill_missing"}
 )
 
 const showRun = "aggy diag show <run id> for what led to it"
@@ -265,6 +271,8 @@ var events = []EventInfo{
 	{EvHookForwardFailed, LevelWarn, "hook", "aggy hook could not hand a vendor hook event to the supervisor; the CLI went on undisturbed.", "The code's entry; aggy diag --trace <trace id> for the session."},
 	{EvQueueDropped, LevelWarn, "diag", "The supervisor's diagnostic queue was full, so records were dropped (attrs.dropped is how many).", "The state dir's disk: a slow or full disk makes the log fall behind."},
 	{EvToolWireRefused, LevelWarn, "tool", "A launch did not wire a tool that is on (attrs: tool, or none for every tool of the vendor); the session started without it.", "The code's entry; aggy tool status."},
+	{EvHookToolFiltered, LevelInfo, "hook", "aggy hook-tool dropped part of a tool hook's answer: an allow, or keys outside its allowlist (attrs: tool, dropped, the key names only).", "Nothing; a tool's hook may never approve an action."},
+	{EvHookToolFailed, LevelWarn, "hook", "aggy hook-tool passed nothing on for a tool's hook; the CLI went on as without the hook (attrs.tool).", "The code's entry."},
 	{EvToolWired, LevelInfo, "tool", "A launch wired the tools that are on into the CLI it started (attrs: tools, the names wired).", "aggy tool status shows why each is on."},
 	{EvToolExecRefused, LevelError, "tool", "aggy tool exec, which a vendor CLI runs to start a tool's MCP server, refused to start it (attrs: tool, check: the step that failed). The CLI shows the server as failed.", "The code's entry; aggy tool status."},
 }
@@ -348,6 +356,10 @@ var codes = []CodeInfo{
 	{CodeToolNoFlag, false, "Tools that are on were not wired: the CLI's --help lacks the launch flag they need (Codex -c).", "Update the CLI; aggy setup shows its version."},
 	{CodeToolWireFailed, false, "Tools that are on were not wired: the CLI's own MCP config could not be read to check names, or the session's tool file could not be written.", "The warning aggy printed; the record's class attr names the step. aggy doctor."},
 	{CodeToolUnverified, false, "Tools were not turned on or wired for a vendor whose launch-time wiring is not verified yet (Grok: what --agent changes besides the MCP servers).", "Use the tool with Claude or Codex; docs/design.md, Launch wiring."},
+	{CodeToolHookApproves, true, "A tool's hook was not wired: its definition, or a verified fact about it, says it approves actions the person would be asked about.", "Nothing; aggy never wires such a hook. docs/verification.md, Managed tools."},
+	{CodeToolHookOutput, true, "aggy hook-tool passed nothing on: the tool's hook printed more than 64 KiB, not one JSON object, or an answer for another event.", "Run the tool's hook by hand with the same input; aggy tool status."},
+	{CodeToolHookFailed, false, "aggy hook-tool passed nothing on: the tool's hook timed out, exited non-zero, could not start, or its definition changed or went since the session started.", "The tool's install (aggy tool status); a new session picks up a changed definition."},
+	{CodeToolSkillMissing, false, "aggy tool on refused: the tool's skill folder is not installed under ~/.aggy/skills, or resolves outside it. aggy never fetches a skill.", "Copy the skill folder into ~/.aggy/skills/<name> as aggy tool on says, then turn the tool on again."},
 	{CodeToolExec, true, "aggy tool exec refused to start a tool's MCP server: its folder is not aggy's private launch folder, the definition changed or is gone, the command is not the definition's, or a variable could not be passed.", "aggy tool status; if the definition changed, aggy tool on <name> again after reading it."},
 	{CodeToolChanged, true, "aggy tool on refused: the user definition is not the file aggy tool add showed.", "aggy tool remove <name>, then aggy tool add the file again and read what it runs."},
 }

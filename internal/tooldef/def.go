@@ -99,9 +99,13 @@ type Hook struct {
 	Event   string           `toml:"event"`
 	Matcher string           `toml:"matcher"`
 	// Timeout is in seconds; zero means the CLI's default.
-	Timeout int      `toml:"timeout"`
-	Decides bool     `toml:"decides"`
-	Argv    []string `toml:"argv"`
+	Timeout int  `toml:"timeout"`
+	Decides bool `toml:"decides"`
+	// Approves says the hook is known to answer "allow", approving an
+	// action the person would have been asked about. Such a hook is
+	// never wired (T6708).
+	Approves bool     `toml:"approves"`
+	Argv     []string `toml:"argv"`
 }
 
 // Init is a vendor-specific setup step of a built-in. It declares what
@@ -436,6 +440,8 @@ func (d Def) validateHooks(builtIn bool) error {
 			return bad(".decides", "%s can allow or deny an action: set decides = true to say this hook does", h.Event)
 		case !deciding && h.Decides:
 			return bad(".decides", "only for %q", decidingEvents)
+		case h.Approves && !h.Decides:
+			return bad(".approves", "only with decides = true")
 		}
 		if h.Matcher != "" {
 			if len(h.Matcher) > maxMatcher || !matcherRE.MatchString(h.Matcher) {

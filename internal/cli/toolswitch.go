@@ -191,6 +191,16 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 				return withCode(diag.CodeToolRepoOff, fmt.Errorf("the repo's .aggy/config.toml lists %s in tools_off, and a repo's config always wins", name))
 			}
 		}
+		if hasSkill(t) {
+			// Nothing is recorded or linked while the skill is not in place.
+			l, err := toolSkillLayout(t)
+			if err != nil {
+				return withCode(diag.CodeToolSkillMissing, err)
+			}
+			if err := checkSkillStore(l.store); err != nil {
+				return withCode(diag.CodeToolSkillMissing, fmt.Errorf("%w. %s", err, skillHowTo(t, l.store)))
+			}
+		}
 	}
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
@@ -244,11 +254,15 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 			fmt.Fprintf(stdout, "Unverified vendor facts: %s.\n", strings.Join(t.Unverified, ", "))
 		}
 	}
-	// Wired at launch (addTools): MCP servers today.
-	// TODO(T6708): hooks and skills (m5-wire-2).
-	if on && !slices.ContainsFunc(adapter.Vendors(), func(v adapter.Vendor) bool { return t.PartsFor(v).MCP != nil }) {
-		fmt.Fprintln(stdout, "aggy does not wire hooks or skills at launch yet, so this changes no session for now.")
-		return nil
+	// MCP servers and hooks are wired at launch (addTools); a skill is
+	// linked now, for every repo.
+	if hasSkill(t) {
+		if a.hasRepo {
+			fmt.Fprintln(stdout, "A skill is linked for every repo: --repo does not change its links, and a repo's tools_off cannot hide it.")
+		}
+		if err := syncToolSkill(ctx, t, b, stdout); err != nil {
+			return fmt.Errorf("the setting is recorded, but the skill links were not changed: %w", err)
+		}
 	}
 	fmt.Fprintln(stdout, "It takes effect at the next launch.")
 	return nil
