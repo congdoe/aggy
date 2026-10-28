@@ -65,6 +65,7 @@ func TestResearchReport(t *testing.T) {
 	}
 
 	// A second report on the same question that day gets its own name.
+	req.Fresh = true
 	res2, err := w.borrower().Run(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)

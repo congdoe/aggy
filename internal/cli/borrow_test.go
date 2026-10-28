@@ -33,6 +33,7 @@ func TestParseBorrowArgs(t *testing.T) {
 			borrowArgs{kind: "review", task: "look", paths: []string{"a", "b"}}, ""},
 		{"dash task after --", []string{"news", "--", "--weird task"}, borrowArgs{kind: "news", task: "--weird task"}, ""},
 		{"help", []string{"-h"}, borrowArgs{help: true}, ""},
+		{"fresh", []string{"news", "x", "--fresh"}, borrowArgs{kind: "news", task: "x", fresh: true}, ""},
 		{"unknown flag", []string{"news", "x", "--model", "m"}, borrowArgs{}, "unknown flag --model"},
 		{"missing value", []string{"news", "x", "--path"}, borrowArgs{}, "needs a value"},
 		{"no task", []string{"news"}, borrowArgs{}, "want a kind and one quoted task"},
@@ -50,7 +51,7 @@ func TestParseBorrowArgs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.kind != tt.want.kind || got.task != tt.want.task || got.vendor != tt.want.vendor || got.help != tt.want.help ||
+			if got.kind != tt.want.kind || got.task != tt.want.task || got.vendor != tt.want.vendor || got.help != tt.want.help || got.fresh != tt.want.fresh ||
 				!slices.Equal(got.paths, tt.want.paths) || !slices.Equal(got.constraints, tt.want.constraints) {
 				t.Errorf("got %+v, want %+v", got, tt.want)
 			}
@@ -161,6 +162,14 @@ func TestBorrowCommand(t *testing.T) {
 	}
 	if n := strings.Count(strings.TrimSpace(out), "\n") + 1; n > 12 {
 		t.Errorf("short report is %d lines", n)
+	}
+	// T6641: the same question again is answered from the cache.
+	code, out, errOut = f.run(t, "news", "what shipped in go 1.27?", "--constraint", "be brief")
+	if code != 0 || !strings.Contains(out, "cached from") || !strings.Contains(out, "Summary: Go 1.27 shipped.") || !strings.Contains(out, "Report: ") {
+		t.Errorf("cached run: code %d, stdout %q, stderr %q", code, out, errOut)
+	}
+	if code, _, errOut = f.run(t, "image", "a cat", "--fresh"); code != 2 || !strings.Contains(errOut, "--fresh is for research and news") {
+		t.Errorf("image --fresh: code %d, stderr %q", code, errOut)
 	}
 }
 
