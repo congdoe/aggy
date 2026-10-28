@@ -126,7 +126,7 @@ func Refusal(k adapter.Kind) error {
 }
 
 // SandboxEdit is the sandbox of an edit borrow, which writes its own
-// worktree. Unconfirmed: only "read-only" is recorded.
+// worktree. Confirmed live (verification.md, "Codex resume with sandbox").
 const SandboxEdit = "workspace-write"
 
 // modelArgs passes a model as the config override -c model="<m>". The -c
