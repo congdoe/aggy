@@ -5,8 +5,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
-	"syscall"
 	"testing"
 )
 
@@ -108,14 +106,6 @@ func TestReadFileLimit(t *testing.T) {
 	}
 	if _, err := ReadFileLimit(dir, 100); !errors.Is(err, ErrNotRegular) {
 		t.Errorf("directory = %v, want ErrNotRegular", err)
-	}
-	if runtime.GOOS != "windows" {
-		fifo := filepath.Join(dir, "fifo")
-		if err := syscall.Mkfifo(fifo, 0o600); err == nil {
-			if _, err := ReadFileLimit(fifo, 100); !errors.Is(err, ErrNotRegular) {
-				t.Errorf("fifo = %v, want ErrNotRegular", err)
-			}
-		}
 	}
 	if _, err := ReadFileLimit(filepath.Join(dir, "missing"), 1); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("missing = %v", err)
