@@ -420,10 +420,14 @@ the brief's missing-tools list rely on these:
 - **Codex.** `mcp_servers` is a table of servers in `config.toml`
   (`config/src/config_toml.rs#L299`); an entry with `command` and `args`
   is stdio, one with `url` streamable HTTP, and there is no SSE
-  transport (`config/src/mcp_types.rs#L373-L389` and its `TryFrom`).
-  Source-verified at `6aaac69`.
+  transport (`config/src/mcp_types.rs#L373-L389` and its `TryFrom`);
+  `enabled = false` skips a server, default true
+  (`mcp_types.rs#L240-L242`). `codex mcp login <name>` signs in to a
+  server with OAuth (`cli/src/mcp_cmd.rs#L62`, `#L79`; also in
+  `codex mcp --help`). Source-verified at `6aaac69`.
 - **Grok.** `[mcp_servers.<name>]` in `~/.grok/config.toml` with
-  `command`/`args`/`env`, or `url`/`headers`
+  `command`/`args`/`env`, or `url`/`headers`, and `enabled` (default
+  true)
   (`xai-grok-pager/docs/user-guide/07-mcp-servers.md`); `type = "sse"`,
   or a `url` ending in `/sse`, is SSE
   (`xai-grok-config/src/mcp_server_config.rs:28-59`, `:499-502`). Grok
