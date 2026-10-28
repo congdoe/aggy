@@ -20,10 +20,11 @@ import (
 // Grok borrow whose cwd is in a repo (review) is refused when any source
 // below is present, and the borrow passes Grok over.
 //
-// TODO(T6649): live check on grok 1.0.70: a scratch repo whose
-// .claude/settings.json and .grok/hooks hold SessionStart and PreToolUse
-// hooks that touch a marker file, the folder never trusted, run with
-// aggy's exact Grok review argv; the marker must stay absent.
+// The live check is test/smoke/smoke.sh (grok-review-untrusted): a
+// scratch repo whose .claude/settings.json and .grok/hooks hold
+// SessionStart and PreToolUse hooks that touch a marker file, the folder
+// never trusted, run with aggy's exact Grok review argv; the marker must
+// stay absent. Not yet recorded in docs/verification.md.
 
 // grokChainSources are checked in every dir from the cwd up to the git
 // root: .mcp.json (project_config.rs:19-39), .grok/config.toml (:77-87),
