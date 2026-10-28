@@ -107,6 +107,7 @@ type Record struct {
 	SessionID     string              `json:"session_id"`
 	Flags         map[string][]string `json:"flags"`
 	Positional    []string            `json:"positional"`
+	PID           int                 `json:"pid"`
 }
 
 // Records reads the runs recorded at path, oldest first. A missing file

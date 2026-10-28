@@ -188,6 +188,7 @@ type Record struct {
 	SessionID     string              `json:"session_id,omitempty"`
 	Flags         map[string][]string `json:"flags,omitempty"`
 	Positional    []string            `json:"positional,omitempty"`
+	PID           int                 `json:"pid"`
 }
 
 // Versions the vendor facts were recorded against (docs/adapters.md).
@@ -863,7 +864,7 @@ func (f *fake) record(mode string, args []string) {
 	r := Record{
 		Vendor: f.vendor, Mode: mode, Args: args, Cwd: cwd, Env: map[string]string{},
 		StdinTerminal: f.terminal, Stdin: f.stdin, SessionID: f.id,
-		Flags: f.flags, Positional: f.positional,
+		Flags: f.flags, Positional: f.positional, PID: os.Getpid(),
 	}
 	for _, kv := range os.Environ() {
 		k, v, _ := strings.Cut(kv, "=")

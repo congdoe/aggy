@@ -53,9 +53,9 @@ var passEnv = []string{
 // only from aggy's own environment, and every other AGGY_* variable
 // (AGGY_HOME among them: a child never gets aggy's state dir).
 //
-//   - AGGY_DELEGATED=1 marks a borrow child. The child's own aggy borrow
-//     refuses to run under it (one hop), and the PreToolUse guard reads
-//     it. It is set by aggy, never taken from the caller's environment.
+//   - AGGY_DELEGATED=1 marks a borrow child, so the child's own aggy
+//     borrow refuses to run (one hop). It is set by aggy for the child,
+//     never taken from aggy's own environment (see passEnv).
 //   - AGGY_VENDOR and AGGY_MODEL name the vendor and model an
 //     interactive session runs, for the linked skill.
 var extraNames = []string{"AGGY_DELEGATED", "AGGY_VENDOR", "AGGY_MODEL"}
