@@ -333,6 +333,36 @@ func TestSetupAPIKeyWarning(t *testing.T) {
 	}
 }
 
+// TestSetupRoutes (T6611): base-URL variables and config-file routes are
+// shown under their vendor by name and key, never by value.
+func TestSetupRoutes(t *testing.T) {
+	fakes := fakecli.Build(t)
+	home := isolate(t)
+	const secret = "ROUTESECRET"
+	if err := safefs.MkdirAll(filepath.Join(home, ".grok"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := safefs.WriteFile(filepath.Join(home, ".grok", "config.toml"), []byte("[toolset.image_gen]\nenv_key = \""+secret+"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w := newFakeWorld(t, fakes)
+	w.environ = []string{"HOME=" + home, "ANTHROPIC_BASE_URL=http://" + secret}
+	var stdout, stderr bytes.Buffer
+	if code := setupWith(nil, w.env(home, "", false), &stdout, &stderr); code != 0 {
+		t.Fatal(stderr.String())
+	}
+	out := stdout.String()
+	claudePart := out[strings.Index(out, "\nClaude Code\n"):strings.Index(out, "\nCodex\n")]
+	grokPart := out[strings.Index(out, "\nGrok Build\n"):]
+	if !strings.Contains(claudePart, "warning: ANTHROPIC_BASE_URL is set") ||
+		!strings.Contains(grokPart, "warning: ~/.grok/config.toml: toolset.image_gen.env_key is set") {
+		t.Errorf("output:\n%s", out)
+	}
+	if strings.Contains(out, secret) {
+		t.Error("a value leaked")
+	}
+}
+
 func TestSetupArgs(t *testing.T) {
 	isolate(t)
 	for _, tt := range []struct {
