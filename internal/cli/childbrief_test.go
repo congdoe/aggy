@@ -102,6 +102,13 @@ func TestChildBrief(t *testing.T) {
 	if _, err := childBrief(ctx, s, env, launchPlan{parent: parent, child: claude}); err == nil || !strings.Contains(err.Error(), "allowed_vendors") {
 		t.Errorf("disallowed vendor: err = %v", err)
 	}
+	// A repo config that cannot be read refuses too (fail closed).
+	if err := os.WriteFile(filepath.Join(dir, ".aggy", "config.toml"), []byte("allowed_vendors = \"claude\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := childBrief(ctx, s, env, launchPlan{parent: parent, child: claude}); err == nil || !strings.Contains(err.Error(), "repo config") {
+		t.Errorf("unreadable repo config: err = %v", err)
+	}
 	if err := os.Remove(filepath.Join(dir, ".aggy", "config.toml")); err != nil {
 		t.Fatal(err)
 	}

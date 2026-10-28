@@ -155,12 +155,8 @@ func childBrief(ctx context.Context, s *store.Store, e borrowEnv, pl launchPlan)
 	}
 	cwd := pl.child.Cwd
 	root, inRepo := repoRoot(cwd)
-	rc, err := config.LoadRepo(root)
-	if err != nil {
-		return "", err
-	}
-	if !config.Merge(config.Config{}, rc).Allows(to) {
-		return "", fmt.Errorf("this repo's allowed_vendors does not list %s, so it gets no brief", to)
+	if _, err := allowedIn(config.Config{}, cwd, to); err != nil {
+		return "", fmt.Errorf("%w, so it gets no brief", err)
 	}
 	in := brief.Input{To: to}
 	in.Task, in.TaskErr = brief.ReadTask(cwd)

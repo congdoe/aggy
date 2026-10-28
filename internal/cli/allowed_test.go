@@ -12,6 +12,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/store"
 )
 
 // TestAllowedVendorsLaunch: a launch never puts a repo on a vendor its
@@ -61,6 +62,17 @@ func TestAllowedVendorsLaunch(t *testing.T) {
 	}
 	if v := adapter.Vendor(p.child.Vendor); v != adapter.Codex && v != adapter.Grok {
 		t.Errorf("default vendor = %s, want an allowed one", v)
+	}
+
+	// aggy resume <child-id>, from anywhere: the child's own repo decides.
+	seedParent(t, s, "dddd0000-0000-4000-8000-000000000000", sub,
+		store.Child{ID: "dd11child", Vendor: "claude", VendorSessionID: sidA})
+	p, err = plan(context.Background(), s, cfg, t.TempDir(), target{ParentID: "dd11"}, time.Now(), &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := allowedIn(cfg, p.child.Cwd, adapter.Vendor(p.child.Vendor)); p.child.Vendor != "claude" || err == nil {
+		t.Errorf("resume by child id: child %+v, err %v; want claude refused", p.child, err)
 	}
 
 	setRepo("allowed_vendors = []\n")
