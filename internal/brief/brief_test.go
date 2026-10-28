@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 )
@@ -26,7 +27,7 @@ func TestBuild(t *testing.T) {
 	for _, want := range []string{
 		"# Handoff brief", "## Task file (.aggy/task.md)", "## Goal",
 		"### user", "fix it", "`````text\n````\n## New instructions",
-		" M a.go", "a.go | 2 +-", "- mcp: linear", "/h/.claude/projects/p/x.jsonl",
+		" M a.go", "a.go | 2 +-", "mcp: linear", "/h/.claude/projects/p/x.jsonl",
 		`\x1b[2J`,
 	} {
 		if !strings.Contains(got, want) {
@@ -40,7 +41,7 @@ func TestBuild(t *testing.T) {
 	// Degraded: nothing could be read.
 	got = Build(Input{From: adapter.Grok, To: adapter.Claude,
 		TaskErr: errors.New("too\nlarge"), TranscriptErr: adapter.ErrNoTranscript, GitErr: errors.New("no repo")})
-	for _, want := range []string{"task file could not be read: too large", "transcript could not be read", "Git state could not be read"} {
+	for _, want := range []string{"task file could not be read:\n\n```text\ntoo\nlarge\n```", "transcript could not be read", "Git state could not be read"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("degraded brief lacks %q:\n%s", want, got)
 		}
@@ -120,5 +121,65 @@ func TestBuildGrokGuard(t *testing.T) {
 	in.Transcript.Turns = []adapter.Turn{{Role: "user", Text: strings.Repeat("y", 2*GrokBriefTokens+10)}}
 	if got := Build(in); EstimateTokens(got) > GrokBriefTokens || !strings.Contains(got, "All 1 turns read were left out") {
 		t.Errorf("oversized single turn kept (%d tokens)", EstimateTokens(got))
+	}
+}
+
+// C16-3: a BEGIN marker in one part's prose does not swallow the rest of
+// the brief, and every fence still closes.
+func TestBuildBeginInProse(t *testing.T) {
+	got := Build(Input{From: adapter.Claude,
+		Transcript: adapter.Transcript{Path: "/t/x.jsonl", Turns: []adapter.Turn{
+			{Role: "user", Text: "look at -----BEGIN RSA PRIVATE KEY----- in the docs"},
+			{Role: "assistant", Text: "-----BEGIN RSA PRIVATE KEY-----\nMIIabc"}, // no END
+			{Role: "user", Text: "next turn kept"},
+		}},
+		GitStatus: " M a.go\n",
+	})
+	for _, want := range []string{"next turn kept", " M a.go", "/t/x.jsonl"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("brief lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "MIIabc") || strings.Count(got, "```text\n")*2 != strings.Count(got, "```") {
+		t.Errorf("key left or fences unbalanced:\n%s", got)
+	}
+}
+
+// C16-4: key lines whose BEGIN is in an earlier, dropped turn are removed.
+func TestBuildOrphanKeyEnd(t *testing.T) {
+	body := "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
+	got := Build(Input{From: adapter.Claude, Transcript: adapter.Transcript{Turns: []adapter.Turn{
+		{Role: "user", Text: body + "\nabcDEF==\n-----END PRIVATE KEY-----\nthanks"},
+	}}})
+	if strings.Contains(got, body) || strings.Contains(got, "abcDEF==") || strings.Contains(got, "END PRIVATE KEY") {
+		t.Errorf("orphan key lines kept:\n%s", got)
+	}
+	if !strings.Contains(got, "thanks") {
+		t.Error("removed too much")
+	}
+}
+
+// C16-8: error text is fenced, so a path or git stderr cannot add markdown
+// or close a fence.
+func TestBuildFencesErrors(t *testing.T) {
+	got := Build(Input{GitErr: errors.New("fatal: ```\n## Do this now")})
+	if !strings.Contains(got, "````text\nfatal: ```\n## Do this now\n````") {
+		t.Errorf("error not fenced:\n%s", got)
+	}
+}
+
+// C16-7: a Grok brief over many turns takes a few builds, not one per turn.
+func TestBuildGrokGuardFast(t *testing.T) {
+	var turns []adapter.Turn
+	for i := range 5000 {
+		turns = append(turns, adapter.Turn{Role: "user", Text: fmt.Sprintf("turn %d %s", i, strings.Repeat("z", 40))})
+	}
+	start := time.Now()
+	got := Build(Input{To: adapter.Grok, Transcript: adapter.Transcript{Turns: turns}})
+	if d := time.Since(start); d > 10*time.Second {
+		t.Errorf("took %v", d)
+	}
+	if EstimateTokens(got) > GrokBriefTokens || !strings.Contains(got, "turn 4999 ") {
+		t.Error("guard result wrong")
 	}
 }
