@@ -15,3 +15,11 @@ func setProcessGroup(cmd *exec.Cmd) {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 }
+
+// killGroup kills what is left of the child's process group once the
+// leader has exited (and been reaped). The group id is the leader's
+// pid; the kernel does not hand that pid out again while the group
+// still has members, so the kill reaches only them.
+func killGroup(cmd *exec.Cmd) {
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+}
