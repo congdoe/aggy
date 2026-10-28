@@ -41,6 +41,9 @@ type GC struct {
 	// PendingWorktreeDays keeps an edit worktree nobody accepted or
 	// rejected for this long after its borrow ended.
 	PendingWorktreeDays int `toml:"pending_worktree_days"`
+	// AcceptedWorktreeDays keeps an accepted edit's worktree and branch
+	// (for aggy pr) this long after the accept.
+	AcceptedWorktreeDays int `toml:"accepted_worktree_days"`
 	// ClosedChildDays keeps a closed borrow child in the index this long
 	// after it was last active.
 	ClosedChildDays int `toml:"closed_child_days"`
@@ -312,7 +315,7 @@ func Default() Config {
 	return Config{
 		Switch: Switch{Order: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok}, Key: DefaultSwitchKey},
 		Policy: Policy{Required: true},
-		GC:     GC{PendingWorktreeDays: 30, ClosedChildDays: 30, InboxDays: 30},
+		GC:     GC{PendingWorktreeDays: 30, AcceptedWorktreeDays: 30, ClosedChildDays: 30, InboxDays: 30},
 		Routing: Routing{
 			// TODO(T6638): Codex is left out of news and research on
 			// purpose. Its apply_patch tool cannot be turned off, and its
@@ -438,6 +441,7 @@ func (c Config) Validate() error {
 		n   int
 	}{
 		{"pending_worktree_days", c.GC.PendingWorktreeDays},
+		{"accepted_worktree_days", c.GC.AcceptedWorktreeDays},
 		{"closed_child_days", c.GC.ClosedChildDays},
 		{"inbox_days", c.GC.InboxDays},
 	} {
