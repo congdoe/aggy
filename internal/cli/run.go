@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -58,7 +59,10 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 // same parent goes on screen the same way, through launchOnce, so it gets
 // its own lease, the repo's allowed_vendors, the policy, and memory. Like
 // /vendor without flags it gets no brief: --brief, --new, and --model
-// for a switch are TODO(T6665).
+// for a switch are TODO(T6665). --no-policy is not carried over (S-6):
+// the next child gets the policy unless [policy] required = false, and a
+// switch to a CLI the policy cannot reach is refused before the exit
+// command is typed (CanSwitch).
 func launch(name string, t target, stderr io.Writer) int {
 	for {
 		var next switchTo
@@ -66,7 +70,7 @@ func launch(name string, t target, stderr io.Writer) int {
 		if next.vendor == "" {
 			return code
 		}
-		t = target{ParentID: next.parentID, Vendor: next.vendor, NoPolicy: t.NoPolicy}
+		t = target{ParentID: next.parentID, Vendor: next.vendor}
 	}
 }
 
@@ -119,13 +123,9 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	// The probe finds the flags whose presence is only known from help:
 	// Codex --no-alt-screen and -c, Claude --settings, Grok --rules and
 	// --deny.
-	var caps []string
-	probed, err := map[adapter.Vendor]adapter.Adapter{adapter.Claude: claude.Adapter{Path: path},
-		adapter.Codex: codex.Adapter{Path: path}, adapter.Grok: grok.Adapter{Path: path}}[v].Probe(ctx, execrun.ExecRunner(probeTimeout))
+	caps, err := probeCaps(ctx, v, path)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: probing %s: %s; starting it without the flags help must list\n", name, v, termsafe.Line(err.Error()))
-	} else {
-		caps = probed.Capabilities
 	}
 	var a adapter.Adapter
 	switch v {
@@ -239,15 +239,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 	defer stopLimits()
 	// A switch is checked when picked or asked for, and again before the
 	// CLI is told to exit; launch checks everything once more.
-	canSwitch := func(next adapter.Vendor) error {
-		if _, err := allowedIn(cfg, pl.child.Cwd, next); err != nil {
-			return err
-		}
-		if _, err := probe.LookPath(vendorBin(next)); err != nil {
-			return fmt.Errorf("%s is not on PATH", next)
-		}
-		return nil
-	}
+	canSwitch := switchCheck(ctx, cfg, pl.child.Cwd)
 	ex, err := supervisor.Run(supervisor.Options{
 		In: os.Stdin, Out: os.Stdout, Command: cmd,
 		Start:      startPTY,
@@ -271,6 +263,53 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo) int {
 		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID}
 	}
 	return ex.Code
+}
+
+// switchCheck says why the session in cwd may not switch to a vendor:
+// the repo's allowed_vendors, its CLI not on PATH, or, unless [policy]
+// required = false, a safety policy that cannot reach it (S-6; a switch
+// never carries --no-policy over). The policy check probes the CLI's help
+// once per vendor, cached for this launch.
+func switchCheck(ctx context.Context, cfg config.Config, cwd string) func(adapter.Vendor) error {
+	var mu sync.Mutex
+	probed := map[adapter.Vendor][]string{}
+	return func(next adapter.Vendor) error {
+		if _, err := allowedIn(cfg, cwd, next); err != nil {
+			return err
+		}
+		path, err := probe.LookPath(vendorBin(next))
+		if err != nil {
+			return fmt.Errorf("%s is not on PATH", next)
+		}
+		if !cfg.Policy.Required {
+			return nil
+		}
+		mu.Lock()
+		caps, ok := probed[next]
+		if !ok {
+			caps, _ = probeCaps(ctx, next, path) // a failed probe has no caps, which policyDelivery reports
+			probed[next] = caps
+		}
+		mu.Unlock()
+		if why, perr := policyDelivery(next, caps); why != "" {
+			if perr != nil {
+				why += ": " + perr.Error()
+			}
+			return fmt.Errorf("the safety policy cannot be applied to %s: %s", next, why)
+		}
+		return nil
+	}
+}
+
+// probeCaps probes v's CLI at path for the flags whose presence is only
+// known from its help.
+func probeCaps(ctx context.Context, v adapter.Vendor, path string) ([]string, error) {
+	probed, err := map[adapter.Vendor]adapter.Adapter{adapter.Claude: claude.Adapter{Path: path},
+		adapter.Codex: codex.Adapter{Path: path}, adapter.Grok: grok.Adapter{Path: path}}[v].Probe(ctx, execrun.ExecRunner(probeTimeout))
+	if err != nil {
+		return nil, err
+	}
+	return probed.Capabilities, nil
 }
 
 // pickerVendors lists the vendors in order, except on, that aggy setup
