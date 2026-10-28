@@ -138,14 +138,14 @@ type EditRecord struct {
 }
 
 // EditRecords returns every edit borrow whose worktree had its tree
-// recorded, in any state, removed ones included, by borrow id. A review
+// recorded, in any state, removed ones included, newest first. A review
 // matches them against its diff to find which vendors made the change.
 func (s *Store) EditRecords(ctx context.Context) ([]EditRecord, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT b.id, b.vendor, c.worktree, c.branch, c.worktree_base, c.worktree_repo, c.worktree_git_dir,
 		        c.worktree_state, c.worktree_tree, c.worktree_removed_at
 		 FROM borrows b JOIN children c ON c.id = b.child_id
-		 WHERE c.worktree <> '' AND c.worktree_tree <> '' ORDER BY b.id`)
+		 WHERE c.worktree <> '' AND c.worktree_tree <> '' ORDER BY b.started_at DESC, b.id`)
 	if err != nil {
 		return nil, err
 	}

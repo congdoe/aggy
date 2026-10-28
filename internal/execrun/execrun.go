@@ -60,7 +60,10 @@ var passEnv = []string{
 //     never taken from aggy's own environment (see passEnv).
 //   - AGGY_VENDOR and AGGY_MODEL name the vendor and model an
 //     interactive session runs, for the linked skill.
-var extraNames = []string{"AGGY_DELEGATED", "AGGY_VENDOR", "AGGY_MODEL"}
+//   - GIT_NO_LAZY_FETCH=1 keeps aggy's own git calls from fetching a
+//     partial clone's missing objects from its remote. It only turns a
+//     network fetch off.
+var extraNames = []string{"AGGY_DELEGATED", "AGGY_VENDOR", "AGGY_MODEL", "GIT_NO_LAZY_FETCH"}
 
 // extraPrefix is the test fakes' variables (AGGY_FAKE_SCENARIO,
 // AGGY_FAKE_RECORD, AGGY_FAKE_VENDOR). The real CLIs ignore them.

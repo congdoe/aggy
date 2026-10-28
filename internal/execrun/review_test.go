@@ -161,8 +161,8 @@ func TestEnvNarrowAllowlist(t *testing.T) {
 		ok  bool
 	}{
 		{"AGGY_DELEGATED", true}, {"AGGY_VENDOR", true}, {"AGGY_MODEL", true},
-		{"AGGY_FAKE_SCENARIO", true}, {"AGGY_FAKE_RECORD", true},
-		{"AGGY_HOME", false}, {"AGGY_ANYTHING", false}, {"AGGY_FAKE_", false}, {"AGGY_FAKE_x", false},
+		{"AGGY_FAKE_SCENARIO", true}, {"AGGY_FAKE_RECORD", true}, {"GIT_NO_LAZY_FETCH", true},
+		{"GIT_DIR", false}, {"GIT_CONFIG_PARAMETERS", false}, {"AGGY_HOME", false}, {"AGGY_ANYTHING", false}, {"AGGY_FAKE_", false}, {"AGGY_FAKE_x", false},
 	}
 	for _, tt := range tests {
 		if _, err := Env(base, []string{tt.key + "=1"}); (err == nil) != tt.ok {

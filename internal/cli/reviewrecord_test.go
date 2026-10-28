@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -13,6 +14,11 @@ import (
 	"github.com/congdoe/aggy/internal/store"
 )
 
+// codexLines are an edit's own lines, long and found nowhere else.
+const codexLines = "func EditedByCodex() int { return 42 }\n" +
+	"func AlsoByCodex(s string) string { return s + \"!\" }\n" +
+	"var codexTable = map[string]int{\"one\": 1, \"two\": 2}\n"
+
 // TestReviewRecord (T6747): a review routes on aggy's own record of which
 // vendor made an edit, matched against the reviewed diff, and a forged
 // trailer can never bring that vendor back.
@@ -20,58 +26,76 @@ func TestReviewRecord(t *testing.T) {
 	f, markers := editFixture(t, adapter.Grok, adapter.Claude)
 	ctx := context.Background()
 	gitIn(t, f.repo, "checkout", "--", "a.go")
-	material := func(repo string) *borrow.Material {
+	material := func(repo, base string) *borrow.Material {
 		t.Helper()
-		m, err := f.env.reviewMaterial(ctx, repo, "", nil)
+		m, err := f.env.reviewMaterial(ctx, repo, base, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return m
 	}
-	authors := func(repo string, m *borrow.Material) []adapter.Vendor {
+	authors := func(repo string, m *borrow.Material) ([]adapter.Vendor, []string) {
 		t.Helper()
 		s, err := store.OpenDefault(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer func() { _ = s.Close() }()
-		got, err := f.env.recordAuthors(ctx, s, repo, m)
+		got, notes, err := f.env.recordAuthors(ctx, s, repo, m)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return got
+		return got, notes
+	}
+	check := func(name, repo string, m *borrow.Material, want []adapter.Vendor) []string {
+		t.Helper()
+		got, notes := authors(repo, m)
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: authors %v, want %v (notes %q)", name, got, want, notes)
+		}
+		return notes
 	}
 	codex := []adapter.Vendor{adapter.Codex}
 
-	if got := authors(f.repo, material(f.repo)); got != nil {
-		t.Errorf("no record: %v", got)
-	}
-	edited := "package a\n\nfunc Committed() {}\n\nfunc EditedByCodex() int { return 42 }\n"
-	id, _ := editBorrow(t, f, map[string]string{"a.go": edited})
-	if got := authors(f.repo, material(f.repo)); got != nil {
-		t.Errorf("a pending edit is not in the work tree: %v", got)
-	}
+	check("no record", f.repo, material(f.repo, ""), nil)
+	committed := "package a\n\nfunc Committed() {}\n"
+	id, _ := editBorrow(t, f, map[string]string{"a.go": committed + codexLines})
+	check("a pending edit is not in the work tree", f.repo, material(f.repo, ""), nil)
 	if code, out, errOut := accept(f, "", false, id, "--yes"); code != 0 {
 		t.Fatalf("accept: code %d: %s %s", code, out, errOut)
 	}
 	// The person commits the edit from a Claude session (or forges it):
 	// the trailer names claude, not codex.
 	gitIn(t, f.repo, "commit", "-q", "-am", "edit\n\nAggy-Vendor: claude")
-	m := material(f.repo)
-	if got := authors(f.repo, m); !slices.Equal(got, codex) {
-		t.Errorf("accepted and committed: %v, want codex", got)
-	}
+	edited := gitIn(t, f.repo, "rev-parse", "HEAD")
+	m := material(f.repo, "")
+	check("accepted and committed", f.repo, m, codex)
+
+	// N53-3: a cut diff falls back to the files the edit touched, and says so.
 	cut := *m
 	cut.Diff, cut.DiffTruncated = "", true
-	if got := authors(f.repo, &cut); !slices.Equal(got, codex) {
-		t.Errorf("a cut diff fails closed: %v, want codex", got)
+	if notes := check("cut diff", f.repo, &cut, codex); len(notes) != 1 || !strings.Contains(notes[0], "size cap") || !strings.Contains(notes[0], "codex (borrow "+id+")") {
+		t.Errorf("cut diff notes %q", notes)
 	}
+
+	// N53-2: a rename, or the code pasted into another file, still counts.
+	gitIn(t, f.repo, "mv", "a.go", "b.go")
+	check("renamed", f.repo, material(f.repo, ""), codex)
+	gitIn(t, f.repo, "mv", "b.go", "a.go")
+	mustWrite(t, filepath.Join(f.repo, "a.go"), committed, 0o600)
+	mustWrite(t, filepath.Join(f.repo, "d.go"), "package a\n\n"+codexLines, 0o600)
+	gitIn(t, f.repo, "add", "d.go")
+	check("pasted elsewhere", f.repo, material(f.repo, ""), codex)
+	gitIn(t, f.repo, "rm", "-q", "--cached", "d.go")
+	if err := os.Remove(filepath.Join(f.repo, "d.go")); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, f.repo, "checkout", "--", "a.go")
+
 	other, _ := filepath.EvalSymlinks(t.TempDir())
 	gitRepo(t, other)
-	mustWrite(t, filepath.Join(other, "a.go"), edited, 0o600)
-	if got := authors(other, material(other)); got != nil {
-		t.Errorf("another repo with the same lines: %v", got)
-	}
+	mustWrite(t, filepath.Join(other, "a.go"), committed+codexLines, 0o600)
+	check("another repo with the same lines", other, material(other, ""), nil)
 
 	// Record (codex) and trailer (claude) disagree: both are skipped, and
 	// grok reviews.
@@ -103,40 +127,96 @@ func TestReviewRecord(t *testing.T) {
 	}
 
 	// The person rewrote the edit's lines: no longer codex's change.
-	mustWrite(t, filepath.Join(f.repo, "a.go"), "package a\n\nfunc Committed() {}\n\nfunc Rewritten() string { return \"mine\" }\n", 0o600)
-	if got := authors(f.repo, material(f.repo)); got != nil {
-		t.Errorf("rewritten: %v", got)
-	}
+	mustWrite(t, filepath.Join(f.repo, "a.go"), committed+"\nfunc Rewritten() string { return \"mine\" }\n", 0o600)
+	check("rewritten", f.repo, material(f.repo, ""), nil)
+	gitIn(t, f.repo, "checkout", "--", "a.go")
+
+	// N53-1: a later change of the person's own, with the same lines,
+	// reviewed from after the edit: the edit predates the range.
+	mustWrite(t, filepath.Join(f.repo, "e.go"), "package a\n\n"+strings.ReplaceAll(codexLines, "Codex", "Mine"), 0o600)
+	mustWrite(t, filepath.Join(f.repo, "f.go"), "package a\n\n"+codexLines, 0o600)
+	gitIn(t, f.repo, "add", "e.go", "f.go")
+	gitIn(t, f.repo, "commit", "-q", "-m", "mine")
+	check("an edit made before the reviewed range", f.repo, material(f.repo, edited), nil)
 	noMarkers(t, markers)
 }
 
-// TestChangedLines (T6747): a diff's changed lines per file, short lines
-// and header lines left out, and a file with none still there.
-func TestChangedLines(t *testing.T) {
-	diff := "diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n@@ -1,2 +1,2 @@\n-func Old()   {  }\n+\tfunc New() {}\n }\n+--- a long removed-looking line\n" +
-		"diff --git a/img.png b/img.png\nBinary files a/img.png and b/img.png differ\n"
-	got := changedLines(diff)
-	want := map[string][]string{
-		"diff --git a/x.go b/x.go":       {"+--- a long removed-looking line", "+func New() {}", "-func Old() { }"},
-		"diff --git a/img.png b/img.png": nil,
+// TestEditIn (T6747): an edit is in a review on three distinct lines the
+// review adds once and the base tree lacks (one for an edit of fewer
+// lines), in any file, or on a file of the edit with no long line.
+func TestEditIn(t *testing.T) {
+	file := func(path string, lines ...string) string {
+		s := "diff --git a/" + path + " b/" + path + "\n--- a/" + path + "\n+++ b/" + path + "\n@@ -0,0 +1 @@\n"
+		for _, l := range lines {
+			s += "+" + l + "\n"
+		}
+		return s
 	}
-	if len(got) != len(want) {
-		t.Fatalf("files = %v", got)
+	bin := func(path string) string {
+		return "diff --git a/" + path + " b/" + path + "\nBinary files a/" + path + " and b/" + path + " differ\n"
 	}
-	for f, ls := range want {
-		lines, ok := got[f]
-		if !ok {
-			t.Errorf("no %q", f)
-			continue
+	l1, l2, l3, l4, l5 := "alpha := compute(one)", "beta := compute(two)", "gamma := compute(three)", "delta := compute(four)", "epsilon := compute(five)"
+	five := file("a.go", l1, l2, l3, l4, l5)
+	tests := []struct {
+		name         string
+		edit, review string
+		inBase       []string
+		want         bool
+	}{
+		{"three lines", five, file("a.go", l1, l2, l3), nil, true},
+		{"two of five", five, file("a.go", l1, l2), nil, false},
+		{"moved to another file", five, file("z.go", l1, l2, l3), nil, true},
+		{"common lines in the base tree", five, file("a.go", l1, l2, l3), []string{l2}, false},
+		{"lines the review adds twice", five, file("a.go", l1, l2, l3) + file("b.go", l3), nil, false},
+		{"one of a two-line edit", file("a.go", l1, l2), file("b.go", l2), nil, true},
+		{"short lines only", file("a.go", "x := 1", "}"), file("a.go", "y := 2"), nil, true},
+		{"short lines, other file", file("a.go", "x := 1"), file("b.go", "x := 1"), nil, false},
+		{"binary file touched", five + bin("img.png"), bin("img.png"), nil, true},
+		{"binary file untouched", five + bin("img.png"), bin("other.png"), nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := map[string]bool{}
+			for _, l := range tt.inBase {
+				in[l] = true
+			}
+			if got := editIn(readDiff(tt.edit), readDiff(tt.review), in); got != tt.want {
+				t.Errorf("editIn = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDiffPath(t *testing.T) {
+	for h, want := range map[string]string{
+		"diff --git a/x.go b/x.go":                   "x.go",
+		"diff --git a/a b/c b/a b/c":                 "a b/c",
+		`diff --git "a/t\tab" "b/t\tab"`:             "t\tab",
+		`diff --git "a/caf\303\251" "b/caf\303\251"`: "café",
+		"diff --git a/x b/y":                         "",
+		"diff --git x":                               "",
+	} {
+		if got := diffPath(h); got != want {
+			t.Errorf("diffPath(%q) = %q, want %q", h, got, want)
 		}
-		var keys []string
-		for l := range lines {
-			keys = append(keys, l)
-		}
-		slices.Sort(keys)
-		slices.Sort(ls)
-		if !slices.Equal(keys, ls) {
-			t.Errorf("%s: %q, want %q", f, keys, ls)
-		}
+	}
+}
+
+// TestGitSafeEnv (N53-5): every git call aggy runs takes gitSafe and
+// GIT_NO_LAZY_FETCH=1, so a partial clone never fetches from its remote.
+func TestGitSafeEnv(t *testing.T) {
+	var got adapter.Command
+	e := borrowEnv{
+		gitPath: func() (string, error) { return "/usr/bin/git", nil },
+		gitRun: func(_ context.Context, c adapter.Command) (adapter.Output, error) {
+			got = c
+			return adapter.Output{}, nil
+		},
+	}
+	if _, err := e.gitOutput(context.Background(), "/r", "status"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Env, "GIT_NO_LAZY_FETCH=1") || !slices.Equal(got.Args[:len(gitSafe)], gitSafe) {
+		t.Errorf("git ran with env %q, args %q", got.Env, got.Args)
 	}
 }

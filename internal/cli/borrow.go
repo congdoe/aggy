@@ -333,9 +333,13 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 			return 1
 		}
 		req.Authors = env.reviewAuthors(ctx, req.Repo, req.Material.Base)
-		if req.Recorded, err = env.recordAuthors(ctx, s, req.Repo, req.Material); err != nil {
+		var notes []string
+		if req.Recorded, notes, err = env.recordAuthors(ctx, s, req.Repo, req.Material); err != nil {
 			fmt.Fprintf(stderr, "aggy borrow: review: read aggy's record of edits: %s\n", termsafe.Field(err.Error()))
 			return 1
+		}
+		for _, n := range notes {
+			fmt.Fprintf(stderr, "aggy borrow: review: %s\n", termsafe.Field(n))
 		}
 	} else if ba.base != "" {
 		fmt.Fprintln(stderr, "aggy borrow: --base is for review only")
