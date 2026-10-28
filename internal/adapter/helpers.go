@@ -215,9 +215,10 @@ var (
 		regexp.MustCompile(`^error: invalid value '[^']*' for '[^']+'`),
 	}
 	// Codex's --strict-config message for a feature it does not know
-	// (config/src/loader/mod.rs at 6aaac69), at the start of a stderr
-	// line, bare or after an "Error: " prefix.
-	codexUnknownField = regexp.MustCompile("^(?:[Ee]rror: )?unknown configuration field `[^`]+` in -c/--config override")
+	// (config/src/loader/mod.rs:264,671 at 6aaac69), at the start of a
+	// stderr line. codex exec prints it as "Error loading config.toml:
+	// <err>" (exec/src/lib.rs:847); the bare and "Error: " forms are kept.
+	codexUnknownField = regexp.MustCompile("^(?:Error loading config\\.toml: |[Ee]rror: )?unknown configuration field `[^`]+` in -c/--config override")
 )
 
 // rejected returns the formats vendor v prints for a flag it refuses.

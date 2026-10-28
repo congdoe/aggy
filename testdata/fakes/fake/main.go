@@ -139,9 +139,10 @@ func (f *fake) validate(headless bool) error {
 	if f.has("--strict-config") {
 		for _, v := range f.flags["--disable"] {
 			if !contains(codexFeatures, v) {
-				// codex's own message (config/src/loader/mod.rs at
-				// 6aaac69), printed bare.
-				return verbatimError(fmt.Sprintf("unknown configuration field `features.%s` in -c/--config override", v))
+				// codex's own line: the loader's error
+				// (config/src/loader/mod.rs:671 at 6aaac69) as codex exec
+				// prints it (exec/src/lib.rs:847).
+				return verbatimError(fmt.Sprintf("Error loading config.toml: unknown configuration field `features.%s` in -c/--config override", v))
 			}
 		}
 	}
