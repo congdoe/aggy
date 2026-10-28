@@ -119,10 +119,24 @@ func sessionArgs(sessionID, resume string, fork bool) ([]string, error) {
 // inline, so no alt-screen flag is needed. A brief is passed as a short
 // first message that points to the file.
 func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, error) {
-	args, err := modelArgs(req.Model)
+	var args []string
+	if req.MCPConfigFile != "" {
+		// --mcp-config <configs...> is variadic: it takes every argument
+		// up to the next flag, so it goes first, where a flag always
+		// follows it, never next to the brief prompt (W71-1). Additive:
+		// no --strict-mcp-config, so the user's own servers stay
+		// (docs/design.md section 9). Re-passed on every resume, which
+		// otherwise drops the servers (docs/verification.md, T6734).
+		if err := adapter.CheckAbs("MCP config file", req.MCPConfigFile); err != nil {
+			return adapter.Command{}, err
+		}
+		args = append(args, "--mcp-config", req.MCPConfigFile)
+	}
+	m, err := modelArgs(req.Model)
 	if err != nil {
 		return adapter.Command{}, err
 	}
+	args = append(args, m...)
 	s, err := sessionArgs(req.SessionID, req.Resume, req.Fork)
 	if err != nil {
 		return adapter.Command{}, err
@@ -146,18 +160,15 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		}
 		args = append(args, "--settings", string(js))
 	}
-	if req.MCPConfigFile != "" {
-		// Additive: no --strict-mcp-config, so the user's own servers stay
-		// (docs/design.md section 9). Re-passed on every resume, which
-		// otherwise drops the servers (docs/verification.md, T6734).
-		if err := adapter.CheckAbs("MCP config file", req.MCPConfigFile); err != nil {
-			return adapter.Command{}, err
-		}
-		args = append(args, "--mcp-config", req.MCPConfigFile)
-	}
 	if req.BriefFile != "" {
 		if err := adapter.CheckAbs("brief file", req.BriefFile); err != nil {
 			return adapter.Command{}, err
+		}
+		if req.MCPConfigFile != "" {
+			// Ends the options, so no variadic flag can take the prompt.
+			// TODO(T6708): unverified that claude takes "--" before its
+			// prompt (commander's convention; not in a recorded help).
+			args = append(args, "--")
 		}
 		args = append(args, adapter.BriefPrompt(req.BriefFile))
 	}

@@ -317,7 +317,12 @@ func toolAdd(src string, yes bool, in io.Reader, tty bool, stdout io.Writer) err
 	// this one (their digest differs too). The digest of what was shown
 	// is recorded, so on turns on only that (S63-16).
 	if err := recordToolAdd(context.Background(), d.Name, tooldef.Digest(b)); err != nil {
-		fmt.Fprintf(stdout, "warning: the index was not updated: %s; earlier settings for %s do not apply to this file\n", termsafe.Line(err.Error()), d.Name)
+		// W71-12: never leave a file whose shown digest is not recorded,
+		// nor an earlier tool's settings applying to it.
+		if rerr := safefs.Remove(dest); rerr != nil {
+			return fmt.Errorf("the index was not updated (%w), and %s could not be removed: %v; remove it by hand", err, dest, rerr)
+		}
+		return fmt.Errorf("not added: the index was not updated: %w", err)
 	}
 	fmt.Fprintf(stdout, "Added %s (off). aggy tool remove %s deletes it.\n", termsafe.Field(dest), d.Name)
 	return nil

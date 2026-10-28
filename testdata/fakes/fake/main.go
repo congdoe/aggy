@@ -271,6 +271,10 @@ type flagSpec struct {
 	// multi take one or more values, each split on commas, up to the next argument that starts
 	// with "-" (a lone "-" is a value), as clap's num_args = 1.. does.
 	multi []string
+	// variadic take one or more values, unsplit, up to the next argument
+	// that starts with "-", as commander's <values...> does (Claude's
+	// --mcp-config <configs...>, W71-1).
+	variadic []string
 }
 
 // Flags recorded in docs/adapters.md and docs/design.md, per vendor and
@@ -283,9 +287,10 @@ var specs = map[string]flagSpec{
 	"claude": {
 		// --append-system-prompt-file: the shared memory, live-verified on
 		// 2.1.312 although the real --help omits it (T6619).
-		values:   []string{"--output-format", "--permission-mode", "--session-id", "--mcp-config", "--tools", "--setting-sources", "--append-system-prompt-file", "--settings"},
+		values:   []string{"--output-format", "--permission-mode", "--session-id", "--tools", "--setting-sources", "--append-system-prompt-file", "--settings"},
 		switches: []string{"-p", "--fork-session", "--strict-mcp-config"},
 		optional: []string{"--resume"},
+		variadic: []string{"--mcp-config"},
 	},
 	"grok": {
 		values: []string{"--output-format", "--permission-mode", "--session-id", "--resume",
@@ -587,6 +592,19 @@ func (f *fake) parse(args []string) error {
 				val = args[i]
 			}
 			f.flags[name] = append(f.flags[name], val)
+		case contains(spec.variadic, name):
+			if hasVal {
+				f.flags[name] = append(f.flags[name], val)
+			}
+			n := 0
+			for i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				n++
+				f.flags[name] = append(f.flags[name], args[i])
+			}
+			if n == 0 && !hasVal {
+				return fmt.Errorf("option %s needs a value", name)
+			}
 		case contains(spec.multi, name):
 			// Values split on commas too, as codex's value_delimiter = ','.
 			if hasVal {
@@ -765,6 +783,9 @@ func (f *fake) helpText() string {
 	}
 	for _, v := range spec.multi {
 		fmt.Fprintf(&b, "  %s <value>...\n", v)
+	}
+	for _, v := range spec.variadic {
+		fmt.Fprintf(&b, "  %s <values...>\n", v)
 	}
 	for _, v := range spec.values {
 		fmt.Fprintf(&b, "  %s <value>\n", v)

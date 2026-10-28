@@ -11,6 +11,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/borrow"
 	"github.com/congdoe/aggy/internal/home"
+	"github.com/congdoe/aggy/internal/store"
 )
 
 const demoTool = `name = "demo"
@@ -162,6 +163,23 @@ func TestToolAddRefuses(t *testing.T) {
 				t.Error("a refused add changed the tools folder")
 			}
 		})
+	}
+}
+
+// TestToolAddIndexFails: W71-12, a copy whose digest the index could
+// not record is removed, so it never sits there unrecorded.
+func TestToolAddIndexFails(t *testing.T) {
+	src, dest := toolHome(t, demoTool)
+	// A folder where the index goes, so the index cannot be opened.
+	if err := os.MkdirAll(filepath.Join(os.Getenv(home.Env), store.FileName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errOut := toolRun("", true, "add", src, "--yes")
+	if code != 1 || !strings.Contains(errOut, "not added") {
+		t.Fatalf("exit %d, stderr %q", code, errOut)
+	}
+	if exists(t, dest) {
+		t.Error("the copy was left behind")
 	}
 }
 

@@ -22,7 +22,7 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 
 | Command | Value flags | Switches |
 | --- | --- | --- |
-| `claude` | `--output-format`, `--permission-mode`, `--session-id`, `--mcp-config`, `--tools`, `--append-system-prompt-file`, `--settings`; `--resume [value]` | `-p`, `--fork-session`, `--strict-mcp-config` |
+| `claude` | `--output-format`, `--permission-mode`, `--session-id`, `--tools`, `--append-system-prompt-file`, `--settings`; `--resume [value]`; `--mcp-config <configs...>` (variadic, as commander declares it: it takes every following word up to the next flag or `--`, so a prompt after it is swallowed; W71-1, unverified against claude itself) | `-p`, `--fork-session`, `--strict-mcp-config` |
 | `grok` | `-p`/`--single <PROMPT>`, `--prompt-file`, `--output-format`, `--permission-mode`, `--session-id`, `--resume`, `--tools`, `--disallowed-tools`, `--max-turns`, `--rules`, `--deny` (repeatable), `--sandbox`, `--agent` | `--fork-session`, `--no-alt-screen`, `--continue`, `--no-subagents` |
 | `codex` | `-c` | `--no-alt-screen` |
 | `codex exec [resume <id>]` (the exec flags go before `resume`) | `-c`, `--disable` (repeatable), `--sandbox`, `-i <value>...` | `--json`, `--ignore-user-config`, `--skip-git-repo-check`, `--strict-config` |

@@ -37,6 +37,12 @@ func TestBuiltinsValid(t *testing.T) {
 	if !slices.Equal(names, want) {
 		t.Errorf("built-ins = %v, want %v", names, want)
 	}
+	// W71-6: the server runs in aggy's launch folder, so it is told the
+	// repo; codegraph's own form is serve --mcp --path <dir>.
+	cg, _ := r.Get("codegraph")
+	if len(cg.MCP) != 1 || !slices.Equal(cg.MCP[0].Argv, []string{"codegraph", "serve", "--mcp", "--path", "{repo}"}) {
+		t.Errorf("codegraph mcp = %+v", cg.MCP)
+	}
 }
 
 func writeDef(t *testing.T, path, text string, mode os.FileMode) {
