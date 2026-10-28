@@ -359,7 +359,10 @@ func stripOne(src []byte, root *node) ([]byte, bool, error) {
 }
 
 // sameLessAggy checks that a and b mean the same once aggy's hooks are
-// taken out of both, as Strip takes them out.
+// taken out of both, as Strip takes them out. An empty event list or
+// hooks object means the same as none (D20-8): Claude's /hooks UI can
+// leave "hooks": {} or "Stop": [] behind, and adding aggy's entry there
+// and taking it out again must not count as a change.
 func sameLessAggy(a, b []byte) error {
 	va, err := lessAggy(a)
 	if err != nil {
@@ -369,7 +372,7 @@ func sameLessAggy(a, b []byte) error {
 	if err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(va, vb) {
+	if !reflect.DeepEqual(pruneEmpty(va), pruneEmpty(vb)) {
 		return ambiguous("the edit would change more than aggy's hooks")
 	}
 	return nil
@@ -444,6 +447,28 @@ func lessAggy(src []byte) (any, error) {
 		delete(root, "hooks")
 	}
 	return root, nil
+}
+
+// pruneEmpty drops empty event lists from a decoded file's hooks object,
+// then the hooks object when that leaves it empty.
+func pruneEmpty(v any) any {
+	root, ok := v.(map[string]any)
+	if !ok {
+		return v
+	}
+	hooks, ok := root["hooks"].(map[string]any)
+	if !ok {
+		return v
+	}
+	for k, ev := range hooks {
+		if l, ok := ev.([]any); ok && len(l) == 0 {
+			delete(hooks, k)
+		}
+	}
+	if len(hooks) == 0 {
+		delete(root, "hooks")
+	}
+	return root
 }
 
 // node is a parsed JSON value with its byte span in the source.
@@ -597,8 +622,13 @@ func remove(src []byte, n *node, i int) []byte {
 // element (key "") to container n, after its last one, in the file's
 // layout: on its own line, indented like its siblings, when the
 // container spans lines (or is empty in a file that has line breaks);
-// inline otherwise.
+// inline otherwise. Line breaks match the file's: CRLF when it has any
+// (D20-9).
 func insert(src []byte, n *node, key string, v any) []byte {
+	nl := "\n"
+	if bytes.Contains(src, []byte("\r\n")) {
+		nl = "\r\n"
+	}
 	close := n.end - 1
 	multi := bytes.IndexByte(src[n.start:n.end], '\n') >= 0
 	outer := lineIndent(src, n.start)
@@ -616,19 +646,20 @@ func insert(src []byte, n *node, key string, v any) []byte {
 	if !multi {
 		item = encodeJSON(v, "", "")
 	}
+	item = strings.ReplaceAll(item, "\n", nl)
 	if key != "" {
 		item = key + ": " + item
 	}
 	if len(n.vals) == 0 {
 		if multi {
-			return splice(src, n.start+1, close, "\n"+inner+item+"\n"+outer)
+			return splice(src, n.start+1, close, nl+inner+item+nl+outer)
 		}
 		return splice(src, n.start+1, close, item)
 	}
 	_, last := n.memberSpan(len(n.vals) - 1)
 	sep := " "
 	if multi {
-		sep = "\n" + inner
+		sep = nl + inner
 	}
 	return splice(src, last, last, ","+sep+item)
 }
