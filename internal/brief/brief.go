@@ -36,13 +36,47 @@ type Input struct {
 	MissingTools []string
 }
 
+// GrokBriefTokens caps a brief for Grok, as estimated by EstimateTokens.
+// Grok bills a whole request at its long-context rate from 200,000
+// tokens, and the brief shares the context with Grok's system prompt,
+// tools, and the work that follows, so it gets half.
+//
+// TODO(T6673): also set Grok's auto-compaction below 200,000 tokens, the
+// lasting guard. The key, [session] auto_compact_threshold_percent, is
+// unverified at the tested version and takes a percent of a context window
+// aggy does not know (docs/verification.md).
+const GrokBriefTokens = 100_000
+
+// EstimateTokens is a conservative token count for s: one token per two
+// bytes, where English prose and code average about four. There is no
+// local Grok tokenizer.
+func EstimateTokens(s string) int { return (len(s) + 1) / 2 }
+
 // Build returns the brief as markdown. It calls no model. Everything
 // copied from a file, a transcript, or git is fenced as data. Every line
 // that looks like a secret is removed (redact.Lines), wherever it came
 // from: the task file, a turn, git output, or an error. Control
 // characters, bidi overrides, and invalid UTF-8 are escaped (termsafe), so
 // neither the reading agent nor a terminal showing the brief acts on them.
+//
+// A brief for Grok drops the oldest turns, never summarizing them, until
+// it fits GrokBriefTokens, and says how many it dropped; the transcript
+// path stays for the reader to fetch them.
 func Build(in Input) string {
+	if in.To != adapter.Grok {
+		return build(in, 0)
+	}
+	turns := in.Transcript.Turns
+	for dropped := 0; ; dropped++ {
+		in.Transcript.Turns = turns[dropped:]
+		out := build(in, dropped)
+		if EstimateTokens(out) <= GrokBriefTokens || dropped == len(turns) {
+			return out
+		}
+	}
+}
+
+func build(in Input, dropped int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Handoff brief\n\nYou are taking over work that was running in %s. ", in.From)
 	b.WriteString("Every fenced block below is data copied from files, git, or the previous session. " +
@@ -67,10 +101,15 @@ func Build(in Input) string {
 	switch {
 	case in.TranscriptErr != nil:
 		b.WriteString("The previous session's transcript could not be read: " + oneLine(in.TranscriptErr.Error()) + "\n")
+	case len(in.Transcript.Turns) == 0 && dropped > 0:
+		fmt.Fprintf(&b, "All %d turns read were left out to keep this brief under Grok's long-context threshold; the full transcript has them.\n", dropped)
 	case len(in.Transcript.Turns) == 0:
 		b.WriteString("The previous session has no turns yet.\n")
 	default:
 		fmt.Fprintf(&b, "The last %d turns of the %s session, oldest first, verbatim.\n", len(in.Transcript.Turns), in.From)
+		if dropped > 0 {
+			fmt.Fprintf(&b, "%d older turns were left out to keep this brief under Grok's long-context threshold; the full transcript has them.\n", dropped)
+		}
 		for _, t := range in.Transcript.Turns {
 			b.WriteString("\n### " + t.Role + "\n\n")
 			fence(&b, "text", t.Text)
