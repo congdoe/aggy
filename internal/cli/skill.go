@@ -408,11 +408,12 @@ func addGrokIgnore(entry string) func([]byte) ([]byte, error) {
 		case ignore != nil:
 			return nil, fmt.Errorf("the Grok config.toml already has a [skills] ignore list; add '%s' to it by hand", entry)
 		case !hasSkills:
+			// One line ending, then the table: a blank line after a file
+			// that ends in one, a line break after one that does not.
+			// removeGrokIgnore cuts exactly this, so the old bytes come
+			// back either way.
 			block, _ := ignoreBlock(entry, nl)
 			if len(out) > 0 {
-				if !bytes.HasSuffix(out, []byte("\n")) {
-					out = append(out, nl...)
-				}
 				out = append(out, nl...)
 			}
 			out = append(out, block...)
