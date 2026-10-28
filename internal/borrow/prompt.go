@@ -17,6 +17,8 @@ type Prompt struct {
 	Paths       []string
 	Constraints []string
 	Today       time.Time
+	// Material is the review input, for review only.
+	Material *Material
 }
 
 // kindGuide is the report shape asked of each kind.
@@ -25,7 +27,7 @@ var kindGuide = map[adapter.Kind]string{
 	adapter.News:     "Search for the latest news. Cite every source with its publish date, say what the news is as of, and list open questions.",
 	adapter.Image:    "Generate the image the task describes. Say how many images you made and describe each in one line.",
 	adapter.Video:    "Generate the video the task describes. Say what you made in one line.",
-	adapter.Review:   "Review the code read-only. Do not change any file. List findings by severity with file:line and a concrete failure scenario.",
+	adapter.Review:   "Review the change in the Material section read-only. Do not change any file. List findings by severity with file:line and a concrete failure scenario.",
 }
 
 // Text renders the prompt as Markdown.
@@ -51,6 +53,10 @@ func (p Prompt) Text() string {
 	}
 	if g := kindGuide[p.Kind]; g != "" {
 		fmt.Fprintf(&b, "\n## Report\n\n%s\n", g)
+	}
+	if p.Material != nil {
+		b.WriteString("\n## Material\n\n")
+		b.WriteString(p.Material.Text(MaxMaterial))
 	}
 	return b.String()
 }

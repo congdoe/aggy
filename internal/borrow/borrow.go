@@ -50,6 +50,9 @@ type Request struct {
 	Repo string
 	// Parent is the vendor on screen, from AGGY_VENDOR; "" when unknown.
 	Parent adapter.Vendor
+	// Material is the review input (required for review, which runs in
+	// Repo, the git work tree root); internal/cli gathers it.
+	Material *Material
 }
 
 // CLI is an installed vendor CLI: its absolute path and the
@@ -168,6 +171,10 @@ func (r Request) validate() error {
 		return fmt.Errorf("the task is over %d bytes", MaxTask)
 	case !filepath.IsAbs(r.Repo):
 		return fmt.Errorf("the working dir %q is not absolute", r.Repo)
+	case r.Kind == adapter.Review && r.Material == nil:
+		return errors.New("a review needs its material (the diff and files)")
+	case r.Kind == adapter.Review && !inGitRepo(r.Repo):
+		return fmt.Errorf("a review runs in a git work tree, and %s is in none", r.Repo)
 	}
 	for _, p := range r.Paths {
 		if !filepath.IsAbs(p) || strings.ContainsAny(p, "\n\r") {
@@ -319,6 +326,9 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	}
 	defer dirs.remove()
 	prompt := Prompt{Kind: req.Kind, Task: req.Task, Paths: req.Paths, Constraints: req.Constraints, Today: now}
+	if req.Kind == adapter.Review {
+		prompt.Material = req.Material
+	}
 	promptFile := filepath.Join(dirs.run, "prompt.md")
 	if err := safefs.WriteFile(promptFile, []byte(prompt.Text()), 0o600); err != nil {
 		return Result{}, err

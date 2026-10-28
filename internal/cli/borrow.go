@@ -25,7 +25,7 @@ import (
 	"github.com/congdoe/aggy/internal/termsafe"
 )
 
-const borrowUsage = `Usage: aggy borrow <kind> "<task>" [--path P]... [--constraint C]... [--vendor V]
+const borrowUsage = `Usage: aggy borrow <kind> "<task>" [--path P]... [--constraint C]... [--vendor V] [--base REF]
 
 Runs one bounded task headless in another vendor's CLI and prints a short
 report. The child gets the task, the paths and constraints given here,
@@ -37,6 +37,11 @@ Kinds: image, video, research, news, review. (edit comes in M3.)
   --constraint C   a rule for the child, such as "cite primary sources" (repeatable)
   --vendor V       claude, codex, or grok, skipping routing; "both" asks
                    two vendors (research only)
+  --base REF       review: diff against REF instead of the merge-base
+                   with the default branch
+
+A review runs at the root of the git work tree you are in. Its child gets
+the diff and the --path files in the prompt, as data to review.
 `
 
 // borrowEnv is what aggy borrow needs from the outside world, so tests
@@ -47,6 +52,9 @@ type borrowEnv struct {
 	lookPath func(name string) (string, error)
 	// probeRun runs --version and --help for the capability probe.
 	probeRun adapter.Runner
+	// gitPath finds git, and gitRun runs it, for a review's diff.
+	gitPath func() (string, error)
+	gitRun  adapter.Runner
 	// runner makes the runner for one child.
 	runner  func(timeout time.Duration) adapter.Runner
 	tempDir string
@@ -104,6 +112,7 @@ type borrowArgs struct {
 	paths       []string
 	constraints []string
 	vendor      string
+	base        string
 	help        bool
 }
 
@@ -127,7 +136,7 @@ func parseBorrowArgs(args []string) (borrowArgs, error) {
 			continue
 		}
 		name, val, has := strings.Cut(a, "=")
-		if !slices.Contains([]string{"--path", "--constraint", "--vendor"}, name) {
+		if !slices.Contains([]string{"--path", "--constraint", "--vendor", "--base"}, name) {
 			return b, fmt.Errorf("unknown flag %s", name)
 		}
 		if !has {
@@ -144,6 +153,8 @@ func parseBorrowArgs(args []string) (borrowArgs, error) {
 			b.constraints = append(b.constraints, val)
 		case "--vendor":
 			b.vendor = val
+		case "--base":
+			b.base = val
 		}
 	}
 	if b.help {
@@ -239,10 +250,24 @@ func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 		Getenv:    env.getenv,
 		Guard:     env.guard(),
 	})
-	results, err := b.Run(ctx, borrow.Request{
+	req := borrow.Request{
 		Kind: kind, Task: ba.task, Paths: paths, Constraints: ba.constraints,
-		Vendor: ba.vendor, Repo: cwd, Parent: parent,
-	})
+		Vendor: ba.vendor, Repo: root, Parent: parent,
+	}
+	if kind == adapter.Review {
+		if req.Repo, err = reviewRoot(cwd, env.getenv("HOME"), stateDir); err != nil {
+			fmt.Fprintf(stderr, "aggy borrow: %s\n", termsafe.Field(err.Error()))
+			return 1
+		}
+		if req.Material, err = env.reviewMaterial(ctx, req.Repo, ba.base, paths); err != nil {
+			fmt.Fprintf(stderr, "aggy borrow: review: %s\n", termsafe.Field(err.Error()))
+			return 1
+		}
+	} else if ba.base != "" {
+		fmt.Fprintln(stderr, "aggy borrow: --base is for review only")
+		return 2
+	}
+	results, err := b.Run(ctx, req)
 	code := 0
 	for _, r := range results {
 		printResult(stdout, r)
