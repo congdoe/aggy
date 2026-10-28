@@ -140,6 +140,7 @@ func (m *Manifest) Apply(ctx context.Context, runID string, p patch.Patch) (stor
 	warn := err
 	if err != nil && (!rec.Changed || !errors.Is(err, patch.ErrNotSynced)) {
 		c.Status = store.ChangeFailed
+		c.CreatedDirIDs = dirIDs(c.CreatedDirs)
 		if ferr := m.store.FinishChange(context.WithoutCancel(ctx), c); ferr != nil {
 			err = errors.Join(err, ferr)
 		}
@@ -154,6 +155,7 @@ func (m *Manifest) Apply(ctx context.Context, runID string, p patch.Patch) (stor
 	if rec.Changed {
 		c.CreatedDirs = rec.CreatedDirs
 	}
+	c.CreatedDirIDs = dirIDs(c.CreatedDirs)
 	c.AppliedAt = m.now()
 	// The file has changed: record it even if the caller has given up.
 	if err := m.store.FinishChange(context.WithoutCancel(ctx), c); err != nil {
@@ -164,6 +166,25 @@ func (m *Manifest) Apply(ctx context.Context, runID string, p patch.Patch) (stor
 		return c, errors.Join(err, warn)
 	}
 	return got, warn
+}
+
+// dirIDs returns the identity of each directory in dirs that exists now,
+// and a zero DirID for one that does not. The sweep in Unwire removes a
+// created directory only while it still has the identity recorded here,
+// so a directory someone made later at the same path is kept.
+func dirIDs(dirs []string) []store.DirID {
+	if len(dirs) == 0 {
+		return nil
+	}
+	ids := make([]store.DirID, len(dirs))
+	for i, d := range dirs {
+		if fi, err := safefs.Lstat(d); err == nil && fi.IsDir() {
+			if dev, ino, ok := safefs.FileID(fi); ok {
+				ids[i] = store.DirID{Dev: dev, Ino: ino}
+			}
+		}
+	}
+	return ids
 }
 
 // isSyncWarning reports whether err only says a written file was not

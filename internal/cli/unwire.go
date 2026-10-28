@@ -155,12 +155,23 @@ func report(undos []manifest.Undo, opt manifest.UnwireOptions, unconfirmed bool,
 			}
 		}
 	}
-	if unconfirmed {
+	if unconfirmed && !onlyBlocked(undos) {
 		fmt.Fprintln(stderr, "Nothing changed. Run again with --force --yes to overwrite the edits shown above.")
 		return 1
 	}
 	fmt.Fprintf(stdout, "%d of %d %s %sundone.\n", done, len(undos), plural(len(undos), "change", "changes"), would)
 	return code
+}
+
+// onlyBlocked reports whether every result is Blocked or Invalid, which
+// --force cannot change.
+func onlyBlocked(undos []manifest.Undo) bool {
+	for _, u := range undos {
+		if u.Outcome != manifest.Blocked && u.Outcome != manifest.Invalid {
+			return false
+		}
+	}
+	return true
 }
 
 func plural(n int, one, many string) string {

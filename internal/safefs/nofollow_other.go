@@ -16,3 +16,6 @@ func linkCount(fs.FileInfo) uint64 { return 1 }
 
 // canWrite reports false where access(2) is not available.
 func canWrite(string) bool { return false }
+
+// FileID reports no identity where device and inode are not available.
+func FileID(fs.FileInfo) (dev, ino uint64, ok bool) { return 0, 0, false }

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/congdoe/aggy/internal/diff"
@@ -78,10 +80,11 @@ const (
 	// Blocked: a newer change to the same file is still in place, so
 	// this one cannot be undone before it. Err names the newer change.
 	Blocked Outcome = "blocked"
-	// Invalid: the manifest row does not describe a change aggy could
-	// have made (a relative or unclean file, a backup outside
-	// backups/<change-id>, a created directory that is not an ancestor
-	// of the file), so it is refused untouched. Err says why.
+	// Invalid: the manifest row does not look like a change aggy could
+	// have made (a relative or unclean file, a backup not named
+	// <change-id>/<hash>.bak, a created directory that is not an
+	// ancestor of the file, or that is the home directory or above it),
+	// so it is refused untouched. Err says why.
 	Invalid Outcome = "invalid"
 	// Failed: the undo hit another error, in Err.
 	Failed Outcome = "failed"
@@ -107,11 +110,15 @@ type Undo struct {
 // planned against the earlier one's result, so it must be undone first.
 // Each change is undone under its target's lock and marked undone.
 //
-// Before acting on a row, Unwire checks that it describes a change aggy
-// could have made: File absolute and clean, the backup inside
-// backups/<change-id>, and every created directory an ancestor of File.
-// Any other row is refused untouched (Invalid), so a crafted row cannot
-// make unwire delete or rewrite an unrelated file.
+// Before acting on a row, Unwire checks that it looks like a change aggy
+// could have made: File absolute and clean, the backup named
+// <change-id>/<hash before>.bak, and every created directory an ancestor
+// of File and below the home directory. Any other row is refused
+// untouched (Invalid). This is a sanity check against a damaged or
+// mistaken row, not a defense: whoever can write the state directory can
+// plant a well-formed row and its backup together. The backup is always
+// read from the current backup root, so a state directory spelled
+// differently than when the change was made still works.
 //
 // A change can only be undone after every newer change to the same file
 // (by canonical path) that is still applied, pending, or failed:
@@ -120,7 +127,13 @@ type Undo struct {
 //     forced or not (Blocked, naming it). Undo it first, or use --all.
 //   - An applied change with such a newer change outside the selection
 //     is Blocked too.
-//   - A pending or failed change with such a newer change is Superseded:
+//   - A pending or failed change that such a newer change was planned on
+//     (the newer change's hash before is this change's hash after) may
+//     have written before its process stopped, and that write is under
+//     the newer change: it is Blocked too. --all undoes the newer one
+//     first and so handles it.
+//   - Any other pending or failed change with such a newer change is
+//     Superseded:
 //     whatever is in the file is the newer change's, so the file is left
 //     alone, only empty directories made for the old change are
 //     removed, and the row is marked undone.
@@ -234,22 +247,45 @@ func (m *Manifest) validRow(c store.Change) error {
 	if (c.HashBefore == patch.NoFile) != c.CreatedFile {
 		return bad("created_file does not match the hash before")
 	}
+	// Only the backup's shape is checked: <change-id>/<hash>.bak. Its
+	// prefix is the state directory as it was spelled then, which can
+	// differ now (/tmp and /private/tmp, or a state directory moved and
+	// linked back), so the backup is read from the current backup root.
 	if c.BackupPath != "" {
-		want := filepath.Join(m.backupRoot, c.ChangeID, c.HashBefore+".bak")
-		if c.HashBefore == patch.NoFile || c.BackupPath != want {
-			return bad("the backup %q is not %s", c.BackupPath, want)
+		if c.HashBefore == patch.NoFile || filepath.Base(c.BackupPath) != c.HashBefore+".bak" ||
+			filepath.Base(filepath.Dir(c.BackupPath)) != c.ChangeID {
+			return bad("the backup %q is not <change-id>/<hash before>.bak", c.BackupPath)
 		}
 	}
+	homes := homeDirs()
 	for _, d := range c.CreatedDirs {
 		if !filepath.IsAbs(d) || filepath.Clean(d) != d || d == string(filepath.Separator) ||
 			!strings.HasPrefix(c.File, d+string(filepath.Separator)) {
 			return bad("the created directory %q is not an ancestor of the file", d)
+		}
+		for _, h := range homes {
+			if h == d || strings.HasPrefix(h, d+string(filepath.Separator)) {
+				return bad("the created directory %q is the home directory or above it", d)
+			}
 		}
 	}
 	if len(c.CreatedDirs) > 0 && !c.CreatedFile {
 		return bad("directories are recorded for a file that existed")
 	}
 	return nil
+}
+
+// homeDirs returns the home directory as $HOME and as the system reports
+// it, cleaned, for validRow.
+func homeDirs() []string {
+	var hs []string
+	if h := os.Getenv("HOME"); filepath.IsAbs(h) {
+		hs = append(hs, filepath.Clean(h))
+	}
+	if h, err := os.UserHomeDir(); err == nil && filepath.IsAbs(h) {
+		hs = append(hs, filepath.Clean(h))
+	}
+	return hs
 }
 
 func isHash(h string) bool {
@@ -264,13 +300,15 @@ func isHash(h string) bool {
 	return true
 }
 
-// newerChange returns a change to the same file as c, newer than c, that
-// is still applied, pending, or failed (and, in a dry run, not undone by
-// an earlier previewed undo), or nil.
-func (m *Manifest) newerChange(ctx context.Context, c store.Change, run *unwireRun) (*store.Change, error) {
+// newerChange returns the oldest change to the same file as c, newer
+// than c, that is still applied, pending, or failed (and, in a dry run,
+// not undone by an earlier previewed undo), or nil. builtOn reports
+// whether any such change was planned on c's result (its hash before is
+// c's hash after): then c's write is underneath it.
+func (m *Manifest) newerChange(ctx context.Context, c store.Change, run *unwireRun) (first *store.Change, builtOn bool, err error) {
 	newer, err := m.store.UndoableAfter(ctx, c.ID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	key := simKey(c.File)
 	for i := range newer {
@@ -279,14 +317,24 @@ func (m *Manifest) newerChange(ctx context.Context, c store.Change, run *unwireR
 			continue
 		}
 		if n.File == c.File || simKey(n.File) == key {
-			return &n, nil
+			if first == nil {
+				first = &n
+			}
+			if n.HashBefore == c.HashAfter && c.HashAfter != c.HashBefore {
+				builtOn = true
+			}
 		}
 	}
-	return nil, nil
+	return first, builtOn, nil
 }
 
 // sweepDirs removes the directories undone changes created that are now
-// empty, unless a change still in place created them too.
+// empty, unless a change still in place created them too. A directory is
+// removed only while it has the identity recorded when aggy made it, so
+// one someone made later at the same path is kept. Once a recorded
+// directory is gone, or has another identity, its identity is cleared in
+// the row, so a later directory that happens to get the same inode
+// number is never taken for it.
 func (m *Manifest) sweepDirs(ctx context.Context) error {
 	all, err := m.store.Changes(ctx, "")
 	if err != nil {
@@ -303,17 +351,42 @@ func (m *Manifest) sweepDirs(ctx context.Context) error {
 	var errs []error
 	for i := len(all) - 1; i >= 0; i-- {
 		c := all[i]
-		if c.Status != store.ChangeUndone || len(c.CreatedDirs) == 0 || m.validRow(c) != nil {
+		if c.Status != store.ChangeUndone || len(c.CreatedDirIDs) == 0 || m.validRow(c) != nil {
 			continue
 		}
+		ids := append([]store.DirID(nil), c.CreatedDirIDs...)
+		ours := func(k int) bool {
+			if k >= len(ids) || ids[k] == (store.DirID{}) {
+				return false
+			}
+			fi, err := safefs.Lstat(c.CreatedDirs[k])
+			if err != nil || !fi.IsDir() {
+				ids[k] = store.DirID{}
+				return false
+			}
+			dev, ino, ok := safefs.FileID(fi)
+			if !ok || (store.DirID{Dev: dev, Ino: ino}) != ids[k] {
+				ids[k] = store.DirID{}
+				return false
+			}
+			return true
+		}
 		var dirs []string
-		for _, d := range c.CreatedDirs {
-			if !live[d] {
+		for k, d := range c.CreatedDirs {
+			if ours(k) && !live[d] {
 				dirs = append(dirs, d)
 			}
 		}
 		if err := patch.RemoveEmptyDirs(dirs); err != nil {
 			errs = append(errs, err)
+		}
+		for k := range c.CreatedDirs {
+			ours(k) // clears the identity of each directory now gone
+		}
+		if !slices.Equal(ids, c.CreatedDirIDs) {
+			if err := m.store.SetCreatedDirIDs(ctx, c.ChangeID, c.CreatedDirs, ids); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 	return errors.Join(errs...)
@@ -349,13 +422,16 @@ func undoable(c store.Change) bool {
 	return false
 }
 
-// undoRecord is the patch.Record that undoes c. A pending or failed row
-// has no backup path yet; the backup, if the write went ahead, is where
-// Apply puts it.
+// undoRecord is the patch.Record that undoes c. The backup is read from
+// where Apply puts it under the current backup root,
+// backups/<change-id>/<hash before>.bak, whatever prefix the row
+// recorded: a pending or failed row has none yet, and the state
+// directory may be spelled differently now.
 func (m *Manifest) undoRecord(c store.Change) patch.Record {
 	r := Record(c)
 	r.Changed = true
-	if r.BackupPath == "" && r.BeforeHash != patch.NoFile {
+	r.BackupPath = ""
+	if r.BeforeHash != patch.NoFile {
 		r.BackupPath = filepath.Join(m.backupRoot, c.ChangeID, r.BeforeHash+".bak")
 	}
 	return r
@@ -412,12 +488,16 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 		return u
 	}
 
-	newer, err := m.newerChange(ctx, c, run)
+	newer, builtOn, err := m.newerChange(ctx, c, run)
 	if err != nil {
 		return fail(err)
 	}
 	if newer != nil {
-		if run.single || c.Status == store.ChangeApplied {
+		// A pending or failed change may have written before the process
+		// stopped; when a newer change was planned on its result, that
+		// write is underneath, and only undoing the newer one first (as
+		// --all does, newest first) can take it out.
+		if run.single || c.Status == store.ChangeApplied || builtOn {
 			u.Outcome = Blocked
 			u.Err = fmt.Errorf("manifest: change %s to %s: %w: change %s; undo it first, or use --all",
 				c.ChangeID, c.File, ErrNewerChange, newer.ChangeID)
@@ -427,8 +507,8 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 			}
 			return u
 		}
-		// A pending or failed change that a newer change has written over:
-		// the file is the newer change's.
+		// A pending or failed change whose would-be result no newer change
+		// builds on: whatever is in the file is the newer change's.
 		u.Outcome = Superseded
 		if opt.DryRun {
 			fmt.Fprintf(w, "# %s: change %s is superseded by change %s; would leave the file\n",

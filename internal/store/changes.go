@@ -39,11 +39,83 @@ type Change struct {
 	CreatedFile bool
 	FileMode    fs.FileMode // permission bits before the change, or of the created file
 	CreatedDirs []string    // directories made for a new file, outermost first
-	Status      string
-	Kind        string // KindChange or KindMarker; empty means KindChange
-	PlannedAt   time.Time
-	AppliedAt   time.Time // zero until applied
-	UndoneAt    time.Time // zero until undone
+	// CreatedDirIDs holds each created directory's identity, by index
+	// into CreatedDirs, recorded once the directory exists. A zero DirID
+	// means unknown (a pending row, a row from before the identities were
+	// recorded, or a directory aggy has since seen removed). Nil means
+	// none is known.
+	CreatedDirIDs []DirID
+	Status        string
+	Kind          string // KindChange or KindMarker; empty means KindChange
+	PlannedAt     time.Time
+	AppliedAt     time.Time // zero until applied
+	UndoneAt      time.Time // zero until undone
+}
+
+// DirID is a directory's device and inode.
+type DirID struct {
+	Dev uint64 `json:"dev"`
+	Ino uint64 `json:"ino"`
+}
+
+// createdDir is one element of created_dirs in the JSON object form.
+// Older rows hold a plain list of paths; both forms are read.
+type createdDir struct {
+	Path string `json:"path"`
+	Dev  uint64 `json:"dev,omitempty"`
+	Ino  uint64 `json:"ino,omitempty"`
+}
+
+// encodeDirs writes created_dirs as a JSON list of {path, dev, ino}.
+func encodeDirs(dirs []string, ids []DirID) (string, error) {
+	out := make([]createdDir, len(dirs))
+	for i, d := range dirs {
+		out[i].Path = d
+		if i < len(ids) {
+			out[i].Dev, out[i].Ino = ids[i].Dev, ids[i].Ino
+		}
+	}
+	b, err := json.Marshal(out)
+	return string(b), err
+}
+
+// decodeDirs reads created_dirs in either form: a list of paths, or a
+// list of {path, dev, ino}.
+func decodeDirs(text string) ([]string, []DirID, error) {
+	var paths []string
+	if err := json.Unmarshal([]byte(text), &paths); err == nil {
+		return nonNil(paths), nil, nil
+	}
+	var objs []createdDir
+	if err := json.Unmarshal([]byte(text), &objs); err != nil {
+		return nil, nil, err
+	}
+	paths = make([]string, len(objs))
+	var ids []DirID
+	for i, o := range objs {
+		paths[i] = o.Path
+		if o.Dev != 0 || o.Ino != 0 {
+			if ids == nil {
+				ids = make([]DirID, len(objs))
+			}
+			ids[i] = DirID{Dev: o.Dev, Ino: o.Ino}
+		}
+	}
+	return paths, ids, nil
+}
+
+// SetCreatedDirIDs replaces the recorded identities of a change's
+// created directories.
+func (s *Store) SetCreatedDirIDs(ctx context.Context, changeID string, dirs []string, ids []DirID) error {
+	text, err := encodeDirs(dirs, ids)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE changes SET created_dirs = ? WHERE change_id = ?`, text, changeID)
+	if err != nil {
+		return err
+	}
+	return oneRow(res, "change "+changeID)
 }
 
 func nullMillis(t time.Time) sql.NullInt64 {
@@ -69,7 +141,7 @@ func (s *Store) InsertChange(ctx context.Context, c Change) error {
 	if c.Kind == "" {
 		c.Kind = KindChange
 	}
-	dirs, err := json.Marshal(nonNil(c.CreatedDirs))
+	dirs, err := encodeDirs(c.CreatedDirs, c.CreatedDirIDs)
 	if err != nil {
 		return err
 	}
@@ -78,7 +150,7 @@ func (s *Store) InsertChange(ctx context.Context, c Change) error {
 		                      created_file, file_mode, created_dirs, status, kind, planned_at, applied_at, undone_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ChangeID, c.RunID, c.File, c.HashBefore, c.HashAfter, c.BackupPath,
-		c.CreatedFile, int64(c.FileMode.Perm()), string(dirs), c.Status, c.Kind,
+		c.CreatedFile, int64(c.FileMode.Perm()), dirs, c.Status, c.Kind,
 		millis(c.PlannedAt), nullMillis(c.AppliedAt), nullMillis(c.UndoneAt))
 	return err
 }
@@ -86,7 +158,7 @@ func (s *Store) InsertChange(ctx context.Context, c Change) error {
 // FinishChange updates a pending change with its outcome: status, hashes,
 // backup path, and the undo facts.
 func (s *Store) FinishChange(ctx context.Context, c Change) error {
-	dirs, err := json.Marshal(nonNil(c.CreatedDirs))
+	dirs, err := encodeDirs(c.CreatedDirs, c.CreatedDirIDs)
 	if err != nil {
 		return err
 	}
@@ -95,7 +167,7 @@ func (s *Store) FinishChange(ctx context.Context, c Change) error {
 		        created_file = ?, file_mode = ?, created_dirs = ?, applied_at = ?
 		 WHERE change_id = ? AND status = 'pending'`,
 		c.Status, c.HashBefore, c.HashAfter, c.BackupPath, c.CreatedFile,
-		int64(c.FileMode.Perm()), string(dirs), nullMillis(c.AppliedAt), c.ChangeID)
+		int64(c.FileMode.Perm()), dirs, nullMillis(c.AppliedAt), c.ChangeID)
 	if err != nil {
 		return err
 	}
@@ -169,7 +241,7 @@ func (s *Store) queryChanges(ctx context.Context, where string, args ...any) ([]
 			return nil, err
 		}
 		c.FileMode = fs.FileMode(mode).Perm()
-		if err := json.Unmarshal([]byte(dirs), &c.CreatedDirs); err != nil {
+		if c.CreatedDirs, c.CreatedDirIDs, err = decodeDirs(dirs); err != nil {
 			return nil, fmt.Errorf("store: change %s: created_dirs: %w", c.ChangeID, err)
 		}
 		c.PlannedAt, c.AppliedAt, c.UndoneAt = fromMillis(planned), fromNull(applied), fromNull(undone)

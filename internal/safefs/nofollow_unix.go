@@ -22,3 +22,13 @@ func linkCount(fi fs.FileInfo) uint64 {
 
 // canWrite reports whether access(2) allows creating files in dir.
 func canWrite(dir string) bool { return syscall.Access(dir, 0x2) == nil } // W_OK
+
+// FileID returns the device and inode of the file fi describes, from
+// metadata safefs returned (Lstat, Stat). ok is false where they are not
+// available.
+func FileID(fi fs.FileInfo) (dev, ino uint64, ok bool) {
+	if st, isStat := fi.Sys().(*syscall.Stat_t); isStat {
+		return uint64(st.Dev), uint64(st.Ino), true
+	}
+	return 0, 0, false
+}
