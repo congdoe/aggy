@@ -99,6 +99,21 @@ func (w *world) launchLeftovers(t *testing.T) []string {
 	return out
 }
 
+// TestToolHookWired: RTK's Claude hook rides in the session's --settings
+// layer, next to the policy, through aggy hook-tool; off, it is gone.
+func TestToolHookWired(t *testing.T) {
+	w := newWorld(t)
+	w.aggyIn(t, "tool", "on", "rtk")
+	f := w.launchRecord(t, "claude").Flags["--settings"]
+	if len(f) != 1 || !strings.Contains(f[0], `"permissions":{"deny":[`) || !strings.Contains(f[0], "/aggy hook-tool --vendor claude rtk 0 ") {
+		t.Errorf("--settings %q", f)
+	}
+	w.aggyIn(t, "tool", "off", "rtk")
+	if f := w.launchRecord(t, "claude").Flags["--settings"]; len(f) != 1 || strings.Contains(f[0], "hook-tool") {
+		t.Errorf("off: --settings %q", f)
+	}
+}
+
 // TestToolForOneSession: aggy run --tool wires an off tool for that
 // session only.
 func TestToolForOneSession(t *testing.T) {
