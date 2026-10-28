@@ -76,6 +76,21 @@ func Run(o Options) (int, error) {
 	waits := make(chan waitResult, 1)
 	s.goSafe(func() { s.wait(waits) })
 
+	defer s.closePicker()
+
+	key := o.SwitchKey
+	if key == 0 {
+		key = 0x1c
+	}
+	double := o.DoublePress
+	if double <= 0 {
+		double = DefaultDoublePress
+	}
+	filter := newKeyFilter(key)
+	s.pk = &picker{vendors: o.Vendors, key: key}
+	// pending is a first switch-key press waiting to see whether a second
+	// follows within double; it fires when none does.
+	var pending <-chan time.Time
 	for {
 		select {
 		case b, ok := <-input:
@@ -86,7 +101,33 @@ func Run(o Options) (int, error) {
 				_ = child.Signal(syscall.SIGHUP)
 				continue
 			}
-			toChild <- b
+			if s.open {
+				s.pickerInput(b)
+				continue
+			}
+			for _, ev := range filter.feed(b) {
+				switch {
+				case s.open:
+					s.pickerInput(ev.data)
+				case ev.press && pending != nil:
+					// A double press: the CLI gets one switch key.
+					pending = nil
+					toChild <- ev.data
+				case ev.press:
+					pending = time.After(double)
+				case pending != nil:
+					// Other input after one press: the picker opens and
+					// takes it, so Ctrl+\ 2 picks the second vendor.
+					pending = nil
+					s.openPicker()
+					s.pickerInput(ev.data)
+				default:
+					toChild <- ev.data
+				}
+			}
+		case <-pending:
+			pending = nil
+			s.openPicker()
 		case sig := <-sigs:
 			switch sig {
 			case syscall.SIGWINCH:
@@ -103,6 +144,7 @@ func Run(o Options) (int, error) {
 			case w.stopped:
 				s.suspend(true)
 			default:
+				s.closePicker()
 				select {
 				case <-outDone:
 				case <-time.After(drainWait):
@@ -124,8 +166,39 @@ type session struct {
 	t     *tty
 	child Child
 	// outMu is held while the CLI's output must not reach the terminal:
-	// during a suspend (and, later, while aggy draws on the screen).
+	// during a suspend, and while the picker is on screen.
 	outMu sync.Mutex
+	pk    *picker
+	open  bool // the picker is on screen, holding outMu
+}
+
+// openPicker pauses the CLI's output and draws the picker. Input goes to
+// the picker until it closes.
+func (s *session) openPicker() {
+	s.outMu.Lock()
+	s.open = true
+	s.pk.draw(s.o.Out)
+}
+
+// closePicker restores the vendor's screen and resumes its output.
+func (s *session) closePicker() {
+	if !s.open {
+		return
+	}
+	s.pk.erase(s.o.Out)
+	s.open = false
+	s.outMu.Unlock()
+}
+
+func (s *session) pickerInput(b []byte) {
+	done, picked := s.pk.handle(b)
+	if !done {
+		return
+	}
+	s.closePicker()
+	// TODO(T6664): switch to picked at the CLI's turn end. Until then
+	// the picker returns to the session unchanged.
+	_ = picked
 }
 
 // goSafe runs f in a goroutine that restores the terminal before a panic
@@ -205,6 +278,7 @@ func (s *session) resize() {
 // it, then re-enters raw mode, passes on the size (it may have changed),
 // and resumes the CLI when it had stopped itself.
 func (s *session) suspend(childStopped bool) {
+	s.closePicker()
 	time.Sleep(stopDrain)
 	s.outMu.Lock()
 	defer s.outMu.Unlock()

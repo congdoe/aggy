@@ -13,6 +13,7 @@ import (
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/probe"
+	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/supervisor"
 )
 
@@ -72,9 +73,16 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	cmd.Path = path
+	key, err := config.ParseKey(cfg.Switch.Key)
+	if err != nil {
+		fmt.Fprintf(stderr, "aggy run: %v\n", err)
+		return 1
+	}
 	code, err := supervisor.Run(supervisor.Options{
 		In: os.Stdin, Out: os.Stdout, Command: cmd,
-		Start: startPTY,
+		Start:     startPTY,
+		SwitchKey: key,
+		Vendors:   pickerVendors(cfg.Switch.Order, v),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy run: %v\n", err)
@@ -83,4 +91,35 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return code
+}
+
+// pickerVendors lists the vendors in order, except on, that aggy setup
+// recorded and did not find signed out. Codex and Grok have no verified
+// sign-in check, so "unknown" counts. Without an index, the list is empty.
+func pickerVendors(order []adapter.Vendor, on adapter.Vendor) []adapter.Vendor {
+	path, err := store.DefaultPath()
+	if err != nil {
+		return nil
+	}
+	ctx := context.Background()
+	s, err := store.OpenReadOnly(ctx, path)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = s.Close() }()
+	rows, err := s.VendorStatuses(ctx)
+	if err != nil {
+		return nil
+	}
+	ok := map[adapter.Vendor]bool{}
+	for _, r := range rows {
+		ok[adapter.Vendor(r.Vendor)] = r.Connected != string(adapter.SignedOut)
+	}
+	var out []adapter.Vendor
+	for _, v := range order {
+		if v != on && ok[v] {
+			out = append(out, v)
+		}
+	}
+	return out
 }
