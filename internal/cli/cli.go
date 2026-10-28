@@ -27,6 +27,10 @@ Commands:
             when it breaks a terminal feature; no switch key), still
             kept in the index through hooks. aggy --direct V is the same.
   brief     Preview the handoff brief for a vendor session
+  new       Start another session in this directory (optionally: a vendor)
+  resume    Reopen the latest session here, or the one with this id
+  sessions  List every session: directory, last vendor, last active
+  session   List this session's children: vendor, kind, title, model
   setup     Check each vendor CLI's install, version, and sign-in
   doctor    Check the vendor CLIs, API-key and proxy settings, and config drift
   log       Show harnesses, models, switches, borrows, and files changed
@@ -65,6 +69,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runRun(args[1:], stdout, stderr)
 	case "--direct":
 		return runRun(args, stdout, stderr)
+	case "new":
+		return runNew(args[1:], stdout, stderr)
+	case "resume":
+		return runResume(args[1:], stdout, stderr)
+	case "sessions":
+		return runSessions(args[1:], stdout, stderr)
+	case "session":
+		return runSession(args[1:], stdout, stderr)
 	case "setup":
 		return runSetup(args[1:], stdout, stderr)
 	case "doctor":
