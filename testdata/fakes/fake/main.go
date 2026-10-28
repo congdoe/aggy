@@ -32,8 +32,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"golang.org/x/term"
 )
 
 // Scenario drives one run. Every field is optional.
@@ -874,11 +872,11 @@ func (f *fake) runHooks() error {
 // rawEcho is the RawEcho session: raw mode, banner, byte echo, resize
 // reports, Ctrl+Z suspend, and Ctrl+D exit.
 func rawEcho(banner string) error {
-	st, err := term.MakeRaw(0)
+	st, err := makeRaw(0)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = term.Restore(0, st) }()
+	defer func() { _ = restoreTerm(0, st) }()
 	var mu sync.Mutex
 	write := func(b []byte) {
 		mu.Lock()
@@ -889,7 +887,7 @@ func rawEcho(banner string) error {
 	signal.Notify(winch, syscall.SIGWINCH)
 	go func() {
 		for range winch {
-			w, h, _ := term.GetSize(0)
+			h, w := termSize(0)
 			write([]byte(fmt.Sprintf("[winch %dx%d]", h, w)))
 		}
 	}()
@@ -906,9 +904,9 @@ func rawEcho(banner string) error {
 			case 0x1a:
 				write(out)
 				out = nil
-				_ = term.Restore(0, st)
+				_ = restoreTerm(0, st)
 				_ = syscall.Kill(os.Getpid(), syscall.SIGSTOP)
-				if _, err := term.MakeRaw(0); err != nil {
+				if _, err := makeRaw(0); err != nil {
 					return err
 				}
 				write([]byte("[continued]"))
