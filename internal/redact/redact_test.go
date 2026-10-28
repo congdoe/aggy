@@ -48,6 +48,14 @@ var linesTests = []struct {
 	{"pending code", "const token =\n  generateToken(user)\nnext", "const token =\n  generateToken(user)\nnext", 0},
 	// F29-2: a lone YAML key's value is dropped even when call-shaped.
 	{"pending pair call", "password:\n  Summer(Fun)\nnext", "password:\nnext", 1},
+	// G34-1: k8s and compose value lines, block scalars, a comment
+	// between a key and its value, and a call with a literal.
+	{"k8s env", "env:\n  - name: API_TOKEN\n    value: hunter2hunter2\n  - name: MODE\n    value: prod", "env:\n  - name: API_TOKEN\n  - name: MODE\n    value: prod", 1},
+	{"k8s env quoted", "- name: \"DB_PASSWORD\"\n  # set by ops\n  value: \"hunter2hunter2\"\nnext", "- name: \"DB_PASSWORD\"\n  # set by ops\nnext", 1},
+	{"block literal", "db:\n  password: |\n    hunter2hunter2\n    more\n\n  user: me", "db:\n  password: |\n\n  user: me", 2},
+	{"block folded", "password: >-\n  hunter2hunter2\nuser: me", "password: >-\nuser: me", 1},
+	{"comment between", "password:\n# the prod one\n  hunter2hunter2\nnext", "password:\n# the prod one\nnext", 1},
+	{"pending call literal", "const password =\n  getPass(\"hunter2hunter2\");\nnext", "const password =\nnext", 1},
 }
 
 func TestLines(t *testing.T) {
@@ -135,6 +143,34 @@ var secretLines = []string{
 	"$secret_key = CorrectHorseBatteryStaple;",
 	// C16-17: a JSON-escaped key body with no BEGIN or END.
 	`{"k": "x\n` + body + `\n` + body + `\n"}`,
+	// G34-1: each of these passed redact.Lines unchanged.
+	`password := "hunter2hunter2"`,
+	`req.Header.Set("X-Api-Key", "hunter2hunter2")`,
+	`req.Header.Set("Authorization", "Token hunter2hunter2")`,
+	`req.SetBasicAuth("bob","hunter2hunter2")`,
+	`  "Authorization": "Token hunter2hunter2",`,
+	`{"pass":"hunter2hunter2"}`,
+	"DB_PASS=hunter2hunter2",
+	"SMTP_PASS=hunter2hunter2",
+	"pass = hunter2hunter2",
+	"PASS_WORD=hunter2hunter2",
+	`os.environ["DB_PASSWORD"] = "hunter2hunter2"`,
+	`ENV["API_KEY"] ||= "hunter2hunter2"`,
+	"curl -u admin:hunter2hunter2 https://api.example.com",
+	"docker login -u bob -p hunter2hunter2 registry.example.com",
+	"sshpass -p hunter2hunter2 ssh bob@host",
+	"redis-server --requirepass hunter2hunter2",
+	"htpasswd -b .htpasswd bob hunter2hunter2",
+	"some-cli --token hunter2hunter2",
+	"some-cli --api-key hunter2hunter2 --verbose",
+	"gh secret set API_TOKEN --body hunter2hunter2",
+	`curl -H "Cookie: session=hunter2hunter2" https://example.com`,
+	`$pw = ConvertTo-SecureString "hunter2hunter2" -AsPlainText -Force`,
+	"| DB_PASSWORD | hunter2hunter2 |",
+	`token = """hunter2hunter2"""`,
+	`requests.get(url, auth=("bob","hunter2hunter2"))`,
+	`const password = getPass("hunter2hunter2");`,
+	"redis-cli -a hunter2hunter2 ping",
 }
 
 // C16-11: base64-wrapped secrets, in either alphabet.
@@ -150,6 +186,9 @@ func TestSecret(t *testing.T) {
 	for _, line := range append(slices.Clone(secretLines), wrappedLines()...) {
 		if !Secret(line) {
 			t.Errorf("Secret(%q) = false", line)
+		}
+		if got, _ := Lines(line); got != "" {
+			t.Errorf("Lines(%q) kept it", line)
 		}
 	}
 	for _, line := range []string{
@@ -170,6 +209,21 @@ func TestSecret(t *testing.T) {
 		"$token = $request->token;",
 		"apiKey := loadKey(cfg)",
 		"login with the password reset link",
+		// G34-1: lines near the new patterns that are not secrets.
+		"generateToken(user)",
+		"CancellationToken;",
+		"max_tokens",
+		"model --max-tokens 4096",
+		"bypass_mode: enabled_always",
+		"docker run -p 8080:80 -u 1000:1000 app",
+		"git push -u origin main",
+		"docker login --password-stdin registry.example.com",
+		"htpasswd -B -c .htpasswd bob",
+		"os.environ[\"API_KEY\"] = load()",
+		`if env["API_KEY"] == "" {`,
+		`os.Getenv("API_KEY", "")`,
+		"| Name | Description |",
+		"the cookie jar is empty",
 		"data: " + base64.StdEncoding.EncodeToString([]byte("just some ordinary text here")),
 	} {
 		if Secret(line) {
