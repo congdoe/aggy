@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -287,10 +288,28 @@ func tableKeys(m map[string]any) []string {
 	return keys
 }
 
+// table returns v as a TOML table, or nil when it is anything else: a
+// key of an unexpected shape is skipped, never a reason to give up on
+// the whole file.
+func table(v any) map[string]any {
+	m, _ := v.(map[string]any)
+	return m
+}
+
+// idRoute is a route set under a table the person named, such as
+// [model_providers.<id>]. The id is the person's own name for it, often
+// a company or person's name, so it goes in Detail, which a report
+// leaves out, and the key names it as <id>.
+func idRoute(path string, v adapter.Vendor, prefix, id, key, what string) Finding {
+	f := routeConfig(path, v, prefix+".<id>."+key, what)
+	f.Detail = "<id> is " + strconv.Quote(id)
+	return f
+}
+
 func codexConfig(path string) []Finding {
 	var c struct {
-		OpenAIBaseURL  any            `toml:"openai_base_url"`
-		ModelProviders map[string]any `toml:"model_providers"`
+		OpenAIBaseURL  any `toml:"openai_base_url"`
+		ModelProviders any `toml:"model_providers"`
 	}
 	if out, done := tomlConfig(path, adapter.Codex, &c); done {
 		return out
@@ -300,9 +319,10 @@ func codexConfig(path string) []Finding {
 	if set(c.OpenAIBaseURL) {
 		out = append(out, routeConfig(path, adapter.Codex, "openai_base_url", what))
 	}
-	for _, id := range tableKeys(c.ModelProviders) {
-		if p, _ := c.ModelProviders[id].(map[string]any); set(p["base_url"]) {
-			out = append(out, routeConfig(path, adapter.Codex, "model_providers."+id+".base_url", what))
+	providers := table(c.ModelProviders)
+	for _, id := range tableKeys(providers) {
+		if set(table(providers[id])["base_url"]) {
+			out = append(out, idRoute(path, adapter.Codex, "model_providers", id, "base_url", what))
 		}
 	}
 	return out
@@ -310,26 +330,29 @@ func codexConfig(path string) []Finding {
 
 func grokConfig(path string) []Finding {
 	var c struct {
-		Endpoints map[string]any `toml:"endpoints"`
-		Model     map[string]any `toml:"model"`
+		Endpoints any `toml:"endpoints"`
+		Model     any `toml:"model"`
 	}
 	if out, done := tomlConfig(path, adapter.Grok, &c); done {
 		return out
 	}
 	var out []Finding
-	if set(c.Endpoints["xai_api_base_url"]) {
+	endpoints := table(c.Endpoints)
+	if set(endpoints["xai_api_base_url"]) {
 		out = append(out, routeConfig(path, adapter.Grok, "endpoints.xai_api_base_url",
 			"Grok, and its image and video tools, may send requests to another endpoint, which can bill an API key"))
 	}
-	if set(c.Endpoints["models_base_url"]) {
+	if set(endpoints["models_base_url"]) {
 		out = append(out, routeConfig(path, adapter.Grok, "endpoints.models_base_url",
 			"Grok may send its requests to another endpoint, which can bill an API key"))
 	}
-	for _, id := range tableKeys(c.Model) {
-		m, _ := c.Model[id].(map[string]any)
+	// model = "grok-4" (a string) is not a table of models: skipped.
+	models := table(c.Model)
+	for _, id := range tableKeys(models) {
+		m := table(models[id])
 		for _, key := range []string{"base_url", "env_key", "api_key"} {
 			if set(m[key]) {
-				out = append(out, routeConfig(path, adapter.Grok, "model."+id+"."+key,
+				out = append(out, idRoute(path, adapter.Grok, "model", id, key,
 					"this model may bill an API key instead of the subscription"))
 			}
 		}

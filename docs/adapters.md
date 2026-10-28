@@ -283,6 +283,8 @@ they are not checked. Not checked yet: Claude's managed settings
 `/etc/claude-code/`), Grok's `managed_config.toml`, and
 `CODEX_ACCESS_TOKEN`.
 
+A key under a table the person named, such as `[model_providers.<id>]` or `[model.<id>]`, is reported as `model_providers.<id>.base_url`; the id itself, often a company or person's name, is shown on screen but left out of `aggy doctor --report`. A key of an unexpected shape (such as Grok's top-level `model = "grok-4"`) is skipped, never a reason to stop checking the file.
+
 Config files are read through `safefs`. A symlinked file (as dotfile
 managers make) is resolved, its target must pass the credential check,
 and the target is read with `safefs.ReadFileLimit`, which refuses a

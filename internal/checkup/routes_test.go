@@ -87,11 +87,15 @@ func TestRouteFiles(t *testing.T) {
 			"[endpoints]\nxai_api_base_url = \"https://" + secret + "\"\nmodels_base_url = \"u\"\n[model.mine]\nbase_url = \"u\"\napi_key = \"" + secret + "\"\nenv_key = \"\"\n",
 			[]string{"route-config grok ~/.grok/config.toml: endpoints.xai_api_base_url is set: Grok, and its image and video tools,",
 				"route-config grok ~/.grok/config.toml: endpoints.models_base_url is set",
-				"route-config grok ~/.grok/config.toml: model.mine.base_url is set",
-				"route-config grok ~/.grok/config.toml: model.mine.api_key is set"}},
+				"route-config grok ~/.grok/config.toml: model.<id>.base_url is set: this model may bill an API key instead of the subscription: <id> is \"mine\"",
+				"route-config grok ~/.grok/config.toml: model.<id>.api_key is set"}},
 		{"grok toolset keys do not exist and are not flagged", "",
 			"[toolset.image_gen]\nbase_url = \"u\"\nenv_key = \"XAI_API_KEY\"\n", nil},
 		{"grok odd shapes", "", "endpoints = 3\nmodel = \"x\"\n", nil},
+		// T6611 re-review D2: a string model is not a reason to skip the
+		// file.
+		{"grok string model beside a route", "", "model = \"grok-4\"\n[endpoints]\nxai_api_base_url = \"u\"\n",
+			[]string{"route-config grok ~/.grok/config.toml: endpoints.xai_api_base_url is set"}},
 		{"grok bad toml", "", "[toolset\n", []string{"config-unreadable grok ~/.grok/config.toml: cannot be checked"}},
 	}
 	for _, tt := range tests {
@@ -209,7 +213,8 @@ func TestRouteFilesCodex(t *testing.T) {
 		{"openai_base_url", "openai_base_url = \"https://" + secret + "\"\n", false,
 			[]string{"~/.codex/config.toml: openai_base_url is set: Codex may send its requests to another endpoint"}},
 		{"model providers", "model_provider = \"proxy\"\n[model_providers.proxy]\nbase_url = \"u\"\nenv_key = \"K\"\n[model_providers.other]\nname = \"x\"\n", false,
-			[]string{"~/.codex/config.toml: model_providers.proxy.base_url is set"}},
+			[]string{"~/.codex/config.toml: model_providers.<id>.base_url is set"}},
+		{"odd shapes", "model_providers = \"x\"\nopenai_base_url = \"u\"\n", false, []string{"openai_base_url is set"}},
 		{"relocated", "openai_base_url = \"u\"\n", true, []string{"openai_base_url is set"}},
 		{"bad toml", "openai_base_url = \n", false, []string{"~/.codex/config.toml: cannot be checked"}},
 	}
@@ -246,5 +251,30 @@ func TestRouteEnvOpenAI(t *testing.T) {
 	if len(got) != 2 || got[0].Vendor != adapter.Grok || got[1].Vendor != "" ||
 		!strings.HasPrefix(got[1].Message, "OPENAI_BASE_URL is set: Codex does not read it, but other OpenAI tools may") {
 		t.Errorf("findings = %+v", got)
+	}
+}
+
+// TestRouteIDsLeftOutOfReports (T6611 re-review D1): the ids people give
+// model providers and models are on screen but not in a report.
+func TestRouteIDsLeftOutOfReports(t *testing.T) {
+	home := t.TempDir()
+	write(t, filepath.Join(home, ".codex", "config.toml"), "[model_providers.\"John Doe corp proxy\"]\nbase_url = \"u\"\n")
+	write(t, filepath.Join(home, ".grok", "config.toml"), "[model.\"acme-jane\"]\napi_key = \"k\"\n")
+	got := RouteFiles([]string{"HOME=" + home})
+	if len(got) != 2 {
+		t.Fatalf("findings = %+v", got)
+	}
+	for i, w := range []struct{ screen, report string }{
+		{`~/.codex/config.toml: model_providers.<id>.base_url is set: Codex may send its requests to another endpoint, which can bill an API key or sit in the middle of plan traffic: <id> is "John Doe corp proxy"`,
+			"~/.codex/config.toml: model_providers.<id>.base_url is set: Codex may send its requests to another endpoint, which can bill an API key or sit in the middle of plan traffic (details left out of the report)"},
+		{`~/.grok/config.toml: model.<id>.api_key is set: this model may bill an API key instead of the subscription: <id> is "acme-jane"`,
+			"~/.grok/config.toml: model.<id>.api_key is set: this model may bill an API key instead of the subscription (details left out of the report)"},
+	} {
+		if s := got[i].Text(home); s != w.screen {
+			t.Errorf("screen %d = %q, want %q", i, s, w.screen)
+		}
+		if s := got[i].ReportText(home); s != w.report {
+			t.Errorf("report %d = %q, want %q", i, s, w.report)
+		}
 	}
 }
