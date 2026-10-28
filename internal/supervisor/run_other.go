@@ -8,3 +8,9 @@ import "errors"
 func Run(Options) (int, error) {
 	return 1, errors.New("supervisor: not supported on this OS yet")
 }
+
+// PrivateDir is not supported here: nothing runs a supervisor.
+func PrivateDir(string) error { return errors.New("supervisor: not supported on this OS yet") }
+
+// Live is false here: no supervisor runs on this OS.
+func Live(string, string) (bool, error) { return false, nil }
