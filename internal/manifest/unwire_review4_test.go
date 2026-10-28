@@ -193,3 +193,39 @@ func TestUnwrittenFailedUnderNewer(t *testing.T) {
 		t.Errorf("file = %q", got)
 	}
 }
+
+// TestLostBackupWithAggysWrite (re-review A): a pending change wrote,
+// then its backup was deleted (the whole backups folder, later made
+// again, or only its own folder). The file still holds exactly aggy's
+// write, so the missing backup proves nothing, and unwire must say so
+// rather than mark the row undone. Fails on 5a5245d.
+func TestLostBackupWithAggysWrite(t *testing.T) {
+	for _, whole := range []bool{true, false} {
+		t.Run(map[bool]string{true: "backups folder", false: "change folder"}[whole], func(t *testing.T) {
+			f := setup(t)
+			ctx := context.Background()
+			file := filepath.Join(f.dir, "c.toml")
+			must(t, os.WriteFile(file, []byte("X\n"), 0o600))
+			c := pendingWritten(t, f, "C", file, "A\n")
+			root := filepath.Join(f.state, BackupDirName)
+			if whole {
+				must(t, os.RemoveAll(root))
+				other := filepath.Join(f.dir, "other.toml")
+				must(t, os.WriteFile(other, []byte("o\n"), 0o600))
+				apply(t, f, "D", other, "d\n") // makes backups/ again
+			} else {
+				must(t, os.RemoveAll(filepath.Join(root, c.ChangeID)))
+			}
+			undos, err := f.m.Unwire(ctx, Selection{RunID: "C"}, UnwireOptions{}, io.Discard)
+			if err == nil || outcomeOf(undos, c.ChangeID) == Cleaned {
+				t.Errorf("C = %q, %v; want it reported", outcomeOf(undos, c.ChangeID), err)
+			}
+			if s := status(t, f, c.ChangeID); s != store.ChangePending {
+				t.Errorf("C = %s, want still pending", s)
+			}
+			if b, _ := os.ReadFile(file); string(b) != "X\nA\n" {
+				t.Errorf("file = %q", b)
+			}
+		})
+	}
+}
