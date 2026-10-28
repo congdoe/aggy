@@ -161,7 +161,11 @@ func (p *launchPlan) newChildOf(ctx context.Context, s *store.Store, cfg config.
 		return err
 	}
 	if v == "" {
-		v = defaultVendor(ctx, s, cfg)
+		eff, err := repoEffective(cfg, p.parent.Dir)
+		if err != nil {
+			return err
+		}
+		v = defaultVendor(ctx, s, eff.Config, eff.Allowed)
 	}
 	id, err := newUUID()
 	if err != nil {
@@ -183,10 +187,12 @@ func (p *launchPlan) newChildOf(ctx context.Context, s *store.Store, cfg config.
 	return nil
 }
 
-// defaultVendor is default_vendor, else the first vendor in claude,
-// codex, grok order that aggy setup did not find signed out and whose CLI
-// is on PATH, else claude.
-func defaultVendor(ctx context.Context, s *store.Store, cfg config.Config) adapter.Vendor {
+// defaultVendor is default_vendor, else the first vendor of allowed (in
+// claude, codex, grok order) that aggy setup did not find signed out and
+// whose CLI is on PATH, else the first allowed one, else claude, which
+// launch then refuses. cfg is narrowed by the repo (config.Merge), so
+// default_vendor is empty when the repo does not allow it.
+func defaultVendor(ctx context.Context, s *store.Store, cfg config.Config, allowed []adapter.Vendor) adapter.Vendor {
 	if cfg.DefaultVendor != "" {
 		return cfg.DefaultVendor
 	}
@@ -196,7 +202,7 @@ func defaultVendor(ctx context.Context, s *store.Store, cfg config.Config) adapt
 			out[r.Vendor] = r.Connected == string(adapter.SignedOut)
 		}
 	}
-	for _, v := range adapter.Vendors() {
+	for _, v := range allowed {
 		if out[string(v)] {
 			continue
 		}
@@ -204,7 +210,36 @@ func defaultVendor(ctx context.Context, s *store.Store, cfg config.Config) adapt
 			return v
 		}
 	}
+	if len(allowed) > 0 {
+		return allowed[0]
+	}
 	return adapter.Claude
+}
+
+// allowedIn is repoEffective, and an error when that repo does not allow
+// v: a session aggy starts or resumes never puts a repo on a vendor the
+// repo leaves out.
+func allowedIn(cfg config.Config, dir string, v adapter.Vendor) (config.Effective, error) {
+	eff, err := repoEffective(cfg, dir)
+	if err != nil {
+		return eff, err
+	}
+	if !eff.Allows(v) {
+		return eff, fmt.Errorf("this repo's allowed_vendors does not list %s", v)
+	}
+	return eff, nil
+}
+
+// repoEffective is cfg narrowed by the config of the repo dir is in (or
+// of dir itself outside a repo). A repo config that cannot be read is an
+// error: aggy never guesses that a repo allows a vendor.
+func repoEffective(cfg config.Config, dir string) (config.Effective, error) {
+	root, _ := repoRoot(dir)
+	rc, err := config.LoadRepo(root)
+	if err != nil {
+		return config.Effective{}, fmt.Errorf("read repo config: %w", err)
+	}
+	return config.Merge(cfg, rc), nil
 }
 
 // commit records the plan in the index and takes the lease on the

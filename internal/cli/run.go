@@ -81,6 +81,12 @@ func launch(name string, t target, stderr io.Writer) int {
 		return fail(err)
 	}
 	v := adapter.Vendor(pl.child.Vendor)
+	// The child's repo decides which vendors may see it, the one on
+	// screen and the ones the switch picker offers.
+	eff, err := allowedIn(cfg, pl.child.Cwd, v)
+	if err != nil {
+		return fail(err)
+	}
 	path, err := probe.LookPath(vendorBin(v))
 	if err != nil {
 		return fail(err)
@@ -184,7 +190,7 @@ func launch(name string, t target, stderr io.Writer) int {
 		In: os.Stdin, Out: os.Stdout, Command: cmd,
 		Start:     startPTY,
 		SwitchKey: key,
-		Vendors:   pickerVendors(cfg.Switch.Order, v),
+		Vendors:   pickerVendors(eff.Switch.Order, v),
 		RunDir:    runDir,
 		ParentID:  parentID,
 		OnHook:    onHook,
