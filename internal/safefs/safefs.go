@@ -664,6 +664,37 @@ func ReadFileLimit(name string, max int64) ([]byte, error) {
 	return readFileLimit("ReadFileLimit", name, max, nil)
 }
 
+// OpenRegular opens name read-only for a child process's stdin, such as
+// a borrow's prompt file. It refuses a name that is itself a symlink and
+// anything but a regular file (ErrNotRegular), before and after opening,
+// and opens with O_NOFOLLOW and O_NONBLOCK, so a FIFO or device swapped
+// in after the check can neither be followed nor block the open. O_NONBLOCK
+// has no effect on reads of a regular file, so the descriptor can be
+// handed to the child as is.
+func OpenRegular(name string) (*os.File, error) {
+	fi, err := Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, &fs.PathError{Op: "OpenRegular", Path: name, Err: ErrNotRegular}
+	}
+	f, err := openFileIn("OpenRegular", name, os.O_RDONLY|oNonBlock, 0, nil)
+	if err != nil {
+		return nil, err
+	}
+	fi, err = f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, renamePath(err, name)
+	}
+	if !fi.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, &fs.PathError{Op: "OpenRegular", Path: name, Err: ErrNotRegular}
+	}
+	return f, nil
+}
+
 // ErrLinkedDir means a file's own directory is a symlink where aggy
 // requires a real directory.
 var ErrLinkedDir = errors.New("the file's directory is a symlink")

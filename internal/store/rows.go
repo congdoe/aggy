@@ -50,6 +50,7 @@ type Child struct {
 	Vendor          string
 	VendorSessionID string
 	Kind            string
+	Title           string
 	Model           string
 	Cwd             string
 	TranscriptPath  string
@@ -65,10 +66,10 @@ func (s *Store) InsertChild(ctx context.Context, c Child) error {
 		c.Status = "open"
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO children (id, parent_id, vendor, vendor_session_id, kind, model, cwd,
+		`INSERT INTO children (id, parent_id, vendor, vendor_session_id, kind, title, model, cwd,
 		                       transcript_path, status, created_at, last_active)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, c.ParentID, c.Vendor, c.VendorSessionID, c.Kind, c.Model, c.Cwd,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.ParentID, c.Vendor, c.VendorSessionID, c.Kind, c.Title, c.Model, c.Cwd,
 		c.TranscriptPath, c.Status, millis(c.CreatedAt), millis(c.LastActive))
 	return err
 }
