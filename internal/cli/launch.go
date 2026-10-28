@@ -31,6 +31,9 @@ type target struct {
 	Direct bool
 	// NoPolicy starts the CLI without aggy's safety policy (--no-policy).
 	NoPolicy bool
+	// Brief writes the child's brief to .aggy/briefs/<child-id>.md and
+	// tells the child to read it (--brief).
+	Brief bool
 }
 
 // launchPlan is what a launch puts on screen.

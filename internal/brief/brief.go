@@ -20,7 +20,7 @@ const maxGit = 16 << 10
 // output, which only internal/cli may run. An Err field set means that
 // part could not be read; the brief says so and goes on without it.
 type Input struct {
-	From adapter.Vendor // the CLI being left
+	From adapter.Vendor // the CLI being left; empty when none ran before
 	To   adapter.Vendor // the CLI that reads the brief
 
 	Task    string
@@ -208,9 +208,15 @@ func build(in Input, turns []string, removed []int, dropped int) string {
 	for _, n := range removed {
 		b.removed += n
 	}
-	if in.Since.IsZero() {
+	// From is empty when no other CLI ran in this session.
+	switch {
+	case in.Since.IsZero() && in.From == "":
+		b.WriteString("# Handoff brief\n\nYou are starting on this work; no other CLI has run in this session. ")
+	case in.Since.IsZero():
 		fmt.Fprintf(&b, "# Handoff brief\n\nYou are taking over work that was running in %s. ", in.From)
-	} else {
+	case in.From == "":
+		fmt.Fprintf(&b, "# Return brief\n\nYou are back in work you left at %s. ", in.Since.UTC().Format(time.RFC3339))
+	default:
 		fmt.Fprintf(&b, "# Return brief\n\nYou are back in work you left at %s; other CLIs worked on it since, %s last. ",
 			in.Since.UTC().Format(time.RFC3339), in.From)
 	}
@@ -251,6 +257,8 @@ func build(in Input, turns []string, removed []int, dropped int) string {
 		fmt.Fprintf(&b, "All %d turns read were left out to keep this brief within its size limit; the full transcript has them.\n", dropped)
 	case len(turns) == 0 && back:
 		b.WriteString("No other CLI added a turn that could be read.\n")
+	case len(turns) == 0 && in.From == "":
+		b.WriteString("There is no earlier session.\n")
 	case len(turns) == 0:
 		b.WriteString("The previous session has no turns yet.\n")
 	default:
