@@ -13,8 +13,12 @@ import (
 )
 
 func gc(f *borrowFixture, args ...string) (int, string, string) {
+	return gcIn(f, "", false, args...)
+}
+
+func gcIn(f *borrowFixture, in string, tty bool, args ...string) (int, string, string) {
 	var out, errb strings.Builder
-	code := gcWith(args, f.env, &out, &errb)
+	code := gcWith(args, f.env, strings.NewReader(in), tty, &out, &errb)
 	return code, out.String(), errb.String()
 }
 
@@ -224,5 +228,51 @@ func TestGCDelegated(t *testing.T) {
 	}
 	if code, _, errOut := gc(f, "--yes"); code != 1 || errOut == "" {
 		t.Errorf("code %d: %s", code, errOut)
+	}
+}
+
+// TestGCDryRunAndAsk (T6695): --dry-run lists what would go, with bytes,
+// and removes nothing, not even the index's mtime; on a terminal gc asks
+// and removes only on y; the retention days come from the user config.
+func TestGCDryRunAndAsk(t *testing.T) {
+	f, _ := editFixture(t)
+	gitIn(t, f.repo, "checkout", "--", "a.go")
+	id, wt := editBorrow(t, f, map[string]string{"a.go": "package a\n// accepted\n"})
+	if code, _, errOut := accept(f, "", false, id, "--yes"); code != 0 {
+		t.Fatal(errOut)
+	}
+	report := filepath.Join(f.state, "inbox", "aaaaaaaaaaaaaaaa.md")
+	mustWrite(t, report, "two days old", 0o600)
+	at := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(report, at, at); err != nil {
+		t.Fatal(err)
+	}
+	db := filepath.Join(f.state, "aggy.db")
+	before, err := os.Stat(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	code, out, errOut := gc(f, "--dry-run")
+	if code != 0 || !strings.Contains(out, wt) || !strings.Contains(out, " B") || !strings.Contains(out, "Dry run: nothing removed.") {
+		t.Fatalf("dry run: code %d: %s %s", code, out, errOut)
+	}
+	if strings.Contains(out, report) {
+		t.Errorf("a 2-day report listed under the default 30 days: %s", out)
+	}
+	if after, _ := os.Stat(db); !exists(t, wt) || !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
+		t.Fatal("the dry run removed or wrote something")
+	}
+
+	// The user's own config shortens the inbox retention.
+	mustWrite(t, filepath.Join(f.state, "config.toml"), "[gc]\ninbox_days = 1\n", 0o600)
+	if code, out, _ := gcIn(f, "n\n", true); code != 1 || !strings.Contains(out, report) || !strings.Contains(out, "Remove these? [y/N] Nothing removed.") || !exists(t, wt) || !exists(t, report) {
+		t.Fatalf("answered n: code %d: %s", code, out)
+	}
+	if code, out, errOut := gcIn(f, "y\n", true); code != 0 || exists(t, wt) || exists(t, report) {
+		t.Fatalf("answered y: code %d: %s %s", code, out, errOut)
+	}
+	if code, out, _ := gc(f, "--dry-run"); code != 0 || !strings.Contains(out, "Nothing to remove.") {
+		t.Errorf("after: %d %s", code, out)
 	}
 }
