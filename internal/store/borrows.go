@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/congdoe/aggy/internal/safefs"
@@ -334,4 +335,61 @@ func (s *Store) FinishBorrow(ctx context.Context, id string, e BorrowEnd) error 
 			 WHERE id = (SELECT child_id FROM borrows WHERE id = ?)`, e.VendorSessionID, id)
 	}
 	return nil
+}
+
+// InboxBorrows returns the borrows that have a report, newest first:
+// only unread ones unless all is set.
+func (s *Store) InboxBorrows(ctx context.Context, all bool) ([]Borrow, error) {
+	q := `SELECT ` + borrowCols + ` FROM borrows b LEFT JOIN children c ON c.id = b.child_id
+	      WHERE b.report_path <> ''`
+	if !all {
+		q += ` AND b.read_at IS NULL`
+	}
+	q += ` ORDER BY b.started_at DESC, b.id`
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Borrow
+	for rows.Next() {
+		b, err := scanBorrow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// BorrowsByPrefix returns the borrows whose id starts with prefix.
+// prefix must be hex digits only.
+func (s *Store) BorrowsByPrefix(ctx context.Context, prefix string) ([]Borrow, error) {
+	for _, r := range prefix {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			return nil, fmt.Errorf("store: borrow id %q is not hex", prefix)
+		}
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+borrowCols+` FROM borrows b LEFT JOIN children c ON c.id = b.child_id
+		 WHERE substr(b.id, 1, ?) = ? ORDER BY b.id`, len(prefix), prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Borrow
+	for rows.Next() {
+		b, err := scanBorrow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// MarkBorrowRead marks borrow id's report read, if it is not already.
+func (s *Store) MarkBorrowRead(ctx context.Context, id string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE borrows SET read_at = ? WHERE id = ? AND read_at IS NULL`, millis(at), id)
+	return err
 }
