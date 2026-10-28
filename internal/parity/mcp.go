@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
+	"math"
 	"net/url"
 	"path/filepath"
 	"reflect"
@@ -41,7 +42,8 @@ import (
 //     (streamable HTTP; Codex has no SSE transport) (codex 6aaac69,
 //     codex-rs/config/src/config_toml.rs#L299,
 //     codex-rs/config/src/mcp_types.rs#L373-L389 and the TryFrom below
-//     it). codex mcp login <name> runs Codex's own OAuth sign-in.
+//     it). codex mcp login <name> runs Codex's own OAuth sign-in
+//     (codex-rs/cli/src/mcp_cmd.rs#L62, #L79; and codex mcp --help).
 //   - Grok: [mcp_servers.<name>] in $GROK_HOME/config.toml or
 //     ~/.grok/config.toml, with command and args, or url, and type =
 //     "sse" for SSE; a url ending in /sse is SSE whatever the type
@@ -50,6 +52,8 @@ import (
 //     also loads ~/.claude.json's servers itself unless [compat.claude]
 //     mcps = false or GROK_CLAUDE_MCPS_ENABLED turns that off (same
 //     guide, "Compatibility"); config.toml wins on a name clash.
+//   - enabled = false makes Codex skip a server (mcp_types.rs#L240-L242,
+//     default true) and Grok too (07-mcp-servers.md, stdio example).
 //
 // Only user-scope servers are copied: Codex and Grok config is global, so
 // a local-scope server would reach every project, and a repo's .mcp.json
@@ -264,7 +268,52 @@ func checkURL(raw string) string {
 	case u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
 		return "its url has user info, a query, or a fragment, which may carry a token"
 	}
+	// Capability URLs (Zapier, Composio) carry their key in the path.
+	for _, seg := range strings.Split(u.EscapedPath(), "/") {
+		if keyLike(seg) {
+			return "its url has a path segment that looks like a key"
+		}
+	}
 	return ""
+}
+
+var uuidLike = regexp.MustCompile(`(?i)[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}`)
+
+// keyLike reports whether a URL path segment may be a key: a UUID, text
+// redact.Secret flags, or 16 or more characters that mix two of lower
+// case, upper case, and digits, or whose characters are spread out
+// enough (4 bits each or more) to be random.
+func keyLike(seg string) bool {
+	if uuidLike.MatchString(seg) || redact.Secret(seg) {
+		return true
+	}
+	if len(seg) < 16 {
+		return false
+	}
+	var lower, upper, digit bool
+	count := map[rune]int{}
+	for _, r := range seg {
+		lower = lower || unicode.IsLower(r)
+		upper = upper || unicode.IsUpper(r)
+		digit = digit || unicode.IsDigit(r)
+		count[r]++
+	}
+	classes := 0
+	for _, b := range []bool{lower, upper, digit} {
+		if b {
+			classes++
+		}
+	}
+	if classes >= 2 {
+		return true
+	}
+	n := float64(utf8.RuneCountInString(seg))
+	bits := 0.0
+	for _, c := range count {
+		p := float64(c) / n
+		bits -= p * math.Log2(p)
+	}
+	return bits >= 4
 }
 
 // readTOML decodes a vendor config.toml; a missing file is nil, nil.
