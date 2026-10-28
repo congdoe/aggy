@@ -337,6 +337,16 @@ and `-c` hooks are skipped) and Grok (no per-run hook flag; it does load
 Claude's `settings.json` hooks) do not: TODO(M2 hooks). No M1 kind keeps
 a shell, so it is a backstop.
 
+**Grok in a repo.** Grok loads the repo's own hooks (`.claude/settings*.json`,
+`.grok/hooks`, `.cursor/hooks.json`), MCP, LSP, plugin, agent, and
+workflow config, and sources `.envrc`, whenever its folder trust says
+Trusted, which includes a folder trusted once interactively
+(`docs/verification.md`, source only). So a Grok review is refused, and
+the borrow passes Grok over, when the review root holds any of them
+(`internal/borrow/grok_trust.go`); instructions and skills alone do not
+refuse it. Every other Grok kind runs in an empty dir outside any git
+tree.
+
 Interactive argv: Claude `claude [--session-id <uuid> | --resume <id>
 [--fork-session [--session-id <uuid>]]] [<brief pointer>]`; Codex `codex
 [--no-alt-screen] [<brief pointer>]` or `codex resume [--no-alt-screen]
