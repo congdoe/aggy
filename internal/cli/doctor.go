@@ -46,6 +46,7 @@ const (
 	codeDrift          = "config-drift"     // warning: a file aggy changed has changed since
 	codeDriftUnchecked = "drift-unchecked"  // error: a file aggy changed cannot be checked
 	codeNoDrift        = "no-drift"         // info
+	codeDriftBlocked   = "drift-blocked"    // info: an older change waits on a newer one
 	codeIndex          = "index-unreadable" // error: the index cannot be read
 	codeIndexOld       = "index-old"        // warning: the index predates drift checks
 	codeNoIndex        = "no-index"         // info: aggy has recorded nothing yet
@@ -175,26 +176,33 @@ func driftFindings(ctx context.Context, home string) []checkup.Finding {
 		return f(codeIndex, checkup.LevelError, "cannot read the index: "+store.ReadError(err).Error())
 	}
 	var out []checkup.Finding
+	add := func(code string, l checkup.Level, format string, a ...any) {
+		out = append(out, checkup.Finding{Code: code, Level: l, Message: fmt.Sprintf(format, a...)})
+	}
 	for _, d := range ds {
-		file := checkup.ShowPath(d.Change.File, home)
-		switch {
-		case errors.Is(d.Err, safefs.ErrAuthPath):
-			out = append(out, checkup.Finding{Code: codeDriftUnchecked, Level: checkup.LevelError,
-				Message: fmt.Sprintf("change %s names a vendor credential file, which aggy never reads: %s", d.Change.ChangeID, file)})
-		case errors.Is(d.Err, manifest.ErrInvalidRow):
-			out = append(out, checkup.Finding{Code: codeDriftUnchecked, Level: checkup.LevelError,
-				Message: fmt.Sprintf("change %s is not a change aggy could have made: %s", d.Change.ChangeID, file)})
-		case d.Err != nil:
-			out = append(out, checkup.Finding{Code: codeDriftUnchecked, Level: checkup.LevelError,
-				Message: fmt.Sprintf("%s cannot be checked (change %s): %v", file, d.Change.ChangeID, d.Err)})
-		case d.Drifted:
-			out = append(out, checkup.Finding{Code: codeDrift, Level: checkup.LevelWarn,
-				Message: fmt.Sprintf("%s changed after aggy wrote it (change %s); aggy unwire will ask for --force", file, d.Change.ChangeID)})
+		file, id := checkup.ShowPath(d.Change.File, home), d.Change.ChangeID
+		switch d.Outcome {
+		case manifest.Drifted:
+			add(codeDrift, checkup.LevelWarn, "%s changed after aggy wrote it (change %s); aggy unwire will ask for --force", file, id)
+		case manifest.Invalid:
+			add(codeDriftUnchecked, checkup.LevelError, "change %s is not a change aggy could have made: %s", id, file)
+		case manifest.Failed:
+			if errors.Is(d.Err, safefs.ErrAuthPath) {
+				add(codeDriftUnchecked, checkup.LevelError, "change %s names a vendor credential file, which aggy never reads: %s", id, file)
+			} else {
+				add(codeDriftUnchecked, checkup.LevelError, "%s cannot be checked (change %s): %v", file, id, d.Err)
+			}
+		case manifest.Blocked:
+			// Only an older change waiting on a newer one; --all
+			// handles it. Info, not a problem.
+			add(codeDriftBlocked, checkup.LevelInfo, "change %s to %s waits for a newer change to the file; aggy unwire --all undoes them in order", id, file)
 		}
+		// Restored, Removed, Cleaned, Superseded: unwire undoes them as
+		// they are. Not drift.
 	}
 	if len(out) == 0 {
 		n := len(ds)
-		msg := fmt.Sprintf("%d %s aggy changed %s as aggy left %s", n, plural(n, "file", "files"), plural(n, "is", "are"), plural(n, "it", "them"))
+		msg := fmt.Sprintf("%d %s aggy made %s undone cleanly by aggy unwire", n, plural(n, "change", "changes"), plural(n, "can be", "can all be"))
 		if n == 0 {
 			msg = "no config change of aggy's is in effect"
 		}

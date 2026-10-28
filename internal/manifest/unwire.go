@@ -48,6 +48,10 @@ func (s Selection) validate() error {
 type UnwireOptions struct {
 	// DryRun writes the diffs an undo would make and changes nothing.
 	DryRun bool
+	// NoLock, only with DryRun, skips the per-target locks, whose lock
+	// files a read-only caller (aggy doctor) must not create. A change
+	// applied meanwhile can make the answer stale; nothing is written.
+	NoLock bool
 	// Force undoes a change even when its file changed after aggy changed
 	// it. The file's current bytes are first copied into the change's
 	// backup folder. It is for one change the person confirmed; the CLI
@@ -194,6 +198,9 @@ type Undo struct {
 func (m *Manifest) Unwire(ctx context.Context, sel Selection, opt UnwireOptions, w io.Writer) ([]Undo, error) {
 	if err := sel.validate(); err != nil {
 		return nil, err
+	}
+	if opt.NoLock && !opt.DryRun {
+		return nil, errors.New("manifest: NoLock is only for a dry run")
 	}
 	var rows []store.Change
 	switch {
@@ -615,7 +622,10 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 	if err := m.validRow(c); err != nil {
 		return Undo{Change: c, Outcome: Invalid, Err: err}
 	}
-	unlock, err := m.lockTarget(ctx, c.File)
+	unlock, err := func() {}, error(nil)
+	if !opt.NoLock {
+		unlock, err = m.lockTarget(ctx, c.File)
+	}
 	if err != nil {
 		return fail(err)
 	}
