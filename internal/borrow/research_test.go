@@ -148,3 +148,24 @@ func TestResearchReportFencesText(t *testing.T) {
 		t.Errorf("headings:\n%s", md)
 	}
 }
+
+// TestResearchReportRedacts (F3): secrets in the question, the
+// constraints, and the child's text never reach the report written into
+// the repo, nor its file name; the report says how many lines went.
+func TestResearchReportRedacts(t *testing.T) {
+	r := researchReport{BorrowID: "0123456789abcdef", Kind: "research", Vendor: "grok",
+		Question: "is sk-ant-abcdefghijklmnop1234 valid", Constraints: []string{"token=Zx9QwErTyUiOp1234", "be brief"},
+		Text: "## Summary\nfound ghp_abcdefghijklmnopqrstuvwxyz0123 in a paste\nok"}
+	md := r.markdown()
+	base, alt := r.fileName()
+	for _, s := range []string{"sk-ant", "Zx9QwErTyUiOp1234", "ghp_"} {
+		if strings.Contains(md, s) || strings.Contains(base+alt, s) {
+			t.Errorf("report or name holds %q:\n%s\n%s", s, md, base)
+		}
+	}
+	for _, w := range []string{"- be brief\n", "\nok\n", "3 lines that looked like secrets"} {
+		if !strings.Contains(md, w) {
+			t.Errorf("report lacks %q:\n%s", w, md)
+		}
+	}
+}
