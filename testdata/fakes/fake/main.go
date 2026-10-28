@@ -712,7 +712,7 @@ func (f *fake) main(args []string) int {
 			return fail(3, "raw echo: %v", err)
 		}
 	case !headless:
-		waitForExit()
+		f.waitForExit()
 	}
 	if f.sc.ExitCode == 0 && f.sc.Error != "" {
 		return 1
@@ -1066,12 +1066,19 @@ func rawEcho(banner string) error {
 }
 
 // waitForExit reads lines until "/exit" or EOF, like a session waiting at
-// its prompt.
-func waitForExit() {
+// its prompt. Every other non-empty line is a turn, which ends by calling
+// the hooks again.
+func (f *fake) waitForExit() {
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
-		if strings.TrimSpace(sc.Text()) == "/exit" {
+		switch strings.TrimSpace(sc.Text()) {
+		case "/exit":
 			return
+		case "":
+		default:
+			if err := f.runHooks(); err != nil {
+				fmt.Fprintf(os.Stderr, "hook: %v\n", err)
+			}
 		}
 	}
 }

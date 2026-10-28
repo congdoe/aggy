@@ -57,11 +57,14 @@ type Server struct {
 	// ends the process.
 	onPanic func()
 	onHook  func(Request) // gets each valid hook-event; may be nil
-	wg      sync.WaitGroup
-	once    sync.Once
-	mu      sync.Mutex
-	conns   map[*net.UnixConn]struct{} // open connections, closed by Close
-	closed  bool
+	// onSwitch takes a switch-request (SetSwitch); nil refuses them.
+	// Guarded by mu.
+	onSwitch func(Request) error
+	wg       sync.WaitGroup
+	once     sync.Once
+	mu       sync.Mutex
+	conns    map[*net.UnixConn]struct{} // open connections, closed by Close
+	closed   bool
 }
 
 // Path returns the socket's path, for AGGY_SOCKET.
@@ -137,6 +140,15 @@ func (s *Server) SetRoot(pid int) {
 		s.root = pid
 		close(s.rootSet)
 	})
+}
+
+// SetSwitch sets what takes a switch-request from the session: it
+// returns nil when the switch is queued, else why not. It runs on the
+// connection's goroutine and must be quick and safe for concurrent use.
+func (s *Server) SetSwitch(f func(Request) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onSwitch = f
 }
 
 // fromSession reports whether the process that opened c, at pid, is in
@@ -375,7 +387,10 @@ func (s *Server) serve(c *net.UnixConn) {
 		if err != nil {
 			return // closed, idle, or a last line without a newline
 		}
-		resp := answer(line[:len(line)-1], from, s.onHook)
+		s.mu.Lock()
+		onSwitch := s.onSwitch
+		s.mu.Unlock()
+		resp := answer(line[:len(line)-1], from, s.onHook, onSwitch)
 		reply(c, resp)
 		if !resp.OK || !from {
 			return

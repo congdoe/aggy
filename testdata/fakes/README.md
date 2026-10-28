@@ -43,7 +43,7 @@ Values are checked where docs/adapters.md records them, with exit 2 otherwise:
 - An interactive run needs a terminal on stdin, unless `interactive_without_tty` is set.
 - Rules that are not recorded are opt-in through `strict`: `resume-with-session-id` refuses `--resume` with `--session-id` unless `--fork-session` is given.
 
-Headless means `-p` (Claude, Grok), Grok's `--prompt-file`, or `codex exec`. A headless run reads stdin to EOF when it is not a terminal: `codex exec` waits on such a stdin, which is why aggy runs it with `/dev/null`. An interactive run prints `stdout`, calls the hooks, then reads lines until `/exit` or EOF.
+Headless means `-p` (Claude, Grok), Grok's `--prompt-file`, or `codex exec`. A headless run reads stdin to EOF when it is not a terminal: `codex exec` waits on such a stdin, which is why aggy runs it with `/dev/null`. An interactive run prints `stdout`, calls the hooks, then reads lines until `/exit` or EOF; every other non-empty line is a turn, which calls the hooks again.
 
 Session ids: `--session-id` sets a new one (Claude, Grok); `--resume <id>` keeps `<id>` unless `--fork-session` is given; Codex never takes an id in advance, and resumes with `codex [exec] resume <id>`. Otherwise the id is the scenario's `session_id`, or a random UUID.
 

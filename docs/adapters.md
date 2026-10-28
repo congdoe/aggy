@@ -18,6 +18,9 @@ adapters are built. These gaps are known:
   given an id in advance.
 - Detecting a plan limit in an interactive session.
 - The exit sequence the supervisor types to end a session at turn end.
+  `adapter.ExitCommand` gives `/exit` for every vendor, **unverified**:
+  no live check is recorded in docs/verification.md. The supervisor asks
+  the user before typing it (design.md section 5).
 - The inputs `ConfigPatches` needs: tool toggles, the safety policy, and
   the MCP server list.
 - Patches that create symlinks or delete files.

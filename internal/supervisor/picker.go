@@ -24,23 +24,52 @@ const (
 
 // picker is the minimal switch menu: the connected vendors in switch.order
 // order, a number or Enter picks one, and Esc, Ctrl+C, or the switch key
-// cancels.
+// cancels. The same overlay asks to confirm a switch at a turn end
+// (confirm set) and shows a note (note set) that any key closes.
 type picker struct {
 	vendors []adapter.Vendor
 	key     byte
+	// waiting is a picked switch waiting for the turn end, shown in the
+	// list; Esc there cancels it.
+	waiting adapter.Vendor
+	// confirm is the vendor a confirmation is for; lines explain it.
+	confirm adapter.Vendor
+	note    bool
+	lines   []string
 }
+
+// list sets the picker to the vendor list.
+func (p *picker) list() { p.confirm, p.note, p.lines = "", false, nil }
+
+// ask sets the picker to confirm a switch to v, explained by lines.
+func (p *picker) ask(v adapter.Vendor, lines ...string) { p.confirm, p.note, p.lines = v, false, lines }
+
+// tell sets the picker to show a note.
+func (p *picker) tell(lines ...string) { p.confirm, p.note, p.lines = "", true, lines }
 
 // draw writes the picker: on the alternate screen, or, when the CLI is
 // already on it (overCLI), over the top lines of the CLI's screen.
 func (p *picker) draw(w io.Writer, overCLI bool) {
-	lines := []string{"aggy: switch vendor", ""}
-	if len(p.vendors) == 0 {
-		lines = append(lines, "  No other connected vendor. `aggy setup` checks them.")
+	var lines []string
+	switch {
+	case p.confirm != "":
+		lines = append(append([]string{"aggy: switch to " + string(p.confirm), ""}, p.lines...),
+			"", "Enter to switch, Esc to stay.")
+	case p.note:
+		lines = append(append([]string{"aggy", ""}, p.lines...), "", "Press any key to go back.")
+	default:
+		lines = []string{"aggy: switch vendor", ""}
+		if len(p.vendors) == 0 {
+			lines = append(lines, "  No other connected vendor. `aggy setup` checks them.")
+		}
+		for i, v := range p.vendors {
+			lines = append(lines, fmt.Sprintf("  %d  %s", i+1, v))
+		}
+		if p.waiting != "" {
+			lines = append(lines, "", fmt.Sprintf("Switching to %s when this turn ends; Esc cancels it.", p.waiting))
+		}
+		lines = append(lines, "", "Number or Enter to switch at the turn end, Esc to go back.")
 	}
-	for i, v := range p.vendors {
-		lines = append(lines, fmt.Sprintf("  %d  %s", i+1, v))
-	}
-	lines = append(lines, "", "Number or Enter to switch, Esc to go back.")
 	var b strings.Builder
 	if overCLI {
 		for i, l := range lines {
@@ -65,8 +94,11 @@ func (p *picker) erase(w io.Writer, overCLI bool) {
 }
 
 // handle reads one chunk of input. It returns done when the picker should
-// close, and the vendor picked, if any.
+// close, and the vendor picked or confirmed, if any.
 func (p *picker) handle(b []byte) (done bool, picked adapter.Vendor) {
+	if p.note {
+		return len(b) > 0, ""
+	}
 	if len(b) == 1 && b[0] == esc {
 		return true, ""
 	}
@@ -92,6 +124,10 @@ func (p *picker) handle(b []byte) (done bool, picked adapter.Vendor) {
 		switch {
 		case c == 0x03 || c == p.key:
 			return true, ""
+		case p.confirm != "":
+			if c == '\r' {
+				return true, p.confirm
+			}
 		case c == '\r' && len(p.vendors) > 0:
 			return true, p.vendors[0]
 		case c >= '1' && c <= '9' && int(c-'0') <= len(p.vendors):

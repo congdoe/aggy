@@ -32,6 +32,13 @@ func ParseVendor(s string) (Vendor, error) {
 	return "", fmt.Errorf("unknown vendor %q (want claude, codex, or grok)", s)
 }
 
+// ExitCommand is the line the supervisor types into vendor v's session,
+// at a turn end, to end it for a switch, and whether that is verified.
+// It is "/exit" for every vendor, unverified: docs/verification.md has no
+// live check of it yet (docs/adapters.md). The supervisor asks the user
+// before it types anything, verified or not.
+func ExitCommand(Vendor) (cmd string, verified bool) { return "/exit", false }
+
 // Kind is what a borrow is for. The on-screen agent picks the kind; aggy
 // picks the vendor.
 type Kind string
