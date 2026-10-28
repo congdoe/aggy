@@ -68,7 +68,7 @@ Session ids per vendor, checked against claude 2.1.311, codex-cli 0.164.0, and g
 | Vendor | New session | Resume | Notes |
 | --- | --- | --- | --- |
 | Claude | `--session-id <uuid>` | `--resume <id>` | `--fork-session` branches instead of reusing the id. |
-| Codex | No pre-assigned id | `codex resume <id>`, `codex exec resume <id>` | Headless, the first `codex exec --json` event is `thread.started` with the `thread_id`. Interactive, aggy watches `~/.codex/sessions/` for the new session file, which races when two Codex sessions start at once. A `SessionStart` hook that reports the id would avoid the race (unconfirmed; the folder watch stays as the fallback). `codex exec` waits on stdin when it is not a terminal, so aggy runs it with stdin from `/dev/null`. |
+| Codex | No pre-assigned id | `codex resume <id>`, `codex exec resume <id>` | Headless, the first `codex exec --json` event is `thread.started` with the `thread_id`. Interactive, aggy watches `~/.codex/sessions/` for the new session file, which races when two Codex sessions start at once. A `SessionStart` hook that reports the id would avoid the race (unconfirmed; the folder watch stays as the fallback). `codex exec` reads stdin to EOF when it is not a terminal, so aggy never gives it an open pipe: headless Codex gets the prompt file as stdin, which ends at once (see adapters.md). |
 | Grok | `--session-id <uuid>` | `--resume <id>`, also with `-p` | `--fork-session` branches. `grok -p --output-format json` returns `sessionId`. |
 
 Only one process holds a vendor session at a time. The holder is recorded as a lease in the store. A borrow or event that targets a busy session waits for its turn to end, or uses `--fork` to branch instead. Two writers on one transcript corrupt it.

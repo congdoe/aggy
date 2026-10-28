@@ -22,11 +22,14 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 
 | Command | Value flags | Switches |
 | --- | --- | --- |
-| `claude` | `--output-format`, `--permission-mode`, `--session-id`, `--resume` | `-p`, `--fork-session` |
+| `claude` | `--output-format`, `--permission-mode`, `--session-id`; `--resume [value]` | `-p`, `--fork-session` |
 | `grok` | `--output-format`, `--permission-mode`, `--session-id`, `--resume`, `--tools`, `--disallowed-tools`, `--max-turns` | `-p`, `--fork-session`, `--no-alt-screen`, `--continue` |
 | `codex` | `-c` | `--no-alt-screen` |
-| `codex exec`, `codex exec resume <id>` | `-c`, `--disable` (repeatable), `--sandbox`, `-i` | `--json` |
+| `codex exec [resume <id>]` (the exec flags go before `resume`) | `-c`, `--disable` (repeatable), `--sandbox`, `-i <value>...` | `--json` |
+| `codex exec resume <id>`, after `resume` | `-c` | |
 | `codex resume <id>` | `-c` | `--no-alt-screen` |
+
+Claude's `--resume` takes an optional value, as the real CLI does: it takes the next argument only when that does not start with `-`, so `--resume --permission-mode plan` is a bare `--resume`. Codex's `-i` takes one or more values, up to the next argument that starts with `-` (a lone `-` is a value), as clap's `num_args = 1..` does. `codex exec resume` takes only its own flags, so exec flags placed after `resume` fail with `unknown option`.
 
 Every command also takes `--version` and `--help` (`-h`). The generated help lists the honored flags; `codex --help` lists `exec` and `resume` in a `Commands:` block, `codex exec --help` lists `resume`, and `codex exec resume --help` names a `[SESSION_ID]` argument. `--flag=value` works too. Grok's `--continue` is recorded in the proposal (§3) and in docs/adapters.md.
 
