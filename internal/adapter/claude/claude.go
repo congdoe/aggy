@@ -36,6 +36,14 @@ var Tested = adapter.VersionRange{Min: "2.1.311", Max: "2.1.311"}
 // TestedVersions returns Tested.
 func (Adapter) TestedVersions() adapter.VersionRange { return Tested }
 
+// SignIn returns Claude's own sign-in step, from docs/design.md section 2.
+// No sign-in status command is verified in docs/adapters.md, so there is
+// no Check and the status is unknown, and the step is only printed:
+// aggy never runs it.
+func (Adapter) SignIn() adapter.SignIn {
+	return adapter.SignIn{Steps: "run `claude`, then type `/login`"}
+}
+
 // Probe reports the CLI's path, version, and capabilities through run,
 // using probe.Specs[adapter.Claude]. It never checks sign-in, so Connected
 // is false.
