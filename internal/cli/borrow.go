@@ -19,6 +19,7 @@ import (
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
+	"github.com/congdoe/aggy/internal/limits"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/router"
 	"github.com/congdoe/aggy/internal/safefs"
@@ -255,7 +256,7 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 	parent, _ := adapter.ParseVendor(env.getenv("AGGY_VENDOR"))
 	b := borrow.New(borrow.Deps{
 		Store:    s,
-		Router:   borrowRouter{router.New(cfg, router.Deps{Statuses: s, Now: env.now})},
+		Router:   borrowRouter{router.New(cfg, router.Deps{Statuses: s, Limits: limits.State{Store: s}, Now: env.now}), stderr},
 		Adapter:  newAdapter,
 		Locate:   w.locate,
 		Runner:   env.runner,
@@ -298,6 +299,7 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 	}
 	req.Fresh = ba.fresh
 	results, err := b.Run(ctx, req)
+	recordBorrowLimits(context.WithoutCancel(ctx), s, results, env.now())
 	code := 0
 	for _, r := range results {
 		printResult(stdout, r)
@@ -397,14 +399,36 @@ func (w *borrowWorld) locate(ctx context.Context, v adapter.Vendor) (borrow.CLI,
 
 // borrowRouter is internal/router behind the borrow package's Router
 // interface, whose kind is an adapter.Kind where the router takes a
-// string.
-type borrowRouter struct{ r *router.Router }
+// string. The router's warnings go to warn.
+type borrowRouter struct {
+	r    *router.Router
+	warn io.Writer
+}
 
 // Choose asks the router, which applies its skip rules to an override
 // too: --vendor never bypasses the parent skip, allowed_vendors, or the
 // connected check.
 func (b borrowRouter) Choose(ctx context.Context, req borrow.RouteRequest) ([]adapter.Vendor, error) {
-	return b.r.Choose(ctx, router.Request{Kind: string(req.Kind), Parent: req.Parent, Repo: req.Repo, Override: req.Override})
+	d, err := b.r.Decide(ctx, router.Request{Kind: string(req.Kind), Parent: req.Parent, Repo: req.Repo, Override: req.Override})
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range d.Warnings {
+		fmt.Fprintf(b.warn, "aggy borrow: warning: %s\n", termsafe.Field(w))
+	}
+	return d.Candidates, nil
+}
+
+// recordBorrowLimits records a limit for each vendor whose child failed
+// with rate_limit. The class comes from the vendor CLI's own headless
+// output, which aggy ran, so it is not a hint. A failed write loses the
+// signal, not the borrow.
+func recordBorrowLimits(ctx context.Context, a limits.Appender, results []borrow.Result, now time.Time) {
+	for _, r := range results {
+		if r.Outcome == string(adapter.ErrRateLimit) {
+			_, _ = limits.Record(ctx, a, limits.Signal{Vendor: r.Vendor, Via: limits.ViaBorrow}, "", now)
+		}
+	}
 }
 
 // repoRoot returns the root of the git work tree holding dir (the

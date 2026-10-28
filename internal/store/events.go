@@ -21,6 +21,10 @@ const (
 	// EventSession: the on-screen CLI reported its session id. Detail:
 	// vendor, session, source, via ("hook" or "sessions folder").
 	EventSession = "session"
+	// EventLimit: a vendor reported a plan limit. Detail: vendor, until
+	// (unix ms, when aggy expects it back), via (hook, rollout, or
+	// borrow). internal/limits writes and reads it.
+	EventLimit = "limit"
 )
 
 // Event is a row of events.
@@ -94,4 +98,31 @@ func (s *Store) Events(ctx context.Context, f EventFilter) ([]Event, error) {
 		out[i], out[j] = out[j], out[i]
 	}
 	return out, nil
+}
+
+// EventsSince returns up to limit events of type typ at or after since,
+// newest first.
+func (s *Store) EventsSince(ctx context.Context, typ string, since time.Time, limit int) ([]Event, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, at, parent_id, child_id, type, detail FROM events WHERE type = ? AND at >= ?
+		 ORDER BY at DESC, id DESC LIMIT ?`, typ, millis(since), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Event
+	for rows.Next() {
+		var e Event
+		var at int64
+		var detail string
+		if err := rows.Scan(&e.ID, &at, &e.ParentID, &e.ChildID, &e.Type, &detail); err != nil {
+			return nil, err
+		}
+		e.At = fromMillis(at)
+		if json.Unmarshal([]byte(detail), &e.Detail) != nil {
+			e.Detail = nil
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

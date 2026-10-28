@@ -220,11 +220,14 @@ func codexFile(root, id string) (string, error) {
 	return one(adapter.Codex, found)
 }
 
-// readTail reads the last MaxTail bytes of path, which must be a regular
-// file under root reached through real directories only. The file opened
-// must be the one checked, so a folder swapped for a symlink after the
-// check is refused.
-func readTail(root, path string) ([]byte, error) {
+// readTail is ReadTail with MaxTail.
+func readTail(root, path string) ([]byte, error) { return ReadTail(root, path, MaxTail) }
+
+// ReadTail reads the last n bytes of path, which must be a regular file
+// under root reached through real directories only, and drops a line the
+// window cut. The file opened must be the one checked, so a folder
+// swapped for a symlink after the check is refused.
+func ReadTail(root, path string, n int64) ([]byte, error) {
 	rel, err := filepath.Rel(root, path)
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return nil, fmt.Errorf("transcript: %s is outside %s", path, root)
@@ -259,11 +262,11 @@ func readTail(root, path string) ([]byte, error) {
 	if !os.SameFile(fi, last) {
 		return nil, &fs.PathError{Op: "transcript", Path: path, Err: safefs.ErrChanged}
 	}
-	off := max(fi.Size()-MaxTail, 0)
+	off := max(fi.Size()-n, 0)
 	if _, err := f.Seek(off, io.SeekStart); err != nil {
 		return nil, err
 	}
-	data, err := io.ReadAll(io.LimitReader(f, MaxTail))
+	data, err := io.ReadAll(io.LimitReader(f, n))
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +274,7 @@ func readTail(root, path string) ([]byte, error) {
 		// The window starts mid-line: drop the cut line.
 		i := bytes.IndexByte(data, '\n')
 		if i < 0 || len(bytes.TrimSpace(data[i+1:])) == 0 {
-			return nil, fmt.Errorf("%w: the session file's last line is over %d MiB, too large to read", adapter.ErrNoTranscript, MaxTail>>20)
+			return nil, fmt.Errorf("%w: the session file's last line is over %d KiB, too large to read", adapter.ErrNoTranscript, n>>10)
 		}
 		data = data[i+1:]
 	}

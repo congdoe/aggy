@@ -27,6 +27,8 @@ func TestRun(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			t.Setenv("PATH", t.TempDir())
 			var stdout, stderr bytes.Buffer
 			stdin := os.Stdin
 			os.Stdin = nil // not a terminal, whatever go test was given
