@@ -20,14 +20,19 @@ import (
 	"github.com/congdoe/aggy/internal/supervisor"
 )
 
-// runRun is `aggy run <vendor>`: a new interactive session of that vendor
-// under the supervisor.
+// runRun is `aggy run [--direct] <vendor>`: a new interactive session of
+// that vendor under the supervisor, or with --direct on aggy's own
+// terminal (runDirect).
 //
 // TODO(T6661): bare `aggy` resumes the latest parent or starts one, and
 // `aggy new` and `aggy resume` record parents and children in the store.
 func runRun(args []string, stdout, stderr io.Writer) int {
+	direct := len(args) > 0 && args[0] == "--direct"
+	if direct {
+		args = args[1:]
+	}
 	if len(args) != 1 {
-		fmt.Fprint(stderr, "usage: aggy run <claude|codex|grok>\n")
+		fmt.Fprint(stderr, "usage: aggy run [--direct] <claude|codex|grok>\n")
 		return 2
 	}
 	v, err := adapter.ParseVendor(args[0])
@@ -91,6 +96,17 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy run: %v\n", err)
 		return 1
 	}
+	runDir := filepath.Join(stateDir, "run")
+	if direct {
+		code, err := runDirect(cmd, runDir, parentID, v)
+		if err != nil {
+			fmt.Fprintf(stderr, "aggy run: %v\n", err)
+			if code == 0 {
+				code = 1
+			}
+		}
+		return code
+	}
 	onHook, stopIndex := startIndex(parentID, v)
 	defer stopIndex()
 	code, err := supervisor.Run(supervisor.Options{
@@ -98,7 +114,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		Start:     startPTY,
 		SwitchKey: key,
 		Vendors:   pickerVendors(cfg.Switch.Order, v),
-		RunDir:    filepath.Join(stateDir, "run"),
+		RunDir:    runDir,
 		ParentID:  parentID,
 		OnHook:    onHook,
 	})

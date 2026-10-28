@@ -287,10 +287,10 @@ linters:
       - path: ^internal/(supervisor|borrow)/
         text: "`(exec\\.(Command|CommandContext)|os\\.StartProcess)`"
         linters: [forbidigo]
-      - path: ^internal/execrun/(execrun|pty_unix)\.go$
+      - path: ^internal/execrun/(execrun|pty_unix|direct_unix)\.go$
         text: "`exec\\.(Command|CommandContext)`"
         linters: [forbidigo]
-      - path: ^internal/execrun/(execrun(_unix|_other)?|pty_unix)\.go$
+      - path: ^internal/execrun/(execrun(_unix|_other)?|pty_unix|direct_unix)\.go$
         text: "`exec\\.Cmd`"
         linters: [forbidigo]
       - path: ^internal/fakecli/build\.go$
