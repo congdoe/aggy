@@ -417,15 +417,15 @@ type borrowRouter struct {
 // Choose asks the router, which applies its skip rules to an override
 // too: --vendor never bypasses the parent skip, allowed_vendors, or the
 // connected check.
-func (b borrowRouter) Choose(ctx context.Context, req borrow.RouteRequest) ([]adapter.Vendor, error) {
+func (b borrowRouter) Choose(ctx context.Context, req borrow.RouteRequest) ([]adapter.Vendor, bool, error) {
 	d, err := b.r.Decide(ctx, router.Request{Kind: string(req.Kind), Parent: req.Parent, Repo: req.Repo, Override: req.Override, IgnoreHints: req.IgnoreHints})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	for _, w := range d.Warnings {
 		fmt.Fprintf(b.warn, "aggy borrow: warning: %s\n", termsafe.Field(w))
 	}
-	return d.Candidates, nil
+	return d.Candidates, d.HintSkipped, nil
 }
 
 // recordBorrowLimits records a limit for each vendor whose child failed

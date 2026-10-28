@@ -83,7 +83,7 @@ func (connected) VendorStatuses(context.Context) ([]store.VendorStatus, error) {
 func TestBorrowRouterShowsWarnings(t *testing.T) {
 	var warn bytes.Buffer
 	b := borrowRouter{router.New(config.Default(), router.Deps{Statuses: connected{}, Limits: hintLimits{}}), &warn}
-	got, err := b.Choose(context.Background(), borrow.RouteRequest{Kind: adapter.Image, Parent: adapter.Grok})
+	got, _, err := b.Choose(context.Background(), borrow.RouteRequest{Kind: adapter.Image, Parent: adapter.Grok})
 	if err != nil || len(got) != 1 || got[0] != adapter.Codex {
 		t.Fatalf("Choose = %v %v", got, err)
 	}

@@ -135,7 +135,7 @@ func TestPromptOnStdin(t *testing.T) {
 // TestRouterSkipsParent: the stand-in order skips the vendor on screen.
 func TestRouterSkipsParent(t *testing.T) {
 	w := newWorld(t)
-	vs, err := w.router().Choose(context.Background(), RouteRequest{Kind: adapter.Image, Parent: adapter.Grok})
+	vs, _, err := w.router().Choose(context.Background(), RouteRequest{Kind: adapter.Image, Parent: adapter.Grok})
 	if err != nil || !slices.Equal(vs, []adapter.Vendor{adapter.Codex}) {
 		t.Errorf("image from grok = %v, %v", vs, err)
 	}

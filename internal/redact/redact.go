@@ -46,16 +46,25 @@ var Token = regexp.MustCompile(strings.Join([]string{
 // may have suffix segments (API_KEY_ID) but not a bare suffix, so
 // "max_tokens" does not count. The separator may be URL-encoded
 // (token%3D...).
-const secretName = `(?i)[A-Za-z0-9_.-]*(?:apikey|key|token|secret|password|passwd|pwd|passphrase|credentials?)(?:[_.-][A-Za-z0-9]+)*["']?\s*(?:[:=]|%3[ad])`
+const secretName = `(?i)` + nameRe + `["']?\s*` + sepRe
+
+// nameRe is the name part of secretName, and sepRe its separator: ":",
+// "=", Perl's and Ruby's "=>", or a URL-encoded ":" or "=".
+const (
+	nameRe = `[A-Za-z0-9_.-]*(?:apikey|key|token|secret|password|passwd|pwd|passphrase|credentials?)(?:[_.-][A-Za-z0-9]+)*`
+	sepRe  = `(?:=>|[:=]|%3[ad])`
+)
 
 // keyPrefix is what may stand before a key line: quoting, a comment
 // marker, or a line number, up to 12 characters.
 const keyPrefix = `^.{0,12}?`
 
 var (
-	// assign is a secret-named setting with a value: the quote before the
-	// value, if any, and the value. codeValue decides whether it counts.
-	assign = regexp.MustCompile(secretName + "\\s*([\"'`]?)([^\\s\"',;`]{8,})")
+	// assign is a secret-named setting with a value. Its groups: the
+	// name, the space before the separator, the separator, the space
+	// after it, the quote before the value if any, and the value.
+	// codeValue decides whether an unquoted value counts.
+	assign = regexp.MustCompile(`(?i)(` + nameRe + `)["']?(\s*)(` + sepRe + `)(\s*)([\"'` + "`" + `]?)([^\s\"',;` + "`" + `]{8,})`)
 	// other matches secrets that are not token-shaped on their own.
 	other = regexp.MustCompile(strings.Join([]string{
 		`(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]*:[^/\s@]+@`,         // credentials in a URL
@@ -97,6 +106,12 @@ var (
 	keyword = regexp.MustCompile(`^(?:const|let|var|val|final|def|func|fn|return|private|public|protected|static|readonly)\b`)
 	// dotted is a dotted identifier path, such as welcome.message.title.
 	dotted = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+$`)
+	// ident is a name that can stand on the left of a statement: an
+	// identifier or a dotted path of them (this.token).
+	ident = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$`)
+	// pairKey is a YAML, INI, or JSON key alone on its line, whose value
+	// is on the next line.
+	pairKey = regexp.MustCompile(`^\s*(?:-\s+)?["']?[\w.-]+["']?\s*(?:=>|[:=])\s*$`)
 	// b64 is a run of base64 text (either alphabet) long enough to wrap a
 	// secret.
 	b64 = regexp.MustCompile(`[A-Za-z0-9+/_-]{24,}={0,2}`)
@@ -151,35 +166,51 @@ func hasRun(line string, n int, url bool) bool {
 }
 
 // codeValue reports whether v, the unquoted value after a secret name in
-// line, is code rather than a secret, and so is kept (C16-12). It fails
-// toward redaction: never for an env-file line or a one-pair YAML or INI
-// line (F28-1), and otherwise only when v is a call (generateToken(user))
-// or the line is clearly code (":=", a trailing ";" or ",", a keyword, or
-// a value that opens with a bracket) and v is code-shaped: brackets, a
-// dotted path, or a camelCase or PascalCase identifier
-// ({item.id}, CancellationToken).
-func codeValue(line, v string) bool {
+// line, is code rather than a secret, and so is kept (C16-12). m is the
+// assign match: name, the spaces around the separator, and the separator;
+// dollar is true when a "$" sigil stands before the name. It fails toward
+// redaction: never for an env-file line, a value right after NAME= with
+// no space around the "=" (a shell assignment, F29-1), or a one-pair YAML
+// or INI line (F28-1), which is checked before the call shape (F29-2).
+// Otherwise it keeps a call (generateToken(user)), or a value in a line
+// that is clearly code (":=", a trailing ";" or ",", a keyword, or a value
+// that opens with a bracket) whose name is an identifier, not a header
+// such as X-Api-Key, and whose value is code-shaped: brackets, a dotted
+// path, or a camelCase or PascalCase identifier ({item.id},
+// CancellationToken). A bare identifier is not kept after "=>" or a
+// "$"-sigiled name (Perl, PowerShell: F29-3).
+func codeValue(line string, m []string, dollar bool) bool {
+	name, before, sep, after, v := m[1], m[2], m[3], m[4], m[6]
 	if envLine.MatchString(line) {
+		return false
+	}
+	tight := before == "" && after == "" && !strings.HasPrefix(v, "{")
+	if tight && (sep == "=" || strings.EqualFold(sep, "%3d")) {
+		return false
+	}
+	if pairLine.MatchString(line) {
 		return false
 	}
 	if call.MatchString(v) {
 		return true
 	}
-	if pairLine.MatchString(line) {
+	if !ident.MatchString(name) {
 		return false
 	}
 	t := strings.TrimSpace(line)
 	code := strings.Contains(t, ":=") || strings.HasSuffix(t, ";") || strings.HasSuffix(t, ",") ||
 		keyword.MatchString(t) || strings.ContainsAny(v[:1], "{[<(")
-	return code && codeShaped(v)
-}
-
-// codeShaped reports whether v looks like an expression, a dotted path,
-// or a camelCase or PascalCase identifier.
-func codeShaped(v string) bool {
+	if !code {
+		return false
+	}
 	if strings.ContainsAny(v, "(){}[]<>") || dotted.MatchString(v) {
 		return true
 	}
+	return sep != "=>" && !dollar && camel(v)
+}
+
+// camel reports whether v is a camelCase or PascalCase identifier.
+func camel(v string) bool {
 	hump := false
 	for i := 0; i < len(v); i++ {
 		c := v[i]
@@ -196,8 +227,12 @@ func codeShaped(v string) bool {
 // assigned reports whether line sets a secret name to a value that is
 // quoted or not code.
 func assigned(line string) bool {
-	for _, m := range assign.FindAllStringSubmatch(line, -1) {
-		if m[1] != "" || !codeValue(line, m[2]) {
+	for _, ix := range assign.FindAllStringSubmatchIndex(line, -1) {
+		m := make([]string, len(ix)/2)
+		for i := range m {
+			m[i] = line[ix[2*i]:ix[2*i+1]]
+		}
+		if m[5] != "" || !codeValue(line, m, ix[2] > 0 && line[ix[2]-1] == '$') {
 			return true
 		}
 	}
@@ -299,7 +334,9 @@ func Lines(text string) (string, int) {
 	lines := strings.Split(text, "\n")
 	drop := make([]bool, len(lines))
 	unpaired := false // a BEGIN with no END, or an END with no BEGIN
-	inKey, pending := false, false
+	// pending is a secret name ending the line before; pair, that it was
+	// a lone key (pairKey), whose value is never kept (F29-2).
+	inKey, pending, pair := false, false, false
 	skip := -1 // lines up to skip are already dropped as one block
 	for i, l := range lines {
 		if i <= skip {
@@ -332,9 +369,10 @@ func Lines(text string) (string, int) {
 				drop[j] = true
 			}
 		case pending && strings.TrimSpace(l) != "":
-			// The value on its own line is kept only when it is a call.
+			// The value on its own line is kept only when it is a call
+			// continuing a statement.
 			v := strings.TrimRight(strings.TrimSpace(l), ",;")
-			drop[i] = !call.MatchString(v) || Secret(l)
+			drop[i] = pair || !call.MatchString(v) || Secret(l)
 		default:
 			// A key block ends at the first line that is not key text.
 			inKey = false
@@ -342,6 +380,7 @@ func Lines(text string) (string, int) {
 		}
 		if strings.TrimSpace(l) != "" || !pending {
 			pending = !drop[i] && hinted(l) && pendingKey.MatchString(l)
+			pair = pending && pairKey.MatchString(l)
 		}
 	}
 	out := lines[:0]

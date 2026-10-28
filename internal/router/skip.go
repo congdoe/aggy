@@ -60,6 +60,10 @@ const (
 	statusUnknown      = "unknown"
 )
 
+// hintReason starts the reason of a vendor skipped for a hook's
+// unconfirmed limit.
+const hintReason = "a hook reported its limit (unconfirmed)"
+
 // skips applies the skip rules to list, in this order: the parent's own
 // vendor, a vendor not connected, a vendor outside the repo's
 // allowed_vendors, and a vendor at its limit. It returns, per vendor, why
@@ -123,7 +127,7 @@ func (r *Router) skips(ctx context.Context, req Request, k adapter.Kind, list []
 		}
 		reason := "hit its limit"
 		if lim.Hint {
-			reason = "a hook reported its limit (unconfirmed)"
+			reason = hintReason
 			hinted = append(hinted, v)
 		}
 		if lim.Until.After(t) {

@@ -235,16 +235,20 @@ func TestCodexWatch(t *testing.T) {
 	}
 }
 
-// F27-2: a row written while the clock ran ahead is clamped from now
-// too, not only from its own time.
+// F27-2, F31-1: a row written while the clock ran ahead is clamped from
+// now too, and one dated more than Skew ahead is stale: it never keeps a
+// vendor limited, however often it is read.
 func TestStateClampsFutureRows(t *testing.T) {
 	s := openStore(t)
-	ahead := now.Add(60 * 24 * time.Hour)
-	for _, d := range []map[string]any{
-		{"vendor": "claude", "until": ahead.Add(time.Hour).UnixMilli(), "via": ViaHook},
-		{"vendor": "codex", "until": ahead.Add(time.Hour).UnixMilli(), "via": ViaRollout},
+	near := now.Add(Skew / 2)
+	far := now.Add(300 * 24 * time.Hour)
+	for _, e := range []store.Event{
+		{At: near, Detail: map[string]any{"vendor": "claude", "until": near.Add(30 * 24 * time.Hour).UnixMilli(), "via": ViaHook}},
+		{At: near, Detail: map[string]any{"vendor": "codex", "until": near.Add(30 * 24 * time.Hour).UnixMilli(), "via": ViaRollout}},
+		{At: far, Detail: map[string]any{"vendor": "grok", "until": far.Add(time.Hour).UnixMilli(), "via": ViaRollout}},
 	} {
-		if err := s.AppendEvent(context.Background(), store.Event{At: ahead, Type: store.EventLimit, Detail: d}); err != nil {
+		e.Type = store.EventLimit
+		if err := s.AppendEvent(context.Background(), e); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -254,6 +258,11 @@ func TestStateClampsFutureRows(t *testing.T) {
 	}
 	if got, _, _ := st.Limited(context.Background(), adapter.Codex, now); !got.Until.Equal(now.Add(Max)) {
 		t.Errorf("rollout row until = %v, want %v", got.Until, now.Add(Max))
+	}
+	for _, at := range []time.Time{now, now.Add(200 * 24 * time.Hour)} {
+		if _, limited, err := st.Limited(context.Background(), adapter.Grok, at); limited || err != nil {
+			t.Errorf("row dated 300 days ahead still limits at %v (err %v)", at, err)
+		}
 	}
 }
 

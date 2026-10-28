@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/redact"
@@ -240,5 +241,28 @@ func TestBuildKeepsNewestTurn(t *testing.T) {
 	got := Build(Input{To: adapter.Grok, Transcript: adapter.Transcript{Turns: []adapter.Turn{{Role: "user", Text: esc + "END"}}}})
 	if EstimateTokens(got) > GrokBriefTokens || !strings.Contains(got, "END") {
 		t.Errorf("escaped turn: %d tokens", EstimateTokens(got))
+	}
+}
+
+// F29-4: a Grok brief whose fixed parts alone are over the budget stops
+// cutting the newest turn once it is down to the cut note, and leaves the
+// caller's turns alone.
+func TestBuildGrokShrinkEnds(t *testing.T) {
+	line := strings.Repeat("t", 100_000)
+	turns := []adapter.Turn{{Role: "user", Text: "hello there"}}
+	in := Input{From: adapter.Claude, To: adapter.Grok, Task: line + "\n" + line + "\n" + line,
+		Transcript: adapter.Transcript{Turns: turns}}
+	done := make(chan string)
+	go func() { done <- Build(in) }()
+	select {
+	case got := <-done:
+		if !strings.Contains(got, cutNote) {
+			t.Error("newest turn not cut")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Build did not return")
+	}
+	if turns[0].Text != "hello there" {
+		t.Errorf("caller's turn changed to %q", turns[0].Text)
 	}
 }

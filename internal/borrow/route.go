@@ -10,9 +10,11 @@ import (
 // Router picks the vendors for a borrow, best first, after its skip
 // rules (the parent's vendor, not connected, outside the repo's
 // allowed_vendors, at its limit). internal/cli wires internal/router in;
-// this package depends only on the interface.
+// this package depends only on the interface. Choose also reports
+// whether a vendor was left out only for a hook's unconfirmed limit,
+// which a request with IgnoreHints would keep.
 type Router interface {
-	Choose(ctx context.Context, req RouteRequest) ([]adapter.Vendor, error)
+	Choose(ctx context.Context, req RouteRequest) (vs []adapter.Vendor, hinted bool, err error)
 }
 
 // RouteRequest is what a Router decides on.
@@ -33,10 +35,10 @@ type RouteRequest struct {
 }
 
 // RouterFunc adapts a function to Router.
-type RouterFunc func(ctx context.Context, req RouteRequest) ([]adapter.Vendor, error)
+type RouterFunc func(ctx context.Context, req RouteRequest) ([]adapter.Vendor, bool, error)
 
 // Choose calls f.
-func (f RouterFunc) Choose(ctx context.Context, req RouteRequest) ([]adapter.Vendor, error) {
+func (f RouterFunc) Choose(ctx context.Context, req RouteRequest) ([]adapter.Vendor, bool, error) {
 	return f(ctx, req)
 }
 

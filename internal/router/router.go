@@ -129,6 +129,9 @@ type Decision struct {
 	// Warnings must be shown to the person: a vendor kept against an
 	// unconfirmed limit (see skips).
 	Warnings []string
+	// HintSkipped is true when a vendor was left out only for a hook's
+	// unconfirmed limit, which a request with IgnoreHints would keep.
+	HintSkipped bool
 }
 
 // Choose returns the vendors that may run req, best first. When none is
@@ -175,6 +178,7 @@ func (r *Router) Decide(ctx context.Context, req Request) (Decision, error) {
 	for _, v := range list {
 		if reason, ok := skips[v]; ok {
 			d.Skipped = append(d.Skipped, Skip{Vendor: v, Reason: reason})
+			d.HintSkipped = d.HintSkipped || strings.HasPrefix(reason, hintReason)
 			continue
 		}
 		d.Candidates = append(d.Candidates, v)
