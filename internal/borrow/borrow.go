@@ -590,6 +590,18 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	if err := lease.Finish(ctx, end); err != nil {
 		return res, err
 	}
+	if req.Kind == adapter.Edit {
+		// Whatever the outcome: the worktree stays for accept or reject.
+		tree, err := b.Worktrees.Tree(ctx, res.Worktree)
+		if err == nil {
+			err = b.Store.SetWorktreeTree(ctx, id, tree)
+		}
+		if err != nil {
+			res.Detail = strings.TrimSpace(res.Detail + "\nrecording the worktree's state: " + err.Error() + " (aggy accept will refuse it)")
+		} else {
+			res.Worktree.Tree = tree
+		}
+	}
 	// The per-borrow log behind aggy log and, later, aggy stats.
 	if err := b.Store.AppendEvent(ctx, store.Event{
 		At: end.EndedAt, ParentID: parent.ID, ChildID: child.ID, Type: store.EventBorrow,

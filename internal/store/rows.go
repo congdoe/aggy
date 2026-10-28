@@ -71,6 +71,9 @@ type Worktree struct {
 	Repo   string // the main checkout it came from
 	GitDir string // its admin dir in the repo's .git
 	State  string // pending, accepted, or rejected
+	// Tree is the git tree of what the child left, taken when the borrow
+	// ended; "" until then.
+	Tree string
 }
 
 // InsertChild adds a child. The parent must exist. An empty Status means
