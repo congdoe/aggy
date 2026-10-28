@@ -330,7 +330,9 @@ func printResult(w io.Writer, r borrow.Result) {
 	for _, x := range r.Refused {
 		fmt.Fprintf(w, "  %s\n", termsafe.Line(x))
 	}
-	if r.ReportPath != "" {
+	if r.ResearchPath != "" {
+		fmt.Fprintf(w, "Report: %s\n", termsafe.Field(r.ResearchPath))
+	} else if r.ReportPath != "" {
 		fmt.Fprintf(w, "Full report: %s\n", termsafe.Field(r.ReportPath))
 	}
 }
