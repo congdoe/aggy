@@ -106,6 +106,9 @@ was tested against.
   `-c mcp_servers.<name>.default_tools_approval_mode="approve"`, because
   `exec` denies MCP calls otherwise. Pass them again on resume. Flags such
   as `--sandbox` go before `resume`, and they apply to the resumed thread.
+- MCP in config: `[mcp_servers.<name>]` in `config.toml` with `command`
+  and `args`, or `url` (streamable HTTP; no SSE). `codex mcp login <name>`
+  is Codex's own OAuth sign-in (`aggy mcp wire`, verification.md).
 - Extra context: `-c developer_instructions="…"`, on every subcommand.
 - Images land in `~/.codex/generated_images/<thread-id>/*.png`, which is
   `$CODEX_HOME/generated_images/...` when `CODEX_HOME` is set. The image tool
@@ -141,6 +144,10 @@ was tested against.
   (`docs/verification.md` C3).
 - MCP at launch: no flag. `--agent <file>` whose frontmatter lists
   `mcpServers` works, with `--allow 'MCPTool(<server>__<tool>)'`.
+- MCP in config: `[mcp_servers.<name>]` in `config.toml` with `command`
+  and `args`, or `url` (`type = "sse"` for SSE). Grok also loads
+  `~/.claude.json`'s servers unless its Claude compatibility is off
+  (verification.md, "MCP server config").
 - Extra context: `--rules "<text>"`, inline only.
 - Images land in `~/.grok/sessions/<url-encoded cwd>/<sessionId>/images/*.jpg`,
   or the same path under `$GROK_HOME`. The reply gives the path relative to

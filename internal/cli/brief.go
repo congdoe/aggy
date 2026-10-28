@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/brief"
 	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
 	"github.com/congdoe/aggy/internal/transcript"
@@ -100,6 +102,9 @@ func briefWith(args []string, e borrowEnv, stdout, stderr io.Writer) int {
 		}
 	}
 
+	if in.To != "" && in.To != in.From {
+		in.MissingTools = missingTools(in.From, in.To, root, e.getenv)
+	}
 	in.Task, in.TaskErr = brief.ReadTask(cwd)
 	home, err := transcript.Home(in.From, e.getenv)
 	if err == nil {
@@ -247,4 +252,30 @@ func showBrief(name string, t target, stdout, stderr io.Writer) int {
 	// The brief is already escaped for a terminal (brief.Build).
 	fmt.Fprint(stdout, text)
 	return 0
+}
+
+// missingTools lists, by name, the MCP servers from loads that to does
+// not (parity.MCPNames), and for a brief from Claude, its claude.ai
+// connectors, which no other CLI can have. A config that cannot be read
+// is said so instead of guessed.
+func missingTools(from, to adapter.Vendor, root string, getenv func(string) string) []string {
+	var out []string
+	have, err := parity.MCPNames(from, root, getenv)
+	if err == nil {
+		var gets []string
+		if gets, err = parity.MCPNames(to, root, getenv); err == nil {
+			for _, n := range have {
+				if !slices.Contains(gets, n) {
+					out = append(out, "MCP server "+n)
+				}
+			}
+		}
+	}
+	if err != nil {
+		out = append(out, "(the MCP servers could not be compared: "+err.Error()+")")
+	}
+	if from == adapter.Claude {
+		out = append(out, "claude.ai connectors, if any were used: they exist only in Claude")
+	}
+	return out
 }

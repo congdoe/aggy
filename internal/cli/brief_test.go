@@ -21,6 +21,8 @@ func TestBriefShow(t *testing.T) {
 	id := "00000000-0000-4000-8000-000000000001"
 	mustWrite(t, filepath.Join(home, ".claude", "projects", transcript.ClaudeProjectDir(repo), id+".jsonl"),
 		`{"type":"user","message":{"content":"make the parser fast"}}`+"\n", 0o600)
+	mustWrite(t, filepath.Join(home, ".claude.json"), `{"mcpServers":{"fs":{"command":"x"},"both":{"command":"x"}}}`, 0o600)
+	mustWrite(t, filepath.Join(home, ".codex", "config.toml"), "[mcp_servers.both]\ncommand = \"x\"\n", 0o600)
 
 	e := gitEnv()
 	e.getenv = func(k string) string { return map[string]string{"HOME": home}[k] }
@@ -30,10 +32,14 @@ func TestBriefShow(t *testing.T) {
 	if code := briefWith([]string{"--show", "--from", "claude", "--session", id, "--to", "codex"}, e, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
-	for _, want := range []string{"- fix the parser", "make the parser fast", "M a.go", "a.go |", id + ".jsonl"} {
+	for _, want := range []string{"- fix the parser", "make the parser fast", "M a.go", "a.go |", id + ".jsonl",
+		"lack", "MCP server fs", "claude.ai connectors"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("brief lacks %q:\n%s", want, out.String())
 		}
+	}
+	if strings.Contains(out.String(), "MCP server both") {
+		t.Error("a server Codex has is listed as missing")
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Error("a program from the repo's git config ran")

@@ -402,6 +402,37 @@ A Claude run with `--strict-mcp-config --mcp-config` on
 `{"mcpServers":{}}` had no MCP or claude.ai connector tools at all
 (2026-10-28); built-in file tools stay unless `--tools` trims them.
 
+## MCP server config (T6679)
+
+Docs and source only, not run live (2026-10-28). `aggy mcp wire` and
+the brief's missing-tools list rely on these:
+
+- **Claude.** User-scope servers are kept in `~/.claude.json`, local-scope
+  ones in the same file under the project's path (`mcp.md`, "MCP
+  installation scopes"). An entry has `type` (stdio when absent; `http`,
+  its alias `streamable-http`, `sse`, `ws`, `sdk`), `command`, `args`,
+  `env`, `url`, `headers`, `headersHelper`, and `oauth` (same page).
+  Doc-verified. The key names (a top-level `mcpServers` object, and
+  `projects.<path>.mcpServers`) are those Grok reads from that file
+  (grok-build `2bdd1d6a`, `xai-grok-config/src/mcp_servers/json_config.rs:235-244`,
+  `:399-402`). The page does not say whether `CLAUDE_CONFIG_DIR` moves
+  the file: unverified, so aggy reads nothing when it is set.
+- **Codex.** `mcp_servers` is a table of servers in `config.toml`
+  (`config/src/config_toml.rs#L299`); an entry with `command` and `args`
+  is stdio, one with `url` streamable HTTP, and there is no SSE
+  transport (`config/src/mcp_types.rs#L373-L389` and its `TryFrom`).
+  Source-verified at `6aaac69`.
+- **Grok.** `[mcp_servers.<name>]` in `~/.grok/config.toml` with
+  `command`/`args`/`env`, or `url`/`headers`
+  (`xai-grok-pager/docs/user-guide/07-mcp-servers.md`); `type = "sse"`,
+  or a `url` ending in `/sse`, is SSE
+  (`xai-grok-config/src/mcp_server_config.rs:28-59`, `:499-502`). Grok
+  also loads `~/.claude.json`'s servers unless `[compat.claude] mcps =
+  false` or `GROK_CLAUDE_MCPS_ENABLED` turns that off, and `config.toml`
+  wins on a name clash (same guide, "Compatibility"). How Grok parses the
+  variable's value is unverified; aggy counts any value but `1` or
+  `true` as off. Source/Doc-verified at `2bdd1d6a`.
+
 ## Codex CLI details
 
 - `codex exec resume [SESSION_ID] [PROMPT]` with `--last` and `--all`
