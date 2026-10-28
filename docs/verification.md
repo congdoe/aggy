@@ -390,6 +390,65 @@ Claude's `settings.json` by default** (`[compat.claude] hooks = false` or
 for Claude fires under Grok too (`docs.x.ai/build/features/hooks.md`;
 `user-guide/10-hooks.md`).
 
+## Hook payloads and config (M2 hooks)
+
+Docs and source only, not run live (2026-10-28). `aggy hook` and
+`aggy hooks install` rely on these; `internal/hook/event.go` keeps only
+the fields named here.
+
+- **Claude** (`code.claude.com/docs/en/hooks.md`). Config: `"hooks"` maps
+  an event to matcher groups `{"matcher": ..., "hooks": [{"type":
+  "command", "command": ..., "timeout": <seconds>}]}`; `matcher` "`*`,
+  `""`, or omitted" matches all, and `Stop` has no matcher support. A
+  command without `args` runs with `sh -c`; with `args` it is spawned
+  without a shell (not used: when `args` arrived is not stated, so a
+  2.1.312 that ignored it would run bare `aggy`). Common input:
+  `session_id`, `transcript_path`, `cwd`, `permission_mode`,
+  `hook_event_name`. `SessionStart` adds `source`
+  (`startup|resume|clear|compact|fork`) and an optional `model`; its
+  plain stdout on exit 0 is added to the model's context. `Stop` adds
+  `stop_hook_active` and `last_assistant_message`. `StopFailure` "runs
+  instead of Stop when the turn ends due to an API error" with `error`
+  (`rate_limit`, `overloaded`, `authentication_failed`, ..., `unknown`),
+  optional `error_details` and `last_assistant_message`; its output and
+  exit code are ignored. `Notification` adds `message`, `title`, and
+  `notification_type`.
+- **Codex** 0.164.0. `Stop` input, all required:
+  `cwd`, `hook_event_name`, `last_assistant_message`, `model`,
+  `permission_mode`, `session_id`, `stop_hook_active`, `transcript_path`,
+  `turn_id` (`hooks/schema/generated/stop.command.input.schema.json`).
+  Legacy `notify` (`hooks/src/legacy_notify.rs#L13`-`#L68`): the configured
+  argv plus one final argument, `{"type":"agent-turn-complete",
+  "thread-id", "turn-id", "cwd", "client"?, "input-messages",
+  "last-assistant-message"}`; stdin, stdout, and stderr are null, and
+  Codex does not wait for it. It is not a hook, so no trust hash gates it
+  (Inferred: the trust check is in hook discovery, `engine/discovery.rs`).
+  Rollouts (`rollout/src/recorder.rs`, `precompute_new_rollout_path`):
+  `sessions/<YYYY>/<MM>/<DD>/rollout-<timestamp>-<thread id>.jsonl`
+  under the Codex home, **created lazily** at the first persist, not at
+  session start.
+- **Grok** (grok-build `2bdd1d6a`,
+  `crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md`). Config:
+  `~/.grok/hooks/*.json` (Claude format, a top-level `"hooks"` object);
+  `command` is a path or "an inline shell command"; `timeout` in seconds
+  (default 5, 600 for `Stop`). Events include `SessionStart`, `Stop`,
+  `StopFailure` ("a turn ends because of an API error"), `StopCancelled`
+  ("instead of `Stop` when a turn ends without completing"), and
+  `Notification`. The envelope is camelCase: `hookEventName`,
+  `sessionId`, `cwd`, `workspaceRoot`, `timestamp`, `permissionMode`;
+  `StopFailure` adds `error` (`rate_limit`, ...) and `errorDetails`
+  (clipped at 1000 characters); `StopCancelled` adds `reason`
+  (`user_interrupt`, ...); `Notification` adds `notificationType`. Every
+  hook gets `GROK_HOOK_EVENT`, `GROK_HOOK_NAME`, `GROK_SESSION_ID`,
+  `GROK_WORKSPACE_ROOT`, and `CLAUDE_PROJECT_DIR`. Grok also reads the
+  hooks in `~/.claude/settings.json` with the same camelCase envelope
+  (plus `hook_event_name`), unless `[compat.<vendor>] hooks = false` or
+  "the corresponding environment variable"; the doc at this revision
+  does not name the variable, so `GROK_CLAUDE_HOOKS_ENABLED` (from
+  `docs.x.ai`) is Doc-verified only there. Whether Grok's
+  `SessionStart` payload has a source field is not stated: unverified,
+  and aggy does not read one.
+
 ## Skill folders
 
 Source and docs only, not run live (2026-10-28). `aggy skill link`

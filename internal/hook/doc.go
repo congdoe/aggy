@@ -1,6 +1,10 @@
-// Package hook is the entry point vendor hooks call (aggy hook <event>).
-// It parses JSON payloads and, from M2, forwards them to the supervisor
-// over a local socket. Payloads never reach a shell.
+// Package hook is the logic behind aggy hook <event>, which vendor hooks
+// call. Payloads are parsed as JSON and never reach a shell.
+//
+// Forwarded events (event.go) keep only the payload fields aggy uses
+// and go to the supervisor over its socket; Forward decides which
+// installed hook speaks for the vendor on screen. Install (install.go)
+// merges aggy's hook entries into a vendor's hook config.
 //
 // PreToolUse is the guard wired into delegated (borrow) children: it
 // denies shell commands that would start another vendor CLI headless or
