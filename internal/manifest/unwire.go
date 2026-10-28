@@ -493,15 +493,23 @@ func removeOwnDirs(c store.Change) error {
 //   - A pending row of a file that existed, whose backup is missing:
 //     patch.Apply writes and fsyncs the backup, and renames it into
 //     place, before it writes the target, so a stop before the backup
-//     is a stop before the write. This trusts the backups folder: it
-//     must exist (so it was not deleted wholesale), and a backup lost to
-//     a power cut after its directory sync failed, or deleted by hand,
-//     would be taken for one never made.
-func (m *Manifest) provenUnwritten(c store.Change) (bool, error) {
+//     is a stop before the write. A backup can also be lost, though:
+//     deleted by hand (alone, or with the whole backups folder, which a
+//     later change makes again), or, after its directory sync failed, by
+//     a power cut. So the proof is used only while the file does not
+//     hold exactly this change's result (curHash, the file's hash now):
+//     a file that does is reported as Drifted or Failed by the normal
+//     path, never quietly marked undone with aggy's write in it. The
+//     backups folder must also exist.
+//
+// TODO(T6735): the backups/<change-id> entry is not synced into backups/
+// before the target write, so a power cut can lose it while keeping the
+// target; the curHash guard keeps that loud when the file is unchanged.
+func (m *Manifest) provenUnwritten(c store.Change, curHash string) (bool, error) {
 	switch {
 	case c.Status == store.ChangeFailed:
 		return true, nil
-	case c.Status != store.ChangePending || c.HashBefore == patch.NoFile:
+	case c.Status != store.ChangePending || c.HashBefore == patch.NoFile || curHash == c.HashAfter:
 		return false, nil
 	}
 	if _, err := safefs.Lstat(m.backupRoot); err != nil {
@@ -620,7 +628,14 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 
 	// A change that never wrote has nothing in the file to undo, whatever
 	// the file holds now and whatever came after it.
-	unwritten, err := m.provenUnwritten(c)
+	_, nowHash, err := readFile(r.File)
+	if err != nil {
+		return fail(err)
+	}
+	if f, ok := run.sim[simKey(r.File)]; ok {
+		nowHash = f.hash
+	}
+	unwritten, err := m.provenUnwritten(c, nowHash)
 	if err != nil {
 		return fail(err)
 	}
