@@ -150,16 +150,21 @@ func (id Identity) words() (user string, hosts []string) {
 // userREs match user in the forms that name an account rather than use
 // a word: "user@host" or an email's local part, "~user" (a home in shell
 // and path form), and "/Volumes/<user>" (an external disk named after the
-// account; also URL-encoded and JSON-escaped). Each captures the text before and after the name, which a
-// replacement keeps. A user name in prose ("ann wrote this") is not
+// account; also URL-encoded and JSON-escaped). Each captures the text
+// before and after the name, which a replacement keeps. A user name in prose ("ann wrote this") is not
 // matched: many account names are ordinary words, so that is a known
 // limit, and generic names are never matched at all (see identifying).
 func userREs(user string) []*regexp.Regexp {
 	u := regexp.QuoteMeta(user)
+	// After the name: the end, a character no name holds, or a dot that
+	// ends a sentence (followed by the end or by a character no name
+	// holds). A dot followed by a name character continues another,
+	// dotted name (macOS allows "ann.doe").
+	end := `($|[^A-Za-z0-9_.-]|\.(?:$|[^A-Za-z0-9_-]))`
 	return []*regexp.Regexp{
 		regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_.+-])` + u + `(@)`),
-		regexp.MustCompile(`(?i)(^~|[^A-Za-z0-9_.+~-]~|%(?:25)*7E)` + u + `($|[^A-Za-z0-9_.-])`),
-		regexp.MustCompile(`(?i)(/Volumes/|\\/Volumes\\/|%(?:25)*2FVolumes%(?:25)*2F)` + u + `($|[^A-Za-z0-9_.-])`),
+		regexp.MustCompile(`(?i)(^~|[^A-Za-z0-9_.+~-]~|%(?:25)*7E)` + u + end),
+		regexp.MustCompile(`(?i)(/Volumes/|\\/Volumes\\/|%(?:25)*2FVolumes%(?:25)*2F)` + u + end),
 	}
 }
 

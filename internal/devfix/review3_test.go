@@ -61,6 +61,12 @@ func TestUserNamePathForms(t *testing.T) {
 		{`"\/Volumes\/annb\/x"`, `"\/Volumes\/fixture-user\/x"`, true},
 		{"annb@laptop:~$", "fixture-user@laptop:~$", true},
 		{"~annb ~annb", "~fixture-user ~fixture-user", true},
+		{"see ~annb.", "see ~fixture-user.", true},
+		{"/Volumes/annb.", "/Volumes/fixture-user.", true},
+		{"(~annb.)", "(~fixture-user.)", true},
+		{"~annb...", "~fixture-user...", true},
+		{"~annb.doe/x", "~annb.doe/x", false}, // another, dotted name
+		{"/Volumes/annb.backup", "/Volumes/annb.backup", false},
 		// Not the user name: a longer name, another volume, prose.
 		{"~annbx/proj", "~annbx/proj", false},
 		{"x~annb", "x~annb", false},
