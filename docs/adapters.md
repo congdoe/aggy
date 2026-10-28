@@ -344,8 +344,11 @@ child gets the lockdown's config isolation too (`--strict-config
 --ignore-user-config` and the `--disable` set, minus the shell, which it
 needs to read files), so no MCP server, `writable_roots`, or
 `network_access` from the user's `config.toml` widens the sandbox. That
-combination is not yet run live, and whether exec's default web search is
-on for it is unverified (no recorded flag turns it off). Claude's
+combination was run live (verification.md, "Codex edit lockdown"): a
+write in the cwd worked and one outside it was refused. Whether exec's
+default web search is on for it, and whether Codex treats a linked
+worktree as its main repo for project trust, are unverified (no recorded
+flag turns web search off). Claude's
 `acceptEdits` under `-p` and a Grok child writing with `write` and
 `search_replace` (which take any absolute path, with no sandbox recorded
 for a writing child) are unverified, so the borrow passes them over
