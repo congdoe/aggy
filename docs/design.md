@@ -194,6 +194,7 @@ Codex is deliberately not in the `news` and `research` defaults. Its `apply_patc
 aggy walks the list for the kind (or the one `--vendor` named) and skips, checking in this order:
 
 - the vendor the parent is on, which should use its own tools instead (for `review`, it wrote the change)
+- for `review`, the vendors named by the `Aggy-Vendor` trailers (section 16) of the commits in the reviewed range (`<base>..HEAD`, at most 1,000 commits, read with `git log` under the same safe options as the diff and no signature check); a value that is not a vendor is ignored, and a git failure means no authors. Anyone can write a trailer, so it only steers: when skipping the authors would leave no vendor, they are kept and `aggy borrow` prints a warning naming them. The other rules below still apply to them
 - vendors that are not connected, or that `aggy setup` never recorded, in the `vendors` table; an `unknown` sign-in status counts as usable, and aggy says so
 - vendors outside the repo's `allowed_vendors`
 - vendors that hit their limit recently (section 11, "Recording limits"); a limit only a hook reported never leaves the list empty: when every vendor would be skipped, those vendors are kept and `aggy borrow` prints a warning naming them

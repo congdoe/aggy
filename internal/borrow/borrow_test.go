@@ -174,3 +174,20 @@ func TestDelegated(t *testing.T) {
 		t.Error("a delegated borrow ran a child")
 	}
 }
+
+// TestReviewSkipsTrailerAuthors (T6693): a review's Authors reach the
+// router, which passes over a vendor that wrote part of the change.
+func TestReviewSkipsTrailerAuthors(t *testing.T) {
+	w := newWorld(t)
+	for _, v := range adapter.Vendors() {
+		w.connected[v] = v == adapter.Grok || v == adapter.Claude
+	}
+	w.scenario[adapter.Grok] = `{"json":{"result":"grok reviewed"}}`
+	w.scenario[adapter.Claude] = `{"json":{"type":"result","result":"claude reviewed"}}`
+	req := w.req(adapter.Review, "review it")
+	req.Authors = []adapter.Vendor{adapter.Grok}
+	res, err := w.borrower().Run(context.Background(), req)
+	if err != nil || len(res) != 1 || res[0].Vendor != adapter.Claude {
+		t.Fatalf("results %+v, %v; want claude", res, err)
+	}
+}
