@@ -16,6 +16,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
 	"github.com/congdoe/aggy/internal/checkup"
+	"github.com/congdoe/aggy/internal/devfix"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
@@ -54,6 +55,7 @@ type checkEnv struct {
 	home     string    // HOME, to show paths as ~
 	environ  []string  // aggy's environment; only names are ever reported
 	now      func() time.Time
+	identity *devfix.Identity // what doctor --report scrubs; nil means the running user's
 }
 
 // defaultCheckEnv is the real world: the three adapters, the process
@@ -217,7 +219,7 @@ func (r *setupRun) vendor(ctx context.Context, a adapter.Adapter) (code int, sto
 			res = checkup.CheckVendor(ctx, a, r.env.run)
 			fmt.Fprintf(r.out, "  sign-in: %s\n", signInText(res))
 		}
-	case res.SignIn == adapter.SignInUnknown && res.Err == nil:
+	case res.SignIn == adapter.SignInUnknown && res.ProbeErr == nil && res.SignInErr == nil:
 		fmt.Fprintf(r.out, "  aggy has no verified way to ask %s whether it is signed in. If it is not: %s.\n", name, steps)
 	}
 	rec := store.VendorStatus{
@@ -247,8 +249,10 @@ func (r *setupRun) printVendor(res checkup.Vendor) {
 	if res.VersionWarning != "" {
 		fmt.Fprintf(r.out, "  warning: %s\n", termsafe.Field(res.VersionWarning))
 	}
-	if res.Err != nil {
-		fmt.Fprintf(r.out, "  error: %s\n", termsafe.Field(res.Err.Error()))
+	for _, err := range []error{res.ProbeErr, res.SignInErr} {
+		if err != nil {
+			fmt.Fprintf(r.out, "  error: %s\n", termsafe.Field(err.Error()))
+		}
 	}
 	fmt.Fprintf(r.out, "  sign-in: %s\n", signInText(res))
 }

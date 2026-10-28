@@ -39,9 +39,19 @@ type Finding struct {
 	Message string         // for the person; holds no secret or env value
 }
 
-// Finding codes.
+// Finding codes. Each is stable, for reports and issues.
 const (
-	CodeAPIKeyEnv = "api-key-env" // an API-key variable is set
+	CodeAPIKeyEnv = "api-key-env" // warning: an API-key variable is set
+
+	CodeCLIFound        = "cli-found"            // info: installed, with its version
+	CodeCLIMissing      = "cli-missing"          // info: not on PATH
+	CodeNoCLI           = "no-cli"               // error: no vendor CLI is installed
+	CodeProbeFailed     = "cli-probe-failed"     // error: installed, but --version failed
+	CodeVersionUntested = "version-untested"     // warning: outside the tested range, or unreadable
+	CodeSignedIn        = "signed-in"            // info
+	CodeSignedOut       = "signed-out"           // warning: the CLI reports it is not signed in
+	CodeSignInUnknown   = "sign-in-unknown"      // info: no verified way to ask
+	CodeSignInFailed    = "sign-in-check-failed" // warning: the sign-in check did not run
 )
 
 // apiKeys maps each API-key variable to the vendor CLI it can switch to
