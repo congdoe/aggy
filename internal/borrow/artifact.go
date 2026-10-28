@@ -93,7 +93,7 @@ func readArtifact(a adapter.Artifact, started time.Time) (media, error) {
 	case safefs.LinkCount(fi) != 1:
 		return refuse(fmt.Sprintf("it has %d hard links", safefs.LinkCount(fi)))
 	case born(fi).Before(started.Add(-timeSlack)):
-		return refuse("it was made before the child started")
+		return media{}, fmt.Errorf("%s: refused, %w", a.Path, errOld)
 	case fi.Size() > limit:
 		return refuse(fmt.Sprintf("it is over the %d MiB cap", limit>>20))
 	}
@@ -113,6 +113,9 @@ func readArtifact(a adapter.Artifact, started time.Time) (media, error) {
 	}
 	return media{Artifact: a, Type: typ, Data: data}, nil
 }
+
+// errOld is the refusal of a file made before the child started.
+var errOld = errors.New("it was made before the child started")
 
 // born is when the file was made: its birth time where the system reports
 // one (macOS, the BSDs).
@@ -144,15 +147,22 @@ func sniff(data []byte) string {
 }
 
 // gate passes each artifact through readArtifact and returns the ones
-// that passed and a reason for each one refused.
-func gate(arts []adapter.Artifact, started time.Time) (ok []media, refused []string) {
+// that passed, a reason for each one refused, and how many the run made.
+// A resumed session's folder holds the files of its earlier runs: with
+// resumed, a file made before this run is skipped quietly (still never
+// copied) and not counted as made.
+func gate(arts []adapter.Artifact, started time.Time, resumed bool) (ok []media, refused []string, made int) {
 	for _, a := range arts {
 		m, err := readArtifact(a, started)
+		if resumed && errors.Is(err, errOld) {
+			continue
+		}
+		made++
 		if err != nil {
 			refused = append(refused, err.Error())
 			continue
 		}
 		ok = append(ok, m)
 	}
-	return ok, refused
+	return ok, refused, made
 }

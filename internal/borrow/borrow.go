@@ -400,6 +400,9 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 		GuardCommand: b.Guard,
 		RefImages:    refs,
 	}
+	if req.Media != nil {
+		hreq.Resume = req.Media.Resume
+	}
 	cmd, err := a.Headless(hreq)
 	if errors.Is(err, adapter.ErrUnsupported) {
 		// Such as reference images on Grok: the next vendor may serve it.
@@ -473,12 +476,11 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 		}
 		// Every file the vendor left counts, kept or not: image turns use
 		// plan limits faster, and Codex can make more than it says.
-		res.Made = len(arts)
+		passed, refused, made := gate(arts, started, hreq.Resume != "")
+		res.Refused, res.Made = refused, made
 		if req.Kind == adapter.Image {
 			end.ImageCount = res.Made
 		}
-		passed, refused := gate(arts, started)
-		res.Refused = refused
 		for _, m := range passed {
 			res.Artifacts = append(res.Artifacts, m.Artifact)
 		}

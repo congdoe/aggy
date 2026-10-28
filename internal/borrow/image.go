@@ -25,6 +25,9 @@ type Media struct {
 	Refs []string
 	// N is the number of variants asked for; 0 means 1.
 	N int
+	// Resume is the vendor session an --edit continues, from the
+	// sidecar of the image edited; Request.Vendor is that vendor.
+	Resume string
 }
 
 // MaxImages caps the variants one image borrow asks for. Image turns use
@@ -72,6 +75,15 @@ func (m *Media) validate(req Request) error {
 			return fmt.Errorf("--ref %q must be absolute and on one line", r)
 		}
 	}
+	if m.Resume != "" {
+		v, err := adapter.ParseVendor(req.Vendor)
+		if err != nil || req.Kind != adapter.Image {
+			return errors.New("an edit resumes an image session on the vendor that made it")
+		}
+		if err := adapter.ValidSessionID(v, m.Resume); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -85,6 +97,9 @@ func (m *Media) constraints() []string {
 	}
 	if len(m.Refs) > 0 {
 		out = append(out, "The attached images are references for style and content.")
+	}
+	if m.Resume != "" {
+		out = append(out, "Edit the image you made earlier in this session as the task says; make a new image file.")
 	}
 	return out
 }
@@ -133,6 +148,38 @@ func SidecarPath(repo, out string) (string, error) {
 		return "", fmt.Errorf("%s is not inside %s", out, repo)
 	}
 	return filepath.Join(repo, filepath.FromSlash(AssetsDir), rel+".json"), nil
+}
+
+// MaxSidecar caps a sidecar file read for --edit.
+const MaxSidecar = 64 << 10
+
+// ReadSidecar reads the sidecar of out, a file inside repo, for --edit.
+// The sidecar sits in the repo, so it is checked like input: a known
+// vendor and a valid session id for it, and an image.
+func ReadSidecar(repo, out string) (Sidecar, error) {
+	p, err := SidecarPath(repo, out)
+	if err != nil {
+		return Sidecar{}, err
+	}
+	data, err := safefs.ReadFileLimit(p, MaxSidecar)
+	if err != nil {
+		return Sidecar{}, fmt.Errorf("%s has no sidecar aggy wrote (%w)", out, err)
+	}
+	var sc Sidecar
+	if err := json.Unmarshal(data, &sc); err != nil {
+		return Sidecar{}, fmt.Errorf("sidecar %s: %w", p, err)
+	}
+	v, err := adapter.ParseVendor(sc.Vendor)
+	if err != nil {
+		return Sidecar{}, fmt.Errorf("sidecar %s: %w", p, err)
+	}
+	if err := adapter.ValidSessionID(v, sc.SessionID); err != nil {
+		return Sidecar{}, fmt.Errorf("sidecar %s: %w", p, err)
+	}
+	if sc.Kind != string(adapter.Image) {
+		return Sidecar{}, fmt.Errorf("sidecar %s is for a %q, and only images are edited", p, sc.Kind)
+	}
+	return sc, nil
 }
 
 // outPath is where the i-th kept file goes: out, then out's name with -2,
