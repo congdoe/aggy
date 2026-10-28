@@ -254,8 +254,11 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 			return nil, err
 		}
 		var out []Result
+		// One group id marks these runs as one question asked of each
+		// vendor, so the redo rule never counts one against another.
+		group := newID()
 		for _, v := range vs {
-			res, err := b.runOne(ctx, req, v)
+			res, err := b.runOne(ctx, req, v, group)
 			if err != nil {
 				return out, err
 			}
@@ -300,7 +303,7 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 				continue
 			}
 			done[v] = true
-			res, err := b.runOne(ctx, req, v)
+			res, err := b.runOne(ctx, req, v, "")
 			var pre *preStartError
 			if errors.As(err, &pre) {
 				tried = append(tried, Attempt{Vendor: v, Reason: pre.Error()})
@@ -405,8 +408,9 @@ func title(task string) string {
 	return string(r)
 }
 
-// runOne runs req on vendor v.
-func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (Result, error) {
+// runOne runs req on vendor v. group is the --vendor both run the borrow
+// is part of, or "".
+func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, group string) (Result, error) {
 	cli, err := b.Locate(ctx, v)
 	if err != nil {
 		return Result{}, &preStartError{fmt.Errorf("%s: %w", v, err)}
@@ -517,7 +521,10 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	if err != nil {
 		return Result{}, err
 	}
-	sum := sha256.Sum256([]byte(req.Task))
+	// The task hash compares questions for the redo rule (store.BorrowStats):
+	// the normalized task, as the research cache compares it. No task text
+	// is stored.
+	sum := sha256.Sum256([]byte(norm(req.Task)))
 	child := store.Child{
 		ID: newID(), ParentID: parent.ID, Vendor: string(v), Kind: string(req.Kind), Title: title(req.Task),
 		Model: model, Cwd: dirs.cwd, CreatedAt: now, LastActive: now, Worktree: res.Worktree,
@@ -620,13 +627,16 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 			res.Worktree.Tree = tree
 		}
 	}
-	// The per-borrow log behind aggy log and, later, aggy stats.
+	// The per-borrow log behind aggy log and aggy stats.
+	detail := map[string]any{
+		"borrow": id, "kind": string(req.Kind), "vendor": string(v), "model": model,
+		"tokens": res.Tokens, "ms": res.Elapsed.Milliseconds(), "outcome": res.Outcome,
+	}
+	if group != "" {
+		detail["group"] = group
+	}
 	if err := b.Store.AppendEvent(ctx, store.Event{
-		At: end.EndedAt, ParentID: parent.ID, ChildID: child.ID, Type: store.EventBorrow,
-		Detail: map[string]any{
-			"borrow": id, "kind": string(req.Kind), "vendor": string(v), "model": model,
-			"tokens": res.Tokens, "ms": res.Elapsed.Milliseconds(), "outcome": res.Outcome,
-		},
+		At: end.EndedAt, ParentID: parent.ID, ChildID: child.ID, Type: store.EventBorrow, Detail: detail,
 	}); err != nil {
 		return res, err
 	}

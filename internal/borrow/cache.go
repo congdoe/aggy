@@ -36,7 +36,6 @@ func cacheTTL(k adapter.Kind) time.Duration {
 // cacheKey identifies a question: the kind, the task, and the
 // constraints, each lowercased with its whitespace collapsed.
 func cacheKey(req Request) string {
-	norm := func(s string) string { return strings.Join(strings.Fields(strings.ToLower(s)), " ") }
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s", req.Kind, norm(req.Task))
 	for _, c := range req.Constraints {
@@ -44,6 +43,10 @@ func cacheKey(req Request) string {
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
+
+// norm lowercases s and collapses its whitespace, so the same question
+// asked twice compares equal.
+func norm(s string) string { return strings.Join(strings.Fields(strings.ToLower(s)), " ") }
 
 func (b *Borrower) cachePath(key string) string {
 	return filepath.Join(b.StateDir, ResearchDir, CacheDir, key+".json")

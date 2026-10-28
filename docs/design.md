@@ -206,6 +206,13 @@ The rest are tried in order. A candidate whose CLI is missing, whose adapter ref
 
 Every borrow is logged with its kind, vendor, model, tokens, time, and outcome. A redo, or the same question re-asked of another vendor, counts against the first. `aggy stats` shows results per kind, and you reorder the table. The switch picker uses the same signals.
 
+As built (M4, T6701), a redo is read from what the borrows table already holds, and nothing new is stored for it. A borrow that ended `ok` is *redone* when a later borrow of the same kind, under the same parent, started after it ended and at most 24 hours later, and either:
+
+- has the same task hash: the same question, re-asked of any vendor (a `--fresh` re-ask included). The task hash is the SHA-256 of the task text lowercased with its whitespace collapsed, as the research cache compares questions; borrows from before this rule hashed the raw text, so a pair that spans the upgrade only matches when the text was already in that form. Or
+- the first is an `edit` whose worktree was rejected (`aggy reject`), and the later one is another edit, whatever its text.
+
+A redo counts against the borrow redone, so against its vendor, never against the one asked next. In a chain of re-asks each attempt but the last is redone. The borrows of one `--vendor both` run are one question asked of two vendors on purpose, not a redo of each other: aggy marks them with a shared `group` in their borrow events, and the rule skips a pair from the same group (runs from before the marker have none and count as redone). A failed or killed borrow is never redone, since it already counts as not `ok`. A cached research or news answer runs no borrow and records none. A borrow whose parent is unknown is never matched. The window and the matching are aggy's own record of what was asked again, not a judgment of the answer: a person who re-asks for another reason still counts, and one who rephrases a question does not. The task text itself is never stored, and `aggy stats` prints no hash.
+
 ## 9. Configuration
 
 User config is `~/.aggy/config.toml` (or `$AGGY_HOME/config.toml`). Unset keys take the defaults, and unknown keys are an error.
@@ -403,7 +410,7 @@ The index is SQLite in WAL mode, with the file at mode 0600, in a directory crea
 | --- | --- |
 | `parents` | id, title, directory, last vendor, created, last active |
 | `children` | id, parent, vendor, vendor session id, kind, model, cwd, worktree, transcript path, status, process lease, last active |
-| `borrows` | id, child, kind, vendor, model, task hash, budget, status, outcome, artifacts, image count, tokens, report path, start, end |
+| `borrows` | id, child, kind, vendor, model, task hash (of the normalized task text, section 8), budget, status, outcome, artifacts, image count, tokens, report path, start, end |
 | `changes` | the config-change manifest: file, hash before, hash after, backup path, applied, undone |
 | `probes` | per vendor: CLI path, version, connected, capabilities, probed at |
 | `vendors` | what `aggy setup` last found, one row per vendor: connected (`connected`, `not_connected`, or `unknown`), CLI version, checked at |

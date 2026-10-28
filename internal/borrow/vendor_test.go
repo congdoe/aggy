@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 )
@@ -85,6 +86,31 @@ func TestBothRunsEach(t *testing.T) {
 	}
 	if res[0].ID == res[1].ID || res[0].ReportPath == res[1].ReportPath {
 		t.Error("the two borrows share an id")
+	}
+	// T6701: one --vendor both run is not a redo of itself; the same
+	// question asked again later (case and spacing aside) redoes both.
+	redone := func() map[string]int {
+		st, err := w.store.BorrowStats(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]int{}
+		for _, s := range st {
+			out[s.Vendor] = s.Redone
+		}
+		return out
+	}
+	if got := redone(); got["claude"] != 0 || got["grok"] != 0 {
+		t.Errorf("after one both run, redone = %v", got)
+	}
+	w.now = w.now.Add(time.Hour)
+	again := w.req(adapter.Research, "  X ")
+	again.Vendor, again.Fresh = "grok", true
+	if _, err := b.Run(context.Background(), again); err != nil {
+		t.Fatal(err)
+	}
+	if got := redone(); got["claude"] != 1 || got["grok"] != 1 {
+		t.Errorf("after a re-ask, redone = %v", got)
 	}
 }
 

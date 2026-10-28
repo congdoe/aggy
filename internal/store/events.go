@@ -13,8 +13,8 @@ const (
 	// EventSwitch: the on-screen harness changed. Detail: from, to,
 	// model, reason.
 	EventSwitch = "switch"
-	// EventBorrow: a borrow finished. Detail: kind, vendor, model,
-	// outcome.
+	// EventBorrow: a borrow finished. Detail: borrow, kind, vendor,
+	// model, tokens, ms, outcome, and group for a --vendor both run.
 	EventBorrow = "borrow"
 	// EventFiles: files changed during a turn. Detail: files.
 	EventFiles = "files"
