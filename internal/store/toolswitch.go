@@ -9,8 +9,10 @@ import (
 type ToolSwitch struct {
 	Tool   string
 	Vendor string // "" for every vendor
-	Repo   string // "" for every repo, else the repo's real path
+	Repo   string // "" for every repo, else the main checkout's canonical path
 	On     bool
+	// Digest is the sha256 of the definition turned on ("" for off).
+	Digest string
 	At     time.Time
 }
 
@@ -30,17 +32,24 @@ func (s *Store) PutToolSwitch(ctx context.Context, sw ToolSwitch) error {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO tool_switches (tool, vendor, repo, on_, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		sw.Tool, sw.Vendor, sw.Repo, sw.On, millis(sw.At)); err != nil {
+		`INSERT INTO tool_switches (tool, vendor, repo, on_, digest, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		sw.Tool, sw.Vendor, sw.Repo, sw.On, sw.Digest, millis(sw.At)); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
+// DeleteToolSwitches removes every setting of tool, as when its user
+// definition is added anew or removed.
+func (s *Store) DeleteToolSwitches(ctx context.Context, tool string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM tool_switches WHERE tool = ?`, tool)
+	return err
+}
+
 // ToolSwitches returns every setting, by tool, repo, and vendor.
 func (s *Store) ToolSwitches(ctx context.Context) ([]ToolSwitch, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT tool, vendor, repo, on_, updated_at FROM tool_switches ORDER BY tool, repo, vendor`)
+		`SELECT tool, vendor, repo, on_, digest, updated_at FROM tool_switches ORDER BY tool, repo, vendor`)
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +58,7 @@ func (s *Store) ToolSwitches(ctx context.Context) ([]ToolSwitch, error) {
 	for rows.Next() {
 		var sw ToolSwitch
 		var at int64
-		if err := rows.Scan(&sw.Tool, &sw.Vendor, &sw.Repo, &sw.On, &at); err != nil {
+		if err := rows.Scan(&sw.Tool, &sw.Vendor, &sw.Repo, &sw.On, &sw.Digest, &at); err != nil {
 			return nil, err
 		}
 		sw.At = fromMillis(at)

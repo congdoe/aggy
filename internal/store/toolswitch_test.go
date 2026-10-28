@@ -33,10 +33,10 @@ func TestPutToolSwitch(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []ToolSwitch{
-		{"demo", "claude", "", false, now},
-		{"demo", "codex", "", true, now},
-		{"demo", "", "/r/b", true, now},
-		{"other", "claude", "/r/a", true, now},
+		{Tool: "demo", Vendor: "claude", Repo: "", On: false, At: now},
+		{Tool: "demo", Vendor: "codex", Repo: "", On: true, At: now},
+		{Tool: "demo", Vendor: "", Repo: "/r/b", On: true, At: now},
+		{Tool: "other", Vendor: "claude", Repo: "/r/a", On: true, At: now},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %+v", got)

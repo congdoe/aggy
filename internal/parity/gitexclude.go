@@ -40,6 +40,31 @@ const maxGitFile = 4 << 10
 // neither info nor info/exclude may be a symlink. Otherwise it is an
 // error and nothing is planned.
 func GitExcludePath(root string) (string, error) {
+	common, err := GitCommonDir(root)
+	if err != nil {
+		return "", err
+	}
+	// Neither info nor the exclude file may be a symlink: the patch must
+	// change the repo's own exclude file, never a file a link points at.
+	info := filepath.Join(common, "info")
+	exclude := filepath.Join(info, "exclude")
+	if fi, err := safefs.Lstat(info); err == nil && !fi.IsDir() {
+		return "", fmt.Errorf("parity: %s is not a directory (a symlink is refused)", info)
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	if fi, err := safefs.Lstat(exclude); err == nil && !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("parity: %s is not a regular file (a symlink is refused)", exclude)
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	return exclude, nil
+}
+
+// GitCommonDir returns the common git dir of the work tree at root (the
+// main checkout's .git for a linked worktree), checked as GitExcludePath
+// describes, without running git.
+func GitCommonDir(root string) (string, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return "", err
@@ -92,21 +117,7 @@ func GitExcludePath(root string) (string, error) {
 	if err := looksLikeGitDir(common, true); err != nil {
 		return "", err
 	}
-	// Neither info nor the exclude file may be a symlink: the patch must
-	// change the repo's own exclude file, never a file a link points at.
-	info := filepath.Join(common, "info")
-	exclude := filepath.Join(info, "exclude")
-	if fi, err := safefs.Lstat(info); err == nil && !fi.IsDir() {
-		return "", fmt.Errorf("parity: %s is not a directory (a symlink is refused)", info)
-	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return "", err
-	}
-	if fi, err := safefs.Lstat(exclude); err == nil && !fi.Mode().IsRegular() {
-		return "", fmt.Errorf("parity: %s is not a regular file (a symlink is refused)", exclude)
-	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return "", err
-	}
-	return exclude, nil
+	return common, nil
 }
 
 // looksLikeGitDir refuses a directory that is not a git dir: it must hold
