@@ -49,16 +49,27 @@ var grokRootSources = []string{
 	".claude/settings.json", ".claude/settings.local.json", ".grok/hooks", ".cursor/hooks.json", ".grok/workflows",
 }
 
-// grokInstructionSources are project instructions and skills, checked in
-// every dir from the cwd up to the git root; folder trust gates them too
-// (folder_trust.rs:539-546). They run no code, but Grok loads them as
-// system-level text, and a review keeps read_file, which takes an
-// absolute or ~ path as is, with no check that it is under the cwd
-// (grok-build 2bdd1d6a, xai-grok-tools/src/types/resources.rs:404-430,
-// resolve_model_path; implementations/grok_build/read_file/mod.rs:135,
-// :419). A hostile repo's instructions could have the reviewer read
-// ~/.ssh or another CLI's auth file and echo it into the review. So they
-// refuse a Grok review like code does. The names: INSTRUCTION_FILENAMES
+// grokInstructionSources are project instructions and skills; folder
+// trust gates them too (folder_trust.rs:539-546). They no longer refuse a
+// Grok review (C17-10, relaxed by T6742), and grokProjectSources does not
+// look for them; TrustMarker still keeps an edit diff off them.
+//
+// Why that is safe now: they run no code, and their only risk was that
+// Grok loads them as system-level text while a review keeps read_file,
+// which takes an absolute or ~ path as is (grok-build 2bdd1d6a,
+// xai-grok-tools/src/types/resources.rs:404-430, resolve_model_path;
+// implementations/grok_build/read_file/mod.rs:135, :419), so a hostile
+// repo could steer the reviewer to read ~/.ssh or another CLI's auth
+// file and echo it. A review now runs under --sandbox strict, which
+// refused a read_file of a canary under $HOME and still read the
+// workspace (docs/verification.md S2), plus aggy's ~/Library denies (S4)
+// and, on darwin, the /System/Volumes/Data firmlink denies (S5), all
+// live-verified on grok 1.0.70 (2026-10-28). That confinement does not
+// depend on who asks for the read. What strict leaves readable (system
+// dirs, the temp dirs, Grok's own home; docs/verification.md after the S
+// table) was never closed by this gate either: the diff under review is
+// attacker text too and can ask for the same reads in any repo. The
+// names: INSTRUCTION_FILENAMES
 // and agent_filenames (xai-grok-config/src/compat.rs:311-318, :431-438),
 // rules dirs (:418-427), checked by has_project_instruction_markers_in
 // (xai-grok-agent/src/prompt/agents_md.rs:213-223); skill dirs are
@@ -80,7 +91,8 @@ func present(p string) bool {
 }
 
 // grokProjectSources returns the code-running config Grok would load
-// with cwd as its working dir, relative to cwd.
+// with cwd as its working dir, relative to cwd. Instructions and skills
+// (grokInstructionSources) are not counted: see there.
 func grokProjectSources(cwd string) []string {
 	cwd = filepath.Clean(cwd)
 	root := cwd
@@ -118,9 +130,6 @@ func grokProjectSources(cwd string) []string {
 		for _, s := range grokChainSources {
 			add(d, s)
 		}
-		for _, s := range grokInstructionSources {
-			add(d, s)
-		}
 	}
 	for _, s := range grokCwdSources {
 		add(cwd, s)
@@ -132,7 +141,8 @@ func grokProjectSources(cwd string) []string {
 }
 
 // grokTrustGate refuses a Grok borrow that runs in a repo holding config
-// Grok would load and run, or instructions it would load.
+// Grok would load and run: hooks, MCP, LSP, plugins, agents, workflows,
+// .envrc. The sandbox does not cover these: a hook is code Grok runs.
 func grokTrustGate(v adapter.Vendor, req Request) error {
 	if v != adapter.Grok || req.Kind != adapter.Review {
 		// Every other kind runs in a fresh empty dir outside any git
@@ -140,7 +150,7 @@ func grokTrustGate(v adapter.Vendor, req Request) error {
 		return nil
 	}
 	if found := grokProjectSources(req.Repo); len(found) > 0 {
-		return fmt.Errorf("grok: %s: %w: the repo holds config or instructions Grok may load (%s), and its folder trust is not relied on",
+		return fmt.Errorf("grok: %s: %w: the repo holds config Grok may load and run (%s), and its folder trust is not relied on",
 			req.Kind, adapter.ErrUnsupported, strings.Join(found, ", "))
 	}
 	return nil

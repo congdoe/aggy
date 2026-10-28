@@ -69,11 +69,11 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 		{"news", adapter.HeadlessRequest{Kind: adapter.News, IsolatedCwd: true, WebSearch: true, MaxTurns: 15},
 			slices.Concat(head, strict, tail("web_search", "web_search"), []string{"--max-turns", "15"}), ""},
 		{"image", adapter.HeadlessRequest{Kind: adapter.Image, SessionID: sid},
-			slices.Concat(head, []string{"--session-id", sid}, tail("image_gen", "image_gen")), ""},
+			slices.Concat(head, []string{"--session-id", sid}, strict, tail("image_gen", "image_gen")), ""},
 		{"image edit", adapter.HeadlessRequest{Kind: adapter.Image, Resume: sid, FileTools: true},
-			slices.Concat(head, []string{"--resume", sid}, tail("image_gen,image_edit", "image_gen", "image_edit")), ""},
+			slices.Concat(head, []string{"--resume", sid}, strict, tail("image_gen,image_edit", "image_gen", "image_edit")), ""},
 		{"video", adapter.HeadlessRequest{Kind: adapter.Video, FileTools: true},
-			slices.Concat(head, tail("image_gen,image_to_video", "image_gen", "image_to_video")), ""},
+			slices.Concat(head, strict, tail("image_gen,image_to_video", "image_gen", "image_to_video")), ""},
 		{"review", adapter.HeadlessRequest{Kind: adapter.Review},
 			slices.Concat(head, []string{"--permission-mode", "plan"}, strict, tail("read_file,grep,list_dir", "read_file", "grep", "list_dir")), ""},
 		{"edit with a model", adapter.HeadlessRequest{Kind: adapter.Edit, Model: "grok-4.7"},
@@ -106,10 +106,11 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 	}
 }
 
-// TestSandboxFailsClosed: review, research, and news need --sandbox
-// strict, so without the probe's sandbox capability they are refused
-// (ErrNoCapability, which is ErrUnsupported); image, video, and edit do
-// not use it yet (TODO(T6742)).
+// TestSandboxFailsClosed: review, research, and news, and image and
+// video while strictMedia is on, need --sandbox strict, so without the
+// probe's sandbox capability, or on a host without a kernel sandbox,
+// they are refused (ErrNoCapability, which is ErrUnsupported); edit does
+// not use it.
 func TestSandboxFailsClosed(t *testing.T) {
 	// G32-1, G32-3: no kernel sandbox on the host, or a HOME that cannot
 	// be named in a deny rule, refuses the sandboxed kinds too.
@@ -121,8 +122,8 @@ func TestSandboxFailsClosed(t *testing.T) {
 		return a
 	}
 	for _, a := range []Adapter{noKernel, home(""), home("rel/home"), home("/"), home("/home/u*"), home("/home/[u]"), home("/home/a,b"), home("/home/u)"), home("/home/../u")} {
-		for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News} {
-			req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true}
+		for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video} {
+			req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true, FileTools: true}
 			if c, err := a.Headless(req); !errors.Is(err, adapter.ErrNoCapability) {
 				t.Errorf("%s with caps %v, HOME %q: %q, %v", k, a.Caps, a.Getenv("HOME"), c.Args, err)
 			}
@@ -134,7 +135,7 @@ func TestSandboxFailsClosed(t *testing.T) {
 		c, cerr := sandboxed().Headless(req)
 		strict := slices.Contains(c.Args, "--sandbox") && c.Args[slices.Index(c.Args, "--sandbox")+1] == "strict"
 		switch k {
-		case adapter.Review, adapter.Research, adapter.News:
+		case adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video:
 			if !errors.Is(err, adapter.ErrNoCapability) || !errors.Is(err, adapter.ErrUnsupported) {
 				t.Errorf("%s without the sandbox capability: %v", k, err)
 			}
@@ -144,6 +145,56 @@ func TestSandboxFailsClosed(t *testing.T) {
 		default:
 			if err != nil || cerr != nil || slices.Contains(c.Args, "--sandbox") {
 				t.Errorf("%s: %q, %v, %v", k, c.Args, err, cerr)
+			}
+		}
+	}
+}
+
+// TestStrictMediaSwitch: strictMedia on puts image and video under
+// --sandbox strict with review's deny rules and host check; off (if the
+// pending live check fails, TODO(T6742)) builds them as before T6742,
+// with no sandbox capability needed.
+func TestStrictMediaSwitch(t *testing.T) {
+	defer func(old bool) { strictMedia = old }(strictMedia)
+	strict := "--sandbox strict --deny Read(/home/u/Library/**) --deny Grep(/home/u/Library/**) " +
+		"--deny Read(/System/Volumes/Data/**) --deny Grep(/System/Volumes/Data/**) "
+	tests := []struct {
+		req  adapter.HeadlessRequest
+		tail string // the argv after --output-format json
+	}{
+		{adapter.HeadlessRequest{Kind: adapter.Image},
+			"--tools image_gen --disallowed-tools read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool," +
+				"image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents"},
+		{adapter.HeadlessRequest{Kind: adapter.Image, Resume: sid, FileTools: true},
+			"--tools image_gen,image_edit --disallowed-tools read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool," +
+				"image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents"},
+		{adapter.HeadlessRequest{Kind: adapter.Video, FileTools: true},
+			"--tools image_gen,image_to_video --disallowed-tools read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool," +
+				"image_edit,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents"},
+	}
+	for _, on := range []bool{true, false} {
+		strictMedia = on
+		for _, tt := range tests {
+			tt.req.PromptFile, tt.req.Cwd = "/p/prompt.md", "/w"
+			head := "--prompt-file /p/prompt.md --output-format json "
+			if tt.req.Resume != "" {
+				head += "--resume " + sid + " "
+			}
+			want := head + tt.tail
+			if on {
+				want = head + strict + tt.tail
+			}
+			c, err := sandboxed().Headless(tt.req)
+			if err != nil || strings.Join(c.Args, " ") != want {
+				t.Errorf("strictMedia %v, %s: %q, %v\nwant %s", on, tt.req.Kind, c.Args, err, want)
+			}
+			// No sandbox capability: refused when on, built when off.
+			_, err = New().Headless(tt.req)
+			if on != errors.Is(err, adapter.ErrNoCapability) || (!on && err != nil) {
+				t.Errorf("strictMedia %v, %s without the capability: %v", on, tt.req.Kind, err)
+			}
+			if got := usesSandbox(tt.req.Kind); got != on {
+				t.Errorf("strictMedia %v: usesSandbox(%s) = %v", on, tt.req.Kind, got)
 			}
 		}
 	}
@@ -243,7 +294,7 @@ func TestParseHeadlessFromScenarios(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.scenario, func(t *testing.T) {
 			h := fakecli.NewHarness(t, fakes)
-			a := Adapter{Getenv: h.Getenv}
+			a := Adapter{Getenv: h.Getenv, Caps: []string{probe.CapSandbox, probe.CapKernelSandbox}}
 			req := adapter.HeadlessRequest{Kind: adapter.Image, PromptFile: h.Prompt, Cwd: h.Cwd}
 			c, err := a.Headless(req)
 			if err != nil {
@@ -276,7 +327,7 @@ func TestParseHeadlessFromScenarios(t *testing.T) {
 func TestArtifactsFallbackScan(t *testing.T) {
 	h := fakecli.NewHarness(t, fakecli.Build(t))
 	grokHome := filepath.Join(t.TempDir(), "grok-home")
-	a := Adapter{Getenv: func(k string) string {
+	a := Adapter{Caps: []string{probe.CapSandbox, probe.CapKernelSandbox}, Getenv: func(k string) string {
 		if k == "GROK_HOME" {
 			return grokHome
 		}
@@ -491,14 +542,14 @@ func TestSandboxNotAppliedFailsClosed(t *testing.T) {
 		"INFO Sandbox enforcement unavailable (built without 'enforce' feature)",
 	} {
 		out := adapter.Output{Stdout: []byte(liveReply), Stderr: []byte("ok\n" + msg + "\n")}
-		for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News} {
+		for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video} {
 			res, err := sandboxed().ParseHeadless(adapter.HeadlessRequest{Kind: k}, out)
 			if !errors.Is(err, adapter.ErrLockdownRejected) || res.Error != adapter.ErrLockdown || res.Text != "" {
 				t.Errorf("%s, %q: %+v, %v", k, msg, res, err)
 			}
 		}
-		if _, err := sandboxed().ParseHeadless(adapter.HeadlessRequest{Kind: adapter.Image}, out); err != nil {
-			t.Errorf("image (no sandbox asked) with %q: %v", msg, err)
+		if _, err := sandboxed().ParseHeadless(adapter.HeadlessRequest{Kind: adapter.Edit}, out); err != nil {
+			t.Errorf("edit (no sandbox asked) with %q: %v", msg, err)
 		}
 	}
 	quoted := strings.Replace(liveReply, `"the answer"`, `"the docs say: continuing without sandbox"`, 1)
@@ -514,8 +565,8 @@ func TestFirmlinkDeny(t *testing.T) {
 	for _, goos := range []string{"darwin", "linux"} {
 		a := sandboxed()
 		a.GOOS = goos
-		for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News} {
-			c, err := a.Headless(adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true})
+		for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video} {
+			c, err := a.Headless(adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true, FileTools: true})
 			if err != nil {
 				t.Fatal(err)
 			}

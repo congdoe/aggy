@@ -29,7 +29,8 @@ type Adapter struct {
 	Getenv func(string) string
 	// Caps are the capabilities a probe of this CLI found, plus
 	// probe.CapKernelSandbox when the host can apply Grok's sandbox.
-	// Review, research, and news need both and are refused without them.
+	// Review, research, and news (and image and video while strictMedia
+	// is on) need both and are refused without them.
 	Caps []string
 	// GOOS picks the OS-specific deny rules. Empty means runtime.GOOS.
 	GOOS string
@@ -250,13 +251,14 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 // Headless builds
 //
 //	grok --prompt-file <abs prompt file> --output-format json [--model m] [session] [--permission-mode plan]
-//	     [--sandbox strict --deny Read(<HOME>/Library/**) --deny Grep(<HOME>/Library/**)] --tools <kind's tools> --disallowed-tools <Lockdown minus them> --no-subagents [--max-turns N]
+//	     [--sandbox strict --deny Read(<HOME>/Library/**) --deny Grep(<HOME>/Library/**) [--deny Read(/System/Volumes/Data/**) --deny Grep(/System/Volumes/Data/**)]] --tools <kind's tools> --disallowed-tools <Lockdown minus them> --no-subagents [--max-turns N]
 //
 // with no stdin, so the prompt never goes in argv. Not -p: in grok 1.0.70
 // -p is --single <PROMPT>, which takes the prompt itself as its value
 // (live diagnostic 2026-10-28, grok 1.0.70; docs/verification.md).
 //
-// Review, research, and news run with --sandbox strict: Grok auto-allows
+// Review, research, and news (and image and video, see strictMedia) run
+// with --sandbox strict: Grok auto-allows
 // file reads in every permission mode, and the strict sandbox kept
 // read_file out of $HOME in a live check (live diagnostic 2026-10-28,
 // grok 1.0.70; grok-src profiles.rs). When applying the profile failed
@@ -293,13 +295,11 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 		return adapter.Command{}, err
 	}
 	var tools []string
-	plan, sandbox := false, false
+	plan, sandbox := false, usesSandbox(req.Kind)
 	switch req.Kind {
 	case adapter.Research, adapter.News:
-		tools, sandbox = slices.Clone(SearchTools), true
+		tools = slices.Clone(SearchTools)
 	case adapter.Image:
-		// TODO(T6742): --sandbox strict for image and video, once an
-		// output file write under it is checked live.
 		tools = slices.Clone(ImageTools)
 		if req.Resume != "" {
 			// An edit needs image_edit, which reads any local path.
@@ -314,7 +314,7 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 		}
 		tools = slices.Clone(VideoTools)
 	case adapter.Review:
-		tools, plan, sandbox = slices.Clone(ReadTools), true, true
+		tools, plan = slices.Clone(ReadTools), true
 	case adapter.Edit:
 		tools = slices.Clone(EditTools)
 	default:
@@ -375,9 +375,30 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 	return adapter.Command{Path: Bin, Args: args, Env: req.Env, Dir: req.Cwd, Stdin: adapter.StdinNull}, nil
 }
 
+// strictMedia runs image and video under --sandbox strict with the same
+// deny rules and host check as review. Grok's media tools save their
+// output in the session folder, <Grok home>/sessions/<encoded cwd>/<id>/
+// images or videos (xai-grok-tools/src/implementations/grok_build/
+// image_gen/mod.rs:13, video_gen/mod.rs:1126, storage.rs:54-69). The
+// strict profile keeps that dir writable, with the workspace and the temp
+// dirs (xai-grok-sandbox/src/paths.rs:74-78; profiles.rs:463-488), and
+// the Grok home readable, which image_edit and image_to_video need for
+// the still they reuse. aggy copies the output out of there itself
+// (Artifacts), outside the sandbox. Source only (grok-src 559751fd): the
+// live check that the output is still written under strict is pending,
+// TODO(T6742). If it fails, set this to false. A var, not a const, so
+// tests can check both settings.
+var strictMedia = true
+
 // usesSandbox reports whether Headless runs kind under --sandbox strict.
 func usesSandbox(k adapter.Kind) bool {
-	return k == adapter.Review || k == adapter.Research || k == adapter.News
+	switch k {
+	case adapter.Review, adapter.Research, adapter.News:
+		return true
+	case adapter.Image, adapter.Video:
+		return strictMedia
+	}
+	return false
 }
 
 // globMeta are the characters a --deny path may not hold: glob syntax,
