@@ -231,3 +231,49 @@ func TestUnwireSkipsMarkersAndNoops(t *testing.T) {
 		t.Error("an empty selection was accepted")
 	}
 }
+
+// TestUnwireDryRunSimulatesOrder: a dry run previews an older change to a
+// file against what the newer undo would leave, so two changes to one
+// file are not reported as drift.
+func TestUnwireDryRunSimulatesOrder(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	file := filepath.Join(f.dir, "c.toml")
+	must(t, os.WriteFile(file, []byte("k = 1\n"), 0o600))
+	apply(t, f, "r1", file, "a = 2\n")
+	apply(t, f, "r2", file, "b = 3\n")
+	var out bytes.Buffer
+	undos, err := f.m.Unwire(ctx, Selection{All: true}, UnwireOptions{DryRun: true}, &out)
+	if err != nil || len(undos) != 2 || undos[0].Outcome != Restored || undos[1].Outcome != Restored {
+		t.Fatalf("dry run = %+v, %v\n%s", undos, err, out.String())
+	}
+	if !strings.Contains(out.String(), "-b = 3") || !strings.Contains(out.String(), "-a = 2") {
+		t.Errorf("dry run output:\n%s", out.String())
+	}
+}
+
+// TestUnwireDryRunFailedBeforeBackup: a failed modify that stopped before
+// its backup previews as nothing to restore, not an error.
+func TestUnwireDryRunFailedBeforeBackup(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	file := filepath.Join(f.dir, "c.toml")
+	must(t, os.WriteFile(file, []byte("k = 1\n"), 0o600))
+	c := apply(t, f, "r", file, "a = 2\n")
+	// What a failure before the backup leaves: the file as before and a
+	// failed row with no backup.
+	must(t, os.WriteFile(file, []byte("k = 1\n"), 0o600))
+	must(t, os.RemoveAll(filepath.Join(f.state, BackupDirName, c.ChangeID)))
+	if _, err := f.s.DB().ExecContext(ctx, `UPDATE changes SET status = 'failed', backup_path = '' WHERE change_id = ?`, c.ChangeID); err != nil {
+		t.Fatal(err)
+	}
+	for _, dry := range []bool{true, false} {
+		undos, err := f.m.Unwire(ctx, Selection{All: true}, UnwireOptions{DryRun: dry}, io.Discard)
+		if err != nil || len(undos) != 1 || undos[0].Outcome != Cleaned {
+			t.Errorf("dry=%v: Unwire = %+v, %v", dry, undos, err)
+		}
+	}
+	if s := status(t, f, c.ChangeID); s != store.ChangeUndone {
+		t.Errorf("status = %s", s)
+	}
+}
