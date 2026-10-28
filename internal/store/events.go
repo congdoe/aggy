@@ -18,6 +18,9 @@ const (
 	EventBorrow = "borrow"
 	// EventFiles: files changed during a turn. Detail: files.
 	EventFiles = "files"
+	// EventSession: the on-screen CLI reported its session id. Detail:
+	// vendor, session, source, via ("hook" or "sessions folder").
+	EventSession = "session"
 )
 
 // Event is a row of events.
