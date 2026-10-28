@@ -20,31 +20,42 @@ import (
 // folder and returns when they last changed. It stats and lists folders
 // only: it never reads a session file, never follows a symlink inside
 // the sessions folder, and goes through safefs, which refuses the
-// credential files. The folders:
+// credential files. The folders, under the vendor home recorded on the
+// child at launch (else the current one):
 //
 //   - Claude: <$CLAUDE_CONFIG_DIR or ~/.claude>/projects/<one folder per
 //     cwd>/<session id>.jsonl. Unverified: docs/verification.md does not
-//     record this layout, so any project folder holding <id>.jsonl counts.
+//     record this layout. The folder for the cwd (every character but
+//     A-Z, a-z, and 0-9 made "-", also unverified) is tried first, then
+//     every project folder. A miss is "unknown", never "gone".
 //   - Codex: <$CODEX_HOME or ~/.codex>/sessions/<YYYY>/<MM>/<DD>/
 //     rollout-<timestamp>-<thread id>.jsonl, created at the first persist
 //     (source-verified in the hooks work: codex-rs/rollout/src/recorder.rs
 //     at 6aaac694). Which clock names the date folder is not recorded, so
-//     the days around the child's start are searched in local time and UTC.
-//     TODO(T6660): share codex.RolloutThreadID and RolloutDirs once the
-//     hooks branch merges; internal/transcript (T6639) may also take this.
+//     every day from the child's start through today is searched, in
+//     local time and UTC. TODO(T6660): share codex.RolloutThreadID and
+//     RolloutDirs once the hooks branch merges; internal/transcript
+//     (T6639) may also take this.
 //   - Grok: <$GROK_HOME or ~/.grok>/sessions/<url-encoded cwd>/<session
 //     id>/, a folder (docs/adapters.md, Grok); its newest entry counts.
 //
 // The zero value uses the environment.
 type sessionFiles struct {
 	getenv func(string) string // nil means os.Getenv
+	now    func() time.Time    // nil means time.Now
 
-	claudeDirs []string // project folders, listed once
-	listed     bool
+	claudeDirs map[string][]string // project folders per root, listed once
 }
 
-// errNoSessionFile means the vendor has no file for the session.
-var errNoSessionFile = errors.New("no session file")
+var (
+	// errNoSessionFile means the vendor's sessions folder is there, its
+	// layout is recorded, and it holds no file for the session.
+	errNoSessionFile = errors.New("no session file")
+	// errUnknownSession means aggy cannot tell: the sessions folder is
+	// missing (an unmounted disk, another vendor home) or its layout is
+	// unverified.
+	errUnknownSession = errors.New("session file not found where aggy looks")
+)
 
 func (f *sessionFiles) env(k string) string {
 	if f.getenv != nil {
@@ -53,92 +64,135 @@ func (f *sessionFiles) env(k string) string {
 	return os.Getenv(k)
 }
 
-// root is the vendor's sessions folder: the relocation variable when
-// set, else ~/.<vendor>, then projects (Claude) or sessions.
-func (f *sessionFiles) root(v adapter.Vendor) (string, error) {
+// home is the vendor's home folder in this environment: the relocation
+// variable when set, else ~/.<vendor>.
+func (f *sessionFiles) home(v adapter.Vendor) (string, error) {
 	relocate := map[adapter.Vendor]string{adapter.Claude: "CLAUDE_CONFIG_DIR", adapter.Codex: "CODEX_HOME", adapter.Grok: "GROK_HOME"}[v]
-	sub := "sessions"
-	if v == adapter.Claude {
-		sub = "projects"
+	if relocate == "" {
+		return "", fmt.Errorf("unknown vendor %q", v)
 	}
 	if d := f.env(relocate); d != "" {
 		if !filepath.IsAbs(d) {
 			return "", fmt.Errorf("%s is not an absolute path", relocate)
 		}
-		return filepath.Join(filepath.Clean(d), sub), nil
+		return filepath.Clean(d), nil
 	}
 	h := f.env("HOME")
 	if h == "" || !filepath.IsAbs(h) {
 		return "", errors.New("no absolute HOME")
 	}
-	return filepath.Join(h, "."+string(v), sub), nil
+	return filepath.Join(h, "."+string(v)), nil
 }
 
 // LastChanged returns when the session id of vendor v last changed on
-// disk, or errNoSessionFile when the vendor has none. cwd is where the
-// session ran and started when (Grok and Codex use them to look first
-// where the file should be). id is checked with adapter.ValidSessionID
-// before it becomes part of a path.
-func (f *sessionFiles) LastChanged(v adapter.Vendor, id, cwd string, started time.Time) (time.Time, error) {
+// disk. vendorHome is the vendor home recorded at launch ("" means this
+// environment's), cwd is where the session ran, and started when. id is
+// checked with adapter.ValidSessionID before it becomes part of a path.
+// The errors that say something about the session are errNoSessionFile
+// and errUnknownSession.
+func (f *sessionFiles) LastChanged(v adapter.Vendor, id, vendorHome, cwd string, started time.Time) (time.Time, error) {
 	if err := adapter.ValidSessionID(v, id); err != nil {
 		return time.Time{}, err
 	}
-	root, err := f.root(v)
-	if err != nil {
-		return time.Time{}, err
+	h := filepath.Clean(vendorHome)
+	if vendorHome == "" || !filepath.IsAbs(h) {
+		var err error
+		if h, err = f.home(v); err != nil {
+			return time.Time{}, err
+		}
 	}
-	if _, err := safefs.Stat(root); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return time.Time{}, errNoSessionFile
+	root := filepath.Join(h, "sessions")
+	if v == adapter.Claude {
+		root = filepath.Join(h, "projects")
+	}
+	if fi, err := safefs.Stat(root); err != nil || !fi.IsDir() {
+		if err == nil || errors.Is(err, fs.ErrNotExist) {
+			return time.Time{}, errUnknownSession
 		}
 		return time.Time{}, err
 	}
 	switch v {
 	case adapter.Claude:
-		return f.claude(root, id)
+		return f.claude(root, id, cwd)
 	case adapter.Codex:
-		return codexRollout(root, id, started)
+		now := time.Now()
+		if f.now != nil {
+			now = f.now()
+		}
+		return codexRollout(root, id, started, now)
 	case adapter.Grok:
 		return grokSession(root, id, cwd)
 	}
 	return time.Time{}, fmt.Errorf("unknown vendor %q", v)
 }
 
-func (f *sessionFiles) claude(root, id string) (time.Time, error) {
-	if !f.listed {
-		dirs, err := subdirs(root)
-		if err != nil {
+// claudeProjectDir is the project folder Claude is thought to use for
+// cwd. Unverified; only a first guess before the full scan.
+func claudeProjectDir(cwd string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '-'
+	}, cwd)
+}
+
+func (f *sessionFiles) claude(root, id, cwd string) (time.Time, error) {
+	if cwd != "" {
+		if d := filepath.Join(root, claudeProjectDir(cwd)); realDir(root, d) {
+			if t, ok := regularMtime(filepath.Join(d, id+".jsonl")); ok {
+				return t, nil
+			}
+		}
+	}
+	dirs, ok := f.claudeDirs[root]
+	if !ok {
+		var err error
+		if dirs, err = subdirs(root); err != nil {
 			return time.Time{}, err
 		}
-		f.claudeDirs, f.listed = dirs, true
+		if f.claudeDirs == nil {
+			f.claudeDirs = map[string][]string{}
+		}
+		f.claudeDirs[root] = dirs
 	}
-	for _, d := range f.claudeDirs {
+	for _, d := range dirs {
 		if t, ok := regularMtime(filepath.Join(d, id+".jsonl")); ok {
 			return t, nil
 		}
 	}
-	return time.Time{}, errNoSessionFile
+	return time.Time{}, errUnknownSession
 }
 
-func codexRollout(root, id string, started time.Time) (time.Time, error) {
-	seen := map[string]bool{}
-	for _, t := range []time.Time{started.Add(-24 * time.Hour), started, started.Add(24 * time.Hour)} {
-		for _, u := range []time.Time{t.Local(), t.UTC()} {
-			d := filepath.Join(root, u.Format("2006"), u.Format("01"), u.Format("02"))
-			if seen[d] || !realDir(root, d) {
-				continue
+// codexRollout searches the existing date folders from the day before
+// started through the day after now (which covers local time and UTC),
+// listing only folders that are there.
+func codexRollout(root, id string, started, now time.Time) (time.Time, error) {
+	if started.IsZero() || started.After(now) {
+		started = now
+	}
+	from := started.UTC().Add(-48 * time.Hour).Format("2006/01/02")
+	to := now.UTC().Add(48 * time.Hour).Format("2006/01/02")
+	var days []string
+	for _, y := range dateDirs(root, 4, from[:4], to[:4]) {
+		for _, m := range dateDirs(y, 2, "01", "12") {
+			for _, d := range dateDirs(m, 2, "01", "31") {
+				if day := strings.TrimPrefix(filepath.ToSlash(d), filepath.ToSlash(root)+"/"); day >= from && day <= to {
+					days = append(days, d)
+				}
 			}
-			seen[d] = true
-			es, err := safefs.ReadDir(d)
-			if err != nil {
-				continue
-			}
-			for _, e := range es {
-				n := e.Name()
-				if strings.HasPrefix(n, "rollout-") && strings.HasSuffix(n, "-"+id+".jsonl") {
-					if t, ok := regularMtime(filepath.Join(d, n)); ok {
-						return t, nil
-					}
+		}
+	}
+	for _, d := range days {
+		es, err := safefs.ReadDir(d)
+		if err != nil {
+			continue
+		}
+		for _, e := range es {
+			n := e.Name()
+			if strings.HasPrefix(n, "rollout-") && strings.HasSuffix(n, "-"+id+".jsonl") {
+				if t, ok := regularMtime(filepath.Join(d, n)); ok {
+					return t, nil
 				}
 			}
 		}
@@ -146,10 +200,29 @@ func codexRollout(root, id string, started time.Time) (time.Time, error) {
 	return time.Time{}, errNoSessionFile
 }
 
+// dateDirs lists dir's folders (not symlinks) whose names are width
+// digits between lo and hi.
+func dateDirs(dir string, width int, lo, hi string) []string {
+	es, err := safefs.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range es {
+		n := e.Name()
+		if len(n) != width || strings.Trim(n, "0123456789") != "" || n < lo || n > hi ||
+			!e.IsDir() || e.Type()&fs.ModeSymlink != 0 {
+			continue
+		}
+		out = append(out, filepath.Join(dir, n))
+	}
+	return out
+}
+
 func grokSession(root, id, cwd string) (time.Time, error) {
 	dir := ""
 	if cwd != "" {
-		if d := filepath.Join(root, grok.EncodeCwd(cwd), id); isDirNoFollow(d) {
+		if d := filepath.Join(root, grok.EncodeCwd(cwd), id); realDir(root, d) {
 			dir = d
 		}
 	}
@@ -204,11 +277,11 @@ func subdirs(root string) ([]string, error) {
 	return out, nil
 }
 
-// realDir reports whether every element of d below root is a folder and
-// not a symlink.
+// realDir reports whether d is below root and every element of it below
+// root is a folder and not a symlink.
 func realDir(root, d string) bool {
 	rel, err := filepath.Rel(root, d)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return false
 	}
 	p := root
@@ -236,59 +309,79 @@ func regularMtime(p string) (time.Time, bool) {
 	return fi.ModTime(), true
 }
 
-// refreshChildren brings the parent's open interactive children up to
-// date from the disk, so their state survives a crash or sleep of aggy:
-//
-//   - a child whose directory was removed (its worktree, say) is closed,
-//     since Claude ties a session to its directory and aggy launches a
-//     child in its own;
-//   - a child's last-active time (and its parent's) rises to its session
-//     file's modified time;
-//   - a child the vendor has no session file for is gone, unless a live
-//     process holds its lease (a new session not yet saved).
-//
-// Lookup errors leave a child as it was. It returns the children as the
-// index now holds them.
+// Child states refreshChildren derives for open interactive children.
+// They are worked out each time from the disk and the leases, never
+// stored, since what they rest on can be temporary (an unmounted disk,
+// another vendor home in this shell, a session not saved yet).
+const (
+	stateOpen    = "open"
+	stateRunning = "running" // a live process holds its lease
+	stateClosed  = "closed"  // its directory is gone (a removed worktree)
+	stateGone    = "gone"    // the vendor's sessions folder has no file for it
+	stateUnknown = "unknown" // aggy cannot tell where the file should be
+)
+
+// refreshChildren returns the parent's children with the state of each
+// open interactive child in Status (see stateOpen and the rest), and
+// raises last-active times, the child's and its parent's, to the session
+// files' modified times, so they survive a crash or sleep of aggy. A
+// child whose lease is live is running and is not checked further. Only
+// last-active times are written.
 func refreshChildren(ctx context.Context, s *store.Store, parentID string, files *sessionFiles) ([]store.Child, error) {
 	cs, err := s.Children(ctx, parentID)
 	if err != nil {
 		return nil, err
 	}
-	changed := false
-	for _, c := range cs {
+	raised := false
+	for i := range cs {
+		c := &cs[i]
 		if c.Kind != "" || c.Status != "open" {
 			continue
 		}
-		if fi, err := safefs.Stat(c.Cwd); errors.Is(err, fs.ErrNotExist) || (err == nil && !fi.IsDir()) {
-			if err := s.SetChildActivity(ctx, c.ID, time.Time{}, "closed"); err != nil {
-				return nil, err
+		if c.VendorSessionID != "" {
+			if _, alive, err := s.LeaseHolder(ctx, c.Vendor, c.VendorSessionID); err == nil && alive {
+				c.Status = stateRunning
 			}
-			changed = true
-			continue
+		}
+		if c.Status != stateRunning {
+			if fi, err := safefs.Stat(c.Cwd); errors.Is(err, fs.ErrNotExist) || (err == nil && !fi.IsDir()) {
+				c.Status = stateClosed
+				continue
+			}
 		}
 		v, err := adapter.ParseVendor(c.Vendor)
 		if err != nil || c.VendorSessionID == "" {
 			continue
 		}
-		t, err := files.LastChanged(v, c.VendorSessionID, c.Cwd, c.CreatedAt)
+		t, err := files.LastChanged(v, c.VendorSessionID, c.VendorHome, c.Cwd, c.CreatedAt)
 		switch {
-		case err == nil && t.After(c.LastActive):
-			err = s.SetChildActivity(ctx, c.ID, t, "")
-		case errors.Is(err, errNoSessionFile):
-			if _, alive, lerr := s.LeaseHolder(ctx, c.Vendor, c.VendorSessionID); lerr != nil || alive {
-				continue
+		case err == nil:
+			if t.After(c.LastActive) {
+				if err := s.SetChildActivity(ctx, c.ID, t); err != nil {
+					return nil, err
+				}
+				raised = true
 			}
-			err = s.SetChildActivity(ctx, c.ID, time.Time{}, "gone")
+		case c.Status == stateRunning:
+		case errors.Is(err, errNoSessionFile):
+			c.Status = stateGone
 		default:
-			continue
+			c.Status = stateUnknown
 		}
-		if err != nil {
-			return nil, err
-		}
-		changed = true
 	}
-	if !changed {
+	if !raised {
 		return cs, nil
 	}
-	return s.Children(ctx, parentID)
+	fresh, err := s.Children(ctx, parentID)
+	if err != nil {
+		return nil, err
+	}
+	state := map[string]string{}
+	for _, c := range cs {
+		state[c.ID] = c.Status
+	}
+	for i := range fresh {
+		fresh[i].Status = state[fresh[i].ID]
+	}
+	return fresh, nil
 }

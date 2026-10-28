@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -58,6 +60,10 @@ func TestResumeGone(t *testing.T) {
 		t.Fatalf("aggy run exit = %d", code)
 	}
 	first := fakecli.Records(t, w.record)[0]
+	// Grok's sessions folder is there and holds nothing for the session.
+	if err := os.MkdirAll(filepath.Join(w.home, ".grok", "sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	s = w.start(t, sc)
 	s.waitFor([]byte("cannot be resumed"))
