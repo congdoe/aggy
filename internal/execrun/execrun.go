@@ -1,7 +1,9 @@
 // Package execrun is the runner that starts vendor CLI processes for
-// probes and maintainer captures: ExecRunner runs one absolute CLI path
-// with no stdin, a scrubbed environment (see Env), a private working
-// directory, capped output, and a time limit.
+// probes, maintainer captures, and borrow children: ExecRunner runs one
+// absolute CLI path with no stdin, a scrubbed environment (see Env), a
+// private working directory, capped output, and a time limit, and
+// HeadlessRunner does the same for a borrow child, whose stdin may be its
+// prompt file and whose working dir the borrow runner made.
 //
 // It is the only process-starting code outside internal/supervisor and
 // internal/borrow, and it is its own package so lint can keep it out of
@@ -118,54 +120,93 @@ func contains(list []string, s string) bool {
 // Output.ExitCode.
 func ExecRunner(timeout time.Duration) adapter.Runner {
 	return func(ctx context.Context, c adapter.Command) (adapter.Output, error) {
-		if !filepath.IsAbs(c.Path) || filepath.Clean(c.Path) != c.Path {
-			return adapter.Output{}, fmt.Errorf("execrun: %q is not a clean absolute path", c.Path)
-		}
 		if c.Stdin != adapter.StdinNull {
 			return adapter.Output{}, errors.New("execrun: the runner gives commands no stdin")
 		}
-		if err := safefs.Check(c.Path); err != nil {
-			return adapter.Output{}, err
+		return run(ctx, c, timeout)
+	}
+}
+
+// HeadlessRunner returns a Runner for borrow children. It is ExecRunner
+// except for stdin and the working directory: a command may read a
+// regular file as stdin (adapter.StdinFile, the prompt file, so the
+// prompt never goes in argv), and it must name its working directory,
+// which the borrow runner made for it. StdinPath is opened through
+// safefs.OpenRegular: never through a symlink, and never a FIFO or
+// device that could block or feed the CLI forever. Past timeout the
+// whole process group is killed and the error matches ErrTimeout.
+func HeadlessRunner(timeout time.Duration) adapter.Runner {
+	return func(ctx context.Context, c adapter.Command) (adapter.Output, error) {
+		if c.Stdin != adapter.StdinNull && c.Stdin != adapter.StdinFile {
+			return adapter.Output{}, errors.New("execrun: a headless child reads no terminal")
 		}
-		env, err := Env(os.Environ(), c.Env)
+		if c.Dir == "" || !filepath.IsAbs(c.Dir) {
+			return adapter.Output{}, fmt.Errorf("execrun: a headless child needs an absolute working dir, got %q", c.Dir)
+		}
+		return run(ctx, c, timeout)
+	}
+}
+
+func run(ctx context.Context, c adapter.Command, timeout time.Duration) (adapter.Output, error) {
+	if !filepath.IsAbs(c.Path) || filepath.Clean(c.Path) != c.Path {
+		return adapter.Output{}, fmt.Errorf("execrun: %q is not a clean absolute path", c.Path)
+	}
+	if err := safefs.Check(c.Path); err != nil {
+		return adapter.Output{}, err
+	}
+	env, err := Env(os.Environ(), c.Env)
+	if err != nil {
+		return adapter.Output{}, err
+	}
+	var stdin *os.File
+	if c.Stdin == adapter.StdinFile {
+		if !filepath.IsAbs(c.StdinPath) {
+			return adapter.Output{}, fmt.Errorf("execrun: stdin file %q is not absolute", c.StdinPath)
+		}
+		stdin, err = safefs.OpenRegular(c.StdinPath)
+		if err != nil {
+			return adapter.Output{}, fmt.Errorf("execrun: stdin: %w", err)
+		}
+		defer func() { _ = stdin.Close() }()
+	}
+	dir := c.Dir
+	if dir == "" {
+		tmp, err := safefs.MkdirTemp("", "aggy-probe-")
 		if err != nil {
 			return adapter.Output{}, err
 		}
-		dir := c.Dir
-		if dir == "" {
-			tmp, err := safefs.MkdirTemp("", "aggy-probe-")
-			if err != nil {
-				return adapter.Output{}, err
-			}
-			defer func() { _ = safefs.RemoveAll(tmp) }()
-			dir = tmp
-		}
-		parent := ctx
-		ctx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, c.Path, c.Args...)
-		cmd.Env = env
-		cmd.Dir = dir
-		cmd.Stdin = nil // /dev/null
-		stdout := &capped{max: MaxOutput}
-		stderr := &capped{max: MaxOutput}
-		cmd.Stdout, cmd.Stderr = stdout, stderr
-		setProcessGroup(cmd)
-		cmd.WaitDelay = time.Second
-		err = cmd.Run()
-		out := adapter.Output{Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes(), ExitCode: cmd.ProcessState.ExitCode()}
-		if perr := parent.Err(); perr != nil {
-			return out, perr
-		}
-		if ctx.Err() != nil {
-			return out, fmt.Errorf("%w: %s after %s", ErrTimeout, filepath.Base(c.Path), timeout)
-		}
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			return out, nil
-		}
-		return out, err
+		defer func() { _ = safefs.RemoveAll(tmp) }()
+		dir = tmp
 	}
+	parent := ctx
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.Path, c.Args...)
+	cmd.Env = env
+	cmd.Dir = dir
+	if stdin != nil {
+		cmd.Stdin = stdin // an *os.File: the child reads the descriptor itself
+	} else {
+		cmd.Stdin = nil // /dev/null
+	}
+	stdout := &capped{max: MaxOutput}
+	stderr := &capped{max: MaxOutput}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	setProcessGroup(cmd)
+	cmd.WaitDelay = time.Second
+	err = cmd.Run()
+	out := adapter.Output{Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes(), ExitCode: cmd.ProcessState.ExitCode()}
+	if perr := parent.Err(); perr != nil {
+		return out, perr
+	}
+	if ctx.Err() != nil {
+		return out, fmt.Errorf("%w: %s after %s", ErrTimeout, filepath.Base(c.Path), timeout)
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return out, nil
+	}
+	return out, err
 }
 
 // capped keeps the first max bytes written and drops the rest.
