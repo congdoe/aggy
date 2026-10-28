@@ -15,7 +15,7 @@ aggy is a Go CLI that runs the official Claude Code, Codex, and Grok Build CLIs 
 - `internal/supervisor`, `hook`, `brief`, `borrow`, `parity`: stubs today, holding only their package docs. In order: the pseudo-terminal pass-through and switches; `aggy hook <event>`, which forwards vendor hook JSON over a local socket; the handoff brief; headless borrows (isolation, budgets, artifacts, inbox); and rendering shared config into each CLI.
 - `internal/checkup`: the checks `aggy setup` and `aggy doctor` share: API-key variables and proxy routes, by name only.
 - `internal/probe`: probe specs, version and help parsing, the probe cache, and `LookPath`. It starts nothing.
-- `internal/execrun`: the only runner that starts vendor CLI processes (no stdin, a scrubbed `AGGY_*`-only env addition, a time limit). Only the files of `internal/cli` and `internal/devfix` (not their subpackages) and tests may import it.
+- `internal/execrun`: the only runner that starts vendor CLI processes (no stdin, or a borrow's prompt file; a scrubbed env whose only additions are `AGGY_DELEGATED`, `AGGY_VENDOR`, `AGGY_MODEL`, and the fakes' `AGGY_FAKE_*`; a time limit that kills the process group). Only the files of `internal/cli` and `internal/devfix` (not their subpackages) and tests may import it.
 - `internal/patch`: guarded, reversible config changes recorded for `aggy unwire`.
 - `internal/safefs`: the only file I/O layer; refuses vendor credential files by path and file identity.
 - `internal/store`: the SQLite index at `~/.aggy/aggy.db` and its migrations; the only package that may call `sql.Open`.

@@ -21,7 +21,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -44,16 +43,35 @@ var passEnv = []string{
 	"CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME",
 }
 
-// extraKey matches the only variables a command's own Env may add: aggy's
-// AGGY_* variables (AGGY_DELEGATED, AGGY_VENDOR, AGGY_MODEL, and the test
-// fakes' AGGY_FAKE_*). It is an allowlist: everything else is refused,
-// including API keys, base URLs, proxies, variables that inject code into
-// a CLI's runtime (BASH_ENV, ENV, NODE_OPTIONS, NODE_PATH, PERL5OPT,
-// RUBYOPT, PYTHONPATH, GIT_SSH_COMMAND, ELECTRON_RUN_AS_NODE, ...), trust
-// stores (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS), and overrides of the
-// vendor homes (CLAUDE_CONFIG_DIR, CODEX_HOME, GROK_HOME, XDG_CONFIG_HOME),
-// which come only from aggy's own environment.
-var extraKey = regexp.MustCompile(`^AGGY_[A-Z0-9_]+$`)
+// extraNames are the only variables a command's own Env may add, by
+// exact name. It is an allowlist: everything else is refused, including
+// API keys, base URLs, proxies, variables that inject code into a CLI's
+// runtime (BASH_ENV, ENV, NODE_OPTIONS, NODE_PATH, PERL5OPT, RUBYOPT,
+// PYTHONPATH, GIT_SSH_COMMAND, ELECTRON_RUN_AS_NODE, ...), trust stores
+// (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS), overrides of the vendor homes
+// (CLAUDE_CONFIG_DIR, CODEX_HOME, GROK_HOME, XDG_CONFIG_HOME), which come
+// only from aggy's own environment, and every other AGGY_* variable
+// (AGGY_HOME among them: a child never gets aggy's state dir).
+//
+//   - AGGY_DELEGATED=1 marks a borrow child. The child's own aggy borrow
+//     refuses to run under it (one hop), and the PreToolUse guard reads
+//     it. It is set by aggy, never taken from the caller's environment.
+//   - AGGY_VENDOR and AGGY_MODEL name the vendor and model an
+//     interactive session runs, for the linked skill.
+var extraNames = []string{"AGGY_DELEGATED", "AGGY_VENDOR", "AGGY_MODEL"}
+
+// extraPrefix is the test fakes' variables (AGGY_FAKE_SCENARIO,
+// AGGY_FAKE_RECORD, AGGY_FAKE_VENDOR). The real CLIs ignore them.
+const extraPrefix = "AGGY_FAKE_"
+
+// extraAllowed reports whether a command may add the variable k.
+func extraAllowed(k string) bool {
+	if contains(extraNames, k) {
+		return true
+	}
+	rest, ok := strings.CutPrefix(k, extraPrefix)
+	return ok && rest != "" && strings.Trim(rest, "ABCDEFGHIJKLMNOPQRSTUVWXYZ_") == ""
+}
 
 // cleanPath drops empty, ".", and relative PATH entries, which would make
 // the CLI's own lookups depend on its working directory.
@@ -70,8 +88,8 @@ func cleanPath(p string) string {
 // Env builds the scrubbed environment for a probed CLI: the passEnv
 // variables from base (PATH without empty, ".", or relative entries, and
 // left unset when no entry is left), TERM=dumb and NO_COLOR=1, then extra.
-// An extra entry whose key is not an AGGY_* variable (see extraKey), or
-// that is not KEY=value, is an error.
+// An extra entry whose key is not allowlisted (see extraNames), or that
+// is not KEY=value, is an error.
 func Env(base, extra []string) ([]string, error) {
 	var env []string
 	for _, kv := range base {
@@ -93,8 +111,9 @@ func Env(base, extra []string) ([]string, error) {
 		if !ok || k == "" {
 			return nil, fmt.Errorf("execrun: bad environment entry %q", kv)
 		}
-		if !extraKey.MatchString(k) {
-			return nil, fmt.Errorf("execrun: refusing to pass %s to a vendor CLI (only AGGY_* variables may be added)", k)
+		if !extraAllowed(k) {
+			return nil, fmt.Errorf("execrun: refusing to pass %s to a vendor CLI (only %s and %s* may be added)",
+				k, strings.Join(extraNames, ", "), extraPrefix)
 		}
 		env = append(env, kv)
 	}

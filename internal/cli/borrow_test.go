@@ -148,6 +148,22 @@ func TestBorrowCommand(t *testing.T) {
 	}
 }
 
+// TestBorrowCommandDelegated (T6623): aggy borrow refuses inside a
+// borrow child.
+func TestBorrowCommandDelegated(t *testing.T) {
+	f := newBorrowFixture(t, adapter.Grok)
+	f.env.getenv = func(k string) string {
+		if k == "AGGY_DELEGATED" {
+			return "1"
+		}
+		return ""
+	}
+	code, _, errOut := f.run(t, "news", "x")
+	if code != 1 || !strings.Contains(errOut, "one hop") {
+		t.Errorf("code %d stderr %q", code, errOut)
+	}
+}
+
 func TestBorrowCommandRefusals(t *testing.T) {
 	f := newBorrowFixture(t, adapter.Grok)
 	tests := []struct {

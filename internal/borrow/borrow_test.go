@@ -2,6 +2,7 @@ package borrow
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -132,5 +133,31 @@ func TestRouterSkipsParent(t *testing.T) {
 	w.connected[adapter.Codex] = false
 	if _, err := w.borrower().Run(context.Background(), Request{Kind: adapter.Image, Task: "x", Repo: w.repo, Parent: adapter.Grok}); err == nil || !strings.Contains(err.Error(), "no connected vendor") {
 		t.Errorf("no vendor: %v", err)
+	}
+}
+
+// TestDelegated (T6623): every child runs with AGGY_DELEGATED=1, and a
+// borrow under AGGY_DELEGATED is refused before anything runs.
+func TestDelegated(t *testing.T) {
+	w := newWorld(t)
+	w.scenario[adapter.Grok] = `{"json":{"result":"ok"}}`
+	if _, err := w.borrower().Run(context.Background(), w.req(adapter.News, "x")); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.records()[0].Env[Delegated]; got != "1" {
+		t.Errorf("child %s = %q, want 1", Delegated, got)
+	}
+	b := w.borrower()
+	b.Getenv = func(k string) string {
+		if k == Delegated {
+			return "1"
+		}
+		return ""
+	}
+	if _, err := b.Run(context.Background(), w.req(adapter.News, "x")); !errors.Is(err, ErrDelegated) {
+		t.Errorf("err = %v, want ErrDelegated", err)
+	}
+	if len(w.records()) != 1 {
+		t.Error("a delegated borrow ran a child")
 	}
 }

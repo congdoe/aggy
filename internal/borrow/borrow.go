@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,6 +20,13 @@ import (
 
 // Kinds are the borrow kinds M1 runs. edit comes in M3.
 var Kinds = []adapter.Kind{adapter.Image, adapter.Video, adapter.Research, adapter.News, adapter.Review}
+
+// Delegated is the variable that marks a borrow child. Every child runs
+// with Delegated=1, and aggy borrow refuses to run under it: one hop.
+const Delegated = "AGGY_DELEGATED"
+
+// ErrDelegated is the refusal of a borrow from inside a borrow child.
+var ErrDelegated = errors.New("aggy borrow does not run inside a borrow child (" + Delegated + " is set): borrows are one hop")
 
 // ErrEditLater is the refusal of the edit kind.
 var ErrEditLater = errors.New("edit comes in M3")
@@ -74,6 +82,9 @@ type Deps struct {
 	// TempDir is where child dirs are made; "" means the OS temp dir.
 	TempDir string
 	Now     func() time.Time
+	// Getenv reads aggy's own environment, for Delegated. Nil means
+	// os.Getenv.
+	Getenv func(string) string
 }
 
 // Caps are the concurrency limits of design section 7: at most 2 borrows
@@ -110,6 +121,9 @@ type Borrower struct{ Deps }
 func New(d Deps) *Borrower {
 	if d.Now == nil {
 		d.Now = time.Now
+	}
+	if d.Getenv == nil {
+		d.Getenv = os.Getenv
 	}
 	return &Borrower{d}
 }
@@ -159,6 +173,9 @@ func (r Request) validate() error {
 // with Status failed or killed, not an error; the error is for a borrow
 // that could not start.
 func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
+	if b.Getenv(Delegated) != "" {
+		return nil, ErrDelegated
+	}
 	if err := req.validate(); err != nil {
 		return nil, err
 	}
@@ -236,6 +253,7 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 		// The turn limit, where the CLI takes one (Grok's --max-turns;
 		// Codex has none, and Claude's is not recorded).
 		MaxTurns: budget.Turns,
+		Env:      []string{Delegated + "=1"},
 	}
 	cmd, err := a.Headless(hreq)
 	if err != nil {
