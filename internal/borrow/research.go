@@ -74,6 +74,7 @@ func slug(k adapter.Kind, task string) string {
 // researchReport is one research or news report: what was asked, who
 // answered, and when.
 type researchReport struct {
+	Key         string    `json:"key"` // cacheKey
 	BorrowID    string    `json:"borrow"`
 	Kind        string    `json:"kind"`
 	Vendor      string    `json:"vendor"`
@@ -102,6 +103,7 @@ func (r researchReport) markdown() string {
 		model = "vendor default"
 	}
 	fmt.Fprintf(&b, "- As of: %s\n- Vendor: %s (%s)\n- Borrow: %s\n", r.AsOf.UTC().Format(time.RFC3339), r.Vendor, model, r.BorrowID)
+	fmt.Fprintf(&b, "- Reused for the same question until: %s\n", r.AsOf.Add(cacheTTL(adapter.Kind(r.Kind))).UTC().Format(time.RFC3339))
 	b.WriteString("\n## Question\n\n")
 	b.WriteString(strings.TrimSpace(r.Question))
 	b.WriteString("\n")
@@ -140,11 +142,14 @@ func placeReport(dir, base, alt string, data []byte) (string, error) {
 }
 
 // saveResearch writes the report of a finished research or news borrow
-// to the research dir and returns its path.
+// to the research dir, records it in the cache, and returns its path.
 func (b *Borrower) saveResearch(req Request, res Result, asOf time.Time) (string, error) {
 	r := researchReport{
-		BorrowID: res.ID, Kind: string(req.Kind), Vendor: string(res.Vendor), Model: res.Model,
+		Key: cacheKey(req), BorrowID: res.ID, Kind: string(req.Kind), Vendor: string(res.Vendor), Model: res.Model,
 		Question: strings.TrimSpace(req.Task), Constraints: req.Constraints, AsOf: asOf.UTC(), Text: res.Text,
+	}
+	if err := b.cacheStore(r); err != nil {
+		return "", err
 	}
 	return b.placeResearch(req, r)
 }
