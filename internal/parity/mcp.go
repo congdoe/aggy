@@ -276,8 +276,11 @@ func checkURL(raw string) string {
 			return "its url has a host name part that looks like a key"
 		}
 	}
-	if mixedRun(u.Hostname()) {
+	if mixedRun(u.Hostname()) || oddRun(u.Hostname()) {
 		return "its url has a host name part that looks like a key"
+	}
+	if oddRun(u.EscapedPath()) {
+		return "its url has path text that looks like a key"
 	}
 	for _, seg := range strings.Split(u.EscapedPath(), "/") {
 		if keyLike(seg) {
@@ -311,6 +314,44 @@ func mixedRun(s string) bool {
 	}
 	return false
 }
+
+// oddRun reports whether s holds key-like text the other checks miss
+// (I43-7): 16 or more digits in a row; 4 or more digits with letters
+// right before and after (abcd1234efgh); or 10 or more letters in a row
+// of which under a fifth are vowels (y counts), which words and names
+// almost never are (kqzvtwmrjxhplbn). shortcut: a random run with more
+// vowels gets through; a pronounceability model would catch more.
+func oddRun(s string) bool {
+	for i := 0; i < len(s); {
+		j := i
+		switch c := s[i]; {
+		case '0' <= c && c <= '9':
+			for j < len(s) && '0' <= s[j] && s[j] <= '9' {
+				j++
+			}
+			if j-i >= 16 || j-i >= 4 && i > 0 && isLetter(s[i-1]) && j < len(s) && isLetter(s[j]) {
+				return true
+			}
+		case isLetter(c):
+			vowels := 0
+			for j < len(s) && isLetter(s[j]) {
+				if strings.IndexByte("aeiouyAEIOUY", s[j]) >= 0 {
+					vowels++
+				}
+				j++
+			}
+			if j-i >= 10 && 5*vowels < j-i {
+				return true
+			}
+		default:
+			j++
+		}
+		i = j
+	}
+	return false
+}
+
+func isLetter(c byte) bool { return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' }
 
 func isAlnum(r rune) bool { return r < utf8.RuneSelf && (unicode.IsLetter(r) || unicode.IsDigit(r)) }
 
