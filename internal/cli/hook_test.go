@@ -16,7 +16,7 @@ func TestHookPreToolUse(t *testing.T) {
 	}{
 		{"deny", []string{"pretooluse"}, `{"tool_name":"Bash","tool_input":{"command":"claude -p x"}}`, 2, "one hop"},
 		{"allow", []string{"pretooluse"}, `{"tool_name":"Bash","tool_input":{"command":"ls"}}`, 0, ""},
-		{"garbage fails closed", []string{"pretooluse"}, `$(rm -rf /)`, 2, "not JSON"},
+		{"garbage fails closed", []string{"pretooluse"}, `$(rm -rf /)`, 2, "not a JSON object"},
 		{"too large", []string{"pretooluse"}, strings.Repeat("x", 1<<20+1), 2, "could not be read"},
 		{"other event", []string{"Stop"}, `{}`, 1, "not handled yet"},
 		{"no event", nil, ``, 1, "Usage"},
