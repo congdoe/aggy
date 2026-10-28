@@ -64,10 +64,11 @@ var grokRootSources = []string{
 // refused a read_file of a canary under $HOME and still read the
 // workspace (docs/verification.md S2), plus aggy's ~/Library denies (S4)
 // and, on darwin, the /System/Volumes/Data firmlink denies (S5), all
-// live-verified on grok 1.0.70 (2026-10-28). That confinement does not
-// depend on who asks for the read. What strict leaves readable (system
-// dirs, the temp dirs, Grok's own home; docs/verification.md after the S
-// table) was never closed by this gate either: the diff under review is
+// live-verified on grok 1.0.70 (2026-10-28), and a deny of Grok's own
+// home (S8, inferred from S4 and S5). That confinement does not depend on
+// who asks for the read. What strict leaves readable (system dirs, the
+// temp dirs; docs/verification.md after the S table) was never closed by
+// this gate either: the diff under review is
 // attacker text too and can ask for the same reads in any repo. The
 // names: INSTRUCTION_FILENAMES
 // and agent_filenames (xai-grok-config/src/compat.rs:311-318, :431-438),

@@ -286,6 +286,7 @@ found every Grok borrow failing. Minimal runs in a scratch directory.
 | S6, nested sandbox (G32-8) | the review argv with `--sandbox strict`, run inside `sandbox-exec -p '(version 1)(allow default)'` | **Refuses to start** | Exit 1; stderr `sandbox initialization failed: Operation not permitted` / `error: could not apply the 'strict' sandbox profile; see the warning above for the cause. Refusing to start with its protections missing.` So a profile that cannot be applied fails closed here; aggy maps it to `ErrLockdownRejected`. |
 | S7, sandbox logging | a successful sandboxed run with `RUST_LOG=xai_grok_sandbox=info` | Recorded | No sandbox line on stderr: headless tracing does not reach stderr, so the source's "continuing without sandbox" warnings are a weak guard. aggy does not set `RUST_LOG`. |
 | S4, `~/Library` denied | S3 plus `--deny "Read(<HOME>/Library/**)" --deny "Grep(<HOME>/Library/**)"`, `$HOME` expanded | **Confined** | `read_file` was refused, `Denied by permission policy: deny rule on read matching "~/Library/**"`; the in-repo README still read. aggy's argv since G32-3. |
+| S8, Grok home denied (T6742) | every sandboxed kind adds `--deny "Read(<Grok home>/**)" --deny "Grep(<Grok home>/**)"`: `$GROK_HOME`, else `<HOME>/.grok`, and `<HOME>/.grok` as well when `GROK_HOME` points elsewhere | **Inferred, not checked directly** | Strict leaves the Grok home readable, and it holds `auth.json`. The deny is the same mechanism as S4 and S5, which are live-verified, so it is inferred to refuse `read_file` and `grep` there. No canary is planted in the real `~/.grok`, so a direct deny check is not possible. **Pending the owner's smoke run** (review, research, image), which checks that Grok still starts and works with it. On darwin, the `/System/Volumes/Data/**` deny (S5) already covers the firmlink spelling of the Grok home. Read and Grep only: Grok's media tools write there in their own code, and `image_edit` and `image_to_video`, which take their input still from the session folder there, are checked as `AccessKind::Tool`, which Read and Grep rules do not match (grok-src 559751fd, `xai-grok-tools/src/permission_access.rs:38-41`, `xai-grok-permission-rules/src/policy.rs:571`). So the deny does not get in their way, and it does not confine them either. |
 
 The strict profile (grok-src `crates/codegen/xai-grok-sandbox/src/profiles.rs:463-488`,
 kernel-enforced) allows reads of system dirs (`/usr`, `/etc`, `/tmp`,
@@ -294,7 +295,8 @@ and the workspace; writes only to the workspace, Grok's sessions dir,
 and the temp dirs (`xai-grok-sandbox/src/paths.rs:74-78`,
 `essential_writable_paths_strict`); and blocks child
 networking. Gaps: files under `/tmp` and `/private` (`$TMPDIR`, aggy's
-run dirs) stay readable, `~/.grok` (Grok's own home) is readable,
+run dirs) stay readable, `~/.grok` (Grok's own home) is readable
+(aggy's deny rules close it for `read_file` and `grep`, S8, inferred),
 `~/Library` is readable (S3; aggy's deny rules close it for `read_file`
 and `grep`, S4), and only vendor homes and other paths under `$HOME` are
 denied, and the `~/Library` deny is lexical, so on darwin the
@@ -313,7 +315,7 @@ Status of each kind under strict:
 
 | Kind | Status |
 | --- | --- |
-| review | Live-verified: S2, S4, S5; `grok-review-untrusted` passed under strict (b972adf re-run below). |
+| review | Live-verified: S2, S4, S5; `grok-review-untrusted` passed under strict (b972adf re-run below). The Grok home deny (S8) is pending the smoke run, for every kind below too. |
 | research | Live-verified: `research-borrow-grok` passed under strict plus the denies (b972adf). |
 | news | **Not yet run live** under strict. Same argv as research. |
 | image | **Pending a live check** (T6742). aggy passes strict, with the same denies and host check as review, while `strictMedia` in `internal/adapter/grok/grok.go` is on. Source only (grok-src `559751fd`): `image_gen` saves to `<Grok home>/sessions/<encoded cwd>/<id>/images/<n>.jpg` (`xai-grok-tools/src/implementations/grok_build/image_gen/mod.rs:13`, `storage.rs:54-69`), which strict keeps writable (`paths.rs:74-78`; `profiles.rs:463-488`), and aggy copies the file out itself, outside the sandbox. If the live check fails, `strictMedia` goes to false. |
@@ -426,10 +428,10 @@ repo's instructions could once have had a reviewer read and echo a file
 outside the repo. A Grok review now runs under `--sandbox strict` with
 the `~/Library` and `/System/Volumes/Data` denies, which kept
 `read_file` and `grep` out of `$HOME` whoever asked (S2, S4, S5 above,
-all live). What strict still leaves readable (system dirs, the temp
-dirs, `~/.grok`) a hostile diff, which is attacker text in every
-review, could ask for just the same, so a gate on instruction files
-never closed it. aggy still keeps an edit diff off them
+all live), and the Grok home deny (S8, inferred, pending the smoke run).
+What strict still leaves readable (system dirs, the temp dirs) a hostile
+diff, which is attacker text in every review, could ask for just the
+same, so a gate on instruction files never closed it. aggy still keeps an edit diff off them
 (`borrow.TrustMarker`). The instruction names are `INSTRUCTION_FILENAMES`
 and `.claude/CLAUDE*.md` (`xai-grok-config/src/compat.rs:311-318`,
 `:431-438`) and the `.grok`, `.claude`, and `.cursor` `rules` dirs

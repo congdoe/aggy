@@ -164,7 +164,13 @@ was tested against.
   and only paths under `$HOME` outside those are denied. aggy narrows
   the `~/Library` gap with `--deny 'Read(<HOME>/Library/**)' --deny
   'Grep(<HOME>/Library/**)'`, `$HOME` expanded by aggy and refused when
-  it is not a clean absolute path free of glob and rule syntax. A deny
+  it is not a clean absolute path free of glob and rule syntax. It
+  closes the `~/.grok` gap the same way, since Grok's auth file lives
+  there: `--deny 'Read(<Grok home>/**)' --deny 'Grep(<Grok home>/**)'`
+  for `$GROK_HOME`, else `<HOME>/.grok`, and for `<HOME>/.grok` too when
+  `GROK_HOME` points elsewhere. Read and Grep only, so Grok's own writes
+  of media output there are untouched. That deny is inferred from the
+  `~/Library` one, and its smoke run is pending (verification.md S8). A deny
   outranks any allow (`decision_rank`,
   `xai-grok-permission-rules/src/policy.rs:791` at 2bdd1d6a), and live
   (2026-10-28, grok 1.0.70) `read_file` of a canary under
@@ -394,7 +400,7 @@ by default is news 15 and research 30; `<run>` is `HeadlessRequest.RunDir`):
 | review | `claude -p --output-format json --permission-mode plan --strict-mcp-config --mcp-config <run>/mcp.json --tools Read,Grep,Glob [--setting-sources user] [--settings <run>/settings.json] [--session-id <uuid> \| --resume <id>]` | `codex exec --json <L> -- -` (in a git work tree, so no `--skip-git-repo-check`) | `grok --prompt-file <p> --output-format json --permission-mode plan --sandbox strict --deny <Lib> --tools read_file,grep,list_dir --disallowed-tools <D> --no-subagents` |
 | edit (M3; `aggy borrow` runs Codex only, see below) | `claude -p --output-format json --permission-mode acceptEdits --strict-mcp-config --mcp-config <run>/mcp.json` | `codex exec --json <L with --sandbox workspace-write, keeping shell_tool and unified_exec> -- -` (`codex.EditLockdown`) | `grok --prompt-file <p> --output-format json --tools read_file,grep,list_dir,write,search_replace --disallowed-tools <D> --no-subagents` |
 
-`--deny <Lib>` is `--deny 'Read(<HOME>/Library/**)' --deny 'Grep(<HOME>/Library/**)'`, plus on darwin `--deny 'Read(/System/Volumes/Data/**)' --deny 'Grep(/System/Volumes/Data/**)'`.
+`--deny <Lib>` is `--deny 'Read(<HOME>/Library/**)' --deny 'Grep(<HOME>/Library/**)' --deny 'Read(<Grok home>/**)' --deny 'Grep(<Grok home>/**)'` (and the same pair for `<HOME>/.grok` when `GROK_HOME` points elsewhere), plus on darwin `--deny 'Read(/System/Volumes/Data/**)' --deny 'Grep(/System/Volumes/Data/**)'`.
 `L` is `codex.Lockdown`: `--strict-config --ignore-user-config --sandbox
 read-only --disable shell_tool --disable unified_exec --disable view_image
 --disable apps --disable plugins --disable goals --disable image_generation
