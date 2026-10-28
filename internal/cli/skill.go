@@ -523,6 +523,8 @@ func (l skillLayout) visible(v string) ([]string, error) {
 
 func skillStatus(l skillLayout, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "installed: %s\n", termsafe.Field(l.store))
+	always, body := skills.Estimate(skills.Aggy)
+	fmt.Fprintf(stdout, "cost: about %d tokens every turn in a CLI that loads it, %d more when invoked (bytes/4 estimate)\n", always, body)
 	code := 0
 	for _, v := range skillVendors {
 		ok, err := l.linked(l.links[v])

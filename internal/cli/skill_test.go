@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -206,5 +207,16 @@ func TestGrokIgnoreTransforms(t *testing.T) {
 	}
 	if _, err := removeGrokIgnore(entry)([]byte("[skills]\nignore = ['/s/aggy', 'x']\n")); err == nil {
 		t.Error("removing from an edited list succeeded")
+	}
+}
+
+// TestSkillStatusShowsCost: status reports the token estimate.
+func TestSkillStatusShowsCost(t *testing.T) {
+	skillHome(t)
+	always, body := skills.Estimate(skills.Aggy)
+	out := mustRun(t, "skill", "status")
+	want := fmt.Sprintf("about %d tokens every turn in a CLI that loads it, %d more when invoked", always, body)
+	if !strings.Contains(out, want) || !strings.Contains(out, "claude: not linked; loads nothing") {
+		t.Errorf("status = %q", out)
 	}
 }
