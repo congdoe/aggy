@@ -122,7 +122,7 @@ func TestParseValid(t *testing.T) {
 		{"check pattern", strings.Replace(base, `check = ["demo", "--version"]`, "check = [\"demo\", \"--version\"]\ncheck_pattern = 'demo v(\\d+\\.\\d+\\.\\d+)'", 1), false},
 		{"two mcp entries", strings.Replace(base, "[[hook]]", "[[mcp]]\nvendors = [\"grok\"]\nargv = [\"demo\", \"serve\", \"--grok\"]\n\n[[hook]]", 1), false},
 		{"crlf", strings.ReplaceAll(base, "\n", "\r\n"), false},
-		{"npx", strings.Replace(base, mcpArgv, `argv = ["npx", "-y", "@demo/server@1.2.3"]`, 1), false},
+		{"npx", strings.Replace(base, mcpArgv, `argv = ["npx", "@demo/server@1.2.3"]`, 1), false},
 		{"shasum is not sh", strings.Replace(base, mcpArgv, `argv = ["shasum", "-a", "256"]`, 1), false},
 		{"node with a script", strings.Replace(base, mcpArgv, `argv = ["node", "/opt/demo/server.js", "--port=3000"]`, 1), false},
 		{"nice then a program", strings.Replace(base, mcpArgv, `argv = ["nice", "-n", "5", "demo", "serve"]`, 1), false},
@@ -165,6 +165,22 @@ func TestParseRefuses(t *testing.T) {
 		{"upper-case table", post("[[MCP]]\nvendors = [\"grok\"]\nargv = [\"x\"]\n"), false, "MCP", "lower case"},
 		{"upper-case top key", pre(`Name = "other"`), false, "Name", "lower case"},
 		{"single mcp table", set("[[mcp]]", "[mcp]"), false, "", ""},
+		// T6776 F-2: the decoder folds ſ (U+017F) to s.
+		{"long s in a key", set(`vendors = ["claude", "codex"]`, `"vendorſ" = ["claude", "codex"]`), false, "mcp.\"vendorſ\"", "lower case"},
+		{"long s in a top key", pre(`"deſcription" = "x"`), false, "\"deſcription\"", "lower case"},
+		{"digit in a key", pre(`name2 = "x"`), false, "name2", "lower case"},
+
+		// T6776 F-3, F-8: {repo} never in a hook or the program.
+		{"repo in a hook", set(`argv = ["/usr/local/bin/demo", "hook"]`, `argv = ["/usr/local/bin/demo", "hook", "{repo}"]`), false, "hook[0].argv", "{repo}"},
+		{"repo as the program", set(mcpArgv, `argv = ["{repo}/bin/demo", "serve"]`), false, "mcp[0].argv", "{repo}"},
+		{"repo as the check program", set(`check = ["demo", "--version"]`, `check = ["{repo}", "--version"]`), false, "install.check", "{repo}"},
+		// T6776 F-1: a non-ASCII program.
+		{"long s shell", set(mcpArgv, `argv = ["/bin/ſh", "-c", "x"]`), false, "mcp[0].argv", "ASCII"},
+		// T6776 F-9: Codex model-request hooks are not for user tools.
+		{"user PreModelRequest", set(`vendors = ["grok"]
+event = "PostToolUse"
+matcher = "run_terminal_cmd"`, `vendors = ["codex"]
+event = "PreModelRequest"`), false, "hook[0].event", "allow or deny"},
 
 		// Name, text fields, version.
 		{"name upper case", set(`name = "demo"`, `name = "Demo"`), false, "name", ""},

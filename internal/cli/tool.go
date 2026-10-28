@@ -166,6 +166,10 @@ func toolAdd(src string, yes bool, in io.Reader, tty bool, stdout io.Writer) err
 	}
 	dir := tooldef.Dir(state)
 	dest := filepath.Join(dir, d.Name+".toml")
+	errExists := fmt.Errorf("%s already exists; aggy tool remove %s first", dest, d.Name)
+	if _, err := safefs.Lstat(dest); err == nil {
+		return errExists // a refused file, or a symlink, holds the name
+	}
 	previewTool(stdout, d, dest)
 	if !tty {
 		return errors.New("not added: adding a tool needs you at a terminal, because its commands run as you once it is on; --yes only skips the question there")
@@ -184,17 +188,35 @@ func toolAdd(src string, yes bool, in io.Reader, tty bool, stdout io.Writer) err
 	if err := tooldef.CheckDir(dir); err != nil {
 		return err
 	}
-	if _, err := safefs.Lstat(dest); !errors.Is(err, fs.ErrNotExist) {
-		if err == nil {
-			err = fmt.Errorf("%s already exists; aggy tool remove %s first", dest, d.Name)
+	if err := writeNew(dest, b); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			err = errExists
 		}
-		return err
-	}
-	if err := safefs.WriteFile(dest, b, 0o600); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "Added %s (off). aggy tool remove %s deletes it.\n", termsafe.Field(dest), d.Name)
 	return nil
+}
+
+// writeNew creates dest (mode 0600) with O_EXCL, so it never replaces a
+// file or follows a symlink put there after the checks (T59-15); a
+// failed write removes the partial file.
+func writeNew(dest string, b []byte) error {
+	f, err := safefs.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(b)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = safefs.Remove(dest)
+	}
+	return err
 }
 
 // previewTool prints exactly what the definition would run and wire,
@@ -262,7 +284,7 @@ func previewTool(w io.Writer, d tooldef.Def, dest string) {
 		}
 	}
 	if strings.Contains(fmt.Sprint(d.MCP, d.Hooks, d.Init, d.Install), tooldef.Placeholder) {
-		fmt.Fprintf(w, "  %s is the repo or worktree the session runs in\n", tooldef.Placeholder)
+		fmt.Fprintf(w, "  %s is the repo or worktree the session runs in, passed as an argument only: never the program, never in a hook\n", tooldef.Placeholder)
 	}
 	if len(d.Unverified) > 0 {
 		fmt.Fprintf(w, "  unverified: %s\n", strings.Join(d.Unverified, ", "))

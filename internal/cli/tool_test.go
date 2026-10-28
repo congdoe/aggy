@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,6 +135,15 @@ func TestToolAddRefuses(t *testing.T) {
 		{"default on", "default = true\n" + demoTool, nil, "proposed.toml: default"},
 		{"shadows a built-in", strings.Replace(demoTool, `name = "demo"`, `name = "context7"`, 1), nil, "built-in"},
 		{"already added", demoTool, func(t *testing.T, dest string) { writeAt(t, dest, demoTool, 0o600) }, "remove it first"},
+		// T59-15: a symlink at the destination is never written through.
+		{"symlink at the destination", demoTool, func(t *testing.T, dest string) {
+			if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(t.TempDir(), "elsewhere"), dest); err != nil {
+				t.Fatal(err)
+			}
+		}, "already exists"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			src, dest := toolHome(t, c.def)
@@ -277,6 +288,32 @@ func TestToolList(t *testing.T) {
 	code, out, errOut = run("tool", "list")
 	if code != 1 || !strings.Contains(errOut, "bad.toml") || !strings.Contains(out, "codegraph") {
 		t.Errorf("exit %d, stdout %q, stderr %q", code, out, errOut)
+	}
+}
+
+// TestToolWriteNew: the final write never replaces a file or follows a
+// symlink put at the destination after the checks (T59-15).
+func TestToolWriteNew(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "elsewhere")
+	link := filepath.Join(dir, "demo.toml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeNew(link, []byte("x")); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("writeNew over a symlink: %v", err)
+	}
+	if exists(t, target) {
+		t.Fatal("writeNew followed the symlink")
+	}
+	file := filepath.Join(dir, "other.toml")
+	writeAt(t, file, "old", 0o600)
+	if err := writeNew(file, []byte("new")); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("writeNew over a file: %v", err)
+	}
+	if b, _ := os.ReadFile(file); string(b) != "old" {
+		t.Fatal("writeNew replaced a file")
 	}
 }
 

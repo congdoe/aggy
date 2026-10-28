@@ -21,13 +21,31 @@ func TestArgvRefusesRunners(t *testing.T) {
 		{"perl", "-E", "x"}, {"node", "--eval", "x"}, {"node", "--eval=x"}, {"node", "-p", "x"}, {"ruby", "-e", "x"},
 		{"deno", "eval", "x"}, {"php", "-r", "x"}, {"awk", "-e", "x"},
 		{"nice", "python3", "-c", "x"},
+		// T6776 F-1: case folding beyond ASCII, after a wrapper too.
+		{"nice", "/bin/ſh", "-c", "x"}, {"nice", "/bin/KSH"}, {"/bin/ſh"},
+		// T6776 F-4: more wrappers and runners.
+		{"arch", "-arm64", "sh", "-c", "x"}, {"caffeinate", "-i", "bash"}, {"chrt", "-f", "10", "sh"},
+		{"taskset", "0x3", "zsh"}, {"ionice", "-c", "3", "sh"}, {"flock", "/tmp/l", "-c", "x"},
+		{"flock", "/tmp/l", "sh"}, {"unbuffer", "sh"}, {"toybox", "sh"},
+		{"find", ".", "-exec", "demo", ";"}, {"find", ".", "-okdir", "x"},
+		{"git", "-c", "core.sshCommand=x", "fetch"}, {"git", "-calias.x=!sh", "x"}, {"git", "--config-env=a=B", "x"},
+		{"sed", "1e", "f"}, {"vim", "-c", "!x"}, {"lldb", "-o", "platform shell x"}, {"awk", "BEGIN{system(\"x\")}"},
+		{"gdb", "-ex", "shell x"},
+		// T6776 F-5: fetching unpinned code on a launch.
+		{"npx", "-y", "@demo/server@1.0.0"}, {"npx", "--yes", "demo@1.0.0"}, {"npx", "demo@latest"},
+		{"npx", "demo"}, {"npx", "@demo/server"}, {"npx", "-p", "demo@next", "demo"}, {"uvx", "demo"},
+		{"uvx", "--from", "demo", "demo"}, {"uvx", "demo@latest"}, {"npm", "exec", "demo"},
+		{"pnpm", "dlx", "demo@latest"}, {"uv", "tool", "run", "demo"}, {"pipx", "run", "demo"},
+		{"nice", "npx", "-y", "demo@1.0.0"},
 	} {
 		if err := argv("argv", a, true); err == nil {
 			t.Errorf("%q passed", a)
 		}
 	}
 	for _, a := range [][]string{
-		{"demo"}, {"shasum", "-a", "256"}, {"ashby"}, {"nudge"}, {"npx", "-y", "@demo/server@1.0.0"},
+		{"demo"}, {"shasum", "-a", "256"}, {"ashby"}, {"nudge"}, {"npx", "@demo/server@1.0.0"},
+		{"npx", "demo@1.2.3-beta.1", "--stdio"}, {"uvx", "demo==1.2.3"}, {"uvx", "--from", "demo==1.2", "demo"},
+		{"npm", "exec", "demo@1.0.0"}, {"find", ".", "-name", "x"}, {"git", "log"}, {"/usr/bin/arch"},
 		{"node", "/opt/demo/server.js"}, {"python3", "-m", "demo"}, {"nice", "-n", "5", "demo"},
 		{"/usr/local/bin/demo", "{repo}"},
 	} {
