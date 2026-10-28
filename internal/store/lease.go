@@ -47,8 +47,8 @@ func (e *BusyError) Is(target error) bool { return target == ErrBusy }
 // directory until it releases the lease or exits. The kernel drops the
 // lock when the process dies, so another process can tell a stale lease
 // from a live one by trying the lock, and a reused pid does not keep a
-// dead lease alive. Where the lock file is missing or file locks are
-// unsupported, liveness falls back to whether the pid exists.
+// dead lease alive. A missing lock file means a dead holder. Only where
+// file locks are unsupported does liveness fall back to the pid.
 type Lease struct {
 	s       *Store
 	childID string
@@ -93,12 +93,21 @@ func (s *Store) leaseRow(ctx context.Context, vendor, sessionID string) (leaseRo
 }
 
 // alive reports whether the lease held under nonce by pid is still live.
+// A live holder always has its lock file: it creates the file before it
+// records the lease and removes it only after clearing the record. So a
+// missing lock file means the holder is gone, whatever the pid, which
+// another process may have reused (#10-11).
 func (s *Store) alive(nonce string, pid int) bool {
 	held, err := lockHeld(s.lockPath(nonce))
-	if err == nil {
+	switch {
+	case err == nil:
 		return held
+	case errors.Is(err, fs.ErrNotExist):
+		return false
 	}
-	// No lock file, or no file locks here: fall back to the pid.
+	// shortcut: where file locks are unsupported the pid is all there is,
+	// and a reused pid keeps a dead lease alive; pair it with the process
+	// start time if aggy has to support such file systems.
 	return pidAlive(pid)
 }
 

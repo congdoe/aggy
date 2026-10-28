@@ -98,7 +98,7 @@ var (
 	// Denying web_search takes them along: the review argv, run live
 	// (C3, 2026-10-28), left the model reporting only read_file, grep,
 	// and list_dir, with no warning. --disable-web-search (not in a
-	// recorded help) is unverified and no longer needed: TODO(T6737).
+	// recorded help) is unverified and not needed, so it is not passed.
 	Lockdown = []string{
 		"read_file", "grep", "list_dir", "write", "search_replace", "run_terminal_cmd", "web_fetch",
 		"Agent", "search_tool", "use_tool", "image_gen", "image_edit", "image_to_video",

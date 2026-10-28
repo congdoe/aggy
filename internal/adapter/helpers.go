@@ -200,27 +200,54 @@ func ValidModel(model string) error {
 // retries without the flag.
 var ErrLockdownRejected = errors.New("the CLI rejected a lockdown flag")
 
-// rejectedFlag are the CLIs' messages for an option they do not take:
-// commander's (Claude), clap's (Codex), Codex's --strict-config message
-// for a feature it does not know (config/src/loader/mod.rs at 6aaac69),
-// and the generic forms.
-var rejectedFlag = []string{"unknown option", "unexpected argument", "unrecognized option", "unknown flag", "invalid value", "unknown configuration field"}
+// Rejection formats: whole lines, matched per vendor.
+var (
+	// commander's unknown option and invalid choice (Claude Code is a
+	// commander CLI).
+	commanderRejected = []*regexp.Regexp{
+		regexp.MustCompile(`^error: unknown option '[^']+'`),
+		regexp.MustCompile(`^error: option '[^']+' argument '[^']*' is invalid\.`),
+	}
+	// clap's unknown argument and invalid value (Codex is a clap CLI).
+	clapRejected = []*regexp.Regexp{
+		regexp.MustCompile(`^error: unexpected argument '[^']+' found`),
+		regexp.MustCompile(`^error: invalid value '[^']*' for '[^']+'`),
+	}
+	// Codex's --strict-config message for a feature it does not know
+	// (config/src/loader/mod.rs at 6aaac69), with any prefix codex adds.
+	codexUnknownField = regexp.MustCompile("unknown configuration field `[^`]+` in -c/--config override")
+)
 
-// TODO(T6737): match each CLI's own rejection format, not substrings of
-// any stderr line (review finding #10-9).
-//
+// rejected returns the formats vendor v prints for a flag it refuses.
+// Grok's parser is not recorded (unverified), so it takes both the
+// commander and the clap forms.
+func rejected(v Vendor) []*regexp.Regexp {
+	switch v {
+	case Claude:
+		return commanderRejected
+	case Codex:
+		return append(slices.Clone(clapRejected), codexUnknownField)
+	}
+	return slices.Concat(commanderRejected, clapRejected)
+}
+
 // CheckLockdown returns an error matching ErrLockdownRejected when a run
-// exited non-zero and its stderr says the CLI refused an option: one of
-// the lockdown flags aggy depends on may be gone from this version.
+// exited non-zero and a line of its stderr or stdout is v's own message
+// for a refused option: one of the lockdown flags aggy depends on may be
+// gone from this version. Only the vendor's exact formats count, so an
+// unrelated failure that mentions "invalid value" keeps its own class.
 func CheckLockdown(v Vendor, out Output) error {
 	if out.ExitCode == 0 {
 		return nil
 	}
-	for _, line := range strings.Split(string(out.Stderr), "\n") {
-		low := strings.ToLower(line)
-		for _, p := range rejectedFlag {
-			if strings.Contains(low, p) {
-				return fmt.Errorf("%s: %w: %s", v, ErrLockdownRejected, strings.TrimSpace(line))
+	pats := rejected(v)
+	for _, stream := range [][]byte{out.Stderr, out.Stdout} {
+		for _, line := range strings.Split(string(stream), "\n") {
+			line = strings.TrimSpace(line)
+			for _, re := range pats {
+				if re.MatchString(line) {
+					return fmt.Errorf("%s: %w: %s", v, ErrLockdownRejected, line)
+				}
 			}
 		}
 	}

@@ -73,6 +73,9 @@ func TestRequestRefused(t *testing.T) {
 		{"relative path", Request{Kind: adapter.News, Task: "x", Repo: w.repo, Paths: []string{"a.go"}}},
 		{"multi-line constraint", Request{Kind: adapter.News, Task: "x", Repo: w.repo, Constraints: []string{"a\nb"}}},
 		{"huge task", w.req(adapter.News, strings.Repeat("x", MaxTask+1))},
+		// #10-13: local paths never go to a web-facing child.
+		{"research path", Request{Kind: adapter.Research, Task: "x", Repo: w.repo, Paths: []string{"/r/go.mod"}}},
+		{"news path", Request{Kind: adapter.News, Task: "x", Repo: w.repo, Paths: []string{"/r/go.mod"}}},
 	}
 	for _, tt := range tests {
 		if _, err := b.Run(context.Background(), tt.req); err == nil {
@@ -91,7 +94,7 @@ func TestPromptOnStdin(t *testing.T) {
 	w.scenario[adapter.Grok] = `{"json":{"result":"Go 1.27 shipped."}}`
 	task := "what shipped in go 1.27? SECRET-TASK-MARKER"
 	req := w.req(adapter.News, task)
-	req.Paths, req.Constraints = []string{"/r/go.mod"}, []string{"cite primary sources"}
+	req.Constraints = []string{"cite primary sources"}
 	res, err := w.borrower().Run(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +112,7 @@ func TestPromptOnStdin(t *testing.T) {
 			t.Errorf("task in argv: %q", r.Args)
 		}
 	}
-	for _, s := range []string{task, "/r/go.mod", "cite primary sources", "2026-10-28"} {
+	for _, s := range []string{task, "cite primary sources", "2026-10-28"} {
 		if !strings.Contains(r.Stdin, s) {
 			t.Errorf("stdin lacks %q: %q", s, r.Stdin)
 		}

@@ -104,7 +104,16 @@ var wrappers = map[string][]string{
 	"sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U"}, "doas": {"-u", "-C"},
 	"xargs": {"-I", "-n", "-L", "-P", "-d", "-E", "-s", "-a"},
 	"npx":   {"-p", "--package", "-c", "--call"}, "bunx": {"-p", "--package"}, "pnpx": nil,
+	// Shell reserved words that put the next word at command position.
+	"if": nil, "then": nil, "elif": nil, "else": nil, "while": nil, "until": nil, "do": nil, "{": nil, "!": nil,
+	"watch": {"-n", "--interval", "-q", "--equexit"},
+	// ssh runs its command on the host named after its flags.
+	"ssh": {"-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o", "-P", "-p", "-Q", "-R", "-S", "-W", "-w"},
 }
+
+// findExec are find's actions that run a command, which starts right
+// after them.
+var findExec = []string{"-exec", "-execdir", "-ok", "-okdir"}
 
 // shells run their -c argument as a command.
 var shells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "fish": true}
@@ -153,12 +162,10 @@ func skipFlags(ws []string, i int, vals []string) int {
 // word at command position counts: the first word of a simple command,
 // after VAR=value words, after a wrapper such as env, sudo, timeout,
 // xargs, or npx and its flags, after npm, pnpm, or yarn exec/dlx/x, or
-// the first word of a shell's -c argument. So git log -S claude -p and
-// find . -name claude -print do not match.
-//
-// TODO(T6737): a CLI after then, do, {, or !, or started by find -exec,
-// watch, or ssh, is not at a command position Nested knows (review
-// finding R-4).
+// the first word of a shell's -c argument, after a shell reserved word
+// (if, then, do, {, !, ...), after watch or ssh host, or after find's
+// -exec. So git log -S claude -p and find . -name claude -print do not
+// match.
 func Nested(cmd string) string {
 	cmd = strings.NewReplacer("${IFS}", " ", "$IFS", " ").Replace(cmd)
 	ws := words(cmd)
@@ -188,10 +195,20 @@ func nestedIn(ws []string) string {
 		prog, rest := program(ws[i]), ws[i+1:]
 		if vals, ok := wrappers[prog]; ok {
 			i = skipFlags(ws, i+1, vals)
-			if prog == "timeout" && i < len(ws) {
-				i++ // the duration
+			if (prog == "timeout" || prog == "ssh") && i < len(ws) {
+				i++ // the duration, or the host
 			}
 			continue
+		}
+		if prog == "find" {
+			for k, w := range rest {
+				if slices.Contains(findExec, w) {
+					if what := nestedIn(rest[k+1:]); what != "" {
+						return what
+					}
+				}
+			}
+			return ""
 		}
 		if (prog == "npm" || prog == "pnpm" || prog == "yarn") && len(rest) > 0 &&
 			slices.Contains([]string{"exec", "dlx", "x"}, rest[0]) {

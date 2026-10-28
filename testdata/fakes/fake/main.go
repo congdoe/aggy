@@ -132,7 +132,7 @@ func (f *fake) validate(headless bool) error {
 		allowed = append(append([]string{}, allowed...), f.sc.ExtraValues[flag]...)
 		for _, v := range f.flags[flag] {
 			if !contains(allowed, v) {
-				return fmt.Errorf("invalid value %q for %s", v, flag)
+				return f.invalidValue(flag, v, allowed)
 			}
 		}
 	}
@@ -279,6 +279,25 @@ func main() {
 type verbatimError string
 
 func (e verbatimError) Error() string { return string(e) }
+
+// unknownOption is the CLI's own message for an option it does not take:
+// clap's for codex, commander's for claude. Grok's parser is not
+// recorded; the fake prints commander's form (unverified).
+func (f *fake) unknownOption(a string) error {
+	if strings.HasPrefix(f.vendor, "codex") {
+		return verbatimError(fmt.Sprintf("error: unexpected argument '%s' found", a))
+	}
+	return verbatimError(fmt.Sprintf("error: unknown option '%s'", a))
+}
+
+// invalidValue is the CLI's own message for a flag value it refuses, in
+// the same forms as unknownOption.
+func (f *fake) invalidValue(flag, v string, allowed []string) error {
+	if strings.HasPrefix(f.vendor, "codex") {
+		return verbatimError(fmt.Sprintf("error: invalid value '%s' for '%s <VALUE>'", v, flag))
+	}
+	return verbatimError(fmt.Sprintf("error: option '%s <value>' argument '%s' is invalid. Allowed choices are %s.", flag, v, strings.Join(allowed, ", ")))
+}
 
 func fail(code int, format string, args ...any) int {
 	fmt.Fprintf(os.Stderr, "fake: "+format+"\n", args...)
@@ -519,7 +538,7 @@ func (f *fake) parse(args []string) error {
 			}
 			f.flags[name] = append(f.flags[name], val)
 		default:
-			return fmt.Errorf("unknown option '%s'", a)
+			return f.unknownOption(a)
 		}
 	}
 	return nil
@@ -543,6 +562,11 @@ func (f *fake) main(args []string) int {
 	}
 	if err := f.parse(args); err != nil {
 		f.record("error", args)
+		var v verbatimError
+		if errors.As(err, &v) {
+			fmt.Fprintln(os.Stderr, string(v))
+			return 2
+		}
 		return fail(2, "%s: %v", f.vendor, err)
 	}
 	if f.has("--version") {

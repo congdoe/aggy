@@ -36,12 +36,13 @@ func reviewRoot(cwd, homeDir, stateDir string) (string, error) {
 		return "", fmt.Errorf("a review runs in a git work tree, and %s is in none", cwd)
 	}
 	root = resolvePath(root)
-	for _, bad := range []struct{ p, why string }{
-		{"/", "the file system root"}, {resolvePath(homeDir), "your home directory"},
-	} {
-		if bad.p != "" && root == bad.p {
-			return "", fmt.Errorf("refusing to review %s: it is %s, which the reviewer could read in full", root, bad.why)
-		}
+	if root == "/" {
+		return "", fmt.Errorf("refusing to review %s: it is the file system root, which the reviewer could read in full", root)
+	}
+	// A root that is or holds the home dir would let the reviewer read
+	// all of it, whatever AGGY_HOME says (#10-7).
+	if h := resolvePath(homeDir); h != "" && within(h, root) {
+		return "", fmt.Errorf("refusing to review %s: it is or holds your home directory, which the reviewer could read in full", root)
 	}
 	if st := resolvePath(stateDir); st != "" && (within(root, st) || within(st, root)) {
 		return "", fmt.Errorf("refusing to review %s: it holds or is inside aggy's state dir %s", root, st)

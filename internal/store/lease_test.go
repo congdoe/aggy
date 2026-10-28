@@ -127,9 +127,10 @@ func TestLeaseStale(t *testing.T) {
 		// PID reuse: the recorded pid now belongs to a live, unrelated
 		// process, but the nonce lock is free, so the lease is stale.
 		{"reused pid, lock free", func(*testing.T) int { return os.Getpid() }, true, false},
-		// No lock file to ask: fall back to the pid.
+		// No lock file: the holder is gone, even when its pid is in use
+		// again (#10-11).
 		{"dead pid, no lock file", deadPID, false, false},
-		{"live pid, no lock file", func(*testing.T) int { return os.Getpid() }, false, true},
+		{"reused pid, no lock file", func(*testing.T) int { return os.Getpid() }, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

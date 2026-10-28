@@ -24,9 +24,9 @@ func TestFakesCheckValues(t *testing.T) {
 	}{
 		{"session id not a uuid", "claude", "", "p", []string{"-p", "--session-id", "abc"}, 2, "UUID"},
 		{"session id uuid", "grok", "", "p", []string{"-p", "--session-id", abc}, 0, ""},
-		{"output format not recorded", "claude", "", "p", []string{"-p", "--output-format", "yaml"}, 2, "invalid value"},
-		{"permission mode not recorded", "grok", "", "p", []string{"-p", "--permission-mode", "yolo"}, 2, "invalid value"},
-		{"sandbox not recorded", "codex", "", "p", []string{"exec", "--sandbox", "danger-full-access"}, 2, "invalid value"},
+		{"output format not recorded", "claude", "", "p", []string{"-p", "--output-format", "yaml"}, 2, "error: option '--output-format <value>' argument 'yaml' is invalid."},
+		{"permission mode not recorded", "grok", "", "p", []string{"-p", "--permission-mode", "yolo"}, 2, "argument 'yolo' is invalid."},
+		{"sandbox not recorded", "codex", "", "p", []string{"exec", "--sandbox", "danger-full-access"}, 2, "error: invalid value 'danger-full-access' for '--sandbox"},
 		{"sandbox added by scenario", "codex", `{"extra_values":{"--sandbox":["workspace-write"]}}`, "p", []string{"exec", "--sandbox", "workspace-write"}, 0, ""},
 		{"claude -p without a prompt", "claude", "", "", []string{"-p"}, 2, "no prompt"},
 		{"claude -p with an argument prompt", "claude", "", "", []string{"-p", "hello"}, 0, ""},

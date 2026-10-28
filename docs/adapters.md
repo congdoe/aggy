@@ -299,7 +299,7 @@ review argv, run live with grok 1.0.70 (2026-10-28,
 `docs/verification.md` C3), left the model reporting only `read_file`,
 `grep`, and `list_dir`, with empty stderr; image and video deny
 `web_search` the same way. `--disable-web-search` (not in a recorded
-help) is unverified and not needed (TODO(T6737)). Claude's `<run>/mcp.json` is `{"mcpServers":{}}`; the
+help) is unverified and not needed, so it is not passed. Claude's `<run>/mcp.json` is `{"mcpServers":{}}`; the
 `--tools` names are unverified. `--setting-sources user` (so a review does
 not run the reviewed repo's own `.claude/settings.json` hooks) and
 `--settings` (the PreToolUse guard) are passed only when the probe found
