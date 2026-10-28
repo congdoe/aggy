@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"path/filepath"
+	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -186,7 +189,7 @@ func driftFindings(ctx context.Context, home string) []checkup.Finding {
 				Message: fmt.Sprintf("%s cannot be checked (change %s): %v", file, d.Change.ChangeID, d.Err)})
 		case d.Drifted:
 			out = append(out, checkup.Finding{Code: codeDrift, Level: checkup.LevelWarn,
-				Message: fmt.Sprintf("%s changed after aggy wrote it (change %s); aggy unwire will not undo it without --force", file, d.Change.ChangeID)})
+				Message: fmt.Sprintf("%s changed after aggy wrote it (change %s); aggy unwire will ask for --force", file, d.Change.ChangeID)})
 		}
 	}
 	if len(out) == 0 {
@@ -220,12 +223,13 @@ func printDoctor(w io.Writer, res doctorResult) {
 
 // printReport prints the findings for a public issue: aggy's version,
 // the OS and architecture, each vendor's CLI version, and each finding's
-// level, code, vendor, and message, scrubbed of the home path, user and
-// host names, emails, UUIDs, and token-shaped strings, then escaped.
+// level, code, vendor, and message, scrubbed (reportScrub, then devfix's
+// scrubber: home paths, user and host names, emails, UUIDs, and
+// token-shaped strings), then escaped.
 // Messages never hold environment values or file contents.
 func printReport(w io.Writer, res doctorResult, id devfix.Identity) {
 	sc := devfix.NewScrubber(id)
-	clean := func(s string) string { return termsafe.Field(sc.String(s)) }
+	clean := func(s string) string { return termsafe.Field(sc.String(reportScrub(s, id))) }
 	var b strings.Builder
 	fmt.Fprintln(&b, "aggy doctor report")
 	fmt.Fprintf(&b, "aggy: %s\n", clean(Version))
@@ -251,4 +255,45 @@ func printReport(w io.Writer, res doctorResult, id devfix.Identity) {
 		}
 	}
 	fmt.Fprint(w, b.String())
+}
+
+// absPathRE matches an absolute path of two or more elements that starts
+// a word: not after a letter, digit, or one of "_.~-/". A one-element
+// "/login" is left alone.
+var absPathRE = regexp.MustCompile(`(^|[^A-Za-z0-9_.~/-])(/[^\s/'"` + "`" + `(),;]+(?:/[^\s/'"` + "`" + `(),;]+)+)`)
+
+// genericUsers are account names too common to identify anyone, which
+// reportScrub leaves in place rather than mangle ordinary words.
+var genericUsers = []string{"root", "runner", "user", "users", "admin", "ubuntu", "vscode", "codespace", "build", "home", "bin", "local"}
+
+// reportScrub removes what devfix's fixture scrubber does not, for
+// doctor --report: the home directory becomes ~; any other absolute path
+// becomes <path>/<its base name>, since paths such as
+// /etc/profiles/per-user/<user>/bin or a relocated vendor home hold the
+// user name; and the user name is replaced wherever it stands as a word
+// (bounded by anything but a letter, digit, or underscore, so "cc-<user>"
+// and "/<user>/" match), unless it is shorter than 3 characters or
+// generic.
+func reportScrub(s string, id devfix.Identity) string {
+	if h := strings.TrimRight(id.Home, "/"); len(h) > 1 {
+		s = strings.ReplaceAll(s, h+"/", "~/")
+		s = regexp.MustCompile(regexp.QuoteMeta(h)+`($|[^A-Za-z0-9_.-])`).ReplaceAllString(s, "~$1")
+	}
+	s = absPathRE.ReplaceAllStringFunc(s, func(m string) string {
+		sub := absPathRE.FindStringSubmatch(m)
+		return sub[1] + "<path>/" + filepath.Base(sub[2])
+	})
+	u := id.User
+	if len(u) >= 3 && !strings.ContainsAny(u, "/\\") && !slices.ContainsFunc(genericUsers, func(g string) bool { return strings.EqualFold(g, u) }) {
+		re := regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_])` + regexp.QuoteMeta(u) + `($|[^A-Za-z0-9_])`)
+		// A match consumes its boundary, so adjacent names need passes.
+		for range 8 {
+			out := re.ReplaceAllString(s, "${1}"+devfix.UserPlaceholder+"${2}")
+			if out == s {
+				break
+			}
+			s = out
+		}
+	}
+	return s
 }

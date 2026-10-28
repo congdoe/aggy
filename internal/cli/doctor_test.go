@@ -226,7 +226,7 @@ func TestDoctorReport(t *testing.T) {
 	}
 	for _, s := range []string{"aggy doctor report\n", "aggy: ", "os: ", "claude: 2.1.311\n", "codex: 0.164.0\n", "grok: 1.0.70\n",
 		"warning api-key-env (codex): OPENAI_API_KEY is set", "warning base-url-env (claude): ANTHROPIC_BASE_URL is set",
-		"warning config-drift: ", "fixture-host", "info sign-in-unknown (grok)"} {
+		"warning config-drift: <path>/cfg.toml changed", "info sign-in-unknown (grok)"} {
 		if !strings.Contains(out, s) {
 			t.Errorf("report lacks %q:\n%s", s, out)
 		}
@@ -255,3 +255,64 @@ func TestDoctorArgs(t *testing.T) {
 }
 
 func fsMode(m uint32) fs.FileMode { return fs.FileMode(m) }
+
+// TestReportScrub (T6612 review 2): the user name in paths outside home,
+// and paths outside home themselves, never reach a report.
+func TestReportScrub(t *testing.T) {
+	id := devfix.Identity{Home: "/home/alice", User: "alice"}
+	tests := []struct{ in, want string }{
+		{"/etc/profiles/per-user/alice/bin/claude, version 2.1.311", "<path>/claude, version 2.1.311"},
+		{"/home/alice/bin/claude, version 1", "~/bin/claude, version 1"},
+		{"probe: /home/alice/x/codex --version exited 1", "probe: ~/x/codex --version exited 1"},
+		{"/home/alice", "~"},
+		{"/home/alicebob/x", "<path>/x"},
+		{"~/.grok/config.toml: toolset.image_gen.env_key is set", "~/.grok/config.toml: toolset.image_gen.env_key is set"},
+		{"run `claude`, then type `/login`", "run `claude`, then type `/login`"},
+		{"cc-alice: set; alice.smith and Alice_x and malice", "cc-fixture-user: set; fixture-user.smith and Alice_x and malice"},
+		{"/tmp/cc-alice/settings.json: env.X is set", "<path>/settings.json: env.X is set"},
+		{"alice-alice", "fixture-user-fixture-user"},
+	}
+	for _, tt := range tests {
+		if got := reportScrub(tt.in, id); got != tt.want {
+			t.Errorf("reportScrub(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+	// Generic and short names are left alone.
+	for _, u := range []string{"root", "user", "al"} {
+		in := "the " + u + " said"
+		if got := reportScrub(in, devfix.Identity{User: u}); got != in {
+			t.Errorf("user %q: %q became %q", u, in, got)
+		}
+	}
+}
+
+// TestDoctorReportNonHomePaths (T6612 review 2): a CLI installed under a
+// per-user profile and a relocated vendor home named after the user.
+func TestDoctorReportNonHomePaths(t *testing.T) {
+	fakes := fakecli.Build(t)
+	home := isolate(t)
+	w := newFakeWorld(t, fakes)
+	profile := filepath.Join(t.TempDir(), "per-user", "zelda", "bin")
+	bin := filepath.Join(profile, "claude")
+	b, err := safefs.ReadFile(fakes.Claude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, bin, string(b), 0o755)
+	cc := filepath.Join(t.TempDir(), "cc-zelda")
+	mustWrite(t, filepath.Join(cc, "settings.json"), `{"env":{"ANTHROPIC_BASE_URL":"u"}}`, 0o600)
+	w.environ = []string{"HOME=" + home, "CLAUDE_CONFIG_DIR=" + cc}
+	env := w.env(home, "", false, claude.Adapter{Path: bin})
+	env.identity = &devfix.Identity{Home: home, User: "zelda", Host: "h"}
+	var stdout, stderr bytes.Buffer
+	doctorWith([]string{"--report"}, env, &stdout, &stderr)
+	out := stdout.String()
+	if strings.Contains(strings.ToLower(out), "zelda") {
+		t.Errorf("the user name leaked:\n%s", out)
+	}
+	for _, s := range []string{"<path>/claude, version 2.1.311", "<path>/settings.json: env.ANTHROPIC_BASE_URL is set"} {
+		if !strings.Contains(out, s) {
+			t.Errorf("report lacks %q:\n%s", s, out)
+		}
+	}
+}
