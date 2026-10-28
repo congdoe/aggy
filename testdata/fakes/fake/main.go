@@ -139,7 +139,9 @@ func (f *fake) validate(headless bool) error {
 	if f.has("--strict-config") {
 		for _, v := range f.flags["--disable"] {
 			if !contains(codexFeatures, v) {
-				return fmt.Errorf("invalid value %q for '--disable': unknown feature (--strict-config)", v)
+				// codex's own message (config/src/loader/mod.rs at
+				// 6aaac69), printed bare.
+				return verbatimError(fmt.Sprintf("unknown configuration field `features.%s` in -c/--config override", v))
 			}
 		}
 	}
@@ -270,6 +272,12 @@ var limitText = map[string]string{
 func main() {
 	os.Exit(run())
 }
+
+// verbatimError is a validation error the fake prints exactly as the
+// real CLI does, with no "fake: <vendor>:" prefix.
+type verbatimError string
+
+func (e verbatimError) Error() string { return string(e) }
 
 func fail(code int, format string, args ...any) int {
 	fmt.Fprintf(os.Stderr, "fake: "+format+"\n", args...)
@@ -556,6 +564,11 @@ func (f *fake) main(args []string) int {
 	}
 	if err := f.validate(headless); err != nil {
 		f.record("error", args)
+		var v verbatimError
+		if errors.As(err, &v) {
+			fmt.Fprintln(os.Stderr, string(v))
+			return 2
+		}
 		return fail(2, "%s: %v", f.vendor, err)
 	}
 	f.id = f.sessionID()

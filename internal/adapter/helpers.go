@@ -201,8 +201,10 @@ func ValidModel(model string) error {
 var ErrLockdownRejected = errors.New("the CLI rejected a lockdown flag")
 
 // rejectedFlag are the CLIs' messages for an option they do not take:
-// commander's (Claude), clap's (Codex), and the generic forms.
-var rejectedFlag = []string{"unknown option", "unexpected argument", "unrecognized option", "unknown flag", "invalid value"}
+// commander's (Claude), clap's (Codex), Codex's --strict-config message
+// for a feature it does not know (config/src/loader/mod.rs at 6aaac69),
+// and the generic forms.
+var rejectedFlag = []string{"unknown option", "unexpected argument", "unrecognized option", "unknown flag", "invalid value", "unknown configuration field"}
 
 // TODO(T6737): match each CLI's own rejection format, not substrings of
 // any stderr line (review finding #10-9).

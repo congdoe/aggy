@@ -143,6 +143,15 @@ func TestStrictConfig(t *testing.T) {
 	if !errors.Is(err, adapter.ErrLockdownRejected) || res.Error != adapter.ErrLockdown {
 		t.Errorf("strict: %+v, %v (stderr %q)", res, err, out.Stderr)
 	}
+	// R-6: the fake prints the real CLI's message, and that message
+	// alone is classified as a rejected lockdown.
+	const real = "unknown configuration field `features.shell_tool_v1` in -c/--config override"
+	if got := strings.TrimSpace(string(out.Stderr)); got != real {
+		t.Errorf("stderr %q, want %q", got, real)
+	}
+	if err := adapter.CheckLockdown(adapter.Codex, adapter.Output{ExitCode: 1, Stderr: []byte(real + "\n")}); !errors.Is(err, adapter.ErrLockdownRejected) {
+		t.Errorf("CheckLockdown(%q) = %v", real, err)
+	}
 	// Without --strict-config the same run would pass silently.
 	lax := c
 	lax.Args = slices.DeleteFunc(renamed(c.Args), func(a string) bool { return a == "--strict-config" })
