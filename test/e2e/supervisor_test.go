@@ -267,6 +267,9 @@ func TestPassThrough(t *testing.T) {
 	if !slices.Contains(rec.EnvKeys, "USER_OWN_SETTING") || !slices.Contains(rec.EnvKeys, "TERM") {
 		t.Errorf("the user's environment did not reach the CLI: %v", rec.EnvKeys)
 	}
+	if !slices.Contains(rec.Args, "--no-alt-screen") {
+		t.Errorf("args = %q: codex help lists --no-alt-screen, so it must be passed", rec.Args)
+	}
 	if rec.Cwd != w.cwd {
 		t.Errorf("cwd = %q, want %q", rec.Cwd, w.cwd)
 	}

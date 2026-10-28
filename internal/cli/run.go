@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
 	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/supervisor"
 )
@@ -39,20 +41,26 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy run: %v\n", err)
 		return 1
 	}
-	var a adapter.Adapter
-	var bin string
-	switch v {
-	case adapter.Claude:
-		a, bin = claude.New(), claude.Bin
-	case adapter.Codex:
-		a, bin = codex.New(), codex.Bin
-	case adapter.Grok:
-		a, bin = grok.New(), grok.Bin
-	}
+	bin := map[adapter.Vendor]string{adapter.Claude: claude.Bin, adapter.Codex: codex.Bin, adapter.Grok: grok.Bin}[v]
 	path, err := probe.LookPath(bin)
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy run: %v\n", err)
 		return 1
+	}
+	var a adapter.Adapter
+	switch v {
+	case adapter.Claude:
+		a = claude.New()
+	case adapter.Codex:
+		// --no-alt-screen is unverified for Codex, so it goes on the
+		// command line only when this CLI's help lists it.
+		p, err := codex.Adapter{Path: path}.Probe(context.Background(), execrun.ExecRunner(probeTimeout))
+		if err != nil {
+			fmt.Fprintf(stderr, "aggy run: probing codex: %v; starting it without --no-alt-screen\n", err)
+		}
+		a = codex.Adapter{Caps: p.Capabilities}
+	case adapter.Grok:
+		a = grok.New()
 	}
 	cmd, err := a.Interactive(adapter.InteractiveRequest{
 		Cwd:   cwd,

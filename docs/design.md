@@ -93,7 +93,7 @@ aggy stays running as the parent process. The supervisor holds the vendor CLI in
 - `/vendor grok --model <id>` overrides the model for one launch and does not write config. Inside a running harness, its own `/model` still changes models.
 - Several children of one vendor open a picker limited to this parent.
 
-**Scrollback.** Claude renders inline, and aggy launches Codex and Grok with `--no-alt-screen`, so the previous vendor's output stays in your terminal's scrollback after a switch. aggy does not redraw the thread. The transcript stays on disk for `aggy log` and later briefs.
+**Scrollback.** Claude renders inline, and aggy launches Codex and Grok with `--no-alt-screen` (verified for Grok; for Codex, unverified, so passed only when a probe at launch finds it in `codex --help`), so the previous vendor's output stays in your terminal's scrollback after a switch. aggy does not redraw the thread. The transcript stays on disk for `aggy log` and later briefs.
 
 **Terminal transparency.** The pass-through must carry window resize, bracketed paste, image paste, Shift+Enter and the kitty keyboard protocol, mouse, clipboard (OSC 52), links (OSC 8), notifications (OSC 9 and 777), truecolor and wide characters, and Ctrl+Z. A checklist covering these runs before each release in common terminals, with and without tmux. `aggy --direct` launches a CLI unwrapped for when the pass-through breaks something; the index is still updated through hooks.
 
