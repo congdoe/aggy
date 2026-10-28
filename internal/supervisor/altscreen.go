@@ -1,3 +1,5 @@
+//go:build unix
+
 package supervisor
 
 // altTracker follows whether the CLI has switched the terminal to its
