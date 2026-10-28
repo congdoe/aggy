@@ -114,6 +114,10 @@ var recordedValues = map[string][]string{
 	"--sandbox":         {"read-only"},
 }
 
+// grokValues replace recordedValues for grok: its --sandbox profile is
+// strict (live diagnostic 2026-10-28, grok 1.0.70).
+var grokValues = map[string][]string{"--sandbox": {"strict"}}
+
 // codexFeatures are the codex exec features the fake knows: the ones the
 // borrow lockdown disables, and others live checks accepted (codex-cli
 // 0.164.0, 2026-10-28). Like the real CLI, an unknown --disable feature
@@ -139,6 +143,9 @@ var uuidRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[
 // the opt-in strict rules.
 func (f *fake) validate(headless bool) error {
 	for flag, allowed := range recordedValues {
+		if v, ok := grokValues[flag]; ok && f.vendor == "grok" {
+			allowed = v
+		}
 		allowed = append(append([]string{}, allowed...), f.sc.ExtraValues[flag]...)
 		for _, v := range f.flags[flag] {
 			if !contains(allowed, v) {
@@ -165,6 +172,10 @@ func (f *fake) validate(headless bool) error {
 	if contains(f.sc.Strict, "resume-with-session-id") && f.has("--resume") && f.has("--session-id") && !f.has("--fork-session") {
 		return errors.New("--session-id with --resume requires --fork-session")
 	}
+	// Grok's prompt is -p's value or the --prompt-file, never stdin.
+	if headless && f.vendor == "grok" {
+		return f.grokPrompt()
+	}
 	// A headless run needs a prompt: an argument or stdin. A prompt
 	// argument of "-" means "read it from stdin", so stdin must then hold
 	// one.
@@ -183,6 +194,32 @@ func (f *fake) validate(headless bool) error {
 	}
 	if !headless && !f.terminal && !f.sc.InteractiveWithoutTTY {
 		return errors.New("an interactive session needs a terminal")
+	}
+	return nil
+}
+
+// grokPrompt reads grok's headless prompt into f.prompt. -p (clap's
+// --single <PROMPT>) together with a positional prompt is clap's conflict
+// error (live diagnostic 2026-10-28, grok 1.0.70). --prompt-file with -p
+// or a positional is not recorded, so the fake refuses it.
+func (f *fake) grokPrompt() error {
+	single, file := f.has("-p"), f.has("--prompt-file")
+	switch {
+	case single && len(f.positional) > 0:
+		return verbatimError("error: the argument '--single <PROMPT>' cannot be used with '[PROMPT]'")
+	case file && (single || len(f.positional) > 0):
+		return errors.New("--prompt-file with -p or a prompt argument is not recorded")
+	case single:
+		f.prompt = f.value("-p")
+	default:
+		b, err := os.ReadFile(f.value("--prompt-file"))
+		if err != nil {
+			return fmt.Errorf("cannot read the prompt file: %v", err)
+		}
+		f.prompt = string(b)
+	}
+	if strings.TrimSpace(f.prompt) == "" {
+		return errors.New("no prompt given")
 	}
 	return nil
 }
@@ -209,6 +246,7 @@ type Record struct {
 	EnvKeys       []string            `json:"env_keys"`
 	StdinTerminal bool                `json:"stdin_terminal"`
 	Stdin         string              `json:"stdin"`
+	Prompt        string              `json:"prompt,omitempty"` // grok's -p value or --prompt-file contents
 	SessionID     string              `json:"session_id,omitempty"`
 	Flags         map[string][]string `json:"flags,omitempty"`
 	Positional    []string            `json:"positional,omitempty"`
@@ -248,10 +286,13 @@ var specs = map[string]flagSpec{
 	},
 	"grok": {
 		values: []string{"--output-format", "--permission-mode", "--session-id", "--resume",
-			"--tools", "--disallowed-tools", "--max-turns", "--rules", "--deny"},
+			"--tools", "--disallowed-tools", "--max-turns", "--rules", "--deny", "--prompt-file", "--sandbox"},
 		// --continue: proposal §3. --no-subagents: the borrow lockdown,
-		// live-verified on grok 1.0.70 (2026-10-28).
-		switches: []string{"-p", "--fork-session", "--no-alt-screen", "--continue", "--no-subagents"},
+		// live-verified on grok 1.0.70 (2026-10-28). -p (--single
+		// <PROMPT>) takes a value; parse handles it. --prompt-file: live
+		// diagnostic 2026-10-28, grok 1.0.70. --sandbox strict: live
+		// diagnostic 2026-10-28, grok 1.0.70; grok-src profiles.rs.
+		switches: []string{"--fork-session", "--no-alt-screen", "--continue", "--no-subagents"},
 	},
 	"codex": {
 		values:   []string{"-c"},
@@ -469,6 +510,7 @@ type fake struct {
 	sub        string // codex subcommand: "", "exec", "resume", "exec resume"
 	id         string
 	stdin      string
+	prompt     string // grok's headless prompt
 	terminal   bool
 }
 
@@ -517,6 +559,20 @@ func (f *fake) parse(args []string) error {
 			continue
 		}
 		name, val, hasVal := strings.Cut(a, "=")
+		if f.vendor == "grok" && (name == "-p" || name == "--single") {
+			// clap's --single <PROMPT>: the next argument is the value,
+			// unless it looks like a flag (a lone "-" is a value). Live
+			// diagnostic 2026-10-28, grok 1.0.70.
+			if !hasVal {
+				if i+1 >= len(args) || (strings.HasPrefix(args[i+1], "-") && args[i+1] != "-") {
+					return verbatimError("error: a value is required for '--single <PROMPT>' but none was supplied")
+				}
+				i++
+				val = args[i]
+			}
+			f.flags["-p"] = append(f.flags["-p"], val)
+			continue
+		}
 		switch {
 		case contains(switches, name) && !hasVal:
 			f.flags[name] = append(f.flags[name], "")
@@ -592,7 +648,7 @@ func (f *fake) main(args []string) int {
 		fmt.Print(f.helpText())
 		return 0
 	}
-	headless := (f.vendor != "codex" && f.has("-p")) || f.sub == "exec" || f.sub == "exec resume"
+	headless := (f.vendor != "codex" && f.has("-p")) || f.has("--prompt-file") || f.sub == "exec" || f.sub == "exec resume"
 	f.terminal = isTerminal(os.Stdin)
 	if headless && !f.terminal {
 		// codex exec waits on a stdin that is not a terminal; the others
@@ -672,7 +728,12 @@ func (f *fake) versionText() string {
 	if v == "" {
 		v = defaultVersion[f.vendor]
 	}
-	// The real output formats are not recorded; this one is a placeholder
+	if f.vendor == "grok" {
+		// The real format: "grok 1.0.70 (f50904eaee6c) [stable]" (live
+		// diagnostic 2026-10-28, grok 1.0.70).
+		return fmt.Sprintf("grok %s (fakehash) [stable]\n", v)
+	}
+	// The other real formats are not recorded; this one is a placeholder
 	// that holds the version number.
 	return fmt.Sprintf("%s %s (fake)\n", f.vendor, v)
 }
@@ -705,6 +766,9 @@ func (f *fake) helpText() string {
 	}
 	for _, s := range spec.switches {
 		fmt.Fprintf(&b, "  %s\n", s)
+	}
+	if f.vendor == "grok" {
+		b.WriteString("  -p, --single <PROMPT>\n")
 	}
 	switch {
 	case f.vendor == "codex" && f.sub == "":
@@ -1003,7 +1067,7 @@ func (f *fake) record(mode string, args []string) {
 	cwd, _ := os.Getwd()
 	r := Record{
 		Vendor: f.vendor, Mode: mode, Args: args, Cwd: cwd, Env: map[string]string{},
-		StdinTerminal: f.terminal, Stdin: f.stdin, SessionID: f.id,
+		StdinTerminal: f.terminal, Stdin: f.stdin, Prompt: f.prompt, SessionID: f.id,
 		Flags: f.flags, Positional: f.positional, PID: os.Getpid(),
 	}
 	for _, kv := range os.Environ() {

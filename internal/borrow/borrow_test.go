@@ -119,8 +119,8 @@ func TestPromptOnStdin(t *testing.T) {
 		}
 	}
 	for _, s := range []string{task, "cite primary sources", "2026-10-28"} {
-		if !strings.Contains(r.Stdin, s) {
-			t.Errorf("stdin lacks %q: %q", s, r.Stdin)
+		if !strings.Contains(r.Stdin+r.Prompt, s) {
+			t.Errorf("prompt lacks %q: %q", s, r.Stdin+r.Prompt)
 		}
 	}
 	got, err := w.store.GetBorrow(context.Background(), res[0].ID)

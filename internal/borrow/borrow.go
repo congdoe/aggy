@@ -70,7 +70,9 @@ type Request struct {
 type CLI struct {
 	Path    string
 	Version string // as the probe read it; "" when unreadable
-	Caps    []string
+	// VersionLine is the first --version line when Version is "".
+	VersionLine string
+	Caps        []string
 }
 
 // Deps is what a borrow needs from the outside world. internal/cli fills
@@ -341,7 +343,9 @@ func (b *Borrower) both(ctx context.Context, req Request) ([]adapter.Vendor, err
 	}
 	var supported, ready []adapter.Vendor
 	for _, v := range adapter.Vendors() {
-		if Supports(b.Adapter(v, CLI{}), req.Kind) != nil {
+		// No CLI is probed here, so a missing flag is not held against
+		// the kind; runOne checks it on the CLI found.
+		if err := Supports(b.Adapter(v, CLI{}), req.Kind); err != nil && !errors.Is(err, adapter.ErrNoCapability) {
 			continue
 		}
 		supported = append(supported, v)
@@ -401,7 +405,7 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 	// The lockdown flags were verified on the tested versions only: a
 	// newer CLI may take them differently, so it needs the caller's
 	// say-so.
-	if w := adapter.VersionWarning(a, cli.Version); w != "" && !req.AllowUntested {
+	if w := adapter.VersionWarning(a, cli.Version, cli.VersionLine); w != "" && !req.AllowUntested {
 		return Result{}, &preStartError{fmt.Errorf("%s; the borrow lockdown was verified only there, so aggy will not borrow on it (pass --allow-untested to run it anyway)", w)}
 	}
 	if err := grokTrustGate(v, req); err != nil {

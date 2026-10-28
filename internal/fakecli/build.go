@@ -120,6 +120,7 @@ type Record struct {
 	EnvKeys       []string            `json:"env_keys"`
 	StdinTerminal bool                `json:"stdin_terminal"`
 	Stdin         string              `json:"stdin"`
+	Prompt        string              `json:"prompt"` // grok's -p value or --prompt-file contents
 	SessionID     string              `json:"session_id"`
 	Flags         map[string][]string `json:"flags"`
 	Positional    []string            `json:"positional"`

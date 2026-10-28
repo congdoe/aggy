@@ -71,7 +71,7 @@ Session ids per vendor, checked against claude 2.1.311, codex-cli 0.164.0, and g
 | --- | --- | --- | --- |
 | Claude | `--session-id <uuid>` | `--resume <id>` | `--fork-session` branches instead of reusing the id. |
 | Codex | No pre-assigned id | `codex resume <id>`, `codex exec resume <id>` | Headless, the first `codex exec --json` event is `thread.started` with the `thread_id`. Interactive, any process the CLI starts can reach aggy's socket (section 11), so a hook alone never names the session: the first thread id a Codex hook reports (`SessionStart` or `Stop` `session_id`, source-verified; the on-screen CLI's `SessionStart` comes before its agent can run anything, and hooks run only once the person has approved them, since Codex trusts hooks by hash and never one passed with `-c`) is a claim, recorded only once `$CODEX_HOME/sessions/<YYYY>/<MM>/<DD>/` holds a rollout of that id that was not there at launch. Codex creates the rollout lazily, at the first persist, so the watch polls folder listings (never file contents). A new rollout alone (another Codex in another terminal, or a borrow sharing `CODEX_HOME`) is never recorded, a later claim never replaces the first, and without hook approval no Codex id is recorded. Claude and Grok get a pre-assigned `--session-id`, the only id recorded for them; a later `/clear` starts a session the index does not follow. The id goes to the events log as a `session` event and onto the child's row, first wins: a resumed child keeps its id, and after a `/clear` the child still names the conversation it started with, which is what resume reopens. A new Codex child takes its lease when its id is recorded. `codex exec` reads stdin to EOF when it is not a terminal, so aggy never gives it an open pipe: headless Codex gets the prompt file as stdin, which ends at once (see adapters.md). |
-| Grok | `--session-id <uuid>` | `--resume <id>`, also with `-p` | `--fork-session` branches. `grok -p --output-format json` returns `sessionId`. |
+| Grok | `--session-id <uuid>` | `--resume <id>`, also headless | `--fork-session` branches. `grok --prompt-file <file> --output-format json` returns `sessionId` (grok 1.0.70's `-p` is `--single <PROMPT>` and takes the prompt text itself). |
 
 Only one process holds a vendor session at a time. The holder is recorded as a lease in the store. A borrow or event that targets a busy session waits for its turn to end, or uses `--fork` to branch instead. Two writers on one transcript corrupt it.
 
@@ -136,7 +136,7 @@ Two common uses:
 
 From the on-screen agent, a linked skill runs `aggy borrow <kind> "<task>"` in the agent's own shell, in the background where the harness supports it. It is a shell command, not an MCP tool: long headless runs would hit MCP tool-call timeouts, and a shell command works the same in all three harnesses.
 
-aggy routes the kind (section 8), runs that vendor's CLI headless (`claude -p`, `codex exec`, `grok -p`) with `AGGY_DELEGATED=1`, and returns a short report to the conversation and to `aggy inbox`.
+aggy routes the kind (section 8), runs that vendor's CLI headless (`claude -p`, `codex exec`, `grok --prompt-file`) with `AGGY_DELEGATED=1`, and returns a short report to the conversation and to `aggy inbox`.
 
 - The borrow prompt is the task, the paths, the constraints, and today's date. It does not include the parent transcript. The child's exploration stays in that child.
 - A borrow is a child, so it appears in `aggy session` and can be resumed with `/vendor`.
@@ -146,7 +146,7 @@ aggy routes the kind (section 8), runs that vendor's CLI headless (`claude -p`, 
 - `--vendor <name>` replaces the routing list for one borrow; the skip rules of section 8 still apply to it. `--vendor both` asks two vendors, for research only.
 - A CLI whose version is outside the versions the adapter was tested on is refused for borrows unless `--allow-untested` is passed: the lockdown flags were verified only there.
 
-**One hop.** The parent's `aggy borrow` works and the child's copy refuses. A child with a shell could still run `claude -p`, `codex exec`, or `grok -p` directly. Delegated children get a `PreToolUse` hook that denies commands calling those or `aggy borrow`. It catches accidents. It is documented as not a security boundary.
+**One hop.** The parent's `aggy borrow` works and the child's copy refuses. A child with a shell could still run `claude -p`, `codex exec`, or `grok -p`/`--prompt-file` directly. Delegated children get a `PreToolUse` hook that denies commands calling those or `aggy borrow`. It catches accidents. It is documented as not a security boundary.
 
 **Image and video.** `aggy image` and `aggy video` are `aggy borrow image|video` with file arguments:
 

@@ -43,7 +43,7 @@ func CheckVendor(ctx context.Context, a adapter.Adapter, run adapter.Runner) Ven
 		v.ProbeErr = err
 		return v
 	}
-	v.VersionWarning = adapter.VersionWarning(a, p.Version)
+	v.VersionWarning = adapter.VersionWarning(a, p.Version, p.VersionLine)
 	v.SignIn, v.SignInErr = adapter.CheckSignIn(ctx, run, p.Path, a.SignIn())
 	return v
 }

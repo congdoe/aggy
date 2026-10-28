@@ -99,7 +99,7 @@ func TestUntestedVersion(t *testing.T) {
 	}{
 		{"1.0.70", false, ""},
 		{"1.0.99", false, "pass --allow-untested"},
-		{"", false, "cannot read the CLI version"},
+		{"", false, "could not parse the CLI version"},
 		{"1.0.99", true, ""},
 	}
 	for _, tt := range tests {

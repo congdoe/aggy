@@ -267,7 +267,7 @@ func nestedIn(ws []string) string {
 				return "claude -p"
 			}
 		case "grok":
-			if hasFlag(rest, "-p", "--print", "--prompt", "--prompt-file") {
+			if hasFlag(rest, "-p", "--single", "--print", "--prompt", "--prompt-file") {
 				return "grok -p"
 			}
 		case "codex":

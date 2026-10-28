@@ -9,9 +9,12 @@
 # AGGY_SMOKE_VENDORS (default "claude codex grok") limits the vendors;
 # AGGY_SMOKE_TIMEOUT (default 300) is the wall-time limit in seconds for
 # each direct vendor run; AGGY_SMOKE_ANY_VERSION=1 runs the Grok checks on
-# a grok other than the tested 1.0.70. The script prints one scrubbed line
-# per check (name, result, a fixed note) and the CLI versions, never vendor
-# output, paths, session ids, or tokens.
+# a grok other than the tested 1.0.70; AGGY_SMOKE_KEEP=1 keeps the temp
+# dir (with every check's stdout and stderr) and prints its path. The
+# script prints one line per check (name, result, a fixed note) and the
+# CLI versions. A FAIL also prints the last 5 lines of that check's
+# stderr, with key-shaped text replaced, the home directory shown as ~,
+# and the temp dir as $WORK: read them before pasting the log anywhere.
 #
 # Safety: everything runs in a fresh temp dir with a temp AGGY_HOME, and
 # every vendor CLI and aggy run gets a fresh environment (env -i) holding
@@ -68,7 +71,11 @@ fi
 ROOT=$(cd "$(dirname "$0")/../.." && pwd -P)
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/aggy-smoke.XXXXXX") || exit 1
 WORK=$(cd "$WORK" && pwd -P)
-trap 'rm -rf "$WORK"' EXIT
+if [ "${AGGY_SMOKE_KEEP:-}" = 1 ]; then
+	trap 'echo "smoke: kept $WORK (AGGY_SMOKE_KEEP=1)" >&2' EXIT
+else
+	trap 'rm -rf "$WORK"' EXIT
+fi
 TO=${AGGY_SMOKE_TIMEOUT:-300}
 AGGY_TO=1200 # aggy enforces each borrow's own budget; this is a backstop.
 
@@ -131,10 +138,30 @@ want() {
 # call V: count one model-calling run of V.
 call() { eval "CALLS_$1=\$((CALLS_$1 + 1))"; }
 
-# result NAME PASS|FAIL|SKIP|INCONCLUSIVE NOTE. NOTE is always text this
-# script wrote.
+# scrub: stdin with key-shaped text (a known key prefix, a bearer token,
+# a secret-named assignment, or a run of 24 or more key characters)
+# replaced, the temp dir shown as $WORK, and the home directory as ~.
+scrub() {
+	sed -E \
+		-e 's#(sk-|xai-|ghp_|gho_|github_pat_|AKIA|eyJ)[A-Za-z0-9_./+=-]*#[redacted]#g' \
+		-e 's#([Bb]earer|[Bb]asic)[[:space:]]+[^[:space:]]+#\1 [redacted]#g' \
+		-e 's#([A-Za-z_]*([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd])[A-Za-z_]*["]?[[:space:]]*[:=][[:space:]]*)[^[:space:],}]+#\1[redacted]#g' \
+		-e 's#[A-Za-z0-9_+/=-]{24,}#[redacted]#g' |
+		awk -v w="$WORK" -v h="$HOME" '{
+			while ((i = index($0, w)) > 0) $0 = substr($0, 1, i - 1) "$WORK" substr($0, i + length(w))
+			while ((i = index($0, h)) > 0) $0 = substr($0, 1, i - 1) "~" substr($0, i + length(h))
+			print
+		}'
+}
+
+# result NAME PASS|FAIL|SKIP|INCONCLUSIVE NOTE [ERRFILE]. NOTE is always
+# text this script wrote. On FAIL, the last 5 lines of ERRFILE (the
+# check's stderr), scrubbed, follow indented.
 result() {
 	printf '%-30s %-4s %s\n' "$1" "$2" "$3"
+	if [ "$2" = FAIL ] && [ -n "${4:-}" ] && [ -s "$4" ]; then
+		tail -n 5 "$4" | scrub | sed 's/^/    | /'
+	fi
 	[ "$2" = FAIL ] && FAILED=$((FAILED + 1))
 	[ "$2" = INCONCLUSIVE ] && INCONCLUSIVE=$((INCONCLUSIVE + 1))
 	return 0
@@ -196,10 +223,10 @@ newrepo() {
 }
 
 # Kept in step with internal/adapter/grok Headless (checked by
-# argv_test.go): the review and the image argv aggy passes, minus the
-# prompt file it gives as stdin.
-GROK_REVIEW_ARGS="-p --output-format json --permission-mode plan --tools read_file,grep,list_dir --disallowed-tools write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_gen,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents"
-GROK_IMAGE_ARGS="-p --output-format json --tools image_gen --disallowed-tools read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents"
+# argv_test.go): the review and the image argv aggy passes, after its
+# leading "--prompt-file <file>", which each check passes itself.
+GROK_REVIEW_ARGS="--output-format json --permission-mode plan --sandbox strict --tools read_file,grep,list_dir --disallowed-tools write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_gen,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents"
+GROK_IMAGE_ARGS="--output-format json --tools image_gen --disallowed-tools read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents"
 
 # The verified Codex research lockdown (docs/verification.md, "Codex
 # research isolation"), less the web_search -c, which needs its quotes.
@@ -223,7 +250,7 @@ check_claude_append() {
 		claude -p --append-system-prompt-file ../extra.txt --output-format json "What is the codeword? Reply with the codeword only.")
 	rc=$?
 	if [ $rc -ne 0 ]; then
-		result $n FAIL "exit $rc"
+		result $n FAIL "exit $rc" "$d/err"
 	elif grep -qF "$tok" "$d/out"; then
 		result $n PASS "the codeword from the file came back"
 	else
@@ -248,9 +275,9 @@ check_codex_hook() {
 		-c "hooks.SessionStart=[{hooks=[{type=\"command\",command=\"$d/hook.sh\"}]}]" -- "reply OK")
 	rc=$?
 	if [ $rc -ne 0 ]; then
-		result $n FAIL "exit $rc"
+		result $n FAIL "exit $rc" "$d/err"
 	elif ! grep -q '"thread.started"' "$d/out"; then
-		result $n FAIL "no thread.started event"
+		result $n FAIL "no thread.started event" "$d/err"
 	elif [ -e "$d/fired" ]; then
 		result $n FAIL "the -c hook ran: the recorded trust gate changed"
 	else
@@ -278,9 +305,9 @@ check_codex_isolation() {
 	if grep -qF "$tok" "$d/out" "$d/err"; then
 		result $n FAIL "the canary leaked into the output"
 	elif [ $rc -ne 0 ]; then
-		result $n FAIL "exit $rc"
+		result $n FAIL "exit $rc" "$d/err"
 	elif ! grep -q '"thread.started"' "$d/out"; then
-		result $n FAIL "no thread.started event"
+		result $n FAIL "no thread.started event" "$d/err"
 	else
 		result $n PASS "answered; canary 0 times"
 	fi
@@ -336,7 +363,7 @@ EOF
 		(cd "$d/work" && run_to "$TO" "$d/claude.out" "$d/claude.err" /dev/null \
 			claude -p --mcp-config ../mcp.json --strict-mcp-config --allowedTools mcp__aggy__aggy_ping --output-format json "$ask")
 		rc=$?
-		mcp_result claude $rc "$d/claude.out" "$tok"
+		mcp_result claude $rc "$d/claude.out" "$tok" "$d/claude.err"
 	else
 		result mcp-launch-claude SKIP "$WHY"
 	fi
@@ -349,7 +376,7 @@ EOF
 			-c 'mcp_servers.aggy.command="python3"' -c "mcp_servers.aggy.args=[\"$d/server.py\"]" \
 			-c 'mcp_servers.aggy.default_tools_approval_mode="approve"' --sandbox read-only -- -)
 		rc=$?
-		mcp_result codex $rc "$d/codex.out" "$tok"
+		mcp_result codex $rc "$d/codex.out" "$tok" "$d/codex.err"
 	else
 		result mcp-launch-codex SKIP "$WHY"
 	fi
@@ -373,19 +400,20 @@ EOF
 		(cd "$d/work" && run_to "$TO" "$d/grok.out" "$d/grok.err" /dev/null \
 			grok -p "$ask" --agent ../agent.md --allow 'MCPTool(aggy__aggy_ping)' --output-format json --max-turns 3)
 		rc=$?
-		mcp_result grok $rc "$d/grok.out" "$tok"
+		mcp_result grok $rc "$d/grok.out" "$tok" "$d/grok.err"
 	else
 		result mcp-launch-grok SKIP "$WHY"
 	fi
 }
 
+# mcp_result V RC OUT TOKEN ERR
 mcp_result() {
 	if [ "$2" -ne 0 ]; then
-		result "mcp-launch-$1" FAIL "exit $2"
+		result "mcp-launch-$1" FAIL "exit $2" "$5"
 	elif grep -qF "$4" "$3"; then
 		result "mcp-launch-$1" PASS "the server's token came back"
 	else
-		result "mcp-launch-$1" FAIL "the server's token did not come back"
+		result "mcp-launch-$1" FAIL "the server's token did not come back" "$5"
 	fi
 }
 
@@ -443,12 +471,12 @@ check_grok_trust() {
 	scn '{"json":{"result":"README.md f-'"$tok"'.txt DONE"}}'
 	call grok
 	# shellcheck disable=SC2086 # the argv is split on purpose
-	(cd "$d/untrusted" && run_to "$TO" "$d/out" "$d/err" "$d/prompt.txt" grok $GROK_REVIEW_ARGS)
+	(cd "$d/untrusted" && run_to "$TO" "$d/out" "$d/err" /dev/null grok --prompt-file "$d/prompt.txt" $GROK_REVIEW_ARGS)
 	rc=$?
 	scn '{"json":{"result":"README.md f-'"$tok"'.txt DONE"},"hook_payload_in":"arg","hooks":[{"event":"x","payload":{}}],"hook_command":["/usr/bin/touch","'"$d"'/control-markers/grok-PreToolUse"]}'
 	call grok
 	# shellcheck disable=SC2086 # the argv is split on purpose
-	(cd "$d/control" && run_to "$TO" "$d/cout" "$d/cerr" "$d/prompt.txt" GROK_FOLDER_TRUST=0 grok $GROK_REVIEW_ARGS)
+	(cd "$d/control" && run_to "$TO" "$d/cout" "$d/cerr" /dev/null GROK_FOLDER_TRUST=0 grok --prompt-file "$d/prompt.txt" $GROK_REVIEW_ARGS)
 	crc=$?
 	for m in claude-SessionStart claude-PreToolUse grok-SessionStart grok-PreToolUse; do
 		[ -e "$d/untrusted-markers/$m" ] && ran="$ran $m"
@@ -457,9 +485,9 @@ check_grok_trust() {
 	if [ -n "$ran" ]; then
 		result $n FAIL "hooks ran untrusted:$ran"
 	elif [ $rc -ne 0 ]; then
-		result $n FAIL "exit $rc"
+		result $n FAIL "exit $rc" "$d/err"
 	elif grep -q 'name no tool' "$d/err"; then
-		result $n FAIL "grok warned of an unknown tool name"
+		result $n FAIL "grok warned of an unknown tool name" "$d/err"
 	elif ! grep -qF "f-$tok" "$d/out"; then
 		result $n INCONCLUSIVE "no hook ran, but list_dir was not shown called"
 	elif [ $crc -ne 0 ]; then
@@ -473,11 +501,16 @@ check_grok_trust() {
 	scn '{"json":{"result":"no findings"}}'
 	(cd "$d/untrusted" && run_to "$AGGY_TO" "$d/aggy.out" "$d/aggy.err" /dev/null "$AGGY" borrow review "Smoke check: review this repo." --vendor grok)
 	rc=$?
+	# PASS needs the trust-gate reason itself: another error (a version or
+	# capability refusal) is a FAIL with its stderr shown.
 	if [ $rc -ne 0 ] && grep -q 'folder trust is not relied on' "$d/aggy.err"; then
 		result aggy-grok-review-refused PASS "refused before starting grok"
+	elif [ $rc -eq 0 ]; then
+		call grok # it ran a review child
+		result aggy-grok-review-refused FAIL "not refused (exit 0)" "$d/aggy.err"
 	else
 		call grok # it may have run a review child
-		result aggy-grok-review-refused FAIL "not refused (exit $rc)"
+		result aggy-grok-review-refused FAIL "failed without the folder-trust reason (exit $rc)" "$d/aggy.err"
 	fi
 }
 
@@ -495,7 +528,7 @@ check_grok_image_tools() {
 	scn '{"json":{"result":"image_gen"}}'
 	call grok
 	# shellcheck disable=SC2086 # the argv is split on purpose
-	(cd "$d/work" && run_to "$TO" "$d/out" "$d/err" "$d/prompt.txt" grok $GROK_IMAGE_ARGS)
+	(cd "$d/work" && run_to "$TO" "$d/out" "$d/err" /dev/null grok --prompt-file "$d/prompt.txt" $GROK_IMAGE_ARGS)
 	rc=$?
 	# Distinctive names only: "grep" and "write" are common words.
 	for t in read_file list_dir search_replace run_terminal_cmd web_fetch web_search open_page \
@@ -503,9 +536,9 @@ check_grok_image_tools() {
 		grep -q "$t" "$d/out" && extra="$extra $t"
 	done
 	if [ $rc -ne 0 ]; then
-		result $n FAIL "exit $rc"
+		result $n FAIL "exit $rc" "$d/err"
 	elif grep -q 'name no tool' "$d/err"; then
-		result $n FAIL "grok warned of an unknown tool name"
+		result $n FAIL "grok warned of an unknown tool name" "$d/err"
 	elif [ -n "$extra" ]; then
 		result $n FAIL "also reported:$extra"
 	elif ! grep -q image_gen "$d/out"; then
@@ -524,7 +557,7 @@ check_setup() {
 	if run_to 120 "$WORK/setup.out" "$WORK/setup.err" /dev/null "$AGGY" setup --yes --only "$only"; then
 		result aggy-setup PASS "recorded in the temp AGGY_HOME"
 	else
-		result aggy-setup FAIL "aggy setup failed"
+		result aggy-setup FAIL "aggy setup failed" "$WORK/setup.err"
 	fi
 }
 
@@ -545,7 +578,7 @@ check_image() {
 		"$AGGY" image "A plain red square on white, 256x256, no text." --out "$out" --vendor "$v")
 	rc=$?
 	if [ $rc -ne 0 ]; then
-		result "$n" FAIL "exit $rc"
+		result "$n" FAIL "exit $rc" "$WORK/img-$v.err"
 	elif ! is_image "$REPO/$out"; then
 		result "$n" FAIL "no PNG or JPEG at --out"
 	else
@@ -565,10 +598,14 @@ check_video() {
 	(cd "$REPO" && run_to "$AGGY_TO" "$WORK/vid0.out" "$WORK/vid0.err" /dev/null \
 		"$AGGY" video "A red ball bouncing once." --out smoke.mp4 --vendor grok)
 	rc=$?
+	# PASS needs the opt-in hint itself: another error (a version
+	# refusal) is a FAIL with its stderr shown.
 	if [ $rc -ne 0 ] && grep -q grok_file_tools "$WORK/vid0.err" && [ ! -e "$REPO/smoke.mp4" ]; then
 		result aggy-video-default-refused PASS "refused without the opt-in"
+	elif [ $rc -eq 0 ]; then
+		result aggy-video-default-refused FAIL "not refused (exit 0)" "$WORK/vid0.err"
 	else
-		result aggy-video-default-refused FAIL "not refused (exit $rc)"
+		result aggy-video-default-refused FAIL "failed without the grok_file_tools hint (exit $rc)" "$WORK/vid0.err"
 	fi
 	mkdir -p "$AGGY_HOME"
 	printf '[media]\ngrok_file_tools = true\n' >"$AGGY_HOME/config.toml"
@@ -578,7 +615,7 @@ check_video() {
 	rc=$?
 	rm -f "$AGGY_HOME/config.toml"
 	if [ $rc -ne 0 ]; then
-		result $n FAIL "exit $rc"
+		result $n FAIL "exit $rc" "$WORK/vid.err"
 	elif ! is_mp4 "$REPO/smoke.mp4"; then
 		result $n FAIL "no MP4 at --out"
 	else
@@ -606,7 +643,7 @@ check_research() {
 	if grep -qF "$tok" "$WORK/res.out" "$WORK/res.err"; then
 		result $n FAIL "the canary leaked into the report"
 	elif [ $rc -ne 0 ]; then
-		result $n FAIL "exit $rc"
+		result $n FAIL "exit $rc" "$WORK/res.err"
 	else
 		result $n PASS "report back; canary 0 times"
 	fi
@@ -626,7 +663,7 @@ check_codex_research_refused() {
 	if [ $rc -ne 0 ] && grep -q 'until T6638' "$WORK/cr.err"; then
 		result aggy-codex-research-refused PASS "refused with the T6638 reason"
 	else
-		result aggy-codex-research-refused FAIL "not refused for T6638 (exit $rc)"
+		result aggy-codex-research-refused FAIL "not refused for T6638 (exit $rc)" "$WORK/cr.err"
 	fi
 }
 

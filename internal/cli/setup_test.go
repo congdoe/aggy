@@ -218,7 +218,7 @@ func TestSetup(t *testing.T) {
 				return ""
 			},
 			want: map[string]row{"claude": {"unknown", "2.1.311"}, "codex": {"unknown", "0.200.0-beta.1"}, "grok": {"unknown", ""}},
-			out:  []string{"codex 0.200.0-beta.1 is outside the versions", "version unreadable", "cannot read the CLI version"},
+			out:  []string{"codex 0.200.0-beta.1 is outside the versions", "version unreadable", "could not parse the CLI version from --version (first line \"grok "},
 		},
 		{
 			name:  "sign-in check fails: unknown",

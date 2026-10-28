@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -27,6 +28,22 @@ func TestUnreadableVersionDoesNotFailDetect(t *testing.T) {
 		p, err := Detect(context.Background(), run, adapter.Grok, "/x/grok")
 		if err != nil || p.Version != tt.want || !Has(p, CapSessionID) {
 			t.Errorf("%q: Detect = %+v, %v", tt.out, p, err)
+		}
+	}
+	// The warning shows the first line the CLI printed, capped, or
+	// "[redacted]" for a secret-shaped one.
+	long := "grok" + strings.Repeat(" ab", 70) + "\n"
+	for _, tt := range []struct{ out, want string }{
+		{"\n  grok build xyz  \nmore\n", "grok build xyz"},
+		{long, long[:maxVersionLine] + "..."},
+		{"sk-ant-api03-" + strings.Repeat("a", 40) + "\n", "[redacted]"},
+	} {
+		run := func(_ context.Context, c adapter.Command) (adapter.Output, error) {
+			return adapter.Output{Stdout: []byte(tt.out)}, nil
+		}
+		p, _ := Detect(context.Background(), run, adapter.Grok, "/x/grok")
+		if p.Version != "" || p.VersionLine != tt.want {
+			t.Errorf("%q: VersionLine = %q, want %q", tt.out, p.VersionLine, tt.want)
 		}
 	}
 	f := setup(t)

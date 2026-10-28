@@ -60,7 +60,7 @@ func TestResearchReport(t *testing.T) {
 		t.Errorf("inbox report does not name %s", want)
 	}
 	// The prompt asks for the sections the report relies on.
-	if recs := w.records(); len(recs) != 1 || !strings.Contains(recs[0].Stdin, "## Sources") || !strings.Contains(recs[0].Stdin, "publish date") {
+	if recs := w.records(); len(recs) != 1 || !strings.Contains(recs[0].Stdin+recs[0].Prompt, "## Sources") || !strings.Contains(recs[0].Stdin+recs[0].Prompt, "publish date") {
 		t.Errorf("prompt lacks the report shape: %+v", recs)
 	}
 

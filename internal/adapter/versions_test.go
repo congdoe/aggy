@@ -37,10 +37,10 @@ func TestVersionWarning(t *testing.T) {
 		{"1.0.71", "outside the versions"},
 		{"1.0.69", "outside the versions"},
 		{"1.0.70-rc.1", "outside the versions"},
-		{"weird", "cannot read"},
+		{"weird", `could not parse the CLI version "weird"`},
 	}
 	for _, tt := range tests {
-		got := VersionWarning(a, tt.version)
+		got := VersionWarning(a, tt.version, "")
 		if (tt.want == "") != (got == "") || !strings.Contains(got, tt.want) {
 			t.Errorf("VersionWarning(%q) = %q, want %q", tt.version, got, tt.want)
 		}
@@ -71,7 +71,7 @@ func TestCompareVersionsSemver(t *testing.T) {
 			t.Errorf("CompareVersions(%s, %s) = %d, %v, want %d", tt.a, tt.b, got, err, tt.want)
 		}
 	}
-	if w := VersionWarning(stub{}, ""); !strings.Contains(w, "cannot read") {
+	if w := VersionWarning(stub{}, "", "grok 1.0.70 (x) [nightly-2]"); !strings.Contains(w, `could not parse the CLI version from --version (first line "grok 1.0.70 (x) [nightly-2]")`) {
 		t.Errorf("empty version warning = %q", w)
 	}
 }

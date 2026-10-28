@@ -60,7 +60,7 @@ func TestDetectFakes(t *testing.T) {
 	}{
 		adapter.Claude: {"2.1.311", []string{CapHeadless, CapJSONOutput, CapSessionID, CapResume, CapForkSession, CapPermissionMode, CapSettings, CapSettingSources}},
 		adapter.Grok: {"1.0.70", []string{CapHeadless, CapJSONOutput, CapSessionID, CapResume, CapForkSession,
-			CapPermissionMode, CapNoAltScreen, CapTools, CapDisallowTools, CapMaxTurns, CapRules, CapDeny}},
+			CapPermissionMode, CapNoAltScreen, CapTools, CapDisallowTools, CapMaxTurns, CapRules, CapDeny, CapSandbox}},
 		adapter.Codex: {"0.164.0", []string{CapHeadless, CapResume, CapNoAltScreen, CapConfigOverride,
 			CapJSONOutput, CapSandbox, CapDisable, CapImageInput, CapIgnoreUserConfig}},
 	}
@@ -175,14 +175,20 @@ func TestParseVersion(t *testing.T) {
 		{"codex-cli 0.164.0\n", "0.164.0"},
 		{"grok 1.0.70-beta.2\n", "1.0.70-beta.2"},
 		{"v1.2.3\n", "1.2.3"},
+		// grok 1.0.70's exact output (live diagnostic 2026-10-28).
+		{"grok 1.0.70 (f50904eaee6c) [stable]\n", "1.0.70"},
+		{"grok 1.0.71 [beta]\n", "1.0.71"},
 	}
 	for _, tt := range tests {
-		if got, err := ParseVersion([]byte(tt.in), nil, nil); err != nil || got != tt.want {
-			t.Errorf("ParseVersion(%q) = %q, %v, want %q", tt.in, got, err, tt.want)
+		for _, programs := range [][]string{nil, {"grok"}} {
+			if got, err := ParseVersion([]byte(tt.in), nil, programs); err != nil || got != tt.want {
+				t.Errorf("ParseVersion(%q, %v) = %q, %v, want %q", tt.in, programs, got, err, tt.want)
+			}
 		}
 	}
-	for _, in := range []string{"  \n", "\n  weird build xyz\n"} {
-		if _, err := ParseVersion([]byte(in), nil, nil); !errors.Is(err, ErrNoVersion) {
+	// The tag is one bracketed word after the version, ending the line.
+	for _, in := range []string{"  \n", "\n  weird build xyz\n", "grok 1.0.70 [stable] extra\n", "grok 1.0.70 [two words]\n", "grok 1.0.70 [stable] (note)\n"} {
+		if _, err := ParseVersion([]byte(in), nil, []string{"grok"}); !errors.Is(err, ErrNoVersion) {
 			t.Errorf("ParseVersion(%q) = %v, want ErrNoVersion", in, err)
 		}
 	}
