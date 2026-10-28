@@ -32,6 +32,10 @@ manifest; aggy unwire undoes it.
            notify in ~/.codex/config.toml, unless it already sets one.
            Codex runs hooks only after you approve them once (start
            codex, then /hooks); the notify needs no approval.
+  grok     ~/.grok/hooks/aggy.json ($GROK_HOME/hooks): Stop, StopFailure,
+           StopCancelled, SessionStart, Notification. Grok also runs
+           Claude's settings.json hooks; aggy hook ignores those inside
+           Grok, so each event counts once.
 
   --vendor V   install for one vendor only (default: all)
   --dry-run    show the changes and make none
@@ -65,7 +69,10 @@ func entries(v adapter.Vendor, events ...string) []hook.Entry {
 // ~/.claude/settings.json "hooks" (code.claude.com/docs/en/hooks.md;
 // CLAUDE_CONFIG_DIR is unverified, as for skills, so not followed);
 // Codex's $CODEX_HOME/hooks.json (docs/verification.md, Codex hooks:
-// hook_config.rs#L12, engine/discovery.rs#L378).
+// hook_config.rs#L12, engine/discovery.rs#L378); Grok's
+// ~/.grok/hooks/*.json, Claude's format (grok-build 2bdd1d6a,
+// user-guide/10-hooks.md). That $GROK_HOME moves the hooks folder, as it
+// moves skills and sessions, is unverified.
 func hookFiles(v adapter.Vendor) ([]hookFile, error) {
 	h := os.Getenv("HOME")
 	if !filepath.IsAbs(h) {
@@ -82,6 +89,19 @@ func hookFiles(v adapter.Vendor) ([]hookFile, error) {
 		}
 		// Codex has no failure hook (verification.md, Codex limits).
 		return []hookFile{{filepath.Join(ch, "hooks.json"), entries(v, "Stop", "SessionStart")}}, nil
+	case adapter.Grok:
+		gh := filepath.Join(h, ".grok")
+		if g := os.Getenv("GROK_HOME"); g != "" {
+			if !filepath.IsAbs(g) {
+				return nil, fmt.Errorf("GROK_HOME=%q is not an absolute path", g)
+			}
+			gh = filepath.Clean(g)
+		}
+		// Grok's own hooks, so StopCancelled is heard and Grok is covered
+		// with [compat.claude] hooks = false; hook.Forward drops the
+		// Claude ones Grok also runs.
+		return []hookFile{{filepath.Join(gh, "hooks", "aggy.json"),
+			entries(v, "Stop", "StopFailure", "StopCancelled", "SessionStart", "Notification")}}, nil
 	}
 	return nil, nil
 }

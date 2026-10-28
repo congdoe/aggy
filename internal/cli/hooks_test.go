@@ -146,3 +146,25 @@ func TestHooksCodexKeepsUserNotify(t *testing.T) {
 		t.Error("hooks.json was not written")
 	}
 }
+
+func TestHooksInstallGrok(t *testing.T) {
+	h := hooksHome(t)
+	before := snapshot(t, h)
+	mustRun(t, "hooks", "install", "--vendor", "grok")
+	b, err := os.ReadFile(filepath.Join(h, ".grok", "hooks", "aggy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []string{"Stop", "StopFailure", "StopCancelled", "SessionStart", "Notification"} {
+		if !strings.Contains(string(b), "hook --vendor grok "+e+`"`) {
+			t.Errorf("aggy.json lacks %s:\n%s", e, b)
+		}
+	}
+	if out := mustRun(t, "hooks", "status"); !strings.Contains(out, "grok    installed") || !strings.Contains(out, "claude  not installed") {
+		t.Errorf("status: %s", out)
+	}
+	mustRun(t, "unwire", "--all")
+	if d := diffSnapshots(before, snapshot(t, h)); len(d) > 0 {
+		t.Errorf("unwire left: %v", d)
+	}
+}
