@@ -145,3 +145,25 @@ func grokTrustGate(v adapter.Vendor, req Request) error {
 	}
 	return nil
 }
+
+// TrustMarker reports whether the repo-relative, slash-separated path
+// rel is, or is inside, one of the sources above (code-running config,
+// hooks, and instructions a CLI loads from a repo) at any depth,
+// compared case-insensitively. An edit's diff that touches one is not
+// applied: it would change what the next session in the repo runs or is
+// told.
+func TrustMarker(rel string) bool {
+	parts := strings.Split(rel, "/")
+	for i := range parts {
+		sub := strings.ToLower(strings.Join(parts[i:], "/"))
+		for _, list := range [][]string{grokChainSources, grokCwdSources, grokRootSources, grokInstructionSources} {
+			for _, s := range list {
+				s = strings.ToLower(s)
+				if sub == s || strings.HasPrefix(sub, s+"/") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}

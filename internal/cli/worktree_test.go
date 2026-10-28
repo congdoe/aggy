@@ -40,7 +40,7 @@ func editRepo(t *testing.T, dir string) []string {
 // setup itself runs nothing.
 func gitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "core.hooksPath=/dev/null", "-c", "filter.evil.clean=cat", "-c", "filter.evil.smudge=cat"}, args...)...)
+	cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "filter.evil.clean=", "-c", "filter.evil.smudge=", "-c", "filter.evil.required=false"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
 	out, err := cmd.CombinedOutput()
@@ -309,4 +309,167 @@ setup = ["/bin/sh", "-c", "echo ran > setup.out; exit $FAIL"]
 			t.Errorf("branch left: %q", b)
 		}
 	})
+}
+
+// editBorrow runs an edit borrow on the fake Codex and returns its id
+// and worktree path.
+func editBorrow(t *testing.T, f *borrowFixture) (string, string) {
+	t.Helper()
+	before := len(fakecli.Records(t, f.record))
+	if code, out, errOut := f.run(t, "edit", "change a.go", "--vendor", "codex"); code != 0 {
+		t.Fatalf("code %d: %s %s", code, out, errOut)
+	}
+	recs := fakecli.Records(t, f.record)
+	for _, r := range recs[before:] {
+		if r.Mode == "headless" {
+			return filepath.Base(r.Cwd), r.Cwd
+		}
+	}
+	t.Fatal("no child ran")
+	return "", ""
+}
+
+// editFixture is a borrow fixture on an edit repo, with git found once
+// and PATH then pointed at an empty dir.
+func editFixture(t *testing.T) (*borrowFixture, []string) {
+	t.Helper()
+	gitBin, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git")
+	}
+	f := newBorrowFixture(t, adapter.Codex)
+	markers := editRepo(t, f.repo)
+	f.env.gitPath = func() (string, error) { return gitBin, nil }
+	f.env.gitRun = execrun.ExecRunner(gitTimeout)
+	f.scenario["codex"] = `{"events":[{"type":"item.completed","item":{"type":"agent_message","text":"done"}}]}`
+	// PATH holds git alone, for the test's own git calls.
+	bin := t.TempDir()
+	if err := os.Symlink(gitBin, filepath.Join(bin, "git")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	return f, markers
+}
+
+func accept(f *borrowFixture, in string, tty bool, args ...string) (int, string, string) {
+	var out, errb strings.Builder
+	code := acceptWith(args, f.env, strings.NewReader(in), tty, &out, &errb)
+	return code, out.String(), errb.String()
+}
+
+// TestAccept (T6689): accept shows the stat, applies only on y or
+// --yes, refuses a main checkout with changes in the touched paths, and
+// applies once; nothing from the repo's config runs.
+func TestAccept(t *testing.T) {
+	f, markers := editFixture(t)
+	id, wt := editBorrow(t, f)
+	mustWrite(t, filepath.Join(wt, "a.go"), "package a\n\nfunc Edited() {}\n", 0o600)
+	mustWrite(t, filepath.Join(wt, "b.go"), "package a\n", 0o600)
+
+	// The main checkout's a.go has an uncommitted change.
+	if code, out, errOut := accept(f, "", false, id, "--yes"); code != 1 || !strings.Contains(errOut, "has changes in paths the diff touches (a.go)") {
+		t.Errorf("dirty: code %d: %s %s", code, out, errOut)
+	}
+	gitIn(t, f.repo, "checkout", "--", "a.go")
+	if code, out, _ := accept(f, "", false, id); code != 1 || !strings.Contains(out, "a.go") || !strings.Contains(out, "Not applied") {
+		t.Errorf("no tty: code %d: %s", code, out)
+	}
+	if code, out, _ := accept(f, "n\n", true, id); code != 1 || !strings.Contains(out, "Not applied.") {
+		t.Errorf("answered n: code %d: %s", code, out)
+	}
+	if data, _ := os.ReadFile(filepath.Join(f.repo, "a.go")); strings.Contains(string(data), "Edited") {
+		t.Fatal("applied without a yes")
+	}
+	// The child can rewrite the worktree's .git file; aggy never reads it.
+	evil := t.TempDir()
+	gitIn(t, evil, "init", "-q")
+	gitIn(t, evil, "config", "core.fsmonitor", "touch "+markers[0])
+	mustWrite(t, filepath.Join(wt, ".git"), "gitdir: "+filepath.Join(evil, ".git")+"\n", 0o600)
+	code, out, errOut := accept(f, "y\n", true, id[:8])
+	if code != 0 || !strings.Contains(out, "2 files changed") {
+		t.Fatalf("code %d: %s %s", code, out, errOut)
+	}
+	if data, _ := os.ReadFile(filepath.Join(f.repo, "a.go")); !strings.Contains(string(data), "Edited") {
+		t.Errorf("a.go = %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(f.repo, "b.go")); err != nil {
+		t.Error(err)
+	}
+	if code, _, errOut := accept(f, "", false, id, "--yes"); code != 1 || !strings.Contains(errOut, "already accepted") {
+		t.Errorf("second accept: code %d: %s", code, errOut)
+	}
+	noMarkers(t, markers)
+}
+
+// TestAcceptRefuses (T6689): a diff that touches .git, a symlink, a
+// submodule, or hook, config, or instruction files is never applied.
+func TestAcceptRefuses(t *testing.T) {
+	f, markers := editFixture(t)
+	gitIn(t, f.repo, "checkout", "--", "a.go")
+	before := gitIn(t, f.repo, "status", "--porcelain")
+	tests := []struct {
+		name string
+		make func(wt string)
+		want string
+	}{
+		{"claude settings", func(wt string) { mustWrite(t, filepath.Join(wt, ".claude", "settings.json"), "{}", 0o600) }, ".claude/settings.json"},
+		{"nested grok hooks", func(wt string) { mustWrite(t, filepath.Join(wt, "sub", ".grok", "hooks", "h.json"), "{}", 0o600) }, "sub/.grok/hooks/h.json"},
+		{"aggy config", func(wt string) { mustWrite(t, filepath.Join(wt, ".aggy", "config.toml"), "", 0o600) }, ".aggy/config.toml"},
+		{"agents file", func(wt string) { mustWrite(t, filepath.Join(wt, "AGENTS.md"), "x", 0o600) }, "AGENTS.md"},
+		{"gitattributes", func(wt string) { mustWrite(t, filepath.Join(wt, ".gitattributes"), "* filter=evil\n", 0o600) }, ".gitattributes"},
+		{"symlink", func(wt string) {
+			if err := os.Symlink("/etc", filepath.Join(wt, "etc")); err != nil {
+				t.Fatal(err)
+			}
+		}, "symlink"},
+		{"nested repo", func(wt string) {
+			gitIn(t, wt, "init", "-q", "inner")
+			mustWrite(t, filepath.Join(wt, "inner", "x"), "x", 0o600)
+			gitIn(t, filepath.Join(wt, "inner"), "add", "x")
+			gitIn(t, filepath.Join(wt, "inner"), "commit", "-q", "-m", "x")
+		}, "submodule"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id, wt := editBorrow(t, f)
+			tt.make(wt)
+			code, out, errOut := accept(f, "", false, id, "--yes")
+			if code != 1 || !strings.Contains(errOut, "refusing") || !strings.Contains(errOut, tt.want) {
+				t.Errorf("code %d: %s %s", code, out, errOut)
+			}
+		})
+	}
+	if st := gitIn(t, f.repo, "status", "--porcelain"); st != before {
+		t.Errorf("main checkout changed:\n%s", st)
+	}
+	noMarkers(t, markers)
+}
+
+// TestReject (T6689): reject removes the worktree and aggy's branch with
+// git, once, and leaves the main checkout alone.
+func TestReject(t *testing.T) {
+	f, markers := editFixture(t)
+	id, wt := editBorrow(t, f)
+	mustWrite(t, filepath.Join(wt, "a.go"), "package a\n// edited\n", 0o600)
+	var out, errb strings.Builder
+	if code := rejectWith([]string{id}, f.env, &out, &errb); code != 0 {
+		t.Fatalf("code %d: %s %s", code, out.String(), errb.String())
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("worktree left: %v", err)
+	}
+	if b := gitIn(t, f.repo, "branch", "--list", "aggy/edit-"+id); b != "" {
+		t.Errorf("branch left: %q", b)
+	}
+	if data, _ := os.ReadFile(filepath.Join(f.repo, "a.go")); !strings.Contains(string(data), "Uncommitted") {
+		t.Errorf("main a.go changed: %q", data)
+	}
+	errb.Reset()
+	if code := rejectWith([]string{id}, f.env, &out, &errb); code != 1 || !strings.Contains(errb.String(), "already rejected") {
+		t.Errorf("second reject: code %d: %s", code, errb.String())
+	}
+	if code, _, errOut := accept(f, "", false, id, "--yes"); code != 1 || !strings.Contains(errOut, "already rejected") {
+		t.Errorf("accept after reject: code %d: %s", code, errOut)
+	}
+	noMarkers(t, markers)
 }
