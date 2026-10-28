@@ -1,0 +1,8 @@
+--- a/exclude_crlf_no_trailing_newline
++++ b/exclude_crlf_no_trailing_newline
+@@ -1,2 +1,3 @@
+ *.log\r
+-build/
+\ No newline at end of file
++build/\r
++.aggy/\r

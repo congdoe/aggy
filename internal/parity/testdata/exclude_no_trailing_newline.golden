@@ -1,0 +1,7 @@
+--- a/exclude_no_trailing_newline
++++ b/exclude_no_trailing_newline
+@@ -1 +1,2 @@
+-*.swp
+\ No newline at end of file
++*.swp
++.aggy/

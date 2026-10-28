@@ -1,0 +1,7 @@
+--- a/exclude_template
++++ b/exclude_template
+@@ -4,3 +4,4 @@
+ # exclude patterns (uncomment them if you want to use them):
+ # *.[oa]
+ # *~
++.aggy/
