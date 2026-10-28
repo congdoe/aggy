@@ -121,10 +121,15 @@ func TestRunnerCallerCancel(t *testing.T) {
 func TestRunnerPrivateDir(t *testing.T) {
 	f := setup(t)
 	run := f.runner(t, "", 10*time.Second)
-	if _, err := run(context.Background(), adapter.Command{Path: f.fakes.Grok, Args: []string{"-p"}}); err != nil {
+	out, err := run(context.Background(), adapter.Command{Path: f.fakes.Grok, Args: []string{"-p"}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	cwd := fakecli.Records(t, f.record)[0].Cwd
+	recs := fakecli.Records(t, f.record)
+	if len(recs) != 1 {
+		t.Fatalf("records = %v (exit %d, stderr %q)", recs, out.ExitCode, out.Stderr)
+	}
+	cwd := recs[0].Cwd
 	tmp, _ := filepath.EvalSymlinks(os.TempDir())
 	if cwd == tmp || cwd == os.TempDir() || !strings.Contains(filepath.Base(cwd), "aggy-probe-") {
 		t.Errorf("cwd = %s, want a private aggy-probe- dir", cwd)
