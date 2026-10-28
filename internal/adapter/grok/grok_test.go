@@ -143,6 +143,8 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 		{"fork", adapter.InteractiveRequest{Resume: sid, Fork: true}, []string{"--no-alt-screen", "--resume", sid, "--fork-session"}},
 		{"memory and a brief", adapter.InteractiveRequest{Memory: "notes, with a comma", BriefFile: brief},
 			[]string{"--no-alt-screen", "--rules", "notes, with a comma", adapter.BriefPrompt(brief)}},
+		{"policy", adapter.InteractiveRequest{Deny: []string{"Read(**/.env)", "Bash(rm -rf *)"}},
+			[]string{"--no-alt-screen", "--deny", "Read(**/.env)", "--deny", "Bash(rm -rf *)"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -159,6 +161,11 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 				t.Errorf("fake: exit %d %q", out.ExitCode, out.Stderr)
 			}
 		})
+	}
+	for _, r := range []string{"Bash(a,b)", ""} {
+		if _, err := a.Interactive(adapter.InteractiveRequest{Deny: []string{r}}); err == nil {
+			t.Errorf("deny rule %q accepted", r)
+		}
 	}
 }
 

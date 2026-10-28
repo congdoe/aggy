@@ -57,3 +57,30 @@ func TestMemoryDelivered(t *testing.T) {
 		})
 	}
 }
+
+// TestPolicyOnCommandLine checks that Claude and Grok get the safety
+// policy as deny rules on the command line of the session aggy starts.
+func TestPolicyOnCommandLine(t *testing.T) {
+	for _, tc := range []struct{ vendor, flag string }{
+		{"claude", "--settings"},
+		{"grok", "--deny"},
+	} {
+		t.Run(tc.vendor, func(t *testing.T) {
+			w := newWorld(t)
+			s := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "run", tc.vendor)
+			s.waitFor([]byte("READY>"))
+			s.send([]byte{0x04})
+			s.exit()
+			vals := interactiveRecord(t, w).Flags[tc.flag]
+			if tc.vendor == "claude" {
+				if len(vals) != 1 || !strings.HasPrefix(vals[0], `{"permissions":{"deny":["Read(**/.env)",`) {
+					t.Errorf("--settings = %q", vals)
+				}
+				return
+			}
+			if len(vals) < 10 || vals[0] != "Read(**/.env)" {
+				t.Errorf("--deny = %q", vals)
+			}
+		})
+	}
+}
