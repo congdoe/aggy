@@ -101,33 +101,42 @@ func TestOpenReadOnlySeesLiveWAL(t *testing.T) {
 	}
 }
 
-// TestOpenReadOnlyUnreadableWAL: a -wal without a -shm in a read-only
-// directory is reported as an unreadable index, not a raw SQLite error.
-func TestOpenReadOnlyUnreadableWAL(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores directory permissions")
-	}
+// TestOpenReadOnlySeesWriterThatStartsLater (PR #6 finding 13): in a
+// writable directory a writer can start after the read-only open, so
+// the read must see its committed rows. On a8b4c37 the open was
+// immutable=1 whenever no -wal existed, and read stale data.
+func TestOpenReadOnlySeesWriterThatStartsLater(t *testing.T) {
 	s, path := openTemp(t)
 	_ = s.Close()
-	if err := os.WriteFile(path+"-wal", nil, 0o600); err != nil {
+	ctx := context.Background()
+	ro, err := OpenReadOnly(ctx, path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Dir(path)
-	if err := os.Chmod(dir, 0o500); err != nil {
+	defer func() { _ = ro.Close() }()
+	w, err := Open(ctx, path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	ro, err := OpenReadOnly(context.Background(), path)
-	if err == nil {
-		// Some SQLite builds read an empty -wal without a -shm; that is
-		// fine too, as long as nothing was created.
-		_ = ro.Close()
-		if _, err := os.Lstat(path + "-shm"); err == nil {
-			t.Error("a -shm was created in a read-only directory")
-		}
-		return
+	defer func() { _ = w.Close() }()
+	if _, err := w.DB().ExecContext(ctx, `INSERT INTO events (at, type) VALUES (1, 'later')`); err != nil {
+		t.Fatal(err)
 	}
-	if !errors.Is(err, ErrUnreadable) || !strings.Contains(err.Error(), "cannot read the index") {
-		t.Errorf("OpenReadOnly = %v, want ErrUnreadable", err)
+	var n int
+	if err := ro.DB().QueryRowContext(ctx, `SELECT count(*) FROM events WHERE type = 'later'`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("rows from the later writer = %d, %v, want 1", n, err)
+	}
+}
+
+// TestReadErrorNeverSaysDelete: a "malformed" read is reported as the
+// index being written, to retry.
+func TestReadErrorNeverSaysDelete(t *testing.T) {
+	err := ReadError(errors.New("database disk image is malformed (11)"))
+	if !errors.Is(err, ErrBusyWriting) || strings.Contains(strings.ToLower(err.Error()), "delete") {
+		t.Errorf("ReadError = %v", err)
+	}
+	other := errors.New("no such table: x")
+	if ReadError(other) != other {
+		t.Error("ReadError changed an unrelated error")
 	}
 }

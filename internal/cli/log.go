@@ -76,7 +76,7 @@ func runLog(args []string, stdout, stderr io.Writer) int {
 	}
 	events, err := s.Events(ctx, store.EventFilter{ParentID: *parent, Limit: *n})
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy log: %v\n", err)
+		fmt.Fprintf(stderr, "aggy log: %v\n", store.ReadError(err))
 		return 1
 	}
 	if len(events) == 0 {

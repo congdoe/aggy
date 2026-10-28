@@ -13,3 +13,6 @@ const (
 
 // linkCount is 1 where the link count is not available.
 func linkCount(fs.FileInfo) uint64 { return 1 }
+
+// canWrite reports false where access(2) is not available.
+func canWrite(string) bool { return false }

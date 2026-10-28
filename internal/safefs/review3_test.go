@@ -179,3 +179,34 @@ func TestCanonicalPath(t *testing.T) {
 		t.Errorf("folded CanonicalPath differs: %s vs %s", c3, c4)
 	}
 }
+
+// TestFirmlinkSpelling (PR #6 finding 9): on macOS,
+// /System/Volumes/Data/Users/x is /Users/x through a firmlink that
+// EvalSymlinks does not follow. A credential that does not exist yet must
+// be refused through that spelling, and both spellings must share one
+// canonical path (one lock key). On a8b4c37 WriteFile created the
+// credential and the two spellings got two keys.
+func TestFirmlinkSpelling(t *testing.T) {
+	old := stripFirmlink
+	stripFirmlink = true
+	t.Cleanup(func() { stripFirmlink = old })
+	home := fakeHome(t)
+	real, err := filepath.EvalSymlinks(home)
+	must(t, err)
+	t.Setenv("HOME", real)
+	cred := dataVolume + filepath.Join(real, ".claude", ".credentials.json")
+	if err := WriteFile(cred, []byte("x"), 0o600); !errors.Is(err, ErrAuthPath) {
+		t.Errorf("WriteFile(%s) = %v, want ErrAuthPath", cred, err)
+	}
+	if _, err := os.Lstat(filepath.Join(real, ".claude", ".credentials.json")); err == nil {
+		t.Error("the credential file was created")
+	}
+	cfg := filepath.Join(real, "config.toml")
+	k1, err := CanonicalPath(cfg)
+	must(t, err)
+	k2, err := CanonicalPath(dataVolume + cfg)
+	must(t, err)
+	if k1 != k2 {
+		t.Errorf("two lock keys: %s and %s", k1, k2)
+	}
+}

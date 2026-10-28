@@ -19,3 +19,6 @@ func linkCount(fi fs.FileInfo) uint64 {
 	}
 	return 1
 }
+
+// canWrite reports whether access(2) allows creating files in dir.
+func canWrite(dir string) bool { return syscall.Access(dir, 0x2) == nil } // W_OK

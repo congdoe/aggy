@@ -9,7 +9,7 @@ GOLANGCI_LINT ?= golangci-lint
 GORELEASER_VERSION := v2.19.0
 GORELEASER ?= goreleaser
 
-.PHONY: build test vet lint lint-install snapshot release-check
+.PHONY: build test vet lint nocgo lint-install snapshot release-check
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/aggy ./cmd/aggy
@@ -20,9 +20,18 @@ vet:
 test: vet
 	go test -race ./...
 
-lint:
-	GOOS=darwin $(GOLANGCI_LINT) run ./...
-	GOOS=linux $(GOLANGCI_LINT) run ./...
+# Keep the targets in step with the lint matrix in .github/workflows/ci.yml.
+lint: nocgo
+	GOOS=darwin GOARCH=arm64 $(GOLANGCI_LINT) run ./...
+	GOOS=darwin GOARCH=amd64 $(GOLANGCI_LINT) run ./...
+	GOOS=linux GOARCH=amd64 $(GOLANGCI_LINT) run ./...
+	GOOS=linux GOARCH=arm64 $(GOLANGCI_LINT) run ./...
+
+# cgo reaches the disk and processes around every lint ban, and lint
+# cannot see a cgo file when it cross-compiles, so any import "C" in a
+# non-test Go file fails here.
+nocgo:
+	@! grep -rEn --include='*.go' '^[[:space:]]*(import[[:space:]]+)?"C"[[:space:]]*$$' . | grep -v '_test\.go:' | grep .
 
 lint-install:
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)

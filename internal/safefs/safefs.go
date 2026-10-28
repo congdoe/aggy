@@ -221,18 +221,54 @@ func (g *guard) pathMatch(path string) bool {
 // strings.ToLower would leave all three alone.
 func normPath(p string) string {
 	p = norm.NFC.String(p)
+	if stripFirmlink && len(p) > len(dataVolume) && strings.EqualFold(p[:len(dataVolume)], dataVolume) &&
+		p[len(dataVolume)] == filepath.Separator {
+		// /System/Volumes/Data/Users/x is /Users/x through a firmlink.
+		p = p[len(dataVolume):]
+	}
 	if foldCase {
 		p = norm.NFC.String(cases.Fold().String(p))
 	}
 	return p
 }
 
+// dataVolume is where macOS keeps the writable half of the file system.
+// Its firmlinks (/Users, /private, /Applications, ...) make
+// /System/Volumes/Data/Users/x and /Users/x one file, and EvalSymlinks
+// does not follow a firmlink, so the prefix is removed lexically.
+const dataVolume = "/System/Volumes/Data"
+
+// stripFirmlink is true where dataVolume firmlinks exist. It is a
+// variable so tests can exercise it on any OS.
+var stripFirmlink = runtime.GOOS == "darwin"
+
+// DirWritable reports whether this process may create files in dir,
+// behind the path check. It asks the kernel (access(2) with W_OK) and
+// never writes. Where that cannot be asked, it reports false.
+func DirWritable(dir string) (bool, error) {
+	t, err := resolve("DirWritable", dir)
+	if err != nil {
+		return false, err
+	}
+	fi, err := os.Stat(t.real)
+	if err != nil {
+		return false, renamePath(err, dir)
+	}
+	if t.g.idMatch(fi) {
+		return false, &AuthPathError{Op: "DirWritable", Path: dir}
+	}
+	if !fi.IsDir() {
+		return false, &fs.PathError{Op: "DirWritable", Path: dir, Err: syscall.ENOTDIR}
+	}
+	return canWrite(t.real), nil
+}
+
 // CanonicalPath returns the one spelling of name that every other
 // spelling of the same file shares: made absolute, resolved through
 // symlinks the way the kernel resolves them (the deepest existing
 // ancestor, then the rest appended), and normalized the way safefs
-// compares paths (NFC, and case-folded where the file system ignores
-// case). It is for keys such as lock names, never for opening the file.
+// compares paths (NFC, the /System/Volumes/Data firmlink prefix removed
+// on macOS, and case-folded where the file system ignores case). It is for keys such as lock names, never for opening the file.
 // It refuses a credential path like every other call.
 func CanonicalPath(name string) (string, error) {
 	t, err := resolve("CanonicalPath", name)

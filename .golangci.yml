@@ -40,6 +40,13 @@ linters:
               desc: aggy makes no network calls
             - pkg: "plugin$"
               desc: aggy loads no code at run time
+            # unsafe makes //go:linkname possible, which reaches any
+            # banned function (os.ReadFile) under another name.
+            - pkg: "unsafe$"
+              desc: unsafe and //go:linkname reach banned functions around lint
+            # cgo calls C file and process functions around every ban.
+            - pkg: "C$"
+              desc: cgo reaches the disk and processes around internal/safefs
             - pkg: golang.org/x/sys/unix
               desc: use internal/safefs or the stdlib
             # These open files by path, around internal/safefs.
@@ -74,6 +81,14 @@ linters:
           deny:
             - pkg: "os/exec$"
               desc: processes start only in internal/supervisor, internal/borrow, or internal/probe
+        # Adapters build commands and parse output; they never start
+        # processes, so they may not import the probe runner's package.
+        adapter:
+          files:
+            - "**/internal/adapter/**"
+          deny:
+            - pkg: github.com/congdoe/aggy/internal/probe
+              desc: adapters never start processes; the caller passes them a Runner
         # The fake vendor CLIs are for tests only.
         fakecli:
           files: ["$all", "!$test"]
@@ -115,6 +130,8 @@ linters:
           msg: syscall reaches the disk and processes around internal/safefs; only the allowlisted names may be used
         - pattern: ^filepath\.Glob$
           msg: use internal/safefs, which refuses vendor credential files
+        - pattern: ^toml\.(DecodeFile|DecodeFS)$
+          msg: read config through internal/safefs (safefs.ReadConfig), then toml.Decode
         # golang.org/x/sys/unix reaches the disk and processes around both
         # safefs and the process rules below.
         - pattern: ^unix\.
@@ -166,14 +183,23 @@ linters:
       - path: ^internal/safefs/
         text: "use of `(os|fs|filepath|ioutil)\\."
         linters: [forbidigo]
-      # The syscall allowlist: errno values, open flags safefs needs, the
-      # stat type, and flock, kill, and process attributes for the store's
-      # locks and leases and the process runners.
-      - text: "use of `syscall\\.(E[A-Z0-9]+|O_NOFOLLOW|O_NONBLOCK|Stat_t|Flock|LOCK_(EX|NB|SH|UN)|Kill|SIG[A-Z0-9]+|Signal|SysProcAttr|WaitStatus)`"
+      # The syscall allowlist everywhere: errno values, the open flags
+      # safefs needs, the stat type, and flock for the store's locks.
+      - text: "use of `syscall\\.(E[A-Z0-9]+|O_NOFOLLOW|O_NONBLOCK|Stat_t|Flock|LOCK_(EX|NB|SH|UN))`"
+        linters: [forbidigo]
+      # access(2) only in safefs, behind its path check (DirWritable).
+      - path: ^internal/safefs/
+        text: "use of `syscall\\.Access`"
+        linters: [forbidigo]
+      # Signals and process attributes only where processes are run or
+      # checked: the probe runner, and the store's leases.
+      - path: ^internal/(probe|store)/
+        text: "use of `syscall\\.(Kill|SIG[A-Z0-9]+|Signal|SysProcAttr|WaitStatus)`"
         linters: [forbidigo]
       # Field keys in a syscall.SysProcAttr literal are reported by their
       # bare name.
-      - text: "use of `(Setpgid|Setsid|Pgid|Pdeathsig|Noctty)`"
+      - path: ^internal/(probe|store)/
+        text: "use of `(Setpgid|Setsid|Pgid|Pdeathsig|Noctty)`"
         linters: [forbidigo]
       - path: ^internal/store/
         text: "`sql\\.Open`"
