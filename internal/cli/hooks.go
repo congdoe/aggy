@@ -14,6 +14,8 @@ import (
 	"github.com/congdoe/aggy/internal/hook"
 	"github.com/congdoe/aggy/internal/manifest"
 	"github.com/congdoe/aggy/internal/patch"
+	"github.com/congdoe/aggy/internal/probe"
+	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
 )
@@ -23,15 +25,19 @@ const hooksUsage = `Usage: aggy hooks install [--vendor V] [--dry-run]
 
 Installs the hooks that tell aggy when a vendor CLI's session starts, its
 turn ends, or it hits a limit. Each hook runs this aggy binary, by its
-absolute path, as aggy hook --vendor V <event>; outside aggy it does
-nothing. Existing hooks are kept. Every change goes through the
-manifest; aggy unwire undoes it.
+absolute path (the one on PATH when it is the same file), as aggy hook
+--vendor V <event>; outside aggy it does nothing, and once that binary is
+gone it does nothing quietly. The binary and every directory above it
+must belong to you or root and be writable by no one else, since every
+session of each CLI runs it. Existing hooks are kept; aggy's own entry
+from another path is updated. Every change goes through the manifest;
+aggy unwire takes out aggy's entries, leaving the rest of the file as it
+is then.
 
   claude   ~/.claude/settings.json: Stop, StopFailure, SessionStart, Notification
-  codex    ~/.codex/hooks.json ($CODEX_HOME): Stop, SessionStart; and
-           notify in ~/.codex/config.toml, unless it already sets one.
-           Codex runs hooks only after you approve them once (start
-           codex, then /hooks); the notify needs no approval.
+  codex    ~/.codex/hooks.json ($CODEX_HOME): Stop, SessionStart. Codex
+           runs hooks only after you approve them once (start codex,
+           then /hooks).
   grok     ~/.grok/hooks/aggy.json ($GROK_HOME/hooks): Stop, StopFailure,
            StopCancelled, SessionStart, Notification. Grok also runs
            Claude's settings.json hooks; aggy hook ignores those inside
@@ -41,8 +47,15 @@ manifest; aggy unwire undoes it.
   --dry-run    show the changes and make none
 `
 
-// hookBin is the aggy binary hooks call; tests replace it.
+// hookBin is this aggy binary; tests replace it.
 var hookBin = os.Executable
+
+// pathAggy finds aggy on PATH; tests replace it.
+var pathAggy = func() (string, error) { return probe.LookPath("aggy") }
+
+// checkTrusted is trustedPath; tests whose temp dirs sit under a
+// world-writable /tmp replace it.
+var checkTrusted = trustedPath
 
 // hookPlan is what installing one vendor's hooks needs.
 type hookPlan struct {
@@ -121,7 +134,12 @@ func codexHome(h string) (string, error) {
 // runs a hook only once its hash is trusted (verification.md, trust
 // gate), which the person approves in interactive Codex. aggy has no
 // documented way to read that state and never bypasses it.
-const codexTrustNote = "Codex runs its hooks only once you approve them (start codex, then /hooks), which aggy cannot check; the turn-end notify works without approval."
+//
+// aggy installs no Codex notify: it would hand aggy every turn's prompts
+// and reply as argv (legacy_notify.rs), readable by other users through
+// the process table, for every Codex session, and Stop gives turn ends
+// and the thread id.
+const codexTrustNote = "Codex runs its hooks only once you approve them (start codex, then /hooks), which aggy cannot check; until then aggy does not hear Codex turn ends or learn its session id."
 
 // planHooks returns the patches that install v's hooks for bin. It
 // writes nothing.
@@ -140,42 +158,47 @@ func planHooks(v adapter.Vendor, bin string) (hookPlan, error) {
 		if err != nil {
 			return p, fmt.Errorf("%s: %w", f.path, err)
 		}
-		if len(missing) > 0 {
-			p.patches = append(p.patches, patch.Patch{File: f.path, ExpectedHash: h, Transform: hook.Merge(bin, f.entries)})
+		if missing > 0 {
+			p.patches = append(p.patches, patch.Patch{File: f.path, ExpectedHash: h,
+				Transform: hook.Merge(bin, f.entries), Reverse: manifest.ReverseAggyHooks})
 		}
 	}
 	if v == adapter.Codex {
 		p.note = codexTrustNote
-		cfg := filepath.Join(filepath.Dir(files[0].path), "config.toml")
-		src, h, err := readMaybe(cfg)
-		if err != nil {
-			return p, err
-		}
-		missing, err := hook.NotifyMissing(src, bin)
-		switch {
-		case errors.Is(err, hook.ErrNotifyTaken):
-			// The hooks still go in; only the notify is left out.
-			p.note = err.Error() + ". " + p.note
-		case err != nil:
-			return p, fmt.Errorf("%s: %w", cfg, err)
-		}
-		if missing {
-			p.patches = append(p.patches, patch.Patch{File: cfg, ExpectedHash: h, Transform: hook.AddNotify(bin)})
-		}
 	}
 	return p, nil
 }
 
-// aggyBin returns the path hooks should call: this binary's.
+// aggyBin returns the path hooks should call: aggy on PATH when it is
+// this same binary (Homebrew's stable bin/aggy link rather than the
+// versioned Cellar path os.Executable can give), else this binary's
+// path. It refuses a go run build, a path a hook command cannot carry
+// unquoted, and one anybody but the user or root could change.
 func aggyBin() (string, error) {
-	bin, err := hookBin()
+	exe, err := hookBin()
 	if err != nil {
 		return "", err
 	}
-	if strings.Contains(bin, string(filepath.Separator)+"go-build") {
+	if strings.Contains(exe, string(filepath.Separator)+"go-build") {
 		return "", errors.New("aggy is running from go run's temporary build; install it (make build) and run that binary")
 	}
-	return bin, hook.CheckBin(bin)
+	bin := exe
+	if p, err := pathAggy(); err == nil && p != exe && filepath.IsAbs(p) && sameFile(p, exe) {
+		bin = filepath.Clean(p)
+	}
+	if err := hook.CheckBin(bin); err != nil {
+		return "", err
+	}
+	return bin, checkTrusted(bin)
+}
+
+func sameFile(a, b string) bool {
+	fa, err := safefs.Stat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := safefs.Stat(b)
+	return err == nil && os.SameFile(fa, fb)
 }
 
 func runHooks(args []string, stdout, stderr io.Writer) int {

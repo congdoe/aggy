@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/congdoe/aggy/internal/diff"
+	"github.com/congdoe/aggy/internal/hook"
 	"github.com/congdoe/aggy/internal/patch"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -93,7 +94,21 @@ const (
 	Invalid Outcome = "invalid"
 	// Failed: the undo hit another error, in Err.
 	Failed Outcome = "failed"
+	// Stripped: the file changed after aggy changed it, and the change
+	// has a structural reverse, so aggy's own entries were taken out of
+	// the file as it is now and everything else left as it is.
+	Stripped Outcome = "stripped"
 )
+
+// ReverseAggyHooks is the structural reverse for aggy's hook entries in a
+// Claude-format hooks file (hook.Strip).
+const ReverseAggyHooks = "aggy-hooks"
+
+// reversers maps a change's Reverse to the transform that takes the
+// change's entries out of the file as it is now.
+var reversers = map[string]func([]byte) ([]byte, error){
+	ReverseAggyHooks: hook.Strip,
+}
 
 // ErrNewerChange matches a Blocked result.
 var ErrNewerChange = errors.New("a newer change to the same file is still in place")
@@ -722,6 +737,10 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 	if f, ok := run.sim[simKey(r)]; ok {
 		cur, curHash = f.data, f.hash
 	}
+	if reverse := reversers[c.Reverse]; reverse != nil && c.Status == store.ChangeApplied &&
+		curHash != r.AfterHash && curHash != r.BeforeHash {
+		return m.strip(c, r, cur, curHash, reverse, run, u, done, fail)
+	}
 	byHand := false
 	switch {
 	case curHash == r.BeforeHash:
@@ -777,6 +796,50 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 		// and made the directory again.
 		run.emptied = append(run.emptied, r.File)
 	}
+	return done()
+}
+
+// strip undoes an applied change with a structural reverse in a file
+// that changed since aggy wrote it: it takes aggy's entries out of the
+// file as it is now (a guarded patch planned on its current hash, with
+// that content backed up under the change's folder), rather than
+// restoring old bytes over the person's or the CLI's later edits. A
+// file gone, or already without aggy's entries, is left as it is.
+func (m *Manifest) strip(c store.Change, r patch.Record, cur []byte, curHash string,
+	reverse func([]byte) ([]byte, error), run *unwireRun, u Undo, done func() Undo, fail func(error) Undo) Undo {
+	w := run.opt.DryRun
+	u.Outcome = Stripped
+	if curHash == patch.NoFile || patch.IsLinkHash(curHash) {
+		u.Outcome = Cleaned
+		if w {
+			fmt.Fprintf(run.w, "# %s: change %s: the file is gone or replaced; would leave it\n",
+				termsafe.Line(r.File), termsafe.Line(c.ChangeID))
+		}
+		return done()
+	}
+	target, err := reverse(cur)
+	if err != nil {
+		return fail(fmt.Errorf("manifest: change %s: cannot take aggy's entries out of %s: %w", c.ChangeID, r.File, err))
+	}
+	if bytes.Equal(target, cur) {
+		u.Outcome = Cleaned
+		if w {
+			fmt.Fprintf(run.w, "# %s: change %s: aggy's entries are already gone; would leave the file\n",
+				termsafe.Line(r.File), termsafe.Line(c.ChangeID))
+		}
+		return done()
+	}
+	if w {
+		fmt.Fprint(run.w, termsafe.Lines(diff.Unified(r.File, r.File, cur, target)))
+		run.sim[simKey(r)] = simFile{data: target, hash: patch.Hash(target)}
+		return done()
+	}
+	_, err = patch.Apply(patch.Patch{File: r.File, ExpectedHash: curHash, Transform: reverse},
+		filepath.Join(m.backupRoot, c.ChangeID))
+	if err != nil && !errors.Is(err, patch.ErrNotSynced) {
+		return fail(err)
+	}
+	u.Err = err
 	return done()
 }
 
