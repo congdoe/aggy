@@ -226,9 +226,10 @@ type flagSpec struct {
 var specs = map[string]flagSpec{
 	// --strict-mcp-config and --mcp-config: the borrow lockdown,
 	// live-verified on claude 2.1.312 (2026-10-28). --tools narrows the
-	// built-ins (tool names unverified).
+	// built-ins (tool names unverified). --setting-sources is in Claude
+	// Code's CLI reference, not in a recorded help.
 	"claude": {
-		values:   []string{"--output-format", "--permission-mode", "--session-id", "--mcp-config", "--tools"},
+		values:   []string{"--output-format", "--permission-mode", "--session-id", "--mcp-config", "--tools", "--setting-sources"},
 		switches: []string{"-p", "--fork-session", "--strict-mcp-config"},
 		optional: []string{"--resume"},
 	},

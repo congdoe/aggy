@@ -303,8 +303,9 @@ help) is unverified and not needed (TODO(T6737)). Claude's `<run>/mcp.json` is `
 `--tools` names are unverified. `--setting-sources user` (so a review does
 not run the reviewed repo's own `.claude/settings.json` hooks) and
 `--settings` (the PreToolUse guard) are passed only when the probe found
-them in `claude --help` (capabilities `setting-sources` and `settings`);
-without the first, that gap is open (TODO(T6643)).
+them in `claude --help` (capabilities `setting-sources` and `settings`).
+Without `setting-sources` a Claude review is `ErrUnsupported`, and the
+borrow passes Claude over: the repo's hooks would otherwise run.
 
 Codex puts every exec flag before the `resume` subcommand, which takes
 only its own flags; `-i` takes one or more values, so the references come
@@ -435,7 +436,7 @@ the code until a live check settles them.
 | `--permission-mode acceptEdits` (Claude edit) and `--sandbox workspace-write` (Codex edit) | `claude.PermissionEdit`, `codex.SandboxEdit`. |
 | `grok --tools` alone removes every other tool, and it combines with `--disallowed-tools` | The per-kind `--tools` allowlists, plus `grok.Lockdown` minus the kind's tools as `--disallowed-tools`, and `--no-subagents`; a `name no tool` warning fails the borrow. |
 | `image_edit`, `image_gen` plus `image_to_video` for video, work headless on Grok (there is no `video_gen`) | `grok.ImageTools` plus `image_edit` on resume, `grok.VideoTools`. |
-| Claude `--tools Read,Grep,Glob` names, and whether `--setting-sources user` keeps the `--settings` layer | `claude.ReviewTools`; `--setting-sources` only with the probed capability. |
+| Claude `--tools Read,Grep,Glob` names, and whether `--setting-sources user` keeps the `--settings` layer | `claude.ReviewTools`; a Claude review needs the probed `setting-sources` capability, and is refused without it. |
 | Grok's cwd encoding under `sessions/` | `grok.EncodeCwd` (`url.QueryEscape`), then the scan fallback. |
 | Claude's JSON reply fields (`result`, `session_id`, `is_error`, `subtype`, `usage`) | Read when present; a reply with none of them is `ErrUnparsed`. |
 | Codex events after `thread.started` (`item.completed` agent messages, `turn.completed` usage, `error`, `turn.failed`) | Read when present; output with no `thread.started` is `ErrUnparsed`. |

@@ -69,7 +69,7 @@ func newWorld(t *testing.T) *world {
 		store:     s,
 		cfg:       config.Default(),
 		connected: map[adapter.Vendor]bool{adapter.Claude: true, adapter.Codex: true, adapter.Grok: true},
-		caps:      map[adapter.Vendor][]string{},
+		caps:      map[adapter.Vendor][]string{adapter.Claude: {"setting-sources"}},
 		version:   map[adapter.Vendor]string{},
 		now:       time.Date(2026, 10, 28, 9, 30, 0, 0, time.UTC),
 	}

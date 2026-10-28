@@ -271,9 +271,13 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 	}
 	// A review runs in the reviewed repo, whose .claude/settings.json
 	// hooks would run with no trust prompt: load the user's settings only.
-	// TODO(T6643): --setting-sources is documented but not in a recorded
-	// help, so without the probed capability the repo's hooks still load.
-	if req.Kind == adapter.Review && slices.Contains(a.Caps, probe.CapSettingSources) {
+	// --setting-sources is documented but not in a recorded help, so a CLI
+	// whose help the probe did not find it in cannot review: it fails
+	// closed, and the borrow passes it over.
+	if req.Kind == adapter.Review {
+		if !slices.Contains(a.Caps, probe.CapSettingSources) {
+			return adapter.Command{}, fmt.Errorf("claude: review: %w (this CLI's help lists no --setting-sources, so the reviewed repo's own hooks would run)", adapter.ErrUnsupported)
+		}
 		args = append(args, "--setting-sources", "user")
 	}
 	if a.guarded(req) {

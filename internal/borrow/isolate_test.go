@@ -202,7 +202,7 @@ func (f fileAdapter) ChildFiles(adapter.HeadlessRequest) ([]adapter.ChildFile, e
 func TestGuardReachesClaude(t *testing.T) {
 	w := newWorld(t)
 	w.connected[adapter.Grok], w.connected[adapter.Codex] = false, false
-	w.caps[adapter.Claude] = []string{"settings"}
+	w.caps[adapter.Claude] = []string{"settings", "setting-sources"}
 	w.scenario[adapter.Claude] = `{"extra_flags":["--settings"],"json":{"type":"result","result":"ok"}}`
 	b := w.borrower()
 	b.Guard = []string{"/usr/local/bin/aggy", "hook", "pretooluse"}
