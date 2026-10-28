@@ -2,6 +2,7 @@ package borrow
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -148,5 +149,73 @@ func TestGrokImagesCounted(t *testing.T) {
 			!strings.HasPrefix(dir, filepath.Join(w.home, ".grok", "sessions")+string(filepath.Separator)) {
 			t.Errorf("artifact %d = %s", i, a.Path)
 		}
+	}
+}
+
+// TestDeliver (T6634): aggy copies what the child made to --out, never
+// the child, and writes a sidecar with the prompt, vendor, model, and
+// child session id.
+func TestDeliver(t *testing.T) {
+	tests := []struct {
+		name     string
+		vendor   adapter.Vendor
+		scenario string
+		out      string
+		n        int
+		link     bool // public is a symlink out of the repo
+		status   string
+		files    []string // written, relative to the repo
+		detail   string
+	}{
+		{"codex png", adapter.Codex, `{"images":1}`, "public/hero.png", 0, false, "done", []string{"public/hero.png"}, ""},
+		{"codex variants", adapter.Codex, `{"images":2}`, "public/hero.png", 2, false, "done", []string{"public/hero.png", "public/hero-2.png"}, ""},
+		{"grok jpeg for a .png", adapter.Grok, `{"images":1,"json":{"result":"images/1.jpg"}}`, "hero.png", 0, false, "done", []string{"hero.jpg"}, ""},
+		{"grok jpeg kept as .jpeg", adapter.Grok, `{"images":1,"json":{"result":"images/1.jpg"}}`, "hero.jpeg", 0, false, "done", []string{"hero.jpeg"}, ""},
+		{"nothing made", adapter.Codex, `{}`, "hero.png", 0, false, "failed", nil, "left no file that passed"},
+		{"symlinked folder", adapter.Codex, `{"images":1}`, "public/hero.png", 0, true, "failed", nil, "outside"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			w.scenario[tt.vendor] = tt.scenario
+			if tt.link {
+				if err := os.Symlink(t.TempDir(), filepath.Join(w.repo, "public")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			req := w.req(adapter.Image, "a hero image")
+			req.Vendor = string(tt.vendor)
+			req.Media = &Media{Out: filepath.Join(w.repo, tt.out), N: tt.n}
+			res, err := w.borrower().Run(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := res[0]
+			if r.Status != tt.status || !strings.Contains(r.Detail, tt.detail) || len(r.Artifacts) != len(tt.files) {
+				t.Fatalf("result %+v", r)
+			}
+			for i, f := range tt.files {
+				p := filepath.Join(w.repo, f)
+				if r.Artifacts[i].Path != p {
+					t.Errorf("artifact %d = %s, want %s", i, r.Artifacts[i].Path, p)
+				}
+				data, err := os.ReadFile(p)
+				if err != nil || sniff(data) == "" {
+					t.Errorf("%s: %v, not an image", f, err)
+				}
+				b, err := os.ReadFile(filepath.Join(w.repo, ".aggy", "assets", f+".json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var sc Sidecar
+				if err := json.Unmarshal(b, &sc); err != nil {
+					t.Fatal(err)
+				}
+				if sc.Prompt != "a hero image" || sc.Vendor != string(tt.vendor) || sc.Kind != "image" || sc.Borrow != r.ID ||
+					adapter.ValidSessionID(tt.vendor, sc.SessionID) != nil {
+					t.Errorf("sidecar %+v", sc)
+				}
+			}
+		})
 	}
 }

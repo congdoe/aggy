@@ -482,6 +482,14 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 		for _, m := range passed {
 			res.Artifacts = append(res.Artifacts, m.Artifact)
 		}
+		if req.Media != nil {
+			// aggy image and aggy video: the copies are the result.
+			var derr error
+			if res.Artifacts, derr = deliver(req, res, passed, parsed.SessionID, now); derr != nil {
+				res.Status, res.Outcome, res.Detail = "failed", string(adapter.ErrUnknown), strings.TrimSpace(res.Detail+"\n"+derr.Error())
+				end.Status, end.Outcome = res.Status, res.Outcome
+			}
+		}
 		for _, x := range res.Artifacts {
 			end.Artifacts = append(end.Artifacts, x.Path)
 		}
