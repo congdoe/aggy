@@ -6,6 +6,8 @@ import "sync"
 //
 // shortcut: input past the cap is dropped, as a full terminal buffer
 // would; nobody types or pastes 4 MiB into a stalled CLI on purpose.
+// Once anything is dropped, everything is until the queue drains, so the
+// CLI never gets input with a gap in it (B13-15).
 const maxQueued = 4 << 20
 
 // byteQueue is an unbounded-until-max FIFO of byte slices: push never
@@ -17,6 +19,8 @@ type byteQueue struct {
 	size   int
 	max    int
 	closed bool
+	// dropping is set by an overflow and cleared once the queue is empty.
+	dropping bool
 }
 
 func newByteQueue(max int) *byteQueue {
@@ -29,7 +33,8 @@ func newByteQueue(max int) *byteQueue {
 func (q *byteQueue) push(b []byte) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.closed || q.size+len(b) > q.max {
+	if q.closed || q.dropping || q.size+len(b) > q.max {
+		q.dropping = !q.closed
 		return
 	}
 	q.items = append(q.items, b)
@@ -52,6 +57,9 @@ func (q *byteQueue) pop() (b []byte, ok bool) {
 	q.items[0] = nil
 	q.items = q.items[1:]
 	q.size -= len(b)
+	if len(q.items) == 0 {
+		q.dropping = false
+	}
 	return b, true
 }
 

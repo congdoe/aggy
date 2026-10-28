@@ -56,6 +56,13 @@ func TestKeyFilter(t *testing.T) {
 		{"utf-8 around the key", 0x1c, []string{"漢\x1c🙂"}, `"漢"<P:"\x1c">"🙂"`},
 		{"mouse and osc untouched", 0x1c, []string{"\x1b[<0;10;5M\x1b]52;c;eA==\x07"}, `"\x1b[<0;10;5M\x1b]52;c;eA==\a"`},
 		{"truncated kitty is data", 0x1c, []string{"\x1b[92;5"}, `"\x1b[92;5"`},
+		// B13-8: kitty's report-text field and xterm modifyOtherKeys.
+		{"kitty press with text", 0x1c, []string{"\x1b[92;5;92u"}, `<P:"\x1b[92;5;92u">`},
+		{"kitty press with event and text", 0x1c, []string{"\x1b[92;5:1;92:93u"}, `<P:"\x1b[92;5:1;92:93u">`},
+		{"modifyOtherKeys press", 0x1c, []string{"a\x1b[27;5;92~b"}, `"a"<P:"\x1b[27;5;92~">"b"`},
+		{"modifyOtherKeys other key is data", 0x1c, []string{"\x1b[27;5;97~"}, `"\x1b[27;5;97~"`},
+		{"modifyOtherKeys ctrl+shift is data", 0x1c, []string{"\x1b[27;6;92~"}, `"\x1b[27;6;92~"`},
+		{"truncated modifyOtherKeys is data", 0x1c, []string{"\x1b[27;5;92"}, `"\x1b[27;5;92"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -113,8 +120,9 @@ func TestPickerDraw(t *testing.T) {
 		want    []string
 		notWant []string
 	}{
-		{"own alternate screen", false, []string{altScreenOn, "1  grok", "2  claude", altScreenOff}, []string{saveCursor}},
-		{"over the CLI's alternate screen", true, []string{saveCursor, "\x1b[1;1H\x1b[2Kaggy: switch vendor", "1  grok", restCursor}, []string{"\x1b[?1049"}},
+		{"own alternate screen", false, []string{altScreenOn, "1  grok", "2  claude", altScreenOff}, []string{"\x1b7"}},
+		// B13-13: DECSC/DECRC would overwrite the CLI's own saved cursor.
+		{"over the CLI's alternate screen", true, []string{"\x1b[1;1H\x1b[2Kaggy: switch vendor", "1  grok"}, []string{"\x1b[?1049", "\x1b7", "\x1b8"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -159,6 +167,9 @@ func TestAltTracker(t *testing.T) {
 		{"broken then real", []string{"\x1b[?10\x1b[?1049h"}, true},
 		{"esc esc", []string{"\x1b\x1b[?1049h"}, true},
 		{"text between", []string{"\x1b[?1049h", "screen", "\x1b[?1049l", "more"}, false},
+		// B13-12: a full reset (RIS) leaves the alternate screen.
+		{"RIS clears", []string{"\x1b[?1049h", "\x1bc"}, false},
+		{"RIS split", []string{"\x1b[?1049h\x1b", "c"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -215,6 +215,12 @@ linters:
           msg: the supervisor socket uses net.ListenUnix only; aggy opens no other socket and resolves no names
         - pattern: ^(net\.)?Dialer\.Dial
           msg: aggy makes no network calls
+        # The method forms of a listener and a resolver (B13-11):
+        # (&net.ListenConfig{}).Listen, net.DefaultResolver.LookupHost.
+        - pattern: ^net\.(ListenConfig|Resolver)\.
+          msg: the supervisor socket uses net.ListenUnix only; aggy opens no other socket and resolves no names
+        - pattern: ^net\.DefaultResolver$
+          msg: aggy resolves no names
         - pattern: ^http\.(Get|Head|Post|PostForm|DefaultClient|DefaultTransport)$
           msg: aggy makes no network calls
         - pattern: ^http\.(Client|Transport)\.(Do|Get|Head|Post|PostForm|RoundTrip)$

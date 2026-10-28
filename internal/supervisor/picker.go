@@ -13,13 +13,13 @@ import (
 // exactly, without anyone redrawing. The alternate screen does not nest,
 // so when the CLI is already on it (Codex without --no-alt-screen, or an
 // editor or pager a CLI opened), the picker is drawn over the CLI's
-// screen instead, with the cursor saved, and the CLI is made to repaint
-// itself afterwards (see session.closePicker).
+// screen instead, and the CLI is made to repaint itself afterwards (see
+// session.closePicker), which puts back its cursor too. The cursor is not
+// saved with DECSC: that slot is the CLI's own, and a full-screen CLI or
+// pager may hold a position there (B13-13).
 const (
 	altScreenOn  = "\x1b[?1049h\x1b[H\x1b[2J"
 	altScreenOff = "\x1b[?1049l"
-	saveCursor   = "\x1b7"
-	restCursor   = "\x1b8"
 )
 
 // picker is the minimal switch menu: the connected vendors in switch.order
@@ -43,7 +43,6 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 	lines = append(lines, "", "Number or Enter to switch, Esc to go back.")
 	var b strings.Builder
 	if overCLI {
-		b.WriteString(saveCursor)
 		for i, l := range lines {
 			fmt.Fprintf(&b, "\x1b[%d;1H\x1b[2K%s", i+1, l)
 		}
@@ -57,11 +56,9 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 }
 
 // erase takes the picker off the screen: it leaves the alternate screen,
-// or, when drawn over the CLI, puts the cursor back (the CLI repaints the
-// rest).
+// or, when drawn over the CLI, does nothing (the CLI repaints).
 func (p *picker) erase(w io.Writer, overCLI bool) {
 	if overCLI {
-		_, _ = io.WriteString(w, restCursor)
 		return
 	}
 	_, _ = io.WriteString(w, altScreenOff)

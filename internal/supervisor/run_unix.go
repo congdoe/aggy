@@ -85,6 +85,9 @@ func Run(o Options) (int, error) {
 	waits := make(chan waitResult, 1)
 	s.goSafe(func() { s.wait(waits) })
 
+	// B13-14: a CLI that exits on its alternate screen would leave the
+	// terminal there. Runs after closePicker (defers run in reverse).
+	defer s.leaveAlt()
 	defer s.closePicker()
 
 	key := o.SwitchKey
@@ -189,13 +192,39 @@ type session struct {
 	toChild *byteQueue
 }
 
+// altSettle bounds how long openPicker waits for the CLI's output to
+// finish an escape sequence split across reads.
+//
+// shortcut: past it the picker trusts the last whole sequence; a CLI that
+// stalls mid-sequence that long is not expected.
+const altSettle = 50 * time.Millisecond
+
 // openPicker pauses the CLI's output and draws the picker. Input goes to
-// the picker until it closes.
+// the picker until it closes. It first lets the alternate-screen tracker
+// get back between sequences (B13-12): mid ESC [ ? 1049 h, its on is
+// about to change.
 func (s *session) openPicker() {
+	deadline := time.Now().Add(altSettle)
 	s.outMu.Lock()
+	for !s.alt.idle() && time.Now().Before(deadline) {
+		s.outMu.Unlock()
+		time.Sleep(2 * time.Millisecond)
+		s.outMu.Lock()
+	}
 	s.open = true
 	s.pickerOverCLI = s.alt.on
 	s.pk.draw(s.o.Out, s.pickerOverCLI)
+}
+
+// leaveAlt takes the terminal off the alternate screen when the CLI left
+// it there.
+func (s *session) leaveAlt() {
+	s.outMu.Lock()
+	defer s.outMu.Unlock()
+	if s.alt.on {
+		_, _ = s.o.Out.Write([]byte(altScreenOff))
+		s.alt.on = false
+	}
 }
 
 // closePicker restores the vendor's screen and resumes its output.
