@@ -73,3 +73,21 @@ no `replace` directives, and no package uses cgo (`make nocgo` checks
 it), so it builds with any C toolchain or none. It needs the Go version
 in `go.mod`. A binary built this way has no release ldflags, so `aggy version`
 reports the module version Go recorded.
+
+## Release notes
+
+Notes for the first release's changelog, and for maintainers' own dev
+installs before it:
+
+- **Dev indexes at schema version 12.** Migration `0012_worktrees.sql`
+  changed during review (it gained `worktree_tree`) after some maintainer
+  dev indexes had already applied it, so such an index is at version 12
+  without that column and edit borrows fail on it. Migrations are not
+  re-run by content, so move or delete that dev `~/.aggy/aggy.db` (and its
+  `-wal` and `-shm` files) and let aggy make a fresh one. No released
+  build has shipped version 12, so users are not affected.
+- **Self-updaters are killed with the borrow.** aggy kills a probe's or
+  borrow's whole process group when the vendor CLI exits. A CLI that
+  starts a self-updater in its own process group without detaching it
+  (`setsid`) during a probe or borrow has that updater killed too; the
+  update then runs on the CLI's next interactive start.

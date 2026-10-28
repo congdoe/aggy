@@ -5,10 +5,15 @@ import "strings"
 // protectedNames are files and dirs, at any depth, that hold code a tool
 // runs or text an agent loads, beyond the trust sources (TrustMarker):
 // git's hook dirs that core.hooksPath commonly names, git attribute and
-// submodule files, pre-commit, editor tasks, CI workflows, and other
-// agents' config and instructions. A dir protects everything under it.
+// submodule files, pre-commit, other git hook managers' config (lefthook),
+// package manager config that runs scripts or names a registry (npm,
+// yarn, pnpm), editor tasks, CI workflows, and other agents' config and
+// instructions. A dir protects everything under it.
 var protectedNames = []string{
 	".husky", ".githooks", ".gitattributes", ".gitmodules", ".pre-commit-config.yaml",
+	"lefthook.yml", "lefthook.yaml", "lefthook-local.yml", "lefthook-local.yaml",
+	".lefthook.yml", ".lefthook.yaml", ".lefthook-local.yml", ".lefthook-local.yaml",
+	".npmrc", ".yarnrc", ".yarnrc.yml", ".pnpmfile.cjs",
 	".claude", ".grok", ".codex", ".cursor", ".gemini", ".vscode", ".github", ".aggy",
 	"GEMINI.md", ".cursorrules",
 }
