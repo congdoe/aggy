@@ -242,16 +242,16 @@ func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stderr io.Writer) int {
 	bg := context.Background()
 	fail := func(code diag.Code, msg string) int {
-		refuse(bg, stderr, "borrow", diag.EvBorrowRefused, code, msg, diag.Rec{})
+		refuse(bg, stderr, "borrow", diag.EvBorrowRefused(), code, msg, diag.Rec{})
 		return 1
 	}
 	// One hop: a borrow child's shell never borrows again.
 	if env.getenv(borrow.Delegated) != "" {
-		return fail(diag.CodeOneHop, borrow.ErrDelegated.Error())
+		return fail(diag.CodeOneHop(), borrow.ErrDelegated.Error())
 	}
 	ba, err := parseBorrowArgs(args)
 	if err != nil {
-		fail(diag.CodeUsage, err.Error())
+		fail(diag.CodeUsage(), err.Error())
 		fmt.Fprintf(stderr, "\n%s", borrowUsage)
 		return 2
 	}
@@ -263,12 +263,12 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 	dlog.Forbid(append([]string{ba.task}, ba.constraints...)...)
 	kind, err := borrow.ParseKind(ba.kind)
 	if err != nil {
-		fail(diag.CodeUsage, err.Error())
+		fail(diag.CodeUsage(), err.Error())
 		return 2
 	}
 	cwd, err := env.cwd()
 	if err != nil {
-		return fail(diag.CodeBorrowStart, err.Error())
+		return fail(diag.CodeBorrowStart(), err.Error())
 	}
 	var paths []string
 	for _, p := range ba.paths {
@@ -283,18 +283,18 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 	defer stop()
 	cfg, err := config.LoadDefault()
 	if err != nil {
-		return fail(diag.CodeConfig, "config: "+err.Error())
+		return fail(diag.CodeConfig(), "config: "+err.Error())
 	}
 	// The repo root, never just the cwd: the router reads the repo's
 	// config there, and a review runs there.
 	root, _ := repoRoot(cwd)
 	stateDir, err := home.Dir()
 	if err != nil {
-		return fail(diag.CodeStore, err.Error())
+		return fail(diag.CodeStore(), err.Error())
 	}
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
-		return fail(diag.CodeStore, err.Error())
+		return fail(diag.CodeStore(), err.Error())
 	}
 	defer func() { _ = s.Close() }()
 
@@ -330,18 +330,18 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 	}
 	if kind == adapter.Review {
 		if req.Repo, err = reviewRoot(cwd, env.getenv, stateDir); err != nil {
-			return fail(diag.CodeBorrowInvalid, err.Error())
+			return fail(diag.CodeBorrowInvalid(), err.Error())
 		}
 		if req.Material, err = env.reviewMaterial(ctx, req.Repo, ba.base, paths); err != nil {
-			return fail(diag.CodeBorrowStart, "review: "+err.Error())
+			return fail(diag.CodeBorrowStart(), "review: "+err.Error())
 		}
 		req.Authors = env.reviewAuthors(ctx, req.Repo, req.Material.Base)
 	} else if ba.base != "" {
-		fail(diag.CodeUsage, "--base is for review only")
+		fail(diag.CodeUsage(), "--base is for review only")
 		return 2
 	}
 	if ba.fresh && kind != adapter.Research && kind != adapter.News {
-		fail(diag.CodeUsage, "--fresh is for research and news only")
+		fail(diag.CodeUsage(), "--fresh is for research and news only")
 		return 2
 	}
 	req.Fresh = ba.fresh
@@ -354,18 +354,18 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 		}
 	}
 	if err != nil {
-		c := diag.CodeBorrowStart
+		c := diag.CodeBorrowStart()
 		var none *borrow.NoStartError
 		switch {
 		case errors.Is(err, borrow.ErrDelegated):
-			c = diag.CodeOneHop
+			c = diag.CodeOneHop()
 		case borrow.Invalid(err):
-			c = diag.CodeBorrowInvalid
+			c = diag.CodeBorrowInvalid()
 		case errors.As(err, &none):
-			c = diag.CodeNoVendor
+			c = diag.CodeNoVendor()
 		}
-		rec := diag.Rec{Event: diag.EvBorrowRefused, Code: c, Msg: err.Error()}
-		if c == diag.CodeBorrowInvalid {
+		rec := diag.Rec{Event: diag.EvBorrowRefused(), Code: c, Msg: err.Error()}
+		if c == diag.CodeBorrowInvalid() {
 			// Its text may quote a path or constraint as typed.
 			rec.Msg = "the borrow request is invalid"
 		}

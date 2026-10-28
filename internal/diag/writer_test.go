@@ -74,7 +74,7 @@ func TestWriterRecord(t *testing.T) {
 	task := "Summarize the canary-zebra-7731 report\nwith all its sections please"
 	w.Forbid(task)
 	id := w.Log(context.Background(), Rec{
-		Event: EvBorrowRefused, Code: CodeBorrowStart,
+		Event: EvBorrowRefused(), Code: CodeBorrowStart(),
 		Msg:    "failed on canary-zebra-7731 report\x1b[31m\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 		Attrs:  map[string]any{"why": "with all its sections please", "n": 3, "ok": true},
 		Borrow: "b1", Child: "c1", Parent: "p1", Vendor: "grok", Exit: Int(2), Duration: 1500 * time.Millisecond,
@@ -87,7 +87,7 @@ func TestWriterRecord(t *testing.T) {
 		t.Fatalf("got %d records", len(recs))
 	}
 	r := recs[0]
-	if r.ID != id || r.Level != "error" || r.Component != "borrow" || r.Code != CodeBorrowStart.String() ||
+	if r.ID != id || r.Level != "error" || r.Component != "borrow" || r.Code != CodeBorrowStart().String() ||
 		r.RunID != w.RunID() || r.TraceID != w.Trace() || r.BorrowID != "b1" || r.Schema != Schema ||
 		*r.ExitCode != 2 || *r.DurationMS != 1500 || r.AggyVersion != "v-test" {
 		t.Errorf("record = %+v", r)
@@ -129,11 +129,11 @@ func TestWriterTrace(t *testing.T) {
 // borrow's trace.
 func TestWriterBorrowTrace(t *testing.T) {
 	a, _, dir := testWriter(t, "info")
-	a.Log(context.Background(), Rec{Event: EvBorrowChildStarted, Borrow: "b9"})
+	a.Log(context.Background(), Rec{Event: EvBorrowChildStarted(), Borrow: "b9"})
 	b := New("v", nil)
 	b.diagPath, b.indexPath, b.logConfig, b.getenv = a.diagPath, a.indexPath, a.logConfig, a.getenv
-	b.Log(context.Background(), Rec{Event: EvAcceptApplied, Borrow: "b9"})
-	b.Log(context.Background(), Rec{Event: EvGCRemoved})
+	b.Log(context.Background(), Rec{Event: EvAcceptApplied(), Borrow: "b9"})
+	b.Log(context.Background(), Rec{Event: EvGCRemoved()})
 	recs := records(t, dir)
 	if len(recs) != 3 || recs[1].TraceID != a.Trace() || recs[1].RunID != b.RunID() || recs[2].TraceID != b.Trace() {
 		t.Errorf("records = %+v", recs)
@@ -142,9 +142,9 @@ func TestWriterBorrowTrace(t *testing.T) {
 
 func TestWriterLevel(t *testing.T) {
 	w, _, dir := testWriter(t, "warn")
-	w.Log(context.Background(), Rec{Event: EvBorrowChildStarted}) // info
-	w.Log(context.Background(), Rec{Event: EvBorrowFailed})       // warn
-	if recs := records(t, dir); len(recs) != 1 || recs[0].Event != EvBorrowFailed.String() {
+	w.Log(context.Background(), Rec{Event: EvBorrowChildStarted()}) // info
+	w.Log(context.Background(), Rec{Event: EvBorrowFailed()})       // warn
+	if recs := records(t, dir); len(recs) != 1 || recs[0].Event != EvBorrowFailed().String() {
 		t.Errorf("records = %+v", recs)
 	}
 	if w.stores(LevelDebug) {
@@ -166,12 +166,12 @@ func TestWriterFailure(t *testing.T) {
 	}
 	w.diagPath = func() (string, error) { return filepath.Join(block, "diag.db"), nil }
 	for i := 0; i < 3; i++ {
-		if id := w.Log(context.Background(), Rec{Event: EvGCRemoved}); id != "" {
+		if id := w.Log(context.Background(), Rec{Event: EvGCRemoved()}); id != "" {
 			t.Errorf("Log = %q", id)
 		}
 	}
 	w.diagPath = func() (string, error) { return "", errors.New("no state dir") }
-	w.Log(context.Background(), Rec{Event: EvGCRemoved})
+	w.Log(context.Background(), Rec{Event: EvGCRemoved()})
 	if n := strings.Count(warn.String(), "aggy: warning"); n != 1 || !strings.Contains(warn.String(), "[diag.write_failed · run "+w.RunID()+"]") {
 		t.Errorf("warnings = %q", warn)
 	}
@@ -182,7 +182,7 @@ func TestWriterFailure(t *testing.T) {
 			t.Fatal(err)
 		}
 		w.diagPath = func() (string, error) { return p, nil }
-		if id := w.Log(context.Background(), Rec{Event: EvGCRemoved}); id == "" {
+		if id := w.Log(context.Background(), Rec{Event: EvGCRemoved()}); id == "" {
 			t.Errorf("%s: not written", sub)
 		}
 		if recs := records(t, filepath.Dir(p)); len(recs) != 1 {
@@ -196,7 +196,7 @@ func TestWriterUnregistered(t *testing.T) {
 	if id := w.Log(context.Background(), Rec{Event: Event{"made.up.event"}}); id != "" {
 		t.Errorf("unregistered event stored: %q", id)
 	}
-	if id := w.Log(context.Background(), Rec{Event: EvGCRemoved, Code: Code{"made.up"}}); id != "" {
+	if id := w.Log(context.Background(), Rec{Event: EvGCRemoved(), Code: Code{"made.up"}}); id != "" {
 		t.Errorf("unregistered code stored: %q", id)
 	}
 	if !strings.Contains(warn.String(), "unregistered event") {
@@ -206,7 +206,7 @@ func TestWriterUnregistered(t *testing.T) {
 		t.Error("diag.db made for nothing")
 	}
 	var nilW *Writer
-	if nilW.Log(context.Background(), Rec{Event: EvGCRemoved}) != "" || nilW.Tag(CodeUsage) != "" || nilW.Trace() != "" {
+	if nilW.Log(context.Background(), Rec{Event: EvGCRemoved()}) != "" || nilW.Tag(CodeUsage()) != "" || nilW.Trace() != "" {
 		t.Error("a nil writer wrote")
 	}
 }
@@ -220,8 +220,8 @@ func TestWriterSecurityRefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = idx.Close()
-	rid := w.Log(context.Background(), Rec{Event: EvGrokLockdown, Code: CodeLockdown, Borrow: "b1", Child: "c1", Vendor: "grok"})
-	w.Log(context.Background(), Rec{Event: EvBorrowFailed, Code: CodeRateLimit})
+	rid := w.Log(context.Background(), Rec{Event: EvGrokLockdown(), Code: CodeLockdown(), Borrow: "b1", Child: "c1", Vendor: "grok"})
+	w.Log(context.Background(), Rec{Event: EvBorrowFailed(), Code: CodeRateLimit()})
 	s, err := store.OpenReadOnly(context.Background(), filepath.Join(dir, "aggy.db"))
 	if err != nil || warn.Len() != 0 {
 		t.Fatalf("%v (warn %q)", err, warn)
@@ -232,7 +232,7 @@ func TestWriterSecurityRefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(evs) != 1 || evs[0].Type != store.EventRefusal || evs[0].ChildID != "c1" ||
-		evs[0].Detail["code"] != CodeLockdown.String() || evs[0].Detail["record"] != rid || evs[0].Detail["run"] != w.RunID() {
+		evs[0].Detail["code"] != CodeLockdown().String() || evs[0].Detail["record"] != rid || evs[0].Detail["run"] != w.RunID() {
 		t.Errorf("events = %+v", evs)
 	}
 }
@@ -245,7 +245,7 @@ func TestWriterNoState(t *testing.T) {
 	state := filepath.Join(dir, "state")
 	w.diagPath = func() (string, error) { return filepath.Join(state, "diag.db"), nil }
 	w.indexPath = func() (string, error) { return filepath.Join(state, "aggy.db"), nil }
-	for _, r := range []Rec{{Event: EvGCRemoved}, {Event: EvAcceptRefused, Code: CodeProtected, Borrow: "b1"}} {
+	for _, r := range []Rec{{Event: EvGCRemoved()}, {Event: EvAcceptRefused(), Code: CodeProtected(), Borrow: "b1"}} {
 		if id := w.Log(context.Background(), r); id != "" {
 			t.Errorf("Log(%v) = %q", r.Event, id)
 		}
@@ -256,7 +256,7 @@ func TestWriterNoState(t *testing.T) {
 	if err := os.Mkdir(state, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if id := w.Log(context.Background(), Rec{Event: EvAcceptRefused, Code: CodeProtected, Borrow: "b1"}); id == "" {
+	if id := w.Log(context.Background(), Rec{Event: EvAcceptRefused(), Code: CodeProtected(), Borrow: "b1"}); id == "" {
 		t.Errorf("not written; warn %q", warn)
 	}
 	if _, err := os.Stat(filepath.Join(state, "aggy.db")); !errors.Is(err, os.ErrNotExist) || warn.Len() != 0 {

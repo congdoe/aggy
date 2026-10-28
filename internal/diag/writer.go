@@ -367,18 +367,18 @@ func (w *Writer) warnOnce(err error) {
 		return
 	}
 	w.warned = true
-	fmt.Fprintf(w.warn, "aggy: warning: the diagnostic log was not written: %s %s\n", termsafe.Field(err.Error()), w.Tag(CodeDiagWrite))
+	fmt.Fprintf(w.warn, "aggy: warning: the diagnostic log was not written: %s %s\n", termsafe.Field(err.Error()), w.Tag(CodeDiagWrite()))
 }
 
 // LockdownEvent is vendor's lockdown_rejected event; "" for another name.
 func LockdownEvent(vendor string) Event {
 	switch vendor {
 	case "claude":
-		return EvClaudeLockdown
+		return EvClaudeLockdown()
 	case "codex":
-		return EvCodexLockdown
+		return EvCodexLockdown()
 	case "grok":
-		return EvGrokLockdown
+		return EvGrokLockdown()
 	}
 	return Event{}
 }

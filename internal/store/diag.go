@@ -18,6 +18,7 @@ import (
 	"github.com/congdoe/aggy/internal/safefs"
 
 	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // The diagnostic log, ~/.aggy/diag.db (docs/logging.md). It is a database
@@ -209,7 +210,6 @@ func (d *DiagDB) used(ctx context.Context) (int64, error) {
 type DiagView struct {
 	db           *sql.DB
 	diag, index  bool
-	paths        []string
 	indexVersion int
 }
 
@@ -234,6 +234,7 @@ type attachSpec struct{ name, uri string }
 func OpenDiagView(ctx context.Context, diagPath, indexPath string) (*DiagView, error) {
 	v := &DiagView{}
 	var specs []attachSpec
+	var pins []dbPin
 	for _, a := range []struct {
 		name, path string
 		has        *bool
@@ -255,12 +256,16 @@ func OpenDiagView(ctx context.Context, diagPath, indexPath string) (*DiagView, e
 				return nil, err
 			}
 		}
+		want, err := pinDB(p)
+		if err != nil {
+			return nil, err
+		}
 		writable, err := safefs.DirWritable(filepath.Dir(p))
 		if err != nil {
 			return nil, err
 		}
 		specs = append(specs, attachSpec{a.name, attachURI(p, !writable)})
-		v.paths = append(v.paths, p)
+		pins = append(pins, dbPin{p, want})
 		*a.has = true
 	}
 	q := url.Values{}
@@ -270,20 +275,12 @@ func OpenDiagView(ctx context.Context, diagPath, indexPath string) (*DiagView, e
 	if err != nil {
 		return nil, err
 	}
-	v.db = sql.OpenDB(attaching{selectOnly{base}, specs})
+	// Every connection confirms SQLite attached the pinned files and that
+	// safefs clears them and their WAL files (pin.go).
+	v.db = sql.OpenDB(pinned{attaching{selectOnly{base}, specs}, pins})
 	if err := v.db.PingContext(ctx); err != nil {
 		_ = v.db.Close()
 		return nil, fmt.Errorf("%w: %w", ErrUnreadable, ReadError(err))
-	}
-	// SQLite opened the files itself, outside safefs. Confirm by identity
-	// that none of them is a vendor credential file.
-	for _, p := range v.paths {
-		for _, f := range []string{p, p + "-wal", p + "-shm"} {
-			if err := safefs.Check(f); err != nil {
-				_ = v.db.Close()
-				return nil, err
-			}
-		}
 	}
 	if v.diag {
 		// A diag.db its writer has made but not yet migrated has no
@@ -518,13 +515,31 @@ func (v *DiagView) DiagVersion(ctx context.Context) (int, error) {
 	return n, ReadError(err)
 }
 
+// QueryMaxValue is the most bytes one string or blob may hold in a
+// Query: SQLite's length limit on its connection, so a statement that
+// builds or reads a bigger value (randomblob(5e8)) fails with "string or
+// blob too big" before allocating it. It also caps a row SQLite builds,
+// such as a sorter record. aggy's own rows are far smaller.
+const QueryMaxValue = 16 << 20
+
 // Query runs one read-only statement (aggy diag sql) and calls row for
 // each result row as it is read, at most limit rows (0: no cap), each
-// value as SQLite gave it; cols is called first with the column names.
-// It reports whether it stopped at limit. ctx bounds the query: SQLite
-// is interrupted when it ends.
+// value as SQLite gave it, none longer than QueryMaxValue; cols is called
+// first with the column names. It reports whether it stopped at limit.
+// ctx bounds the query: SQLite is interrupted when it ends.
 func (v *DiagView) Query(ctx context.Context, q string, limit int, cols func([]string) error, row func([]any) error) (bool, error) {
-	rows, err := v.db.QueryContext(ctx, q)
+	conn, err := v.db.Conn(ctx)
+	if err != nil {
+		return false, ReadError(err)
+	}
+	defer func() { _ = conn.Close() }()
+	old, err := sqlite.Limit(conn, sqlite3.SQLITE_LIMIT_LENGTH, QueryMaxValue)
+	if err != nil {
+		return false, err
+	}
+	// The connection goes back to the pool: restore its limit after.
+	defer func() { _, _ = sqlite.Limit(conn, sqlite3.SQLITE_LIMIT_LENGTH, old) }()
+	rows, err := conn.QueryContext(ctx, q)
 	if err != nil {
 		return false, ReadError(err)
 	}

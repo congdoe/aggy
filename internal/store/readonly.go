@@ -48,7 +48,7 @@ var ErrUnreadable = errors.New("store: cannot read the index")
 // on.
 //
 // The paths are checked through safefs before the open and, as Open does,
-// again after it, by identity. A read that meets a writer's checkpoint
+// again after each connection opens, by identity (pin.go). A read that meets a writer's checkpoint
 // can fail with a "malformed" error; it is reported as the index being
 // written, to be retried, never as damage (see ReadError).
 func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
@@ -66,6 +66,10 @@ func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
 			return nil, err
 		}
 	}
+	want, err := pinDB(path)
+	if err != nil {
+		return nil, err
+	}
 	writable, err := safefs.DirWritable(filepath.Dir(path))
 	if err != nil {
 		return nil, err
@@ -74,7 +78,9 @@ func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	db := sql.OpenDB(selectOnly{base})
+	// Every connection confirms SQLite opened the pinned file and that
+	// safefs clears it and its WAL files (pin.go).
+	db := sql.OpenDB(pinned{selectOnly{base}, []dbPin{{path, want}}})
 	// Ping opens a connection; a query proves the file can be read.
 	err = db.PingContext(ctx)
 	if err == nil {
@@ -83,14 +89,6 @@ func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("%w %s: %w", ErrUnreadable, path, ReadError(err))
-	}
-	// SQLite opened the files itself, outside safefs. Confirm by identity
-	// that none of them is a vendor credential file.
-	for _, p := range []string{path, path + "-wal", path + "-shm"} {
-		if err := safefs.Check(p); err != nil {
-			_ = db.Close()
-			return nil, err
-		}
 	}
 	return &Store{db: db, path: path}, nil
 }
