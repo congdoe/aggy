@@ -128,8 +128,8 @@ func TestPlan(t *testing.T) {
 				if req.Resume != sidA || req.SessionID != "" || req.BriefFile != "" || req.Cwd != dir {
 					t.Errorf("request = %+v", req)
 				}
-				if !slices.Equal(req.Env, []string{"AGGY_VENDOR=claude"}) {
-					t.Errorf("env = %q, want AGGY_VENDOR only (no model set)", req.Env)
+				if !slices.Equal(req.Env, []string{"AGGY_VENDOR=claude", "AGGY_TRACE=" + dlog.Trace()}) {
+					t.Errorf("env = %q, want AGGY_VENDOR and AGGY_TRACE only (no model set)", req.Env)
 				}
 			},
 		},
@@ -506,13 +506,14 @@ func TestChildIDs(t *testing.T) {
 	}
 }
 
-// TestChildEnv (T6692): a child gets AGGY_VENDOR, and AGGY_MODEL only
-// when a model is set.
+// TestChildEnv (T6692, T6753): a child gets AGGY_VENDOR, AGGY_MODEL only
+// when a model is set, and this run's AGGY_TRACE.
 func TestChildEnv(t *testing.T) {
-	if got := childEnv("codex", "gpt-5"); !slices.Equal(got, []string{"AGGY_VENDOR=codex", "AGGY_MODEL=gpt-5"}) {
+	trace := "AGGY_TRACE=" + dlog.Trace()
+	if got := childEnv("codex", "gpt-5"); !slices.Equal(got, []string{"AGGY_VENDOR=codex", "AGGY_MODEL=gpt-5", trace}) {
 		t.Errorf("env = %q", got)
 	}
-	if got := childEnv("grok", ""); !slices.Equal(got, []string{"AGGY_VENDOR=grok"}) {
+	if got := childEnv("grok", ""); !slices.Equal(got, []string{"AGGY_VENDOR=grok", trace}) {
 		t.Errorf("env = %q", got)
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/probe"
@@ -86,44 +87,42 @@ func (e repoCheckEnv) check(ctx context.Context, args []string, stdout, stderr i
 		fmt.Fprint(stderr, checkUsage)
 		return 2
 	}
+	fail := func(code diag.Code, msg string, exit int) int {
+		refuse(ctx, stderr, "check", diag.EvCheckRefused, code, msg, diag.Rec{})
+		return exit
+	}
 	cwd, err := e.getwd()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy check: %s\n", termsafe.Line(err.Error()))
-		return 2
+		return fail(diag.CodeNotGit, err.Error(), 2)
 	}
 	root, ok := repoRoot(cwd)
 	if !ok {
-		fmt.Fprintf(stderr, "aggy check: %s is in no git work tree\n", termsafe.Field(cwd))
-		return 2
+		return fail(diag.CodeNotGit, cwd+" is in no git work tree", 2)
 	}
 	// W-5: an edit worktree's config and code are the borrow child's.
 	state, err := e.stateDir()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy check: %s\n", termsafe.Line(err.Error()))
-		return 2
+		return fail(diag.CodeStore, err.Error(), 2)
 	}
 	wts := resolvePath(filepath.Join(state, worktreesDir))
 	for _, d := range []string{cwd, root} {
 		if within(resolvePath(d), wts) {
-			fmt.Fprintf(stderr, "aggy check: refusing: %s is an aggy edit worktree, and its .aggy/config.toml and code were written by a borrow child; run aggy check <borrow-id> from the main checkout, which takes the check list from there and asks first\n", termsafe.Field(root))
-			return 2
+			return fail(diag.CodeEditWorktree, "refusing: "+root+" is an aggy edit worktree, and its .aggy/config.toml and code were written by a borrow child; run aggy check <borrow-id> from the main checkout, which takes the check list from there and asks first", 2)
 		}
 	}
 	rc, err := config.LoadRepo(root)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy check: %s\n", termsafe.Line(err.Error()))
-		return 2
+		return fail(diag.CodeConfig, err.Error(), 2)
 	}
 	if len(rc.Check) == 0 {
-		fmt.Fprintf(stderr, "aggy check: no checks configured; list them under check in %s\n", termsafe.Field(config.RepoPath(root)))
-		return 1
+		return fail(diag.CodeNoChecks, "no checks configured; list them under check in "+config.RepoPath(root), 1)
 	}
 	fmt.Fprintf(stdout, "aggy check runs these commands from %s, at %s, %d minutes each at most:\n",
 		termsafe.Field(config.RepoPath(root)), termsafe.Field(root), checkMinutes(rc))
 	for _, c := range rc.Check {
 		fmt.Fprintf(stdout, "  %s\n", showCommand(c))
 	}
-	return e.runList(ctx, root, rc, stdout)
+	return e.runList(ctx, root, rc, stdout, diag.Rec{})
 }
 
 func checkMinutes(rc config.RepoConfig) int {
@@ -134,15 +133,29 @@ func checkMinutes(rc config.RepoConfig) int {
 }
 
 // runList runs rc's checks at root, in order, printing a line for each.
-// It returns 0 when every one passed and 1 otherwise.
-func (e repoCheckEnv) runList(ctx context.Context, root string, rc config.RepoConfig, stdout io.Writer) int {
+// It returns 0 when every one passed and 1 otherwise. ids are the
+// diagnostic log's ids (an edit borrow's, for the check gate).
+func (e repoCheckEnv) runList(ctx context.Context, root string, rc config.RepoConfig, stdout io.Writer, ids diag.Rec) int {
 	run := e.runner(time.Duration(checkMinutes(rc)) * time.Minute)
 	failed := 0
-	for _, c := range rc.Check {
+	begin := e.now()
+	defer func() {
+		rec := ids
+		rec.Event, rec.Duration = diag.EvCheckFinished, e.now().Sub(begin)
+		rec.Attrs = map[string]any{"total": len(rc.Check), "failed": failed, "interrupted": ctx.Err() != nil}
+		dlog.Log(ctx, rec)
+	}()
+	for i, c := range rc.Check {
 		start := e.now()
 		res, tail := e.checkOne(ctx, run, root, c)
 		fmt.Fprintf(stdout, "%-4s %s (%s)\n", map[bool]string{true: "ok", false: "FAIL"}[res == ""], showCommand(c), e.now().Sub(start).Round(100*time.Millisecond))
 		if res != "" {
+			rec := ids
+			// Only the command's place and why it failed: its output and
+			// arguments are the repo's, and never stored.
+			rec.Event, rec.Code, rec.Msg, rec.Duration = diag.EvCheckCommandFailed, diag.CodeChecksFailed, res, e.now().Sub(start)
+			rec.Attrs = map[string]any{"index": i}
+			dlog.Log(ctx, rec)
 			failed++
 			fmt.Fprintf(stdout, "     %s\n", termsafe.Line(res))
 			for _, l := range tail {

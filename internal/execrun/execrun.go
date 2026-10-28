@@ -60,7 +60,11 @@ var passEnv = []string{
 //     never taken from aggy's own environment (see passEnv).
 //   - AGGY_VENDOR and AGGY_MODEL name the vendor and model an
 //     interactive session runs, for the linked skill.
-var extraNames = []string{"AGGY_DELEGATED", "AGGY_VENDOR", "AGGY_MODEL"}
+//   - AGGY_TRACE is the diagnostic log's trace id (docs/logging.md), so
+//     an aggy the child runs (the guard hook, a refused borrow) records
+//     under the flow that started the child. It is an id aggy made, never
+//     taken from aggy's own environment unchecked (diag.ValidID).
+var extraNames = []string{"AGGY_DELEGATED", "AGGY_VENDOR", "AGGY_MODEL", "AGGY_TRACE"}
 
 // extraPrefix is the test fakes' variables (AGGY_FAKE_SCENARIO,
 // AGGY_FAKE_RECORD, AGGY_FAKE_VENDOR). The real CLIs ignore them.

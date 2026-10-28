@@ -64,3 +64,10 @@ Codex cannot ask; there the user presses aggy's switch key.
   child needs in a few sentences instead.
 - Keep borrows bounded: one question or one artifact each. aggy runs at
   most 2 per vendor and 4 in total, with a time limit per kind.
+
+## Troubleshooting
+
+When aggy refuses or fails, its message ends with `[<code> · run <id>]`.
+Run `aggy diag show <run id>` (or a borrow id) for the timeline, then
+`aggy diag codes <code>` for what it means and what to check next. For
+the user or an issue, `aggy diag bundle` prints a scrubbed report.

@@ -146,6 +146,15 @@ func describe(e store.Event) string {
 			s += " (" + strings.Join(extra, ", ") + ")"
 		}
 		return s
+	case store.EventRefusal:
+		s := str(d, "code")
+		if b := str(d, "borrow"); b != "" {
+			s += " borrow " + b
+		}
+		if v := str(d, "vendor"); v != "" {
+			s += " on " + v
+		}
+		return s + " [run " + str(d, "run") + "; aggy diag show " + str(d, "record") + "]"
 	case store.EventFiles:
 		if fs, ok := d["files"].([]any); ok {
 			names := make([]string, len(fs))

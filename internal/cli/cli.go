@@ -65,6 +65,8 @@ Commands:
   setup     Check each vendor CLI's install, version, and sign-in
   doctor    Check the vendor CLIs, API-key and proxy settings, and config drift
   log       Show harnesses, models, switches, borrows, and files changed
+  diag      Query aggy's diagnostic log: aggy diag show <id> for what
+            happened, aggy diag bundle for an issue, aggy diag codes
   stats     Show borrows per kind and vendor: runs, tokens, time, redo rate
   usage     Show what a vendor has left where its CLI writes that, and
             what aggy's own borrows used
@@ -135,6 +137,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDoctor(args[1:], stdout, stderr)
 	case "log":
 		return runLog(args[1:], stdout, stderr)
+	case "diag":
+		return runDiag(args[1:], stdout, stderr)
 	case "stats":
 		return runStats(args[1:], stdout, stderr)
 	case "usage":

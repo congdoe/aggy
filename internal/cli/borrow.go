@@ -17,6 +17,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/grok"
 	"github.com/congdoe/aggy/internal/borrow"
 	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/limits"
@@ -239,29 +240,35 @@ func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 // borrowMedia is aggy borrow with the file arguments of aggy image or
 // aggy video (nil for aggy borrow).
 func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stderr io.Writer) int {
+	bg := context.Background()
+	fail := func(code diag.Code, msg string) int {
+		refuse(bg, stderr, "borrow", diag.EvBorrowRefused, code, msg, diag.Rec{})
+		return 1
+	}
 	// One hop: a borrow child's shell never borrows again.
 	if env.getenv(borrow.Delegated) != "" {
-		fmt.Fprintf(stderr, "aggy borrow: %s\n", borrow.ErrDelegated)
-		return 1
+		return fail(diag.CodeOneHop, borrow.ErrDelegated.Error())
 	}
 	ba, err := parseBorrowArgs(args)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy borrow: %s\n\n%s", termsafe.Field(err.Error()), borrowUsage)
+		fail(diag.CodeUsage, err.Error())
+		fmt.Fprintf(stderr, "\n%s", borrowUsage)
 		return 2
 	}
 	if ba.help {
 		fmt.Fprint(stdout, borrowUsage)
 		return 0
 	}
+	// The task and constraints never reach the diagnostic log.
+	dlog.Forbid(append([]string{ba.task}, ba.constraints...)...)
 	kind, err := borrow.ParseKind(ba.kind)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy borrow: %s\n", termsafe.Field(err.Error()))
+		fail(diag.CodeUsage, err.Error())
 		return 2
 	}
 	cwd, err := env.cwd()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy borrow: %v\n", err)
-		return 1
+		return fail(diag.CodeBorrowStart, err.Error())
 	}
 	var paths []string
 	for _, p := range ba.paths {
@@ -276,21 +283,18 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 	defer stop()
 	cfg, err := config.LoadDefault()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy borrow: config: %s\n", termsafe.Field(err.Error()))
-		return 1
+		return fail(diag.CodeConfig, "config: "+err.Error())
 	}
 	// The repo root, never just the cwd: the router reads the repo's
 	// config there, and a review runs there.
 	root, _ := repoRoot(cwd)
 	stateDir, err := home.Dir()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy borrow: %v\n", err)
-		return 1
+		return fail(diag.CodeStore, err.Error())
 	}
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy borrow: %s\n", termsafe.Field(err.Error()))
-		return 1
+		return fail(diag.CodeStore, err.Error())
 	}
 	defer func() { _ = s.Close() }()
 
@@ -318,6 +322,7 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 			}
 		},
 		Worktrees: &gitWorktrees{env: env, stateDir: stateDir, out: stderr, allow: cfg.Worktree, cfgPath: filepath.Join(stateDir, config.FileName)},
+		Diag:      dlog,
 	})
 	req := borrow.Request{
 		Kind: kind, Task: ba.task, Paths: paths, Constraints: ba.constraints,
@@ -325,20 +330,18 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 	}
 	if kind == adapter.Review {
 		if req.Repo, err = reviewRoot(cwd, env.getenv, stateDir); err != nil {
-			fmt.Fprintf(stderr, "aggy borrow: %s\n", termsafe.Field(err.Error()))
-			return 1
+			return fail(diag.CodeBorrowInvalid, err.Error())
 		}
 		if req.Material, err = env.reviewMaterial(ctx, req.Repo, ba.base, paths); err != nil {
-			fmt.Fprintf(stderr, "aggy borrow: review: %s\n", termsafe.Field(err.Error()))
-			return 1
+			return fail(diag.CodeBorrowStart, "review: "+err.Error())
 		}
 		req.Authors = env.reviewAuthors(ctx, req.Repo, req.Material.Base)
 	} else if ba.base != "" {
-		fmt.Fprintln(stderr, "aggy borrow: --base is for review only")
+		fail(diag.CodeUsage, "--base is for review only")
 		return 2
 	}
 	if ba.fresh && kind != adapter.Research && kind != adapter.News {
-		fmt.Fprintln(stderr, "aggy borrow: --fresh is for research and news only")
+		fail(diag.CodeUsage, "--fresh is for research and news only")
 		return 2
 	}
 	req.Fresh = ba.fresh
@@ -351,7 +354,23 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 		}
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy borrow: %s\n", termsafe.Field(err.Error()))
+		c := diag.CodeBorrowStart
+		var none *borrow.NoStartError
+		switch {
+		case errors.Is(err, borrow.ErrDelegated):
+			c = diag.CodeOneHop
+		case borrow.Invalid(err):
+			c = diag.CodeBorrowInvalid
+		case errors.As(err, &none):
+			c = diag.CodeNoVendor
+		}
+		rec := diag.Rec{Event: diag.EvBorrowRefused, Code: c, Msg: err.Error()}
+		if c == diag.CodeBorrowInvalid {
+			// Its text may quote a path or constraint as typed.
+			rec.Msg = "the borrow request is invalid"
+		}
+		dlog.Log(ctx, rec)
+		fmt.Fprintf(stderr, "aggy borrow: %s %s\n", termsafe.Field(err.Error()), dlog.Tag(c))
 		code = 1
 	}
 	// Record and notify once the report is out: the notifier can take
@@ -381,8 +400,12 @@ func printResult(w io.Writer, r borrow.Result) {
 		fmt.Fprintf(w, "borrow %s: %s on %s (%s): %s, cached from %s (--fresh asks again)\n", r.ID, r.Kind, r.Vendor,
 			termsafe.Field(model), r.Outcome, r.CachedAt.UTC().Format("2006-01-02 15:04 UTC"))
 	} else {
-		fmt.Fprintf(w, "borrow %s: %s on %s (%s): %s in %s, %d tokens\n", r.ID, r.Kind, r.Vendor,
-			termsafe.Field(model), r.Outcome, r.Elapsed.Round(time.Second), r.Tokens)
+		tag := ""
+		if r.Status != "done" {
+			tag = " " + dlog.Tag(borrow.OutcomeCode(r.Outcome))
+		}
+		fmt.Fprintf(w, "borrow %s: %s on %s (%s): %s in %s, %d tokens%s\n", r.ID, r.Kind, r.Vendor,
+			termsafe.Field(model), r.Outcome, r.Elapsed.Round(time.Second), r.Tokens, tag)
 	}
 	for _, a := range r.Tried {
 		fmt.Fprintf(w, "  passed over %s: %s\n", a.Vendor, termsafe.Field(a.Reason))

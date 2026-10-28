@@ -28,6 +28,8 @@ func TestPTYEnv(t *testing.T) {
 		{"lowercase aggy refused", []string{"aggy_x=1"}, nil, "only AGGY_"},
 		{"socket and parent", []string{"AGGY_SOCKET=/s", "AGGY_PARENT=p"},
 			append(append([]string{}, base[:3]...), "AGGY_SOCKET=/s", "AGGY_PARENT=p"), ""},
+		{"trace", []string{"AGGY_TRACE=01JBX4M6T0Q2W8Y5C3N7R9D1FA"},
+			append(append([]string{}, base[:3]...), "AGGY_TRACE=01JBX4M6T0Q2W8Y5C3N7R9D1FA"), ""},
 		{"vendor and model", []string{"AGGY_VENDOR=codex", "AGGY_MODEL=gpt-5"},
 			[]string{"HOME=/h", "TERM=xterm", "ANTHROPIC_BASE_URL=user-set", "AGGY_VENDOR=codex", "AGGY_MODEL=gpt-5"}, ""},
 		{"delegated marker refused", []string{"AGGY_DELEGATED=1"}, nil, "only AGGY_"},
