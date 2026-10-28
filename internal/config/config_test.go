@@ -50,6 +50,15 @@ func TestParse(t *testing.T) {
 			check: func(t *testing.T, c Config) { equal(t, c, Default()) },
 		},
 		{
+			name: "desktop notifications off by default, on by user config",
+			text: "[notify]\ndesktop = true\n",
+			check: func(t *testing.T, c Config) {
+				if Default().Notify.Desktop || !c.Notify.Desktop {
+					t.Errorf("notify.desktop: default %v, set %v", Default().Notify.Desktop, c.Notify.Desktop)
+				}
+			},
+		},
+		{
 			name: "full proposal example",
 			text: `
 default_vendor = "claude"

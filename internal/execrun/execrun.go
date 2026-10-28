@@ -3,7 +3,8 @@
 // absolute CLI path with no stdin, a scrubbed environment (see Env), a
 // private working directory, capped output, and a time limit, and
 // HeadlessRunner does the same for a borrow child, whose stdin may be its
-// prompt file and whose working dir the borrow runner made.
+// prompt file and whose working dir the borrow runner made. NotifyRunner
+// runs the desktop notifier (osascript or notify-send) the same way.
 //
 // It is the only process-starting code outside internal/supervisor and
 // internal/borrow, and it is its own package so lint can keep it out of
@@ -166,7 +167,26 @@ func HeadlessRunner(timeout time.Duration) adapter.Runner {
 	}
 }
 
-func run(ctx context.Context, c adapter.Command, timeout time.Duration) (adapter.Output, error) {
+// notifyEnv are the variables a desktop notifier also inherits from
+// aggy: notify-send reaches the notification server over the session
+// bus, on the display.
+var notifyEnv = []string{"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "DISPLAY", "WAYLAND_DISPLAY"}
+
+// NotifyRunner returns a Runner for the desktop notifier
+// (internal/notify): ExecRunner, plus the notifyEnv variables from aggy's
+// environment. A command may add no variables of its own.
+func NotifyRunner(timeout time.Duration) adapter.Runner {
+	return func(ctx context.Context, c adapter.Command) (adapter.Output, error) {
+		if c.Stdin != adapter.StdinNull || len(c.Env) > 0 {
+			return adapter.Output{}, errors.New("execrun: a notifier gets no stdin and no added environment")
+		}
+		return run(ctx, c, timeout, notifyEnv...)
+	}
+}
+
+// run runs c. pass names extra variables c inherits from aggy's
+// environment, beyond Env's.
+func run(ctx context.Context, c adapter.Command, timeout time.Duration, pass ...string) (adapter.Output, error) {
 	if !filepath.IsAbs(c.Path) || filepath.Clean(c.Path) != c.Path {
 		return adapter.Output{}, fmt.Errorf("execrun: %q is not a clean absolute path", c.Path)
 	}
@@ -176,6 +196,11 @@ func run(ctx context.Context, c adapter.Command, timeout time.Duration) (adapter
 	env, err := Env(os.Environ(), c.Env)
 	if err != nil {
 		return adapter.Output{}, err
+	}
+	for _, k := range pass {
+		if v, ok := os.LookupEnv(k); ok {
+			env = append(env, k+"="+v)
+		}
 	}
 	var stdin *os.File
 	if c.Stdin == adapter.StdinFile {

@@ -118,3 +118,34 @@ func TestRunnerExitCodeAndCap(t *testing.T) {
 		t.Errorf("run = exit %d, %d bytes, %v", out.ExitCode, len(out.Stdout), err)
 	}
 }
+
+// The notifier gets the session bus and display, and nothing else
+// beyond ExecRunner's environment.
+func TestNotifyRunnerEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/x")
+	t.Setenv("DISPLAY", ":1")
+	t.Setenv("OPENAI_API_KEY", "sk-test")
+	run := NotifyRunner(5 * time.Second)
+	out, err := run(context.Background(), adapter.Command{Path: "/usr/bin/env"})
+	if err != nil {
+		t.Skipf("no /usr/bin/env: %v", err)
+	}
+	env := string(out.Stdout)
+	for _, k := range []string{"DBUS_SESSION_BUS_ADDRESS=unix:path=/x", "DISPLAY=:1", "HOME="} {
+		if !strings.Contains(env, k) {
+			t.Errorf("env lacks %s:\n%s", k, env)
+		}
+	}
+	if strings.Contains(env, "OPENAI_API_KEY") {
+		t.Error("an API key reached the notifier")
+	}
+	for name, c := range map[string]adapter.Command{
+		"added env": {Path: "/usr/bin/env", Env: []string{"AGGY_VENDOR=x"}},
+		"stdin":     {Path: "/usr/bin/env", Stdin: adapter.StdinTerminal},
+	} {
+		if _, err := run(context.Background(), c); err == nil {
+			t.Errorf("%s: run succeeded", name)
+		}
+	}
+}
