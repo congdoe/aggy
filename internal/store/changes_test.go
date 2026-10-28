@@ -160,3 +160,53 @@ func TestMarkerRows(t *testing.T) {
 		}
 	}
 }
+
+// TestUnlockedBackfill (B14-6): a row written before schema 8 did not
+// record whether its plan held the lock, so it comes back Unlocked; rows
+// written since record the value they are given.
+func TestUnlockedBackfill(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), FileName)
+	ms, err := migrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range ms[:7] {
+		if _, err := db.ExecContext(ctx, m.sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, q := range []string{
+		`PRAGMA user_version = 7`,
+		`INSERT INTO changes (change_id, run_id, file, hash_before, hash_after, status, planned_at) VALUES ('old', 'r', '/a', 'none', 'h', 'applied', 1)`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = db.Close()
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	at := time.Unix(10, 0)
+	for _, c := range []Change{
+		{ChangeID: "locked", RunID: "r", File: "/b", HashBefore: "none", HashAfter: "h", PlannedAt: at},
+		{ChangeID: "unlocked", RunID: "r", File: "/c", HashBefore: "none", HashAfter: "h", PlannedAt: at, Unlocked: true},
+	} {
+		if err := s.InsertChange(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, want := range map[string]bool{"old": true, "locked": false, "unlocked": true} {
+		if c, err := s.GetChange(ctx, id); err != nil || c.Unlocked != want {
+			t.Errorf("%s Unlocked = %v, %v, want %v", id, c.Unlocked, err, want)
+		}
+	}
+}
