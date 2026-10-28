@@ -569,3 +569,43 @@ func TestRemoveKeepsOtherWorktrees(t *testing.T) {
 		t.Errorf("entry removed: %v", err)
 	}
 }
+
+// TestHooksDir (T6748): core.hooksPath is found under ~ and through a
+// symlinked prefix, compared by real path; a path aggy cannot resolve is
+// an error, never a skipped check.
+func TestHooksDir(t *testing.T) {
+	g, _ := newWorktrees(t)
+	tmp := t.TempDir() // unresolved: /var/... against /private/var/... on macOS
+	repo, _ := filepath.EvalSymlinks(t.TempDir())
+	gitRepo(t, repo)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(repo, link); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		val, home, want string
+		err             bool
+	}{
+		{val: "tools/hooks", want: "tools/hooks"},
+		{val: "~/tools/hooks", home: repo, want: "tools/hooks"},
+		{val: "~", home: repo, want: "."},
+		{val: link + "/tools/hooks", want: "tools/hooks"},
+		{val: filepath.Join(repo, "x", "..", "hooks"), want: "hooks"},
+		{val: tmp, want: ""},
+		{val: "~/x", err: true},
+		{val: "~root/hooks", home: repo, err: true},
+	}
+	for _, tt := range tests {
+		gitIn(t, repo, "config", "core.hooksPath", tt.val)
+		g.env.getenv = func(k string) string {
+			if k == "HOME" {
+				return tt.home
+			}
+			return ""
+		}
+		got, err := g.hooksDir(context.Background(), repo)
+		if (err != nil) != tt.err || got != tt.want {
+			t.Errorf("%s (HOME %q): %q, %v; want %q, error %v", tt.val, tt.home, got, err, tt.want, tt.err)
+		}
+	}
+}

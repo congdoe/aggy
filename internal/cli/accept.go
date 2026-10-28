@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -415,7 +416,14 @@ func (g *gitWorktrees) editDiff(ctx context.Context, wt store.Worktree) (stat, p
 
 // hooksDir returns the repo's own core.hooksPath (the last value from
 // git's config files, never aggy's own -c override) relative to repo:
-// "" when it is unset or outside the repo, "." when it is the root.
+// "" when it is unset or outside the repo, "." when it is the root. A
+// leading ~/ is expanded the way git does (HOME), and both paths are
+// compared by real path (/tmp against /private/tmp, a symlinked prefix).
+// A path it cannot resolve safely (~user, no HOME, an unreadable
+// ancestor) is an error, so accept refuses rather than skip the check.
+// TODO(T6748): a core.hooksPath set only through the environment
+// (GIT_CONFIG_COUNT, GIT_CONFIG_GLOBAL, XDG_CONFIG_HOME) is not seen:
+// aggy's git runs with the scrubbed environment.
 func (g *gitWorktrees) hooksDir(ctx context.Context, repo string) (string, error) {
 	o, err := g.env.gitOutput(ctx, repo, "config", "--show-origin", "-z", "--get-all", "core.hooksPath")
 	switch {
@@ -436,17 +444,60 @@ func (g *gitWorktrees) hooksDir(ctx context.Context, repo string) (string, error
 	if val == "" {
 		return "", nil
 	}
-	if filepath.IsAbs(val) {
-		if !within(val, repo) {
-			return "", nil
-		}
-		val, _ = filepath.Rel(repo, val)
+	refuse := func(why string) (string, error) {
+		return "", fmt.Errorf("refusing: cannot tell where the repo's core.hooksPath %q points (%s), so the diff cannot be checked against it", val, why)
 	}
-	val = filepath.ToSlash(filepath.Clean(val))
-	if val == ".." || strings.HasPrefix(val, "../") || strings.HasPrefix(val, "~") {
+	p := val
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		h := ""
+		if g.env.getenv != nil {
+			h = g.env.getenv("HOME")
+		}
+		if !filepath.IsAbs(h) {
+			return refuse("no HOME")
+		}
+		p = filepath.Join(h, strings.TrimPrefix(p, "~"))
+	} else if strings.HasPrefix(p, "~") {
+		return refuse("another user's home")
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(repo, p)
+	}
+	real, err := realPath(p)
+	if err != nil {
+		return refuse(err.Error())
+	}
+	root, err := realPath(repo)
+	if err != nil {
+		return refuse(err.Error())
+	}
+	if !within(real, root) {
 		return "", nil
 	}
-	return val, nil
+	rel, err := filepath.Rel(root, real)
+	if err != nil {
+		return refuse(err.Error())
+	}
+	return filepath.ToSlash(rel), nil
+}
+
+// realPath resolves every symlink in p's deepest existing ancestor and
+// joins the rest, which does not exist yet. It errs when an ancestor
+// cannot be checked (other than by not existing).
+func realPath(p string) (string, error) {
+	p = filepath.Clean(p)
+	rest := ""
+	for {
+		r, err := filepath.EvalSymlinks(p)
+		if err == nil {
+			return filepath.Join(r, rest), nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) || filepath.Dir(p) == p {
+			return "", err
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = filepath.Dir(p)
+	}
 }
 
 // checkTouched reads git diff --raw -z output and returns the touched

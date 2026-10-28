@@ -285,8 +285,7 @@ func run(ctx context.Context, c adapter.Command, timeout time.Duration, tail boo
 		}()
 	}
 	if err == nil {
-		err = cmd.Wait()
-		killGroup(cmd)
+		err = reap(cmd)
 	}
 	// A process that escaped the group may hold the pipes open: stop
 	// reading after a second.

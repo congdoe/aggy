@@ -11,6 +11,9 @@ func TestProtectedPath(t *testing.T) {
 		".cursorrules", ".aggy/config.toml", ".codex/rules/x.rules", ".gitattributes", "sub/.gitmodules",
 		"a/.git/config", "sub/.claude/settings.json", "sub/.husky/pre-commit", ".anything/x",
 		"AGENTS.md", "pkg/CLAUDE.md", ".mcp.json", ".envrc", ".Husky/pre-commit",
+		// T6748: top-level hook and package manager config, outside a dot dir.
+		".npmrc", "pkg/.npmrc", "lefthook.yml", "Lefthook.YAML", "lefthook-local.yml", ".lefthook.yml",
+		".yarnrc.yml", ".pnpmfile.cjs",
 	} {
 		if !ProtectedPath(p) {
 			t.Errorf("%s is not protected", p)

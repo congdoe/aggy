@@ -264,6 +264,20 @@ linters:
       - path: ^internal/execrun/pty_unix\.go$
         text: "use of `syscall\\.(Wait4|WUNTRACED)`"
         linters: [forbidigo]
+      # The runner kills a borrow's process group before it reaps the
+      # leader, so the group id cannot have been handed out again: it
+      # waits for the leader's exit without reaping it, with waitid and
+      # WNOWAIT on Linux (golang.org/x/sys/unix, for exactly these names)
+      # and a kqueue NOTE_EXIT event on macOS.
+      - path: ^internal/execrun/reap_linux\.go$
+        text: "import 'golang.org/x/sys/unix' is not allowed"
+        linters: [depguard]
+      - path: ^internal/execrun/reap_linux\.go$
+        text: "use of `unix\\.(Waitid|Siginfo|P_PID|WEXITED|WNOWAIT|EINTR)`"
+        linters: [forbidigo]
+      - path: ^internal/execrun/reap_darwin\.go$
+        text: "use of `(syscall\\.(Kqueue|Close|Kevent_t|Kevent|SetKevent|EVFILT_PROC|EV_ADD|EV_ONESHOT|EV_ERROR|NOTE_EXIT|Errno|EINTR|ESRCH)|Flags|Fflags|Data)`"
+        linters: [forbidigo]
       # Field keys in a syscall.SysProcAttr literal are reported by their
       # bare name.
       - path: ^internal/(execrun|store)/
