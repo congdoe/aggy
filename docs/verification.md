@@ -264,6 +264,46 @@ Lessons: an unknown name in `--tools` makes Grok ignore the whole
 allowlist, with only a warning; and `search_tool` and `use_tool` must be
 denied by name to cut off MCP servers.
 
+## Grok project config and folder trust (source only)
+
+From grok-build source at `2bdd1d6`, not run live. Grok loads project
+hooks and other code-running config whenever folder trust resolves
+Trusted:
+
+- Project hook sources at the git root: `.claude/settings.json`,
+  `.claude/settings.local.json`, `.grok/hooks`, `.cursor/hooks.json`
+  (`xai-grok-hooks/src/discovery.rs:385-401`); they load only when the
+  trust allows project sources (`:299-314`).
+- `decide` is Trusted when folder trust is off (the feature flag, set by
+  `GROK_FOLDER_TRUST`, `[folder_trust] enabled`, managed or remote
+  config), when the folder is durably trusted (an earlier interactive
+  grant or `--trust`), when the key cannot be recorded (`$HOME`, `/`),
+  or when no repo config is present
+  (`xai-grok-permission-rules/src/folder_trust.rs:58-77`). A headless run
+  is Untrusted only when none of these holds.
+- The repo config folder trust gates
+  (`xai-grok-workspace/src/folder_trust.rs:433-551`): `.mcp.json` and
+  `.grok/config.toml` from the cwd up to the git root; Claude settings on
+  the same walk (`xai-grok-permission-rules/src/claude_settings.rs:354-384`);
+  `.grok/plugins`, `.claude/plugins`, `.grok/agents`, `.claude/agents`
+  on that walk; `.grok/lsp.json`, `.cursor/mcp.json`, `.envrc`,
+  `.grok/roles`, `.grok/personas` in the cwd; `.grok/hooks`,
+  `.cursor/hooks.json`, `.grok/workflows` at the git root; project
+  instructions and skills; and `~/.claude.json` project MCP servers.
+- `.envrc` runs through `direnv export json`, or, without direnv, in bash
+  with direnv stubs (`xai-grok-workspace/src/envrc.rs:147-188`).
+
+So a repo the user once trusted in interactive Grok, on a hostile
+branch, would run that branch's hooks in a Grok review. aggy does not
+rely on folder trust: a Grok review is refused, and Grok passed over,
+when the review root holds any of these files or dirs except the
+instruction and skill ones, which are prompt text
+(`internal/borrow/grok_trust.go`). Grok 1.0.70's folder-trust behaviour
+is unverified; the live check is TODO(T6649).
+
+Grok's CLI parses its flags with clap (`xai-grok-pager/src/app/cli.rs:2`),
+so its rejection lines have clap's form.
+
 ## Extra context at session start (T6619)
 
 - **Claude.** `--append-system-prompt-file <path>` is documented for
@@ -418,3 +458,7 @@ given, opt-in or not.
    re-enable Codex research (open: the existence oracle and the readable
    `~/.codex`).
 6. Greedy `codex exec -i a.png -` without `--`.
+7. Grok 1.0.70 folder trust in a headless review (TODO(T6649)): a scratch
+   repo whose `.claude/settings.json` and `.grok/hooks` hold SessionStart
+   and PreToolUse hooks that touch a marker, never trusted, run with
+   aggy's exact Grok review argv; the marker must stay absent.
