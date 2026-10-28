@@ -63,6 +63,37 @@ type Scenario struct {
 	// InteractiveWithoutTTY lets an interactive run start with a stdin
 	// that is not a terminal. The real CLIs need a terminal.
 	InteractiveWithoutTTY bool `json:"interactive_without_tty"`
+	// Replies answer an exact argument list that docs/adapters.md does
+	// not record, such as a sign-in status command a test supplies,
+	// before any flag is parsed.
+	Replies []Reply `json:"replies"`
+}
+
+// Reply is the fixed answer to one exact argument list.
+type Reply struct {
+	Args     []string `json:"args"`
+	Stdout   string   `json:"stdout"`
+	Stderr   string   `json:"stderr"`
+	ExitCode int      `json:"exit_code"`
+}
+
+// reply returns the scenario's reply to args, if any.
+func (f *fake) reply(args []string) (Reply, bool) {
+	for _, r := range f.sc.Replies {
+		if len(r.Args) == len(args) {
+			same := true
+			for i := range args {
+				if args[i] != r.Args[i] {
+					same = false
+					break
+				}
+			}
+			if same {
+				return r, true
+			}
+		}
+	}
+	return Reply{}, false
 }
 
 // recordedValues are the flag values docs/adapters.md records. Others are
@@ -460,6 +491,12 @@ func contains(list []string, s string) bool {
 }
 
 func (f *fake) main(args []string) int {
+	if r, ok := f.reply(args); ok {
+		f.record("reply", args)
+		fmt.Print(f.expand(r.Stdout))
+		fmt.Fprint(os.Stderr, f.expand(r.Stderr))
+		return r.ExitCode
+	}
 	if err := f.parse(args); err != nil {
 		f.record("error", args)
 		return fail(2, "%s: %v", f.vendor, err)

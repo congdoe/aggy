@@ -349,6 +349,7 @@ The index is SQLite in WAL mode, with the file at mode 0600, in a directory crea
 | `borrows` | id, child, kind, vendor, model, task hash, budget, status, outcome, artifacts, image count, tokens, report path, start, end |
 | `changes` | the config-change manifest: file, hash before, hash after, backup path, applied, undone |
 | `probes` | per vendor: CLI path, version, connected, capabilities, probed at |
+| `vendors` | what `aggy setup` last found, one row per vendor: connected (`connected`, `not_connected`, or `unknown`), CLI version, checked at |
 | `events` | append-only log behind `aggy log` |
 
 ## 15. Vendor adapters
@@ -361,7 +362,7 @@ The interface is documented in [adapters.md](adapters.md). The interface is unst
 
 ## 16. Other commands
 
-- `aggy setup` asks for each vendor in turn. You can skip any and rerun setup later. It records that the CLI reports itself connected and its version, and applies the parity layer.
+- `aggy setup` checks Claude, Codex, and Grok in turn: it finds each CLI on `PATH` and probes it through its adapter for version, capabilities, and sign-in status. You can skip any and rerun setup later; `--only claude,codex` picks vendors, and `--yes`, or a stdin that is not a terminal, checks without asking. A CLI that is not signed in gets the vendor's own sign-in step printed (`claude` then `/login`, `codex login`, `grok login`), and on a terminal setup waits and checks again. aggy never runs a login itself: no adapter has a verified login command. Nor has any a verified sign-in status command yet, so today every installed CLI's status is `unknown`. Setup records only, per vendor, connected or not, the CLI version, and when it checked (the `vendors` table). It writes no vendor config; applying the parity layer comes with M2.
 - `aggy doctor` checks install, sign-in, CLI versions, skill links, MCP entries, tool toggles, parity drift, and API-key media settings.
 - `aggy check` runs the repo's typecheck, lint, and tests from repo config.
 - `aggy log` records which harness and model were on screen, the switches, the borrows, and the files changed. `aggy inbox` holds finished borrows.

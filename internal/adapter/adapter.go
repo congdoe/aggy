@@ -258,9 +258,14 @@ type Adapter interface {
 	// on. VersionWarning compares a probed version with it.
 	TestedVersions() VersionRange
 
-	// Probe checks the installed CLI through run: path, version, sign-in
-	// status, and capabilities. It never reads credential files.
+	// Probe checks the installed CLI through run: path, version, and
+	// capabilities. It never reads credential files. Sign-in status is
+	// checked separately (SignIn, CheckSignIn), so Connected stays false.
 	Probe(ctx context.Context, run Runner) (Probe, error)
+
+	// SignIn returns the vendor's own sign-in step and, when one is
+	// verified, a sign-in status check.
+	SignIn() SignIn
 
 	// Interactive builds the command for an on-screen session.
 	Interactive(req InteractiveRequest) (Command, error)

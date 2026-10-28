@@ -36,7 +36,8 @@ can be tested against recorded output with no vendor installed.
 | --- | --- |
 | `Vendor()` | Names the vendor: `claude`, `codex`, or `grok`. |
 | `TestedVersions()` | The CLI version range the adapter was tested on. |
-| `Probe(ctx, run)` | Reports the CLI's path, version, sign-in status, and capabilities. It records connection status only and never tokens. |
+| `Probe(ctx, run)` | Reports the CLI's path, version, and capabilities. It never reads tokens; `Connected` stays false (sign-in is `SignIn`). |
+| `SignIn()` | The vendor's own sign-in step, as text, and a verified sign-in status check if there is one. `adapter.CheckSignIn` runs the check through the caller's runner. |
 | `Interactive(req)` | Builds the command for an on-screen session: new session, resume, or fork. It sets a model only when one is given, and points to a brief file when there is one. |
 | `Headless(req)` | Builds the command for one borrow. |
 | `ParseHeadless(req, out)` | Turns stdout, stderr, and the exit code into a `HeadlessResult`: vendor session id, final text, artifacts, error class, and tokens. |
@@ -232,6 +233,19 @@ images/` folder; several are an error. Claude has none.
 `TranscriptTail` returns `ErrNoTranscript` for every vendor: no transcript
 path or format is recorded. `ConfigPatches` returns nothing yet; the Codex
 `CLAUDE.md` fallback is built in `internal/parity`.
+
+### Sign-in
+
+No sign-in status command is recorded above, so no adapter has a
+`SignIn().Check`: `adapter.CheckSignIn` returns `unknown` for every
+installed CLI and runs nothing, and `aggy setup` records `unknown`. The
+sign-in steps each adapter prints come from docs/design.md section 2
+(`claude` then `/login`, `codex login`, `grok login`). They are not
+verified here, so aggy only prints them and never launches them. When a
+status command is verified (its arguments and how its output or exit
+status reads), it goes in the adapter's `SignIn().Check`, whose `Parse`
+returns a status and keeps none of the output. The fakes answer such a
+command through a scenario `replies` entry.
 
 ### Tested versions
 

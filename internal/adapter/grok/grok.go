@@ -43,6 +43,14 @@ var Tested = adapter.VersionRange{Min: "1.0.70", Max: "1.0.70"}
 // TestedVersions returns Tested.
 func (Adapter) TestedVersions() adapter.VersionRange { return Tested }
 
+// SignIn returns Grok's own sign-in step, from docs/design.md section 2.
+// No sign-in status command is verified in docs/adapters.md, so there is
+// no Check and the status is unknown, and the step is only printed:
+// aggy never runs it.
+func (Adapter) SignIn() adapter.SignIn {
+	return adapter.SignIn{Steps: "run `grok login`"}
+}
+
 // Probe reports the CLI's path, version, and capabilities through run,
 // using probe.Specs[adapter.Grok].
 func (a Adapter) Probe(ctx context.Context, run adapter.Runner) (adapter.Probe, error) {
