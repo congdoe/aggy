@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 )
 
@@ -18,6 +19,11 @@ type Drift struct {
 	// Err is the outcome's error: why a change is Failed (a credential
 	// path, an unreadable file), Invalid, or Blocked.
 	Err error
+	// BlockedBy, for a Blocked change, is the id of the next newer
+	// change to the same file, the one in its way (in an --all run, one
+	// that is itself not undone, such as a Drifted one), or "" when it is
+	// not in the results.
+	BlockedBy string
 }
 
 // Drift runs Unwire{All: true} as a dry run that takes no locks and
@@ -31,6 +37,12 @@ func (m *Manifest) Drift(ctx context.Context) ([]Drift, error) {
 	if len(undos) == 0 && err != nil {
 		return nil, err
 	}
+	key := func(file string) string {
+		if k, err := safefs.CanonicalPath(file); err == nil {
+			return k
+		}
+		return file
+	}
 	out := make([]Drift, 0, len(undos))
 	for i := len(undos) - 1; i >= 0; i-- {
 		u := undos[i]
@@ -38,6 +50,15 @@ func (m *Manifest) Drift(ctx context.Context) ([]Drift, error) {
 		switch u.Outcome {
 		case Failed, Invalid, Blocked:
 			d.Err = u.Err
+		}
+		if u.Outcome == Blocked {
+			// undos is newest first: the newer changes come before i.
+			for j := i - 1; j >= 0; j-- {
+				if key(undos[j].Change.File) == key(u.Change.File) {
+					d.BlockedBy = undos[j].Change.ChangeID
+					break
+				}
+			}
 		}
 		out = append(out, d)
 	}

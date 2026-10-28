@@ -206,7 +206,7 @@ func (r *setupRun) vendor(ctx context.Context, a adapter.Adapter) int {
 	res := checkup.CheckVendor(ctx, a, r.env.run)
 	r.printVendor(res)
 	for _, f := range checkup.ForVendor(r.findings, v) {
-		fmt.Fprintf(r.out, "  %s: %s\n", f.Level, termsafe.Field(f.Message))
+		fmt.Fprintf(r.out, "  %s: %s\n", f.Level, termsafe.Field(f.Text(r.env.home)))
 	}
 	steps := a.SignIn().Steps
 	switch {

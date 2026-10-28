@@ -72,10 +72,11 @@ func ShowPath(p, home string) string {
 }
 
 // VendorFindings turns a vendor check into findings. name is the
-// product name and steps the vendor's own sign-in step, for messages;
-// home shows paths as ~. Messages may hold CLI text (the version, an
-// error): print them through termsafe.
-func VendorFindings(res Vendor, name, steps, home string) []Finding {
+// product name and steps the vendor's own sign-in step, for messages.
+// The CLI's path is the findings' Path, and an error's text their
+// Detail. Messages may hold CLI text (the version): print them through
+// termsafe.
+func VendorFindings(res Vendor, name, steps string) []Finding {
 	f := func(code string, l Level, msg string) Finding {
 		return Finding{Code: code, Level: l, Vendor: res.Vendor, Message: msg}
 	}
@@ -86,15 +87,21 @@ func VendorFindings(res Vendor, name, steps, home string) []Finding {
 	if version == "" {
 		version = "unreadable"
 	}
-	out := []Finding{f(CodeCLIFound, LevelInfo, ShowPath(res.Path, home)+", version "+version)}
+	found := f(CodeCLIFound, LevelInfo, "version "+version)
+	found.Path = res.Path
+	out := []Finding{found}
 	if res.VersionWarning != "" {
 		out = append(out, f(CodeVersionUntested, LevelWarn, res.VersionWarning))
 	}
 	switch {
 	case res.ProbeErr != nil:
-		out = append(out, f(CodeProbeFailed, LevelError, name+" did not answer its version check: "+res.ProbeErr.Error()))
+		e := f(CodeProbeFailed, LevelError, name+" did not answer its version check")
+		e.Detail = res.ProbeErr.Error()
+		out = append(out, e)
 	case res.SignInErr != nil:
-		out = append(out, f(CodeSignInFailed, LevelWarn, name+"'s sign-in check failed: "+res.SignInErr.Error()))
+		e := f(CodeSignInFailed, LevelWarn, name+"'s sign-in check failed")
+		e.Detail = res.SignInErr.Error()
+		out = append(out, e)
 	case res.SignIn == adapter.SignedIn:
 		out = append(out, f(CodeSignedIn, LevelInfo, name+" is signed in"))
 	case res.SignIn == adapter.SignedOut:

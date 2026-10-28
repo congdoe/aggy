@@ -117,6 +117,22 @@ func TestDrift(t *testing.T) {
 	}
 }
 
+// TestDriftBlockedBy (T6612 re-review C): an older change behind a
+// drifted newer one is Blocked, and names it.
+func TestDriftBlockedBy(t *testing.T) {
+	f := setup(t)
+	createNew(t, f, "a.toml", "x\n")
+	changeExisting(t, f, "a.toml", "x\n", "x\nmore\n")
+	writeDrift(t, filepath.Join(f.dir, "a.toml"), "edited\n")
+	got, err := f.m.Drift(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Outcome != Blocked || got[1].Outcome != Drifted || got[0].BlockedBy != got[1].Change.ChangeID {
+		t.Errorf("drift = %+v", got)
+	}
+}
+
 // TestNoLockOnlyDryRun: NoLock is refused on a real unwire.
 func TestNoLockOnlyDryRun(t *testing.T) {
 	f := setup(t)

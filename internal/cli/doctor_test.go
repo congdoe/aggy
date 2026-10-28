@@ -13,6 +13,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/claude"
 	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
+	"github.com/congdoe/aggy/internal/checkup"
 	"github.com/congdoe/aggy/internal/devfix"
 	"github.com/congdoe/aggy/internal/fakecli"
 	"github.com/congdoe/aggy/internal/patch"
@@ -119,7 +120,7 @@ func TestDoctor(t *testing.T) {
 				mustWrite(t, a, "a = 1\nx = 3\n", 0o600)
 				return nil
 			},
-			want:    []string{"warning config-drift: ~/.codex/config.toml changed after aggy wrote it", "0 errors, 1 warning"},
+			want:    []string{"warning config-drift: ~/.codex/config.toml: changed after aggy wrote it", "0 errors, 1 warning"},
 			notWant: []string{"x.toml", "x = 3"},
 		},
 		{
@@ -150,7 +151,7 @@ func TestDoctor(t *testing.T) {
 				return nil
 			},
 			code: 1,
-			want: []string{"error   drift-unchecked: change c1 names a vendor credential file, which aggy never reads: ~/.codex/auth.json"},
+			want: []string{"error   drift-unchecked: ~/.codex/auth.json: change c1 names a vendor credential file, which aggy never reads"},
 		},
 	}
 	for _, tt := range tests {
@@ -226,7 +227,7 @@ func TestDoctorReport(t *testing.T) {
 	}
 	for _, s := range []string{"aggy doctor report\n", "aggy: ", "os: ", "claude: 2.1.311\n", "codex: 0.164.0\n", "grok: 1.0.70\n",
 		"warning api-key-env (codex): OPENAI_API_KEY is set", "warning base-url-env (claude): ANTHROPIC_BASE_URL is set",
-		"warning config-drift: <path>/cfg.toml changed", "info sign-in-unknown (grok)"} {
+		"warning config-drift: <path>/cfg.toml: changed", "info sign-in-unknown (grok)"} {
 		if !strings.Contains(out, s) {
 			t.Errorf("report lacks %q:\n%s", s, out)
 		}
@@ -277,6 +278,22 @@ func TestReportScrub(t *testing.T) {
 			t.Errorf("reportScrub(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
+	// T6612 re-review A: paths with spaces are scrubbed at the source,
+	// through a finding's Path, not by the regex.
+	for _, tt := range []struct {
+		f    checkup.Finding
+		want string
+	}{
+		{checkup.Finding{Path: "/mnt/c/Users/John Doe/AppData/claude", Message: "version 2.1.311"}, "<path>/claude: version 2.1.311"},
+		{checkup.Finding{Path: "/Volumes/Acme Corp Clients/cfg/settings.json", Message: "env.X is set"}, "<path>/settings.json: env.X is set"},
+		{checkup.Finding{Path: "/home/alice/My Files/x.toml", Message: "changed"}, "~/My Files/x.toml: changed"},
+		{checkup.Finding{Message: "Codex did not answer its version check", Detail: "probe: /mnt/c/Users/John Doe/codex --version exited 1"},
+			"Codex did not answer its version check (details left out of the report)"},
+	} {
+		if got := reportScrub(tt.f.ReportText(id.Home), id); got != tt.want {
+			t.Errorf("report of %+v = %q, want %q", tt.f, got, tt.want)
+		}
+	}
 	// Generic and short names are left alone.
 	for _, u := range []string{"root", "user", "al"} {
 		in := "the " + u + " said"
@@ -310,7 +327,40 @@ func TestDoctorReportNonHomePaths(t *testing.T) {
 	if strings.Contains(strings.ToLower(out), "zelda") {
 		t.Errorf("the user name leaked:\n%s", out)
 	}
-	for _, s := range []string{"<path>/claude, version 2.1.311", "<path>/settings.json: env.ANTHROPIC_BASE_URL is set"} {
+	for _, s := range []string{"<path>/claude: version 2.1.311", "<path>/settings.json: env.ANTHROPIC_BASE_URL is set"} {
+		if !strings.Contains(out, s) {
+			t.Errorf("report lacks %q:\n%s", s, out)
+		}
+	}
+}
+
+// TestDoctorReportSpacedPaths (T6612 re-review A): a CLI under a path
+// with spaces, outside home, and a probe error naming it.
+func TestDoctorReportSpacedPaths(t *testing.T) {
+	fakes := fakecli.Build(t)
+	home := isolate(t)
+	w := newFakeWorld(t, fakes)
+	dir := filepath.Join(t.TempDir(), "Users", "John Doe", "AppData")
+	b, err := safefs.ReadFile(fakes.Claude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := filepath.Join(dir, "claude")
+	mustWrite(t, good, string(b), 0o755)
+	broken := filepath.Join(dir, "codex")
+	mustWrite(t, broken, "not a program", 0o644)
+	w.environ = []string{"HOME=" + home}
+	env := w.env(home, "", false, claude.Adapter{Path: good}, codex.Adapter{Path: broken})
+	env.identity = &devfix.Identity{Home: home, User: "jdoe", Host: "h"}
+	var stdout, stderr bytes.Buffer
+	doctorWith([]string{"--report"}, env, &stdout, &stderr)
+	out := stdout.String()
+	for _, s := range []string{"John", "Doe", "AppData"} {
+		if strings.Contains(out, s) {
+			t.Errorf("report has %q:\n%s", s, out)
+		}
+	}
+	for _, s := range []string{"cli-found (claude): <path>/claude: version 2.1.311", "cli-probe-failed (codex): Codex did not answer its version check (details left out of the report)"} {
 		if !strings.Contains(out, s) {
 			t.Errorf("report lacks %q:\n%s", s, out)
 		}
