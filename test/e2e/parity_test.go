@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/congdoe/aggy/internal/fakecli"
 )
 
 // TestMemoryDelivered checks that aggy run gives each CLI the repo's
@@ -83,4 +85,29 @@ func TestPolicyOnCommandLine(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPolicyFailsClosed: aggy run refuses to start a CLI the safety
+// policy cannot reach (here Codex with no rules file) and starts nothing;
+// --no-policy starts it anyway.
+func TestPolicyFailsClosed(t *testing.T) {
+	w := newWorld(t)
+	if err := os.Remove(filepath.Join(w.home, ".codex", "rules", "aggy.rules")); err != nil {
+		t.Fatal(err)
+	}
+	s := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "run", "codex")
+	s.waitFor([]byte("--no-policy"))
+	if code := s.exit(); code != 1 {
+		t.Errorf("exit %d, want 1", code)
+	}
+	for _, r := range fakecli.Records(t, w.record) {
+		if r.Mode == "interactive" {
+			t.Fatalf("the CLI started without the policy: %+v", r)
+		}
+	}
+	s = w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "run", "--no-policy", "codex")
+	s.waitFor([]byte("READY>"))
+	s.send([]byte{0x04})
+	s.exit()
+	interactiveRecord(t, w)
 }

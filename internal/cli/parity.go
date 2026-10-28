@@ -169,13 +169,18 @@ func policyDelivery(v adapter.Vendor, caps []string) (why string, err error) {
 }
 
 // addPolicy puts the safety policy on req for vendor v where it goes on
-// the command line, and warns when the vendor will not get it.
-func addPolicy(v adapter.Vendor, caps []string, req *adapter.InteractiveRequest) []string {
+// the command line. When v cannot get it, it fails closed: an error when
+// required (the default; only the user's own config or --no-policy
+// changes that), else a warning.
+func addPolicy(v adapter.Vendor, caps []string, required bool, req *adapter.InteractiveRequest) ([]string, error) {
 	if why, err := policyDelivery(v, caps); why != "" {
 		if err != nil {
 			why += ": " + err.Error()
 		}
-		return []string{"safety policy not applied: " + why}
+		if required {
+			return nil, errors.New("the safety policy cannot be applied: " + why + "; fix that, pass --no-policy to start without it, or set required = false under [policy] in aggy's config")
+		}
+		return []string{"safety policy not applied: " + why}, nil
 	}
 	switch v {
 	case adapter.Claude:
@@ -183,7 +188,7 @@ func addPolicy(v adapter.Vendor, caps []string, req *adapter.InteractiveRequest)
 	case adapter.Grok:
 		req.Deny = parity.GrokDeny
 	}
-	return nil
+	return nil, nil
 }
 
 // Finding codes of doctor's parity section.
