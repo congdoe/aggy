@@ -56,16 +56,52 @@ func newID(now time.Time) string {
 // be listed and undone together.
 func NewRunID() string { return "run-" + newID(time.Now()) }
 
+// lockWait bounds the wait for another process changing the same file.
+const lockWait = 30 * time.Second
+
+// lockPath is the per-target lock file: run/patch/<sha256(path)>.lock next
+// to the database.
+func (m *Manifest) lockPath(file string) string {
+	return filepath.Join(filepath.Dir(m.store.Path()), "run", "patch", patch.Hash([]byte(file))+".lock")
+}
+
+// lockTarget takes the per-target lock. Where file locks are unsupported
+// it goes on unlocked; the hash guard then still refuses most races.
+func (m *Manifest) lockTarget(ctx context.Context, file string) (func(), error) {
+	lock := m.lockPath(file)
+	if err := safefs.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		return nil, err
+	}
+	unlock, err := store.LockFile(ctx, lock, lockWait)
+	if errors.Is(err, store.ErrLockUnsupported) {
+		return func() {}, nil
+	}
+	return unlock, err
+}
+
 // Apply applies p as part of run runID and records it.
 //
-// A patch that would change nothing is not recorded and comes back with
-// Status store.ChangeNoop. A refused patch (drift, a credential path, a
-// transform error) records nothing. Otherwise a pending row is written
-// first, then the backup and the file, then the row is marked applied with
-// the undo facts. When only the directory sync after the write failed, the
-// change is recorded as applied and the error matching safefs.ErrDirSync
-// is returned with it.
+// It holds a lock on the target file from the plan to the final manifest
+// update, so two processes changing one file cannot both pass the hash
+// check and lose an update. A patch that would change nothing is not
+// recorded and comes back with Status store.ChangeNoop. A refused patch
+// (drift, a credential path, a transform error) records nothing.
+// Otherwise a pending row is written first, holding the expected hashes
+// and the directories a new file needs, then the backup and the file, then
+// the row is marked applied with the undo facts, or failed (keeping the
+// directories, which Apply may already have made). When only the directory
+// sync after the target write failed, the change is recorded as applied
+// and the error matching patch.ErrNotSynced is returned with it.
 func (m *Manifest) Apply(ctx context.Context, runID string, p patch.Patch) (store.Change, error) {
+	file, err := filepath.Abs(p.File)
+	if err != nil {
+		return store.Change{}, err
+	}
+	unlock, err := m.lockTarget(ctx, file)
+	if err != nil {
+		return store.Change{}, err
+	}
+	defer unlock()
 	pl, err := patch.Plan(p)
 	if err != nil {
 		return store.Change{}, err
@@ -77,6 +113,7 @@ func (m *Manifest) Apply(ctx context.Context, runID string, p patch.Patch) (stor
 		HashAfter:   pl.AfterHash,
 		CreatedFile: pl.Created,
 		FileMode:    pl.Mode,
+		CreatedDirs: pl.CreatedDirs,
 	}
 	if pl.Action == patch.NoOp {
 		c.Status = store.ChangeNoop
@@ -89,7 +126,7 @@ func (m *Manifest) Apply(ctx context.Context, runID string, p patch.Patch) (stor
 	}
 	rec, err := patch.Apply(p, filepath.Join(m.backupRoot, c.ChangeID))
 	warn := err
-	if err != nil && !errors.Is(err, safefs.ErrDirSync) {
+	if err != nil && (!rec.Changed || !errors.Is(err, patch.ErrNotSynced)) {
 		c.Status = store.ChangeFailed
 		if ferr := m.store.FinishChange(context.WithoutCancel(ctx), c); ferr != nil {
 			err = errors.Join(err, ferr)
@@ -101,7 +138,10 @@ func (m *Manifest) Apply(ctx context.Context, runID string, p patch.Patch) (stor
 		c.Status = store.ChangeApplied
 	}
 	c.HashBefore, c.HashAfter, c.BackupPath = rec.BeforeHash, rec.AfterHash, rec.BackupPath
-	c.CreatedFile, c.FileMode, c.CreatedDirs = rec.Created, rec.Mode, rec.CreatedDirs
+	c.CreatedFile, c.FileMode = rec.Created, rec.Mode
+	if rec.Changed {
+		c.CreatedDirs = rec.CreatedDirs
+	}
 	c.AppliedAt = m.now()
 	// The file has changed: record it even if the caller has given up.
 	if err := m.store.FinishChange(context.WithoutCancel(ctx), c); err != nil {
@@ -116,7 +156,7 @@ func (m *Manifest) Apply(ctx context.Context, runID string, p patch.Patch) (stor
 
 // isSyncWarning reports whether err only says a written file was not
 // synced, which does not undo the write.
-func isSyncWarning(err error) bool { return errors.Is(err, safefs.ErrDirSync) }
+func isSyncWarning(err error) bool { return errors.Is(err, patch.ErrNotSynced) }
 
 // Record converts a recorded change back to the patch.Record that
 // patch.Revert takes.
@@ -133,11 +173,23 @@ func Record(c store.Change) patch.Record {
 	}
 }
 
-// Revert undoes one applied change and marks it undone. It refuses, with a
+// Revert undoes one applied change and marks it undone.
+//
+// Undoing several changes (aggy unwire, T6607) must revert them newest
+// first, in reverse id order (store.ChangesNewestFirst): a later change
+// to the same file was planned against the earlier one's result. It refuses, with a
 // *patch.DriftError, when the file changed after aggy changed it.
 func (m *Manifest) Revert(ctx context.Context, changeID string) error {
 	c, err := m.store.GetChange(ctx, changeID)
 	if err != nil {
+		return err
+	}
+	unlock, err := m.lockTarget(ctx, c.File)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if c, err = m.store.GetChange(ctx, changeID); err != nil {
 		return err
 	}
 	if c.Status != store.ChangeApplied {

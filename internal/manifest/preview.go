@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 
 	"github.com/congdoe/aggy/internal/diff"
 	"github.com/congdoe/aggy/internal/patch"
+	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 )
 
@@ -32,10 +34,16 @@ func (m Mode) String() string {
 
 // SetupMode picks the mode for aggy setup. dryRun (--dry-run) always
 // previews and write (--write) always writes; both is an error. With
-// neither, the first setup, before any change has been applied, previews,
-// so the person sees every config change before aggy makes one. Later
-// setups write.
-func (m *Manifest) SetupMode(ctx context.Context, dryRun, write bool) (Mode, error) {
+// neither, the first setup previews, so the person sees every config
+// change before aggy makes one, and later setups write.
+//
+// The first setup is one where no setup has ever written: there is no
+// index, or it records no applied, no-op, or undone change. A write run
+// that finds nothing to change records a no-op row (see Run), so a person
+// whose config already matches does not get a dry run forever. SetupMode
+// needs no open store: it looks for the index without creating it and
+// reads it read-only.
+func SetupMode(ctx context.Context, dryRun, write bool) (Mode, error) {
 	switch {
 	case dryRun && write:
 		return DryRun, errors.New("manifest: --dry-run and --write together")
@@ -44,14 +52,35 @@ func (m *Manifest) SetupMode(ctx context.Context, dryRun, write bool) (Mode, err
 	case write:
 		return Write, nil
 	}
-	cs, err := m.store.Changes(ctx, "")
+	path, err := store.DefaultPath()
 	if err != nil {
 		return DryRun, err
 	}
-	for _, c := range cs {
-		if c.Status == store.ChangeApplied || c.Status == store.ChangeUndone {
-			return Write, nil
-		}
+	if _, err := safefs.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return DryRun, nil
+	} else if err != nil {
+		return DryRun, err
+	}
+	s, err := store.OpenReadOnly(ctx, path)
+	if err != nil {
+		return DryRun, err
+	}
+	defer func() { _ = s.Close() }()
+	v, err := s.Version(ctx)
+	if err != nil || v < 1 {
+		return DryRun, err
+	}
+	q := `SELECT EXISTS (SELECT 1 FROM changes WHERE status IN ('applied', 'noop', 'undone'))`
+	if v < 2 {
+		// Version 1 had no status column; every row was an applied change.
+		q = `SELECT EXISTS (SELECT 1 FROM changes)`
+	}
+	var found bool
+	if err := s.DB().QueryRowContext(ctx, q).Scan(&found); err != nil {
+		return DryRun, err
+	}
+	if found {
+		return Write, nil
 	}
 	return DryRun, nil
 }
@@ -95,7 +124,8 @@ func plural(n int, one, many string) string {
 
 // Run applies patches in mode. In DryRun it calls Preview and returns no
 // changes. In Write it applies each patch as part of run runID, stopping at
-// the first refusal, and returns the changes made so far. A directory sync
+// the first refusal, and returns the changes made so far. A write run that
+// records no change records one no-op row for the run. A directory sync
 // warning does not stop the run; the warnings are joined into the error.
 func (m *Manifest) Run(ctx context.Context, mode Mode, runID string, patches []patch.Patch, w io.Writer) ([]store.Change, error) {
 	if mode == DryRun {
@@ -104,15 +134,27 @@ func (m *Manifest) Run(ctx context.Context, mode Mode, runID string, patches []p
 	}
 	var out []store.Change
 	var warns []error
+	recorded := false
 	for _, p := range patches {
 		c, err := m.Apply(ctx, runID, p)
 		if c.ChangeID != "" || c.Status == store.ChangeNoop {
 			out = append(out, c)
 		}
+		recorded = recorded || c.ChangeID != ""
 		if err != nil && !isSyncWarning(err) {
 			return out, errors.Join(append(warns, err)...)
 		}
 		if err != nil {
+			warns = append(warns, err)
+		}
+	}
+	if !recorded {
+		// Nothing needed changing. Record that a write run happened, so
+		// SetupMode stops treating the next setup as the first.
+		now := m.now()
+		if err := m.store.InsertChange(ctx, store.Change{
+			ChangeID: newID(now), RunID: runID, Status: store.ChangeNoop, PlannedAt: now, AppliedAt: now,
+		}); err != nil {
 			warns = append(warns, err)
 		}
 	}

@@ -90,14 +90,14 @@ func TestPreviewGolden(t *testing.T) {
 func TestSetupMode(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	mode, err := f.m.SetupMode(ctx, false, false)
+	mode, err := SetupMode(ctx, false, false)
 	if err != nil || mode != DryRun {
 		t.Fatalf("first setup mode = %v, %v, want dry-run", mode, err)
 	}
-	if mode, _ := f.m.SetupMode(ctx, false, true); mode != Write {
+	if mode, _ := SetupMode(ctx, false, true); mode != Write {
 		t.Errorf("--write = %v", mode)
 	}
-	if _, err := f.m.SetupMode(ctx, true, true); err == nil {
+	if _, err := SetupMode(ctx, true, true); err == nil {
 		t.Error("--dry-run --write accepted")
 	}
 
@@ -108,7 +108,7 @@ func TestSetupMode(t *testing.T) {
 	if err != nil || cs != nil || !strings.Contains(out.String(), "+++ ") {
 		t.Fatalf("dry run = %v, %v, %q", cs, err, out.String())
 	}
-	if mode, _ := f.m.SetupMode(ctx, false, false); mode != DryRun {
+	if mode, _ := SetupMode(ctx, false, false); mode != DryRun {
 		t.Errorf("after a dry run, mode = %v", mode)
 	}
 
@@ -116,10 +116,10 @@ func TestSetupMode(t *testing.T) {
 	if err != nil || len(cs) != 2 || cs[0].Status != store.ChangeApplied || cs[1].Status != store.ChangeApplied {
 		t.Fatalf("write run = %+v, %v", cs, err)
 	}
-	if mode, _ := f.m.SetupMode(ctx, false, false); mode != Write {
+	if mode, _ := SetupMode(ctx, false, false); mode != Write {
 		t.Errorf("after a write, mode = %v, want write", mode)
 	}
-	if mode, _ := f.m.SetupMode(ctx, true, false); mode != DryRun {
+	if mode, _ := SetupMode(ctx, true, false); mode != DryRun {
 		t.Errorf("--dry-run after a write = %v", mode)
 	}
 }

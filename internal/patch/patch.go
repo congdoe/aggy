@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"testing"
 
 	"github.com/congdoe/aggy/internal/safefs"
 )
@@ -184,6 +185,11 @@ func Plan(p Patch) (Planned, error) {
 		if pl.Mode == 0 {
 			pl.Mode = DefaultMode
 		}
+		// Known before anything is written, so a caller can record them
+		// first and undo them even if Apply fails half way.
+		if pl.CreatedDirs, err = missingDirs(filepath.Dir(file)); err != nil {
+			return Planned{}, err
+		}
 	}
 	same := exists && bytes.Equal(next, cur)
 	switch {
@@ -204,6 +210,29 @@ func Plan(p Patch) (Planned, error) {
 // writeFile is safefs.WriteFile; tests replace it to inject failures.
 var writeFile = safefs.WriteFile
 
+// ErrNotSynced matches an Apply or Revert error that means the target file
+// was written but its directory could not be synced. The change happened.
+// A sync failure on the backup is not reported: the backup exists, and the
+// target write goes ahead.
+var ErrNotSynced = errors.New("written but not synced")
+
+// testHookBeforeWrite, set through SetTestHookBeforeWrite, runs right
+// before Apply writes the target, after the re-check and the backup.
+var testHookBeforeWrite func(file string) error
+
+// SetTestHookBeforeWrite installs fn to run right before Apply writes its
+// target; an error from fn fails the Apply there. It is for tests in
+// other packages (a race window, a failure after MkdirAll), and panics
+// outside a test binary. The returned func removes the hook.
+func SetTestHookBeforeWrite(fn func(file string) error) (restore func()) {
+	if !testing.Testing() {
+		panic("patch: SetTestHookBeforeWrite outside a test")
+	}
+	old := testHookBeforeWrite
+	testHookBeforeWrite = fn
+	return func() { testHookBeforeWrite = old }
+}
+
 // Apply makes the change. When the file matches ExpectedHash it backs up the
 // current bytes into backupDir and writes the transform's output atomically.
 // When the file already holds the patched content it does nothing and
@@ -212,8 +241,10 @@ var writeFile = safefs.WriteFile
 // When the new content is in place but syncing its directory fails, the
 // change has happened and only its durability across a power loss is in
 // doubt. Apply then returns the full Record together with an error matching
-// safefs.ErrDirSync, and the caller must still record the change, or
-// aggy unwire could not undo it. Every other error comes with a zero Record.
+// ErrNotSynced (and safefs.ErrDirSync), and the caller must still record
+// the change, or aggy unwire could not undo it. A sync failure on the
+// backup is not an error: the backup exists. Every other error comes with
+// a zero Record.
 func Apply(p Patch, backupDir string) (Record, error) {
 	pl, err := Plan(p)
 	if err != nil {
@@ -227,9 +258,6 @@ func Apply(p Patch, backupDir string) (Record, error) {
 		return Record{}, errors.New("patch: backup directory is required")
 	}
 	if pl.Action == Create {
-		if rec.CreatedDirs, err = missingDirs(filepath.Dir(rec.File)); err != nil {
-			return Record{}, err
-		}
 		if err := safefs.MkdirAll(filepath.Dir(rec.File), 0o700); err != nil {
 			return Record{}, err
 		}
@@ -248,10 +276,15 @@ func Apply(p Patch, backupDir string) (Record, error) {
 			return Record{}, err
 		}
 	}
+	if testHookBeforeWrite != nil {
+		if err := testHookBeforeWrite(rec.File); err != nil {
+			return Record{}, err
+		}
+	}
 	if err := writeFile(rec.File, pl.After, rec.Mode); err != nil {
 		if errors.Is(err, safefs.ErrDirSync) {
 			rec.Changed = true
-			return rec, fmt.Errorf("patch: %s was written: %w", rec.File, err)
+			return rec, fmt.Errorf("patch: %s: target %w: %w", rec.File, ErrNotSynced, err)
 		}
 		return Record{}, err
 	}
@@ -296,7 +329,9 @@ func backup(dir string, b []byte) (string, error) {
 	} else if h == Hash(b) {
 		return path, nil
 	}
-	if err := safefs.WriteFile(path, b, 0o600); err != nil {
+	// A failed directory sync still leaves the backup in place and
+	// readable, so it does not stop the change.
+	if err := writeFile(path, b, 0o600); err != nil && !errors.Is(err, safefs.ErrDirSync) {
 		return "", err
 	}
 	return path, nil
@@ -316,6 +351,11 @@ func Revert(r Record) error {
 		return err
 	}
 	if cur == r.BeforeHash {
+		// Already reverted, perhaps half way: finish removing the
+		// directories a created file needed.
+		if r.BeforeHash == NoFile {
+			return removeEmptyDirs(r.CreatedDirs)
+		}
 		return nil
 	}
 	if cur != r.AfterHash {
@@ -339,6 +379,9 @@ func Revert(r Record) error {
 	werr := writeFile(r.File, old, DefaultMode)
 	if werr != nil && !errors.Is(werr, safefs.ErrDirSync) {
 		return werr
+	}
+	if werr != nil {
+		werr = fmt.Errorf("patch: %s: restored file %w: %w", r.File, ErrNotSynced, werr)
 	}
 	if r.Mode != 0 {
 		fi, err := safefs.Stat(r.File)
