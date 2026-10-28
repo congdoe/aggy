@@ -118,8 +118,9 @@ func addJSONKey(b []byte) ([]byte, error) {
 // It also covers the rows that are not plain applied changes: a failed
 // create that made its directories, a pending change whose write
 // happened before the process stopped, a file whose mode a tool changed
-// after aggy wrote it, and a file whose mode is not the default under a
-// strict umask. Skipping pending or failed rows, or ignoring the
+// after aggy wrote it, a file whose mode is not the default under a
+// strict umask, and the link and removal kinds: a symlink made in new
+// directories, a symlink replacing another, and a file removed. Skipping pending or failed rows, or ignoring the
 // recorded mode, fails this test.
 func TestM0Gate(t *testing.T) {
 	h := isolate(t)
@@ -140,6 +141,20 @@ func TestM0Gate(t *testing.T) {
 	writeAt(t, claudeMD, "# global\n", 0o644)
 	// Grok has no config yet: setup creates a file in new directories.
 	grokCfg := filepath.Join(h, ".grok", "aggy", "settings.toml")
+	// Skill links: one made in new directories, one replacing an old
+	// link, and a stale file removed.
+	skillDir := filepath.Join(h, "skills-store", "aggy")
+	writeAt(t, filepath.Join(skillDir, "SKILL.md"), "---\nname: aggy\n---\n", 0o644)
+	claudeLink := filepath.Join(h, ".claude", "skills", "aggy")
+	agentsLink := filepath.Join(h, ".agents", "skills", "aggy")
+	if err := os.MkdirAll(filepath.Dir(agentsLink), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../old-skill", agentsLink); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(h, ".agents", "stale.md")
+	writeAt(t, stale, "stale\r\n", 0o640)
 
 	// A repo with no info/exclude, a repo with git's template exclude in
 	// CRLF and no trailing newline, and a linked worktree of the first.
@@ -194,6 +209,12 @@ func TestM0Gate(t *testing.T) {
 		add(patch.Patch{File: claudeSettings, ExpectedHash: hc, Transform: addJSONKey}, err)
 		hg, err := patch.HashFile(grokCfg)
 		add(patch.Patch{File: grokCfg, ExpectedHash: hg, Transform: appendOnce("aggy = true\n"), Mode: 0o640}, err)
+		for _, l := range []string{claudeLink, agentsLink} {
+			st, err := patch.ReadState(l)
+			add(patch.Patch{File: l, ExpectedHash: st.Hash, Link: skillDir}, err)
+		}
+		st, err := patch.ReadState(stale)
+		add(patch.Patch{File: stale, ExpectedHash: st.Hash, Remove: true}, err)
 		return ps
 	}
 	// Run 1: setup. Run 2: a later change to a file run 1 changed. Run 3:
@@ -273,6 +294,7 @@ func TestM0Gate(t *testing.T) {
 		"content .claude/settings.json",
 		"extra: .grok", "extra: src/app/.git/info", "content src/lib/.git/info/exclude",
 		"extra: .config", "content .claude/CLAUDE.md", "mode .codex/config.toml",
+		"extra: .claude/skills", "content .agents/skills/aggy", "missing: .agents/stale.md",
 	} {
 		if !strings.Contains(strings.Join(changed, "\n"), want) {
 			t.Errorf("setup did not make the change %q; changes:\n%s", want, strings.Join(changed, "\n"))
@@ -299,6 +321,10 @@ func TestM0Gate(t *testing.T) {
 		"-- use aggy",
 		"# " + codexCfg + ": mode 0600 -> 0640",
 		"# " + filepath.Join(h, ".config") + ": would remove the directory if empty",
+		"# " + claudeLink + ": symlink to " + skillDir + " -> nothing",
+		"# " + filepath.Join(h, ".claude", "skills") + ": would remove the directory if empty",
+		"# " + agentsLink + ": symlink to " + skillDir + " -> symlink to ../../old-skill",
+		"# " + stale + ": nothing -> file (7 bytes,",
 	} {
 		if !strings.Contains(dry, want) {
 			t.Errorf("dry run output lacks %q:\n%s", want, dry)

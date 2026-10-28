@@ -1,7 +1,13 @@
 // Package patch makes guarded, reversible changes to config files. A Patch
-// names a file, the hash it expects to find there, and a transform. Apply
-// writes only when the file still matches, backs up the old bytes, and
-// returns a Record that aggy unwire can use to restore them byte for byte.
+// names a file, the hash it expects to find there, and what to make of
+// it: new content (a transform), a symlink, or nothing (a removal). Apply
+// acts only when the path still matches, backs up what was there, and
+// returns a Record that aggy unwire can use to restore it byte for byte.
+//
+// A content patch reads and writes through a symlink at its path, as it
+// always has. A link or removal patch never follows one: it reads the
+// path with lstat, records a symlink by its target (LinkHash), and acts
+// only on a path that still has the identity it checked.
 //
 // All file access goes through safefs, so vendor credential files are
 // refused here too.
@@ -14,7 +20,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/congdoe/aggy/internal/safefs"
@@ -41,6 +49,26 @@ type Patch struct {
 	// Mode is the mode of a newly created file. An existing file keeps its
 	// mode. Zero means DefaultMode.
 	Mode fs.FileMode
+	// Link, when set, makes File a symlink to Link instead: it creates the
+	// link, or replaces the file or link there (ExpectedHash names it;
+	// see LinkHash). Transform must be nil. A Link that is, or resolves
+	// to, a vendor credential file is refused, and so is replacing one.
+	Link string
+	// Remove, when true, removes File: a regular file, or a symlink
+	// itself, never what it points to. Transform must be nil and Link
+	// empty. Undo puts back the same file or the same link.
+	Remove bool
+}
+
+// kinds counts the change kinds p asks for; exactly one is valid.
+func (p Patch) kinds() int {
+	n := 0
+	for _, set := range []bool{p.Transform != nil, p.Link != "", p.Remove} {
+		if set {
+			n++
+		}
+	}
+	return n
 }
 
 // Record describes an applied change in the shape of the store's changes
@@ -62,13 +90,100 @@ type Record struct {
 	CreatedDirs []string
 }
 
+// linkPrefix starts every LinkHash. A file's hash is bare hex, so a
+// symlink's hash never equals a file's.
+const linkPrefix = "link-"
+
+// LinkHash is the hash recorded for a symlink to target: "link-" and the
+// hex sha256 of the target string. A link is identified by its target
+// alone; what it points to is never read.
+func LinkHash(target string) string { return linkPrefix + Hash([]byte(target)) }
+
+// IsLinkHash reports whether h is a LinkHash.
+func IsLinkHash(h string) bool { return strings.HasPrefix(h, linkPrefix) }
+
+// NoFollow reports whether r's path is read without following a final
+// symlink: a change that makes or replaces a symlink, replaces one, or
+// removes a file or link. A content change can never leave NoFile, so
+// AfterHash NoFile marks a removal.
+func (r Record) NoFollow() bool {
+	return IsLinkHash(r.BeforeHash) || IsLinkHash(r.AfterHash) || r.AfterHash == NoFile
+}
+
+// State is what is at a path, read without following a final symlink.
+type State struct {
+	Data []byte      // a regular file's bytes, or a symlink's target
+	Hash string      // Hash of a file, LinkHash of a link, or NoFile
+	Info fs.FileInfo // the Lstat of what is there; nil for NoFile
+}
+
+// ReadState reads path without following a final symlink. Anything but a
+// regular file, a symlink, or nothing is an error, and so is a file
+// swapped for another between the Lstat and the read.
+func ReadState(path string) (State, error) {
+	fi, err := safefs.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return State{Hash: NoFile}, nil
+	}
+	if err != nil {
+		return State{}, err
+	}
+	switch {
+	case fi.Mode()&fs.ModeSymlink != 0:
+		t, err := safefs.Readlink(path)
+		if err != nil {
+			return State{}, err
+		}
+		return State{Data: []byte(t), Hash: LinkHash(t), Info: fi}, nil
+	case fi.Mode().IsRegular():
+		b, err := safefs.ReadFile(path)
+		if err != nil {
+			return State{}, err
+		}
+		// ReadFile follows a final symlink: make sure none was swapped in.
+		again, err := safefs.Lstat(path)
+		if err != nil {
+			return State{}, err
+		}
+		if !os.SameFile(fi, again) || !again.Mode().IsRegular() {
+			return State{}, &fs.PathError{Op: "read", Path: path, Err: safefs.ErrChanged}
+		}
+		return State{Data: b, Hash: Hash(b), Info: fi}, nil
+	}
+	return State{}, &fs.PathError{Op: "read", Path: path, Err: fmt.Errorf("not a file or symlink: %v", fi.Mode().Type())}
+}
+
+// Current returns what r.File holds now, read the way r's kind reads it:
+// without following a symlink for NoFollow records, through it otherwise.
+// It returns nil and NoFile when nothing is there.
+func Current(r Record) ([]byte, string, error) {
+	if r.NoFollow() {
+		st, err := ReadState(r.File)
+		return st.Data, st.Hash, err
+	}
+	return read(r.File)
+}
+
+// Describe names a state for a preview: a symlink and its target, a
+// file, or nothing.
+func Describe(hash string, data []byte) string {
+	switch {
+	case hash == NoFile:
+		return "nothing"
+	case IsLinkHash(hash):
+		return "symlink to " + string(data)
+	}
+	return fmt.Sprintf("file (%d bytes, %s)", len(data), short(hash))
+}
+
 // Action is what applying a patch would do.
 type Action string
 
 // Actions reported by Plan.
 const (
 	Create Action = "create" // the file does not exist and would be created
-	Modify Action = "modify" // the file would be rewritten
+	Modify Action = "modify" // the file would be rewritten, or the file or link replaced by a link
+	Delete Action = "remove" // the file or link would be removed
 	NoOp   Action = "noop"   // the file already holds the patched content
 )
 
@@ -76,8 +191,10 @@ const (
 type Planned struct {
 	Record
 	Action Action
-	Before []byte // current content, nil when the file does not exist
-	After  []byte // content after the change
+	Before []byte // current content (a link's target), nil when nothing is there
+	After  []byte // content after the change (a link's target)
+	// info is the Lstat of what a link or removal patch found.
+	info fs.FileInfo
 }
 
 // ErrNotIdempotent means applying the transform to its own output changed
@@ -141,12 +258,15 @@ func Plan(p Patch) (Planned, error) {
 	if p.ExpectedHash == "" {
 		return Planned{}, fmt.Errorf("patch: %s: ExpectedHash is required (use NoFile for a new file)", p.File)
 	}
-	if p.Transform == nil {
-		return Planned{}, fmt.Errorf("patch: %s: Transform is required", p.File)
+	if p.kinds() != 1 {
+		return Planned{}, fmt.Errorf("patch: %s: set exactly one of Transform, Link, and Remove", p.File)
 	}
 	file, err := filepath.Abs(p.File)
 	if err != nil {
 		return Planned{}, err
+	}
+	if p.Transform == nil {
+		return planNoFollow(p, file)
 	}
 	cur, curHash, err := read(file)
 	if err != nil {
@@ -207,6 +327,40 @@ func Plan(p Patch) (Planned, error) {
 	return pl, nil
 }
 
+// planNoFollow plans a link or removal patch.
+func planNoFollow(p Patch, file string) (Planned, error) {
+	st, err := ReadState(file)
+	if err != nil {
+		return Planned{}, err
+	}
+	pl := Planned{Record: Record{File: file, BeforeHash: st.Hash, AfterHash: NoFile}, Before: st.Data, info: st.Info}
+	if p.Link != "" {
+		if err := safefs.CheckLinkTarget(file, p.Link); err != nil {
+			return Planned{}, err
+		}
+		pl.AfterHash, pl.After = LinkHash(p.Link), []byte(p.Link)
+	}
+	if st.Info != nil && st.Info.Mode().IsRegular() {
+		pl.Mode = st.Info.Mode().Perm()
+	}
+	switch {
+	case st.Hash == pl.AfterHash:
+		pl.Action = NoOp
+	case st.Hash != p.ExpectedHash:
+		return Planned{}, &DriftError{File: file, Expected: p.ExpectedHash, Actual: st.Hash}
+	case p.Remove:
+		pl.Action = Delete
+	case st.Hash == NoFile:
+		pl.Action, pl.Created = Create, true
+		if pl.CreatedDirs, err = missingDirs(filepath.Dir(file)); err != nil {
+			return Planned{}, err
+		}
+	default:
+		pl.Action = Modify
+	}
+	return pl, nil
+}
+
 // writeFile is safefs.WriteFile; tests replace it to inject failures.
 var writeFile = safefs.WriteFile
 
@@ -254,6 +408,9 @@ func Apply(p Patch, backupDir string) (Record, error) {
 	if pl.Action == NoOp {
 		return rec, nil
 	}
+	if p.Transform == nil {
+		return applyNoFollow(p, rec, backupDir)
+	}
 	if pl.Action == Modify && backupDir == "" {
 		return Record{}, errors.New("patch: backup directory is required")
 	}
@@ -292,6 +449,49 @@ func Apply(p Patch, backupDir string) (Record, error) {
 	return rec, nil
 }
 
+// applyNoFollow makes a planned link or removal change.
+func applyNoFollow(p Patch, rec Record, backupDir string) (Record, error) {
+	if rec.BeforeHash != NoFile && backupDir == "" {
+		return Record{}, errors.New("patch: backup directory is required")
+	}
+	if rec.Created {
+		if err := safefs.MkdirAll(filepath.Dir(rec.File), 0o700); err != nil {
+			return Record{}, err
+		}
+	}
+	st, err := ReadState(rec.File)
+	if err != nil {
+		return Record{}, err
+	}
+	if st.Hash != rec.BeforeHash {
+		return Record{}, &DriftError{File: rec.File, Expected: rec.BeforeHash, Actual: st.Hash}
+	}
+	if rec.BeforeHash != NoFile {
+		if rec.BackupPath, err = backupAs(backupDir, rec.BeforeHash, st.Data); err != nil {
+			return Record{}, err
+		}
+	}
+	if testHookBeforeWrite != nil {
+		if err := testHookBeforeWrite(rec.File); err != nil {
+			return Record{}, err
+		}
+	}
+	if p.Remove {
+		err = safefs.RemoveSame(rec.File, st.Info)
+	} else {
+		err = safefs.Symlink(p.Link, rec.File, st.Info)
+	}
+	if err != nil {
+		if errors.Is(err, safefs.ErrDirSync) {
+			rec.Changed = true
+			return rec, fmt.Errorf("patch: %s: target %w: %w", rec.File, ErrNotSynced, err)
+		}
+		return Record{}, err
+	}
+	rec.Changed = true
+	return rec, nil
+}
+
 // missingDirs lists the directories that do not exist on the way to dir,
 // outermost first.
 func missingDirs(dir string) ([]string, error) {
@@ -316,14 +516,18 @@ func missingDirs(dir string) ([]string, error) {
 
 // backup stores b in dir under its own hash, so the same bytes are kept
 // once and an existing backup is never overwritten with different content.
-func backup(dir string, b []byte) (string, error) {
+func backup(dir string, b []byte) (string, error) { return backupAs(dir, Hash(b), b) }
+
+// backupAs stores b in dir as <name>.bak, where name is the state's hash:
+// Hash(b) for a file, the LinkHash for a link's target b.
+func backupAs(dir, name string, b []byte) (string, error) {
 	if dir == "" {
 		return "", errors.New("patch: backup directory is required")
 	}
 	if err := safefs.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, Hash(b)+".bak")
+	path := filepath.Join(dir, name+".bak")
 	if h, err := HashFile(path); err != nil {
 		return "", err
 	} else if h == Hash(b) {
@@ -344,15 +548,20 @@ func backup(dir string, b []byte) (string, error) {
 // directories a created file needed. As with Apply, an error matching
 // safefs.ErrDirSync means the file was restored but not synced.
 //
-// Known limits, left for the T6607 follow-up: a file that was a symlink
-// is restored through the link (the link stays and its target gets the
-// old bytes), a hard link to the file is not kept (the restore writes a
-// new inode), and extended attributes are not restored.
+// A link or removal change (Record.NoFollow) is compared and restored
+// without following a symlink: the same link comes back, or the same
+// file with its mode.
+//
+// Known limits of a content change, left for the T6607 follow-up: a file
+// that was a symlink is restored through the link (the link stays and
+// its target gets the old bytes), a hard link to the file is not kept
+// (the restore writes a new inode), and extended attributes are not
+// restored.
 func Revert(r Record) error {
 	if !r.Changed {
 		return nil
 	}
-	cur, err := HashFile(r.File)
+	_, cur, err := Current(r)
 	if err != nil {
 		return err
 	}
@@ -379,7 +588,7 @@ func RevertForce(r Record, backupDir string) (saved string, err error) {
 	if !r.Changed {
 		return "", nil
 	}
-	b, cur, err := read(r.File)
+	b, cur, err := Current(r)
 	if err != nil {
 		return "", err
 	}
@@ -387,7 +596,7 @@ func RevertForce(r Record, backupDir string) (saved string, err error) {
 		return "", Revert(r)
 	}
 	if cur != NoFile && cur != r.AfterHash {
-		if saved, err = backup(backupDir, b); err != nil {
+		if saved, err = backupAs(backupDir, cur, b); err != nil {
 			return "", err
 		}
 	}
@@ -404,7 +613,11 @@ func Target(r Record) ([]byte, bool, error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("patch: read backup for %s: %w", r.File, err)
 	}
-	if Hash(old) != r.BeforeHash {
+	h := Hash(old)
+	if IsLinkHash(r.BeforeHash) {
+		h = LinkHash(string(old))
+	}
+	if h != r.BeforeHash {
 		return nil, false, fmt.Errorf("patch: backup %s does not match the recorded hash", r.BackupPath)
 	}
 	return old, true, nil
@@ -414,6 +627,9 @@ func Target(r Record) ([]byte, bool, error) {
 // writes the backup's bytes and the recorded mode. cur is the file's
 // current hash.
 func restore(r Record, cur string) error {
+	if r.NoFollow() {
+		return restoreNoFollow(r)
+	}
 	if r.BeforeHash == NoFile {
 		if cur != NoFile {
 			// TODO(T6607): exact restore also has to cover dangling
@@ -458,6 +674,47 @@ func restore(r Record, cur string) error {
 		}
 	}
 	return werr
+}
+
+// restoreNoFollow puts back what a link or removal change found: nothing
+// (removing the link it made), the same symlink, or the same file and
+// mode. It replaces what is there now only while it keeps the identity it
+// has as read here.
+func restoreNoFollow(r Record) error {
+	st, err := ReadState(r.File)
+	if err != nil {
+		return err
+	}
+	if r.BeforeHash == NoFile {
+		if st.Hash != NoFile {
+			if err := safefs.RemoveSame(r.File, st.Info); err != nil {
+				return err
+			}
+		}
+		return removeEmptyDirs(r.CreatedDirs)
+	}
+	old, _, err := Target(r)
+	if err != nil {
+		return err
+	}
+	if st.Hash == NoFile {
+		if err := safefs.MkdirAll(filepath.Dir(r.File), 0o700); err != nil {
+			return err
+		}
+	}
+	if IsLinkHash(r.BeforeHash) {
+		err = safefs.Symlink(string(old), r.File, st.Info)
+	} else {
+		mode := r.Mode
+		if mode == 0 {
+			mode = DefaultMode
+		}
+		err = safefs.WriteFileNoFollow(r.File, old, mode, st.Info)
+	}
+	if errors.Is(err, safefs.ErrDirSync) {
+		return fmt.Errorf("patch: %s: restored %w: %w", r.File, ErrNotSynced, err)
+	}
+	return err
 }
 
 // RemoveEmptyDirs removes dirs, innermost first, while each is empty. A
