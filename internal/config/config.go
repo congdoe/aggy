@@ -31,7 +31,25 @@ type Config struct {
 	Policy        Policy         `toml:"policy"`
 	Notify        Notify         `toml:"notify"`
 	Worktree      UserWorktree   `toml:"worktree"`
+	GC            GC             `toml:"gc"`
 }
+
+// GC is how long aggy gc keeps what it may remove, in days. It is user
+// config only: a repo's .aggy/config.toml has no such table, so a cloned
+// repo cannot make aggy delete sooner.
+type GC struct {
+	// PendingWorktreeDays keeps an edit worktree nobody accepted or
+	// rejected for this long after its borrow ended.
+	PendingWorktreeDays int `toml:"pending_worktree_days"`
+	// ClosedChildDays keeps a closed borrow child in the index this long
+	// after it was last active.
+	ClosedChildDays int `toml:"closed_child_days"`
+	// InboxDays keeps an inbox report this long after it was written.
+	InboxDays int `toml:"inbox_days"`
+}
+
+// MaxGCDays bounds a gc retention setting (ten years).
+const MaxGCDays = 3650
 
 // UserWorktree holds the person's opt-ins for edit worktrees. It is user
 // config only: a repo's .aggy/config.toml has no allow_setup key, so a
@@ -294,6 +312,7 @@ func Default() Config {
 	return Config{
 		Switch: Switch{Order: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok}, Key: DefaultSwitchKey},
 		Policy: Policy{Required: true},
+		GC:     GC{PendingWorktreeDays: 30, ClosedChildDays: 30, InboxDays: 30},
 		Routing: Routing{
 			// TODO(T6638): Codex is left out of news and research on
 			// purpose. Its apply_patch tool cannot be turned off, and its
@@ -412,6 +431,18 @@ func (c Config) Validate() error {
 	for i, a := range c.Worktree.AllowSetup {
 		if !filepath.IsAbs(a.Repo) || len(a.Command) == 0 || a.Command[0] == "" {
 			return fmt.Errorf("worktree.allow_setup[%d]: want an absolute repo and a program with its arguments", i)
+		}
+	}
+	for _, d := range []struct {
+		key string
+		n   int
+	}{
+		{"pending_worktree_days", c.GC.PendingWorktreeDays},
+		{"closed_child_days", c.GC.ClosedChildDays},
+		{"inbox_days", c.GC.InboxDays},
+	} {
+		if d.n < 1 || d.n > MaxGCDays {
+			return fmt.Errorf("gc.%s must be 1 to %d, got %d", d.key, MaxGCDays, d.n)
 		}
 	}
 	for _, k := range adapter.Kinds() {

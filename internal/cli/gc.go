@@ -1,33 +1,42 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/congdoe/aggy/internal/borrow"
+	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
 )
 
-const gcUsage = `Usage: aggy gc [--yes]
+const gcUsage = `Usage: aggy gc [--dry-run] [--yes]
 
 Removes what aggy made and no longer needs: edit worktrees that were
 accepted (rejected ones are already gone), and pending ones left
-untouched for 30 days; closed borrow children in aggy's index (never the
-vendor's own session files); inbox reports older than 30 days; and
-expired research cache entries. It lists stale leases whose pid is alive
-again but kills nothing it cannot prove it started.
+untouched for gc.pending_worktree_days; closed borrow children in aggy's
+index after gc.closed_child_days (never the vendor's own session files);
+inbox reports older than gc.inbox_days; and expired research cache
+entries. The days (30 by default) are set in your own config.toml only.
+It lists stale leases whose pid is in use again, but kills nothing it
+cannot prove it started.
 
-It shows what it would remove, and removes it only with --yes.
+It shows what it would remove and how many bytes, then asks. Without a
+terminal it removes nothing unless given --yes.
+
+  --dry-run  show what it would remove, and remove nothing
+  --yes      remove without asking
 `
 
 // gcRetention is how long aggy gc keeps what it may remove.
@@ -35,10 +44,13 @@ type gcRetention struct {
 	pendingWorktree, closedChild, inbox time.Duration
 }
 
-var defaultRetention = gcRetention{
-	pendingWorktree: 30 * 24 * time.Hour,
-	closedChild:     30 * 24 * time.Hour,
-	inbox:           30 * 24 * time.Hour,
+func retention(c config.GC) gcRetention {
+	day := 24 * time.Hour
+	return gcRetention{
+		pendingWorktree: time.Duration(c.PendingWorktreeDays) * day,
+		closedChild:     time.Duration(c.ClosedChildDays) * day,
+		inbox:           time.Duration(c.InboxDays) * day,
+	}
 }
 
 // gcItem is one thing aggy gc would remove.
@@ -59,13 +71,14 @@ func (p *gcPlan) skip(format string, a ...any) {
 }
 
 func runGC(args []string, stdout, stderr io.Writer) int {
-	return gcWith(args, defaultBorrowEnv(), stdout, stderr)
+	return gcWith(args, defaultBorrowEnv(), os.Stdin, isTerminal(os.Stdin), stdout, stderr)
 }
 
-func gcWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
+func gcWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, stderr io.Writer) int {
 	fl := flag.NewFlagSet("gc", flag.ContinueOnError)
 	fl.SetOutput(io.Discard)
 	yes := fl.Bool("yes", false, "")
+	dry := fl.Bool("dry-run", false, "")
 	if err := fl.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprint(stdout, gcUsage)
@@ -90,6 +103,10 @@ func gcWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		return fail(err)
+	}
 	path, err := store.DefaultPath()
 	if err != nil {
 		return fail(err)
@@ -99,13 +116,18 @@ func gcWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 		return 0
 	}
 	ctx := context.Background()
-	s, err := store.OpenDefault(ctx)
+	// A dry run never creates, migrates, or writes the index.
+	open := store.OpenDefault
+	if *dry {
+		open = func(ctx context.Context) (*store.Store, error) { return store.OpenReadOnly(ctx, path) }
+	}
+	s, err := open(ctx)
 	if err != nil {
 		return fail(err)
 	}
 	defer func() { _ = s.Close() }()
 	g := &gitWorktrees{env: env, stateDir: stateDir, out: stderr}
-	plan, err := planGC(ctx, s, g, stateDir, defaultRetention, env.now())
+	plan, err := planGC(ctx, s, g, stateDir, retention(cfg.GC), env.now())
 	if err != nil {
 		return fail(store.ReadError(err))
 	}
@@ -113,9 +135,21 @@ func gcWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 	if len(plan.items) == 0 {
 		return 0
 	}
-	if !*yes {
-		fmt.Fprintln(stdout, "Nothing removed: run again with --yes to remove these.")
+	switch {
+	case *dry:
+		fmt.Fprintln(stdout, "Dry run: nothing removed.")
+		return 0
+	case *yes:
+	case !tty:
+		fmt.Fprintln(stdout, "Nothing removed: run again with --yes, or in a terminal, to remove these.")
 		return 1
+	default:
+		fmt.Fprint(stdout, "Remove these? [y/N] ")
+		line, _ := bufio.NewReader(io.LimitReader(in, maxAnswer)).ReadString('\n')
+		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+			fmt.Fprintln(stdout, "Nothing removed.")
+			return 1
+		}
 	}
 	code := 0
 	for _, it := range plan.items {
