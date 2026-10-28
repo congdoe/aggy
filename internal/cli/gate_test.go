@@ -8,8 +8,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/congdoe/aggy/internal/manifest"
@@ -112,8 +114,17 @@ func addJSONKey(b []byte) ([]byte, error) {
 // temp HOME, setup-style patches applied through the manifest over
 // several runs, then aggy unwire --all leaves every file byte-identical
 // with the same mode, and no extra file or directory behind.
+//
+// It also covers the rows that are not plain applied changes: a failed
+// create that made its directories, a pending change whose write
+// happened before the process stopped, a file whose mode a tool changed
+// after aggy wrote it, and a file whose mode is not the default under a
+// strict umask. Skipping pending or failed rows, or ignoring the
+// recorded mode, fails this test.
 func TestM0Gate(t *testing.T) {
 	h := isolate(t)
+	old := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(old) })
 	src := filepath.Join(h, "src")
 
 	// Vendor config as people have it: comments, CRLF, tables, no
@@ -123,9 +134,10 @@ func TestM0Gate(t *testing.T) {
 	writeAt(t, codexCfg, "# Codex\r\n# hand edited\r\n\r\nmodel = \"gpt-5\"\r\nproject_doc_fallback_filenames = [\r\n  \"AGENTS.override.md\", # team\r\n]\r\n\r\n[mcp_servers.docs]\r\ncommand = \"npx\"\r\n", 0o640)
 	writeAt(t, filepath.Join(h, ".codex", "auth.json"), `{"token":"fake"}`, 0o600)
 	claudeSettings := filepath.Join(h, ".claude", "settings.json")
-	writeAt(t, claudeSettings, "{\n  \"permissions\": {\"deny\": [\"Read(.env)\"]},\n  \"model\": \"opus\"\n}", 0o600)
+	writeAt(t, claudeSettings, "{\n  \"permissions\": {\"deny\": [\"Read(.env)\"]},\n  \"model\": \"opus\"\n}", 0o644)
 	writeAt(t, filepath.Join(h, ".claude", ".credentials.json"), `{"fake":true}`, 0o600)
-	writeAt(t, filepath.Join(h, ".claude", "CLAUDE.md"), "# global\n", 0o644)
+	claudeMD := filepath.Join(h, ".claude", "CLAUDE.md")
+	writeAt(t, claudeMD, "# global\n", 0o644)
 	// Grok has no config yet: setup creates a file in new directories.
 	grokCfg := filepath.Join(h, ".grok", "aggy", "settings.toml")
 
@@ -181,7 +193,7 @@ func TestM0Gate(t *testing.T) {
 		hc, err := patch.HashFile(claudeSettings)
 		add(patch.Patch{File: claudeSettings, ExpectedHash: hc, Transform: addJSONKey}, err)
 		hg, err := patch.HashFile(grokCfg)
-		add(patch.Patch{File: grokCfg, ExpectedHash: hg, Transform: appendOnce("aggy = true\n")}, err)
+		add(patch.Patch{File: grokCfg, ExpectedHash: hg, Transform: appendOnce("aggy = true\n"), Mode: 0o640}, err)
 		return ps
 	}
 	// Run 1: setup. Run 2: a later change to a file run 1 changed. Run 3:
@@ -206,13 +218,61 @@ func TestM0Gate(t *testing.T) {
 			t.Errorf("setup again changed %s", c.File)
 		}
 	}
+	if fi, err := os.Stat(grokCfg); err != nil || fi.Mode().Perm() != 0o640 {
+		t.Errorf("created grok config mode = %v, %v, want 0640", fi, err)
+	}
+	// Run 4 fails after making the directories for a new file.
+	failedFile := filepath.Join(h, ".config", "aggy", "failed.toml")
+	restore := patch.SetTestHookBeforeWrite(func(f string) error {
+		if f == failedFile {
+			return fmt.Errorf("injected failure")
+		}
+		return nil
+	})
+	_, err = m.Run(ctx, manifest.Write, manifest.NewRunID(), []patch.Patch{{File: failedFile, ExpectedHash: patch.NoFile, Transform: appendOnce("x = 1\n")}}, io.Discard)
+	restore()
+	if err == nil {
+		t.Fatal("the injected failure did not fail the run")
+	}
+	if _, err := os.Stat(filepath.Dir(failedFile)); err != nil {
+		t.Fatalf("the failed run made no directories: %v", err)
+	}
+	// Run 5 writes, and the process stops before recording it: the row
+	// stays pending with no backup path.
+	hm, err := patch.HashFile(claudeMD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pend, err := m.Run(ctx, manifest.Write, manifest.NewRunID(), []patch.Patch{{File: claudeMD, ExpectedHash: hm, Transform: appendOnce("- use aggy\n")}}, io.Discard)
+	if err != nil || len(pend) != 1 {
+		t.Fatalf("run 5 = %+v, %v", pend, err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `UPDATE changes SET status = 'pending', backup_path = '' WHERE change_id = ?`, pend[0].ChangeID); err != nil {
+		t.Fatal(err)
+	}
+	var statuses []string
+	rows, _ := s.Changes(ctx, "")
+	for _, c := range rows {
+		statuses = append(statuses, c.Status)
+	}
+	for _, want := range []string{store.ChangeFailed, store.ChangePending} {
+		if !slices.Contains(statuses, want) {
+			t.Errorf("no %s row in the manifest: %v", want, statuses)
+		}
+	}
 	_ = s.Close()
+	// Another tool tightens a file's mode after aggy wrote it; the
+	// content is still aggy's, so unwire restores the recorded mode.
+	if err := os.Chmod(codexCfg, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	wired := snapshot(t, h)
 	changed := diffSnapshots(before, wired)
 	for _, want := range []string{
-		"content .codex/config.toml", "content .claude/settings.json",
+		"content .claude/settings.json",
 		"extra: .grok", "extra: src/app/.git/info", "content src/lib/.git/info/exclude",
+		"extra: .config", "content .claude/CLAUDE.md", "mode .codex/config.toml",
 	} {
 		if !strings.Contains(strings.Join(changed, "\n"), want) {
 			t.Errorf("setup did not make the change %q; changes:\n%s", want, strings.Join(changed, "\n"))
@@ -222,9 +282,27 @@ func TestM0Gate(t *testing.T) {
 		t.Errorf("codex config = %q", b)
 	}
 
-	// A dry run changes nothing.
-	if code, _, errOut := run("unwire", "--all", "--dry-run"); code != 0 {
+	// A dry run shows each undo and changes nothing.
+	code, dry, errOut := run("unwire", "--all", "--dry-run")
+	if code != 0 {
 		t.Fatalf("dry run: exit %d: %s", code, errOut)
+	}
+	for _, want := range []string{
+		"--- " + codexCfg + "\n+++ " + codexCfg,
+		`-# wired by aggy\r`,
+		`-  "AGENTS.override.md", "CLAUDE.md", # team\r`,
+		`+  "AGENTS.override.md", # team\r`,
+		"--- " + grokCfg + "\n+++ /dev/null",
+		"-aggy = true",
+		`-  "aggyParity": true`,
+		"-.aggy/",
+		"-- use aggy",
+		"# " + codexCfg + ": mode 0600 -> 0640",
+		"# " + filepath.Join(h, ".config") + ": would remove the directory if empty",
+	} {
+		if !strings.Contains(dry, want) {
+			t.Errorf("dry run output lacks %q:\n%s", want, dry)
+		}
 	}
 	if d := diffSnapshots(wired, snapshot(t, h)); len(d) > 0 {
 		t.Errorf("the dry run changed files:\n%s", strings.Join(d, "\n"))
