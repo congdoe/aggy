@@ -38,6 +38,13 @@ type target struct {
 	// Brief writes the child's brief to .aggy/briefs/<child-id>.md and
 	// tells the child to read it (--brief).
 	Brief bool
+	// For a switch (ParentID and Vendor set, T6665): Child puts that
+	// child of the parent on screen instead of the vendor's latest,
+	// NewChild starts another child of the vendor, and Model is the model
+	// for this one launch, never written to config.
+	Child    string
+	NewChild bool
+	Model    string
 }
 
 // launchPlan is what a launch puts on screen.
@@ -119,6 +126,12 @@ func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t 
 		return p, p.newChildOf(ctx, s, cfg, t.Vendor, now)
 	}
 
+	if t.Vendor != "" && t.NewChild {
+		return p, p.newChildOf(ctx, s, cfg, t.Vendor, now)
+	}
+	if t.Child != "" {
+		pick = t.Child
+	}
 	files := &sessionFiles{}
 	children, err := planRefresh(ctx, s, p.parent.ID, files)
 	if err != nil {

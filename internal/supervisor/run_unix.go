@@ -100,7 +100,7 @@ func Run(o Options) (Exit, error) {
 		return Exit{Code: 1}, errors.New("supervisor: standard input is not a terminal")
 	}
 	t := &tty{fd: fd}
-	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, events: make(chan hookEvent, 16), asks: make(chan adapter.Vendor, 1), quit: make(chan struct{})}
+	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, events: make(chan hookEvent, 16), asks: make(chan Choice, 1), quit: make(chan struct{})}
 	defer close(s.quit)
 	var srv *Server
 	if o.RunDir != "" {
@@ -159,7 +159,7 @@ func Run(o Options) (Exit, error) {
 		double = DefaultDoublePress
 	}
 	filter := newKeyFilter(key)
-	s.pk = &picker{vendors: o.Vendors, key: key}
+	s.pk = &picker{vendors: o.Vendors, key: key, children: o.Children}
 	// pending is a first switch-key press waiting to see whether a second
 	// follows within double; it fires when none does.
 	var pending <-chan time.Time
@@ -200,9 +200,9 @@ func Run(o Options) (Exit, error) {
 		case <-s.escBy:
 			s.escBy = nil
 			s.promptEsc()
-		case v := <-s.asks:
+		case c := <-s.asks:
 			if s.sw.to == "" { // a switch the user picked wins
-				s.setSwitch(pendingSwitch{to: v, asked: true})
+				s.setSwitch(pendingSwitch{to: c.Vendor, asked: true, choice: c})
 			}
 		case <-check:
 			s.offerSwitch()
@@ -254,7 +254,8 @@ func Run(o Options) (Exit, error) {
 				// switch; a CLI the user quit ends aggy.
 				ex := Exit{Code: w.code}
 				if s.sw.typed {
-					ex.SwitchTo = s.sw.to
+					ex.SwitchTo, ex.Next = s.sw.to, s.sw.choice
+					ex.Next.Vendor = s.sw.to
 				}
 				return ex, nil
 			}
@@ -295,7 +296,7 @@ type session struct {
 	// returns.
 	sw     pendingSwitch
 	events chan hookEvent
-	asks   chan adapter.Vendor
+	asks   chan Choice
 	quit   chan struct{}
 	// atPrompt: a turn end from the session came after the last Enter the
 	// user typed (or none was typed since a launch that started no turn),
@@ -342,6 +343,8 @@ type pendingSwitch struct {
 	to    adapter.Vendor
 	asked bool // the agent asked for it (a skill), not the user
 	typed bool // the exit command has been typed
+	// choice is what was picked or asked for with the vendor (T6665).
+	choice Choice
 }
 
 // hookEvent is a hook event from the session: its name and the vendor
@@ -393,6 +396,7 @@ func (s *session) hookEvent(ev hookEvent) {
 func (s *session) onSwitch(r Request) error {
 	v := adapter.Vendor(r.Vendor)
 	if !holdSignal(s.o.Vendor) {
+		// TODO(T6753): log switch.agent_no_hold.
 		return fmt.Errorf("an agent cannot ask for a switch away from %s: aggy cannot tell when %s waits for an approval, so only the user may start one, with aggy's switch key",
 			s.o.Vendor, s.o.Vendor)
 	}
@@ -402,7 +406,8 @@ func (s *session) onSwitch(r Request) error {
 	if !s.waiting.CompareAndSwap(false, true) {
 		return errors.New("a switch is already waiting")
 	}
-	s.asks <- v // the only one past the swap; the channel holds one
+	// The only one past the swap; the channel holds one.
+	s.asks <- Choice{Vendor: v, New: r.New, Model: r.Model, Brief: r.Brief}
 	return nil
 }
 
@@ -497,8 +502,24 @@ func (s *session) offerSwitch() {
 	if !verified {
 		lines = append(lines, fmt.Sprintf("(%s is unverified.)", cmd))
 	}
+	lines = append(lines, choiceNote(s.sw.choice)...)
 	s.pk.ask(v, lines...)
 	s.openPicker()
+}
+
+// choiceNote describes a switch's options, for the status line's end.
+func choiceNote(c Choice) []string {
+	var out []string
+	if c.New {
+		out = append(out, "(A new session.)")
+	}
+	if c.Model != "" {
+		out = append(out, "(Model "+c.Model+".)")
+	}
+	if c.Brief {
+		out = append(out, "(With a brief.)")
+	}
+	return out
 }
 
 // typeExit types the on-screen CLI's exit command, through the input
@@ -618,10 +639,12 @@ func (s *session) pickerInput(b []byte) {
 		s.promptInput(b)
 		return
 	}
-	done, picked := s.pk.handle(b)
+	done, c := s.pk.handle(b)
 	if !done {
+		s.pk.draw(s.o.Out, s.pickerOverCLI) // a toggle, the model edit, or a child list
 		return
 	}
+	picked := c.Vendor
 	s.closePicker()
 	switch {
 	case s.sw.typed:
@@ -635,6 +658,7 @@ func (s *session) pickerInput(b []byte) {
 		// (an Enter that started none leaves no turn end to wait for).
 		// Not past a hold (S-3), and not past unsent text (S-8): that
 		// stays until the user's next Enter, which offerSwitch reports.
+		// The new pick's options replace the old.
 		if s.held {
 			s.pk.tell(fmt.Sprintf("%s said it is waiting for you (a permission prompt or another notice).", s.o.Vendor),
 				fmt.Sprintf("Answer it, or send a message; aggy switches to %s at the next turn end.", picked))
@@ -642,13 +666,15 @@ func (s *session) pickerInput(b []byte) {
 			return
 		}
 		s.atPrompt, s.toldDirty = true, false
+		s.sw.choice, s.sw.asked = c, false
 	case picked != "":
 		if err := s.offered(picked); err != nil && !errors.Is(err, ErrChecking) {
+			// TODO(T6753): log picker.refused.
 			s.pk.tell(fmt.Sprintf("Cannot switch to %s: %v", picked, err))
 			s.openPicker()
 			return
 		}
-		s.setSwitch(pendingSwitch{to: picked})
+		s.setSwitch(pendingSwitch{to: picked, choice: c})
 	default: // Esc on the list cancels a waiting switch
 		s.setSwitch(pendingSwitch{})
 	}

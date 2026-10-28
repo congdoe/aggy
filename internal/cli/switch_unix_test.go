@@ -30,12 +30,12 @@ func TestSwitchCommand(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = srv.Close() })
 	srv.SetRoot(os.Getpid()) // the test plays the CLI
-	var asked []string
+	var asked []supervisor.Request
 	srv.SetSwitch(func(r supervisor.Request) error {
 		if r.Vendor == "codex" {
 			return errors.New("codex is not offered here")
 		}
-		asked = append(asked, r.Vendor)
+		asked = append(asked, r)
 		return nil
 	})
 	env := func(sock string) func(string) string {
@@ -50,6 +50,9 @@ func TestSwitchCommand(t *testing.T) {
 		stderr string
 	}{
 		{"queued", []string{"grok"}, srv.Path(), 0, "when this turn ends", ""},
+		{"with options", []string{"--new", "--model", "grok-5", "--brief", "grok"}, srv.Path(), 0, "when this turn ends", ""},
+		{"bad model", []string{"--model", "a;b", "grok"}, srv.Path(), 2, "", "not a model name"},
+		{"unknown flag", []string{"--fork", "grok"}, srv.Path(), 2, "", "usage"},
 		{"refused", []string{"codex"}, srv.Path(), 1, "", "not offered here"},
 		{"unknown vendor", []string{"gpt"}, srv.Path(), 2, "", "unknown vendor"},
 		{"no vendor", nil, srv.Path(), 2, "", "usage"},
@@ -65,7 +68,8 @@ func TestSwitchCommand(t *testing.T) {
 			}
 		})
 	}
-	if len(asked) != 1 || asked[0] != "grok" {
-		t.Errorf("switch requests = %v, want one for grok", asked)
+	if len(asked) != 2 || asked[0].Vendor != "grok" || asked[0].New ||
+		!asked[1].New || asked[1].Model != "grok-5" || !asked[1].Brief {
+		t.Errorf("switch requests = %+v, want grok, then grok with --new --model grok-5 --brief", asked)
 	}
 }
