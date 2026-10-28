@@ -125,9 +125,15 @@ is `startup`.
     `limit_name`, and `normal_model_slug` (`protocol.rs#L2479-L2483`). A
     missing `limit_id` is the ordinary `codex` quota
     (`core/src/state/session.rs#L446-L453`), and ids are lowercased with
-    `-` as `_` (`codex-api/src/rate_limits.rs#L270`). Codex's TUI treats
-    the ordinary quota and the one whose `limit_name` is the current model
-    as the session's (`tui/src/chatwidget/rate_limits.rs#L196-L202`);
+    `-` as `_` (`codex-api/src/rate_limits.rs#L270`). In Codex's TUI,
+    only the refresh-poll cadence looks at both the `codex` bucket and
+    the one whose `limit_name` is the current model (exact,
+    case-sensitive: `tui/src/chatwidget/rate_limits.rs#L196-L202`). Its
+    usage warnings and rate-limit-reached state key off the `codex` limit
+    alone, matched with `eq_ignore_ascii_case`
+    (`on_rate_limit_snapshot_from`, `#L252-L265`, `#L325`, `#L350`). So
+    the ordinary quota limiting a session is source-checked; a
+    model-scoped quota limiting it is Inferred, unverified (TODO(T6617)).
     `normal_model_slug` is metadata of a quota alias, "never a replacement
     for the request model" (`protocol.rs#L2481-L2483`). The model is
     `turn_context`'s `payload.model` (`protocol.rs#L3451`,
