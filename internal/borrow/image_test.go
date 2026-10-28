@@ -41,6 +41,8 @@ func TestMediaValidate(t *testing.T) {
 		{"video refs", adapter.Video, Media{Out: "/r/a.mp4", Refs: []string{"/x.png"}}, "--ref is for images"},
 		{"relative ref", adapter.Image, Media{Out: "/r/a.png", Refs: []string{"s.png"}}, "--ref"},
 		{"research", adapter.Research, Media{Out: "/r/a.png"}, "for image and video"},
+		{"edit with no vendor", adapter.Image, Media{Out: "/r/a.png", Resume: "5f0c6a2e-9b1d-4e7a-8c3f-2d4b6a8e0c1f"}, "on the vendor that made it"},
+		{"edit a video", adapter.Video, Media{Out: "/r/a.mp4", Resume: "5f0c6a2e-9b1d-4e7a-8c3f-2d4b6a8e0c1f"}, "on the vendor that made it"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -217,5 +219,111 @@ func TestDeliver(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestEditResumes (T6635): --edit resumes the child session that made
+// the image, on its vendor, read from the sidecar, and writes over it.
+func TestEditResumes(t *testing.T) {
+	tests := []struct {
+		vendor   adapter.Vendor
+		scenario string
+		want     []string // in the resumed run's args
+	}{
+		{adapter.Codex, `{"images":1}`, []string{"resume"}},
+		{adapter.Grok, `{"images":1,"json":{"result":"images/1.jpg"}}`, []string{"--resume", "image_gen,image_edit"}},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.vendor), func(t *testing.T) {
+			w := newWorld(t)
+			w.scenario[tt.vendor] = tt.scenario
+			out := filepath.Join(w.repo, "hero.jpg")
+			req := w.req(adapter.Image, "a hero image")
+			req.Vendor = string(tt.vendor)
+			req.Media = &Media{Out: out}
+			first, err := w.borrower().Run(context.Background(), req)
+			if err != nil || first[0].Status != "done" {
+				t.Fatalf("first run %+v, %v", first, err)
+			}
+			out = first[0].Artifacts[0].Path
+			sc, err := ReadSidecar(w.repo, out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The vendor names new files afresh; the fake reuses 1.*, so
+			// clear the first run's file.
+			if err := os.Remove(firstSource(t, w, tt.vendor)); err != nil {
+				t.Fatal(err)
+			}
+			req = w.req(adapter.Image, "darker background")
+			req.Vendor = sc.Vendor
+			req.Media = &Media{Out: out, Resume: sc.SessionID}
+			res, err := w.borrower().Run(context.Background(), req)
+			if err != nil || res[0].Status != "done" || len(res[0].Artifacts) != 1 || res[0].Artifacts[0].Path != out {
+				t.Fatalf("edit %+v, %v", res, err)
+			}
+			recs := w.records()
+			rec := recs[len(recs)-1]
+			args := strings.Join(rec.Args, " ")
+			if rec.SessionID != sc.SessionID || !strings.Contains(args, sc.SessionID) || !strings.Contains(rec.Stdin, "Edit the image you made earlier") {
+				t.Errorf("resumed run %+v", rec)
+			}
+			for _, x := range tt.want {
+				if !strings.Contains(args, x) {
+					t.Errorf("args %q lack %q", args, x)
+				}
+			}
+			after, err := ReadSidecar(w.repo, out)
+			if err != nil || after.SessionID != sc.SessionID || after.Prompt != "darker background" || after.Borrow == sc.Borrow {
+				t.Errorf("sidecar after edit %+v, %v", after, err)
+			}
+		})
+	}
+}
+
+// firstSource is the one file the vendor stored for the first run.
+func firstSource(t *testing.T, w *world, v adapter.Vendor) string {
+	t.Helper()
+	pattern := filepath.Join(w.home, ".codex", "generated_images", "*", "1.png")
+	if v == adapter.Grok {
+		pattern = filepath.Join(w.home, ".grok", "sessions", "*", "*", "images", "1.jpg")
+	}
+	m, err := filepath.Glob(pattern)
+	if err != nil || len(m) != 1 {
+		t.Fatalf("glob %s = %v, %v", pattern, m, err)
+	}
+	return m[0]
+}
+
+func TestReadSidecar(t *testing.T) {
+	repo := t.TempDir()
+	out := filepath.Join(repo, "a.png")
+	dir := filepath.Join(repo, ".aggy", "assets")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id := "5f0c6a2e-9b1d-4e7a-8c3f-2d4b6a8e0c1f"
+	tests := []struct {
+		name, body, want string
+	}{
+		{"ok", `{"kind":"image","vendor":"grok","session_id":"` + id + `"}`, ""},
+		{"flag id", `{"kind":"image","vendor":"grok","session_id":"--yolo"}`, "session id"},
+		{"unknown vendor", `{"kind":"image","vendor":"gemini","session_id":"` + id + `"}`, "unknown vendor"},
+		{"video", `{"kind":"video","vendor":"grok","session_id":"` + id + `"}`, "only images are edited"},
+		{"garbage", `{`, "sidecar"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := os.WriteFile(filepath.Join(dir, "a.png.json"), []byte(tt.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := ReadSidecar(repo, out)
+			if (err == nil) != (tt.want == "") || (err != nil && !strings.Contains(err.Error(), tt.want)) {
+				t.Errorf("ReadSidecar = %v, want %q", err, tt.want)
+			}
+		})
+	}
+	if _, err := ReadSidecar(repo, filepath.Join(repo, "none.png")); err == nil || !strings.Contains(err.Error(), "no sidecar") {
+		t.Errorf("missing sidecar = %v", err)
 	}
 }

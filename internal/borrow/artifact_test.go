@@ -124,9 +124,19 @@ func TestGate(t *testing.T) {
 	good, bad := filepath.Join(dir, "1.png"), filepath.Join(dir, "2.png")
 	write(pngBytes)(t, good)
 	write([]byte("not an image"))(t, bad)
-	ok, refused := gate([]adapter.Artifact{{Path: good, Kind: "image"}, {Path: bad, Kind: "image"}}, time.Time{})
-	if len(ok) != 1 || ok[0].Path != good || ok[0].Ext() != ".png" || len(refused) != 1 || !strings.HasPrefix(refused[0], bad) {
-		t.Fatalf("gate = %+v, %q", ok, refused)
+	arts := []adapter.Artifact{{Path: good, Kind: "image"}, {Path: bad, Kind: "image"}}
+	ok, refused, made := gate(arts, time.Time{}, false)
+	if len(ok) != 1 || ok[0].Path != good || ok[0].Ext() != ".png" || len(refused) != 1 || !strings.HasPrefix(refused[0], bad) || made != 2 {
+		t.Fatalf("gate = %+v, %q, %d", ok, refused, made)
+	}
+	// A resumed session's earlier files are skipped and not counted; a
+	// fresh session's are refused.
+	later := time.Now().Add(time.Hour)
+	if ok, refused, made := gate(arts, later, true); len(ok)+len(refused)+made != 0 {
+		t.Errorf("resumed gate = %+v, %q, %d", ok, refused, made)
+	}
+	if ok, refused, made := gate(arts, later, false); len(ok) != 0 || len(refused) != 2 || made != 2 {
+		t.Errorf("fresh gate = %+v, %q, %d", ok, refused, made)
 	}
 }
 
