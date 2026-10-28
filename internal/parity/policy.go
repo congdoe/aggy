@@ -20,41 +20,80 @@ import (
 // cannot edit these rules. A trusted repo can still switch the Codex
 // part off with a rules file Codex cannot parse (OtherCodexRules).
 
-// DenyRules are the policy's deny rules in the syntax Claude Code and
-// Grok Build share. Claude takes them as permissions.deny in an inline
-// --settings layer (code.claude.com/docs settings.md: lists merge across
-// layers; permissions.md: Read rules use gitignore patterns, so
-// "**/.env" matches at any depth under the working directory, and a "*"
-// in a Bash rule matches any text, spaces included). Grok takes each as a
-// --deny flag (grok-build 2bdd1d6a, src/app/cli.rs and user-guide
-// 22-permissions-and-safety.md: deny wins over every allow, from any
-// source; an unrooted "**/" glob matches anywhere; a Bash pattern is a
-// prefix or a whole-command glob). Grok splits a --deny value on commas,
-// so no rule holds one.
-var DenyRules = []string{
-	// Never read .env or key files.
-	"Read(**/.env)",
-	"Read(**/.env.*)",
-	"Read(**/*.pem)",
-	"Read(**/*.key)",
-	"Read(**/id_rsa)",
-	"Read(**/id_dsa)",
-	"Read(**/id_ecdsa)",
-	"Read(**/id_ed25519)",
-	// Never push to main.
+// keyFiles are the file names the policy never reads: .env files and
+// private keys by their usual names.
+var keyFiles = []string{".env", ".env.*", "*.pem", "*.key", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
+
+// bashDeny are the policy's Bash rules, in the syntax Claude Code and
+// Grok Build share: a "*" matches any text, spaces included, and a deny
+// applies to every segment of a chained command (Claude: permissions.md,
+// "Wildcard patterns" and "Compound commands"; Grok: user-guide
+// 22-permissions-and-safety.md, "Bash Rules", where a pattern matches as
+// a prefix or as a whole-command glob). Grok splits a --deny value on
+// commas, so no rule holds one.
+var bashDeny = []string{
+	// Never push to main: the target is the last word, a refspec ending
+	// in :main or :refs/heads/main, or main with options after it.
 	"Bash(git push * main)",
 	"Bash(git push * main *)",
 	"Bash(git push * *:main)",
 	"Bash(git push * *:main *)",
-	// No destructive commands.
-	"Bash(rm -rf *)",
-	"Bash(rm -fr *)",
-	"Bash(git reset --hard*)",
-	"Bash(git clean *)",
+	"Bash(git push * refs/heads/main)",
+	"Bash(git push * refs/heads/main *)",
+	"Bash(git push * *:refs/heads/main)",
+	"Bash(git push * *:refs/heads/main *)",
+	// No force push: a force flag anywhere, or a +refspec.
 	"Bash(git push --force*)",
 	"Bash(git push -f*)",
 	"Bash(git push * --force*)",
 	"Bash(git push * -f*)",
+	"Bash(git push * +*)",
+	// No recursive forced delete, in the usual spellings.
+	"Bash(rm -rf*)",
+	"Bash(rm -fr*)",
+	"Bash(rm -Rf*)",
+	"Bash(rm -fR*)",
+	"Bash(rm -r -f*)",
+	"Bash(rm -f -r*)",
+	"Bash(rm -R -f*)",
+	"Bash(rm -f -R*)",
+	"Bash(rm -r --force*)",
+	"Bash(rm -R --force*)",
+	"Bash(rm -f --recursive*)",
+	"Bash(rm --recursive -f*)",
+	"Bash(rm --force -r*)",
+	"Bash(rm --force -R*)",
+	"Bash(rm --recursive --force*)",
+	"Bash(rm --force --recursive*)",
+	// No hard reset, no git clean.
+	"Bash(git reset --hard*)",
+	"Bash(git reset * --hard*)",
+	"Bash(git clean *)",
+}
+
+// ClaudeDeny are the policy's deny rules for Claude Code, which takes
+// them as permissions.deny in an inline --settings layer (settings.md:
+// lists merge across layers; permissions.md: a deny wins over any
+// allow). A Read pattern starting with // is anchored at the file-system
+// root, so "//**/.env" matches a .env anywhere, not only under the
+// working directory (permissions.md, "Read and Edit"); a Read deny also
+// covers Edit and Write on the path, and the file commands Claude
+// recognizes in Bash, such as cat.
+var ClaudeDeny = denyRules("Read(//**/")
+
+// GrokDeny are the policy's deny rules for Grok Build, one --deny flag
+// each (grok-build 2bdd1d6a, src/app/cli.rs; user-guide
+// 22-permissions-and-safety.md). Grok has no // anchor; an unrooted
+// "**/" glob matches anywhere, and a Read deny also covers the paths
+// shell commands such as cat name.
+var GrokDeny = denyRules("Read(**/")
+
+func denyRules(readPrefix string) []string {
+	out := make([]string, 0, len(keyFiles)+len(bashDeny))
+	for _, f := range keyFiles {
+		out = append(out, readPrefix+f+")")
+	}
+	return append(out, bashDeny...)
 }
 
 // CodexRules is the policy as a Codex exec-policy rules file. Codex
@@ -77,19 +116,43 @@ const CodexRules = `# Written by aggy: its safety policy (aggy policy wire). agg
 # removes this file. A guardrail against mistakes, not a sandbox.
 
 prefix_rule(
-    pattern = ["git", "push", ["origin", "upstream"], ["main", "HEAD:main", "main:main"]],
+    pattern = ["git", "push", ["origin", "upstream"], ["main", "+main", "HEAD:main", "main:main", "refs/heads/main", "HEAD:refs/heads/main"]],
     decision = "forbidden",
     justification = "aggy safety policy: never push to main. Push a branch and open a pull request.",
 )
 
 prefix_rule(
-    pattern = ["git", "push", ["--force", "-f", "--force-with-lease"]],
+    pattern = ["git", "push", ["-u", "--set-upstream"], ["origin", "upstream"], ["main", "+main", "HEAD:main", "main:main", "refs/heads/main", "HEAD:refs/heads/main"]],
+    decision = "forbidden",
+    justification = "aggy safety policy: never push to main. Push a branch and open a pull request.",
+)
+
+prefix_rule(
+    pattern = ["git", "push", ["--force", "-f", "--force-with-lease", "--force-if-includes"]],
     decision = "forbidden",
     justification = "aggy safety policy: no force push.",
 )
 
 prefix_rule(
-    pattern = ["rm", ["-rf", "-fr"]],
+    pattern = ["git", "push", ["origin", "upstream"], ["--force", "-f", "--force-with-lease", "--force-if-includes"]],
+    decision = "forbidden",
+    justification = "aggy safety policy: no force push.",
+)
+
+prefix_rule(
+    pattern = ["rm", ["-rf", "-fr", "-Rf", "-fR"]],
+    decision = "forbidden",
+    justification = "aggy safety policy: no recursive forced delete. Remove the specific files instead.",
+)
+
+prefix_rule(
+    pattern = ["rm", ["-r", "-R", "--recursive"], ["-f", "--force"]],
+    decision = "forbidden",
+    justification = "aggy safety policy: no recursive forced delete. Remove the specific files instead.",
+)
+
+prefix_rule(
+    pattern = ["rm", ["-f", "--force"], ["-r", "-R", "--recursive"]],
     decision = "forbidden",
     justification = "aggy safety policy: no recursive forced delete. Remove the specific files instead.",
 )

@@ -151,8 +151,8 @@ type InteractiveRequest struct {
 	// MemoryFile is an absolute path holding Memory, for Claude's
 	// --append-system-prompt-file. Empty means none.
 	MemoryFile string
-	// Deny holds the safety policy's deny rules (parity.DenyRules), in
-	// the rule syntax Claude and Grok share: Claude takes them as
+	// Deny holds the safety policy's deny rules (parity.ClaudeDeny or
+	// parity.GrokDeny), in the vendor's rule syntax: Claude takes them as
 	// permissions.deny in an inline --settings layer, Grok as --deny
 	// flags. Codex ignores them; its policy is a rules file.
 	Deny []string
