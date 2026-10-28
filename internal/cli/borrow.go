@@ -26,7 +26,7 @@ import (
 	"github.com/congdoe/aggy/internal/termsafe"
 )
 
-const borrowUsage = `Usage: aggy borrow <kind> "<task>" [--path P]... [--constraint C]... [--vendor V] [--base REF]
+const borrowUsage = `Usage: aggy borrow <kind> "<task>" [--path P]... [--constraint C]... [--vendor V] [--base REF] [--fresh]
 
 Runs one bounded task headless in another vendor's CLI and prints a short
 report. The child gets the task, the paths and constraints given here,
@@ -42,6 +42,9 @@ Kinds: image, video, research, news, review. (edit comes in M3.)
                    with the default branch
   --allow-untested run a CLI whose version is outside the versions the
                    borrow lockdown was verified on
+  --fresh          research and news: ask again instead of reusing the
+                   report on the same question (a day for news, a week
+                   for research)
 
 A review runs at the root of the git work tree you are in. Its child gets
 the diff and the --path files in the prompt, as data to review.
@@ -119,6 +122,7 @@ type borrowArgs struct {
 	vendor        string
 	base          string
 	allowUntested bool
+	fresh         bool
 	help          bool
 }
 
@@ -139,6 +143,10 @@ func parseBorrowArgs(args []string) (borrowArgs, error) {
 		}
 		if a == "--allow-untested" {
 			b.allowUntested = true
+			continue
+		}
+		if a == "--fresh" {
+			b.fresh = true
 			continue
 		}
 		if !strings.HasPrefix(a, "-") || a == "-" {
@@ -273,6 +281,11 @@ func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "aggy borrow: --base is for review only")
 		return 2
 	}
+	if ba.fresh && kind != adapter.Research && kind != adapter.News {
+		fmt.Fprintln(stderr, "aggy borrow: --fresh is for research and news only")
+		return 2
+	}
+	req.Fresh = ba.fresh
 	results, err := b.Run(ctx, req)
 	code := 0
 	for _, r := range results {
@@ -299,8 +312,13 @@ func printResult(w io.Writer, r borrow.Result) {
 	if model == "" {
 		model = "default model"
 	}
-	fmt.Fprintf(w, "borrow %s: %s on %s (%s): %s in %s, %d tokens\n", r.ID, r.Kind, r.Vendor,
-		termsafe.Field(model), r.Outcome, r.Elapsed.Round(time.Second), r.Tokens)
+	if !r.CachedAt.IsZero() {
+		fmt.Fprintf(w, "borrow %s: %s on %s (%s): %s, cached from %s (--fresh asks again)\n", r.ID, r.Kind, r.Vendor,
+			termsafe.Field(model), r.Outcome, r.CachedAt.UTC().Format("2006-01-02 15:04 UTC"))
+	} else {
+		fmt.Fprintf(w, "borrow %s: %s on %s (%s): %s in %s, %d tokens\n", r.ID, r.Kind, r.Vendor,
+			termsafe.Field(model), r.Outcome, r.Elapsed.Round(time.Second), r.Tokens)
+	}
 	for _, a := range r.Tried {
 		fmt.Fprintf(w, "  passed over %s: %s\n", a.Vendor, termsafe.Field(a.Reason))
 	}

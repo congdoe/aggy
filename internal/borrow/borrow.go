@@ -53,6 +53,9 @@ type Request struct {
 	// AllowUntested runs a CLI whose version is outside the adapter's
 	// tested range (--allow-untested).
 	AllowUntested bool
+	// Fresh skips the research cache (--fresh). A fresh report still
+	// replaces the cached one.
+	Fresh bool
 	// Material is the review input (required for review, which runs in
 	// Repo, the git work tree root); internal/cli gathers it.
 	Material *Material
@@ -127,6 +130,9 @@ type Result struct {
 	ReportPath string
 	// ResearchPath is the research or news report (research.go).
 	ResearchPath string
+	// CachedAt is when a cached report was made (cache.go); zero for a
+	// borrow that ran.
+	CachedAt time.Time
 	// Tried are the candidates passed over before Vendor, and why.
 	Tried []Attempt
 }
@@ -203,6 +209,12 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 	}
 	if err := req.validate(); err != nil {
 		return nil, err
+	}
+	if res, ok, err := b.cached(ctx, req); err != nil || ok {
+		if err != nil {
+			return nil, err
+		}
+		return []Result{res}, nil
 	}
 	if req.Vendor == Both {
 		vs, err := b.both(ctx, req)
