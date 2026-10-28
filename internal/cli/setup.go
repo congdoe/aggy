@@ -57,11 +57,13 @@ type checkEnv struct {
 	environ  []string  // aggy's environment; only names are ever reported
 	now      func() time.Time
 	identity *devfix.Identity // what doctor --report scrubs; nil means the running user's
+	cwd      string           // where doctor looks for the repo's shared memory; "" skips it
 }
 
 // defaultCheckEnv is the real world: the three adapters, the process
 // runner, and the process's stdin.
 func defaultCheckEnv() checkEnv {
+	cwd, _ := os.Getwd()
 	return checkEnv{
 		adapters: []adapter.Adapter{claude.New(), codex.New(), grok.New()},
 		run:      execrun.ExecRunner(probeTimeout),
@@ -70,6 +72,7 @@ func defaultCheckEnv() checkEnv {
 		home:     os.Getenv("HOME"),
 		environ:  os.Environ(),
 		now:      time.Now,
+		cwd:      cwd,
 	}
 }
 
