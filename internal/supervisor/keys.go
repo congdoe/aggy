@@ -18,9 +18,6 @@ type keyEvent struct {
 
 const esc = 0x1b
 
-// ctrlU clears the line in a readline-style composer.
-const ctrlU = 0x15
-
 var (
 	pasteStart = []byte("\x1b[200~")
 	pasteEnd   = []byte("\x1b[201~")
