@@ -1,0 +1,10 @@
+--- a/codex_comments_crlf
++++ b/codex_comments_crlf
+@@ -1,6 +1,7 @@
+ # Codex settings\r
+ # managed by hand\r
+ \r
++project_doc_fallback_filenames = ["CLAUDE.md"]\r
+ model = "gpt-5"\r
+ approval_policy = "on-request"\r
+ \r

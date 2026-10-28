@@ -1,0 +1,5 @@
+--- a/codex_empty_list
++++ b/codex_empty_list
+@@ -1 +1 @@
+-project_doc_fallback_filenames = []
++project_doc_fallback_filenames = ["CLAUDE.md"]

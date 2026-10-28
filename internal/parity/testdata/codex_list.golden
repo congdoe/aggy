@@ -1,0 +1,6 @@
+--- a/codex_list
++++ b/codex_list
+@@ -1,2 +1,2 @@
+ model = "o"
+-project_doc_fallback_filenames = ["AGENTS.override.md"] # mine
++project_doc_fallback_filenames = ["AGENTS.override.md", "CLAUDE.md"] # mine

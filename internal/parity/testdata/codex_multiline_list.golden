@@ -1,0 +1,10 @@
+--- a/codex_multiline_list
++++ b/codex_multiline_list
+@@ -1,6 +1,6 @@
+ project_doc_fallback_filenames = [
+   "GUIDE.md", # team guide
+-  'NOTES.md',
++  'NOTES.md', "CLAUDE.md",
+ ]
+ 
+ [profiles.fast]

@@ -1,0 +1,6 @@
+--- a/codex_bom
++++ b/codex_bom
+@@ -1 +1,2 @@
+-\ufeffmodel = "o"
++\ufeffproject_doc_fallback_filenames = ["CLAUDE.md"]
++model = "o"
