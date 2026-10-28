@@ -300,7 +300,7 @@ found every Grok borrow failing. Minimal runs in a scratch directory.
 | S1, read confinement | G3 plus a prompt asking to read `./README.md`, then a canary file outside the cwd by absolute path, with `--permission-mode plan`; `--permission-mode dontAsk --allow 'Read(./**)'`; `--permission-mode plan --allow 'Read(./**)'` | **Not confined** | All three exited 0 and returned the canary: Grok auto-allows reads in every mode, so allow rules do not confine `read_file`. |
 | S2, strict sandbox | the same with `--permission-mode plan --sandbox strict` | **Confined under `$HOME`** | README was read; the canary under `$HOME` was refused, `Permission denied: <HOME>/.../canary.txt`. |
 | S3, `~/Library` (G32-3) | S2 with the canary at `<HOME>/Library/Caches/aggy-canary.*/canary.txt` | **Not confined** | `read_file` returned the canary: strict allows `~/Library`. |
-| S5, firmlink (G32-9) | S4, with `read_file /System/Volumes/Data<HOME>/Library/Caches/.../c.txt` | **Not confined** | Returned the canary: Grok matches deny rules on the lexical path, and a firmlink is not a symlink. The same spelling of a home folder outside `~/Library` was refused by Seatbelt (`Permission denied`). aggy now also denies `Read(/System/Volumes/Data/**)` and `Grep(/System/Volumes/Data/**)` on darwin; re-check pending. |
+| S5, firmlink (G32-9) | S4, with `read_file /System/Volumes/Data<HOME>/Library/Caches/.../c.txt` | **Not confined**, then **Confined** with aggy's firmlink deny | Before the deny: returned the canary, since Grok matches deny rules on the lexical path and a firmlink is not a symlink. The same spelling of a home folder outside `~/Library` was refused by Seatbelt (`Permission denied`). Re-check, live-verified (2026-10-28, grok 1.0.70): with `--deny "Read(/System/Volumes/Data/**)"` and the matching `Grep` rule, both `read_file` and `grep` on `/System/Volumes/Data<HOME>/Library/...` were refused (`Denied by permission policy`), and the canary did not leak. aggy's darwin argv since G32-9. |
 | S6, nested sandbox (G32-8) | the review argv with `--sandbox strict`, run inside `sandbox-exec -p '(version 1)(allow default)'` | **Refuses to start** | Exit 1; stderr `sandbox initialization failed: Operation not permitted` / `error: could not apply the 'strict' sandbox profile; see the warning above for the cause. Refusing to start with its protections missing.` So a profile that cannot be applied fails closed here; aggy maps it to `ErrLockdownRejected`. |
 | S7, sandbox logging | a successful sandboxed run with `RUST_LOG=xai_grok_sandbox=info` | Recorded | No sandbox line on stderr: headless tracing does not reach stderr, so the source's "continuing without sandbox" warnings are a weak guard. aggy does not set `RUST_LOG`. |
 | S4, `~/Library` denied | S3 plus `--deny "Read(<HOME>/Library/**)" --deny "Grep(<HOME>/Library/**)"`, `$HOME` expanded | **Confined** | `read_file` was refused, `Denied by permission policy: deny rule on read matching "~/Library/**"`; the in-repo README still read. aggy's argv since G32-3. |
@@ -308,7 +308,9 @@ found every Grok borrow failing. Minimal runs in a scratch directory.
 The strict profile (grok-src `crates/codegen/xai-grok-sandbox/src/profiles.rs:463-488`,
 kernel-enforced) allows reads of system dirs (`/usr`, `/etc`, `/tmp`,
 `/private`, `/var`, `/System`, `/Library`, ...), `~/Library`, `~/.grok`,
-and the workspace; writes only to Grok's sessions dir; and blocks child
+and the workspace; writes only to the workspace, Grok's sessions dir,
+and the temp dirs (`xai-grok-sandbox/src/paths.rs:74-78`,
+`essential_writable_paths_strict`); and blocks child
 networking. Gaps: files under `/tmp` and `/private` (`$TMPDIR`, aggy's
 run dirs) stay readable, `~/.grok` (Grok's own home) is readable,
 `~/Library` is readable (S3; aggy's deny rules close it for `read_file`
@@ -323,9 +325,17 @@ paths, `xai-grok-sandbox/src/lib.rs:206-216` and `:236-247`, that log
 refuses them when the probed `--help` does not list `--sandbox` or the
 host has no kernel sandbox (macOS, or Linux with `landlock` in
 `/sys/kernel/security/lsm`), and discards a run whose stderr shows the
-refusal or, a weak extra check, one of those log lines. Not yet run
-live: news under strict, and image and video under strict (their output
-write; TODO(T6742)).
+refusal or, a weak extra check, one of those log lines.
+
+Status of each kind under strict:
+
+| Kind | Status |
+| --- | --- |
+| review | Live-verified: S2, S4, S5; `grok-review-untrusted` passed under strict (b972adf re-run below). |
+| research | Live-verified: `research-borrow-grok` passed under strict plus the denies (b972adf). |
+| news | **Not yet run live** under strict. Same argv as research. |
+| image | **Pending a live check** (T6742). aggy passes strict, with the same denies and host check as review, while `strictMedia` in `internal/adapter/grok/grok.go` is on. Source only (grok-src `559751fd`): `image_gen` saves to `<Grok home>/sessions/<encoded cwd>/<id>/images/<n>.jpg` (`xai-grok-tools/src/implementations/grok_build/image_gen/mod.rs:13`, `storage.rs:54-69`), which strict keeps writable (`paths.rs:74-78`; `profiles.rs:463-488`), and aggy copies the file out itself, outside the sandbox. If the live check fails, `strictMedia` goes to false. |
+| video | **Pending a live check** (T6742), same switch and reasoning (`video_gen/mod.rs:1126`, `videos/<n>.mp4`). **Blocked** on the test account: it has zero data retention, under which Grok's video tools are unavailable (b972adf re-run below). Turning ZDR off, or a user-hosted bucket, is an owner item. |
 
 ## Smoke run, 2026-10-28 (main 2383c13)
 
@@ -421,22 +431,31 @@ Trusted:
 So a repo the user once trusted in interactive Grok, on a hostile
 branch, would run that branch's hooks in a Grok review. aggy does not
 rely on folder trust: a Grok review is refused, and Grok passed over,
-when the review root holds any of these files or dirs, the instruction
-and skill ones included (`internal/borrow/grok_trust.go`). Instructions
-run no code, but Grok's `read_file` keeps an absolute or `~` path as is,
-with no check that it is under the cwd
+when the review root holds any of the code-running files or dirs above
+(`internal/borrow/grok_trust.go`).
+
+Project instructions and skills no longer refuse it (C17-10, relaxed by
+T6742). They run no code, but Grok's `read_file` keeps an absolute or
+`~` path as is, with no check that it is under the cwd
 (`xai-grok-tools/src/types/resources.rs:404-430`, `resolve_model_path`;
 the tool's own description says an absolute path "will be preserved as
 is", `implementations/grok_build/read_file/mod.rs:135`), so a hostile
-repo's instructions could have a reviewer read and echo a file outside
-the repo (C17-10). The instruction names are `INSTRUCTION_FILENAMES`
+repo's instructions could once have had a reviewer read and echo a file
+outside the repo. A Grok review now runs under `--sandbox strict` with
+the `~/Library` and `/System/Volumes/Data` denies, which kept
+`read_file` and `grep` out of `$HOME` whoever asked (S2, S4, S5 above,
+all live). What strict still leaves readable (system dirs, the temp
+dirs, `~/.grok`) a hostile diff, which is attacker text in every
+review, could ask for just the same, so a gate on instruction files
+never closed it. aggy still keeps an edit diff off them
+(`borrow.TrustMarker`). The instruction names are `INSTRUCTION_FILENAMES`
 and `.claude/CLAUDE*.md` (`xai-grok-config/src/compat.rs:311-318`,
 `:431-438`) and the `.grok`, `.claude`, and `.cursor` `rules` dirs
 (`:418-427`); skills are `skills/` or `commands/` under `.grok`,
 `.agents`, `.claude`, or `.cursor` (`compat.rs:405-414`,
-`skills/discovery.rs:26-27`). Grok 1.0.70's folder-trust behaviour is
-unverified; `test/smoke/smoke.sh` (`grok-review-untrusted`) runs the
-live check, not yet recorded here.
+`skills/discovery.rs:26-27`). Grok 1.0.70's folder trust held in one
+live check (`grok-review-untrusted`, b972adf re-run above: no hook ran
+untrusted), but aggy still does not rely on it.
 
 Grok's CLI parses its flags with clap (`xai-grok-pager/src/app/cli.rs:2`),
 so its rejection lines have clap's form.

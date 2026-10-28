@@ -255,11 +255,13 @@ newrepo() {
 # argv_test.go): the review and the image argv aggy passes, after its
 # leading "--prompt-file <file>", which each check passes itself.
 GROK_REVIEW_ARGS="--output-format json --permission-mode plan --sandbox strict --deny Read(@HOME@/Library/**) --deny Grep(@HOME@/Library/**) --deny Read(/System/Volumes/Data/**) --deny Grep(/System/Volumes/Data/**) --tools read_file,grep,list_dir --disallowed-tools write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_gen,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents"
-GROK_IMAGE_ARGS="--output-format json --tools image_gen --disallowed-tools read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents"
+GROK_IMAGE_ARGS="--output-format json --sandbox strict --deny Read(@HOME@/Library/**) --deny Grep(@HOME@/Library/**) --deny Read(/System/Volumes/Data/**) --deny Grep(/System/Volumes/Data/**) --tools image_gen --disallowed-tools read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,web_search --no-subagents"
 # aggy denies Read and Grep of $HOME/Library, and on macOS of the
-# /System/Volumes/Data firmlink, on the sandboxed kinds. The
+# /System/Volumes/Data firmlink, on the sandboxed kinds (image too, while
+# grok.go strictMedia is on). The
 # argv holds globs, so every run that splits it does so under set -f.
 GROK_REVIEW_ARGS=${GROK_REVIEW_ARGS//@HOME@/$HOME}
+GROK_IMAGE_ARGS=${GROK_IMAGE_ARGS//@HOME@/$HOME}
 
 # The verified Codex research lockdown (docs/verification.md, "Codex
 # research isolation"), less the web_search -c, which needs its quotes.

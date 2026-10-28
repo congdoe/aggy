@@ -150,13 +150,15 @@ was tested against.
   last line that holds a whole object.
 - `--version` prints `grok 1.0.70 (f50904eaee6c) [stable]`: version, build
   hash, channel tag (live diagnostic 2026-10-28).
-- Read-only kinds (review, research, news) run with `--sandbox strict`.
+- Read-only kinds (review, research, news, and image and video while
+  `strictMedia` is on) run with `--sandbox strict`.
   Grok auto-allows file reads in every permission mode, so neither
   `--permission-mode plan` nor `--allow 'Read(./**)'` keeps `read_file`
   in the workspace; the strict sandbox does, kernel-enforced: it allows
   reads of system dirs (`/usr`, `/etc`, `/tmp`, `/private`, `/var`,
   `/System`, `/Library`, ...), `~/Library`, `~/.grok`, and the workspace,
-  writes only to Grok's sessions dir, and blocks child networking (live
+  writes only to the workspace, Grok's sessions dir, and the temp dirs
+  (`xai-grok-sandbox/src/paths.rs:74-78`), and blocks child networking (live
   diagnostic 2026-10-28, grok 1.0.70; grok-src
   `crates/codegen/xai-grok-sandbox/src/profiles.rs:463-488`). Gaps: files
   under `/tmp` and `/private` (which holds `$TMPDIR` and aggy's run dirs
@@ -176,8 +178,10 @@ was tested against.
   /System/Volumes/Data<HOME>/Library/...` (the firmlink spelling, not a
   symlink) returned the canary past it (live, 2026-10-28, grok 1.0.70),
   so on darwin aggy also denies `Read(/System/Volumes/Data/**)` and
-  `Grep(/System/Volumes/Data/**)`. The same firmlink read of a home
-  folder outside `~/Library` was refused by the sandbox itself.
+  `Grep(/System/Volumes/Data/**)`, which refused both `read_file` and
+  `grep` there in a live re-check (2026-10-28, grok 1.0.70; verification
+  S5). The same firmlink read of a home folder outside `~/Library` was
+  refused by the sandbox itself.
 - When grok 1.0.70 cannot apply the profile it was asked for, it refuses
   to start, exit 1 (live, 2026-10-28, nested in `sandbox-exec -p
   '(version 1)(allow default)'`): `sandbox initialization failed:
@@ -198,9 +202,19 @@ was tested against.
   but headless tracing is off by default (live: a sandboxed run printed
   no sandbox line on stderr, even with `RUST_LOG=xai_grok_sandbox=info`),
   so that is a weak guard; the host check and Grok's own refusal are the
-  main ones. aggy does not set `RUST_LOG`. Image and video do not use the sandbox
-  yet: their output write under strict is unchecked (TODO(T6742)).
-  Research under strict plus the denies passed live (smoke, b972adf).
+  main ones. aggy does not set `RUST_LOG`. Research under strict plus the
+  denies passed live (smoke, b972adf); news under strict has not been
+  run live.
+- Image and video run under the same strict argv, denies, and host check
+  while `strictMedia` (`internal/adapter/grok/grok.go`) is on. Grok's
+  media tools save into the session folder under `<Grok home>/sessions`
+  (below), which strict keeps writable, and aggy copies the files out
+  itself, outside the sandbox (source only, grok-src 559751fd:
+  `image_gen/mod.rs:13`, `video_gen/mod.rs:1126`, `storage.rs:54-69`).
+  The live check that the output is still written under strict is
+  pending (TODO(T6742)); if it fails, the switch goes off. Video cannot
+  be checked live on the test account until its zero data retention is
+  off (owner item).
 - Flags: `--tools`, `--disallowed-tools`, `--max-turns`, and
   `--permission-mode plan`.
 - Research and news: `--tools web_search --no-subagents --disallowed-tools
@@ -377,9 +391,9 @@ by default is news 15 and research 30; `<run>` is `HeadlessRequest.RunDir`):
 | Kind | Claude | Codex | Grok |
 | --- | --- | --- | --- |
 | research, news | unsupported | unsupported until T6638 (`codex.Refusal`: apply_patch can confirm guessed file contents) | `grok --prompt-file <p> --output-format json --sandbox strict --deny <Lib> --tools web_search --disallowed-tools <D> --no-subagents` |
-| image | unsupported | `codex exec [-i <ref>]... --json <L without --disable image_generation> --skip-git-repo-check -- -` | `grok --prompt-file <p> --output-format json [--session-id <uuid>] --tools image_gen --disallowed-tools <D> --no-subagents` |
-| image `--edit` | unsupported | `codex exec [-i <ref>]... --json <L without image_generation> --skip-git-repo-check resume <id> -- -` | only with `[media] grok_file_tools`: `grok --prompt-file <p> --output-format json --resume <id> --tools image_gen,image_edit --disallowed-tools <D> --no-subagents` |
-| video | unsupported | unsupported | only with `[media] grok_file_tools`: `grok --prompt-file <p> --output-format json --tools image_gen,image_to_video --disallowed-tools <D> --no-subagents` (unverified headless) |
+| image | unsupported | `codex exec [-i <ref>]... --json <L without --disable image_generation> --skip-git-repo-check -- -` | `grok --prompt-file <p> --output-format json [--session-id <uuid>] --sandbox strict --deny <Lib> --tools image_gen --disallowed-tools <D> --no-subagents` (strict while `strictMedia` is on, live check pending) |
+| image `--edit` | unsupported | `codex exec [-i <ref>]... --json <L without image_generation> --skip-git-repo-check resume <id> -- -` | only with `[media] grok_file_tools`: `grok --prompt-file <p> --output-format json --resume <id> --sandbox strict --deny <Lib> --tools image_gen,image_edit --disallowed-tools <D> --no-subagents` |
+| video | unsupported | unsupported | only with `[media] grok_file_tools`: `grok --prompt-file <p> --output-format json --sandbox strict --deny <Lib> --tools image_gen,image_to_video --disallowed-tools <D> --no-subagents` (unverified headless; strict while `strictMedia` is on) |
 | review | `claude -p --output-format json --permission-mode plan --strict-mcp-config --mcp-config <run>/mcp.json --tools Read,Grep,Glob [--setting-sources user] [--settings <run>/settings.json] [--session-id <uuid> \| --resume <id>]` | `codex exec --json <L> -- -` (in a git work tree, so no `--skip-git-repo-check`) | `grok --prompt-file <p> --output-format json --permission-mode plan --sandbox strict --deny <Lib> --tools read_file,grep,list_dir --disallowed-tools <D> --no-subagents` |
 | edit (M3; `aggy borrow` runs Codex only, see below) | `claude -p --output-format json --permission-mode acceptEdits --strict-mcp-config --mcp-config <run>/mcp.json` | `codex exec --json <L with --sandbox workspace-write, keeping shell_tool and unified_exec> -- -` (`codex.EditLockdown`) | `grok --prompt-file <p> --output-format json --tools read_file,grep,list_dir,write,search_replace --disallowed-tools <D> --no-subagents` |
 
@@ -459,11 +473,13 @@ Trusted, which includes a folder trusted once interactively
 (`docs/verification.md`, source only). So a Grok review is refused, and
 the borrow passes Grok over, when the review root holds any of them
 (`internal/borrow/grok_trust.go`). Project instructions (`AGENTS.md`,
-`CLAUDE.md`, rules dirs) and skill dirs refuse it too: Grok loads them as
-system-level text, and its `read_file` is not limited to the cwd
-(`docs/verification.md`), so a hostile repo could steer a reviewer to
-read a file outside it. Every other Grok kind runs in an empty dir outside any git
-tree.
+`CLAUDE.md`, rules dirs) and skill dirs no longer refuse it (T6742):
+Grok's `read_file` is not limited to the cwd by itself, but the review
+runs under `--sandbox strict` and aggy's denies, which kept reads out of
+`$HOME` live whoever asked (verification.md S2, S4, S5), and what strict
+leaves readable the diff under review could ask for in any repo
+(verification.md, "Grok project config and folder trust"). Every other
+Grok kind runs in an empty dir outside any git tree.
 
 Interactive argv: Claude `claude [--session-id <uuid> | --resume <id>
 [--fork-session [--session-id <uuid>]]] [<brief pointer>]`; Codex `codex
