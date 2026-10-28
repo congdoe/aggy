@@ -54,7 +54,7 @@ const keyPrefix = `^.{0,12}?`
 
 var (
 	// assign is a secret-named setting with a value: the quote before the
-	// value, if any, and the value. literal decides whether it counts.
+	// value, if any, and the value. codeValue decides whether it counts.
 	assign = regexp.MustCompile(secretName + "\\s*([\"'`]?)([^\\s\"',;`]{8,})")
 	// other matches secrets that are not token-shaped on their own.
 	other = regexp.MustCompile(strings.Join([]string{
@@ -86,6 +86,15 @@ var (
 	// escapedKey is key text inside one escaped string: 60 or more base64
 	// characters between written "\n"s, as a JSON-escaped PEM body has.
 	escapedKey = regexp.MustCompile(`\\n[A-Za-z0-9+/]{60,}={0,2}\\n`)
+	// envLine is an env-file line: NAME=value, nothing else.
+	envLine = regexp.MustCompile(`^\s*(?:export\s+)?[A-Za-z_][\w.-]*=\S+\s*$`)
+	// pairLine is a one-pair YAML or INI line: key: value or key = value,
+	// with no trailing "," or ";".
+	pairLine = regexp.MustCompile(`^\s*(?:-\s+)?["']?[\w.-]+["']?\s*[:=]\s*\S*[^\s,;]\s*$`)
+	// call is a value that is a function call, such as hashPassword(raw).
+	call = regexp.MustCompile(`^[A-Za-z_$][\w$.]*\(.*\)$`)
+	// keyword starts a line of code.
+	keyword = regexp.MustCompile(`^(?:const|let|var|val|final|def|func|fn|return|private|public|protected|static|readonly)\b`)
 	// dotted is a dotted identifier path, such as welcome.message.title.
 	dotted = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+$`)
 	// b64 is a run of base64 text (either alphabet) long enough to wrap a
@@ -141,42 +150,54 @@ func hasRun(line string, n int, url bool) bool {
 	return false
 }
 
-// literal reports whether v, the text after a secret name, looks like a
-// value rather than code: quoted, or a word that is not a call, an
-// expression, a type, or a dotted path (generateToken(user),
-// {item.id}, CancellationToken, welcome.message.title).
-func literal(v string) bool {
-	v = strings.TrimSpace(v)
-	if v == "" {
+// codeValue reports whether v, the unquoted value after a secret name in
+// line, is code rather than a secret, and so is kept (C16-12). It fails
+// toward redaction: never for an env-file line or a one-pair YAML or INI
+// line (F28-1), and otherwise only when v is a call (generateToken(user))
+// or the line is clearly code (":=", a trailing ";" or ",", a keyword, or
+// a value that opens with a bracket) and v is code-shaped: brackets, a
+// dotted path, or a camelCase or PascalCase identifier
+// ({item.id}, CancellationToken).
+func codeValue(line, v string) bool {
+	if envLine.MatchString(line) {
 		return false
 	}
-	if strings.ContainsRune("\"'`", rune(v[0])) {
+	if call.MatchString(v) {
 		return true
 	}
-	if i := strings.IndexAny(v, " \t,;"); i >= 0 {
-		v = v[:i]
-	}
-	if strings.ContainsAny(v, "(){}[]<>") || dotted.MatchString(v) {
+	if pairLine.MatchString(line) {
 		return false
 	}
-	// A camelCase or PascalCase identifier: letters only, with a hump.
+	t := strings.TrimSpace(line)
+	code := strings.Contains(t, ":=") || strings.HasSuffix(t, ";") || strings.HasSuffix(t, ",") ||
+		keyword.MatchString(t) || strings.ContainsAny(v[:1], "{[<(")
+	return code && codeShaped(v)
+}
+
+// codeShaped reports whether v looks like an expression, a dotted path,
+// or a camelCase or PascalCase identifier.
+func codeShaped(v string) bool {
+	if strings.ContainsAny(v, "(){}[]<>") || dotted.MatchString(v) {
+		return true
+	}
 	hump := false
 	for i := 0; i < len(v); i++ {
 		c := v[i]
 		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
-			return true
+			return false
 		}
 		if i > 0 && 'a' <= v[i-1] && v[i-1] <= 'z' && 'A' <= c && c <= 'Z' {
 			hump = true
 		}
 	}
-	return !hump
+	return hump
 }
 
-// assigned reports whether line sets a secret name to a literal value.
+// assigned reports whether line sets a secret name to a value that is
+// quoted or not code.
 func assigned(line string) bool {
 	for _, m := range assign.FindAllStringSubmatch(line, -1) {
-		if m[1] != "" || literal(m[2]) {
+		if m[1] != "" || !codeValue(line, m[2]) {
 			return true
 		}
 	}
@@ -311,7 +332,9 @@ func Lines(text string) (string, int) {
 				drop[j] = true
 			}
 		case pending && strings.TrimSpace(l) != "":
-			drop[i] = literal(l) || Secret(l)
+			// The value on its own line is kept only when it is a call.
+			v := strings.TrimRight(strings.TrimSpace(l), ",;")
+			drop[i] = !call.MatchString(v) || Secret(l)
 		default:
 			// A key block ends at the first line that is not key text.
 			inKey = false
