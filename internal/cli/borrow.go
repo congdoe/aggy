@@ -140,6 +140,11 @@ func runBorrow(args []string, stdout, stderr io.Writer) int {
 }
 
 func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
+	// One hop: a borrow child's shell never borrows again.
+	if env.getenv(borrow.Delegated) != "" {
+		fmt.Fprintf(stderr, "aggy borrow: %s\n", borrow.ErrDelegated)
+		return 1
+	}
 	ba, err := parseBorrowArgs(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy borrow: %s\n\n%s", termsafe.Field(err.Error()), borrowUsage)
@@ -197,6 +202,7 @@ func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 		StateDir:  stateDir,
 		TempDir:   env.tempDir,
 		Now:       env.now,
+		Getenv:    env.getenv,
 	})
 	results, err := b.Run(ctx, borrow.Request{
 		Kind: kind, Task: ba.task, Paths: paths, Constraints: ba.constraints,
