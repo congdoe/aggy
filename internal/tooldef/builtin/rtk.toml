@@ -1,14 +1,17 @@
 # RTK: compresses shell output before the model sees it; failures stay.
 # Source: docs/verification.md, "Managed tools (2026-10-28)": rtk 1.1.0,
-# rtk hook claude and rtk hook codex (there is no Grok subcommand).
+# rtk hook claude (there is no Grok subcommand).
 #
 # aggy never runs rtk init: it edits files aggy cannot undo through the
-# manifest. RTK is wired as declared PreToolUse hooks instead, which can
-# rewrite the command and so are marked as deciding.
-# #59 F-6, cleared: rtk hook claude answers updatedInput with a
-# permissionDecisionReason and no permissionDecision, so it never
+# manifest. RTK is wired as a declared PreToolUse hook instead, which can
+# rewrite the command and so is marked as deciding.
+# #59 F-6, cleared for Claude: rtk hook claude answers updatedInput with
+# a permissionDecisionReason and no permissionDecision, so it never
 # approves a command it rewrites (verified live at 1.1.0).
-# TODO(T6712): Codex's matcher for its shell tool, and the token cost.
+# Not for Codex (S63-9): rtk hook codex answers permissionDecision
+# "allow" with every rewrite, which would approve every shell command it
+# touches, so aggy does not wire it.
+# TODO(T6712): the token cost.
 name = "rtk"
 description = "Compresses shell command output before the model sees it; failures stay"
 homepage = "https://github.com/rtk-ai/rtk"
@@ -27,12 +30,6 @@ event = "PreToolUse"
 matcher = "Bash"
 decides = true
 argv = ["rtk", "hook", "claude"]
-
-[[hook]]
-vendors = ["codex"]
-event = "PreToolUse"
-decides = true
-argv = ["rtk", "hook", "codex"]
 
 [cost]
 method = "none" # TODO(T6712): measure what the hook adds to each CLI

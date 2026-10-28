@@ -1,7 +1,9 @@
 package tooldef
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +25,15 @@ type Tool struct {
 	BuiltIn bool
 	// Source is "built-in:<file>" for a built-in, else the file's path.
 	Source string
+	// Digest is the sha256 of the definition file, in hex. A switch that
+	// turns a user tool on holds it, so an edited or replaced file is off
+	// until it is turned on again.
+	Digest string
+}
+
+func digest(b []byte) string {
+	s := sha256.Sum256(b)
+	return hex.EncodeToString(s[:])
 }
 
 // Registry holds every loaded tool, sorted by name.
@@ -77,7 +88,7 @@ func Builtins() (*Registry, error) {
 		if e.Name() != d.Name+".toml" {
 			return nil, &Error{File: src, Key: "name", Msg: "the file must be named <name>.toml"}
 		}
-		if err := r.add(Tool{Def: d, BuiltIn: true, Source: src}); err != nil {
+		if err := r.add(Tool{Def: d, BuiltIn: true, Source: src, Digest: digest(b)}); err != nil {
 			return nil, err
 		}
 	}
@@ -151,7 +162,7 @@ func loadUser(file string) (Tool, error) {
 	if filepath.Base(file) != d.Name+".toml" {
 		return Tool{}, &Error{File: file, Key: "name", Msg: fmt.Sprintf("the file must be named %s.toml", d.Name)}
 	}
-	return Tool{Def: d, Source: file}, nil
+	return Tool{Def: d, Source: file, Digest: digest(b)}, nil
 }
 
 // readTrusted reads file through one no-follow descriptor and checks the

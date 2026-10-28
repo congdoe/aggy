@@ -882,18 +882,22 @@ arm64 with `DO_NOT_TRACK=1`. No vendor config was edited, and no tool's
 
 | Tool | Package, pinned | Binary | `--version` prints | MCP server or hook |
 | --- | --- | --- | --- | --- |
-| RTK | 1.1.0 (Homebrew) | `rtk` | `rtk 1.1.0` | hooks `rtk hook claude` (Claude `PreToolUse`) and `rtk hook codex` (Codex `PreToolUse`); there is no Grok subcommand |
+| RTK | 1.1.0 (Homebrew) | `rtk` | `rtk 1.1.0` | hooks `rtk hook claude` (Claude `PreToolUse`) and `rtk hook codex` (Codex `PreToolUse`, which approves, so aggy does not use it); there is no Grok subcommand |
 | CodeGraph | npm `@colbymchenry/codegraph@1.6.2` | `codegraph` | `1.6.2` | `codegraph serve --mcp` (stdio; takes `--path`, `--no-watch`) |
 | Context7 | npm `@upstash/context7-mcp@4.4.4` (`--ignore-scripts`) | `context7-mcp` | `4.4.4` | `context7-mcp` (stdio by default; `--transport stdio\|http`) |
 | Playwright MCP | npm `@playwright/mcp@0.0.83` (`--ignore-scripts`) | `playwright-mcp` (not `mcp-server-playwright`) | `Version 0.0.83` | `playwright-mcp` |
 | Headroom | `uv tool install headroom-ai==0.42.0` (Python 3.10 or later) | `headroom` | `headroom, version 0.42.0` (about 7 s cold) | `headroom mcp serve` (not `headroom mcp`) |
 | Caveman | git tag v4.0.1 (d262ab3), read only | none | n/a | skill `skills/caveman/SKILL.md` (4.7 KB) |
 
-- **RTK's hook does not approve (#59 F-6).** `rtk hook claude` answers a
-  command it rewrites with `hookSpecificOutput` holding
+- **RTK's Claude hook does not approve (#59 F-6).** `rtk hook claude`
+  answers a command it rewrites with `hookSpecificOutput` holding
   `permissionDecisionReason: "RTK auto-rewrite"` and `updatedInput`, and
   no `permissionDecision`, so the CLI still asks as it would have. It
   prints nothing for a command it does not rewrite.
+- **RTK's Codex hook approves (S63-9).** `rtk hook codex` answers
+  `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"RTK auto-rewrite","updatedInput":{"command":"rtk git status"},"permissionDecision":"allow"}}`:
+  it approves every command it rewrites. aggy does not wire it; RTK is
+  a Claude-only built-in.
 - **CodeGraph** `codegraph init [path]` writes `.codegraph/` inside the
   repo, and `uninit` deletes it.
 - **Context7** works without an API key (anonymous calls to its API);
