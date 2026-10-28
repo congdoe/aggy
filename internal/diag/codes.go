@@ -200,6 +200,7 @@ var (
 	CodePeerUnknown    = Code{"peer.cred_failed"}
 	CodeWrongVendor    = Code{"hook.wrong_vendor"}
 	CodeBadPayload     = Code{"hook.bad_payload"}
+	CodeToolChanged    = Code{"tool.changed_since_add"}
 )
 
 const showRun = "aggy diag show <run id> for what led to it"
@@ -330,6 +331,7 @@ var codes = []CodeInfo{
 	{CodePeerUnknown, false, "aggy could not tell which user or process opened a connection to the supervisor's socket, so it was closed unanswered.", "Usually a process that connected and exited at once; nothing, unless hooks stop arriving."},
 	{CodeWrongVendor, true, "A hook event from the CLI's tree came from another vendor's hook than the one on screen, so it did not gate a switch.", "A nested CLI of another vendor in the session; nothing else."},
 	{CodeBadPayload, false, "aggy hook could not read the vendor's hook payload, or it was not a JSON object.", "The vendor CLI's version; aggy doctor."},
+	{CodeToolChanged, true, "aggy tool on refused: the user definition is not the file aggy tool add showed.", "aggy tool remove <name>, then aggy tool add the file again and read what it runs."},
 }
 
 // LookupEvent returns event e's entry.

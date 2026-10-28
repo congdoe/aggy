@@ -51,6 +51,20 @@ func clearToolSwitches(ctx context.Context, name string) error {
 	return withCode(diag.CodeStore, s.DeleteToolSwitches(ctx, name))
 }
 
+// recordToolAdd clears every setting of name and records the digest of
+// the definition aggy tool add showed.
+func recordToolAdd(ctx context.Context, name, digest string) error {
+	s, err := store.OpenDefault(ctx)
+	if err != nil {
+		return withCode(diag.CodeStore, err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.DeleteToolSwitches(ctx, name); err != nil {
+		return withCode(diag.CodeStore, err)
+	}
+	return withCode(diag.CodeStore, s.PutToolAdded(ctx, name, digest, time.Now()))
+}
+
 // toolRepoAt is the repo a switch is about.
 type toolRepoAt struct {
 	root string // the work-tree root holding the directory
@@ -60,8 +74,12 @@ type toolRepoAt struct {
 
 // toolRepo finds the repo holding dir: its work-tree root, and the main
 // checkout from git's common dir, so a setting follows the repo into its
-// worktrees. Outside a git work tree it is the zero value.
-func toolRepo(dir string) (toolRepoAt, error) {
+// worktrees. A .git link that is not git's own keys the work tree by its
+// own root (S63-11, parity.GitMainCheckout). Outside a git work tree it
+// is the zero value. strict is for aggy tool on: a .git that cannot be
+// read is an error; otherwise (off, status, a launch) the work tree is
+// keyed by its own root (S63-17).
+func toolRepo(dir string, strict bool) (toolRepoAt, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return toolRepoAt{}, err
@@ -70,13 +88,12 @@ func toolRepo(dir string) (toolRepoAt, error) {
 	if !ok {
 		return toolRepoAt{}, nil
 	}
-	common, err := parity.GitCommonDir(root)
+	main, err := parity.GitMainCheckout(root)
 	if err != nil {
-		return toolRepoAt{}, withCode(diag.CodeToolScope, err)
-	}
-	main := common
-	if filepath.Base(common) == ".git" {
-		main = filepath.Dir(common)
+		if strict {
+			return toolRepoAt{}, withCode(diag.CodeToolScope, err)
+		}
+		main = root
 	}
 	key, err := safefs.CanonicalPath(main)
 	return toolRepoAt{root: root, main: main, key: key}, err
@@ -138,7 +155,7 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 	}
 	var repo toolRepoAt
 	if a.hasRepo {
-		if repo, err = toolRepo(a.repo); err != nil {
+		if repo, err = toolRepo(a.repo, on); err != nil {
 			return err
 		}
 		if repo.root == "" {
@@ -177,7 +194,18 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 	}
 	defer func() { _ = s.Close() }()
 	sw := store.ToolSwitch{Tool: name, Vendor: a.vendor, Repo: repo.key, On: on, At: time.Now()}
-	if on {
+	switch {
+	case on && t.BuiltIn:
+		sw.Digest = switchboard.BuiltInDigest
+	case on:
+		// S63-16: the file must still be the one aggy tool add showed.
+		added, ok, err := s.ToolAdded(ctx, name)
+		if err != nil {
+			return withCode(diag.CodeStore, err)
+		}
+		if ok && added != t.Digest {
+			return withCode(diag.CodeToolChanged, fmt.Errorf("%s changed since aggy tool add showed it; aggy tool remove %s, then add it again to see what it runs", t.Source, name))
+		}
 		sw.Digest = t.Digest
 	}
 	if err := s.PutToolSwitch(ctx, sw); err != nil {
@@ -239,7 +267,7 @@ func toolStatus(ctx context.Context, a toolArgs, stdout, stderr io.Writer) error
 			return err
 		}
 	}
-	repo, err := toolRepo(dir)
+	repo, err := toolRepo(dir, false)
 	if err != nil {
 		return err
 	}

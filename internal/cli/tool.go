@@ -314,9 +314,10 @@ func toolAdd(src string, yes bool, in io.Reader, tty bool, stdout io.Writer) err
 		return err
 	}
 	// Settings left from an earlier tool of this name never apply to
-	// this one (their digest differs too).
-	if err := clearToolSwitches(context.Background(), d.Name); err != nil {
-		fmt.Fprintf(stdout, "warning: earlier settings for %s were not cleared: %s; they do not apply to this file\n", d.Name, termsafe.Line(err.Error()))
+	// this one (their digest differs too). The digest of what was shown
+	// is recorded, so on turns on only that (S63-16).
+	if err := recordToolAdd(context.Background(), d.Name, tooldef.Digest(b)); err != nil {
+		fmt.Fprintf(stdout, "warning: the index was not updated: %s; earlier settings for %s do not apply to this file\n", termsafe.Line(err.Error()), d.Name)
 	}
 	fmt.Fprintf(stdout, "Added %s (off). aggy tool remove %s deletes it.\n", termsafe.Field(dest), d.Name)
 	return nil

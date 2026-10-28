@@ -312,4 +312,5 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `peer.cred_failed` |  | aggy could not tell which user or process opened a connection to the supervisor's socket, so it was closed unanswered. | Usually a process that connected and exited at once; nothing, unless hooks stop arriving. |
 | `hook.wrong_vendor` | yes | A hook event from the CLI's tree came from another vendor's hook than the one on screen, so it did not gate a switch. | A nested CLI of another vendor in the session; nothing else. |
 | `hook.bad_payload` |  | aggy hook could not read the vendor's hook payload, or it was not a JSON object. | The vendor CLI's version; aggy doctor. |
+| `tool.changed_since_add` | yes | aggy tool on refused: the user definition is not the file aggy tool add showed. | aggy tool remove &lt;name&gt;, then aggy tool add the file again and read what it runs. |
 <!-- registry:end -->

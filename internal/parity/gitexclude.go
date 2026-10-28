@@ -166,6 +166,67 @@ func absUnder(base, p string) string {
 	return filepath.Join(base, p)
 }
 
+// GitMainCheckout returns the main checkout of the work tree at root, by
+// GitCommonDir, but only when the link is git's own (S63-11): a crafted
+// .git file or folder can name another real repo, whose per-repo
+// settings would then apply here and whose tools_off would replace this
+// one's. Otherwise it returns root itself, so the work tree is keyed by
+// its own path and only its own config applies. The link is git's own
+// when root/.git is a "gitdir:" file naming <main>/.git/worktrees/<name>,
+// whose gitdir file names root/.git back, and whose commondir names
+// <main>/.git, a real folder (not a symlink). A real .git folder is a
+// main checkout: root, whatever commondir it holds. A submodule's .git
+// file (gitdir: <super>/.git/modules/<name>) has no back-link, so a
+// submodule is keyed by its own root. An error is GitCommonDir's: no
+// readable git dir at all.
+func GitMainCheckout(root string) (string, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	common, err := GitCommonDir(root)
+	if err != nil {
+		return "", err
+	}
+	dotgit := filepath.Join(root, ".git")
+	fi, err := safefs.Lstat(dotgit)
+	if err != nil {
+		return "", err
+	}
+	if !fi.Mode().IsRegular() {
+		return root, nil // a .git folder, or a symlink to one
+	}
+	b, err := safefs.ReadFileLimit(dotgit, maxGitFile)
+	if err != nil {
+		return "", err
+	}
+	p, _ := strings.CutPrefix(strings.TrimSpace(firstLine(b)), "gitdir:")
+	gitDir := absUnder(root, strings.TrimSpace(p))
+	// The back-link: <gitdir>/gitdir names root/.git.
+	back, err := safefs.ReadFileLimit(filepath.Join(gitDir, "gitdir"), maxGitFile)
+	if err != nil || !samePath(absUnder(gitDir, strings.TrimSpace(firstLine(back))), dotgit) {
+		return root, nil
+	}
+	// The common dir is <main>/.git, a real folder, and the git dir is
+	// one of its worktrees.
+	main := filepath.Dir(common)
+	if filepath.Base(common) != ".git" || !samePath(filepath.Dir(gitDir), filepath.Join(common, "worktrees")) {
+		return root, nil
+	}
+	if cfi, err := safefs.Lstat(common); err != nil || !cfi.IsDir() {
+		return root, nil
+	}
+	return main, nil
+}
+
+// samePath reports whether a and b are the same path once each is made
+// canonical.
+func samePath(a, b string) bool {
+	ca, err1 := safefs.CanonicalPath(a)
+	cb, err2 := safefs.CanonicalPath(b)
+	return err1 == nil && err2 == nil && ca == cb
+}
+
 // GitExcludePatch returns the patch that adds ".aggy/" to the git exclude
 // file of the repo at root, never to .gitignore, guarded by the file's
 // current hash. Apply it through a manifest, so aggy unwire removes the

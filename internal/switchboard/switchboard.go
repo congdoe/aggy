@@ -45,6 +45,15 @@ type State struct {
 // Changed is the reason a user tool turned on is off again.
 const Changed = "off: the definition changed since it was turned on"
 
+// WasUser is the reason a built-in is off although an "on" names it: the
+// on was for a user tool of the same name.
+const WasUser = "off: it was turned on for a user tool of this name; turn the built-in on to use it"
+
+// BuiltInDigest is the digest an "on" for a built-in records: a
+// built-in's own file changes with aggy's releases, so its on holds this
+// marker rather than a file's sha256.
+const BuiltInDigest = "built-in"
+
 // State decides tool t for vendor v in repo, the key of the repo's main
 // checkout ("" outside a repo).
 func (b Board) State(t tooldef.Tool, v adapter.Vendor, repo string) State {
@@ -67,9 +76,16 @@ func (b Board) State(t tooldef.Tool, v adapter.Vendor, repo string) State {
 		on, why = sw.On, "off: "+sw.why
 		if on {
 			why = "on: " + sw.why
-			// A user file edited or replaced after it was turned on.
-			if !t.BuiltIn && sw.digest != t.Digest {
+			switch {
+			case !t.BuiltIn && sw.digest != t.Digest:
+				// A user file edited or replaced after it was turned on.
 				on, why = false, Changed
+			case t.BuiltIn && sw.digest != BuiltInDigest && sw.digest != t.Digest:
+				// S63-18: turned on for a user tool of this name, before
+				// a release made the name a built-in. (Rows a dev build
+				// wrote for a built-in hold its digest at the time, and
+				// go off once its file changes.)
+				on, why = false, WasUser
 			}
 		}
 	} else {

@@ -1,6 +1,10 @@
 package cli
 
 import (
+	"context"
+	"time"
+
+	"github.com/congdoe/aggy/internal/store"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -210,10 +214,11 @@ func TestToolSwitchStale(t *testing.T) {
 	if _, out, _ := toolRun("", false, "status"); !strings.HasPrefix(statusLine(t, out, "demo"), "demo off off off") || !strings.Contains(out, "changed since") {
 		t.Errorf("an edited definition stayed on:\n%s", out)
 	}
-	// B: an invalid file can be turned off and removed.
-	if code, _, _ := toolRun("", false, "on", "demo"); code != 0 {
-		t.Fatal("on")
+	// S63-16: on turns on only the file aggy tool add showed.
+	if code, _, errOut := toolRun("", false, "on", "demo"); code != 1 || !strings.Contains(errOut, "tool.changed_since_add") {
+		t.Errorf("on an edited file: %d %q", code, errOut)
 	}
+	// B: an invalid file can be turned off and removed.
 	writeAt(t, dest, "name = 1\n", 0o600)
 	if code, out, errOut := toolRun("", false, "off", "demo"); code != 0 || !strings.Contains(out, "not loaded") {
 		t.Errorf("off a refused tool: %d %q %q", code, out, errOut)
@@ -223,6 +228,68 @@ func TestToolSwitchStale(t *testing.T) {
 	}
 	if code, _, errOut := toolRun("", false, "remove", "demo"); code != 0 || exists(t, dest) {
 		t.Errorf("remove a refused tool: %d %q", code, errOut)
+	}
+}
+
+// TestToolRepoLinks: a crafted .git that names another repo keys the
+// work tree by its own root, so that repo's settings and tools_off never
+// apply (S63-11); and off and status take a broken .git, which only on
+// refuses (S63-17).
+func TestToolRepoLinks(t *testing.T) {
+	_, dest := toolHome(t, demoTool)
+	writeAt(t, dest, demoTool, 0o600)
+	other := switchRepo(t, "")
+	if code, _, errOut := toolRun("", false, "on", "demo", "--repo", other); code != 0 {
+		t.Fatalf("on in other: %d %q", code, errOut)
+	}
+	crafted := t.TempDir()
+	writeAt(t, filepath.Join(crafted, ".git"), "gitdir: "+filepath.Join(other, ".git")+"\n", 0o644)
+	writeAt(t, filepath.Join(crafted, ".aggy", "config.toml"), `tools_off = ["context7"]`, 0o600)
+	_, out, _ := toolRun("", false, "status", "--repo", crafted)
+	if got := statusLine(t, out, "demo"); !strings.HasPrefix(got, "demo off off off") {
+		t.Errorf("the other repo's on applied through a crafted .git: %q", got)
+	}
+	if !strings.Contains(out, crafted) {
+		t.Errorf("status names another repo:\n%s", out)
+	}
+	if code, _, errOut := toolRun("", false, "on", "context7", "--repo", crafted); code != 1 || !strings.Contains(errOut, "tool.repo_off") {
+		t.Errorf("the crafted repo's own tools_off was dropped: %d %q", code, errOut)
+	}
+
+	broken := t.TempDir()
+	writeAt(t, filepath.Join(broken, ".git"), "gitdir: /nonexistent\n", 0o644)
+	if code, _, errOut := toolRun("", false, "off", "demo", "--repo", broken); code != 0 {
+		t.Errorf("off on a broken .git: %d %q", code, errOut)
+	}
+	if code, _, errOut := toolRun("", false, "status", "--repo", broken); code != 0 {
+		t.Errorf("status on a broken .git: %d %q", code, errOut)
+	}
+	if code, _, errOut := toolRun("", false, "on", "demo", "--repo", broken); code != 1 || !strings.Contains(errOut, "tool.not_applicable") {
+		t.Errorf("on on a broken .git: %d %q", code, errOut)
+	}
+}
+
+// TestToolOnUserRowsBuiltIn (S63-18): an "on" made for a user tool does
+// not turn on a built-in that later takes its name.
+func TestToolOnUserRowsBuiltIn(t *testing.T) {
+	isolate(t)
+	ctx := context.Background()
+	s, err := store.OpenDefault(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutToolSwitch(ctx, store.ToolSwitch{Tool: "context7", On: true, Digest: strings.Repeat("a", 64), At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	if _, out, _ := toolRun("", false, "status", "context7"); !strings.Contains(out, "user tool of this name") {
+		t.Errorf("a user tool's on turned the built-in on:\n%s", out)
+	}
+	if code, _, errOut := toolRun("", false, "on", "context7"); code != 0 {
+		t.Fatalf("on: %d %q", code, errOut)
+	}
+	if _, out, _ := toolRun("", false, "status", "context7"); !strings.HasPrefix(statusLine(t, out, "context7"), "context7 on on on") {
+		t.Errorf("the built-in's own on:\n%s", out)
 	}
 }
 
