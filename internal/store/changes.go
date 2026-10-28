@@ -47,9 +47,12 @@ type Change struct {
 	CreatedDirIDs []DirID
 	Status        string
 	Kind          string // KindChange or KindMarker; empty means KindChange
-	PlannedAt     time.Time
-	AppliedAt     time.Time // zero until applied
-	UndoneAt      time.Time // zero until undone
+	// Unlocked: the change was planned without the per-target lock, which
+	// the file system could not take.
+	Unlocked  bool
+	PlannedAt time.Time
+	AppliedAt time.Time // zero until applied
+	UndoneAt  time.Time // zero until undone
 }
 
 // DirID is a directory's device and inode, and its birth time (Unix
@@ -153,10 +156,10 @@ func (s *Store) InsertChange(ctx context.Context, c Change) error {
 	}
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO changes (change_id, run_id, file, hash_before, hash_after, backup_path,
-		                      created_file, file_mode, created_dirs, status, kind, planned_at, applied_at, undone_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                      created_file, file_mode, created_dirs, status, kind, unlocked, planned_at, applied_at, undone_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ChangeID, c.RunID, c.File, c.HashBefore, c.HashAfter, c.BackupPath,
-		c.CreatedFile, int64(c.FileMode.Perm()), dirs, c.Status, c.Kind,
+		c.CreatedFile, int64(c.FileMode.Perm()), dirs, c.Status, c.Kind, c.Unlocked,
 		millis(c.PlannedAt), nullMillis(c.AppliedAt), nullMillis(c.UndoneAt))
 	return err
 }
@@ -229,7 +232,7 @@ func (s *Store) Changes(ctx context.Context, runID string) ([]Change, error) {
 func (s *Store) queryChanges(ctx context.Context, where string, args ...any) ([]Change, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, change_id, run_id, file, hash_before, hash_after, backup_path, created_file,
-		        file_mode, created_dirs, status, kind, planned_at, applied_at, undone_at
+		        file_mode, created_dirs, status, kind, unlocked, planned_at, applied_at, undone_at
 		 FROM changes `+where+` ORDER BY id`, args...)
 	if err != nil {
 		return nil, err
@@ -243,7 +246,7 @@ func (s *Store) queryChanges(ctx context.Context, where string, args ...any) ([]
 		var planned int64
 		var applied, undone sql.NullInt64
 		if err := rows.Scan(&c.ID, &c.ChangeID, &c.RunID, &c.File, &c.HashBefore, &c.HashAfter,
-			&c.BackupPath, &c.CreatedFile, &mode, &dirs, &c.Status, &c.Kind, &planned, &applied, &undone); err != nil {
+			&c.BackupPath, &c.CreatedFile, &mode, &dirs, &c.Status, &c.Kind, &c.Unlocked, &planned, &applied, &undone); err != nil {
 			return nil, err
 		}
 		c.FileMode = fs.FileMode(mode).Perm()

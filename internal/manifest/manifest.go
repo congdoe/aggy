@@ -94,24 +94,27 @@ func (m *Manifest) lockPath(file string, noFollow bool) (string, error) {
 	return filepath.Join(filepath.Dir(m.store.Path()), "run", "patch", patch.Hash([]byte(key))+".lock"), nil
 }
 
+// lockFile is store.LockFile; tests replace it to simulate a file system
+// without locks.
+var lockFile = store.LockFile
+
 // lockTarget takes the per-target lock. Where file locks are unsupported
-// it goes on unlocked; the hash guard then still refuses most races.
-func (m *Manifest) lockTarget(ctx context.Context, file string, noFollow bool) (func(), error) {
+// it goes on unlocked, and locked is false; the hash guard then still
+// refuses most races, and Apply marks the row Unlocked, so unwire does
+// not take its plan as proof about an older change.
+func (m *Manifest) lockTarget(ctx context.Context, file string, noFollow bool) (unlock func(), locked bool, err error) {
 	lock, err := m.lockPath(file, noFollow)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := safefs.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	unlock, err := store.LockFile(ctx, lock, lockWait)
+	unlock, err = lockFile(ctx, lock, lockWait)
 	if errors.Is(err, store.ErrLockUnsupported) {
-		// TODO(T6735): unwire's proofs that a pending change never wrote
-		// (a newer change planned on its hash before) assume this lock
-		// was held; unlocked, a newer plan can race a live write.
-		return func() {}, nil
+		return func() {}, false, nil
 	}
-	return unlock, err
+	return unlock, err == nil, err
 }
 
 // Apply applies p as part of run runID and records it.
@@ -123,8 +126,8 @@ func (m *Manifest) lockTarget(ctx context.Context, file string, noFollow bool) (
 // at the plan (drift, a credential path, a transform error) records
 // nothing. Otherwise a pending row is written first, holding the expected hashes
 // and the directories a new file needs, then the backup and the file, then
-// the row is marked applied with the undo facts, or failed (keeping the
-// directories, which Apply may already have made). A failed row never
+// the row is marked applied with the undo facts, or failed with the
+// directories patch.Apply made itself before it failed. A failed row never
 // wrote the file: that includes drift found by patch.Apply's re-check
 // just before the write, which leaves a failed row with no backup. When only the directory
 // sync after the target write failed, the change is recorded as applied
@@ -134,7 +137,7 @@ func (m *Manifest) Apply(ctx context.Context, runID string, p patch.Patch) (stor
 	if err != nil {
 		return store.Change{}, err
 	}
-	unlock, err := m.lockTarget(ctx, file, p.Transform == nil)
+	unlock, locked, err := m.lockTarget(ctx, file, p.Transform == nil)
 	if err != nil {
 		return store.Change{}, err
 	}
@@ -151,6 +154,7 @@ func (m *Manifest) Apply(ctx context.Context, runID string, p patch.Patch) (stor
 		CreatedFile: pl.Created,
 		FileMode:    pl.Mode,
 		CreatedDirs: pl.CreatedDirs,
+		Unlocked:    !locked,
 	}
 	if pl.Action == patch.NoOp {
 		c.Status = store.ChangeNoop
@@ -165,6 +169,9 @@ func (m *Manifest) Apply(ctx context.Context, runID string, p patch.Patch) (stor
 	warn := err
 	if err != nil && (!rec.Changed || !errors.Is(err, patch.ErrNotSynced)) {
 		c.Status = store.ChangeFailed
+		// Only the directories this Apply made, never one another
+		// process made in the meantime.
+		c.CreatedDirs = rec.CreatedDirs
 		c.CreatedDirIDs = dirIDs(c.CreatedDirs)
 		if ferr := m.store.FinishChange(context.WithoutCancel(ctx), c); ferr != nil {
 			err = errors.Join(err, ferr)
