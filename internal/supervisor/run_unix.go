@@ -317,6 +317,13 @@ type session struct {
 	// paste was opened and not closed.
 	lastByte byte
 	inPaste  bool
+	// pasteTail is the end of the last read, for a paste marker split
+	// across reads; lineLen counts the bytes since the last Enter, and
+	// popup is set once a line since the last clean send had an @ or began
+	// with / (T6754).
+	pasteTail []byte
+	lineLen   int
+	popup     bool
 	// openedAt is when the picker last opened.
 	openedAt time.Time
 	// input feeds keys through the key filter (set by Run).
@@ -438,8 +445,12 @@ func (s *session) offered(v adapter.Vendor) error {
 // Only a plain Enter sends (S-13): a chunk that ends in a \r not preceded
 // by ESC (Option+Enter, a newline in Claude) and not by a backslash (also
 // a newline in Claude), even one in the chunk before, and not inside a
-// bracketed paste. Anything else leaves text that may be unsent. When in
-// doubt it stays dirty: the user can press Enter on an empty prompt.
+// bracketed paste, whose markers are found across reads too (T6754).
+// Nor does an Enter on a line that had an @ or began with / (T6754): it
+// may only accept an entry in the CLI's file or command popup, leaving the
+// text in the composer, so it counts as unsent until an Enter on an empty
+// line. Anything else leaves text that may be unsent. When in doubt it
+// stays dirty: the user can press Enter on an empty prompt.
 // shortcut: a CLI that turns on kitty's all-keys-as-escapes mode gets
 // Enter as CSI 13 u, which never clears it, so it cannot be switched
 // from by aggy. Upgrade if T6684 finds one.
@@ -449,19 +460,39 @@ func (s *session) send(b []byte) {
 	if len(b) == 0 {
 		return
 	}
-	if i, j := bytes.LastIndex(b, pasteStart), bytes.LastIndex(b, pasteEnd); i > j {
+	// The paste markers, found with the last bytes of the read before, so
+	// one split across reads still counts.
+	seen := append(append([]byte(nil), s.pasteTail...), b...)
+	if i, j := bytes.LastIndex(seen, pasteStart), bytes.LastIndex(seen, pasteEnd); i > j {
 		s.inPaste = true
 	} else if j >= 0 {
 		s.inPaste = false
 	}
+	s.pasteTail = seen[max(0, len(seen)-len(pasteEnd)+1):]
 	if bytes.IndexByte(b, '\r') >= 0 {
 		s.atPrompt, s.toldDirty = false, false // an Enter may start a turn
+	}
+	// The line so far: its length and whether it may have opened a popup.
+	popup := s.popup
+	for _, c := range b {
+		if c == '\r' {
+			popup = s.lineLen > 0 && s.popup
+			s.lineLen = 0
+			continue
+		}
+		if c == '@' || c == '/' && s.lineLen == 0 {
+			s.popup = true
+		}
+		s.lineLen++
 	}
 	prev := s.lastByte
 	if len(b) > 1 {
 		prev = b[len(b)-2]
 	}
-	s.dirty = b[len(b)-1] != '\r' || prev == esc || prev == '\\' || s.inPaste
+	s.dirty = b[len(b)-1] != '\r' || prev == esc || prev == '\\' || s.inPaste || popup
+	if !s.dirty {
+		s.popup = false // a clean send empties the composer
+	}
 	s.lastByte = b[len(b)-1]
 	s.toChild.push(b)
 }
@@ -495,10 +526,10 @@ func (s *session) offerSwitch() {
 		s.openPicker()
 		return
 	}
-	// One status line (S-12): what matters first, as a narrow terminal
-	// cuts the end.
+	// One status line (S-12): the keys first, as a narrow terminal cuts
+	// the end (it fits 80 columns up to "It types /exit.").
 	cmd, verified := adapter.ExitCommand(on)
-	lines := []string{fmt.Sprintf("See %s's prompt? %s types %s; Esc stays.", on, keyName(s.pk.key), cmd)}
+	lines := []string{fmt.Sprintf("%s switches to %s, Esc stays. See %s's prompt? It types %s.", keyName(s.pk.key), v, on, cmd)}
 	if s.sw.asked {
 		lines = append(lines, "(The agent asked.)")
 	}

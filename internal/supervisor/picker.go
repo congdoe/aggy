@@ -136,7 +136,7 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 // CLI's screen, so an approval prompt or menu the CLI shows stays in
 // view while the user decides.
 func (p *picker) statusLine(cols int) string {
-	line := "aggy: switch to " + string(p.confirm) + "? " + strings.Join(p.lines, " ")
+	line := "aggy: " + strings.Join(p.lines, " ")
 	if cols > 1 && len(line) > cols-1 {
 		line = line[:cols-1] // ASCII only; never writes the last column, so no wrap or scroll
 	}
