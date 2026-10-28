@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
+	"strconv"
 	"text/tabwriter"
 	"time"
 
@@ -48,16 +50,23 @@ func runUsage(args []string, stdout, stderr io.Writer) int {
 	}
 	now := time.Now()
 	ctx := context.Background()
-	s, err := openIndexReadOnly(ctx)
+	s, version, err := openIndexReadOnly(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy usage: %v\n", err)
+		fmt.Fprintf(stderr, "aggy usage: %v\n", store.ReadError(err))
 		return 1
 	}
 	var rows []store.BorrowUsage
 	var statuses []store.VendorStatus
 	if s != nil {
 		defer func() { _ = s.Close() }()
-		statuses, _ = s.VendorStatuses(ctx) // an index before vendor rows lists every vendor
+		// An index older than the vendors table has no sign-in record, so
+		// every vendor is listed; a failed read of the table is an error.
+		if version >= vendorsSchema {
+			if statuses, err = s.VendorStatuses(ctx); err != nil {
+				fmt.Fprintf(stderr, "aggy usage: %v\n", store.ReadError(err))
+				return 1
+			}
+		}
 		if rows, err = s.BorrowUsageSince(ctx, now.Add(-usageWindow)); err != nil {
 			fmt.Fprintf(stderr, "aggy usage: %v\n", store.ReadError(err))
 			return 1
@@ -105,27 +114,32 @@ func runUsage(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// openIndexReadOnly opens the index read-only, or returns nil when there
-// is none (or it predates the borrows table): nothing to show then.
-func openIndexReadOnly(ctx context.Context) (*store.Store, error) {
+// vendorsSchema is the oldest schema with the vendors table (0006).
+const vendorsSchema = 6
+
+// openIndexReadOnly opens the index read-only and returns its schema
+// version, or a nil store when there is none (or it predates the borrows
+// table, schema 1): nothing to show then.
+func openIndexReadOnly(ctx context.Context) (*store.Store, int, error) {
 	path, err := store.DefaultPath()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if _, err := safefs.Stat(path); errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, 0, nil
 	} else if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	s, err := store.OpenReadOnly(ctx, path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	if v, err := s.Version(ctx); err != nil || v < 1 {
+	v, err := s.Version(ctx)
+	if err != nil || v < 1 {
 		_ = s.Close()
-		return nil, err
+		return nil, 0, err
 	}
-	return s, nil
+	return s, v, nil
 }
 
 // usageVendors is every vendor except those setup recorded as signed
@@ -164,7 +178,7 @@ func codexAllowanceLines(quotas []limits.CodexQuota, now time.Time) []string {
 				continue
 			}
 			s := fmt.Sprintf("%s, %s window: ", name, windowLabel(w.WindowMinutes))
-			left := fmt.Sprintf("%.0f%% left", min(max(100-w.UsedPercent, 0), 100))
+			left := shareLeft(w.UsedPercent)
 			switch reset := time.Unix(w.ResetsAt, 0); {
 			case w.ResetsAt <= 0:
 				s += left + ", reset time not written"
@@ -178,6 +192,20 @@ func codexAllowanceLines(quotas []limits.CodexQuota, now time.Time) []string {
 		}
 	}
 	return out
+}
+
+// shareLeft renders what a window has left, floored to a tenth so it is
+// never overstated, and never "0%" for a window not used up (L49-3).
+func shareLeft(used float64) string {
+	left := min(max(100-used, 0), 100)
+	switch tenths := math.Floor(left * 10); {
+	case left == 0:
+		return "0% left"
+	case tenths == 0:
+		return "under 0.1% left"
+	default:
+		return strconv.FormatFloat(tenths/10, 'f', -1, 64) + "% left"
+	}
 }
 
 // windowLabel names a window by its length: "5h", "7d", "90m".

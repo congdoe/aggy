@@ -155,3 +155,77 @@ func TestWindowLabel(t *testing.T) {
 		}
 	}
 }
+
+// TestShareLeft (L49-3): a window not used up never reads 0%, and the
+// share is never rounded up.
+func TestShareLeft(t *testing.T) {
+	for _, c := range []struct {
+		used float64
+		want string
+	}{
+		{30, "70% left"}, {99.6, "0.4% left"}, {99.96, "under 0.1% left"}, {100, "0% left"},
+		{120, "0% left"}, {-5, "100% left"}, {0.05, "99.9% left"}, {42.25, "57.7% left"},
+	} {
+		if got := shareLeft(c.used); got != c.want {
+			t.Errorf("shareLeft(%v) = %q, want %q", c.used, got, c.want)
+		}
+	}
+}
+
+// TestUsageLeavesIndex (L49-4): aggy usage leaves a seeded index
+// byte-identical, and reads one older than the vendors table (schema 1)
+// as it is, listing every vendor.
+func TestUsageLeavesIndex(t *testing.T) {
+	for _, old := range []bool{false, true} {
+		t.Run(fmt.Sprintf("old=%v", old), func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("PATH", t.TempDir())
+			t.Setenv("CODEX_HOME", t.TempDir())
+			state := t.TempDir()
+			t.Setenv(home.Env, state)
+			path := filepath.Join(state, store.FileName)
+			if old {
+				schemaV1(t, path)
+			} else {
+				seedUsage(t, time.Now())
+			}
+			snapshot := func() map[string]string {
+				out := map[string]string{}
+				es, err := os.ReadDir(state)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, e := range es {
+					if b, err := os.ReadFile(filepath.Join(state, e.Name())); err == nil {
+						out[e.Name()] = string(b)
+					}
+				}
+				return out
+			}
+			before := snapshot()
+			var stdout, stderr bytes.Buffer
+			if code := Run([]string{"usage"}, &stdout, &stderr); code != 0 {
+				t.Fatalf("exit %d: %s", code, stderr.String())
+			}
+			after := snapshot()
+			if len(before) != len(after) {
+				t.Errorf("files in the state folder changed: %d before, %d after", len(before), len(after))
+			}
+			for name, b := range before {
+				if after[name] != b {
+					t.Errorf("aggy usage changed %s", name)
+				}
+			}
+			if old {
+				if v := userVersion(t, path); v != 1 {
+					t.Errorf("aggy usage migrated the index to version %d", v)
+				}
+				for _, v := range []string{"claude", "codex", "grok"} {
+					if !strings.Contains(stdout.String(), "  "+v+" ") {
+						t.Errorf("an old index hides %s:\n%s", v, stdout.String())
+					}
+				}
+			}
+		})
+	}
+}
