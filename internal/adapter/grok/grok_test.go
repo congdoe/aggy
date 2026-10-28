@@ -28,7 +28,7 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 	a := New()
 	all := strings.Split("read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,"+
 		"image_gen,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,"+
-		"ask_user_question,enter_plan_mode,exit_plan_mode", ",")
+		"ask_user_question,enter_plan_mode,exit_plan_mode,web_search", ",")
 	// deny is every lockdown tool but the kind's own.
 	deny := func(keep ...string) string {
 		var out []string
@@ -50,9 +50,9 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 		scenario string
 	}{
 		{"research", adapter.HeadlessRequest{Kind: adapter.Research, MaxTurns: 30, IsolatedCwd: true},
-			slices.Concat(head, tail("web_search"), []string{"--max-turns", "30"}), ""},
+			slices.Concat(head, tail("web_search", "web_search"), []string{"--max-turns", "30"}), ""},
 		{"news", adapter.HeadlessRequest{Kind: adapter.News, IsolatedCwd: true, WebSearch: true, MaxTurns: 15},
-			slices.Concat(head, tail("web_search"), []string{"--max-turns", "15"}), ""},
+			slices.Concat(head, tail("web_search", "web_search"), []string{"--max-turns", "15"}), ""},
 		{"image", adapter.HeadlessRequest{Kind: adapter.Image, SessionID: sid},
 			slices.Concat(head, []string{"--session-id", sid}, tail("image_gen", "image_gen")), ""},
 		{"image edit", adapter.HeadlessRequest{Kind: adapter.Image, Resume: sid},
