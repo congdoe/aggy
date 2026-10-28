@@ -277,6 +277,7 @@ found every Grok borrow failing. Minimal runs in a scratch directory.
 | G2, prompt last | `grok -p --output-format json ... "<prompt>"` | **Fails** | `the argument '--single <PROMPT>' cannot be used with '[PROMPT]'`. |
 | G3, prompt file | `grok --prompt-file <abs path> --output-format json --tools read_file,grep,list_dir --disallowed-tools <review deny list> --no-subagents --permission-mode plan` | **Works** | Exit 0; the model reported only `read_file`, `list_dir`, and `grep`. aggy's argv since T6740. |
 | G4, inline | `grok -p "<text>" --output-format json --max-turns 1` | Works | Puts the prompt in argv, so aggy does not use it. |
+| G6, JSON reply | G3 | Recorded | `--output-format json` prints one pretty-printed object (29 lines in the sample), keys `text`, `stopReason` (`end_turn`), `sessionId`, `requestId`, `cwd`, `thought`, `usage` {`input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `output_tokens`, `reasoning_tokens`, `total_tokens`}, `num_turns`, `total_cost_usd`, `total_cost_usd_ticks`, `modelUsage` {per model}. The answer is `text`; `thought` is the model's reasoning. aggy's parser before T6740's fix read single lines only and failed every successful borrow with "unrecognized headless output" (7c86f6c re-run below). |
 | G5, version | `grok --version` | Recorded | Prints exactly `grok 1.0.70 (f50904eaee6c) [stable]`. aggy's parser before T6740 did not allow the `[stable]` tag, read no version, and refused every Grok borrow as untested. |
 | S1, read confinement | G3 plus a prompt asking to read `./README.md`, then a canary file outside the cwd by absolute path, with `--permission-mode plan`; `--permission-mode dontAsk --allow 'Read(./**)'`; `--permission-mode plan --allow 'Read(./**)'` | **Not confined** | All three exited 0 and returned the canary: Grok auto-allows reads in every mode, so allow rules do not confine `read_file`. |
 | S2, strict sandbox | the same with `--permission-mode plan --sandbox strict` | **Confined under `$HOME`** | README was read; the canary under `$HOME` was refused, `Permission denied: <HOME>/.../canary.txt`. |
@@ -309,8 +310,8 @@ prints a scrubbed stderr tail on a FAIL.
 | `codex-hook-trust-gate` | PASS (the `-c` hook was skipped) | |
 | `codex-research-isolation` | PASS (canary 0 times) | |
 | `mcp-launch-claude` | PASS | |
-| `mcp-launch-codex` | FAIL, exit 143 (the 300 s timeout) | open; see below |
-| `mcp-launch-grok` | FAIL, exit 1 | open; see below |
+| `mcp-launch-codex` | FAIL, exit 143 (the 300 s timeout) | intermittent: passed on 7c86f6c, cause unknown (below) |
+| `mcp-launch-grok` | FAIL, exit 1 | the agent file's `mcpServers` layout (below) |
 | `grok-review-untrusted` | FAIL, exit 2 (G1) | failed on 2383c13, fixed by T6740, re-run pending |
 | `aggy-grok-review-refused` | FAIL, not refused (exit 1: the version refusal, G5) | failed on 2383c13, fixed by T6740, re-run pending |
 | `grok-image-tool-list` | FAIL, exit 2 (G1) | failed on 2383c13, fixed by T6740, re-run pending |
@@ -321,24 +322,21 @@ prints a scrubbed stderr tail on a FAIL.
 | `aggy-video-default-refused` | FAIL, not refused (exit 1: the version refusal, G5) | failed on 2383c13, fixed by T6740, re-run pending |
 | `video-borrow-grok` | FAIL, exit 1 (G5) | failed on 2383c13, fixed by T6740, re-run pending |
 
-The two MCP failures are not explained yet; the stderr was deleted with
-the temp dir (`AGGY_SMOKE_KEEP=1` now keeps it). The Claude and Codex
-rows of the T6734 table above passed with the same server script.
+### Re-run on 7c86f6c (T6740, 2026-10-28)
 
-- `mcp-launch-grok` (exit 1, not clap's usage exit 2, so the argv
-  parsed): it differs from the confirmed T6734 run only by
-  `--max-turns 3` and by the agent file, whose frontmatter layout is not
-  recorded. Grok defers MCP tool definitions (`search_tool`/`use_tool`),
-  so finding and calling `aggy_ping` and replying may need more than 3
-  turns, and running out of turns may exit 1. Next check: the same run
-  without `--max-turns`, with `AGGY_SMOKE_KEEP=1`.
-- `mcp-launch-codex` (timed out at 300 s): the argv matches the confirmed
-  T6734 per-server-approval run. Differences: the smoke run's `env -i`
-  environment, and the ChatGPT connector MCP servers (`codex_apps`), which
-  `--ignore-user-config` does not remove ("Codex research isolation" above) and which the run
-  must start alongside the scratch server. Next check: the same run with
-  `AGGY_SMOKE_KEEP=1`, reading `codex.err` and the last `codex.out`
-  events.
+`AGGY_SMOKE_KEEP=1`, live. Grok alone (`AGGY_SMOKE_VENDORS=grok`, 7 grok
+runs), then Codex alone (4 codex runs).
+
+| Check | Result on 7c86f6c | Cause, and fix |
+| --- | --- | --- |
+| `aggy-setup` | PASS | the version now parses |
+| `aggy-grok-review-refused` | PASS | |
+| `grok-image-tool-list` | PASS | |
+| `aggy-video-default-refused` | PASS | |
+| `image-borrow-grok`, `research-borrow-grok`, `video-borrow-grok` | FAIL: "grok: unrecognized headless output" (the CLI exited 0) | the multi-line JSON reply (G6); `ParseHeadless` now decodes all of stdout. Re-run pending. |
+| `mcp-launch-grok` | FAIL, exit 1 | stderr: `failed to load agent profile '<scratch>/agent.md': failed to parse agent definition: its frontmatter is not a valid definition at line 5, column 3`. The smoke agent file gave `mcpServers` as a map; Grok wants a YAML list whose entries are a name, a one-key `{name: config}` map, or an object with `name` (grok-src `crates/codegen/xai-grok-agent/src/config.rs:1121-1163`, `McpServerRef`; test `crates/codegen/xai-grok-shell/src/session/agent_mcp_tests.rs:429`). A stdio entry is `{command, args}` with no `type`: `McpServerTransportConfig` is untagged (`crates/codegen/xai-grok-config/src/mcp_server_config.rs:27-41`). The file is now `- aggy: {command: python3, args: [...]}`, and `--max-turns 3` is gone (MCP tools are deferred). Re-run pending. |
+| `grok-review-untrusted` | INCONCLUSIVE: no hook ran, none fired in the control either | `--sandbox strict` allows writes only to Grok's sessions dir, so the control's hook marker writes failed. The control now runs without `--sandbox`; the untrusted run keeps aggy's exact argv. Re-run pending. |
+| Codex: all four checks, including `mcp-launch-codex` | PASS ("the server's token came back") | The 2383c13 timeout did not recur: intermittent, seen once, cause unknown. No code change. |
 
 ## Grok project config and folder trust (source only)
 
@@ -465,7 +463,7 @@ Live (2026-10-27), with a 25-line stdlib stdio MCP server exposing
 | Codex, default approval | `codex exec --json --skip-git-repo-check --ignore-user-config -c 'mcp_servers.aggy.command="python3"' -c 'mcp_servers.aggy.args=["<scratch>/server.py"]' --sandbox read-only -- - < p.txt` | Key path confirmed; call blocked | "MCP tool call requires approval, but approval policy is never". |
 | Codex, per-server approval | same plus `-c 'mcp_servers.aggy.default_tools_approval_mode="approve"'` | Confirmed | Returned `<token>`. Values: `auto`, `prompt`, `writes`, `approve`. A per-server allow, not a global bypass. |
 | Codex resume with sandbox | `codex exec --json ... -c ... --sandbox workspace-write resume <id> -- - < p2.txt` | Confirmed | Same thread id; MCP call worked; a write succeeded on a thread started read-only, so `--sandbox` before `resume` applies. |
-| Grok via agent file | `grok -p "Call aggy_ping..." --agent ../agent.md --allow 'MCPTool(aggy__aggy_ping)' --output-format json`, with `mcpServers` in the agent file's frontmatter | Confirmed | Returned `<token>`. Grok has no per-session MCP flag. Resume with the same agent file was not tested. |
+| Grok via agent file | `grok -p "Call aggy_ping..." --agent ../agent.md --allow 'MCPTool(aggy__aggy_ping)' --output-format json`, with `mcpServers` in the agent file's frontmatter | Confirmed | Returned `<token>`. Grok has no per-session MCP flag. Resume with the same agent file was not tested. The frontmatter `mcpServers` is a YAML list (see "Smoke run" below): a map there fails to load. |
 
 Also (Doc/Source-verified): Claude subagents can declare inline
 `mcpServers` that connect only while they run; Grok user agents can too,

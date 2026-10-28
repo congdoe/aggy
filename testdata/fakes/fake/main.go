@@ -866,12 +866,43 @@ func (f *fake) headlessOutput() {
 			_ = json.Unmarshal([]byte(f.expand(string(b))), &obj)
 		}
 		if f.vendor == "grok" {
-			// Recorded: Grok's JSON includes sessionId.
-			obj["sessionId"] = f.id
+			fmt.Println(f.grokReply(obj))
+			return
 		}
 		b, _ := json.Marshal(obj)
 		fmt.Println(string(b))
 	}
+}
+
+// grokReply is grok 1.0.70's --output-format json reply: one
+// pretty-printed object over many lines, with these top-level keys (live
+// 2026-10-28). The scenario's json fields override or add to them; text
+// is left out when the scenario gives result, an unconfirmed fallback.
+// thought (the model's reasoning) is never the answer, so it holds text a
+// parser must not take.
+func (f *fake) grokReply(sc map[string]any) string {
+	cwd, _ := os.Getwd()
+	obj := map[string]any{
+		"text":                 "",
+		"stopReason":           "end_turn",
+		"sessionId":            f.id,
+		"requestId":            "00000000-0000-4000-8000-000000000000",
+		"cwd":                  cwd,
+		"thought":              "fake reasoning: THOUGHT-NOT-THE-ANSWER read_file list_dir",
+		"usage":                map[string]any{"input_tokens": 10, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 5, "reasoning_tokens": 3, "total_tokens": 18},
+		"num_turns":            1,
+		"total_cost_usd":       0.0001,
+		"total_cost_usd_ticks": 1000,
+		"modelUsage":           map[string]any{"grok-4.7-build": map[string]any{"input_tokens": 10, "output_tokens": 5}},
+	}
+	if _, ok := sc["result"]; ok {
+		delete(obj, "text")
+	}
+	for k, v := range sc {
+		obj[k] = v
+	}
+	b, _ := json.MarshalIndent(obj, "", "  ")
+	return string(b)
 }
 
 func compact(s string) string {
