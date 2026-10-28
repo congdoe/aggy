@@ -91,6 +91,8 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy run: %v\n", err)
 		return 1
 	}
+	onHook, stopIndex := startIndex(parentID, v)
+	defer stopIndex()
 	code, err := supervisor.Run(supervisor.Options{
 		In: os.Stdin, Out: os.Stdout, Command: cmd,
 		Start:     startPTY,
@@ -98,6 +100,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		Vendors:   pickerVendors(cfg.Switch.Order, v),
 		RunDir:    filepath.Join(stateDir, "run"),
 		ParentID:  parentID,
+		OnHook:    onHook,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy run: %v\n", err)
