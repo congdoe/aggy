@@ -518,14 +518,23 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// unknownKinds names an undecoded key under [routing] or [budgets] as an
-// unknown borrow kind, which reads better than "unknown key".
+// unknownKinds names an undecoded key under [routing] as an unknown
+// routing key (listing the kinds and review_skip_on_screen), and one
+// under [budgets] as an unknown borrow kind, which read better than
+// "unknown key".
 func unknownKinds(md toml.MetaData) error {
 	for _, k := range md.Undecoded() {
 		if len(k) < 2 || (k[0] != "routing" && k[0] != "budgets") {
 			continue
 		}
 		if _, err := adapter.ParseKind(k[1]); err != nil {
+			if k[0] == "routing" { // [routing] also holds review_skip_on_screen, so a typo may not be a kind
+				kinds := make([]string, 0, len(adapter.Kinds()))
+				for _, kd := range adapter.Kinds() {
+					kinds = append(kinds, string(kd))
+				}
+				return fmt.Errorf("routing.%s: unknown routing key %q: want a borrow kind (%s) or review_skip_on_screen", k[1], k[1], strings.Join(kinds, ", "))
+			}
 			return fmt.Errorf("%s.%s: %w", k[0], k[1], err)
 		}
 	}

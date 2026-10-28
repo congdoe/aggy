@@ -61,6 +61,7 @@ Confidence words: *Source-verified*, *Help-verified*, *Doc-verified*,
 | Launch-time MCP | Claude `--mcp-config` (re-pass on resume); Codex `-c mcp_servers.*` plus per-server approval; Grok has no flag, use `--agent <file>` with `mcpServers`. | Live-confirmed |
 | Codex CLI details | `codex exec resume`, `--ignore-user-config` on `exec` only, greedy `-i`. | Help/Source-verified; parts Live-confirmed |
 | API and route settings | Listed in adapters.md. | Source/Doc-verified |
+| Same-vendor nested review (T6779) | A Claude review borrow run from inside an on-screen Claude Code session routes to Claude and runs as a fresh headless session. Codex under Codex and Grok under Grok are not run. | Claude Live-confirmed; Codex and Grok unverified |
 
 ## Codex hooks (T6616)
 
@@ -871,6 +872,23 @@ the model's context window, default 85
 the context window of the user's Grok model is not recorded, so no
 percent can be computed that keeps a session under 200,000 tokens. aggy
 does not set it yet (TODO(T6673)).
+
+## Same-vendor nested review (T6779)
+
+Live-confirmed on 2026-10-28. The `review-route` binary at 3ef4753, with a
+scratch `AGGY_HOME` and `aggy setup --only claude`, run from inside a
+Claude Code 2.1.312 session (`CLAUDECODE=1` in the environment).
+`aggy borrow review "…" --base main` with the default routing routed to
+Claude and ran a fresh headless session: "ok in 12s, 432 tokens", and the
+report found the bug planted in the diff. So a Claude review nested under
+an on-screen Claude works.
+
+Not run: Codex under Codex and Grok under Grok. The default route reaches
+them only when Claude is limited, disconnected, or not allowed, or when a
+user lists them. Grok's `--sandbox strict`, which a Grok review uses,
+refuses to start inside another sandbox (S6 above), so a Grok review
+nested under a sandboxed Grok session may fail closed. The smoke script
+has no check for either yet (TODO(T6779)).
 
 ## Still open
 

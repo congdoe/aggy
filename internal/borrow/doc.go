@@ -1,4 +1,5 @@
-// Package borrow runs one bounded task headless in another vendor's CLI:
+// Package borrow runs one bounded task headless in a vendor's CLI (for a
+// review, possibly the one on screen, in a fresh session):
 // aggy borrow <kind> "<task>". It builds the prompt (the task, the
 // caller's paths and constraints, and today's date, never the parent
 // transcript), records the child and the borrow in the store, asks a

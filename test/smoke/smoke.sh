@@ -466,6 +466,11 @@ mcp_result() {
 	fi
 }
 
+# TODO(T6779): a review borrow nested under the same vendor on screen,
+# Codex under Codex and Grok under Grok (Claude under Claude is
+# live-confirmed, docs/verification.md). Grok's strict sandbox may refuse
+# inside another sandbox (S6).
+
 # --- Open TODO(T6649) checks ---
 
 # Grok folder trust (internal/borrow/grok_trust.go). Two scratch repos
