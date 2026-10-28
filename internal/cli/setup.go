@@ -18,6 +18,7 @@ import (
 	"github.com/congdoe/aggy/internal/checkup"
 	"github.com/congdoe/aggy/internal/devfix"
 	"github.com/congdoe/aggy/internal/execrun"
+	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
 )
@@ -72,10 +73,19 @@ func defaultCheckEnv() checkEnv {
 	}
 }
 
-// isTerminal reports whether f is a character device, as a terminal is.
+// isTerminal reports whether f looks like a terminal: a character device
+// that is not /dev/null. /dev/null is a character device too, and a
+// setup run with </dev/null must not prompt. Without a termios ioctl
+// (golang.org/x/sys and raw syscalls are banned) this is a heuristic:
+// another character device such as /dev/zero passes, and then the first
+// prompt reads no line, which setup treats as no terminal.
 func isTerminal(f *os.File) bool {
 	fi, err := f.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	null, err := safefs.Stat(os.DevNull)
+	return err != nil || !os.SameFile(fi, null)
 }
 
 // parseOnly returns the adapters named in list (comma-separated), in
@@ -142,13 +152,9 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 	}
 	code := 0
 	for _, a := range selected {
-		c, stop := st.vendor(ctx, a)
-		if c != 0 {
+		if c := st.vendor(ctx, a); c != 0 {
 			fmt.Fprintf(stderr, "aggy setup: %s\n", termsafe.Field(st.err.Error()))
 			code = c
-		}
-		if stop {
-			break
 		}
 	}
 	fmt.Fprintln(stdout, "\nKeeping instructions, memory, and safety rules in step across the CLIs comes in a later release.")
@@ -168,32 +174,33 @@ type setupRun struct {
 	findings []checkup.Finding
 }
 
-// answer prints prompt and reads one line, lower-cased and trimmed. ok
-// is false at the end of input.
+// answer prints prompt and reads one line, lower-cased and trimmed. At
+// the end of input it returns ok false and stops asking: setup goes on
+// as with --yes, checking and recording the rest without prompts, so an
+// input that ends never leaves vendors unrecorded.
 func (r *setupRun) answer(prompt string) (string, bool) {
 	fmt.Fprint(r.out, prompt)
 	line, err := r.in.ReadString('\n')
 	if err != nil && line == "" {
 		fmt.Fprintln(r.out)
+		fmt.Fprintln(r.out, "  (no more input: checking the rest without asking)")
+		r.ask = false
 		return "", false
 	}
 	return strings.ToLower(strings.TrimSpace(line)), true
 }
 
 // vendor sets up one vendor. It returns a non-zero code when recording
-// failed, and stop when the person's input ended.
-func (r *setupRun) vendor(ctx context.Context, a adapter.Adapter) (code int, stop bool) {
+// failed.
+func (r *setupRun) vendor(ctx context.Context, a adapter.Adapter) int {
 	v := a.Vendor()
 	name := vendorNames[v]
 	fmt.Fprintf(r.out, "\n%s\n", name)
 	if r.ask {
 		ans, ok := r.answer(fmt.Sprintf("  Check %s now? [Y/n] ", name))
-		if !ok {
-			return 0, true
-		}
-		if ans == "n" || ans == "no" || ans == "s" || ans == "skip" {
+		if ok && (ans == "n" || ans == "no" || ans == "s" || ans == "skip") {
 			fmt.Fprintln(r.out, "  skipped")
-			return 0, false
+			return 0
 		}
 	}
 	res := checkup.CheckVendor(ctx, a, r.env.run)
@@ -209,11 +216,7 @@ func (r *setupRun) vendor(ctx context.Context, a adapter.Adapter) (code int, sto
 		fmt.Fprintf(r.out, "  Sign in with %s's own flow: %s. aggy never sees your login.\n", name, steps)
 		for r.ask && res.SignIn == adapter.SignedOut {
 			ans, ok := r.answer("  Press Enter to check again once you have signed in, or type s to skip: ")
-			if !ok {
-				stop = true
-				break
-			}
-			if ans == "s" || ans == "skip" {
+			if !ok || ans == "s" || ans == "skip" {
 				break
 			}
 			res = checkup.CheckVendor(ctx, a, r.env.run)
@@ -228,10 +231,10 @@ func (r *setupRun) vendor(ctx context.Context, a adapter.Adapter) (code int, sto
 	}
 	if err := r.store.PutVendorStatus(ctx, rec); err != nil {
 		r.err = err
-		return 1, stop
+		return 1
 	}
 	fmt.Fprintf(r.out, "  recorded: %s\n", recordText(rec))
-	return 0, stop
+	return 0
 }
 
 // printVendor prints what a check found. The version, path, warning, and
