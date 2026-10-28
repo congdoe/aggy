@@ -13,6 +13,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/execrun"
+	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/redact"
 	"github.com/congdoe/aggy/internal/safefs"
@@ -20,6 +21,7 @@ import (
 )
 
 const checkUsage = `Usage: aggy check
+       aggy check <borrow-id> [--yes]
 
 Runs the repo's checks (typecheck, lint, tests): the commands listed
 under check in <repo>/.aggy/config.toml, in order, at the repo root,
@@ -35,8 +37,16 @@ ask. Each gets aggy's scrubbed environment (no API keys, no proxy
 settings) and no stdin. It prints one line per command and the tail of
 a failing command's output, with secret-shaped lines removed.
 
-Exit status: 0 when every command passed, 1 when one failed or none is
-configured, 2 on a usage or config error.
+With a borrow id, it gates an edit borrow's diff: it shows the diff
+stat, takes the check list from this main checkout's config (never the
+edit worktree's), and runs it in the worktree once you say y (or pass
+--yes). The worktree's tests and scripts are code the borrow child
+wrote. The result is recorded, and aggy accept shows it. aggy check
+refuses to run by hand inside an edit worktree, whose config the child
+could have written.
+
+Exit status: 0 when every command passed, 1 when one failed, none is
+configured, or a gate was not run, 2 on a usage or config error.
 `
 
 // checkTail caps the lines of a failing command's output aggy check
@@ -49,10 +59,11 @@ type repoCheckEnv struct {
 	lookPath func(string) (string, error)
 	runner   func(time.Duration) adapter.Runner
 	now      func() time.Time
+	stateDir func() (string, error)
 }
 
 func defaultRepoCheckEnv() repoCheckEnv {
-	return repoCheckEnv{getwd: os.Getwd, lookPath: probe.LookPath, runner: execrun.CheckRunner, now: time.Now}
+	return repoCheckEnv{getwd: os.Getwd, lookPath: probe.LookPath, runner: execrun.CheckRunner, now: time.Now, stateDir: home.Dir}
 }
 
 func runCheck(args []string, stdout, stderr io.Writer) int {
@@ -60,6 +71,9 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	// the running check's whole process group before aggy exits.
 	ctx, stop := execrun.NotifyContext(context.Background())
 	defer stop()
+	if len(args) > 0 && args[0] != "-h" && args[0] != "--help" && args[0] != "help" {
+		return checkEditWith(ctx, args, defaultBorrowEnv(), defaultRepoCheckEnv(), os.Stdin, isTerminal(os.Stdin), stdout, stderr)
+	}
 	return defaultRepoCheckEnv().check(ctx, args, stdout, stderr)
 }
 
@@ -82,6 +96,19 @@ func (e repoCheckEnv) check(ctx context.Context, args []string, stdout, stderr i
 		fmt.Fprintf(stderr, "aggy check: %s is in no git work tree\n", termsafe.Field(cwd))
 		return 2
 	}
+	// W-5: an edit worktree's config and code are the borrow child's.
+	state, err := e.stateDir()
+	if err != nil {
+		fmt.Fprintf(stderr, "aggy check: %s\n", termsafe.Line(err.Error()))
+		return 2
+	}
+	wts := resolvePath(filepath.Join(state, worktreesDir))
+	for _, d := range []string{cwd, root} {
+		if within(resolvePath(d), wts) {
+			fmt.Fprintf(stderr, "aggy check: refusing: %s is an aggy edit worktree, and its .aggy/config.toml and code were written by a borrow child; run aggy check <borrow-id> from the main checkout, which takes the check list from there and asks first\n", termsafe.Field(root))
+			return 2
+		}
+	}
 	rc, err := config.LoadRepo(root)
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy check: %s\n", termsafe.Line(err.Error()))
@@ -91,17 +118,25 @@ func (e repoCheckEnv) check(ctx context.Context, args []string, stdout, stderr i
 		fmt.Fprintf(stderr, "aggy check: no checks configured; list them under check in %s\n", termsafe.Field(config.RepoPath(root)))
 		return 1
 	}
-	minutes := rc.CheckMinutes
-	if minutes == 0 {
-		minutes = config.DefaultCheckMinutes
-	}
-	timeout := time.Duration(minutes) * time.Minute
 	fmt.Fprintf(stdout, "aggy check runs these commands from %s, at %s, %d minutes each at most:\n",
-		termsafe.Field(config.RepoPath(root)), termsafe.Field(root), minutes)
+		termsafe.Field(config.RepoPath(root)), termsafe.Field(root), checkMinutes(rc))
 	for _, c := range rc.Check {
 		fmt.Fprintf(stdout, "  %s\n", showCommand(c))
 	}
-	run := e.runner(timeout)
+	return e.runList(ctx, root, rc, stdout)
+}
+
+func checkMinutes(rc config.RepoConfig) int {
+	if rc.CheckMinutes == 0 {
+		return config.DefaultCheckMinutes
+	}
+	return rc.CheckMinutes
+}
+
+// runList runs rc's checks at root, in order, printing a line for each.
+// It returns 0 when every one passed and 1 otherwise.
+func (e repoCheckEnv) runList(ctx context.Context, root string, rc config.RepoConfig, stdout io.Writer) int {
+	run := e.runner(time.Duration(checkMinutes(rc)) * time.Minute)
 	failed := 0
 	for _, c := range rc.Check {
 		start := e.now()

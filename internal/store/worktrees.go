@@ -7,6 +7,13 @@ import (
 	"fmt"
 )
 
+// Check gate results on a worktree's recorded tree.
+const (
+	CheckPass    = "pass"
+	CheckFail    = "fail"
+	CheckSkipped = "skipped"
+)
+
 // Worktree states.
 const (
 	WorktreePending  = "pending"
@@ -19,10 +26,10 @@ const (
 func (s *Store) BorrowWorktree(ctx context.Context, id string) (Worktree, error) {
 	var w Worktree
 	err := s.db.QueryRowContext(ctx,
-		`SELECT c.worktree, c.branch, c.worktree_base, c.worktree_repo, c.worktree_git_dir, c.worktree_state, c.worktree_tree
+		`SELECT c.worktree, c.branch, c.worktree_base, c.worktree_repo, c.worktree_git_dir, c.worktree_state, c.worktree_tree, c.worktree_check
 		 FROM borrows b JOIN children c ON c.id = b.child_id
 		 WHERE b.id = ? AND c.worktree <> ''`, id).
-		Scan(&w.Path, &w.Branch, &w.Base, &w.Repo, &w.GitDir, &w.State, &w.Tree)
+		Scan(&w.Path, &w.Branch, &w.Base, &w.Repo, &w.GitDir, &w.State, &w.Tree, &w.Check)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Worktree{}, ErrNotFound
 	}
@@ -66,6 +73,22 @@ func (s *Store) SetWorktreeTree(ctx context.Context, id, tree string) error {
 	}
 	if n, err := res.RowsAffected(); err != nil || n != 1 {
 		return fmt.Errorf("%w (borrow %s: tree already set or not pending)", ErrWorktreeState, id)
+	}
+	return nil
+}
+
+// SetWorktreeCheck records the check gate's result on borrow id's
+// worktree while it is pending.
+func (s *Store) SetWorktreeCheck(ctx context.Context, id, result string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE children SET worktree_check = ?
+		 WHERE id = (SELECT child_id FROM borrows WHERE id = ?) AND worktree <> '' AND worktree_state = 'pending'`,
+		result, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("%w (borrow %s: not pending)", ErrWorktreeState, id)
 	}
 	return nil
 }

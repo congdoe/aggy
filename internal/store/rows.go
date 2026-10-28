@@ -77,6 +77,9 @@ type Worktree struct {
 	// Tree is the git tree of what the child left, taken when the borrow
 	// ended; "" until then.
 	Tree string
+	// Check is the check gate's result on Tree: "" (not run), pass, fail,
+	// or skipped (schema version 13).
+	Check string
 }
 
 // InsertChild adds a child. The parent must exist. An empty Status means

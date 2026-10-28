@@ -53,8 +53,9 @@ the diff and the --path files in the prompt, as data to review.
 
 An edit runs in a git worktree of its own, on a new branch aggy/edit-<id>
 made from HEAD, under aggy's state dir; it never writes this checkout,
-and its CLI's own sandbox stays on. aggy accept <id> applies its diff
-here; aggy reject <id> discards it.
+and its CLI's own sandbox stays on. aggy check <id> runs the repo's
+checks on it once you approve, aggy accept <id> applies its diff here,
+and aggy reject <id> discards it.
 `
 
 // borrowEnv is what aggy borrow needs from the outside world, so tests
@@ -382,8 +383,11 @@ func printResult(w io.Writer, r borrow.Result) {
 	}
 	if wt := r.Worktree; wt.Path != "" {
 		fmt.Fprintf(w, "  worktree %s on branch %s\n", termsafe.Field(wt.Path), termsafe.Field(wt.Branch))
-		// TODO(T6691): run aggy check on the diff before showing it.
-		fmt.Fprintf(w, "  aggy accept %s shows the diff and applies it to %s; aggy reject %s discards it\n", r.ID, termsafe.Field(wt.Repo), r.ID)
+		// The checks wait for the person (W-5): they run the child's code.
+		// TODO(T6691): send a failed check's output back to the edit child
+		// as its next message; that needs a resume of the edit child.
+		fmt.Fprintf(w, "  aggy check %s shows the diff stat and, once you say y, runs the repo's checks on it\n", r.ID)
+		fmt.Fprintf(w, "  aggy accept %s shows the diff and the checks' result and applies it to %s; aggy reject %s discards it\n", r.ID, termsafe.Field(wt.Repo), r.ID)
 	}
 	if r.ResearchPath != "" {
 		fmt.Fprintf(w, "Report: %s\n", termsafe.Field(r.ResearchPath))
