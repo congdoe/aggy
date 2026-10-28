@@ -202,6 +202,9 @@ func childBrief(ctx context.Context, s *store.Store, e borrowEnv, pl launchPlan)
 		}
 		in.Transcript, in.TranscriptErr = brief.Since(in.Since, since)
 	}
+	if in.From != "" && in.From != to {
+		in.MissingTools = missingTools(in.From, to, root, e.getenv)
+	}
 	if inRepo {
 		in.GitStatus, in.DiffStat, in.GitErr = e.gitState(ctx, root)
 	} else {
