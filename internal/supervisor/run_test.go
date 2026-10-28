@@ -111,6 +111,9 @@ func startRunWith(t *testing.T, double time.Duration, setup func(*fakeChild)) (*
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = master.Close(); _ = slave.Close() })
+	if err := pty.Setsize(master, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
+		t.Fatal(err)
+	}
 	ts := &termSide{master: master}
 	go func() {
 		buf := make([]byte, 4096)
@@ -289,5 +292,44 @@ func TestStalledCLIDoesNotBlockSignals(t *testing.T) {
 	case <-time.After(waitLimit):
 		t.Fatal("SIGTERM never reached the stalled CLI")
 	}
+	finish(t, c, done)
+}
+
+// TestPickerOverCLIAlternateScreen (B13-3): when the CLI is on the
+// alternate screen, the picker must not switch screens (they do not
+// nest, so leaving would drop the CLI's screen), and the CLI is made to
+// repaint.
+func TestPickerOverCLIAlternateScreen(t *testing.T) {
+	ts, c, done := startRun(t, 20*time.Millisecond)
+	c.print("\x1b[?10")
+	poll(t, "the terminal to show", []byte("\x1b[?10"), ts.screen)
+	c.print("49hCLI-SCREEN")
+	poll(t, "the terminal to show", []byte("CLI-SCREEN"), ts.screen)
+
+	ts.typeIn(t, "\x1c")
+	poll(t, "the terminal to show", []byte("aggy: switch vendor"), ts.screen)
+	ts.typeIn(t, "\x1b")
+	poll(t, "the terminal to show", []byte(restCursor), ts.screen)
+	if got := ts.screen(); bytes.Contains(got, []byte(altScreenOn)) || bytes.Count(got, []byte("\x1b[?1049")) != 1 {
+		t.Errorf("the picker switched screens over the CLI's alternate screen: %q", got)
+	}
+	for i, want := range []string{"one row fewer", "back"} {
+		select {
+		case sz := <-c.sizes:
+			if i == 0 && sz[0] != 23 || i == 1 && sz[0] != 24 {
+				t.Errorf("resize %d (%s) = %v", i, want, sz)
+			}
+		case <-time.After(waitLimit):
+			t.Fatalf("no repaint resize (%s)", want)
+		}
+	}
+
+	// Back on the main screen, the picker uses its own alternate screen.
+	c.print("\x1b[?1049lMAIN")
+	poll(t, "the terminal to show", []byte("MAIN"), ts.screen)
+	ts.typeIn(t, "\x1c")
+	poll(t, "the terminal to show", []byte(altScreenOn), ts.screen)
+	ts.typeIn(t, "\x1b")
+	poll(t, "the terminal to show", []byte("MAIN"+altScreenOn), ts.screen)
 	finish(t, c, done)
 }

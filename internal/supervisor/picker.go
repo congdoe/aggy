@@ -8,13 +8,18 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 )
 
-// The picker is drawn on the terminal's alternate screen, so leaving it
-// puts back the vendor's screen and cursor exactly, without aggy redrawing
-// anything. The CLIs run inline (Claude) or with --no-alt-screen, so the
-// alternate screen is free.
+// When the CLI is on the main screen, the picker is drawn on the
+// alternate screen, so leaving it puts back the CLI's screen and cursor
+// exactly, without anyone redrawing. The alternate screen does not nest,
+// so when the CLI is already on it (Codex without --no-alt-screen, or an
+// editor or pager a CLI opened), the picker is drawn over the CLI's
+// screen instead, with the cursor saved, and the CLI is made to repaint
+// itself afterwards (see session.closePicker).
 const (
 	altScreenOn  = "\x1b[?1049h\x1b[H\x1b[2J"
 	altScreenOff = "\x1b[?1049l"
+	saveCursor   = "\x1b7"
+	restCursor   = "\x1b8"
 )
 
 // picker is the minimal switch menu: the connected vendors in switch.order
@@ -25,23 +30,42 @@ type picker struct {
 	key     byte
 }
 
-// draw writes the picker on the alternate screen.
-func (p *picker) draw(w io.Writer) {
-	var b strings.Builder
-	b.WriteString(altScreenOn)
-	b.WriteString("aggy: switch vendor\r\n\r\n")
+// draw writes the picker: on the alternate screen, or, when the CLI is
+// already on it (overCLI), over the top lines of the CLI's screen.
+func (p *picker) draw(w io.Writer, overCLI bool) {
+	lines := []string{"aggy: switch vendor", ""}
 	if len(p.vendors) == 0 {
-		b.WriteString("  No other connected vendor. `aggy setup` checks them.\r\n")
+		lines = append(lines, "  No other connected vendor. `aggy setup` checks them.")
 	}
 	for i, v := range p.vendors {
-		fmt.Fprintf(&b, "  %d  %s\r\n", i+1, v)
+		lines = append(lines, fmt.Sprintf("  %d  %s", i+1, v))
 	}
-	b.WriteString("\r\nNumber or Enter to switch, Esc to go back.\r\n")
+	lines = append(lines, "", "Number or Enter to switch, Esc to go back.")
+	var b strings.Builder
+	if overCLI {
+		b.WriteString(saveCursor)
+		for i, l := range lines {
+			fmt.Fprintf(&b, "\x1b[%d;1H\x1b[2K%s", i+1, l)
+		}
+	} else {
+		b.WriteString(altScreenOn)
+		for _, l := range lines {
+			b.WriteString(l + "\r\n")
+		}
+	}
 	_, _ = io.WriteString(w, b.String())
 }
 
-// erase leaves the alternate screen, restoring the vendor's screen.
-func (p *picker) erase(w io.Writer) { _, _ = io.WriteString(w, altScreenOff) }
+// erase takes the picker off the screen: it leaves the alternate screen,
+// or, when drawn over the CLI, puts the cursor back (the CLI repaints the
+// rest).
+func (p *picker) erase(w io.Writer, overCLI bool) {
+	if overCLI {
+		_, _ = io.WriteString(w, restCursor)
+		return
+	}
+	_, _ = io.WriteString(w, altScreenOff)
+}
 
 // handle reads one chunk of input. It returns done when the picker should
 // close, and the vendor picked, if any.
