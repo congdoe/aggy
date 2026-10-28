@@ -155,6 +155,10 @@ func skipFlags(ws []string, i int, vals []string) int {
 // xargs, or npx and its flags, after npm, pnpm, or yarn exec/dlx/x, or
 // the first word of a shell's -c argument. So git log -S claude -p and
 // find . -name claude -print do not match.
+//
+// TODO(T6737): a CLI after then, do, {, or !, or started by find -exec,
+// watch, or ssh, is not at a command position Nested knows (review
+// finding R-4).
 func Nested(cmd string) string {
 	cmd = strings.NewReplacer("${IFS}", " ", "$IFS", " ").Replace(cmd)
 	ws := words(cmd)
