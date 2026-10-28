@@ -10,12 +10,12 @@ version = "unpinned" # TODO(T6716): pin the version aggy installs
 default = false
 scope = "repo"
 when = "has-ui"
-unverified = ["version", "install", "mcp"]
+unverified = ["version", "homepage", "install", "mcp"]
 
 [install]
 check = ["mcp-server-playwright", "--version"]
 
-[mcp]
+[[mcp]]
 vendors = ["claude", "codex", "grok"]
 argv = ["mcp-server-playwright"]
 

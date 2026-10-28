@@ -140,6 +140,9 @@ func loadUser(file string) (Tool, error) {
 	if err := checkFile(file, false); err != nil {
 		return Tool{}, err
 	}
+	// TODO(T6752): follow-up to review finding T59-15: check owner and mode on the descriptor
+	// ReadConfig opens (fstat), not on the earlier Lstat. A swap between
+	// the two needs write access to the checked tools folder.
 	b, err := safefs.ReadConfig(file, MaxSize)
 	if err != nil {
 		// TODO(T6753): log tool.def_untrusted.

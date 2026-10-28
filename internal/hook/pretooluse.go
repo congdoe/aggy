@@ -19,8 +19,9 @@ type Decision struct {
 // PreToolUse decides on one PreToolUse payload: it denies a tool call
 // whose command (tool_input.command or tool_input.cmd, as a string or a
 // list of strings) calls claude -p, codex exec, grok -p, or aggy borrow
-// (or aggy image or aggy video, which borrow). A payload that is not a
-// JSON object is denied: the guard fails closed.
+// (or aggy image or aggy video, which borrow), or aggy tool add or
+// remove. A payload that is not a JSON object is denied: the guard fails
+// closed.
 //
 // It is an accident guard for delegated children, not a security
 // boundary. It matches words, so a shell that builds the command at run
@@ -112,6 +113,13 @@ var wrappers = map[string][]string{
 	"watch": {"-n", "--interval", "-q", "--equexit"},
 	// ssh runs its command on the host named after its flags.
 	"ssh": {"-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o", "-P", "-p", "-Q", "-R", "-S", "-W", "-w"},
+}
+
+// IsWrapper reports whether prog (a base name) runs another program
+// named in its arguments, such as env, nice, timeout, xargs, or npx.
+func IsWrapper(prog string) bool {
+	_, ok := wrappers[prog]
+	return ok
 }
 
 // findExec are find's actions that run a command, which starts right
@@ -277,6 +285,11 @@ func nestedIn(ws []string) string {
 		case "aggy":
 			if k := skipFlags(rest, 0, nil); k < len(rest) && slices.Contains([]string{"borrow", "image", "video"}, rest[k]) {
 				return "aggy " + rest[k]
+			} else if k < len(rest) && rest[k] == "tool" {
+				// A delegated child must not change which tools aggy trusts.
+				if j := skipFlags(rest, k+1, nil); j < len(rest) && (rest[j] == "add" || rest[j] == "remove") {
+					return "aggy tool " + rest[j]
+				}
 			}
 		}
 		return ""

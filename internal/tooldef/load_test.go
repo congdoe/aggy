@@ -90,7 +90,7 @@ func TestLoadNoDir(t *testing.T) {
 // TestLoadRefuses: each refused file is left out and named, and the
 // other user definitions still load.
 func TestLoadRefuses(t *testing.T) {
-	other := strings.Replace(base, `name = "demo"`, `name = "other"`, 1)
+	other := strings.NewReplacer(`name = "demo"`, `name = "other"`, "DEMO_HOME", "OTHER_HOME").Replace(base)
 	for _, c := range []struct {
 		name      string
 		setup     func(t *testing.T, dir string)
@@ -116,13 +116,13 @@ func TestLoadRefuses(t *testing.T) {
 			}
 		}, true, "regular"},
 		{"invalid", func(t *testing.T, dir string) {
-			writeDef(t, filepath.Join(dir, "demo.toml"), strings.Replace(base, `"demo", "serve"`, `"sh", "-c", "demo"`, 1), 0o600)
-		}, false, "mcp.argv"},
+			writeDef(t, filepath.Join(dir, "demo.toml"), strings.Replace(base, `"demo", "serve", "{repo}"`, `"sh", "-c", "demo"`, 1), 0o600)
+		}, false, "mcp[0].argv"},
 		{"name and file differ", func(t *testing.T, dir string) {
-			writeDef(t, filepath.Join(dir, "demo.toml"), strings.Replace(base, `name = "demo"`, `name = "dmeo"`, 1), 0o600)
+			writeDef(t, filepath.Join(dir, "demo.toml"), strings.NewReplacer(`name = "demo"`, `name = "dmeo"`, "DEMO_HOME", "DMEO_HOME").Replace(base), 0o600)
 		}, false, "dmeo.toml"},
 		{"shadows a built-in", func(t *testing.T, dir string) {
-			writeDef(t, filepath.Join(dir, "codegraph.toml"), strings.Replace(base, `name = "demo"`, `name = "codegraph"`, 1), 0o600)
+			writeDef(t, filepath.Join(dir, "codegraph.toml"), strings.NewReplacer(`name = "demo"`, `name = "codegraph"`, "DEMO_HOME", "CODEGRAPH_HOME").Replace(base), 0o600)
 		}, false, "shadowed"},
 		{"user tool default on", func(t *testing.T, dir string) {
 			writeDef(t, filepath.Join(dir, "demo.toml"), "default = true\n"+base, 0o600)
@@ -212,5 +212,27 @@ func TestLoadNeverReadsRepo(t *testing.T) {
 	}
 	if _, ok := r.Get("demo"); ok {
 		t.Fatal("a definition was loaded from the repo")
+	}
+}
+
+// TestBuiltinsPinnedForRelease runs only for a release (AGGY_RELEASE=1).
+func TestBuiltinsPinnedForRelease(t *testing.T) { requirePinnedForRelease(t) }
+
+// requirePinnedForRelease fails on any built-in whose version is not
+// pinned (a version starting with a digit). Built-ins may stay unpinned
+// until their tool's task pins them, but never in a release.
+func requirePinnedForRelease(t *testing.T) {
+	t.Helper()
+	if os.Getenv("AGGY_RELEASE") != "1" {
+		t.Skip("AGGY_RELEASE=1 checks that every built-in is pinned")
+	}
+	r, err := Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tl := range r.List() {
+		if !userVersionRE.MatchString(tl.Version) {
+			t.Errorf("%s: version %q is not pinned", tl.Name, tl.Version)
+		}
 	}
 }

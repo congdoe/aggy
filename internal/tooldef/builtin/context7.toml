@@ -9,12 +9,12 @@ homepage = "https://github.com/upstash/context7"
 version = "unpinned" # TODO(T6714): pin the version aggy installs
 default = false
 scope = "global"
-unverified = ["version", "install", "mcp"]
+unverified = ["version", "homepage", "install", "mcp"]
 
 [install]
 check = ["context7-mcp", "--version"]
 
-[mcp]
+[[mcp]]
 vendors = ["claude", "codex", "grok"]
 argv = ["context7-mcp"]
 
