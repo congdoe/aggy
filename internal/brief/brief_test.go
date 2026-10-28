@@ -2,6 +2,7 @@ package brief
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -89,5 +90,35 @@ func TestBuildRedacts(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("brief lacks %q:\n%s", want, got)
 		}
+	}
+}
+
+// A Grok brief drops the oldest turns until it fits; others keep them all.
+func TestBuildGrokGuard(t *testing.T) {
+	big := strings.Repeat("x", 60_000) // 30,000 estimated tokens
+	var turns []adapter.Turn
+	for i := range 8 {
+		turns = append(turns, adapter.Turn{Role: "user", Text: fmt.Sprintf("turn%d %s", i, big)})
+	}
+	in := Input{From: adapter.Claude, To: adapter.Grok, Transcript: adapter.Transcript{Path: "/t", Turns: turns}}
+	got := Build(in)
+	if EstimateTokens(got) > GrokBriefTokens {
+		t.Errorf("grok brief estimated at %d tokens", EstimateTokens(got))
+	}
+	if strings.Contains(got, "turn4 ") || !strings.Contains(got, "turn5 ") || !strings.Contains(got, "turn7 ") {
+		t.Error("did not keep exactly the newest turns that fit")
+	}
+	if !strings.Contains(got, "5 older turns were left out") || !strings.Contains(got, "/t") {
+		t.Errorf("no drop note or transcript path")
+	}
+	in.To = adapter.Codex
+	if got := Build(in); !strings.Contains(got, "turn0 ") {
+		t.Error("a codex brief dropped turns")
+	}
+	// One turn larger than the whole budget is left out too.
+	in.To = adapter.Grok
+	in.Transcript.Turns = []adapter.Turn{{Role: "user", Text: strings.Repeat("y", 2*GrokBriefTokens+10)}}
+	if got := Build(in); EstimateTokens(got) > GrokBriefTokens || !strings.Contains(got, "All 1 turns read were left out") {
+		t.Errorf("oversized single turn kept (%d tokens)", EstimateTokens(got))
 	}
 }

@@ -388,6 +388,17 @@ these, and adapters.md lists what it reads.
   `isSidechain` lines. **Unverified:** assistant lines (read the same way
   with `type` `assistant`) and how Claude names the folder of a long path.
 
+Grok's auto-compaction threshold (T6673): `[session]
+auto_compact_threshold_percent` in the user `config.toml`, also per model
+as `[model.<id>].auto_compact_threshold_percent` and the environment
+variable `GROK_AUTO_COMPACT_THRESHOLD_PERCENT`, a percent (0 to 100) of
+the model's context window, default 85
+(`xai-grok-shell/src/util/config/resolve/compaction.rs#L2`, `#L36`,
+`#L38`). It is source-only at a revision possibly newer than 1.0.70, and
+the context window of the user's Grok model is not recorded, so no
+percent can be computed that keeps a session under 200,000 tokens. aggy
+does not set it yet (TODO(T6673)).
+
 ## Still open
 
 1. Codex limit event, captured live from an exhausted account: the
@@ -400,3 +411,6 @@ these, and adapters.md lists what it reads.
    re-enable Codex research (open: the existence oracle and the readable
    `~/.codex`).
 6. Greedy `codex exec -i a.png -` without `--`.
+7. Grok's `auto_compact_threshold_percent` at 1.0.70, and the context
+   window of the user's model, before aggy sets Grok's compaction below
+   200,000 tokens (T6673).
