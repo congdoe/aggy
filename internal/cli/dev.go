@@ -22,11 +22,13 @@ const devUsage = `aggy dev is for maintainers recording vendor CLI fixtures.
 Usage:
   aggy dev capture <vendor> --` + devConfirmFlag + ` (--name NAME | --out DIR)
                    [--bin PATH] [--env AGGY_X=V]... [--timeout 5m] -- <args>
-  aggy dev scrub <fixture dir>
+  aggy dev scrub [--anywhere] <fixture dir>
 
-capture runs the real CLI once (it may spend quota), records its stdout,
-stderr, exit code, and the files it wrote into testdata/fixtures/<vendor>/
-<name>, and scrubs the result. scrub rewrites a fixture, replacing home
+Run them inside the aggy repo. capture runs the real CLI once (it may
+spend quota), records its stdout, stderr, exit code, and the text files of
+its session into testdata/fixtures/<vendor>/<name> (or --out, which must
+also be under testdata/fixtures), and scrubs the result. scrub rewrites a
+fixture under testdata/fixtures (anywhere with --anywhere), replacing home
 paths, emails, usernames, hostnames, session UUIDs, and token-shaped
 strings. Review a fixture before committing it.
 `
@@ -97,17 +99,21 @@ func runDevCapture(args []string, stdout, stderr io.Writer) int {
 	case dir == "" && *name == "":
 		fmt.Fprintln(stderr, "aggy dev capture: give --name or --out")
 		return 2
-	case dir == "":
-		if *name != filepath.Base(*name) || strings.HasPrefix(*name, ".") {
-			fmt.Fprintf(stderr, "aggy dev capture: bad fixture name %q\n", *name)
-			return 2
-		}
-		dir = filepath.Join("testdata", "fixtures", string(vendor), *name)
+	case dir == "" && (*name != filepath.Base(*name) || strings.HasPrefix(*name, ".")):
+		fmt.Fprintf(stderr, "aggy dev capture: bad fixture name %q\n", *name)
+		return 2
 	}
-	dir, err = filepath.Abs(dir)
+	root, err := devfix.RepoRoot(".")
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy dev capture: %v\n", err)
 		return 1
+	}
+	if dir == "" {
+		dir = filepath.Join(devfix.FixturesDir(root), string(vendor), *name)
+	}
+	if dir, err = devfix.UnderFixtures(root, dir); err != nil {
+		fmt.Fprintf(stderr, "aggy dev capture: %v\n", err)
+		return 2
 	}
 	meta, err := devfix.Capture(context.Background(), devfix.CaptureOptions{
 		Vendor: vendor, Bin: *bin, Args: cliArgs, Out: dir, Env: env, Timeout: *timeout,
@@ -122,6 +128,10 @@ func runDevCapture(args []string, stdout, stderr io.Writer) int {
 }
 
 func runDevScrub(args []string, stdout, stderr io.Writer) int {
+	anywhere := len(args) > 0 && args[0] == "--anywhere"
+	if anywhere {
+		args = args[1:]
+	}
 	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
 		fmt.Fprintf(stderr, "aggy dev scrub: give one fixture directory\n\n%s", devUsage)
 		return 2
@@ -131,6 +141,16 @@ func runDevScrub(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aggy dev scrub: %v\n", err)
 		return 1
 	}
+	if !anywhere {
+		root, err := devfix.RepoRoot(".")
+		if err == nil {
+			dir, err = devfix.UnderFixtures(root, dir)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "aggy dev scrub: %v (use --anywhere to scrub elsewhere)\n", err)
+			return 2
+		}
+	}
 	changed, err := devfix.ScrubDir(dir, devfix.NewScrubber(devfix.CurrentIdentity()))
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy dev scrub: %v\n", err)
@@ -139,7 +159,7 @@ func runDevScrub(args []string, stdout, stderr io.Writer) int {
 	for _, c := range changed {
 		fmt.Fprintf(stdout, "scrubbed %s\n", c)
 	}
-	findings, err := devfix.Detect(dir, devfix.CurrentIdentity().Home, nil)
+	findings, err := devfix.Detect(dir, devfix.CurrentIdentity(), nil)
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy dev scrub: %v\n", err)
 		return 1

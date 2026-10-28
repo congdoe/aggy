@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -17,12 +18,23 @@ import (
 	"github.com/congdoe/aggy/internal/safefs"
 )
 
-// Limits on what Capture copies from the directories it watches.
+// Limits on what Capture copies.
 const (
 	maxSnapshotEntries = 200_000
 	maxCopiedFiles     = 200
 	maxCopiedFile      = 1 << 20
 )
+
+// SessionPaths are the vendor-home files Capture may copy, as globs
+// relative to the vendor home in which {id} is a session id the run
+// printed. Nothing else in the vendor home is copied, so another
+// session's transcript never is. Only the Codex image folder and the Grok
+// session folder are recorded; the transcript paths are unconfirmed.
+var SessionPaths = map[adapter.Vendor][]string{
+	adapter.Claude: {"projects/*/{id}.jsonl"},
+	adapter.Codex:  {"generated_images/{id}/*", "sessions/*/*/*/rollout-*{id}.jsonl"},
+	adapter.Grok:   {"sessions/*/{id}/*", "sessions/*/{id}/*/*"},
+}
 
 // CaptureOptions describes one capture.
 type CaptureOptions struct {
@@ -39,8 +51,8 @@ type CaptureOptions struct {
 	Timeout time.Duration
 	// Run runs the CLI. Nil means probe.ExecRunner(Timeout).
 	Run adapter.Runner
-	// Identity is what the scrub replaces besides pattern matches. The
-	// zero value means the current user's.
+	// Identity is what the scrub replaces besides pattern matches. Nil
+	// means the current user's.
 	Identity *Identity
 }
 
@@ -112,11 +124,25 @@ func snapshot(root string) map[string]stamp {
 	return out
 }
 
+// sessionFile reports whether rel, under the vendor home, matches one of
+// the vendor's SessionPaths for one of ids.
+func sessionFile(v adapter.Vendor, rel string, ids []string) bool {
+	for _, g := range SessionPaths[v] {
+		for _, id := range ids {
+			if ok, _ := path.Match(strings.ReplaceAll(g, "{id}", id), rel); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Capture runs the CLI once and records a fixture in opts.Out: stdout,
-// stderr, meta.json, and under files/vendor_home/ and files/cwd/ the files
-// it created or changed in its vendor home and in its working dir (a
-// fresh temp dir). Then it scrubs the fixture. It is for maintainers: it
-// runs whatever CLI Bin names, which may spend quota.
+// stderr, meta.json, and under files/ the text files the run created or
+// changed in its working dir (a fresh temp dir) and, in its vendor home,
+// only those matching SessionPaths for a session id it printed. Binary
+// files are never copied. Then it scrubs the fixture. It is for
+// maintainers: it runs whatever CLI Bin names, which may spend quota.
 func Capture(ctx context.Context, opts CaptureOptions) (Meta, error) {
 	meta := Meta{Vendor: string(opts.Vendor), Args: opts.Args, Files: []string{}, Skipped: []string{}}
 	if _, err := adapter.ParseVendor(string(opts.Vendor)); err != nil {
@@ -167,6 +193,7 @@ func Capture(ctx context.Context, opts CaptureOptions) (Meta, error) {
 		return meta, err
 	}
 	meta.ExitCode = out.ExitCode
+	ids := slices.Compact(uuidRE.FindAllString(string(out.Stdout)+"\n"+string(out.Stderr), -1))
 
 	if err := safefs.MkdirAll(opts.Out, 0o755); err != nil {
 		return meta, err
@@ -175,11 +202,20 @@ func Capture(ctx context.Context, opts CaptureOptions) (Meta, error) {
 	for _, name := range []string{"vendor_home", "cwd"} {
 		root := roots[name]
 		after := snapshot(root)
-		for _, rel := range sortedKeys(after) {
+		keys := make([]string, 0, len(after))
+		for k := range after {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		for _, rel := range keys {
 			if old, ok := before[name][rel]; ok && old == after[rel] {
 				continue
 			}
 			dest := path.Join(name, s.String(rel))
+			if name == "vendor_home" && !sessionFile(opts.Vendor, rel, ids) {
+				meta.Skipped = append(meta.Skipped, dest+": not a file of this run's session")
+				continue
+			}
 			if len(meta.Files) >= maxCopiedFiles {
 				meta.Skipped = append(meta.Skipped, dest+": too many files")
 				continue
@@ -187,6 +223,10 @@ func Capture(ctx context.Context, opts CaptureOptions) (Meta, error) {
 			b, err := safefs.ReadFileLimit(filepath.Join(root, filepath.FromSlash(rel)), maxCopiedFile)
 			if err != nil {
 				meta.Skipped = append(meta.Skipped, dest+": "+s.String(err.Error()))
+				continue
+			}
+			if !IsText(b) {
+				meta.Skipped = append(meta.Skipped, dest+": binary")
 				continue
 			}
 			p := filepath.Join(opts.Out, "files", filepath.FromSlash(dest))
@@ -200,6 +240,10 @@ func Capture(ctx context.Context, opts CaptureOptions) (Meta, error) {
 		}
 	}
 	for name, data := range map[string][]byte{"stdout": out.Stdout, "stderr": out.Stderr} {
+		if !IsText(data) {
+			meta.Skipped = append(meta.Skipped, name+": binary")
+			data = nil
+		}
 		if err := safefs.WriteFile(filepath.Join(opts.Out, name), data, 0o644); err != nil {
 			return meta, err
 		}
@@ -217,11 +261,70 @@ func Capture(ctx context.Context, opts CaptureOptions) (Meta, error) {
 	return meta, nil
 }
 
-func sortedKeys(m map[string]stamp) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+// ModulePath identifies aggy's repo root by its go.mod.
+const ModulePath = "github.com/congdoe/aggy"
+
+// RepoRoot walks up from start to the directory whose go.mod declares
+// ModulePath.
+func RepoRoot(start string) (string, error) {
+	dir, err := filepath.Abs(start)
+	if err != nil {
+		return "", err
 	}
-	slices.Sort(keys)
-	return keys
+	for {
+		b, err := safefs.ReadFileLimit(filepath.Join(dir, "go.mod"), 1<<16)
+		if err == nil {
+			for _, line := range strings.Split(string(b), "\n") {
+				if f := strings.Fields(line); len(f) == 2 && f[0] == "module" && f[1] == ModulePath {
+					return dir, nil
+				}
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("devfix: not inside the aggy repo (no go.mod for %s above %s)", ModulePath, start)
+		}
+		dir = parent
+	}
+}
+
+// FixturesDir is testdata/fixtures under the repo root.
+func FixturesDir(root string) string { return filepath.Join(root, "testdata", "fixtures") }
+
+// resolve makes p absolute and resolves symlinks in its longest existing
+// prefix.
+func resolve(p string) (string, error) {
+	p, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	rest := ""
+	for {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return filepath.Join(r, rest), nil
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return filepath.Join(p, rest), nil
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = parent
+	}
+}
+
+// UnderFixtures returns p resolved, or an error unless it is strictly
+// inside the repo's testdata/fixtures.
+func UnderFixtures(root, p string) (string, error) {
+	fx, err := resolve(FixturesDir(root))
+	if err != nil {
+		return "", err
+	}
+	rp, err := resolve(p)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(rp, fx+string(filepath.Separator)) {
+		return "", fmt.Errorf("devfix: %s is not under %s", p, FixturesDir(root))
+	}
+	return rp, nil
 }

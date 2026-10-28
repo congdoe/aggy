@@ -50,7 +50,7 @@ func TestDetectAndScrubDir(t *testing.T) {
 	write(t, root, "b/ok.json", `{"id":"0b9d3c4e-1f2a-4b5c-8d7e-6f5a4b3c2d1e","mail":"x@example.org"}`)
 	write(t, root, "c/home/sam/name.txt", "fine")
 	write(t, root, "d/image.png", "\x89PNG\x00 /Users/ann")
-	got, err := Detect(root, "", nil)
+	got, err := Detect(root, Identity{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,8 @@ func TestDetectAndScrubDir(t *testing.T) {
 	for _, f := range got {
 		kinds = append(kinds, f.File+":"+f.Kind)
 	}
-	want := []string{"a/stdout:" + KindHome, "a/stdout:" + KindEmail, "a/stdout:" + KindToken, "c/home/sam/name.txt:" + KindHome}
+	want := []string{"a/stdout:" + KindHome, "a/stdout:" + KindEmail, "a/stdout:" + KindToken, "b/ok.json:" + KindUUID,
+		"c/home/sam/name.txt:" + KindHome, "d/image.png:" + KindBinary}
 	if !slices.Equal(kinds, want) {
 		t.Errorf("Detect = %v, want %v", got, want)
 	}
@@ -67,7 +68,7 @@ func TestDetectAndScrubDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _ = Detect(root, "", allow)
+	got, _ = Detect(root, Identity{}, allow)
 	for _, f := range got {
 		if f.Kind == KindEmail {
 			t.Errorf("allowlisted email reported: %v", f)
@@ -81,8 +82,8 @@ func TestDetectAndScrubDir(t *testing.T) {
 	if err != nil || !slices.Equal(changed, []string{"a/stdout", "b/ok.json"}) {
 		t.Errorf("ScrubDir = %v, %v", changed, err)
 	}
-	got, _ = Detect(root, "", nil)
-	if len(got) != 1 || got[0].Line != 0 {
-		t.Errorf("after scrub = %v, want only the path finding", got)
+	got, _ = Detect(root, Identity{}, nil)
+	if len(got) != 2 || got[0].Line != 0 || got[1].Kind != KindBinary {
+		t.Errorf("after scrub = %v, want only the path and binary findings", got)
 	}
 }

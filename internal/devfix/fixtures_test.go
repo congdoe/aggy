@@ -22,8 +22,11 @@ func TestFixturesHoldNoSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	home, _ := os.UserHomeDir()
-	findings, err := Detect(root, home, allow)
+	id := CurrentIdentity()
+	if id.Home == "" {
+		id.Home, _ = os.UserHomeDir()
+	}
+	findings, err := Detect(root, id, allow)
 	if err != nil {
 		t.Fatal(err)
 	}
