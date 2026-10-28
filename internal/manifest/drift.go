@@ -19,10 +19,10 @@ type Drift struct {
 	// Err is the outcome's error: why a change is Failed (a credential
 	// path, an unreadable file), Invalid, or Blocked.
 	Err error
-	// BlockedBy, for a Blocked change, is the id of the next newer
-	// change to the same file, the one in its way (in an --all run, one
-	// that is itself not undone, such as a Drifted one), or "" when it is
-	// not in the results.
+	// BlockedBy, for a Blocked change, is the id of the nearest newer
+	// change to the same file that the run leaves in place (Drifted,
+	// Failed, Invalid, or Blocked itself), the one in its way, or "" when
+	// none is in the results.
 	BlockedBy string
 }
 
@@ -52,10 +52,14 @@ func (m *Manifest) Drift(ctx context.Context) ([]Drift, error) {
 			d.Err = u.Err
 		}
 		if u.Outcome == Blocked {
-			// undos is newest first: the newer changes come before i.
+			// undos is newest first: the newer changes come before i. A
+			// newer change the dry run resolved (restored, removed,
+			// cleaned, superseded) is out of the way; the blocker is the
+			// nearest one left in place.
 			for j := i - 1; j >= 0; j-- {
-				if key(undos[j].Change.File) == key(u.Change.File) {
-					d.BlockedBy = undos[j].Change.ChangeID
+				n := undos[j]
+				if key(n.Change.File) == key(u.Change.File) && unresolved(n.Outcome) {
+					d.BlockedBy = n.Change.ChangeID
 					break
 				}
 			}
@@ -63,4 +67,13 @@ func (m *Manifest) Drift(ctx context.Context) ([]Drift, error) {
 		out = append(out, d)
 	}
 	return out, nil
+}
+
+// unresolved reports whether a dry run leaves a change in place.
+func unresolved(o Outcome) bool {
+	switch o {
+	case Drifted, Failed, Invalid, Blocked:
+		return true
+	}
+	return false
 }
