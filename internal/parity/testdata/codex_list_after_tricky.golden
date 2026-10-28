@@ -1,0 +1,8 @@
+--- a/codex_list_after_tricky
++++ b/codex_list_after_tricky
+@@ -2,4 +2,4 @@
+ multi = """
+ project_doc_fallback_filenames = [
+ """
+-project_doc_fallback_filenames=[ 'A.md' , "B.md" ] # x = [
++project_doc_fallback_filenames=[ 'A.md' , "B.md", "CLAUDE.md" ] # x = [

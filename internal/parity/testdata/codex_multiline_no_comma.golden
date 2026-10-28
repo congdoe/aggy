@@ -1,0 +1,7 @@
+--- a/codex_multiline_no_comma
++++ b/codex_multiline_no_comma
+@@ -1,3 +1,3 @@
+ project_doc_fallback_filenames = [\r
+-  "GUIDE.md"\r
++  "GUIDE.md", "CLAUDE.md"\r
+ ]\r

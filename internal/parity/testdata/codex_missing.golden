@@ -1,0 +1,4 @@
+--- /dev/null
++++ b/codex_missing
+@@ -0,0 +1 @@
++project_doc_fallback_filenames = ["CLAUDE.md"]
