@@ -122,7 +122,7 @@ func TestFakes(t *testing.T) {
 		e := newEnv(t, fakes)
 		e.run(t, "grok", `{"session_id":"new-id"}`, "next", "-p", "--resume", "old-id")
 		e.run(t, "grok", `{"session_id":"new-id"}`, "next", "-p", "--resume", "old-id", "--fork-session")
-		e.run(t, "codex", "", "next step", "exec", "resume", "thread-9", "--json")
+		e.run(t, "codex", "", "next step", "exec", "--json", "resume", "thread-9")
 		recs := Records(t, e.record)
 		if recs[0].SessionID != "old-id" || recs[1].SessionID != "new-id" || recs[2].SessionID != "thread-9" {
 			t.Errorf("session ids = %s %s %s", recs[0].SessionID, recs[1].SessionID, recs[2].SessionID)

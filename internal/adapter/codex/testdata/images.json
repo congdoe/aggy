@@ -1,1 +1,1 @@
-{"session_id": "t-0199", "images": 2, "events": [{"type": "item.completed", "item": {"type": "agent_message", "text": "made two images"}}, {"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 20}}]}
+{"session_id": "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b", "images": 2, "events": [{"type": "item.completed", "item": {"type": "agent_message", "text": "made two images"}}, {"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 20}}]}

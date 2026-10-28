@@ -152,14 +152,22 @@ var defaultVersion = map[string]string{"claude": "2.1.311", "codex": "0.164.0", 
 type flagSpec struct {
 	values   []string
 	switches []string
+	// optional take a value only when the next argument does not start
+	// with "-": Claude's --resume [value] opens a picker without one, and
+	// never takes a following flag as its value.
+	optional []string
+	// multi take one or more values, up to the next argument that starts
+	// with "-" (a lone "-" is a value), as clap's num_args = 1.. does.
+	multi []string
 }
 
 // Flags recorded in docs/adapters.md and docs/design.md, per vendor and
 // codex subcommand.
 var specs = map[string]flagSpec{
 	"claude": {
-		values:   []string{"--output-format", "--permission-mode", "--session-id", "--resume"},
+		values:   []string{"--output-format", "--permission-mode", "--session-id"},
 		switches: []string{"-p", "--fork-session"},
+		optional: []string{"--resume"},
 	},
 	"grok": {
 		values: []string{"--output-format", "--permission-mode", "--session-id", "--resume",
@@ -170,9 +178,14 @@ var specs = map[string]flagSpec{
 		values:   []string{"-c"},
 		switches: []string{"--no-alt-screen"},
 	},
+	// codex exec flags go before the resume subcommand; -c is global.
 	"codex exec": {
-		values:   []string{"-c", "--disable", "--sandbox", "-i"},
+		values:   []string{"-c", "--disable", "--sandbox"},
 		switches: []string{"--json"},
+		multi:    []string{"-i"},
+	},
+	"codex exec resume": {
+		values: []string{"-c"},
 	},
 	"codex resume": {
 		values:   []string{"-c"},
@@ -370,14 +383,15 @@ func (f *fake) parse(args []string) error {
 		f.sub = args[0]
 		args = args[1:]
 		key = "codex " + f.sub
-		if f.sub == "exec" && len(args) > 0 && args[0] == "resume" {
-			f.sub = "exec resume"
-			args = args[1:]
-		}
 	}
-	spec := specs[key]
-	values := append(append([]string{}, spec.values...), f.sc.ExtraFlags...)
-	switches := append(append([]string{"--version", "--help", "-h"}, spec.switches...), f.sc.ExtraSwitches...)
+	var spec flagSpec
+	var values, switches []string
+	use := func(k string) {
+		spec = specs[k]
+		values = append(append([]string{}, spec.values...), f.sc.ExtraFlags...)
+		switches = append(append([]string{"--version", "--help", "-h"}, spec.switches...), f.sc.ExtraSwitches...)
+	}
+	use(key)
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
@@ -385,6 +399,13 @@ func (f *fake) parse(args []string) error {
 			break
 		}
 		if !strings.HasPrefix(a, "-") || a == "-" {
+			// The first positional of codex exec may name its resume
+			// subcommand, which then takes only its own flags.
+			if f.sub == "exec" && len(f.positional) == 0 && a == "resume" {
+				f.sub = "exec resume"
+				use("codex exec resume")
+				continue
+			}
 			f.positional = append(f.positional, a)
 			continue
 		}
@@ -392,6 +413,26 @@ func (f *fake) parse(args []string) error {
 		switch {
 		case contains(switches, name) && !hasVal:
 			f.flags[name] = append(f.flags[name], "")
+		case contains(spec.optional, name):
+			if !hasVal && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				val = args[i]
+			}
+			f.flags[name] = append(f.flags[name], val)
+		case contains(spec.multi, name):
+			if hasVal {
+				f.flags[name] = append(f.flags[name], val)
+				continue
+			}
+			n := 0
+			for i+1 < len(args) && args[i+1] != "--" && (args[i+1] == "-" || !strings.HasPrefix(args[i+1], "-")) {
+				i++
+				n++
+				f.flags[name] = append(f.flags[name], args[i])
+			}
+			if n == 0 {
+				return fmt.Errorf("option %s needs a value", name)
+			}
 		case contains(values, name):
 			if !hasVal {
 				if i+1 >= len(args) {
@@ -506,11 +547,21 @@ func (f *fake) helpText() string {
 	}
 	key := f.vendor
 	if f.sub != "" {
-		key = "codex " + strings.Fields(f.sub)[0]
+		key = "codex " + f.sub
 	}
 	spec := specs[key]
 	var b strings.Builder
-	fmt.Fprintf(&b, "Usage: %s [options]\n\nOptions:\n", key)
+	if f.sub == "exec resume" {
+		b.WriteString("Usage: codex exec resume [options] [SESSION_ID] [PROMPT]\n\nOptions:\n")
+	} else {
+		fmt.Fprintf(&b, "Usage: %s [options]\n\nOptions:\n", key)
+	}
+	for _, v := range spec.optional {
+		fmt.Fprintf(&b, "  %s [value]\n", v)
+	}
+	for _, v := range spec.multi {
+		fmt.Fprintf(&b, "  %s <value>...\n", v)
+	}
 	for _, v := range spec.values {
 		fmt.Fprintf(&b, "  %s <value>\n", v)
 	}
@@ -522,8 +573,6 @@ func (f *fake) helpText() string {
 		b.WriteString("\nCommands:\n  exec\n  resume\n")
 	case f.sub == "exec":
 		b.WriteString("\nCommands:\n  resume\n")
-	case f.sub == "exec resume":
-		return strings.Replace(b.String(), "Usage: codex exec [options]", "Usage: codex exec resume [options] [SESSION_ID] [PROMPT]", 1)
 	}
 	return b.String()
 }

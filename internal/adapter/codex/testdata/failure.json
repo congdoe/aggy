@@ -1,1 +1,1 @@
-{"session_id": "t-0199", "exit_code": 1, "stderr": "boom\n", "events": [{"type": "turn.failed", "error": {"message": "stream error"}}]}
+{"session_id": "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b", "exit_code": 1, "stderr": "boom\n", "events": [{"type": "turn.failed", "error": {"message": "stream error"}}]}

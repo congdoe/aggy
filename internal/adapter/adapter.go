@@ -81,6 +81,11 @@ type Command struct {
 	Stdin Stdin
 	// StdinPath is the file read as stdin when Stdin is StdinFile: the
 	// headless prompt file, so the prompt never goes in argv.
+	//
+	// TODO(T6621): the borrow runner opens StdinPath through safefs with
+	// O_NOFOLLOW and O_NONBLOCK, refuses anything but a regular file (a
+	// FIFO or device could block or feed the CLI forever), and only then
+	// clears O_NONBLOCK and hands the descriptor to the child.
 	StdinPath string
 }
 
@@ -168,6 +173,12 @@ type HeadlessRequest struct {
 	RefImages []string
 	// Env holds extra KEY=value entries, such as AGGY_DELEGATED=1.
 	Env []string
+	// IsolatedCwd says Cwd is a fresh, empty temp dir made for this run.
+	// Adapters cannot check that without touching the disk, so the caller
+	// vouches for it: the M1 borrow runner (T6621) must create one for
+	// every research and news run and set this. Research and news refuse
+	// to build without it.
+	IsolatedCwd bool
 }
 
 // ErrorClass is aggy's classification of a failed run. Adapters map each
@@ -193,7 +204,9 @@ type Artifact struct {
 	Kind string // "image" or "video"
 }
 
-// HeadlessResult is a parsed headless run.
+// HeadlessResult is a parsed headless run. Text and ErrorDetail are raw
+// vendor output, which a model or a web page may have shaped: callers must
+// pass them through termsafe before printing them to a terminal (M1).
 type HeadlessResult struct {
 	SessionID   string // the vendor's conversation id, for resume
 	Text        string // the final reply
