@@ -81,14 +81,6 @@ linters:
           deny:
             - pkg: "os/exec$"
               desc: processes start only in internal/supervisor, internal/borrow, or internal/probe
-        # Adapters build commands and parse output; they never start
-        # processes, so they may not import the probe runner's package.
-        adapter:
-          files:
-            - "**/internal/adapter/**"
-          deny:
-            - pkg: github.com/congdoe/aggy/internal/probe
-              desc: adapters never start processes; the caller passes them a Runner
         # The fake vendor CLIs are for tests only.
         fakecli:
           files: ["$all", "!$test"]
@@ -130,6 +122,13 @@ linters:
           msg: syscall reaches the disk and processes around internal/safefs; only the allowlisted names may be used
         - pattern: ^filepath\.Glob$
           msg: use internal/safefs, which refuses vendor credential files
+        # Adapters build commands and parse output; they never start
+        # processes. They may use probe's specs and parsers and run
+        # commands through the Runner the caller passes, but not build
+        # the process-starting runner (allowed outside internal/adapter
+        # by an exclusion below).
+        - pattern: ^probe\.ExecRunner$
+          msg: adapters never start processes; the caller passes them a Runner
         - pattern: ^toml\.(DecodeFile|DecodeFS)$
           msg: read config through internal/safefs (safefs.ReadConfig), then toml.Decode
         # golang.org/x/sys/unix reaches the disk and processes around both
@@ -186,6 +185,10 @@ linters:
       # The syscall allowlist everywhere: errno values, the open flags
       # safefs needs, the stat type, and flock for the store's locks.
       - text: "use of `syscall\\.(E[A-Z0-9]+|O_NOFOLLOW|O_NONBLOCK|Stat_t|Flock|LOCK_(EX|NB|SH|UN))`"
+        linters: [forbidigo]
+      # The process-starting probe runner is banned only in adapters.
+      - path-except: ^internal/adapter/
+        text: "use of `probe\\.ExecRunner`"
         linters: [forbidigo]
       # access(2) only in safefs, behind its path check (DirWritable).
       - path: ^internal/safefs/
