@@ -1,22 +1,24 @@
 # Headroom MCP: compresses a blob the agent already holds; the original
-# stays local and can be retrieved (headroom_compress, headroom_retrieve,
-# headroom_stats, per the aggy proposal). Never headroom wrap or its
-# proxy. The homepage and the server command are not in the proposal or
-# docs/verification.md: the command below is a placeholder, unverified
-# until T6713 checks it at a pinned version.
+# stays local and can be retrieved (compress, retrieve, and stats tools).
+# Source: docs/verification.md, "Managed tools (2026-10-28)": headroom
+# 0.42.0 (the headroom-ai package), headroom mcp serve.
+# Never headroom proxy or wrap (they need ANTHROPIC_BASE_URL, which aggy
+# never sets), and never headroom mcp install, which edits every agent's
+# config.
 name = "headroom"
 description = "Compresses a large blob the agent holds; originals stay local and can be retrieved"
-version = "unpinned" # TODO(T6713): pin the version aggy installs
+homepage = "https://docs.headroomlabs.ai"
+version = "0.42.0"
 default = false
 scope = "global"
-unverified = ["version", "homepage", "install", "mcp"]
 
 [install]
 check = ["headroom", "--version"]
+check_pattern = 'headroom, version (\d+\.\d+\.\d+)'
 
 [[mcp]]
 vendors = ["claude", "codex", "grok"]
-argv = ["headroom", "mcp"]
+argv = ["headroom", "mcp", "serve"]
 
 [cost]
 method = "mcp-schema"
