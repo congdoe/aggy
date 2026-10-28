@@ -78,8 +78,9 @@ Rules every adapter follows:
 ## Verified vendor facts
 
 These were checked on 2026-10-27 with claude 2.1.311, codex-cli 0.164.0, and
-grok 1.0.70, and the later live checks of 2026-10-27 and 2026-10-28 (with
-claude 2.1.312) are recorded, with commands and evidence, in
+grok 1.0.70 (help and source). The live checks of 2026-10-27 and
+2026-10-28 ran claude 2.1.312, codex-cli 0.164.0, and grok 1.0.70; the
+Claude adapter still declares 2.1.311 as tested. They are recorded, with commands and evidence, in
 [verification.md](verification.md). Each adapter states the versions it
 was tested against.
 
@@ -130,8 +131,10 @@ was tested against.
   `--permission-mode plan`.
 - Research and news: `--tools web_search --no-subagents --disallowed-tools
   "read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_gen,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode"`
-  leaves exactly `web_search`, `open_page`, and `open_page_with_find`
-  (checked live). There is no `x_keyword_search` or `x_semantic_search`
+  should leave only `web_search`, `open_page`, and `open_page_with_find`.
+  The live run (the same list plus `open_page,open_page_with_find`, which
+  Grok ignored with a warning) got that list as the model's own one-turn
+  report, not a wire dump; this exact set has not been run live yet. There is no `x_keyword_search` or `x_semantic_search`
   tool: naming them made Grok warn and ignore the whole `--tools`
   allowlist. `open_page*` cannot be named in `--disallowed-tools`.
 - MCP at launch: no flag. `--agent <file>` whose frontmatter lists

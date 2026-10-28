@@ -6,8 +6,10 @@ and 2026-10-28, how, and what was found. [design.md](design.md) and
 ping replies, canary tokens, and file hashes are replaced with `<id>` or
 `<token>`; scratch paths with `<scratch>`, `<HOME>`, and `<TESTDIR>`.
 
-Versions checked: claude 2.1.312 (Claude Code), codex-cli 0.164.0, and
-grok 1.0.70 (f50904eaee6c) [stable].
+Versions checked live: claude 2.1.312 (Claude Code), codex-cli 0.164.0,
+and grok 1.0.70 (f50904eaee6c) [stable]. The adapters still declare
+claude 2.1.311, the version of the earlier help checks, as tested
+(adapters.md).
 
 ## Method
 
@@ -31,8 +33,16 @@ Three tiers were used.
 3. **Live runs** (owner-approved, a few model calls each). Every run used
    a fresh directory under the scratch area (not a git repo, so Codex got
    `--skip-git-repo-check`), stdin closed or the prompt file, and no
-   `--dangerously-*` flag, yolo mode, or permission skipping. No vendor
-   state directory was read except the JSON each run printed.
+   `--dangerously-*` flag, yolo mode, or permission skipping. From the
+   vendor state directories, only files these runs created were read:
+   the JSON each run printed, and, once, the `turn_context` line of one
+   check run's own Codex rollout (to learn the model slug it had used,
+   for the catalog run below). No other session, and no credential file,
+   was ever read.
+
+Tool lists below are what the model itself reported in one turn when
+asked to list its tools, not a dump of the tool definitions sent on the
+wire. They can miss deferred tools or misname one.
 
 Confidence words: *Source-verified*, *Help-verified*, *Doc-verified*,
 *Inferred* (reasoned from source, not traced), *Live-confirmed*.
@@ -44,7 +54,7 @@ Confidence words: *Source-verified*, *Help-verified*, *Doc-verified*,
 | Codex `SessionStart` hook | Exists, Claude-style; payload `session_id` is the thread id. Hooks need a trust hash; a hook passed with `-c` is untrusted and silently skipped. | Source-verified; trust gate Live-confirmed; firing not yet seen live |
 | Codex usage limit | `exec --json` gives only human text, no code and no reset time. The rollout has `task_complete.error.codex_error_info` and `token_count.rate_limits.*.resets_at`. | Source-verified; limit case not testable live |
 | Codex research isolation | No local read tool once `shell_tool` and `view_image` are off, but `apply_patch` is a file-guess oracle and cannot be turned off by a flag. | Live-confirmed |
-| Grok research and news tools | `x_keyword_search` and `x_semantic_search` do not exist. A clean list is `web_search` plus `open_page*`. | Live-confirmed |
+| Grok research and news tools | `x_keyword_search` and `x_semantic_search` do not exist. A clean list, as the model reported it, is `web_search` plus `open_page*`. | Live-confirmed |
 | Extra context at session start | Claude `--append-system-prompt-file` (works although `--help` omits it); Codex `-c developer_instructions`; Grok `--rules` (inline only). | Claude Live-confirmed; others Source/Doc-verified |
 | Launch-time MCP | Claude `--mcp-config` (re-pass on resume); Codex `-c mcp_servers.*` plus per-server approval; Grok has no flag, use `--agent <file>` with `mcpServers`. | Live-confirmed |
 | Codex CLI details | `codex exec resume`, `--ignore-user-config` on `exec` only, greedy `-i`. | Help/Source-verified; parts Live-confirmed |
@@ -142,7 +152,7 @@ Lockdown runs (2026-10-28), prompt "List every tool you have by exact name":
 
 | Check | Flags beyond the isolation set | Result |
 | --- | --- | --- |
-| A1 | `--disable apps --disable plugins --disable code_mode --disable goals` | Connector tools and goal tools gone. `functions.exec`, `web__run`, `image_gen__imagegen` remain. |
+| A1 | `--disable apps --disable plugins --disable code_mode --disable goals` | Connector tools and goal tools gone. `functions.exec`, `web__run`, `image_gen__imagegen` remain. The model said additional deferred tools may be available but could not name them. |
 | A2 | A1 plus `--disable image_generation --disable standalone_web_search --disable multi_agent --disable sleep_tool` | Image tool and sleep gone. `functions.exec`, `web__run`, `collaboration.*`, `apply_patch`, MCP resource tools remain. `--disable multi_agent` did not remove `collaboration.*`, and `--disable code_mode` did not remove `functions.exec`. |
 
 The clean Codex set is therefore `--ignore-user-config --sandbox read-only
@@ -247,7 +257,7 @@ research stays off in the defaults.
 | Check | Command | Verdict | Evidence |
 | --- | --- | --- | --- |
 | C1, design flags as written | `grok -p "<prompt>" --tools web_search,x_keyword_search,x_semantic_search --disallowed-tools "read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent" --output-format json` | **Not clean** | stderr: `warning: --tools "x_keyword_search", "x_semantic_search" name no tool, so other tools stay available`. The allowlist was ignored, and image, video, workflow, and the MCP meta-tools `search_tool` and `use_tool` stayed reachable. No tool by either X name exists in grok-build's source or docs. |
-| C2, cleaned | `grok -p "<prompt>" --tools web_search --disallowed-tools "read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_gen,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode" --no-subagents --output-format json` | **Clean** | Only `web_search`, `open_page`, `open_page_with_find`. The two `open_page*` tools are browse helpers that come with web search and cannot be named in `--disallowed-tools` (Grok warns that they name no tool). |
+| C2, cleaned | `grok -p "<prompt>" --tools web_search --disallowed-tools "read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,image_gen,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,ask_user_question,enter_plan_mode,exit_plan_mode,open_page,open_page_with_find" --no-subagents --output-format json` | **Clean, as the model reported it** | The model reported only `web_search`, `open_page`, `open_page_with_find` (a one-turn self-report, not a wire dump). stderr: `warning: --disallowed-tools "open_page", "open_page_with_find" name no tool, so they remove nothing`: the two `open_page*` tools are browse helpers that come with web search and cannot be named in `--disallowed-tools` (`--disable-web-search` removes all three). The flag set aggy's adapter will use, which drops those two names, has not been run live yet. |
 
 Lessons: an unknown name in `--tools` makes Grok ignore the whole
 allowlist, with only a warning; and `search_tool` and `use_tool` must be
