@@ -95,9 +95,10 @@ var (
 	// with web_search, are not in it: they cannot be removed by name, and
 	// naming them makes Grok warn "name no tool ... so they remove
 	// nothing" (live check C2, 2026-10-28), which fails a borrow closed.
-	// Denying web_search is expected to take them along; that, and
-	// --disable-web-search (not in a recorded help), are unverified:
-	// TODO(T6737).
+	// Denying web_search takes them along: the review argv, run live
+	// (C3, 2026-10-28), left the model reporting only read_file, grep,
+	// and list_dir, with no warning. --disable-web-search (not in a
+	// recorded help) is unverified and no longer needed: TODO(T6737).
 	Lockdown = []string{
 		"read_file", "grep", "list_dir", "write", "search_replace", "run_terminal_cmd", "web_fetch",
 		"Agent", "search_tool", "use_tool", "image_gen", "image_edit", "image_to_video",
