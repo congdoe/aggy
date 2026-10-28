@@ -240,6 +240,19 @@ func TestDiagFollow(t *testing.T) {
 	if code := <-done; code != 0 || !strings.Contains(out.String(), "followed") {
 		t.Errorf("follow: code %d: %s", code, out.String())
 	}
+	// G67-9: a cancel at any point of a poll, a query in flight
+	// included, ends it cleanly.
+	diagPollEvery = 0
+	for i := 0; i < 50; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		var o syncBuilder
+		go func() { done <- diagWith(ctx, []string{"--follow", "--jsonl"}, time.Now, &o, &o) }()
+		time.Sleep(time.Duration(i%10) * time.Millisecond)
+		cancel()
+		if code := <-done; code != 0 {
+			t.Fatalf("cancel %d: code %d: %s", i, code, o.String())
+		}
+	}
 }
 
 // TestDiagReadOnly: no aggy diag form creates diag.db or the index.
