@@ -264,6 +264,11 @@ func (g *gitWorktrees) owned(wt store.Worktree) error {
 // removed (dropAdmin), never a repo-wide prune, which would also drop the
 // person's own worktrees that happen to be missing (an unmounted disk).
 func (g *gitWorktrees) Remove(ctx context.Context, wt store.Worktree) error {
+	return g.remove(ctx, wt, true)
+}
+
+// remove is Remove, with the branch deleted only when branch is true.
+func (g *gitWorktrees) remove(ctx context.Context, wt store.Worktree, branch bool) error {
 	if err := g.owned(wt); err != nil {
 		return err
 	}
@@ -287,6 +292,9 @@ func (g *gitWorktrees) Remove(ctx context.Context, wt store.Worktree) error {
 			return err
 		}
 	}
+	if !branch {
+		return nil
+	}
 	// A removal cut short after the worktree went may have left the
 	// branch, or not.
 	o, err := g.env.gitOutput(ctx, wt.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+wt.Branch)
@@ -302,30 +310,41 @@ func (g *gitWorktrees) Remove(ctx context.Context, wt store.Worktree) error {
 // real directory whose gitdir file points at wt's own .git, so it is the
 // entry git made for this worktree and no other.
 func (g *gitWorktrees) dropAdmin(ctx context.Context, wt store.Worktree) error {
+	admin, err := g.aggyAdmin(ctx, wt)
+	if admin == "" || err != nil {
+		return err // nothing left to remove, or refused
+	}
+	return safefs.RemoveAll(admin)
+}
+
+// aggyAdmin returns the admin entry of aggy's worktree wt, or "" when
+// there is none. It refuses an entry that is not the one git made for
+// wt, as dropAdmin describes.
+func (g *gitWorktrees) aggyAdmin(ctx context.Context, wt store.Worktree) (string, error) {
 	out, _, err := g.env.git(ctx, wt.Repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
-		return err
+		return "", err
 	}
 	admin := filepath.Join(strings.TrimSpace(out), "worktrees", filepath.Base(wt.Path))
 	if wt.GitDir != "" && filepath.Clean(wt.GitDir) != admin {
-		return fmt.Errorf("refusing: the recorded git dir %s is not %s", wt.GitDir, admin)
+		return "", fmt.Errorf("refusing: the recorded git dir %s is not %s", wt.GitDir, admin)
 	}
 	fi, err := safefs.Lstat(admin)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil // nothing left to remove
+		return "", nil
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !fi.IsDir() {
-		return fmt.Errorf("refusing: %s is not a directory", admin)
+		return "", fmt.Errorf("refusing: %s is not a directory", admin)
 	}
 	data, err := safefs.ReadFileLimit(filepath.Join(admin, "gitdir"), 4096)
 	if err != nil {
-		return fmt.Errorf("refusing to remove %s: %w", admin, err)
+		return "", fmt.Errorf("refusing to remove %s: %w", admin, err)
 	}
 	if got := filepath.Clean(strings.TrimSpace(string(data))); got != filepath.Join(wt.Path, ".git") {
-		return fmt.Errorf("refusing: %s belongs to %s, not aggy's %s", admin, got, wt.Path)
+		return "", fmt.Errorf("refusing: %s belongs to %s, not aggy's %s", admin, got, wt.Path)
 	}
-	return safefs.RemoveAll(admin)
+	return admin, nil
 }

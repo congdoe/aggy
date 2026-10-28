@@ -246,7 +246,7 @@ func TestAcceptRefusesTmpState(t *testing.T) {
 	}
 	f.env.tmpDirs = func() []string { return []string{"", tmp} }
 	code, out, errOut := accept(f, "", false, id, "--yes")
-	if code != 1 || !strings.Contains(errOut, "aggy's state dir") || !strings.Contains(errOut, "set AGGY_HOME") || strings.Contains(out, "Applied") {
+	if code != 1 || !strings.Contains(errOut, "aggy's state dir") || !strings.Contains(errOut, "set AGGY_HOME") || !strings.Contains(errOut, "accept.state_temp_dir") || strings.Contains(out, "Applied") {
 		t.Errorf("code %d: %s %s", code, out, errOut)
 	}
 	if data, _ := os.ReadFile(filepath.Join(f.repo, "a.go")); strings.Contains(string(data), "edited") {

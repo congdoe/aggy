@@ -219,6 +219,8 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `accept.worktree_changed` | yes | The worktree changed after the borrow ended (a process the child left behind?). | Review the worktree by hand. |
 | `accept.checkout_dirty` |  | The main checkout has changes in the paths the diff touches. | Commit or stash them, then accept again. |
 | `accept.failed` |  | Another accept error: git failed, or the diff no longer applies. | The record's msg; git status. |
+| `accept.state_temp_dir` | yes | aggy's state dir, where accept writes the patch, is under a temp dir an edit child's sandbox may write. | Set AGGY_HOME to a dir outside temp dirs. |
+| `accept.unsupported_os` |  | aggy accept is not supported on this OS yet. | Review the worktree and apply its diff by hand. |
 | `check.gate_temp_dir` | yes | The main checkout is under a temp dir an edit child's sandbox may write, so its check list may be the child's. | Run edits from a repo outside temp dirs. |
 | `check.tree_changed` | yes | The checks changed files in the worktree, so it no longer matches the diff the child left. | Review the worktree by hand. |
 | `check.gate_failed` |  | Another check gate error. | The record's msg. |

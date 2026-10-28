@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -285,7 +286,8 @@ func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktre
 		wt, id := w.Worktree, w.BorrowID
 		leftover := !wt.Removed.IsZero()
 		fi, err := safefs.Lstat(wt.Path)
-		if leftover && errors.Is(err, fs.ErrNotExist) {
+		gone := errors.Is(err, fs.ErrNotExist)
+		if leftover && gone {
 			// The directory went; its branch or admin entry may not have.
 			left, lerr := g.leftBehind(ctx, wt)
 			if lerr != nil {
@@ -337,9 +339,39 @@ func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktre
 				continue
 			}
 		}
+		// A branch with commits that hold more than the recorded edit is
+		// kept: a leftover loses only its directory and admin entry.
+		var commits int
+		keepBranch := false
+		if accepted || leftover {
+			why, n, err := g.branchKept(ctx, wt)
+			if err != nil {
+				p.skip("worktree of borrow %s: %v", id, err)
+				continue
+			}
+			commits = n
+			if why != "" {
+				p.skip("worktree of borrow %s: kept: %s", id, why)
+				keepBranch = true
+				if gone {
+					if admin, err := g.aggyAdmin(ctx, wt); err != nil || admin == "" {
+						if err != nil {
+							p.skip("worktree of borrow %s: %v", id, err)
+						}
+						continue // nothing else is left
+					}
+				}
+			}
+		}
 		what := fmt.Sprintf("%s (%s, branch %s)", wt.Path, wt.State, wt.Branch)
-		if leftover {
+		switch {
+		case keepBranch:
+			what = fmt.Sprintf("%s (left by a removal cut short; its branch %s is kept)", wt.Path, wt.Branch)
+		case leftover:
 			what = fmt.Sprintf("%s (left by a removal cut short, branch %s)", wt.Path, wt.Branch)
+		}
+		if commits > 0 && !keepBranch {
+			what += fmt.Sprintf(", deletes %d commit(s) on the branch that hold only the recorded edit", commits)
 		}
 		ids := diag.Rec{Borrow: id, Worktree: filepath.Base(wt.Path), Trace: w.TraceID}
 		p.items = append(p.items, gcItem{kind: "worktree", what: what, bytes: size, ids: ids, remove: func(ctx context.Context) error {
@@ -347,7 +379,13 @@ func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktre
 				return err
 			}
 			if leftover {
-				return g.Remove(ctx, wt) // the removal is claimed already
+				// The removal is claimed already. The branch is checked
+				// again: it may have been committed on since the plan.
+				why, _, err := g.branchKept(ctx, wt)
+				if err != nil {
+					return err
+				}
+				return g.remove(ctx, wt, why == "")
 			}
 			if accepted {
 				if why, err := g.keptAccepted(ctx, wt); err != nil || why != "" {
@@ -449,30 +487,48 @@ func (g *gitWorktrees) keptAccepted(ctx context.Context, wt store.Worktree) (str
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return "", err
 	}
+	why, _, err := g.branchKept(ctx, wt)
+	return why, err
+}
+
+// branchKept says why aggy's branch for wt must stay, "" if it may be
+// deleted, and how many commits deleting it drops. It may go when it is
+// gone, at the base commit, or when its tip holds exactly the tree aggy
+// recorded (the edit child committing its own work adds nothing the
+// accept did not apply; only those commits' messages are lost, which
+// the gc listing shows). Any other commit keeps it (M61-1, M61-2).
+func (g *gitWorktrees) branchKept(ctx context.Context, wt store.Worktree) (string, int, error) {
 	o, err := g.env.gitOutput(ctx, wt.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+wt.Branch+"^{commit}")
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	head := strings.TrimSpace(string(o.Stdout))
 	if o.ExitCode != 0 || head == wt.Base {
-		return "", nil
+		return "", 0, nil
 	}
-	// Commits whose tip holds exactly the accepted tree (the edit child
-	// committing its own work) add nothing the accept did not apply.
+	kept := "its branch " + wt.Branch + " has commits past the recorded edit"
+	if wt.Tree == "" {
+		return kept, 0, nil
+	}
 	o, err = g.env.gitOutput(ctx, wt.Repo, "rev-parse", "--verify", "--quiet", head+"^{tree}")
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if o.ExitCode != 0 || strings.TrimSpace(string(o.Stdout)) != wt.Tree {
-		return "its branch " + wt.Branch + " has commits past the accepted edit", nil
+		return kept, 0, nil
 	}
-	return "", nil
+	out, _, err := g.env.git(ctx, wt.Repo, "rev-list", "--count", wt.Base+".."+head)
+	if err != nil {
+		return "", 0, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(out))
+	return "", n, err
 }
 
 // leftBehind reports whether a leftover whose directory is gone (a
-// removal cut short) still has aggy's branch or git admin entry in its
-// repo, so gc has something to clean. A record not aggy's, or whose repo
-// is gone, has nothing.
+// removal cut short) still has aggy's branch or git admin entry (checked
+// as dropAdmin checks it) in its repo. A record not aggy's, or whose
+// repo is gone or no longer a git repo, has nothing.
 func (g *gitWorktrees) leftBehind(ctx context.Context, wt store.Worktree) (bool, error) {
 	if g.owned(wt) != nil {
 		return false, nil
@@ -480,19 +536,17 @@ func (g *gitWorktrees) leftBehind(ctx context.Context, wt store.Worktree) (bool,
 	if _, err := safefs.Lstat(wt.Repo); errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
-	o, err := g.env.gitOutput(ctx, wt.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+wt.Branch)
-	if err != nil || o.ExitCode == 0 {
-		return err == nil, err
-	}
-	out, _, err := g.env.git(ctx, wt.Repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil {
+	o, err := g.env.gitOutput(ctx, wt.Repo, "rev-parse", "--git-dir")
+	if err != nil || o.ExitCode != 0 {
 		return false, err
 	}
-	_, err = safefs.Lstat(filepath.Join(strings.TrimSpace(out), "worktrees", filepath.Base(wt.Path)))
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
+	if o, err = g.env.gitOutput(ctx, wt.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+wt.Branch); err != nil || o.ExitCode == 0 {
+		return err == nil, err
 	}
-	return err == nil, err
+	// An entry dropAdmin would refuse (another worktree's, or not one
+	// git made) is not aggy's to clean: listing it would fail every run.
+	admin, err := g.aggyAdmin(ctx, wt)
+	return err == nil && admin != "", nil
 }
 
 // unchanged reads w's record again just before its removal, since the
