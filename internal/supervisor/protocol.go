@@ -46,4 +46,8 @@ type Response struct {
 	OK    bool   `json:"ok"`
 	Type  string `json:"type,omitempty"` // "pong" for a ping
 	Error string `json:"error,omitempty"`
+	// Code is a refusal's reason code (docs/logging.md), so the sender
+	// can print and record it too. The sender looks it up in the
+	// registry and never trusts it further.
+	Code string `json:"code,omitempty"`
 }

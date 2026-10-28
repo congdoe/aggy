@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/supervisor"
 	"github.com/congdoe/aggy/internal/termsafe"
@@ -28,16 +30,27 @@ func runSwitch(args []string, stdout, stderr io.Writer) int {
 }
 
 func switchWith(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	ctx := context.Background()
 	req := supervisor.Request{Type: supervisor.ReqSwitchRequest}
+	// refused records a refusal under code with msg, and prints it with
+	// shown, which may quote the agent's own arguments; the record never
+	// does. This process's trace is the supervisor's (AGGY_TRACE), so
+	// its record joins the session's.
+	refused := func(code diag.Code, msg, shown string, v adapter.Vendor) {
+		dlog.Log(ctx, diag.Rec{Event: diag.EvSwitchRefused, Code: code, Msg: msg, Vendor: string(v)})
+		fmt.Fprintf(stderr, "aggy switch: %s %s\n", termsafe.Line(shown), dlog.Tag(code))
+	}
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
 		case a == "--brief":
 			req.Brief = true
 		case a == "--new" || a == "--model":
-			fmt.Fprintf(stderr, "aggy switch: %s is the user's choice, in aggy's picker; an agent may ask for a vendor and --brief only\n", a)
+			msg := a + " is the user's choice, in aggy's picker; an agent may ask for a vendor and --brief only"
+			refused(diag.CodeAgentOptions, msg, msg, "")
 			return 2
 		case strings.HasPrefix(a, "-"):
+			refused(diag.CodeUsage, "an unknown flag", "an unknown flag", "")
 			fmt.Fprint(stderr, switchUsage)
 			return 2
 		default:
@@ -45,33 +58,40 @@ func switchWith(args []string, getenv func(string) string, stdout, stderr io.Wri
 		}
 	}
 	if len(rest) != 1 {
+		refused(diag.CodeUsage, "one vendor is needed", "one vendor is needed", "")
 		fmt.Fprint(stderr, switchUsage)
 		return 2
 	}
 	v, err := adapter.ParseVendor(rest[0])
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy switch: %v\n", err)
+		refused(diag.CodeUsage, "an unknown vendor", err.Error(), "")
 		return 2
 	}
 	sock := getenv("AGGY_SOCKET")
 	if sock == "" {
-		fmt.Fprintln(stderr, "aggy switch: not inside a CLI aggy runs (no AGGY_SOCKET); press the switch key in aggy instead")
+		msg := "not inside a CLI aggy runs (no AGGY_SOCKET); press the switch key in aggy instead"
+		refused(diag.CodeNotSupervised, msg, msg, v)
 		return 1
 	}
 	dir, err := home.Dir()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy switch: %v\n", err)
+		refused(diag.CodeStore, err.Error(), err.Error(), v)
 		return 1
 	}
 	req.Vendor = string(v)
 	resp, err := supervisor.Send(filepath.Join(dir, "run"), sock, req, hookTimeout)
 	switch {
 	case err != nil:
-		fmt.Fprintf(stderr, "aggy switch: %s\n", termsafe.Line(err.Error()))
+		refused(diag.CodeUnreachable, err.Error(), err.Error(), v)
 		return 1
 	case !resp.OK:
-		// TODO(T6753): log switch.refused.
-		fmt.Fprintf(stderr, "aggy switch: refused: %s\n", termsafe.Line(resp.Error))
+		// The supervisor recorded it too; its code is taken only when
+		// the registry has it.
+		code := diag.CodeSwitchVendor
+		if c, ok := diag.CodeNamed(resp.Code); ok {
+			code = c.Name
+		}
+		refused(code, "refused: "+resp.Error, "refused: "+resp.Error, v)
 		return 1
 	}
 	fmt.Fprintf(stdout, "aggy will offer the user a switch to %s when this turn ends. End your turn now; the user decides.\n", v)
