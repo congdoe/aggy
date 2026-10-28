@@ -182,6 +182,12 @@ func runBorrow(args []string, stdout, stderr io.Writer) int {
 }
 
 func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
+	return borrowMedia(args, nil, env, stdout, stderr)
+}
+
+// borrowMedia is aggy borrow with the file arguments of aggy image or
+// aggy video (nil for aggy borrow).
+func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stderr io.Writer) int {
 	// One hop: a borrow child's shell never borrows again.
 	if env.getenv(borrow.Delegated) != "" {
 		fmt.Fprintf(stderr, "aggy borrow: %s\n", borrow.ErrDelegated)
@@ -254,7 +260,7 @@ func borrowWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 	})
 	req := borrow.Request{
 		Kind: kind, Task: ba.task, Paths: paths, Constraints: ba.constraints,
-		Vendor: ba.vendor, Repo: root, Parent: parent, AllowUntested: ba.allowUntested,
+		Vendor: ba.vendor, Repo: root, Parent: parent, AllowUntested: ba.allowUntested, Media: media,
 	}
 	if kind == adapter.Review {
 		if req.Repo, err = reviewRoot(cwd, env.getenv("HOME"), stateDir); err != nil {
