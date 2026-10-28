@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -61,6 +62,10 @@ type skillLayout struct {
 	links      map[string]string // vendor -> its link
 	grokHome   string
 	grokConfig string
+	// content is the SKILL.md aggy writes into store on link: aggy's
+	// own skill. A managed tool's skill (nil) is the person's to put
+	// there; aggy never fetches or writes one.
+	content []byte
 }
 
 // scans lists the links a vendor's CLI would load the skill through: its
@@ -80,6 +85,15 @@ func (l skillLayout) scans(v string) []string {
 // followed), Codex $HOME/.agents/skills (Codex skills docs; ~/.codex/skills
 // is not a documented location), and Grok's grok home skills folder.
 func layout() (skillLayout, error) {
+	l, err := layoutFor(skillName)
+	l.content = skills.Aggy
+	return l, err
+}
+
+// layoutFor is layout for the skill named name, stored in
+// <state>/skills/<name> (a managed tool's skill, T6708), whose SKILL.md
+// aggy does not write.
+func layoutFor(name string) (skillLayout, error) {
 	h := os.Getenv("HOME")
 	if !filepath.IsAbs(h) {
 		return skillLayout{}, errors.New("HOME is not an absolute path")
@@ -96,11 +110,11 @@ func layout() (skillLayout, error) {
 		grokHome = g
 	}
 	return skillLayout{
-		store: filepath.Join(state, "skills", skillName),
+		store: filepath.Join(state, "skills", name),
 		links: map[string]string{
-			"claude": filepath.Join(h, ".claude", "skills", skillName),
-			"codex":  filepath.Join(h, ".agents", "skills", skillName),
-			"grok":   filepath.Join(grokHome, "skills", skillName),
+			"claude": filepath.Join(h, ".claude", "skills", name),
+			"codex":  filepath.Join(h, ".agents", "skills", name),
+			"grok":   filepath.Join(grokHome, "skills", name),
 		},
 		grokHome:   grokHome,
 		grokConfig: filepath.Join(grokHome, "config.toml"),
@@ -212,6 +226,16 @@ func runSkill(args []string, stdout, stderr io.Writer) int {
 // Grok is not linked but another vendor's link is in a folder it scans.
 // It writes nothing.
 func (l skillLayout) plan(link bool, vendors []string) ([]patch.Patch, error) {
+	want := map[string]bool{}
+	for _, v := range vendors {
+		want[v] = link
+	}
+	return l.planSet(want)
+}
+
+// planSet is plan with each vendor of want linked (true) or unlinked
+// (false) in one plan, so Grok's ignore entry matches the end state.
+func (l skillLayout) planSet(want map[string]bool) ([]patch.Patch, error) {
 	var ps []patch.Patch
 	after := map[string]bool{}
 	for _, v := range skillVendors {
@@ -221,16 +245,22 @@ func (l skillLayout) plan(link bool, vendors []string) ([]patch.Patch, error) {
 		}
 		after[v] = ok
 	}
-	if link {
+	anyLink := slices.Contains(slices.Collect(maps.Values(want)), true)
+	if anyLink && l.content != nil {
 		file := filepath.Join(l.store, "SKILL.md")
 		h, err := patch.HashFile(file)
 		if err != nil {
 			return nil, err
 		}
+		content := l.content
 		ps = append(ps, patch.Patch{File: file, ExpectedHash: h, Mode: 0o644,
-			Transform: func([]byte) ([]byte, error) { return skills.Aggy, nil }})
+			Transform: func([]byte) ([]byte, error) { return content, nil }})
 	}
-	for _, v := range vendors {
+	for _, v := range skillVendors {
+		link, ok := want[v]
+		if !ok {
+			continue
+		}
 		path := l.links[v]
 		st, err := entryState(path)
 		if err != nil {
@@ -252,8 +282,12 @@ func (l skillLayout) plan(link bool, vendors []string) ([]patch.Patch, error) {
 		return nil, err
 	}
 	if p != nil {
-		if link {
-			ps = append(ps[:1], append([]patch.Patch{*p}, ps[1:]...)...) // before the Grok link
+		if anyLink {
+			i := 0
+			if l.content != nil {
+				i = 1 // after SKILL.md
+			}
+			ps = slices.Insert(ps, i, *p) // before any link
 		} else {
 			ps = append(ps, *p)
 		}

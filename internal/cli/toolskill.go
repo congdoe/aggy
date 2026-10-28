@@ -1,0 +1,175 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"path/filepath"
+
+	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/diag"
+	"github.com/congdoe/aggy/internal/manifest"
+	"github.com/congdoe/aggy/internal/safefs"
+	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/switchboard"
+	"github.com/congdoe/aggy/internal/termsafe"
+	"github.com/congdoe/aggy/internal/tooldef"
+)
+
+// maxSkillEntries caps the files and folders checked in a skill folder.
+const maxSkillEntries = 1000
+
+// hasSkill reports whether t has a skill for any vendor.
+func hasSkill(t tooldef.Tool) bool {
+	for _, v := range adapter.Vendors() {
+		if t.PartsFor(v).Skill != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// toolSkillLayout is where t's skill is stored and linked: its folder is
+// <state>/skills/<name>, the only place a tool's skill is linked from.
+func toolSkillLayout(t tooldef.Tool) (skillLayout, error) {
+	if t.Name == skillName {
+		return skillLayout{}, fmt.Errorf("a tool named %s would share aggy's own skill links", skillName)
+	}
+	for _, v := range adapter.Vendors() {
+		// TODO(T6715): a built-in skill stored elsewhere under home.
+		if s := t.PartsFor(v).Skill; s != nil && s.Path != "~/.aggy/skills/"+t.Name {
+			return skillLayout{}, fmt.Errorf("%s's skill is at %s; aggy links a tool's skill only from ~/.aggy/skills/%s", t.Name, s.Path, t.Name)
+		}
+	}
+	return layoutFor(t.Name)
+}
+
+// errSkillMissing is a skill folder that is absent or not a plain
+// folder of regular files.
+var errSkillMissing = errors.New("skill folder missing or refused")
+
+// checkSkillStore checks the installed skill folder before any link to
+// it is made (the TODO(T6708) of tooldef.skillPath): a real folder, not
+// a symlink, that resolves to itself under the state dir's skills
+// folder; that safefs does not refuse; holding a regular SKILL.md; and
+// holding only regular files and folders, no symlink, so no link can
+// point a CLI's skill at a credential or anywhere else.
+func checkSkillStore(dir string) error {
+	bad := func(why string) error { return fmt.Errorf("%w: %s %s", errSkillMissing, dir, why) }
+	fi, err := safefs.Lstat(dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return bad("does not exist")
+	case err != nil:
+		return err
+	case !fi.IsDir():
+		return bad("is not a folder (a symlink is refused)")
+	}
+	parent, err := safefs.CanonicalPath(filepath.Dir(dir))
+	if err != nil {
+		return err
+	}
+	if real, err := safefs.CanonicalPath(dir); err != nil || real != filepath.Join(parent, filepath.Base(dir)) {
+		return bad("resolves elsewhere")
+	}
+	if err := safefs.Check(dir); err != nil {
+		return err
+	}
+	if fi, err := safefs.Lstat(filepath.Join(dir, "SKILL.md")); err != nil || !fi.Mode().IsRegular() {
+		return bad("has no regular SKILL.md")
+	}
+	n := 0
+	var walk func(d string) error
+	walk = func(d string) error {
+		des, err := safefs.ReadDir(d)
+		if err != nil {
+			return err
+		}
+		for _, de := range des {
+			if n++; n > maxSkillEntries {
+				return bad(fmt.Sprintf("holds more than %d entries", maxSkillEntries))
+			}
+			p := filepath.Join(d, de.Name())
+			fi, err := safefs.Lstat(p)
+			if err != nil {
+				return err
+			}
+			switch {
+			case fi.IsDir():
+				if err := walk(p); err != nil {
+					return err
+				}
+			case !fi.Mode().IsRegular():
+				return bad("holds " + de.Name() + ", which is not a regular file or folder")
+			}
+		}
+		return nil
+	}
+	return walk(dir)
+}
+
+// skillHowTo says how to put a tool's skill in place: aggy never fetches
+// one.
+func skillHowTo(t tooldef.Tool, dir string) string {
+	src := "the skill's folder"
+	if t.Homepage != "" {
+		src = fmt.Sprintf("the skill folder from %s at version %s", t.Homepage, t.Version)
+	}
+	return fmt.Sprintf("aggy never fetches a skill. Copy %s into %s (a plain folder holding SKILL.md, no symlinks), then run aggy tool on %s again", src, dir, t.Name)
+}
+
+// syncToolSkill links t's skill into each vendor whose setting for every
+// repo has it on, and unlinks it from the others, through the manifest
+// (aggy unwire undoes it). Grok's [skills] ignore gets the folder while
+// Grok is off but a Claude or Codex link is in a folder it scans
+// (T6709). A skill is linked for every repo: a per-repo on or a repo's
+// tools_off does not change its links.
+func syncToolSkill(ctx context.Context, t tooldef.Tool, b switchboard.Board, stdout io.Writer) error {
+	if !hasSkill(t) {
+		return nil
+	}
+	l, err := toolSkillLayout(t)
+	if err != nil {
+		return withCode(diag.CodeToolSkillMissing, err)
+	}
+	want := map[string]bool{}
+	link := false
+	for _, v := range adapter.Vendors() {
+		if t.PartsFor(v).Skill != nil {
+			want[string(v)] = b.State(t, v, "").On
+			link = link || want[string(v)]
+		}
+	}
+	if link {
+		if err := checkSkillStore(l.store); err != nil {
+			return withCode(diag.CodeToolSkillMissing, err)
+		}
+	}
+	ps, err := l.planSet(want)
+	if err != nil || len(ps) == 0 {
+		return withCode(diag.CodeToolFailed, err)
+	}
+	s, err := store.OpenDefault(ctx)
+	if err != nil {
+		return withCode(diag.CodeStore, err)
+	}
+	defer func() { _ = s.Close() }()
+	m, err := manifest.Open(s)
+	if err != nil {
+		return withCode(diag.CodeStore, err)
+	}
+	runID := manifest.NewRunID()
+	cs, err := m.Run(ctx, manifest.Write, runID, ps, io.Discard)
+	for _, c := range cs {
+		if c.Status == store.ChangeApplied {
+			fmt.Fprintf(stdout, "changed %s\n", termsafe.Field(c.File))
+		}
+	}
+	if err != nil {
+		return withCode(diag.CodeToolFailed, err)
+	}
+	fmt.Fprintf(stdout, "Skill links updated (run %s); aggy unwire --run %s undoes it.\n", runID, runID)
+	return nil
+}

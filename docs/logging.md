@@ -237,6 +237,8 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `hook.forward.failed` | warn | hook | aggy hook could not hand a vendor hook event to the supervisor; the CLI went on undisturbed. | The code's entry; aggy diag --trace &lt;trace id&gt; for the session. |
 | `diag.queue.dropped` | warn | diag | The supervisor's diagnostic queue was full, so records were dropped (attrs.dropped is how many). | The state dir's disk: a slow or full disk makes the log fall behind. |
 | `tool.wire.refused` | warn | tool | A launch did not wire a tool that is on (attrs: tool, or none for every tool of the vendor); the session started without it. | The code's entry; aggy tool status. |
+| `hook.tool.filtered` | info | hook | aggy hook-tool dropped part of a tool hook's answer: an allow, or keys outside its allowlist (attrs: tool, dropped, the key names only). | Nothing; a tool's hook may never approve an action. |
+| `hook.tool.failed` | warn | hook | aggy hook-tool passed nothing on for a tool's hook; the CLI went on as without the hook (attrs.tool). | The code's entry. |
 | `tool.wire.done` | info | tool | A launch wired the tools that are on into the CLI it started (attrs: tools, the names wired). | aggy tool status shows why each is on. |
 | `tool.exec.refused` | error | tool | aggy tool exec, which a vendor CLI runs to start a tool's MCP server, refused to start it (attrs: tool, check: the step that failed). The CLI shows the server as failed. | The code's entry; aggy tool status. |
 
@@ -320,6 +322,10 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `tool.no_launch_flag` |  | Tools that are on were not wired: the CLI's --help lacks the launch flag they need (Codex -c). | Update the CLI; aggy setup shows its version. |
 | `tool.wire_failed` |  | Tools that are on were not wired: the CLI's own MCP config could not be read to check names, or the session's tool file could not be written. | The warning aggy printed; the record's class attr names the step. aggy doctor. |
 | `tool.vendor_unverified` |  | Tools were not turned on or wired for a vendor whose launch-time wiring is not verified yet (Grok: what --agent changes besides the MCP servers). | Use the tool with Claude or Codex; docs/design.md, Launch wiring. |
+| `tool.hook_approves` | yes | A tool's hook was not wired: its definition, or a verified fact about it, says it approves actions the person would be asked about. | Nothing; aggy never wires such a hook. docs/verification.md, Managed tools. |
+| `tool.hook_output` | yes | aggy hook-tool passed nothing on: the tool's hook printed more than 64 KiB, not one JSON object, or an answer for another event. | Run the tool's hook by hand with the same input; aggy tool status. |
+| `tool.hook_failed` |  | aggy hook-tool passed nothing on: the tool's hook timed out, exited non-zero, could not start, or its definition changed or went since the session started. | The tool's install (aggy tool status); a new session picks up a changed definition. |
+| `tool.skill_missing` |  | aggy tool on refused: the tool's skill folder is not installed under ~/.aggy/skills, or resolves outside it. aggy never fetches a skill. | Copy the skill folder into ~/.aggy/skills/&lt;name&gt; as aggy tool on says, then turn the tool on again. |
 | `tool.exec_refused` | yes | aggy tool exec refused to start a tool's MCP server: its folder is not aggy's private launch folder, the definition changed or is gone, the command is not the definition's, or a variable could not be passed. | aggy tool status; if the definition changed, aggy tool on &lt;name&gt; again after reading it. |
 | `tool.changed_since_add` | yes | aggy tool on refused: the user definition is not the file aggy tool add showed. | aggy tool remove &lt;name&gt;, then aggy tool add the file again and read what it runs. |
 <!-- registry:end -->
