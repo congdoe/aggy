@@ -226,6 +226,14 @@ func TestSkipsInjectedContext(t *testing.T) {
 		{adapter.Codex, codex("<environment_context>\n  <cwd>/w</cwd>\n</environment_context>"), ""},
 		{adapter.Codex, codex("<turn_aborted>\nThe user interrupted\n</turn_aborted>"), ""},
 		{adapter.Codex, codex("fix the bug"), "fix the bug"},
+		// C16-14: only Codex's own markers count; a user message that
+		// starts with a tag is the user's.
+		{adapter.Codex, codex("<Button> does not render in Safari"), "<Button> does not render in Safari"},
+		{adapter.Codex, codex("<div>x</div> is misaligned"), "<div>x</div> is misaligned"},
+		{adapter.Codex, codex("<external_ticket>SECRET_OUTPUT</external_ticket>"), ""},
+		{adapter.Codex, codex(`<hook_prompt hook_run_id="r1">SECRET_OUTPUT</hook_prompt>`), ""},
+		{adapter.Codex, codex("<skills_instructions>\nSECRET_OUTPUT\n</skills_instructions>"), ""},
+		{adapter.Codex, codex("Warning: apply_patch was requested via exec_command. Use the apply_patch tool instead of exec_command."), ""},
 		{adapter.Claude, claude("<bash-input>cat .env</bash-input>"), "! cat .env"},
 		{adapter.Claude, claude("<bash-stdout>SECRET_OUTPUT</bash-stdout><bash-stderr></bash-stderr>"), ""},
 		{adapter.Claude, claude("<local-command-stdout>SECRET_OUTPUT</local-command-stdout>"), ""},
@@ -269,5 +277,16 @@ func TestTailLineTooLarge(t *testing.T) {
 	_, err := Tail(adapter.Codex, home, adapter.SessionRef{ID: id}, 0)
 	if !errors.Is(err, adapter.ErrNoTranscript) || !strings.Contains(err.Error(), "too large") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// C16-14: Codex's compaction summary is labeled, not passed off as the
+// user's words.
+func TestCodexSummary(t *testing.T) {
+	line := `{"timestamp":"2026-10-27T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":` +
+		strconv.Quote(codexSummaryPrefix+" Here is the summary produced by the other language model:\nwe fixed the parser") + `}]}}`
+	turns, _ := parse(adapter.Codex, []byte(line+"\n"))
+	if got := texts(turns); got != SummaryRole+":we fixed the parser" {
+		t.Errorf("got %q", got)
 	}
 }

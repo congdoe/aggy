@@ -474,7 +474,11 @@ these, and adapters.md lists what it reads.
   fragment's start marker and ends with its end marker
   (`core/src/event_mapping.rs#L64`,
   `context/contextual_user_message.rs#L24`,
-  `context-fragments/src/fragment.rs#L163`).
+  `context-fragments/src/fragment.rs#L163`); aggy matches the same
+  markers. The compaction summary is a `user` message with empty markers
+  (`context/compaction_summary.rs#L34`) whose text starts with
+  `prompts/templates/compact/summary_prefix.md` and a newline
+  (`core/src/compact.rs#L403`, `#L618`); aggy labels it a summary.
 - **Grok** (grok-build `2bdd1d6a`): a session folder holds
   `chat_history.jsonl` ("raw chat messages sent to the model") and
   `updates.jsonl` (`xai-grok-pager/docs/user-guide/17-sessions.md`,

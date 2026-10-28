@@ -382,8 +382,12 @@ calls, tool output, and reasoning are skipped, and so is context the CLI
 wrote into a user message: Codex's AGENTS.md text, environment context,
 and turn notes, and Claude's slash-command output. Of a shell command the
 user ran (Codex `!cmd`, Claude bash mode), only `! <command>` is kept,
-never its output. A user message that starts with a tag (`<` and a
-letter) is treated as such context. The vendor home is `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or
+never its output. A Codex user message is context when it has Codex's
+own start and end markers (the list Codex itself matches, in
+`transcript.codexMarkers`), and Codex's compaction summary is kept with
+the role `summary`; a Claude user message that starts with `<` and a
+lowercase letter is context, as in Grok's heuristic. A brief takes at most
+the newest 512 KiB of turn text (`brief.MaxTurnBytes`). The vendor home is `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or
 `GROK_HOME`, else `~/.<vendor>`. No session file has been recorded as a
 fixture yet; the tests use lines in the shapes below. Sources are in
 [verification.md](verification.md#session-file-formats-t6670).
