@@ -62,6 +62,9 @@ Commands:
   hooks     Install the vendor hooks aggy listens to, or show them
   memory    Import Claude's memory into the shared .aggy/memory.md
   policy    Wire aggy's safety policy into Codex (Claude and Grok get it per launch)
+  attribution
+            Install the commit hook that adds Aggy-Vendor and Aggy-Model
+            trailers to commits made under aggy
   check     Run the repo's typecheck, lint, and tests from .aggy/config.toml
   version   Print the aggy version
   help      Show this help
@@ -126,6 +129,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runMemory(args[1:], stdout, stderr)
 	case "policy":
 		return runPolicy(args[1:], stdout, stderr)
+	case "attribution":
+		return runAttribution(args[1:], stdout, stderr)
 	case "check":
 		return runCheck(args[1:], stdout, stderr)
 	case "help", "--help", "-h":
