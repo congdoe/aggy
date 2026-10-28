@@ -263,8 +263,8 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 var TextFields = []string{"result", "text", "response"}
 
 // ParseHeadless reads the JSON reply: sessionId (recorded; checked with
-// adapter.ValidSessionID, and a pre-assigned id is kept, with an error if
-// the reply names another), and the final text from the first of
+// adapter.ValidSessionID, and a pre-assigned or resumed id is kept, with
+// an error if the reply names another), and the final text from the first of
 // TextFields present.
 //
 // The error class comes from the JSON "error" field, mapped with
@@ -289,9 +289,8 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 	var idErr error
 	if parsed {
 		reported, _ := obj["sessionId"].(string)
-		if reported != "" || req.SessionID != "" {
-			res.SessionID, idErr = adapter.ParsedSessionID(adapter.Grok, req.SessionID, reported)
-		}
+		// A pre-assigned or resumed id must come back unchanged.
+		res.SessionID, idErr = adapter.ParsedSessionID(adapter.Grok, assigned, reported)
 		for _, f := range TextFields {
 			if s, ok := obj[f].(string); ok {
 				res.Text = s

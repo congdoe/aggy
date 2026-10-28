@@ -196,8 +196,8 @@ type result struct {
 const limitText = "hit your limit"
 
 // ParseHeadless reads the JSON reply: final text, session id, tokens, and
-// the error class. A session id aggy pre-assigned is kept, and a reply
-// naming another one, or an invalid one, is an error.
+// the error class. A session id aggy pre-assigned or resumed is kept, and
+// a reply naming another one, or an invalid one, is an error.
 //
 // The class comes from structured fields only: an "error" class name,
 // subtype error_max_turns, and is_error. The recorded limit text "hit
@@ -214,10 +214,8 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 	parsed := lastJSON(out.Stdout, &r) && (r.Type != "" || r.SessionID != "" || r.Result != "")
 	var idErr error
 	if parsed {
-		res.SessionID, idErr = adapter.ParsedSessionID(adapter.Claude, req.SessionID, r.SessionID)
-		if req.SessionID == "" && r.SessionID == "" {
-			res.SessionID = assigned
-		}
+		// A pre-assigned or resumed id must come back unchanged.
+		res.SessionID, idErr = adapter.ParsedSessionID(adapter.Claude, assigned, r.SessionID)
 		res.Text = r.Result
 		res.Tokens = r.Usage.Input + r.Usage.Output
 	}
