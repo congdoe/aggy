@@ -274,7 +274,7 @@ linters:
       # banned) and answers only its own uid. Only these files may import
       # net, and the hook client (client_unix.go), which dials it. Tests
       # dial it.
-      - path: ^(internal/supervisor/(socket(_test)?|client_unix(_test)?|peercred_(darwin|linux|other))|test/e2e/supervisor_test)\.go$
+      - path: ^(internal/supervisor/(socket(_test)?|client_unix(_test)?|peercred_(darwin|linux|other)(_test)?)|test/e2e/supervisor_test)\.go$
         text: "import 'net' is not allowed"
         linters: [depguard]
       # aggy hook reaches the supervisor socket with net.DialUnix, after
@@ -298,10 +298,10 @@ linters:
       - path: ^internal/supervisor/peercred_darwin\.go$
         text: "use of `(unix\\.(GetsockoptInt|LOCAL_PEERPID|SysctlKinfoProc|KinfoProc)|k\\.(Proc|Eproc)(\\.(P_pid|Ppid|P_starttime(\\.Nano)?))?|P_pid|Ppid|P_starttime)`"
         linters: [forbidigo]
-      # Linux: the peer's pidfd (SO_PEERPIDFD, by its number) and closing
-      # it, so the lineage check is bound to the process that connected.
+      # Linux: the peer's pidfd (SO_PEERPIDFD) and closing it, so the
+      # lineage check is bound to the process that connected.
       - path: ^internal/supervisor/peercred_linux\.go$
-        text: "use of `unix\\.(GetsockoptInt|Close)`"
+        text: "use of `unix\\.(GetsockoptInt|Close|SO_PEERPIDFD)`"
         linters: [forbidigo]
       - path: ^internal/store/
         text: "`sql\\.(Open|OpenDB)`"
