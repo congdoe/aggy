@@ -1,0 +1,42 @@
+name: Tool proposal
+description: Propose a managed tool for aggy's default set.
+labels: [tool-proposal]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read [Propose a tool for the default set](https://github.com/congdoe/aggy/blob/main/CONTRIBUTING.md#propose-a-tool-for-the-default-set) first. A tool that needs a proxy, a base URL, an API key in the environment, or a shell string is out of scope. Never paste credentials.
+  - type: input
+    id: tool
+    attributes:
+      label: Tool
+      description: Name, homepage, and the version you tested.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What it does, and why it belongs in the default set
+    validations:
+      required: true
+  - type: input
+    id: license
+    attributes:
+      label: License
+    validations:
+      required: true
+  - type: textarea
+    id: network
+    attributes:
+      label: What it sends off the machine
+      description: Every network call it makes, or "nothing".
+    validations:
+      required: true
+  - type: textarea
+    id: definition
+    attributes:
+      label: Definition
+      description: The TOML definition, after `aggy tool add <file>.toml` accepted it. Cite the docs for every command, flag, hook event, and config key, or list them under `unverified`.
+      render: toml
+    validations:
+      required: true

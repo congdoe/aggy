@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping. aggy is early, and the design and adapter guides will land in `docs/`.
+Thanks for helping. The design is in [docs/design.md](docs/design.md), the adapter contract in [docs/adapters.md](docs/adapters.md), and what has been checked against the real vendor CLIs in [docs/verification.md](docs/verification.md).
 
 ## Ground rules
 
@@ -8,6 +8,14 @@ Thanks for helping. aggy is early, and the design and adapter guides will land i
 - Every change aggy makes to another tool's config goes through the manifest, so `aggy unwire` can undo it.
 - Tests never need a vendor login. Use the fake CLIs in `testdata/fakes`.
 - Scrub recorded fixtures of home paths, emails, and tokens before committing them.
+
+## Add a vendor adapter
+
+A new vendor CLI gets its own package in `internal/adapter/`. [docs/adding-a-vendor.md](docs/adding-a-vendor.md) walks through it: the interface, the lockdown flags, the verification.md entry every vendor fact needs, the fakes and tests, and the security rules a PR must keep. Adapter changes for a CLI update follow the same rules.
+
+## Report a bug or a vendor change
+
+Use the issue templates. A bug report asks for `aggy diag bundle` ([docs/logging.md](docs/logging.md)), and a vendor change for `aggy doctor --report`; both are scrubbed for a public issue. Never paste credentials, tokens, or anything from `~/.claude`, `~/.codex`, or `~/.grok`.
 
 ## Propose a tool for the default set
 
