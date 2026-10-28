@@ -67,6 +67,40 @@ func TestSwitchAtTurnEnd(t *testing.T) {
 	s.restored("after the switch")
 }
 
+// TestSkillRequestedSwitch (T6668): aggy switch, run from inside the
+// CLI's tree as a skill would, queues a switch the user confirms.
+func TestSkillRequestedSwitch(t *testing.T) {
+	w := newWorld(t)
+	setup := exec.Command(buildAggy(t), "setup", "--yes")
+	setup.Dir = w.cwd
+	setup.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
+	if out, err := setup.CombinedOutput(); err != nil {
+		t.Fatalf("aggy setup: %v\n%s", err, out)
+	}
+	// The fake runs it as a hook: the "event" grok is the argument. Under
+	// grok itself the request is refused, which must not fail the fake.
+	sc := map[string]any{
+		"stdout":       "READY>",
+		"hook_command": []string{"/bin/sh", "-c", buildAggy(t) + " switch \"$1\" >/dev/null 2>&1 || true", "sh"},
+		"hooks":        []map[string]any{{"event": "grok", "payload": map[string]any{}}},
+	}
+	s := w.start(t, sc, "run", "claude")
+	s.waitFor([]byte("The agent asked to switch to grok."))
+	time.Sleep(50 * time.Millisecond)
+	s.send([]byte("\r"))
+	deadline := time.Now().Add(timeout)
+	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	if runs := interactiveRuns(t, w); len(runs) != 2 || runs[1].Vendor != "grok" {
+		t.Fatalf("interactive runs = %+v, want claude then grok", runs)
+	}
+}
+
 // interactiveRuns returns the fake's records of interactive runs.
 func interactiveRuns(t *testing.T, w *world) []fakecli.Record {
 	t.Helper()
