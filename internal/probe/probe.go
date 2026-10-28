@@ -28,8 +28,9 @@ type Feature struct {
 	Help int    // index into Spec.Help
 	// Flag is the option as it appears in help, e.g. "--session-id".
 	// With Kind Subcommand it is a subcommand name, found only as an
-	// entry of a "Commands:" block. With Kind HelpRuns it is unused: the
-	// capability is present when the help invocation itself succeeds.
+	// entry of a "Commands:" block. With Kind SessionArg it is unused.
+	// Several features may share a Name: the capability is present when
+	// any of them is found.
 	Flag string
 	Kind MatchKind
 }
@@ -41,16 +42,20 @@ type MatchKind int
 const (
 	Option     MatchKind = iota // Flag appears as an option
 	Subcommand                  // Flag is listed in a Commands: block
-	HelpRuns                    // the help invocation exits 0
+	// SessionArg: the help names a session-id argument, such as
+	// "[SESSION_ID]" or "<session-id>". A help that merely exits 0 proves
+	// nothing: clap may have taken the subcommand name as a prompt.
+	SessionArg
 )
 
 // Spec says how to probe one vendor's CLI.
 type Spec struct {
+	// Programs are the names the CLI gives itself in --version output,
+	// such as "codex-cli" or "Claude Code". A version line keyed on one of
+	// them wins over any other version-shaped line (see ParseVersion).
+	Programs []string
 	Help     [][]string // argument lists that print help, e.g. {"--help"}
 	Features []Feature
-	// Version matches a --version line; its last group is the version.
-	// Nil means versionLine.
-	Version *regexp.Regexp
 }
 
 // Capability names, shared across vendors.
@@ -75,7 +80,8 @@ const (
 // docs/adapters.md.
 var Specs = map[adapter.Vendor]Spec{
 	adapter.Claude: {
-		Help: [][]string{{"--help"}},
+		Programs: []string{"Claude Code", "claude"},
+		Help:     [][]string{{"--help"}},
 		Features: []Feature{
 			{CapHeadless, 0, "-p", Option},
 			{CapJSONOutput, 0, "--output-format", Option},
@@ -86,7 +92,8 @@ var Specs = map[adapter.Vendor]Spec{
 		},
 	},
 	adapter.Grok: {
-		Help: [][]string{{"--help"}},
+		Programs: []string{"grok"},
+		Help:     [][]string{{"--help"}},
 		Features: []Feature{
 			{CapHeadless, 0, "-p", Option},
 			{CapJSONOutput, 0, "--output-format", Option},
@@ -101,10 +108,14 @@ var Specs = map[adapter.Vendor]Spec{
 		},
 	},
 	adapter.Codex: {
-		Help: [][]string{{"--help"}, {"exec", "--help"}, {"exec", "resume", "--help"}},
+		Programs: []string{"codex-cli", "codex"},
+		Help:     [][]string{{"--help"}, {"exec", "--help"}, {"exec", "resume", "--help"}},
 		Features: []Feature{
 			{CapHeadless, 0, "exec", Subcommand},
-			{CapResume, 2, "", HelpRuns},
+			// exec resume is present when exec lists it as a command, or
+			// when its own help names a session-id argument.
+			{CapResume, 1, "resume", Subcommand},
+			{CapResume, 2, "", SessionArg},
 			{CapNoAltScreen, 0, "--no-alt-screen", Option},
 			{CapConfigOverride, 0, "-c", Option},
 			{CapJSONOutput, 1, "--json", Option},
@@ -118,53 +129,147 @@ var Specs = map[adapter.Vendor]Spec{
 // ErrNoVersion means the CLI printed no version.
 var ErrNoVersion = errors.New("probe: no version in --version output")
 
-// versionLine matches a whole --version line: an optional program name,
-// x.y.z with an optional pre-release or build suffix, and an optional
-// parenthesized note such as "(Claude Code)". The exact --version
-// formats are not recorded in docs/adapters.md; the program names follow
-// how the versions were reported there ("codex-cli 0.164.0", "grok
-// 1.0.70"). A Spec can set its own.
-var versionLine = regexp.MustCompile(`^(?:[A-Za-z][\w.-]*\s+)?v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?:\s+\([^)]*\))?$`)
+// ErrAmbiguousVersion means --version printed several different versions
+// and none is keyed on the CLI's program name, so aggy will not guess.
+var ErrAmbiguousVersion = errors.New("probe: several versions in --version output")
 
-// ParseVersion returns the version from the last line of --version output
-// that matches re (versionLine when nil). Only whole lines anchored at
-// their start count, so a version mentioned in a notice ("update 3.0.0
-// available") is not taken. stderr is read when stdout has no match.
-func ParseVersion(stdout, stderr []byte, re *regexp.Regexp) (string, error) {
-	if re == nil {
-		re = versionLine
+// semver is x.y.z with an optional v prefix and an optional pre-release or
+// build suffix; its group is the version without the v.
+const semver = `v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)`
+
+// note is an optional parenthesized remark after the version, such as
+// "(Claude Code)" or "(fake)".
+const note = `(?:\s+\([^)]*\))?`
+
+// anyLine matches a whole --version line: an optional program name of one
+// or more words, the version, and an optional note. The exact --version
+// formats are not recorded in docs/adapters.md, so this is the fallback
+// when no line names the program.
+var anyLine = regexp.MustCompile(`^(?:[A-Za-z][\w.-]*(?:\s+[A-Za-z][\w.-]*)*\s+)?` + semver + note + `$`)
+
+// programLine matches a whole line that names one of programs: "<name>
+// [v]x.y.z [(note)]" or "x.y.z (<name>)", case-insensitively. A name of
+// several words matches with any run of spaces between them.
+func programLine(programs []string) *regexp.Regexp {
+	if len(programs) == 0 {
+		return nil
+	}
+	var alts []string
+	for _, p := range programs {
+		words := strings.Fields(p)
+		for i, w := range words {
+			words[i] = regexp.QuoteMeta(w)
+		}
+		alts = append(alts, strings.Join(words, `\s+`))
+	}
+	names := `(?:` + strings.Join(alts, "|") + `)`
+	return regexp.MustCompile(`(?i)^(?:` + names + `\s+` + semver + note + `|` + semver + `\s+\(` + names + `\))$`)
+}
+
+// versions returns the distinct versions on whole lines of out that re
+// matches, in order of appearance.
+func versions(out []byte, re *regexp.Regexp) []string {
+	var vs []string
+	for _, line := range strings.Split(string(out), "\n") {
+		m := re.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
+		}
+		v := ""
+		for _, g := range m[1:] {
+			if g != "" {
+				v = g
+				break
+			}
+		}
+		if !slices.Contains(vs, v) {
+			vs = append(vs, v)
+		}
+	}
+	return vs
+}
+
+// ParseVersion returns the CLI's version from its --version output. Only
+// whole lines count, so a version mentioned in a notice ("update 3.0.0
+// available") is not taken.
+//
+// A line keyed on one of programs (the Spec's program names) wins: "codex-
+// cli 0.164.0" over "node v20.11.1". When no line names the program, a
+// single version-shaped line is taken. Several different candidates of the
+// same rank are ErrAmbiguousVersion, never a guess. stdout is read first,
+// then stderr.
+func ParseVersion(stdout, stderr []byte, programs []string) (string, error) {
+	if re := programLine(programs); re != nil {
+		vs := append(versions(stdout, re), versions(stderr, re)...)
+		vs = slices.Compact(vs)
+		switch {
+		case len(vs) == 1:
+			return vs[0], nil
+		case len(vs) > 1:
+			return "", fmt.Errorf("%w: %s", ErrAmbiguousVersion, strings.Join(vs, ", "))
+		}
 	}
 	for _, out := range [][]byte{stdout, stderr} {
-		lines := strings.Split(string(out), "\n")
-		for i := len(lines) - 1; i >= 0; i-- {
-			if m := re.FindStringSubmatch(strings.TrimSpace(lines[i])); m != nil {
-				return m[len(m)-1], nil
-			}
+		vs := versions(out, anyLine)
+		switch {
+		case len(vs) == 1:
+			return vs[0], nil
+		case len(vs) > 1:
+			return "", fmt.Errorf("%w: %s", ErrAmbiguousVersion, strings.Join(vs, ", "))
 		}
 	}
 	return "", ErrNoVersion
 }
 
 // commandsBlock returns the subcommand names listed under a "Commands:"
-// heading: the first word of each indented line until a blank line or the
-// next heading.
+// heading. The first entry's indentation is the command column: a line
+// indented exactly that far starts an entry, a line indented further is a
+// wrapped description and is skipped, and a blank line, a heading, or a
+// line indented less ends the block.
 func commandsBlock(help string) []string {
 	var names []string
 	in := false
+	col := -1
 	for _, line := range strings.Split(help, "\n") {
 		trimmed := strings.TrimSpace(line)
+		indent := indentWidth(line)
 		switch {
 		case strings.EqualFold(strings.TrimSuffix(trimmed, ":"), "commands") && strings.HasSuffix(trimmed, ":"):
-			in = true
+			in, col = true, -1
 		case !in:
-		case trimmed == "" || !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t"):
+		case trimmed == "" || indent == 0:
 			in = false
-		default:
+		case col < 0 || indent == col:
+			col = indent
 			names = append(names, strings.Fields(trimmed)[0])
+		case indent > col:
+			// A wrapped description line.
+		default:
+			in = false
 		}
 	}
 	return names
 }
+
+// indentWidth is the width of line's leading blanks, a tab counting to the
+// next multiple of 8.
+func indentWidth(line string) int {
+	w := 0
+	for _, r := range line {
+		switch r {
+		case ' ':
+			w++
+		case '\t':
+			w += 8 - w%8
+		default:
+			return w
+		}
+	}
+	return w
+}
+
+// sessionArg matches a help text naming a session-id argument.
+var sessionArg = regexp.MustCompile(`[<\[](?i:session[_-]?id)[>\]]|\bSESSION_ID\b`)
 
 // hasFlag reports whether help mentions flag as an option or command:
 // bounded by start of line, space, comma, or bracket before, and by end,
@@ -189,10 +294,10 @@ func Capabilities(spec Spec, helps [][]byte) []string {
 			found = hasFlag(help, f.Flag)
 		case Subcommand:
 			found = slices.Contains(commandsBlock(help), f.Flag)
-		case HelpRuns:
-			found = true
+		case SessionArg:
+			found = sessionArg.MatchString(help)
 		}
-		if found {
+		if found && !slices.Contains(caps, f.Name) {
 			caps = append(caps, f.Name)
 		}
 	}
@@ -209,7 +314,7 @@ func Detect(ctx context.Context, run adapter.Runner, vendor adapter.Vendor, path
 	if !ok {
 		return p, fmt.Errorf("probe: no spec for vendor %q", vendor)
 	}
-	version, err := Version(ctx, run, path, spec.Version)
+	version, err := Version(ctx, run, path, spec.Programs)
 	if err != nil {
 		return p, err
 	}
@@ -219,8 +324,9 @@ func Detect(ctx context.Context, run adapter.Runner, vendor adapter.Vendor, path
 	return p, nil
 }
 
-// Version runs path --version and parses it with re (nil for the default).
-func Version(ctx context.Context, run adapter.Runner, path string, re *regexp.Regexp) (string, error) {
+// Version runs path --version and parses it, keyed on the program names
+// (see ParseVersion).
+func Version(ctx context.Context, run adapter.Runner, path string, programs []string) (string, error) {
 	out, err := run(ctx, adapter.Command{Path: path, Args: []string{"--version"}})
 	if err != nil {
 		return "", fmt.Errorf("probe: %s --version: %w", path, err)
@@ -228,7 +334,7 @@ func Version(ctx context.Context, run adapter.Runner, path string, re *regexp.Re
 	if out.ExitCode != 0 {
 		return "", fmt.Errorf("probe: %s --version exited %d", path, out.ExitCode)
 	}
-	return ParseVersion(out.Stdout, out.Stderr, re)
+	return ParseVersion(out.Stdout, out.Stderr, programs)
 }
 
 // ErrIncomplete matches a probe in which a help invocation failed. Its
@@ -236,9 +342,19 @@ func Version(ctx context.Context, run adapter.Runner, path string, re *regexp.Re
 // cached, so the next probe runs every invocation again.
 var ErrIncomplete = errors.New("probe: incomplete")
 
-// helps runs each help invocation. A non-zero exit or a runner error (a
-// timeout, a cancelled ctx) leaves that output nil and is reported in the
-// error, which matches ErrIncomplete, so the partial result is not cached.
+// usageError matches a CLI's refusal of an argument list: clap's
+// "unrecognized subcommand" and "unexpected argument", and the "unknown
+// option" or "unknown command" of other parsers. It means the invocation
+// does not exist in this version, a stable answer.
+var usageError = regexp.MustCompile(`(?i)\b(?:unrecognized subcommand|unexpected argument|unknown (?:option|command|subcommand)|invalid subcommand)\b`)
+
+// helps runs each help invocation. A non-zero exit whose output is a
+// usage error (see usageError) leaves that output nil with no error: the
+// invocation does not exist, so its capabilities are absent, and that
+// result may be cached. Any other non-zero exit or a runner error (a
+// timeout, a cancelled ctx) also leaves the output nil but is reported in
+// the error, which matches ErrIncomplete, so the partial result is not
+// cached.
 func helps(ctx context.Context, run adapter.Runner, spec Spec, path string) ([][]byte, error) {
 	out := make([][]byte, len(spec.Help))
 	var errs []error
@@ -246,6 +362,9 @@ func helps(ctx context.Context, run adapter.Runner, spec Spec, path string) ([][
 		o, err := run(ctx, adapter.Command{Path: path, Args: args})
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%w: %s %s: %w", ErrIncomplete, path, strings.Join(args, " "), err))
+			continue
+		}
+		if o.ExitCode != 0 && (usageError.Match(o.Stderr) || usageError.Match(o.Stdout)) {
 			continue
 		}
 		if o.ExitCode != 0 {
@@ -277,7 +396,7 @@ func (p *Prober) Probe(ctx context.Context, vendor adapter.Vendor, path string) 
 	if !ok {
 		return adapter.Probe{}, false, fmt.Errorf("probe: no spec for vendor %q", vendor)
 	}
-	version, err := Version(ctx, p.Run, path, spec.Version)
+	version, err := Version(ctx, p.Run, path, spec.Programs)
 	if err != nil {
 		return adapter.Probe{Vendor: vendor, Path: path}, false, err
 	}

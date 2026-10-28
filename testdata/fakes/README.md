@@ -6,7 +6,7 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 
 ## Rules
 
-- A fake refuses to run (exit 97) when `HOME` is unset, relative, or the real user's home, or when any vendor home (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`, else `$HOME/.<vendor>`) is relative or inside the real home. Paths are compared after resolving symlinks, and case-insensitively on darwin. Tests set `HOME` to a temp dir and clear or set the three vendor variables.
+- A fake refuses to run (exit 97) when `HOME` is unset, relative, or the real user's home, or when any vendor home (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`, else `$HOME/.<vendor>`) is relative or inside the real home. Paths are compared by name, after resolving symlinks and case-insensitively on darwin, and by file identity: every existing ancestor of each candidate is compared with `os.SameFile` against the real home and the real `~/.claude`, `~/.codex`, and `~/.grok`, which catches spellings such as macOS's `/System/Volumes/Data` firmlink or a case-folded `ſ`. Tests set `HOME` to a temp dir and clear or set the three vendor variables.
 - It accepts only the flags recorded in [docs/adapters.md](../../docs/adapters.md). Any other flag fails with exit 2 and `unknown option`, as the real CLIs do, so an adapter that invents a flag fails its test. A scenario can allow more with `extra_flags` and `extra_switches`.
 - It never reads anything except the scenario file and its stdin.
 
@@ -28,13 +28,13 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 | `codex exec`, `codex exec resume <id>` | `-c`, `--disable` (repeatable), `--sandbox`, `-i` | `--json` |
 | `codex resume <id>` | `-c` | `--no-alt-screen` |
 
-Every command also takes `--version` and `--help` (`-h`). `--flag=value` works too. Grok's `--continue` is recorded in the proposal (§3) and in docs/adapters.md.
+Every command also takes `--version` and `--help` (`-h`). The generated help lists the honored flags; `codex --help` lists `exec` and `resume` in a `Commands:` block, `codex exec --help` lists `resume`, and `codex exec resume --help` names a `[SESSION_ID]` argument. `--flag=value` works too. Grok's `--continue` is recorded in the proposal (§3) and in docs/adapters.md.
 
 Values are checked where docs/adapters.md records them, with exit 2 otherwise:
 
 - `--session-id` must be a UUID.
 - `--output-format` must be `json`, `--permission-mode` must be `plan`, and `--sandbox` must be `read-only`. `extra_values` adds values.
-- `claude -p`, `codex exec`, and `codex exec resume <id>` need a prompt, as an argument or on stdin.
+- `claude -p`, `grok -p`, `codex exec`, and `codex exec resume <id>` need a prompt, as an argument or on stdin. A prompt argument of `-` means "read stdin", so it needs a non-empty stdin.
 - An interactive run needs a terminal on stdin, unless `interactive_without_tty` is set.
 - Rules that are not recorded are opt-in through `strict`: `resume-with-session-id` refuses `--resume` with `--session-id` unless `--fork-session` is given.
 

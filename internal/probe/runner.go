@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -30,28 +31,16 @@ var passEnv = []string{
 	"CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME",
 }
 
-// baseOnly lists the variables a command's own Env may not override.
-var baseOnly = []string{"HOME", "PATH", "TMPDIR", "USER", "LOGNAME"}
-
-// forbiddenEnv reports whether a variable must never reach a vendor CLI
-// from aggy, compared case-insensitively: API keys, tokens, and base URLs
-// that would bill an API key or redirect plan traffic, proxies, code
-// injected into the CLI's runtime (NODE_OPTIONS, LD_*, DYLD_*), and
-// Claude Code's provider switches (CLAUDE_CODE_USE_*).
-func forbiddenEnv(key string) bool {
-	k := strings.ToUpper(key)
-	for _, suffix := range []string{"_API_KEY", "_BASE_URL", "_API_BASE", "_AUTH_TOKEN", "_OAUTH_TOKEN", "_TOKEN", "_PROXY"} {
-		if strings.HasSuffix(k, suffix) {
-			return true
-		}
-	}
-	for _, prefix := range []string{"LD_", "DYLD_", "CLAUDE_CODE_USE_"} {
-		if strings.HasPrefix(k, prefix) {
-			return true
-		}
-	}
-	return k == "NODE_OPTIONS"
-}
+// extraKey matches the only variables a command's own Env may add: aggy's
+// AGGY_* variables (AGGY_DELEGATED, AGGY_VENDOR, AGGY_MODEL, and the test
+// fakes' AGGY_FAKE_*). It is an allowlist: everything else is refused,
+// including API keys, base URLs, proxies, variables that inject code into
+// a CLI's runtime (BASH_ENV, ENV, NODE_OPTIONS, NODE_PATH, PERL5OPT,
+// RUBYOPT, PYTHONPATH, GIT_SSH_COMMAND, ELECTRON_RUN_AS_NODE, ...), trust
+// stores (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS), and overrides of the
+// vendor homes (CLAUDE_CONFIG_DIR, CODEX_HOME, GROK_HOME, XDG_CONFIG_HOME),
+// which come only from aggy's own environment.
+var extraKey = regexp.MustCompile(`^AGGY_[A-Z0-9_]+$`)
 
 // cleanPath drops empty, ".", and relative PATH entries, which would make
 // the CLI's own lookups depend on its working directory.
@@ -66,17 +55,21 @@ func cleanPath(p string) string {
 }
 
 // Env builds the scrubbed environment for a probed CLI: the passEnv
-// variables from base (PATH without empty, ".", or relative entries),
-// TERM=dumb and NO_COLOR=1, then extra. An extra entry that is forbidden
-// (see forbiddenEnv), overrides HOME, PATH, TMPDIR, USER, or LOGNAME, or is
-// not KEY=value, is an error.
+// variables from base (PATH without empty, ".", or relative entries, and
+// left unset when no entry is left), TERM=dumb and NO_COLOR=1, then extra.
+// An extra entry whose key is not an AGGY_* variable (see extraKey), or
+// that is not KEY=value, is an error.
 func Env(base, extra []string) ([]string, error) {
 	var env []string
 	for _, kv := range base {
 		k, v, ok := strings.Cut(kv, "=")
 		if ok && contains(passEnv, k) {
 			if k == "PATH" {
-				kv = "PATH=" + cleanPath(v)
+				p := cleanPath(v)
+				if p == "" {
+					continue
+				}
+				kv = "PATH=" + p
 			}
 			env = append(env, kv)
 		}
@@ -87,11 +80,8 @@ func Env(base, extra []string) ([]string, error) {
 		if !ok || k == "" {
 			return nil, fmt.Errorf("probe: bad environment entry %q", kv)
 		}
-		if forbiddenEnv(k) {
-			return nil, fmt.Errorf("probe: refusing to pass %s to a vendor CLI", k)
-		}
-		if contains(baseOnly, strings.ToUpper(k)) {
-			return nil, fmt.Errorf("probe: a command may not override %s", k)
+		if !extraKey.MatchString(k) {
+			return nil, fmt.Errorf("probe: refusing to pass %s to a vendor CLI (only AGGY_* variables may be added)", k)
 		}
 		env = append(env, kv)
 	}

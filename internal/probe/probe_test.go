@@ -140,7 +140,7 @@ func TestProbeDegrades(t *testing.T) {
 		case "--help":
 			return adapter.Output{Stdout: []byte("Commands:\n  exec   Run\n  resume  Resume\n")}, nil
 		}
-		return adapter.Output{ExitCode: 2, Stderr: []byte("error: unexpected argument")}, nil
+		return adapter.Output{ExitCode: 1, Stderr: []byte("transient failure")}, nil
 	}
 	pr.Run = partial
 	p, cached, err := pr.Probe(ctx, adapter.Codex, "/x/codex")

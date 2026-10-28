@@ -95,14 +95,16 @@ func (f *fake) validate(headless bool) error {
 	if contains(f.sc.Strict, "resume-with-session-id") && f.has("--resume") && f.has("--session-id") && !f.has("--fork-session") {
 		return errors.New("--session-id with --resume requires --fork-session")
 	}
-	// A headless Claude or Codex run needs a prompt: an argument or stdin.
-	needPrompt := (f.vendor == "claude" && f.has("-p")) || f.sub == "exec" || f.sub == "exec resume"
-	if needPrompt {
+	// A headless run needs a prompt: an argument or stdin. A prompt
+	// argument of "-" means "read it from stdin", so stdin must then hold
+	// one.
+	if headless {
 		args := f.positional
 		if f.sub == "exec resume" && len(args) > 0 {
 			args = args[1:] // the session id
 		}
-		if len(args) == 0 && strings.TrimSpace(f.stdin) == "" {
+		fromStdin := len(args) == 0 || (len(args) == 1 && args[0] == "-")
+		if fromStdin && strings.TrimSpace(f.stdin) == "" {
 			return errors.New("no prompt given (pass it as an argument or on stdin)")
 		}
 	}
@@ -220,10 +222,14 @@ func run() int {
 // checkHome refuses to run against the real home directory, so a fake can
 // never write into the real ~/.claude, ~/.codex, or ~/.grok.
 //
-// Paths are compared after resolving symlinks, and case-insensitively on
-// darwin. HOME must not be the real home, and no vendor home the fake could
-// write (CLAUDE_CONFIG_DIR, CODEX_HOME, GROK_HOME, or HOME/.<vendor>) may
-// be relative or inside the real home.
+// HOME must not be the real home, and no vendor home the fake could write
+// (CLAUDE_CONFIG_DIR, CODEX_HOME, GROK_HOME, or HOME/.<vendor>) may be
+// relative or inside the real home. Paths are compared twice: by name,
+// after resolving symlinks and folding case on darwin, and by file
+// identity, walking up from each candidate and comparing every existing
+// ancestor with os.SameFile against the real home and the real vendor
+// homes. Identity catches the spellings a name check misses, such as the
+// /System/Volumes/Data firmlink on macOS or a case-folded "ſ" for "s".
 func checkHome(string) error {
 	h := os.Getenv("HOME")
 	if h == "" || !filepath.IsAbs(h) {
@@ -248,7 +254,39 @@ func checkHome(string) error {
 			return fmt.Errorf("refusing to run with the %s home %s inside the real home directory", v, vendorHome(v))
 		}
 	}
+	var real []os.FileInfo
+	for _, p := range []string{u.HomeDir, filepath.Join(u.HomeDir, ".claude"), filepath.Join(u.HomeDir, ".codex"), filepath.Join(u.HomeDir, ".grok")} {
+		if fi, err := os.Stat(p); err == nil {
+			real = append(real, fi)
+		}
+	}
+	candidates := []string{h}
+	for _, v := range []string{"claude", "codex", "grok"} {
+		candidates = append(candidates, vendorHome(v))
+	}
+	for _, c := range candidates {
+		if within(c, real) {
+			return fmt.Errorf("refusing to run: %s is the real home directory or inside it", c)
+		}
+	}
 	return nil
+}
+
+// within reports whether p or any of its existing ancestors is the same
+// file as one of real.
+func within(p string, real []os.FileInfo) bool {
+	for p = filepath.Clean(p); ; p = filepath.Dir(p) {
+		if fi, err := os.Stat(p); err == nil {
+			for _, r := range real {
+				if os.SameFile(fi, r) {
+					return true
+				}
+			}
+		}
+		if filepath.Dir(p) == p {
+			return false
+		}
+	}
 }
 
 // canon resolves symlinks in the longest existing prefix of p, and folds
@@ -479,8 +517,13 @@ func (f *fake) helpText() string {
 	for _, s := range spec.switches {
 		fmt.Fprintf(&b, "  %s\n", s)
 	}
-	if f.vendor == "codex" && f.sub == "" {
+	switch {
+	case f.vendor == "codex" && f.sub == "":
 		b.WriteString("\nCommands:\n  exec\n  resume\n")
+	case f.sub == "exec":
+		b.WriteString("\nCommands:\n  resume\n")
+	case f.sub == "exec resume":
+		return strings.Replace(b.String(), "Usage: codex exec [options]", "Usage: codex exec resume [options] [SESSION_ID] [PROMPT]", 1)
 	}
 	return b.String()
 }

@@ -82,7 +82,7 @@ func TestRunnerExitCodeAndCap(t *testing.T) {
 	f := setup(t)
 	big := strings.Repeat("x", MaxOutput+100)
 	run := f.runner(t, `{"stdout":"`+big+`","exit_code":3}`, 10*time.Second)
-	out, err := run(context.Background(), adapter.Command{Path: f.fakes.Grok, Args: []string{"-p"}})
+	out, err := run(context.Background(), adapter.Command{Path: f.fakes.Grok, Args: []string{"-p", "x"}})
 	if err != nil || out.ExitCode != 3 || len(out.Stdout) != MaxOutput {
 		t.Errorf("run = exit %d, %d bytes, %v", out.ExitCode, len(out.Stdout), err)
 	}

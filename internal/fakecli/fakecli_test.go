@@ -120,8 +120,8 @@ func TestFakes(t *testing.T) {
 
 	t.Run("resume and fork", func(t *testing.T) {
 		e := newEnv(t, fakes)
-		e.run(t, "grok", `{"session_id":"new-id"}`, "", "-p", "--resume", "old-id")
-		e.run(t, "grok", `{"session_id":"new-id"}`, "", "-p", "--resume", "old-id", "--fork-session")
+		e.run(t, "grok", `{"session_id":"new-id"}`, "next", "-p", "--resume", "old-id")
+		e.run(t, "grok", `{"session_id":"new-id"}`, "next", "-p", "--resume", "old-id", "--fork-session")
 		e.run(t, "codex", "", "next step", "exec", "resume", "thread-9", "--json")
 		recs := Records(t, e.record)
 		if recs[0].SessionID != "old-id" || recs[1].SessionID != "new-id" || recs[2].SessionID != "thread-9" {
@@ -133,7 +133,7 @@ func TestFakes(t *testing.T) {
 		e := newEnv(t, fakes)
 		grokHome := t.TempDir()
 		e.vars = append(e.vars, "GROK_HOME="+grokHome)
-		r := e.run(t, "grok", `{"images":2,"session_id":"s1","json":{"text":"saved images/1.jpg"}}`, "",
+		r := e.run(t, "grok", `{"images":2,"session_id":"s1","json":{"text":"saved images/1.jpg"}}`, "draw",
 			"-p", "--output-format", "json", "--tools", "image_gen")
 		var got map[string]any
 		if err := json.Unmarshal([]byte(r.stdout), &got); err != nil || got["sessionId"] != "s1" {
