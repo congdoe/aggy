@@ -74,6 +74,9 @@ var linesTests = []struct {
 	{"flag words", "- --password\n- correct horse battery staple\nnext", "- --password\nnext", 1},
 	{"flag words digits", "- --password\n- Tr0ub4dor and 3 more\nnext", "- --password\nnext", 1},
 	{"flag then flag", "args:\n  - --token\n  - --verbose", "args:\n  - --token\n  - --verbose", 0},
+	// N55-7: a bare $word is a value unless it is env-style upper case.
+	{"flag dollar value", "- --password\n- $Xsecret\nnext", "- --password\nnext", 1},
+	{"flag env refs", "- --password\n- $API_KEY\n- --token\n- ${api_key}\n- --api-key\n- $(TOKEN)", "- --password\n- $API_KEY\n- --token\n- ${api_key}\n- --api-key\n- $(TOKEN)", 0},
 	{"flag env ref", "- --api-key\n- $(API_KEY)\n- --token\n- \"${TOKEN}\"", "- --api-key\n- $(API_KEY)\n- --token\n- \"${TOKEN}\"", 0},
 	{"flag word", "  --monkey\n  banana\n", "  --monkey\n  banana\n", 0},
 	// I43-5: a value in parentheses over several lines.
@@ -250,6 +253,8 @@ var secretLines = []string{
 	`env["API_TOKEN"] = "abc1234"`,
 	// N55-4: a pass name with a word that is not a count.
 	`DB_PASS_MODE = "Zk29fjQ0aLm3ppQ7"`,
+	// N55-7: a "$" password is not a reference.
+	`os.Setenv("DB_PASSWORD", "$uperS3cret")`,
 }
 
 // C16-11: base64-wrapped secrets, in either alphabet.
@@ -323,6 +328,10 @@ func TestSecret(t *testing.T) {
 		`monkeypatch.setenv("API_KEY", "dummy")`,
 		`os.Setenv("API_KEY", "${API_KEY}")`,
 		`os.environ["API_KEY"] = ""`,
+		// N55-7: env-style references.
+		`os.Setenv("API_KEY", "$API_KEY")`,
+		`os.Setenv("API_KEY", "${api_key}")`,
+		`os.Setenv("API_KEY", "$(TOKEN)")`,
 		"some-cli --monkey 3",
 		"xdotool --hotkey ctrlaltdel",
 		`"args": ["--monkey", "banana"]`,

@@ -162,9 +162,11 @@ var (
 	// (Header.Set("X-Api-Key", "...")), or set at a secret-named subscript
 	// (os.environ["API_KEY"] = "..."). Its group is the literal's text.
 	setLit = regexp.MustCompile(`(?i)(?:\(\s*` + q + nameRe + q + `\s*,|\[\s*` + q + nameRe + q + `\s*\]\s*(?:\|\||&&|\?\?)?=)\s*` + q + "([^\"'`]*)")
-	// envRef is a value that only names one held elsewhere: $TOKEN,
-	// ${TOKEN}, $(API_KEY), %TOKEN%, or a {{ template }}.
-	envRef = regexp.MustCompile(`^(?:\$\{?\w+\}?|\$\(\w+\)|%\w+%|\$?\{\{[^{}]*\}\})$`)
+	// envRef is a value that only names one held elsewhere: ${TOKEN},
+	// $(API_KEY), %TOKEN%, a {{ template }}, or a bare $NAME only in env
+	// style upper case, since a password may start with "$" ($uperS3cret)
+	// and Go literals and k8s args do not expand a bare $word (N55-7).
+	envRef = regexp.MustCompile(`^(?:\$[A-Z_][A-Z0-9_]*|\$\{\w+\}|\$\(\w+\)|%\w+%|\$?\{\{[^{}]*\}\})$`)
 	// authB64 is a Docker config.json "auth" or an npmrc _auth value,
 	// which is user:password in base64 (I43-5). Its group is the value.
 	authB64 = regexp.MustCompile(`(?i)(?:^|[^\w-])_?auth["']?\s*[:=]\s*["']?([A-Za-z0-9+/]{8,}={0,2})`)
