@@ -59,3 +59,35 @@ func TestBuildCaps(t *testing.T) {
 		t.Errorf("brief is %d bytes", len(got))
 	}
 }
+
+// Secrets are removed from every part of a brief: the task file, turns,
+// git output, tool names, and error text.
+func TestBuildRedacts(t *testing.T) {
+	secrets := []string{
+		"sk-ant-abcdefghijklmnop1234",
+		"ghp_abcdefghijklmnopqrstuvwxyz0123",
+		"OPENAI_API_KEY=zzzzzzzzzzzz",
+		"-----BEGIN OPENSSH PRIVATE KEY-----",
+		"b3BlbnNzaC1rZXktdjEAAAAA",
+	}
+	got := Build(Input{
+		Task: "## Goal\nuse " + secrets[0] + "\n## Done\n",
+		Transcript: adapter.Transcript{Turns: []adapter.Turn{
+			{Role: "assistant", Text: "cat ~/.ssh/id_ed25519\n" + secrets[3] + "\n" + secrets[4] + "\n-----END OPENSSH PRIVATE KEY-----\nok"},
+			{Role: "user", Text: "env:\n" + secrets[2]},
+		}},
+		GitStatus:     "?? " + secrets[1] + ".txt\n",
+		MissingTools:  []string{"tool " + secrets[0]},
+		TranscriptErr: nil,
+	})
+	for _, s := range secrets {
+		if strings.Contains(got, s) {
+			t.Errorf("brief holds %q:\n%s", s, got)
+		}
+	}
+	for _, want := range []string{"## Goal", "ok", "lines that looked like secrets"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("brief lacks %q:\n%s", want, got)
+		}
+	}
+}

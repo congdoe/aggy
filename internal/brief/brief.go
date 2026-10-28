@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/redact"
 	"github.com/congdoe/aggy/internal/termsafe"
 )
 
@@ -36,7 +37,9 @@ type Input struct {
 }
 
 // Build returns the brief as markdown. It calls no model. Everything
-// copied from a file, a transcript, or git is fenced as data, and control
+// copied from a file, a transcript, or git is fenced as data. Every line
+// that looks like a secret is removed (redact.Lines), wherever it came
+// from: the task file, a turn, git output, or an error. Control
 // characters, bidi overrides, and invalid UTF-8 are escaped (termsafe), so
 // neither the reading agent nor a terminal showing the brief acts on them.
 func Build(in Input) string {
@@ -95,7 +98,11 @@ func Build(in Input) string {
 		b.WriteString("\n## Full transcript\n\nRead it only if you need more than the turns above:\n\n")
 		fence(&b, "text", in.Transcript.Path)
 	}
-	return termsafe.Lines(b.String())
+	text, removed := redact.Lines(b.String())
+	if removed > 0 {
+		text += fmt.Sprintf("\n%d lines that looked like secrets (keys, tokens, private keys, secret settings) were removed from this brief.\n", removed)
+	}
+	return termsafe.Lines(text)
 }
 
 // fence writes s as a fenced code block whose fence is longer than any
