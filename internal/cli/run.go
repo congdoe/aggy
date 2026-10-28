@@ -20,6 +20,7 @@ import (
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/supervisor"
+	"github.com/congdoe/aggy/internal/termsafe"
 )
 
 // runRun is `aggy run <vendor>`: a new parent in the current directory
@@ -42,7 +43,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 // flag and no brief, or a new child. name prefixes errors.
 func launch(name string, t target, stderr io.Writer) int {
 	fail := func(err error) int {
-		fmt.Fprintf(stderr, "%s: %v\n", name, err)
+		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(err.Error()))
 		return 1
 	}
 	// Refused before anything is written to the index.
