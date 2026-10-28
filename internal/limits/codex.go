@@ -3,9 +3,11 @@ package limits
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -305,19 +307,22 @@ func (w *CodexWatch) Poll(now time.Time) {
 // has not finished a turn has written no rate limits yet.
 const allowanceTries = 5
 
-// CodexAllowance returns the session quotas (CodexQuotas) of the newest
-// Codex rollout under sessionsDir that holds any, among rollouts written
-// in the last Max: what Codex last wrote about this account's limits. It
-// reads as CodexWatch does: date folders only, regular rollout files, and
-// only their last RolloutTail bytes through transcript.ReadTail, newest
-// first, at most allowanceTries of them. Nil means Codex wrote nothing
-// aggy can use.
-func CodexAllowance(sessionsDir string, now time.Time) []CodexQuota {
-	type rollout struct {
-		path string
-		mod  time.Time
-	}
-	var found []rollout
+// futureMod is how far past now a rollout's modification time may be and
+// still count; one further ahead is stale or forged (L60-3).
+const futureMod = time.Minute
+
+// rolloutFile is one rollout CodexAllowance may read.
+type rolloutFile struct {
+	path string
+	mod  time.Time
+	size int64
+}
+
+// codexRollouts lists the regular rollout files under sessionsDir written
+// in the last Max (and not more than futureMod ahead), newest first; the
+// one of thread prefer, if any, comes first.
+func codexRollouts(sessionsDir string, now time.Time, prefer string) []rolloutFile {
+	var found []rolloutFile
 	seen := map[string]bool{}
 	// One day ahead too: which clock names the date folder is not recorded.
 	for d := -1; d <= int(Max/(24*time.Hour)); d++ {
@@ -336,19 +341,32 @@ func CodexAllowance(sessionsDir string, now time.Time) []CodexQuota {
 				if _, ok := codex.RolloutThreadID(e.Name()); !ok || !e.Type().IsRegular() {
 					continue
 				}
-				if fi, err := e.Info(); err == nil && fi.ModTime().After(now.Add(-Max)) {
-					found = append(found, rollout{filepath.Join(dir, e.Name()), fi.ModTime()})
+				if fi, err := e.Info(); err == nil && fi.ModTime().After(now.Add(-Max)) && !fi.ModTime().After(now.Add(futureMod)) {
+					found = append(found, rolloutFile{filepath.Join(dir, e.Name()), fi.ModTime(), fi.Size()})
 				}
 			}
 		}
 	}
+	first := func(r rolloutFile) bool {
+		id, _ := codex.RolloutThreadID(filepath.Base(r.path))
+		return prefer != "" && id == prefer
+	}
 	sort.Slice(found, func(i, j int) bool {
+		if a, b := first(found[i]), first(found[j]); a != b {
+			return a
+		}
 		if !found[i].mod.Equal(found[j].mod) {
 			return found[i].mod.After(found[j].mod)
 		}
 		return found[i].path > found[j].path
 	})
-	for i, r := range found {
+	return found
+}
+
+// readAllowance returns the session quotas of the first of files that
+// holds any, trying at most allowanceTries.
+func readAllowance(sessionsDir string, files []rolloutFile) []CodexQuota {
+	for i, r := range files {
 		if i == allowanceTries {
 			break
 		}
@@ -363,25 +381,81 @@ func CodexAllowance(sessionsDir string, now time.Time) []CodexQuota {
 	return nil
 }
 
-// CodexUsed returns the largest share used, 0 to 1, of the ordinary
-// quota's windows whose reset is still ahead of now. Only the ordinary
-// quota counts: Codex's own TUI warns off it alone (see CodexQuotas). A
-// window with no reset time, or one already past, says nothing about now
-// and is skipped; ok is false when no window is left. The near-limit
+// CodexAllowance returns the session quotas (CodexQuotas) of the newest
+// Codex rollout under sessionsDir that holds any, among rollouts written
+// in the last Max and not dated more than futureMod ahead: what Codex
+// last wrote about this account's limits. The rollout of thread prefer
+// (the on-screen session's, when known; "" for none) is tried first. It
+// reads as CodexWatch does: date folders only, regular rollout files, and
+// only their last RolloutTail bytes through transcript.ReadTail, at most
+// allowanceTries of them. Nil means Codex wrote nothing aggy can use.
+func CodexAllowance(sessionsDir string, now time.Time, prefer string) []CodexQuota {
+	return readAllowance(sessionsDir, codexRollouts(sessionsDir, now, prefer))
+}
+
+// AllowanceCache is CodexAllowance that reads the rollouts' tails again
+// only when a rollout it would read (the first allowanceTries: their
+// paths, modification times, and sizes) changed (L60-2). It is safe for
+// concurrent use.
+type AllowanceCache struct {
+	mu     sync.Mutex
+	key    string
+	quotas []CodexQuota
+}
+
+// Get is CodexAllowance through the cache.
+func (c *AllowanceCache) Get(sessionsDir string, now time.Time, prefer string) []CodexQuota {
+	files := codexRollouts(sessionsDir, now, prefer)
+	var key strings.Builder
+	for i, f := range files {
+		if i == allowanceTries {
+			break
+		}
+		fmt.Fprintf(&key, "%s|%d|%d\n", f.path, f.mod.UnixNano(), f.size)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if key.Len() == 0 || key.String() != c.key {
+		c.key, c.quotas = key.String(), readAllowance(sessionsDir, files)
+	}
+	return c.quotas
+}
+
+// CodexUse is the window CodexUsed picked: the share used, 0 to 1, and
+// the window's length and reset time (unix seconds), which name it.
+type CodexUse struct {
+	Used     float64
+	Minutes  int64
+	ResetsAt int64
+}
+
+// CodexUsed returns the window with the largest share used among the
+// ordinary quota's windows whose reset is still ahead of now and no
+// further ahead than the window's own length. Only the ordinary quota
+// counts: Codex's own TUI warns off it alone (see CodexQuotas). A window
+// with no reset time or length, one already past, or one that resets
+// further ahead than it lasts (stale or forged, L60-3) says nothing about
+// now and is skipped; ok is false when no window is left. The near-limit
 // warning (T6699) and aggy usage share it.
-func CodexUsed(quotas []CodexQuota, now time.Time) (used float64, ok bool) {
+func CodexUsed(quotas []CodexQuota, now time.Time) (use CodexUse, ok bool) {
 	for _, q := range quotas {
 		if q.ID != codexOrdinary {
 			continue
 		}
 		for _, w := range []*CodexWindow{q.Primary, q.Secondary} {
-			if w == nil || w.ResetsAt <= 0 || !time.Unix(w.ResetsAt, 0).After(now) {
+			if w == nil || w.ResetsAt <= 0 || w.WindowMinutes <= 0 {
 				continue
 			}
-			used, ok = max(used, min(max(w.UsedPercent/100, 0), 1)), true
+			reset := time.Unix(w.ResetsAt, 0)
+			if !reset.After(now) || reset.After(now.Add(time.Duration(w.WindowMinutes)*time.Minute)) {
+				continue
+			}
+			if used := min(max(w.UsedPercent/100, 0), 1); !ok || used > use.Used {
+				use, ok = CodexUse{Used: used, Minutes: w.WindowMinutes, ResetsAt: w.ResetsAt}, true
+			}
 		}
 	}
-	return used, ok
+	return use, ok
 }
 
 // Run polls every interval until stop closes.

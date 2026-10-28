@@ -12,6 +12,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/home"
+	"github.com/congdoe/aggy/internal/limits"
 	"github.com/congdoe/aggy/internal/store"
 )
 
@@ -23,8 +24,9 @@ func TestUsedShare(t *testing.T) {
 	t.Setenv(home.Env, t.TempDir())
 	codexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", codexHome)
-	if got := usedShare(adapter.Codex); got != -1 {
-		t.Errorf("codex with no rollout: %v, want -1", got)
+	var cache limits.AllowanceCache
+	if got, ok := usedShare(adapter.Codex, &cache, ""); ok {
+		t.Errorf("codex with no rollout: %+v", got)
 	}
 	now := time.Now()
 	day := filepath.Join(codexHome, "sessions", now.Format("2006"), now.Format("01"), now.Format("02"))
@@ -36,12 +38,14 @@ func TestUsedShare(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(day, "rollout-2026-10-28T12-00-00-0199a213-81c0-7800-8aa1-bbab2a035a53.jsonl"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := usedShare(adapter.Codex); got < 0.919 || got > 0.921 {
-		t.Errorf("codex: %v, want 0.92", got)
+	reset := now.Add(time.Hour).Unix()
+	got, ok := usedShare(adapter.Codex, &cache, "")
+	if !ok || got.Used < 0.919 || got.Used > 0.921 || got.Window != fmt.Sprintf("300m@%d", reset) || !got.Reset.Equal(time.Unix(reset, 0)) {
+		t.Errorf("codex: %+v, %v; want 0.92 of the 300m window", got, ok)
 	}
 	for _, v := range []adapter.Vendor{adapter.Claude, adapter.Grok} {
-		if got := usedShare(v); got != -1 {
-			t.Errorf("%s: %v, want -1", v, got)
+		if got, ok := usedShare(v, &cache, ""); ok {
+			t.Errorf("%s: %+v, want none", v, got)
 		}
 	}
 }
@@ -57,6 +61,8 @@ func TestUsage(t *testing.T) {
 		rollout  bool
 		used     int    // the ordinary 5h window's used_percent; 0 means 30
 		config   string // the user config, if any
+		symlink  bool   // the config is a symlink to it
+		stderr   string
 		want     []string
 		wantNot  []string
 		wantCode int
@@ -85,7 +91,13 @@ func TestUsage(t *testing.T) {
 		}},
 		{name: "below warn_at", rollout: true, used: 92, config: "[switch]\nwarn_at = 0.95\n", wantNot: []string{"near limit"}},
 		{name: "warning off", rollout: true, used: 99, config: "[switch]\nwarn_at = 0\n", wantNot: []string{"near limit"}},
-		{name: "bad config", config: "[switch]\nwarn_at = 2\n", wantCode: 1},
+		// L60-5: an unreadable config warns and uses the default.
+		{name: "bad config", rollout: true, used: 92, config: "[switch]\nwarn_at = 2\n",
+			want:   []string{"  codex   near limit: 92% used, at or past switch.warn_at 0.9\n", "Consumption aggy observed"},
+			stderr: "switch.warn_at must be 0 (off) to 1, got 2; near limit uses switch.warn_at 0.9\n"},
+		{name: "symlinked config", rollout: true, used: 92, config: "[switch]\nwarn_at = 0.95\n", symlink: true,
+			want:   []string{"  codex   near limit: 92% used, at or past switch.warn_at 0.9\n"},
+			stderr: "near limit uses switch.warn_at 0.9\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -95,8 +107,17 @@ func TestUsage(t *testing.T) {
 			t.Setenv(home.Env, state)
 			codexHome := t.TempDir()
 			if tt.config != "" {
-				if err := os.WriteFile(filepath.Join(state, "config.toml"), []byte(tt.config), 0o600); err != nil {
+				cfgPath := filepath.Join(state, "config.toml")
+				if tt.symlink {
+					cfgPath = filepath.Join(t.TempDir(), "config.toml")
+				}
+				if err := os.WriteFile(cfgPath, []byte(tt.config), 0o600); err != nil {
 					t.Fatal(err)
+				}
+				if tt.symlink {
+					if err := os.Symlink(cfgPath, filepath.Join(state, "config.toml")); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			used := tt.used
@@ -125,6 +146,9 @@ func TestUsage(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			if code := Run([]string{"usage"}, &stdout, &stderr); code != tt.wantCode {
 				t.Fatalf("exit = %d, want %d (stderr %q)", code, tt.wantCode, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tt.stderr) || tt.stderr == "" && stderr.Len() > 0 {
+				t.Errorf("stderr %q, want %q", stderr.String(), tt.stderr)
 			}
 			out := stdout.String()
 			for _, w := range tt.want {

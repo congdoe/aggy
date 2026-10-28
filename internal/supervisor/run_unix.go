@@ -102,7 +102,7 @@ func Run(o Options) (Exit, error) {
 		return Exit{Code: 1}, errors.New("supervisor: standard input is not a terminal")
 	}
 	t := &tty{fd: fd}
-	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, lenKnown: true, events: make(chan hookEvent, 16), asks: make(chan Choice, 1), quit: make(chan struct{})}
+	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, lenKnown: true, events: make(chan hookEvent, 16), asks: make(chan Choice, 1), quit: make(chan struct{}), shares: make(chan shareReading)}
 	defer close(s.quit)
 	var srv *Server
 	if o.RunDir != "" {
@@ -214,6 +214,10 @@ func Run(o Options) (Exit, error) {
 			s.offerWarn()
 		case h := <-s.o.Limits:
 			s.onLimit(h)
+		case r := <-s.shares:
+			if r.seq == s.shareSeq {
+				s.share = &r
+			}
 		case <-s.exitBy:
 			s.exitBy = nil
 			if s.sw.typed && !s.open {
@@ -351,8 +355,15 @@ type session struct {
 	waiting atomic.Bool
 	// warnDue: a turn of the on-screen child ended and the near-limit
 	// check (offerWarn) has not run since; warned: the warning was shown
-	// and the share used has not dropped below WarnAt since (T6699).
+	// (or a limit hit) and its crossing has not ended, warnedWindow and
+	// warnedReset being the window it was about (T6699). shares brings
+	// askShare's readings; share is the latest ask's, nil until it is in.
 	warnDue, warned bool
+	warnedWindow    string
+	warnedReset     time.Time
+	shares          chan shareReading
+	share           *shareReading
+	shareSeq        int
 }
 
 // setSwitch sets the switch state.
@@ -411,6 +422,7 @@ func (s *session) hookEvent(ev hookEvent) {
 		if ev.sessionID != "" && s.o.SessionID != nil && ev.sessionID == s.o.SessionID() {
 			s.atPrompt = !s.held
 			s.warnDue = true
+			s.askShare()
 			if ev.name == "Stop" && holdSignal(s.o.Vendor) && s.pk != nil {
 				s.pk.preselect = "" // a turn ended without a limit (O56-5)
 			}
@@ -600,17 +612,19 @@ func (s *session) offerSwitch() {
 
 // offerWarn shows the near-limit warning (T6699) after a turn end of the
 // on-screen child, once the CLI is at its prompt and quiet, as a switch
-// is offered: when the vendor on screen has used WarnAt of its limit or
-// more (Options.Used, only where its CLI writes that locally), once per
+// is offered, and once the share read at that turn end (askShare) is in:
+// when the vendor on screen has used WarnAt of its limit or more
+// (Options.Used, only where its CLI writes that locally), once per
 // crossing. It never switches: the switch key opens the list with the
 // first vendor with quota preselected, and a pick there waits for a turn
 // end and the user's confirmation like any, unsent text included. A turn
 // started, a switch already waiting, or the picker up drops it until the
 // next turn end.
 //
-// shortcut: Used is the cache cli.refreshed reads every 2 seconds; the
-// quiet wait (switchQuiet) is usually longer, but a share the CLI wrote
-// just before the turn end can still show at the next one.
+// A crossing ends when the warned window's reset time has passed, or a
+// reading of that same window is below WarnAt; a lower share from
+// another window or rollout does not end it (L60-3). After a limit
+// (onLimit), whose window is not known, any reading below WarnAt does.
 func (s *session) offerWarn() {
 	if !s.warnDue {
 		return
@@ -623,33 +637,81 @@ func (s *session) offerWarn() {
 	if now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
 		return
 	}
+	if s.share == nil {
+		return // still being read
+	}
+	r := *s.share
 	s.warnDue = false
-	if s.o.Used == nil || s.o.WarnAt <= 0 {
+	if s.warned && !s.warnedReset.IsZero() && !now.Before(s.warnedReset) {
+		s.warned = false
+	}
+	if !r.ok {
 		return
 	}
-	used, ok := s.o.Used(s.o.Vendor)
-	if !ok {
-		return
-	}
-	if used < s.o.WarnAt {
-		s.warned = false // below again (a reset): the next crossing warns
+	if r.Used < s.o.WarnAt {
+		if s.warned && (s.warnedWindow == "" || r.Window == s.warnedWindow) {
+			s.warned = false
+		}
 		return
 	}
 	if s.warned {
 		return
 	}
-	s.warned = true
+	s.warned, s.warnedWindow, s.warnedReset = true, r.Window, r.Reset
 	// TODO(T6753): log switch.near_limit_warned (vendor, share, warn_at).
 	// The epsilon keeps 0.29*100 (28.999...) at 29%.
-	line := fmt.Sprintf("%s is at %d%% of its limit.", s.o.Vendor, int(math.Floor(used*100+1e-9)))
+	// TODO(T6753): log switch.near_limit_no_quota when pre is "".
 	pre := s.withQuota()
-	tail := fmt.Sprintf(" %s hands off to %s, Esc dismisses.", keyName(s.pk.key), pre)
-	if pre == "" {
-		// TODO(T6753): log switch.near_limit_no_quota.
-		tail = " No vendor with quota left; Esc dismisses."
-	}
-	s.pk.warn(pre, line, tail)
+	s.pk.warn(pre, warnForms(s.o.Vendor, int(math.Floor(r.Used*100+1e-9)), keyName(s.pk.key), pre)...)
 	s.openPicker()
+}
+
+// warnForms is the near-limit warning's line, from longest to shortest
+// (L60-4): v is at pct% of its limit, and the switch key hands off to
+// pre ("": no vendor has quota left). Each form ends in its keys; with
+// vendor names of at most 6 bytes the first fits 80 columns, and the last
+// 13.
+func warnForms(v adapter.Vendor, pct int, key string, pre adapter.Vendor) []string {
+	if pre == "" {
+		return []string{
+			fmt.Sprintf("aggy: %s is at %d%% of its limit. No vendor with quota left; Esc dismisses.", v, pct),
+			fmt.Sprintf("aggy: %s %d%%: no quota left, Esc", v, pct),
+			fmt.Sprintf("%s %d%%: no quota, Esc", v, pct),
+			"Esc",
+		}
+	}
+	return []string{
+		fmt.Sprintf("aggy: %s is at %d%% of its limit. %s hands off to %s, Esc dismisses.", v, pct, key, pre),
+		fmt.Sprintf("aggy: %s %d%%: %s -> %s, Esc", v, pct, key, pre),
+		fmt.Sprintf("%s -> %s, Esc", key, pre),
+		key + " / Esc",
+	}
+}
+
+// askShare reads the share used of the vendor on screen off the main
+// loop, at a turn end of the on-screen child (L60-2); the main loop keeps
+// the reading of the latest ask only.
+func (s *session) askShare() {
+	if s.o.Used == nil || s.o.WarnAt <= 0 {
+		return
+	}
+	s.shareSeq++
+	s.share = nil
+	seq, v := s.shareSeq, s.o.Vendor
+	s.goSafe(func() {
+		sh, ok := s.o.Used(v)
+		select {
+		case s.shares <- shareReading{Share: sh, ok: ok, seq: seq}:
+		case <-s.quit:
+		}
+	})
+}
+
+// shareReading is one answer of Options.Used.
+type shareReading struct {
+	Share
+	ok  bool
+	seq int
 }
 
 // withQuota is the first vendor the picker offers that has quota left
@@ -683,6 +745,12 @@ func (s *session) onLimit(h LimitHit) {
 	v := h.Vendor
 	if v != s.o.Vendor {
 		return
+	}
+	// L60-1: a limit ends any near-limit warning: none follows for this
+	// crossing, and one on screen gives way to the limit's own note.
+	s.warned, s.warnDue, s.warnedWindow, s.warnedReset = true, false, "", time.Time{}
+	if s.open && s.pk.warning {
+		s.closePicker()
 	}
 	pre := s.withQuota()
 	s.pk.preselect = pre
