@@ -29,7 +29,7 @@ func TestReports(t *testing.T) {
 			[]string{"(rate_limit)", "## Error"}, 0},
 		{"codex images", adapter.Codex, adapter.Image,
 			`{"images":2,"events":[{"type":"item.completed","item":{"type":"agent_message","text":"made 2"}},{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}]}`,
-			"done", []string{"- image: ", "1.png", "2.png"}, 2},
+			"done", []string{"- Files made: 2, kept: 2", "- image: ", "1.png", "2.png"}, 2},
 		{"grok image", adapter.Grok, adapter.Image, `{"images":1,"json":{"result":"images/1.jpg"}}`, "done", []string{"1.jpg"}, 1},
 	}
 	for _, tt := range tests {

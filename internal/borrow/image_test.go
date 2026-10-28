@@ -99,3 +99,29 @@ func TestImageRefRefused(t *testing.T) {
 		t.Error("a child ran")
 	}
 }
+
+// TestCodexImagesCounted (T6632): every file in the thread's folder is
+// collected and counted; one that is not an image is refused, and the
+// count still includes it.
+func TestCodexImagesCounted(t *testing.T) {
+	w := newWorld(t)
+	w.scenario[adapter.Codex] = `{"images":2,"session_files":[{"path":"generated_images/{session_id}/3.txt","content":"not an image"}]}`
+	req := w.req(adapter.Image, "two cats")
+	req.Vendor = "codex"
+	res, err := w.borrower().Run(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := res[0]
+	if r.Status != "done" || r.Made != 3 || len(r.Artifacts) != 2 || len(r.Refused) != 1 || !strings.Contains(r.Refused[0], "3.txt: refused, it is not a PNG or JPEG image") {
+		t.Fatalf("result %+v", r)
+	}
+	row, err := w.store.GetBorrow(context.Background(), r.ID)
+	if err != nil || row.ImageCount != 3 || len(row.Artifacts) != 2 {
+		t.Errorf("row %+v, %v", row, err)
+	}
+	report, _ := os.ReadFile(r.ReportPath)
+	if !strings.Contains(string(report), "- Files made: 3, kept: 2") || !strings.Contains(string(report), "- Refused file: ") {
+		t.Errorf("report:\n%s", report)
+	}
+}
