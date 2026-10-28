@@ -18,7 +18,6 @@ import (
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/probe"
-	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/supervisor"
 	"github.com/congdoe/aggy/internal/termsafe"
@@ -120,8 +119,9 @@ func launch(name string, t target, stderr io.Writer) int {
 	}
 	sweepMemoryDirs(runDir, time.Now())
 	req := pl.interactiveRequest()
-	// The policy is checked before anything is written to the index, so
-	// a refused launch leaves no trace.
+	// The policy is checked before the launch is recorded (commit), so a
+	// refused launch adds no parent, child, or lease. plan's refresh may
+	// already have raised last-active times from session files (D19-9).
 	var warns []string
 	if t.NoPolicy {
 		warns = append(warns, "starting without the safety policy (--no-policy)")
@@ -134,9 +134,10 @@ func launch(name string, t target, stderr io.Writer) int {
 	}
 	// Memory comes from the child's own directory, never the current one:
 	// aggy resume <id> works from anywhere.
-	memDir := memoryDir(runDir, parentID)
-	if live, err := supervisor.Live(runDir, parentID); err == nil && !live {
-		_ = safefs.RemoveAll(memDir) // left by a crash of this parent's last launch
+	// A crashed launch's folder is left to sweepMemoryDirs above.
+	memDir, err := memoryDir(runDir, parentID)
+	if err != nil {
+		return fail(err)
 	}
 	cleanup, mw := addMemory(v, caps, pl.child.Cwd, memDir, &req)
 	defer cleanup()

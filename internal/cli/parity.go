@@ -288,13 +288,33 @@ func parityFindings(cwd string, vendors []checkup.Vendor) []checkup.Finding {
 	return out
 }
 
-// memorySuffix names a session's memory folder in the run dir:
-// <parent-id>.memory, beside the supervisor's <parent-id>.lock.
+// memorySuffix names a launch's memory folder in the run dir:
+// <parent-id>.<nonce>.memory, beside the supervisor's <parent-id>.lock.
+// Each launch has its own (D19-8): two launches of one parent racing to
+// its lock must not remove each other's folder.
 const memorySuffix = ".memory"
 
-// memoryDir is the memory folder of session parentID.
-func memoryDir(runDir, parentID string) string {
-	return filepath.Join(runDir, parentID+memorySuffix)
+// memoryDir is a new memory folder name for a launch of session parentID.
+func memoryDir(runDir, parentID string) (string, error) {
+	n, err := newUUID()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(runDir, parentID+"."+n[:8]+memorySuffix), nil
+}
+
+// memoryParent is the parent id a memory folder name belongs to:
+// <uuid>.<8 hex>.memory, or <uuid>.memory from before per-launch names.
+func memoryParent(name string) (string, bool) {
+	base, ok := strings.CutSuffix(name, memorySuffix)
+	if !ok {
+		return "", false
+	}
+	id, nonce, hasNonce := strings.Cut(base, ".")
+	if hasNonce && (len(nonce) != 8 || strings.Trim(nonce, "0123456789abcdef") != "") {
+		return "", false
+	}
+	return id, adapter.IsUUID(id)
 }
 
 // staleAfter is how old a memory folder must be before a sweep may take
@@ -303,8 +323,9 @@ const staleAfter = time.Minute
 
 // sweepMemoryDirs removes the memory folders that sessions killed before
 // their cleanup left in runDir (aggy's own 0700 run dir, checked by
-// supervisor.PrivateDir): a <uuid>.memory folder, not a symlink, older
-// than staleAfter, whose supervisor no longer holds its lock. Errors are
+// supervisor.PrivateDir): a <uuid>.<nonce>.memory (or <uuid>.memory)
+// folder, not a symlink, older than staleAfter, whose parent's supervisor
+// does not hold its lock. Errors are
 // ignored; the next run tries again.
 func sweepMemoryDirs(runDir string, now time.Time) {
 	des, err := safefs.ReadDir(runDir)
@@ -312,8 +333,8 @@ func sweepMemoryDirs(runDir string, now time.Time) {
 		return
 	}
 	for _, de := range des {
-		id, ok := strings.CutSuffix(de.Name(), memorySuffix)
-		if !ok || !adapter.IsUUID(id) || !de.IsDir() {
+		id, ok := memoryParent(de.Name())
+		if !ok || !de.IsDir() {
 			continue
 		}
 		dir := filepath.Join(runDir, de.Name())
