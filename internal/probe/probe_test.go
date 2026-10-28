@@ -119,6 +119,34 @@ func TestProbeCachesPerPathAndVersion(t *testing.T) {
 	}
 }
 
+// TestProbeCacheKeyedOnSpec (G32-2): a probe cached by an older aggy,
+// whose spec did not look for --sandbox, is probed again once, so a
+// Grok review is not refused for a capability the cache never checked.
+func TestProbeCacheKeyedOnSpec(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	path := f.fakes.Grok
+	old := []string{CapHeadless, CapJSONOutput, CapTools}
+	if err := f.store.InsertProbe(ctx, store.Probe{Vendor: "grok", CLIPath: path, Version: "1.0.70",
+		Capabilities: old, ProbedAt: time.Now().Add(-time.Hour).UTC().Truncate(time.Millisecond)}); err != nil {
+		t.Fatal(err)
+	}
+	pr := &Prober{Store: f.store, Run: f.runner(t, "", 10*time.Second)}
+	first, cached, err := pr.Probe(ctx, adapter.Grok, path)
+	if err != nil || cached || !Has(first, CapSandbox) {
+		t.Fatalf("first probe = %+v, cached %v, %v", first, cached, err)
+	}
+	second, cached, err := pr.Probe(ctx, adapter.Grok, path)
+	if err != nil || !cached || !slices.Equal(second.Capabilities, first.Capabilities) {
+		t.Fatalf("second probe = %+v, cached %v, %v", second, cached, err)
+	}
+	for _, c := range second.Capabilities {
+		if strings.HasPrefix(c, stampPrefix) {
+			t.Errorf("the spec stamp leaked into the capabilities: %v", second.Capabilities)
+		}
+	}
+}
+
 func TestProbeDegrades(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()

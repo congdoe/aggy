@@ -281,16 +281,26 @@ found every Grok borrow failing. Minimal runs in a scratch directory.
 | G5, version | `grok --version` | Recorded | Prints exactly `grok 1.0.70 (f50904eaee6c) [stable]`. aggy's parser before T6740 did not allow the `[stable]` tag, read no version, and refused every Grok borrow as untested. |
 | S1, read confinement | G3 plus a prompt asking to read `./README.md`, then a canary file outside the cwd by absolute path, with `--permission-mode plan`; `--permission-mode dontAsk --allow 'Read(./**)'`; `--permission-mode plan --allow 'Read(./**)'` | **Not confined** | All three exited 0 and returned the canary: Grok auto-allows reads in every mode, so allow rules do not confine `read_file`. |
 | S2, strict sandbox | the same with `--permission-mode plan --sandbox strict` | **Confined under `$HOME`** | README was read; the canary under `$HOME` was refused, `Permission denied: <HOME>/.../canary.txt`. |
+| S3, `~/Library` (G32-3) | S2 with the canary at `<HOME>/Library/Caches/aggy-canary.*/canary.txt` | **Not confined** | `read_file` returned the canary: strict allows `~/Library`. |
+| S4, `~/Library` denied | S3 plus `--deny "Read(<HOME>/Library/**)" --deny "Grep(<HOME>/Library/**)"`, `$HOME` expanded | **Confined** | `read_file` was refused, `Denied by permission policy: deny rule on read matching "~/Library/**"`; the in-repo README still read. aggy's argv since G32-3. |
 
 The strict profile (grok-src `crates/codegen/xai-grok-sandbox/src/profiles.rs:463-488`,
 kernel-enforced) allows reads of system dirs (`/usr`, `/etc`, `/tmp`,
 `/private`, `/var`, `/System`, `/Library`, ...), `~/Library`, `~/.grok`,
 and the workspace; writes only to Grok's sessions dir; and blocks child
-networking. Gaps: files under `/tmp` and `/private` stay readable,
-`~/.grok` (Grok's own home) is readable, and only vendor homes and other
-paths under `$HOME` are denied. aggy passes `--sandbox strict` on review,
-research, and news, and refuses them when the probed `--help` does not
-list `--sandbox`. Not yet run live: research and news under strict, and
+networking. Gaps: files under `/tmp` and `/private` (`$TMPDIR`, aggy's
+run dirs) stay readable, `~/.grok` (Grok's own home) is readable,
+`~/Library` is readable (S3; aggy's deny rules close it for `read_file`
+and `grep`, S4), and only vendor homes and other paths under `$HOME` are
+denied. The sandbox fails open: `xai-grok-sandbox/src/lib.rs:206-216`
+and `:236-247` log "continuing without sandbox" and return Ok when the
+platform has none or applying it fails (source only, 2bdd1d6a). aggy
+passes `--sandbox strict` on review, research, and news, and refuses
+them when the probed `--help` does not list `--sandbox` or the host has
+no kernel sandbox (macOS, or Linux with `landlock` in
+`/sys/kernel/security/lsm`); a run whose stderr has one of those
+messages is discarded. Whether they reach stderr headless is
+unverified. Not yet run live: research and news under strict, and
 image and video under strict (their output write; TODO(T6742)).
 
 ## Smoke run, 2026-10-28 (main 2383c13)

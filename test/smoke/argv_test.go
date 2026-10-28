@@ -26,7 +26,12 @@ func TestScriptArgvMatchesAdapter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a := grok.Adapter{Caps: []string{probe.CapSandbox}}
+			a := grok.Adapter{Caps: []string{probe.CapSandbox, probe.CapKernelSandbox}, Getenv: func(k string) string {
+				if k == "HOME" {
+					return "/smokehome"
+				}
+				return ""
+			}}
 			cmd, err := a.Headless(adapter.HeadlessRequest{Kind: tt.kind, PromptFile: "/p/prompt.md", Cwd: "/c"})
 			if err != nil {
 				t.Fatal(err)
@@ -35,7 +40,8 @@ func TestScriptArgvMatchesAdapter(t *testing.T) {
 			if len(cmd.Args) < 2 || cmd.Args[0] != "--prompt-file" || cmd.Args[1] != "/p/prompt.md" {
 				t.Fatalf("argv does not start with --prompt-file: %q", cmd.Args)
 			}
-			want := tt.name + `="` + strings.Join(cmd.Args[2:], " ") + `"`
+			// The script writes $HOME as @HOME@ and fills it in at run time.
+			want := tt.name + `="` + strings.ReplaceAll(strings.Join(cmd.Args[2:], " "), "/smokehome", "@HOME@") + `"`
 			if !strings.Contains(string(script), "\n"+want+"\n") {
 				t.Errorf("smoke.sh lacks the line\n%s", want)
 			}
