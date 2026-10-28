@@ -238,7 +238,7 @@ func requirePinnedForRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tl := range r.List() {
-		if !userVersionRE.MatchString(tl.Version) {
+		if !semverRE.MatchString(tl.Version) {
 			t.Errorf("%s: version %q is not pinned", tl.Name, tl.Version)
 		}
 	}

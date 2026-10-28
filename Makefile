@@ -54,9 +54,12 @@ release-check:
 	$(GORELEASER) check
 
 # A release fails on a built-in tool whose version is not pinned
-# (internal/tooldef). release.yml runs it before goreleaser.
+# (internal/tooldef). release.yml runs it before goreleaser. It fails
+# unless the test ran and passed: a renamed or skipped test is a failure.
 release-pinned:
-	AGGY_RELEASE=1 go test -count=1 -run '^TestBuiltinsPinnedForRelease$$' ./internal/tooldef/
+	@out=$$(AGGY_RELEASE=1 go test -count=1 -v -run '^TestBuiltinsPinnedForRelease$$' ./internal/tooldef/ 2>&1); \
+	echo "$$out"; \
+	echo "$$out" | grep -q -- '^--- PASS: TestBuiltinsPinnedForRelease' || { echo "release-pinned: TestBuiltinsPinnedForRelease did not pass"; exit 1; }
 
 # Opt-in live checks against the real vendor CLIs; they spend quota. The
 # script refuses to run unless AGGY_SMOKE=1. Never part of test or CI.

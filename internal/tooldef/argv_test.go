@@ -37,6 +37,25 @@ func TestArgvRefusesRunners(t *testing.T) {
 		{"uvx", "--from", "demo", "demo"}, {"uvx", "demo@latest"}, {"npm", "exec", "demo"},
 		{"pnpm", "dlx", "demo@latest"}, {"uv", "tool", "run", "demo"}, {"pipx", "run", "demo"},
 		{"nice", "npx", "-y", "demo@1.0.0"},
+		// S63-3: {repo} as the program after a wrapper, as an
+		// interpreter's script or module, or as git's exec path.
+		{"nice", "{repo}/x"}, {"timeout", "10", "{repo}/x"}, {"xargs", "{repo}/x"},
+		{"python3", "{repo}/x.py"}, {"python3", "-W", "ignore", "{repo}/x.py"}, {"node", "{repo}/x.js"},
+		{"osascript", "{repo}/x"}, {"node", "--require", "{repo}/hook.js", "server.js"}, {"node", "--import={repo}/x.mjs", "s.js"},
+		{"node", "-r", "{repo}/x.js"}, {"perl", "-I", "{repo}/lib", "x.pl"}, {"python3", "-m", "{repo}"},
+		{"python3", "--", "{repo}/x.py"}, {"git", "--exec-path={repo}", "x"},
+		// S63-4: pins that are not exact, and ways round them.
+		{"npx", "demo@1"}, {"npx", "demo@1.2"}, {"npx", "demo@^1.2.3"}, {"npx", "demo@1.2.3 || 2"},
+		{"npx", "git+https://example.com/x.git@1.2.3"}, {"npx", "https://example.com/x@1.2.3"},
+		{"npx", "./local@1.2.3"}, {"npx", "--cache", "demo@1.0.0", "demo"}, {"npx", "--registry", "https://evil", "demo@1.0.0"},
+		{"npm", "--yes", "exec", "demo@1.0.0"}, {"npm", "-y", "x", "demo@1.0.0"}, {"uvx", "-p", "3.12", "demo"},
+		{"uvx", "--index-url", "https://evil", "demo==1.0.0"}, {"uvx", "--with-requirements", "r.txt", "demo==1.0.0"},
+		{"pip", "install", "demo"}, {"npm", "install"}, {"npm", "i", "demo"}, {"npm", "run", "serve"}, {"npm", "start"},
+		{"npm", "test"}, {"pnpm", "add", "x"}, {"yarn"}, {"yarn", "install"}, {"uv", "run", "x"}, {"cargo", "run"},
+		{"cargo", "install", "x"}, {"go", "run", "."}, {"pipx", "install", "x"}, {"npx", "-p", "demo@1.0.0", "sh"},
+		// S63-6: more runners.
+		{"sandbox-exec", "-p", "x", "demo"}, {"expect", "-c", "x"}, {"xcrun", "demo"}, {"launchctl", "submit"},
+		{"tmux", "new", "x"}, {"screen", "-dm", "x"},
 	} {
 		if err := argv("argv", a, true); err == nil {
 			t.Errorf("%q passed", a)
@@ -44,7 +63,11 @@ func TestArgvRefusesRunners(t *testing.T) {
 	}
 	for _, a := range [][]string{
 		{"demo"}, {"shasum", "-a", "256"}, {"ashby"}, {"nudge"}, {"npx", "@demo/server@1.0.0"},
-		{"npx", "demo@1.2.3-beta.1", "--stdio"}, {"uvx", "demo==1.2.3"}, {"uvx", "--from", "demo==1.2", "demo"},
+		{"npx", "demo@1.2.3-beta.1", "--stdio"}, {"uvx", "demo==1.2.3"}, {"uvx", "--from", "demo==1.2.0", "demo"},
+		{"uvx", "-p", "3.12", "demo==1.2.3"}, {"npx", "--cache", "/tmp/c", "demo@1.0.0"}, {"npm", "--version"},
+		{"python3", "-Wignore", "-m", "demo"}, {"perl", "-MO=Deparse", "x.pl"}, {"ruby", "-I/opt/lib", "x.rb"},
+		{"node", "server.js", "--root", "{repo}"}, {"python3", "-m", "demo", "{repo}"}, {"python3", "/opt/x.py", "{repo}"},
+		{"git", "--exec-path=/opt/git", "log"},
 		{"npm", "exec", "demo@1.0.0"}, {"find", ".", "-name", "x"}, {"git", "log"}, {"/usr/bin/arch"},
 		{"node", "/opt/demo/server.js"}, {"python3", "-m", "demo"}, {"nice", "-n", "5", "demo"},
 		{"/usr/local/bin/demo", "{repo}"},
