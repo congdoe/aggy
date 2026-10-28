@@ -460,9 +460,11 @@ func restore(r Record, cur string) error {
 	return werr
 }
 
-// removeEmptyDirs removes dirs, innermost first, while each is empty. A
+// RemoveEmptyDirs removes dirs, innermost first, while each is empty. A
 // directory something else has put files in since is kept, and so are the
-// ones above it.
+// ones above it. A directory that is gone already is skipped.
+func RemoveEmptyDirs(dirs []string) error { return removeEmptyDirs(dirs) }
+
 func removeEmptyDirs(dirs []string) error {
 	for i := len(dirs) - 1; i >= 0; i-- {
 		entries, err := safefs.ReadDir(dirs[i])

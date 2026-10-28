@@ -1,12 +1,14 @@
 package manifest
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"path/filepath"
+	"strings"
 
 	"github.com/congdoe/aggy/internal/diff"
 	"github.com/congdoe/aggy/internal/patch"
@@ -68,9 +70,28 @@ const (
 	// Drifted: the file changed after aggy changed it, so the change was
 	// not undone. Err holds a *patch.DriftError.
 	Drifted Outcome = "drifted"
+	// Superseded: a pending or failed change to a file that a newer
+	// change, still in place, has written since. The file belongs to the
+	// newer change and is left alone; only empty directories made for
+	// this change are removed, and the row is marked undone.
+	Superseded Outcome = "superseded"
+	// Blocked: a newer change to the same file is still in place, so
+	// this one cannot be undone before it. Err names the newer change.
+	Blocked Outcome = "blocked"
+	// Invalid: the manifest row does not describe a change aggy could
+	// have made (a relative or unclean file, a backup outside
+	// backups/<change-id>, a created directory that is not an ancestor
+	// of the file), so it is refused untouched. Err says why.
+	Invalid Outcome = "invalid"
 	// Failed: the undo hit another error, in Err.
 	Failed Outcome = "failed"
 )
+
+// ErrNewerChange matches a Blocked result.
+var ErrNewerChange = errors.New("a newer change to the same file is still in place")
+
+// ErrInvalidRow matches an Invalid result.
+var ErrInvalidRow = errors.New("invalid manifest row")
 
 // Undo is the result for one change.
 type Undo struct {
@@ -86,7 +107,25 @@ type Undo struct {
 // planned against the earlier one's result, so it must be undone first.
 // Each change is undone under its target's lock and marked undone.
 //
-// Which rows it acts on:
+// Before acting on a row, Unwire checks that it describes a change aggy
+// could have made: File absolute and clean, the backup inside
+// backups/<change-id>, and every created directory an ancestor of File.
+// Any other row is refused untouched (Invalid), so a crafted row cannot
+// make unwire delete or rewrite an unrelated file.
+//
+// A change can only be undone after every newer change to the same file
+// (by canonical path) that is still applied, pending, or failed:
+//
+//   - With --change (sel.ChangeID), such a newer change refuses the undo,
+//     forced or not (Blocked, naming it). Undo it first, or use --all.
+//   - An applied change with such a newer change outside the selection
+//     is Blocked too.
+//   - A pending or failed change with such a newer change is Superseded:
+//     whatever is in the file is the newer change's, so the file is left
+//     alone, only empty directories made for the old change are
+//     removed, and the row is marked undone.
+//
+// Otherwise:
 //
 //   - applied: the file is restored byte for byte from the backup, with
 //     its mode, or, when the change created it, removed along with the
@@ -104,9 +143,16 @@ type Undo struct {
 //
 // A file that changed after aggy changed it is not touched: its result
 // is Drifted, and Unwire goes on with the other changes. With
-// opt.Force it is undone anyway, after its bytes are saved. An earlier
-// change to a drifted file will drift as well, since the file no longer
-// holds what that change left.
+// opt.Force it is undone anyway, after its bytes are saved. Two edits
+// count as the person undoing aggy's change by hand, not as drift: a
+// file aggy created that now holds only white space is removed, and a
+// file that is its old content plus one line ending (the one aggy added
+// before its own line) gets its old content back exactly.
+//
+// After a run that changed anything, Unwire sweeps the directories every
+// undone change created and removes those that are now empty, unless a
+// change still in place created them too, so undoing runs one at a time
+// leaves no directory behind.
 //
 // In a dry run, Unwire writes to w the unified diff each undo would make,
 // escaped for the terminal, and changes nothing. The returned error joins
@@ -134,15 +180,16 @@ func (m *Manifest) Unwire(ctx context.Context, sel Selection, opt UnwireOptions,
 	// A dry run changes nothing, so an older change to a file must be
 	// previewed against what the newer undos would leave, not against the
 	// file on disk.
-	var sim map[string]simFile
+	run := &unwireRun{opt: opt, single: sel.ChangeID != "", w: w}
 	if opt.DryRun {
-		sim = map[string]simFile{}
+		run.sim = map[string]simFile{}
+		run.simUndone = map[string]bool{}
 	}
 	for _, c := range rows {
 		if !undoable(c) {
 			continue
 		}
-		u := m.undo(ctx, c, opt, w, sim)
+		u := m.undo(ctx, c, run)
 		if u.Change.ChangeID == "" {
 			continue // no longer undoable once locked
 		}
@@ -151,7 +198,143 @@ func (m *Manifest) Unwire(ctx context.Context, sel Selection, opt UnwireOptions,
 			errs = append(errs, u.Err)
 		}
 	}
+	if !opt.DryRun && len(out) > 0 {
+		if err := m.sweepDirs(context.WithoutCancel(ctx)); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	return out, errors.Join(errs...)
+}
+
+// unwireRun is the state of one Unwire call.
+type unwireRun struct {
+	opt    UnwireOptions
+	single bool // one change was asked for by id
+	w      io.Writer
+	// In a dry run: files as the earlier previewed undos would leave
+	// them, and the changes they would mark undone.
+	sim       map[string]simFile
+	simUndone map[string]bool
+}
+
+// validRow reports why c is not a change aggy could have made, or nil.
+func (m *Manifest) validRow(c store.Change) error {
+	bad := func(format string, a ...any) error {
+		return fmt.Errorf("manifest: change %s: %w: %s", c.ChangeID, ErrInvalidRow, fmt.Sprintf(format, a...))
+	}
+	if c.ChangeID == "" || c.ChangeID == "." || c.ChangeID == ".." || filepath.Base(c.ChangeID) != c.ChangeID {
+		return bad("the change id is not a plain name")
+	}
+	if !filepath.IsAbs(c.File) || filepath.Clean(c.File) != c.File {
+		return bad("the file %q is not an absolute, clean path", c.File)
+	}
+	if !isHash(c.HashAfter) || (c.HashBefore != patch.NoFile && !isHash(c.HashBefore)) {
+		return bad("the hashes are not sha256 hashes")
+	}
+	if (c.HashBefore == patch.NoFile) != c.CreatedFile {
+		return bad("created_file does not match the hash before")
+	}
+	if c.BackupPath != "" {
+		want := filepath.Join(m.backupRoot, c.ChangeID, c.HashBefore+".bak")
+		if c.HashBefore == patch.NoFile || c.BackupPath != want {
+			return bad("the backup %q is not %s", c.BackupPath, want)
+		}
+	}
+	for _, d := range c.CreatedDirs {
+		if !filepath.IsAbs(d) || filepath.Clean(d) != d || d == string(filepath.Separator) ||
+			!strings.HasPrefix(c.File, d+string(filepath.Separator)) {
+			return bad("the created directory %q is not an ancestor of the file", d)
+		}
+	}
+	if len(c.CreatedDirs) > 0 && !c.CreatedFile {
+		return bad("directories are recorded for a file that existed")
+	}
+	return nil
+}
+
+func isHash(h string) bool {
+	if len(h) != 64 {
+		return false
+	}
+	for _, r := range h {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// newerChange returns a change to the same file as c, newer than c, that
+// is still applied, pending, or failed (and, in a dry run, not undone by
+// an earlier previewed undo), or nil.
+func (m *Manifest) newerChange(ctx context.Context, c store.Change, run *unwireRun) (*store.Change, error) {
+	newer, err := m.store.UndoableAfter(ctx, c.ID)
+	if err != nil {
+		return nil, err
+	}
+	key := simKey(c.File)
+	for i := range newer {
+		n := newer[i]
+		if run.simUndone[n.ChangeID] {
+			continue
+		}
+		if n.File == c.File || simKey(n.File) == key {
+			return &n, nil
+		}
+	}
+	return nil, nil
+}
+
+// sweepDirs removes the directories undone changes created that are now
+// empty, unless a change still in place created them too.
+func (m *Manifest) sweepDirs(ctx context.Context) error {
+	all, err := m.store.Changes(ctx, "")
+	if err != nil {
+		return err
+	}
+	live := map[string]bool{}
+	for _, c := range all {
+		if undoable(c) {
+			for _, d := range c.CreatedDirs {
+				live[d] = true
+			}
+		}
+	}
+	var errs []error
+	for i := len(all) - 1; i >= 0; i-- {
+		c := all[i]
+		if c.Status != store.ChangeUndone || len(c.CreatedDirs) == 0 || m.validRow(c) != nil {
+			continue
+		}
+		var dirs []string
+		for _, d := range c.CreatedDirs {
+			if !live[d] {
+				dirs = append(dirs, d)
+			}
+		}
+		if err := patch.RemoveEmptyDirs(dirs); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// userReverted reports whether cur is aggy's change undone by hand: a
+// created file left holding only white space, or the old content plus
+// the one line ending aggy added before its own line.
+func userReverted(r patch.Record, cur []byte, curHash string) bool {
+	if curHash == patch.NoFile {
+		return false
+	}
+	if r.BeforeHash == patch.NoFile {
+		return len(bytes.TrimSpace(cur)) == 0
+	}
+	for _, nl := range []string{"\n", "\r\n"} {
+		if b, ok := bytes.CutSuffix(cur, []byte(nl)); ok && patch.Hash(b) == r.BeforeHash {
+			return true
+		}
+	}
+	return false
 }
 
 // undoable reports whether c is a row Unwire acts on.
@@ -194,11 +377,13 @@ func simKey(file string) string {
 }
 
 // undo undoes one change under its target's lock. It returns a zero Undo
-// when the row, read again under the lock, is no longer undoable. In a
-// dry run, sim holds the files earlier previewed undos changed, and gets
-// this undo's result.
-func (m *Manifest) undo(ctx context.Context, c store.Change, opt UnwireOptions, w io.Writer, sim map[string]simFile) Undo {
+// when the row, read again under the lock, is no longer undoable.
+func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Undo {
+	opt, w := run.opt, run.w
 	fail := func(err error) Undo { return Undo{Change: c, Outcome: Failed, Err: err} }
+	if err := m.validRow(c); err != nil {
+		return Undo{Change: c, Outcome: Invalid, Err: err}
+	}
 	unlock, err := m.lockTarget(ctx, c.File)
 	if err != nil {
 		return fail(err)
@@ -210,15 +395,61 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, opt UnwireOptions, 
 	if !undoable(c) {
 		return Undo{}
 	}
+	if err := m.validRow(c); err != nil {
+		return Undo{Change: c, Outcome: Invalid, Err: err}
+	}
 	r := m.undoRecord(c)
+	u := Undo{Change: c}
+	done := func() Undo {
+		if opt.DryRun {
+			run.simUndone[c.ChangeID] = true
+			return u
+		}
+		// Record it even if the caller has given up.
+		if merr := m.store.MarkChangeUndone(context.WithoutCancel(ctx), c.ChangeID, m.now()); merr != nil {
+			u.Err = errors.Join(merr, u.Err)
+		}
+		return u
+	}
+
+	newer, err := m.newerChange(ctx, c, run)
+	if err != nil {
+		return fail(err)
+	}
+	if newer != nil {
+		if run.single || c.Status == store.ChangeApplied {
+			u.Outcome = Blocked
+			u.Err = fmt.Errorf("manifest: change %s to %s: %w: change %s; undo it first, or use --all",
+				c.ChangeID, c.File, ErrNewerChange, newer.ChangeID)
+			if opt.DryRun {
+				fmt.Fprintf(w, "# %s: change %s waits for the newer change %s; would not undo\n",
+					termsafe.Line(r.File), termsafe.Line(c.ChangeID), termsafe.Line(newer.ChangeID))
+			}
+			return u
+		}
+		// A pending or failed change that a newer change has written over:
+		// the file is the newer change's.
+		u.Outcome = Superseded
+		if opt.DryRun {
+			fmt.Fprintf(w, "# %s: change %s is superseded by change %s; would leave the file\n",
+				termsafe.Line(r.File), termsafe.Line(c.ChangeID), termsafe.Line(newer.ChangeID))
+			printDirs(w, r.CreatedDirs)
+			return done()
+		}
+		if err := patch.RemoveEmptyDirs(r.CreatedDirs); err != nil {
+			return fail(err)
+		}
+		return done()
+	}
+
 	cur, curHash, err := readFile(r.File)
 	if err != nil {
 		return fail(err)
 	}
-	if f, ok := sim[simKey(r.File)]; ok {
+	if f, ok := run.sim[simKey(r.File)]; ok {
 		cur, curHash = f.data, f.hash
 	}
-	u := Undo{Change: c}
+	byHand := false
 	switch {
 	case curHash == r.BeforeHash:
 		u.Outcome = Cleaned
@@ -229,7 +460,8 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, opt UnwireOptions, 
 				u.Outcome = Removed
 			}
 		}
-	case curHash == r.AfterHash || opt.Force:
+	case curHash == r.AfterHash || opt.Force || userReverted(r, cur, curHash):
+		byHand = curHash != r.AfterHash && !opt.Force
 		u.Outcome = Restored
 		if r.BeforeHash == patch.NoFile {
 			u.Outcome = Removed
@@ -253,11 +485,14 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, opt UnwireOptions, 
 		if exists {
 			f.hash = patch.Hash(target)
 		}
-		sim[simKey(r.File)] = f
-		return u
+		run.sim[simKey(r.File)] = f
+		return done()
 	}
-	if opt.Force && curHash != r.AfterHash {
+	if (opt.Force || byHand) && curHash != r.AfterHash && curHash != r.BeforeHash {
 		u.Saved, err = patch.RevertForce(r, filepath.Join(m.backupRoot, c.ChangeID))
+		if byHand {
+			u.Saved = "" // nothing of the person's was overwritten
+		}
 	} else {
 		err = patch.Revert(r)
 	}
@@ -265,12 +500,15 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, opt UnwireOptions, 
 		u.Outcome, u.Err = Failed, err
 		return u
 	}
-	// The file is back; record it even if the caller has given up.
-	if merr := m.store.MarkChangeUndone(context.WithoutCancel(ctx), c.ChangeID, m.now()); merr != nil {
-		err = errors.Join(merr, err)
-	}
 	u.Err = err
-	return u
+	return done()
+}
+
+// printDirs writes the directories a dry run would remove while empty.
+func printDirs(w io.Writer, dirs []string) {
+	for i := len(dirs) - 1; i >= 0; i-- {
+		fmt.Fprintf(w, "# %s: would remove the directory if empty\n", termsafe.Line(dirs[i]))
+	}
 }
 
 // readFile returns the file's bytes and hash, or nil and patch.NoFile.
@@ -313,9 +551,7 @@ func previewUndo(w io.Writer, r patch.Record, cur []byte, curHash string) ([]byt
 		}
 	}
 	if !exists {
-		for i := len(r.CreatedDirs) - 1; i >= 0; i-- {
-			fmt.Fprintf(w, "# %s: would remove the directory if empty\n", termsafe.Line(r.CreatedDirs[i]))
-		}
+		printDirs(w, r.CreatedDirs)
 	}
 	return target, exists, nil
 }
