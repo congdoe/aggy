@@ -24,7 +24,7 @@ func TestDiagSessionCanary(t *testing.T) {
 	const typed, said, printed = "typed-tapir-canary-61", "payload-quokka-canary-62", "stderr-egret-canary-63"
 	// G67-7: an env value an agent sets, a model typed in the picker,
 	// and a hook event name aggy does not know.
-	const envSock, envHome, model, event = "/tmp/env-ocelot-canary-64.sock", "env-lemur-canary-65", "model-ibex-canary-66", "EventNewtCanary67"
+	const envSock, envHome, model, event = "/tmp/env-ocelot-canary-64.sock", "/nonexistent/env-lemur-canary-65", "model-ibex-canary-66", "EventNewtCanary67"
 	w := newWorld(t)
 	env := []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
 	aggy := func(args ...string) string {
@@ -37,10 +37,34 @@ func TestDiagSessionCanary(t *testing.T) {
 		}
 		return string(out)
 	}
+	// count is how many records of event (and code, and holding attrs
+	// text) the log has: the test waits on these, not on sleeps (G67-R7).
+	count := func(event, code, attrs string) int {
+		t.Helper()
+		n := 0
+		for _, l := range strings.Split(aggy("diag", "export", "--jsonl"), "\n") {
+			var r struct {
+				Event string          `json:"event"`
+				Code  string          `json:"code"`
+				Attrs json.RawMessage `json:"attrs"`
+			}
+			if json.Unmarshal([]byte(l), &r) == nil && r.Event == event && r.Code == code && strings.Contains(string(r.Attrs), attrs) {
+				n++
+			}
+		}
+		return n
+	}
+	waitCount := func(what string, n int, event, code, attrs string) {
+		t.Helper()
+		for end := time.Now().Add(offerTimeout); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
+			if count(event, code, attrs) >= n {
+				return
+			}
+		}
+		t.Fatalf("no %s record in time", what)
+	}
 	aggy("setup", "--yes")
-	hook := buildAggy(t) + " hook --vendor claude \"$1\"; " + buildAggy(t) + " switch --new grok >/dev/null 2>&1; " +
-		"AGGY_SOCKET=" + envSock + " " + buildAggy(t) + " switch grok >/dev/null 2>&1; " +
-		"AGGY_HOME=" + envHome + " " + buildAggy(t) + " switch grok >/dev/null 2>&1; true"
+	hook := buildAggy(t) + " hook --vendor claude \"$1\"; " + buildAggy(t) + " switch --new grok >/dev/null 2>&1; true"
 	sc := map[string]any{
 		"stdout":       "READY>",
 		"stderr":       "error: " + printed + " " + secret + "\n",
@@ -53,7 +77,10 @@ func TestDiagSessionCanary(t *testing.T) {
 	}
 	s := w.start(t, sc, "run", "claude")
 	s.waitFor([]byte("READY>"))
-	time.Sleep(500 * time.Millisecond) // the hooks have run
+	// Every hook has run: the unknown event's hold, and each hook's aggy
+	// switch.
+	waitCount("holding hook", 1, "hook.event.accepted", "", `"holds":true`)
+	waitCount("agent switch", 3, "switch.request.refused", "switch.agent_options", "")
 	s.send([]byte{0x1c})
 	s.waitFor([]byte("aggy: switch vendor"))
 	s.mu.Lock()
@@ -65,20 +92,39 @@ func TestDiagSessionCanary(t *testing.T) {
 	s.send([]byte("m" + model + "\r"))
 	s.waitFor([]byte(model))
 	s.send(key)
-	time.Sleep(200 * time.Millisecond)
-	s.send([]byte(typed + " " + secret)) // never sent
-	// The unknown event held the switch; picking grok again says no turn
-	// is running, and the unsent text still blocks it.
-	time.Sleep(200 * time.Millisecond)
-	s.send([]byte{0x1c})
-	time.Sleep(600 * time.Millisecond)
-	s.send(key)
+	waitCount("queued switch", 1, "switch.request.queued", "", "")
+	// The unknown event held the switch; typing ends the hold, and
+	// picking grok again (the switch key, then the key the list takes)
+	// says no turn is running. The unsent text still blocks it.
+	s.send([]byte(typed + " " + secret))
+	s.send(append([]byte{0x1c}, key...))
+	waitCount("second pick", 2, "switch.picker.chosen", "", "")
 	s.waitWithin([]byte("you have not sent"), offerTimeout)
 	s.send([]byte{0x1b})
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond) // past the Esc's wait; the exit is not timed
 	s.send([]byte("\r/exit\r"))
 	if code := s.exit(); code != 0 {
 		t.Fatalf("aggy exit = %d", code)
+	}
+
+	// An agent's aggy switch with AGGY_SOCKET or AGGY_HOME set to its own
+	// values, in the session's trace (G67-7, G67-R5).
+	var launchTrace string
+	for _, l := range strings.Split(aggy("diag", "export", "--jsonl", "--event", "supervisor.child.launched"), "\n") {
+		var r struct {
+			TraceID string `json:"trace_id"`
+		}
+		if json.Unmarshal([]byte(l), &r) == nil && r.TraceID != "" {
+			launchTrace = r.TraceID
+		}
+	}
+	for _, kv := range []string{"AGGY_SOCKET=" + envSock, "AGGY_HOME=" + envHome} {
+		c := exec.Command(buildAggy(t), "switch", "grok")
+		c.Dir = w.cwd
+		c.Env = append(append([]string{}, env...), "AGGY_TRACE="+launchTrace, kv)
+		if out, err := c.CombinedOutput(); err == nil {
+			t.Errorf("aggy switch with %s: %s", kv, out)
+		}
 	}
 
 	all := aggy("diag", "sql", "SELECT * FROM records")

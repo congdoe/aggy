@@ -2,6 +2,7 @@ package diag
 
 import (
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -104,6 +105,18 @@ func TestQueueSecurityFirst(t *testing.T) {
 	// One plain record was already with the writer.
 	if secRow == 0 || before > 1 {
 		t.Errorf("the security record (row %d) was written after %d plain ones", secRow, before)
+	}
+	// G67-R1: the flood of security records lets a plain one through
+	// after secBurst of them.
+	var plain []int64
+	for _, r := range recs {
+		if r.Code == "" {
+			plain = append(plain, r.Row)
+		}
+	}
+	sort.Slice(plain, func(i, j int) bool { return plain[i] < plain[j] })
+	if len(plain) < 2 || plain[1] > plain[0]+secBurst+1 {
+		t.Errorf("plain records at rows %v: starved by security ones", plain)
 	}
 	last := recs[len(recs)-1]
 	if last.Event != EvQueueDropped.String() || !strings.Contains(string(last.Attrs), `"dropped_security":`) {

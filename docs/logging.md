@@ -42,7 +42,7 @@ Each record is one row of the `records` table. The record schema is versioned (`
 | `component` | text | `borrow`, `accept`, `check`, `gc`, `setup`, `doctor`, `adapter.claude`, `adapter.codex`, `adapter.grok`, `supervisor`, `switch`, `hook`, `diag`; later `tool` |
 | `event` | text | the stable dotted event name |
 | `code` | text | the stable reason code; empty for a plain info event |
-| `msg` | text | short and scrubbed: aggy's own text, or the error aggy printed |
+| `msg` | text | short and scrubbed: aggy's own words. A refusal's or error's record holds its code's registry text, not the message aggy printed, which can quote argv, a path, an environment value, or git's or a vendor CLI's own text |
 | `attrs` | JSON | a small object of typed values: strings (scrubbed), bools, numbers |
 | `duration_ms` | int | when the event has a duration |
 | `exit_code` | int | a child's or check's exit status |
@@ -105,7 +105,7 @@ The hard rules hold for every record, the export, and the bundle.
 - **Never stored:** prompt or task text, file contents, diffs, model output, environment values, credentials, vendor transcripts, a check's output or arguments, a child's reply or error text.
 - **Fine:** ids, codes, aggy-state paths, exit codes, durations, counts, vendor names, error classes, and aggy's own messages.
 - Every free-text value (`msg` and each string attr) goes through `internal/redact` (secret-shaped lines are removed) and `internal/termsafe` (control and format characters are escaped), and is capped (300 characters for `msg`, 200 for an attr).
-- `aggy borrow` marks its task and constraints as forbidden text: the writer replaces them, and every line of them of 8 or more characters, with `[task text]` wherever they appear. A borrow request that fails validation is recorded without its error text, which can quote a path or constraint.
+- `aggy borrow` marks its task and constraints as forbidden text: the writer replaces them, and every line of them of 8 or more characters, with `[task text]` wherever they appear. The record of a refusal holds its code's registry text, never the printed error, which can quote a path or constraint.
 - `aggy diag bundle` is also scrubbed as `aggy doctor --report` is (home paths, user and host names, emails, token-shaped text), leaves out vendor session ids, and lists config keys, never values.
 - A test runs a fake borrow, accept, and gc with a planted secret and a distinctive task, and checks every column of diag.db, the export, and the bundle for both (`TestDiagPrivacyCanary`).
 
@@ -233,7 +233,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `switch.near_limit.warned` | info | switch | The near-limit warning was shown at a turn end (attrs: used_pct, warn_at_pct, window, to). | With switch.near_limit_no_quota no vendor had quota; aggy usage. |
 | `hook.event.accepted` | info | hook | The supervisor took a hook event of the vendor on screen from the CLI's process tree (attrs.event: Stop, StopFailure, StopCancelled, SessionStart, Notification, or other). A turn end has attrs.counted: true when it named the on-screen session and so may let a switch go on, false while that session's id is not known yet; any other event holds a switch (attrs.holds). | A counted turn end that did not move a switch on: the switch.request.refused records near it. |
 | `hook.event.rejected` | warn | hook | The supervisor did not act on a message on its socket; the code says why. | The code's entry; aggy log shows the security ones as refusals. |
-| `hook.event.ignored` | info | hook | A turn end from the CLI's tree named another session, such as a nested claude -p, so it did not end the on-screen turn. Recorded once a minute per session (attrs.repeats: how many more came in that minute). | Nothing, unless every turn end of the on-screen CLI is ignored: then its session id is not the one aggy recorded. |
+| `hook.event.ignored` | info | hook | A turn end from the CLI's tree named another session, such as a nested claude -p, so it did not end the on-screen turn. Recorded once a minute per session (attrs.repeats: how many more came since the last record). | Nothing, unless every turn end of the on-screen CLI is ignored: then its session id is not the one aggy recorded. |
 | `hook.forward.failed` | warn | hook | aggy hook could not hand a vendor hook event to the supervisor; the CLI went on undisturbed. | The code's entry; aggy diag --trace &lt;trace id&gt; for the session. |
 | `diag.queue.dropped` | warn | diag | The supervisor's diagnostic queue was full, so records were dropped (attrs.dropped is how many). | The state dir's disk: a slow or full disk makes the log fall behind. |
 
@@ -308,7 +308,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `peer.uid_mismatch` | yes | A process of another user reached the supervisor's socket; it got no answer. | The run directory's owner and mode (0700). |
 | `socket.bad_request` | yes | A message on the supervisor's socket was not one aggy sends (bad JSON, an unknown type or field, a bad name). | Which process writes to ~/.aggy/run; aggy hook and aggy switch send only valid messages. |
 | `hook.foreign_session` |  | A turn end from the CLI's tree named another session (a nested CLI), so it did not end the on-screen turn. | Nothing, unless the on-screen CLI's own turn ends are ignored: then its session id is not the one aggy recorded. |
-| `hook.no_session` | yes | A turn end from the CLI's tree named no session, which the vendor's own hook always does, so it looks forged and was not acted on. | Which process in the session sends hook events: aggy hook forwards what the vendor gives it. |
+| `hook.no_session` | yes | A turn end from the CLI's tree named no session, which the vendor's own hook always does, so it looks forged and was not acted on. Recorded once a minute (attrs.repeats: how many more came since the last record). | Which process in the session sends hook events: aggy hook forwards what the vendor gives it. |
 | `peer.cred_failed` |  | aggy could not tell which user or process opened a connection to the supervisor's socket, so it was closed unanswered. | Usually a process that connected and exited at once; nothing, unless hooks stop arriving. |
 | `hook.wrong_vendor` | yes | A hook event from the CLI's tree came from another vendor's hook than the one on screen, so it did not gate a switch. | A nested CLI of another vendor in the session; nothing else. |
 | `hook.bad_payload` |  | aggy hook could not read the vendor's hook payload, or it was not a JSON object. | The vendor CLI's version; aggy doctor. |
