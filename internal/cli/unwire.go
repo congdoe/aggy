@@ -32,7 +32,9 @@ any directories made for it that are now empty.
   --yes         confirm --force
 
 A file edited after aggy changed it is not undone without --force; unwire
-reports it and goes on with the rest.
+reports it and goes on with the rest. A change cannot be undone with
+--change while a newer change to the same file is in place: undo that
+one first, or use --all.
 `
 
 // runUnwire is aggy unwire. It never creates the store: with no index
@@ -129,9 +131,18 @@ func report(undos []manifest.Undo, opt manifest.UnwireOptions, unconfirmed bool,
 		case manifest.Drifted:
 			code = 1
 			fmt.Fprintf(stderr, "refused %s (change %s): it changed after aggy changed it. Undo it by hand, or run aggy unwire --change %s --force to see what forcing would overwrite.\n", file, id, id)
+		case manifest.Blocked:
+			code = 1
+			fmt.Fprintf(stderr, "refused %s (change %s): %s\n", file, id, termsafe.Field(u.Err.Error()))
+		case manifest.Invalid:
+			code = 1
+			fmt.Fprintf(stderr, "refused change %s: %s\n", id, termsafe.Field(u.Err.Error()))
 		case manifest.Failed:
 			code = 1
 			fmt.Fprintf(stderr, "failed %s (change %s): %s\n", file, id, termsafe.Field(u.Err.Error()))
+		case manifest.Superseded:
+			done++
+			fmt.Fprintf(stdout, "%sundone %s (change %s): a newer change wrote the file since, so the file is left as it is\n", would, file, id)
 		default:
 			done++
 			fmt.Fprintf(stdout, "%s%s %s (change %s)\n", would, u.Outcome, file, id)

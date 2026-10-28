@@ -199,3 +199,10 @@ func (s *Store) ChangesNewestFirst(ctx context.Context, runID string) ([]Change,
 	}
 	return cs, err
 }
+
+// UndoableAfter returns the change rows newer than id (by row id) that
+// are applied, pending, or failed, oldest first. aggy unwire uses it to
+// find a newer change to the same file before it undoes an older one.
+func (s *Store) UndoableAfter(ctx context.Context, id int64) ([]Change, error) {
+	return s.queryChanges(ctx, `WHERE id > ? AND kind = 'change' AND status IN ('applied', 'pending', 'failed')`, id)
+}

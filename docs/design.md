@@ -253,7 +253,13 @@ No other code path writes another tool's config.
 
 A row is `pending` until its write is recorded, and `failed` when the write failed after the row was written. Either may have been written or not, so unwire compares the file with the row's hashes: still the hash before means nothing was written, and only empty directories made for a new file are removed; the hash after means the write happened before the process stopped, and it is undone from `backups/<change-id>` like an applied change; anything else is drift. Either way the change leaves nothing behind.
 
-A file changed after aggy changed it is reported and left alone, and unwire goes on with the rest. `--force` undoes one such change anyway: it needs `--change` and `--yes`, without `--yes` it only shows what it would overwrite, and the edited bytes are saved under `backups/<change-id>` first.
+Before acting on a row, unwire checks that aggy could have written it: the file is an absolute, clean path, the backup is `backups/<change-id>/<hash>.bak`, and every directory recorded as created is an ancestor of the file. Any other row is refused untouched, so a crafted manifest row cannot delete or rewrite an unrelated file or remove an unrelated directory.
+
+A change is undone only after every newer change to the same file (by canonical path) that is still applied, pending, or failed. `--change` refuses, forced or not, while such a newer change exists, and names it: undo it first, or use `--all`. In a `--run` or `--all` undo, an applied change behind such a newer change outside the selection is refused the same way, and a pending or failed one is *superseded*: the file holds the newer change's write, so it is left alone, only empty directories made for the old change are removed, and the row is marked undone. After any undo, unwire also sweeps the directories every undone change created and removes those now empty, unless a change still in place created them too.
+
+Two hand edits count as undoing aggy's change, not as drift: a file aggy created that now holds only white space is removed (with the directories made for it), and a file that is its old content plus one line ending, which aggy added before its own line, gets its old content back exactly.
+
+A file changed after aggy changed it in any other way is reported and left alone, and unwire goes on with the rest. `--force` undoes one such change anyway: it needs `--change` and `--yes`, without `--yes` it only shows what it would overwrite, and the edited bytes are saved under `backups/<change-id>` first.
 
 Known limits (TODO(T6607) follow-up): a file that is a symlink is restored through the link, a hard link to a changed file is not kept (the restore writes a new inode), and extended attributes are not restored.
 

@@ -135,3 +135,40 @@ func TestUnwireCommand(t *testing.T) {
 		t.Errorf("after undo: exit %d, %q", code, out)
 	}
 }
+
+// TestUnwireChangeRefusesWhileNewer (PR #6 finding 5): --change on an
+// older change while aggy's newer change to the same file is in place is
+// refused, forced or not, and names the newer change. On a8b4c37 the
+// newer change was taken for drift, and --force wiped it.
+func TestUnwireChangeRefusesWhileNewer(t *testing.T) {
+	h := isolate(t)
+	file := filepath.Join(h, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	orig := "model = \"o\"\n"
+	if err := os.WriteFile(file, []byte(orig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := applyAll(t, "A", patch.Patch{File: file, ExpectedHash: patch.Hash([]byte(orig)), Transform: appendOnce("a = 1\n")})
+	mid := orig + "a = 1\n"
+	b := applyAll(t, "B", patch.Patch{File: file, ExpectedHash: patch.Hash([]byte(mid)), Transform: appendOnce("b = 2\n")})
+	for _, args := range [][]string{
+		{"unwire", "--change", a[0].ChangeID},
+		{"unwire", "--change", a[0].ChangeID, "--force", "--yes"},
+	} {
+		code, _, errOut := run(args...)
+		if code != 1 || !strings.Contains(errOut, b[0].ChangeID) {
+			t.Errorf("%v: exit %d, %q, want a refusal naming %s", args, code, errOut, b[0].ChangeID)
+		}
+		if got, _ := os.ReadFile(file); string(got) != mid+"b = 2\n" {
+			t.Fatalf("%v changed the file: %q", args, got)
+		}
+	}
+	if code, _, errOut := run("unwire", "--all"); code != 0 {
+		t.Fatalf("--all: exit %d: %s", code, errOut)
+	}
+	if got, _ := os.ReadFile(file); string(got) != orig {
+		t.Errorf("after --all = %q", got)
+	}
+}
