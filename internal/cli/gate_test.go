@@ -136,12 +136,18 @@ func TestM0Gate(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, ".git", "objects"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	writeAt(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n", 0o644)
 	wtGit := filepath.Join(repo, ".git", "worktrees", "wt")
 	writeAt(t, filepath.Join(wtGit, "commondir"), "../..\n", 0o644)
+	writeAt(t, filepath.Join(wtGit, "HEAD"), "ref: refs/heads/wt\n", 0o644)
 	wt := filepath.Join(src, "app-wt")
 	writeAt(t, filepath.Join(wt, ".git"), "gitdir: "+wtGit+"\n", 0o644)
 	lib := filepath.Join(src, "lib")
 	writeAt(t, filepath.Join(lib, ".git", "info", "exclude"), "# git ls-files --others --exclude-from=.git/info/exclude\r\n*.o", 0o644)
+	writeAt(t, filepath.Join(lib, ".git", "HEAD"), "ref: refs/heads/main\n", 0o644)
+	if err := os.MkdirAll(filepath.Join(lib, ".git", "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	before := snapshot(t, h)
 
