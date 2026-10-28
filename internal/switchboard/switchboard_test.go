@@ -20,6 +20,9 @@ func sw(tool, vendor, repo string, on bool) store.ToolSwitch {
 // changed is a setting made for an earlier version of the definition.
 func changed(s store.ToolSwitch) store.ToolSwitch { s.Digest = "d0"; return s }
 
+// builtIn is a setting made for a built-in.
+func builtIn(s store.ToolSwitch) store.ToolSwitch { s.Digest = BuiltInDigest; return s }
+
 const repo = "/r/app"
 
 func TestState(t *testing.T) {
@@ -39,7 +42,10 @@ func TestState(t *testing.T) {
 	}{
 		// S63-1: an edited or replaced user file is off until turned on again.
 		{"user file changed", user, []store.ToolSwitch{changed(sw("demo", "", "", true))}, nil, adapter.Claude, repo, false, nil},
-		{"built-in updated", tool("b", "global", true, false, all...), []store.ToolSwitch{changed(sw("b", "", "", true))}, nil, adapter.Claude, repo, true, nil},
+		{"built-in updated", tool("b", "global", true, false, all...), []store.ToolSwitch{builtIn(sw("b", "", "", true))}, nil, adapter.Claude, repo, true, nil},
+		{"built-in, dev row with its digest", tool("b", "global", true, false, all...), []store.ToolSwitch{sw("b", "", "", true)}, nil, adapter.Claude, repo, true, nil},
+		// S63-18: a user tool's on never turns on a later built-in of its name.
+		{"user on, name now built-in", tool("b", "global", true, false, all...), []store.ToolSwitch{changed(sw("b", "", "", true))}, nil, adapter.Claude, repo, false, nil},
 		// S63-10: one session's --tool, under the repo's rules.
 		{"session on", user, nil, nil, adapter.Claude, repo, true, []string{"demo"}},
 		{"session beats a setting off", user, []store.ToolSwitch{sw("demo", "", "", false)}, nil, adapter.Claude, repo, true, []string{"demo"}},

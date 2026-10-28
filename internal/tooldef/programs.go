@@ -41,40 +41,50 @@ var (
 		"tclsh", "wish", "rscript", "julia", "deno", "bun", "jshell", "irb", "groovy"}
 	// codeFlags give an interpreter its code inline.
 	codeFlags = []string{"-c", "-e", "-E", "--eval", "--command", "--exec", "-r", "eval", "--print", "-p"}
-	// loadFlags make an interpreter load a file or module first; their
-	// value may not be the repo's code.
-	loadFlags = []string{"--require", "--import", "--loader", "--experimental-loader", "-I", "-M", "--include"}
+	// nodeLoadFlags make node, deno, or bun load a module first. A bare
+	// name resolves from the working directory's node_modules, which may
+	// be the repo's, so the value must be an absolute path.
+	nodeLoadFlags = []string{"--require", "-r", "--import", "--loader", "--experimental-loader", "--preload"}
+	nodeFamily    = []string{"node", "nodejs", "deno", "bun"}
 )
 
 // Package runners and managers. A runner fetches a package and runs it,
-// so its package must be pinned and it may never install without asking
-// (-y) or from another index; a manager's install or run subcommands
-// run the repo's or a registry's code.
+// so its package must be pinned, and it takes only the flags listed
+// here (S63-12): any other may take a value that swallows the pin,
+// install without asking (-y), or fetch from another index. A manager
+// is allowed only as a package runner (S63-13): its other subcommands
+// install packages or run the repo's code (scripts, build.rs, go
+// generate).
 var (
 	// fetchers run a package by themselves.
 	fetchers = []string{"npx", "pnpx", "bunx", "uvx"}
 	// managers run a package through a subcommand, or install one.
 	managers = []string{"npm", "pnpm", "yarn", "pip", "pip3", "pipx", "uv", "cargo", "go"}
-	// installSubs install packages or run the repo's scripts.
-	installSubs = []string{"install", "i", "add", "run", "start", "test", "ci", "get", "update", "up", "upgrade", "run-script"}
-	// refusedFetchFlags install without asking, from another index, a
-	// local file, or a shell string.
-	refusedFetchFlags = []string{"-y", "--yes", "--registry", "--index-url", "--index", "--extra-index-url",
-		"--default-index", "--find-links", "-i", "--pip-args", "--with-requirements", "--with-editable", "-c", "--call"}
-	npmValues = []string{"-p", "--package", "--cache", "--userconfig", "--prefix", "-w", "--workspace", "-C", "--dir"}
-	uvValues  = []string{"-p", "--python", "--from", "--with", "--cache-dir", "--directory", "--project",
-		"--config-file", "--constraints", "--overrides"}
+	// managerFlags are the flags a manager may take with no subcommand
+	// (npm --version).
+	managerFlags = []string{"--version", "-v", "-V", "--help", "-h"}
+	npmBools     = []string{"-q", "--quiet", "--silent", "--offline", "--prefer-offline", "--no-update-notifier"}
+	uvBools      = []string{"-q", "--quiet", "--offline", "--no-cache", "--isolated", "--no-progress"}
 )
 
-// runner is how one package runner takes its flags: vals take a value,
-// and pkg are those whose value names a package.
-type runner struct{ vals, pkg []string }
+// runner is how one package runner takes its flags: bools take no
+// value, vals take one, and pkg are those whose value names a package.
+type runner struct{ bools, vals, pkg []string }
 
-var runners = map[string]runner{
-	"npx": {npmValues, []string{"-p", "--package"}}, "pnpx": {npmValues, []string{"-p", "--package"}},
-	"bunx": {npmValues, []string{"-p", "--package"}},
-	"uvx":  {uvValues, []string{"--from", "--with"}}, "pipx": {[]string{"--spec", "--python"}, []string{"--spec"}},
-}
+var (
+	npmRunner = runner{npmBools, []string{"-p", "--package"}, []string{"-p", "--package"}}
+	uvRunner  = runner{uvBools, []string{"--from", "--with", "-p", "--python"}, []string{"--from", "--with"}}
+	runners   = map[string]runner{
+		"npx": npmRunner, "pnpx": npmRunner, "bunx": npmRunner, "uvx": uvRunner,
+		"pipx": {[]string{"-q", "--quiet"}, []string{"--spec", "--python"}, []string{"--spec"}},
+	}
+)
+
+// managerRunners are the subcommands that make a manager a package
+// runner: npm exec and x, pnpm dlx, yarn dlx, uv tool run, pipx run.
+// pnpm exec is not one: it runs the repo's own node_modules/.bin.
+var managerRunners = map[string]string{"npm exec": "npx", "npm x": "npx", "pnpm dlx": "npx", "yarn dlx": "npx",
+	"uv tool": "uvx", "pipx run": "pipx"}
 
 var (
 	semverRE  = regexp.MustCompile(`^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$`)
@@ -145,9 +155,13 @@ func checkPrograms(a []string) string {
 		case n == "git":
 			// -c core.sshCommand=..., alias.x=!..., core.pager and the
 			// like run a command from a config value.
-			for _, f := range a[i+1:] {
+			for k, f := range a[i+1:] {
 				if strings.HasPrefix(f, "-c") || strings.HasPrefix(f, "--config-env") {
 					return fmt.Sprintf("%q is given a config value with %q, which can run a command", a[i], f)
+				}
+				// S63-14: --exec-path with its value in the next word.
+				if f == "--exec-path" && i+2+k < len(a) && strings.Contains(a[i+2+k], Placeholder) {
+					return fmt.Sprintf("%q --exec-path %q would run programs from the repo", a[i], a[i+2+k])
 				}
 			}
 		case n == "flock":
@@ -176,50 +190,89 @@ func checkPrograms(a []string) string {
 	return ""
 }
 
-// checkInterpreter refuses inline code, and the repo's own code as the
-// script or as a module loaded first (node --require, perl -I, ...).
+// checkInterpreter refuses inline code; the repo's own code as the
+// script, or anywhere before it (a module loaded first, perl -I, ruby
+// -C); a script that is not an absolute path, which would be the repo's
+// when the server runs in it (S63-14; Claude starts MCP servers in the
+// session's directory); python -m without -I or -P, which puts that
+// directory first on sys.path; and a node, deno, or bun module loaded
+// first by a bare name, which resolves from it.
 func checkInterpreter(prog, n string, rest []string) string {
 	python := strings.HasPrefix(n, "python")
+	node := hasPrefixIn(n, nodeFamily)
 	// Short flags whose value follows, in the same word or the next.
 	valueChars := "WXMmIrCxl"
 	if python {
 		valueChars = "WXmQ" // python -I takes no value
+	}
+	isolated := false // python -I or -P was given
+	ranSub := false   // deno or bun's run subcommand was skipped
+	script := func(f string) string {
+		switch {
+		case strings.Contains(f, Placeholder):
+			return fmt.Sprintf("%q would run the repo's own script", prog)
+		case !strings.HasPrefix(f, "/"):
+			return fmt.Sprintf("%q runs %q: a script must be an absolute path, since the server may run in the repo, where a relative one is the repo's", prog, f)
+		}
+		return "" // the rest are its arguments
 	}
 	for k := 0; k < len(rest); k++ {
 		f := rest[k]
 		if codeFlag(f, valueChars) {
 			return fmt.Sprintf("%q is given inline code with %q", prog, f)
 		}
-		name, val, hasVal := strings.Cut(f, "=")
 		switch {
-		case !python && slices.Contains(loadFlags, name), python && f == "-m":
-			if !hasVal && k+1 < len(rest) {
+		case f == "--":
+			if k+1 < len(rest) {
+				return script(rest[k+1])
+			}
+			return ""
+		case strings.HasPrefix(f, "-") && f != "-":
+			name, val, hasVal := strings.Cut(f, "=")
+			load := node && slices.Contains(nodeLoadFlags, name)
+			if !hasVal && k+1 < len(rest) && (load || f == "-m" || len(f) == 2 && strings.ContainsRune(valueChars, rune(f[1]))) {
 				k++
 				val = rest[k]
 			}
-			if strings.Contains(val, Placeholder) {
-				return fmt.Sprintf("%q would load the repo's own code with %q", prog, name)
+			if strings.Contains(f, Placeholder) || strings.Contains(val, Placeholder) {
+				return fmt.Sprintf("%q would load or run the repo's own code with %q", prog, name)
 			}
-			if python && f == "-m" {
-				return "" // the rest are the module's arguments
+			if load && !strings.HasPrefix(val, "/") {
+				return fmt.Sprintf("%q %s %q: a module loaded first must be an absolute path, not resolved from the working directory", prog, name, val)
 			}
-		case f == "--":
-			if k+1 < len(rest) && strings.Contains(rest[k+1], Placeholder) {
-				return fmt.Sprintf("%q would run the repo's own script", prog)
+			if python {
+				if f == "-m" {
+					if !isolated {
+						return fmt.Sprintf("%q -m needs -I or -P: otherwise the working directory, which may be the repo, comes first on sys.path", prog)
+					}
+					return "" // the rest are the module's arguments
+				}
+				isolated = isolated || pyIsolates(f)
 			}
-			return ""
-		case strings.HasPrefix(f, "-"):
-			if len(f) == 2 && strings.ContainsRune(valueChars, rune(f[1])) {
-				k++ // its value
-			}
+		case !ranSub && f == "run" && (strings.HasPrefix(n, "deno") || strings.HasPrefix(n, "bun")):
+			ranSub = true
 		default:
-			if strings.Contains(f, Placeholder) {
-				return fmt.Sprintf("%q would run the repo's own script", prog)
-			}
-			return "" // the script; the rest are its arguments
+			return script(f)
 		}
 	}
 	return ""
+}
+
+// pyIsolates reports a python flag cluster holding -I or -P, before any
+// flag that takes a value.
+func pyIsolates(f string) bool {
+	if len(f) < 2 || f[0] != '-' || f[1] == '-' {
+		return false
+	}
+	for _, c := range f[1:] {
+		switch {
+		case c == 'I' || c == 'P':
+			return true
+		case strings.ContainsRune("WXmQ", c):
+			return false
+		}
+	}
+	return false
 }
 
 // codeFlag reports an inline-code flag: one of codeFlags, its --x=value
@@ -245,59 +298,70 @@ func codeFlag(f, valueChars string) bool {
 	return false
 }
 
-// checkManager handles npm, pnpm, yarn, pip, uv, cargo, and go: never
-// with -y or another index, never install or run subcommands, and their
-// package runners (npm exec, pnpm dlx, yarn dlx, uv tool run, pipx run)
-// checked as fetchers.
+// checkManager handles npm, pnpm, yarn, pip, uv, cargo, and go: only as
+// a package runner (npm exec, pnpm dlx, yarn dlx, uv tool run, pipx
+// run), checked as a fetcher, or with no subcommand and only
+// managerFlags (npm --version). Every other subcommand is refused, so a
+// new install or run spelling is never let through (S63-13).
 func checkManager(prog, n string, rest []string) string {
-	sub := -1
-	for k := 0; k < len(rest); k++ {
-		f := rest[k]
-		name, _, hasVal := strings.Cut(f, "=")
-		if slices.Contains(refusedFetchFlags, name) {
-			return fmt.Sprintf("%q with %q installs or runs a package without asking, or from another index", prog, f)
+	sub := 0
+	for ; sub < len(rest) && strings.HasPrefix(rest[sub], "-"); sub++ {
+		if !slices.Contains(managerFlags, rest[sub]) {
+			return fmt.Sprintf("%q takes no flag %q before its subcommand", prog, rest[sub])
 		}
-		if strings.HasPrefix(f, "-") {
-			if !hasVal && slices.Contains(npmValues, name) {
-				k++
-			}
-			continue
-		}
-		sub = k
-		break
 	}
-	if sub < 0 {
-		if n == "yarn" {
+	if sub == len(rest) {
+		if n == "yarn" && sub == 0 {
 			return fmt.Sprintf("%q alone installs the repo's packages", prog)
 		}
 		return ""
 	}
 	s, after := rest[sub], rest[sub+1:]
-	switch {
-	case (n == "npm" && (s == "exec" || s == "x")) || (n == "pnpm" && (s == "dlx" || s == "exec")) || (n == "yarn" && s == "dlx"):
-		return checkFetch(prog+" "+s, runners["npx"], after)
-	case n == "uv" && s == "tool" && len(after) > 0 && after[0] == "run":
-		return checkFetch(prog+" tool run", runners["uvx"], after[1:])
-	case n == "pipx" && s == "run":
-		return checkFetch(prog+" run", runners["pipx"], after)
-	case slices.Contains(installSubs, s):
-		return fmt.Sprintf("%q %q installs packages or runs the repo's scripts", prog, s)
+	r, ok := managerRunners[n+" "+s]
+	if ok && n == "uv" {
+		if len(after) == 0 || after[0] != "run" {
+			ok = false
+		} else {
+			s, after = "tool run", after[1:]
+		}
 	}
-	return ""
+	if !ok {
+		return fmt.Sprintf("%q %q: a package manager is allowed only as a package runner (npm exec, pnpm dlx, yarn dlx, uv tool run, pipx run); its other subcommands install packages or run the repo's code", prog, s)
+	}
+	return checkFetch(prog+" "+s, runners[r], after)
 }
 
 // checkFetch refuses a package runner that would fetch new code on a
-// launch, which breaks "never install unasked": -y or --yes, another
-// index or a local file, a shell string, and a package not pinned to an
-// exact version. The command it then runs is checked too.
+// launch, which breaks "never install unasked": any flag but r's (so no
+// -y, another index, a local file, or a shell string), {repo} before the
+// command, and a package not pinned to an exact version. The command it
+// then runs is checked too: with the package named by a flag, it is a
+// bare command name, never a path (S63-14: npx -p x@1.0.0 -- {repo}/x).
 func checkFetch(prog string, r runner, rest []string) string {
 	named := false // a --package or --from names the package
+	command := func(f string) string {
+		if named && (strings.Contains(f, "/") || strings.Contains(f, Placeholder) || f == "." || f == "..") {
+			return fmt.Sprintf("%q runs %q: the command must be a name from the package, not a path", prog, f)
+		}
+		if !named && !pinnedSpec(f) {
+			return fmt.Sprintf("%q runs %q, which is not a package pinned to a version (want name@1.2.3)", prog, f)
+		}
+		// f is the command the runner starts; the rest its arguments.
+		return runsString(f)
+	}
 	for k := 0; k < len(rest); k++ {
 		f := rest[k]
 		name, val, hasVal := strings.Cut(f, "=")
+		if strings.Contains(f, Placeholder) && strings.HasPrefix(f, "-") {
+			return fmt.Sprintf("%q with %q would take the repo's code or config", prog, f)
+		}
 		switch {
-		case slices.Contains(refusedFetchFlags, name):
-			return fmt.Sprintf("%q with %q installs or runs a package without asking, or from another index", prog, f)
+		case f == "--":
+			if k+1 < len(rest) {
+				return command(rest[k+1])
+			}
+			return ""
+		case slices.Contains(r.bools, f):
 		case slices.Contains(r.vals, name):
 			if !hasVal {
 				if k+1 >= len(rest) {
@@ -306,20 +370,20 @@ func checkFetch(prog string, r runner, rest []string) string {
 				k++
 				val = rest[k]
 			}
+			if strings.Contains(val, Placeholder) {
+				return fmt.Sprintf("%q %s %q would take the repo's code", prog, name, val)
+			}
 			if slices.Contains(r.pkg, name) {
 				if !pinnedSpec(val) {
 					return fmt.Sprintf("%q runs %q, which is not a package pinned to a version (want name@1.2.3)", prog, val)
 				}
 				named = named || name != "--with" // --with adds a dependency only
 			}
-		case f == "--":
 		case strings.HasPrefix(f, "-"):
+			return fmt.Sprintf("%q with %q: a package runner takes only the flags aggy knows (%s), so no flag can swallow the pin, install without asking, or fetch from elsewhere",
+				prog, f, strings.Join(slices.Concat(r.bools, r.vals), " "))
 		default:
-			if !named && !pinnedSpec(f) {
-				return fmt.Sprintf("%q runs %q, which is not a package pinned to a version (want name@1.2.3)", prog, f)
-			}
-			// f is the command the runner starts; the rest its arguments.
-			return runsString(f)
+			return command(f)
 		}
 	}
 	return ""

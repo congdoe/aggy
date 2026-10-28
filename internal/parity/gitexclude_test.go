@@ -205,3 +205,68 @@ func TestGitExcludeRefusesCraftedGitDirs(t *testing.T) {
 		t.Errorf(".bashrc = %q", b)
 	}
 }
+
+// TestGitMainCheckout (S63-11): only git's own worktree link names a
+// main checkout; a crafted .git file or folder keys the work tree by its
+// own root.
+func TestGitMainCheckout(t *testing.T) {
+	isolate(t)
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	must(t, err)
+	// other is a real repo whose settings a crafted link would borrow.
+	other := filepath.Join(base, "other")
+	gitDir(t, filepath.Join(other, ".git"), true)
+	// A real linked worktree of main: wt/.git names
+	// main/.git/worktrees/wt, which names wt/.git back.
+	main := filepath.Join(base, "main")
+	gitDir(t, filepath.Join(main, ".git"), true)
+	wtGit := filepath.Join(main, ".git", "worktrees", "wt")
+	gitDir(t, wtGit, false)
+	wt := filepath.Join(base, "wt")
+	must(t, os.MkdirAll(wt, 0o755))
+	must(t, os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+wtGit+"\n"), 0o644))
+	must(t, os.WriteFile(filepath.Join(wtGit, "gitdir"), []byte(filepath.Join(wt, ".git")+"\n"), 0o644))
+	must(t, os.WriteFile(filepath.Join(wtGit, "commondir"), []byte("../..\n"), 0o644))
+
+	crafted := func(name string, setup func(r string)) string {
+		r := filepath.Join(base, name)
+		must(t, os.MkdirAll(r, 0o755))
+		setup(r)
+		return r
+	}
+	// A: a gitdir: file naming other's own git dir (no back-link).
+	a := crafted("a", func(r string) {
+		must(t, os.WriteFile(filepath.Join(r, ".git"), []byte("gitdir: "+filepath.Join(other, ".git")+"\n"), 0o644))
+	})
+	// B: a .git folder with HEAD and a commondir naming other's.
+	b := crafted("b", func(r string) {
+		gitDir(t, filepath.Join(r, ".git"), false)
+		must(t, os.WriteFile(filepath.Join(r, ".git", "commondir"), []byte(filepath.Join(other, ".git")+"\n"), 0o644))
+	})
+	// C: a gitdir naming a worktree of other whose back-link names
+	// another work tree.
+	cGit := filepath.Join(other, ".git", "worktrees", "c")
+	gitDir(t, cGit, false)
+	must(t, os.WriteFile(filepath.Join(cGit, "commondir"), []byte("../..\n"), 0o644))
+	must(t, os.WriteFile(filepath.Join(cGit, "gitdir"), []byte(filepath.Join(base, "elsewhere", ".git")+"\n"), 0o644))
+	c := crafted("c", func(r string) {
+		must(t, os.WriteFile(filepath.Join(r, ".git"), []byte("gitdir: "+cGit+"\n"), 0o644))
+	})
+	// D: a back-link that matches, but a git dir outside the common
+	// dir's worktrees folder.
+	dGit := filepath.Join(base, "dgit")
+	gitDir(t, dGit, false)
+	must(t, os.WriteFile(filepath.Join(dGit, "commondir"), []byte(filepath.Join(other, ".git")+"\n"), 0o644))
+	d := crafted("d", func(r string) {
+		must(t, os.WriteFile(filepath.Join(r, ".git"), []byte("gitdir: "+dGit+"\n"), 0o644))
+		must(t, os.WriteFile(filepath.Join(dGit, "gitdir"), []byte(filepath.Join(r, ".git")+"\n"), 0o644))
+	})
+	for _, k := range []struct{ root, want string }{
+		{main, main}, {wt, main}, {a, a}, {b, b}, {c, c}, {d, d},
+	} {
+		got, err := GitMainCheckout(k.root)
+		if err != nil || got != k.want {
+			t.Errorf("GitMainCheckout(%s) = %q, %v; want %q", filepath.Base(k.root), got, err, k.want)
+		}
+	}
+}
