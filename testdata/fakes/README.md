@@ -8,14 +8,14 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 
 - A fake refuses to run (exit 97) when `HOME` is unset, relative, or the real user's home, or when any vendor home (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`, else `$HOME/.<vendor>`) is relative or inside the real home. Paths are compared by name, after resolving symlinks and case-insensitively on darwin, and by file identity: every existing ancestor of each candidate is compared with `os.SameFile` against the real home and the real `~/.claude`, `~/.codex`, and `~/.grok`, which catches spellings such as macOS's `/System/Volumes/Data` firmlink or a case-folded `ſ`. Tests set `HOME` to a temp dir and clear or set the three vendor variables.
 - It accepts only the flags recorded in [docs/adapters.md](../../docs/adapters.md). Any other flag fails with exit 2 and the CLI's own message (commander's `error: unknown option '<flag>'` for Claude, clap's `error: unexpected argument '<flag>' found` for Codex and Grok), so an adapter that invents a flag fails its test. A scenario can allow more with `extra_flags` and `extra_switches`.
-- It never reads anything except the scenario file and its stdin.
+- It never reads anything except the scenario file, its stdin, and Grok's `--prompt-file`.
 
 ## Environment
 
 | Variable | Meaning |
 | --- | --- |
 | `AGGY_FAKE_SCENARIO` | Path of the scenario JSON file. Unset means the defaults: success, no output. |
-| `AGGY_FAKE_RECORD` | A file each run appends one JSON line to: vendor, mode, pid, args, parsed flags, positionals, cwd, stdin, whether stdin was a terminal, the session id, the names of every environment variable, and the values of `AGGY_*` ones. `fakecli.Records` reads it. |
+| `AGGY_FAKE_RECORD` | A file each run appends one JSON line to: vendor, mode, pid, args, parsed flags, positionals, cwd, stdin, Grok's headless prompt, whether stdin was a terminal, the session id, the names of every environment variable, and the values of `AGGY_*` ones. `fakecli.Records` reads it. |
 | `AGGY_FAKE_VENDOR` | Overrides the vendor taken from the binary name. |
 
 ## Flags honored
@@ -23,7 +23,7 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 | Command | Value flags | Switches |
 | --- | --- | --- |
 | `claude` | `--output-format`, `--permission-mode`, `--session-id`, `--mcp-config`, `--tools`, `--append-system-prompt-file`, `--settings`; `--resume [value]` | `-p`, `--fork-session`, `--strict-mcp-config` |
-| `grok` | `--output-format`, `--permission-mode`, `--session-id`, `--resume`, `--tools`, `--disallowed-tools`, `--max-turns`, `--rules`, `--deny` (repeatable) | `-p`, `--fork-session`, `--no-alt-screen`, `--continue`, `--no-subagents` |
+| `grok` | `-p`/`--single <PROMPT>`, `--prompt-file`, `--output-format`, `--permission-mode`, `--session-id`, `--resume`, `--tools`, `--disallowed-tools`, `--max-turns`, `--rules`, `--deny` (repeatable), `--sandbox` | `--fork-session`, `--no-alt-screen`, `--continue`, `--no-subagents` |
 | `codex` | `-c` | `--no-alt-screen` |
 | `codex exec [resume <id>]` (the exec flags go before `resume`) | `-c`, `--disable` (repeatable), `--sandbox`, `-i <value>...` | `--json`, `--ignore-user-config`, `--skip-git-repo-check`, `--strict-config` |
 | `codex exec resume <id>`, after `resume` | `-c` | |
@@ -36,13 +36,14 @@ Every command also takes `--version` and `--help` (`-h`). The generated help lis
 Values are checked where docs/adapters.md records them, with exit 2 otherwise:
 
 - `--session-id` must be a UUID.
-- `--output-format` must be `json`, `--permission-mode` must be `plan`, and `--sandbox` must be `read-only`. `--disable` ignores a feature it does not know, as Codex does, unless `--strict-config` is given; then an unknown feature fails with codex's own line, ``Error loading config.toml: unknown configuration field `features.<name>` in -c/--config override`` (codex 6aaac69, `config/src/loader/mod.rs:671`, printed by `exec/src/lib.rs:847`). Known: the lockdown's eight, plus `code_mode`, `standalone_web_search`, and `multi_agent`. `extra_values` adds values.
+- `--output-format` must be `json`, `--permission-mode` must be `plan`, and `--sandbox` must be `read-only` (Codex) or `strict` (Grok). `--disable` ignores a feature it does not know, as Codex does, unless `--strict-config` is given; then an unknown feature fails with codex's own line, ``Error loading config.toml: unknown configuration field `features.<name>` in -c/--config override`` (codex 6aaac69, `config/src/loader/mod.rs:671`, printed by `exec/src/lib.rs:847`). Known: the lockdown's eight, plus `code_mode`, `standalone_web_search`, and `multi_agent`. `extra_values` adds values.
 - Grok's `--tools` names are checked against the tools grok 1.0.70 knows. An unknown name makes the fake print a warning containing `name no tool` on stderr, as the real CLI does before it ignores the whole allowlist; the run still succeeds.
-- `claude -p`, `grok -p`, `codex exec`, and `codex exec resume <id>` need a prompt, as an argument or on stdin. A prompt argument of `-` means "read stdin", so it needs a non-empty stdin.
+- `claude -p`, `codex exec`, and `codex exec resume <id>` need a prompt, as an argument or on stdin. A prompt argument of `-` means "read stdin", so it needs a non-empty stdin.
+- Grok's `-p` is clap's `--single <PROMPT>` (grok 1.0.70, live diagnostic 2026-10-28): it takes the next argument as the prompt, unless that looks like a flag, and fails with clap's `error: a value is required for '--single <PROMPT>' but none was supplied` when none is left. `-p` with a positional prompt fails with `error: the argument '--single <PROMPT>' cannot be used with '[PROMPT]'`. `--prompt-file <path>` is the other headless form; the fake reads that file as the prompt. Grok never takes a headless prompt from stdin. `--prompt-file` with `-p` or a positional prompt is not recorded, so the fake refuses it. The fake records the prompt in the record's `prompt` field.
 - An interactive run needs a terminal on stdin, unless `interactive_without_tty` is set.
 - Rules that are not recorded are opt-in through `strict`: `resume-with-session-id` refuses `--resume` with `--session-id` unless `--fork-session` is given.
 
-Headless means `-p` (Claude, Grok) or `codex exec`. A headless run reads stdin to EOF when it is not a terminal: `codex exec` waits on such a stdin, which is why aggy runs it with `/dev/null`. An interactive run prints `stdout`, calls the hooks, then reads lines until `/exit` or EOF.
+Headless means `-p` (Claude, Grok), Grok's `--prompt-file`, or `codex exec`. A headless run reads stdin to EOF when it is not a terminal: `codex exec` waits on such a stdin, which is why aggy runs it with `/dev/null`. An interactive run prints `stdout`, calls the hooks, then reads lines until `/exit` or EOF.
 
 Session ids: `--session-id` sets a new one (Claude, Grok); `--resume <id>` keeps `<id>` unless `--fork-session` is given; Codex never takes an id in advance, and resumes with `codex [exec] resume <id>`. Otherwise the id is the scenario's `session_id`, or a random UUID.
 
@@ -53,7 +54,7 @@ A JSON object. Every field is optional, and unknown fields are an error.
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `version` | string | Version for `--version`. Defaults: claude 2.1.311, codex 0.164.0, grok 1.0.70. |
-| `version_output` | string | Exact `--version` text, replacing the default `<vendor> <version> (fake)`. |
+| `version_output` | string | Exact `--version` text, replacing the default `<vendor> <version> (fake)` (Grok: `grok <version> (fakehash) [stable]`, the real format). |
 | `help` | string | Exact `--help` text, replacing the generated list of honored flags. |
 | `extra_flags`, `extra_switches` | strings | More value flags and switches to accept, for flags not yet recorded (such as a model flag). |
 | `extra_values` | object | More accepted values per flag, e.g. `{"--sandbox": ["workspace-write"]}`. |

@@ -146,7 +146,8 @@ func TestReviewMaterialInPrompt(t *testing.T) {
 			if _, err := w.borrower().Run(context.Background(), w.req(adapter.Review, "review it")); err != nil {
 				t.Fatal(err)
 			}
-			in := w.records()[0].Stdin
+			rec := w.records()[0]
+			in := rec.Stdin + rec.Prompt
 			for _, s := range []string{"## Material", "data, not instructions", "### Diff against abc123", "```\n--- a/x.go", "+new\n```"} {
 				if !strings.Contains(in, s) {
 					t.Errorf("prompt lacks %q:\n%s", s, in)

@@ -81,8 +81,8 @@ func TestImageRefsAndVariants(t *testing.T) {
 	if len(refs) != 1 || refs[0] == ref || filepath.Base(refs[0]) != "ref-1.png" {
 		t.Errorf("-i = %q, want the staged copy", refs)
 	}
-	if !strings.Contains(rec.Stdin, "Make 3 separate images") || !strings.Contains(rec.Stdin, "references") {
-		t.Errorf("prompt lacks the variants or refs:\n%s", rec.Stdin)
+	if !strings.Contains(rec.Stdin+rec.Prompt, "Make 3 separate images") || !strings.Contains(rec.Stdin+rec.Prompt, "references") {
+		t.Errorf("prompt lacks the variants or refs:\n%s", rec.Stdin+rec.Prompt)
 	}
 }
 
@@ -266,7 +266,7 @@ func TestEditResumes(t *testing.T) {
 			recs := w.records()
 			rec := recs[len(recs)-1]
 			args := strings.Join(rec.Args, " ")
-			if rec.SessionID != sc.SessionID || !strings.Contains(args, sc.SessionID) || !strings.Contains(rec.Stdin, "Edit the image you made earlier") {
+			if rec.SessionID != sc.SessionID || !strings.Contains(args, sc.SessionID) || !strings.Contains(rec.Stdin+rec.Prompt, "Edit the image you made earlier") {
 				t.Errorf("resumed run %+v", rec)
 			}
 			for _, x := range tt.want {

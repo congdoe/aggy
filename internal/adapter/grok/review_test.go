@@ -13,7 +13,7 @@ import (
 
 // TestSessionIDsCannotBeFlags (1, 7).
 func TestSessionIDsCannotBeFlags(t *testing.T) {
-	a := New()
+	a := sandboxed()
 	for _, id := range []string{"--dangerously-skip", "-x", "r-1"} {
 		if _, err := a.Headless(adapter.HeadlessRequest{Kind: adapter.Review, PromptFile: "/p", Cwd: "/w", Resume: id}); err == nil {
 			t.Errorf("headless resume %q accepted", id)
@@ -38,7 +38,7 @@ func TestSessionIDsCannotBeFlags(t *testing.T) {
 // own tools, compared case-insensitively; edit has no shell; every run
 // also passes the verified deny list.
 func TestToolAllowlists(t *testing.T) {
-	a := New()
+	a := sandboxed()
 	for _, tc := range []struct {
 		kind  adapter.Kind
 		tools []string
@@ -74,12 +74,12 @@ func TestToolAllowlists(t *testing.T) {
 // TestWebSearchOnlyForResearch (5).
 func TestWebSearchOnlyForResearch(t *testing.T) {
 	for _, k := range []adapter.Kind{adapter.Review, adapter.Image, adapter.Video, adapter.Edit} {
-		_, err := New().Headless(adapter.HeadlessRequest{Kind: k, PromptFile: "/p", Cwd: "/w", WebSearch: true})
+		_, err := sandboxed().Headless(adapter.HeadlessRequest{Kind: k, PromptFile: "/p", Cwd: "/w", WebSearch: true})
 		if !errors.Is(err, adapter.ErrUnsupported) {
 			t.Errorf("%s with web search: %v", k, err)
 		}
 	}
-	if _, err := New().Headless(adapter.HeadlessRequest{Kind: adapter.News, PromptFile: "/p", Cwd: "/w"}); err == nil {
+	if _, err := sandboxed().Headless(adapter.HeadlessRequest{Kind: adapter.News, PromptFile: "/p", Cwd: "/w"}); err == nil {
 		t.Error("news without IsolatedCwd accepted")
 	}
 }
@@ -87,7 +87,7 @@ func TestWebSearchOnlyForResearch(t *testing.T) {
 // TestErrorClassFromStructuredFields (8): a successful reply whose text
 // mentions rate_limit, and stderr on a clean exit, are not a limit.
 func TestErrorClassFromStructuredFields(t *testing.T) {
-	res, _ := New().ParseHeadless(adapter.HeadlessRequest{Kind: adapter.News},
+	res, _ := sandboxed().ParseHeadless(adapter.HeadlessRequest{Kind: adapter.News},
 		adapter.Output{Stdout: []byte(`{"sessionId":"` + sid + `","is_error":true,"result":"a post about rate_limit"}`), Stderr: []byte("note: retried after rate_limit\n")})
 	if res.Error != adapter.ErrUnknown {
 		t.Errorf("class = %q, want unknown", res.Error)

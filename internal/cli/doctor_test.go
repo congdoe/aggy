@@ -80,7 +80,7 @@ func TestDoctor(t *testing.T) {
 				}
 				return nil
 			},
-			want:    []string{"warning version-untested: claude 3.0.0 is outside the versions aggy was tested on (2.1.311 to 2.1.312)", "version unreadable", "cannot read the CLI version"},
+			want:    []string{"warning version-untested: claude 3.0.0 is outside the versions aggy was tested on (2.1.311 to 2.1.312)", "version unreadable", "could not parse the CLI version from --version (first line \"grok "},
 			notWant: []string{"\x1b"},
 		},
 		{

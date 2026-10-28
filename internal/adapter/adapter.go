@@ -113,9 +113,12 @@ type Runner func(ctx context.Context, cmd Command) (Output, error)
 // Probe is what aggy records about an installed CLI: connection status
 // only. It never holds tokens or credentials.
 type Probe struct {
-	Vendor       Vendor
-	Path         string    // resolved binary path, empty when not installed
-	Version      string    // as the CLI reports it
+	Vendor  Vendor
+	Path    string // resolved binary path, empty when not installed
+	Version string // as the CLI reports it
+	// VersionLine is the first line --version printed, trimmed and capped,
+	// when Version could not be parsed from it; "" otherwise.
+	VersionLine  string
 	Connected    bool      // the CLI reports itself signed in
 	Capabilities []string  // feature names this version supports, e.g. "headless-json"
 	ProbedAt     time.Time // when the probe ran
@@ -293,6 +296,12 @@ var ErrUnsupported = errors.New("not supported by this CLI")
 // files at any path (FileTools) when it is off. It matches ErrUnsupported
 // too, so the borrow passes the vendor over.
 var ErrFileTools = fmt.Errorf("needs a media tool that uploads any local image a path names, which is off (%w)", ErrUnsupported)
+
+// ErrNoCapability matches a request this CLI version cannot run safely
+// because its probe did not find a flag the kind needs (Grok's --sandbox
+// for review, research, and news). It matches ErrUnsupported too, so the
+// borrow passes the vendor over rather than run it without the flag.
+var ErrNoCapability = fmt.Errorf("needs a flag this CLI's --help does not list (%w)", ErrUnsupported)
 
 // ErrUnparsed matches a headless run whose output the adapter could not
 // read. Its HeadlessResult carries ErrUnknown.

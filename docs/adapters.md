@@ -127,8 +127,33 @@ was tested against.
 
 ### Grok
 
-- Headless is `grok -p --output-format json`, and the JSON includes
-  `sessionId`.
+- Headless is `grok --prompt-file <absolute path> --output-format json`,
+  and the JSON includes `sessionId`. In grok 1.0.70 `-p` is clap's
+  `--single <PROMPT>`: it takes the prompt itself as its value, so `-p`
+  with the prompt on stdin fails (`a value is required for '--single
+  <PROMPT>'`), and `-p` with the prompt as a later positional fails too
+  (`'--single <PROMPT>' cannot be used with '[PROMPT]'`); `-p "<text>"`
+  works but puts the prompt in argv. `--prompt-file` takes no stdin (live
+  diagnostic 2026-10-28, grok 1.0.70; verification.md, "Grok headless
+  prompt").
+- `--version` prints `grok 1.0.70 (f50904eaee6c) [stable]`: version, build
+  hash, channel tag (live diagnostic 2026-10-28).
+- Read-only kinds (review, research, news) run with `--sandbox strict`.
+  Grok auto-allows file reads in every permission mode, so neither
+  `--permission-mode plan` nor `--allow 'Read(./**)'` keeps `read_file`
+  in the workspace; the strict sandbox does, kernel-enforced: it allows
+  reads of system dirs (`/usr`, `/etc`, `/tmp`, `/private`, `/var`,
+  `/System`, `/Library`, ...), `~/Library`, `~/.grok`, and the workspace,
+  writes only to Grok's sessions dir, and blocks child networking (live
+  diagnostic 2026-10-28, grok 1.0.70; grok-src
+  `crates/codegen/xai-grok-sandbox/src/profiles.rs:463-488`). Gaps: files
+  under `/tmp` and `/private` stay readable, `~/.grok` (Grok's own home)
+  is readable, and only paths under `$HOME` outside those are denied.
+  aggy refuses these kinds on a Grok whose `--help` does not list
+  `--sandbox` (`adapter.ErrNoCapability`). Image and video do not use it
+  yet: their output write under strict is unchecked (TODO(T6742)).
+  Research and news under strict have not been run live (web search is
+  Grok's own tool, not a child process, so it should be unaffected).
 - Flags: `--tools`, `--disallowed-tools`, `--max-turns`, and
   `--permission-mode plan`.
 - Research and news: `--tools web_search --no-subagents --disallowed-tools
@@ -155,7 +180,7 @@ was tested against.
   folder as `videos/<n>.mp4` (source-verified, grok-build 2bdd1d6a,
   `xai-grok-tools/src/implementations/grok_build/video_gen/mod.rs`; not
   seen live).
-- Sessions: `--session-id <uuid>`, `--resume <id>` (also with `-p`), and
+- Sessions: `--session-id <uuid>`, `--resume <id>` (also headless), and
   `--fork-session`. `--continue` takes the latest session in the current
   directory. Use `--no-alt-screen` to keep scrollback.
 
@@ -204,8 +229,11 @@ Each adapter lives in `internal/adapter/<vendor>` and is tested against
 its fake with golden argv per kind and parsing tests driven by scenario
 files in its `testdata/`.
 
-**Prompts.** A headless prompt is never in argv. Every adapter returns
-`Stdin: StdinFile` with `StdinPath` set to the prompt file. For Codex the
+**Prompts.** A headless prompt is never in argv. Claude and Codex return
+`Stdin: StdinFile` with `StdinPath` set to the prompt file. Grok takes the
+file's absolute path as `--prompt-file <path>` with no stdin (its `-p`
+needs the prompt text as its value); `CheckAbs` refuses a relative path,
+and the path, aggy's own run dir, is in argv but the prompt is not. For Codex the
 prompt argument is `-` after `--`: `codex exec` reads a non-terminal stdin
 to EOF, and a regular file reaches EOF at once, so it never waits as it
 would on an open pipe. (The recorded rule is "never an open stdin";
@@ -283,25 +311,28 @@ file. The brief itself never goes in argv.
 **Probes.** `Probe` finds the binary on aggy's absolute `PATH` entries
 (`probe.LookPath`) and runs `probe.Detect` with the vendor's `Spec`.
 `--version` is parsed keyed on the Spec's program names (`Claude Code`,
-`claude`; `codex-cli`, `codex`; `grok`), with an optional `v`; with no
+`claude`; `codex-cli`, `codex`; `grok`), with an optional `v`, an
+optional `(note)`, and an optional bracketed channel tag such as Grok's
+`[stable]`; with no
 named line, one unambiguous version line is taken, and several are an
 error, never a guess. Codex `exec resume` counts as present only when the `exec` help
 lists it under `Commands:` or its own help names a session-id argument; a
 usage error is a cached absence.
 
-Headless argv per kind, as built (the prompt file is stdin; `<id>` a
+Headless argv per kind, as built (the prompt file is stdin, or Grok's
+`--prompt-file <p>`, shown as `grok …` below; `<id>` a
 session id; `--model <m>`, or `-c model="<m>"` on Codex, only when a model
 is given; Grok's `[--max-turns N]` when the kind has a turn budget, which
 by default is news 15 and research 30; `<run>` is `HeadlessRequest.RunDir`):
 
 | Kind | Claude | Codex | Grok |
 | --- | --- | --- | --- |
-| research, news | unsupported | unsupported until T6638 (`codex.Refusal`: apply_patch can confirm guessed file contents) | `grok -p --output-format json --tools web_search --disallowed-tools <D> --no-subagents` |
-| image | unsupported | `codex exec [-i <ref>]... --json <L without --disable image_generation> --skip-git-repo-check -- -` | `grok -p --output-format json [--session-id <uuid>] --tools image_gen --disallowed-tools <D> --no-subagents` |
-| image `--edit` | unsupported | `codex exec [-i <ref>]... --json <L without image_generation> --skip-git-repo-check resume <id> -- -` | only with `[media] grok_file_tools`: `grok -p --output-format json --resume <id> --tools image_gen,image_edit --disallowed-tools <D> --no-subagents` |
-| video | unsupported | unsupported | only with `[media] grok_file_tools`: `grok -p --output-format json --tools image_gen,image_to_video --disallowed-tools <D> --no-subagents` (unverified headless) |
-| review | `claude -p --output-format json --permission-mode plan --strict-mcp-config --mcp-config <run>/mcp.json --tools Read,Grep,Glob [--setting-sources user] [--settings <run>/settings.json] [--session-id <uuid> \| --resume <id>]` | `codex exec --json <L> -- -` (in a git work tree, so no `--skip-git-repo-check`) | `grok -p --output-format json --permission-mode plan --tools read_file,grep,list_dir --disallowed-tools <D> --no-subagents` |
-| edit (M3; refused by `aggy borrow`) | `claude -p --output-format json --permission-mode acceptEdits --strict-mcp-config --mcp-config <run>/mcp.json` | `codex exec --json --sandbox workspace-write -- -` | `grok -p --output-format json --tools read_file,grep,list_dir,write,search_replace --disallowed-tools <D> --no-subagents` |
+| research, news | unsupported | unsupported until T6638 (`codex.Refusal`: apply_patch can confirm guessed file contents) | `grok --prompt-file <p> --output-format json --sandbox strict --tools web_search --disallowed-tools <D> --no-subagents` |
+| image | unsupported | `codex exec [-i <ref>]... --json <L without --disable image_generation> --skip-git-repo-check -- -` | `grok --prompt-file <p> --output-format json [--session-id <uuid>] --tools image_gen --disallowed-tools <D> --no-subagents` |
+| image `--edit` | unsupported | `codex exec [-i <ref>]... --json <L without image_generation> --skip-git-repo-check resume <id> -- -` | only with `[media] grok_file_tools`: `grok --prompt-file <p> --output-format json --resume <id> --tools image_gen,image_edit --disallowed-tools <D> --no-subagents` |
+| video | unsupported | unsupported | only with `[media] grok_file_tools`: `grok --prompt-file <p> --output-format json --tools image_gen,image_to_video --disallowed-tools <D> --no-subagents` (unverified headless) |
+| review | `claude -p --output-format json --permission-mode plan --strict-mcp-config --mcp-config <run>/mcp.json --tools Read,Grep,Glob [--setting-sources user] [--settings <run>/settings.json] [--session-id <uuid> \| --resume <id>]` | `codex exec --json <L> -- -` (in a git work tree, so no `--skip-git-repo-check`) | `grok --prompt-file <p> --output-format json --permission-mode plan --sandbox strict --tools read_file,grep,list_dir --disallowed-tools <D> --no-subagents` |
+| edit (M3; refused by `aggy borrow`) | `claude -p --output-format json --permission-mode acceptEdits --strict-mcp-config --mcp-config <run>/mcp.json` | `codex exec --json --sandbox workspace-write -- -` | `grok --prompt-file <p> --output-format json --tools read_file,grep,list_dir,write,search_replace --disallowed-tools <D> --no-subagents` |
 
 `L` is `codex.Lockdown`: `--strict-config --ignore-user-config --sandbox
 read-only --disable shell_tool --disable unified_exec --disable view_image
@@ -512,8 +543,10 @@ Each adapter declares the CLI versions it was tested on, from the verified
 versions above: claude 2.1.311 to 2.1.312, codex-cli 0.164.0, and grok
 1.0.70.
 Each declares it as `Tested` and through `TestedVersions()`.
-`adapter.VersionWarning(a, version)` returns a warning when a probed
-version falls outside that range or cannot be read, and "" inside it, for
+`adapter.VersionWarning(a, version, line)` returns a warning when a probed
+version falls outside that range or cannot be parsed (then it quotes
+`line`, the first line `--version` printed, trimmed, capped at 80
+characters, and `[redacted]` when secret-shaped), and "" inside it, for
 `aggy doctor` to show, and `aggy borrow` refuses such a CLI unless
 `--allow-untested` is passed. Versions compare the semver way (pre-release
 identifiers numerically where both are numbers, build metadata ignored),

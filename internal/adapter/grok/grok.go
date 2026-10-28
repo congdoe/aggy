@@ -26,6 +26,10 @@ type Adapter struct {
 	Path string
 	// Getenv reads HOME and GROK_HOME for Artifacts. Nil means os.Getenv.
 	Getenv func(string) string
+	// Caps are the capabilities a probe of this CLI found. Review,
+	// research, and news need probe.CapSandbox (--sandbox strict) and are
+	// refused without it.
+	Caps []string
 }
 
 var _ adapter.Adapter = Adapter{}
@@ -242,17 +246,25 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 
 // Headless builds
 //
-//	grok -p --output-format json [--model m] [session] [--permission-mode plan]
-//	     --tools <kind's tools> --disallowed-tools <Lockdown minus them> --no-subagents [--max-turns N]
+//	grok --prompt-file <abs prompt file> --output-format json [--model m] [session] [--permission-mode plan]
+//	     [--sandbox strict] --tools <kind's tools> --disallowed-tools <Lockdown minus them> --no-subagents [--max-turns N]
 //
-// with the prompt file as stdin. AllowedTools may only name tools the
+// with no stdin, so the prompt never goes in argv. Not -p: in grok 1.0.70
+// -p is --single <PROMPT>, which takes the prompt itself as its value
+// (live diagnostic 2026-10-28, grok 1.0.70; docs/verification.md).
+//
+// Review, research, and news run with --sandbox strict: Grok auto-allows
+// file reads in every permission mode, so only the kernel sandbox keeps
+// read_file out of the rest of $HOME (live diagnostic 2026-10-28, grok
+// 1.0.70; grok-src profiles.rs). They are ErrUnsupported when Caps lacks
+// probe.CapSandbox, so they never run unsandboxed. AllowedTools may only name tools the
 // kind already permits (compared case-insensitively), and never the MCP
 // meta-tools. Review runs with --permission-mode plan, MaxTurns sets
 // --max-turns, and research and news need IsolatedCwd. Web search outside
 // research and news, and RefImages (no recorded flag), are ErrUnsupported.
 // Grok takes no per-run hook flag (it does load Claude's settings.json
 // hooks by default), so GuardCommand is not wired: TODO(M2 hooks).
-func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
+func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	if err := adapter.CheckAbs("prompt file", req.PromptFile); err != nil {
 		return adapter.Command{}, err
 	}
@@ -269,11 +281,13 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 		return adapter.Command{}, err
 	}
 	var tools []string
-	plan := false
+	plan, sandbox := false, false
 	switch req.Kind {
 	case adapter.Research, adapter.News:
-		tools = slices.Clone(SearchTools)
+		tools, sandbox = slices.Clone(SearchTools), true
 	case adapter.Image:
+		// TODO(T6742): --sandbox strict for image and video, once an
+		// output file write under it is checked live.
 		tools = slices.Clone(ImageTools)
 		if req.Resume != "" {
 			// An edit needs image_edit, which reads any local path.
@@ -288,11 +302,14 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 		}
 		tools = slices.Clone(VideoTools)
 	case adapter.Review:
-		tools, plan = slices.Clone(ReadTools), true
+		tools, plan, sandbox = slices.Clone(ReadTools), true, true
 	case adapter.Edit:
 		tools = slices.Clone(EditTools)
 	default:
 		return adapter.Command{}, fmt.Errorf("grok: unknown kind %q", req.Kind)
+	}
+	if sandbox && !slices.Contains(a.Caps, probe.CapSandbox) {
+		return adapter.Command{}, fmt.Errorf("grok: %s runs only under --sandbox strict: %w", req.Kind, adapter.ErrNoCapability)
 	}
 	for _, t := range req.AllowedTools {
 		c, ok := canonical(req.Kind, req.FileTools, t)
@@ -309,7 +326,7 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 			deny = append(deny, d)
 		}
 	}
-	args := []string{"-p", "--output-format", "json"}
+	args := []string{"--prompt-file", req.PromptFile, "--output-format", "json"}
 	m, err := modelArgs(req.Model)
 	if err != nil {
 		return adapter.Command{}, err
@@ -323,14 +340,14 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	if plan {
 		args = append(args, "--permission-mode", "plan")
 	}
+	if sandbox {
+		args = append(args, "--sandbox", "strict")
+	}
 	args = append(args, "--tools", strings.Join(tools, ","), "--disallowed-tools", strings.Join(deny, ","), NoSubagents)
 	if req.MaxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(req.MaxTurns))
 	}
-	return adapter.Command{
-		Path: Bin, Args: args, Env: req.Env, Dir: req.Cwd,
-		Stdin: adapter.StdinFile, StdinPath: req.PromptFile,
-	}, nil
+	return adapter.Command{Path: Bin, Args: args, Env: req.Env, Dir: req.Cwd, Stdin: adapter.StdinNull}, nil
 }
 
 // TextFields are the reply fields read for the final text, in order. Only

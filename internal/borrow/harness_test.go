@@ -71,7 +71,7 @@ func newWorld(t *testing.T) *world {
 		store:     s,
 		cfg:       config.Default(),
 		connected: map[adapter.Vendor]bool{adapter.Claude: true, adapter.Codex: true, adapter.Grok: true},
-		caps:      map[adapter.Vendor][]string{adapter.Claude: {"setting-sources"}},
+		caps:      map[adapter.Vendor][]string{adapter.Claude: {"setting-sources"}, adapter.Grok: {"sandbox"}},
 		version:   map[adapter.Vendor]string{},
 		now:       time.Date(2026, 10, 28, 9, 30, 0, 0, time.UTC),
 	}
@@ -117,7 +117,7 @@ func testAdapter(v adapter.Vendor, cli CLI) adapter.Adapter {
 	case adapter.Codex:
 		return codex.New()
 	}
-	return grok.New()
+	return grok.Adapter{Caps: cli.Caps}
 }
 
 func (w *world) borrower() *Borrower {

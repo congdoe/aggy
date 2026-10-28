@@ -42,6 +42,7 @@ func TestPreToolUse(t *testing.T) {
 		// Review finding #10-8.
 		{"codex value flag before exec", payload(t, "Bash", map[string]any{"command": "codex -c k=v -m o3 --cd /x exec hi"}), true},
 		{"grok --prompt-file", payload(t, "Bash", map[string]any{"command": "grok --prompt-file /tmp/p"}), true},
+		{"grok --single", payload(t, "Bash", map[string]any{"command": "grok --single hi"}), true},
 		{"npx claude-code", payload(t, "Bash", map[string]any{"command": "npx -y @anthropic-ai/claude-code@latest -p hi"}), true},
 		{"npm exec codex", payload(t, "Bash", map[string]any{"command": "npm exec @openai/codex -- exec hi"}), true},
 		{"pnpm dlx codex", payload(t, "Bash", map[string]any{"command": "pnpm dlx @openai/codex exec hi"}), true},

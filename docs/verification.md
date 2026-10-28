@@ -56,6 +56,8 @@ Confidence words: *Source-verified*, *Help-verified*, *Doc-verified*,
 | Codex research isolation | No local read tool once `shell_tool` and `view_image` are off, but `apply_patch` is a file-guess oracle and cannot be turned off by a flag. | Live-confirmed |
 | Grok research and news tools | `x_keyword_search` and `x_semantic_search` do not exist. A clean list, as the model reported it, is `web_search` plus `open_page*`. | Live-confirmed |
 | Extra context at session start | Claude `--append-system-prompt-file` (works although `--help` omits it); Codex `-c developer_instructions`; Grok `--rules` (inline only). | Claude Live-confirmed; others Source/Doc-verified |
+| Grok headless prompt and version | `-p` is `--single <PROMPT>` and takes the prompt as its value, so aggy passes `--prompt-file <absolute path>`; `--version` ends in a `[stable]` channel tag. | Live-confirmed (T6740) |
+| Grok read confinement | Reads are auto-allowed in every permission mode; only `--sandbox strict` kept `read_file` out of `$HOME`. | Live-confirmed (T6740) |
 | Launch-time MCP | Claude `--mcp-config` (re-pass on resume); Codex `-c mcp_servers.*` plus per-server approval; Grok has no flag, use `--agent <file>` with `mcpServers`. | Live-confirmed |
 | Codex CLI details | `codex exec resume`, `--ignore-user-config` on `exec` only, greedy `-i`. | Help/Source-verified; parts Live-confirmed |
 | API and route settings | Listed in adapters.md. | Source/Doc-verified |
@@ -263,6 +265,80 @@ research stays off in the defaults.
 Lessons: an unknown name in `--tools` makes Grok ignore the whole
 allowlist, with only a warning; and `search_tool` and `use_tool` must be
 denied by name to cut off MCP servers.
+
+## Grok headless prompt, version, and sandbox (T6740)
+
+Live diagnostics, 2026-10-28, grok 1.0.70, after the smoke run below
+found every Grok borrow failing. Minimal runs in a scratch directory.
+
+| Check | Command | Verdict | Evidence |
+| --- | --- | --- | --- |
+| G1, aggy's old argv | `grok -p --output-format json ... < prompt.md` | **Fails** | `error: a value is required for '--single <PROMPT>' but none was supplied`. `-p` is clap's `--single <PROMPT>` and needs a value; stdin is not read. |
+| G2, prompt last | `grok -p --output-format json ... "<prompt>"` | **Fails** | `the argument '--single <PROMPT>' cannot be used with '[PROMPT]'`. |
+| G3, prompt file | `grok --prompt-file <abs path> --output-format json --tools read_file,grep,list_dir --disallowed-tools <review deny list> --no-subagents --permission-mode plan` | **Works** | Exit 0; the model reported only `read_file`, `list_dir`, and `grep`. aggy's argv since T6740. |
+| G4, inline | `grok -p "<text>" --output-format json --max-turns 1` | Works | Puts the prompt in argv, so aggy does not use it. |
+| G5, version | `grok --version` | Recorded | Prints exactly `grok 1.0.70 (f50904eaee6c) [stable]`. aggy's parser before T6740 did not allow the `[stable]` tag, read no version, and refused every Grok borrow as untested. |
+| S1, read confinement | G3 plus a prompt asking to read `./README.md`, then a canary file outside the cwd by absolute path, with `--permission-mode plan`; `--permission-mode dontAsk --allow 'Read(./**)'`; `--permission-mode plan --allow 'Read(./**)'` | **Not confined** | All three exited 0 and returned the canary: Grok auto-allows reads in every mode, so allow rules do not confine `read_file`. |
+| S2, strict sandbox | the same with `--permission-mode plan --sandbox strict` | **Confined under `$HOME`** | README was read; the canary under `$HOME` was refused, `Permission denied: <HOME>/.../canary.txt`. |
+
+The strict profile (grok-src `crates/codegen/xai-grok-sandbox/src/profiles.rs:463-488`,
+kernel-enforced) allows reads of system dirs (`/usr`, `/etc`, `/tmp`,
+`/private`, `/var`, `/System`, `/Library`, ...), `~/Library`, `~/.grok`,
+and the workspace; writes only to Grok's sessions dir; and blocks child
+networking. Gaps: files under `/tmp` and `/private` stay readable,
+`~/.grok` (Grok's own home) is readable, and only vendor homes and other
+paths under `$HOME` are denied. aggy passes `--sandbox strict` on review,
+research, and news, and refuses them when the probed `--help` does not
+list `--sandbox`. Not yet run live: research and news under strict, and
+image and video under strict (their output write; TODO(T6742)).
+
+## Smoke run, 2026-10-28 (main 2383c13)
+
+`AGGY_SMOKE=1 test/smoke/smoke.sh`, live, with claude 2.1.312, codex-cli
+0.164.0, and grok 1.0.70. Runs used: claude 2, codex 4, grok 8. Every
+Grok row failed on 2383c13 for the two causes above (G1 and G5); two
+refusal checks reported "not refused" only because aggy had already
+stopped at the version check, with exit 1. The smoke script now passes
+the prompt with `--prompt-file`, requires each refusal's own reason, and
+prints a scrubbed stderr tail on a FAIL.
+
+| Check | Result on 2383c13 | Status |
+| --- | --- | --- |
+| `aggy-setup` | PASS | |
+| `claude-append-prompt` | PASS | |
+| `codex-hook-trust-gate` | PASS (the `-c` hook was skipped) | |
+| `codex-research-isolation` | PASS (canary 0 times) | |
+| `mcp-launch-claude` | PASS | |
+| `mcp-launch-codex` | FAIL, exit 143 (the 300 s timeout) | open; see below |
+| `mcp-launch-grok` | FAIL, exit 1 | open; see below |
+| `grok-review-untrusted` | FAIL, exit 2 (G1) | failed on 2383c13, fixed by T6740, re-run pending |
+| `aggy-grok-review-refused` | FAIL, not refused (exit 1: the version refusal, G5) | failed on 2383c13, fixed by T6740, re-run pending |
+| `grok-image-tool-list` | FAIL, exit 2 (G1) | failed on 2383c13, fixed by T6740, re-run pending |
+| `aggy-codex-research-refused` | PASS | |
+| `image-borrow-codex` | PASS | |
+| `image-borrow-grok` | FAIL, exit 1 (G5) | failed on 2383c13, fixed by T6740, re-run pending |
+| `research-borrow-grok` | FAIL, exit 1 (G5) | failed on 2383c13, fixed by T6740, re-run pending |
+| `aggy-video-default-refused` | FAIL, not refused (exit 1: the version refusal, G5) | failed on 2383c13, fixed by T6740, re-run pending |
+| `video-borrow-grok` | FAIL, exit 1 (G5) | failed on 2383c13, fixed by T6740, re-run pending |
+
+The two MCP failures are not explained yet; the stderr was deleted with
+the temp dir (`AGGY_SMOKE_KEEP=1` now keeps it). The Claude and Codex
+rows of the T6734 table above passed with the same server script.
+
+- `mcp-launch-grok` (exit 1, not clap's usage exit 2, so the argv
+  parsed): it differs from the confirmed T6734 run only by
+  `--max-turns 3` and by the agent file, whose frontmatter layout is not
+  recorded. Grok defers MCP tool definitions (`search_tool`/`use_tool`),
+  so finding and calling `aggy_ping` and replying may need more than 3
+  turns, and running out of turns may exit 1. Next check: the same run
+  without `--max-turns`, with `AGGY_SMOKE_KEEP=1`.
+- `mcp-launch-codex` (timed out at 300 s): the argv matches the confirmed
+  T6734 per-server-approval run. Differences: the smoke run's `env -i`
+  environment, and the ChatGPT connector MCP servers (`codex_apps`), which
+  `--ignore-user-config` does not remove ("Codex research isolation" above) and which the run
+  must start alongside the scratch server. Next check: the same run with
+  `AGGY_SMOKE_KEEP=1`, reading `codex.err` and the last `codex.out`
+  events.
 
 ## Grok project config and folder trust (source only)
 
@@ -686,7 +762,8 @@ does not set it yet (TODO(T6673)).
    `~/.codex`).
 6. Greedy `codex exec -i a.png -` without `--`.
 7. Grok 1.0.70 folder trust in a headless review (`test/smoke/smoke.sh`,
-   `grok-review-untrusted`, not yet run): a scratch
+   `grok-review-untrusted`; failed on 2383c13 on the argv, re-run
+   pending): a scratch
    repo whose `.claude/settings.json` and `.grok/hooks` hold SessionStart
    and PreToolUse hooks that touch a marker, never trusted, run with
    aggy's exact Grok review argv; the marker must stay absent.

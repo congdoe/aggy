@@ -10,8 +10,12 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/fakecli"
+	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
 )
+
+// sandboxed is an adapter whose probe found --sandbox.
+func sandboxed() Adapter { return Adapter{Caps: []string{probe.CapSandbox}} }
 
 const sid = "5f0c6a2e-9b1d-4e7a-8c3f-2d4b6a8e0c1f"
 
@@ -26,7 +30,7 @@ func scenario(t *testing.T, h *fakecli.Harness, name string) string {
 
 func TestHeadlessGoldenArgv(t *testing.T) {
 	h := fakecli.NewHarness(t, fakecli.Build(t))
-	a := New()
+	a := sandboxed()
 	all := strings.Split("read_file,grep,list_dir,write,search_replace,run_terminal_cmd,web_fetch,Agent,search_tool,use_tool,"+
 		"image_gen,image_edit,image_to_video,reference_to_video,send_feedback,monitor,workflow,todo_write,"+
 		"ask_user_question,enter_plan_mode,exit_plan_mode,web_search", ",")
@@ -43,7 +47,8 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 	tail := func(tools string, keep ...string) []string {
 		return []string{"--tools", tools, "--disallowed-tools", deny(keep...), "--no-subagents"}
 	}
-	head := []string{"-p", "--output-format", "json"}
+	head := []string{"--prompt-file", h.Prompt, "--output-format", "json"}
+	strict := []string{"--sandbox", "strict"}
 	tests := []struct {
 		name     string
 		req      adapter.HeadlessRequest
@@ -51,9 +56,9 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 		scenario string
 	}{
 		{"research", adapter.HeadlessRequest{Kind: adapter.Research, MaxTurns: 30, IsolatedCwd: true},
-			slices.Concat(head, tail("web_search", "web_search"), []string{"--max-turns", "30"}), ""},
+			slices.Concat(head, strict, tail("web_search", "web_search"), []string{"--max-turns", "30"}), ""},
 		{"news", adapter.HeadlessRequest{Kind: adapter.News, IsolatedCwd: true, WebSearch: true, MaxTurns: 15},
-			slices.Concat(head, tail("web_search", "web_search"), []string{"--max-turns", "15"}), ""},
+			slices.Concat(head, strict, tail("web_search", "web_search"), []string{"--max-turns", "15"}), ""},
 		{"image", adapter.HeadlessRequest{Kind: adapter.Image, SessionID: sid},
 			slices.Concat(head, []string{"--session-id", sid}, tail("image_gen", "image_gen")), ""},
 		{"image edit", adapter.HeadlessRequest{Kind: adapter.Image, Resume: sid, FileTools: true},
@@ -61,7 +66,7 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 		{"video", adapter.HeadlessRequest{Kind: adapter.Video, FileTools: true},
 			slices.Concat(head, tail("image_gen,image_to_video", "image_gen", "image_to_video")), ""},
 		{"review", adapter.HeadlessRequest{Kind: adapter.Review},
-			slices.Concat(head, []string{"--permission-mode", "plan"}, tail("read_file,grep,list_dir", "read_file", "grep", "list_dir")), ""},
+			slices.Concat(head, []string{"--permission-mode", "plan"}, strict, tail("read_file,grep,list_dir", "read_file", "grep", "list_dir")), ""},
 		{"edit with a model", adapter.HeadlessRequest{Kind: adapter.Edit, Model: "grok-4.7"},
 			slices.Concat(head, []string{"--model", "grok-4.7"},
 				tail("read_file,grep,list_dir,write,search_replace", "read_file", "grep", "list_dir", "write", "search_replace")),
@@ -77,22 +82,49 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 			if c.Path != Bin || !slices.Equal(c.Args, tt.want) {
 				t.Errorf("argv = %s %q, want %q", c.Path, c.Args, tt.want)
 			}
-			if c.Stdin != adapter.StdinFile || c.StdinPath != h.Prompt || c.Dir != h.Cwd {
+			// The prompt goes by --prompt-file, never stdin or argv.
+			if c.Stdin != adapter.StdinNull || c.StdinPath != "" || c.Dir != h.Cwd {
 				t.Errorf("stdin %v %q dir %q", c.Stdin, c.StdinPath, c.Dir)
 			}
 			out, rec := h.Run(t, c, tt.scenario)
 			if strings.Contains(string(out.Stderr), UnknownToolWarning) {
 				t.Errorf("an unknown tool name in %q: %s", c.Args, out.Stderr)
 			}
-			if out.ExitCode != 0 || rec.Mode != "headless" || rec.Stdin != "the task\n" {
+			if out.ExitCode != 0 || rec.Mode != "headless" || rec.Prompt != "the task\n" || rec.Stdin != "" || slices.Contains(c.Args, "the task\n") {
 				t.Errorf("fake: exit %d %q, record %+v", out.ExitCode, out.Stderr, rec)
 			}
 		})
 	}
 }
 
+// TestSandboxFailsClosed: review, research, and news need --sandbox
+// strict, so without the probe's sandbox capability they are refused
+// (ErrNoCapability, which is ErrUnsupported); image, video, and edit do
+// not use it yet (TODO(T6742)).
+func TestSandboxFailsClosed(t *testing.T) {
+	for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video, adapter.Edit} {
+		req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true, FileTools: true}
+		_, err := New().Headless(req)
+		c, cerr := sandboxed().Headless(req)
+		strict := slices.Contains(c.Args, "--sandbox") && c.Args[slices.Index(c.Args, "--sandbox")+1] == "strict"
+		switch k {
+		case adapter.Review, adapter.Research, adapter.News:
+			if !errors.Is(err, adapter.ErrNoCapability) || !errors.Is(err, adapter.ErrUnsupported) {
+				t.Errorf("%s without the sandbox capability: %v", k, err)
+			}
+			if cerr != nil || !strict {
+				t.Errorf("%s with it: %q, %v", k, c.Args, cerr)
+			}
+		default:
+			if err != nil || cerr != nil || slices.Contains(c.Args, "--sandbox") {
+				t.Errorf("%s: %q, %v, %v", k, c.Args, err, cerr)
+			}
+		}
+	}
+}
+
 func TestHeadlessRefusals(t *testing.T) {
-	a := New()
+	a := sandboxed()
 	base := adapter.HeadlessRequest{PromptFile: "/p/prompt.md", Cwd: "/w"}
 	for _, r := range []adapter.HeadlessRequest{
 		{Kind: adapter.Research, AllowedTools: []string{"read_file"}},
@@ -320,7 +352,7 @@ func TestVideoArtifacts(t *testing.T) {
 // with ErrFileTools, and AllowedTools cannot name them; reference_to_video
 // is never given.
 func TestFileToolsOptIn(t *testing.T) {
-	a := New()
+	a := sandboxed()
 	base := adapter.HeadlessRequest{PromptFile: "/p/prompt.md", Cwd: "/w"}
 	for _, r := range []adapter.HeadlessRequest{
 		{Kind: adapter.Video},
