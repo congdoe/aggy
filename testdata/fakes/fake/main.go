@@ -281,10 +281,10 @@ type verbatimError string
 func (e verbatimError) Error() string { return string(e) }
 
 // unknownOption is the CLI's own message for an option it does not take:
-// clap's for codex, commander's for claude. Grok's parser is not
-// recorded; the fake prints commander's form (unverified).
+// commander's for claude, clap's for codex and grok (grok-build 2bdd1d6,
+// xai-grok-pager/src/app/cli.rs).
 func (f *fake) unknownOption(a string) error {
-	if strings.HasPrefix(f.vendor, "codex") {
+	if f.vendor != "claude" {
 		return verbatimError(fmt.Sprintf("error: unexpected argument '%s' found", a))
 	}
 	return verbatimError(fmt.Sprintf("error: unknown option '%s'", a))
@@ -293,7 +293,7 @@ func (f *fake) unknownOption(a string) error {
 // invalidValue is the CLI's own message for a flag value it refuses, in
 // the same forms as unknownOption.
 func (f *fake) invalidValue(flag, v string, allowed []string) error {
-	if strings.HasPrefix(f.vendor, "codex") {
+	if f.vendor != "claude" {
 		return verbatimError(fmt.Sprintf("error: invalid value '%s' for '%s <VALUE>'", v, flag))
 	}
 	return verbatimError(fmt.Sprintf("error: option '%s <value>' argument '%s' is invalid. Allowed choices are %s.", flag, v, strings.Join(allowed, ", ")))
