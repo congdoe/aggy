@@ -284,6 +284,10 @@ type lineFacts struct {
 }
 
 func factsOf(line string) *lineFacts {
+	if work != nil {
+		work.facts++
+		work.bytes += len(line)
+	}
 	t := strings.TrimSpace(line)
 	f := &lineFacts{
 		env:  envLine.MatchString(line),
@@ -332,6 +336,9 @@ func assigned(line string) bool {
 		for i := range m {
 			m[i] = line[ix[2*i]:ix[2*i+1]]
 		}
+		if work != nil {
+			work.bytes += ix[1] - ix[0]
+		}
 		if m[5] != "" {
 			return true
 		}
@@ -344,6 +351,13 @@ func assigned(line string) bool {
 	}
 	return false
 }
+
+// work, when a test sets it, counts the factsOf calls and the bytes
+// factsOf and the assign loop examine, to check they stay linear
+// (I43-10). It is nil outside tests.
+var work *workCount
+
+type workCount struct{ facts, bytes int }
 
 // Secret reports whether line holds secret-shaped text.
 func Secret(line string) bool { return secret(line, true) }
