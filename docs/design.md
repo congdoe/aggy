@@ -59,7 +59,7 @@ These are requirements, not preferences.
 - If the vendor no longer has that session, aggy says so and keeps the parent's other children.
 - Claude sessions are tied to their directory, so a child whose worktree was removed is marked closed, not resumable.
 
-`aggy session` lists the children of the open parent: vendor, kind, title, model, last active. Borrows are children too. The same list is the picker when one vendor has several children.
+`aggy session` lists the children of the open parent (the supervisor's, named by `AGGY_PARENT`, else the latest in the current directory): vendor, kind, title, model, last active, and status. `aggy sessions` shows directories to the local user and never prints a vendor session id or an env value; neither list goes into `aggy doctor --report`. Borrows are children too. The same list is the picker when one vendor has several children.
 
 Inside a harness, a linked skill prints either list. Each vendor owns its slash commands, so aggy does not add slash commands inside them.
 
