@@ -209,6 +209,10 @@ linters:
         # requests, no proxy.
         - pattern: ^net\.Dial
           msg: aggy makes no network calls
+        # net is allowed only in the supervisor socket's files, and there
+        # only for net.ListenUnix: no other listener, and no name lookups.
+        - pattern: ^net\.(Listen|ListenTCP|ListenUDP|ListenPacket|ListenIP|ListenMulticastUDP|ListenUnixgram|FileListener|FileConn|FilePacketConn|Lookup[A-Za-z]*|Resolve[A-Za-z]*)$
+          msg: the supervisor socket uses net.ListenUnix only; aggy opens no other socket and resolves no names
         - pattern: ^(net\.)?Dialer\.Dial
           msg: aggy makes no network calls
         - pattern: ^http\.(Get|Head|Post|PostForm|DefaultClient|DefaultTransport)$
@@ -258,7 +262,7 @@ linters:
       # Unix socket in a 0700 dir that only listens (net.Dial stays
       # banned) and answers only its own uid. Only these files may import
       # net (and later the hook client, which dials it). Tests dial it.
-      - path: ^(internal/supervisor/(socket(_test)?|peercred_(darwin|linux|other))|test/e2e/[a-z_]+_test)\.go$
+      - path: ^(internal/supervisor/(socket(_test)?|peercred_(darwin|linux|other))|test/e2e/supervisor_test)\.go$
         text: "import 'net' is not allowed"
         linters: [depguard]
       # The socket's peer-uid check: the stdlib has no getpeereid

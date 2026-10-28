@@ -42,15 +42,22 @@ type Server struct {
 	path string
 	lock *os.File // flocked while the server runs; marks the socket live
 	peer func(*net.UnixConn) (int, error)
-	wg   sync.WaitGroup
-	once sync.Once
+	// onPanic restores the terminal before a panic in a server goroutine
+	// ends the process.
+	onPanic func()
+	wg      sync.WaitGroup
+	once    sync.Once
+	mu      sync.Mutex
+	conns   map[*net.UnixConn]struct{} // open connections, closed by Close
+	closed  bool
 }
 
 // Path returns the socket's path, for AGGY_SOCKET.
 func (s *Server) Path() string { return s.path }
 
 // Listen creates runDir (0700) if needed and listens on
-// runDir/<parentID>.sock (0600). parentID must be a UUID.
+// runDir/<parentID>.sock (0600). parentID must be a UUID. onPanic, if
+// set, runs before a panic in a server goroutine ends the process.
 //
 // A socket left by a supervisor that died is removed first. Liveness is
 // an flock on runDir/<parentID>.lock, held while the server runs: the
@@ -58,7 +65,7 @@ func (s *Server) Path() string { return s.path }
 // fooled by pid reuse. If another live supervisor holds it, Listen fails.
 // Anything at the socket path that is not a socket is left alone and
 // Listen fails.
-func Listen(runDir, parentID string) (*Server, error) {
+func Listen(runDir, parentID string, onPanic func()) (*Server, error) {
 	if !adapter.IsUUID(parentID) {
 		return nil, fmt.Errorf("supervisor: parent id %q is not a UUID", parentID)
 	}
@@ -102,9 +109,9 @@ func Listen(runDir, parentID string) (*Server, error) {
 		_ = safefs.Remove(path)
 		return fail(err)
 	}
-	s := &Server{ln: ln, path: path, lock: lock, peer: peerUID}
-	s.wg.Add(1)
-	go s.accept()
+	s := &Server{ln: ln, path: path, lock: lock, peer: peerUID, onPanic: onPanic,
+		conns: map[*net.UnixConn]struct{}{}}
+	s.goSafe(s.accept)
 	return s, nil
 }
 
@@ -153,12 +160,54 @@ func takeLock(path string) (*os.File, error) {
 	return f, nil
 }
 
-// Close stops the server, waits for its connections, and removes the
-// socket and the lock file.
+// goSafe runs f in a goroutine Close waits for, which runs onPanic
+// before a panic ends the process.
+func (s *Server) goSafe(f func()) {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				if s.onPanic != nil {
+					s.onPanic()
+				}
+				panic(r)
+			}
+		}()
+		f()
+	}()
+}
+
+// track records an open connection; it reports false once Close has run.
+func (s *Server) track(c *net.UnixConn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	s.conns[c] = struct{}{}
+	return true
+}
+
+func (s *Server) untrack(c *net.UnixConn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.conns, c)
+}
+
+// Close stops the server, closes every open connection (a client that
+// stays connected must not keep aggy from exiting), waits for their
+// goroutines, and removes the socket and the lock file.
 func (s *Server) Close() error {
 	var err error
 	s.once.Do(func() {
 		err = s.ln.Close()
+		s.mu.Lock()
+		s.closed = true
+		for c := range s.conns {
+			_ = c.Close()
+		}
+		s.mu.Unlock()
 		s.wg.Wait()
 		if rerr := safefs.Remove(s.path); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) && err == nil {
 			err = rerr
@@ -172,7 +221,6 @@ func (s *Server) Close() error {
 }
 
 func (s *Server) accept() {
-	defer s.wg.Done()
 	for {
 		c, err := s.ln.AcceptUnix()
 		if err != nil {
@@ -181,11 +229,14 @@ func (s *Server) accept() {
 			}
 			continue
 		}
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
+		if !s.track(c) {
+			_ = c.Close()
+			return
+		}
+		s.goSafe(func() {
+			defer s.untrack(c)
 			s.serve(c)
-		}()
+		})
 	}
 }
 
