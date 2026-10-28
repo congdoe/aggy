@@ -26,6 +26,8 @@ var codexCases = []struct {
 	{"codex_multiline_no_comma", []byte("project_doc_fallback_filenames = [\r\n  \"GUIDE.md\"\r\n]\r\n")},
 	{"codex_key_only_in_table", []byte("# top comment\nmodel = \"o\"\n\n[profiles.x]\nproject_doc_fallback_filenames = [\"X.md\"]\n")},
 	{"codex_bom", []byte("\xef\xbb\xbfmodel = \"o\"\n")},
+	{"codex_bom_list", []byte("\xef\xbb\xbfproject_doc_fallback_filenames = [\"A.md\"]\r\nmodel = \"o\"\r\n")},
+	{"codex_bom_header", []byte("\xef\xbb\xbf# Codex\n\nmodel = \"o\"\n")},
 	{"codex_list_after_tricky", []byte("note = \"project_doc_fallback_filenames = [\\\"x\\\"]\"\nmulti = \"\"\"\nproject_doc_fallback_filenames = [\n\"\"\"\nproject_doc_fallback_filenames=[ 'A.md' , \"B.md\" ] # x = [\n")},
 	{"codex_tricky_strings", []byte("note = \"project_doc_fallback_filenames = [\\\"x\\\"]\"\nmulti = '''\nproject_doc_fallback_filenames = []\n'''\n[t]\nk = 1\n")},
 }
@@ -42,6 +44,9 @@ func TestCodexFallbackGolden(t *testing.T) {
 			again, err := AddClaudeFallback(out)
 			if err != nil || !bytes.Equal(again, out) {
 				t.Errorf("not idempotent: %q, %v", again, err)
+			}
+			if bytes.HasPrefix(tc.in, bom) && !bytes.HasPrefix(out, bom) {
+				t.Errorf("byte order mark lost: %q", out)
 			}
 			if bytes.Contains(tc.in, []byte("\r\n")) && bytes.Count(out, []byte("\n")) != bytes.Count(out, []byte("\r\n")) {
 				t.Errorf("line endings mixed: %q", out)
