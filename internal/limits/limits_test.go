@@ -176,6 +176,30 @@ func TestCodexRollout(t *testing.T) {
 		{"other error", line(after, "event_msg", `{"type":"task_complete","error":{"codex_error_info":"context_window_exceeded"}}`), false, time.Time{}},
 		{"garbage", "not json\n{\n", false, time.Time{}},
 	}
+	// T6741 (F27-6): two quotas, and the one at 100% is not always the
+	// session's. Fixture shapes follow RateLimitSnapshot (protocol.rs#L2478).
+	other := now.Add(7 * 24 * time.Hour).Unix()
+	q := func(id, name, slug string, used float64, resets int64) string {
+		return line(after, "event_msg", fmt.Sprintf(`{"type":"token_count","rate_limits":{"limit_id":%q,"limit_name":%q,"normal_model_slug":%q,"primary":{"used_percent":%v,"window_minutes":300,"resets_at":%d}}}`,
+			id, name, slug, used, resets))
+	}
+	model := func(m string) string { return line(after, "turn_context", fmt.Sprintf(`{"model":%q}`, m)) }
+	spark := q("codex_bengalfox", "gpt-5.3-codex-spark", "", 100, other)
+	tests = append(tests, []struct {
+		name      string
+		tail      string
+		want      bool
+		wantUntil time.Time
+	}{
+		{"another model's quota at 100% is not the session's", model("gpt-5.5") + q("codex", "", "", 80, reset) + spark + limitDone, true, time.Time{}},
+		{"the session model's own quota", model("gpt-5.3-codex-spark") + q("codex", "", "", 80, reset) + spark + limitDone, true, time.Unix(other, 0)},
+		{"a model quota with no turn_context fails closed", q("codex", "", "", 80, reset) + spark + limitDone, true, time.Time{}},
+		{"normal_model_slug does not match", model("gpt-5.5") + q("codex_reserve", "luna-reserve", "gpt-5.5", 100, other) + limitDone, true, time.Time{}},
+		{"a later snapshot of another quota keeps the ordinary one", model("gpt-5.5") + q("codex", "", "", 100, reset) + q("codex_bengalfox", "gpt-5.3-codex-spark", "", 0, other) + limitDone, true, time.Unix(reset, 0)},
+		{"a newer snapshot of the same quota wins", q("codex", "", "", 100, other) + q("codex", "", "", 50, other) + limitDone, true, time.Time{}},
+		{"limit_id is normalized", model("gpt-5.5") + q(" CODEX ", "", "", 100, reset) + limitDone, true, time.Unix(reset, 0)},
+		{"a model switch drops the old model's quota", model("gpt-5.3-codex-spark") + spark + model("gpt-5.5") + limitDone, true, time.Time{}},
+	}...)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sig, _, ok := CodexRollout([]byte(tt.tail), since, now)
