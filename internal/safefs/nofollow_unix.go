@@ -19,11 +19,3 @@ func linkCount(fi fs.FileInfo) uint64 {
 	}
 	return 1
 }
-
-// fileID returns the device and inode of the file fi describes.
-func fileID(fi fs.FileInfo) (id, bool) {
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-		return id{dev: uint64(st.Dev), ino: uint64(st.Ino)}, true
-	}
-	return id{}, false
-}

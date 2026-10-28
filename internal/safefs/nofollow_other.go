@@ -13,7 +13,3 @@ const (
 
 // linkCount is 1 where the link count is not available.
 func linkCount(fs.FileInfo) uint64 { return 1 }
-
-// fileID reports no identity where device and inode are not available;
-// the identity history then has nothing to record.
-func fileID(fs.FileInfo) (id, bool) { return id{}, false }
