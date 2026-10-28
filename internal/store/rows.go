@@ -17,7 +17,7 @@ type Parent struct {
 	LastActive time.Time
 	// DirKey is Dir's canonical form, which parents are matched by; DirID
 	// is Dir's device and inode when the parent was made. Both may be
-	// empty (rows from before schema version 9, borrow parents).
+	// empty (rows from before schema version 10, borrow parents).
 	DirKey string
 	DirID  string
 }
