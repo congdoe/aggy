@@ -71,6 +71,7 @@ A JSON object. Every field is optional, and unknown fields are an error.
 | `hook_payload_in` | string | `stdin` (default) or `arg`, for where the payload goes. |
 | `hooks` | objects | `{"event": "Stop", "payload": {...}}`, called in order at turn end. With `error: rate_limit` and no hooks, Claude and Grok call `StopFailure` with `{"error":"rate_limit"}`. Codex has no failure hook. |
 | `images` | int | Number of images to write where the CLI does: `$CODEX_HOME/generated_images/<thread-id>/N.png`, or `$GROK_HOME/sessions/<url-encoded cwd>/<sessionId>/images/N.jpg`. Claude's image path is not recorded, so Claude refuses. |
+| `videos` | int | Grok only: number of videos to write at `$GROK_HOME/sessions/<url-encoded cwd>/<sessionId>/videos/N.mp4`, where grok-build's video tools save them (source, not live). |
 | `session_files` | objects | `{"path": "...", "content": "..."}` files written under the vendor's home. The path must stay inside it. |
 | `sleep_ms` | int | Delay before output, for timeout tests. |
 | `replies` | objects | `{"args": [...], "stdout": "...", "stderr": "...", "exit_code": N}`: the fixed answer to that exact argument list, given before any flag is parsed. For commands docs/adapters.md does not record, such as a sign-in status check a test supplies (no vendor's is verified). The run is recorded with mode `reply`. |

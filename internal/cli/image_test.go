@@ -107,3 +107,20 @@ func TestImageCommand(t *testing.T) {
 		}
 	}
 }
+
+// TestVideoCommand (T6637): aggy video copies Grok's MP4 into the repo;
+// image-only flags are refused.
+func TestVideoCommand(t *testing.T) {
+	f := newBorrowFixture(t, adapter.Grok)
+	if code, _, errOut := f.media(t, adapter.Video, "a reveal", "--out", "intro.mp4", "--n", "2"); code != 2 || !strings.Contains(errOut, "unknown flag --n") {
+		t.Errorf("--n: code %d stderr %q", code, errOut)
+	}
+	if code, _, errOut := f.media(t, adapter.Video, "a reveal", "--out", "intro.png"); code != 1 || !strings.Contains(errOut, "must end in .mp4") {
+		t.Errorf("png out: code %d stderr %q", code, errOut)
+	}
+	f.scenario["grok"] = `{"videos":1,"json":{"result":"videos/1.mp4"}}`
+	code, out, errOut := f.media(t, adapter.Video, "a reveal", "--out", "media/intro.mp4")
+	if code != 0 || !strings.Contains(out, "video: "+filepath.Join(f.repo, "media", "intro.mp4")) {
+		t.Fatalf("code %d stderr %q stdout %q", code, errOut, out)
+	}
+}
