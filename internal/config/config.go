@@ -30,6 +30,34 @@ type Config struct {
 	Media         Media          `toml:"media"`
 	Policy        Policy         `toml:"policy"`
 	Notify        Notify         `toml:"notify"`
+	Worktree      UserWorktree   `toml:"worktree"`
+}
+
+// UserWorktree holds the person's opt-ins for edit worktrees. It is user
+// config only: a repo's .aggy/config.toml has no allow_setup key, so a
+// cloned repo can name a setup command but never allow it.
+type UserWorktree struct {
+	// AllowSetup lists the setup commands aggy may run in a new worktree,
+	// each for one repo and that exact command: a repo whose command
+	// changes (a pull) needs the person's say-so again.
+	AllowSetup []SetupApproval `toml:"allow_setup"`
+}
+
+// SetupApproval allows one repo's worktree setup command.
+type SetupApproval struct {
+	Repo    string  `toml:"repo"` // the main checkout, absolute
+	Command Command `toml:"command"`
+}
+
+// AllowsSetup reports whether cmd is allowed as the setup command of the
+// repo whose canonical path is repo; canon canonicalizes a path.
+func (w UserWorktree) AllowsSetup(repo string, cmd Command, canon func(string) string) bool {
+	for _, a := range w.AllowSetup {
+		if canon(a.Repo) == repo && slices.Equal(a.Command, cmd) {
+			return true
+		}
+	}
+	return false
 }
 
 // Notify holds notification settings. It is user config only: a repo's
@@ -380,6 +408,11 @@ func (c Config) Validate() error {
 	}
 	if _, err := ParseKey(c.Switch.Key); err != nil {
 		return err
+	}
+	for i, a := range c.Worktree.AllowSetup {
+		if !filepath.IsAbs(a.Repo) || len(a.Command) == 0 || a.Command[0] == "" {
+			return fmt.Errorf("worktree.allow_setup[%d]: want an absolute repo and a program with its arguments", i)
+		}
 	}
 	for _, k := range adapter.Kinds() {
 		r := c.Routing.For(k)

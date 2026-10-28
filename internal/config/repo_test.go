@@ -210,3 +210,25 @@ func TestMergeNarrowsNeverWidens(t *testing.T) {
 		})
 	}
 }
+
+// TestAllowSetup (T6688): only the user config allows a setup command,
+// for an absolute repo and a non-empty command; a repo cannot.
+func TestAllowSetup(t *testing.T) {
+	ok := "[[worktree.allow_setup]]\nrepo = \"/r\"\ncommand = [\"make\", \"setup\"]\n"
+	c, err := Parse(ok)
+	if err != nil || !c.Worktree.AllowsSetup("/r", Command{"make", "setup"}, func(s string) string { return s }) ||
+		c.Worktree.AllowsSetup("/r", Command{"make"}, func(s string) string { return s }) {
+		t.Errorf("%+v, %v", c.Worktree, err)
+	}
+	for _, bad := range []string{
+		"[[worktree.allow_setup]]\nrepo = \"r\"\ncommand = [\"make\"]\n",
+		"[[worktree.allow_setup]]\nrepo = \"/r\"\ncommand = []\n",
+	} {
+		if _, err := Parse(bad); err == nil {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+	if _, err := ParseRepo(ok); err == nil || !strings.Contains(err.Error(), "unknown key") {
+		t.Errorf("a repo allowed its own setup: %v", err)
+	}
+}
