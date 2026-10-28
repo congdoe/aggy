@@ -121,7 +121,7 @@ func TestReviewRoot(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := reviewRoot(tt.cwd, tt.home, tt.state)
+			got, err := reviewRoot(tt.cwd, envMap{"HOME": tt.home}.get, tt.state)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("got %q, err %v", got, err)
@@ -237,5 +237,49 @@ func TestBorrowReviewDefaultEnv(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := borrowWith([]string{"review", "review the change"}, defaultBorrowEnv(), &out, &errb); code != 0 {
 		t.Fatalf("code %d:\n%s\n%s", code, out.String(), errb.String())
+	}
+}
+
+type envMap map[string]string
+
+func (m envMap) get(k string) string { return m[k] }
+
+// TestReviewRootVendorHomes (C17-2): a review never runs at, inside, or
+// around a vendor config dir, default or set by environment.
+func TestReviewRootVendorHomes(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	home := filepath.Join(base, "home")
+	mk := func(dir string) string {
+		mustWrite(t, filepath.Join(dir, ".git", "HEAD"), "ref", 0o600)
+		mustWrite(t, filepath.Join(dir, "auth.json"), "{}", 0o600)
+		return dir
+	}
+	tests := []struct {
+		name string
+		repo string
+		env  envMap
+		want bool // accepted
+	}{
+		{"~/.codex", mk(filepath.Join(home, ".codex")), envMap{}, false},
+		{"~/.claude", mk(filepath.Join(home, ".claude")), envMap{}, false},
+		{"~/.grok", mk(filepath.Join(home, ".grok")), envMap{}, false},
+		{"~/.agents", mk(filepath.Join(home, ".agents")), envMap{}, false},
+		{"inside ~/.codex", mk(filepath.Join(home, ".codex", "skills", "x")), envMap{}, false},
+		{"CODEX_HOME", mk(filepath.Join(base, "ch")), envMap{"CODEX_HOME": filepath.Join(base, "ch")}, false},
+		{"holds CLAUDE_CONFIG_DIR", mk(filepath.Join(base, "work")), envMap{"CLAUDE_CONFIG_DIR": filepath.Join(base, "work", "cfg")}, false},
+		{"GROK_HOME", mk(filepath.Join(base, "gh")), envMap{"GROK_HOME": filepath.Join(base, "gh")}, false},
+		{"a plain repo", mk(filepath.Join(base, "plain")), envMap{}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := envMap{"HOME": home}
+			for k, v := range tt.env {
+				env[k] = v
+			}
+			got, err := reviewRoot(tt.repo, env.get, "/nostate")
+			if (err == nil) != tt.want {
+				t.Errorf("reviewRoot(%s) = %q, %v", tt.repo, got, err)
+			}
+		})
 	}
 }
