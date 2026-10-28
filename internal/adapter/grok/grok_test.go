@@ -387,3 +387,70 @@ func TestFileToolsOptIn(t *testing.T) {
 		}
 	}
 }
+
+// liveReply has the shape grok 1.0.70 printed for --output-format json
+// (live 2026-10-28): one pretty-printed object, ids and costs replaced.
+const liveReply = `{
+  "text": "the answer",
+  "stopReason": "end_turn",
+  "sessionId": "` + sid + `",
+  "requestId": "<id>",
+  "cwd": "/w",
+  "thought": "THOUGHT-NOT-THE-ANSWER",
+  "usage": {
+    "input_tokens": 100,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "output_tokens": 20,
+    "reasoning_tokens": 7,
+    "total_tokens": 127
+  },
+  "num_turns": 2,
+  "total_cost_usd": 0.01,
+  "total_cost_usd_ticks": 100000,
+  "modelUsage": {
+    "grok-4.7-build": {
+      "input_tokens": 100,
+      "output_tokens": 20
+    }
+  }
+}
+`
+
+// TestParseLiveReplyShape (T6740): the multi-line reply parses, text is
+// the answer and never thought, and a one-line object after other output
+// still parses.
+func TestParseLiveReplyShape(t *testing.T) {
+	tests := []struct {
+		name, stdout, text string
+		tokens             int64
+	}{
+		{"pretty object", liveReply, "the answer", 120},
+		{"thought only", strings.Replace(liveReply, `"text": "the answer",`, `"text": "",`, 1), "", 120},
+		{"one line after a notice", "notice: something\n" + `{"sessionId":"` + sid + `","text":"x"}` + "\n", "x", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := New().ParseHeadless(adapter.HeadlessRequest{Kind: adapter.News}, adapter.Output{Stdout: []byte(tt.stdout)})
+			if err != nil || res.SessionID != sid || res.Text != tt.text || res.Tokens != tt.tokens || res.Error != adapter.ErrNone {
+				t.Errorf("ParseHeadless = %+v, %v", res, err)
+			}
+		})
+	}
+	// Through the fake, which prints the same shape.
+	h := fakecli.NewHarness(t, fakecli.Build(t))
+	a := sandboxed()
+	req := adapter.HeadlessRequest{Kind: adapter.News, PromptFile: h.Prompt, Cwd: h.Cwd, IsolatedCwd: true}
+	c, err := a.Headless(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := h.Run(t, c, `{"json":{"text":"from the fake"}}`)
+	if n := strings.Count(strings.TrimSpace(string(out.Stdout)), "\n"); n < 10 {
+		t.Fatalf("the fake printed %d lines, want a pretty object", n+1)
+	}
+	res, err := a.ParseHeadless(req, out)
+	if err != nil || res.Text != "from the fake" || strings.Contains(res.Text, "THOUGHT") {
+		t.Errorf("ParseHeadless = %+v, %v", res, err)
+	}
+}

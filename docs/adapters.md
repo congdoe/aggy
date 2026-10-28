@@ -136,6 +136,15 @@ was tested against.
   works but puts the prompt in argv. `--prompt-file` takes no stdin (live
   diagnostic 2026-10-28, grok 1.0.70; verification.md, "Grok headless
   prompt").
+- The `--output-format json` reply is one pretty-printed object over many
+  lines, with top-level `text` (the answer), `stopReason` (`end_turn`),
+  `sessionId`, `requestId`, `cwd`, `thought` (the model's reasoning,
+  never the answer), `usage` (`input_tokens`, `cache_read_input_tokens`,
+  `cache_creation_input_tokens`, `output_tokens`, `reasoning_tokens`,
+  `total_tokens`), `num_turns`, `total_cost_usd`, `total_cost_usd_ticks`,
+  and `modelUsage` (per model) (live 2026-10-28, grok 1.0.70).
+  `ParseHeadless` decodes all of stdout first, then falls back to the
+  last line that holds a whole object.
 - `--version` prints `grok 1.0.70 (f50904eaee6c) [stable]`: version, build
   hash, channel tag (live diagnostic 2026-10-28).
 - Read-only kinds (review, research, news) run with `--sandbox strict`.
@@ -578,7 +587,7 @@ the code until a live check settles them.
 | Grok's cwd encoding under `sessions/` | `grok.EncodeCwd` (`url.QueryEscape`), then the scan fallback. |
 | Claude's JSON reply fields (`result`, `session_id`, `is_error`, `subtype`, `usage`) | Read when present; a reply with none of them is `ErrUnparsed`. |
 | Codex events after `thread.started` (`item.completed` agent messages, `turn.completed` usage, `error`, `turn.failed`) | Read when present; output with no `thread.started` is `ErrUnparsed`. |
-| Grok's reply text field and error field | `grok.TextFields` (`result`, `text`, `response`); an `error` string mapped with `adapter.ClassifyName`. |
+| Grok's reply text field and error field | `grok.TextFields` (`text`, recorded live on 1.0.70; then the unconfirmed `result` and `response`; never `thought`); an `error` string and `is_error`, unconfirmed, mapped with `adapter.ClassifyName`. |
 | Error class names other than `rate_limit` | `adapter.ClassifyName` also accepts Claude Code's likely names (`authentication_failed`, `billing_error`, `server_error`, `error_max_turns`). |
 
 ## Testing an adapter

@@ -27,7 +27,7 @@ func TestBorrowLog(t *testing.T) {
 			`{"events":[{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}]}`, 15, "ok"},
 		{"claude review", adapter.Claude, adapter.Review, "",
 			`{"json":{"type":"result","result":"ok","usage":{"input_tokens":7,"output_tokens":3}}}`, 10, "ok"},
-		{"grok limit", adapter.Grok, adapter.News, "", `{"json":{"error":"rate_limit"},"exit_code":1}`, 0, "rate_limit"},
+		{"grok limit", adapter.Grok, adapter.News, "", `{"json":{"error":"rate_limit"},"exit_code":1}`, 15, "rate_limit"}, // the fake's default usage: 10 in, 5 out
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
