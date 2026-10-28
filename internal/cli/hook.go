@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -15,7 +14,7 @@ import (
 )
 
 const hookUsage = `Usage: aggy hook pretooluse
-       aggy hook --vendor V <event> [payload]
+       aggy hook --vendor V <event>
 
 Called by a vendor CLI's hook, with the JSON payload on stdin. aggy hooks
 install writes these calls into each CLI's hook config.
@@ -24,9 +23,7 @@ install writes these calls into each CLI's hook config.
                run claude -p, codex exec, grok -p, or aggy borrow. An
                accident guard, not a security boundary.
   <event>      a Claude, Codex, or Grok hook event (Stop, StopFailure,
-               StopCancelled, SessionStart, Notification), or notify for
-               Codex's agent-turn-complete notify, which passes its
-               payload as the last argument instead of on stdin. The
+               StopCancelled, SessionStart, Notification). The
                payload is parsed as JSON and forwarded to the aggy
                supervisor running the CLI ($AGGY_SOCKET). Outside aggy,
                or on any failure, it exits 0 and prints nothing to
@@ -58,7 +55,7 @@ func hookWith(args []string, in io.Reader, getenv func(string) string, stdout, s
 			return preToolUse(in, stderr)
 		}
 	}
-	if len(args) < 3 || args[0] != "--vendor" {
+	if len(args) != 3 || args[0] != "--vendor" {
 		fmt.Fprint(stderr, hookUsage)
 		return 1
 	}
@@ -67,23 +64,16 @@ func hookWith(args []string, in io.Reader, getenv func(string) string, stdout, s
 		fmt.Fprintf(stderr, "aggy hook: %v\n", err)
 		return 1
 	}
-	event, rest := args[2], args[3:]
-	notify := v == adapter.Codex && event == "notify"
-	if len(rest) > 1 || (len(rest) == 1) != notify {
-		fmt.Fprint(stderr, hookUsage)
-		return 1
-	}
+	event := args[2]
 	if !hook.Forward(v, getenv) {
 		// Not under aggy, or another vendor's hook (see hook.Forward).
 		// Read the payload anyway, so the CLI's write to the hook's
 		// stdin never fails on a closed pipe.
-		if !notify {
-			drain(in)
-		}
+		drain(in)
 		return 0
 	}
 	done := make(chan string, 1)
-	go func() { done <- forward(v, event, rest, in, getenv) }()
+	go func() { done <- forward(v, event, in, getenv) }()
 	select {
 	case msg := <-done:
 		if msg != "" {
@@ -97,27 +87,14 @@ func hookWith(args []string, in io.Reader, getenv func(string) string, stdout, s
 
 // forward reads the payload, keeps the fields aggy uses, and sends it to
 // the supervisor. It returns why it did not, or "".
-func forward(v adapter.Vendor, event string, rest []string, in io.Reader, getenv func(string) string) string {
-	var raw []byte
-	notify := len(rest) == 1
-	if notify {
-		raw = []byte(rest[0]) // Codex notify: the payload is the last argument
-	} else {
-		b, err := io.ReadAll(io.LimitReader(in, hook.MaxPayload+1))
-		if err != nil || len(b) > hook.MaxPayload {
-			return "the payload could not be read; ignored"
-		}
-		raw = b
+func forward(v adapter.Vendor, event string, in io.Reader, getenv func(string) string) string {
+	raw, err := io.ReadAll(io.LimitReader(in, hook.MaxPayload+1))
+	if err != nil || len(raw) > hook.MaxPayload {
+		return "the payload could not be read; ignored"
 	}
 	payload, err := hook.Project(v, raw)
 	if err != nil {
 		return err.Error() + "; ignored"
-	}
-	if notify {
-		if !isNotify(payload) {
-			return "" // another notify type: nothing aggy uses
-		}
-		event = hook.NotifyType
 	}
 	dir, err := home.Dir()
 	if err != nil {
@@ -145,16 +122,6 @@ func drain(in io.Reader) {
 	case <-done:
 	case <-time.After(hookTimeout):
 	}
-}
-
-// isNotify reports whether a projected Codex notify payload is the
-// agent-turn-complete type.
-func isNotify(payload []byte) bool {
-	var p struct {
-		Type string `json:"type"`
-	}
-	_ = json.Unmarshal(payload, &p)
-	return p.Type == hook.NotifyType
 }
 
 // preToolUse runs the borrow children's guard.

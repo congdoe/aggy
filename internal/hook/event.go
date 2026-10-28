@@ -13,8 +13,7 @@ import (
 //   - Claude: code.claude.com/docs/en/hooks.md ("Common input fields";
 //     SessionStart, Stop, StopFailure, and Notification input).
 //   - Codex 0.164.0: hooks/schema/generated/session-start.command.input.schema.json
-//     and stop.command.input.schema.json; the legacy notify payload,
-//     hooks/src/legacy_notify.rs#L16 (kebab-case keys, "type").
+//     and stop.command.input.schema.json.
 //   - Grok: grok-build 2bdd1d6a, crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md
 //     (camelCase keys: sessionId, hookEventName, error, errorDetails,
 //     reason, notificationType).
@@ -29,8 +28,7 @@ var keep = map[adapter.Vendor][]string{
 	adapter.Claude: {"session_id", "hook_event_name", "cwd", "transcript_path", "source", "model",
 		"permission_mode", "stop_hook_active", "error", "error_details", "notification_type"},
 	adapter.Codex: {"session_id", "hook_event_name", "cwd", "transcript_path", "source", "model",
-		"permission_mode", "turn_id", "stop_hook_active",
-		"type", "thread-id", "turn-id"}, // notify
+		"permission_mode", "turn_id", "stop_hook_active"},
 	adapter.Grok: {"sessionId", "hookEventName", "cwd", "workspaceRoot", "timestamp", "permissionMode",
 		"stopHookActive", "error", "errorDetails", "reason", "notificationType"},
 }
@@ -77,19 +75,9 @@ func Parse(v adapter.Vendor, payload []byte) Event {
 	switch v {
 	case adapter.Grok:
 		return Event{SessionID: s("sessionId"), Error: s("error"), Reason: s("reason")}
-	case adapter.Codex:
-		id := s("session_id")
-		if id == "" && s("type") == NotifyType {
-			id = s("thread-id")
-		}
-		return Event{SessionID: id, Source: s("source")}
 	}
 	return Event{SessionID: s("session_id"), Source: s("source"), Error: s("error")}
 }
-
-// NotifyType is the type of the Codex legacy notify payload aggy
-// handles (legacy_notify.rs#L15).
-const NotifyType = "agent-turn-complete"
 
 // Forward reports whether a hook installed for vendor label should be
 // forwarded, given the hook's environment.
