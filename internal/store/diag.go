@@ -515,30 +515,43 @@ func (v *DiagView) DiagVersion(ctx context.Context) (int, error) {
 	return n, ReadError(err)
 }
 
-// QueryMaxValue is the most bytes one string or blob may hold in a
-// Query: SQLite's length limit on its connection, so a statement that
-// builds or reads a bigger value (randomblob(5e8)) fails with "string or
-// blob too big" before allocating it. It also caps a row SQLite builds,
-// such as a sorter record. aggy's own rows are far smaller.
-const QueryMaxValue = 16 << 20
+// QueryMaxValue and QueryMaxColumns bound what one Query row can hold,
+// through SQLite's limits on its connection: no string or blob longer
+// than QueryMaxValue bytes (a statement that builds or reads one, such as
+// randomblob(5e8), fails with "string or blob too big" before allocating
+// it; the limit also caps a row SQLite builds, such as a sorter record),
+// and no result wider than QueryMaxColumns. aggy diag sql prints at most
+// 64 KiB of a value anyway. The aggregates that build one value from
+// many rows past these checks (json_group_array, json_group_object) are
+// denied by the read-only authorizer.
+const (
+	QueryMaxValue   = 1 << 20
+	QueryMaxColumns = 64
+)
 
 // Query runs one read-only statement (aggy diag sql) and calls row for
 // each result row as it is read, at most limit rows (0: no cap), each
-// value as SQLite gave it, none longer than QueryMaxValue; cols is called
-// first with the column names. It reports whether it stopped at limit.
-// ctx bounds the query: SQLite is interrupted when it ends.
+// value as SQLite gave it, none longer than QueryMaxValue and at most
+// QueryMaxColumns of them; cols is called first with the column names.
+// It reports whether it stopped at limit. ctx bounds the query: SQLite
+// is interrupted when it ends.
 func (v *DiagView) Query(ctx context.Context, q string, limit int, cols func([]string) error, row func([]any) error) (bool, error) {
 	conn, err := v.db.Conn(ctx)
 	if err != nil {
 		return false, ReadError(err)
 	}
 	defer func() { _ = conn.Close() }()
-	old, err := sqlite.Limit(conn, sqlite3.SQLITE_LIMIT_LENGTH, QueryMaxValue)
-	if err != nil {
-		return false, err
+	for _, l := range []struct{ id, max int }{
+		{sqlite3.SQLITE_LIMIT_LENGTH, QueryMaxValue},
+		{sqlite3.SQLITE_LIMIT_COLUMN, QueryMaxColumns},
+	} {
+		old, err := sqlite.Limit(conn, l.id, l.max)
+		if err != nil {
+			return false, err
+		}
+		// The connection goes back to the pool: restore its limit after.
+		defer func() { _, _ = sqlite.Limit(conn, l.id, old) }()
 	}
-	// The connection goes back to the pool: restore its limit after.
-	defer func() { _, _ = sqlite.Limit(conn, sqlite3.SQLITE_LIMIT_LENGTH, old) }()
 	rows, err := conn.QueryContext(ctx, q)
 	if err != nil {
 		return false, ReadError(err)

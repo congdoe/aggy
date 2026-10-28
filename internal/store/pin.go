@@ -19,7 +19,8 @@ import (
 // available form instead:
 //
 //   - before the open, Lstat the database: it must be a regular file with
-//     one link, not a symlink, and its -wal and -shm regular or absent;
+//     one link, not a symlink, and its -journal, -wal, and -shm regular
+//     or absent (a FIFO there would hang SQLite's hot-journal open);
 //   - after every connection SQLite opens (database/sql opens more
 //     later, each reopening the path), Lstat again and refuse the
 //     connection unless the file is still the one pinned, by identity,
@@ -28,14 +29,24 @@ import (
 // A swap inside the window between the two Lstats is refused, but SQLite
 // may already have read or written what it opened by then (the WAL switch
 // writes the header). Closing that needs the flag.
+//
+// The main file is open once a connection is, but the sidecars may not
+// be: OpenReadOnly and OpenExisting run no statement while connecting
+// (OpenDiagView's ATTACH does), so SQLite opens -wal and -shm (and a hot
+// -journal) at the first query, after confirm. For those two the sidecar
+// check is a pre-check.
+// What covers a sidecar planted after it is SQLite itself: its unix VFS
+// refuses to open a journal, -wal, or -shm that is a symlink, with
+// SQLITE_CANTOPEN (TestSidecarSymlinkAfterConfirm).
 
 // testHookBeforeOpen, when set, runs between the pin and SQLite's open of
-// a connection, so a test can swap the file in that window.
-var testHookBeforeOpen func()
+// a connection, so a test can swap the file in that window;
+// testHookAfterConfirm runs after a connection's pins are confirmed.
+var testHookBeforeOpen, testHookAfterConfirm func()
 
 // pinDB returns the identity of the database file at path, refusing a
-// symlink, a non-regular or multiply-linked file there or at its -wal or
-// -shm. The file must exist.
+// symlink, a non-regular or multiply-linked file there or at its
+// -journal, -wal, or -shm. The file must exist.
 func pinDB(path string) (fs.FileInfo, error) {
 	fi, err := safefs.Lstat(path)
 	if err != nil {
@@ -44,7 +55,7 @@ func pinDB(path string) (fs.FileInfo, error) {
 	if err := plainFile(path, fi); err != nil {
 		return nil, err
 	}
-	for _, p := range []string{path + "-wal", path + "-shm"} {
+	for _, p := range []string{path + "-journal", path + "-wal", path + "-shm"} {
 		wfi, err := safefs.Lstat(p)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
@@ -85,7 +96,7 @@ func (p dbPin) confirm() error {
 	if !os.SameFile(p.want, fi) {
 		return &fs.PathError{Op: "store", Path: p.path, Err: safefs.ErrChanged}
 	}
-	for _, f := range []string{p.path, p.path + "-wal", p.path + "-shm"} {
+	for _, f := range []string{p.path, p.path + "-journal", p.path + "-wal", p.path + "-shm"} {
 		if err := safefs.Check(f); err != nil {
 			return err
 		}
@@ -114,6 +125,9 @@ func (c pinned) Connect(ctx context.Context) (driver.Conn, error) {
 			_ = conn.Close()
 			return nil, err
 		}
+	}
+	if testHookAfterConfirm != nil {
+		testHookAfterConfirm()
 	}
 	return conn, nil
 }

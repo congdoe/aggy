@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/congdoe/aggy/internal/safefs"
@@ -116,12 +117,24 @@ func (c selectOnly) Connect(ctx context.Context) (driver.Conn, error) {
 	return conn, nil
 }
 
-// readOnlyAuthorizer allows reading tables, functions, and recursive
-// queries, and the one PRAGMA read aggy uses, user_version, without a
-// value. Everything else is denied when the statement is compiled.
+// unboundedFuncs are the aggregates that build one value from every row
+// and are not stopped by SQLite's length limit until they have used
+// memory far past it (aggy diag sql, T6777 D64-1). aggy never calls them.
+var unboundedFuncs = []string{"json_group_array", "json_group_object", "jsonb_group_array", "jsonb_group_object"}
+
+// readOnlyAuthorizer allows reading tables, functions (but not
+// unboundedFuncs), and recursive queries, and the one PRAGMA read aggy
+// uses, user_version, without a value. Everything else is denied when
+// the statement is compiled.
 func readOnlyAuthorizer(action sqlite.AuthorizerActionCode, arg1, arg2, _, _ string) sqlite.AuthorizerReturnCode {
 	switch action {
-	case sqlite.AuthSelect, sqlite.AuthRead, sqlite.AuthFunction, sqlite.AuthRecursive:
+	case sqlite.AuthFunction:
+		// arg2 is the function's name.
+		if slices.ContainsFunc(unboundedFuncs, func(f string) bool { return strings.EqualFold(f, arg2) }) {
+			return sqlite.AuthorizerDeny
+		}
+		return sqlite.AuthorizerOK
+	case sqlite.AuthSelect, sqlite.AuthRead, sqlite.AuthRecursive:
 		return sqlite.AuthorizerOK
 	case sqlite.AuthPragma:
 		if strings.EqualFold(arg1, "user_version") && arg2 == "" {
