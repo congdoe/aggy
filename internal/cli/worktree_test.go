@@ -2,14 +2,18 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/fakecli"
 	"github.com/congdoe/aggy/internal/store"
 )
@@ -191,4 +195,118 @@ func TestBorrowEditCommand(t *testing.T) {
 	if len(entries) != 1 {
 		t.Errorf("worktrees: %v", entries)
 	}
+}
+
+// TestWorktreeCopy (T6688): only listed files that are ignored, regular,
+// and reached through no symlink are copied into a new worktree; nothing
+// is replaced.
+func TestWorktreeCopy(t *testing.T) {
+	g, _ := newWorktrees(t)
+	var out strings.Builder
+	g.out = &out
+	repo, _ := filepath.EvalSymlinks(t.TempDir())
+	gitRepo(t, repo)
+	mustWrite(t, filepath.Join(repo, ".gitignore"), "*.env\nlocal/\n", 0o600)
+	gitIn(t, repo, "add", ".gitignore")
+	gitIn(t, repo, "commit", "-q", "-m", "ignore")
+	outside := t.TempDir()
+	mustWrite(t, filepath.Join(outside, "secret.env"), "OUTSIDE=1\n", 0o600)
+	mustWrite(t, filepath.Join(repo, ".env"), "KEY=1\n", 0o600)
+	mustWrite(t, filepath.Join(repo, "local", "deep", "x.env"), "DEEP=1\n", 0o600)
+	mustWrite(t, filepath.Join(repo, "hard.env"), "HARD=1\n", 0o600)
+	if err := os.Link(filepath.Join(repo, "hard.env"), filepath.Join(outside, "hard2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.env"), filepath.Join(repo, "link.env")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(repo, "local", "out")); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(repo, ".aggy", "config.toml"),
+		`[worktree]
+copy = [".env", "local/deep/x.env", "link.env", "local/out/secret.env", "hard.env", "a.go", "missing.env"]
+`, 0o600)
+	wt, err := g.Create(context.Background(), repo, "2123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rel, want := range map[string]string{".env": "KEY=1\n", "local/deep/x.env": "DEEP=1\n"} {
+		if data, err := os.ReadFile(filepath.Join(wt.Path, rel)); err != nil || string(data) != want {
+			t.Errorf("%s = %q, %v", rel, data, err)
+		}
+	}
+	for _, rel := range []string{"link.env", "local/out", "hard.env"} {
+		if _, err := os.Lstat(filepath.Join(wt.Path, rel)); err == nil {
+			t.Errorf("%s was copied", rel)
+		}
+	}
+	// a.go is tracked: the worktree keeps HEAD's, not the main checkout's.
+	if data, _ := os.ReadFile(filepath.Join(wt.Path, "a.go")); strings.Contains(string(data), "Uncommitted") {
+		t.Error("a.go was replaced")
+	}
+	for _, w := range []string{"link.env: not a regular file", "local/out/secret.env: local/out is not a real directory", "hard.env:", "a.go: not ignored", "missing.env: not in the main checkout"} {
+		if !strings.Contains(out.String(), w) {
+			t.Errorf("output lacks %q:\n%s", w, out.String())
+		}
+	}
+}
+
+// TestWorktreeSetup (T6688): the repo's setup command is shown, and runs
+// only when the person's config allows that command for that repo; a
+// failing setup fails the worktree, which is removed.
+func TestWorktreeSetup(t *testing.T) {
+	repo, _ := filepath.EvalSymlinks(t.TempDir())
+	setup := `[worktree]
+setup = ["/bin/sh", "-c", "echo ran > setup.out; exit $FAIL"]
+`
+	cmd := []string{"/bin/sh", "-c", "echo ran > setup.out; exit $FAIL"}
+	tests := []struct {
+		name    string
+		allow   []config.SetupApproval
+		ran     bool
+		wantOut string
+	}{
+		{"not allowed", nil, false, "was not run"},
+		{"another command allowed", []config.SetupApproval{{Repo: repo, Command: []string{"/bin/sh", "-c", "true"}}}, false, "[[worktree.allow_setup]]"},
+		{"another repo allowed", []config.SetupApproval{{Repo: t.TempDir(), Command: cmd}}, false, "was not run"},
+		{"allowed", []config.SetupApproval{{Repo: repo, Command: cmd}}, true, "running the repo's worktree setup command"},
+	}
+	gitRepo(t, repo)
+	mustWrite(t, filepath.Join(repo, ".gitignore"), "setup.out\n", 0o600)
+	gitIn(t, repo, "add", ".gitignore")
+	gitIn(t, repo, "commit", "-q", "-m", "ignore")
+	mustWrite(t, filepath.Join(repo, ".aggy", "config.toml"), setup, 0o600)
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g, _ := newWorktrees(t)
+			g.env.setupRun = execrun.ExecRunner(time.Minute)
+			var out strings.Builder
+			g.out, g.allow = &out, config.UserWorktree{AllowSetup: tt.allow}
+			wt, err := g.Create(context.Background(), repo, fmt.Sprintf("%016x", 0x3123456789abcd00+i))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, serr := os.Stat(filepath.Join(wt.Path, "setup.out"))
+			if (serr == nil) != tt.ran || !strings.Contains(out.String(), tt.wantOut) || !strings.Contains(out.String(), `"/bin/sh" "-c"`) {
+				t.Errorf("ran %v, output:\n%s", serr == nil, out.String())
+			}
+		})
+	}
+	t.Run("failing", func(t *testing.T) {
+		g, state := newWorktrees(t)
+		g.env.setupRun = execrun.ExecRunner(time.Minute)
+		g.allow = config.UserWorktree{AllowSetup: []config.SetupApproval{{Repo: repo, Command: []string{"/bin/sh", "-c", "echo broke >&2; exit 3"}}}}
+		mustWrite(t, filepath.Join(repo, ".aggy", "config.toml"), "[worktree]\nsetup = [\"/bin/sh\", \"-c\", \"echo broke >&2; exit 3\"]\n", 0o600)
+		_, err := g.Create(context.Background(), repo, "4123456789abcdef")
+		if err == nil || !strings.Contains(err.Error(), "exit 3: broke") {
+			t.Fatalf("err = %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(state, worktreesDir, "4123456789abcdef")); !os.IsNotExist(err) {
+			t.Errorf("worktree left: %v", err)
+		}
+		if b := gitIn(t, repo, "branch", "--list", "aggy/edit-4123456789abcdef"); b != "" {
+			t.Errorf("branch left: %q", b)
+		}
+	})
 }
