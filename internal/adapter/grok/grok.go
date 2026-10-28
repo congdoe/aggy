@@ -36,8 +36,8 @@ func New() Adapter { return Adapter{} }
 // Vendor returns adapter.Grok.
 func (Adapter) Vendor() adapter.Vendor { return adapter.Grok }
 
-// Tested is the Grok Build CLI version range this adapter was tested on: the
-// version the facts in docs/adapters.md were verified with.
+// Tested is the Grok Build CLI version range this adapter was tested on:
+// the version the facts in docs/adapters.md were verified with.
 var Tested = adapter.VersionRange{Min: "1.0.70", Max: "1.0.70"}
 
 // TestedVersions returns Tested.
@@ -57,15 +57,12 @@ func (a Adapter) Probe(ctx context.Context, run adapter.Runner) (adapter.Probe, 
 	return probe.Detect(ctx, run, adapter.Grok, path)
 }
 
-// Tool allowlists per kind, passed with --tools. The names come from the
-// verified runs in docs/adapters.md: the news run kept web_search,
-// x_keyword_search, and x_semantic_search, image generation used
-// image_gen, and the deny list named the file and shell tools.
+// Tool lists, from the verified runs in docs/adapters.md: the news run
+// kept web_search, x_keyword_search, and x_semantic_search, image
+// generation used image_gen, and the isolation run's deny list named the
+// file, shell, fetch, and agent tools.
 var (
-	// SearchTools is research and news: search only, no file, shell, or
-	// fetch tool. The verified isolation run used --disallowed-tools; that
-	// --tools alone is an allowlist that removes every other tool is
-	// unconfirmed (it did drop the bundled imagine skill in the image run).
+	// SearchTools is research and news, and the only tools they may have.
 	SearchTools = []string{"web_search", "x_keyword_search", "x_semantic_search"}
 	// ImageTools is image generation. image_edit, added on resume, is
 	// unverified headless.
@@ -74,29 +71,64 @@ var (
 	VideoTools = []string{"video_gen"}
 	// ReadTools is review, which also runs with --permission-mode plan.
 	ReadTools = []string{"read_file", "grep", "list_dir"}
-	// EditTools is edit, in its own worktree.
-	EditTools = []string{"read_file", "grep", "list_dir", "write", "search_replace", "run_terminal_cmd"}
-	// isolationDenied may never be added to research or news: the verified
-	// isolation deny list.
-	isolationDenied = []string{"read_file", "grep", "list_dir", "write", "search_replace", "run_terminal_cmd", "web_fetch", "Agent"}
-	// writeTools may not be added to a read-only kind.
-	writeTools = []string{"write", "search_replace", "run_terminal_cmd"}
+	// EditTools is edit, in its own worktree. No shell: aggy check runs
+	// the tests.
+	EditTools = []string{"read_file", "grep", "list_dir", "write", "search_replace"}
+	// VerifiedDeny is the --disallowed-tools list of the verified
+	// isolation run. Every run passes it, minus the tools its kind uses,
+	// so isolation holds even if --tools is not a strict allowlist.
+	VerifiedDeny = []string{"read_file", "grep", "list_dir", "write", "search_replace", "run_terminal_cmd", "web_fetch", "Agent"}
 )
 
-// modelArgs passes a model through unchanged. --model is not recorded in
-// docs/adapters.md (unconfirmed); an empty model adds nothing.
-func modelArgs(model string) []string {
-	if model == "" {
-		return nil
+// permitted lists the tools each kind may have: its own and, through
+// AllowedTools, nothing else.
+func permitted(k adapter.Kind) []string {
+	switch k {
+	case adapter.Research, adapter.News:
+		return SearchTools
+	case adapter.Image:
+		return append(slices.Clone(ImageTools), "image_edit")
+	case adapter.Video:
+		return VideoTools
+	case adapter.Review:
+		return ReadTools
+	case adapter.Edit:
+		return EditTools
 	}
-	return []string{"--model", model}
+	return nil
+}
+
+// canonical returns the permitted tool named t, compared
+// case-insensitively, or false.
+func canonical(k adapter.Kind, t string) (string, bool) {
+	for _, p := range permitted(k) {
+		if strings.EqualFold(p, t) {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// modelArgs passes a model through unchanged, after adapter.ValidModel.
+// --model is not recorded in docs/adapters.md (unconfirmed); an empty
+// model adds nothing.
+func modelArgs(model string) ([]string, error) {
+	if err := adapter.ValidModel(model); err != nil || model == "" {
+		return nil, err
+	}
+	return []string{"--model", model}, nil
 }
 
 // sessionArgs is as on Claude: --session-id <uuid>, --resume <id>, and
-// --fork-session.
+// --fork-session. Every id passes adapter.ValidSessionID, so none can be
+// read as a flag.
 func sessionArgs(sessionID, resume string, fork bool) ([]string, error) {
-	if sessionID != "" && !adapter.IsUUID(sessionID) {
-		return nil, fmt.Errorf("grok: --session-id takes a UUID, got %q", sessionID)
+	for _, id := range []string{sessionID, resume} {
+		if id != "" {
+			if err := adapter.ValidSessionID(adapter.Grok, id); err != nil {
+				return nil, err
+			}
+		}
 	}
 	switch {
 	case resume == "" && fork:
@@ -124,7 +156,11 @@ func sessionArgs(sessionID, resume string, fork bool) ([]string, error) {
 // session start is unconfirmed (T6619).
 func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, error) {
 	args := []string{"--no-alt-screen"}
-	args = append(args, modelArgs(req.Model)...)
+	m, err := modelArgs(req.Model)
+	if err != nil {
+		return adapter.Command{}, err
+	}
+	args = append(args, m...)
 	s, err := sessionArgs(req.SessionID, req.Resume, req.Fork)
 	if err != nil {
 		return adapter.Command{}, err
@@ -140,12 +176,14 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 }
 
 // Headless builds grok -p --output-format json with the prompt file as
-// stdin (that grok -p reads its prompt from stdin is unconfirmed). Tools
-// are an allowlist per kind (see SearchTools and the others) plus
-// AllowedTools, and WebSearch adds web_search. Research and news refuse
-// any file, shell, or fetch tool; other read-only kinds refuse write
-// tools. Review runs with --permission-mode plan. MaxTurns sets
-// --max-turns. RefImages are ErrUnsupported (no recorded flag).
+// stdin (that grok -p reads its prompt from stdin is unconfirmed). Each
+// kind gets a fixed --tools allowlist and --disallowed-tools with the
+// verified deny list minus those tools. AllowedTools may only name tools
+// the kind already permits (compared case-insensitively): research and
+// news get search tools and nothing else, review read tools only. Review
+// runs with --permission-mode plan, MaxTurns sets --max-turns, and
+// research and news need IsolatedCwd. Web search outside research and
+// news, and RefImages (no recorded flag), are ErrUnsupported.
 func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	if err := adapter.CheckAbs("prompt file", req.PromptFile); err != nil {
 		return adapter.Command{}, err
@@ -155,6 +193,12 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	}
 	if len(req.RefImages) > 0 {
 		return adapter.Command{}, fmt.Errorf("grok: reference images: %w", adapter.ErrUnsupported)
+	}
+	if err := adapter.CheckWebSearch(adapter.Grok, req); err != nil {
+		return adapter.Command{}, err
+	}
+	if err := adapter.CheckIsolated(adapter.Grok, req); err != nil {
+		return adapter.Command{}, err
 	}
 	var tools []string
 	plan := false
@@ -175,25 +219,27 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	default:
 		return adapter.Command{}, fmt.Errorf("grok: unknown kind %q", req.Kind)
 	}
-	extra := slices.Clone(req.AllowedTools)
-	if req.WebSearch {
-		extra = append(extra, "web_search")
-	}
-	for _, t := range extra {
-		switch {
-		case t == "" || strings.ContainsAny(t, ", \t\n"):
-			return adapter.Command{}, fmt.Errorf("grok: bad tool name %q", t)
-		case (req.Kind == adapter.Research || req.Kind == adapter.News) && slices.Contains(isolationDenied, t):
-			return adapter.Command{}, fmt.Errorf("grok: %s may not use %s: research and news stay isolated", req.Kind, t)
-		case req.Kind.ReadOnly() && slices.Contains(writeTools, t):
-			return adapter.Command{}, fmt.Errorf("grok: %s is read-only and may not use %s", req.Kind, t)
+	for _, t := range req.AllowedTools {
+		c, ok := canonical(req.Kind, t)
+		if !ok {
+			return adapter.Command{}, fmt.Errorf("grok: %s may use only %s, not %q", req.Kind, strings.Join(permitted(req.Kind), ", "), t)
 		}
-		if !slices.Contains(tools, t) {
-			tools = append(tools, t)
+		if !slices.Contains(tools, c) {
+			tools = append(tools, c)
+		}
+	}
+	var deny []string
+	for _, d := range VerifiedDeny {
+		if !slices.Contains(tools, d) {
+			deny = append(deny, d)
 		}
 	}
 	args := []string{"-p", "--output-format", "json"}
-	args = append(args, modelArgs(req.Model)...)
+	m, err := modelArgs(req.Model)
+	if err != nil {
+		return adapter.Command{}, err
+	}
+	args = append(args, m...)
 	s, err := sessionArgs(req.SessionID, req.Resume, false)
 	if err != nil {
 		return adapter.Command{}, err
@@ -202,7 +248,7 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	if plan {
 		args = append(args, "--permission-mode", "plan")
 	}
-	args = append(args, "--tools", strings.Join(tools, ","))
+	args = append(args, "--tools", strings.Join(tools, ","), "--disallowed-tools", strings.Join(deny, ","))
 	if req.MaxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(req.MaxTurns))
 	}
@@ -216,15 +262,21 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 // sessionId is recorded in Grok's JSON; these names are unconfirmed.
 var TextFields = []string{"result", "text", "response"}
 
-// ParseHeadless reads the JSON reply: sessionId (recorded), the final text
-// from the first of TextFields present, and the error class from an
-// "error" field or the stderr text. Grok's classes mirror Claude Code's,
-// so rate_limit maps to rate_limit.
+// ParseHeadless reads the JSON reply: sessionId (recorded; checked with
+// adapter.ValidSessionID, and a pre-assigned id is kept, with an error if
+// the reply names another), and the final text from the first of
+// TextFields present.
+//
+// The error class comes from the JSON "error" field, mapped with
+// adapter.ClassifyName (Grok's classes mirror Claude Code's), and
+// is_error. The CLI's stderr is read for "rate_limit" only when the run
+// exited non-zero with no JSON error.
 func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (adapter.HeadlessResult, error) {
-	res := adapter.HeadlessResult{SessionID: req.SessionID}
-	if res.SessionID == "" {
-		res.SessionID = req.Resume
+	assigned := req.SessionID
+	if assigned == "" {
+		assigned = req.Resume
 	}
+	res := adapter.HeadlessResult{SessionID: assigned}
 	var obj map[string]any
 	parsed := false
 	lines := bytes.Split(bytes.TrimSpace(out.Stdout), []byte("\n"))
@@ -234,9 +286,11 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 	}
 	errName := ""
 	isError := false
+	var idErr error
 	if parsed {
-		if id, ok := obj["sessionId"].(string); ok && id != "" {
-			res.SessionID = id
+		reported, _ := obj["sessionId"].(string)
+		if reported != "" || req.SessionID != "" {
+			res.SessionID, idErr = adapter.ParsedSessionID(adapter.Grok, req.SessionID, reported)
 		}
 		for _, f := range TextFields {
 			if s, ok := obj[f].(string); ok {
@@ -248,13 +302,13 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 		isError, _ = obj["is_error"].(bool)
 	}
 	if out.ExitCode == 0 && errName == "" && !isError && parsed {
-		return res, nil
+		return res, idErr
 	}
 	stderr := string(out.Stderr)
 	switch {
 	case errName != "":
 		res.Error = adapter.ClassifyName(errName)
-	case strings.Contains(stderr, "rate_limit"):
+	case out.ExitCode != 0 && strings.Contains(stderr, "rate_limit"):
 		res.Error = adapter.ErrRateLimit
 	default:
 		res.Error = adapter.ErrUnknown
@@ -263,7 +317,7 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 	if !parsed && out.ExitCode == 0 {
 		return res, fmt.Errorf("grok: %w", adapter.ErrUnparsed)
 	}
-	return res, nil
+	return res, idErr
 }
 
 // Home is Grok's config directory: $GROK_HOME, else ~/.grok.
@@ -290,11 +344,15 @@ func EncodeCwd(cwd string) string { return url.QueryEscape(cwd) }
 // under the Grok home. When that folder is missing (the cwd encoding is
 // unconfirmed, or the CLI saw the cwd with symlinks resolved), it falls
 // back to the one sessions/*/<sessionId>/images folder; several matches are
-// an error, not a guess. It returns paths only and copies nothing.
+// an error, not a guess. An id that fails adapter.ValidSessionID is an
+// error. It returns paths only and copies nothing.
 func (a Adapter) Artifacts(req adapter.HeadlessRequest, res adapter.HeadlessResult) ([]adapter.Artifact, error) {
 	id := res.SessionID
-	if id == "" || id != filepath.Base(id) || id == "." || id == ".." {
+	if id == "" {
 		return nil, nil
+	}
+	if err := adapter.ValidSessionID(adapter.Grok, id); err != nil {
+		return nil, err
 	}
 	home := a.Home()
 	if !filepath.IsAbs(home) {
