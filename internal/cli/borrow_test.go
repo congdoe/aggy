@@ -177,6 +177,8 @@ func TestBorrowCommandRefusals(t *testing.T) {
 	}{
 		{"edit", []string{"edit", "fix"}, 2, "edit comes in M3"},
 		{"unknown kind", []string{"chat", "hi"}, 2, "unknown kind"},
+		{"vendor not installed", []string{"image", "a cat", "--vendor", "codex"}, 1, "codex is not connected"},
+		{"both", []string{"research", "q", "--vendor", "both"}, 1, "only one vendor supports research right now"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
