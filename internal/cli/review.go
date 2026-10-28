@@ -243,6 +243,12 @@ const maxAuthorCommits = 1000
 // vendor is ignored, and any git failure gives none (the normal route).
 // git runs with gitSafe and without signature checks, so no program from
 // the repo's config runs.
+//
+// Trailers are best-effort and forgeable: anyone can commit with
+// AGGY_VENDOR set, or skip the hook and write one by hand, to steer a
+// review back to the real author (never past allowed_vendors).
+// TODO(T6747): route on aggy's own store record of which vendor made an
+// edit, and keep trailers as a fallback.
 func (e borrowEnv) reviewAuthors(ctx context.Context, root, base string) []adapter.Vendor {
 	if !validRef(base) {
 		return nil
