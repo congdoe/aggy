@@ -1,4 +1,4 @@
--- aggy index schema, version 7: a change row says whether it was planned
+-- aggy index schema, version 8: a change row says whether it was planned
 -- without the per-target lock (a file system without flock). aggy unwire
 -- trusts a newer change's plan as proof that an older pending change had
 -- not written only when that plan held the lock.
