@@ -13,6 +13,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/aggydir"
+	"github.com/congdoe/aggy/internal/redact"
 	"github.com/congdoe/aggy/internal/safefs"
 )
 
@@ -260,8 +261,10 @@ func deliver(req Request, res Result, kept []media, sessionID string, created ti
 		if err != nil {
 			return out, err
 		}
+		// The sidecar sits in the repo: the prompt goes in redacted.
+		prompt, _ := redact.Lines(req.Task)
 		data, err := json.MarshalIndent(Sidecar{
-			Prompt: req.Task, Kind: string(req.Kind), Vendor: string(res.Vendor), Model: res.Model,
+			Prompt: prompt, Kind: string(req.Kind), Vendor: string(res.Vendor), Model: res.Model,
 			SessionID: sessionID, Borrow: res.ID, Created: created.UTC(),
 		}, "", "  ")
 		if err != nil {

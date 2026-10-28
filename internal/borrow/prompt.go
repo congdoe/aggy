@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/redact"
 )
 
 // Prompt is everything a borrow child is told. It holds no parent
@@ -36,35 +37,59 @@ const webReport = "Use these sections, in this order: `## Summary` (at most 8 li
 	"`## Findings`, `## Sources` (one line each: title, URL, and publish date as YYYY-MM-DD, or \"date unknown\"), " +
 	"`## As of` (the newest date your sources cover), and `## Open questions`. Cite a source for every finding."
 
-// Text renders the prompt as Markdown.
+// Text renders the prompt as Markdown. Every part the caller passed (the
+// task, paths, constraints, and review material) is redacted on its own
+// (redact.Lines) before it goes in, and the prompt says how many lines
+// were removed. Only the prompt file the child reads is built here.
 func (p Prompt) Text() string {
+	removed := 0
+	clean := func(s string) string {
+		s, n := redact.Lines(s)
+		removed += n
+		return s
+	}
 	var b strings.Builder
 	b.WriteString("You are a headless helper for another coding agent. Do the one task below and reply with a short Markdown report.\n")
 	b.WriteString("Start the report with a one-line summary. Do not start other agents or CLIs.\n\n")
 	fmt.Fprintf(&b, "Kind: %s\nToday's date: %s\n\n", p.Kind, p.Today.Format("2006-01-02"))
 	b.WriteString("## Task\n\n")
-	b.WriteString(strings.TrimSpace(p.Task))
+	b.WriteString(strings.TrimSpace(clean(p.Task)))
 	b.WriteString("\n")
-	if len(p.Paths) > 0 {
-		b.WriteString("\n## Paths\n\n")
-		for _, x := range p.Paths {
+	list := func(title string, xs []string) {
+		var keep []string
+		for _, x := range xs {
+			if x = strings.TrimSpace(clean(x)); x != "" {
+				keep = append(keep, x)
+			}
+		}
+		if len(keep) == 0 {
+			return
+		}
+		fmt.Fprintf(&b, "\n## %s\n\n", title)
+		for _, x := range keep {
 			fmt.Fprintf(&b, "- %s\n", x)
 		}
 	}
-	if len(p.Constraints) > 0 {
-		b.WriteString("\n## Constraints\n\n")
-		for _, x := range p.Constraints {
-			fmt.Fprintf(&b, "- %s\n", strings.TrimSpace(x))
-		}
-	}
+	list("Paths", p.Paths)
+	list("Constraints", p.Constraints)
 	if g := kindGuide[p.Kind]; g != "" {
 		fmt.Fprintf(&b, "\n## Report\n\n%s\n", g)
 	}
 	if p.Material != nil {
 		b.WriteString("\n## Material\n\n")
-		b.WriteString(p.Material.Text(MaxMaterial))
+		text, n := p.Material.Text(MaxMaterial)
+		removed += n
+		b.WriteString(text)
+	}
+	if removed > 0 {
+		fmt.Fprintf(&b, "\n%s\n", removedNote(removed, "this prompt"))
 	}
 	return b.String()
+}
+
+// removedNote says that n secret-looking lines were removed from what.
+func removedNote(n int, what string) string {
+	return fmt.Sprintf("%d lines that looked like secrets (keys, tokens, private keys, secret settings) were removed from %s.", n, what)
 }
 
 // Excerpt returns up to n non-empty lines of text, each cut to width
