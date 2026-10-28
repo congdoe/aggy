@@ -39,6 +39,8 @@ func TestMarkRedone(t *testing.T) {
 		{"rejected edit, then another edit", []statRow{rejected, row("edit", "codex", "ok", "h2", "p", 7, 9)}, []bool{true, false}},
 		{"rejected edit, nothing after", []statRow{rejected}, []bool{false}},
 		{"accepted edit, then another edit", []statRow{row("edit", "codex", "ok", "h1", "p", 0, 5), row("edit", "codex", "ok", "h2", "p", 7, 9)}, []bool{false, false}},
+		{"a 24-hour borrow, then a re-ask", []statRow{row("news", "grok", "ok", "h", "p", 0, 24*60), row("news", "codex", "ok", "h", "p", 25*60, 25*60+1)}, []bool{true, false}},
+		{"an end past any budget stops the scan", []statRow{row("news", "grok", "ok", "h", "p", 0, 10*24*60), row("news", "codex", "ok", "h", "p", 10*24*60+1, 10*24*60+2)}, []bool{false, false}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
