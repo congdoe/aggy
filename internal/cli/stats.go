@@ -66,12 +66,21 @@ func runStats(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer func() { _ = s.Close() }()
+	known, err := store.KnownVersion()
+	if err != nil {
+		fmt.Fprintf(stderr, "aggy stats: %v\n", err)
+		return 1
+	}
 	if v, err := s.Version(ctx); err != nil {
 		fmt.Fprintf(stderr, "aggy stats: %v\n", err)
 		return 1
 	} else if v < store.StatsSchema {
 		fmt.Fprintf(stdout, "The index is at schema version %d, older than aggy stats reads. Run another aggy command to upgrade it.\n", v)
 		return 0
+	} else if v > known {
+		// A newer aggy may have changed what the rows mean.
+		fmt.Fprintf(stderr, "aggy stats: the index is at schema version %d, newer than this aggy knows (%d); update aggy to read it\n", v, known)
+		return 1
 	}
 	stats, err := s.BorrowStats(ctx)
 	if err != nil {

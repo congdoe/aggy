@@ -247,6 +247,13 @@ func apply(ctx context.Context, conn *sql.Conn, m migration) (err error) {
 	return err
 }
 
+// KnownVersion returns the newest schema version this binary has a
+// migration for.
+func KnownVersion() (int, error) {
+	ms, err := migrations()
+	return len(ms), err
+}
+
 // Version returns the schema version (PRAGMA user_version).
 func (s *Store) Version(ctx context.Context) (int, error) {
 	var v int

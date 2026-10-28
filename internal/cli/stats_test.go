@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,6 +114,61 @@ func TestStats(t *testing.T) {
 				t.Errorf("aggy stats created the database: %v", err)
 			case tt.store != "" && !bytes.Equal(before, after):
 				t.Error("aggy stats changed the database")
+			}
+		})
+	}
+}
+
+// TestStatsSchema (L48-3): an index older than aggy stats reads, or newer
+// than this binary knows, gets a message and is left byte for byte.
+func TestStatsSchema(t *testing.T) {
+	newer := func(t *testing.T, path string) {
+		s, err := store.OpenDefault(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = s.Close()
+		db, err := sql.Open("sqlite", "file:"+path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = db.Close() }()
+		if _, err := db.Exec(`PRAGMA user_version = 999`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tests := []struct {
+		name       string
+		make       func(t *testing.T, path string)
+		wantCode   int
+		wantStdout string
+		wantStderr string
+	}{
+		{"older", schemaV1, 0, "schema version 1, older than aggy stats reads", ""},
+		{"newer", newer, 1, "", "schema version 999, newer than this aggy knows"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("PATH", t.TempDir())
+			state := t.TempDir()
+			t.Setenv(home.Env, state)
+			path := filepath.Join(state, store.FileName)
+			tt.make(t, path)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			if code := Run([]string{"stats"}, &stdout, &stderr); code != tt.wantCode {
+				t.Errorf("exit = %d, want %d (stderr %q)", code, tt.wantCode, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), tt.wantStdout) || !strings.Contains(stderr.String(), tt.wantStderr) {
+				t.Errorf("stdout %q, stderr %q", stdout.String(), stderr.String())
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Errorf("aggy stats changed the index (%v)", err)
 			}
 		})
 	}
