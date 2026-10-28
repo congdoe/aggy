@@ -202,3 +202,61 @@ func TestSetupModeAfterNoopWrite(t *testing.T) {
 		t.Errorf("after a no-op write, SetupMode = %v, %v, want write", mode, err)
 	}
 }
+
+// TestConcurrentApplyTwoSpellings (T6725 N1): two spellings of one file,
+// one through a symlinked directory, take one lock, so the second waits
+// for the first and is refused as drift instead of losing its update. On
+// 2e1e234 the lock was keyed on the spelling, and both applied.
+func TestConcurrentApplyTwoSpellings(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	dirA := filepath.Join(f.dir, "a")
+	must(t, os.MkdirAll(dirA, 0o700))
+	must(t, os.Symlink(dirA, filepath.Join(f.dir, "link")))
+	fileA := filepath.Join(dirA, "c.toml")
+	fileB := filepath.Join(f.dir, "link", "c.toml")
+	orig := "x = 0\n"
+	must(t, os.WriteFile(fileA, []byte(orig), 0o600))
+	var arrived atomic.Int32
+	t.Cleanup(patch.SetTestHookBeforeWrite(func(string) error {
+		arrived.Add(1)
+		deadline := time.Now().Add(500 * time.Millisecond)
+		for arrived.Load() < 2 && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		return nil
+	}))
+	appendText := func(text string) func([]byte) ([]byte, error) {
+		return func(b []byte) ([]byte, error) {
+			if bytes.Contains(b, []byte(text)) {
+				return b, nil
+			}
+			return append(append([]byte{}, b...), text...), nil
+		}
+	}
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	files := []string{fileA, fileB}
+	for i, text := range []string{"a = 1\n", "b = 2\n"} {
+		wg.Go(func() {
+			m := New(f.s, filepath.Join(f.state, BackupDirName))
+			_, errs[i] = m.Apply(ctx, "r", patch.Patch{File: files[i], ExpectedHash: patch.Hash([]byte(orig)), Transform: appendText(text)})
+		})
+	}
+	wg.Wait()
+	drift := 0
+	for _, err := range errs {
+		if errors.Is(err, patch.ErrDrift) {
+			drift++
+		} else if err != nil {
+			t.Errorf("Apply = %v", err)
+		}
+	}
+	if drift != 1 {
+		t.Errorf("%d of 2 refused as drift, want exactly 1 (errors %v)", drift, errs)
+	}
+	b, _ := os.ReadFile(fileA)
+	if n := strings.Count(string(b), " = "); n != 2 {
+		t.Errorf("file = %q, want the original line and exactly one patch", b)
+	}
+}

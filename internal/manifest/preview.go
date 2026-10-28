@@ -11,6 +11,7 @@ import (
 	"github.com/congdoe/aggy/internal/patch"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/termsafe"
 )
 
 // Mode says whether a wire run writes its patches or only shows them.
@@ -91,13 +92,17 @@ func SetupMode(ctx context.Context, dryRun, write bool) (Mode, error) {
 // example because the file changed since it was planned, gets a line
 // saying so, and its error is returned at the end, joined with the others.
 // It returns the number of files that would change.
+//
+// The files belong to other tools and may hold anything, so every line
+// is escaped with termsafe before it is written: an escape sequence or a
+// bidi override is shown, not acted on, and a CR shows as \r.
 func Preview(w io.Writer, patches []patch.Patch) (int, error) {
 	var errs []error
 	changed := 0
 	for _, p := range patches {
 		pl, err := patch.Plan(p)
 		if err != nil {
-			fmt.Fprintf(w, "# %s: would not change: %v\n", p.File, err)
+			fmt.Fprintf(w, "# %s: would not change: %s\n", termsafe.Line(p.File), termsafe.Line(err.Error()))
 			errs = append(errs, err)
 			continue
 		}
@@ -109,7 +114,7 @@ func Preview(w io.Writer, patches []patch.Patch) (int, error) {
 		if pl.Action == patch.Create {
 			from = diff.DevNull
 		}
-		fmt.Fprint(w, diff.Unified(from, pl.File, pl.Before, pl.After))
+		fmt.Fprint(w, termsafe.Lines(diff.Unified(from, pl.File, pl.Before, pl.After)))
 	}
 	fmt.Fprintf(w, "# %d %s would change\n", changed, plural(changed, "file", "files"))
 	return changed, errors.Join(errs...)
@@ -150,10 +155,11 @@ func (m *Manifest) Run(ctx context.Context, mode Mode, runID string, patches []p
 	}
 	if !recorded {
 		// Nothing needed changing. Record that a write run happened, so
-		// SetupMode stops treating the next setup as the first.
+		// SetupMode stops treating the next setup as the first. It is a
+		// marker row, which aggy unwire skips.
 		now := m.now()
 		if err := m.store.InsertChange(ctx, store.Change{
-			ChangeID: newID(now), RunID: runID, Status: store.ChangeNoop, PlannedAt: now, AppliedAt: now,
+			ChangeID: newID(now), RunID: runID, Status: store.ChangeNoop, Kind: store.KindMarker, PlannedAt: now, AppliedAt: now,
 		}); err != nil {
 			warns = append(warns, err)
 		}

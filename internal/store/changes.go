@@ -19,6 +19,13 @@ const (
 	ChangeUndone  = "undone"
 )
 
+// Change kinds. A marker row records that a write run happened and
+// changed nothing; it names no file and has nothing to undo.
+const (
+	KindChange = "change"
+	KindMarker = "marker"
+)
+
 // Change is a row of changes: one config-file change and what undoing it
 // exactly needs.
 type Change struct {
@@ -33,6 +40,7 @@ type Change struct {
 	FileMode    fs.FileMode // permission bits before the change, or of the created file
 	CreatedDirs []string    // directories made for a new file, outermost first
 	Status      string
+	Kind        string // KindChange or KindMarker; empty means KindChange
 	PlannedAt   time.Time
 	AppliedAt   time.Time // zero until applied
 	UndoneAt    time.Time // zero until undone
@@ -52,10 +60,14 @@ func fromNull(n sql.NullInt64) time.Time {
 	return fromMillis(n.Int64)
 }
 
-// InsertChange records a change. An empty Status means pending.
+// InsertChange records a change. An empty Status means pending, and an
+// empty Kind means KindChange.
 func (s *Store) InsertChange(ctx context.Context, c Change) error {
 	if c.Status == "" {
 		c.Status = ChangePending
+	}
+	if c.Kind == "" {
+		c.Kind = KindChange
 	}
 	dirs, err := json.Marshal(nonNil(c.CreatedDirs))
 	if err != nil {
@@ -63,10 +75,10 @@ func (s *Store) InsertChange(ctx context.Context, c Change) error {
 	}
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO changes (change_id, run_id, file, hash_before, hash_after, backup_path,
-		                      created_file, file_mode, created_dirs, status, planned_at, applied_at, undone_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                      created_file, file_mode, created_dirs, status, kind, planned_at, applied_at, undone_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ChangeID, c.RunID, c.File, c.HashBefore, c.HashAfter, c.BackupPath,
-		c.CreatedFile, int64(c.FileMode.Perm()), string(dirs), c.Status,
+		c.CreatedFile, int64(c.FileMode.Perm()), string(dirs), c.Status, c.Kind,
 		millis(c.PlannedAt), nullMillis(c.AppliedAt), nullMillis(c.UndoneAt))
 	return err
 }
@@ -136,7 +148,7 @@ func (s *Store) Changes(ctx context.Context, runID string) ([]Change, error) {
 func (s *Store) queryChanges(ctx context.Context, where string, args ...any) ([]Change, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, change_id, run_id, file, hash_before, hash_after, backup_path, created_file,
-		        file_mode, created_dirs, status, planned_at, applied_at, undone_at
+		        file_mode, created_dirs, status, kind, planned_at, applied_at, undone_at
 		 FROM changes `+where+` ORDER BY id`, args...)
 	if err != nil {
 		return nil, err
@@ -150,7 +162,7 @@ func (s *Store) queryChanges(ctx context.Context, where string, args ...any) ([]
 		var planned int64
 		var applied, undone sql.NullInt64
 		if err := rows.Scan(&c.ID, &c.ChangeID, &c.RunID, &c.File, &c.HashBefore, &c.HashAfter,
-			&c.BackupPath, &c.CreatedFile, &mode, &dirs, &c.Status, &planned, &applied, &undone); err != nil {
+			&c.BackupPath, &c.CreatedFile, &mode, &dirs, &c.Status, &c.Kind, &planned, &applied, &undone); err != nil {
 			return nil, err
 		}
 		c.FileMode = fs.FileMode(mode).Perm()
@@ -171,9 +183,14 @@ func nonNil(s []string) []string {
 }
 
 // ChangesNewestFirst returns the changes of one run, or of every run when
-// runID is empty, newest first: the order an undo must run in.
+// runID is empty, newest first: the order an undo must run in. Marker rows
+// are left out; they name no file and have nothing to undo.
 func (s *Store) ChangesNewestFirst(ctx context.Context, runID string) ([]Change, error) {
-	cs, err := s.Changes(ctx, runID)
+	where, args := `WHERE kind <> 'marker'`, []any{}
+	if runID != "" {
+		where, args = where+` AND run_id = ?`, append(args, runID)
+	}
+	cs, err := s.queryChanges(ctx, where, args...)
 	for i, j := 0, len(cs)-1; i < j; i, j = i+1, j-1 {
 		cs[i], cs[j] = cs[j], cs[i]
 	}

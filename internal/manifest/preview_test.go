@@ -123,3 +123,32 @@ func TestSetupMode(t *testing.T) {
 		t.Errorf("--dry-run after a write = %v", mode)
 	}
 }
+
+// TestPreviewEscapesControls (N3): a config file's bytes and a file name
+// cannot drive the terminal through --dry-run.
+func TestPreviewEscapesControls(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGGY_HOME", t.TempDir())
+	dir := t.TempDir()
+	file := filepath.Join(dir, "x\x1b[2J.toml")
+	orig := "title = \"\x1b]0;pwned\x07\"\r\nkey\t= 1\n"
+	must(t, os.WriteFile(file, []byte(orig), 0o600))
+	drifted := filepath.Join(dir, "d\x1b[31m.toml")
+	must(t, os.WriteFile(drifted, []byte("y\n"), 0o600))
+	var out bytes.Buffer
+	_, _ = Preview(&out, []patch.Patch{
+		{File: file, ExpectedHash: patch.Hash([]byte(orig)), Transform: addLine},
+		{File: drifted, ExpectedHash: patch.Hash([]byte("z\n")), Transform: addLine},
+	})
+	got := out.String()
+	for _, raw := range []string{"\x1b", "\x07", "\r"} {
+		if strings.Contains(got, raw) {
+			t.Errorf("preview holds raw %q: %q", raw, got)
+		}
+	}
+	for _, esc := range []string{`x\x1b[2J.toml`, `\x1b]0;pwned\x07"\r`, "key\t= 1", `d\x1b[31m.toml`} {
+		if !strings.Contains(got, esc) {
+			t.Errorf("preview lacks %q: %q", esc, got)
+		}
+	}
+}

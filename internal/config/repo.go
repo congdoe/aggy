@@ -52,11 +52,13 @@ type Worktree struct {
 func RepoPath(root string) string { return filepath.Join(root, RepoDir, FileName) }
 
 // LoadRepo reads the repo config of the repo at root through safefs: a
-// regular file of at most MaxFileSize, not a symlink. A missing file gives
+// regular file of at most MaxFileSize, not a symlink, and in a .aggy
+// directory that is not a symlink (safefs.ReadConfig), so a cloned repo
+// cannot point .aggy at another place on the disk. A missing file gives
 // the zero RepoConfig, which narrows nothing. Unknown keys are an error.
 func LoadRepo(root string) (RepoConfig, error) {
 	path := RepoPath(root)
-	b, err := safefs.ReadFileLimit(path, MaxFileSize)
+	b, err := safefs.ReadConfig(path, MaxFileSize)
 	if errors.Is(err, fs.ErrNotExist) {
 		return RepoConfig{}, nil
 	}

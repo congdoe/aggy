@@ -80,3 +80,36 @@ func TestConfigReadsAreCapped(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadRepoRefusesLinkedAggyDir (T6725 L5): a cloned repo's .aggy that
+// is a symlink cannot point the repo config at another file on the disk.
+// The user config's directory is held to the same rule.
+func TestLoadRepoRefusesLinkedAggyDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGGY_HOME", t.TempDir())
+	base := t.TempDir()
+	elsewhere := filepath.Join(base, "elsewhere")
+	if err := os.MkdirAll(elsewhere, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(elsewhere, FileName), []byte("allowed_vendors = []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(base, "repo")
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(repo, RepoDir)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadRepo(repo); !errors.Is(err, safefs.ErrLinkedDir) {
+		t.Errorf("LoadRepo with a linked .aggy = %v, want ErrLinkedDir", err)
+	}
+	userDir := filepath.Join(base, "state")
+	if err := os.Symlink(elsewhere, userDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(filepath.Join(userDir, FileName)); !errors.Is(err, safefs.ErrLinkedDir) {
+		t.Errorf("Load with a linked state dir = %v, want ErrLinkedDir", err)
+	}
+}

@@ -59,16 +59,27 @@ func NewRunID() string { return "run-" + newID(time.Now()) }
 // lockWait bounds the wait for another process changing the same file.
 const lockWait = 30 * time.Second
 
-// lockPath is the per-target lock file: run/patch/<sha256(path)>.lock next
-// to the database.
-func (m *Manifest) lockPath(file string) string {
-	return filepath.Join(filepath.Dir(m.store.Path()), "run", "patch", patch.Hash([]byte(file))+".lock")
+// lockPath is the per-target lock file: run/patch/<sha256(key)>.lock next
+// to the database. The key is the target's canonical path
+// (safefs.CanonicalPath): symlinks resolved through the deepest existing
+// ancestor, then normalized and case-folded where the file system ignores
+// case. Every spelling of one file, through a linked directory or in
+// another case, therefore takes the same lock.
+func (m *Manifest) lockPath(file string) (string, error) {
+	key, err := safefs.CanonicalPath(file)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(m.store.Path()), "run", "patch", patch.Hash([]byte(key))+".lock"), nil
 }
 
 // lockTarget takes the per-target lock. Where file locks are unsupported
 // it goes on unlocked; the hash guard then still refuses most races.
 func (m *Manifest) lockTarget(ctx context.Context, file string) (func(), error) {
-	lock := m.lockPath(file)
+	lock, err := m.lockPath(file)
+	if err != nil {
+		return nil, err
+	}
 	if err := safefs.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		return nil, err
 	}

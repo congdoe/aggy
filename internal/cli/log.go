@@ -10,11 +10,10 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/termsafe"
 )
 
 const logUsage = `Usage: aggy log [-n N] [--parent ID]
@@ -84,11 +83,13 @@ func runLog(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "No events yet.")
 		return 0
 	}
+	// Every field is escaped, tab included: the events table holds text
+	// from vendor sessions, and a tab would also break the columns.
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "TIME (UTC)\tSESSION\tEVENT\tDETAIL")
 	for _, e := range events {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", e.At.UTC().Format("2006-01-02 15:04:05"),
-			sanitize(dash(e.ParentID)), sanitize(e.Type), sanitize(describe(e)))
+			termsafe.Field(dash(e.ParentID)), termsafe.Field(e.Type), termsafe.Field(describe(e)))
 	}
 	_ = tw.Flush()
 	return 0
@@ -154,31 +155,4 @@ func describe(e store.Event) string {
 		parts[i] = k + "=" + str(d, k)
 	}
 	return strings.Join(parts, " ")
-}
-
-// sanitize escapes what a terminal would act on rather than print: C0
-// controls except tab (including ESC, CR, and newline), DEL, C1 controls,
-// Unicode format characters such as bidi overrides, and invalid UTF-8. The
-// events table holds text from vendor sessions, so it is untrusted.
-func sanitize(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		switch {
-		case r == utf8.RuneError && size == 1:
-			fmt.Fprintf(&b, "\\x%02x", s[i])
-		case r == '\n':
-			b.WriteString("\\n")
-		case r == '\r':
-			b.WriteString("\\r")
-		case r < 0x20 && r != '\t', r == 0x7f:
-			fmt.Fprintf(&b, "\\x%02x", r)
-		case r >= 0x80 && r <= 0x9f, unicode.Is(unicode.Cf, r):
-			fmt.Fprintf(&b, "\\u%04x", r)
-		default:
-			b.WriteRune(r)
-		}
-		i += size
-	}
-	return b.String()
 }
