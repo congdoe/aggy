@@ -61,17 +61,66 @@ func lines(s []byte) []string {
 	return ls
 }
 
-// myers returns the shortest edit script from a to b.
+// MaxEdits caps the edit distance the Myers search explores. Its trace
+// keeps one snapshot per step d of width 2d+1, so memory is O(MaxEdits²)
+// ints, about 8 MB, whatever the input size. Past the cap the diff falls
+// back to deleting every differing line and inserting the new ones: still
+// a correct diff, only not the shortest.
+const MaxEdits = 1000
+
+// myers returns an edit script from a to b: the shortest one when the
+// files differ by at most MaxEdits lines, after trimming the common prefix
+// and suffix.
 func myers(a, b []string) []op {
+	pre := 0
+	for pre < len(a) && pre < len(b) && a[pre] == b[pre] {
+		pre++
+	}
+	suf := 0
+	for suf < len(a)-pre && suf < len(b)-pre && a[len(a)-1-suf] == b[len(b)-1-suf] {
+		suf++
+	}
+	var ops []op
+	for i := 0; i < pre; i++ {
+		ops = append(ops, op{opEq, i, i})
+	}
+	mid, ok := myersCore(a[pre:len(a)-suf], b[pre:len(b)-suf], MaxEdits)
+	if !ok {
+		mid = nil
+		for i := range len(a) - pre - suf {
+			mid = append(mid, op{opDel, i, 0})
+		}
+		for j := range len(b) - pre - suf {
+			mid = append(mid, op{opIns, len(a) - pre - suf, j})
+		}
+	}
+	for _, o := range mid {
+		o.a += pre
+		o.b += pre
+		ops = append(ops, o)
+	}
+	for i := 0; i < suf; i++ {
+		ops = append(ops, op{opEq, len(a) - suf + i, len(b) - suf + i})
+	}
+	return ops
+}
+
+// myersCore is the Myers O(ND) search with a trace of only the diagonals
+// each step can reach. It gives up (ok false) past maxD edits.
+func myersCore(a, b []string, maxD int) (ops []op, ok bool) {
 	n, m := len(a), len(b)
 	max := n + m
 	off := max + 1
 	v := make([]int, 2*max+3)
+	// trace[d][k+d] is v[k] at the start of step d, for k in [-d, d].
 	var trace [][]int
-	var dEnd int
+	dEnd := -1
 search:
 	for d := 0; d <= max; d++ {
-		trace = append(trace, append([]int(nil), v...))
+		if d > maxD {
+			return nil, false
+		}
+		trace = append(trace, append([]int(nil), v[off-d:off+d+1]...))
 		for k := -d; k <= d; k += 2 {
 			var x int
 			if k == -d || (k != d && v[off+k-1] < v[off+k+1]) {
@@ -95,15 +144,16 @@ search:
 	var rev []op
 	x, y := n, m
 	for d := dEnd; d > 0; d-- {
-		v := trace[d]
+		snap := trace[d]
+		at := func(k int) int { return snap[k+d] }
 		k := x - y
 		var prevK int
-		if k == -d || (k != d && v[off+k-1] < v[off+k+1]) {
+		if k == -d || (k != d && at(k-1) < at(k+1)) {
 			prevK = k + 1
 		} else {
 			prevK = k - 1
 		}
-		prevX := v[off+prevK]
+		prevX := at(prevK)
 		prevY := prevX - prevK
 		for x > prevX && y > prevY {
 			x--
@@ -123,11 +173,11 @@ search:
 		y--
 		rev = append(rev, op{opEq, x, y})
 	}
-	ops := make([]op, len(rev))
+	ops = make([]op, len(rev))
 	for i, o := range rev {
 		ops[len(rev)-1-i] = o
 	}
-	return ops
+	return ops, true
 }
 
 // hunks splits ops into runs of changes with up to Context lines of
