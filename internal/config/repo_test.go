@@ -37,6 +37,8 @@ setup = ["npm", "ci"]
 				Worktree:       Worktree{Copy: []string{".env", "config/local.json"}, Setup: Command{"npm", "ci"}},
 			},
 		},
+		// T6695: retention is the person's; a cloned repo cannot set it.
+		{name: "gc is user config only", text: "[gc]\ninbox_days = 1\n", wantErr: "unknown key gc"},
 		{name: "empty allow list allows none", text: `allowed_vendors = []`, want: RepoConfig{AllowedVendors: []adapter.Vendor{}}},
 		{name: "unknown key", text: "allowed_vendors = []\nmodel = \"x\"\n", wantErr: "unknown key model"},
 		{name: "unknown table", text: "[routing]\nimage = [\"grok\"]\n", wantErr: "unknown key routing"},
