@@ -365,9 +365,29 @@ every file in `$GROK_HOME/sessions/<encoded cwd>/<sessionId>/images/`
 (`videos/` for the video kind)
 (else `~/.grok/...`), falling back to the single `sessions/*/<sessionId>/
 images/` folder; several are an error. Claude has none.
-`TranscriptTail` returns `ErrNoTranscript` for every vendor: no transcript
-path or format is recorded. `ConfigPatches` returns nothing yet; the Codex
+`TranscriptTail` still returns `ErrNoTranscript` for every vendor; the
+brief reads session files through `internal/transcript` (below). `ConfigPatches` returns nothing yet; the Codex
 `CLAUDE.md` fallback is built in `internal/parity`.
+
+### Transcript formats
+
+`internal/transcript` reads the tail of a session file for a brief. It
+reads through `safefs`, at most the last 4 MiB (`transcript.MaxTail`),
+refuses a symlink anywhere between the vendor's session folder and the
+file (`ErrUnsafe`) and a file swapped after the check, and returns
+`ErrNoTranscript` when it finds no file, or a file with no line in a known
+shape. Several files for one id are an error, never a guess. Only message
+text is read: tool calls, tool output, reasoning, and injected messages
+are skipped. The vendor home is `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or
+`GROK_HOME`, else `~/.<vendor>`. No session file has been recorded as a
+fixture yet; the tests use lines in the shapes below. Sources are in
+[verification.md](verification.md#session-file-formats-t6670).
+
+| Vendor | File | Lines read | Confidence |
+| --- | --- | --- | --- |
+| Claude | `projects/<cwd, every non-alphanumeric as ->/<id>.jsonl`, else the one `projects/*/<id>.jsonl` | `type` `user` or `assistant`; `message.content` a string or blocks whose `text` blocks are joined; lines with `isMeta`, `isCompactSummary`, or `isSidechain` skipped | User lines and the folder name from Grok's Claude importer; **assistant lines unverified** |
+| Codex | the one `sessions/YYYY/MM/DD/rollout-*-<id>.jsonl` | `type` `response_item` whose `payload` is a `message` with `role` `user` or `assistant`; `input_text` and `output_text` content joined; `timestamp` kept | Source-verified (0.164.0) |
+| Grok | `sessions/<grok.EncodeCwd(cwd)>/<id>/chat_history.jsonl`, else the one `sessions/*/<id>/chat_history.jsonl` | `type` `user` (text parts; skipped when `synthetic_reason` is set) and `assistant` (`content` a string) | Source-verified at a revision possibly newer than 1.0.70 |
 
 ### Sign-in
 
