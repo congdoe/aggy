@@ -61,6 +61,34 @@ type Switch struct {
 	// Order is the picker's preference. It preselects the first vendor that
 	// is connected, has quota left, and is not the one on screen.
 	Order []adapter.Vendor `toml:"order"`
+	// Key opens the picker, e.g. "ctrl+\\" (the default); pressed twice
+	// quickly, it is sent to the CLI. See ParseKey.
+	Key string `toml:"key"`
+}
+
+// DefaultSwitchKey is the default switch.key: Ctrl+\, which none of the
+// three CLIs is known to use.
+const DefaultSwitchKey = `ctrl+\`
+
+// ParseKey returns the control byte of a switch key named "ctrl+<k>",
+// where k is a letter or one of \ ] ^ _ (case-insensitive). Ctrl+I, J, M
+// (Tab, Enter, Enter) and Ctrl+[ (Esc, which starts every escape
+// sequence) are refused: they are typed far too often.
+func ParseKey(s string) (byte, error) {
+	k, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(s)), "ctrl+")
+	if !ok || len(k) != 1 {
+		return 0, fmt.Errorf("switch.key %q: want ctrl+ and one letter or one of \\ ] ^ _", s)
+	}
+	c := k[0]
+	switch {
+	case c == 'i' || c == 'j' || c == 'm':
+		return 0, fmt.Errorf("switch.key %q: Ctrl+%c is Tab or Enter", s, c-32)
+	case c >= 'a' && c <= 'z':
+		return c - 'a' + 1, nil
+	case c == '\\' || c == ']' || c == '^' || c == '_':
+		return c & 0x1f, nil
+	}
+	return 0, fmt.Errorf("switch.key %q: want ctrl+ and one letter or one of \\ ] ^ _", s)
 }
 
 // NotAuthor is the routing value meaning any connected vendor except the
@@ -182,7 +210,7 @@ func vendors(vs ...adapter.Vendor) Route { return Route{Vendors: vs} }
 // tools, not benchmarks; budgets follow the build plan.
 func Default() Config {
 	return Config{
-		Switch: Switch{Order: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok}},
+		Switch: Switch{Order: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok}, Key: DefaultSwitchKey},
 		Routing: Routing{
 			// TODO(T6638): Codex is left out of news and research on
 			// purpose. Its apply_patch tool cannot be turned off, and its
@@ -293,6 +321,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("switch.order: vendor %q listed twice", v)
 		}
 		seen[v] = true
+	}
+	if _, err := ParseKey(c.Switch.Key); err != nil {
+		return err
 	}
 	for _, k := range adapter.Kinds() {
 		r := c.Routing.For(k)

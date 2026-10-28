@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"syscall"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 )
@@ -34,4 +35,17 @@ type Options struct {
 	Command adapter.Command
 	// Start starts Command in a new pseudo-terminal of rows by cols.
 	Start func(c adapter.Command, rows, cols int) (Child, error)
+	// SwitchKey is the control byte that opens the switch picker
+	// (config.ParseKey); zero means Ctrl+\ (0x1c).
+	SwitchKey byte
+	// Vendors are the picker's choices, in switch.order order, without
+	// the vendor on screen.
+	Vendors []adapter.Vendor
+	// DoublePress is how soon a second switch key must follow the first
+	// to be sent to the CLI instead of opening the picker. Zero means
+	// DefaultDoublePress.
+	DoublePress time.Duration
 }
+
+// DefaultDoublePress is the default Options.DoublePress.
+const DefaultDoublePress = 400 * time.Millisecond
