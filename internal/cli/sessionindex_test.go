@@ -38,25 +38,64 @@ func hookReq(v adapter.Vendor, event, payload string) supervisor.Request {
 	return supervisor.Request{Type: supervisor.ReqHookEvent, Vendor: string(v), Event: event, Payload: json.RawMessage(payload)}
 }
 
-func TestSessionIndexHooks(t *testing.T) {
-	x, got := recorded(adapter.Claude)
-	x.hook(hookReq(adapter.Claude, "Stop", `{"session_id":"not-a-uuid"}`))
-	x.hook(hookReq(adapter.Grok, "SessionStart", `{"sessionId":"`+idB+`"}`)) // another vendor
-	x.hook(hookReq(adapter.Claude, "Stop", `{"session_id":"`+idA+`"}`))      // first id, from any event
-	x.hook(hookReq(adapter.Claude, "Stop", `{"session_id":"`+idB+`"}`))      // not a SessionStart: kept
-	x.hook(hookReq(adapter.Claude, "SessionStart", `{"session_id":"`+idA+`","source":"resume"}`))
-	x.hook(hookReq(adapter.Claude, "SessionStart", `{"session_id":"`+idB+`","source":"clear"}`))
-	want := []string{idA + "/hook", idB + "/hook"}
-	if g := got(); len(g) != 2 || g[0] != want[0] || g[1] != want[1] {
+// TestSessionIndexAssigned: Claude and Grok record their pre-assigned
+// id and nothing a hook says, even a SessionStart from a nested CLI or a
+// forged one.
+func TestSessionIndexAssigned(t *testing.T) {
+	for _, v := range []adapter.Vendor{adapter.Claude, adapter.Grok} {
+		x, got := recorded(v)
+		x.set(idA, "", "assigned")
+		x.hook(hookReq(v, "SessionStart", `{"session_id":"`+idB+`","sessionId":"`+idB+`","source":"startup"}`))
+		x.hook(hookReq(v, "SessionStart", `{"session_id":"`+idB+`","sessionId":"`+idB+`","source":"clear"}`))
+		if g := got(); len(g) != 1 || g[0] != idA+"/assigned" {
+			t.Errorf("%s: recorded %v", v, g)
+		}
+	}
+}
+
+// TestSessionIndexCodexClaim: a Codex id is recorded only when the first
+// claimed id shows up as a new rollout; a rollout alone, or a later
+// claim, never is.
+func TestSessionIndexCodexClaim(t *testing.T) {
+	// A lone new rollout from another Codex: not recorded.
+	x, got := recorded(adapter.Codex)
+	x.saw([]string{idB})
+	if g := got(); len(g) != 0 {
+		t.Errorf("rollout alone recorded %v", g)
+	}
+	// The on-screen claim, then its rollout: recorded.
+	x.hook(hookReq(adapter.Codex, "SessionStart", `{"session_id":"`+idA+`","source":"startup"}`))
+	if g := got(); len(g) != 0 {
+		t.Errorf("claim alone recorded %v", g)
+	}
+	x.saw([]string{idA})
+	// A nested codex exec's later SessionStart and rollout: ignored.
+	x.hook(hookReq(adapter.Codex, "SessionStart", `{"session_id":"`+idB+`","source":"startup"}`))
+	if g := got(); len(g) != 1 || g[0] != idA+"/hook and sessions folder" {
 		t.Errorf("recorded %v", g)
 	}
-	// Grok's camelCase, and Codex's notify thread-id.
-	g, gotG := recorded(adapter.Grok)
-	g.hook(hookReq(adapter.Grok, "SessionStart", `{"sessionId":"`+idA+`"}`))
-	c, gotC := recorded(adapter.Codex)
-	c.hook(hookReq(adapter.Codex, "agent-turn-complete", `{"type":"agent-turn-complete","thread-id":"`+idB+`"}`))
-	if len(gotG()) != 1 || len(gotC()) != 1 || gotC()[0] != idB+"/hook" {
-		t.Errorf("grok %v codex %v", gotG(), gotC())
+	// Rollout first, then the claim: recorded on the claim.
+	y, gotY := recorded(adapter.Codex)
+	y.saw([]string{idA})
+	y.hook(hookReq(adapter.Codex, "Stop", `{"session_id":"`+idA+`"}`))
+	if g := gotY(); len(g) != 1 {
+		t.Errorf("recorded %v", g)
+	}
+	// A later claim never replaces the first, even once its rollout shows.
+	z, gotZ := recorded(adapter.Codex)
+	z.hook(hookReq(adapter.Codex, "SessionStart", `{"session_id":"`+idA+`"}`))
+	z.hook(hookReq(adapter.Codex, "SessionStart", `{"session_id":"`+idB+`"}`))
+	z.saw([]string{idB})
+	if g := gotZ(); len(g) != 0 {
+		t.Errorf("later claim recorded %v", g)
+	}
+	// Another vendor's event and a bad id are ignored.
+	w, gotW := recorded(adapter.Codex)
+	w.hook(hookReq(adapter.Claude, "SessionStart", `{"session_id":"`+idA+`"}`))
+	w.hook(hookReq(adapter.Codex, "SessionStart", `{"session_id":"x"}`))
+	w.saw([]string{idA, "x"})
+	if g := gotW(); len(g) != 0 {
+		t.Errorf("recorded %v", g)
 	}
 }
 
@@ -75,59 +114,36 @@ func TestWatchCodex(t *testing.T) {
 	old := codexPoll
 	codexPoll = 10 * time.Millisecond
 	t.Cleanup(func() { codexPoll = old })
-	run := func(t *testing.T, setup func(dir string, start time.Time)) []string {
-		dir := t.TempDir()
-		start := time.Now()
-		rollout(t, dir, start, "cccccccc-3333-4333-8333-333333333333") // an older session
-		before := codexRollouts(dir, start, start)
-		x, got := recorded(adapter.Codex)
-		stop := make(chan struct{})
-		done := make(chan struct{})
-		setup(dir, start) // after the snapshot, before the first poll
-		go func() { x.watchCodex(dir, start, before, stop); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(300 * time.Millisecond):
-			close(stop)
-			<-done
-		}
-		return got()
-	}
-	if g := run(t, func(dir string, start time.Time) { rollout(t, dir, start, idA) }); len(g) != 1 || g[0] != idA+"/sessions folder" {
-		t.Errorf("one new rollout: %v", g)
-	}
-	if g := run(t, func(string, time.Time) {}); len(g) != 0 {
-		t.Errorf("no new rollout: %v", g)
-	}
-	if g := run(t, func(dir string, start time.Time) {
-		// Both appear within one poll: which is ours cannot be told.
-		rollout(t, dir, start, idA)
-		rollout(t, dir, start, idB)
-	}); len(g) != 0 {
-		t.Errorf("two new rollouts: %v", g)
-	}
-	// A hook that already gave the id stops the watch.
 	dir := t.TempDir()
+	start := time.Now()
+	rollout(t, dir, start, "cccccccc-3333-4333-8333-333333333333") // an older session
+	before := codexRollouts(dir, start, start)
 	x, got := recorded(adapter.Codex)
-	x.set(idB, "startup", "hook", true)
 	done := make(chan struct{})
-	go func() { x.watchCodex(dir, time.Now(), nil, make(chan struct{})); close(done) }()
+	go func() { x.watchCodex(dir, start, before, make(chan struct{})); close(done) }()
+	rollout(t, dir, start, idB) // another Codex, alongside
+	time.Sleep(50 * time.Millisecond)
+	if g := got(); len(g) != 0 {
+		t.Fatalf("the watch recorded %v on its own", g)
+	}
+	x.hook(hookReq(adapter.Codex, "SessionStart", `{"session_id":"`+idA+`"}`))
+	rollout(t, dir, start, idA)
 	select {
 	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("the watch kept going after a hook gave the id")
+	case <-time.After(2 * time.Second):
+		t.Fatal("the watch did not end once the id was recorded")
 	}
-	if g := got(); len(g) != 1 {
+	if g := got(); len(g) != 1 || g[0] != idA+"/hook and sessions folder" {
 		t.Errorf("recorded %v", g)
 	}
 }
 
 func TestSessionIndexWritesTheIndex(t *testing.T) {
 	isolate(t)
-	x := newSessionIndex("11111111-2222-4333-8444-555555555555", adapter.Claude)
-	x.hook(hookReq(adapter.Claude, "SessionStart", `{"session_id":"`+idA+`","source":"startup"}`))
+	_, stop := startIndex("11111111-2222-4333-8444-555555555555", adapter.Claude, idA)
+	stop()
 	code, out, _ := run("log")
-	if code != 0 || !strings.Contains(out, "session="+idA) || !strings.Contains(out, "source=startup") {
+	if code != 0 || !strings.Contains(out, "session="+idA) || !strings.Contains(out, "via=assigned") {
 		t.Errorf("aggy log: %d\n%s", code, out)
 	}
 }

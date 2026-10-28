@@ -23,7 +23,7 @@ func TestRunDirect(t *testing.T) {
 	const parent = "11111111-2222-4333-8444-555555555555"
 	c := adapter.Command{Path: "/bin/sh", Dir: d, Stdin: adapter.StdinTerminal, Env: []string{"AGGY_VENDOR=claude"},
 		Args: []string{"-c", `test -S "$AGGY_SOCKET" && test "$AGGY_PARENT" = ` + parent + ` && test "$AGGY_VENDOR" = claude && exit 7`}}
-	code, err := runDirect(c, runDir, parent, adapter.Claude)
+	code, err := runDirect(c, runDir, parent, adapter.Claude, "")
 	if code != 7 || err != nil {
 		t.Errorf("runDirect = %d, %v", code, err)
 	}

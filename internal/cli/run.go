@@ -71,10 +71,20 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	case adapter.Grok:
 		a = grok.New()
 	}
+	// Claude and Grok take a pre-assigned --session-id (adapters.md), the
+	// only id the index then records for this session (sessionIndex).
+	assigned := ""
+	if v != adapter.Codex {
+		if assigned, err = newParentID(); err != nil {
+			fmt.Fprintf(stderr, "aggy run: %v\n", err)
+			return 1
+		}
+	}
 	cmd, err := a.Interactive(adapter.InteractiveRequest{
-		Cwd:   cwd,
-		Model: cfg.Vendors.For(v).Model,
-		Env:   []string{"AGGY_VENDOR=" + string(v)},
+		Cwd:       cwd,
+		Model:     cfg.Vendors.For(v).Model,
+		SessionID: assigned,
+		Env:       []string{"AGGY_VENDOR=" + string(v)},
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "aggy run: %v\n", err)
@@ -98,7 +108,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	runDir := filepath.Join(stateDir, "run")
 	if direct {
-		code, err := runDirect(cmd, runDir, parentID, v)
+		code, err := runDirect(cmd, runDir, parentID, v, assigned)
 		if err != nil {
 			fmt.Fprintf(stderr, "aggy run: %v\n", err)
 			if code == 0 {
@@ -107,7 +117,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		}
 		return code
 	}
-	onHook, stopIndex := startIndex(parentID, v)
+	onHook, stopIndex := startIndex(parentID, v, assigned)
 	defer stopIndex()
 	code, err := supervisor.Run(supervisor.Options{
 		In: os.Stdin, Out: os.Stdout, Command: cmd,
