@@ -84,7 +84,7 @@ func (w *world) router() Router {
 func testAdapter(v adapter.Vendor, cli CLI) adapter.Adapter {
 	switch v {
 	case adapter.Claude:
-		return claude.New()
+		return claude.Adapter{Caps: cli.Caps}
 	case adapter.Codex:
 		return codex.New()
 	}

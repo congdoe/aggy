@@ -41,6 +41,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "borrow":
 		return runBorrow(args[1:], stdout, stderr)
+	case "hook":
+		return runHook(args[1:], stdout, stderr)
 	case "setup":
 		return runSetup(args[1:], stdout, stderr)
 	case "doctor":

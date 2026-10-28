@@ -79,6 +79,10 @@ type Deps struct {
 	Config config.Config
 	// StateDir is aggy's state directory ($AGGY_HOME or ~/.aggy).
 	StateDir string
+	// Guard is the PreToolUse guard command (an absolute aggy path, then
+	// hook pretooluse), wired into each child where its CLI takes a
+	// per-run hook. Empty means no guard.
+	Guard []string
 	// TempDir is where child dirs are made; "" means the OS temp dir.
 	TempDir string
 	Now     func() time.Time
@@ -252,8 +256,9 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor) (R
 		RunDir: dirs.run, GitRepo: dirs.gitRepo,
 		// The turn limit, where the CLI takes one (Grok's --max-turns;
 		// Codex has none, and Claude's is not recorded).
-		MaxTurns: budget.Turns,
-		Env:      []string{Delegated + "=1"},
+		MaxTurns:     budget.Turns,
+		Env:          []string{Delegated + "=1"},
+		GuardCommand: b.Guard,
 	}
 	cmd, err := a.Headless(hreq)
 	if err != nil {

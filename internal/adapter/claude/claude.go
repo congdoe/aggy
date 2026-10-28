@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -20,6 +22,10 @@ const Bin = "claude"
 type Adapter struct {
 	// Path is the CLI to probe. Empty means Bin on PATH.
 	Path string
+	// Caps are the capabilities a probe of this CLI found. The borrow
+	// guard is wired through --settings only when they include
+	// probe.CapSettings.
+	Caps []string
 }
 
 var (
@@ -146,9 +152,60 @@ const EmptyMCPConfig = `{"mcpServers":{}}`
 // the borrow fails closed (adapter.ErrLockdown).
 var ReviewTools = []string{"Read", "Grep", "Glob"}
 
-// ChildFiles returns the empty MCP config every headless run reads.
-func (Adapter) ChildFiles(adapter.HeadlessRequest) ([]adapter.ChildFile, error) {
-	return []adapter.ChildFile{{Name: MCPConfigFile, Data: []byte(EmptyMCPConfig)}}, nil
+// SettingsFile is the per-run settings layer, written in RunDir, that
+// holds the borrow guard: a PreToolUse hook running GuardCommand. It is
+// passed with --settings, which leaves the user's own settings untouched.
+const SettingsFile = "settings.json"
+
+// guarded reports whether req's child gets the guard: a guard command is
+// given and the probe found --settings.
+func (a Adapter) guarded(req adapter.HeadlessRequest) bool {
+	return len(req.GuardCommand) > 0 && slices.Contains(a.Caps, probe.CapSettings)
+}
+
+// GuardSettings returns the settings layer that runs guard before every
+// tool call. Claude runs a hook command through a shell, so each word is
+// single-quoted; a word holding a quote, a control character, or a
+// non-absolute program is refused.
+func GuardSettings(guard []string) ([]byte, error) {
+	if len(guard) == 0 {
+		return nil, errors.New("claude: no guard command")
+	}
+	if err := adapter.CheckAbs("guard program", guard[0]); err != nil {
+		return nil, err
+	}
+	words := make([]string, len(guard))
+	for i, w := range guard {
+		if w == "" || strings.ContainsFunc(w, func(r rune) bool { return r == '\'' || r < 0x20 || r == 0x7f }) {
+			return nil, fmt.Errorf("claude: guard word %q cannot be quoted for a shell", w)
+		}
+		words[i] = "'" + w + "'"
+	}
+	type hookCmd struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+	}
+	type matcher struct {
+		Matcher string    `json:"matcher"`
+		Hooks   []hookCmd `json:"hooks"`
+	}
+	return json.Marshal(map[string]any{"hooks": map[string]any{
+		"PreToolUse": []matcher{{Matcher: "*", Hooks: []hookCmd{{Type: "command", Command: strings.Join(words, " ")}}}},
+	}})
+}
+
+// ChildFiles returns the empty MCP config every headless run reads, and
+// the guard's settings layer when the child is guarded.
+func (a Adapter) ChildFiles(req adapter.HeadlessRequest) ([]adapter.ChildFile, error) {
+	files := []adapter.ChildFile{{Name: MCPConfigFile, Data: []byte(EmptyMCPConfig)}}
+	if a.guarded(req) {
+		b, err := GuardSettings(req.GuardCommand)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, adapter.ChildFile{Name: SettingsFile, Data: b})
+	}
+	return files, nil
 }
 
 // Headless builds
@@ -159,7 +216,9 @@ func (Adapter) ChildFiles(adapter.HeadlessRequest) ([]adapter.ChildFile, error) 
 // with the prompt file as stdin (claude -p reads its prompt from stdin
 // when none is given as an argument). Every run needs RunDir, which holds
 // the empty MCP config (ChildFiles). Review runs with --permission-mode
-// plan and ReviewTools.
+// plan and ReviewTools. With a GuardCommand, and when the probe found
+// --settings, the run also gets --settings <RunDir>/settings.json holding
+// the PreToolUse guard.
 //
 // Claude's web search and image-input flags are not recorded in
 // docs/adapters.md, so image, video, research, and news are
@@ -167,7 +226,7 @@ func (Adapter) ChildFiles(adapter.HeadlessRequest) ([]adapter.ChildFile, error) 
 // WebSearch, and RefImages. MaxTurns is ignored (--max-turns is not
 // recorded). Edit runs with --permission-mode acceptEdits, a value that
 // is unconfirmed.
-func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
+func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	if err := adapter.CheckAbs("prompt file", req.PromptFile); err != nil {
 		return adapter.Command{}, err
 	}
@@ -208,6 +267,12 @@ func (Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) {
 	args = append(args, "--strict-mcp-config", "--mcp-config", filepath.Join(req.RunDir, MCPConfigFile))
 	if tools != nil {
 		args = append(args, "--tools", strings.Join(tools, ","))
+	}
+	if a.guarded(req) {
+		if _, err := GuardSettings(req.GuardCommand); err != nil {
+			return adapter.Command{}, err
+		}
+		args = append(args, "--settings", filepath.Join(req.RunDir, SettingsFile))
 	}
 	s, err := sessionArgs(req.SessionID, req.Resume, false)
 	if err != nil {

@@ -79,6 +79,11 @@ const (
 	// of the borrow lockdown (live-verified on 0.164.0, 2026-10-28): the
 	// adapter always passes it, and a CLI that rejects it fails the borrow.
 	CapIgnoreUserConfig = "ignore-user-config"
+	// CapSettings is claude --settings <file>, which adds a settings
+	// layer for one run: the borrow guard's PreToolUse hook goes in it.
+	// Not recorded in docs/adapters.md or a fixture: present only when
+	// help lists it.
+	CapSettings = "settings"
 )
 
 // Specs holds the probe spec of each vendor, from the flags recorded in
@@ -94,6 +99,7 @@ var Specs = map[adapter.Vendor]Spec{
 			{CapResume, 0, "--resume", Option},
 			{CapForkSession, 0, "--fork-session", Option},
 			{CapPermissionMode, 0, "--permission-mode", Option},
+			{CapSettings, 0, "--settings", Option},
 		},
 	},
 	adapter.Grok: {
