@@ -269,7 +269,8 @@ func TestToolRemoveSymlinkedFolder(t *testing.T) {
 }
 
 // TestToolCommandsNeverRunWhileOff: add, list, and remove run none of a
-// user tool's commands (check, install, prebuild, MCP server, hook).
+// user tool's commands (check, install, MCP server, hook). A user tool
+// has no prebuild (T6711).
 func TestToolCommandsNeverRunWhileOff(t *testing.T) {
 	src, dest := toolHome(t, demoTool)
 	bin := t.TempDir()
@@ -278,7 +279,7 @@ func TestToolCommandsNeverRunWhileOff(t *testing.T) {
 		writeAt(t, filepath.Join(bin, name), "#!/bin/sh\ntouch "+marker+"\n", 0o755)
 	}
 	t.Setenv("PATH", bin)
-	def := strings.Replace(demoTool, `"/usr/local/bin/demo-install", "1.2.3"`, `"demo-install"]`+"\nprebuild = [\"demo\", \"index\"", 1)
+	def := strings.Replace(demoTool, `"/usr/local/bin/demo-install", "1.2.3"`, `"demo-install"`, 1)
 	writeAt(t, src, def, 0o644)
 	// T59-11: on and off record a setting; nothing runs until a launch
 	// wires the tool.

@@ -189,15 +189,20 @@ func HeadlessRunner(timeout time.Duration) adapter.Runner {
 // scratch with no vendor home (L78-7): a tool's hook has no use for
 // CLAUDE_CONFIG_DIR, CODEX_HOME, or GROK_HOME. A command may add no
 // variables of its own.
-func ToolHookRunner(timeout time.Duration) adapter.Runner {
+func ToolHookRunner(timeout time.Duration) adapter.Runner { return ToolRunner(timeout, nil) }
+
+// ToolRunner is ToolHookRunner that also passes names, the variables a
+// tool's definition declares (ToolEnv), from aggy's environment: a
+// built-in's prebuild (aggy tool on, T6711) gets those of its servers.
+func ToolRunner(timeout time.Duration, names []string) adapter.Runner {
 	return func(ctx context.Context, c adapter.Command) (adapter.Output, error) {
 		if c.Stdin != adapter.StdinNull && c.Stdin != adapter.StdinFile {
-			return adapter.Output{}, errors.New("execrun: a tool hook reads no terminal")
+			return adapter.Output{}, errors.New("execrun: a tool command reads no terminal")
 		}
 		if c.Dir == "" || !filepath.IsAbs(c.Dir) || len(c.Env) > 0 {
-			return adapter.Output{}, fmt.Errorf("execrun: a tool hook needs an absolute working dir and no added environment, got %q", c.Dir)
+			return adapter.Output{}, fmt.Errorf("execrun: a tool command needs an absolute working dir and no added environment, got %q", c.Dir)
 		}
-		env, err := ToolEnv(os.Environ(), nil)
+		env, err := ToolEnv(os.Environ(), names)
 		if err != nil {
 			return adapter.Output{}, err
 		}

@@ -901,6 +901,28 @@ arm64 with `DO_NOT_TRACK=1`. No vendor config was edited, and no tool's
   a Claude-only built-in.
 - **CodeGraph** `codegraph init [path]` writes `.codegraph/` inside the
   repo, and `uninit` deletes it.
+- **CodeGraph's index and refresh (T6711).** Read from the installed
+  1.6.2 package (its `README.md` and `dist/*.d.ts`), not run: the index
+  is `.codegraph/codegraph.db`, SQLite with `-wal` and `-shm` sidecars
+  (`index.d.ts`); a repo counts as indexed once `codegraph.db` holds its
+  schema (`directory.d.ts`, `isInitialized`); the running server keeps
+  `.codegraph/daemon.pid` (`directory.d.ts`); `CODEGRAPH_DIR` can rename
+  the folder (aggy does not pass it, so it stays `.codegraph`). The
+  server refreshes the index itself: a file watcher syncs changes, and a
+  `(size, mtime)` and content-hash catch-up runs when an MCP client
+  connects (README, "How auto-syncing works"); `codegraph sync [path]`
+  is the manual incremental update. Telemetry is on unless
+  `CODEGRAPH_TELEMETRY=0` or `DO_NOT_TRACK=1` (README, "Telemetry");
+  aggy passes the person's own values through and sets neither.
+  Install: `npm install -g @colbymchenry/codegraph@1.6.2`.
+  Unverified, for a maintainer's live check (TODO(T6711)): whether
+  `codegraph init <path>` with no stdin and no `--yes` builds the index
+  without asking anything (the README says `--yes` skips every prompt,
+  so aggy does not pass it: a yes it cannot read is not given), and
+  whether it writes anything outside `.codegraph/` (a `.gitignore`
+  entry, an agent's instructions file); and the name of the lock file
+  (`FileLock`), which a worktree copy leaves out by copying only
+  `codegraph.db` and `codegraph.db-wal`.
 - **Context7** works without an API key (anonymous calls to its API);
   `--api-key` or `CONTEXT7_API_KEY` raises its rate limits.
 - **Playwright MCP** downloads no browser with `--ignore-scripts`; the

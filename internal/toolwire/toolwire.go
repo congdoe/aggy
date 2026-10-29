@@ -68,7 +68,7 @@ func MCP(on []switchboard.State, repo, dir, bin string, taken map[string]string)
 				fmt.Sprintf("a server named %s is already set in %s; aggy adds its servers next to yours and never replaces one", name, src)})
 			continue
 		}
-		argv, err := fill(m.Argv, repo)
+		argv, err := Fill(m.Argv, repo)
 		if err != nil {
 			refused = append(refused, Refusal{name, diag.CodeToolRepoPath, err.Error()})
 			continue
@@ -93,7 +93,7 @@ func ExecArgs(dir, name, digest, repo string, argv []string) []string {
 // repo, is argv: the shim's check that it runs what the definition says.
 func Match(t tooldef.Tool, repo string, argv []string) (*tooldef.MCP, error) {
 	for i := range t.MCP {
-		want, err := fill(t.MCP[i].Argv, repo)
+		want, err := Fill(t.MCP[i].Argv, repo)
 		if err == nil && slices.Equal(want, argv) {
 			return &t.MCP[i], nil
 		}
@@ -101,9 +101,9 @@ func Match(t tooldef.Tool, repo string, argv []string) (*tooldef.MCP, error) {
 	return nil, fmt.Errorf("the command is not one of %s's MCP servers", t.Name)
 }
 
-// fill replaces {repo} in each word with repo. Words are argv, never
+// Fill replaces {repo} in each word with repo. Words are argv, never
 // joined into a shell string.
-func fill(args []string, repo string) ([]string, error) {
+func Fill(args []string, repo string) ([]string, error) {
 	out := make([]string, len(args))
 	for i, a := range args {
 		if strings.Contains(a, tooldef.Placeholder) {

@@ -128,6 +128,8 @@ var (
 	EvToolWireRefused     = Event{"tool.wire.refused"}
 	EvToolWired           = Event{"tool.wire.done"}
 	EvToolExecRefused     = Event{"tool.exec.refused"}
+	EvToolIndexed         = Event{"tool.index.done"}
+	EvToolIndexRefused    = Event{"tool.index.refused"}
 	EvHookToolFiltered    = Event{"hook.tool.filtered"}
 	EvHookToolFailed      = Event{"hook.tool.failed"}
 )
@@ -224,6 +226,8 @@ var (
 	CodeToolUnlisted     = Code{"tool.borrow_unlisted"}
 	CodeToolNetwork      = Code{"tool.borrow_network"}
 	CodeToolSkillChanged = Code{"tool.skill_changed"}
+	CodeToolIndexFailed  = Code{"tool.index_failed"}
+	CodeToolIndexCopy    = Code{"tool.index_copy_refused"}
 )
 
 const showRun = "aggy diag show <run id> for what led to it"
@@ -284,6 +288,8 @@ var events = []EventInfo{
 	{EvHookToolFiltered, LevelInfo, "hook", "aggy hook-tool dropped part of a tool hook's answer: an allow, an updatedInput from a hook not declaring rewrites or other than its rewrite_prefix in front of the original command, a bad reason or input, or keys outside its allowlist (attrs: tool, dropped, fixed names only: permissionDecision_allow, permissionDecision_other, permissionDecisionReason_invalid, updatedInput_undeclared, updatedInput_not_object, updatedInput_unexpected, a known key, or other).", "Nothing; a tool's hook may never approve an action."},
 	{EvHookToolFailed, LevelWarn, "hook", "aggy hook-tool passed nothing on for a tool's hook; the CLI went on as without the hook (attrs.tool).", "The code's entry."},
 	{EvToolWired, LevelInfo, "tool", "A launch wired the tools that are on into the CLI it started (attrs: tools, the names wired).", "aggy tool status shows why each is on."},
+	{EvToolIndexed, LevelInfo, "tool", "A built-in's per-repo index was built (aggy tool on --repo, attrs.step init) or copied into a linked worktree at a launch (attrs.step copy) (attrs: tool).", "Nothing; the tool's server keeps the index fresh."},
+	{EvToolIndexRefused, LevelWarn, "tool", "A built-in's per-repo index was not built or not copied (attrs: tool, step: init or copy). aggy tool on refused for init; a launch went on without the copy.", "The code's entry; the warning aggy printed."},
 	{EvToolExecRefused, LevelError, "tool", "aggy tool exec, which a vendor CLI runs to start a tool's MCP server, refused to start it (attrs: tool, check: the step that failed). The CLI shows the server as failed.", "The code's entry; aggy tool status."},
 }
 
@@ -376,6 +382,8 @@ var codes = []CodeInfo{
 	{CodeToolSkillChanged, true, "A tool's skill folder changed since it was first linked: aggy tool on refused to link it, or a launch wired none of that tool's MCP servers or hooks. A linked skill is a symlink and reaches every session of that CLI.", "aggy tool off <name> everywhere, read the folder in ~/.aggy/skills/<name>, then turn the tool on again."},
 	{CodeToolNetwork, true, "An edit borrow's tool reaches the network (network = true in its definition, or a user definition without network = false), and routing.edit_network_tools is off. Its server runs outside the CLI's sandbox, so a child steered by a prompt injection could read a .env and send it out.", "Drop the tool from routing.edit_tools, or set routing.edit_network_tools = true if you accept that risk."},
 	{CodeToolUnlisted, true, "aggy borrow --tool named a tool that routing.edit_tools in your ~/.aggy/config.toml does not list. An agent runs aggy borrow, so only the tools you listed there reach an edit child.", "Add the tool to routing.edit_tools if an edit child should get it."},
+	{CodeToolIndexFailed, false, "aggy tool on --repo refused a built-in with a per-repo index: its program is not installed, or its index build (codegraph init) failed or timed out. Nothing was recorded.", "Install the pinned version as aggy tool on says (aggy never installs anything), then turn it on again."},
+	{CodeToolIndexCopy, false, "A launch in a linked worktree did not copy the main checkout's index: the index folder or a file in it is a symlink or not a regular file, it is over the size cap, or it changed while being copied. The session started without it.", "The warning names the file; the tool can still build its own index there."},
 	{CodeToolExec, true, "aggy tool exec refused to start a tool's MCP server: its folder is not aggy's private launch folder, the definition changed or is gone, the command is not the definition's, or a variable could not be passed.", "aggy tool status; if the definition changed, aggy tool on <name> again after reading it."},
 	{CodeToolChanged, true, "aggy tool on or a --tool refused a user definition that is not the file aggy tool add showed, or (--tool) one it never recorded.", "aggy tool remove <name>, then aggy tool add the file again and read what it runs."},
 }
