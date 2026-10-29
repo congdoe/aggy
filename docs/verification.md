@@ -800,6 +800,44 @@ grok_file_tools = true` in `~/.aggy/config.toml` (never repo config). So
 key; a new Grok image gets `image_gen` only. `reference_to_video` is never
 given, opt-in or not.
 
+**Confining them to images (T6751).** Source only, grok-build `2bdd1d6a`,
+paths under `crates/codegen/`; not run live.
+
+- No path rule reaches them. Both are checked as `AccessKind::Tool` with
+  the tool's name and no path (`xai-grok-tools/src/permission_access.rs:40-41`).
+  A rule's tool prefix is one of `Bash`, `Read`, `Edit`/`Write`,
+  `MCPTool`, `Grep`/`Glob`, `WebFetch`, `WebSearch`, `AgentMessage`
+  (`xai-grok-permission-rules/src/rules.rs:244-257`); `image_edit(<path>)`
+  is a parse error (`UnknownToolPrefix`, `rules.rs:150-166`), and a bare
+  `image_edit` is a tool-wide `Any` rule (`rules.rs:229-240`). A `Tool`
+  access is reached only by `Any` rules and tool-wide `Edit` deny or ask
+  (`policy.rs:547-577`), and matched against the tool's name
+  (`policy.rs:749-755`). So `--deny` can remove either tool whole, never
+  one path, and `Read`/`Grep` denies (S8, S9) do not reach them.
+- A file that is not an image is refused before upload. The extension
+  and any MIME a caller claims are not looked at; the bytes are.
+  `image_edit` reads the path (`implementations/grok_build/image_edit/mod.rs:146`)
+  and passes it as is only when it is at most the size cap and `infer`
+  sniffs `image/jpeg` or `image/png` magic (`:52-60`); anything else must
+  be detected and decoded by the `image` crate and is re-encoded
+  (`:63-104`), else `failed to decode image reference` (`:84-86`); only
+  then is the data URL built (`:159-161`) and sent (`:356`).
+  `image_to_video` reads the path (`video_gen/mod.rs:909`) and calls
+  `validate_image_bytes` (`:921`): magic-byte sniff, a full decode, a
+  complete JPEG marker walk, and an allow-list of PNG, JPEG, GIF, WebP,
+  BMP, and TIFF (`xai-grok-image/src/lib.rs:38-92`); it uploads the raw
+  bytes only after that (`video_gen/mod.rs:924-925`). The refusal texts
+  quote the path, not the bytes. The Grok home's `auth.json` is JSON, so
+  either tool refuses it.
+- Not covered: `image_edit`'s fast path checks only the magic bytes, and
+  `image_to_video` ignores bytes after a JPEG's end marker
+  (`lib.rs:113-114`), so a file that starts as an image, or is one with
+  data appended, goes up whole. Any real image the model names goes up
+  too; that is what the opt-in's text warns about.
+
+Consequence in aggy: no rule is added to the media argv; the opt-in
+stays off by default and unchanged.
+
 ## Session file formats (T6670)
 
 Source only; no session file was read. `internal/transcript` follows

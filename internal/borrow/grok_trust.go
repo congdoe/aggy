@@ -224,7 +224,8 @@ func grokInstructionLinks(cwd string) []string {
 // Grok would load and run: hooks, MCP, LSP, plugins, agents, workflows,
 // .envrc. The sandbox does not cover these: a hook is code Grok runs. It
 // also refuses one whose instruction or skill files are symlinks
-// (grokInstructionLinks); plain ones pass.
+// (grokInstructionLinks), or whose committed .cursor paths hold one
+// (Request.CursorLinks); plain ones pass.
 func grokTrustGate(v adapter.Vendor, req Request) error {
 	if v != adapter.Grok || req.Kind != adapter.Review {
 		// Every other kind runs in a fresh empty dir outside any git
@@ -238,6 +239,16 @@ func grokTrustGate(v adapter.Vendor, req Request) error {
 	if found := grokInstructionLinks(req.Repo); len(found) > 0 {
 		return fmt.Errorf("grok: %s: %w: instruction or skill files Grok would load are, or hold, a symlink or something that cannot be checked (%s), and Grok would load the link's target as instructions",
 			req.Kind, adapter.ErrUnsupported, strings.Join(found, ", "))
+	}
+	// Grok's cursor rules (a feature off by default) load .md/.mdc files
+	// from <dir>/.cursor/rules of any dir it reads in, following a linked
+	// .cursor or rules dir (grok-build 2bdd1d6a,
+	// xai-grok-tools/src/implementations/cursor_rules_on_read.rs:235-241,
+	// tokio::fs::metadata); grokInstructionLinks only checks the cwd's
+	// chain, so a nested sub/.cursor link is caught here (T6751).
+	if len(req.CursorLinks) > 0 {
+		return fmt.Errorf("grok: %s: %w: the repo commits a symlink under a .cursor path (%s), and Grok's cursor rules would follow it",
+			req.Kind, adapter.ErrUnsupported, strings.Join(req.CursorLinks, ", "))
 	}
 	return nil
 }

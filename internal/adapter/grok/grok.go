@@ -96,7 +96,9 @@ var (
 	// (tokio::fs::read, no cwd check) and upload it to xAI: image_edit
 	// (image_edit/mod.rs resolve_to_data_url), image_to_video and
 	// reference_to_video (video_gen/mod.rs resolve_image_reference). They
-	// are off unless HeadlessRequest.FileTools, the user's opt-in.
+	// are off unless HeadlessRequest.FileTools, the user's opt-in. Grok
+	// has no path rule for them, but they refuse bytes that are not an
+	// image before upload (docs/verification.md, T6751).
 	FileTools = []string{"image_edit", "image_to_video", "reference_to_video"}
 	// VideoTools is video generation, behind FileTools: Grok has no
 	// text-to-video tool, so the child makes a still with image_gen and
