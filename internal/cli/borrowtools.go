@@ -103,9 +103,13 @@ func borrowTools(stateDir string, network bool) func(context.Context, adapter.Ve
 		}
 		b.Session = keep
 		var on []switchboard.State
-		for _, st := range b.On(v, repo.key) {
-			if !slices.Contains(keep, st.Tool.Name) {
-				continue // on for sessions, not named for this child
+		named := slices.DeleteFunc(b.On(v, repo.key), func(st switchboard.State) bool {
+			return !slices.Contains(keep, st.Tool.Name) // on for sessions, not named for this child
+		})
+		changed := changedSkills(ctx, named) // R80-3
+		for _, st := range named {
+			if err := changed[st.Tool.Name]; err != nil {
+				return nil, nil, refused(st.Tool.Name, codeOf(err, diag.CodeToolSkillChanged), err.Error())
 			}
 			if st.Parts.MCP == nil {
 				return nil, nil, refused(st.Tool.Name, diag.CodeToolScope, "it has no MCP server for "+string(v)+", and a borrow child gets MCP servers only")
