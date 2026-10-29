@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -49,6 +50,25 @@ func TestFakeProxyHelper(t *testing.T) {
 		time.Sleep(time.Minute)
 		os.Exit(0)
 	}
+	if mode == "holdfd" {
+		// HIGH-2: holds the listener it inherited as fd 3, outside the
+		// proxy's group, and accepts nothing.
+		time.Sleep(20 * time.Second)
+		os.Exit(0)
+	}
+	if mode == "attack" {
+		// HIGH-2: retries bind every 100µs, as an attacker racing aggy
+		// for the port once the proxy dies; it says so if it wins.
+		for deadline := time.Now().Add(8 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Microsecond) {
+			if ln, err := net.Listen("tcp", addr); err == nil {
+				_ = os.WriteFile(filepath.Join(dir, "won"), nil, 0o600)
+				time.Sleep(3 * time.Second)
+				_ = ln.Close()
+				break
+			}
+		}
+		os.Exit(0)
+	}
 	// A grandchild in the proxy's group, which Stop must kill too.
 	sleep := exec.Command("/bin/sleep", "60")
 	if err := sleep.Start(); err == nil {
@@ -58,7 +78,30 @@ func TestFakeProxyHelper(t *testing.T) {
 	if err != nil {
 		os.Exit(3)
 	}
+	var escape sync.Once
 	_ = http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mode == "escape" {
+			// HIGH-2: once aggy has checked it, hand the listener to a
+			// process in its own session, which keeps the port when the
+			// proxy dies (a worker that escaped its group).
+			escape.Do(func() {
+				go func() {
+					time.Sleep(1500 * time.Millisecond)
+					f, err := ln.(*net.TCPListener).File()
+					if err != nil {
+						return
+					}
+					esc := filepath.Join(dir, "esc")
+					_ = os.Mkdir(esc, 0o700)
+					c := exec.Command(os.Args[0], "-test.run=^TestFakeProxyHelper$", "--", "fakeproxy", "holdfd", addr, esc)
+					c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+					c.ExtraFiles = []*os.File{f}
+					if c.Start() == nil {
+						_ = os.WriteFile(filepath.Join(dir, "escaped"), []byte(strconv.Itoa(c.Process.Pid)), 0o600)
+					}
+				}()
+			})
+		}
 		switch {
 		case mode == "redirect" && r.URL.Path == "/health":
 			http.Redirect(w, r, "/ok", http.StatusFound)

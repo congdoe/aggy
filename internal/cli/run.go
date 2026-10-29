@@ -292,13 +292,19 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	// the CLI starts without it.
 	px := startToolProxy(ctx, v, pl.child.Cwd, memDir, t.Tools, stderr, name)
 	defer px.stop()
+	if px.interrupted {
+		fmt.Fprintf(stderr, "%s: interrupted; nothing started %s\n", name, dlog.Tag(diag.CodeProxyFailed))
+		return 130
+	}
 	if px.env != "" {
 		cmd.Env = append(cmd.Env, px.env)
 	}
 	// HIGH-2: a proxy that dies mid-session is recorded at once (its
 	// address is already held, execrun.Proxy.Died), the supervisor reads
 	// the session's tools again and offers a resume, and aggy says so
-	// once the terminal is its own again.
+	// once the terminal is its own again. When aggy could not hold the
+	// address, execrun has already killed the CLI (px.guard), so the
+	// session ends and the warning shows at once.
 	proxyNudge := make(chan struct{}, 1)
 	watch, stopWatch := context.WithCancel(ctx)
 	defer stopWatch()
@@ -350,10 +356,12 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 		q.Log(r)
 	}
 	if t.Direct {
+		// --direct's CLI shares aggy's process group: only it is killed.
 		code, err := runDirect(cmd, runDir, parentID, v, assigned, cids.set, func(r diag.Rec) {
 			r.Parent, r.Child, r.Vendor = parentID, pl.child.ID, string(v)
 			q.LogWait(r, 100*time.Millisecond) // the socket's goroutines
-		})
+		}, func(pid int) { px.guard(pid, false) })
+		px.guard(0, false)
 		dlog.Release()
 		if err != nil {
 			r := ids
@@ -426,7 +434,14 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 		ToolsAtLaunch: toolBase,
 		ToolsNudge:    proxyNudge,
 		In:            os.Stdin, Out: os.Stdout, Command: cmd,
-		Start:      startPTY,
+		// The CLI leads its own session in the pseudo-terminal.
+		Start: func(c adapter.Command, rows, cols int) (supervisor.Child, error) {
+			ch, err := startPTY(c, rows, cols)
+			if err == nil {
+				px.guard(ch.Pid(), true)
+			}
+			return ch, err
+		},
 		SwitchKey:  key,
 		Vendors:    vendors,
 		RunDir:     runDir,
@@ -445,6 +460,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 		Diag:       q,
 		ChildID:    pl.child.ID,
 	})
+	px.guard(0, false) // the CLI was reaped: never signal its pid again
 	dlog.Release()
 	if err != nil {
 		r := ids

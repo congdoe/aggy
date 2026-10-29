@@ -12,3 +12,6 @@ import (
 func StartProxy(context.Context, ProxySpec, []string) (*Proxy, error) {
 	return nil, errors.New("execrun: a tool proxy runs on macOS and Linux only")
 }
+
+// killCLI has nothing to do: no Proxy exists here.
+func (p *Proxy) killCLI() {}
