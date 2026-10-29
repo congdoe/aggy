@@ -215,11 +215,12 @@ func boardFindings(ctx context.Context, b switchboard.Board, refused []error, cw
 	out = append(out, skillFindings(ctx, b, s, ver)...)
 	problems := slices.ContainsFunc(out, func(f checkup.Finding) bool { return f.Level != checkup.LevelInfo })
 	n := 0
+	blocked := skillBlocked(ctx, b, repo.key)
 	for _, t := range b.Tools {
 		var costs []string
 		anyOn := false
 		for _, v := range adapter.Vendors() {
-			skillOn, partsOn := toolOnFor(b, t, v, repo.key)
+			skillOn, partsOn := toolOnFor(b, t, v, repo.key, blocked)
 			anyOn = anyOn || skillOn || partsOn
 			costs = append(costs, string(v)+" "+toolCost(t, v, skillOn, partsOn))
 		}

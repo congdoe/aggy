@@ -91,6 +91,26 @@ func TestToolListCost(t *testing.T) {
 	}
 }
 
+// TestToolListCostSkillChanged (#84 MED): a tool whose linked skill
+// changed costs only its skill, since a launch wires none of its
+// servers or hooks.
+func TestToolListCostSkillChanged(t *testing.T) {
+	_, repo, _ := traceTool(t, "tracer")
+	t.Chdir(repo)
+	toolOK(t, "on", "tracer", "--vendor", "claude")
+	_, out, _ := toolRun("", false, "list")
+	if got := statusLine(t, out, "tracer"); !strings.HasPrefix(got, "tracer user off ~10 +2 +unknown 0 0 ") {
+		t.Fatalf("tracer's row: %q", got)
+	}
+	// R80-3: a launch wires no server of a tool whose skill changed, so
+	// only the linked skill costs.
+	writeAt(t, filepath.Join(os.Getenv(home.Env), "skills", "tracer", "SKILL.md"), "---\nname: tracer\ndescription: test\n---\nBody.\n\n", 0o644)
+	_, out, _ = toolRun("", false, "list")
+	if got := statusLine(t, out, "tracer"); !strings.HasPrefix(got, "tracer user off ~10 +2 0 0 ") {
+		t.Errorf("tracer's row after its skill changed: %q", got)
+	}
+}
+
 // TestToolListCostPerRepo (M83-4): a tool turned on for one repo wires
 // its server there, but its skill, linked from the setting for every
 // repo, is not linked, so it costs nothing.

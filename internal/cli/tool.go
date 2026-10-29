@@ -221,6 +221,7 @@ func toolList(ctx context.Context, stdout, stderr io.Writer) int {
 			}
 		}
 	}
+	blocked := skillBlocked(ctx, b, repo.key) // R80-3: not wired, so no cost
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	head := "NAME\tKIND\tDEFAULT"
 	for _, v := range adapter.Vendors() {
@@ -237,7 +238,7 @@ func toolList(ctx context.Context, stdout, stderr io.Writer) int {
 		}
 		row := []string{t.Name, kind, def}
 		for _, v := range adapter.Vendors() {
-			skillOn, partsOn := toolOnFor(b, t, v, repo.key)
+			skillOn, partsOn := toolOnFor(b, t, v, repo.key, blocked)
 			row = append(row, toolCost(t, v, skillOn, partsOn))
 		}
 		fmt.Fprintln(tw, strings.Join(append(row, termsafe.Field(t.Source), termsafe.Field(t.Description)), "\t"))

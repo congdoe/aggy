@@ -265,11 +265,11 @@ func syncToolSkill(ctx context.Context, t tooldef.Tool, b switchboard.Board, std
 	if err != nil {
 		return withCode(diag.CodeToolSkillMissing, err)
 	}
+	// H84-1: every vendor is planned, so one whose skill part an edit
+	// dropped is unlinked rather than left out of the plan.
 	want := map[string]bool{}
 	for _, v := range adapter.Vendors() {
-		if t.PartsFor(v).Skill != nil {
-			want[string(v)] = b.State(t, v, "").On
-		}
+		want[string(v)] = t.PartsFor(v).Skill != nil && b.State(t, v, "").On
 	}
 	return setSkillLinks(ctx, t.Name, l, want, stdout)
 }

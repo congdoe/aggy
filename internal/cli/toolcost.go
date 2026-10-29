@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -20,8 +21,21 @@ const toolCostNote = "Cost per vendor, here: estimated tokens every turn, +N mor
 // (syncToolSkill), whatever the repo's tools_off or a per-repo on says,
 // while servers and hooks follow the switches in repo, as a launch
 // wires them.
-func toolOnFor(b switchboard.Board, t tooldef.Tool, v adapter.Vendor, repo string) (skillOn, partsOn bool) {
-	return b.State(t, v, "").On, b.State(t, v, repo).On
+// blocked holds, per vendor, the tools a launch in repo would not wire
+// because a linked skill changed since its first link (changedSkills).
+func toolOnFor(b switchboard.Board, t tooldef.Tool, v adapter.Vendor, repo string, blocked map[adapter.Vendor]map[string]error) (skillOn, partsOn bool) {
+	_, no := blocked[v][t.Name]
+	return b.State(t, v, "").On, b.State(t, v, repo).On && !no
+}
+
+// skillBlocked is, per vendor, changedSkills of the tools on in repo:
+// the ones a launch would wire none of the servers or hooks of (R80-3).
+func skillBlocked(ctx context.Context, b switchboard.Board, repo string) map[adapter.Vendor]map[string]error {
+	out := map[adapter.Vendor]map[string]error{}
+	for _, v := range adapter.Vendors() {
+		out[v] = changedSkills(ctx, b.On(v, repo))
+	}
+	return out
 }
 
 // toolCost estimates, offline, the tokens tool t costs vendor v, with
