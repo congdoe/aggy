@@ -920,9 +920,18 @@ arm64 with `DO_NOT_TRACK=1`. No vendor config was edited, and no tool's
   launch adds every safety-policy Bash rule again with the hook's
   `rewrite_prefix` (`"rtk "`) in front, and for each key file a rule
   matching any prefixed command that names it (`Bash(rtk *.env*)`),
-  since what RTK 1.1.0 turns `cat`, `head`, or `grep` of a key file into
-  is not recorded. A hook that does not declare `rewrites` has its
-  `updatedInput` dropped by `aggy hook-tool`.
+  since which file commands Claude's Read rules recognize in Bash is not
+  documented. `aggy hook-tool` passes a rewrite only when its `command`
+  is exactly `rewrite_prefix` plus the original command and every other
+  key is the original's (R80-1); any other rewrite is dropped
+  (`updatedInput_unexpected`). So whichever input Claude matches its
+  rules against, the prefixed deny copies cover it: a Bash rule that
+  matches the original matches the rewrite with the prefix in front, and
+  a key file named in the original is named in the rewrite. A hook that
+  does not declare `rewrites` has its `updatedInput` dropped. That RTK
+  1.1.0 rewrites only in that whole-command form is unverified: a
+  rewrite in another form (of `cat` to another subcommand, or of each
+  part of `a && b`) is dropped, and the command runs as the model asked.
 - **Unverified: whether `headroom mcp serve` reaches the network.** Its
   definition says `network = true`, so an edit borrow's child does not
   get it without `routing.edit_network_tools` (M78-2). Context7 calls its

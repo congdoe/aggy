@@ -40,7 +40,9 @@ var hookTools = func() ([]tooldef.Tool, error) {
 // scratch with no vendor home (execrun.ToolHookRunner, L78-7), the
 // hook's timeout, and capped output, and prints only what
 // hook.FilterToolOutput passes: never an "allow", and an updatedInput
-// only from a hook whose definition declares rewrites (H78-1). What it
+// only from a hook whose definition declares rewrites (H78-1), and only
+// as its rewrite_prefix in front of the payload's own command (R80-1).
+// What it
 // drops is recorded by fixed names only (L78-5). On any failure it
 // prints nothing and exits 0, which leaves the action as the CLI would
 // have handled it without the hook. It always exits 0.
@@ -115,7 +117,11 @@ func hookToolWith(ctx context.Context, args []string, in io.Reader, stdout io.Wr
 		fail(diag.CodeToolHookFailed)
 		return
 	}
-	filtered, dropped, err := hook.FilterToolOutput(h.Event, out.Stdout, h.Rewrites)
+	prefix := ""
+	if h.Rewrites {
+		prefix = h.RewritePrefix
+	}
+	filtered, dropped, err := hook.FilterToolOutput(h.Event, out.Stdout, payload, prefix)
 	if err != nil {
 		fail(diag.CodeToolHookOutput)
 		return
