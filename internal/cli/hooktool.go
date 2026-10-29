@@ -36,9 +36,12 @@ var hookTools = func() ([]tooldef.Tool, error) {
 // runHookTool is aggy hook-tool --vendor V <tool> <hook index> <digest>,
 // the command a managed tool's hook entry runs (toolwire.HookCommand):
 // it runs the hook's argv through execrun, with the payload from stdin as
-// a file, a private empty working directory, aggy's scrubbed
-// environment, the hook's timeout, and capped output, and prints only
-// what hook.FilterToolOutput passes: never an "allow". On any failure it
+// a file, a private empty working directory, an environment built from
+// scratch with no vendor home (execrun.ToolHookRunner, L78-7), the
+// hook's timeout, and capped output, and prints only what
+// hook.FilterToolOutput passes: never an "allow", and an updatedInput
+// only from a hook whose definition declares rewrites (H78-1). What it
+// drops is recorded by fixed names only (L78-5). On any failure it
 // prints nothing and exits 0, which leaves the action as the CLI would
 // have handled it without the hook. It always exits 0.
 func runHookTool(args []string, stdout, stderr io.Writer) int {
@@ -106,13 +109,13 @@ func hookToolWith(ctx context.Context, args []string, in io.Reader, stdout io.Wr
 	if timeout == 0 {
 		timeout = toolwire.ToolHookTimeout
 	}
-	out, err := execrun.HeadlessRunner(time.Duration(timeout)*time.Second)(ctx, adapter.Command{
+	out, err := execrun.ToolHookRunner(time.Duration(timeout)*time.Second)(ctx, adapter.Command{
 		Path: path, Args: h.Argv[1:], Dir: dir, Stdin: adapter.StdinFile, StdinPath: file})
 	if err != nil || out.ExitCode != 0 {
 		fail(diag.CodeToolHookFailed)
 		return
 	}
-	filtered, dropped, err := hook.FilterToolOutput(h.Event, out.Stdout)
+	filtered, dropped, err := hook.FilterToolOutput(h.Event, out.Stdout, h.Rewrites)
 	if err != nil {
 		fail(diag.CodeToolHookOutput)
 		return

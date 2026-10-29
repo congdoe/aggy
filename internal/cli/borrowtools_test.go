@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -63,12 +64,17 @@ func toolsFixture(t *testing.T, editTools string) *borrowFixture {
 // TestBorrowEditToolsCommand (T6709): an edit child on Codex gets the
 // tools routing.edit_tools lists, each through aggy tool exec in a
 // private launch folder removed once it exits, with its own approval;
-// --tool picks among them; other kinds refuse --tool.
+// --tool picks among them; other kinds refuse --tool. A tool that
+// reaches the network needs routing.edit_network_tools (M78-2).
 func TestBorrowEditToolsCommand(t *testing.T) {
 	f := toolsFixture(t, `["context7"]`)
 	editRepo(t, f.repo)
 	f.env.gitPath, f.env.gitRun = gitEnv().gitPath, gitEnv().gitRun
 	f.scenario["codex"] = `{"events":[{"type":"item.completed","item":{"type":"agent_message","text":"done"}}]}`
+	if code, _, errOut := f.run(t, "edit", "add a helper", "--vendor", "codex"); code != 1 || !strings.Contains(errOut, "tool.borrow_network") {
+		t.Fatalf("a network tool without edit_network_tools: %d %s", code, errOut)
+	}
+	mustWrite(t, filepath.Join(f.state, config.FileName), "[routing]\nedit_tools = [\"context7\"]\nedit_network_tools = true\n", 0o600)
 	code, out, errOut := f.run(t, "edit", "add a helper", "--vendor", "codex")
 	if code != 0 {
 		t.Fatalf("code %d: %s %s", code, out, errOut)
@@ -108,7 +114,7 @@ func TestBorrowEditToolsCommand(t *testing.T) {
 func TestBorrowToolsRefusals(t *testing.T) {
 	f := toolsFixture(t, `["context7"]`)
 	gitRepo(t, f.repo)
-	wire := borrowTools(f.state)
+	wire := borrowTools(f.state, true)
 	ctx := context.Background()
 	codex := borrow.CLI{Caps: []string{probe.CapConfigOverride}}
 	check := func(name string, v adapter.Vendor, cli borrow.CLI, names []string, want diag.Code) {
@@ -123,6 +129,17 @@ func TestBorrowToolsRefusals(t *testing.T) {
 	check("codex without -c", adapter.Codex, borrow.CLI{}, []string{"context7"}, diag.CodeToolNoFlag)
 	check("unknown", adapter.Codex, codex, []string{"nope"}, diag.CodeToolUnknown)
 	check("skill only", adapter.Codex, codex, []string{"caveman"}, diag.CodeToolScope)
+	// M78-2: a network tool, routing.edit_network_tools off.
+	if _, _, err := borrowTools(f.state, false)(ctx, adapter.Claude, borrow.CLI{}, []string{"context7"}, f.repo); !strings.Contains(fmt.Sprint(err), "tool.borrow_network") {
+		t.Errorf("network: %v", err)
+	}
+	// M78-3: Claude's managed-mcp.json still counts for a child.
+	managed := filepath.Join(t.TempDir(), "managed-mcp.json")
+	mustWrite(t, managed, `{"mcpServers":{"context7":{}}}`, 0o600)
+	oldManaged := claudeManagedMCP
+	claudeManagedMCP = []string{managed}
+	check("claude managed clash", adapter.Claude, borrow.CLI{}, []string{"context7"}, diag.CodeToolNameClash)
+	claudeManagedMCP = oldManaged
 
 	// Claude reads no other MCP config, so a name it loads elsewhere is no
 	// clash; Codex's project config is, and fails closed.

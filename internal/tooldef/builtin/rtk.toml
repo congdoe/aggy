@@ -29,6 +29,11 @@ vendors = ["claude"]
 event = "PreToolUse"
 matcher = "Bash"
 decides = true
+# It answers updatedInput: the command again with "rtk " in front
+# (docs/verification.md, "Managed tools"), so the launch adds the safety
+# policy's Bash rules with that prefix too (H78-1).
+rewrites = true
+rewrite_prefix = "rtk "
 argv = ["rtk", "hook", "claude"]
 
 [cost]

@@ -353,7 +353,7 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 			}
 		},
 		Worktrees: &gitWorktrees{env: env, stateDir: stateDir, out: stderr, allow: cfg.Worktree, cfgPath: filepath.Join(stateDir, config.FileName)},
-		Tools:     borrowTools(stateDir),
+		Tools:     borrowTools(stateDir, cfg.Routing.EditNetworkTools),
 		Diag:      dlog,
 	})
 	req := borrow.Request{

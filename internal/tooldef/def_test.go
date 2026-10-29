@@ -259,6 +259,8 @@ event = "PreModelRequest"`), false, "hook[0].event", "allow or deny"},
 		{"built-in skill in the grok home", on(skillOnly, set(`"~/.aggy/skills/brief"`, `"~/.grok/skills/x"`)), true, "skill[0].path", "dot folders"},
 		{"built-in skill in aggy state", on(skillOnly, set(`"~/.aggy/skills/brief"`, `"~/.aggy"`)), true, "skill[0].path", "dot folders"},
 		{"built-in skill in aggy tools", on(skillOnly, set(`"~/.aggy/skills/brief"`, `"~/.aggy/tools"`)), true, "skill[0].path", "dot folders"},
+		// L78-8: a skill-only tool is global.
+		{"skill-only per repo", on(skillOnly, set(`scope = "global"`, `scope = "repo"`)), true, "scope", "only a skill"},
 		{"skill vendor twice", on(skillOnly, post("[[skill]]\nvendors = [\"claude\"]\npath = \"~/.aggy/skills/brief/b\"\n")), false, "skill[1].vendors[0]", "another entry"},
 
 		// Hooks.
@@ -268,6 +270,12 @@ event = "PreModelRequest"`), false, "hook[0].event", "allow or deny"},
 		{"user PermissionRequest", post("[[hook]]\nvendors = [\"claude\"]\nevent = \"PermissionRequest\"\nargv = [\"demo\"]\n"), false, "hook[1].event", "allow or deny"},
 		{"built-in deciding hook without decides", set(`event = "PostToolUse"`, `event = "PreToolUse"`), true, "hook[0].decides", "decides = true"},
 		{"decides on another event", set(`event = "PostToolUse"`, "event = \"PostToolUse\"\ndecides = true"), true, "hook[0].decides", ""},
+		// H78-1: rewrites only on a built-in deciding hook, with a prefix.
+		{"rewrites on a user hook", set(`event = "PostToolUse"`, "event = \"PostToolUse\"\nrewrites = true\nrewrite_prefix = \"demo \""), false, "hook[0].rewrites", "built-in"},
+		{"rewrites without decides", set(`event = "PostToolUse"`, "event = \"PostToolUse\"\nrewrites = true\nrewrite_prefix = \"demo \""), true, "hook[0].rewrites", "decides"},
+		{"rewrites without a prefix", set(`event = "PostToolUse"`, "event = \"PreToolUse\"\ndecides = true\nrewrites = true"), true, "hook[0].rewrite_prefix", "exactly"},
+		{"a prefix without rewrites", set(`event = "PostToolUse"`, "event = \"PreToolUse\"\ndecides = true\nrewrite_prefix = \"demo \""), true, "hook[0].rewrite_prefix", "exactly"},
+		{"a bad prefix", set(`event = "PostToolUse"`, "event = \"PreToolUse\"\ndecides = true\nrewrites = true\nrewrite_prefix = \"demo*\""), true, "hook[0].rewrite_prefix", "program name"},
 		{"hook matcher", set(`matcher = "run_terminal_cmd"`, `matcher = "Bash; rm"`), false, "hook[0].matcher", ""},
 		{"hook matcher invalid", set(`matcher = "run_terminal_cmd"`, `matcher = "Bash**"`), false, "hook[0].matcher", "pattern"},
 		{"hook timeout", set(`timeout = 10`, `timeout = 601`), false, "hook[0].timeout", ""},

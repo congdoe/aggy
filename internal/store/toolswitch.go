@@ -93,3 +93,30 @@ func (s *Store) ToolSwitches(ctx context.Context) ([]ToolSwitch, error) {
 	}
 	return out, rows.Err()
 }
+
+// ToolSkill returns the digest of tool's skill folder recorded when it
+// was first linked (L78-4), and whether there is one.
+func (s *Store) ToolSkill(ctx context.Context, tool string) (string, bool, error) {
+	var d string
+	err := s.db.QueryRowContext(ctx, `SELECT digest FROM tool_skill WHERE tool = ?`, tool).Scan(&d)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return d, err == nil, err
+}
+
+// PutToolSkill records the digest of tool's skill folder as linked.
+func (s *Store) PutToolSkill(ctx context.Context, tool, digest string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO tool_skill (tool, digest, linked_at) VALUES (?, ?, ?)
+		 ON CONFLICT (tool) DO UPDATE SET digest = excluded.digest, linked_at = excluded.linked_at`,
+		tool, digest, millis(at))
+	return err
+}
+
+// DeleteToolSkill forgets tool's skill folder digest, once no vendor
+// links it.
+func (s *Store) DeleteToolSkill(ctx context.Context, tool string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM tool_skill WHERE tool = ?`, tool)
+	return err
+}

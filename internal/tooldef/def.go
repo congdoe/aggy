@@ -42,6 +42,11 @@ type Def struct {
 	// condition in When, such as "has-ui".
 	Scope string `toml:"scope"`
 	When  string `toml:"when"`
+	// Network says the tool's servers reach the network (M78-2). An edit
+	// borrow's child never gets one unless the user also sets
+	// routing.edit_network_tools: a server runs outside the CLI's own
+	// sandbox, so a steered child could read a key file and send it out.
+	Network bool `toml:"network"`
 
 	Install Install `toml:"install"`
 	MCP     []MCP   `toml:"mcp"`
@@ -104,8 +109,16 @@ type Hook struct {
 	// Approves says the hook is known to answer "allow", approving an
 	// action the person would have been asked about. Such a hook is
 	// never wired (T6708).
-	Approves bool     `toml:"approves"`
-	Argv     []string `toml:"argv"`
+	Approves bool `toml:"approves"`
+	// Rewrites says the hook may answer updatedInput, changing the tool
+	// call (H78-1); aggy hook-tool drops an updatedInput from any other
+	// hook. RewritePrefix is what a rewritten shell command starts with,
+	// such as "rtk ": the launch then adds the safety policy's Bash
+	// rules again with it in front, in case the CLI matches its rules
+	// against the rewritten command. Built-ins only, with decides.
+	Rewrites      bool     `toml:"rewrites"`
+	RewritePrefix string   `toml:"rewrite_prefix"`
+	Argv          []string `toml:"argv"`
 }
 
 // Init is a vendor-specific setup step of a built-in. It declares what
@@ -140,6 +153,10 @@ type Parts struct {
 func (p Parts) Empty() bool {
 	return p.MCP == nil && p.Skill == nil && len(p.Hooks) == 0 && len(p.Init) == 0
 }
+
+// SkillOnly reports whether d is only skills: no MCP server, hook, or
+// init step.
+func (d Def) SkillOnly() bool { return len(d.MCP) == 0 && len(d.Hooks) == 0 && len(d.Init) == 0 }
 
 // PartsFor returns the parts of d that support vendor v. A vendor is in
 // at most one [[mcp]] and one [[skill]] entry.
@@ -218,6 +235,7 @@ var (
 	userVersionRE = regexp.MustCompile(`^[0-9][A-Za-z0-9._+-]{0,63}$`)
 	matcherRE     = regexp.MustCompile(`^[A-Za-z0-9_|.*]+$`)
 	keyRE         = regexp.MustCompile(`^[a-z_]+$`)
+	prefixRE      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31} $`)
 )
 
 // Fixed vocabularies.
@@ -226,7 +244,7 @@ var (
 	conditions = []string{"has-ui"}
 	costs      = []string{"mcp-schema", "skill-md", "static", "none"}
 	lifecycles = []string{"worktree-copy", "gc", "refresh"}
-	topKeys    = []string{"version", "homepage", "install", "mcp", "skill", "hook", "init", "cost"}
+	topKeys    = []string{"version", "homepage", "install", "mcp", "skill", "hook", "init", "cost", "network"}
 )
 
 // hookEvents are the hook events each CLI has. Claude: code.claude.com
@@ -342,6 +360,10 @@ func (d Def) validate(builtIn bool) error {
 	if len(d.MCP) == 0 && len(d.Skills) == 0 && len(d.Hooks) == 0 && len(d.Init) == 0 {
 		return bad("mcp", "a tool needs at least one part: mcp, skill, hook, or init")
 	}
+	if d.SkillOnly() && d.Scope == "repo" {
+		// L78-8: a skill is linked for every repo, never for one.
+		return bad("scope", "a tool that is only a skill is global: its skill is linked for every repo")
+	}
 	if err := d.validateMCP(builtIn); err != nil {
 		return err
 	}
@@ -442,6 +464,12 @@ func (d Def) validateHooks(builtIn bool) error {
 			return bad(".decides", "only for %q", decidingEvents)
 		case h.Approves && !h.Decides:
 			return bad(".approves", "only with decides = true")
+		case h.Rewrites && (!h.Decides || !builtIn):
+			return bad(".rewrites", "only on a built-in, with decides = true")
+		case h.Rewrites != (h.RewritePrefix != ""):
+			return bad(".rewrite_prefix", "set it exactly when rewrites = true")
+		case h.RewritePrefix != "" && !prefixRE.MatchString(h.RewritePrefix):
+			return bad(".rewrite_prefix", "want a program name and one space, such as \"rtk \"")
 		}
 		if h.Matcher != "" {
 			if len(h.Matcher) > maxMatcher || !matcherRE.MatchString(h.Matcher) {
@@ -495,8 +523,7 @@ func (d Def) validateInit(builtIn bool) error {
 }
 
 func (d Def) validateInstall() error {
-	skillOnly := len(d.MCP) == 0 && len(d.Hooks) == 0 && len(d.Init) == 0
-	if err := argv("install.check", d.Install.Check, !skillOnly); err != nil {
+	if err := argv("install.check", d.Install.Check, !d.SkillOnly()); err != nil {
 		return err
 	}
 	if p := d.Install.CheckPattern; p != "" {

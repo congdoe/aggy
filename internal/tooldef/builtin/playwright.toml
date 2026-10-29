@@ -10,6 +10,7 @@ version = "0.0.83"
 default = false
 scope = "repo"
 when = "has-ui"
+network = true # it drives a browser
 unverified = ["homepage"]
 
 [install]

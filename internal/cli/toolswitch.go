@@ -205,6 +205,10 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 		if !slices.ContainsFunc(vendors, func(v adapter.Vendor) bool { return !t.PartsFor(v).Empty() }) {
 			return withCode(diag.CodeToolScope, fmt.Errorf("%s has nothing for %s", name, a.vendor))
 		}
+		if a.hasRepo && t.SkillOnly() {
+			// L78-8: its skill is linked for every repo, never one.
+			return withCode(diag.CodeToolScope, fmt.Errorf("%s is only a skill, which is linked for every repo: turn it on without --repo", name))
+		}
 		if t.Scope == "repo" && !a.hasRepo {
 			return withCode(diag.CodeToolScope, fmt.Errorf("%s is a per-repo tool: turn it on with --repo DIR", name))
 		}
@@ -234,6 +238,15 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 		return withCode(diag.CodeStore, err)
 	}
 	defer func() { _ = s.Close() }()
+	if on && hasSkill(t) {
+		l, err := toolSkillLayout(t)
+		if err != nil {
+			return withCode(diag.CodeToolSkillMissing, err)
+		}
+		if err := checkSkillLinked(ctx, s, t, l.store); err != nil {
+			return err
+		}
+	}
 	sw := store.ToolSwitch{Tool: name, Vendor: a.vendor, Repo: repo.key, On: on, At: time.Now()}
 	switch {
 	case on && t.BuiltIn:
