@@ -610,10 +610,11 @@ func refusedMsg(v adapter.Vendor, err error) string {
 // emptied, with Ctrl+U (unverified: it is the readline kill-line key and
 // is assumed to clear the composer line) or with backspaces down to zero
 // while aggy still knew the length. Either counts only if no cursor key
-// or newline came since the @ (or since the last Ctrl+U): the @ may then
-// be on another line or after the cursor, and survive (T6770). A cursor
-// key after any @ of the draft may put the cursor back in its token, so
-// it opens the popup mark again. A paste's @ followed by whitespace in
+// or newline came since the @ (or since the last Ctrl+U), and a Ctrl+U
+// only if it cleared text: the @ may then be on another line or after
+// the cursor, and survive (T6770). A cursor key, yank, undo, or a Ctrl+U
+// on an empty line after any @ of the draft may put the cursor back in
+// its token, so it opens the popup mark again. A paste's @ followed by whitespace in
 // the same paste leaves the cursor outside its token (unverified: assumed
 // to end the token, as typing a space does), so it does not set the mark.
 // When in doubt it stays dirty.
@@ -640,10 +641,11 @@ func (s *session) send(b []byte) {
 }
 
 // cursorKey reports whether c moves the cursor (or starts an escape
-// sequence that may): ESC, and Ctrl+A, B, E, F, N, P.
+// sequence that may), or may bring text back: ESC, Ctrl+A, B, E, F, N,
+// P, yank (Ctrl+Y) and undo (Ctrl+_).
 func cursorKey(c byte) bool {
 	switch c {
-	case esc, 0x01, 0x02, 0x05, 0x06, 0x0e, 0x10:
+	case esc, 0x01, 0x02, 0x05, 0x06, 0x0e, 0x10, 0x19, 0x1f:
 		return true
 	}
 	return false
@@ -674,7 +676,7 @@ func (s *session) compose(c byte) {
 		}
 	}
 	switch {
-	case c == '\r' && (prev == esc || prev == '\\' || s.inPaste):
+	case c == '\r' && (prev == esc || prev == '\\' || s.inPaste) || c == '\n':
 		s.compLen++ // a newline in the composer
 		s.moved, s.pastePop = true, false
 	case c == '\r' && s.popup:
@@ -683,17 +685,22 @@ func (s *session) compose(c byte) {
 		s.compLen, s.lenKnown, s.cleared, s.hadAt, s.moved = 0, true, false, false, false // sent
 	case c == ctrlU:
 		// The line is empty, but it counts only once an Enter confirms
-		// it: in a multiline draft Ctrl+U may clear one line only.
-		s.compLen, s.lenKnown, s.cleared = 0, true, true
-		if !s.moved {
+		// it: in a multiline draft Ctrl+U may clear one line only. Only
+		// one that clears text, with no cursor key since, clears the
+		// mark: on an empty line some composers join the line before,
+		// which puts the cursor back in its @ token.
+		switch {
+		case s.compLen == 0:
+			s.popup = s.popup || s.hadAt
+		case !s.moved:
 			s.popup = false
 		}
-		s.moved = false
+		s.compLen, s.lenKnown, s.cleared, s.moved = 0, true, true, false
 	case c == 0x7f || c == 0x08:
 		if s.compLen > 0 {
 			s.compLen--
 			if s.compLen == 0 && s.lenKnown && s.popup && !s.moved {
-				s.popup, s.cleared, s.hadAt = false, true, false
+				s.popup, s.cleared = false, true // hadAt stays: an undo may bring it back
 			}
 		}
 	default:
@@ -720,8 +727,13 @@ func (s *session) offerSwitch() {
 	if !s.atPrompt || now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
 		return
 	}
-	if s.sw.checkSeq != 0 && time.Since(s.sw.checkAt) < childCheckWait {
-		return // confirmed: the picked session is being checked
+	if s.sw.checkSeq != 0 {
+		if time.Since(s.sw.checkAt) < childCheckWait {
+			return // confirmed: the picked session is being checked
+		}
+		// Offered again: a late answer must not type the exit command
+		// past this offer.
+		s.sw.checkSeq, s.sw.checkAt = 0, time.Time{}
 	}
 	v, on := s.sw.to, s.o.Vendor
 	if s.dirty {
@@ -1032,7 +1044,7 @@ func choiceNote(c Choice) []string {
 
 // childCheckWait bounds how long a confirmed switch waits for HasChild
 // before the switch is offered again.
-const childCheckWait = 5 * time.Second
+var childCheckWait = 5 * time.Second
 
 // childCheck is one answer of Options.HasChild.
 type childCheck struct {
