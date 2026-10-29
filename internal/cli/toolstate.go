@@ -2,12 +2,14 @@ package cli
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/checkup"
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/termsafe"
 	"github.com/congdoe/aggy/internal/tooldef"
 )
 
@@ -48,8 +50,11 @@ func toolInstalled(t tooldef.Tool) string {
 	if prog == "" && len(t.Install.Check) > 0 && resolveProgram(t.Install.Check[0]) != nil {
 		prog = t.Install.Check[0]
 	}
-	if prog != "" {
-		return "no: " + prog + " not on PATH"
+	switch {
+	case prog != "" && filepath.IsAbs(prog):
+		return "no: " + termsafe.Field(prog) + " is not an executable file"
+	case prog != "":
+		return "no: " + termsafe.Field(prog) + " not on PATH"
 	}
 	if hasSkill(t) {
 		l, err := toolSkillLayout(t)
@@ -66,12 +71,12 @@ func toolInstalled(t tooldef.Tool) string {
 // toolReady says whether what t needs before it is used is in place: a
 // per-repo index for a tool with a prebuild step, and a skill folder
 // that still hashes to its pin. s is the index opened read-only (nil
-// when there is none or it cannot be read), at schema version ver.
-func toolReady(ctx context.Context, t tooldef.Tool, s *store.Store, ver int) string {
+// when there is none or it cannot be read), at schema version ver; repo
+// is the repo status looks at.
+func toolReady(ctx context.Context, t tooldef.Tool, s *store.Store, ver int, repo toolRepoAt) string {
 	var parts []string
 	if len(t.Install.Prebuild) > 0 {
-		// TODO(T6726): read CodeGraph's index marker once PR #88 lands.
-		parts = append(parts, "index n/a")
+		parts = append(parts, indexState(t, repo))
 	}
 	if hasSkill(t) {
 		parts = append(parts, skillPinState(ctx, t, s, ver))
@@ -108,4 +113,22 @@ func skillPinState(ctx context.Context, t tooldef.Tool, s *store.Store, ver int)
 		return "pin changed"
 	}
 	return "pin ok"
+}
+
+// indexState is whether the main checkout of repo has t's finished index:
+// its folder a real folder holding its database and aggy's marker, as
+// aggy tool on --repo checks before it builds one (T6711).
+func indexState(t tooldef.Tool, repo toolRepoAt) string {
+	ix, ok := toolIndexes[t.Name]
+	switch {
+	case !ok:
+		return "index n/a"
+	case repo.main == "":
+		return "index n/a outside a repo"
+	}
+	dir := filepath.Join(repo.main, ix.dir)
+	if _, err := indexDir(dir); err == nil && regular(filepath.Join(dir, indexMarker)) && regular(filepath.Join(dir, ix.db)) {
+		return "indexed"
+	}
+	return "not indexed"
 }
