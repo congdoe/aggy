@@ -127,6 +127,33 @@ func toolBoard(ctx context.Context) (switchboard.Board, *tooldef.Registry, []err
 	return b, r, refused, nil
 }
 
+// toolAddedSchema is the index version with the tool_added table.
+const toolAddedSchema = 17
+
+// checkAdded is S63-16 for user tool t: its file must still be the one
+// aggy tool add showed. aggy tool on lets a file aggy tool add never
+// recorded through (needRow false); a session's --tool does not (W76-1).
+// s nil is an index with no tool_added table: no record.
+func checkAdded(ctx context.Context, s *store.Store, t tooldef.Tool, needRow bool) error {
+	if t.BuiltIn {
+		return nil
+	}
+	added, ok := "", false
+	if s != nil {
+		var err error
+		if added, ok, err = s.ToolAdded(ctx, t.Name); err != nil {
+			return withCode(diag.CodeStore, err)
+		}
+	}
+	switch {
+	case ok && added != t.Digest:
+		return withCode(diag.CodeToolChanged, fmt.Errorf("%s changed since aggy tool add showed it; aggy tool remove %s, then add it again to see what it runs", t.Source, t.Name))
+	case !ok && needRow:
+		return withCode(diag.CodeToolChanged, fmt.Errorf("aggy tool add has no record of %s; aggy tool remove %s, then add it again to see what it runs", t.Source, t.Name))
+	}
+	return nil
+}
+
 // toolVendors is the vendor a --vendor flag names, or every vendor.
 func toolVendors(name string) ([]adapter.Vendor, error) {
 	if name == "" {
@@ -202,13 +229,8 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 	case on && t.BuiltIn:
 		sw.Digest = switchboard.BuiltInDigest
 	case on:
-		// S63-16: the file must still be the one aggy tool add showed.
-		added, ok, err := s.ToolAdded(ctx, name)
-		if err != nil {
-			return withCode(diag.CodeStore, err)
-		}
-		if ok && added != t.Digest {
-			return withCode(diag.CodeToolChanged, fmt.Errorf("%s changed since aggy tool add showed it; aggy tool remove %s, then add it again to see what it runs", t.Source, name))
+		if err := checkAdded(ctx, s, t, false); err != nil {
+			return err
 		}
 		sw.Digest = t.Digest
 	}
