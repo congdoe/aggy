@@ -156,9 +156,10 @@ const CodexInstructionsKey = "developer_instructions"
 // delivers no memory to Codex rather than drop the person's own text.
 var ErrCodexInstructionsAmbiguous = errors.New("parity: a Codex profile or project config sets " + CodexInstructionsKey + ", so aggy cannot add memory without replacing it")
 
-// CodexConfig is one Codex config file: its bytes (nil when absent) and
-// whether it is a project layer.
+// CodexConfig is one Codex config file: its path, its bytes (nil when
+// absent), and whether it is a project layer.
 type CodexConfig struct {
+	Path    string
 	Data    []byte
 	Project bool
 }

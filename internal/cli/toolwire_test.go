@@ -9,8 +9,22 @@ import (
 	"testing"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/probe"
 )
+
+// wireHome is toolHome with aggy's own path set to testBin, the shim
+// every server starts through.
+func wireHome(t *testing.T) (src, dest string) {
+	t.Helper()
+	src, dest = toolHome(t, demoTool)
+	oldBin, oldPath, oldCheck := hookBin, pathAggy, checkTrusted
+	hookBin = func() (string, error) { return testBin, nil }
+	pathAggy = func() (string, error) { return "", os.ErrNotExist }
+	checkTrusted = func(string) error { return nil }
+	t.Cleanup(func() { hookBin, pathAggy, checkTrusted = oldBin, oldPath, oldCheck })
+	return src, dest
+}
 
 // wireOnce runs addTools for v in dir cwd and returns the request, the
 // warnings, and the launch folder it used.
@@ -22,12 +36,39 @@ func wireOnce(t *testing.T, v adapter.Vendor, caps []string, cwd string) (adapte
 	return req, warns, dir
 }
 
+type claudeMCPFile struct {
+	MCPServers map[string]struct {
+		Command string
+		Args    []string
+	} `json:"mcpServers"`
+}
+
+func readClaudeMCP(t *testing.T, f string) claudeMCPFile {
+	t.Helper()
+	var doc claudeMCPFile
+	b, err := os.ReadFile(f)
+	if err != nil || json.Unmarshal(b, &doc) != nil {
+		t.Fatalf("mcp.json: %v %s", err, b)
+	}
+	return doc
+}
+
+// shimTail is the argv a shim entry runs, after "--".
+func shimTail(args []string) string {
+	for i, a := range args {
+		if a == "--" {
+			return strings.Join(args[i+1:], " ")
+		}
+	}
+	return ""
+}
+
 // TestAddTools: the tools that are on reach each CLI's launch as its own
-// form (a Claude MCP file, Grok agent file, Codex -c servers); an off
-// tool leaves no flag and no file; a name the user's config already has
-// is refused, never merged.
+// form (a Claude MCP file, Codex -c servers), each started through aggy
+// tool exec; an off tool leaves no flag and no file; Grok gets none
+// (W71-4).
 func TestAddTools(t *testing.T) {
-	_, dest := toolHome(t, demoTool)
+	_, dest := wireHome(t)
 	writeAt(t, dest, strings.Replace(demoTool, `"--stdio"`, `"--root", "{repo}"`, 1), 0o600)
 	repo := switchRepo(t, "")
 	all := []string{probe.CapConfigOverride}
@@ -49,26 +90,20 @@ func TestAddTools(t *testing.T) {
 	if len(warns) != 0 || req.MCPConfigFile != filepath.Join(dir, "mcp.json") {
 		t.Fatalf("claude: %+v %q", req, warns)
 	}
-	var doc struct {
-		MCPServers map[string]struct {
-			Command string
-			Args    []string
-		} `json:"mcpServers"`
+	doc := readClaudeMCP(t, req.MCPConfigFile)
+	demo := doc.MCPServers["demo"]
+	if len(doc.MCPServers) != 2 || demo.Command != testBin || doc.MCPServers["context7"].Command != testBin ||
+		strings.Join(demo.Args[:4], " ") != "tool exec "+dir+" demo" || demo.Args[5] != repo ||
+		shimTail(demo.Args) != "demo serve --root "+repo || shimTail(doc.MCPServers["context7"].Args) != "context7-mcp" {
+		t.Errorf("mcp.json = %+v", doc)
 	}
-	b, err := os.ReadFile(req.MCPConfigFile)
-	if err != nil || json.Unmarshal(b, &doc) != nil {
-		t.Fatalf("mcp.json: %v %s", err, b)
-	}
-	if len(doc.MCPServers) != 2 || doc.MCPServers["context7"].Command != "context7-mcp" ||
-		strings.Join(doc.MCPServers["demo"].Args, " ") != "serve --root "+repo {
-		t.Errorf("mcp.json = %s", b)
+	if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Errorf("launch folder: %v %v", fi, err)
 	}
 
 	req, warns, dir = wireOnce(t, adapter.Grok, nil, repo)
-	b, _ = os.ReadFile(req.AgentFile)
-	if len(warns) != 0 || !strings.Contains(string(b), `- {"context7":{"command":"context7-mcp","args":[],"cwd":"`+dir+`"}}`) ||
-		strings.Contains(string(b), "demo") {
-		t.Errorf("grok (demo has no grok MCP part): %q\n%s", warns, b)
+	if req.AgentFile != "" || len(warns) != 1 || !strings.Contains(warns[0], "tool.vendor_unverified") || exists(t, dir) {
+		t.Errorf("grok: %+v %q", req, warns)
 	}
 
 	req, warns, _ = wireOnce(t, adapter.Codex, nil, repo)
@@ -76,24 +111,9 @@ func TestAddTools(t *testing.T) {
 		t.Errorf("codex without -c: %+v %q", req.MCP, warns)
 	}
 	req, warns, dir = wireOnce(t, adapter.Codex, all, repo)
-	if len(warns) != 0 || len(req.MCP) != 2 || req.MCP[1].Name != "demo" || req.MCP[1].Cwd != dir ||
-		strings.Join(req.MCP[1].EnvVars, ",") != "DEMO_HOME" {
+	if len(warns) != 0 || len(req.MCP) != 2 || req.MCP[1].Name != "demo" || req.MCP[1].Cwd != dir || req.MCP[1].Command != testBin ||
+		shimTail(req.MCP[1].Args) != "demo serve --root "+repo || strings.Join(req.MCP[1].EnvVars, ",") != "DEMO_HOME" {
 		t.Errorf("codex: %+v %q", req.MCP, warns)
-	}
-
-	// The user's own context7 is never replaced or merged into.
-	writeAt(t, filepath.Join(os.Getenv("HOME"), ".claude.json"), `{"mcpServers":{"context7":{"command":"mine"}}}`, 0o600)
-	req, warns, _ = wireOnce(t, adapter.Claude, nil, repo)
-	b, _ = os.ReadFile(req.MCPConfigFile)
-	if len(warns) != 1 || !strings.Contains(warns[0], "tool context7 not wired") || !strings.Contains(warns[0], "tool.name_clash") ||
-		strings.Contains(string(b), "context7") || !strings.Contains(string(b), "demo") {
-		t.Errorf("clash: %q\n%s", warns, b)
-	}
-	// And a repo's .mcp.json server of that name.
-	writeAt(t, filepath.Join(repo, ".mcp.json"), `{"mcpServers":{"demo":{"command":"x"}}}`, 0o600)
-	req, warns, dir = wireOnce(t, adapter.Claude, nil, repo)
-	if len(warns) != 2 || req.MCPConfigFile != "" || exists(t, dir) {
-		t.Errorf("both clash: %+v %q", req, warns)
 	}
 
 	// Off really means off, and the repo's tools_off wins.
@@ -110,5 +130,163 @@ func TestAddTools(t *testing.T) {
 		if req.MCPConfigFile != "" || req.AgentFile != "" || req.MCP != nil || len(warns) != 0 || exists(t, dir) {
 			t.Errorf("%s after off: %+v %q", v, req, warns)
 		}
+	}
+}
+
+// TestAddToolsGrokGated: W71-4. tool on --vendor grok is refused, and
+// the --agent code behind the gate still renders the agent file.
+func TestAddToolsGrokGated(t *testing.T) {
+	wireHome(t)
+	repo := switchRepo(t, "")
+	if code, _, errOut := toolRun("", false, "on", "context7", "--vendor", "grok"); code != 1 || !strings.Contains(errOut, "tool.vendor_unverified") {
+		t.Errorf("on --vendor grok: %d %q", code, errOut)
+	}
+	if code, _, errOut := toolRun("", false, "on", "context7"); code != 0 {
+		t.Fatalf("on: %q", errOut)
+	}
+	grokToolsVerified = true
+	t.Cleanup(func() { grokToolsVerified = false })
+	req, warns, dir := wireOnce(t, adapter.Grok, nil, repo)
+	b, _ := os.ReadFile(req.AgentFile)
+	if len(warns) != 0 || !strings.Contains(string(b), `{"context7":{"command":"`+testBin+`","args":["tool","exec","`+dir+`","context7"`) {
+		t.Errorf("grok behind the gate: %q\n%s", warns, b)
+	}
+}
+
+// TestAddToolsClash: a name the CLI already loads is refused, never
+// merged, and the warning names where it is set (W71-9). Claude's
+// .mcp.json counts from cwd up to / and its local scope under any
+// project (W71-5); Codex's every layer, disabled servers and profiles
+// included (W71-3). A file that cannot be parsed refuses every tool.
+func TestAddToolsClash(t *testing.T) {
+	_, dest := wireHome(t)
+	writeAt(t, dest, demoTool, 0o600)
+	h := os.Getenv("HOME")
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "app")
+	runGit(t, parent, "init", "-q", "app")
+	sub := filepath.Join(repo, "pkg")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	all := []string{probe.CapConfigOverride}
+	for _, args := range [][]string{{"on", "context7"}, {"on", "demo"}} {
+		if code, _, errOut := toolRun("", false, args...); code != 0 {
+			t.Fatalf("%v: %q", args, errOut)
+		}
+	}
+	claudeJSON := filepath.Join(h, ".claude.json")
+	for _, c := range []struct {
+		name, file, text, want string
+	}{
+		{"user scope", claudeJSON, `{"mcpServers":{"context7":{"command":"mine"}}}`, claudeJSON},
+		{"another project's local scope", claudeJSON, `{"projects":{"/elsewhere/app":{"mcpServers":{"context7":{"command":"x"}}}}}`, "local scope of /elsewhere/app"},
+		{"the repo's .mcp.json", filepath.Join(repo, ".mcp.json"), `{"mcpServers":{"context7":{}}}`, filepath.Join(repo, ".mcp.json")},
+		{"a .mcp.json above the repo", filepath.Join(parent, ".mcp.json"), `{"mcpServers":{"context7":{}}}`, filepath.Join(parent, ".mcp.json")},
+	} {
+		t.Run("claude "+c.name, func(t *testing.T) {
+			writeAt(t, c.file, c.text, 0o600)
+			defer func() { _ = os.Remove(c.file) }()
+			req, warns, _ := wireOnce(t, adapter.Claude, nil, sub)
+			if len(warns) != 1 || !strings.Contains(warns[0], "tool context7 not wired") || !strings.Contains(warns[0], "tool.name_clash") ||
+				!strings.Contains(warns[0], c.want) {
+				t.Fatalf("warns %q", warns)
+			}
+			if doc := readClaudeMCP(t, req.MCPConfigFile); len(doc.MCPServers) != 1 || doc.MCPServers["demo"].Command == "" {
+				t.Errorf("wired %+v", doc)
+			}
+		})
+	}
+	codexHome := filepath.Join(h, ".codex")
+	for _, c := range []struct {
+		name, file, text string
+	}{
+		{"user, disabled", filepath.Join(codexHome, "config.toml"), "[mcp_servers.context7]\ncommand = \"x\"\nenabled = false\n"},
+		{"user, in a profile", filepath.Join(codexHome, "config.toml"), "[profiles.work.mcp_servers.context7]\ncommand = \"x\"\n"},
+		{"selected profile file", filepath.Join(codexHome, "work.config.toml"), "[mcp_servers.context7]\ncommand = \"x\"\n"},
+		{"project layer", filepath.Join(repo, ".codex", "config.toml"), "[mcp_servers.context7]\ncommand = \"x\"\n"},
+		{"project layer below the root", filepath.Join(sub, ".codex", "config.toml"), "[mcp_servers.context7]\ncommand = \"x\"\n"},
+	} {
+		t.Run("codex "+c.name, func(t *testing.T) {
+			if strings.HasSuffix(c.file, "work.config.toml") {
+				writeAt(t, filepath.Join(codexHome, "config.toml"), "profile = \"work\"\n", 0o600)
+				defer func() { _ = os.Remove(filepath.Join(codexHome, "config.toml")) }()
+			}
+			writeAt(t, c.file, c.text, 0o600)
+			defer func() { _ = os.Remove(c.file) }()
+			req, warns, _ := wireOnce(t, adapter.Codex, all, sub)
+			if len(warns) != 1 || !strings.Contains(warns[0], "tool.name_clash") || !strings.Contains(warns[0], c.file) ||
+				len(req.MCP) != 1 || req.MCP[0].Name != "demo" {
+				t.Errorf("%+v %q", req.MCP, warns)
+			}
+		})
+	}
+	// Fail closed: a file that cannot be parsed wires nothing.
+	for v, f := range map[adapter.Vendor]string{
+		adapter.Claude: filepath.Join(parent, ".mcp.json"),
+		adapter.Codex:  filepath.Join(repo, ".codex", "config.toml"),
+	} {
+		writeAt(t, f, "{not", 0o600)
+		req, warns, dir := wireOnce(t, v, all, sub)
+		if req.MCPConfigFile != "" || req.MCP != nil || len(warns) != 1 || !strings.Contains(warns[0], "tool.wire_failed") || exists(t, dir) {
+			t.Errorf("%s with %s unparsable: %+v %q", v, f, req, warns)
+		}
+		_ = os.Remove(f)
+	}
+}
+
+// TestAddToolsLaunchDir: W71-10, a launch folder that is not aggy's own
+// private one is refused, and no file is written through a symlink.
+func TestAddToolsLaunchDir(t *testing.T) {
+	wireHome(t)
+	repo := switchRepo(t, "")
+	if code, _, errOut := toolRun("", false, "on", "context7"); code != 0 {
+		t.Fatal(errOut)
+	}
+	open := filepath.Join(t.TempDir(), "open")
+	if err := os.Mkdir(open, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{open, link} {
+		var req adapter.InteractiveRequest
+		warns := addTools(context.Background(), adapter.Claude, nil, repo, dir, nil, &req)
+		if req.MCPConfigFile != "" || len(warns) != 1 || !strings.Contains(warns[0], "tool.wire_failed") {
+			t.Errorf("%s: %+v %q", dir, req, warns)
+		}
+	}
+	if exists(t, filepath.Join(target, "mcp.json")) || exists(t, filepath.Join(open, "mcp.json")) {
+		t.Error("a file was written")
+	}
+}
+
+// TestAddToolsRecordText: W71-11, a refusal's record holds the code's
+// registry text and a fixed class, never the error's own text.
+func TestAddToolsRecordText(t *testing.T) {
+	freshRun(t)
+	wireHome(t)
+	const canary = "wire-canary-ocelot"
+	parent := filepath.Join(t.TempDir(), canary)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, parent, "init", "-q", "app")
+	repo := filepath.Join(parent, "app")
+	if code, _, errOut := toolRun("", false, "on", "context7"); code != 0 {
+		t.Fatal(errOut)
+	}
+	writeAt(t, filepath.Join(parent, ".mcp.json"), "{"+canary, 0o600)
+	_, warns, _ := wireOnce(t, adapter.Claude, nil, repo)
+	if len(warns) != 1 || !strings.Contains(warns[0], canary) {
+		t.Fatalf("warns %q", warns)
+	}
+	text := allDiagText(t, os.Getenv("AGGY_HOME"))
+	info, _ := diag.LookupCode(diag.CodeToolWireFailed)
+	if strings.Contains(text, canary) || !strings.Contains(text, info.Meaning) || !strings.Contains(text, `"class":"names"`) {
+		t.Errorf("diag.db: %s", text)
 	}
 }

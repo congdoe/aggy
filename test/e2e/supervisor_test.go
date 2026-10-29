@@ -66,6 +66,8 @@ func buildAggy(t *testing.T) string {
 // on PATH.
 type world struct {
 	home, bin, cwd, record string
+	// env is added to the environment of every aggy start runs.
+	env []string
 }
 
 func newWorld(t *testing.T) *world {
@@ -100,6 +102,14 @@ func newWorld(t *testing.T) *world {
 		if err := os.WriteFile(filepath.Join(w.bin, v), b, 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// fake-mcp, a stand-in MCP server a tool definition can name.
+	b, err := os.ReadFile(fakes.MCP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.bin, "fake-mcp"), b, 0o755); err != nil {
+		t.Fatal(err)
 	}
 	return w
 }
@@ -146,6 +156,7 @@ func (w *world) start(t *testing.T, scenario map[string]any, args ...string) *se
 		"USER_OWN_SETTING=kept",
 		fakecli.EnvScenario + "=" + scPath, fakecli.EnvRecord + "=" + w.record,
 	}
+	s.cmd.Env = append(s.cmd.Env, w.env...)
 	s.cmd.Stdin, s.cmd.Stdout, s.cmd.Stderr = slave, slave, slave
 	s.cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 	if err := s.cmd.Start(); err != nil {

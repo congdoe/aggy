@@ -260,6 +260,11 @@ linters:
       - path: ^internal/supervisor/
         text: "use of `syscall\\.(Kill|SIG[A-Z0-9]+|Signal)`"
         linters: [forbidigo]
+      # aggy tool exec becomes a tool's MCP server with execve, so the
+      # server keeps the pid and stdio the vendor CLI started (W71-2).
+      - path: ^internal/execrun/toolexec_unix\.go$
+        text: "use of `syscall\\.Exec`"
+        linters: [forbidigo]
       # The pseudo-terminal runner reaps its CLI itself, to see a stop.
       - path: ^internal/execrun/pty_unix\.go$
         text: "use of `syscall\\.(Wait4|WUNTRACED)`"

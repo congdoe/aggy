@@ -14,9 +14,11 @@ import (
 
 func onState(name string, argv ...string) switchboard.State {
 	m := &tooldef.MCP{Vendors: []adapter.Vendor{adapter.Claude}, Argv: argv, Env: []string{"DEMO_HOME"}}
-	return switchboard.State{Tool: tooldef.Tool{Def: tooldef.Def{Name: name}}, Vendor: adapter.Claude, On: true,
-		Parts: tooldef.Parts{MCP: m}}
+	return switchboard.State{Tool: tooldef.Tool{Def: tooldef.Def{Name: name, MCP: []tooldef.MCP{*m}}, Digest: strings.Repeat("ab", 32)},
+		Vendor: adapter.Claude, On: true, Parts: tooldef.Parts{MCP: m}}
 }
+
+const bin = "/opt/aggy/bin/aggy"
 
 func TestMCP(t *testing.T) {
 	on := []switchboard.State{
@@ -25,29 +27,55 @@ func TestMCP(t *testing.T) {
 		onState("mine", "mine-mcp"),
 		{Tool: tooldef.Tool{Def: tooldef.Def{Name: "skillonly"}}, On: true}, // no MCP part
 	}
-	got, refused := MCP(on, "/r/app", "/state/run/x", []string{"mine"})
+	d := strings.Repeat("ab", 8)
+	got, refused := MCP(on, "/r/app", "/state/run/x", bin, map[string]string{"mine": "/r/app/.mcp.json"})
+	// W71-2: every server starts through the shim, which checks the argv.
 	want := []adapter.MCPServer{
-		{Name: "idx", Command: "idx", Args: []string{"serve", "--path", "/r/app"}, EnvVars: []string{"DEMO_HOME"}, Cwd: "/state/run/x"},
-		{Name: "docs", Command: "docs-mcp", Args: []string{}, EnvVars: []string{"DEMO_HOME"}, Cwd: "/state/run/x"},
+		{Name: "idx", Command: bin, Args: []string{"tool", "exec", "/state/run/x", "idx", d, "/r/app", "--", "idx", "serve", "--path", "/r/app"},
+			EnvVars: []string{"DEMO_HOME"}, Cwd: "/state/run/x"},
+		{Name: "docs", Command: bin, Args: []string{"tool", "exec", "/state/run/x", "docs", d, "/r/app", "--", "docs-mcp"},
+			EnvVars: []string{"DEMO_HOME"}, Cwd: "/state/run/x"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("servers = %+v\nwant %+v", got, want)
 	}
-	if len(refused) != 1 || refused[0].Tool != "mine" || refused[0].Code != diag.CodeToolNameClash {
+	// W71-9: the clash names where the other server is set.
+	if len(refused) != 1 || refused[0].Tool != "mine" || refused[0].Code != diag.CodeToolNameClash || !strings.Contains(refused[0].Why, "/r/app/.mcp.json") {
 		t.Errorf("refused = %+v, want mine's name clash", refused)
+	}
+	// The shim matches what MCP wired, and nothing else.
+	for i, s := range got {
+		if _, err := Match(on[i].Tool, s.Args[5], s.Args[7:]); err != nil {
+			t.Errorf("%s: %v", s.Name, err)
+		}
+	}
+	for _, c := range []struct {
+		repo string
+		argv []string
+	}{
+		{"/r/app", []string{"idx", "serve", "--path", "/r/other"}},
+		{"/r/other", []string{"idx", "serve", "--path", "/r/app"}},
+		{"/r/app", []string{"idx", "serve", "--path", "/r/app", "--extra"}},
+		{"/r/a b", []string{"idx", "serve", "--path", "/r/a b"}},
+		{"", []string{"idx", "serve", "--path", ""}},
+		{"/r/app", []string{"/tmp/idx", "serve", "--path", "/r/app"}},
+	} {
+		if _, err := Match(on[0].Tool, c.repo, c.argv); err == nil {
+			t.Errorf("Match(%q, %q) passed", c.repo, c.argv)
+		}
 	}
 	// F-3: {repo} with no repo, or a path outside CheckBin's set.
 	for _, repo := range []string{"", "/r/my app", "/r/a\"b", "/r/a$(x)", "/r/a\nb", "/r/é", "r/rel"} {
-		got, refused := MCP(on[:1], repo, "/d", nil)
+		got, refused := MCP(on[:1], repo, "/d", bin, nil)
 		if len(got) != 0 || len(refused) != 1 || refused[0].Code != diag.CodeToolRepoPath {
 			t.Errorf("repo %q: %+v %+v", repo, got, refused)
 		}
 	}
 	// A tool without {repo} is wired outside a repo.
-	if got, refused := MCP(on[1:2], "", "/d", nil); len(got) != 1 || len(refused) != 0 {
+	if got, refused := MCP(on[1:2], "", "/d", bin, nil); len(got) != 1 || len(refused) != 0 || got[0].Args[5] != NoRepo {
 		t.Errorf("outside a repo: %+v %+v", got, refused)
 	}
-	if got, refused := MCP(nil, "/r/app", "/d", nil); got != nil || refused != nil {
+	if got, refused := MCP(nil, "/r/app", "/d", bin, nil); got != nil || refused != nil {
 		t.Errorf("nothing on: %+v %+v", got, refused)
 	}
 }

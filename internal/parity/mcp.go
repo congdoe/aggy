@@ -688,6 +688,64 @@ func MCPNames(v adapter.Vendor, root string, getenv func(string) string) ([]stri
 	return slices.Sorted(maps.Keys(set)), nil
 }
 
+// ClaudeMCPSources maps the name of every MCP server in ~/.claude.json
+// to where it is set: the user scope, and the local scope of every
+// project the file lists, whatever its path (W71-5): a session's
+// directory can match a project key by its canonical path, a symlinked
+// one, or the main checkout's, and Claude's matching is unverified, so
+// every local name counts. Values are never read into the result.
+func ClaudeMCPSources(getenv func(string) string) (map[string]string, error) {
+	path, err := ClaudeJSONPath(getenv)
+	if err != nil {
+		return nil, err
+	}
+	f, err := readClaude(path)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for p, proj := range f.Projects {
+		for n := range proj.MCPServers {
+			out[n] = path + " (local scope of " + p + ")"
+		}
+	}
+	for n := range f.MCPServers {
+		out[n] = path
+	}
+	return out, nil
+}
+
+// CodexMCPNames lists the MCP servers one Codex config file sets, by
+// name: [mcp_servers.*] and [profiles.*.mcp_servers.*], each whether or
+// not enabled = false, since another layer may turn it back on (W71-3).
+// data is the file's bytes; a file aggy cannot parse is an error.
+func CodexMCPNames(data []byte) ([]string, error) {
+	var doc map[string]any
+	if _, err := toml.Decode(string(data), &doc); err != nil {
+		return nil, fmt.Errorf("not valid TOML: %w", err)
+	}
+	set := map[string]bool{}
+	add := func(d map[string]any) error {
+		servers, err := tomlServers(d)
+		for n := range servers {
+			set[n] = true
+		}
+		return err
+	}
+	if err := add(doc); err != nil {
+		return nil, err
+	}
+	profiles, _ := doc["profiles"].(map[string]any)
+	for name, p := range profiles {
+		if pm, ok := p.(map[string]any); ok {
+			if err := add(pm); err != nil {
+				return nil, fmt.Errorf("profiles.%s: %w", name, err)
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(set)), nil
+}
+
 // GrokClaudeStdio reports whether Grok would start stdio MCP servers
 // from ~/.claude.json itself (user scope, or the local scope of the
 // project at root): its Claude compatibility is not off and the file has

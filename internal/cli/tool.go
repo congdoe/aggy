@@ -52,6 +52,9 @@ own in ~/.aggy/tools/<name>.toml. Definitions are never read from a repo.
 `
 
 func runTool(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "exec" {
+		return runToolExec(args[1:], stderr) // a vendor CLI runs it; not in the usage
+	}
 	return toolWith(args, os.Stdin, isTerminal(os.Stdin), stdout, stderr)
 }
 

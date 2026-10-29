@@ -72,6 +72,14 @@ func TestArgvRefusesRunners(t *testing.T) {
 		{"npx", "-p", "demo@1.0.0", "--", "{repo}/evil"}, {"npx", "-p", "demo@1.0.0", "./evil"},
 		{"node", "server.js"}, {"python3", "x.py"}, {"python3", "-m", "demo"}, {"bun", "x", "demo"},
 		{"node", "--require", "hook", "/opt/s.js"}, {"node", "-r", "./hook.js", "/opt/s.js"}, {"deno", "run", "npm:demo"},
+		// W71-2: config and loaders found from the working directory.
+		{"uvx", "--python", ".venv/bin/python", "demo==1.0.0"}, {"uvx", "-p", "./py", "demo==1.0.0"},
+		{"uvx", "--python=venv/bin/python", "demo==1.0.0"},
+		{"pipx", "run", "--python", "bin/python", "--spec", "demo==1.0.0", "demo"},
+		{"deno", "run", "--import-map", "map.json", "/opt/x.ts"}, {"deno", "run", "--config=deno.json", "/opt/x.ts"},
+		{"bun", "--config", "./bunfig.toml", "/opt/x.ts"},
+		{"lua", "-l", "socket", "/opt/x.lua"}, {"lua", "-lsocket", "/opt/x.lua"}, {"perl", "-d:NYTProf", "/opt/x.pl"},
+		{"java", "-jar", "server.jar"}, {"java", "Main"}, {"java", "-jar", "{repo}/x.jar"},
 	} {
 		if err := argv("argv", a, true); err == nil {
 			t.Errorf("%q passed", a)
@@ -89,6 +97,9 @@ func TestArgvRefusesRunners(t *testing.T) {
 		{"deno", "run", "/opt/x.ts", "{repo}"}, {"node", "--require", "/opt/hook.js", "/opt/s.js"}, {"uvx", "--offline", "demo==1.2.3"},
 		{"npx", "-p", "demo@1.0.0", "--", "demo-server", "{repo}"}, {"pipx", "run", "--spec", "demo==1.0.0", "demo"},
 		{"/usr/local/bin/demo", "{repo}"},
+		{"uvx", "--python", "/usr/bin/python3", "demo==1.2.3"}, {"uvx", "--python", "python3.12", "demo==1.2.3"},
+		{"deno", "run", "--import-map", "/opt/map.json", "/opt/x.ts"}, {"lua", "-l", "/opt/socket.lua", "/opt/x.lua"},
+		{"java", "-jar", "/opt/server.jar", "{repo}"}, {"perl", "-d", "/opt/x.pl"},
 	} {
 		if err := argv("argv", a, true); err != nil {
 			t.Errorf("%q: %v", a, err)

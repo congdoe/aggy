@@ -1,6 +1,6 @@
 # Fake CLIs
 
-`fake-claude`, `fake-codex`, and `fake-grok` stand in for the vendor CLIs, so tests never run a real vendor CLI or need a login. `fake-hook` records hook calls. All four are one program, `fake/`, named by its binary name (or `AGGY_FAKE_VENDOR`).
+`fake-claude`, `fake-codex`, and `fake-grok` stand in for the vendor CLIs, so tests never run a real vendor CLI or need a login. `fake-hook` records hook calls. `fake-mcp` stands in for an MCP server: it appends its arguments (after the first), working directory, and whole environment as one JSON line to the absolute path in its first argument, and exits. All five are one program, `fake/`, named by its binary name (or `AGGY_FAKE_VENDOR`).
 
 Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go build` into a temp dir. They are not built by `go build ./...`.
 
@@ -8,14 +8,14 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 
 - A fake refuses to run (exit 97) when `HOME` is unset, relative, or the real user's home, or when any vendor home (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`, else `$HOME/.<vendor>`) is relative or inside the real home. Paths are compared by name, after resolving symlinks and case-insensitively on darwin, and by file identity: every existing ancestor of each candidate is compared with `os.SameFile` against the real home and the real `~/.claude`, `~/.codex`, and `~/.grok`, which catches spellings such as macOS's `/System/Volumes/Data` firmlink or a case-folded `ſ`. Tests set `HOME` to a temp dir and clear or set the three vendor variables.
 - It accepts only the flags recorded in [docs/adapters.md](../../docs/adapters.md). Any other flag fails with exit 2 and the CLI's own message (commander's `error: unknown option '<flag>'` for Claude, clap's `error: unexpected argument '<flag>' found` for Codex and Grok), so an adapter that invents a flag fails its test. A scenario can allow more with `extra_flags` and `extra_switches`.
-- It never reads anything except the scenario file, its stdin, and Grok's `--prompt-file`.
+- It never reads anything except the scenario file, its stdin, Grok's `--prompt-file`, and Claude's first `--mcp-config` file.
 
 ## Environment
 
 | Variable | Meaning |
 | --- | --- |
 | `AGGY_FAKE_SCENARIO` | Path of the scenario JSON file. Unset means the defaults: success, no output. |
-| `AGGY_FAKE_RECORD` | A file each run appends one JSON line to: vendor, mode, pid, args, parsed flags, positionals, cwd, stdin, Grok's headless prompt, whether stdin was a terminal, the session id, the names of every environment variable, and the values of `AGGY_*` ones. `fakecli.Records` reads it. |
+| `AGGY_FAKE_RECORD` | A file each run appends one JSON line to: vendor, mode, pid, args, parsed flags, positionals, cwd, stdin, Grok's headless prompt, the content of Claude's first `--mcp-config` file (`mcp_config`), whether stdin was a terminal, the session id, the names of every environment variable, and the values of `AGGY_*` ones. `fakecli.Records` reads it. |
 | `AGGY_FAKE_VENDOR` | Overrides the vendor taken from the binary name. |
 
 ## Flags honored
@@ -76,6 +76,7 @@ A JSON object. Every field is optional, and unknown fields are an error.
 | `session_files` | objects | `{"path": "...", "content": "..."}` files written under the vendor's home. The path must stay inside it. |
 | `cwd_files` | objects | `{"path": "...", "content": "..."}` files written under the working dir, as an edit child would. The path must stay inside it. |
 | `sleep_ms` | int | Delay before output, for timeout tests. |
+| `start_mcp` | bool | Claude: after the hooks, start each server of the first `--mcp-config` file (`command` and `args`) once, with the fake's own environment and working directory, and wait for it. With `fake-mcp` as the server, a test sees what the server got. |
 | `raw_echo` | bool | An interactive run that acts like a full-screen CLI: raw mode, then `stdout`, then every byte read echoed back; each resize prints `[winch <rows>x<cols>]`; Ctrl+Z (0x1a) stops it with SIGSTOP and prints `[continued]` on resume; Ctrl+D (0x04) exits. For the supervisor tests in `test/e2e`. |
 | `replies` | objects | `{"args": [...], "stdout": "...", "stderr": "...", "exit_code": N}`: the fixed answer to that exact argument list, given before any flag is parsed. For commands docs/adapters.md does not record, such as a sign-in status check a test supplies (no vendor's is verified). The run is recorded with mode `reply`. |
 

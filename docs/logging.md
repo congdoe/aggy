@@ -238,6 +238,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `diag.queue.dropped` | warn | diag | The supervisor's diagnostic queue was full, so records were dropped (attrs.dropped is how many). | The state dir's disk: a slow or full disk makes the log fall behind. |
 | `tool.wire.refused` | warn | tool | A launch did not wire a tool that is on (attrs: tool, or none for every tool of the vendor); the session started without it. | The code's entry; aggy tool status. |
 | `tool.wire.done` | info | tool | A launch wired the tools that are on into the CLI it started (attrs: tools, the names wired). | aggy tool status shows why each is on. |
+| `tool.exec.refused` | error | tool | aggy tool exec, which a vendor CLI runs to start a tool's MCP server, refused to start it (attrs: tool, check: the step that failed). The CLI shows the server as failed. | The code's entry; aggy tool status. |
 
 | Code | Security | Meaning | What to check next |
 | --- | --- | --- | --- |
@@ -317,6 +318,8 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `tool.name_clash` |  | A tool that is on was not wired: the CLI already loads an MCP server of that name from the user's or the repo's config, and aggy never replaces or merges into one. | Rename or remove that server in the CLI's config, or turn the tool off. |
 | `tool.repo_path` |  | A tool that is on was not wired: its arguments hold {repo}, and the session is not in a repo, or the repo's path holds a character other than letters, digits, and / . _ + @ -. | Run the session in a repo whose path has only those characters. |
 | `tool.no_launch_flag` |  | Tools that are on were not wired: the CLI's --help lacks the launch flag they need (Codex -c). | Update the CLI; aggy setup shows its version. |
-| `tool.wire_failed` |  | Tools that are on were not wired: the CLI's own MCP config could not be read to check names, or the session's tool file could not be written. | The record's msg; aggy doctor. |
+| `tool.wire_failed` |  | Tools that are on were not wired: the CLI's own MCP config could not be read to check names, or the session's tool file could not be written. | The warning aggy printed; the record's class attr names the step. aggy doctor. |
+| `tool.vendor_unverified` |  | Tools were not turned on or wired for a vendor whose launch-time wiring is not verified yet (Grok: what --agent changes besides the MCP servers). | Use the tool with Claude or Codex; docs/design.md, Launch wiring. |
+| `tool.exec_refused` | yes | aggy tool exec refused to start a tool's MCP server: its folder is not aggy's private launch folder, the definition changed or is gone, the command is not the definition's, or a variable could not be passed. | aggy tool status; if the definition changed, aggy tool on &lt;name&gt; again after reading it. |
 | `tool.changed_since_add` | yes | aggy tool on refused: the user definition is not the file aggy tool add showed. | aggy tool remove &lt;name&gt;, then aggy tool add the file again and read what it runs. |
 <!-- registry:end -->

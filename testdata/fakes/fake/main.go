@@ -59,6 +59,9 @@ type Scenario struct {
 	// CwdFiles are files an edit child writes under its working dir.
 	CwdFiles []SessionFile `json:"cwd_files"`
 	SleepMS  int           `json:"sleep_ms"`
+	// StartMCP makes claude start each server of its --mcp-config file
+	// once and wait for it, after the hooks.
+	StartMCP bool `json:"start_mcp"`
 	// ExtraValues adds accepted values to a flag with a recorded value
 	// set, e.g. {"--sandbox": ["workspace-write"]}.
 	ExtraValues map[string][]string `json:"extra_values"`
@@ -253,7 +256,9 @@ type Record struct {
 	SessionID     string              `json:"session_id,omitempty"`
 	Flags         map[string][]string `json:"flags,omitempty"`
 	Positional    []string            `json:"positional,omitempty"`
-	PID           int                 `json:"pid"`
+	// MCPConfig is the content of the first --mcp-config file, if any.
+	MCPConfig json.RawMessage `json:"mcp_config,omitempty"`
+	PID       int             `json:"pid"`
 }
 
 // Versions the vendor facts were recorded against (docs/adapters.md).
@@ -378,6 +383,9 @@ func run() int {
 	}
 	if vendor == "hook" {
 		return runHook()
+	}
+	if vendor == "mcp" {
+		return runMCP()
 	}
 	if _, ok := specs[vendor]; !ok {
 		return fail(97, "unknown vendor %q", vendor)
@@ -719,6 +727,9 @@ func (f *fake) main(args []string) int {
 	}
 	if err := f.runHooks(); err != nil {
 		return fail(3, "hook: %v", err)
+	}
+	if err := f.startMCP(); err != nil {
+		return fail(3, "mcp: %v", err)
 	}
 	if f.sc.Error != "" {
 		text := limitText[f.vendor]
@@ -1151,6 +1162,11 @@ func (f *fake) record(mode string, args []string) {
 		StdinTerminal: f.terminal, Stdin: f.stdin, Prompt: f.prompt, SessionID: f.id,
 		Flags: f.flags, Positional: f.positional, PID: os.Getpid(),
 	}
+	if files := f.flags["--mcp-config"]; len(files) > 0 {
+		if b, err := os.ReadFile(files[0]); err == nil && json.Valid(b) {
+			r.MCPConfig = b
+		}
+	}
 	for _, kv := range os.Environ() {
 		k, v, _ := strings.Cut(kv, "=")
 		r.EnvKeys = append(r.EnvKeys, k)
@@ -1171,6 +1187,50 @@ func appendJSON(path string, v any) {
 	}
 	defer fh.Close()
 	_, _ = fh.Write(append(b, '\n'))
+}
+
+// runMCP is fake-mcp, a stand-in MCP server: it writes its arguments,
+// working directory, and whole environment as JSON to the absolute path
+// in its first argument, and exits. Its environment is not the test's
+// (aggy tool exec builds it), so the path comes as an argument.
+func runMCP() int {
+	if len(os.Args) < 2 || !filepath.IsAbs(os.Args[1]) {
+		return fail(97, "mcp: want an absolute dump path")
+	}
+	cwd, _ := os.Getwd()
+	appendJSON(os.Args[1], map[string]any{"vendor": "mcp", "args": os.Args[1:], "cwd": cwd, "env": os.Environ()})
+	return 0
+}
+
+// startMCP starts each server of the --mcp-config file as Claude would
+// (start_mcp), with the fake's own environment and working directory,
+// and waits for it: a fake-mcp server dumps what it got and exits.
+func (f *fake) startMCP() error {
+	files := f.flags["--mcp-config"]
+	if !f.sc.StartMCP || len(files) == 0 {
+		return nil
+	}
+	b, err := os.ReadFile(files[0])
+	if err != nil {
+		return err
+	}
+	var doc struct {
+		MCPServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return err
+	}
+	for name, s := range doc.MCPServers {
+		cmd := exec.Command(s.Command, s.Args...)
+		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("server %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // runHook is fake-hook: it records its arguments and stdin.
