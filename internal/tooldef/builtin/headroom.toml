@@ -18,6 +18,7 @@ network = true
 [install]
 check = ["headroom", "--version"]
 check_pattern = 'headroom, version (\d+\.\d+\.\d+)'
+hint = "uv tool install headroom-ai==0.42.0 (Python 3.10 or later); never run headroom mcp install, which edits every agent's config"
 
 [[mcp]]
 vendors = ["claude", "codex", "grok"]
