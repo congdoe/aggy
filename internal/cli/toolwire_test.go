@@ -67,8 +67,10 @@ func shimTail(args []string) string {
 // changes no setting, and never beats the repo's tools_off; an unknown
 // name is a warning.
 func TestAddToolsSession(t *testing.T) {
-	_, dest := wireHome(t)
-	writeAt(t, dest, demoTool, 0o600)
+	src, _ := wireHome(t)
+	if code, _, errOut := toolRun("", true, "add", src, "--yes"); code != 0 {
+		t.Fatalf("add: %d %q", code, errOut)
+	}
 	repo := switchRepo(t, "")
 	var req adapter.InteractiveRequest
 	warns := addTools(context.Background(), adapter.Claude, nil, repo, filepath.Join(t.TempDir(), "l"), []string{"demo", "nope"}, &req)
@@ -81,8 +83,75 @@ func TestAddToolsSession(t *testing.T) {
 	}
 	writeAt(t, filepath.Join(repo, ".aggy", "config.toml"), `tools_off = ["demo"]`, 0o600)
 	req = adapter.InteractiveRequest{}
-	if addTools(context.Background(), adapter.Claude, nil, repo, filepath.Join(t.TempDir(), "l"), []string{"demo"}, &req); req.MCPConfigFile != "" {
-		t.Error("--tool beat the repo's tools_off")
+	warns = addTools(context.Background(), adapter.Claude, nil, repo, filepath.Join(t.TempDir(), "l"), []string{"demo"}, &req)
+	if req.MCPConfigFile != "" || len(warns) != 1 || !strings.Contains(warns[0], "tool.repo_off") {
+		t.Errorf("--tool against the repo's tools_off: %+v %q", req, warns)
+	}
+}
+
+// TestAddToolsSessionChanged (W76-1): --tool wires a user tool only
+// while its file is the one aggy tool add showed, as aggy tool on
+// checks (S63-16); a file aggy tool add never recorded is refused too.
+func TestAddToolsSessionChanged(t *testing.T) {
+	src, dest := wireHome(t)
+	if code, _, errOut := toolRun("", true, "add", src, "--yes"); code != 0 {
+		t.Fatalf("add: %d %q", code, errOut)
+	}
+	repo := switchRepo(t, "")
+	writeAt(t, dest, strings.Replace(demoTool, `"--stdio"`, `"--evil"`, 1), 0o600)
+	if code, _, errOut := toolRun("", false, "on", "demo"); code == 0 || !strings.Contains(errOut, "tool.changed_since_add") {
+		t.Fatalf("aggy tool on took the edited file: %d %q", code, errOut)
+	}
+	var req adapter.InteractiveRequest
+	warns := addTools(context.Background(), adapter.Claude, nil, repo, filepath.Join(t.TempDir(), "l"), []string{"demo"}, &req)
+	if req.MCPConfigFile != "" || len(warns) != 1 || !strings.Contains(warns[0], "tool.changed_since_add") {
+		t.Errorf("--tool after an edit: %+v %q", req, warns)
+	}
+
+	// A file put in the tools folder by hand, never added.
+	if code, _, errOut := toolRun("", false, "remove", "demo"); code != 0 {
+		t.Fatalf("remove: %d %q", code, errOut)
+	}
+	writeAt(t, dest, demoTool, 0o600)
+	req = adapter.InteractiveRequest{}
+	warns = addTools(context.Background(), adapter.Claude, nil, repo, filepath.Join(t.TempDir(), "l"), []string{"demo"}, &req)
+	if req.MCPConfigFile != "" || len(warns) != 1 || !strings.Contains(warns[0], "no record") {
+		t.Errorf("--tool with no add record: %+v %q", req, warns)
+	}
+}
+
+// TestAddToolsSessionOff (W76-2, W76-3): a --tool that cannot be on, or
+// has nothing to wire, says so; Grok stays gated for one too.
+func TestAddToolsSessionOff(t *testing.T) {
+	src, _ := wireHome(t)
+	writeAt(t, src, strings.Replace(demoTool, `scope = "global"`, `scope = "repo"`, 1), 0o600)
+	if code, _, errOut := toolRun("", true, "add", src, "--yes"); code != 0 {
+		t.Fatalf("add: %d %q", code, errOut)
+	}
+	repo := switchRepo(t, "")
+	wire := func(v adapter.Vendor, cwd string, session ...string) (adapter.InteractiveRequest, []string, string) {
+		dir := filepath.Join(t.TempDir(), "l")
+		var req adapter.InteractiveRequest
+		return req, addTools(context.Background(), v, nil, cwd, dir, session, &req), dir
+	}
+
+	// Grok: context7 has a Grok server, but the wiring is gated.
+	req, warns, dir := wire(adapter.Grok, repo, "context7")
+	if req.AgentFile != "" || len(warns) != 1 || !strings.Contains(warns[0], "tool.vendor_unverified") || exists(t, dir) {
+		t.Errorf("grok: %+v %q", req, warns)
+	}
+	// demo has only a hook for Grok: on, but nothing is wired.
+	req, warns, _ = wire(adapter.Grok, repo, "demo")
+	if req.AgentFile != "" || len(warns) != 1 || !strings.Contains(warns[0], "only MCP servers are wired so far") {
+		t.Errorf("grok demo: %+v %q", req, warns)
+	}
+	// A per-repo tool: wired in a repo, refused outside one.
+	if req, warns, _ = wire(adapter.Claude, repo, "demo"); req.MCPConfigFile == "" || len(warns) != 0 {
+		t.Errorf("per-repo in a repo: %+v %q", req, warns)
+	}
+	req, warns, _ = wire(adapter.Claude, t.TempDir(), "demo")
+	if req.MCPConfigFile != "" || len(warns) != 1 || !strings.Contains(warns[0], "tool.not_applicable") || !strings.Contains(warns[0], "outside a repo") {
+		t.Errorf("per-repo outside a repo: %+v %q", req, warns)
 	}
 }
 

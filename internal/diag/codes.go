@@ -349,7 +349,7 @@ var codes = []CodeInfo{
 	{CodeToolWireFailed, false, "Tools that are on were not wired: the CLI's own MCP config could not be read to check names, or the session's tool file could not be written.", "The warning aggy printed; the record's class attr names the step. aggy doctor."},
 	{CodeToolUnverified, false, "Tools were not turned on or wired for a vendor whose launch-time wiring is not verified yet (Grok: what --agent changes besides the MCP servers).", "Use the tool with Claude or Codex; docs/design.md, Launch wiring."},
 	{CodeToolExec, true, "aggy tool exec refused to start a tool's MCP server: its folder is not aggy's private launch folder, the definition changed or is gone, the command is not the definition's, or a variable could not be passed.", "aggy tool status; if the definition changed, aggy tool on <name> again after reading it."},
-	{CodeToolChanged, true, "aggy tool on refused: the user definition is not the file aggy tool add showed.", "aggy tool remove <name>, then aggy tool add the file again and read what it runs."},
+	{CodeToolChanged, true, "aggy tool on or a --tool refused a user definition that is not the file aggy tool add showed, or (--tool) one it never recorded.", "aggy tool remove <name>, then aggy tool add the file again and read what it runs."},
 }
 
 // LookupEvent returns event e's entry.

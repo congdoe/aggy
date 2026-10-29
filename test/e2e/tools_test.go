@@ -107,11 +107,57 @@ func TestToolForOneSession(t *testing.T) {
 	s.waitFor([]byte("READY>"))
 	s.send([]byte{0x04})
 	s.exit()
-	if f := interactiveRecord(t, w).Flags["--mcp-config"]; len(f) != 1 {
+	r := interactiveRecord(t, w)
+	if f := r.Flags["--mcp-config"]; len(f) != 1 {
 		t.Errorf("--tool: --mcp-config %q", f)
+	}
+	// W76-2: the file holds context7, and only it.
+	var file struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(r.MCPConfig, &file); err != nil || len(file.MCPServers) != 1 || file.MCPServers["context7"] == nil {
+		t.Errorf("--tool: the --mcp-config file %s (%v)", r.MCPConfig, err)
 	}
 	if r := w.launchRecord(t, "claude"); slices.Contains(r.Args, "--mcp-config") {
 		t.Errorf("--tool outlived its session: %q", r.Args)
+	}
+}
+
+// TestToolSessionSwitch (W76-2): aggy run --tool on Grok wires nothing
+// (gated) and says so; a switch away from that session drops the tool.
+func TestToolSessionSwitch(t *testing.T) {
+	w := newWorld(t)
+	w.aggyIn(t, "setup", "--yes")
+	_ = os.Remove(w.record)
+	sc := map[string]any{
+		"stdout":       "READY>",
+		"hook_command": []string{"/bin/sh", "-c", buildAggy(t) + " switch \"$1\" >/dev/null 2>&1 || true", "sh"},
+		"hooks":        []map[string]any{{"event": "claude", "payload": map[string]any{}}},
+	}
+	s := w.start(t, sc, "run", "--tool", "context7", "grok")
+	s.waitWithin([]byte("-> claude. Ctrl+"), offerTimeout)
+	time.Sleep(600 * time.Millisecond) // past the confirmation's guard
+	s.send([]byte{0x1c})
+	deadline := time.Now().Add(timeout)
+	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	if !strings.Contains(s.screen(), "tool.vendor_unverified") {
+		t.Errorf("no Grok gate warning:\n%s", s.screen())
+	}
+	runs := interactiveRuns(t, w)
+	if len(runs) != 2 || runs[1].Vendor != "claude" {
+		t.Fatalf("runs = %+v", runs)
+	}
+	if slices.Contains(runs[0].Args, "--agent") {
+		t.Errorf("grok got an agent file: %q", runs[0].Args)
+	}
+	if slices.Contains(runs[1].Args, "--mcp-config") {
+		t.Errorf("--tool outlived its session across a switch: %q", runs[1].Args)
 	}
 }
 

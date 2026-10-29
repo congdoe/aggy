@@ -15,6 +15,7 @@ import (
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
+	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/switchboard"
 	"github.com/congdoe/aggy/internal/tooldef"
 	"github.com/congdoe/aggy/internal/toolwire"
@@ -76,19 +77,16 @@ func addTools(ctx context.Context, v adapter.Vendor, caps []string, cwd, dir str
 	if err != nil {
 		return failed("settings", fmt.Errorf("the tool settings could not be read: %w", err))
 	}
-	b.Session = session
 	var warns []string
-	for _, n := range session {
-		if !slices.ContainsFunc(b.Tools, func(t tooldef.Tool) bool { return t.Name == n }) {
-			warns = append(warns, refuse(n, diag.CodeToolUnknown, "unknown", "no tool of that name is loaded (aggy tool list)"))
-		}
-	}
 	if repo.root != "" {
 		if b.RepoOff, err = repoToolsOff(repo); err != nil {
 			// As aggy tool status shows it: every tool off in this repo.
 			return append(warns, failed("repo_config", fmt.Errorf("the repo's config cannot be read, so every tool is off here: %w", err))...)
 		}
 	}
+	var sw []string
+	b.Session, sw = sessionTools(ctx, b, v, repo.key, session, refuse)
+	warns = append(warns, sw...)
 	on := b.On(v, repo.key)
 	if !slices.ContainsFunc(on, func(st switchboard.State) bool { return st.Parts.MCP != nil }) {
 		return warns
@@ -152,6 +150,69 @@ func addTools(ctx context.Context, v adapter.Vendor, caps []string, cwd, dir str
 	}
 	dlog.Log(ctx, diag.Rec{Event: diag.EvToolWired, Vendor: string(v), Attrs: map[string]any{"tools": toolwire.Names(servers)}})
 	return warns
+}
+
+// sessionTools keeps the names of session (--tool) that may turn on for
+// vendor v in repo, and warns for each one dropped or off:
+//
+//   - a name no loaded tool has;
+//   - a user tool whose file is not the one aggy tool add showed, or that
+//     aggy tool add never recorded (S63-16, W76-1): a session tool has
+//     no switch row to carry a digest, so the check runs here, as aggy
+//     tool on runs it;
+//   - one the board keeps off: nothing for v, a per-repo tool outside a
+//     repo, or the repo's tools_off;
+//   - one with no MCP server for v, which stays on but adds nothing
+//     (W76-3).
+//
+// The index is opened once, read-only, and only for a user tool.
+func sessionTools(ctx context.Context, b switchboard.Board, v adapter.Vendor, repo string, session []string,
+	refuse func(tool string, code diag.Code, class, why string) string) ([]string, []string) {
+	var keep, warns []string
+	var s *store.Store
+	opened := false
+	defer func() {
+		if s != nil {
+			_ = s.Close()
+		}
+	}()
+	for _, n := range session {
+		i := slices.IndexFunc(b.Tools, func(t tooldef.Tool) bool { return t.Name == n })
+		if i < 0 {
+			warns = append(warns, refuse(n, diag.CodeToolUnknown, "unknown", "no tool of that name is loaded (aggy tool list)"))
+			continue
+		}
+		t := b.Tools[i]
+		if !t.BuiltIn && !opened {
+			opened = true
+			var ver int
+			var err error
+			if s, ver, err = openIndexReadOnly(ctx); err != nil {
+				warns = append(warns, refuse(n, diag.CodeStore, "index", fmt.Sprintf("the index could not be read to check the file: %v", err)))
+				continue
+			}
+			if s != nil && ver < toolAddedSchema {
+				_ = s.Close()
+				s = nil
+			}
+		}
+		if err := checkAdded(ctx, s, t, true); err != nil {
+			warns = append(warns, refuse(n, codeOf(err, diag.CodeToolChanged), "added", err.Error()))
+			continue
+		}
+		keep = append(keep, n)
+		b.Session = []string{n}
+		st := b.State(t, v, repo)
+		switch {
+		case !st.On && slices.Contains(b.RepoOff, n):
+			warns = append(warns, refuse(n, diag.CodeToolRepoOff, "repo_off", st.Why))
+		case !st.On:
+			warns = append(warns, refuse(n, diag.CodeToolScope, "off", st.Why))
+		case st.Parts.MCP == nil:
+			warns = append(warns, refuse(n, diag.CodeToolScope, "no_mcp", "it has no MCP server for "+string(v)+", and only MCP servers are wired so far"))
+		}
+	}
+	return keep, warns
 }
 
 // takenMCPNames maps the MCP servers vendor v already loads by name to
