@@ -228,6 +228,43 @@ func TestProxyHoldLost(t *testing.T) {
 	}
 }
 
+// TestProxyHoldError (round 4): a take that fails for another reason
+// than a taken address (EACCES, EMFILE, ...) kills the CLI too, at once:
+// it must never keep pointing at a free port.
+func TestProxyHoldError(t *testing.T) {
+	injected := &net.OpError{Op: "listen", Net: "tcp", Err: os.NewSyscallError("bind", syscall.EACCES)}
+	holdAddr = func(netip.AddrPort) (func(), error) { return nil, injected }
+	t.Cleanup(func() { holdAddr = holdLoopback })
+	spec, dir := fakeProxy(t, "ok")
+	p, err := StartProxy(bg, spec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Stop()
+	cli := fakeCLI(t)
+	p.Guard(cli.pid, true)
+	start := time.Now()
+	_ = syscall.Kill(-readPid(t, filepath.Join(dir, "pid")), syscall.SIGKILL)
+	died := diedAt(t, p)
+	if err := p.HoldErr(); !errors.Is(err, syscall.EACCES) {
+		t.Errorf("HoldErr = %v", err)
+	}
+	select {
+	case <-p.Lost():
+	default:
+		t.Error("Lost not closed")
+	}
+	select {
+	case <-cli.exited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the CLI still runs after the take failed")
+	}
+	t.Logf("proxy killed -> CLI dead %s; -> Died %s", cli.at.Sub(start), died.Sub(start))
+	if kill := cli.at.Sub(start); kill > killBound {
+		t.Errorf("the CLI was killed only %s after the proxy died (bound %s)", kill, killBound)
+	}
+}
+
 // TestProxyHoldRace (HIGH-2, round 2): an attacker retrying bind every
 // 100µs races aggy for the port as the proxy dies. Whoever wins, the CLI
 // never keeps running while the attacker has the address: aggy holds it
