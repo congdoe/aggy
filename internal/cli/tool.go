@@ -504,5 +504,10 @@ func toolRemove(ctx context.Context, name string, stdout io.Writer) error {
 	if err := clearToolSwitches(ctx, name); err != nil {
 		fmt.Fprintf(stdout, "warning: its settings were not cleared: %s; they apply to no file\n", termsafe.Line(err.Error()))
 	}
+	// T6727: a removed tool is off everywhere, so a skill it linked
+	// while it was on (its file since edited, so off) goes too.
+	if err := unlinkToolSkill(ctx, name, stdout); err != nil {
+		fmt.Fprintf(stdout, "warning: its skill links were not removed: %s; aggy tool off %s removes them\n", termsafe.Line(err.Error()), name)
+	}
 	return nil
 }

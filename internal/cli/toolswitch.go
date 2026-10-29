@@ -265,6 +265,10 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 
 	if !loaded {
 		fmt.Fprintf(stdout, "%s is not loaded; its settings say off.\n", name)
+		// T6727: a skill linked while it was loaded must not outlive it.
+		if err := unlinkToolSkill(ctx, name, stdout); err != nil {
+			return fmt.Errorf("the setting is recorded, but the skill links were not removed: %w", err)
+		}
 		return nil
 	}
 	if b.Switches, err = s.ToolSwitches(ctx); err != nil {
