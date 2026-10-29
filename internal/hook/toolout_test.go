@@ -107,6 +107,12 @@ func TestFilterToolOutputRewriteForm(t *testing.T) {
 		{"no payload", ``, `{"command":"rtk git status"}`, ""},
 		{"empty command", `{"tool_name":"Bash","tool_input":{"command":""}}`, `{"command":"rtk "}`, ""},
 		{"null command", `{"tool_name":"Bash","tool_input":{"command":null}}`, `{"command":"rtk "}`, ""},
+		// M82-1: leading whitespace would sit between the prefix and the
+		// command, out of reach of the prefixed rules.
+		{"leading spaces", `{"tool_name":"Bash","tool_input":{"command":"  git push --force origin x"}}`,
+			`{"command":"rtk   git push --force origin x"}`, ""},
+		{"leading tab", `{"tool_name":"Bash","tool_input":{"command":"\tgit push --force origin x"}}`,
+			`{"command":"rtk \tgit push --force origin x"}`, ""},
 		{"lone surrogate", `{"tool_name":"Bash","tool_input":{"command":"ls \ud800"}}`, `{"command":"rtk ls \ud800"}`, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {

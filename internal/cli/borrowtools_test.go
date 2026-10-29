@@ -193,3 +193,36 @@ func TestBorrowToolsUserNetwork(t *testing.T) {
 	}
 	done()
 }
+
+// TestBorrowToolsSkillChanged (L82-3): an edit child refuses a tool
+// whose linked skill folder changed since it was first linked
+// (tool.skill_changed, R80-3), as a ToolError, so the borrow passes to
+// the next vendor.
+func TestBorrowToolsSkillChanged(t *testing.T) {
+	f := toolsFixture(t, `["demo"]`)
+	gitRepo(t, f.repo)
+	_ = os.Unsetenv("AGGY_DELEGATED") // tool add and on refuse while it is set
+	ctx := context.Background()
+	src := filepath.Join(t.TempDir(), "demo.toml")
+	writeAt(t, src, "network = false\n"+demoTool+"\n[[skill]]\nvendors = [\"claude\"]\npath = \"~/.aggy/skills/demo\"\n", 0o644)
+	if code, _, errOut := toolRun("", true, "add", src, "--yes"); code != 0 {
+		t.Fatalf("add: %d %q", code, errOut)
+	}
+	skill := filepath.Join(f.state, "skills", "demo", "SKILL.md")
+	writeAt(t, skill, "---\nname: demo\ndescription: short\n---\n", 0o644)
+	if code, _, errOut := toolRun("", false, "on", "demo", "--vendor", "claude"); code != 0 {
+		t.Fatalf("on: %d %q", code, errOut)
+	}
+	wire := borrowTools(f.state, false)
+	servers, done, err := wire(ctx, adapter.Claude, borrow.CLI{}, []string{"demo"}, f.repo)
+	if err != nil || len(servers) != 1 {
+		t.Fatalf("before the change: %+v %v", servers, err)
+	}
+	done()
+	writeAt(t, skill, "---\nname: demo\ndescription: changed\n---\n", 0o644)
+	servers, done, err = wire(ctx, adapter.Claude, borrow.CLI{}, []string{"demo"}, f.repo)
+	var te *borrow.ToolError
+	if !errors.As(err, &te) || te.Code != diag.CodeToolSkillChanged || servers != nil || done != nil {
+		t.Errorf("a changed skill: %+v %v", servers, err)
+	}
+}

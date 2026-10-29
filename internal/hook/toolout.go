@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -187,8 +188,11 @@ func rewritten(upd map[string]json.RawMessage, payload []byte, prefix string) (j
 		return nil, false
 	}
 	// Invalid UTF-8 or a lone surrogate decodes to U+FFFD, so the command
-	// passed on would not be the one Claude's rules saw.
-	if strings.TrimSpace(cmd) == "" || strings.ContainsRune(cmd, utf8.RuneError) || newCmd != prefix+cmd {
+	// passed on would not be the one Claude's rules saw. Leading space
+	// would sit between prefix and command, where a prefixed rule such as
+	// Bash(rtk git push --force*) may not match it (M82-1).
+	if strings.TrimSpace(cmd) == "" || cmd != strings.TrimLeftFunc(cmd, unicode.IsSpace) ||
+		strings.ContainsRune(cmd, utf8.RuneError) || newCmd != prefix+cmd {
 		return nil, false
 	}
 	out := make(map[string]json.RawMessage, len(upd))
