@@ -17,9 +17,9 @@ func TestToolSwitchProxy(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 	for _, sw := range []ToolSwitch{
-		{Tool: "a", Vendor: "claude", On: true, Proxy: true},
-		{Tool: "b", Vendor: "", On: true, Proxy: true},
-		{Tool: "c", Vendor: "claude", On: false, Proxy: true},
+		{Tool: "a", Vendor: "claude", On: true, ProxyDigest: "x"},
+		{Tool: "b", Vendor: "", On: true, ProxyDigest: "x"},
+		{Tool: "c", Vendor: "claude", On: false, ProxyDigest: "x"},
 		{Tool: "d", Vendor: "claude", On: true},
 	} {
 		if err := s.PutToolSwitch(ctx, sw); err != nil {
@@ -31,8 +31,8 @@ func TestToolSwitchProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, sw := range got {
-		if sw.Proxy != (sw.Tool == "a") {
-			t.Errorf("%s: proxy %v", sw.Tool, sw.Proxy)
+		if (sw.ProxyDigest == "x") != (sw.Tool == "a") {
+			t.Errorf("%s: proxy %q", sw.Tool, sw.ProxyDigest)
 		}
 	}
 }

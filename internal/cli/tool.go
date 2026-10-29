@@ -28,7 +28,7 @@ import (
 const toolUsage = `Usage:
   aggy tool list
   aggy tool status [<name>] [--vendor V] [--repo DIR]
-  aggy tool on <name> [--vendor V] [--repo DIR]
+  aggy tool on <name> [--vendor V] [--repo DIR] [--proxy]
   aggy tool off <name> [--vendor V] [--repo DIR]
   aggy tool add <file> [--yes]
   aggy tool remove <name>
@@ -47,9 +47,9 @@ own in ~/.aggy/tools/<name>.toml. Definitions are never read from a repo.
            wherever it applies. A per-repo tool is turned on only with
            --repo. A repo's .aggy/config.toml can turn a tool off
            (tools_off) and never on. It takes effect at the next launch.
-           A tool with a local proxy (Headroom) turns on only with
-           --vendor, and its proxy only after you read the warning and
-           type the confirmation at a terminal.
+           A tool with a local proxy (Headroom) turns on without it;
+           --proxy --vendor V turns its proxy on for V too, after you
+           read the warning and type the confirmation at a terminal.
   add      validate a definition, show what it would run and wire per
            vendor, and copy it into ~/.aggy/tools after you answer y at a
            terminal (--yes skips the question; it never works without a
@@ -69,6 +69,7 @@ func runTool(args []string, stdout, stderr io.Writer) int {
 type toolArgs struct {
 	pos          []string
 	yes          bool
+	proxy        bool // --proxy, for aggy tool on only (T6780)
 	vendor, repo string
 	hasRepo      bool
 }
@@ -81,6 +82,8 @@ func parseToolArgs(args []string) (toolArgs, bool) {
 		switch {
 		case w == "--yes":
 			a.yes = true
+		case w == "--proxy":
+			a.proxy = true
 		case name == "--vendor" || name == "--repo":
 			if !hasVal {
 				if i+1 >= len(args) {
@@ -130,7 +133,7 @@ func toolWith(args []string, in io.Reader, tty bool, stdout, stderr io.Writer) i
 		return 1
 	}
 	a, ok := parseToolArgs(args[1:])
-	if !ok {
+	if !ok || a.proxy && args[0] != "on" {
 		return usageErr()
 	}
 	noSwitchFlags := a.vendor == "" && !a.hasRepo
@@ -470,6 +473,11 @@ func previewTool(w io.Writer, d tooldef.Def, dest string) {
 			if h.Decides {
 				fmt.Fprintln(w, "      can allow or deny the action")
 			}
+		}
+		if p.Proxy != nil {
+			// T6780: what the warning on aggy tool on --proxy names.
+			fmt.Fprintf(w, "    local proxy (off until aggy tool on %s --proxy --vendor %s): %s\n", d.Name, v, quoteArgv(p.Proxy.Argv))
+			fmt.Fprintf(w, "      %s points at http://%s, checked at %s; every request, the login token included, would pass through it\n", p.Proxy.Env[v], p.Proxy.Listen, p.Proxy.Health)
 		}
 		for _, s := range p.Init {
 			cmd("init step", s.Argv)

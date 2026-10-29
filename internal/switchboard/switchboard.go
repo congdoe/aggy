@@ -40,6 +40,10 @@ type State struct {
 	Why    string
 	// Parts are the tool's parts for the vendor: empty unless On.
 	Parts tooldef.Parts
+	// ProxyChanged: the setting holds a proxy confirmation for the vendor,
+	// but of another proxy than the definition's now, so the proxy is off
+	// until the person confirms it again (T6780).
+	ProxyChanged bool
 }
 
 // Changed is the reason a user tool turned on is off again.
@@ -92,10 +96,14 @@ func (b Board) State(t tooldef.Tool, v adapter.Vendor, repo string) State {
 	}
 	st.On, st.Why, st.Parts = true, why, parts
 	// T6780: a proxy runs only on the setting that holds the person's
-	// typed confirmation for this vendor, never on a default, a session's
-	// --tool, or an "on" for every vendor.
-	if confirmed := set && sw.On && sw.proxy && sw.vendor == string(v); !confirmed {
-		st.Parts.Proxy = nil
+	// typed confirmation for this vendor, of the proxy as it is now; never
+	// on a default, a session's --tool, or an "on" for every vendor.
+	if parts.Proxy != nil {
+		mine := set && sw.On && sw.proxy != "" && sw.vendor == string(v)
+		if !mine || sw.proxy != tooldef.ProxyDigest(*parts.Proxy, v) {
+			st.Parts.Proxy = nil
+		}
+		st.ProxyChanged = mine && st.Parts.Proxy == nil
 	}
 	return st
 }
@@ -120,7 +128,7 @@ func (sw setting) check(t tooldef.Tool) (bool, string) {
 type setting struct {
 	On                  bool
 	why, digest, vendor string
-	proxy               bool
+	proxy               string // the proxy confirmation's digest
 }
 
 // setting finds the most specific switch for the tool: this repo and
@@ -148,7 +156,7 @@ func (b Board) setting(t tooldef.Tool, v adapter.Vendor, repo string) (setting, 
 		if sw.On {
 			why = "on: " + k.why
 		}
-		return setting{sw.On, why, sw.Digest, sw.Vendor, sw.Proxy}, true
+		return setting{sw.On, why, sw.Digest, sw.Vendor, sw.ProxyDigest}, true
 	}
 	return setting{}, false
 }

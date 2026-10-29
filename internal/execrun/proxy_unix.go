@@ -5,6 +5,7 @@ package execrun
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os/exec"
@@ -19,19 +20,18 @@ import (
 	"github.com/congdoe/aggy/internal/tooldef"
 )
 
-// StartProxy starts the proxy s describes for one on-screen session, in
-// its own process group, with ProxyEnv(base) as its whole environment,
-// no stdin, and its output kept only as a capped tail. It refuses when
-// something already listens on s.Addr, and returns only once the proxy
-// answers its health check, or fails (and is stopped) when it does not
-// within s.Wait, or exits. A healthy proxy is registered, so PTYEnv
+// StartProxy starts the proxy s describes for one on-screen session, as
+// the leader of its own session and process group, with ProxyEnv(base)
+// as its whole environment, no stdin, and its output kept only as a
+// capped tail. It refuses when something already listens on s.Addr. It
+// returns once the proxy answers its health check and the listener on
+// s.Addr is a socket of a process in the proxy's group (listenerOwned):
+// a process that bound the port while the proxy started, and answered
+// the check, is never trusted. It fails, and stops the proxy, when the
+// proxy does not get there within s.Wait, exits, or ctx ends (a signal:
+// ErrProxyInterrupted). A proxy that comes up is registered, so PTYEnv
 // passes s.Var pointing at it; the caller must Stop it.
-//
-// Limit: a process that binds the address between the port check and
-// the proxy's own bind would answer the health check while the proxy
-// exits for want of its port; the proxy's exit is checked after the
-// health check, which catches a proxy that gives up at once.
-func StartProxy(s ProxySpec, base []string) (*Proxy, error) {
+func StartProxy(ctx context.Context, s ProxySpec, base []string) (*Proxy, error) {
 	if err := checkProxySpec(s); err != nil {
 		return nil, err
 	}
@@ -48,11 +48,11 @@ func StartProxy(s ProxySpec, base []string) (*Proxy, error) {
 	cmd.Stdout, cmd.Stderr = out, out
 	// A process that escaped the group may hold the output pipe open.
 	cmd.WaitDelay = time.Second
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = proxyAttr()
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	p := &Proxy{spec: s, url: proxyURL(s.Addr), done: make(chan struct{})}
+	p := &Proxy{spec: s, url: proxyURL(s.Addr), done: make(chan struct{}), died: make(chan struct{})}
 	pid := cmd.Process.Pid
 	p.kill = func(graceful bool) {
 		sig := syscall.SIGKILL
@@ -65,38 +65,62 @@ func StartProxy(s ProxySpec, base []string) (*Proxy, error) {
 		// reap kills what is left of the group once the leader exits,
 		// before it reaps it.
 		_ = reap(cmd)
-		close(p.done)
+		p.reaped()
 	}()
 	wait := s.Wait
 	if wait <= 0 {
 		wait = ProxyWait
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	hctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
-	for !healthy(ctx, s.Addr, s.Health) {
+	for !healthy(hctx, s.Addr, s.Health) {
 		select {
 		case <-p.done:
 			p.Stop()
 			return nil, out.failed(fmt.Errorf("%w before it answered its health check", ErrProxyExited))
-		case <-ctx.Done():
+		case <-hctx.Done():
 			p.Stop()
+			if ctx.Err() != nil {
+				return nil, ErrProxyInterrupted
+			}
 			return nil, out.failed(fmt.Errorf("%w at %s within %s", ErrProxyUnhealthy, s.Addr, wait))
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	// One more beat: a proxy that could not bind (another process
-	// answered the check) exits at once.
-	select {
-	case <-p.done:
+	// HIGH-1: the health check proves only that something answers.
+	if err := listenerOwned(ctx, s.Addr, pid); err != nil {
 		p.Stop()
-		return nil, out.failed(fmt.Errorf("%w right after its health check passed: another process may hold %s", ErrProxyExited, s.Addr))
-	case <-time.After(200 * time.Millisecond):
+		return nil, fmt.Errorf("%w: %v", ErrProxyNotOwned, err)
 	}
+	p.mu.Lock()
+	if p.Exited() {
+		p.mu.Unlock()
+		p.Stop()
+		return nil, out.failed(fmt.Errorf("%w right after its health check passed", ErrProxyExited))
+	}
+	p.live = true
+	p.mu.Unlock()
 	proxies.Lock()
 	proxies.m[p] = true
 	proxies.Unlock()
 	return p, nil
 }
+
+// reaped runs once the process is reaped: an exit nobody asked for,
+// while a CLI may point at the proxy, puts the placeholder on its
+// address at once (holdLoopback).
+func (p *Proxy) reaped() {
+	p.mu.Lock()
+	if p.live && !p.stopping {
+		p.hold, p.holdErr = holdLoopback(p.spec.Addr)
+		close(p.died)
+	}
+	p.mu.Unlock()
+	close(p.done)
+}
+
+// errNoListener: nothing listens on the address the proxy should.
+var errNoListener = errors.New("no process listens on the address")
 
 // proxyLog caps what is kept of a proxy's output: its last bytes, shown
 // (through termsafe) only when it fails to come up. It never reaches the

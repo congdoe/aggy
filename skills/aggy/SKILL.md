@@ -65,10 +65,16 @@ Codex cannot ask; there the user presses aggy's switch key.
   versions that matter. Never put in secrets (keys, tokens, passwords,
   `.env` contents) or the conversation transcript; summarize what the
   child needs in a few sentences instead.
-- **Never turn on a tool's proxy.** `aggy tool on` for a tool with a
-  local proxy (such as Headroom's) routes every request of that CLI,
-  its login token included, through that process. Only the user does
-  that, in their own terminal; aggy refuses it from inside a session.
+- **Never turn on a tool's proxy.** `aggy tool on <tool> --vendor <v>
+  --proxy` for a tool with a local proxy (such as Headroom's) routes
+  every request of that CLI, its login token included, through that
+  process. Only the user does that, in their own terminal; aggy refuses
+  it from inside a session. Its confirmation guards against mistakes,
+  not against you: never get around it by unsetting `AGGY_SOCKET` or
+  `AGGY_PARENT` (`env -u`), by running aggy under `script` or another
+  pty wrapper, by typing the confirmation for the user, or by editing
+  aggy's index (`~/.aggy/aggy.db`). Plain `aggy tool on headroom` turns
+  on only its MCP server; that is fine to suggest.
 - Keep borrows bounded: one question or one artifact each. aggy runs at
   most 2 per vendor and 4 in total, with a time limit per kind.
 

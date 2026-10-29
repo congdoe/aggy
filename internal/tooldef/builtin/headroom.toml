@@ -26,13 +26,13 @@ hint = "uv tool install headroom-ai==0.42.0, which needs Python 3.10 or later; n
 vendors = ["claude", "codex", "grok"]
 argv = ["headroom", "mcp", "serve"]
 
-# TODO(T6780): unverified at 0.42.0 (docs/verification.md, "Headroom
-# proxy"): the --host and --port flags and GET /health are from
-# docs.headroomlabs.ai/docs/proxy (latest, not pinned); its README shows
-# headroom proxy --port 8787. Codex and Grok support is not verified
-# (Codex reads no base-URL variable), so claude only. Its anonymous
-# beacon is on by default per those docs; aggy's proxy env sets
-# DO_NOT_TRACK=1, which they say turns it off (unverified live).
+# TODO(T6780): not run at 0.42.0 (docs/verification.md, "Headroom
+# proxy"). Source-read, not run: --host and --port at
+# headroom/cli/proxy.py:296,334; GET /health at
+# headroom/proxy/server.py:4274; the beacon, on by default, is off with
+# DO_NOT_TRACK at headroom/telemetry/beacon.py:60-95, which aggy's proxy
+# env sets. Codex and Grok stay unsupported (Codex reads no base-URL
+# variable), so claude only.
 [proxy]
 vendors = ["claude"]
 argv = ["headroom", "proxy", "--host", "127.0.0.1", "--port", "8787"]

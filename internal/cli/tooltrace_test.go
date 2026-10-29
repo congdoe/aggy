@@ -226,18 +226,14 @@ func TestToolOffLeavesNoTrace(t *testing.T) {
 			// look like a trace.
 			t.Run(fmt.Sprintf("%d-%s", i, v), func(t *testing.T) {
 				tool, repo, scope := traceTool(t, name)
-				if tool.Proxy == nil {
-					toolOK(t, append([]string{"on", name}, scope...)...)
-				} else {
-					// T6780: a tool with a proxy turns on per named
-					// vendor, its proxy with a typed confirmation (Grok's
-					// tools are gated).
+				toolOK(t, append([]string{"on", name}, scope...)...)
+				if tool.Proxy != nil {
+					// T6780: its proxy turns on per named vendor, with
+					// --proxy and a typed confirmation.
 					t.Setenv("AGGY_SOCKET", "")
-					for _, w := range []adapter.Vendor{adapter.Claude, adapter.Codex} {
-						args := append([]string{"on", name, "--vendor", string(w)}, scope...)
-						if code, _, errOut := toolRun(name+" "+string(w)+"\n", true, args...); code != 0 {
-							t.Fatalf("aggy tool %q: %d %s", args, code, errOut)
-						}
+					args := append([]string{"on", name, "--vendor", "claude", "--proxy"}, scope...)
+					if code, _, errOut := toolRun(name+" claude\n", true, args...); code != 0 {
+						t.Fatalf("aggy tool %q: %d %s", args, code, errOut)
 					}
 					if proxyState(t, name, adapter.Claude).Parts.Proxy == nil {
 						t.Fatal("its proxy is not on for claude")

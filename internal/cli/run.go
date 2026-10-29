@@ -295,6 +295,31 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	if px.env != "" {
 		cmd.Env = append(cmd.Env, px.env)
 	}
+	// HIGH-2: a proxy that dies mid-session is recorded at once (its
+	// address is already held, execrun.Proxy.Died), the supervisor reads
+	// the session's tools again and offers a resume, and aggy says so
+	// once the terminal is its own again.
+	proxyNudge := make(chan struct{}, 1)
+	watch, stopWatch := context.WithCancel(ctx)
+	defer stopWatch()
+	if px.died != nil {
+		go func() {
+			select {
+			case <-px.died:
+				px.onDied()
+				select {
+				case proxyNudge <- struct{}{}:
+				default:
+				}
+			case <-watch.Done():
+			}
+		}()
+	}
+	defer func() {
+		if n := px.diedNote(name); n != "" {
+			fmt.Fprintln(stderr, n)
+		}
+	}()
 	// The child's id when known at launch: Claude's and Grok's
 	// pre-assigned or resumed one (the only id the index records for
 	// them), or a resumed Codex thread. A new Codex child's id comes from
@@ -390,11 +415,16 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	var tools func() (supervisor.ToolSet, error)
 	toolBase, err := sessionToolSet(ctx, v, caps, pl.child.Cwd, t.Tools)
 	if err == nil {
-		tools = func() (supervisor.ToolSet, error) { return sessionToolSet(pctx, v, caps, pl.child.Cwd, t.Tools) }
+		tools = func() (supervisor.ToolSet, error) {
+			set, err := sessionToolSet(pctx, v, caps, pl.child.Cwd, t.Tools)
+			px.withoutProxy(set)
+			return set, err
+		}
 	}
 	ex, err := supervisor.Run(supervisor.Options{
 		Tools:         tools,
 		ToolsAtLaunch: toolBase,
+		ToolsNudge:    proxyNudge,
 		In:            os.Stdin, Out: os.Stdout, Command: cmd,
 		Start:      startPTY,
 		SwitchKey:  key,
