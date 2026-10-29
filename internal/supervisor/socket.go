@@ -61,6 +61,9 @@ type Server struct {
 	// onSwitch takes a switch-request (SetSwitch); nil refuses them.
 	// Guarded by mu.
 	onSwitch func(Request) error
+	// onTools takes a tools-changed notice (SetTools); nil refuses them.
+	// Guarded by mu.
+	onTools func()
 	// log gets a record of each message refused or not acted on
 	// (SetLog); it must not block. Guarded by mu.
 	log    func(diag.Rec)
@@ -144,6 +147,14 @@ func (s *Server) SetRoot(pid int) {
 		s.root = pid
 		close(s.rootSet)
 	})
+}
+
+// SetTools sets what takes a tools-changed notice, from any peer of this
+// uid. It runs on the connection's goroutine and must not block.
+func (s *Server) SetTools(f func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onTools = f
 }
 
 // SetSwitch sets what takes a switch-request from the session: it
@@ -419,9 +430,9 @@ func (s *Server) serve(c *net.UnixConn) {
 			return // closed, idle, or a last line without a newline
 		}
 		s.mu.Lock()
-		onSwitch, log := s.onSwitch, s.log
+		onSwitch, onTools, log := s.onSwitch, s.onTools, s.log
 		s.mu.Unlock()
-		resp := answer(line[:len(line)-1], from, s.onHook, onSwitch, log)
+		resp := answer(line[:len(line)-1], from, s.onHook, onSwitch, onTools, log)
 		reply(c, resp)
 		if !resp.OK || !from {
 			return

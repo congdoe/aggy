@@ -63,24 +63,28 @@ type picker struct {
 	warning bool
 	warnTo  adapter.Vendor
 	forms   []string
+	// resume: the note is a tool change's (T6729), whose switch key
+	// queues a resume of the vendor on screen; in the list, the switch
+	// waiting is that resume.
+	resume bool
 }
 
 // list sets the picker to the vendor list, its toggles cleared.
 func (p *picker) list() {
-	p.confirm, p.note, p.lines = "", false, nil
+	p.confirm, p.note, p.lines, p.resume = "", false, nil, false
 	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
 	p.opts, p.editing, p.edit, p.editErr, p.stage, p.kids = Choice{}, false, nil, "", "", nil
 }
 
 // ask sets the picker to confirm a switch to v, explained by lines.
 func (p *picker) ask(v adapter.Vendor, lines ...string) {
-	p.confirm, p.note, p.lines = v, false, lines
+	p.confirm, p.note, p.lines, p.resume = v, false, lines, false
 	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
 }
 
 // tell sets the picker to show a note.
 func (p *picker) tell(lines ...string) {
-	p.confirm, p.note, p.lines = "", true, lines
+	p.confirm, p.note, p.lines, p.resume = "", true, lines, false
 	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
 }
 
@@ -124,8 +128,13 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 			}
 			lines = append(lines, fmt.Sprintf(" %s%d  %s", mark, i+1, v))
 		}
-		if p.waiting != "" {
+		switch {
+		case p.waiting != "" && p.resume:
+			lines = append(lines, "", fmt.Sprintf("Resuming %s on the same session, for the changed tools, when this turn ends; Esc cancels it.", p.waiting))
+		case p.waiting != "":
 			lines = append(lines, "", fmt.Sprintf("Switching to %s when this turn ends; Esc cancels it, picking it again says no turn is running.", p.waiting))
+		}
+		if p.waiting != "" {
 			if p.checking {
 				lines = append(lines, fmt.Sprintf("Checking that %s can get the safety policy...", p.waiting))
 			}
