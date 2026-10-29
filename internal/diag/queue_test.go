@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/congdoe/aggy/internal/store"
 )
 
 // TestQueueSlowWriter (T6753): with a writer that takes 50 ms a record,
@@ -37,24 +39,23 @@ func TestQueueSlowWriter(t *testing.T) {
 		t.Error("a Log after Close was taken")
 	}
 	q.Close(time.Second) // twice is fine
-	recs := records(t, dir)
+	recs, drops := splitDrops(records(t, dir))
 	var kept []string
 	for _, id := range ids {
 		if id != "" {
 			kept = append(kept, id)
 		}
 	}
-	if len(recs) != len(kept)+1 {
-		t.Fatalf("%d records, want %d kept and the drop count", len(recs), len(kept))
+	if len(recs) != len(kept) || len(drops) != 1 {
+		t.Fatalf("%d records and %d drop counts, want %d kept and one", len(recs), len(drops), len(kept))
 	}
 	for i, id := range kept {
 		if recs[i].ID != id {
 			t.Errorf("record %d is %s, want %s", i, recs[i].ID, id)
 		}
 	}
-	last := recs[len(recs)-1]
-	if last.Event != EvQueueDropped.String() || last.Code != CodeQueueFull.String() || string(last.Attrs) != `{"dropped":`+strconv.FormatInt(q.Dropped(), 10)+`,"dropped_security":0}` {
-		t.Errorf("last record %+v", last)
+	if d := drops[0]; d.Code != CodeQueueFull.String() || string(d.Attrs) != `{"dropped":`+strconv.FormatInt(q.Dropped(), 10)+`,"dropped_security":0}` {
+		t.Errorf("drop record %+v", d)
 	}
 	var nilQ *Queue
 	if nilQ.Log(Rec{Event: EvPickerOpened}) != "" || nilQ.Writer() != nil || nilQ.Dropped() != 0 {
@@ -107,20 +108,64 @@ func TestQueueSecurityFirst(t *testing.T) {
 		t.Errorf("the security record (row %d) was written after %d plain ones", secRow, before)
 	}
 	// G67-R1: the flood of security records lets a plain one through
-	// after secBurst of them.
-	var plain []int64
-	for _, r := range recs {
+	// after secBurst of them. Places count without the drop record,
+	// which Close writes beside the drain.
+	rest, drops := splitDrops(recs)
+	sort.Slice(rest, func(i, j int) bool { return rest[i].Row < rest[j].Row })
+	var plain []int
+	for i, r := range rest {
 		if r.Code == "" {
-			plain = append(plain, r.Row)
+			plain = append(plain, i)
 		}
 	}
-	sort.Slice(plain, func(i, j int) bool { return plain[i] < plain[j] })
 	if len(plain) < 2 || plain[1] > plain[0]+secBurst+1 {
-		t.Errorf("plain records at rows %v: starved by security ones", plain)
+		t.Errorf("plain records at places %v: starved by security ones", plain)
 	}
-	last := recs[len(recs)-1]
-	if last.Event != EvQueueDropped.String() || !strings.Contains(string(last.Attrs), `"dropped_security":`) {
-		t.Errorf("last record %+v", last)
+	if len(drops) != 1 || !strings.Contains(string(drops[0].Attrs), `"dropped_security":`) {
+		t.Errorf("drop records %+v", drops)
+	}
+}
+
+// splitDrops parts recs into the diag.queue.dropped records and the rest.
+func splitDrops(recs []store.DiagRecord) (rest, drops []store.DiagRecord) {
+	for _, r := range recs {
+		if r.Event == EvQueueDropped.String() {
+			drops = append(drops, r)
+		} else {
+			rest = append(rest, r)
+		}
+	}
+	return rest, drops
+}
+
+// TestQueueDropRecordBeatsBacklog (G67-R6): with a backlog that takes
+// far longer than Close's wait, the drop count is still written in time.
+func TestQueueDropRecordBeatsBacklog(t *testing.T) {
+	w, _, dir := testWriter(t, "info")
+	w.diagPath = func() (string, error) {
+		time.Sleep(80 * time.Millisecond)
+		return filepath.Join(dir, "diag.db"), nil
+	}
+	q := w.Queue(32)
+	for i := 0; i < 40; i++ {
+		q.Log(Rec{Event: EvPickerOpened})
+	}
+	q.Log(Rec{Event: EvHookRejected, Code: CodeLineage})
+	if q.Dropped() == 0 {
+		t.Fatal("nothing dropped")
+	}
+	start := time.Now()
+	q.Close(time.Second) // the backlog needs over 2 s
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("Close took %s past its wait", d)
+	}
+	_, drops := splitDrops(records(t, dir))
+	if len(drops) != 1 || string(drops[0].Attrs) != `{"dropped":`+strconv.FormatInt(q.Dropped(), 10)+`,"dropped_security":0}` {
+		t.Errorf("drop records %+v after a short Close", drops)
+	}
+	q.Close(30 * time.Second) // let the drain finish before the temp dir goes
+	if _, drops := splitDrops(records(t, dir)); len(drops) != 1 {
+		t.Errorf("%d drop records, want one", len(drops))
 	}
 }
 
@@ -173,5 +218,22 @@ func TestWriterScrubsEnv(t *testing.T) {
 	got := w.scrub("dial /tmp/sock-canary-heron-91.sock: no such file; AGGY_HOME relative-canary-heron-92 is not absolute", maxMsg)
 	if strings.Contains(got, "canary") || strings.Count(got, "[env value]") != 2 {
 		t.Errorf("scrubbed %q", got)
+	}
+}
+
+// TestWriterScrubsVendorHomes (G67-R4): the vendor homes are scrubbed,
+// the longer value whole when one holds another, and a short value such
+// as /tmp is left so it cannot mangle unrelated text.
+func TestWriterScrubsVendorHomes(t *testing.T) {
+	t.Setenv("AGGY_SOCKET", "/tmp")
+	t.Setenv("AGGY_HOME", "/h/canary-owl")
+	t.Setenv("CODEX_HOME", "/h/canary-owl/codex-home")
+	t.Setenv("GROK_HOME", "/srv/canary-grok-77")
+	t.Setenv("CLAUDE_CONFIG_DIR", "/srv/canary-claude-78")
+	w := New("v-test", nil)
+	got := w.scrub("open /h/canary-owl/codex-home/config.toml; /srv/canary-grok-77 and /srv/canary-claude-78; under /tmp/x", maxMsg)
+	want := "open [env value]/config.toml; [env value] and [env value]; under /tmp/x"
+	if got != want {
+		t.Errorf("scrubbed %q, want %q", got, want)
 	}
 }

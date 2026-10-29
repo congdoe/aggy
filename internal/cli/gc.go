@@ -89,7 +89,7 @@ func gcWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, stderr
 			fmt.Fprint(stdout, gcUsage)
 			return 0
 		}
-		refuse(context.Background(), stderr, "gc", diag.EvGCRefused, diag.CodeUsage, err.Error(), diag.Rec{})
+		refuse(context.Background(), stderr, "gc", diag.EvGCRefused, diag.CodeUsage, err.Error(), errRec(diag.Rec{}, err))
 		fmt.Fprintf(stderr, "\n%s", gcUsage)
 		return 2
 	}
@@ -104,7 +104,7 @@ func gcWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, stderr
 		log = nil
 	}
 	fail := func(code diag.Code, err error) int {
-		refuseWith(log, context.Background(), stderr, "gc", diag.EvGCRefused, code, err.Error(), diag.Rec{})
+		refuseWith(log, context.Background(), stderr, "gc", diag.EvGCRefused, code, err.Error(), errRec(diag.Rec{}, err))
 		return 1
 	}
 	// A borrow child never cleans up after its parent.
@@ -174,7 +174,7 @@ func gcWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, stderr
 		rec.Attrs = map[string]any{"kind": it.kind}
 		if err := it.remove(ctx); err != nil {
 			refuse(ctx, stderr, "gc", diag.EvGCRemoveFailed, diag.CodeGCRemoveFailed,
-				fmt.Sprintf("not removed: %s %s: %s", it.kind, it.what, err), rec)
+				fmt.Sprintf("not removed: %s %s: %s", it.kind, it.what, err), errRec(rec, err))
 			code = 1
 			continue
 		}

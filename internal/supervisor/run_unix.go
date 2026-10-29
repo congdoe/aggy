@@ -105,6 +105,10 @@ func Run(o Options) (Exit, error) {
 	t := &tty{fd: fd}
 	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, lenKnown: true, events: make(chan hookEvent, 16), asks: make(chan Choice, 1), quit: make(chan struct{}), shares: make(chan shareReading)}
 	defer close(s.quit)
+	// The last minute's repeats, queued before the caller closes the
+	// diagnostic queue (G67-R3); deferred first, so it runs after the
+	// socket and the main loop are done.
+	defer s.flushForeign(nil)
 	var srv *Server
 	if o.RunDir != "" {
 		var err error
@@ -379,19 +383,11 @@ type session struct {
 	lastTurnEnd, lastLimit string
 	// foreign is, per session id a turn end named that was not the
 	// on-screen one, when it was last recorded and how many came since
-	// (G67-4). Only in memory; owned by the main loop.
-	foreign map[string]*foreignSeen
+	// (G67-4); foreignOver is the same for all the sessions past
+	// maxForeign (G67-R3). Only in memory; owned by the main loop.
+	foreign     map[string]*foreignSeen
+	foreignOver foreignSeen
 }
-
-// foreignSeen is one foreign session's turn ends: when one was last
-// recorded, and how many came since.
-type foreignSeen struct {
-	at      time.Time
-	repeats int
-}
-
-// maxForeign caps the sessions foreign keeps; past it, it starts over.
-const maxForeign = 64
 
 // turnCause is the cause of a switch's step at a turn end: the counted
 // turn end, when it came after the switch's latest record (ids sort by
@@ -401,34 +397,6 @@ func (s *session) turnCause() string {
 		return s.lastTurnEnd
 	}
 	return s.sw.rec
-}
-
-// ignoredTurnEnd records a turn end that named another session, at most
-// once a minute per session, with how many came since the last record.
-// A turn end naming no session is keyed by "" and recorded the same
-// way, as a security rejection (G67-R1).
-func (s *session) ignoredTurnEnd(ev hookEvent) {
-	now := time.Now()
-	if s.foreign == nil || len(s.foreign) >= maxForeign {
-		s.foreign = map[string]*foreignSeen{}
-	}
-	f := s.foreign[ev.sessionID]
-	if f != nil && now.Sub(f.at) < time.Minute {
-		f.repeats++
-		return
-	}
-	repeats := 0
-	if f != nil {
-		repeats = f.repeats
-	}
-	s.foreign[ev.sessionID] = &foreignSeen{at: now}
-	attrs := map[string]any{"event": hookName(ev.name), "repeats": repeats}
-	if ev.sessionID == "" {
-		// The vendor's own hook always names its session.
-		s.log(diag.Rec{Event: diag.EvHookRejected, Code: diag.CodeNoSession, Msg: "a turn end that names no session", Attrs: attrs})
-		return
-	}
-	s.log(diag.Rec{Event: diag.EvHookIgnored, Code: diag.CodeForeignSession, Msg: "a turn end of another session", Attrs: attrs})
 }
 
 // setSwitch sets the switch state.

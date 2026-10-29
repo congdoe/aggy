@@ -234,12 +234,12 @@ var errDefsRefused = errors.New("user tool definitions refused")
 // holds only the file's base name and the key (attrs file and key).
 func toolRefuse(ctx context.Context, stderr io.Writer, cmd string, ev diag.Event, err error) {
 	code := toolCode(err)
-	rec := diag.Rec{Event: ev, Code: code, Msg: err.Error()}
+	rec := errRec(diag.Rec{Event: ev, Code: code, Msg: fixedMsg(code)}, err)
 	var te *tooldef.Error
 	if errors.As(err, &te) {
 		file := filepath.Base(te.File)
 		rec.Msg = file + ": refused"
-		rec.Attrs = map[string]any{"file": file}
+		rec.Attrs["file"] = file
 		if te.Key != "" {
 			rec.Msg = file + ": " + te.Key + ": refused"
 			rec.Attrs["key"] = te.Key

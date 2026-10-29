@@ -4,7 +4,9 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
@@ -25,7 +27,7 @@ func diagHome(t *testing.T) (*diag.Queue, func() []store.DiagRecord) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("AGGY_HOME", state)
 	t.Setenv(diag.TraceEnv, "")
-	q := diag.New("v-test", io.Discard).Queue(64)
+	q := diag.New("v-test", io.Discard).Queue(256)
 	return q, func() []store.DiagRecord {
 		t.Helper()
 		q.Close(waitLimit)
@@ -150,34 +152,115 @@ func TestDiagOfferCause(t *testing.T) {
 	if !ok {
 		t.Fatal("no offer record")
 	}
-	var ignored int
 	for _, r := range recs {
 		if r.ID == offered.CauseID && (r.Event != diag.EvHookAccepted.String() || !strings.Contains(string(r.Attrs), `"counted":true`)) {
 			t.Errorf("the offer's cause is %s %s, want the counted turn end", r.Event, r.Attrs)
 		}
-		if r.Event == diag.EvHookIgnored.String() {
-			ignored++
-			if r.Code != diag.CodeForeignSession.String() {
-				t.Errorf("ignored with code %q", r.Code)
-			}
+		if r.Event == diag.EvHookIgnored.String() && r.Code != diag.CodeForeignSession.String() {
+			t.Errorf("ignored with code %q", r.Code)
 		}
 		if r.Code == diag.CodeForeignSession.String() && r.Event != diag.EvHookIgnored.String() {
 			t.Errorf("foreign session recorded as %s", r.Event)
 		}
 	}
-	if ignored != 1 {
-		t.Errorf("%d ignored records for three foreign turn ends in a minute, want 1", ignored)
+	// Three foreign turn ends in a minute are one record, and the two
+	// repeats are recorded when the session ends (G67-R3). G67-R1: the
+	// same for three naming no session, as security records.
+	if n, sum := countTurnEnds(t, recs, diag.CodeForeignSession); n != 2 || sum != 3 {
+		t.Errorf("%d ignored records for %d turn ends, want 2 for 3", n, sum)
 	}
-	// G67-R1: three turn ends naming no session in a minute are one
-	// security record.
-	var none int
+	if n, sum := countTurnEnds(t, recs, diag.CodeNoSession); n != 2 || sum != 3 {
+		t.Errorf("%d hook.no_session records for %d turn ends, want 2 for 3", n, sum)
+	}
+}
+
+// countTurnEnds is how many records have code c, and how many turn ends
+// they stand for: its attrs.repeats, and itself unless it is a tail.
+func countTurnEnds(t *testing.T, recs []store.DiagRecord, c diag.Code) (n, sum int) {
+	t.Helper()
 	for _, r := range recs {
-		if r.Code == diag.CodeNoSession.String() {
-			none++
+		if r.Code != c.String() {
+			continue
+		}
+		var a struct {
+			Repeats int
+			Tail    bool
+		}
+		if err := json.Unmarshal(r.Attrs, &a); err != nil {
+			t.Fatal(err)
+		}
+		n++
+		sum += a.Repeats
+		if !a.Tail {
+			sum++
 		}
 	}
-	if none != 1 {
-		t.Errorf("%d hook.no_session records for three in a minute, want 1", none)
+	return n, sum
+}
+
+// TestIgnoredTurnEndBounded (G67-R3): cycling through more foreign
+// session ids than maxForeign neither loses a turn end nor records each
+// one: the sessions past the cap are counted together, a session whose
+// minute has passed is let go with its repeats recorded, and the end of
+// the session records what is left.
+func TestIgnoredTurnEndBounded(t *testing.T) {
+	q, records := diagHome(t)
+	s := &session{o: Options{Diag: q, Vendor: adapter.Claude}}
+	const ids, rounds = maxForeign + 36, 3
+	for r := 0; r < rounds; r++ {
+		for i := 0; i < ids; i++ {
+			s.ignoredTurnEnd(hookEvent{name: "Stop", sessionID: fmt.Sprintf("sess-%03d", i)})
+		}
+	}
+	if len(s.foreign) != maxForeign {
+		t.Errorf("%d sessions kept, want %d", len(s.foreign), maxForeign)
+	}
+	// A minute later, a new id lets the old sessions go, recording their
+	// repeats, and is kept on its own.
+	for _, f := range s.foreign {
+		f.at = f.at.Add(-2 * time.Minute)
+	}
+	s.ignoredTurnEnd(hookEvent{name: "Stop", sessionID: "sess-new"})
+	if len(s.foreign) != 1 || s.foreign["sess-new"] == nil {
+		t.Errorf("kept %d sessions after expiry, want sess-new alone", len(s.foreign))
+	}
+	s.ignoredTurnEnd(hookEvent{name: "Stop", sessionID: "sess-new"})
+	s.flushForeign(nil)
+	recs := records()
+	n, sum := countTurnEnds(t, recs, diag.CodeForeignSession)
+	if sum != ids*rounds+2 {
+		t.Errorf("records stand for %d turn ends, want %d", sum, ids*rounds+2)
+	}
+	// Per kept session a first record and its repeats, the same for the
+	// sessions past the cap, and sess-new's two.
+	if want := 2*maxForeign + 2 + 2; n != want {
+		t.Errorf("%d records, want %d", n, want)
+	}
+	var over int
+	for _, r := range recs {
+		if strings.Contains(string(r.Attrs), `"over_cap":true`) {
+			over++
+		}
+	}
+	if over != 2 {
+		t.Errorf("%d over-cap records, want 2", over)
+	}
+}
+
+// TestTurnEndNamesSession (T6807-R2): the one switch for Grok's stop
+// events, and every other vendor's turn end must name its session.
+func TestTurnEndNamesSession(t *testing.T) {
+	for _, c := range []struct {
+		v     adapter.Vendor
+		event string
+		want  bool
+	}{
+		{adapter.Claude, "Stop", true}, {adapter.Claude, "StopFailure", true}, {adapter.Codex, "Stop", true},
+		{adapter.Grok, "Stop", true}, {adapter.Grok, "StopFailure", grokStopNamesSession}, {adapter.Grok, "StopCancelled", grokStopNamesSession},
+	} {
+		if got := turnEndNamesSession(c.v, c.event); got != c.want {
+			t.Errorf("turnEndNamesSession(%s, %s) = %v", c.v, c.event, got)
+		}
 	}
 }
 

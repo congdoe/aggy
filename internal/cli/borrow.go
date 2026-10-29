@@ -257,13 +257,17 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 		refuse(bg, stderr, "borrow", diag.EvBorrowRefused, code, msg, diag.Rec{})
 		return 1
 	}
+	failErr := func(code diag.Code, err error) int {
+		refuse(bg, stderr, "borrow", diag.EvBorrowRefused, code, err.Error(), errRec(diag.Rec{}, err))
+		return 1
+	}
 	// One hop: a borrow child's shell never borrows again.
 	if env.getenv(borrow.Delegated) != "" {
 		return fail(diag.CodeOneHop, borrow.ErrDelegated.Error())
 	}
 	ba, err := parseBorrowArgs(args)
 	if err != nil {
-		fail(diag.CodeUsage, err.Error())
+		failErr(diag.CodeUsage, err)
 		fmt.Fprintf(stderr, "\n%s", borrowUsage)
 		return 2
 	}
@@ -275,12 +279,12 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 	dlog.Forbid(append([]string{ba.task}, ba.constraints...)...)
 	kind, err := borrow.ParseKind(ba.kind)
 	if err != nil {
-		fail(diag.CodeUsage, err.Error())
+		failErr(diag.CodeUsage, err)
 		return 2
 	}
 	cwd, err := env.cwd()
 	if err != nil {
-		return fail(diag.CodeBorrowStart, err.Error())
+		return failErr(diag.CodeBorrowStart, err)
 	}
 	var paths []string
 	for _, p := range ba.paths {
@@ -295,18 +299,18 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 	defer stop()
 	cfg, err := config.LoadDefault()
 	if err != nil {
-		return fail(diag.CodeConfig, "config: "+err.Error())
+		return failErr(diag.CodeConfig, fmt.Errorf("config: %w", err))
 	}
 	// The repo root, never just the cwd: the router reads the repo's
 	// config there, and a review runs there.
 	root, _ := repoRoot(cwd)
 	stateDir, err := home.Dir()
 	if err != nil {
-		return fail(diag.CodeStore, err.Error())
+		return failErr(diag.CodeStore, err)
 	}
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
-		return fail(diag.CodeStore, err.Error())
+		return failErr(diag.CodeStore, err)
 	}
 	defer func() { _ = s.Close() }()
 
@@ -342,10 +346,10 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 	}
 	if kind == adapter.Review {
 		if req.Repo, err = reviewRoot(cwd, env.getenv, stateDir); err != nil {
-			return fail(diag.CodeBorrowInvalid, err.Error())
+			return failErr(diag.CodeBorrowInvalid, err)
 		}
 		if req.Material, err = env.reviewMaterial(ctx, req.Repo, ba.base, paths); err != nil {
-			return fail(diag.CodeBorrowStart, "review: "+err.Error())
+			return failErr(diag.CodeBorrowStart, fmt.Errorf("review: %w", err))
 		}
 		if cfg.Routing.Review.NotAuthor { // only that route reads trailers; skip the history walk otherwise
 			req.Authors = env.reviewAuthors(ctx, req.Repo, req.Material.Base)

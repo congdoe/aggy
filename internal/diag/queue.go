@@ -92,10 +92,6 @@ func (q *Queue) run() {
 		}
 		q.write(r)
 	}
-	if n := q.dropped.Load(); n > 0 {
-		q.write(Rec{Event: EvQueueDropped, Code: CodeQueueFull, Msg: "the diagnostic log fell behind and dropped records",
-			Attrs: map[string]any{"dropped": n, "dropped_security": q.droppedSec.Load()}})
-	}
 }
 
 // write writes r. A panic in the writer is reported as a failed write
@@ -172,20 +168,42 @@ func (q *Queue) Dropped() int64 {
 
 // Close stops taking records and waits up to wait for the queued ones to
 // be written; past it they are left to the goroutine, which a process
-// that exits cuts short. It may be called more than once.
+// that exits cuts short. When records were dropped, the first Close
+// writes one diag.queue.dropped record with the counts before the
+// backlog, so a slow backlog cannot cut it short (G67-R6). It may be
+// called more than once.
 func (q *Queue) Close(wait time.Duration) {
 	if q == nil {
 		return
 	}
 	q.mu.Lock()
-	if !q.closed {
+	first := !q.closed
+	if first {
 		q.closed = true
 		close(q.ch)
 		close(q.sec)
 	}
 	q.mu.Unlock()
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	// The counts are final: Log counts only while the queue is open.
+	if n := q.dropped.Load(); first && n > 0 {
+		// Written beside the drain: the two take turns at the
+		// writer's lock, so it never waits for the whole backlog.
+		wrote := make(chan struct{})
+		go func() {
+			defer close(wrote)
+			q.write(Rec{Event: EvQueueDropped, Code: CodeQueueFull, Msg: "the diagnostic log fell behind and dropped records",
+				Attrs: map[string]any{"dropped": n, "dropped_security": q.droppedSec.Load()}})
+		}()
+		select {
+		case <-wrote:
+		case <-deadline.C:
+			return
+		}
+	}
 	select {
 	case <-q.done:
-	case <-time.After(wait):
+	case <-deadline.C:
 	}
 }

@@ -91,9 +91,13 @@ func (e repoCheckEnv) check(ctx context.Context, args []string, stdout, stderr i
 		refuse(ctx, stderr, "check", diag.EvCheckRefused, code, msg, diag.Rec{})
 		return exit
 	}
+	failErr := func(code diag.Code, err error, exit int) int {
+		refuse(ctx, stderr, "check", diag.EvCheckRefused, code, err.Error(), errRec(diag.Rec{}, err))
+		return exit
+	}
 	cwd, err := e.getwd()
 	if err != nil {
-		return fail(diag.CodeNotGit, err.Error(), 2)
+		return failErr(diag.CodeNotGit, err, 2)
 	}
 	root, ok := repoRoot(cwd)
 	if !ok {
@@ -102,7 +106,7 @@ func (e repoCheckEnv) check(ctx context.Context, args []string, stdout, stderr i
 	// W-5: an edit worktree's config and code are the borrow child's.
 	state, err := e.stateDir()
 	if err != nil {
-		return fail(diag.CodeStore, err.Error(), 2)
+		return failErr(diag.CodeStore, err, 2)
 	}
 	wts := resolvePath(filepath.Join(state, worktreesDir))
 	for _, d := range []string{cwd, root} {
@@ -112,7 +116,7 @@ func (e repoCheckEnv) check(ctx context.Context, args []string, stdout, stderr i
 	}
 	rc, err := config.LoadRepo(root)
 	if err != nil {
-		return fail(diag.CodeConfig, err.Error(), 2)
+		return failErr(diag.CodeConfig, err, 2)
 	}
 	if len(rc.Check) == 0 {
 		return fail(diag.CodeNoChecks, "no checks configured; list them under check in "+config.RepoPath(root), 1)
@@ -147,14 +151,16 @@ func (e repoCheckEnv) runList(ctx context.Context, root string, rc config.RepoCo
 	}()
 	for i, c := range rc.Check {
 		start := e.now()
-		res, tail := e.checkOne(ctx, run, root, c)
+		res, attrs, tail := e.checkOne(ctx, run, root, c)
 		fmt.Fprintf(stdout, "%-4s %s (%s)\n", map[bool]string{true: "ok", false: "FAIL"}[res == ""], showCommand(c), e.now().Sub(start).Round(100*time.Millisecond))
 		if res != "" {
 			rec := ids
-			// Only the command's place and why it failed: its output and
-			// arguments are the repo's, and never stored.
-			rec.Event, rec.Code, rec.Msg, rec.Duration = diag.EvCheckCommandFailed, diag.CodeChecksFailed, res, e.now().Sub(start)
-			rec.Attrs = map[string]any{"index": i}
+			// Only the command's place and the kind of failure: its
+			// output, arguments, and error text are the repo's (a path,
+			// a program name), and never stored.
+			rec.Event, rec.Code, rec.Msg, rec.Duration = diag.EvCheckCommandFailed, diag.CodeChecksFailed, fixedMsg(diag.CodeChecksFailed), e.now().Sub(start)
+			attrs["index"] = i
+			rec.Attrs = attrs
 			dlog.Log(ctx, rec)
 			failed++
 			fmt.Fprintf(stdout, "     %s %s\n", termsafe.Line(res), dlog.Tag(diag.CodeChecksFailed))
@@ -176,23 +182,24 @@ func (e repoCheckEnv) runList(ctx context.Context, root string, rc config.RepoCo
 }
 
 // checkOne runs c at root. It returns "" when c passed, and otherwise why
-// it failed and the redacted tail of its output.
-func (e repoCheckEnv) checkOne(ctx context.Context, run adapter.Runner, root string, c config.Command) (string, []string) {
+// it failed, the record's attrs for it (fixed words and numbers, never
+// the error's text, G67-R4), and the redacted tail of its output.
+func (e repoCheckEnv) checkOne(ctx context.Context, run adapter.Runner, root string, c config.Command) (string, map[string]any, []string) {
 	path, err := e.program(root, c[0])
 	if err != nil {
-		return "cannot start: " + err.Error(), nil
+		return "cannot start: " + err.Error(), map[string]any{"failure": "start", "error_class": errClass(err)}, nil
 	}
 	out, err := run(ctx, adapter.Command{Path: path, Args: c[1:], Dir: root})
 	tail := outputTail(out)
 	switch {
 	case errors.Is(err, execrun.ErrTimeout):
-		return "timed out", tail
+		return "timed out", map[string]any{"failure": "timeout"}, tail
 	case err != nil:
-		return "cannot start: " + err.Error(), tail
+		return "cannot start: " + err.Error(), map[string]any{"failure": "start", "error_class": errClass(err)}, tail
 	case out.ExitCode != 0:
-		return fmt.Sprintf("exit status %d", out.ExitCode), tail
+		return fmt.Sprintf("exit status %d", out.ExitCode), map[string]any{"failure": "exit", "exit_code": out.ExitCode}, tail
 	}
-	return "", nil
+	return "", nil, nil
 }
 
 // program resolves a check's program: a bare name on PATH, or ./ and a

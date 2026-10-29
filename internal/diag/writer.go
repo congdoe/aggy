@@ -130,18 +130,26 @@ func New(version string, warn io.Writer) *Writer {
 	}
 	// Environment values are never stored, and these reach error text
 	// aggy prints: a CLI's tree, an agent included, sets them at will
-	// (G67-1).
+	// (G67-1). A value under minEnvScrub bytes, such as /tmp, would
+	// replace unrelated text (G67-R4).
 	for _, k := range envScrubbed {
-		if v := strings.TrimSpace(w.getenv(k)); len(v) >= 4 {
+		if v := strings.TrimSpace(w.getenv(k)); len(v) >= minEnvScrub {
 			w.env = append(w.env, v)
 		}
 	}
+	// Longest first, so a value inside another (a vendor home under
+	// AGGY_HOME) does not break the longer one's replacement.
+	sort.Slice(w.env, func(i, j int) bool { return len(w.env[i]) > len(w.env[j]) })
 	return w
 }
 
 // envScrubbed are the variables whose values the writer replaces with
-// [env value] wherever they show.
-var envScrubbed = []string{"AGGY_SOCKET", "AGGY_HOME"}
+// [env value] wherever they show: aggy's own, and the vendor homes, which
+// reach the text of an error about a vendor's files (G67-R4).
+var envScrubbed = []string{"AGGY_SOCKET", "AGGY_HOME", "CODEX_HOME", "GROK_HOME", "CLAUDE_CONFIG_DIR"}
+
+// minEnvScrub is the shortest value envScrubbed replaces.
+const minEnvScrub = 8
 
 // RunID is this process's run id; "" for a nil writer.
 func (w *Writer) RunID() string {

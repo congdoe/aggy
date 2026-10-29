@@ -130,7 +130,7 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 			fmt.Fprint(stdout, setupUsage)
 			return 0
 		}
-		refuse(context.Background(), stderr, "setup", diag.EvSetupFailed, diag.CodeUsage, err.Error(), diag.Rec{})
+		refuse(context.Background(), stderr, "setup", diag.EvSetupFailed, diag.CodeUsage, err.Error(), errRec(diag.Rec{}, err))
 		fmt.Fprintf(stderr, "\n%s", setupUsage)
 		return 2
 	}
@@ -141,13 +141,13 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 	}
 	selected, err := parseOnly(*only, env.adapters)
 	if err != nil {
-		refuse(context.Background(), stderr, "setup", diag.EvSetupFailed, diag.CodeUsage, err.Error(), diag.Rec{})
+		refuse(context.Background(), stderr, "setup", diag.EvSetupFailed, diag.CodeUsage, err.Error(), errRec(diag.Rec{}, err))
 		return 2
 	}
 	ctx := context.Background()
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
-		refuse(ctx, stderr, "setup", diag.EvSetupFailed, diag.CodeStore, err.Error(), diag.Rec{})
+		refuse(ctx, stderr, "setup", diag.EvSetupFailed, diag.CodeStore, err.Error(), errRec(diag.Rec{}, err))
 		return 1
 	}
 	defer func() { _ = s.Close() }()
@@ -165,7 +165,7 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 	code := 0
 	for _, a := range selected {
 		if c := st.vendor(ctx, a); c != 0 {
-			refuse(ctx, stderr, "setup", diag.EvSetupFailed, diag.CodeStore, st.err.Error(), diag.Rec{Vendor: string(a.Vendor())})
+			refuse(ctx, stderr, "setup", diag.EvSetupFailed, diag.CodeStore, st.err.Error(), errRec(diag.Rec{Vendor: string(a.Vendor())}, st.err))
 			code = c
 		}
 	}
