@@ -32,7 +32,11 @@ func trustedPath(p string) error {
 				if ok && int(st.Uid) != os.Getuid() && st.Uid != 0 {
 					return fmt.Errorf("%s belongs to another user, so aggy will not have every CLI session run it", d)
 				}
-				if fi.Mode().Perm()&0o022 != 0 {
+				// A sticky folder (/tmp) is writable by others, but none
+				// of them can rename or remove an entry they do not own,
+				// and the entry below it is checked as this user's or
+				// root's in turn, so it cannot be replaced.
+				if fi.Mode().Perm()&0o022 != 0 && (d == q || fi.Mode()&fs.ModeSticky == 0 || !fi.IsDir()) {
 					return fmt.Errorf("%s is writable by others (mode %#o), so aggy will not have every CLI session run aggy from below it", d, fi.Mode().Perm())
 				}
 			}

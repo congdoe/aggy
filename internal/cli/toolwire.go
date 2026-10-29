@@ -172,12 +172,21 @@ func takenMCPNames(v adapter.Vendor, cwd, root string) (map[string]string, error
 			return nil, err
 		}
 		out = m
+		above := false // past the repo root (or cwd outside one)
 		for d := filepath.Clean(cwd); ; d = filepath.Dir(d) {
 			f := filepath.Join(d, ".mcp.json")
 			names, err := projectMCPNames(f)
+			// A folder above the repo that this user cannot read (a
+			// shared /home, a CI runner's) holds nothing aggy can see,
+			// and is no clash; a file that is there but cannot be
+			// parsed still refuses every tool.
+			if above && errors.Is(err, fs.ErrPermission) {
+				err = nil
+			}
 			if err != nil {
 				return nil, err
 			}
+			above = above || d == filepath.Clean(root) || root == ""
 			for _, n := range names {
 				out[n] = f
 			}
