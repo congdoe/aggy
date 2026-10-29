@@ -143,39 +143,64 @@ func TestGrokReviewWithInstructions(t *testing.T) {
 	}
 }
 
-// TestGrokCursorLinks (T6751): a review whose repo commits a symlink
-// under a .cursor path refuses Grok, which is passed over; with none,
+// TestGrokCursorLinks (T6751): a review whose repo holds a symlink under
+// a .cursor path, or whose .cursor paths were not checked, refuses Grok,
+// which is passed over; the reason names at most three links. With none,
 // Grok runs.
 func TestGrokCursorLinks(t *testing.T) {
-	for _, links := range [][]string{nil, {".cursor"}, {"sub/.cursor"}} {
-		w := newWorld(t)
-		w.cfg.Routing.Review.Vendors = []adapter.Vendor{adapter.Grok, adapter.Claude}
-		for _, v := range adapter.Vendors() {
-			w.connected[v] = v == adapter.Grok || v == adapter.Claude
-		}
-		w.scenario[adapter.Grok] = `{"json":{"result":"grok reviewed"}}`
-		w.scenario[adapter.Claude] = `{"json":{"type":"result","result":"claude reviewed"}}`
-		req := w.req(adapter.Review, "review it")
-		req.CursorLinks = links
-		res, err := w.borrower().Run(context.Background(), req)
-		if err != nil || len(res) != 1 {
-			t.Fatalf("%q: %+v, %v", links, res, err)
-		}
-		if links == nil {
-			if res[0].Vendor != adapter.Grok {
-				t.Errorf("no links: grok passed over: %+v", res[0])
+	tests := []struct {
+		name      string
+		links     []string
+		unchecked bool
+		reason    []string // the reason holds each
+		notReason string   // and not this
+	}{
+		{name: "none"},
+		{name: "root", links: []string{".cursor"}, reason: []string{".cursor"}},
+		{name: "nested", links: []string{"sub/.cursor"}, reason: []string{"sub/.cursor"}},
+		{name: "unchecked", unchecked: true, reason: []string{"could not be checked"}},
+		{name: "many", links: []string{"a/.cursor", "b/.cursor", "c/.cursor", "d/.cursor", "e/.cursor"},
+			reason: []string{"a/.cursor, b/.cursor, c/.cursor, and 2 more"}, notReason: "d/.cursor"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			w.cfg.Routing.Review.Vendors = []adapter.Vendor{adapter.Grok, adapter.Claude}
+			for _, v := range adapter.Vendors() {
+				w.connected[v] = v == adapter.Grok || v == adapter.Claude
 			}
-			continue
-		}
-		if res[0].Vendor != adapter.Claude || len(res[0].Tried) != 1 || res[0].Tried[0].Vendor != adapter.Grok ||
-			!strings.Contains(res[0].Tried[0].Reason, links[0]) {
-			t.Errorf("%q: want grok passed over: %+v", links, res[0])
-		}
-		for _, r := range w.records() {
-			if r.Vendor == "grok" {
-				t.Errorf("%q: grok ran", links)
+			w.scenario[adapter.Grok] = `{"json":{"result":"grok reviewed"}}`
+			w.scenario[adapter.Claude] = `{"json":{"type":"result","result":"claude reviewed"}}`
+			req := w.req(adapter.Review, "review it")
+			req.CursorLinks, req.CursorChecked = tt.links, !tt.unchecked
+			res, err := w.borrower().Run(context.Background(), req)
+			if err != nil || len(res) != 1 {
+				t.Fatalf("%+v, %v", res, err)
 			}
-		}
+			if tt.reason == nil {
+				if res[0].Vendor != adapter.Grok {
+					t.Errorf("grok passed over: %+v", res[0])
+				}
+				return
+			}
+			if res[0].Vendor != adapter.Claude || len(res[0].Tried) != 1 || res[0].Tried[0].Vendor != adapter.Grok {
+				t.Fatalf("want grok passed over: %+v", res[0])
+			}
+			reason := res[0].Tried[0].Reason
+			for _, s := range tt.reason {
+				if !strings.Contains(reason, s) {
+					t.Errorf("reason %q lacks %q", reason, s)
+				}
+			}
+			if tt.notReason != "" && strings.Contains(reason, tt.notReason) {
+				t.Errorf("reason %q names %q", reason, tt.notReason)
+			}
+			for _, r := range w.records() {
+				if r.Vendor == "grok" {
+					t.Error("grok ran")
+				}
+			}
+		})
 	}
 }
 

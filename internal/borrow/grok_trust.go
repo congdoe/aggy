@@ -245,12 +245,25 @@ func grokTrustGate(v adapter.Vendor, req Request) error {
 	// .cursor or rules dir (grok-build 2bdd1d6a,
 	// xai-grok-tools/src/implementations/cursor_rules_on_read.rs:235-241,
 	// tokio::fs::metadata); grokInstructionLinks only checks the cwd's
-	// chain, so a nested sub/.cursor link is caught here (T6751).
+	// chain, so a nested sub/.cursor link is caught here (T6751). No
+	// check (CursorChecked false) refuses too.
+	if !req.CursorChecked {
+		return fmt.Errorf("grok: %s: %w: the repo's .cursor paths could not be checked for symlinks, which Grok's cursor rules would follow",
+			req.Kind, adapter.ErrUnsupported)
+	}
 	if len(req.CursorLinks) > 0 {
-		return fmt.Errorf("grok: %s: %w: the repo commits a symlink under a .cursor path (%s), and Grok's cursor rules would follow it",
-			req.Kind, adapter.ErrUnsupported, strings.Join(req.CursorLinks, ", "))
+		return fmt.Errorf("grok: %s: %w: the repo holds a symlink under a .cursor path (%s), and Grok's cursor rules would follow it",
+			req.Kind, adapter.ErrUnsupported, firstNames(req.CursorLinks, 3))
 	}
 	return nil
+}
+
+// firstNames joins the first n of names, then says how many more there are.
+func firstNames(names []string, n int) string {
+	if len(names) <= n {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s, and %d more", strings.Join(names[:n], ", "), len(names)-n)
 }
 
 // TrustMarker reports whether the repo-relative, slash-separated path

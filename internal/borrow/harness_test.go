@@ -176,6 +176,7 @@ func (w *world) req(kind adapter.Kind, task string) Request {
 	r := Request{Kind: kind, Task: task, Repo: w.repo}
 	if kind == adapter.Review {
 		r.Material = &Material{Base: "abc123", Diff: "--- a/x.go\n+++ b/x.go\n@@ -1 +1 @@\n-old\n+new\n"}
+		r.CursorChecked = true
 	}
 	return r
 }

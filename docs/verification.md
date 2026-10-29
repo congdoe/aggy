@@ -22,7 +22,9 @@ Three tiers were used.
    Grok from `github.com/xai-org/grok-build` (Apache-2.0) at HEAD
    `2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8` (2026-09-29), which may be
    newer than the installed binary, so Grok source claims are a little
-   weaker; also `https://docs.x.ai/build/...`. Claude from
+   weaker; also `https://docs.x.ai/build/...`. Citations to "grok-src
+   559751fd" name the same tree: grok-src 2bdd1d6a is the monorepo's
+   SOURCE_REV 559751fd. Claude from
    `https://code.claude.com/docs/en/<page>.md`.
 2. **Help output.** Only `--help` and `--version`, with stdin closed:
    `claude --help`, `claude mcp [add] --help`, `codex --help`,
@@ -832,8 +834,9 @@ paths under `crates/codegen/`; not run live.
 - Not covered: `image_edit`'s fast path checks only the magic bytes, and
   `image_to_video` ignores bytes after a JPEG's end marker
   (`lib.rs:113-114`), so a file that starts as an image, or is one with
-  data appended, goes up whole. Any real image the model names goes up
-  too; that is what the opt-in's text warns about.
+  data appended (a PNG trailer too), goes up whole. Any real image the
+  model names goes up too, with its EXIF metadata such as GPS position
+  when it is sent as is; that is what the opt-in's text warns about.
 
 Consequence in aggy: no rule is added to the media argv; the opt-in
 stays off by default and unchanged.
