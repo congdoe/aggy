@@ -128,7 +128,8 @@ it:
   (`readDeny`). `--sandbox strict` depends on the kind and the host:
   review, research, and news need it and the host's kernel sandbox
   (`probe.CapSandbox` and `probe.CapKernelSandbox`) and are refused
-  without them; image and video run without it (`strictMedia` is off).
+  without them; image generation needs it too, with `--allow image_gen`;
+  an image edit and video run without it (TODO(T6821)).
 
 **A review child must not load the reviewed repo's config or hooks**:
 the repo is someone else's change, and its hooks would run with no trust

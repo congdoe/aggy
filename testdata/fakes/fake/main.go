@@ -304,7 +304,8 @@ var specs = map[string]flagSpec{
 		values: []string{"--output-format", "--permission-mode", "--session-id", "--resume",
 			"--tools", "--disallowed-tools", "--max-turns", "--rules", "--deny", "--prompt-file", "--sandbox",
 			// --agent <file>: docs/verification.md, "Launch-time MCP" (T6734).
-			"--agent"},
+			// --allow <rule>: live 2026-10-29, grok 1.0.70 (T6847).
+			"--agent", "--allow"},
 		// --continue: proposal §3. --no-subagents: the borrow lockdown,
 		// live-verified on grok 1.0.70 (2026-10-28). -p (--single
 		// <PROMPT>) takes a value; parse handles it. --prompt-file: live
