@@ -509,8 +509,9 @@ so its rejection lines have clap's form.
   then `project_doc_fallback_filenames` (a TOML array of bare file
   names, `config_toml.rs#L340`), walked from the project root to cwd.
 - **Grok.** `--rules "<text>"` (alias `--append-system-prompt`) appends
-  inline text only; there is no file variant. Behavior on `--resume` is
-  unknown. Grok reads `AGENTS.md`, `CLAUDE.md`, and `.grok/rules/*.md`
+  inline text only; there is no file variant. It is stored with the
+  session at the first launch: a resume keeps the original rules and
+  ignores new ones (live, 2026-10-29, below). Grok reads `AGENTS.md`, `CLAUDE.md`, and `.grok/rules/*.md`
   (also `.claude/rules/`) from the repo root to cwd.
 
 ## Safety policy rendering (T6678)
@@ -735,7 +736,10 @@ the fields named here.
   `sessionId`, `cwd`, `workspaceRoot`, `timestamp`, `permissionMode`;
   `StopFailure` adds `error` (`rate_limit`, ...) and `errorDetails`
   (clipped at 1000 characters); `StopCancelled` adds `reason`
-  (`user_interrupt`, ...); `Notification` adds `notificationType`. Every
+  (`user_interrupt`, ...); `Notification` adds `notificationType`.
+  Live (2026-10-29, grok 1.0.70, below): an extra `stop` with
+  `"reason":"shutdown"` fires at every exit, and the payload's event
+  names are snake_case. Every
   hook gets `GROK_HOOK_EVENT`, `GROK_HOOK_NAME`, `GROK_SESSION_ID`,
   `GROK_WORKSPACE_ROOT`, and `CLAUDE_PROJECT_DIR`. Grok also reads the
   hooks in `~/.claude/settings.json` with the same camelCase envelope
@@ -971,17 +975,13 @@ arm64 with `DO_NOT_TRACK=1`. No vendor config was edited, and no tool's
   schema; `codegraph index [path]` rebuilds the full index from scratch
   and exits 1 when the path is not initialized. So after an interrupted
   init aggy runs `codegraph index {repo}` (`install.rebuild`), then
-  `init` if that fails. Whether `index` asks anything without a terminal
-  is unverified (TODO(T6711)).
+  `init` if that fails. Neither `init` nor `index` asks anything with no
+  stdin and no terminal, and `init` writes only `.codegraph/` (live,
+  2026-10-29, below), so aggy passes no `--yes`.
   Under WSL on a Windows drive the folder may be `.codegraph-wsl`
   (`directory.d.ts`); aggy launches nothing there (TODO(T6711)).
-  Unverified, for a maintainer's live check (TODO(T6711)): whether
-  `codegraph init <path>` with no stdin and no `--yes` builds the index
-  without asking anything (the README says `--yes` skips every prompt,
-  so aggy does not pass it: a yes it cannot read is not given), and
-  whether it writes anything outside `.codegraph/` (an agent's
-  instructions file); and the name of the lock file (`FileLock`), which
-  a worktree copy leaves out by copying only `codegraph.db` and
+  Unverified (TODO(T6711)): the name of the lock file (`FileLock`),
+  which a worktree copy leaves out by copying only `codegraph.db` and
   `codegraph.db-wal`.
 - **Context7** works without an API key (anonymous calls to its API);
   `--api-key` or `CONTEXT7_API_KEY` raises its rate limits.
@@ -993,9 +993,12 @@ arm64 with `DO_NOT_TRACK=1`. No vendor config was edited, and no tool's
   vendor the person turned Headroom's proxy on for (T6780); the MCP
   server alone offers compress, retrieve, and stats on demand.
   `headroom mcp install` edits every agent config it finds: never run it.
-- **Headroom proxy (T6780): unverified, for the owner's live check.**
-  From docs.headroomlabs.ai/docs/proxy (latest, not pinned) and the
-  README, and source-read by a #93 reviewer (not run):
+- **Headroom proxy (T6780).** The flags, `/health`, and the beacon's
+  `DO_NOT_TRACK` opt-out are now live-verified (2026-10-29, below); one
+  Claude turn through the proxy is not, so the definition still lists
+  `proxy` in `unverified` (TODO(T6780)). The earlier record,
+  from docs.headroomlabs.ai/docs/proxy (latest, not pinned) and the
+  README, and source-read by a #93 reviewer:
   `headroom/cli/proxy.py:296,334` defines `--host` (default
   `127.0.0.1`) and `--port` (default `8787`);
   `headroom/proxy/server.py:4274` serves `GET /health`, which answers
@@ -1012,26 +1015,24 @@ arm64 with `DO_NOT_TRACK=1`. No vendor config was edited, and no tool's
   http://127.0.0.1:8787/health` for the health path; whether it starts
   with only `HOME`, `USER`, `LOGNAME`, `PATH`, `TMPDIR`, the locale, and
   `DO_NOT_TRACK=1`, and sends no beacon then; and one Claude turn with
-  `ANTHROPIC_BASE_URL=http://127.0.0.1:8787`. Until then the definition
-  lists `proxy` in `unverified` (TODO(T6780)).
-- **Claude and an HTTP proxy in the environment (T6780): unverified,
-  for the owner's live check.** Whether Claude Code sends a request for
-  a loopback `ANTHROPIC_BASE_URL` through `HTTP_PROXY`/`ALL_PROXY`, and
-  whether it honors `NO_PROXY` (`localhost`, `127.0.0.1`, `::1`) for
-  it. Until then aggy refuses to start a tool proxy when one of
-  `HTTP_PROXY`, `http_proxy`, `ALL_PROXY`, `all_proxy` is set and
-  `NO_PROXY`/`no_proxy` does not cover the address
-  (`tool.proxy_env_proxy`). To check: with a local proxy on
-  127.0.0.1:8787 and `HTTP_PROXY` pointing at a logging proxy, one
-  Claude turn with and without `NO_PROXY=127.0.0.1`, and whether the
-  logging proxy saw the request.
+  `ANTHROPIC_BASE_URL=http://127.0.0.1:8787`. The flags, the health path, and the
+  beacon were run on 2026-10-29; aggy's scrubbed environment and the
+  Claude turn were not.
+- **Claude and an HTTP proxy in the environment (T6780).** Live
+  (2026-10-29, below): Claude sends a request for a loopback
+  `ANTHROPIC_BASE_URL` through `HTTP_PROXY` unless `NO_PROXY` lists the
+  address, and goes direct when it does. So aggy refuses to start a tool
+  proxy when one of `HTTP_PROXY`, `http_proxy`, `ALL_PROXY`, `all_proxy`
+  is set and `NO_PROXY`/`no_proxy` does not cover the address
+  (`tool.proxy_env_proxy`). `ALL_PROXY` was not run; it is treated the
+  same way.
 - **Caveman.** Its installers (`npx @caveman-ai/cli`, `install.sh`) find
   the agents and their logins, edit vendor configs, add a proxy, and
   send telemetry by default. aggy uses only the `skills/caveman/` folder
   at the pinned tag (T6715).
-- **Unverified: whether Claude matches permission rules against the
-  original input or the hook's `updatedInput` (H78-1).** aggy covers
-  both: when a wired hook declares `rewrites` (only RTK's does), the
+- **Claude matches permission rules against the hook's `updatedInput`,
+  not the original input (H78-1; live, 2026-10-29, below).** So when a
+  wired hook declares `rewrites` (only RTK's does), the
   launch adds every safety-policy Bash rule again with the hook's
   `rewrite_prefix` (`"rtk "`) in front, and for each key file a rule
   matching any prefixed command that names it (`Bash(rtk *.env*)`),
@@ -1039,10 +1040,10 @@ arm64 with `DO_NOT_TRACK=1`. No vendor config was edited, and no tool's
   documented. `aggy hook-tool` passes a rewrite only when its `command`
   is exactly `rewrite_prefix` plus the original command and every other
   key is the original's (R80-1); any other rewrite is dropped
-  (`updatedInput_unexpected`). So whichever input Claude matches its
-  rules against, the prefixed deny copies cover it: a Bash rule that
-  matches the original matches the rewrite with the prefix in front, and
-  a key file named in the original is named in the rewrite. A hook that
+  (`updatedInput_unexpected`). So the prefixed deny copies are what
+  stops a rewritten command: a Bash rule that matches the original
+  matches the rewrite with the prefix in front, and a key file named in
+  the original is named in the rewrite. A hook that
   does not declare `rewrites` has its `updatedInput` dropped. That RTK
   1.1.0 rewrites only in that whole-command form is unverified: a
   rewrite in another form (of `cat` to another subcommand, or of each
@@ -1051,6 +1052,78 @@ arm64 with `DO_NOT_TRACK=1`. No vendor config was edited, and no tool's
   definition says `network = true`, so an edit borrow's child does not
   get it without `routing.edit_network_tools` (M78-2). Context7 calls its
   API, and Playwright drives a browser; CodeGraph is local.
+
+## Live checks, 2026-10-29 (T6847)
+
+Run by the owner with claude 2.1.312, grok 1.0.70, codegraph 1.6.2, and
+headroom-ai[proxy] 0.42.0. The Grok image result is in the strict status
+table above.
+
+- **Grok hooks.** Grok fires an extra `stop` hook with
+  `"reason":"shutdown"` at every exit, interactive and headless. A
+  headless SIGINT gave no `stop_cancelled`, only that shutdown stop.
+  `sessionId` was set on `stop`, `stop_failure`, and `stop_cancelled`, so
+  `grokStopNamesSession` stays true (T6807-R2). The payload's event
+  names and `GROK_HOOK_EVENT` are snake_case (`stop`, `stop_failure`,
+  `stop_cancelled`); aggy takes the event from the installed command's
+  argv (`internal/hook/install.go`), so that does not matter to it. The
+  supervisor ignores a Grok `Stop` whose `reason` is `shutdown`: it ends
+  no turn and is recorded as `hook.grok_shutdown`.
+- **Grok resume.** `--agent <file>` must be passed again on
+  `grok -r <id>`: without it the agent's MCP server was gone, and with it
+  a fresh server worked. `--rules` is stored with the session at the
+  first launch: a resume without `--rules` kept the original rules (the
+  model recalled a number given only there), and new `--rules` passed on
+  resume were ignored (the reply followed the old rule).
+- **Claude and an HTTP proxy.** With `HTTP_PROXY` set and no `NO_PROXY`,
+  the POST to a loopback `ANTHROPIC_BASE_URL` went through `HTTP_PROXY`,
+  with credentials. With `NO_PROXY=127.0.0.1,localhost,::1` it went
+  direct. So `tool.proxy_env_proxy` is needed as built.
+- **Claude `--`.** `claude --mcp-config <file> -- "<prompt>"` works
+  interactively.
+- **Claude permission rules and a hook's `updatedInput` (H78-1).** Claude
+  matches its rules against the rewritten command: a deny rule on the
+  rewritten command blocked it, and the denial named the rewritten
+  command; a deny rule on the original command let the rewritten one
+  run. So `RewriteDeny`'s prefixed deny copies are required.
+- **CodeGraph 1.6.2.** With no stdin and no terminal, `codegraph init .`
+  exited 0 without asking anything and wrote only `.codegraph/`
+  (`.gitignore` and `codegraph.db`). `codegraph index .` did not ask
+  either. A second `init` printed "Already initialized" and exited 0.
+- **Headroom 0.42.0 proxy.** `headroom proxy` needs the `[proxy]` extra;
+  without it, it fails with "Proxy dependencies not installed. Run: pip
+  install headroom-ai[proxy]". `GET /health` answers 200 JSON
+  (`status: healthy`, `ready: true`), and it listens only on the
+  `--host 127.0.0.1 --port` given; it also serves `/livez`, `/readyz`,
+  `/stats`, and `/metrics`. Its log says "Anonymous upload beacon:
+  ENABLED (default — session summaries are sent to Headroom Labs)", and
+  with `DO_NOT_TRACK=1` "DISABLED (DO_NOT_TRACK=1)". A subscription
+  tracker, on by default, polls `GET
+  https://api.anthropic.com/api/oauth/usage` every 300 s with the Claude
+  OAuth token, learned from a loopback caller's traffic or read from
+  `CLAUDE_CODE_OAUTH_TOKEN` or `~/.claude/.credentials.json`
+  (`headroom/subscription/client.py`, `tracker.py`,
+  `credential_policy.py`); `--no-subscription-tracking` (env
+  `HEADROOM_NO_SUBSCRIPTION_TRACKING`) turns it off. Its Codex tracker,
+  which uses the bearer token from traffic, stays on, but aggy's proxy
+  is Claude only. An update check contacts PyPI; `HEADROOM_UPDATE_CHECK=off`
+  turns it off, and `--stateless` skips it. The first use downloads a
+  model from Hugging Face; with `HF_HUB_OFFLINE=1` it never became
+  healthy within 90 s, so aggy does not set it. It writes `~/.headroom`
+  (`compression_cache.db`, `logs/proxy-<port>.log`, `update_check.json`,
+  `subscription_state.json`) and `~/.cache/huggingface`. With
+  `DO_NOT_TRACK=1`, `--no-subscription-tracking`, and
+  `HEADROOM_UPDATE_CHECK=off`, the log showed the beacon, subscription
+  tracking, and Claude quota tracking all disabled; one TLS connection
+  to an Anthropic address stayed open, purpose unknown, with no usage
+  polls. Time to a healthy `/health` was 24.6 s, 56.8 s, and 80.6 s on a
+  machine with a load average of 100 to 200; the first start after
+  install was not healthy after 60 s, and SIGTERM did not stop that cold
+  start within 5 s (SIGKILL did; aggy's group kill covers it). So
+  headroom's definition sets `--no-subscription-tracking`,
+  `HEADROOM_UPDATE_CHECK=off` (`telemetry_env`), and
+  `health_timeout = 90`. Not run: one Claude turn through the proxy, so
+  it stays `unverified = ["proxy"]`.
 
 ## Same-vendor nested review (T6779)
 
@@ -1092,7 +1165,8 @@ and ask the agent for the new skill or tool in the next turn.
 1. Codex limit event, captured live from an exhausted account: the
    rollout lines and the exit code.
 2. Codex hook firing and payload, after trusting a hook by hand.
-3. Grok resume (`-r`) with an `--agent` file, and `--rules` on resume.
+3. Answered 2026-10-29 (above): Grok resume needs `--agent` again and
+   keeps the first launch's `--rules`.
 4. Whether a Codex `spawn_agent` child really starts and inherits the
    clean set (not observable in `exec --json`).
 5. Backlogged: an OS sandbox around research children, which would

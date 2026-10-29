@@ -312,7 +312,9 @@ was tested against.
   payload also carries `error_details`.
 - Turn end: Claude uses `Stop`. Codex uses `Stop` (aggy installs no
   legacy `notify`, which would pass each turn's prompts as argv). Grok
-  uses `Stop` and `StopCancelled`.
+  uses `Stop` and `StopCancelled`. Grok also fires a `Stop` with
+  `"reason":"shutdown"` at every exit (live, 2026-10-29, grok 1.0.70),
+  which the supervisor ignores: it ends no turn.
 - Codex has Claude-style hooks (`hooks.json` or `[[hooks.<Event>]]`), and
   `SessionStart` carries `session_id` (the thread id) and `source`. A
   hook runs only once its hash is trusted; one passed with `-c` is
@@ -699,7 +701,7 @@ the code until a live check settles them.
 | Codex `SessionStart` hook fires in `exec` with `session_id` (T6616; source-verified, and hooks need a trusted hash) | Not used; the session folder watch stays the plan. |
 | Codex limit signals (T6617). Source shows `--json` has no limit code, only the text; the rollout has `task_complete.error.codex_error_info` and `token_count.rate_limits`. A real limit was not captured live | `codex.LimitCode` and `codex.LimitText` are matched in the code and message of `error` and `turn.failed` events, and in stderr only on a non-zero exit with no error event. Interactive sessions read the rollout's `task_complete`/`turn_aborted` error and `token_count.rate_limits` (`limits.CodexRollout`, design.md section 11), with `LimitText` matched only inside that error. |
 | Settled (T6618): those flags leave no file-read tool, but `apply_patch` is a file-guess oracle, and `apps`, `plugins`, `goals`, `image_generation`, and `sleep_tool` must be disabled too; Codex research and news are refused until T6638 | `codex.Lockdown` for image and review; research and news refused by `codex.Refusal`. |
-| Extra context at session start (T6619): settled as Claude `--append-system-prompt-file`, Codex `-c developer_instructions`, Grok `--rules`; resume behavior of the last two is open | A positional first message pointing to the brief file (`adapter.BriefPrompt`). |
+| Extra context at session start (T6619): settled as Claude `--append-system-prompt-file`, Codex `-c developer_instructions`, Grok `--rules`; Grok keeps the first launch's rules on resume (live, 2026-10-29), Codex's resume behavior is open | A positional first message pointing to the brief file (`adapter.BriefPrompt`). |
 | `codex exec -` reads the prompt from stdin | Codex headless passes `-- -` with the prompt file on stdin. Confirmed live with `codex exec -i <png> ... -- - < prompt`. |
 | Codex exec flags go before `resume`, which takes only its own flags; `-i` takes several values | `codex exec [-i <ref>]... --json ... resume <id> -- -`. Confirmed by help and live: flags before `resume` apply to the resumed thread. |
 | `codex exec --ignore-user-config` keeps user MCP servers out (confirmed live; ChatGPT connector tools stay unless `--disable apps --disable plugins`) | Always passed, in `codex.Lockdown`; a CLI that rejects it fails the borrow. |

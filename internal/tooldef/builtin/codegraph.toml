@@ -10,7 +10,9 @@
 # where the tool is off. The server keeps the index fresh itself: a file
 # watcher, and a catch-up on connect (codegraph 1.6.2 README, "How
 # auto-syncing works"). Without a terminal, init gets no stdin and no
-# --yes (unverified whether it asks anything; TODO(T6711)).
+# --yes: with no stdin and no terminal, codegraph 1.6.2 init and index
+# ask nothing and init writes only .codegraph/ (live, 2026-10-29,
+# docs/verification.md).
 # Telemetry (README, "Telemetry"; docs/verification.md): codegraph sends
 # anonymous usage counts unless CODEGRAPH_TELEMETRY=0 or DO_NOT_TRACK=1.
 # aggy sets both in the server, a prebuild, and a rebuild (T6822) unless

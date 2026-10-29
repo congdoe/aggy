@@ -99,7 +99,7 @@ func TestToolOnProxyConfirm(t *testing.T) {
 	for _, w := range []string{"WARNING", "including your login token", "third-party code with its own network access",
 		"forwards that traffic", "rewrites what the model sees", "inherits ANTHROPIC_BASE_URL", "your own key", "stops working",
 		"connects only to that loopback address", "127.0.0.1:8787", `Type "headroom claude"`, "proxy on",
-		"This proxy is experimental: its flags and health check are confirmed from headroom's source, not a live run."} {
+		"This proxy is experimental: no live run has yet sent a session's requests through headroom's proxy."} {
 		if !strings.Contains(out, w) {
 			t.Errorf("output lacks %q:\n%s", w, out)
 		}
