@@ -7,10 +7,13 @@
 # CLI, its login token included, then goes through headroom proxy. Never
 # headroom wrap, init, or mcp install, which edit agent configs.
 # Telemetry: aggy sets DO_NOT_TRACK=1 in its processes, the proxy
-# included (T6822); the proxy's anonymous beacon honours it (source-read,
-# docs/verification.md, "Headroom proxy"). Whether the MCP server sends
-# anything, or has another opt-out, is unverified (TODO(T6822)), so no
-# telemetry_env is set.
+# included (T6822). The proxy's anonymous upload beacon, on by default,
+# honours it: its log said "DISABLED (DO_NOT_TRACK=1)" (live, 2026-10-29,
+# 0.42.0; docs/verification.md, "Headroom proxy"). HEADROOM_UPDATE_CHECK
+# =off stops its check for a newer release on PyPI (live, same run); as
+# telemetry_env it is set in the MCP server too, where it is harmless.
+# Whether the MCP server sends anything else, or has another opt-out, is
+# unverified (TODO(T6822)).
 name = "headroom"
 description = "Compresses a large blob the agent holds; originals stay local and can be retrieved"
 homepage = "https://docs.headroomlabs.ai"
@@ -20,29 +23,38 @@ scope = "global"
 # TODO(M78-2): unverified whether headroom mcp serve reaches the network;
 # marked as if it does.
 network = true
+# The proxy stays experimental: Claude traffic end to end through it has
+# not been run live.
 unverified = ["proxy"]
+telemetry_env = ["HEADROOM_UPDATE_CHECK=off"]
 
 [install]
 check = ["headroom", "--version"]
 check_pattern = 'headroom, version (\d+\.\d+\.\d+)'
-hint = "uv tool install headroom-ai==0.42.0, which needs Python 3.10 or later; never run headroom mcp install, which edits every agent's config"
+hint = "uv tool install 'headroom-ai[proxy]==0.42.0', which needs Python 3.10 or later (the [proxy] extra is what headroom proxy needs); never run headroom mcp install, which edits every agent's config"
 
 [[mcp]]
 vendors = ["claude", "codex", "grok"]
 argv = ["headroom", "mcp", "serve"]
 
-# TODO(T6780): not run at 0.42.0 (docs/verification.md, "Headroom
-# proxy"). Source-read, not run: --host and --port at
-# headroom/cli/proxy.py:296,334; GET /health at
-# headroom/proxy/server.py:4274; the beacon, on by default, is off with
-# DO_NOT_TRACK at headroom/telemetry/beacon.py:60-95, which aggy's proxy
-# env sets. Codex and Grok stay unsupported (Codex reads no base-URL
-# variable), so claude only.
+# Live at 0.42.0 with the [proxy] extra (2026-10-29, docs/verification.md,
+# "Headroom proxy"): it listens only on the --host and --port given, and
+# GET /health answers 200 JSON once ready. --no-subscription-tracking
+# turns off its subscription tracker, on by default, which polls
+# api.anthropic.com/api/oauth/usage every 300 s with the Claude OAuth
+# token, learned from a caller's traffic or read from
+# CLAUDE_CODE_OAUTH_TOKEN or ~/.claude/.credentials.json
+# (headroom/subscription/client.py, tracker.py, credential_policy.py).
+# The first start downloads a model from Hugging Face (so HF_HUB_OFFLINE
+# is not set) and took 25 to 81 s to answer /health on a heavily loaded
+# machine, hence health_timeout. Codex and Grok stay unsupported (Codex
+# reads no base-URL variable), so claude only.
 [proxy]
 vendors = ["claude"]
-argv = ["headroom", "proxy", "--host", "127.0.0.1", "--port", "8787"]
+argv = ["headroom", "proxy", "--host", "127.0.0.1", "--port", "8787", "--no-subscription-tracking"]
 listen = "127.0.0.1:8787"
 health = "/health"
+health_timeout = 90
 
 [proxy.env]
 claude = "ANTHROPIC_BASE_URL"

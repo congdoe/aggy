@@ -27,6 +27,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -134,6 +135,25 @@ type Proxy struct {
 	Listen string `toml:"listen"`
 	// Health is the HTTP path that answers 2xx once it is ready.
 	Health string `toml:"health"`
+	// HealthTimeout is how many whole seconds aggy waits for the health
+	// check, from MinHealthTimeout to MaxHealthTimeout; nil is
+	// DefaultHealthTimeout.
+	HealthTimeout *int `toml:"health_timeout"`
+}
+
+// The bounds and default of Proxy.HealthTimeout, in seconds.
+const (
+	MinHealthTimeout     = 1
+	MaxHealthTimeout     = 120
+	DefaultHealthTimeout = 15
+)
+
+// Wait is how long aggy waits for the proxy's health check.
+func (p Proxy) Wait() time.Duration {
+	if p.HealthTimeout == nil {
+		return DefaultHealthTimeout * time.Second
+	}
+	return time.Duration(*p.HealthTimeout) * time.Second
 }
 
 // ProxyVars is the allowlist of the variables a proxy may set, one per
@@ -533,7 +553,8 @@ func (d Def) validateMCP(builtIn bool) error {
 }
 
 // validateProxy checks [proxy], for built-ins and user tools alike: a
-// loopback listen address, a health path, an argv without {repo}, and
+// loopback listen address, a health path, a health_timeout in bounds
+// when set, an argv without {repo}, and
 // per vendor exactly the variable ProxyVars allows.
 func (d Def) validateProxy() error {
 	p := d.Proxy
@@ -569,6 +590,9 @@ func (d Def) validateProxy() error {
 	}
 	if len(p.Health) > maxHealth || !healthRE.MatchString(p.Health) || strings.Contains(p.Health, "..") {
 		return bad("health", "want an HTTP path of at most %d of A-Z, a-z, 0-9, and / . _ -, starting with /", maxHealth)
+	}
+	if n := p.HealthTimeout; n != nil && (*n < MinHealthTimeout || *n > MaxHealthTimeout) {
+		return bad("health_timeout", "want whole seconds from %d to %d", MinHealthTimeout, MaxHealthTimeout)
 	}
 	return nil
 }

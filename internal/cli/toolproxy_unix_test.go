@@ -340,3 +340,69 @@ func proxyHome(t *testing.T, bin, mode string, port int) (launch, dir string) {
 	launch = filepath.Join(t.TempDir(), "launch")
 	return launch, dir
 }
+
+// TestToolProxyHealthTimeout (T6847): a definition's health_timeout, not
+// the default wait, bounds the health check, and a wait past noteAfter
+// prints one line saying so.
+func TestToolProxyHealthTimeout(t *testing.T) {
+	bin := fakecli.BuildProxy(t)
+	isolate(t)
+	t.Setenv("AGGY_SOCKET", "")
+	t.Setenv("AGGY_PARENT", "")
+	for _, k := range []string{"HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"} {
+		t.Setenv(k, "")
+	}
+	t.Chdir(t.TempDir())
+	t.Cleanup(func() { proxyWait, noteAfter = execrun.ProxyWait, 2*time.Second })
+	proxyWait = 10 * time.Minute // would hang the test if used
+	noteAfter = 10 * time.Millisecond
+	dir := t.TempDir()
+	def := strings.Replace(pxTool(bin, "unhealthy", freePort(t, bin), dir), "health = \"/health\"\n", "health = \"/health\"\nhealth_timeout = 1\n", 1)
+	addedAt(t, filepath.Join(os.Getenv("AGGY_HOME"), "tools", "px.toml"), def)
+	if code, _, errOut := toolRun("px claude\n", true, "on", "px", "--vendor", "claude", "--proxy"); code != 0 {
+		t.Fatalf("on: %d %s", code, errOut)
+	}
+	launch := filepath.Join(t.TempDir(), "launch")
+	var stderr bytes.Buffer
+	start := time.Now()
+	px := startToolProxy(context.Background(), adapter.Claude, ".", launch, nil, &stderr, "aggy")
+	defer px.stop()
+	// One second of health checks plus a loaded machine's slack, far
+	// short of proxyWait.
+	if took := time.Since(start); px.env != "" || took > 2*time.Minute {
+		t.Errorf("env %q after %s", px.env, took)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "tool.proxy_unhealthy") || strings.Count(out, "waiting for px's proxy to become healthy (up to 1s)") != 1 {
+		t.Errorf("stderr: %s", out)
+	}
+	waitGone(t, "the proxy", pidIn(t, filepath.Join(dir, "pid")))
+}
+
+// TestWaitingNote (T6847): the note is printed once noteAfter passes,
+// and never when stop comes first.
+func TestWaitingNote(t *testing.T) {
+	t.Cleanup(func() { noteAfter = 2 * time.Second })
+	w := noteWriter(make(chan string, 2))
+	noteAfter = time.Hour
+	waitingNote(w, "early\n")()
+	noteAfter = time.Millisecond
+	stop := waitingNote(w, "slow\n")
+	select {
+	case got := <-w:
+		if got != "slow\n" {
+			t.Errorf("wrote %q", got)
+		}
+	case <-time.After(time.Minute):
+		t.Error("no note")
+	}
+	stop()
+	if len(w) != 0 {
+		t.Errorf("wrote %q too", <-w)
+	}
+}
+
+// noteWriter hands each write to the test.
+type noteWriter chan string
+
+func (w noteWriter) Write(p []byte) (int, error) { w <- string(p); return len(p), nil }

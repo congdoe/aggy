@@ -457,9 +457,10 @@ func TestDesignExample(t *testing.T) {
 // TestTelemetryEnvRefuses (T6822, #97 HIGH-1): even a built-in may set
 // only a variable that names telemetry, to a plain on/off value, and
 // never one that changes how a package runner, resolver, loader, or
-// shell behaves. CodeGraph's documented opt-out passes.
+// shell behaves. CodeGraph's documented opt-out, and Headroom's update
+// check (T6847), pass.
 func TestTelemetryEnvRefuses(t *testing.T) {
-	if err := telemetryEnv([]string{"CODEGRAPH_TELEMETRY=0", "DEMO_ANALYTICS=Disabled", "DEMO_OPT_OUT=yes"}, true); err != nil {
+	if err := telemetryEnv([]string{"CODEGRAPH_TELEMETRY=0", "DEMO_ANALYTICS=Disabled", "DEMO_OPT_OUT=yes", "HEADROOM_UPDATE_CHECK=off"}, true); err != nil {
 		t.Fatal(err)
 	}
 	for _, kv := range []string{
@@ -474,6 +475,8 @@ func TestTelemetryEnvRefuses(t *testing.T) {
 		// Set by aggy, or the env rules' own refusals.
 		"DO_NOT_TRACK=0", "AGGY_TELEMETRY=0", "ANTHROPIC_TELEMETRY=0", "NODE_TELEMETRY=0", "TELEMETRY_TOKEN=0",
 		"TELEMETRY_PROXY=0", "TRACK_BASE_URL=0",
+		// T6847: UPDATE_CHECK names a release check, not anything else.
+		"DEMO_UPDATE=off", "DEMO_CHECK=off", "UV_UPDATE_CHECK=off", "DEMO_UPDATE_CHECK=https",
 		// Values: on/off words only.
 		"DEMO_TELEMETRY=/tmp/x", "DEMO_TELEMETRY=", "DEMO_TELEMETRY", "DEMO_TELEMETRY=$(x)", "DEMO_TELEMETRY=2",
 		"demo_telemetry=0",
