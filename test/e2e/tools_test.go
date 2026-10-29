@@ -146,13 +146,12 @@ func TestToolSessionSwitch(t *testing.T) {
 	_ = os.Remove(w.record)
 	sc := map[string]any{
 		"stdout":       "READY>",
-		"hook_command": []string{"/bin/sh", "-c", buildAggy(t) + " switch \"$1\" >/dev/null 2>&1 || true", "sh"},
+		"hook_command": []string{"/bin/sh", "-c", aggySh(t) + " switch \"$1\" >/dev/null 2>&1 || true", "sh"},
 		"hooks":        []map[string]any{{"event": "claude", "payload": map[string]any{}}},
 	}
 	s := w.start(t, sc, "run", "--tool", "context7", "grok")
 	s.waitWithin([]byte("-> claude. Ctrl+"), offerTimeout)
-	time.Sleep(600 * time.Millisecond) // past the confirmation's guard
-	s.send([]byte{0x1c})
+	s.confirmPastGuard(time.Now())
 	deadline := time.Now().Add(timeout)
 	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
@@ -289,15 +288,14 @@ func TestToolShimSwitchResume(t *testing.T) {
 	_ = os.Remove(w.record)
 	sc := map[string]any{
 		"stdout":        "READY>",
-		"hook_command":  []string{"/bin/sh", "-c", buildAggy(t) + " switch --brief \"$1\" >/dev/null 2>&1 || true", "sh"},
+		"hook_command":  []string{"/bin/sh", "-c", aggySh(t) + " switch --brief \"$1\" >/dev/null 2>&1 || true", "sh"},
 		"hooks":         []map[string]any{{"event": "claude", "payload": map[string]any{}}},
 		"start_mcp":     true,
 		"session_files": []map[string]any{{"path": "projects/p/{session_id}.jsonl", "content": "{}"}},
 	}
 	s := w.start(t, sc, "run", "grok")
 	s.waitWithin([]byte("-> claude. Ctrl+"), offerTimeout)
-	time.Sleep(600 * time.Millisecond) // past the confirmation's guard
-	s.send([]byte{0x1c})
+	s.confirmPastGuard(time.Now())
 	deadline := time.Now().Add(timeout)
 	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
@@ -420,8 +418,7 @@ func TestToolOnResumes(t *testing.T) {
 		t.Fatalf("aggy tool on: %d\n%s", code, out)
 	}
 	s.waitWithin([]byte("tools +context7, same session -> claude. Ctrl+"), offerTimeout)
-	time.Sleep(600 * time.Millisecond) // past the confirmation's guard
-	s.send([]byte{0x1c})
+	s.confirmPastGuard(time.Now())
 	deadline := time.Now().Add(timeout)
 	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)

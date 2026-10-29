@@ -2,7 +2,7 @@
 
 The supervisor driven in a pseudo-terminal against the fake CLIs.
 
-CI runs them on Linux and macOS with `go test -race -p 1 ./test/e2e`. They wait on what the terminal shows or what the fakes record; the switch confirmation's guard is wall time by design, so a test waits past it on the clock.
+CI runs them on Linux and macOS only in their own job, with `go test -race -p 1 ./test/e2e`; the main test job leaves them out. They wait on what the terminal shows or what the fakes record; the switch confirmation's guard is wall time by design, so a test waits past it on the clock.
 
 | Flow | Test |
 | --- | --- |
