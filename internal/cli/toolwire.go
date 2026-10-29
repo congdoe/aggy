@@ -293,25 +293,7 @@ func takenMCPNames(v adapter.Vendor, cwd, root string) (map[string]string, error
 		}
 		maps.Copy(out, managed)
 	case adapter.Codex:
-		if root == "" {
-			root = cwd // Codex's project root is cwd outside git
-		}
-		layers, err := codexConfigs(cwd, root)
-		if err != nil {
-			return nil, err
-		}
-		for _, l := range layers {
-			if l.Data == nil {
-				continue
-			}
-			names, err := parity.CodexMCPNames(l.Data)
-			if err != nil {
-				return nil, fmt.Errorf("%s: %w", l.Path, err)
-			}
-			for _, n := range names {
-				out[n] = l.Path
-			}
-		}
+		return codexTakenNames(cwd, root, false)
 	default:
 		names, err := parity.MCPNames(v, root, os.Getenv)
 		if err != nil {
@@ -324,6 +306,41 @@ func takenMCPNames(v adapter.Vendor, cwd, root string) (map[string]string, error
 		names = append(names, more...)
 		for _, n := range names {
 			out[n] = string(v) + "'s config"
+		}
+	}
+	return out, nil
+}
+
+// codexTakenNames is takenMCPNames for Codex. ignoreUser leaves out
+// $CODEX_HOME/config.toml, which a child run with --ignore-user-config
+// does not load (live-confirmed: no user MCP server, adapters.md); the
+// other layers still count, a selected profile's too, since which of them
+// codex exec reads then is unverified (R80-4, L78-9).
+func codexTakenNames(cwd, root string, ignoreUser bool) (map[string]string, error) {
+	if root == "" {
+		root = cwd // Codex's project root is cwd outside git
+	}
+	layers, err := codexConfigs(cwd, root)
+	if err != nil {
+		return nil, err
+	}
+	user := ""
+	if ignoreUser {
+		if user, err = parity.CodexConfigPath(); err != nil {
+			return nil, err
+		}
+	}
+	out := map[string]string{}
+	for _, l := range layers {
+		if l.Data == nil || ignoreUser && l.Path == user {
+			continue
+		}
+		names, err := parity.CodexMCPNames(l.Data)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", l.Path, err)
+		}
+		for _, n := range names {
+			out[n] = l.Path
 		}
 	}
 	return out, nil
