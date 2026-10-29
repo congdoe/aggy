@@ -307,6 +307,10 @@ func TestAddToolsClash(t *testing.T) {
 		}
 	}
 	claudeJSON := filepath.Join(h, ".claude.json")
+	managed := filepath.Join(t.TempDir(), "managed-mcp.json")
+	oldManaged := claudeManagedMCP
+	claudeManagedMCP = []string{managed, filepath.Join(t.TempDir(), "absent.json")}
+	t.Cleanup(func() { claudeManagedMCP = oldManaged })
 	for _, c := range []struct {
 		name, file, text, want string
 	}{
@@ -314,6 +318,7 @@ func TestAddToolsClash(t *testing.T) {
 		{"another project's local scope", claudeJSON, `{"projects":{"/elsewhere/app":{"mcpServers":{"context7":{"command":"x"}}}}}`, "local scope of /elsewhere/app"},
 		{"the repo's .mcp.json", filepath.Join(repo, ".mcp.json"), `{"mcpServers":{"context7":{}}}`, filepath.Join(repo, ".mcp.json")},
 		{"a .mcp.json above the repo", filepath.Join(parent, ".mcp.json"), `{"mcpServers":{"context7":{}}}`, filepath.Join(parent, ".mcp.json")},
+		{"the managed-mcp.json", managed, `{"mcpServers":{"context7":{}}}`, managed},
 	} {
 		t.Run("claude "+c.name, func(t *testing.T) {
 			writeAt(t, c.file, c.text, 0o600)
@@ -354,7 +359,7 @@ func TestAddToolsClash(t *testing.T) {
 	}
 	// A .mcp.json above the repo that this user cannot read is no clash;
 	// in the repo it still refuses every tool.
-	for f, wired := range map[string]bool{filepath.Join(parent, ".mcp.json"): true, filepath.Join(repo, ".mcp.json"): false} {
+	for f, wired := range map[string]bool{filepath.Join(parent, ".mcp.json"): true, filepath.Join(repo, ".mcp.json"): false, managed: true} {
 		writeAt(t, f, `{"mcpServers":{"context7":{}}}`, 0o000)
 		req, warns, _ := wireOnce(t, adapter.Claude, nil, sub)
 		if got := req.MCPConfigFile != ""; got != wired || wired && len(warns) != 0 {
@@ -373,6 +378,10 @@ func TestAddToolsClash(t *testing.T) {
 			t.Errorf("%s with %s unparsable: %+v %q", v, f, req, warns)
 		}
 		_ = os.Remove(f)
+	}
+	writeAt(t, managed, "{not", 0o600)
+	if req, warns, _ := wireOnce(t, adapter.Claude, nil, sub); req.MCPConfigFile != "" || len(warns) != 1 || !strings.Contains(warns[0], "tool.wire_failed") {
+		t.Errorf("managed-mcp.json unparsable: %+v %q", req, warns)
 	}
 }
 
