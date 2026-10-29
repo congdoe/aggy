@@ -67,7 +67,7 @@ func toolFindings(ctx context.Context, cwd string) []checkup.Finding {
 // the person's own choice, so its Message is msg alone, and its name,
 // the detail, and the fix go in Detail.
 func toolProblem(t tooldef.Tool, v adapter.Vendor, code string, l checkup.Level, msg, detail, fix string) checkup.Finding {
-	f := checkup.Finding{Code: code, Level: l, Vendor: v}
+	f := checkup.Finding{Code: code, Level: l, Vendor: v, Tool: t.Name}
 	if fix != "" {
 		fix = "fix: " + fix
 	}

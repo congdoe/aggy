@@ -386,20 +386,52 @@ func toolStatus(ctx context.Context, a toolArgs, stdout, stderr io.Writer) error
 	default:
 		fmt.Fprintf(stdout, "Repo %s\n", termsafe.Field(repo.main))
 	}
+	cwd, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	// T6726: what doctor reports per tool and vendor decides wired.
+	notWired := wireProblems(boardFindings(ctx, b, nil, cwd, repo))
+	idx, ver, idxErr := openIndexReadOnly(ctx)
+	if idxErr != nil {
+		fmt.Fprintf(stderr, "aggy tool status: warning: the index cannot be read (%s); skill pins show as unknown\n", termsafe.Line(idxErr.Error()))
+	}
+	if idx != nil {
+		defer func() { _ = idx.Close() }()
+	}
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	head := []string{"TOOL"}
 	for _, v := range vendors {
 		head = append(head, strings.ToUpper(string(v)))
 	}
-	fmt.Fprintln(tw, strings.Join(append(head, "WHY"), "\t"))
+	fmt.Fprintln(tw, strings.Join(append(head, "INSTALLED", "READY", "WIRED", "WHY"), "\t"))
 	for _, t := range tools {
 		row := []string{t.Name}
-		var whys []string
+		var whys, wired []string
 		for _, v := range vendors {
 			st := b.State(t, v, repo.key)
 			row = append(row, onOff(st.On))
 			whys = append(whys, string(v)+": "+st.Why)
+			if !st.On {
+				continue
+			}
+			code, bad := notWired[t.Name][v]
+			if !bad {
+				code, bad = notWired[t.Name][""]
+			}
+			if !bad && st.Parts.MCP != nil {
+				code, bad = notWired[""][v] // the CLI's own MCP config cannot be read
+			}
+			if bad {
+				wired = append(wired, string(v)+" no ("+code+")")
+			} else {
+				wired = append(wired, string(v))
+			}
 		}
+		if len(wired) == 0 {
+			wired = []string{"-"}
+		}
+		row = append(row, toolInstalled(t), toolReady(ctx, t, idx, ver), strings.Join(wired, ", "))
 		fmt.Fprintln(tw, strings.Join(append(row, sameWhy(whys)), "\t"))
 	}
 	_ = tw.Flush()
