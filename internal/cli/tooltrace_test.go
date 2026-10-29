@@ -234,6 +234,12 @@ func TestToolOffLeavesNoTrace(t *testing.T) {
 	}
 }
 
+// changeSkill edits tracer's installed skill after its first link.
+func changeSkill(t *testing.T) {
+	t.Helper()
+	writeAt(t, filepath.Join(os.Getenv(home.Env), "skills", "tracer", "SKILL.md"), "---\nname: tracer\ndescription: changed\n---\n", 0o644)
+}
+
 // TestToolGoneLeavesNoSkill (T6727): a user tool whose skill is linked
 // is off once its file is edited, removed, or refused; aggy tool remove,
 // and aggy tool off of a name no longer loaded, take its skill links and
@@ -252,6 +258,16 @@ func TestToolGoneLeavesNoSkill(t *testing.T) {
 				t.Fatal(err)
 			}
 			toolOK(t, "off", "tracer")
+		}},
+		// R80-3: a skill changed since its first link still unlinks.
+		{"off after the skill changed", func(t *testing.T, _ string) {
+			changeSkill(t)
+			toolOK(t, "off", "tracer")
+		}},
+		{"remove after the skill and file changed", func(t *testing.T, file string) {
+			changeSkill(t)
+			writeAt(t, file, tracerTool+"# edited\n", 0o600)
+			toolOK(t, "remove", "tracer")
 		}},
 		{"off when refused", func(t *testing.T, file string) {
 			writeAt(t, file, tracerTool+"bogus = 1\n", 0o600)
