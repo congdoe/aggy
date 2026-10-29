@@ -285,7 +285,7 @@ func freePort(t *testing.T, bin string) int {
 func proxyHome(t *testing.T, bin, mode string, port int) (launch, dir string) {
 	t.Helper()
 	dir = t.TempDir()
-	writeAt(t, filepath.Join(os.Getenv("AGGY_HOME"), "tools", "px.toml"), pxTool(bin, mode, port, dir), 0o600)
+	addedAt(t, filepath.Join(os.Getenv("AGGY_HOME"), "tools", "px.toml"), pxTool(bin, mode, port, dir))
 	if code, _, errOut := toolRun("px claude\n", true, "on", "px", "--vendor", "claude", "--proxy"); code != 0 {
 		t.Fatalf("on: %d %s", code, errOut)
 	}

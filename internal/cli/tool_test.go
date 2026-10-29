@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/congdoe/aggy/internal/borrow"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/tooldef"
 )
 
 const demoTool = `name = "demo"
@@ -45,6 +47,16 @@ func toolHome(t *testing.T, def string) (src, dest string) {
 	src = filepath.Join(t.TempDir(), "proposed.toml")
 	writeAt(t, src, def, 0o644)
 	return src, filepath.Join(os.Getenv(home.Env), "tools", "demo.toml")
+}
+
+// addedAt writes a user definition into the tools folder and records it
+// as aggy tool add would, so aggy tool on takes it (R76-F1).
+func addedAt(t *testing.T, dest, def string) {
+	t.Helper()
+	writeAt(t, dest, def, 0o600)
+	if err := recordToolAdd(context.Background(), strings.TrimSuffix(filepath.Base(dest), ".toml"), tooldef.Digest([]byte(def))); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func toolRun(in string, tty bool, args ...string) (int, string, string) {
@@ -187,7 +199,7 @@ func TestToolAddIndexFails(t *testing.T) {
 
 func TestToolRemove(t *testing.T) {
 	_, dest := toolHome(t, demoTool)
-	writeAt(t, dest, demoTool, 0o600)
+	addedAt(t, dest, demoTool)
 
 	if code, _, errOut := toolRun("", false, "remove", "codegraph"); code != 1 || !strings.Contains(errOut, "built-in") {
 		t.Errorf("remove a built-in: exit %d %q", code, errOut)

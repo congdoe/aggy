@@ -192,6 +192,7 @@ func sessionTools(ctx context.Context, b switchboard.Board, v adapter.Vendor, re
 	refuse func(tool string, code diag.Code, class, why string) string) ([]string, []string) {
 	var keep, warns []string
 	var s *store.Store
+	var openErr error // R76-F2: every user tool is refused with it
 	opened := false
 	defer func() {
 		if s != nil {
@@ -208,15 +209,14 @@ func sessionTools(ctx context.Context, b switchboard.Board, v adapter.Vendor, re
 		if !t.BuiltIn && !opened {
 			opened = true
 			var ver int
-			var err error
-			if s, ver, err = openIndexReadOnly(ctx); err != nil {
-				warns = append(warns, refuse(n, diag.CodeStore, "index", fmt.Sprintf("the index could not be read to check the file: %v", err)))
-				continue
-			}
-			if s != nil && ver < toolAddedSchema {
+			if s, ver, openErr = openIndexReadOnly(ctx); s != nil && ver < toolAddedSchema {
 				_ = s.Close()
 				s = nil
 			}
+		}
+		if !t.BuiltIn && openErr != nil {
+			warns = append(warns, refuse(n, diag.CodeStore, "index", fmt.Sprintf("the index could not be read to check the file: %v", openErr)))
+			continue
 		}
 		if err := checkAdded(ctx, s, t, true); err != nil {
 			warns = append(warns, refuse(n, codeOf(err, diag.CodeToolChanged), "added", err.Error()))

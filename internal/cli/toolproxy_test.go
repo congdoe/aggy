@@ -211,7 +211,7 @@ func TestProxyEdited(t *testing.T) {
 	t.Setenv("AGGY_PARENT", "")
 	t.Chdir(t.TempDir())
 	f := filepath.Join(os.Getenv("AGGY_HOME"), "tools", "px.toml")
-	writeAt(t, f, pxTool("/bin/fake", "ok", 40000, "/tmp"), 0o600)
+	addedAt(t, f, pxTool("/bin/fake", "ok", 40000, "/tmp"))
 	if code, _, errOut := toolRun("px claude\n", true, "on", "px", "--vendor", "claude", "--proxy"); code != 0 {
 		t.Fatal(errOut)
 	}

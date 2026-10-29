@@ -269,13 +269,15 @@ func TestToolShimSwitchResume(t *testing.T) {
 	w.env = []string{"PROBE_HOME=/opt/probe", "PROBE_SECRET_TOKEN=leak-canary", "NODE_OPTIONS=--require /tmp/x.js"}
 	w.aggyIn(t, "setup", "--yes")
 	dump := filepath.Join(w.home, "dump.jsonl")
-	tools := filepath.Join(w.home, ".aggy", "tools")
-	if err := os.MkdirAll(tools, 0o700); err != nil {
+	def := strings.NewReplacer("{bin}", w.bin, "{dump}", dump).Replace(probeTool)
+	src := filepath.Join(t.TempDir(), "probe.toml") // outside home, which traces scans
+	if err := os.WriteFile(src, []byte(def), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	def := strings.NewReplacer("{bin}", w.bin, "{dump}", dump).Replace(probeTool)
-	if err := os.WriteFile(filepath.Join(tools, "probe.toml"), []byte(def), 0o600); err != nil {
-		t.Fatal(err)
+	// R76-F1: aggy tool on takes only a file aggy tool add recorded, and
+	// add needs a terminal.
+	if code := w.start(t, map[string]any{}, "tool", "add", src, "--yes").exit(); code != 0 {
+		t.Fatalf("aggy tool add: exit %d", code)
 	}
 
 	// Off by default.

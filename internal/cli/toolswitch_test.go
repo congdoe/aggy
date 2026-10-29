@@ -53,7 +53,7 @@ func statusLine(t *testing.T, out, tool string) string {
 // setting holds wherever it applies; status says why.
 func TestToolOnOff(t *testing.T) {
 	_, dest := toolHome(t, demoTool)
-	writeAt(t, dest, demoTool, 0o600)
+	addedAt(t, dest, demoTool)
 	repo := switchRepo(t, "")
 	t.Chdir(repo)
 
@@ -98,7 +98,7 @@ func TestToolOnOff(t *testing.T) {
 // be read refuses rather than allowing.
 func TestToolRepoCannotTurnOn(t *testing.T) {
 	_, dest := toolHome(t, demoTool)
-	writeAt(t, dest, demoTool, 0o600)
+	addedAt(t, dest, demoTool)
 
 	off := switchRepo(t, `tools_off = ["demo", "not-a-known-tool"]`)
 	t.Chdir(off)
@@ -143,7 +143,7 @@ func TestToolRepoCannotTurnOn(t *testing.T) {
 // worktree's own tools_off adds to them.
 func TestToolSwitchWorktree(t *testing.T) {
 	_, dest := toolHome(t, demoTool)
-	writeAt(t, dest, demoTool, 0o600)
+	addedAt(t, dest, demoTool)
 	main := switchRepo(t, "")
 	wt := filepath.Join(t.TempDir(), "wt")
 	runGit(t, main, "worktree", "add", "-q", wt)
@@ -238,7 +238,7 @@ func TestToolSwitchStale(t *testing.T) {
 // refuses (S63-17).
 func TestToolRepoLinks(t *testing.T) {
 	_, dest := toolHome(t, demoTool)
-	writeAt(t, dest, demoTool, 0o600)
+	addedAt(t, dest, demoTool)
 	other := switchRepo(t, "")
 	if code, _, errOut := toolRun("", false, "on", "demo", "--repo", other); code != 0 {
 		t.Fatalf("on in other: %d %q", code, errOut)
@@ -298,7 +298,7 @@ func TestToolOnUserRowsBuiltIn(t *testing.T) {
 // per-repo tool without --repo, and --repo outside a work tree.
 func TestToolOnRefuses(t *testing.T) {
 	_, dest := toolHome(t, demoTool)
-	writeAt(t, dest, demoTool, 0o600)
+	addedAt(t, dest, demoTool)
 	solo := strings.NewReplacer(`name = "demo"`, `name = "solo"`, `"DEMO_HOME"`, `"SOLO_HOME"`).Replace(demoTool[:strings.Index(demoTool, "[[hook]]")]) + "[cost]\nmethod = \"none\"\n"
 	writeAt(t, filepath.Join(filepath.Dir(dest), "solo.toml"), solo, 0o600)
 	t.Chdir(switchRepo(t, ""))

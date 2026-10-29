@@ -83,17 +83,20 @@ func TestDoctorTools(t *testing.T) {
 			want: []string{"warning tool.changed_since_add (): a user tool: its file is not the one aggy tool add showed, so aggy tool on and --tool refuse it: tool tracer; fix: aggy tool off tracer, aggy tool remove tracer, then aggy tool add the file again"},
 		},
 		{
-			// M83-3: a file put in the tools folder by hand and turned on
-			// is on; only a session's --tool refuses it.
+			// M83-3, R76-F1: a file put in the tools folder by hand is
+			// refused by aggy tool on, as by a session's --tool, and
+			// doctor says how to add it.
 			name: "user tool placed by hand",
 			prepare: func(t *testing.T, _ string) {
 				writeAt(t, filepath.Join(os.Getenv(home.Env), "tools", "tracer.toml"), tracerTool, 0o600)
-				writeAt(t, filepath.Join(os.Getenv(home.Env), "skills", "tracer", "SKILL.md"), "---\nname: tracer\ndescription: t\n---\n", 0o644)
 				onPath(t, "tracer")
-				toolOK(t, "on", "tracer", "--vendor", "codex")
+				code, _, errOut := toolRun("", false, "on", "tracer", "--vendor", "codex")
+				if code != 1 || !strings.Contains(errOut, "by hand must go through aggy tool add. Move it out of that folder, then aggy tool add <file>") {
+					t.Errorf("on took a file put there by hand: %d %q", code, errOut)
+				}
 			},
-			want:    []string{"warning tool.changed_since_add (): a user tool: aggy tool add has no record of its file, so a session's --tool refuses it: tool tracer; fix: aggy tool off tracer, aggy tool remove tracer, then aggy tool add the file again"},
-			notWant: []string{"so aggy tool on and --tool refuse it"},
+			want:    []string{"warning tool.changed_since_add (): a user tool: aggy tool add has no record of its file, so aggy tool on and --tool refuse it: tool tracer; fix: aggy tool off tracer, move its file out of the tools folder, then aggy tool add that file"},
+			notWant: []string{"so a session's --tool refuses it"},
 		},
 		{
 			// H83-2: an edit that dropped the tool's [[skill]] leaves its
