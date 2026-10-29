@@ -28,9 +28,10 @@ import (
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
+	"github.com/congdoe/aggy/internal/tooldef"
 )
 
-const borrowUsage = `Usage: aggy borrow <kind> "<task>" [--path P]... [--constraint C]... [--vendor V] [--base REF] [--fresh]
+const borrowUsage = `Usage: aggy borrow <kind> "<task>" [--path P]... [--constraint C]... [--vendor V] [--base REF] [--fresh] [--tool NAME]...
 
 Runs one bounded task headless in a vendor's CLI (for review, possibly the
 one on screen, in a fresh session) and prints a short report. The child gets the task, the paths and constraints given here,
@@ -49,6 +50,9 @@ Kinds: image, video, research, news, review, edit.
   --fresh          research and news: ask again instead of reusing the
                    report on the same question (a day for news, a week
                    for research)
+  --tool NAME      edit: give the child this managed tool's MCP server
+                   (repeatable); it must be listed in routing.edit_tools
+                   in ~/.aggy/config.toml, which an edit gets by default
 
 A review runs at the root of the git work tree you are in. Its child gets
 the diff and the --path files in the prompt, as data to review.
@@ -180,6 +184,7 @@ type borrowArgs struct {
 	allowUntested bool
 	fresh         bool
 	help          bool
+	tools         []string
 }
 
 // parseBorrowArgs reads flags anywhere on the line, so the task can come
@@ -210,7 +215,7 @@ func parseBorrowArgs(args []string) (borrowArgs, error) {
 			continue
 		}
 		name, val, has := strings.Cut(a, "=")
-		if !slices.Contains([]string{"--path", "--constraint", "--vendor", "--base"}, name) {
+		if !slices.Contains([]string{"--path", "--constraint", "--vendor", "--base", "--tool"}, name) {
 			return b, fmt.Errorf("unknown flag %s", name)
 		}
 		if !has {
@@ -229,6 +234,16 @@ func parseBorrowArgs(args []string) (borrowArgs, error) {
 			b.vendor = val
 		case "--base":
 			b.base = val
+		case "--tool":
+			if !tooldef.ValidName(val) {
+				return b, fmt.Errorf("--tool %q is not a tool name", val)
+			}
+			if !slices.Contains(b.tools, val) {
+				b.tools = append(b.tools, val)
+			}
+			if len(b.tools) > config.MaxBorrowTools {
+				return b, fmt.Errorf("more than %d --tool", config.MaxBorrowTools)
+			}
 		}
 	}
 	if b.help {
@@ -338,6 +353,7 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 			}
 		},
 		Worktrees: &gitWorktrees{env: env, stateDir: stateDir, out: stderr, allow: cfg.Worktree, cfgPath: filepath.Join(stateDir, config.FileName)},
+		Tools:     borrowTools(stateDir),
 		Diag:      dlog,
 	})
 	req := borrow.Request{
@@ -363,6 +379,15 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 		return 2
 	}
 	req.Fresh = ba.fresh
+	tools, c, err := editTools(kind, ba.tools, cfg.Routing)
+	if c == diag.CodeToolBorrowKind {
+		failErr(c, err)
+		return 2
+	}
+	if err != nil {
+		return failErr(c, err)
+	}
+	req.Tools = tools
 	results, err := b.Run(ctx, req)
 	code := 0
 	for _, r := range results {

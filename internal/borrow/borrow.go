@@ -79,7 +79,21 @@ type Request struct {
 	// Media is the file arguments of aggy image and aggy video; nil for
 	// aggy borrow.
 	Media *Media
+	// Tools names the managed tools for this child only (aggy borrow
+	// --tool or routing.edit_tools, T6709): edit only, wired through
+	// Deps.Tools. They change no setting.
+	Tools []string
 }
+
+// ToolError is Deps.Tools' refusal before the child starts, such as a
+// vendor whose tool wiring is not verified: the next vendor may try.
+type ToolError struct {
+	Code diag.Code
+	Err  error
+}
+
+func (e *ToolError) Error() string { return e.Err.Error() }
+func (e *ToolError) Unwrap() error { return e.Err }
 
 // CLI is an installed vendor CLI: its absolute path and the
 // capabilities its probe found.
@@ -124,6 +138,12 @@ type Deps struct {
 	ChildDone func()
 	// Worktrees makes an edit child's worktree; nil refuses edit.
 	Worktrees Worktrees
+	// Tools wires Request.Tools for one child on vendor v (T6709): their
+	// MCP servers with {repo} set to cwd, each started through aggy tool
+	// exec in a private launch folder that done removes once the child is
+	// reaped. A *ToolError passes the borrow to the next vendor. Nil
+	// refuses any tool.
+	Tools func(ctx context.Context, v adapter.Vendor, cli CLI, names []string, cwd string) (servers []adapter.MCPServer, done func(), err error)
 	// Diag is the diagnostic log; nil logs nothing.
 	Diag *diag.Writer
 }
@@ -218,6 +238,10 @@ func (r Request) validate() error {
 		// The child cannot read them, and its queries go to the web, where
 		// a local path would leak the user name and layout (#10-13).
 		return fmt.Errorf("--path is not for %s: the child cannot read files, and local paths must not reach the web; put what matters in the task", r.Kind)
+	case len(r.Tools) > 0 && r.Kind != adapter.Edit:
+		// T6709: aggy cannot tell which tools read files or write, so
+		// only an edit child, which may do both, gets any.
+		return fmt.Errorf("tools are for an edit borrow only: a %s child gets none", r.Kind)
 	}
 	for _, p := range r.Paths {
 		if !filepath.IsAbs(p) || strings.ContainsAny(p, "\n\r") {
@@ -518,6 +542,22 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 	}
 	if req.Media != nil {
 		hreq.Resume = req.Media.Resume
+	}
+	if len(req.Tools) > 0 {
+		if b.Tools == nil {
+			return Result{}, errors.New("tools: no tool wiring")
+		}
+		servers, done, err := b.Tools(ctx, v, cli, req.Tools, dirs.cwd)
+		var te *ToolError
+		if errors.As(err, &te) {
+			return Result{}, &preStartError{err, te.Code}
+		}
+		if err != nil {
+			return Result{}, err
+		}
+		// After the child is reaped: runOne returns only then.
+		defer done()
+		hreq.MCP = servers
 	}
 	cmd, err := a.Headless(hreq)
 	if errors.Is(err, adapter.ErrFileTools) {

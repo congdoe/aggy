@@ -292,7 +292,10 @@ var specs = map[string]flagSpec{
 	"claude": {
 		// --append-system-prompt-file: the shared memory, live-verified on
 		// 2.1.312 although the real --help omits it (T6619).
-		values:   []string{"--output-format", "--permission-mode", "--session-id", "--tools", "--setting-sources", "--append-system-prompt-file", "--settings"},
+		// --allowedTools: the launch-time MCP check (docs/verification.md,
+		// "Launch-time MCP"); its variadic form is not modelled, aggy
+		// passes one comma-joined value.
+		values:   []string{"--output-format", "--permission-mode", "--session-id", "--tools", "--setting-sources", "--append-system-prompt-file", "--settings", "--allowedTools"},
 		switches: []string{"-p", "--fork-session", "--strict-mcp-config"},
 		optional: []string{"--resume"},
 		variadic: []string{"--mcp-config"},

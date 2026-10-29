@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -157,7 +158,7 @@ image    = { minutes = 5 }
 			},
 		},
 		{name: "unknown top-level key", text: "colour = \"red\"\n", wantErr: "unknown key colour"},
-		{name: "unknown kind", text: "[routing]\nchat = [\"grok\"]\n", wantErr: "routing.chat: unknown routing key \"chat\": want a borrow kind (image, video, research, news, review, edit) or review_skip_on_screen"},
+		{name: "unknown kind", text: "[routing]\nchat = [\"grok\"]\n", wantErr: "routing.chat: unknown routing key \"chat\": want a borrow kind (image, video, research, news, review, edit), review_skip_on_screen, or edit_tools"},
 		// R66-4: a misspelled routing key is not called a kind.
 		{name: "misspelled routing key", text: "[routing]\nreview_skip_onscreen = true\n", wantErr: "routing.review_skip_onscreen: unknown routing key \"review_skip_onscreen\""},
 		{name: "unknown budget kind", text: "[budgets]\nchat = { minutes = 5 }\n", wantErr: "budgets.chat: unknown kind \"chat\""},
@@ -175,6 +176,18 @@ image    = { minutes = 5 }
 		{name: "codex in research is kept", text: "[routing]\nresearch = [\"codex\"]\n", check: func(t *testing.T, c Config) {
 			equal(t, c.Routing.Research.Vendors, []adapter.Vendor{adapter.Codex})
 		}},
+		{
+			name: "edit tools",
+			text: "[routing]\nedit_tools = [\"context7\", \"codegraph\"]\n",
+			check: func(t *testing.T, c Config) {
+				if !slices.Equal(c.Routing.EditTools, []string{"context7", "codegraph"}) || Default().Routing.EditTools != nil {
+					t.Errorf("edit_tools = %q, default %q", c.Routing.EditTools, Default().Routing.EditTools)
+				}
+			},
+		},
+		{name: "edit tools bad name", text: "[routing]\nedit_tools = [\"../x\"]\n", wantErr: "routing.edit_tools: \"../x\" is not a tool name"},
+		{name: "edit tools twice", text: "[routing]\nedit_tools = [\"a\", \"a\"]\n", wantErr: "listed twice"},
+		{name: "edit tools too many", text: "[routing]\nedit_tools = [\"a\",\"b\",\"c\",\"d\",\"e\",\"f\",\"g\",\"h\",\"i\"]\n", wantErr: "more than 8"},
 		{name: "bad routing string", text: "[routing]\nreview = \"anyone\"\n", wantErr: "not-author"},
 		{name: "routing wrong type", text: "[routing]\nnews = 3\n", wantErr: "vendor list"},
 		// T6779: the opt-in on-screen skip for review.

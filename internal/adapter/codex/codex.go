@@ -309,6 +309,22 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 	default:
 		return adapter.Command{}, fmt.Errorf("codex: unknown kind %q", req.Kind)
 	}
+	// An edit child's tools (T6709) as -c overrides, which
+	// --ignore-user-config leaves in force, each with its own approval:
+	// exec refuses an MCP call otherwise (docs/verification.md,
+	// "Launch-time MCP"). Before resume, like every exec flag. A review
+	// child stays read-only: no tool says it only reads.
+	if len(req.MCP) > 0 && req.Kind != adapter.Edit {
+		return adapter.Command{}, fmt.Errorf("codex: tools for a %s child: %w", req.Kind, adapter.ErrUnsupported)
+	}
+	for _, s := range req.MCP {
+		m, err := mcpOverrides(s)
+		if err != nil {
+			return adapter.Command{}, err
+		}
+		args = append(args, m...)
+		args = append(args, "-c", "mcp_servers."+s.Name+".default_tools_approval_mode="+tomlString("approve"))
+	}
 	if req.Resume != "" {
 		args = append(args, "resume", req.Resume)
 	}
