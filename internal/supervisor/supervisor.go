@@ -105,11 +105,13 @@ type Options struct {
 }
 
 // Share is how much of a vendor's limit is used: Used, 0 to 1, of the
-// window named Window, which resets at Reset (zero: unknown).
+// window named Window, Minutes long (0: unknown), which resets at Reset
+// (zero: unknown).
 type Share struct {
-	Used   float64
-	Window string
-	Reset  time.Time
+	Used    float64
+	Window  string
+	Minutes int64
+	Reset   time.Time
 }
 
 // LimitHit is a plan limit the session recorded for Vendor. Unverified is

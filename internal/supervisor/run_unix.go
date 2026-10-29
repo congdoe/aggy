@@ -226,6 +226,9 @@ func Run(o Options) (Exit, error) {
 		case r := <-s.childChecks:
 			s.childChecked(r)
 		case r := <-s.shares:
+			if r.seq != s.shareRead {
+				break // a read given up on as stuck (T6811)
+			}
 			s.shareBusy = false
 			if r.seq == s.shareSeq {
 				s.share = &r
@@ -384,10 +387,15 @@ type session struct {
 	warnDue, warned bool
 	shareBusy       bool
 	warnedWindow    string
+	warnedMinutes   int64
 	warnedReset     time.Time
-	shares          chan shareReading
-	share           *shareReading
-	shareSeq        int
+	// shareRead is the ask the read in flight is for, started at
+	// shareAt; a newer ask past shareStale starts its own (T6811).
+	shareRead int
+	shareAt   time.Time
+	shares    chan shareReading
+	share     *shareReading
+	shareSeq  int
 	// childChecks brings HasChild's answers; childSeq numbers its asks.
 	childChecks chan childCheck
 	childSeq    int
@@ -828,12 +836,15 @@ func (s *session) offerWarn() {
 	// A crossing of another window that resets sooner is a new one: a
 	// stale weekly reading (another rollout's, read before the session's
 	// own) must not mute the 5-hour window for days. The warned reset
-	// only moves sooner, so two windows never take turns warning.
-	sooner := r.Window != s.warnedWindow && !s.warnedReset.IsZero() && r.Reset.Before(s.warnedReset)
+	// only moves sooner, so two windows never take turns warning. A
+	// window of the same length whose reset moved by at most resetSlack
+	// is the same window, its resets_at read again (T6811).
+	sooner := r.Window != s.warnedWindow && !s.warnedReset.IsZero() && r.Reset.Before(s.warnedReset) &&
+		(r.Minutes != s.warnedMinutes || s.warnedReset.Sub(r.Reset) > resetSlack)
 	if s.warned && !sooner {
 		return
 	}
-	s.warned, s.warnedWindow, s.warnedReset = true, r.Window, r.Reset
+	s.warned, s.warnedWindow, s.warnedMinutes, s.warnedReset = true, r.Window, r.Minutes, r.Reset
 	// The epsilon keeps 0.29*100 (28.999...) at 29%.
 	pct := int(math.Floor(r.Used*100 + 1e-9))
 	pre := s.withQuota()
@@ -877,21 +888,31 @@ func warnForms(v adapter.Vendor, pct int, key string, pre adapter.Vendor) []stri
 // loop, at a turn end of the on-screen child (L60-2); the main loop keeps
 // the reading of the latest ask only. One read runs at a time: an ask
 // while one is in flight makes that one stale, and the main loop reads
-// again when it lands.
+// again when it lands. A read in flight past shareStale (say, on a hung
+// file system) is given up on: the ask starts its own, and the old one's
+// answer is dropped when it lands (T6811).
 func (s *session) askShare() {
 	if s.o.Used == nil || s.o.WarnAt <= 0 {
 		return
 	}
 	s.shareSeq++
 	s.share = nil
-	if !s.shareBusy {
+	if !s.shareBusy || time.Since(s.shareAt) > shareStale {
 		s.readShare()
 	}
 }
 
+// shareStale is how long a share read may run before a new ask gives up
+// on it; resetSlack is how far a window's reset may move and still be
+// the same window.
+var (
+	shareStale = 30 * time.Second
+	resetSlack = 60 * time.Second
+)
+
 // readShare starts the one read of the share for the latest ask.
 func (s *session) readShare() {
-	s.shareBusy = true
+	s.shareBusy, s.shareRead, s.shareAt = true, s.shareSeq, time.Now()
 	seq, v := s.shareSeq, s.o.Vendor
 	s.goSafe(func() {
 		sh, ok := s.o.Used(v)
@@ -944,7 +965,7 @@ func (s *session) onLimit(h LimitHit) {
 	s.lastLimit = s.log(diag.Rec{Event: diag.EvLimitReceived, Code: diag.CodeRateLimit, Attrs: map[string]any{"unverified": h.Unverified}})
 	// L60-1: a limit ends any near-limit warning: none follows for this
 	// crossing, and one on screen gives way to the limit's own note.
-	s.warned, s.warnDue, s.warnedWindow, s.warnedReset = true, false, "", time.Time{}
+	s.warned, s.warnDue, s.warnedWindow, s.warnedMinutes, s.warnedReset = true, false, "", 0, time.Time{}
 	if s.open && s.pk.warning {
 		s.closePicker()
 	}
