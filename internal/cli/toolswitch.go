@@ -214,10 +214,17 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, in io.Reader, tty bool
 		if !slices.ContainsFunc(vendors, func(v adapter.Vendor) bool { return !t.PartsFor(v).Empty() }) {
 			return withCode(diag.CodeToolScope, fmt.Errorf("%s has nothing for %s", name, a.vendor))
 		}
-		if t.Proxy != nil && a.vendor == "" {
-			// T6780: a proxy is never turned on for a vendor the person
-			// did not name.
-			return withCode(diag.CodeProxyVendor, fmt.Errorf("%s has a local proxy, which aggy turns on only for a vendor you name: aggy tool on %s --vendor <vendor> (its proxy supports %s)", name, name, vendorList(t.Proxy.Vendors)))
+		if a.proxy {
+			// T6780: a proxy turns on only with --proxy, for a vendor the
+			// person names and its definition supports.
+			switch {
+			case t.Proxy == nil:
+				return withCode(diag.CodeToolScope, fmt.Errorf("%s has no local proxy", name))
+			case a.vendor == "":
+				return withCode(diag.CodeProxyVendor, fmt.Errorf("--proxy turns a proxy on only for a vendor you name: aggy tool on %s --proxy --vendor <vendor> (its proxy supports %s)", name, vendorList(t.Proxy.Vendors)))
+			case t.PartsFor(vendors[0]).Proxy == nil:
+				return withCode(diag.CodeToolScope, fmt.Errorf("%s's proxy supports only %s", name, vendorList(t.Proxy.Vendors)))
+			}
 		}
 		if a.hasRepo && t.SkillOnly() {
 			// L78-8: its skill is linked for every repo, never one.
@@ -236,15 +243,6 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, in io.Reader, tty bool
 				return withCode(diag.CodeToolRepoOff, fmt.Errorf("the repo's .aggy/config.toml lists %s in tools_off, and a repo's config always wins", name))
 			}
 		}
-		if a.hasRepo {
-			// T6711: a per-repo index is built here, the first time, or
-			// nothing is recorded.
-			if err := prebuildIndex(ctx, t, repo, in, tty, stdout); errors.Is(err, errNotIndexed) {
-				return nil
-			} else if err != nil {
-				return err
-			}
-		}
 	}
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
@@ -255,6 +253,23 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, in io.Reader, tty bool
 		// #86: before anything prints the file's hint, it must be the
 		// file aggy tool add showed.
 		if err := checkAdded(ctx, s, t, false); err != nil {
+			return err
+		}
+	}
+	// T6780: the warning and the typed confirmation, once the file is the
+	// one aggy tool add showed, and before a prebuild runs anything.
+	proxy := on && a.proxy
+	if proxy {
+		if err := confirmProxy(t, vendors[0], in, tty, stdout); err != nil {
+			return err
+		}
+	}
+	if on && a.hasRepo {
+		// T6711: a per-repo index is built here, the first time, or
+		// nothing is recorded.
+		if err := prebuildIndex(ctx, t, repo, in, tty, stdout); errors.Is(err, errNotIndexed) {
+			return nil
+		} else if err != nil {
 			return err
 		}
 	}
@@ -277,16 +292,10 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, in io.Reader, tty bool
 			return err
 		}
 	}
-	// T6780: the warning and the typed confirmation come last, once
-	// every other check passed and the file is the one aggy tool add
-	// showed.
-	proxy := on && len(vendors) == 1 && t.PartsFor(vendors[0]).Proxy != nil
+	sw := store.ToolSwitch{Tool: name, Vendor: a.vendor, Repo: repo.key, On: on, At: time.Now()}
 	if proxy {
-		if err := confirmProxy(t, vendors[0], in, tty, stdout); err != nil {
-			return err
-		}
+		sw.ProxyDigest = tooldef.ProxyDigest(*t.Proxy, vendors[0])
 	}
-	sw := store.ToolSwitch{Tool: name, Vendor: a.vendor, Repo: repo.key, On: on, Proxy: proxy, At: time.Now()}
 	switch {
 	case on && t.BuiltIn:
 		sw.Digest = switchboard.BuiltInDigest
@@ -329,13 +338,13 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, in io.Reader, tty bool
 	}
 	for _, v := range adapter.Vendors() {
 		st := b.State(t, v, repo.key)
-		fmt.Fprintf(stdout, "%s for %s in %s: %s (%s%s)\n", name, v, where, onOff(st.On), st.Why, proxyNote(t, v, st))
+		fmt.Fprintf(stdout, "%s for %s in %s: %s (%s%s)\n", name, v, where, onOff(st.On), st.Why, proxyNote(t, v, st, proxiesOn(b, v, repo.key)))
 	}
 	switch {
 	case proxy:
 		fmt.Fprintf(stdout, "Its proxy starts with each on-screen %s session from the next launch, never for a borrow child.\n", a.vendor)
 	case on && t.Proxy != nil:
-		fmt.Fprintf(stdout, "Its proxy supports only %s, so for %s only its other parts turn on.\n", vendorList(t.Proxy.Vendors), a.vendor)
+		fmt.Fprintf(stdout, "Its proxy stays off; add --proxy --vendor <vendor> to turn it on (it supports %s).\n", vendorList(t.Proxy.Vendors))
 	case !on && t.Proxy != nil && slices.ContainsFunc(vendors, func(v adapter.Vendor) bool { return t.PartsFor(v).Proxy != nil }):
 		fmt.Fprintf(stdout, "A running session keeps its proxy and %s until its CLI restarts.\n", strings.Join(proxyVars(t), " or "))
 	}
@@ -454,7 +463,7 @@ func toolStatus(ctx context.Context, a toolArgs, stdout, stderr io.Writer) error
 		for _, v := range vendors {
 			st := b.State(t, v, repo.key)
 			row = append(row, onOff(st.On))
-			whys = append(whys, string(v)+": "+st.Why+proxyNote(t, v, st))
+			whys = append(whys, string(v)+": "+st.Why+proxyNote(t, v, st, proxiesOn(b, v, repo.key)))
 			if !st.On {
 				continue
 			}

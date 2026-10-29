@@ -318,12 +318,15 @@ linters:
       # nothing else holds the port, and GETs its health path there.
       # proxynet.go dials only the address tooldef.ParseListen accepted
       # (127.0.0.1 or ::1), resolves no name, uses no HTTP proxy, and
-      # follows no redirect. Its test runs the fake proxy.
-      - path: ^internal/execrun/(proxynet|proxy_unix_test)\.go$
+      # follows no redirect. Its test runs the fake proxy. After the proxy
+      # dies mid-session it listens on that same address, accepts, and
+      # closes each connection unread, so nothing else can take the port
+      # the CLI still sends to (T6780 HIGH-2).
+      - path: ^internal/execrun/(proxynet|proxy_unix_test|proxyown_unix_test)\.go$
         text: "import 'net(/http)?' is not allowed"
         linters: [depguard]
       - path: ^internal/execrun/proxynet\.go$
-        text: "use of `(net\\.Dialer|d\\.DialContext|c\\.Do)`"
+        text: "use of `(net\\.Dialer|d\\.DialContext|c\\.Do|net\\.Listen|ln\\.Accept)`"
         linters: [forbidigo]
       # aggy hook reaches the supervisor socket with net.DialUnix, after
       # checking the path is aggy's own socket in its 0700 run directory.

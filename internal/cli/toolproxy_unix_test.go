@@ -6,8 +6,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"math/rand/v2"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -55,7 +55,11 @@ func TestStartToolProxy(t *testing.T) {
 	t.Chdir(t.TempDir())
 	t.Cleanup(func() { proxyWait = execrun.ProxyWait })
 	proxyWait = 3 * time.Second
-	port := 30000 + rand.IntN(30000)
+	port := freePort(t, bin)
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("http_proxy", "")
+	t.Setenv("ALL_PROXY", "")
+	t.Setenv("all_proxy", "")
 
 	launch, dir := proxyHome(t, bin, "ok", port)
 	var stderr bytes.Buffer
@@ -104,6 +108,42 @@ func TestStartToolProxy(t *testing.T) {
 		t.Error("a stopped proxy's variable still passes")
 	}
 
+	// MED-3: an HTTP proxy in the environment, not bypassed for loopback.
+	t.Setenv("HTTP_PROXY", "http://corp.example:3128")
+	stderr.Reset()
+	if bad := startToolProxy(context.Background(), adapter.Claude, ".", launch, nil, &stderr, "aggy"); bad.env != "" {
+		bad.stop()
+		t.Error("a proxy started under HTTP_PROXY")
+	}
+	if !strings.Contains(stderr.String(), "tool.proxy_env_proxy") {
+		t.Errorf("HTTP_PROXY: %s", stderr.String())
+	}
+	t.Setenv("NO_PROXY", "localhost,127.0.0.1,::1")
+	ok := startToolProxy(context.Background(), adapter.Claude, ".", launch, nil, &stderr, "aggy")
+	if ok.env == "" {
+		t.Fatalf("NO_PROXY covers it: %s", stderr.String())
+	}
+	t.Setenv("HTTP_PROXY", "")
+
+	// HIGH-2: it dies mid-session; aggy holds its address, records it,
+	// offers the resume without it, and says so at the end.
+	_ = syscall.Kill(-pidIn(t, filepath.Join(dir, "pid")), syscall.SIGKILL)
+	select {
+	case <-ok.died:
+	case <-time.After(5 * time.Second):
+		t.Fatal("died not closed")
+	}
+	ok.onDied()
+	set := map[string]string{"px": "proxy", "other": "mcp"}
+	ok.withoutProxy(set)
+	if _, has := set["px"]; has || set["other"] != "mcp" {
+		t.Errorf("set = %v", set)
+	}
+	if n := ok.diedNote("aggy"); !strings.Contains(n, "exited during the claude session") || !strings.Contains(n, "held its address") {
+		t.Errorf("note = %q", n)
+	}
+	ok.stop()
+
 	// Health fails: the CLI starts without it, and nothing is left.
 	launch, dir = proxyHome(t, bin, "unhealthy", port)
 	stderr.Reset()
@@ -118,13 +158,27 @@ func TestStartToolProxy(t *testing.T) {
 	waitGone(t, "its child", pidIn(t, filepath.Join(dir, "child")))
 }
 
+// freePort asks the fake proxy for a loopback port nothing listens on.
+func freePort(t *testing.T, bin string) int {
+	t.Helper()
+	out, err := exec.Command(bin, "freeport").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
 // proxyHome turns on a user proxy tool in mode for claude, and returns
 // the launch folder and the fake's own folder.
 func proxyHome(t *testing.T, bin, mode string, port int) (launch, dir string) {
 	t.Helper()
 	dir = t.TempDir()
 	writeAt(t, filepath.Join(os.Getenv("AGGY_HOME"), "tools", "px.toml"), pxTool(bin, mode, port, dir), 0o600)
-	if code, _, errOut := toolRun("px claude\n", true, "on", "px", "--vendor", "claude"); code != 0 {
+	if code, _, errOut := toolRun("px claude\n", true, "on", "px", "--vendor", "claude", "--proxy"); code != 0 {
 		t.Fatalf("on: %d %s", code, errOut)
 	}
 	launch = filepath.Join(t.TempDir(), "launch")

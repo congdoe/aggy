@@ -133,6 +133,7 @@ var (
 	EvToolProxyStarted    = Event{"tool.proxy.started"}
 	EvToolProxyRefused    = Event{"tool.proxy.refused"}
 	EvToolProxyStopped    = Event{"tool.proxy.stopped"}
+	EvToolProxyExited     = Event{"tool.proxy.exited"}
 	EvHookToolFiltered    = Event{"hook.tool.filtered"}
 	EvHookToolFailed      = Event{"hook.tool.failed"}
 )
@@ -240,6 +241,9 @@ var (
 	CodeProxyUnhealthy   = Code{"tool.proxy_unhealthy"}
 	CodeProxyFailed      = Code{"tool.proxy_failed"}
 	CodeProxyConflict    = Code{"tool.proxy_conflict"}
+	CodeProxyNotOwned    = Code{"tool.proxy_not_owned"}
+	CodeProxyEnvProxy    = Code{"tool.proxy_env_proxy"}
+	CodeProxyHoldFailed  = Code{"tool.proxy_hold_failed"}
 )
 
 const showRun = "aggy diag show <run id> for what led to it"
@@ -305,6 +309,7 @@ var events = []EventInfo{
 	{EvToolProxyStarted, LevelInfo, "tool", "A launch started a tool's local proxy and pointed the on-screen CLI at it (attrs: tool). Every request of that CLI, its login token included, passes through the proxy until the CLI exits.", "aggy tool status shows where it is on; aggy tool off <name> --vendor <vendor> turns it off for the next launch."},
 	{EvToolProxyRefused, LevelWarn, "tool", "A launch did not use a tool's proxy that is on (attrs: tool, class: the step); the CLI started without it, talking to its vendor directly.", "The code's entry; the warning aggy printed."},
 	{EvToolProxyStopped, LevelInfo, "tool", "The CLI exited and aggy stopped the tool's proxy, its whole process group (attrs: tool).", "Nothing."},
+	{EvToolProxyExited, LevelWarn, "tool", "A tool's proxy exited on its own while its CLI ran (attrs: tool, held). aggy took its loopback address with a placeholder that reads nothing, so the CLI's requests failed rather than reaching another process; code tool.proxy_hold_failed when it could not.", "Run the proxy by hand to see why it stops; accept the resume aggy offers, or restart the session."},
 	{EvToolExecRefused, LevelError, "tool", "aggy tool exec, which a vendor CLI runs to start a tool's MCP server, refused to start it (attrs: tool, check: the step that failed). The CLI shows the server as failed.", "The code's entry; aggy tool status."},
 }
 
@@ -406,6 +411,9 @@ var codes = []CodeInfo{
 	{CodeProxyUnhealthy, false, "A launch did not use a tool's proxy: it did not answer its health check in time, answered other than 2xx, or exited. aggy stopped it and started the CLI without it.", "Run the tool's proxy by hand to see why; aggy doctor checks its program."},
 	{CodeProxyFailed, false, "A launch did not start a tool's proxy: its program is not on PATH, the launch folder could not be made, or it could not start. The CLI started without it.", "The warning aggy printed; aggy doctor."},
 	{CodeProxyConflict, false, "A launch started no tool proxy: more than one tool with a proxy is on for the vendor, and a CLI has one base URL.", "aggy tool off one of them for that vendor."},
+	{CodeProxyNotOwned, true, "A launch did not use a tool's proxy: the process listening on its loopback address is not in the proxy's process group (another process took the port while the proxy started), or this system cannot tell. aggy never points a CLI at a process it did not start.", "Find what holds the port (lsof -i :<port>) and stop it; on a system other than macOS and Linux, aggy runs no proxy."},
+	{CodeProxyEnvProxy, false, "A launch did not use a tool's proxy: HTTP_PROXY or ALL_PROXY is set and NO_PROXY does not list the proxy's loopback address, so the CLI would send its requests to that HTTP proxy first.", "Add 127.0.0.1 and ::1 to NO_PROXY, or unset the HTTP proxy for aggy."},
+	{CodeProxyHoldFailed, true, "A tool's proxy exited mid-session and aggy could not take its loopback address: until the CLI exited, its requests could have reached another process listening there.", "Find what holds the port (lsof -i :<port>); sign in again if you do not trust it."},
 	{CodeToolChanged, true, "aggy tool on or a --tool refused a user definition that is not the file aggy tool add showed, or (--tool) one it never recorded.", "aggy tool remove <name>, then aggy tool add the file again and read what it runs."},
 	{CodeToolSkillExists, false, "aggy skill add refused: a skill folder, a built-in tool, or a user tool definition already has that name.", "Pick another --name, or pass --replace once the tool is off everywhere (aggy tool off <name>)."},
 	{CodeToolSkillRefused, true, "aggy skill add refused the folder: it is or holds a symlink, something other than a regular file or folder, a file with another hard link, no SKILL.md, or more than the entry or size cap.", "Copy the skill into a plain folder of regular files and add that."},

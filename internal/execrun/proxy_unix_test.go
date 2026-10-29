@@ -35,6 +35,20 @@ func TestFakeProxyHelper(t *testing.T) {
 		_, _ = os.Stderr.WriteString("boom\x1b[31m: no port\n")
 		os.Exit(1)
 	}
+	if mode == "squat" {
+		// HIGH-1: a process outside the proxy's group (its own session)
+		// takes the port and answers the health check; the proxy itself
+		// never listens.
+		sq := filepath.Join(dir, "sq")
+		_ = os.Mkdir(sq, 0o700)
+		c := exec.Command(os.Args[0], "-test.run=^TestFakeProxyHelper$", "--", "fakeproxy", "ok", addr, sq)
+		c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if c.Start() != nil {
+			os.Exit(4)
+		}
+		time.Sleep(time.Minute)
+		os.Exit(0)
+	}
 	// A grandchild in the proxy's group, which Stop must kill too.
 	sleep := exec.Command("/bin/sleep", "60")
 	if err := sleep.Start(); err == nil {
@@ -109,7 +123,7 @@ func readPid(t *testing.T, f string) int {
 func TestProxyLifecycle(t *testing.T) {
 	spec, dir := fakeProxy(t, "ok")
 	base := []string{"HOME=/h", "PATH=/bin:rel", "AGGY_SOCKET=/s", "AGGY_TRACE=x", "ANTHROPIC_API_KEY=k", "HTTP_PROXY=http://evil", "LD_PRELOAD=/x.so"}
-	p, err := StartProxy(spec, base)
+	p, err := StartProxy(bg, spec, base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +183,7 @@ func TestProxyRefusals(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = ln.Close() }()
-		if _, err := StartProxy(spec, nil); !errors.Is(err, ErrProxyPortTaken) {
+		if _, err := StartProxy(bg, spec, nil); !errors.Is(err, ErrProxyPortTaken) {
 			t.Fatalf("err = %v", err)
 		}
 		if _, err := os.Stat(filepath.Join(dir, "pid")); err == nil {
@@ -187,7 +201,7 @@ func TestProxyRefusals(t *testing.T) {
 		t.Run(c.mode, func(t *testing.T) {
 			spec, dir := fakeProxy(t, c.mode)
 			spec.Wait = 1500 * time.Millisecond
-			p, err := StartProxy(spec, nil)
+			p, err := StartProxy(bg, spec, nil)
 			if !errors.Is(err, c.want) || p != nil {
 				t.Fatalf("err = %v", err)
 			}
@@ -215,7 +229,7 @@ func TestProxyRefusals(t *testing.T) {
 		} {
 			s := spec
 			edit(&s)
-			if _, err := StartProxy(s, nil); err == nil || errors.Is(err, ErrProxyPortTaken) {
+			if _, err := StartProxy(bg, s, nil); err == nil || errors.Is(err, ErrProxyPortTaken) {
 				t.Errorf("%+v: err = %v", s, err)
 			}
 		}

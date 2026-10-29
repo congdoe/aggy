@@ -15,14 +15,16 @@ type ToolSwitch struct {
 	On     bool
 	// Digest is the sha256 of the definition turned on ("" for off).
 	Digest string
-	// Proxy is the person's typed confirmation of the tool's proxy for
-	// Vendor, which is never "" then (T6780). Without it the proxy stays
-	// off, whatever On says.
-	Proxy bool
-	At    time.Time
+	// ProxyDigest records the person's typed confirmation of the tool's
+	// proxy for Vendor, which is never "" then (T6780):
+	// tooldef.ProxyDigest of what they confirmed. Without it, or once the
+	// definition no longer hashes to it, the proxy stays off, whatever On
+	// says.
+	ProxyDigest string
+	At          time.Time
 }
 
-// toolProxySchema is the index version with tool_switches.proxy.
+// toolProxySchema is the index version with tool_switches.proxy_digest.
 const toolProxySchema = 19
 
 // PutToolSwitch records sw. It replaces every setting of the tool that
@@ -41,11 +43,19 @@ func (s *Store) PutToolSwitch(ctx context.Context, sw ToolSwitch) error {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO tool_switches (tool, vendor, repo, on_, digest, proxy, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		sw.Tool, sw.Vendor, sw.Repo, sw.On, sw.Digest, sw.Proxy && sw.On && sw.Vendor != "", millis(sw.At)); err != nil {
+		`INSERT INTO tool_switches (tool, vendor, repo, on_, digest, proxy_digest, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		sw.Tool, sw.Vendor, sw.Repo, sw.On, sw.Digest, proxyDigest(sw), millis(sw.At)); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// proxyDigest is sw's confirmation, kept only on an "on" for one vendor.
+func proxyDigest(sw ToolSwitch) string {
+	if !sw.On || sw.Vendor == "" {
+		return ""
+	}
+	return sw.ProxyDigest
 }
 
 // DeleteToolSwitches removes every setting of tool, and the digest aggy
@@ -88,9 +98,9 @@ func (s *Store) ToolSwitches(ctx context.Context) ([]ToolSwitch, error) {
 	if err != nil {
 		return nil, err
 	}
-	proxy := "0"
+	proxy := "''"
 	if v >= toolProxySchema {
-		proxy = "proxy"
+		proxy = "proxy_digest"
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT tool, vendor, repo, on_, digest, `+proxy+`, updated_at FROM tool_switches ORDER BY tool, repo, vendor`)
@@ -102,7 +112,7 @@ func (s *Store) ToolSwitches(ctx context.Context) ([]ToolSwitch, error) {
 	for rows.Next() {
 		var sw ToolSwitch
 		var at int64
-		if err := rows.Scan(&sw.Tool, &sw.Vendor, &sw.Repo, &sw.On, &sw.Digest, &sw.Proxy, &at); err != nil {
+		if err := rows.Scan(&sw.Tool, &sw.Vendor, &sw.Repo, &sw.On, &sw.Digest, &sw.ProxyDigest, &at); err != nil {
 			return nil, err
 		}
 		sw.At = fromMillis(at)

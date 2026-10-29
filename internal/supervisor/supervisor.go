@@ -111,6 +111,10 @@ type Options struct {
 	// Tools never offers.
 	Tools         func() (ToolSet, error)
 	ToolsAtLaunch ToolSet
+	// ToolsNudge reads Tools again, as a tools-changed notice does: the
+	// launch sends on it when the session's tool proxy died (T6780), so
+	// the change is offered as a resume. It may be nil.
+	ToolsNudge <-chan struct{}
 }
 
 // ToolSet maps a managed tool's name to what a session gets of it (such
