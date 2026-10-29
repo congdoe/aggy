@@ -228,6 +228,8 @@ var (
 	CodeToolSkillChanged = Code{"tool.skill_changed"}
 	CodeToolIndexFailed  = Code{"tool.index_failed"}
 	CodeToolIndexCopy    = Code{"tool.index_copy_refused"}
+	CodeToolSkillExists  = Code{"tool.skill_exists"}
+	CodeToolSkillRefused = Code{"tool.skill_refused"}
 )
 
 const showRun = "aggy diag show <run id> for what led to it"
@@ -338,10 +340,10 @@ var codes = []CodeInfo{
 	{CodeToolUnknown, false, "No built-in or loaded user tool has that name.", "aggy tool list; a refused user file is named there."},
 	{CodeToolScope, false, "The tool has nothing for that vendor, or is a per-repo tool turned on without --repo.", "aggy tool status <name>; aggy tool on <name> --repo ."},
 	{CodeToolRepoOff, false, "The repo's .aggy/config.toml lists the tool in tools_off; a repo config always wins, and can only turn tools off.", "Edit that repo's tools_off if it is your repo."},
-	{CodeToolDelegated, true, "aggy tool add, remove, on, or off ran inside a borrow child (AGGY_DELEGATED is set).", "Run it from your own shell. A child that tries this was steered to; read its task."},
+	{CodeToolDelegated, true, "aggy tool add, remove, on, or off, or aggy skill add or remove, ran inside a borrow child (AGGY_DELEGATED is set).", "Run it from your own shell. A child that tries this was steered to; read its task."},
 	{CodeToolInvalid, false, "A tool definition failed validation; the message names the file and the key.", "Fix the key; docs/design.md section 9 has the rules."},
 	{CodeToolUntrusted, true, "A user tool definition, its tools folder, or the state dir is a symlink, not the user's own, or writable by group or others.", "chmod go-w and check the owner of ~/.aggy, ~/.aggy/tools, and the file."},
-	{CodeToolStillOn, false, "aggy tool remove refused: the tool is still on somewhere.", "aggy tool off <name>, then remove it."},
+	{CodeToolStillOn, false, "aggy tool remove or aggy skill remove refused, or aggy skill add --replace: the tool is still on somewhere, or its skill still linked.", "aggy tool off <name>, then remove it."},
 	{CodeToolFailed, false, "Another aggy tool error: a file or the index could not be read or written.", "The record's msg; aggy doctor."},
 	{CodeQueueFull, false, "The diagnostic log fell behind the supervisor and dropped records rather than hold up the terminal.", "The state dir's disk; aggy gc prunes the log."},
 	{CodeNoTerminal, false, "aggy run, new, or resume needs a terminal on stdin.", "Run it in a terminal, not a pipe or a script."},
@@ -386,6 +388,8 @@ var codes = []CodeInfo{
 	{CodeToolIndexCopy, false, "A launch in one of aggy's edit worktrees did not copy the main checkout's index: the index folder or a file in it is a symlink or not a regular file, it is over the size cap, or a source changed while being copied. No database was left; the session started without it.", "The warning names the file; the tool can still build its own index there."},
 	{CodeToolExec, true, "aggy tool exec refused to start a tool's MCP server: its folder is not aggy's private launch folder, the definition changed or is gone, the command is not the definition's, or a variable could not be passed.", "aggy tool status; if the definition changed, aggy tool on <name> again after reading it."},
 	{CodeToolChanged, true, "aggy tool on or a --tool refused a user definition that is not the file aggy tool add showed, or (--tool) one it never recorded.", "aggy tool remove <name>, then aggy tool add the file again and read what it runs."},
+	{CodeToolSkillExists, false, "aggy skill add refused: a skill folder, a built-in tool, or a user tool definition already has that name.", "Pick another --name, or pass --replace once the tool is off everywhere (aggy tool off <name>)."},
+	{CodeToolSkillRefused, true, "aggy skill add refused the folder: it is or holds a symlink, something other than a regular file or folder, a file with another hard link, no SKILL.md, or more than the entry or size cap.", "Copy the skill into a plain folder of regular files and add that."},
 }
 
 // LookupEvent returns event e's entry.

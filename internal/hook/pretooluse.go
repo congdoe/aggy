@@ -19,8 +19,8 @@ type Decision struct {
 // PreToolUse decides on one PreToolUse payload: it denies a tool call
 // whose command (tool_input.command or tool_input.cmd, as a string or a
 // list of strings) calls claude -p, codex exec, grok -p, or aggy borrow
-// (or aggy image or aggy video, which borrow), or aggy tool add or
-// remove. A payload that is not a JSON object is denied: the guard fails
+// (or aggy image or aggy video, which borrow), aggy tool add, remove,
+// on, or off, or aggy skill add or remove. A payload that is not a JSON object is denied: the guard fails
 // closed.
 //
 // It is an accident guard for delegated children, not a security
@@ -304,6 +304,11 @@ func nestedIn(ws []string) string {
 				// nor which ones are on.
 				if j := skipFlags(rest, k+1, nil); j < len(rest) && slices.Contains([]string{"add", "remove", "on", "off"}, rest[j]) {
 					return "aggy tool " + rest[j]
+				}
+			} else if k < len(rest) && rest[k] == "skill" {
+				// Nor which skills it stores (T6706).
+				if j := skipFlags(rest, k+1, nil); j < len(rest) && slices.Contains([]string{"add", "remove"}, rest[j]) {
+					return "aggy skill " + rest[j]
 				}
 			}
 		}
