@@ -153,7 +153,7 @@ The hard rules hold for every record, the export, and the bundle.
   ```
 - **Did the near-limit warning show?** `aggy diag --event switch.near_limit.warned --since today` (attrs: `used_pct`, `warn_at_pct`, `to`; code `switch.near_limit_no_quota` when no vendor had quota).
 - **Why did a launch fail?** `aggy diag --event supervisor.launch.refused --since 1h`; the code says which step (`supervisor.no_terminal`, `policy.unreachable`, `vendor.cli_missing`, `cli.config_invalid`, `supervisor.launch_failed`).
-- **Every security refusal this week:** `aggy log` for the `refusal` rows, or `aggy diag sql "SELECT ts, code, run_id, trace_id, borrow_id FROM records WHERE code IN ('borrow.one_hop', 'lockdown.rejected', 'accept.protected_path', 'accept.worktree_changed', 'accept.state_temp_dir', 'check.gate_temp_dir', 'check.tree_changed', 'check.edit_worktree', 'peer.lineage_failed', 'peer.uid_mismatch', 'socket.bad_request', 'hook.no_session', 'hook.wrong_vendor') AND ts >= unixepoch('now', '-7 days') * 1000"` (the registry's Security column lists them).
+- **Every security refusal this week:** `aggy log` for the `refusal` rows, or `aggy diag sql "SELECT ts, code, run_id, trace_id, borrow_id FROM records WHERE code IN ('borrow.one_hop', 'lockdown.rejected', 'accept.protected_path', 'accept.worktree_changed', 'accept.state_temp_dir', 'check.gate_temp_dir', 'check.tree_changed', 'check.edit_worktree', 'tool.delegated', 'tool.def_untrusted', 'peer.lineage_failed', 'peer.uid_mismatch', 'socket.bad_request', 'hook.no_session', 'hook.wrong_vendor') AND ts >= unixepoch('now', '-7 days') * 1000"` (the registry's Security column lists them).
 - **Borrows that started and never finished (aggy was killed):**
 
   ```sh

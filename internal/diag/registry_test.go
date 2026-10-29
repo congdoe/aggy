@@ -254,6 +254,28 @@ func TestRegistryDoc(t *testing.T) {
 	}
 }
 
+// TestRegistrySecurityQuery (T6778): docs/logging.md's "every security
+// refusal" query names exactly the registry's Security codes, in order.
+func TestRegistrySecurityQuery(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), "docs", "logging.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^- \*\*Every security refusal this week:\*\*.*?code IN \(([^)]*)\)`).FindSubmatch(b)
+	if m == nil {
+		t.Fatal(`docs/logging.md has no "Every security refusal" query with code IN (...)`)
+	}
+	var want []string
+	for _, c := range Codes() {
+		if c.Security {
+			want = append(want, "'"+c.Name.String()+"'")
+		}
+	}
+	if got := string(m[1]); got != strings.Join(want, ", ") {
+		t.Errorf("the security query lists\n  %s\nwant\n  %s", got, strings.Join(want, ", "))
+	}
+}
+
 // TestRegistryAssign (T6777 D64-4): an assignment to a registry variable,
 // or taking its address, is caught anywhere outside codes.go; reading one
 // in a list, a call, or a case is not.

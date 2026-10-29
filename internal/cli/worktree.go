@@ -259,16 +259,27 @@ func (g *gitWorktrees) owned(wt store.Worktree) error {
 }
 
 // Remove removes wt and its branch with git: git worktree remove, never
-// a recursive delete of a path, then git branch -D on aggy's own branch.
+// a recursive delete of a path, then deleteBranch on aggy's own branch.
 // A worktree directory already gone has only aggy's own admin entry
 // removed (dropAdmin), never a repo-wide prune, which would also drop the
 // person's own worktrees that happen to be missing (an unmounted disk).
 func (g *gitWorktrees) Remove(ctx context.Context, wt store.Worktree) error {
-	return g.remove(ctx, wt, true)
+	return g.remove(ctx, wt, branchDelete)
 }
 
-// remove is Remove, with the branch deleted only when branch is true.
-func (g *gitWorktrees) remove(ctx context.Context, wt store.Worktree, branch bool) error {
+// branchRule is what remove does with aggy's branch.
+type branchRule int
+
+const (
+	// branchDelete deletes it (aggy reject).
+	branchDelete branchRule = iota
+	// branchIfOnlyEdit deletes it only when branchKept, asked once the
+	// worktree is gone, lets it go (aggy gc).
+	branchIfOnlyEdit
+)
+
+// remove is Remove, with the branch handled by rule.
+func (g *gitWorktrees) remove(ctx context.Context, wt store.Worktree, rule branchRule) error {
 	if err := g.owned(wt); err != nil {
 		return err
 	}
@@ -292,16 +303,48 @@ func (g *gitWorktrees) remove(ctx context.Context, wt store.Worktree, branch boo
 			return err
 		}
 	}
-	if !branch {
-		return nil
-	}
 	// A removal cut short after the worktree went may have left the
 	// branch, or not.
-	o, err := g.env.gitOutput(ctx, wt.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+wt.Branch)
-	if err != nil || o.ExitCode != 0 {
+	var head string
+	if rule == branchIfOnlyEdit {
+		why, _, h, err := g.branchKept(ctx, wt)
+		if err != nil || why != "" {
+			return err
+		}
+		head = h
+	} else {
+		o, err := g.env.gitOutput(ctx, wt.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+wt.Branch+"^{commit}")
+		if err != nil || o.ExitCode != 0 {
+			return err
+		}
+		head = strings.TrimSpace(string(o.Stdout))
+	}
+	if head == "" {
+		return nil
+	}
+	return g.deleteBranch(ctx, wt, head)
+}
+
+// deleteBranch deletes aggy's branch for wt only while it still points
+// at head, the commit it was judged at (git update-ref's compare and
+// swap), so a commit made since keeps it. Like git branch -D, it refuses
+// a branch checked out in any worktree, which update-ref alone would
+// leave on an unborn branch.
+func (g *gitWorktrees) deleteBranch(ctx context.Context, wt store.Worktree, head string) error {
+	ref := "refs/heads/" + wt.Branch
+	out, cut, err := g.env.git(ctx, wt.Repo, "worktree", "list", "--porcelain")
+	if err != nil {
 		return err
 	}
-	_, _, err = g.env.git(ctx, wt.Repo, "branch", "-D", wt.Branch)
+	if cut {
+		return fmt.Errorf("refusing to delete branch %s: the worktree list is too long to check", wt.Branch)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if line == "branch "+ref {
+			return fmt.Errorf("refusing to delete branch %s: it is checked out in a worktree", wt.Branch)
+		}
+	}
+	_, _, err = g.env.git(ctx, wt.Repo, "update-ref", "-d", ref, head)
 	return err
 }
 
