@@ -162,6 +162,7 @@ func addTools(ctx context.Context, v adapter.Vendor, caps []string, cwd, dir str
 	case adapter.Codex:
 		req.MCP = servers
 	}
+	warns = append(warns, copyIndexes(ctx, on, toolwire.Names(servers), repo)...) // T6711, before the CLI starts
 	dlog.Log(ctx, diag.Rec{Event: diag.EvToolWired, Vendor: string(v), Attrs: map[string]any{"tools": toolwire.Names(servers)}})
 	return warns
 }

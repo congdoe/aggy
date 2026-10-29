@@ -34,6 +34,7 @@ func TestEditTools(t *testing.T) {
 		{"edit unlisted", adapter.Edit, []string{"demo"}, nil, diag.CodeToolUnlisted},
 		{"review gets none", adapter.Review, nil, nil, diag.Code{}},
 		{"review refuses --tool", adapter.Review, []string{"context7"}, nil, diag.CodeToolBorrowKind},
+		{"research gets none", adapter.Research, nil, nil, diag.Code{}},
 		{"research refuses --tool", adapter.Research, []string{"context7"}, nil, diag.CodeToolBorrowKind},
 		{"image refuses --tool", adapter.Image, []string{"context7"}, nil, diag.CodeToolBorrowKind},
 	}

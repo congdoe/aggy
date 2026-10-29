@@ -231,6 +231,13 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) (err
 				return withCode(diag.CodeToolRepoOff, fmt.Errorf("the repo's .aggy/config.toml lists %s in tools_off, and a repo's config always wins", name))
 			}
 		}
+		if a.hasRepo {
+			// T6711: a per-repo index is built here, the first time, or
+			// nothing is recorded.
+			if err := prebuildIndex(ctx, t, repo, stdout); err != nil {
+				return err
+			}
+		}
 	}
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
