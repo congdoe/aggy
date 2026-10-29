@@ -90,10 +90,12 @@ var ClaudeDeny = denyRules("Read(//**/")
 var GrokDeny = denyRules("Read(**/")
 
 // RewriteDeny are the policy's deny rules again for a hook that rewrites
-// a shell command by putting prefix (such as "rtk ") in front (H78-1). It
-// is unverified whether Claude matches its rules against the command the
-// model asked for or the hook's updatedInput (docs/verification.md), so
-// aggy covers both: every Bash rule with prefix in front, and for each
+// a shell command by putting prefix (such as "rtk ") in front (H78-1).
+// Claude matches its rules against the hook's updatedInput, not the
+// command the model asked for: a deny on the rewritten command blocked
+// it, and a deny on the original let the rewrite run (live, 2026-10-29,
+// claude 2.1.312; docs/verification.md). So these copies are required:
+// every Bash rule with prefix in front, and for each
 // key file a rule matching the prefixed command wherever the name
 // appears in it. aggy hook-tool passes a rewrite only as exactly prefix +
 // the original command (hook.FilterToolOutput, R80-1), so a Bash rule

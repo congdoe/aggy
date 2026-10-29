@@ -72,7 +72,7 @@ func experimentalLine(t tooldef.Tool) string {
 	if proxyExperimental(t) == "" {
 		return ""
 	}
-	return fmt.Sprintf("This proxy is experimental: its flags and health check are confirmed from %s's source, not a live run.\n", t.Name)
+	return fmt.Sprintf("This proxy is experimental: no live run has yet sent a session's requests through %s's proxy.\n", t.Name)
 }
 
 // confirmProxy shows the warning and asks the person to type
@@ -235,8 +235,10 @@ func startToolProxy(ctx context.Context, v adapter.Vendor, cwd, dir string, sess
 		return refuse(t.Name, diag.CodeToolUnverified, "unverified", errors.New(grokUnverified))
 	}
 	// MED-3: the CLI would send its requests to an HTTP proxy first.
-	// TODO(T6780): whether Claude honors NO_PROXY for its base URL is
-	// unverified (docs/verification.md), so a match there is trusted.
+	// Live (2026-10-29, claude 2.1.312): without NO_PROXY, Claude sent
+	// its request for a loopback base URL through HTTP_PROXY, with
+	// credentials; with NO_PROXY listing the address it went direct
+	// (docs/verification.md), so a match there is trusted.
 	if k := envProxyBlocks(os.Environ(), t.Proxy.Addr().Addr()); k != "" {
 		return refuse(t.Name, diag.CodeProxyEnvProxy, "env_proxy",
 			fmt.Errorf("%s is set and NO_PROXY does not list %s, so %s would send its requests to that HTTP proxy first", k, t.Proxy.Addr().Addr(), v))

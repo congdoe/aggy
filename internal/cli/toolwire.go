@@ -36,12 +36,15 @@ const maxProjectMCP = 1 << 20
 // grokToolsVerified gates every Grok tool wiring (W71-4): aggy tool on
 // --vendor grok and the launch wiring refuse with tool.vendor_unverified
 // while it is false. The --agent code stays behind it.
+// A resumed session does not keep the agent: --agent must be passed
+// again on grok -r <id>, and then a fresh server works (live, 2026-10-29,
+// grok 1.0.70). A resume is a launch, so it is wired again (run.go,
+// addTools) and the adapter passes --agent with it.
 // TODO(T6708): unverified for Grok's --agent: what the agent replaces
-// besides mcpServers ([agent] settings, the system prompt, the model);
-// whether a resumed session keeps or drops it; and which project MCP
-// sources Grok also reads (.mcp.json and .grok/config.toml from cwd up
-// to the git root, .cursor/mcp.json, .grok/agents), which the clash
-// check would have to read.
+// besides mcpServers ([agent] settings, the system prompt, the model),
+// and which project MCP sources Grok also reads (.mcp.json and
+// .grok/config.toml from cwd up to the git root, .cursor/mcp.json,
+// .grok/agents), which the clash check would have to read.
 var grokToolsVerified = false
 
 // grokUnverified is why Grok gets no tools while grokToolsVerified is off.
