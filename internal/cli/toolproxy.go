@@ -241,9 +241,19 @@ func startToolProxy(ctx context.Context, v adapter.Vendor, cwd, dir string, sess
 		return refuse(t.Name, diag.CodeProxyEnvProxy, "env_proxy",
 			fmt.Errorf("%s is set and NO_PROXY does not list %s, so %s would send its requests to that HTTP proxy first", k, t.Proxy.Addr().Addr(), v))
 	}
+	// F74-2: no PATH entry from the repo picks the proxy's program or
+	// reaches it. aggy's own PATH is left alone: the CLI starts with it.
+	path, err := toolPath(cwd)
+	if err != nil {
+		return refuse(t.Name, diag.CodeProxyFailed, "path", err)
+	}
+	base := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "PATH=") })
+	if path != "" {
+		base = append(base, "PATH="+path)
+	}
 	prog := t.Proxy.Argv[0]
 	if !filepath.IsAbs(prog) {
-		if prog, err = probe.LookPath(prog); err != nil {
+		if prog, err = probe.LookPathIn(prog, path); err != nil {
 			return refuse(t.Name, diag.CodeProxyFailed, "program", fmt.Errorf("%w. %s", err, installHowTo(t)))
 		}
 	}
@@ -255,7 +265,7 @@ func startToolProxy(ctx context.Context, v adapter.Vendor, cwd, dir string, sess
 	sctx, cancel := execrun.NotifyContext(ctx)
 	pass, set := toolTelemetry("", t) // T6822
 	p, err := execrun.StartProxy(sctx, execrun.ProxySpec{Vendor: v, Var: t.Proxy.Env[v], Path: prog, Args: t.Proxy.Argv[1:],
-		Addr: t.Proxy.Addr(), Health: t.Proxy.Health, Dir: dir, Wait: proxyWait, Pass: pass, Set: set}, os.Environ())
+		Addr: t.Proxy.Addr(), Health: t.Proxy.Health, Dir: dir, Wait: proxyWait, Pass: pass, Set: set}, base)
 	cancel()
 	switch {
 	case errors.Is(err, execrun.ErrProxyPortTaken):

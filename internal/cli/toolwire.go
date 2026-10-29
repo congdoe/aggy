@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/diag"
@@ -90,6 +91,13 @@ func addTools(ctx context.Context, v adapter.Vendor, caps []string, cwd, dir str
 	b.Session, sw = sessionTools(ctx, b, v, repo.key, session, refuse)
 	warns = append(warns, sw...)
 	on := b.On(v, repo.key)
+	// R76-F1: an "on" for a user file aggy tool add never recorded is
+	// off; the launch says so rather than drop it silently.
+	for _, t := range b.Tools {
+		if st := b.State(t, v, repo.key); st.Why == switchboard.NotAdded {
+			warns = append(warns, refuse(t.Name, diag.CodeToolChanged, "not_added", strings.TrimPrefix(st.Why, "off: ")))
+		}
+	}
 	// R80-3: a linked skill folder changed since its first link keeps its
 	// tool's servers and hooks out of this launch.
 	if changed := changedSkills(ctx, on); len(changed) > 0 {

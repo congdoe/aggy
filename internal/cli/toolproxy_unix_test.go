@@ -255,8 +255,18 @@ func TestToolProxyInterrupted(t *testing.T) {
 	}
 	t.Chdir(t.TempDir())
 	launch, dir := proxyHome(t, bin, "unhealthy", freePort(t, bin))
+	t.Cleanup(func() { proxyWait = execrun.ProxyWait })
+	proxyWait = time.Minute // the signal, not the health check, ends the wait
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(700*time.Millisecond, cancel)
+	// The signal comes once the proxy runs, however slow the machine is.
+	go func() {
+		defer cancel()
+		for end := time.Now().Add(30 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+			if _, err := os.Stat(filepath.Join(dir, "pid")); err == nil {
+				return
+			}
+		}
+	}()
 	var stderr bytes.Buffer
 	px := startToolProxy(ctx, adapter.Claude, ".", launch, nil, &stderr, "aggy")
 	defer px.stop()
@@ -264,6 +274,44 @@ func TestToolProxyInterrupted(t *testing.T) {
 		t.Errorf("interrupted %v, env %q: %s", px.interrupted, px.env, stderr.String())
 	}
 	waitGone(t, "the proxy", pidIn(t, filepath.Join(dir, "pid")))
+}
+
+// TestToolProxyPathOutsideRepo (F74-2): a proxy's bare program is looked
+// up, and its PATH built, without the entries in the session's repo;
+// aggy's own PATH, which the CLI starts with, is left as it was.
+func TestToolProxyPathOutsideRepo(t *testing.T) {
+	bin := fakecli.BuildProxy(t)
+	isolate(t)
+	t.Setenv("AGGY_SOCKET", "")
+	t.Setenv("AGGY_PARENT", "")
+	for _, k := range []string{"HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"} {
+		t.Setenv(k, "")
+	}
+	t.Cleanup(func() { proxyWait = execrun.ProxyWait })
+	proxyWait = 3 * time.Second
+	repo := switchRepo(t, "")
+	outside := t.TempDir()
+	if err := os.Symlink(bin, filepath.Join(outside, "pxfake")); err != nil {
+		t.Fatal(err)
+	}
+	writeAt(t, filepath.Join(repo, "bin", "pxfake"), "#!/bin/sh\nexit 1\n", 0o755)
+	path := filepath.Join(repo, "bin") + ":" + outside + ":/usr/bin:/bin"
+	t.Setenv("PATH", path)
+	t.Chdir(repo)
+	launch, dir := proxyHome(t, "pxfake", "ok", freePort(t, bin))
+	var stderr bytes.Buffer
+	px := startToolProxy(context.Background(), adapter.Claude, repo, launch, nil, &stderr, "aggy")
+	defer px.stop()
+	if px.env == "" {
+		t.Fatalf("no proxy: %s", stderr.String())
+	}
+	env, _ := os.ReadFile(filepath.Join(dir, "env"))
+	if lines := strings.Split(string(env), "\n"); !slices.Contains(lines, "PATH="+outside+":/usr/bin:/bin") {
+		t.Errorf("proxy env: %q", lines)
+	}
+	if os.Getenv("PATH") != path {
+		t.Errorf("aggy's PATH changed: %q", os.Getenv("PATH"))
+	}
 }
 
 // freePort asks the fake proxy for a loopback port nothing listens on.
