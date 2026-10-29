@@ -76,7 +76,7 @@ func toolInstalled(t tooldef.Tool) string {
 func toolReady(ctx context.Context, t tooldef.Tool, s *store.Store, ver int, repo toolRepoAt) string {
 	var parts []string
 	if len(t.Install.Prebuild) > 0 {
-		parts = append(parts, indexState(t, repo))
+		parts = append(parts, indexState(ctx, t, repo))
 	}
 	if hasSkill(t) {
 		parts = append(parts, skillPinState(ctx, t, s, ver))
@@ -118,7 +118,7 @@ func skillPinState(ctx context.Context, t tooldef.Tool, s *store.Store, ver int)
 // indexState is whether the main checkout of repo has t's finished index:
 // its folder a real folder holding its database and aggy's marker, as
 // aggy tool on --repo checks before it builds one (T6711).
-func indexState(t tooldef.Tool, repo toolRepoAt) string {
+func indexState(ctx context.Context, t tooldef.Tool, repo toolRepoAt) string {
 	ix, ok := toolIndexes[t.Name]
 	switch {
 	case !ok:
@@ -128,6 +128,9 @@ func indexState(t tooldef.Tool, repo toolRepoAt) string {
 	}
 	dir := filepath.Join(repo.main, ix.dir)
 	if _, err := indexDir(dir); err == nil && regular(filepath.Join(dir, indexMarker)) && regular(filepath.Join(dir, ix.db)) {
+		if indexCommitted(ctx, repo.main, ix) {
+			return "index committed in the repo (not built by aggy)"
+		}
 		return "indexed"
 	}
 	return "not indexed"

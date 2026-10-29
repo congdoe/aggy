@@ -96,6 +96,28 @@ func codegraphOff(t *testing.T, repo string) {
 // never indexed; a missing or failing codegraph, a symlinked index
 // folder, and an agent with no terminal are refused, and nothing is
 // recorded; at a terminal the person is asked first.
+// TestCodegraphCommittedIndex (T6820): a repo that commits
+// .codegraph/codegraph.db and aggy's marker is not indexed: status says
+// so, and aggy tool on --repo runs the first index.
+func TestCodegraphCommittedIndex(t *testing.T) {
+	isolate(t)
+	fakeCodegraph(t, "0")
+	repo := switchRepo(t, "")
+	writeAt(t, filepath.Join(repo, ".codegraph", "codegraph.db"), "db", 0o600)
+	writeAt(t, filepath.Join(repo, ".codegraph", indexMarker), "x\n", 0o600)
+	gitIn(t, repo, "add", "-f", ".codegraph")
+	gitIn(t, repo, "commit", "-q", "-m", "index")
+
+	if _, out, _ := toolRun("", false, "status", "--repo", repo); !strings.Contains(statusLine(t, out, "codegraph"), "index committed in the repo (not built by aggy)") {
+		t.Errorf("status: %s", out)
+	}
+	indexes := filepath.Join(repo, ".codegraph", "indexes")
+	code, out, errOut := toolRun("", false, "on", "codegraph", "--repo", repo)
+	if code != 0 || !strings.Contains(out, "committed in the repo") || lines(t, indexes) != 1 {
+		t.Fatalf("on: %d %q %q, %d indexes", code, out, errOut, lines(t, indexes))
+	}
+}
+
 func TestCodegraphIndexOnFirstOn(t *testing.T) {
 	isolate(t)
 	fakeCodegraph(t, "0")

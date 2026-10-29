@@ -123,7 +123,10 @@ func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, in io.R
 	dir := filepath.Join(repo.main, ix.dir)
 	if _, err := indexDir(dir); err == nil {
 		if regular(filepath.Join(dir, indexMarker)) && regular(filepath.Join(dir, ix.db)) {
-			return nil // indexed already; its server keeps it fresh
+			if !indexCommitted(ctx, repo.main, ix) {
+				return nil // indexed already; its server keeps it fresh
+			}
+			fmt.Fprintf(stdout, "%s/ holds an index committed in the repo, not one aggy built; indexing it once.\n", ix.dir)
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fail(err)
@@ -215,6 +218,18 @@ func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, in io.R
 		fmt.Fprintf(stdout, "Indexed into %s; the tool's server keeps it fresh. Add %s/ to .gitignore or .git/info/exclude so git ignores it.\n", termsafe.Field(dir), ix.dir)
 	}
 	return nil
+}
+
+// indexCommitted reports whether git tracks ix's database or aggy's
+// marker in the repo at main: an index the repo committed (aggy's
+// exclude line only keeps untracked files out), so aggy never built it
+// there and it does not count as indexed. shortcut: a committed marker
+// stays, so each aggy tool on --repo indexes such a repo again; and when
+// git cannot answer (not on PATH), the files count as aggy's.
+func indexCommitted(ctx context.Context, main string, ix toolIndex) bool {
+	out, _, err := defaultBorrowEnv().git(ctx, main, "ls-files", "-z", "--",
+		filepath.ToSlash(filepath.Join(ix.dir, ix.db)), filepath.ToSlash(filepath.Join(ix.dir, indexMarker)))
+	return err == nil && out != ""
 }
 
 // excludeIndex adds "<dir>/" to the git exclude file of the repo at
