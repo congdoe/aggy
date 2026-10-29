@@ -23,3 +23,25 @@ func TestToolEnv(t *testing.T) {
 		}
 	}
 }
+
+// TestSetEnv (T6822): an opt-out aggy sets replaces the person's own
+// value; it may not name a variable the environment is built from, or
+// one of aggy's.
+func TestSetEnv(t *testing.T) {
+	env := []string{"HOME=/h", "DO_NOT_TRACK=0", "DEMO_T=1", "LANG=C"}
+	got, err := SetEnv(env, []string{DoNotTrack, "DEMO_T=0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"HOME=/h", "LANG=C", "DO_NOT_TRACK=1", "DEMO_T=0"}; !slices.Equal(got, want) {
+		t.Errorf("env = %q, want %q", got, want)
+	}
+	if got, _ := SetEnv(env, nil); !slices.Equal(got, env) {
+		t.Errorf("nothing set: %q", got)
+	}
+	for _, kv := range []string{"PATH=/x", "HOME=/x", "AGGY_HOME=/x", "NOVALUE", "=1"} {
+		if _, err := SetEnv(env, []string{kv}); err == nil {
+			t.Errorf("%q set", kv)
+		}
+	}
+}

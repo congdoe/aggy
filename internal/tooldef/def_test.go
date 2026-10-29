@@ -157,6 +157,7 @@ func TestParseValid(t *testing.T) {
 		{"shasum is not sh", strings.Replace(base, mcpArgv, `argv = ["shasum", "-a", "256"]`, 1), false},
 		{"node with a script", strings.Replace(base, mcpArgv, `argv = ["node", "/opt/demo/server.js", "--port=3000"]`, 1), false},
 		{"nice then a program", strings.Replace(base, mcpArgv, `argv = ["nice", "-n", "5", "demo", "serve"]`, 1), false},
+		{"telemetry_env", "telemetry_env = [\"DEMO_TELEMETRY=0\", \"OTHER_TRACKING=false\"]\n" + base, false},
 		{"an install hint", strings.Replace(base, `check = ["demo", "--version"]`, "check = [\"demo\", \"--version\"]\nhint = \"npm i -g demo@1.4.2\"", 1), false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -283,6 +284,22 @@ event = "PreModelRequest"`), false, "hook[0].event", "allow or deny"},
 		{"env twice", set(`env = ["DEMO_HOME"]`, `env = ["DEMO_HOME", "DEMO_HOME"]`), false, "mcp[0].env[1]", "twice"},
 		{"too many env", set(`env = ["DEMO_HOME"]`, manyEnv(maxEnv+1)), false, "mcp[0].env", "at most"},
 		{"env table", set(`env = ["DEMO_HOME"]`, `env = { DEMO_HOME = "/x" }`), false, "", ""},
+
+		// T6822: telemetry_env sets plain NAME=VALUE opt-outs only.
+		{"telemetry_env lower case", pre(`telemetry_env = ["demo_telemetry=0"]`), false, "telemetry_env[0]", "NAME=VALUE"},
+		{"telemetry_env no value", pre(`telemetry_env = ["DEMO_TELEMETRY"]`), false, "telemetry_env[0]", "NAME=VALUE"},
+		{"telemetry_env empty value", pre(`telemetry_env = ["DEMO_TELEMETRY="]`), false, "telemetry_env[0]", "NAME=VALUE"},
+		{"telemetry_env shell value", pre(`telemetry_env = ["DEMO_TELEMETRY=$(x)"]`), false, "telemetry_env[0]", "NAME=VALUE"},
+		{"telemetry_env path value", pre(`telemetry_env = ["DEMO_TELEMETRY=/tmp/x"]`), false, "telemetry_env[0]", "NAME=VALUE"},
+		{"telemetry_env twice", pre(`telemetry_env = ["DEMO_T=0", "DEMO_T=1"]`), false, "telemetry_env[1]", "twice"},
+		{"telemetry_env DO_NOT_TRACK", pre(`telemetry_env = ["DO_NOT_TRACK=0"]`), true, "telemetry_env[0]", "set by aggy"},
+		{"telemetry_env PATH", pre(`telemetry_env = ["PATH=0"]`), true, "telemetry_env[0]", "load or run"},
+		{"telemetry_env TMPDIR", pre(`telemetry_env = ["TMPDIR=x"]`), true, "telemetry_env[0]", "set by aggy"},
+		{"telemetry_env base URL", pre(`telemetry_env = ["ANTHROPIC_BASE_URL=x"]`), true, "telemetry_env[0]", "base-URL"},
+		{"telemetry_env loader", pre(`telemetry_env = ["NODE_OPTIONS=x"]`), true, "telemetry_env[0]", "load or run"},
+		{"telemetry_env aggy", pre(`telemetry_env = ["AGGY_HOME=x"]`), true, "telemetry_env[0]", "aggy's own"},
+		{"telemetry_env secret", pre(`telemetry_env = ["DEMO_TOKEN=x"]`), false, "telemetry_env[0]", "secret"},
+		{"too many telemetry_env", pre(`telemetry_env = [` + strings.Repeat(`"A=0",`, maxEnv+1) + `]`), false, "telemetry_env", "at most"},
 
 		// Skill paths.
 		{"skill absolute path", on(skillOnly, set(`"~/.aggy/skills/brief"`, `"/opt/skills/brief"`)), false, "skill[0].path", "under ~/"},

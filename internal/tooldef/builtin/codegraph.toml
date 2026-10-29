@@ -11,9 +11,11 @@
 # watcher, and a catch-up on connect (codegraph 1.6.2 README, "How
 # auto-syncing works"). Without a terminal, init gets no stdin and no
 # --yes (unverified whether it asks anything; TODO(T6711)).
-# DO_NOT_TRACK and CODEGRAPH_TELEMETRY pass the person's own telemetry
-# opt-out through (README, "Telemetry"): codegraph sends anonymous usage
-# counts unless one is set.
+# Telemetry (README, "Telemetry"; docs/verification.md): codegraph sends
+# anonymous usage counts unless CODEGRAPH_TELEMETRY=0 or DO_NOT_TRACK=1.
+# aggy sets both in the server, a prebuild, and a rebuild (T6822) unless
+# the user config's [tools] allow_telemetry is on; then the person's own
+# values pass through (env).
 name = "codegraph"
 description = "Local code index: the agent asks where a symbol lives instead of grepping"
 homepage = "https://github.com/colbymchenry/codegraph"
@@ -22,6 +24,7 @@ default = false
 scope = "repo"
 lifecycle = ["worktree-copy", "gc", "refresh"]
 unverified = ["homepage", "install"]
+telemetry_env = ["CODEGRAPH_TELEMETRY=0"]
 
 [install]
 check = ["codegraph", "--version"]

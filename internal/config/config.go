@@ -34,6 +34,17 @@ type Config struct {
 	Worktree      UserWorktree   `toml:"worktree"`
 	GC            GC             `toml:"gc"`
 	Log           Log            `toml:"log"`
+	Tools         Tools          `toml:"tools"`
+}
+
+// Tools is user config for managed tools' processes. A repo's
+// .aggy/config.toml has no such table.
+type Tools struct {
+	// AllowTelemetry, when true, stops aggy setting DO_NOT_TRACK=1 and
+	// each tool's own telemetry opt-out (its telemetry_env) in the tool
+	// processes it starts (T6822); the person's own values then pass
+	// through as each tool's env allows.
+	AllowTelemetry bool `toml:"allow_telemetry"`
 }
 
 // Log is the diagnostic log's retention and level (docs/logging.md). It
