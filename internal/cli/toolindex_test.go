@@ -31,7 +31,11 @@ const codegraphGitignore = `# CodeGraph data files — local to each machine, no
 // own .gitignore and codegraph.db, counts its runs in .codegraph/inits,
 // and writes the environment it got to .codegraph/env. exit is its exit
 // code, or "sleep": it then writes its pid to .codegraph/pid and sleeps.
-// It never runs the real codegraph.
+// As codegraph 1.6.2's runInit does, init on a repo whose codegraph.db
+// holds the schema (here: is not "schemaless") says it is already
+// initialized and exits 0; index <dir> rebuilds such a database
+// (counted in .codegraph/indexes) and fails on any other. It never runs
+// the real codegraph.
 func fakeCodegraph(t *testing.T, exit string) string {
 	t.Helper()
 	t.Setenv("AGGY_VENDOR", "")
@@ -41,7 +45,16 @@ func fakeCodegraph(t *testing.T, exit string) string {
 		tail = "echo $$ > \"$2/.codegraph/pid\"\nexec /bin/sleep 777\n"
 	}
 	writeAt(t, filepath.Join(bin, "codegraph"), `#!/bin/sh
+db="$2/.codegraph/codegraph.db"
+schema() { [ -f "$db" ] && [ "$(/bin/cat "$db")" != schemaless ]; }
+if [ "$1" = index ]; then
+	schema || { echo "CodeGraph not initialized" >&2; exit 1; }
+	echo run >> "$2/.codegraph/indexes"
+	printf db > "$db"
+	exit 0
+fi
 [ "$1" = init ] || exit 9
+if schema; then echo "Already initialized"; exit 0; fi
 /bin/mkdir -p "$2/.codegraph" || exit 8
 [ -e "$2/.codegraph/.gitignore" ] || /bin/cat > "$2/.codegraph/.gitignore" <<'EOF'
 `+codegraphGitignore+`EOF
@@ -113,12 +126,21 @@ func TestCodegraphIndexOnFirstOn(t *testing.T) {
 	if code, _, errOut := toolRun("", false, "on", "codegraph", "--repo", repo, "--vendor", "codex"); code != 0 || lines(t, inits) != 1 {
 		t.Fatalf("second on: %d %q, %d runs", code, errOut, lines(t, inits))
 	}
-	// A database without aggy's marker (a build cut short) is built again.
-	if err := os.Remove(filepath.Join(repo, ".codegraph", indexMarker)); err != nil {
+	// A database without aggy's marker (a build cut short) is rebuilt
+	// with codegraph index: init would only say it is initialized.
+	marker, indexes := filepath.Join(repo, ".codegraph", indexMarker), filepath.Join(repo, ".codegraph", "indexes")
+	if err := os.Remove(marker); err != nil {
 		t.Fatal(err)
 	}
-	if code, _, errOut := toolRun("", false, "on", "codegraph", "--repo", repo); code != 0 || lines(t, inits) != 2 {
-		t.Fatalf("without the marker: %d %q, %d runs", code, errOut, lines(t, inits))
+	if code, _, errOut := toolRun("", false, "on", "codegraph", "--repo", repo); code != 0 || lines(t, inits) != 1 || lines(t, indexes) != 1 || !exists(t, marker) {
+		t.Fatalf("without the marker: %d %q, %d inits, %d indexes", code, errOut, lines(t, inits), lines(t, indexes))
+	}
+	// A database without the schema: index refuses it, and init rebuilds it.
+	_ = os.Remove(marker)
+	writeAt(t, filepath.Join(repo, ".codegraph", "codegraph.db"), "schemaless", 0o600)
+	code, out, errOut = toolRun("", false, "on", "codegraph", "--repo", repo)
+	if b, _ := os.ReadFile(filepath.Join(repo, ".codegraph", "codegraph.db")); code != 0 || !strings.Contains(out, "trying") || lines(t, inits) != 2 || string(b) != "db" || !exists(t, marker) {
+		t.Fatalf("schemaless: %d %q %q, %d inits, db %q", code, out, errOut, lines(t, inits), b)
 	}
 	// Off runs nothing; a repo never turned on is never indexed.
 	if code, _, errOut := toolRun("", false, "off", "codegraph", "--repo", other); code != 0 || exists(t, filepath.Join(other, ".codegraph")) {

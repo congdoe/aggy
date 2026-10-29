@@ -17,7 +17,6 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/borrow"
 	"github.com/congdoe/aggy/internal/diag"
-	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -110,10 +109,9 @@ func toolWith(args []string, in io.Reader, tty bool, stdout, stderr io.Writer) i
 		fmt.Fprint(stderr, toolUsage)
 		return 2
 	}
-	// Ctrl-C, SIGTERM, or SIGHUP ends a prebuild aggy tool on runs, and
-	// kills its process group (T6711).
-	ctx, stop := execrun.NotifyContext(context.Background())
-	defer stop()
+	// Signals are caught only while a prebuild runs (prebuildIndex), so
+	// Ctrl-C at a prompt ends aggy tool as usual.
+	ctx := context.Background()
 	cmd := "tool " + args[0]
 	usageErr := func() int {
 		refuse(ctx, stderr, cmd, diag.EvToolRefused, diag.CodeUsage, "bad arguments", diag.Rec{})

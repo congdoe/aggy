@@ -86,6 +86,10 @@ type Install struct {
 	// It is text aggy shows (doctor, aggy tool on, the skill-missing
 	// refusal) and never runs.
 	Hint string `toml:"hint"`
+	// Rebuild builds the index again from scratch, where a prebuild left
+	// one unfinished (an interrupted build): the same rules as Prebuild,
+	// which it needs.
+	Rebuild []string `toml:"rebuild"`
 }
 
 // MCP is a stdio MCP server for the vendors listed: Argv is the program
@@ -562,13 +566,24 @@ func (d Def) validateInstall(builtIn bool) error {
 	if err := argv("install.install", d.Install.Install, false); err != nil {
 		return err
 	}
-	if len(d.Install.Prebuild) == 0 {
-		return nil
+	if len(d.Install.Rebuild) > 0 && len(d.Install.Prebuild) == 0 {
+		return &Error{Key: "install.rebuild", Msg: "only with install.prebuild"}
 	}
-	if !builtIn || d.Scope != "repo" || !slices.ContainsFunc(d.Install.Prebuild[1:], func(a string) bool { return strings.Contains(a, Placeholder) }) {
-		return &Error{Key: "install.prebuild", Msg: "only aggy's built-in per-repo tools have a prebuild, and it names the repo as " + Placeholder}
+	for _, c := range []struct {
+		key string
+		a   []string
+	}{{"install.prebuild", d.Install.Prebuild}, {"install.rebuild", d.Install.Rebuild}} {
+		if len(c.a) == 0 {
+			continue
+		}
+		if !builtIn || d.Scope != "repo" || !slices.ContainsFunc(c.a[1:], func(a string) bool { return strings.Contains(a, Placeholder) }) {
+			return &Error{Key: c.key, Msg: "only aggy's built-in per-repo tools have a prebuild or rebuild, and it names the repo as " + Placeholder}
+		}
+		if err := argv(c.key, c.a, true); err != nil {
+			return err
+		}
 	}
-	return argv("install.prebuild", d.Install.Prebuild, true)
+	return nil
 }
 
 func (c Cost) validate(d Def) error {

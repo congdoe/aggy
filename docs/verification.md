@@ -922,9 +922,15 @@ arm64 with `DO_NOT_TRACK=1`. No vendor config was edited, and no tool's
   `createDirectory`) makes `.codegraph/` and writes its own
   `.codegraph/.gitignore` (a header, `*`, and `!.gitignore`), which
   leaves that file itself untracked-but-visible, so aggy adds
-  `.codegraph/` to the repo's `info/exclude`; it throws "already
-  initialized" when `codegraph.db` holds the schema, so a rebuild after
-  an interrupted init may need `codegraph uninit --force <repo>` first.
+  `.codegraph/` to the repo's `info/exclude`. The `init` command
+  (`dist/bin/codegraph.js`, `runInit`) logs "Already initialized" and
+  exits 0 when `codegraph.db` holds the schema, a half-built one an
+  interrupted init left included, and rebuilds a database without the
+  schema; `codegraph index [path]` rebuilds the full index from scratch
+  and exits 1 when the path is not initialized. So after an interrupted
+  init aggy runs `codegraph index {repo}` (`install.rebuild`), then
+  `init` if that fails. Whether `index` asks anything without a terminal
+  is unverified (TODO(T6711)).
   Under WSL on a Windows drive the folder may be `.codegraph-wsl`
   (`directory.d.ts`); aggy launches nothing there (TODO(T6711)).
   Unverified, for a maintainer's live check (TODO(T6711)): whether
