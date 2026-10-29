@@ -452,7 +452,7 @@ func toolStatus(ctx context.Context, a toolArgs, stdout, stderr io.Writer) error
 		if len(wired) == 0 {
 			wired = []string{"-"}
 		}
-		row = append(row, toolInstalled(t), toolReady(ctx, t, idx, ver), strings.Join(wired, ", "))
+		row = append(row, toolInstalled(t), toolReady(ctx, t, idx, ver, repo), strings.Join(wired, ", "))
 		fmt.Fprintln(tw, strings.Join(append(row, sameWhy(whys)), "\t"))
 	}
 	_ = tw.Flush()

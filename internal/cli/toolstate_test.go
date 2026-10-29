@@ -13,6 +13,7 @@ import (
 // ready, and wired per vendor, reading only.
 func TestToolStatusColumns(t *testing.T) {
 	src, _ := wireHome(t)
+	repo := switchRepo(t, "") // git is on PATH only until the next line
 	bin := t.TempDir()
 	t.Setenv("PATH", bin)
 	t.Chdir(t.TempDir())
@@ -57,8 +58,18 @@ func TestToolStatusColumns(t *testing.T) {
 	if got := line("caveman"); !strings.HasPrefix(got, "caveman off off off yes pin changed - ") {
 		t.Errorf("caveman changed: %q", got)
 	}
-	// Codegraph's index has no marker on main yet.
-	if got := line("codegraph"); !strings.Contains(got, "index n/a") {
-		t.Errorf("codegraph: %q", got)
+	// CodeGraph's index: n/a outside a repo; in one, indexed only with
+	// its database and aggy's marker.
+	if got := line("codegraph"); !strings.Contains(got, "index n/a outside a repo") {
+		t.Errorf("codegraph outside: %q", got)
+	}
+	t.Chdir(repo)
+	writeAt(t, filepath.Join(repo, ".codegraph", "codegraph.db"), "db", 0o600)
+	if got := line("codegraph"); !strings.Contains(got, "not indexed") {
+		t.Errorf("codegraph without the marker: %q", got)
+	}
+	writeAt(t, filepath.Join(repo, ".codegraph", indexMarker), "x", 0o600)
+	if got := line("codegraph"); !strings.Contains(got, " indexed") || strings.Contains(got, "not indexed") {
+		t.Errorf("codegraph indexed: %q", got)
 	}
 }
