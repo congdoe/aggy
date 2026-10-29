@@ -576,6 +576,16 @@ func skillRemove(ctx context.Context, name string, stdout io.Writer) error {
 		}
 	}
 	if st.stored() {
+		if testHookBeforeSkillRemove != nil {
+			testHookBeforeSkillRemove()
+		}
+		// Remove only the folder the lookup and checks saw: one put
+		// there since (a swap, or a symlink) is kept.
+		if fi, err := safefs.Lstat(st.store); err != nil {
+			return err
+		} else if !fi.IsDir() || !os.SameFile(st.storeFI, fi) {
+			return withCode(diag.CodeToolSkillExists, fmt.Errorf("%s changed since aggy looked it up; nothing was removed there, run it again", st.store))
+		}
 		if err := safefs.RemoveAll(st.store); err != nil {
 			return err
 		}
@@ -583,6 +593,10 @@ func skillRemove(ctx context.Context, name string, stdout io.Writer) error {
 	}
 	return forgetSkillPin(ctx, name)
 }
+
+// testHookBeforeSkillRemove runs in skillRemove right before the store
+// folder's identity check; tests swap the folder there.
+var testHookBeforeSkillRemove func()
 
 // forgetSkillPin deletes name's skill pin, when there is an index.
 func forgetSkillPin(ctx context.Context, name string) error {
