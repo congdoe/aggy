@@ -128,10 +128,9 @@ func borrowTools(stateDir string, network bool) func(context.Context, adapter.Ve
 				return nil, nil, refused("", diag.CodeToolWireFailed, "the CLI's managed MCP servers could not be listed to check names: "+err.Error())
 			}
 		case adapter.Codex:
-			// TODO(L78-9): every layer counts, the user's too, which
-			// --ignore-user-config drops: an over-refusal. Which project
-			// layers codex exec still reads then is unverified.
-			if taken, err = takenMCPNames(v, cwd, repo.root); err != nil {
+			// R80-4: the edit child runs with --ignore-user-config
+			// (codex.EditLockdown), so the user's layer is no clash.
+			if taken, err = codexTakenNames(cwd, repo.root, true); err != nil {
 				return nil, nil, refused("", diag.CodeToolWireFailed, "the CLI's own MCP servers could not be listed to check names: "+err.Error())
 			}
 		}
