@@ -125,45 +125,68 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 	}
 }
 
+// strictCases are the requests whose strictness is fixed here, not taken
+// from usesSandbox (#101): review, research, news, and image generation
+// run under --sandbox strict; an image edit (a resume, or image_edit
+// named), video, and edit do not.
+var strictCases = []struct {
+	name   string
+	req    adapter.HeadlessRequest
+	strict bool
+}{
+	{"review", adapter.HeadlessRequest{Kind: adapter.Review}, true},
+	{"research", adapter.HeadlessRequest{Kind: adapter.Research}, true},
+	{"news", adapter.HeadlessRequest{Kind: adapter.News}, true},
+	{"image", adapter.HeadlessRequest{Kind: adapter.Image}, true},
+	{"image with file tools on", adapter.HeadlessRequest{Kind: adapter.Image, FileTools: true}, true},
+	{"image edit", adapter.HeadlessRequest{Kind: adapter.Image, FileTools: true, Resume: sid}, false},
+	{"image_edit named", adapter.HeadlessRequest{Kind: adapter.Image, FileTools: true, AllowedTools: []string{"image_edit"}}, false},
+	{"video", adapter.HeadlessRequest{Kind: adapter.Video, FileTools: true}, false},
+	{"edit", adapter.HeadlessRequest{Kind: adapter.Edit}, false},
+}
+
+// strictReq is c's request, ready for Headless.
+func strictReq(r adapter.HeadlessRequest) adapter.HeadlessRequest {
+	r.PromptFile, r.Cwd, r.IsolatedCwd = "/p/prompt.md", "/w", true
+	return r
+}
+
 // TestSandboxFailsClosed: review, research, news, and image generation
 // need --sandbox strict, so without the probe's sandbox capability, or on
 // a host without a kernel sandbox, they are refused (ErrNoCapability,
 // which is ErrUnsupported); edit, video, and an image edit do not use it.
 func TestSandboxFailsClosed(t *testing.T) {
-	all := []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video, adapter.Edit}
 	// G32-1: no kernel sandbox on the host refuses the sandboxed kinds.
 	noKernel := sandboxed()
 	noKernel.Caps = []string{probe.CapSandbox}
-	for _, k := range all {
-		req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true, FileTools: true}
-		if c, err := noKernel.Headless(req); usesSandbox(req) != errors.Is(err, adapter.ErrNoCapability) {
-			t.Errorf("%s with no kernel sandbox: %q, %v", k, c.Args, err)
+	for _, tc := range strictCases {
+		if c, err := noKernel.Headless(strictReq(tc.req)); tc.strict != errors.Is(err, adapter.ErrNoCapability) {
+			t.Errorf("%s with no kernel sandbox: %q, %v", tc.name, c.Args, err)
 		}
 	}
 	// G32-3: a HOME that cannot be named in a deny rule refuses every
-	// sandboxed kind. Image and video without strict (N54-4) run without
-	// the denies instead: they match none of their tools.
+	// sandboxed kind. An image edit and video without strict (N54-4) run
+	// without the denies instead: they match none of their tools.
 	home := func(h string) Adapter {
 		a := sandboxed()
 		a.Getenv = func(string) string { return h }
 		return a
 	}
 	for _, a := range []Adapter{home(""), home("rel/home"), home("/"), home("/home/u*"), home("/home/[u]"), home("/home/a,b"), home("/home/u)"), home("/home/../u")} {
-		for _, k := range all {
-			req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true, FileTools: true}
-			c, err := a.Headless(req)
-			if usesSandbox(req) != errors.Is(err, adapter.ErrNoCapability) || (!usesSandbox(req) && (err != nil || slices.Contains(c.Args, "--deny"))) {
-				t.Errorf("%s with HOME %q: %q, %v", k, a.Getenv("HOME"), c.Args, err)
+		for _, tc := range strictCases {
+			c, err := a.Headless(strictReq(tc.req))
+			if tc.strict != errors.Is(err, adapter.ErrNoCapability) || (!tc.strict && (err != nil || slices.Contains(c.Args, "--deny"))) {
+				t.Errorf("%s with HOME %q: %q, %v", tc.name, a.Getenv("HOME"), c.Args, err)
 			}
 		}
 	}
-	for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video, adapter.Edit} {
-		req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true, FileTools: true}
+	for _, tc := range strictCases {
+		k, req := tc.name, strictReq(tc.req)
 		_, err := New().Headless(req)
 		c, cerr := sandboxed().Headless(req)
 		strict := slices.Contains(c.Args, "--sandbox") && c.Args[slices.Index(c.Args, "--sandbox")+1] == "strict"
 		switch {
-		case usesSandbox(req):
+		case tc.strict:
 			if !errors.Is(err, adapter.ErrNoCapability) || !errors.Is(err, adapter.ErrUnsupported) {
 				t.Errorf("%s without the sandbox capability: %v", k, err)
 			}
@@ -610,16 +633,19 @@ func TestSandboxNotAppliedFailsClosed(t *testing.T) {
 		"INFO Sandbox enforcement unavailable (built without 'enforce' feature)",
 	} {
 		out := adapter.Output{Stdout: []byte(liveReply), Stderr: []byte("ok\n" + msg + "\n")}
-		for _, k := range []adapter.Kind{adapter.Review, adapter.Research, adapter.News, adapter.Image, adapter.Video, adapter.Edit} {
-			req := adapter.HeadlessRequest{Kind: k}
-			res, err := sandboxed().ParseHeadless(req, out)
-			if usesSandbox(req) {
+		for _, tc := range strictCases {
+			res, err := sandboxed().ParseHeadless(tc.req, out)
+			if tc.strict {
 				if !errors.Is(err, adapter.ErrLockdownRejected) || res.Error != adapter.ErrLockdown || res.Text != "" {
-					t.Errorf("%s, %q: %+v, %v", k, msg, res, err)
+					t.Errorf("%s, %q: %+v, %v", tc.name, msg, res, err)
 				}
 			} else if err != nil {
-				t.Errorf("%s (no sandbox asked) with %q: %v", k, msg, err)
+				t.Errorf("%s (no sandbox asked) with %q: %v", tc.name, msg, err)
 			}
+		}
+		// #101: fixed, for an image generation.
+		if res, err := sandboxed().ParseHeadless(adapter.HeadlessRequest{Kind: adapter.Image}, out); !errors.Is(err, adapter.ErrLockdownRejected) || res.Error != adapter.ErrLockdown {
+			t.Errorf("image generation, %q: %+v, %v", msg, res, err)
 		}
 	}
 	quoted := strings.Replace(liveReply, `"the answer"`, `"the docs say: continuing without sandbox"`, 1)
@@ -709,11 +735,13 @@ func TestGrokHomeDeny(t *testing.T) {
 		t.Errorf("edit: %q, %v", c.Args, err)
 	}
 	for _, bad := range []string{"rel/grok", "/", "/g*", "/g,h", "/g)"} {
-		for _, k := range denyKinds {
-			req := adapter.HeadlessRequest{Kind: k, PromptFile: "/p/prompt.md", Cwd: "/w", IsolatedCwd: true, FileTools: true}
-			c, err := env(bad).Headless(req)
-			if usesSandbox(req) != errors.Is(err, adapter.ErrNoCapability) || (!usesSandbox(req) && (err != nil || slices.Contains(c.Args, "--deny"))) {
-				t.Errorf("%s, GROK_HOME %q: %q, %v", k, bad, c.Args, err)
+		for _, tc := range strictCases {
+			if tc.req.Kind == adapter.Edit {
+				continue // no deny rules to name
+			}
+			c, err := env(bad).Headless(strictReq(tc.req))
+			if tc.strict != errors.Is(err, adapter.ErrNoCapability) || (!tc.strict && (err != nil || slices.Contains(c.Args, "--deny"))) {
+				t.Errorf("%s, GROK_HOME %q: %q, %v", tc.name, bad, c.Args, err)
 			}
 		}
 	}
@@ -816,5 +844,29 @@ func TestSandboxRefusalFailsClosed(t *testing.T) {
 		if !errors.Is(err, adapter.ErrLockdownRejected) || res.Error != adapter.ErrLockdown || !strings.Contains(err.Error(), "inside another sandbox") {
 			t.Errorf("%s: %+v, %v", k, res, err)
 		}
+	}
+}
+
+// TestHeadlessPermissionPrompt (#101): Grok's stderr line for a tool
+// stopped at a permission prompt in a headless run (live, 2026-10-29,
+// grok 1.0.70, exit 0) fails the run with ErrPermission, for any kind;
+// the same words in the reply do not, and the prompt it quotes is not
+// kept as the error detail.
+func TestHeadlessPermissionPrompt(t *testing.T) {
+	line := "permission required: imagine: A small plain solid red circle ... no shadows. was not run, as a headless run cannot ask for approval"
+	for _, tc := range strictCases {
+		out := adapter.Output{Stdout: []byte(liveReply), Stderr: []byte(line + "\n")}
+		res, err := sandboxed().ParseHeadless(tc.req, out)
+		if err == nil || res.Error != adapter.ErrPermission || !strings.Contains(err.Error(), "permission prompt") || strings.Contains(res.ErrorDetail, "red circle") {
+			t.Errorf("%s: %+v, %v", tc.name, res, err)
+		}
+	}
+	quoted := strings.Replace(liveReply, `"the answer"`, `"it said: was not run, as a headless run cannot ask for approval"`, 1)
+	if res, err := sandboxed().ParseHeadless(adapter.HeadlessRequest{Kind: adapter.Image}, adapter.Output{Stdout: []byte(quoted)}); err != nil || res.Error != adapter.ErrNone {
+		t.Errorf("the words in the reply failed the run: %+v, %v", res, err)
+	}
+	// Other permission text is not this line.
+	if res, err := sandboxed().ParseHeadless(adapter.HeadlessRequest{Kind: adapter.Image}, adapter.Output{Stdout: []byte(liveReply), Stderr: []byte("permission required: imagine\n")}); err != nil || res.Error != adapter.ErrNone {
+		t.Errorf("a partial line failed the run: %+v, %v", res, err)
 	}
 }

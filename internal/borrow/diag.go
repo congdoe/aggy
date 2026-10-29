@@ -52,6 +52,8 @@ func OutcomeCode(outcome string) diag.Code {
 		return diag.CodeTimeout
 	case adapter.ErrLockdown:
 		return diag.CodeLockdown
+	case adapter.ErrPermission:
+		return diag.CodePermissionPrompt
 	}
 	if outcome == Interrupted {
 		return diag.CodeInterrupted

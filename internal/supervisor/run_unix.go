@@ -112,6 +112,7 @@ func Run(o Options) (Exit, error) {
 	// diagnostic queue (G67-R3); deferred first, so it runs after the
 	// socket and the main loop are done.
 	defer s.flushForeign(nil)
+	defer s.flushShutdown()
 	var srv *Server
 	if o.RunDir != "" {
 		var err error
@@ -542,18 +543,20 @@ func (s *session) onHook(r Request) {
 // tree, holds the switch: Notification is how Claude and Grok say they
 // wait for the user, a permission prompt among others, and its type field
 // is not verified, so every one counts. Grok's exit-time stop
-// (grokShutdown) is no turn end and holds nothing: it is only recorded
-// as ignored.
+// (grokShutdown) of the on-screen child itself is no turn end and holds
+// nothing: it is only recorded as ignored. One that names no session or
+// another one takes the turn-end paths below, so a forged one is still
+// a security rejection (#101).
 func (s *session) hookEvent(ev hookEvent) {
-	if ev.shutdown {
-		s.ignoredShutdown(ev)
+	own := ""
+	if s.o.SessionID != nil {
+		own = s.o.SessionID()
+	}
+	if ev.shutdown && ev.sessionID != "" && ev.sessionID == own {
+		s.ignoredShutdown()
 		return
 	}
 	if turnEnd(ev.name) {
-		own := ""
-		if s.o.SessionID != nil {
-			own = s.o.SessionID()
-		}
 		// Neither session id is stored: the payload's could be any text.
 		switch {
 		case ev.sessionID == "":

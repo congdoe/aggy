@@ -188,19 +188,32 @@ func turnEndNamesSession(v adapter.Vendor, event string) bool {
 // and key those apart from the "" entry in ignoredTurnEnd.
 const grokStopNamesSession = true
 
-// ignoredShutdown records Grok's exit-time stop (grokShutdown) as an
-// ignored hook event: the first, then at most one a minute with the
-// repeats since, as ignoredTurnEnd does, since a process in the tree can
-// send any number of them. The session id is not stored.
-func (s *session) ignoredShutdown(ev hookEvent) {
+// ignoredShutdown records the on-screen Grok child's exit-time stop
+// (grokShutdown) as an ignored hook event: the first, then at most one a
+// minute with the repeats since, as ignoredTurnEnd does, since a process
+// in the tree can send any number of them. The session id is not stored.
+func (s *session) ignoredShutdown() {
 	now := time.Now()
 	f := &s.shutdownSeen
 	if !f.at.IsZero() && now.Sub(f.at) < time.Minute {
 		f.repeats++
 		return
 	}
-	attrs := map[string]any{"event": hookName(ev.name), "repeats": f.repeats, "own": ev.sessionID != "" && s.o.SessionID != nil && ev.sessionID == s.o.SessionID()}
-	*f = foreignSeen{at: now, event: ev.name}
+	s.logShutdown(map[string]any{"repeats": f.repeats})
+	*f = foreignSeen{at: now, event: "Stop"}
+}
+
+// flushShutdown records the shutdown stops not yet recorded, at the end
+// of the session (attrs.tail: the record holds only those repeats).
+func (s *session) flushShutdown() {
+	if f := &s.shutdownSeen; f.repeats > 0 {
+		s.logShutdown(map[string]any{"repeats": f.repeats, "tail": true})
+		f.repeats = 0
+	}
+}
+
+func (s *session) logShutdown(attrs map[string]any) {
+	attrs["event"] = hookName("Stop")
 	s.log(diag.Rec{Event: diag.EvHookIgnored, Code: diag.CodeGrokShutdown, Msg: "Grok's exit-time stop, which ends no turn", Attrs: attrs})
 }
 
