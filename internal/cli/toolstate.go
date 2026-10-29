@@ -128,8 +128,11 @@ func indexState(ctx context.Context, t tooldef.Tool, repo toolRepoAt) string {
 	}
 	dir := filepath.Join(repo.main, ix.dir)
 	if _, err := indexDir(dir); err == nil && regular(filepath.Join(dir, indexMarker)) && regular(filepath.Join(dir, ix.db)) {
-		if indexCommitted(ctx, repo.main, ix) {
+		switch committed, unsure := indexOwner(ctx, t.Name, repo, ix); {
+		case committed:
 			return "index committed in the repo (not built by aggy)"
+		case unsure:
+			return "indexed (git could not check)"
 		}
 		return "indexed"
 	}

@@ -3,6 +3,8 @@ package cli
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -123,7 +125,7 @@ func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, in io.R
 	dir := filepath.Join(repo.main, ix.dir)
 	if _, err := indexDir(dir); err == nil {
 		if regular(filepath.Join(dir, indexMarker)) && regular(filepath.Join(dir, ix.db)) {
-			if !indexCommitted(ctx, repo.main, ix) {
+			if committed, _ := indexOwner(ctx, t.Name, repo, ix); !committed {
 				return nil // indexed already; its server keeps it fresh
 			}
 			fmt.Fprintf(stdout, "%s/ holds an index committed in the repo, not one aggy built; indexing it once.\n", ix.dir)
@@ -211,6 +213,9 @@ func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, in io.R
 	if err := safefs.WriteFileNoFollowIn(dfi, filepath.Join(dir, indexMarker), []byte("built by aggy tool on\n"), 0o600, nil); err != nil && !errors.Is(err, fs.ErrExist) {
 		return fail(err)
 	}
+	if err := recordIndexBuilt(t.Name, repo, ix); err != nil {
+		fmt.Fprintf(stdout, "warning: aggy could not record that it built this index (%s); in a repo that commits it, the next aggy tool on indexes it again.\n", termsafe.Line(err.Error()))
+	}
 	dlog.Log(ctx, diag.Rec{Event: diag.EvToolIndexed, Attrs: map[string]any{"tool": t.Name, "step": "init"}})
 	if excluded {
 		fmt.Fprintf(stdout, "Indexed into %s, which the repo's git exclude file ignores; the tool's server keeps it fresh.\n", termsafe.Field(dir))
@@ -220,16 +225,71 @@ func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, in io.R
 	return nil
 }
 
-// indexCommitted reports whether git tracks ix's database or aggy's
-// marker in the repo at main: an index the repo committed (aggy's
-// exclude line only keeps untracked files out), so aggy never built it
-// there and it does not count as indexed. shortcut: a committed marker
-// stays, so each aggy tool on --repo indexes such a repo again; and when
-// git cannot answer (not on PATH), the files count as aggy's.
-func indexCommitted(ctx context.Context, main string, ix toolIndex) bool {
-	out, _, err := defaultBorrowEnv().git(ctx, main, "ls-files", "-z", "--",
+// indexOwner says whose the finished-looking index of tool in repo is.
+// It is aggy's when aggy's record of its last build there names the
+// database's file identity. Otherwise, when git tracks the database or
+// aggy's marker, the repo committed it (aggy's exclude line only keeps
+// untracked files out) and aggy never built it: committed. When git
+// cannot answer (not on PATH, say), the index counts as aggy's, and
+// gitUnsure says so.
+func indexOwner(ctx context.Context, tool string, repo toolRepoAt, ix toolIndex) (committed, gitUnsure bool) {
+	if id, ok := indexDBID(repo, ix); ok {
+		if p, err := indexRecordPath(tool, repo); err == nil {
+			if b, err := safefs.ReadFileLimit(p, 256); err == nil && string(b) == id {
+				return false, false
+			}
+		}
+	}
+	out, _, err := defaultBorrowEnv().git(ctx, repo.main, "ls-files", "-z", "--",
 		filepath.ToSlash(filepath.Join(ix.dir, ix.db)), filepath.ToSlash(filepath.Join(ix.dir, indexMarker)))
-	return err == nil && out != ""
+	if err != nil {
+		return false, true
+	}
+	return out != "", false
+}
+
+// indexRecordPath is aggy's record, in its state folder and never in the
+// repo, of the index it last built for tool in repo: the database's file
+// identity then.
+func indexRecordPath(tool string, repo toolRepoAt) (string, error) {
+	state, err := home.Dir()
+	if err != nil {
+		return "", err
+	}
+	key := repo.key
+	if key == "" {
+		key = repo.main
+	}
+	sum := sha256.Sum256([]byte(key))
+	return filepath.Join(state, "indexes", tool+"-"+hex.EncodeToString(sum[:16])), nil
+}
+
+// indexDBID is the file identity (device and inode) of ix's database in
+// repo. The tool's server updates the database in place, so the identity
+// lasts; a checkout that rewrites the file gives it a new one.
+func indexDBID(repo toolRepoAt, ix toolIndex) (string, bool) {
+	fi, err := safefs.Lstat(filepath.Join(repo.main, ix.dir, ix.db))
+	if err != nil || !fi.Mode().IsRegular() {
+		return "", false
+	}
+	dev, ino, ok := safefs.FileID(fi)
+	return fmt.Sprintf("%d:%d\n", dev, ino), ok
+}
+
+// recordIndexBuilt writes aggy's record of the index it just built.
+func recordIndexBuilt(tool string, repo toolRepoAt, ix toolIndex) error {
+	id, ok := indexDBID(repo, ix)
+	if !ok {
+		return errors.New("the index database has no file identity")
+	}
+	p, err := indexRecordPath(tool, repo)
+	if err != nil {
+		return err
+	}
+	if err := safefs.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	return safefs.WriteFile(p, []byte(id), 0o600)
 }
 
 // excludeIndex adds "<dir>/" to the git exclude file of the repo at

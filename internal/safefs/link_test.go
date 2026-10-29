@@ -29,11 +29,7 @@ func TestRenameNoReplaceRace(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() { testHookBeforeRename = nil })
-	err := RenameNoReplace(src, dst, fi)
-	if errors.Is(err, ErrNoAtomicRename) {
-		t.Skipf("the temp file system has no no-replace rename: %v", err)
-	}
-	if !errors.Is(err, fs.ErrExist) {
+	if err := RenameNoReplace(src, dst, fi); !errors.Is(err, fs.ErrExist) {
 		t.Fatalf("err = %v, want ErrExist", err)
 	}
 	for _, c := range []struct{ name, want string }{{src, "new"}, {dst, "old"}} {

@@ -249,10 +249,14 @@ linters:
       # The atomic no-replace rename in safefs (RenameNoReplace), relative
       # to its checked parent's descriptor: renameat2 RENAME_NOREPLACE on
       # Linux and renameatx_np RENAME_EXCL on macOS (golang.org/x/sys/unix,
-      # for exactly these names).
-      - path: ^internal/safefs/rename_(linux|darwin)\.go$
+      # for exactly these names), and linkat/unlinkat on the same
+      # descriptor where the file system has no such flag.
+      - path: ^internal/safefs/rename_(linux|darwin|atomic)\.go$
         text: "import 'golang.org/x/sys/unix' is not allowed"
         linters: [depguard]
+      - path: ^internal/safefs/rename_atomic\.go$
+        text: "use of `unix\\.(Linkat|Unlinkat)`"
+        linters: [forbidigo]
       - path: ^internal/safefs/rename_linux\.go$
         text: "use of `unix\\.(Renameat2|RENAME_NOREPLACE)`"
         linters: [forbidigo]
