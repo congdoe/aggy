@@ -69,6 +69,9 @@ type gcItem struct {
 type gcPlan struct {
 	items   []gcItem
 	skipped []string
+	// keptBranches are aggy branches with commits of their own whose
+	// worktree is gone: kept until the person deletes them.
+	keptBranches []string
 }
 
 func (p *gcPlan) skip(format string, a ...any) {
@@ -204,11 +207,15 @@ func showPlan(w io.Writer, p gcPlan) {
 			fmt.Fprintf(w, "  %-9s %s%s\n", it.kind, termsafe.Field(it.what), size)
 		}
 	}
-	if len(p.skipped) > 0 {
+	if len(p.skipped) > 0 || len(p.keptBranches) > 0 {
 		fmt.Fprintln(w, "Left alone:")
 		for _, s := range p.skipped {
 			fmt.Fprintf(w, "  %s\n", termsafe.Field(s))
 		}
+	}
+	if n := len(p.keptBranches); n > 0 {
+		fmt.Fprintf(w, "  %d branch(es) kept with commits past the recorded edit, until you delete them: %s\n",
+			n, termsafe.Field(strings.Join(p.keptBranches, ", ")))
 	}
 }
 
@@ -340,33 +347,36 @@ func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktre
 			}
 		}
 		// A branch with commits that hold more than the recorded edit is
-		// kept: a leftover loses only its directory and admin entry.
-		var commits int
-		keepBranch := false
-		if accepted || leftover {
-			why, n, err := g.branchKept(ctx, wt)
+		// kept: the worktree loses only its directory and admin entry.
+		why, commits, _, err := g.branchKept(ctx, wt)
+		if err != nil {
+			p.skip("worktree of borrow %s: %v", id, err)
+			continue
+		}
+		keepBranch := why != ""
+		if keepBranch && gone {
+			admin, err := g.aggyAdmin(ctx, wt)
+			if err == nil && admin == "" {
+				// Nothing else is left: summed up in one line, not a
+				// line per branch on every run.
+				p.keptBranches = append(p.keptBranches, wt.Branch)
+				continue
+			}
 			if err != nil {
+				p.skip("worktree of borrow %s: kept: %s", id, why)
 				p.skip("worktree of borrow %s: %v", id, err)
 				continue
 			}
-			commits = n
-			if why != "" {
-				p.skip("worktree of borrow %s: kept: %s", id, why)
-				keepBranch = true
-				if gone {
-					if admin, err := g.aggyAdmin(ctx, wt); err != nil || admin == "" {
-						if err != nil {
-							p.skip("worktree of borrow %s: %v", id, err)
-						}
-						continue // nothing else is left
-					}
-				}
-			}
+		}
+		if keepBranch {
+			p.skip("worktree of borrow %s: kept: %s", id, why)
 		}
 		what := fmt.Sprintf("%s (%s, branch %s)", wt.Path, wt.State, wt.Branch)
 		switch {
-		case keepBranch:
+		case keepBranch && leftover:
 			what = fmt.Sprintf("%s (left by a removal cut short; its branch %s is kept)", wt.Path, wt.Branch)
+		case keepBranch:
+			what = fmt.Sprintf("%s (%s; its branch %s is kept)", wt.Path, wt.State, wt.Branch)
 		case leftover:
 			what = fmt.Sprintf("%s (left by a removal cut short, branch %s)", wt.Path, wt.Branch)
 		}
@@ -381,11 +391,7 @@ func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktre
 			if leftover {
 				// The removal is claimed already. The branch is checked
 				// again: it may have been committed on since the plan.
-				why, _, err := g.branchKept(ctx, wt)
-				if err != nil {
-					return err
-				}
-				return g.remove(ctx, wt, why == "")
+				return g.remove(ctx, wt, branchIfOnlyEdit)
 			}
 			if accepted {
 				if why, err := g.keptAccepted(ctx, wt); err != nil || why != "" {
@@ -395,7 +401,7 @@ func planWorktrees(ctx context.Context, p *gcPlan, s *store.Store, g *gitWorktre
 					return err
 				}
 			}
-			return discardEdit(ctx, s, g, id, wt, now)
+			return discardEdit(ctx, s, g, id, wt, now, branchIfOnlyEdit)
 		}})
 	}
 	return nil
@@ -487,7 +493,7 @@ func (g *gitWorktrees) keptAccepted(ctx context.Context, wt store.Worktree) (str
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return "", err
 	}
-	why, _, err := g.branchKept(ctx, wt)
+	why, _, _, err := g.branchKept(ctx, wt)
 	return why, err
 }
 
@@ -496,33 +502,38 @@ func (g *gitWorktrees) keptAccepted(ctx context.Context, wt store.Worktree) (str
 // gone, at the base commit, or when its tip holds exactly the tree aggy
 // recorded (the edit child committing its own work adds nothing the
 // accept did not apply; only those commits' messages are lost, which
-// the gc listing shows). Any other commit keeps it (M61-1, M61-2).
-func (g *gitWorktrees) branchKept(ctx context.Context, wt store.Worktree) (string, int, error) {
+// the gc listing shows). Any other commit keeps it (M61-1, M61-2). head
+// is the commit the branch was judged at ("" when it is gone), for the
+// compare-and-swap delete.
+func (g *gitWorktrees) branchKept(ctx context.Context, wt store.Worktree) (why string, n int, head string, err error) {
 	o, err := g.env.gitOutput(ctx, wt.Repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+wt.Branch+"^{commit}")
 	if err != nil {
-		return "", 0, err
+		return "", 0, "", err
 	}
-	head := strings.TrimSpace(string(o.Stdout))
-	if o.ExitCode != 0 || head == wt.Base {
-		return "", 0, nil
+	if o.ExitCode != 0 {
+		return "", 0, "", nil
+	}
+	head = strings.TrimSpace(string(o.Stdout))
+	if head == wt.Base {
+		return "", 0, head, nil
 	}
 	kept := "its branch " + wt.Branch + " has commits past the recorded edit"
 	if wt.Tree == "" {
-		return kept, 0, nil
+		return kept, 0, head, nil
 	}
 	o, err = g.env.gitOutput(ctx, wt.Repo, "rev-parse", "--verify", "--quiet", head+"^{tree}")
 	if err != nil {
-		return "", 0, err
+		return "", 0, "", err
 	}
 	if o.ExitCode != 0 || strings.TrimSpace(string(o.Stdout)) != wt.Tree {
-		return kept, 0, nil
+		return kept, 0, head, nil
 	}
 	out, _, err := g.env.git(ctx, wt.Repo, "rev-list", "--count", wt.Base+".."+head)
 	if err != nil {
-		return "", 0, err
+		return "", 0, "", err
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(out))
-	return "", n, err
+	n, err = strconv.Atoi(strings.TrimSpace(out))
+	return "", n, head, err
 }
 
 // leftBehind reports whether a leftover whose directory is gone (a
