@@ -218,6 +218,9 @@ func toolList(ctx context.Context, stdout, stderr io.Writer) int {
 	if b.Switches, err = toolSwitches(ctx); err != nil {
 		// L83-9: the list still shows; only the costs need the settings.
 		fmt.Fprintf(stderr, "aggy tool list: warning: the tool settings cannot be read (%s); costs are shown as if no tool were turned on\n", termsafe.Line(err.Error()))
+	} else if b.Unadded, err = toolUnadded(ctx, b.Tools); err != nil {
+		b.Switches = nil // R76-F1: as a launch, which then wires nothing
+		fmt.Fprintf(stderr, "aggy tool list: warning: the tool settings cannot be read (%s); costs are shown as if no tool were turned on\n", termsafe.Line(err.Error()))
 	}
 	repo := toolRepoAt{}
 	if cwd, err := os.Getwd(); err == nil {

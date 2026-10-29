@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/diag"
@@ -150,6 +151,40 @@ func TestSessionToolsIndexError(t *testing.T) {
 		if !strings.Contains(w, "the index could not be read") {
 			t.Errorf("%q", w)
 		}
+	}
+}
+
+// TestAddToolsUnaddedRow (R76-F1): an "on" recorded for a user file put
+// in the tools folder by hand (as aggy tool on took it before) wires
+// nothing at launch, for any vendor, and status says why.
+func TestAddToolsUnaddedRow(t *testing.T) {
+	_, dest := wireHome(t)
+	writeAt(t, dest, demoTool, 0o600)
+	repo := switchRepo(t, "")
+	r, _, err := tooldef.Load(os.Getenv(home.Env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	demo, _ := r.Get("demo")
+	ctx := context.Background()
+	s, err := store.OpenDefault(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.PutToolSwitch(ctx, store.ToolSwitch{Tool: "demo", On: true, Digest: demo.Digest, At: time.Now()})
+	_ = s.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range adapter.Vendors() {
+		req, warns, dir := wireOnce(t, v, []string{probe.CapConfigOverride, probe.CapSettings}, repo)
+		if req.MCPConfigFile != "" || req.AgentFile != "" || req.MCP != nil || req.Hooks != nil || len(warns) != 0 || exists(t, dir) {
+			t.Errorf("%s: %+v %q", v, req, warns)
+		}
+	}
+	t.Chdir(repo)
+	if _, out, _ := toolRun("", false, "status", "demo"); !strings.Contains(out, switchboard.NotAdded) {
+		t.Errorf("status:\n%s", out)
 	}
 }
 
