@@ -914,15 +914,27 @@ arm64 with `DO_NOT_TRACK=1`. No vendor config was edited, and no tool's
   is the manual incremental update. Telemetry is on unless
   `CODEGRAPH_TELEMETRY=0` or `DO_NOT_TRACK=1` (README, "Telemetry");
   aggy passes the person's own values through and sets neither.
-  Install: `npm install -g @colbymchenry/codegraph@1.6.2`.
+  Install: `npm install -g @colbymchenry/codegraph@1.6.2`. Its launcher
+  (`npm-shim.js`) runs the bundle the npm package installed, and when
+  that is missing downloads one from GitHub Releases into
+  `~/.codegraph/bundles` (`CODEGRAPH_INSTALL_DIR`), checked against
+  `SHA256SUMS`. Init (the platform bundle's `dist/directory.js`,
+  `createDirectory`) makes `.codegraph/` and writes its own
+  `.codegraph/.gitignore` (a header, `*`, and `!.gitignore`), which
+  leaves that file itself untracked-but-visible, so aggy adds
+  `.codegraph/` to the repo's `info/exclude`; it throws "already
+  initialized" when `codegraph.db` holds the schema, so a rebuild after
+  an interrupted init may need `codegraph uninit --force <repo>` first.
+  Under WSL on a Windows drive the folder may be `.codegraph-wsl`
+  (`directory.d.ts`); aggy launches nothing there (TODO(T6711)).
   Unverified, for a maintainer's live check (TODO(T6711)): whether
   `codegraph init <path>` with no stdin and no `--yes` builds the index
   without asking anything (the README says `--yes` skips every prompt,
   so aggy does not pass it: a yes it cannot read is not given), and
-  whether it writes anything outside `.codegraph/` (a `.gitignore`
-  entry, an agent's instructions file); and the name of the lock file
-  (`FileLock`), which a worktree copy leaves out by copying only
-  `codegraph.db` and `codegraph.db-wal`.
+  whether it writes anything outside `.codegraph/` (an agent's
+  instructions file); and the name of the lock file (`FileLock`), which
+  a worktree copy leaves out by copying only `codegraph.db` and
+  `codegraph.db-wal`.
 - **Context7** works without an API key (anonymous calls to its API);
   `--api-key` or `CONTEXT7_API_KEY` raises its rate limits.
 - **Playwright MCP** downloads no browser with `--ignore-scripts`; the

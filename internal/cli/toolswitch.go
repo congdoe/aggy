@@ -178,7 +178,7 @@ func toolVendors(name string) ([]adapter.Vendor, error) {
 // toolSwitch is aggy tool on|off: it records one setting. Nothing runs
 // and nothing is wired here; the next launch wires what is on. Off takes
 // any tool name, loaded or not, and never reads the repo's config.
-func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) (err error) {
+func toolSwitch(ctx context.Context, a toolArgs, on bool, in io.Reader, tty bool, stdout io.Writer) (err error) {
 	if err := delegated(); err != nil {
 		return err
 	}
@@ -234,7 +234,9 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) (err
 		if a.hasRepo {
 			// T6711: a per-repo index is built here, the first time, or
 			// nothing is recorded.
-			if err := prebuildIndex(ctx, t, repo, stdout); err != nil {
+			if err := prebuildIndex(ctx, t, repo, in, tty, stdout); errors.Is(err, errNotIndexed) {
+				return nil
+			} else if err != nil {
 				return err
 			}
 		}

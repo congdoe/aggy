@@ -5,7 +5,8 @@
 # so it is told the repo.
 # The index (T6711): codegraph init [path] writes .codegraph/ inside the
 # repo. aggy runs it once per repo, on the aggy tool on --repo that finds
-# no .codegraph/codegraph.db there, never on its own and never for a repo
+# no finished index there (internal/cli/toolindex.go), never on its own
+# and never for a repo
 # where the tool is off. The server keeps the index fresh itself: a file
 # watcher, and a catch-up on connect (codegraph 1.6.2 README, "How
 # auto-syncing works"). Without a terminal, init gets no stdin and no

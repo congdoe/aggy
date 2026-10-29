@@ -244,6 +244,12 @@ func samePath(a, b string) bool {
 // rules never apply to a tracked file. With the line deleted and nothing
 // else edited, aggy unwire treats the change as already undone.
 func GitExcludePatch(root string) (patch.Patch, error) {
+	return GitExcludeLinePatch(root, ExcludeLine)
+}
+
+// GitExcludeLinePatch is GitExcludePatch for another folder's line, such
+// as ".codegraph/" for a tool's index in the repo (T6711): "<name>/".
+func GitExcludeLinePatch(root, line string) (patch.Patch, error) {
 	path, err := GitExcludePath(root)
 	if err != nil {
 		return patch.Patch{}, err
@@ -252,26 +258,33 @@ func GitExcludePatch(root string) (patch.Patch, error) {
 	if err != nil {
 		return patch.Patch{}, err
 	}
-	return patch.Patch{File: path, ExpectedHash: h, Transform: AddExcludeLine, Mode: 0o644}, nil
+	return patch.Patch{File: path, ExpectedHash: h, Transform: addExcludeLine(line), Mode: 0o644}, nil
 }
 
 // AddExcludeLine is GitExcludePatch's transform. It gets nil for a file
 // that does not exist.
-func AddExcludeLine(src []byte) ([]byte, error) {
-	if src == nil {
-		return []byte(ExcludeLine + "\n"), nil
-	}
-	for _, l := range strings.Split(string(src), "\n") {
-		switch strings.TrimSpace(l) {
-		case ".aggy/", "/.aggy/", ".aggy", "/.aggy":
-			return src, nil
+func AddExcludeLine(src []byte) ([]byte, error) { return addExcludeLine(ExcludeLine)(src) }
+
+// addExcludeLine is the transform that adds line ("<name>/"), unless the
+// file has it or /<name>/, <name>, or /<name>.
+func addExcludeLine(line string) func([]byte) ([]byte, error) {
+	name := strings.TrimSuffix(line, "/")
+	return func(src []byte) ([]byte, error) {
+		if src == nil {
+			return []byte(line + "\n"), nil
 		}
+		for _, l := range strings.Split(string(src), "\n") {
+			switch strings.TrimSpace(l) {
+			case name + "/", "/" + name + "/", name, "/" + name:
+				return src, nil
+			}
+		}
+		nl := eol(src)
+		out := bytes.Clone(src)
+		if len(out) > 0 && !bytes.HasSuffix(out, []byte("\n")) {
+			out = append(out, nl...)
+		}
+		out = append(out, line...)
+		return append(out, nl...), nil
 	}
-	nl := eol(src)
-	out := bytes.Clone(src)
-	if len(out) > 0 && !bytes.HasSuffix(out, []byte("\n")) {
-		out = append(out, nl...)
-	}
-	out = append(out, ExcludeLine...)
-	return append(out, nl...), nil
 }

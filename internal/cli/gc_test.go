@@ -11,6 +11,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/switchboard"
 )
 
 func gc(f *borrowFixture, args ...string) (int, string, string) {
@@ -41,8 +42,15 @@ func TestGCWorktrees(t *testing.T) {
 		t.Fatalf("accept: %d %s %s", code, out, errOut)
 	}
 	// T6711: a worktree's copy of the CodeGraph index goes with it.
-	mustWrite(t, filepath.Join(wtA, ".codegraph", "codegraph.db"), "db", 0o600)
-	mustWrite(t, filepath.Join(wtA, ".codegraph", ".gitignore"), "*\n", 0o600)
+	mustWrite(t, filepath.Join(f.repo, ".codegraph", "codegraph.db"), "db", 0o600)
+	mustWrite(t, filepath.Join(f.repo, ".codegraph", indexMarker), "x", 0o600)
+	repoA, err := toolRepo(wtA, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := copyIndexes(context.Background(), []switchboard.State{codegraphState(t)}, []string{"codegraph"}, repoA); len(w) != 0 || !exists(t, filepath.Join(wtA, ".codegraph", "codegraph.db")) {
+		t.Fatalf("no copy: %q", w)
+	}
 	pending, wtP := editBorrow(t, f, map[string]string{"b.go": "package a\n"})
 	linked, wtL := editBorrow(t, f, map[string]string{"c.go": "package a\n"})
 	if code, _, errOut := accept(f, "", false, linked, "--yes"); code != 0 {

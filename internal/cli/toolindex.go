@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -16,8 +17,13 @@ import (
 	"github.com/congdoe/aggy/internal/borrow"
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/execrun"
+	"github.com/congdoe/aggy/internal/home"
+	"github.com/congdoe/aggy/internal/manifest"
+	"github.com/congdoe/aggy/internal/parity"
+	"github.com/congdoe/aggy/internal/patch"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
+	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/switchboard"
 	"github.com/congdoe/aggy/internal/termsafe"
 	"github.com/congdoe/aggy/internal/tooldef"
@@ -25,24 +31,29 @@ import (
 )
 
 // toolIndex is a built-in's per-repo index (T6711): the folder its
-// prebuild writes under the work-tree root, the file whose presence
-// means the repo is indexed, and the files a linked worktree's copy
-// takes.
+// prebuild writes under the work-tree root, its database (the file an
+// index has), and the files a worktree's copy takes, the database last.
 type toolIndex struct {
-	dir, marker string
-	copy        []string
+	dir, db string
+	copy    []string
 }
 
 // toolIndexes are the built-ins' index folders. CodeGraph 1.6.2 keeps
 // .codegraph/codegraph.db, a SQLite database with -wal and -shm
-// sidecars, and counts a repo as indexed once codegraph.db is there
-// (its dist/directory.d.ts and dist/index.d.ts; docs/verification.md,
-// "Managed tools"). A copy takes the database and its WAL only: the
-// main checkout's daemon.pid and lock files belong to its own server,
-// and SQLite rebuilds -shm.
+// sidecars (its dist/directory.d.ts and dist/index.d.ts; docs/
+// verification.md, "Managed tools"). A copy takes the database and its
+// WAL only: the main checkout's daemon.pid, socket, and locks belong to
+// its own server, and SQLite rebuilds -shm.
+// TODO(T6711): under WSL on a Windows drive codegraph may use
+// .codegraph-wsl instead (directory.d.ts); aggy does not launch there.
 var toolIndexes = map[string]toolIndex{
-	"codegraph": {dir: ".codegraph", marker: "codegraph.db", copy: []string{"codegraph.db", "codegraph.db-wal"}},
+	"codegraph": {dir: ".codegraph", db: "codegraph.db", copy: []string{"codegraph.db-wal", "codegraph.db"}},
 }
+
+// indexMarker is aggy's own file in an index folder: written only once
+// the prebuild exited 0 (or a copy is complete), so a database an
+// interrupted build left behind never counts as an index.
+const indexMarker = ".aggy-indexed"
 
 // toolInstallHow says how to install a built-in's pinned version
 // ({version}); aggy only says it and never installs anything.
@@ -66,20 +77,39 @@ const prebuildTimeout = 30 * time.Minute
 // test lowers it.
 var maxIndexCopy int64 = 1 << 30
 
-// gitignoreAll is the .gitignore aggy puts in an index folder, so git
-// ignores the folder and everything in it, itself included.
-const gitignoreAll = "*\n"
+// errNotIndexed is a person's no to the first index of a repo: nothing
+// is recorded, and aggy tool on exits 0.
+var errNotIndexed = errors.New("not indexed")
+
+// indexDir reports whether p is a real folder (not a symlink), or
+// absent (fs.ErrNotExist).
+func indexDir(p string) (fs.FileInfo, error) {
+	fi, err := safefs.Lstat(p)
+	if err == nil && !fi.IsDir() {
+		err = fmt.Errorf("%s is not a real folder (a symlink?)", p)
+	}
+	return fi, err
+}
+
+// regular reports whether p is there as a regular file.
+func regular(p string) bool {
+	fi, err := safefs.Lstat(p)
+	return err == nil && fi.Mode().IsRegular()
+}
 
 // prebuildIndex is the lazy index of aggy tool on --repo (T6711): for a
 // built-in with a prebuild, it checks that the program is installed and,
-// when the main checkout has no index yet, runs the prebuild there once
-// as the MCP shim runs a server: the definition's argv with {repo}
-// filled in, through execrun with an environment built from scratch
-// (the variables the tool's servers declare), no stdin, a private empty
-// working folder, and a time limit. Any failure refuses the switch, so
-// nothing is recorded. A repo where the tool is never turned on is never
-// indexed.
-func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, stdout io.Writer) error {
+// when the main checkout has no finished index (its database and aggy's
+// marker), asks at a terminal, puts the index folder in the repo's git
+// exclude file (through the manifest, so aggy unwire undoes it), and
+// runs the prebuild there as the MCP shim runs a server: the
+// definition's argv with {repo} filled in, through execrun with an
+// environment built from scratch (the variables the tool's servers
+// declare), no stdin, a private empty working folder, and a time limit.
+// ctx ends it, and kills its process group, on Ctrl-C, SIGTERM, or
+// SIGHUP. Any failure refuses the switch, so nothing is recorded. A repo
+// where the tool is never turned on is never indexed.
+func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, in io.Reader, tty bool, stdout io.Writer) error {
 	if !t.BuiltIn || len(t.Install.Prebuild) == 0 {
 		return nil
 	}
@@ -102,19 +132,34 @@ func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, stdout 
 			return fail(err)
 		}
 	}
+	// The folder is checked without following a symlink, so neither the
+	// check nor the build reaches outside the repo through one.
 	dir := filepath.Join(repo.main, ix.dir)
-	switch fi, err := safefs.Lstat(filepath.Join(dir, ix.marker)); {
-	case err == nil && fi.Mode().IsRegular():
-		return nil // indexed already; its server keeps it fresh
-	case err == nil:
-		return fail(fmt.Errorf("%s is not a regular file", filepath.Join(dir, ix.marker)))
-	case !errors.Is(err, fs.ErrNotExist):
+	if _, err := indexDir(dir); err == nil {
+		if regular(filepath.Join(dir, indexMarker)) && regular(filepath.Join(dir, ix.db)) {
+			return nil // indexed already; its server keeps it fresh
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fail(err)
 	}
 	argv, err := toolwire.Fill(t.Install.Prebuild, repo.main)
 	if err != nil {
 		return fail(err)
 	}
+	switch {
+	case tty:
+		fmt.Fprintf(stdout, "Index %s with %s? This runs %s, which writes %s/ in the repo. [y/N] ", termsafe.Field(repo.main), t.Name, quoteArgv(argv), ix.dir)
+		line, _ := bufio.NewReader(io.LimitReader(in, maxAnswer)).ReadString('\n')
+		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+			fmt.Fprintln(stdout, "Nothing indexed or turned on.")
+			return errNotIndexed
+		}
+	case os.Getenv("AGGY_VENDOR") != "":
+		// An agent in a session aggy started: the first index runs the
+		// tool's code over the repo, so the person starts it.
+		return fail(fmt.Errorf("the first index of a repo runs %s, so you run it yourself, at a terminal: aggy tool on %s --repo %s", quoteArgv(argv), t.Name, termsafe.Field(repo.main)))
+	}
+	excluded := excludeIndex(ctx, repo.main, ix.dir, stdout)
 	var names []string
 	for _, m := range t.MCP {
 		names = append(names, m.Env...)
@@ -125,44 +170,83 @@ func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, stdout 
 		return fail(err)
 	}
 	defer func() { _ = safefs.RemoveAll(tmp) }()
-	fmt.Fprintf(stdout, "Indexing %s once for %s (up to %s): %s\n", termsafe.Field(repo.main), t.Name, prebuildTimeout, quoteArgv(argv))
+	fmt.Fprintf(stdout, "Indexing %s once for %s: %s. This may take a while (up to %s); Ctrl-C cancels.\n", termsafe.Field(repo.main), t.Name, quoteArgv(argv), prebuildTimeout)
 	out, err := execrun.ToolRunner(prebuildTimeout, slices.Compact(names))(ctx, adapter.Command{Path: path, Args: argv[1:], Dir: tmp})
-	if err == nil && out.ExitCode != 0 {
+	switch {
+	case ctx.Err() != nil:
+		err = errors.New("interrupted; nothing was recorded, and the next aggy tool on builds it again")
+	case err == nil && out.ExitCode != 0:
 		err = fmt.Errorf("exit %d: %s", out.ExitCode, termsafe.Field(strings.Join(borrow.Excerpt(string(out.Stderr), 5, 160), " | ")))
+		if regular(filepath.Join(dir, ix.db)) {
+			err = fmt.Errorf("%w (an index an earlier build left is there; codegraph uninit --force %s removes it)", err, termsafe.Field(repo.main))
+		}
 	}
 	if err != nil {
 		return fail(fmt.Errorf("%s: %w", quoteArgv(argv), err))
 	}
-	if fi, err := safefs.Lstat(filepath.Join(dir, ix.marker)); err != nil || !fi.Mode().IsRegular() {
-		return fail(fmt.Errorf("%s ran but left no %s", quoteArgv(argv), filepath.Join(ix.dir, ix.marker)))
+	dfi, err := indexDir(dir)
+	if err != nil || !regular(filepath.Join(dir, ix.db)) {
+		return fail(errors.Join(err, fmt.Errorf("%s ran but left no %s", quoteArgv(argv), filepath.Join(ix.dir, ix.db))))
 	}
-	// The index lives in the repo: aggy makes sure git ignores it.
-	dfi, err := safefs.Lstat(dir)
-	if err == nil && !dfi.IsDir() {
-		err = errors.New("not a real folder")
-	}
-	if err == nil {
-		if err = safefs.WriteFileNoFollowIn(dfi, filepath.Join(dir, ".gitignore"), []byte(gitignoreAll), 0o644, nil); errors.Is(err, fs.ErrExist) {
-			err = nil // one is there already; it is left as it is
-		}
-	}
-	if err != nil {
-		fmt.Fprintf(stdout, "warning: no .gitignore was written in %s (%s): add %s/ to the repo's .gitignore\n", termsafe.Field(dir), termsafe.Line(err.Error()), ix.dir)
+	if err := safefs.WriteFileNoFollowIn(dfi, filepath.Join(dir, indexMarker), []byte("built by aggy tool on\n"), 0o600, nil); err != nil && !errors.Is(err, fs.ErrExist) {
+		return fail(err)
 	}
 	dlog.Log(ctx, diag.Rec{Event: diag.EvToolIndexed, Attrs: map[string]any{"tool": t.Name, "step": "init"}})
-	fmt.Fprintf(stdout, "Indexed into %s, which git ignores; the tool's server keeps it fresh.\n", termsafe.Field(dir))
+	if excluded {
+		fmt.Fprintf(stdout, "Indexed into %s, which the repo's git exclude file ignores; the tool's server keeps it fresh.\n", termsafe.Field(dir))
+	} else {
+		fmt.Fprintf(stdout, "Indexed into %s; the tool's server keeps it fresh. Add %s/ to .gitignore or .git/info/exclude so git ignores it.\n", termsafe.Field(dir), ix.dir)
+	}
 	return nil
 }
 
-// copyIndexes copies the main checkout's index of each tool in on that
-// has one (worktree-copy) and was wired (wired names it) into the linked
-// worktree a session is about to start in, when the worktree has none
-// yet (T6711). Worktrees never share an index, and one where the tool is
-// off never gets a copy. Each failure is a warning: the session starts
-// without the copy, and the tool's server builds what it can there. aggy
-// gc removes the copy with the worktree.
+// excludeIndex adds "<dir>/" to the git exclude file of the repo at
+// main, which its linked worktrees share, through the manifest. It
+// reports whether the line is there; a failure is a warning.
+func excludeIndex(ctx context.Context, main, dir string, stdout io.Writer) bool {
+	err := func() error {
+		p, err := parity.GitExcludeLinePatch(main, dir+"/")
+		if err != nil {
+			return err
+		}
+		s, err := store.OpenDefault(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = s.Close() }()
+		m, err := manifest.Open(s)
+		if err != nil {
+			return err
+		}
+		runID := manifest.NewRunID()
+		cs, err := m.Run(ctx, manifest.Write, runID, []patch.Patch{p}, io.Discard)
+		for _, c := range cs {
+			if c.Status == store.ChangeApplied {
+				fmt.Fprintf(stdout, "Added %s/ to %s (aggy unwire --run %s undoes it).\n", dir, termsafe.Field(c.File), runID)
+			}
+		}
+		return err
+	}()
+	if err != nil {
+		fmt.Fprintf(stdout, "warning: %s/ was not added to the repo's git exclude file: %s\n", dir, termsafe.Line(err.Error()))
+	}
+	return err == nil
+}
+
+// copyIndexes copies the main checkout's finished index of each tool in
+// on that has one (worktree-copy) and was wired (wired names it) into
+// the worktree a session is about to start in (T6711), only when that is
+// one of aggy's own edit worktrees (<state>/worktrees/<id>), which aggy
+// gc removes with the copy; a worktree of the person's own gets none.
+// Worktrees never share an index, and one where the tool is off never
+// gets a copy. Each failure is a warning: the session starts without
+// the copy, and the tool's server builds what it can there.
 func copyIndexes(ctx context.Context, on []switchboard.State, wired []string, repo toolRepoAt) []string {
 	if repo.root == "" || repo.root == repo.main {
+		return nil
+	}
+	state, err := home.Dir()
+	if err != nil || filepath.Dir(resolvePath(repo.root)) != resolvePath(filepath.Join(state, worktreesDir)) || !validBorrowID(filepath.Base(repo.root)) {
 		return nil
 	}
 	var warns []string
@@ -187,41 +271,40 @@ func copyIndexes(ctx context.Context, on []switchboard.State, wired []string, re
 }
 
 // copyIndex copies ix's files from the main checkout main into the
-// worktree wt, through safefs: the index folder must be a real folder;
-// a symlink anywhere in it refuses the copy, and so does a file to copy
-// that is not a regular file with one link, or files over maxIndexCopy
-// in all. Nothing is copied when wt has the folder already (an earlier
-// copy, or its own index) or main has no index. A file that changes
-// while it is copied (the main checkout's server writing) refuses the
-// copy, and a refused copy leaves nothing behind. The copy gets its own
-// .gitignore, so it never lands in an edit's diff.
+// worktree wt, through safefs. It copies only a finished index (the
+// database and aggy's marker in main), and nothing when wt's folder has
+// a database already (an earlier copy, or its own index). The source
+// folder must be a real folder; a symlink in it refuses the copy, and so
+// does a file to copy that is not a regular file with one link, or
+// files over maxIndexCopy in all. In wt the folder's .gitignore (*) is
+// written first unless one is there, each file is copied under a temp
+// name and renamed into place only once every source is checked again
+// against the first look (identity, size, mtime: the main checkout's
+// server may write while it is copied), the database last, then aggy's
+// marker. A refused or cut-short copy leaves no database, so it is never
+// taken for an index, and the next launch copies again.
 func copyIndex(ix toolIndex, main, wt string) (bool, error) {
 	src, dst := filepath.Join(main, ix.dir), filepath.Join(wt, ix.dir)
-	switch _, err := safefs.Lstat(dst); {
-	case err == nil:
-		return false, nil
-	case !errors.Is(err, fs.ErrNotExist):
+	if _, err := indexDir(dst); err == nil {
+		if _, err := safefs.Lstat(filepath.Join(dst, ix.db)); !errors.Is(err, fs.ErrNotExist) {
+			return false, err // there, or not checkable
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return false, err
 	}
-	sfi, err := safefs.Lstat(src)
-	if errors.Is(err, fs.ErrNotExist) {
+	if _, err := indexDir(src); errors.Is(err, fs.ErrNotExist) {
 		return false, nil
-	}
-	if err != nil {
+	} else if err != nil {
 		return false, err
 	}
-	if !sfi.IsDir() {
-		return false, fmt.Errorf("%s is not a real folder (a symlink?)", src)
+	if !regular(filepath.Join(src, indexMarker)) {
+		return false, nil // not a finished index
 	}
 	ents, err := safefs.ReadDir(src)
 	if err != nil {
 		return false, err
 	}
-	type file struct {
-		name string
-		fi   fs.FileInfo
-	}
-	var files []file
+	snap := map[string]fs.FileInfo{}
 	var total int64
 	for _, e := range ents {
 		p := filepath.Join(src, e.Name())
@@ -239,38 +322,91 @@ func copyIndex(ix toolIndex, main, wt string) (bool, error) {
 		if total += fi.Size(); total > maxIndexCopy {
 			return false, fmt.Errorf("the index is over the %d MiB a worktree copy takes", maxIndexCopy>>20)
 		}
-		files = append(files, file{e.Name(), fi})
+		snap[e.Name()] = fi
 	}
-	if !slices.ContainsFunc(files, func(f file) bool { return f.name == ix.marker }) {
-		return false, nil // not indexed yet
+	if snap[ix.db] == nil {
+		return false, nil
 	}
-	if wfi, err := safefs.Lstat(wt); err != nil || !wfi.IsDir() {
-		return false, errors.Join(err, fmt.Errorf("%s is not a real folder", wt))
-	}
-	if err := safefs.Mkdir(dst, 0o700); err != nil {
+	if err := safefs.Mkdir(dst, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 		return false, err
 	}
-	done := false
+	dfi, err := indexDir(dst)
+	if err != nil {
+		return false, err
+	}
+	if err := safefs.WriteFileNoFollowIn(dfi, filepath.Join(dst, ".gitignore"), []byte("*\n"), 0o600, nil); err != nil && !errors.Is(err, fs.ErrExist) {
+		return false, err
+	}
+	// Left by a copy cut short: no database came with them.
+	stale := []string{indexMarker}
+	for _, n := range ix.copy {
+		stale = append(stale, n, copyTemp(n))
+	}
+	for _, n := range stale {
+		p := filepath.Join(dst, n)
+		if fi, err := safefs.Lstat(p); err == nil {
+			if !fi.Mode().IsRegular() {
+				return false, fmt.Errorf("%s is not a regular file", p)
+			}
+			if err := safefs.RemoveSame(p, fi); err != nil {
+				return false, err
+			}
+		}
+	}
+	type staged struct {
+		name, tmp string
+		fi        fs.FileInfo
+	}
+	var done []staged
 	defer func() {
-		if !done {
-			_ = safefs.RemoveAll(dst)
+		for _, s := range done {
+			_ = safefs.RemoveSame(s.tmp, s.fi)
 		}
 	}()
-	dfi, err := safefs.Lstat(dst)
-	if err != nil || !dfi.IsDir() {
-		return false, errors.Join(err, fmt.Errorf("%s is not a real folder", dst))
-	}
-	for _, f := range files {
-		if err := copyRegular(filepath.Join(src, f.name), f.fi, filepath.Join(dst, f.name)); err != nil {
+	for _, n := range ix.copy {
+		if snap[n] == nil {
+			continue
+		}
+		tmp := filepath.Join(dst, copyTemp(n))
+		if err := copyRegular(filepath.Join(src, n), snap[n], tmp); err != nil {
 			return false, err
 		}
+		fi, err := safefs.Lstat(tmp)
+		if err != nil {
+			return false, err
+		}
+		done = append(done, staged{n, tmp, fi})
 	}
-	if err := safefs.WriteFileNoFollowIn(dfi, filepath.Join(dst, ".gitignore"), []byte(gitignoreAll), 0o600, nil); err != nil {
+	// Every source again, after all are copied: a checkpoint between the
+	// database and its WAL would make a pair that does not match.
+	if testHookIndexCopied != nil {
+		testHookIndexCopied()
+	}
+	for n, want := range snap {
+		fi, err := safefs.Lstat(filepath.Join(src, n))
+		if err != nil || !os.SameFile(fi, want) || fi.Size() != want.Size() || !fi.ModTime().Equal(want.ModTime()) {
+			return false, fmt.Errorf("%s changed while the index was copied", filepath.Join(src, n))
+		}
+	}
+	for len(done) > 0 {
+		s := done[0]
+		if err := safefs.RenameNoReplace(s.tmp, filepath.Join(dst, s.name), s.fi); err != nil {
+			return false, err
+		}
+		done = done[1:]
+	}
+	if err := safefs.WriteFileNoFollowIn(dfi, filepath.Join(dst, indexMarker), []byte("copied by aggy\n"), 0o600, nil); err != nil {
 		return false, err
 	}
-	done = true
 	return true, nil
 }
+
+// testHookIndexCopied runs once copyIndex has copied every file and
+// before it checks the sources again; a test changes one there.
+var testHookIndexCopied func()
+
+// copyTemp is the name a copied file has until it is renamed into place.
+func copyTemp(name string) string { return "." + name + ".aggy-copy" }
 
 // copyRegular copies src, which must still be the file want describes,
 // to dst, a new file, and refuses a src that changed meanwhile.
@@ -295,11 +431,11 @@ func copyRegular(src string, want fs.FileInfo, dst string) error {
 	if cerr := out.Close(); err == nil {
 		err = cerr
 	}
+	if err == nil && (n != want.Size() || !same()) {
+		err = fmt.Errorf("%s changed while it was copied", src)
+	}
 	if err != nil {
-		return err
+		_ = safefs.Remove(dst)
 	}
-	if n != want.Size() || !same() {
-		return fmt.Errorf("%s changed while it was copied", src)
-	}
-	return nil
+	return err
 }
