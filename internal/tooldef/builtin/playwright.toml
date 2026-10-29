@@ -1,5 +1,7 @@
 # Playwright MCP: the page's accessibility tree instead of a screenshot.
-# Project-scoped, only for repos with a UI, and not in the default set.
+# Project-scoped and not in the default set. It is meant for repos with a
+# UI, but aggy does not guess which those are: when = "has-ui" is shown,
+# never checked, and the person turns it on per repo (--repo).
 # Source: docs/verification.md, "Managed tools (2026-10-28)":
 # @playwright/mcp 0.0.83, whose binary is playwright-mcp. Its browsers
 # are a separate download on first use.
@@ -16,6 +18,7 @@ unverified = ["homepage"]
 [install]
 check = ["playwright-mcp", "--version"]
 check_pattern = 'Version (\d+\.\d+\.\d+)'
+hint = "npm i -g --ignore-scripts @playwright/mcp@0.0.83; its browsers need npx playwright install before first use"
 
 [[mcp]]
 vendors = ["claude", "codex", "grok"]
