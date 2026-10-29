@@ -17,6 +17,7 @@ import (
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
+	"github.com/congdoe/aggy/internal/tooldef"
 )
 
 // checkRepo makes a git-looking repo with the given repo config and
@@ -147,6 +148,27 @@ func TestCheckRecordsNoErrorText(t *testing.T) {
 	}
 	if strings.Count(text, `"failure":"start"`) != 2 || strings.Count(text, `"error_class":`) != 2 {
 		t.Errorf("records lack the failure and its class:\n%s", text)
+	}
+}
+
+// TestToolRefuseKey (F73-3): a [cost.vendor] key the user wrote reaches
+// a record only when it names a vendor.
+func TestToolRefuseKey(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGGY_HOME", state)
+	freshRun(t)
+	var errb bytes.Buffer
+	toolRefuse(context.Background(), &errb, "tool", diag.EvToolDefRefused,
+		&tooldef.Error{File: "/x/t.toml", Key: "cost.vendor.marten-canary-81", Msg: "unknown vendor"})
+	toolRefuse(context.Background(), &errb, "tool", diag.EvToolDefRefused,
+		&tooldef.Error{File: "/x/t.toml", Key: "cost.vendor.grok", Msg: "want 1 to 9 tokens"})
+	text := allDiagText(t, state)
+	if strings.Contains(text, "canary") || !strings.Contains(text, "cost.vendor.<invalid>: refused") || !strings.Contains(text, `"key":"cost.vendor.\u003cinvalid\u003e"`) || !strings.Contains(text, "cost.vendor.grok") {
+		t.Errorf("records:\n%s", text)
+	}
+	if !strings.Contains(errb.String(), "marten-canary-81") {
+		t.Errorf("the printed error lost the key: %s", errb.String())
 	}
 }
 

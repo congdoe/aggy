@@ -241,8 +241,9 @@ func toolRefuse(ctx context.Context, stderr io.Writer, cmd string, ev diag.Event
 		rec.Msg = file + ": refused"
 		rec.Attrs["file"] = file
 		if te.Key != "" {
-			rec.Msg = file + ": " + te.Key + ": refused"
-			rec.Attrs["key"] = te.Key
+			key := recordKey(te.Key)
+			rec.Msg = file + ": " + key + ": refused"
+			rec.Attrs["key"] = key
 		}
 	}
 	dlog.Log(ctx, rec)
@@ -251,6 +252,18 @@ func toolRefuse(ctx context.Context, stderr io.Writer, cmd string, ev diag.Event
 		msg += " " + tag
 	}
 	fmt.Fprintf(stderr, "aggy %s: %s\n", cmd, msg)
+}
+
+// recordKey is a definition error's key for a record. The one map whose
+// keys the user writes, [cost.vendor], is kept only for a known vendor:
+// any other name is the file's own text (F73-3).
+func recordKey(k string) string {
+	if v, ok := strings.CutPrefix(k, "cost.vendor."); ok {
+		if _, err := adapter.ParseVendor(v); err != nil {
+			return "cost.vendor.<invalid>"
+		}
+	}
+	return k
 }
 
 func toolAdd(src string, yes bool, in io.Reader, tty bool, stdout io.Writer) error {

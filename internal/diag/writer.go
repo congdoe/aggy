@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -133,8 +134,22 @@ func New(version string, warn io.Writer) *Writer {
 	// (G67-1). A value under minEnvScrub bytes, such as /tmp, would
 	// replace unrelated text (G67-R4).
 	for _, k := range envScrubbed {
-		if v := strings.TrimSpace(w.getenv(k)); len(v) >= minEnvScrub {
-			w.env = append(w.env, v)
+		v := strings.TrimSpace(w.getenv(k))
+		if v == "" {
+			continue
+		}
+		// The forms an error may show it in: as set, cleaned (no
+		// trailing slash), and resolved (/tmp as /private/tmp) (F73-2).
+		forms := []string{v, filepath.Clean(v)}
+		if filepath.IsAbs(v) {
+			if r, err := safefs.RealPath(v); err == nil {
+				forms = append(forms, r)
+			}
+		}
+		for _, f := range forms {
+			if len(f) >= minEnvScrub && !slices.Contains(w.env, f) {
+				w.env = append(w.env, f)
+			}
 		}
 	}
 	// Longest first, so a value inside another (a vendor home under

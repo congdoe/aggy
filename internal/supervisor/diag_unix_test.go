@@ -30,7 +30,10 @@ func diagHome(t *testing.T) (*diag.Queue, func() []store.DiagRecord) {
 	q := diag.New("v-test", io.Discard).Queue(256)
 	return q, func() []store.DiagRecord {
 		t.Helper()
-		q.Close(waitLimit)
+		// Close returns once every queued record is written; the long
+		// limit only stops a hung writer, so a loaded machine never reads
+		// a partial log (F73-1).
+		q.Close(5 * time.Minute)
 		v, err := store.OpenDiagView(context.Background(), filepath.Join(state, store.DiagFileName), "")
 		if err != nil {
 			t.Fatal(err)
