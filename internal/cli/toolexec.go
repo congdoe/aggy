@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/execrun"
@@ -35,7 +36,8 @@ var execTool = execrun.ExecTool
 // The server then runs in dir with an environment built from scratch
 // (execrun.ToolEnv): the basics plus the tool's declared variables, read
 // now from the CLI's environment and never written to a file, and the
-// telemetry opt-outs (telemetryOff).
+// telemetry opt-outs, or with telemetry allowed the person's own
+// DO_NOT_TRACK (toolTelemetry).
 func runToolExec(args []string, stderr io.Writer) int {
 	ctx := context.Background()
 	name := ""
@@ -80,9 +82,10 @@ func runToolExec(args []string, stderr io.Writer) int {
 			return fail("program", err)
 		}
 	}
-	env, err := execrun.ToolEnv(os.Environ(), m.Env)
+	pass, set := toolTelemetry(state, t)
+	env, err := execrun.ToolEnv(os.Environ(), append(slices.Clone(m.Env), pass...))
 	if err == nil {
-		env, err = execrun.SetEnv(env, telemetryOff(state, t))
+		env, err = execrun.SetEnv(env, set)
 	}
 	if err != nil {
 		return fail("env", err)

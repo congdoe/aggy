@@ -401,6 +401,38 @@ func TestToolOffKeepsSkillPin(t *testing.T) {
 	toolOK(t, "on", "caveman", "--vendor", "claude")
 }
 
+// TestSkillRepinMoreThanASkill (T6822, MED-1 of #97): a user tool with a
+// skill and an MCP server, whose folder changed while it was off, is
+// re-pinned by aggy skill add --replace, which stores the folder and
+// leaves the definition as it is; without --replace the name clashes.
+func TestSkillRepinMoreThanASkill(t *testing.T) {
+	traceTool(t, "tracer")
+	toolOK(t, "on", "tracer", "--vendor", "claude")
+	toolOK(t, "off", "tracer")
+	changeSkill(t)
+	if code, _, errOut := toolRun("", false, "on", "tracer", "--vendor", "claude"); code == 0 || !strings.Contains(errOut, "tool.skill_changed") || !strings.Contains(errOut, "skill add") {
+		t.Fatalf("on with a changed folder: %d %q", code, errOut)
+	}
+	def := filepath.Join(os.Getenv(home.Env), "tools", "tracer.toml")
+	before, err := os.ReadFile(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := filepath.Join(t.TempDir(), "tracer")
+	writeAt(t, filepath.Join(read, "SKILL.md"), "---\nname: tracer\ndescription: changed\n---\n", 0o644)
+	if code, _, errOut := skillRun("", true, "add", read, "--yes"); code == 0 || !strings.Contains(errOut, "tool.skill_exists") {
+		t.Errorf("without --replace: %d %q", code, errOut)
+	}
+	code, out, errOut := skillRun("", true, "add", read, "--yes", "--replace")
+	if code != 0 || !strings.Contains(out, "kept as it is") {
+		t.Fatalf("re-pin: %d %q %q", code, out, errOut)
+	}
+	if after, _ := os.ReadFile(def); string(after) != string(before) {
+		t.Errorf("the definition changed:\n%s", after)
+	}
+	toolOK(t, "on", "tracer", "--vendor", "claude")
+}
+
 // TestToolRemoveBuiltinNamed (L83-6): removing a refused user file named
 // like a built-in leaves the built-in's settings and skill links alone.
 func TestToolRemoveBuiltinNamed(t *testing.T) {

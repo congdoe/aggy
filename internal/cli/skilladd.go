@@ -176,6 +176,11 @@ func skillClash(name string, st skillTarget, replace bool) (writeDef bool, err e
 		return false, withCode(diag.CodeToolSkillExists, fmt.Errorf("%s is a built-in tool that is not only a skill; pick another --name", name))
 	case st.builtIn != nil && !replace:
 		return false, exists("a built-in tool has the name")
+	case replace && st.builtIn == nil && st.defFile() && st.user != nil && !st.user.SkillOnly() && storeSkill(*st.user):
+		// MED-1 of #97: a user tool that is more than a skill, linked
+		// from this store folder, gets the folder and its pin replaced;
+		// its definition is left as it is.
+		return false, nil
 	case st.builtIn == nil && st.defFile() && (st.user == nil || !st.user.SkillOnly()):
 		// Only a skill-only user tool is replaced; anything else is the
 		// person's to remove.
@@ -186,6 +191,13 @@ func skillClash(name string, st skillTarget, replace bool) (writeDef bool, err e
 		return false, exists(st.store + " already holds the skill")
 	}
 	return st.builtIn == nil, nil
+}
+
+// storeSkill reports whether t has a skill, and every one is linked
+// from ~/.aggy/skills/<its name>, the folder aggy skill add stores.
+func storeSkill(t tooldef.Tool) bool {
+	_, err := toolSkillLayout(t)
+	return hasSkill(t) && err == nil
 }
 
 // skillInUse refuses while tool name is on anywhere or its skill is
@@ -355,6 +367,8 @@ func skillAdd(ctx context.Context, a skillAddArgs, in io.Reader, tty bool, stdou
 		fmt.Fprintln(stdout, "  replaces the folder there now")
 	}
 	switch {
+	case def == nil && st.user != nil:
+		fmt.Fprintf(stdout, "  definition: %s, a user tool with more than this skill, kept as it is; only the folder and its pin change\n", termsafe.Field(st.defPath))
 	case def == nil:
 		fmt.Fprintf(stdout, "  definition: none; the built-in %s links this folder\n", name)
 	case st.defFile():

@@ -87,7 +87,8 @@ func TestHookTool(t *testing.T) {
 		t.Errorf("default: %q", got)
 	}
 	writeAt(t, filepath.Join(os.Getenv(home.Env), "config.toml"), "[tools]\nallow_telemetry = true\n", 0o600)
-	if got := run("dnt"); got != dnt("") {
+	// The person's own value passes (L1 of #97).
+	if got := run("dnt"); got != dnt("0") {
 		t.Errorf("allowed: %q", got)
 	}
 	// H78-1: a hook that does not declare rewrites never rewrites.
