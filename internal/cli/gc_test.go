@@ -429,6 +429,34 @@ func TestGCAcceptedKept(t *testing.T) {
 	}
 }
 
+// TestGCPendingKept (T6778): a pending edit past its age whose branch
+// has commits past the recorded edit loses its worktree, not its branch;
+// later runs sum the kept branch up in one line, with no "kept:" line.
+func TestGCPendingKept(t *testing.T) {
+	f, _ := editFixture(t)
+	gitIn(t, f.repo, "checkout", "--", "a.go")
+	id, wt := editBorrow(t, f, map[string]string{"a.go": "package a\n// pending\n"})
+	mustWrite(t, filepath.Join(wt, "mine.go"), "package a\n", 0o600)
+	gitIn(t, wt, "add", "mine.go")
+	gitIn(t, wt, "commit", "-q", "-m", "my own work")
+	branch := "aggy/edit-" + id
+	f.env.now = func() time.Time { return time.Now().Add(31 * 24 * time.Hour) }
+	code, out, errOut := gc(f, "--yes")
+	if code != 0 || !strings.Contains(out, "its branch "+branch+" is kept") || exists(t, wt) {
+		t.Fatalf("code %d: %s %s", code, out, errOut)
+	}
+	if !strings.Contains(gitIn(t, f.repo, "log", "--format=%s", branch), "my own work") {
+		t.Error("the branch or its commit was lost")
+	}
+	for i := 0; i < 2; i++ {
+		_, out, _ = gc(f)
+		if strings.Contains(out, wt) || strings.Contains(out, "kept:") ||
+			!strings.Contains(out, "1 branch(es) kept with commits past the recorded edit, until you delete them: "+branch) {
+			t.Errorf("run %d: %s", i+2, out)
+		}
+	}
+}
+
 // TestGCLeftoverGone (T6750): a removal cut short after the worktree's
 // directory went leaves its git admin entry and branch.
 //   - plain (GC-6): the next gc removes both, and a run after that has

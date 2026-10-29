@@ -119,6 +119,39 @@ func TestWorktreeCreateRemove(t *testing.T) {
 	}
 }
 
+// TestWorktreeDeleteBranch (T6778): aggy's branch is deleted only at the
+// commit it was judged at (a commit made since keeps it), and never
+// while a worktree has it checked out.
+func TestWorktreeDeleteBranch(t *testing.T) {
+	g, _ := newWorktrees(t)
+	repo, _ := filepath.EvalSymlinks(t.TempDir())
+	editRepo(t, repo)
+	ctx := context.Background()
+	wt, err := g.Create(ctx, repo, "2123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	judged := gitIn(t, repo, "rev-parse", "refs/heads/"+wt.Branch)
+	if err := g.deleteBranch(ctx, wt, judged); err == nil || !strings.Contains(err.Error(), "checked out") {
+		t.Errorf("checked out: err %v", err)
+	}
+	gitIn(t, wt.Path, "commit", "-q", "--allow-empty", "-m", "made after the check")
+	moved := gitIn(t, repo, "rev-parse", "refs/heads/"+wt.Branch)
+	gitIn(t, repo, "worktree", "remove", "--force", wt.Path)
+	if err := g.deleteBranch(ctx, wt, judged); err == nil {
+		t.Error("a branch moved since it was judged was deleted")
+	}
+	if got := gitIn(t, repo, "rev-parse", "refs/heads/"+wt.Branch); got != moved {
+		t.Errorf("branch at %s, want %s", got, moved)
+	}
+	if err := g.deleteBranch(ctx, wt, moved); err != nil {
+		t.Fatal(err)
+	}
+	if b := gitIn(t, repo, "branch", "--list", wt.Branch); b != "" {
+		t.Errorf("branch left: %q", b)
+	}
+}
+
 // TestWorktreeRemoveOwned (T6687): Remove acts only on a path and branch
 // aggy made, whatever the record says.
 func TestWorktreeRemoveOwned(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -55,6 +56,27 @@ func (f *fakeUse) waitCalls(t *testing.T, n int) {
 	t.Fatalf("Used was not read %d times", n)
 }
 
+// countChecks counts offerWarn's readings taken (warnChecked) until the
+// test ends, and returns a wait for the count to reach n. Call it
+// before Run starts.
+func countChecks(t *testing.T) func(n int) {
+	t.Helper()
+	var n atomic.Int32
+	old := warnChecked
+	warnChecked = func() { n.Add(1) }
+	t.Cleanup(func() { warnChecked = old })
+	return func(want int) {
+		t.Helper()
+		deadline := time.Now().Add(waitLimit)
+		for int(n.Load()) < want {
+			if time.Now().After(deadline) {
+				t.Fatalf("offerWarn took %d reading(s), want %d", n.Load(), want)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+}
+
 // usedOpts reports f as the share of the on-screen vendor's limit used,
 // warns at warnAt, and gives grok quota.
 func usedOpts(f *fakeUse, warnAt float64) func(*Options) {
@@ -77,6 +99,7 @@ const (
 // vendor with quota preselected; nothing switches by itself, and unsent
 // text still blocks the switch.
 func TestNearLimitWarn(t *testing.T) {
+	checked := countChecks(t)
 	f := newFakeUse(500)
 	ts, c, done, sock := switchRunOn(t, false, adapter.Codex, usedOpts(f, 0.9))
 	const want = "aggy: codex is at 90% of its limit. Ctrl+\\ hands off to grok, Esc dismisses."
@@ -84,7 +107,7 @@ func TestNearLimitWarn(t *testing.T) {
 	hour := time.Now().Add(time.Hour)
 
 	_ = request(t, sock, codexStop) // below
-	f.waitCalls(t, 1)
+	checked(1)
 	never(t, "a warning below warn_at", []byte("of its limit"), ts.screen, 200*time.Millisecond)
 
 	f.set(900, "300@1", hour) // exactly at warn_at
@@ -96,20 +119,23 @@ func TestNearLimitWarn(t *testing.T) {
 	f.set(950, "300@1", hour) // still past: once per crossing
 	mark := len(ts.screen())
 	_ = request(t, sock, codexStop)
-	f.waitCalls(t, 3)
+	checked(3)
 	never(t, "a second warning", []byte("of its limit"), after(mark), 200*time.Millisecond)
 
+	// Each step waits until offerWarn has taken its reading, not only
+	// until the share was read: a reading the next turn end replaced
+	// would never count (L60-6).
 	f.set(300, "other", hour) // another source's lower share: no reset
 	_ = request(t, sock, codexStop)
-	f.waitCalls(t, 4)
+	checked(4)
 	f.set(950, "300@1", hour)
 	_ = request(t, sock, codexStop)
-	f.waitCalls(t, 5)
+	checked(5)
 	never(t, "a warning after another window's dip", []byte("of its limit"), after(mark), 200*time.Millisecond)
 
 	f.set(300, "300@1", hour) // the same window below: the next crossing warns
 	_ = request(t, sock, codexStop)
-	f.waitCalls(t, 6)
+	checked(6)
 	f.set(910, "300@1", time.Now().Add(300*time.Millisecond))
 	_ = request(t, sock, codexOther)
 	never(t, "a nested session's turn end", []byte("of its limit"), after(mark), 200*time.Millisecond)
@@ -143,6 +169,76 @@ func TestNearLimitWarn(t *testing.T) {
 	finish(t, c, done)
 }
 
+// TestNearLimitSingleFlight (T6778): turn ends while a share read is in
+// flight start no read of their own; one more read follows once it lands.
+func TestNearLimitSingleFlight(t *testing.T) {
+	gate := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	var mu sync.Mutex
+	calls := 0
+	count := func() int { mu.Lock(); defer mu.Unlock(); return calls }
+	used := func(adapter.Vendor) (Share, bool) {
+		mu.Lock()
+		calls++
+		first := calls == 1
+		mu.Unlock()
+		if first {
+			<-gate
+		}
+		return Share{Used: 0.5, Window: "300m@1", Reset: time.Now().Add(time.Hour)}, true
+	}
+	_, c, done, sock := switchRunOn(t, false, adapter.Codex, func(o *Options) { o.WarnAt, o.Used = 0.9, used })
+	for i := 0; i < 3; i++ {
+		_ = request(t, sock, codexStop)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := count(); n != 1 {
+		t.Errorf("%d reads while the first was in flight, want 1", n)
+	}
+	release()
+	deadline := time.Now().Add(waitLimit)
+	for count() < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := count(); n != 2 {
+		t.Errorf("%d reads in all, want 2: the first, and one for the turn ends during it", n)
+	}
+	finish(t, c, done)
+}
+
+// TestNearLimitSoonerWindow (T6778): a warning about a window that
+// resets days out (a stale weekly reading) does not mute a crossing of a
+// window that resets sooner; the far window coming back does not warn
+// again, so two windows never take turns.
+func TestNearLimitSoonerWindow(t *testing.T) {
+	checked := countChecks(t)
+	f := newFakeUse(950)
+	f.set(950, "10080m@far", time.Now().Add(6*24*time.Hour))
+	ts, c, done, sock := switchRunOn(t, false, adapter.Codex, usedOpts(f, 0.9))
+	after := func(mark int) func() []byte { return func() []byte { return ts.screen()[mark:] } }
+	_ = request(t, sock, codexStop)
+	poll(t, "the weekly warning", []byte("codex is at 95% of its limit"), ts.screen)
+	ts.typeIn(t, "\x1b")
+	poll(t, "the line cleared", []byte("\x1b7\x1b[24;1H\x1b[2K\x1b8"), ts.screen)
+
+	mark := len(ts.screen())
+	f.set(960, "300m@near", time.Now().Add(time.Hour))
+	_ = request(t, sock, codexStop)
+	poll(t, "the 5-hour warning", []byte("codex is at 96% of its limit"), after(mark))
+	ts.typeIn(t, "\x1b")
+	poll(t, "the line cleared", []byte("\x1b7\x1b[24;1H\x1b[2K\x1b8"), after(mark))
+
+	mark = len(ts.screen())
+	f.set(970, "10080m@far", time.Now().Add(6*24*time.Hour))
+	_ = request(t, sock, codexStop)
+	checked(3)
+	never(t, "the weekly window warning again", []byte("of its limit"), after(mark), 200*time.Millisecond)
+	finish(t, c, done)
+}
+
 // TestNearLimitAndLimit (L60-1): a limit ends the warning in either
 // order: one on screen gives way to the limit's note, and none follows
 // the note for that crossing.
@@ -161,6 +257,24 @@ func TestNearLimitAndLimit(t *testing.T) {
 		_ = request(t, sock, codexStop)
 		f.waitCalls(t, 2)
 		never(t, "a warning after the limit", []byte("of its limit."), func() []byte { return ts.screen()[mark:] }, 300*time.Millisecond)
+		finish(t, c, done)
+	})
+	t.Run("Esc on the warning, then limit", func(t *testing.T) {
+		// T6778: a lone Esc still pending when the limit replaces the
+		// warning does not close the limit's note.
+		f := newFakeUse(990)
+		ch := make(chan LimitHit, 1)
+		longEsc := func(*Options) { escTimeout = 3 * time.Second } // before Run starts; switchRunOn restores it
+		ts, c, done, sock := switchRunOn(t, false, adapter.Codex, limitOpts(ch, adapter.Grok), usedOpts(f, 0.9), longEsc)
+		_ = request(t, sock, codexStop)
+		poll(t, "the warning", []byte("codex is at 99% of its limit"), ts.screen)
+		ts.typeIn(t, "\x1b")
+		time.Sleep(300 * time.Millisecond) // the Esc reaches Run, well inside escTimeout
+		ch <- LimitHit{Vendor: adapter.Codex}
+		poll(t, "the limit note", []byte("codex hit its limit. grok has quota left"), ts.screen)
+		mark := len(ts.screen())
+		never(t, "the note closed by the earlier Esc", []byte(altScreenOff),
+			func() []byte { return ts.screen()[mark:] }, 3500*time.Millisecond)
 		finish(t, c, done)
 	})
 	t.Run("limit, then turn end", func(t *testing.T) {
