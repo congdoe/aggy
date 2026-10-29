@@ -66,6 +66,14 @@ func TestBuiltinsValid(t *testing.T) {
 	if hr, _ := r.Get("headroom"); len(hr.MCP) != 1 || !slices.Equal(hr.MCP[0].Argv, []string{"headroom", "mcp", "serve"}) || len(hr.Hooks)+len(hr.Init) > 0 || !hr.Network {
 		t.Errorf("headroom = %+v", hr.Def)
 	}
+	// T6847: the proxy turns off Headroom's subscription tracker (it
+	// reads the Claude OAuth token) and its update check, keeps the
+	// experimental label, and is installed with the [proxy] extra.
+	if hr, _ := r.Get("headroom"); hr.Proxy == nil || !slices.Contains(hr.Proxy.Argv, "--no-subscription-tracking") ||
+		!slices.Equal(hr.TelemetryEnv, []string{"HEADROOM_UPDATE_CHECK=off"}) || !slices.Contains(hr.Unverified, "proxy") ||
+		!strings.Contains(hr.Install.Hint, "'headroom-ai[proxy]==0.42.0'") || !strings.Contains(hr.Install.Hint, "never run headroom mcp install") {
+		t.Errorf("headroom = %+v", hr.Def)
+	}
 	// W71-6: the server runs in aggy's launch folder, so it is told the
 	// repo; codegraph's own form is serve --mcp --path <dir>.
 	cg, _ := r.Get("codegraph")

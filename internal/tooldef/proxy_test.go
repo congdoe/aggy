@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 )
@@ -69,6 +70,10 @@ func TestParseProxy(t *testing.T) {
 		{"health dotdot", `"/health"`, `"/../health"`, "proxy.health"},
 		{"health query", `"/health"`, `"/health?x=1"`, "proxy.health"},
 		{"health missing", `"/health"`, `""`, "proxy.health"},
+		{"health_timeout zero", `health = "/health"`, "health = \"/health\"\nhealth_timeout = 0", "proxy.health_timeout"},
+		{"health_timeout negative", `health = "/health"`, "health = \"/health\"\nhealth_timeout = -5", "proxy.health_timeout"},
+		{"health_timeout over", `health = "/health"`, "health = \"/health\"\nhealth_timeout = 121", "proxy.health_timeout"},
+		{"health_timeout huge", `health = "/health"`, "health = \"/health\"\nhealth_timeout = 9223372036854775807", "proxy.health_timeout"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if !strings.Contains(proxyPart, c.old) {
@@ -83,5 +88,45 @@ func TestParseProxy(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestProxyHealthTimeout (T6847): health_timeout is optional, whole
+// seconds from 1 to 120, and 15 when not set; headroom's is 90.
+func TestProxyHealthTimeout(t *testing.T) {
+	with := func(line string) string {
+		return base + strings.Replace(proxyPart, `health = "/health"`, "health = \"/health\"\n"+line, 1)
+	}
+	for _, c := range []struct {
+		line string
+		want time.Duration
+	}{
+		{"", 15 * time.Second},
+		{"health_timeout = 1", time.Second},
+		{"health_timeout = 90", 90 * time.Second},
+		{"health_timeout = 120", 120 * time.Second},
+	} {
+		for _, builtIn := range []bool{true, false} {
+			d, err := Parse("demo.toml", []byte(with(c.line)), builtIn)
+			if err != nil {
+				t.Fatalf("%q: %v", c.line, err)
+			}
+			if got := d.Proxy.Wait(); got != c.want {
+				t.Errorf("%q: Wait = %s, want %s", c.line, got, c.want)
+			}
+		}
+	}
+	for _, line := range []string{`health_timeout = "90"`, "health_timeout = 1.5", "health_timeout = []"} {
+		if _, err := Parse("demo.toml", []byte(with(line)), false); err == nil {
+			t.Errorf("%s accepted", line)
+		}
+	}
+	r, err := Builtins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hr, _ := r.Get("headroom")
+	if hr.Proxy == nil || hr.Proxy.Wait() != 90*time.Second {
+		t.Errorf("headroom's proxy: %+v", hr.Proxy)
 	}
 }

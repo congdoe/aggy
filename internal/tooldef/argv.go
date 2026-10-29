@@ -164,7 +164,9 @@ var telemetryNameRE = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 // must say what it is for, and never be one that changes how a package
 // runner, resolver, loader, or shell behaves (#97 review).
 var (
-	telemetryWords    = []string{"TELEMETRY", "TRACK", "ANALYTICS", "OPTOUT", "OPT_OUT"}
+	// UPDATE_CHECK: a tool's own check for a newer release, which
+	// reaches a package index (Headroom's HEADROOM_UPDATE_CHECK, T6847).
+	telemetryWords    = []string{"TELEMETRY", "TRACK", "ANALYTICS", "OPTOUT", "OPT_OUT", "UPDATE_CHECK"}
 	telemetryValues   = []string{"0", "1", "true", "false", "off", "no", "yes", "disabled"}
 	telemetryPrefixes = []string{"NPM_CONFIG_", "PNPM_", "YARN_", "BUN_", "DENO_", "UV_", "PIP_", "PIPX_", "COREPACK_",
 		"GO", "CARGO_", "RUSTUP_", "RUSTC_", "XDG_", "SSL_", "DOTNET_", "ELECTRON_", "LUA_"}

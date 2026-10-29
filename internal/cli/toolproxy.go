@@ -264,8 +264,14 @@ func startToolProxy(ctx context.Context, v adapter.Vendor, cwd, dir string, sess
 	// MED-1: a signal while it comes up stops it and goes on without it.
 	sctx, cancel := execrun.NotifyContext(ctx)
 	pass, set := toolTelemetry("", t) // T6822
+	wait := proxyWait
+	if t.Proxy.HealthTimeout != nil {
+		wait = t.Proxy.Wait() // T6847
+	}
+	stopNote := waitingNote(stderr, fmt.Sprintf("%s: waiting for %s's proxy to become healthy (up to %s) ...\n", name, t.Name, wait))
 	p, err := execrun.StartProxy(sctx, execrun.ProxySpec{Vendor: v, Var: t.Proxy.Env[v], Path: prog, Args: t.Proxy.Argv[1:],
-		Addr: t.Proxy.Addr(), Health: t.Proxy.Health, Dir: dir, Wait: proxyWait, Pass: pass, Set: set}, base)
+		Addr: t.Proxy.Addr(), Health: t.Proxy.Health, Dir: dir, Wait: wait, Pass: pass, Set: set}, base)
+	stopNote()
 	cancel()
 	switch {
 	case errors.Is(err, execrun.ErrProxyPortTaken):
@@ -359,8 +365,28 @@ func (px *toolProxy) withoutProxy(set map[string]string) {
 	}
 }
 
-// proxyWait is how long a launch waits for a proxy's health check.
+// proxyWait is how long a launch waits for a proxy's health check when
+// its definition sets no health_timeout.
 var proxyWait = execrun.ProxyWait
+
+// noteAfter is how long a proxy may take before waitingNote speaks.
+var noteAfter = 2 * time.Second
+
+// waitingNote prints note to w once, if the returned stop is not called
+// within noteAfter. stop returns once the note is printed or will never
+// be, so nothing is written to w after it.
+func waitingNote(w io.Writer, note string) (stop func()) {
+	done, finished := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(finished)
+		select {
+		case <-done:
+		case <-time.After(noteAfter):
+			fmt.Fprint(w, note)
+		}
+	}()
+	return func() { close(done); <-finished }
+}
 
 // vendorList is vs as text.
 func vendorList(vs []adapter.Vendor) string {
