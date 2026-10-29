@@ -191,8 +191,28 @@ const maxSkillBytes = 8 << 20
 // regular files: each one's path relative to dir and its content, in
 // path order, each length-prefixed (L78-4).
 func skillDigest(dir string) (string, error) {
-	h := sha256.New()
-	total := 0
+	files, err := readSkillTree(dir)
+	if err != nil {
+		return "", err
+	}
+	return digestSkillFiles(files), nil
+}
+
+// skillFile is one regular file of a skill folder, read whole.
+type skillFile struct {
+	rel  string // path relative to the folder
+	perm fs.FileMode
+	data []byte
+}
+
+// readSkillTree reads every regular file under dir, in path order,
+// through safefs: no symlink at any depth, nothing but regular files
+// and folders, no file with a second hard link, at most maxSkillEntries
+// entries and under maxSkillBytes in all.
+func readSkillTree(dir string) ([]skillFile, error) {
+	bad := func(why string) error { return fmt.Errorf("%w: %s %s", errSkillMissing, dir, why) }
+	var files []skillFile
+	n, total := 0, 0
 	var walk func(rel string) error
 	walk = func(rel string) error {
 		des, err := safefs.ReadDir(filepath.Join(dir, rel))
@@ -201,6 +221,9 @@ func skillDigest(dir string) (string, error) {
 		}
 		slices.SortFunc(des, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
 		for _, de := range des {
+			if n++; n > maxSkillEntries {
+				return bad(fmt.Sprintf("holds more than %d entries", maxSkillEntries))
+			}
 			r := filepath.Join(rel, de.Name())
 			fi, err := safefs.Lstat(filepath.Join(dir, r))
 			if err != nil {
@@ -213,24 +236,37 @@ func skillDigest(dir string) (string, error) {
 				}
 				continue
 			case !fi.Mode().IsRegular():
-				return fmt.Errorf("%w: %s holds %s, which is not a regular file or folder", errSkillMissing, dir, r)
+				return bad("holds " + r + ", which is not a regular file or folder (a symlink is refused)")
+			case safefs.LinkCount(fi) > 1:
+				return bad("holds " + r + ", which has another hard link")
 			}
 			b, err := safefs.ReadFileLimit(filepath.Join(dir, r), int64(maxSkillBytes-total))
-			if err != nil {
+			if errors.Is(err, safefs.ErrTooLarge) {
+				return bad(fmt.Sprintf("holds more than %d bytes", maxSkillBytes))
+			} else if err != nil {
 				return err
 			}
 			if total += len(b); total >= maxSkillBytes {
-				return fmt.Errorf("%w: %s holds more than %d bytes", errSkillMissing, dir, maxSkillBytes)
+				return bad(fmt.Sprintf("holds more than %d bytes", maxSkillBytes))
 			}
-			fmt.Fprintf(h, "%d:%s;%d:", len(r), filepath.ToSlash(r), len(b))
-			h.Write(b)
+			files = append(files, skillFile{rel: r, perm: fi.Mode().Perm(), data: b})
 		}
 		return nil
 	}
 	if err := walk(""); err != nil {
-		return "", err
+		return nil, err
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return files, nil
+}
+
+// digestSkillFiles is skillDigest over files already read.
+func digestSkillFiles(files []skillFile) string {
+	h := sha256.New()
+	for _, f := range files {
+		fmt.Fprintf(h, "%d:%s;%d:", len(f.rel), filepath.ToSlash(f.rel), len(f.data))
+		h.Write(f.data)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // skillHowTo says how to put a tool's skill in place: aggy never fetches

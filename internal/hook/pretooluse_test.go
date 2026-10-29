@@ -35,6 +35,9 @@ func TestPreToolUse(t *testing.T) {
 		{"aggy tool on", payload(t, "Bash", map[string]any{"command": "aggy tool on demo"}), true},
 		{"aggy tool off", payload(t, "Bash", map[string]any{"command": "aggy tool off demo --vendor grok"}), true},
 		{"aggy tool status", payload(t, "Bash", map[string]any{"command": "aggy tool status"}), false},
+		{"aggy skill add", payload(t, "Bash", map[string]any{"command": "aggy skill add ./s --yes"}), true},
+		{"aggy skill remove", payload(t, "Bash", map[string]any{"command": "aggy skill remove s"}), true},
+		{"aggy skill status", payload(t, "Bash", map[string]any{"command": "aggy skill status"}), false},
 		// T6776 F-4: more wrappers.
 		{"chrt", payload(t, "Bash", map[string]any{"command": "chrt -f 10 claude -p hi"}), true},
 		{"taskset", payload(t, "Bash", map[string]any{"command": "taskset -c 0-3 codex exec hi"}), true},

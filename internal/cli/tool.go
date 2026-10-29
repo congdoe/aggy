@@ -379,8 +379,11 @@ func toolAdd(src string, yes bool, in io.Reader, tty bool, stdout io.Writer) err
 // writeNew creates dest (mode 0600) with O_EXCL, so it never replaces a
 // file or follows a symlink put there after the checks (T59-15); a
 // failed write removes the partial file.
-func writeNew(dest string, b []byte) error {
-	f, err := safefs.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+func writeNew(dest string, b []byte) error { return writeNewMode(dest, b, 0o600) }
+
+// writeNewMode is writeNew with mode perm.
+func writeNewMode(dest string, b []byte, perm fs.FileMode) error {
+	f, err := safefs.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
 	if err != nil {
 		return err
 	}
