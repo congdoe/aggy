@@ -11,8 +11,12 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/diag"
+	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/probe"
+	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/switchboard"
+	"github.com/congdoe/aggy/internal/tooldef"
 )
 
 // wireHome is toolHome with aggy's own path set to testBin, the shim
@@ -122,6 +126,33 @@ func TestAddToolsSessionChanged(t *testing.T) {
 	}
 }
 
+// TestSessionToolsIndexError (R76-F2): an index that cannot be opened
+// refuses every user --tool with its error, not only the first.
+func TestSessionToolsIndexError(t *testing.T) {
+	_, dest := wireHome(t)
+	writeAt(t, dest, demoTool, 0o600)
+	writeAt(t, filepath.Join(filepath.Dir(dest), "demo2.toml"), strings.NewReplacer(`name = "demo"`, `name = "demo2"`, "DEMO_", "DEMO2_").Replace(demoTool), 0o600)
+	db, err := store.DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAt(t, db, "not a database", 0o600)
+	r, _, err := tooldef.Load(os.Getenv(home.Env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, warns := sessionTools(context.Background(), switchboard.Board{Tools: r.List()}, adapter.Claude, "", []string{"demo", "demo2"},
+		func(tool string, code diag.Code, _, why string) string { return tool + " " + code.String() + " " + why })
+	if len(warns) != 2 {
+		t.Fatalf("warns %q", warns)
+	}
+	for _, w := range warns {
+		if !strings.Contains(w, "the index could not be read") {
+			t.Errorf("%q", w)
+		}
+	}
+}
+
 // TestAddToolsSessionOff (W76-2, W76-3): a --tool that cannot be on, or
 // has nothing to wire, says so; Grok stays gated for one too.
 func TestAddToolsSessionOff(t *testing.T) {
@@ -224,7 +255,7 @@ func TestAddToolsHooks(t *testing.T) {
 // (W71-4).
 func TestAddTools(t *testing.T) {
 	_, dest := wireHome(t)
-	writeAt(t, dest, strings.Replace(demoTool, `"--stdio"`, `"--root", "{repo}"`, 1), 0o600)
+	addedAt(t, dest, strings.Replace(demoTool, `"--stdio"`, `"--root", "{repo}"`, 1))
 	repo := switchRepo(t, "")
 	all := []string{probe.CapConfigOverride}
 
@@ -318,7 +349,7 @@ func TestAddToolsGrokGated(t *testing.T) {
 // included (W71-3). A file that cannot be parsed refuses every tool.
 func TestAddToolsClash(t *testing.T) {
 	_, dest := wireHome(t)
-	writeAt(t, dest, demoTool, 0o600)
+	addedAt(t, dest, demoTool)
 	h := os.Getenv("HOME")
 	parent := t.TempDir()
 	repo := filepath.Join(parent, "app")

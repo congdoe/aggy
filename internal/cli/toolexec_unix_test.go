@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/congdoe/aggy/internal/home"
+	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/tooldef"
 	"github.com/congdoe/aggy/internal/toolwire"
 )
@@ -56,7 +58,7 @@ func TestToolExec(t *testing.T) {
 	}
 	old := execTool
 	t.Cleanup(func() { execTool = old })
-	execTool = func(prog string, args []string, dir string, env []string) error {
+	execTool = func(prog string, args []string, dir string, _ fs.FileInfo, env []string) error {
 		got.prog, got.args, got.dir, got.env = prog, args, dir, env
 		return nil
 	}
@@ -148,5 +150,87 @@ func TestToolExec(t *testing.T) {
 	}
 	if code, _ := exec(ok); code != 1 || got.prog != "" {
 		t.Error("an open run folder passed")
+	}
+}
+
+// privateLaunch makes a private launch folder in state's run folder.
+func privateLaunch(t *testing.T, state string) string {
+	t.Helper()
+	run := filepath.Join(state, "run")
+	dir := filepath.Join(run, "p.12345678.x")
+	for _, d := range []string{run, dir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// TestToolExecPathOutsideRepo (F74-2): a PATH entry in the repo, as
+// written or through a symlink, neither picks the program nor reaches
+// the server's PATH.
+func TestToolExecPathOutsideRepo(t *testing.T) {
+	_, dest := wireHome(t)
+	writeAt(t, dest, demoTool, 0o600)
+	state := os.Getenv(home.Env)
+	dir := privateLaunch(t, state)
+	repo := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(repo, link); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	for _, b := range []string{filepath.Join(repo, "bin"), outside} {
+		writeAt(t, filepath.Join(b, "demo"), "#!/bin/sh\n", 0o755)
+	}
+	r, _, err := tooldef.Load(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	demo, _ := r.Get("demo")
+	var gotProg string
+	var gotEnv []string
+	old := execTool
+	t.Cleanup(func() { execTool = old })
+	execTool = func(prog string, _ []string, _ string, _ fs.FileInfo, env []string) error {
+		gotProg, gotEnv = prog, env
+		return nil
+	}
+	for _, p := range []string{filepath.Join(repo, "bin"), filepath.Join(link, "bin"), repo + "/bin/"} {
+		t.Setenv("PATH", p+":"+outside)
+		gotProg = ""
+		args := toolwire.ExecArgs(dir, "demo", demo.Digest, repo, []string{"demo", "serve", "--stdio"})[2:]
+		var errb bytes.Buffer
+		if code := runToolExec(args, &errb); code != 0 || gotProg != filepath.Join(outside, "demo") ||
+			!slices.Contains(gotEnv, "PATH="+outside) {
+			t.Errorf("PATH %s: exit %d %q, ran %q, env %q", p, code, errb.String(), gotProg, gotEnv)
+		}
+	}
+}
+
+// TestToolExecLogsToLaunchState (F74-4): with no AGGY_HOME (Codex passes
+// none), a refusal is logged in the state dir the launch folder is in,
+// not in ~/.aggy.
+func TestToolExecLogsToLaunchState(t *testing.T) {
+	h := isolate(t)
+	state := t.TempDir()
+	dir := privateLaunch(t, state)
+	if err := os.MkdirAll(filepath.Join(h, ".aggy"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(home.Env, "")
+	var errb bytes.Buffer
+	args := toolwire.ExecArgs(dir, "nope", strings.Repeat("0", toolwire.DigestLen), toolwire.NoRepo, []string{"demo"})[2:]
+	if code := runToolExec(args, &errb); code != 1 || !strings.Contains(errb.String(), "tool.exec_refused") {
+		t.Fatalf("exit %d %q", code, errb.String())
+	}
+	if _, err := os.Stat(filepath.Join(state, store.DiagFileName)); err != nil {
+		t.Errorf("no log in the launch's state dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(h, ".aggy", store.DiagFileName)); !os.IsNotExist(err) {
+		t.Errorf("logged under ~/.aggy: %v", err)
 	}
 }
