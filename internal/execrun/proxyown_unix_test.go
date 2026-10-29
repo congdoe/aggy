@@ -20,21 +20,34 @@ var bg = context.Background()
 
 // TestListenerOwned (HIGH-1): the owner check matches a listener of the
 // given process group and refuses another group's, on this system's own
-// path (/proc on Linux, lsof on macOS).
+// path (/proc on Linux, lsof on macOS). The listener is the fake proxy's,
+// started as the leader of its own session, as StartProxy starts a
+// proxy: the test's own group may hold processes whose /proc/<pid>/fd it
+// cannot read (a CI runner's), and the check fails closed on them.
 func TestListenerOwned(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
+	spec, _ := fakeProxy(t, "ok")
+	c := exec.Command(spec.Path, spec.Args...)
+	c.Dir = spec.Dir
+	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := c.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = ln.Close() }()
-	addr := netip.MustParseAddrPort(ln.Addr().String())
-	if err := listenerOwned(bg, addr, syscall.Getpgrp()); err != nil {
-		t.Errorf("own listener: %v", err)
+	pgid := c.Process.Pid // a session leader leads its own group
+	t.Cleanup(func() { _ = syscall.Kill(-pgid, syscall.SIGKILL); _ = c.Wait() })
+	for deadline := time.Now().Add(10 * time.Second); !healthy(bg, spec.Addr, "/health"); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the fake proxy never listened")
+		}
 	}
-	if err := listenerOwned(bg, addr, 1); err == nil {
-		t.Error("another group's listener passed")
+	if err := listenerOwned(bg, spec.Addr, pgid); err != nil {
+		t.Errorf("its own group: %v", err)
 	}
-	if err := listenerOwned(bg, freeAddr(t), syscall.Getpgrp()); !errors.Is(err, errNoListener) {
+	for _, other := range []int{1, syscall.Getpgrp()} {
+		if err := listenerOwned(bg, spec.Addr, other); err == nil {
+			t.Errorf("group %d passed for another group's listener", other)
+		}
+	}
+	if err := listenerOwned(bg, freeAddr(t), pgid); !errors.Is(err, errNoListener) {
 		t.Errorf("no listener: %v", err)
 	}
 }
