@@ -20,6 +20,7 @@ import (
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/switchboard"
 	"github.com/congdoe/aggy/internal/termsafe"
 	"github.com/congdoe/aggy/internal/tooldef"
 )
@@ -198,10 +199,15 @@ func delegated() error {
 }
 
 func toolList(ctx context.Context, stdout, stderr io.Writer) int {
-	b, r, refused, err := toolBoard(ctx)
+	r, refused, err := tooldef.LoadDefault()
 	if err != nil {
 		toolRefuse(ctx, stderr, "tool list", diag.EvToolRefused, err)
 		return 1
+	}
+	b := switchboard.Board{Tools: r.List()}
+	if b.Switches, err = toolSwitches(ctx); err != nil {
+		// L83-9: the list still shows; only the costs need the settings.
+		fmt.Fprintf(stderr, "aggy tool list: warning: the tool settings cannot be read (%s); costs are shown as if no tool were turned on\n", termsafe.Line(err.Error()))
 	}
 	repo := toolRepoAt{}
 	if cwd, err := os.Getwd(); err == nil {
@@ -231,7 +237,8 @@ func toolList(ctx context.Context, stdout, stderr io.Writer) int {
 		}
 		row := []string{t.Name, kind, def}
 		for _, v := range adapter.Vendors() {
-			row = append(row, toolCost(t, v, b.State(t, v, repo.key).On))
+			skillOn, partsOn := toolOnFor(b, t, v, repo.key)
+			row = append(row, toolCost(t, v, skillOn, partsOn))
 		}
 		fmt.Fprintln(tw, strings.Join(append(row, termsafe.Field(t.Source), termsafe.Field(t.Description)), "\t"))
 	}
@@ -523,13 +530,19 @@ func toolRemove(ctx context.Context, name string, stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(stdout, "Removed %s.\n", termsafe.Field(dest))
+	if t, ok := r.Get(name); ok && t.BuiltIn {
+		// L83-6: the name is a built-in's, whose settings and skill links
+		// are its own; the refused file had none.
+		fmt.Fprintf(stdout, "%s is also a built-in tool; its settings and skill links are left as they are.\n", name)
+		return nil
+	}
 	if err := clearToolSwitches(ctx, name); err != nil {
 		fmt.Fprintf(stdout, "warning: its settings were not cleared: %s; they apply to no file\n", termsafe.Line(err.Error()))
 	}
 	// T6727: a removed tool is off everywhere, so a skill it linked
 	// while it was on (its file since edited, so off) goes too.
 	if err := unlinkToolSkill(ctx, name, stdout); err != nil {
-		fmt.Fprintf(stdout, "warning: its skill links were not removed: %s; aggy tool off %s removes them\n", termsafe.Line(err.Error()), name)
+		fmt.Fprintf(stdout, "warning: not every skill link was removed (the changed lines above were): %s; aggy tool off %s tries again\n", termsafe.Line(err.Error()), name)
 	}
 	return nil
 }

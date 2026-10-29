@@ -267,7 +267,7 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 		fmt.Fprintf(stdout, "%s is not loaded; its settings say off.\n", name)
 		// T6727: a skill linked while it was loaded must not outlive it.
 		if err := unlinkToolSkill(ctx, name, stdout); err != nil {
-			return fmt.Errorf("the setting is recorded, but the skill links were not removed: %w", err)
+			return fmt.Errorf("the setting is recorded, but not every skill link was removed (the changed lines above were): %w", err)
 		}
 		return nil
 	}
@@ -300,8 +300,11 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 			fmt.Fprintln(stdout, "A skill is linked for every repo: --repo does not change its links, and a repo's tools_off cannot hide it.")
 		}
 		if err := syncToolSkill(ctx, t, b, stdout); err != nil {
-			return fmt.Errorf("the setting is recorded, but the skill links were not changed: %w", err)
+			return fmt.Errorf("the setting is recorded, but not every skill link change was made (the changed lines above were): %w", err)
 		}
+	} else if err := unlinkToolSkill(ctx, name, stdout); err != nil {
+		// H83-2: an edit that dropped the tool's [[skill]] leaves no link.
+		return fmt.Errorf("the setting is recorded, but not every old skill link was removed (the changed lines above were): %w", err)
 	}
 	fmt.Fprintln(stdout, "It takes effect at the next launch.")
 	return nil
