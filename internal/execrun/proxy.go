@@ -70,8 +70,27 @@ type Proxy struct {
 	mu       sync.Mutex
 	live     bool   // registered: a CLI may point at it
 	stopping bool   // Stop began: its exit is expected
+	gone     bool   // its leader's exit was seen (leaderGone)
 	hold     func() // closes the placeholder listener (holdLoopback)
 	holdErr  error
+	cli      int  // the CLI it serves (Guard); 0 for none
+	cliGroup bool // the CLI leads its own process group
+}
+
+// Guard names the CLI this proxy serves: its pid, and whether it leads
+// its own process group (a PTY's session; aggy --direct's CLI shares
+// aggy's group, so only the CLI itself is signalled). When the proxy
+// dies and aggy cannot take its address back, the CLI is killed at once
+// (SIGKILL), so it never goes on sending its login to whatever took the
+// port; a Guard after that kills it at once. Guard(0, false) forgets
+// the CLI once it has exited, so its pid is never signalled again.
+func (p *Proxy) Guard(pid int, group bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cli, p.cliGroup = pid, group
+	if p.gone && p.holdErr != nil {
+		p.killCLI()
+	}
 }
 
 // Env is the variable that points the CLI at the proxy.
@@ -91,7 +110,8 @@ func (p *Proxy) Exited() bool {
 // at it. By then aggy holds its address with a placeholder that accepts
 // and closes each connection, reading nothing, so no other process can
 // take the port and the CLI's requests fail rather than go elsewhere;
-// HoldErr says whether that worked. The placeholder lasts until Stop.
+// HoldErr says whether that worked, and when it did not, the guarded
+// CLI is already killed (Guard). The placeholder lasts until Stop.
 func (p *Proxy) Died() <-chan struct{} { return p.died }
 
 // HoldErr is why the placeholder could not take the address, once Died

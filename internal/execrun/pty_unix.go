@@ -80,9 +80,11 @@ var ptyExtraNames = []string{"AGGY_VENDOR", "AGGY_MODEL", "AGGY_SOCKET", "AGGY_P
 // API keys, base URLs, or anything else to the user's session. The one
 // exception is a tool proxy's (T6780): the vendor's base-URL variable,
 // set to exactly the URL of a proxy StartProxy started and still runs
-// for that vendor, the one extra AGGY_VENDOR names. An inherited proxy
-// variable pointing at loopback that no proxy of this process runs on is
-// dropped (staleProxyURL).
+// for that vendor, the one extra AGGY_VENDOR names. In a nested session
+// (base has AGGY_SOCKET or AGGY_PARENT), an inherited proxy variable
+// pointing at loopback that no proxy of this process runs on is dropped
+// (staleProxyURL): an outer session's proxy. Outside one, it is the
+// user's own (a local gateway) and passes.
 func PTYEnv(base, extra []string) ([]string, error) {
 	set := map[string]bool{"AGGY_VENDOR": true, "AGGY_MODEL": true}
 	var vendor adapter.Vendor
@@ -104,8 +106,11 @@ func PTYEnv(base, extra []string) ([]string, error) {
 		set[k] = true
 	}
 	env := make([]string, 0, len(base)+len(extra))
+	nested := slices.ContainsFunc(base, func(kv string) bool {
+		return strings.HasPrefix(kv, "AGGY_SOCKET=") || strings.HasPrefix(kv, "AGGY_PARENT=")
+	})
 	for _, kv := range base {
-		if k, v, _ := strings.Cut(kv, "="); !set[k] && !staleProxyURL(k, v) {
+		if k, v, _ := strings.Cut(kv, "="); !set[k] && (!nested || !staleProxyURL(k, v)) {
 			env = append(env, kv)
 		}
 	}
@@ -114,10 +119,10 @@ func PTYEnv(base, extra []string) ([]string, error) {
 
 // staleProxyURL reports an inherited proxy variable (tooldef.ProxyVars)
 // that points at a loopback address no proxy of this process runs on: a
-// parent aggy session's proxy, or one left in the shell (T6780 MED-2).
-// It is dropped, so a CLI never reaches a local process aggy did not
-// start and check. A base URL that is not loopback is the user's own
-// setting and passes, as before (aggy doctor flags it).
+// parent aggy session's proxy (T6780 MED-2). PTYEnv drops it in a
+// nested session only, so a CLI there never reaches a local process this
+// aggy did not start and check. A base URL that is not loopback is the
+// user's own setting and passes, as before (aggy doctor flags it).
 func staleProxyURL(k, v string) bool {
 	if !slices.Contains(slices.Collect(maps.Values(tooldef.ProxyVars)), k) {
 		return false

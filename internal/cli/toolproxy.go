@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -149,11 +150,17 @@ type toolProxy struct {
 	env    string
 	stop   func()
 	died   <-chan struct{}
-	onDied func() // records it; call once died is closed
+	onDied func() // records it, once; call once died is closed
 	dead   atomic.Bool
 	tool   string
 	vendor adapter.Vendor
 	held   error // why the placeholder could not take the address
+	// guard names the CLI the proxy serves (execrun.Proxy.Guard): it is
+	// killed at once if the proxy dies and aggy cannot hold its address.
+	guard func(pid int, group bool)
+	// interrupted: a signal arrived while the proxy came up, so nothing
+	// starts.
+	interrupted bool
 }
 
 // startToolProxy starts the proxy of the tool that has one on for
@@ -162,10 +169,11 @@ type toolProxy struct {
 // and the CLI starts without a proxy: a taken port (never a process aggy
 // did not start), a failed health check, a listener outside the proxy's
 // process group, an HTTP proxy in the environment, more than one proxy
-// on, or a signal while it waits. It prints to stderr as it goes, since
+// on. A signal while it waits returns one marked interrupted, and the
+// launch ends with nothing started. It prints to stderr as it goes, since
 // the health check can take seconds.
 func startToolProxy(ctx context.Context, v adapter.Vendor, cwd, dir string, session []string, stderr io.Writer, name string) *toolProxy {
-	none := &toolProxy{stop: func() {}}
+	none := &toolProxy{stop: func() {}, guard: func(int, bool) {}}
 	repo, _ := toolRepo(cwd, false)
 	b, _, _, err := toolBoard(ctx)
 	if err != nil {
@@ -234,25 +242,36 @@ func startToolProxy(ctx context.Context, v adapter.Vendor, cwd, dir string, sess
 	case errors.Is(err, execrun.ErrProxyUnhealthy), errors.Is(err, execrun.ErrProxyExited):
 		return refuse(t.Name, diag.CodeProxyUnhealthy, "health", err)
 	case errors.Is(err, execrun.ErrProxyInterrupted):
-		return refuse(t.Name, diag.CodeProxyFailed, "interrupted", err)
+		// Ctrl-C while it came up ends aggy: nothing starts.
+		dlog.Log(ctx, diag.Rec{Event: diag.EvToolProxyRefused, Vendor: string(v), Code: diag.CodeProxyFailed, Msg: fixedMsg(diag.CodeProxyFailed),
+			Attrs: map[string]any{"tool": t.Name, "class": "interrupted"}})
+		return &toolProxy{stop: func() {}, guard: func(int, bool) {}, interrupted: true}
 	case err != nil:
 		return refuse(t.Name, diag.CodeProxyFailed, "start", err)
 	}
 	dlog.Log(ctx, diag.Rec{Event: diag.EvToolProxyStarted, Vendor: string(v), Attrs: map[string]any{"tool": t.Name}})
 	fmt.Fprintf(stderr, "%s: %s's proxy is on for this %s session: every request, your login token included, goes through it (%s). aggy tool off %s --vendor %s turns it off.\n",
 		name, t.Name, v, termsafe.Line(p.Env()), t.Name, v)
-	px := &toolProxy{env: p.Env(), died: p.Died(), tool: t.Name, vendor: v}
+	// Round 2 MED: the user's own base URL (a local gateway) gives way
+	// to the proxy's for this session; say so once.
+	if own := os.Getenv(t.Proxy.Env[v]); own != "" && t.Proxy.Env[v]+"="+own != p.Env() {
+		fmt.Fprintf(stderr, "%s: your own %s is set; %s's proxy replaces it for this %s session.\n", name, t.Proxy.Env[v], t.Name, v)
+	}
+	px := &toolProxy{env: p.Env(), died: p.Died(), tool: t.Name, vendor: v, guard: p.Guard}
 	px.stop = func() {
 		p.Stop()
 		dlog.Log(context.Background(), diag.Rec{Event: diag.EvToolProxyStopped, Vendor: string(v), Attrs: map[string]any{"tool": t.Name}})
 	}
+	var once sync.Once
 	px.onDied = func() {
-		r := diag.Rec{Event: diag.EvToolProxyExited, Vendor: string(v), Attrs: map[string]any{"tool": t.Name, "held": true}}
-		if px.held = p.HoldErr(); px.held != nil {
-			r.Code, r.Msg, r.Attrs["held"] = diag.CodeProxyHoldFailed, fixedMsg(diag.CodeProxyHoldFailed), false
-		}
-		px.dead.Store(true) // after held: diedNote reads it once dead
-		dlog.Log(context.Background(), r)
+		once.Do(func() {
+			r := diag.Rec{Event: diag.EvToolProxyExited, Vendor: string(v), Attrs: map[string]any{"tool": t.Name, "held": true}}
+			if px.held = p.HoldErr(); px.held != nil {
+				r.Code, r.Msg, r.Attrs["held"] = diag.CodeProxyHoldFailed, fixedMsg(diag.CodeProxyHoldFailed), false
+			}
+			px.dead.Store(true) // after held: diedNote reads it once dead
+			dlog.Log(context.Background(), r)
+		})
 	}
 	return px
 }
@@ -260,12 +279,19 @@ func startToolProxy(ctx context.Context, v adapter.Vendor, cwd, dir string, sess
 // diedNote is what aggy says once the CLI has exited, after its proxy
 // died mid-session; "" when it did not.
 func (px *toolProxy) diedNote(name string) string {
+	if px.died != nil {
+		select {
+		case <-px.died:
+			px.onDied() // the watch may not have run yet
+		default:
+		}
+	}
 	if !px.dead.Load() {
 		return ""
 	}
 	if px.held != nil {
-		return fmt.Sprintf("%s: WARNING: %s's proxy exited during the %s session, and aggy could not hold its address (%s): until the CLI exited, its requests could have reached another process listening there %s",
-			name, px.tool, px.vendor, termsafe.Line(px.held.Error()), dlog.Tag(diag.CodeProxyHoldFailed))
+		return fmt.Sprintf("%s: WARNING: %s's proxy stopped and another process took its address (%s); aggy stopped %s so it would not send your login there. Resume with aggy resume. %s",
+			name, px.tool, termsafe.Line(px.held.Error()), px.vendor, dlog.Tag(diag.CodeProxyHoldFailed))
 	}
 	return fmt.Sprintf("%s: %s's proxy exited during the %s session; aggy held its address, so its requests failed rather than going elsewhere. The next launch starts it again, or starts %s without it.", name, px.tool, px.vendor, px.vendor)
 }
