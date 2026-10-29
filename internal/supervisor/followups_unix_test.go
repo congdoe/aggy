@@ -5,11 +5,63 @@ package supervisor
 import (
 	"bytes"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 )
+
+// TestSwitchLateChildCheck (T6770, #79): a child check slower than
+// childCheckWait lets the switch be offered again; its answer, landing
+// after the user typed past that offer, never types the exit command.
+func TestSwitchLateChildCheck(t *testing.T) {
+	old := childCheckWait
+	t.Cleanup(func() { childCheckWait = old })
+	gate := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	var asked atomic.Bool
+	ts, c, done, _ := switchRunOn(t, false, adapter.Claude, func(o *Options) {
+		childCheckWait = 100 * time.Millisecond // before Run starts
+		o.Children = func(v adapter.Vendor) []ChildChoice {
+			if v == adapter.Grok {
+				return []ChildChoice{{"g2", "latest"}, {"g1", "older"}}
+			}
+			return nil
+		}
+		o.HasChild = func(adapter.Vendor, string) bool {
+			asked.Store(true)
+			<-gate
+			return true
+		}
+	})
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list", []byte("aggy: switch vendor"), ts.screen)
+	ts.typeIn(t, "2")
+	poll(t, "the children", []byte("older"), ts.screen)
+	ts.typeIn(t, "2")
+	poll(t, "the confirmation", []byte("-> grok. Ctrl+"), ts.screen)
+	confirm(t, ts)
+	deadline := time.Now().Add(waitLimit)
+	for !asked.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("HasChild was not asked")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mark := len(ts.screen())
+	poll(t, "the offer again", []byte("-> grok. Ctrl+"), func() []byte { return ts.screen()[mark:] })
+	ts.typeIn(t, "x") // closes the offer and goes to the CLI
+	c.waitGot(t, []byte("x"))
+	ts.typeIn(t, "\x7f")
+	c.waitGot(t, []byte("x\x7f"))
+	release()
+	never(t, "the exit command from the late answer", []byte("/exit"), c.received, 300*time.Millisecond)
+	finish(t, c, done)
+}
 
 // TestSwitchPickedChildGone (T6770): a confirmed switch to a picked
 // child checks it is still recorded before the exit command; one gone is
