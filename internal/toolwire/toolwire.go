@@ -1,6 +1,7 @@
 // Package toolwire builds what a vendor CLI gets at launch for the
 // managed tools that are on (switchboard.Board.On, T6708): today the
-// MCP servers, with {repo} filled in. It reads and writes nothing; the
+// MCP servers, each started through aggy tool exec (the shim), with
+// {repo} filled in. It reads and writes nothing; the
 // caller writes the files it renders into the launch's private folder
 // under aggy's state dir, never into the user's vendor config.
 //
@@ -34,15 +35,25 @@ type Refusal struct {
 // TOML, or YAML reader treats as more than text (F-3).
 const repoChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._+-@"
 
-// MCP returns the MCP servers of the tools in on, in order, each with
-// {repo} replaced by repo (the work tree the session runs in; "" outside
-// one) and its working directory set to dir, a private folder outside
-// the repo (S63-14), for the CLIs that take one. taken holds the names
-// of the servers the vendor already loads from the user's or the repo's
-// config. A tool is refused when its name is taken, or when its
-// arguments hold {repo} and there is no repo or the repo's path holds a
-// character outside repoChars.
-func MCP(on []switchboard.State, repo, dir string, taken []string) ([]adapter.MCPServer, []Refusal) {
+// DigestLen is how much of a definition's digest the shim's arguments
+// carry: enough that no edit of the file passes unnoticed by chance.
+const DigestLen = 16
+
+// NoRepo stands for "not in a repo" in the shim's arguments.
+const NoRepo = "-"
+
+// MCP returns the MCP servers of the tools in on, in order. Each is
+// started through the shim, bin tool exec (ExecArgs): bin is aggy's own
+// path, and the shim checks the server's argv against the definition
+// again, moves to dir, builds its environment from scratch, and execs it
+// (W71-2), so the server never runs in the repo (S63-14) whatever the CLI
+// does with a working directory. {repo} is replaced by repo (the work
+// tree the session runs in; "" outside one). taken maps the names of the
+// servers the vendor already loads to where each is set. A tool is
+// refused when its name is taken, or when its arguments hold {repo} and
+// there is no repo or the repo's path holds a character outside
+// repoChars.
+func MCP(on []switchboard.State, repo, dir, bin string, taken map[string]string) ([]adapter.MCPServer, []Refusal) {
 	var out []adapter.MCPServer
 	var refused []Refusal
 	for _, st := range on {
@@ -51,24 +62,46 @@ func MCP(on []switchboard.State, repo, dir string, taken []string) ([]adapter.MC
 			continue
 		}
 		name := st.Tool.Name
-		if slices.Contains(taken, name) {
+		if src, ok := taken[name]; ok {
 			refused = append(refused, Refusal{name, diag.CodeToolNameClash,
-				fmt.Sprintf("a server named %s is already in %s's own config; aggy adds its servers next to yours and never replaces one", name, st.Vendor)})
+				fmt.Sprintf("a server named %s is already set in %s; aggy adds its servers next to yours and never replaces one", name, src)})
 			continue
 		}
-		args, err := fill(m.Argv[1:], repo)
+		argv, err := fill(m.Argv, repo)
 		if err != nil {
 			refused = append(refused, Refusal{name, diag.CodeToolRepoPath, err.Error()})
 			continue
 		}
-		out = append(out, adapter.MCPServer{Name: name, Command: m.Argv[0], Args: args,
-			EnvVars: slices.Clone(m.Env), Cwd: dir})
+		out = append(out, adapter.MCPServer{Name: name, Command: bin,
+			Args: ExecArgs(dir, name, st.Tool.Digest, repo, argv), EnvVars: slices.Clone(m.Env), Cwd: dir})
 	}
 	return out, refused
 }
 
-// fill replaces {repo} in each argument with repo. Arguments are argv
-// words, never joined into a shell string.
+// ExecArgs are the shim's arguments: tool exec <dir> <name> <digest>
+// <repo> -- <argv...>, with the digest cut to DigestLen and NoRepo for
+// no repo.
+func ExecArgs(dir, name, digest, repo string, argv []string) []string {
+	if repo == "" {
+		repo = NoRepo
+	}
+	return append([]string{"tool", "exec", dir, name, digest[:min(len(digest), DigestLen)], repo, "--"}, argv...)
+}
+
+// Match returns the MCP part of t whose argv, with {repo} filled in from
+// repo, is argv: the shim's check that it runs what the definition says.
+func Match(t tooldef.Tool, repo string, argv []string) (*tooldef.MCP, error) {
+	for i := range t.MCP {
+		want, err := fill(t.MCP[i].Argv, repo)
+		if err == nil && slices.Equal(want, argv) {
+			return &t.MCP[i], nil
+		}
+	}
+	return nil, fmt.Errorf("the command is not one of %s's MCP servers", t.Name)
+}
+
+// fill replaces {repo} in each word with repo. Words are argv, never
+// joined into a shell string.
 func fill(args []string, repo string) ([]string, error) {
 	out := make([]string, len(args))
 	for i, a := range args {
@@ -96,11 +129,12 @@ func Names(servers []adapter.MCPServer) []string {
 
 // claudeServer is a stdio entry of Claude's MCP config: command and args
 // (docs/verification.md, "MCP server config"; type is stdio when
-// absent). Claude's entry has no working-directory field, so the server
-// runs in the session's directory, which is why a tool's script must be
-// an absolute path (internal/tooldef).
-// TODO(T6708): unverified whether a server Claude starts inherits its
-// environment; env_vars are not written as values, which may be secrets.
+// absent). Claude's entry has no working-directory field; the command is
+// the shim (MCP), which moves to the launch folder itself. The shim
+// reads the declared variables from the environment Claude gives it.
+// TODO(T6708): unverified whether a server Claude starts inherits
+// Claude's environment; no value is written here, since one may be a
+// secret.
 type claudeServer struct {
 	Command string   `json:"command"`
 	Args    []string `json:"args"`

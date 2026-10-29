@@ -38,7 +38,11 @@ var (
 		"expect", "tmux", "screen", "launchctl", "sandbox-exec", "xcrun"}
 	// interpreters run code given with -c, -e, -E, --eval, or eval.
 	interpreters = []string{"python", "perl", "ruby", "node", "nodejs", "php", "lua", "luajit", "osascript",
-		"tclsh", "wish", "rscript", "julia", "deno", "bun", "jshell", "irb", "groovy"}
+		"tclsh", "wish", "rscript", "julia", "deno", "bun", "jshell", "irb", "groovy",
+		// java runs the jar or class it is given: checked as a script,
+		// so -jar's file is absolute and a bare class name is refused
+		// (it would load from the working directory; W71-2).
+		"java"}
 	// codeFlags give an interpreter its code inline.
 	codeFlags = []string{"-c", "-e", "-E", "--eval", "--command", "--exec", "-r", "eval", "--print", "-p"}
 	// nodeLoadFlags make node, deno, or bun load a module first. A bare
@@ -46,6 +50,9 @@ var (
 	// be the repo's, so the value must be an absolute path.
 	nodeLoadFlags = []string{"--require", "-r", "--import", "--loader", "--experimental-loader", "--preload"}
 	nodeFamily    = []string{"node", "nodejs", "deno", "bun"}
+	// nodeConfigFlags make deno or bun read a config or an import map;
+	// a relative one is read from the working directory (W71-2).
+	nodeConfigFlags = []string{"--config", "--import-map"}
 )
 
 // Package runners and managers. A runner fetches a package and runs it,
@@ -229,7 +236,7 @@ func checkInterpreter(prog, n string, rest []string) string {
 			return ""
 		case strings.HasPrefix(f, "-") && f != "-":
 			name, val, hasVal := strings.Cut(f, "=")
-			load := node && slices.Contains(nodeLoadFlags, name)
+			load := node && (slices.Contains(nodeLoadFlags, name) || slices.Contains(nodeConfigFlags, name))
 			if !hasVal && k+1 < len(rest) && (load || f == "-m" || len(f) == 2 && strings.ContainsRune(valueChars, rune(f[1]))) {
 				k++
 				val = rest[k]
@@ -239,6 +246,9 @@ func checkInterpreter(prog, n string, rest []string) string {
 			}
 			if load && !strings.HasPrefix(val, "/") {
 				return fmt.Sprintf("%q %s %q: a module loaded first must be an absolute path, not resolved from the working directory", prog, name, val)
+			}
+			if op, ok := loaderOperand(f, val, python || node); ok && !strings.HasPrefix(op, "/") {
+				return fmt.Sprintf("%q %s %q: a library loaded first must be an absolute path, not found from the working directory", prog, f, op)
 			}
 			if python {
 				if f == "-m" {
@@ -256,6 +266,22 @@ func checkInterpreter(prog, n string, rest []string) string {
 		}
 	}
 	return ""
+}
+
+// loaderOperand returns what -l (lua, ruby) or -d (perl -d:Module)
+// loads, attached or in val, for an interpreter other than python and
+// the node family, which take neither as a loader (W71-2).
+func loaderOperand(f, val string, skip bool) (string, bool) {
+	if skip || len(f) < 2 || f[0] != '-' || f[1] != 'l' && f[1] != 'd' {
+		return "", false
+	}
+	switch {
+	case len(f) > 2:
+		return strings.TrimPrefix(f[2:], ":"), true
+	case f == "-l":
+		return val, true
+	}
+	return "", false // -d alone loads the debugger, from no path
 }
 
 // pyIsolates reports a python flag cluster holding -I or -P, before any
@@ -372,6 +398,12 @@ func checkFetch(prog string, r runner, rest []string) string {
 			}
 			if strings.Contains(val, Placeholder) {
 				return fmt.Sprintf("%q %s %q would take the repo's code", prog, name, val)
+			}
+			// W71-2: an interpreter named by a relative path is found
+			// from the working directory; a version or a bare name is not.
+			if (name == "--python" || name == "-p") && !slices.Contains(r.pkg, name) &&
+				(strings.HasPrefix(val, ".") || strings.Contains(val, "/") && !strings.HasPrefix(val, "/")) {
+				return fmt.Sprintf("%q %s %q: an interpreter path must be absolute", prog, name, val)
 			}
 			if slices.Contains(r.pkg, name) {
 				if !pinnedSpec(val) {

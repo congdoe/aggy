@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -152,6 +153,9 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 	vendors, err := toolVendors(a.vendor)
 	if err != nil {
 		return err
+	}
+	if on && slices.Equal(vendors, []adapter.Vendor{adapter.Grok}) && !grokToolsVerified {
+		return withCode(diag.CodeToolUnverified, errors.New(grokUnverified)) // W71-4
 	}
 	var repo toolRepoAt
 	if a.hasRepo {

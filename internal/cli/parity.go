@@ -111,7 +111,7 @@ func codexConfigs(cwd, root string) ([]parity.CodexConfig, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, parity.CodexConfig{Data: b, Project: d.Project})
+		out = append(out, parity.CodexConfig{Path: filepath.Join(d.Dir, "config.toml"), Data: b, Project: d.Project})
 		if i != 1 || b == nil {
 			continue
 		}
@@ -125,7 +125,7 @@ func codexConfigs(cwd, root string) ([]parity.CodexConfig, error) {
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, parity.CodexConfig{Data: pb, Project: true})
+			out = append(out, parity.CodexConfig{Path: filepath.Join(d.Dir, doc.Profile+".config.toml"), Data: pb, Project: true})
 		}
 	}
 	return out, nil

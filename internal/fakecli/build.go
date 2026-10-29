@@ -36,9 +36,10 @@ type Fakes struct {
 	Codex  string
 	Grok   string
 	Hook   string
+	MCP    string // fake-mcp, a stand-in MCP server (testdata/fakes)
 }
 
-// For returns the fake for vendor ("claude", "codex", "grok", or "hook").
+// For returns the fake for vendor ("claude", "codex", "grok", "hook", or "mcp").
 func (f Fakes) For(vendor string) string {
 	return filepath.Join(f.Dir, "fake-"+vendor)
 }
@@ -85,13 +86,13 @@ func Build(t testing.TB) Fakes {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, v := range []string{"codex", "grok", "hook"} {
+	for _, v := range []string{"codex", "grok", "hook", "mcp"} {
 		if err := safefs.WriteFile(filepath.Join(dir, "fake-"+v), data, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	f := Fakes{Dir: dir}
-	f.Claude, f.Codex, f.Grok, f.Hook = f.For("claude"), f.For("codex"), f.For("grok"), f.For("hook")
+	f.Claude, f.Codex, f.Grok, f.Hook, f.MCP = f.For("claude"), f.For("codex"), f.For("grok"), f.For("hook"), f.For("mcp")
 	return f
 }
 
@@ -124,6 +125,7 @@ type Record struct {
 	SessionID     string              `json:"session_id"`
 	Flags         map[string][]string `json:"flags"`
 	Positional    []string            `json:"positional"`
+	MCPConfig     json.RawMessage     `json:"mcp_config"` // the first --mcp-config file's content
 	PID           int                 `json:"pid"`
 }
 

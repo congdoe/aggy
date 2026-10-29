@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"bytes"
+	"encoding/json"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -10,18 +12,34 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/fakecli"
 )
 
-// aggyIn runs aggy (not on a terminal) in the world's home and dir.
-func (w *world) aggyIn(t *testing.T, args ...string) {
+// aggyCode runs aggy (not on a terminal) in the world's home and dir and
+// returns its exit code and output.
+func (w *world) aggyCode(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	cmd := exec.Command(buildAggy(t), args...)
 	cmd.Dir = w.cwd
 	cmd.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("aggy %q: %v\n%s", args, err, out)
+	out, err := cmd.CombinedOutput()
+	if ee, ok := err.(*exec.ExitError); ok {
+		return ee.ExitCode(), string(out)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return 0, string(out)
+}
+
+// aggyIn runs aggy and fails the test unless it succeeds.
+func (w *world) aggyIn(t *testing.T, args ...string) {
+	t.Helper()
+	if code, out := w.aggyCode(t, args...); code != 0 {
+		t.Fatalf("aggy %q: exit %d\n%s", args, code, out)
 	}
 }
 
@@ -63,14 +81,39 @@ func (w *world) traces(t *testing.T, server string) []string {
 	return found
 }
 
+// launchLeftovers lists what a launch left in aggy's run folder: its
+// private folder and the tool files in it are removed at exit.
+func (w *world) launchLeftovers(t *testing.T) []string {
+	t.Helper()
+	des, err := os.ReadDir(filepath.Join(w.home, ".aggy", "run"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, de := range des {
+		if strings.HasSuffix(de.Name(), ".memory") {
+			out = append(out, de.Name())
+		}
+	}
+	return out
+}
+
 // TestToolsWiredAtLaunch (T6708): a tool turned on reaches the CLI aggy
-// starts on its command line only, for that session; turned off, it
-// leaves no flag, no file, and nothing in any vendor config.
+// starts on its command line only, for that session, started through
+// aggy tool exec; turned off, it leaves no flag, no file, and nothing in
+// any vendor config. Grok gets no tools (W71-4).
 func TestToolsWiredAtLaunch(t *testing.T) {
 	for _, v := range []string{"claude", "codex", "grok"} {
 		t.Run(v, func(t *testing.T) {
 			w := newWorld(t)
-			w.aggyIn(t, "tool", "on", "context7", "--vendor", v)
+			if v == "grok" {
+				if code, out := w.aggyCode(t, "tool", "on", "context7", "--vendor", v); code != 1 || !strings.Contains(out, "tool.vendor_unverified") {
+					t.Errorf("on --vendor grok: %d %s", code, out)
+				}
+				w.aggyIn(t, "tool", "on", "context7")
+			} else {
+				w.aggyIn(t, "tool", "on", "context7", "--vendor", v)
+			}
 			r := w.launchRecord(t, v)
 			switch v {
 			case "claude":
@@ -81,16 +124,22 @@ func TestToolsWiredAtLaunch(t *testing.T) {
 					t.Errorf("%s left after the session: %v", f[0], err)
 				}
 			case "codex":
-				if !slices.Contains(r.Flags["-c"], `mcp_servers.context7.command="context7-mcp"`) {
+				if !slices.Contains(r.Flags["-c"], `mcp_servers.context7.command="`+buildAggy(t)+`"`) ||
+					!slices.ContainsFunc(r.Flags["-c"], func(c string) bool {
+						return strings.HasPrefix(c, `mcp_servers.context7.args=["tool", "exec", `) && strings.HasSuffix(c, `"--", "context7-mcp"]`)
+					}) {
 					t.Errorf("-c %q", r.Flags["-c"])
 				}
 			case "grok":
-				if f := r.Flags["--agent"]; len(f) != 1 || !strings.HasSuffix(f[0], "/agent.md") {
-					t.Errorf("args %q", r.Args)
+				if slices.Contains(r.Args, "--agent") {
+					t.Errorf("grok got tools: %q", r.Args)
 				}
 			}
 			if tr := w.traces(t, "context7-mcp"); len(tr) != 0 {
 				t.Errorf("vendor config written: %q", tr)
+			}
+			if lo := w.launchLeftovers(t); len(lo) != 0 {
+				t.Errorf("left in run: %q", lo)
 			}
 
 			w.aggyIn(t, "tool", "off", "context7")
@@ -104,5 +153,168 @@ func TestToolsWiredAtLaunch(t *testing.T) {
 				t.Errorf("an off tool left a trace: %q", tr)
 			}
 		})
+	}
+}
+
+// probeTool is a user tool whose server is fake-mcp, which dumps its
+// arguments, working directory, and environment to the file it is given.
+const probeTool = `name = "probe"
+description = "e2e probe server"
+version = "1.0.0"
+scope = "global"
+
+[install]
+check = ["{bin}/fake-mcp", "--version"]
+
+[[mcp]]
+vendors = ["claude", "codex"]
+argv = ["{bin}/fake-mcp", "{dump}"]
+env = ["PROBE_HOME"]
+
+[cost]
+method = "none"
+`
+
+type mcpDump struct {
+	Args []string `json:"args"`
+	Cwd  string   `json:"cwd"`
+	Env  []string `json:"env"`
+}
+
+// TestToolShimSwitchResume (W71-2, W71-8): a user tool is off by
+// default; on, it reaches Claude after a switch with a brief, the brief
+// staying Claude's prompt, through a file whose server is aggy tool
+// exec; the server runs in the launch's private folder with only the
+// basics and its declared variable; the launch leaves nothing in run;
+// a resume wires it again; a repo's tools_off turns it off.
+func TestToolShimSwitchResume(t *testing.T) {
+	w := newWorld(t)
+	w.env = []string{"PROBE_HOME=/opt/probe", "PROBE_SECRET_TOKEN=leak-canary", "NODE_OPTIONS=--require /tmp/x.js"}
+	w.aggyIn(t, "setup", "--yes")
+	dump := filepath.Join(w.home, "dump.jsonl")
+	tools := filepath.Join(w.home, ".aggy", "tools")
+	if err := os.MkdirAll(tools, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	def := strings.NewReplacer("{bin}", w.bin, "{dump}", dump).Replace(probeTool)
+	if err := os.WriteFile(filepath.Join(tools, "probe.toml"), []byte(def), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Off by default.
+	if r := w.launchRecord(t, "claude"); len(r.Flags["--mcp-config"]) != 0 {
+		t.Fatalf("an off user tool was wired: %q", r.Args)
+	}
+	w.aggyIn(t, "tool", "on", "probe")
+
+	// Grok asks for a switch to Claude, which starts with a brief.
+	_ = os.Remove(w.record)
+	sc := map[string]any{
+		"stdout":        "READY>",
+		"hook_command":  []string{"/bin/sh", "-c", buildAggy(t) + " switch --brief \"$1\" >/dev/null 2>&1 || true", "sh"},
+		"hooks":         []map[string]any{{"event": "claude", "payload": map[string]any{}}},
+		"start_mcp":     true,
+		"session_files": []map[string]any{{"path": "projects/p/{session_id}.jsonl", "content": "{}"}},
+	}
+	s := w.start(t, sc, "run", "grok")
+	s.waitWithin([]byte("-> claude. Ctrl+"), offerTimeout)
+	time.Sleep(600 * time.Millisecond) // past the confirmation's guard
+	s.send([]byte{0x1c})
+	deadline := time.Now().Add(timeout)
+	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	runs := interactiveRuns(t, w)
+	if len(runs) != 2 || runs[1].Vendor != "claude" {
+		t.Fatalf("runs = %+v", runs)
+	}
+	c := runs[1]
+	f := c.Flags["--mcp-config"]
+	if len(f) != 1 || c.Args[0] != "--mcp-config" || !slices.Contains(c.Args, "--") ||
+		len(c.Positional) != 1 || !strings.HasPrefix(c.Positional[0], "Read the handoff brief at ") {
+		t.Fatalf("claude after the switch: args %q, prompt %q", c.Args, c.Positional)
+	}
+	if want := adapter.BriefPrompt(strings.TrimSuffix(strings.TrimPrefix(c.Positional[0], "Read the handoff brief at "), " before anything else, then continue the work it describes.")); c.Positional[0] != want {
+		t.Errorf("prompt %q", c.Positional[0])
+	}
+	launch := filepath.Dir(f[0])
+	var file struct {
+		MCPServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(c.MCPConfig, &file); err != nil {
+		t.Fatalf("mcp config %s: %v", c.MCPConfig, err)
+	}
+	p := file.MCPServers["probe"]
+	if len(file.MCPServers) != 1 || p.Command != buildAggy(t) || len(p.Args) != 9 ||
+		!slices.Equal(p.Args[:4], []string{"tool", "exec", launch, "probe"}) ||
+		!slices.Equal(p.Args[6:], []string{"--", filepath.Join(w.bin, "fake-mcp"), dump}) {
+		t.Errorf("claude's file: %s", c.MCPConfig)
+	}
+
+	// The server ran through the shim: in the launch folder, with only
+	// the basics and PROBE_HOME.
+	b, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatalf("the server never ran: %v", err)
+	}
+	var d mcpDump
+	if err := json.Unmarshal(bytes.SplitN(b, []byte("\n"), 2)[0], &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Cwd != launch || !slices.Equal(d.Args, []string{dump}) {
+		t.Errorf("server cwd %q args %q, want %q", d.Cwd, d.Args, launch)
+	}
+	basics := []string{"HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"}
+	for _, kv := range d.Env {
+		k, _, _ := strings.Cut(kv, "=")
+		if !slices.Contains(basics, k) && kv != "PROBE_HOME=/opt/probe" {
+			t.Errorf("server env has %q", kv)
+		}
+	}
+	if !slices.Contains(d.Env, "PROBE_HOME=/opt/probe") || !slices.Contains(d.Env, "HOME="+w.home) {
+		t.Errorf("server env %q", d.Env)
+	}
+	if lo := w.launchLeftovers(t); len(lo) != 0 {
+		t.Errorf("left in run: %q", lo)
+	}
+	if tr := w.traces(t, "fake-mcp"); len(tr) != 0 {
+		t.Errorf("vendor config written: %q", tr)
+	}
+
+	// A resume wires it again, --mcp-config first.
+	_ = os.Remove(w.record)
+	s = w.start(t, map[string]any{"stdout": "READY>"})
+	s.waitFor([]byte("READY>"))
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	r := interactiveRecord(t, w)
+	if r.Vendor != "claude" || len(r.Args) < 4 || r.Args[0] != "--mcp-config" || r.Args[2] != "--resume" {
+		t.Errorf("resume args %q", r.Args)
+	}
+
+	// A repo's tools_off turns it off there.
+	gitInit := exec.Command("git", "init", "-q")
+	gitInit.Dir = w.cwd
+	gitInit.Env = []string{"HOME=" + w.home, "PATH=/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM=1"}
+	if out, err := gitInit.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	if err := os.MkdirAll(filepath.Join(w.cwd, ".aggy"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.cwd, ".aggy", "config.toml"), []byte("tools_off = [\"probe\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := w.launchRecord(t, "claude"); len(r.Flags["--mcp-config"]) != 0 {
+		t.Errorf("tools_off: %q", r.Args)
 	}
 }

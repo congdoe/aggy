@@ -287,7 +287,10 @@ was tested against.
   with the session, so pass it again on resume. With an empty
   `{"mcpServers":{}}` no MCP or connector tool is left. On screen, aggy
   passes `--mcp-config <file>` alone, so the person's own servers stay
-  (design.md section 9, "Launch wiring").
+  (design.md section 9, "Launch wiring"). `--mcp-config <configs...>` is
+  variadic: it takes every following word up to the next flag, a prompt
+  included, so aggy puts it first and a `--` before the brief prompt
+  (W71-1; that claude takes `--` there is unverified).
 - Extra context: `--append-system-prompt-file <path>` works although
   `--help` omits it. The system prompt is snapshotted on the first
   request, so a new value is ignored on resume.

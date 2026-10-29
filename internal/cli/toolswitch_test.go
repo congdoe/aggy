@@ -155,7 +155,7 @@ func TestToolSwitchWorktree(t *testing.T) {
 	}{
 		{[]string{"on", "demo"}, wt, "demo on on on"},
 		{[]string{"off", "demo", "--repo", main}, wt, "demo off off off"},
-		{[]string{"on", "demo", "--repo", wt, "--vendor", "grok"}, main, "demo off off on"},
+		{[]string{"on", "demo", "--repo", wt, "--vendor", "codex"}, main, "demo off on off"},
 		{[]string{"on", "codegraph", "--repo", main}, wt, "codegraph on on on"},
 	}
 	for _, s := range steps {
@@ -178,7 +178,7 @@ func TestToolSwitchWorktree(t *testing.T) {
 			t.Errorf("worktree %s: %q", tool, got)
 		}
 	}
-	if _, out, _ := toolRun("", false, "status", "--repo", main); !strings.HasPrefix(statusLine(t, out, "demo"), "demo off off on") {
+	if _, out, _ := toolRun("", false, "status", "--repo", main); !strings.HasPrefix(statusLine(t, out, "demo"), "demo off on off") {
 		t.Errorf("the worktree's tools_off reached the main checkout:\n%s", out)
 	}
 }
@@ -307,7 +307,7 @@ func TestToolOnRefuses(t *testing.T) {
 		exit int
 	}{
 		{[]string{"on", "nope"}, "tool.unknown", 1},
-		{[]string{"on", "solo", "--vendor", "grok"}, "tool.not_applicable", 1},
+		{[]string{"on", "solo", "--vendor", "grok"}, "tool.vendor_unverified", 1}, // W71-4,
 		{[]string{"on", "codegraph"}, "tool.not_applicable", 1},
 		{[]string{"on", "demo", "--repo", t.TempDir()}, "tool.not_applicable", 1},
 		{[]string{"on", "demo", "--vendor", "gemini"}, "cli.usage", 1},
