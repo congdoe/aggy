@@ -140,10 +140,15 @@ func TestAddToolsSessionOff(t *testing.T) {
 	if req.AgentFile != "" || len(warns) != 1 || !strings.Contains(warns[0], "tool.vendor_unverified") || exists(t, dir) {
 		t.Errorf("grok: %+v %q", req, warns)
 	}
-	// demo has only a hook for Grok: on, but nothing is wired.
+	// demo has only a hook for Grok, which takes none for one session.
 	req, warns, _ = wire(adapter.Grok, repo, "demo")
-	if req.AgentFile != "" || len(warns) != 1 || !strings.Contains(warns[0], "only MCP servers are wired so far") {
+	if req.AgentFile != "" || req.Hooks != nil || len(warns) != 1 || !strings.Contains(warns[0], "tool.no_launch_flag") {
 		t.Errorf("grok demo: %+v %q", req, warns)
+	}
+	// caveman is a skill only: on, but a session wires none (W76-3).
+	req, warns, _ = wire(adapter.Claude, repo, "caveman")
+	if req.MCPConfigFile != "" || req.Hooks != nil || len(warns) != 1 || !strings.Contains(warns[0], "a skill follows aggy tool on") {
+		t.Errorf("claude caveman: %+v %q", req, warns)
 	}
 	// A per-repo tool: wired in a repo, refused outside one.
 	if req, warns, _ = wire(adapter.Claude, repo, "demo"); req.MCPConfigFile == "" || len(warns) != 0 {

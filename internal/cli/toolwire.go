@@ -163,8 +163,8 @@ func addTools(ctx context.Context, v adapter.Vendor, caps []string, cwd, dir str
 //     tool on runs it;
 //   - one the board keeps off: nothing for v, a per-repo tool outside a
 //     repo, or the repo's tools_off;
-//   - one with no MCP server for v, which stays on but adds nothing
-//     (W76-3).
+//   - one with no MCP server or hook for v, which stays on but adds
+//     nothing to the launch (W76-3).
 //
 // The index is opened once, read-only, and only for a user tool.
 func sessionTools(ctx context.Context, b switchboard.Board, v adapter.Vendor, repo string, session []string,
@@ -209,8 +209,8 @@ func sessionTools(ctx context.Context, b switchboard.Board, v adapter.Vendor, re
 			warns = append(warns, refuse(n, diag.CodeToolRepoOff, "repo_off", st.Why))
 		case !st.On:
 			warns = append(warns, refuse(n, diag.CodeToolScope, "off", st.Why))
-		case st.Parts.MCP == nil:
-			warns = append(warns, refuse(n, diag.CodeToolScope, "no_mcp", "it has no MCP server for "+string(v)+", and only MCP servers are wired so far"))
+		case st.Parts.MCP == nil && len(st.Parts.Hooks) == 0:
+			warns = append(warns, refuse(n, diag.CodeToolScope, "no_mcp", "it has no MCP server or hook for "+string(v)+", and a session wires only those; a skill follows aggy tool on"))
 		}
 	}
 	return keep, warns
