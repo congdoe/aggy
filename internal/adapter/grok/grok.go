@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -426,7 +427,10 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 // TODO(T6821): an image edit (image_edit) and video (image_to_video) stay
 // without strict until a live check shows they work under it with the
 // same kind of allow rule; neither, nor reference_to_video, was run live
-// under strict. They keep the read denies (usesDeny).
+// under strict. They keep the read denies (usesDeny). An edit resumes a
+// session created under strict, and Grok stores --rules with a session,
+// so it may store the sandbox or permission rules too; an edit might
+// then hit the same headless prompt (permissionErr). A live check.
 func usesSandbox(req adapter.HeadlessRequest) bool {
 	switch req.Kind {
 	case adapter.Review, adapter.Research, adapter.News:
@@ -620,7 +624,9 @@ var TextFields = []string{"text", "result", "response"}
 
 // ParseHeadless first fails closed when the CLI rejected a lockdown flag,
 // printed UnknownToolWarning, refused to start for want of its sandbox,
-// or (on a sandboxed kind) said it ran without it (ErrLockdown). It then reads the JSON reply: sessionId (recorded; checked with
+// or (on a sandboxed kind) said it ran without it (ErrLockdown), and on
+// a tool stopped at a permission prompt it cannot answer (ErrPermission,
+// permissionErr). It then reads the JSON reply: sessionId (recorded; checked with
 // adapter.ValidSessionID, and a pre-assigned or resumed id is kept, with
 // an error if the reply names another), and the final text from the first of
 // TextFields present.
@@ -641,6 +647,11 @@ func (Adapter) ParseHeadless(req adapter.HeadlessRequest, out adapter.Output) (a
 	}
 	if err != nil {
 		res.Error, res.ErrorDetail = adapter.ErrLockdown, strings.TrimSpace(string(out.Stderr))
+		return res, err
+	}
+	if err := permissionErr(out); err != nil {
+		// Not the stderr: the line quotes the tool's input, the prompt.
+		res.Error = adapter.ErrPermission
 		return res, err
 	}
 	obj, parsed := decodeReply(out.Stdout)
@@ -731,6 +742,24 @@ func lockdownErr(out adapter.Output) error {
 		if strings.Contains(line, UnknownToolWarning) {
 			return fmt.Errorf("grok: %w: Grok ignored the --tools allowlist because a tool name is unknown (%s)",
 				adapter.ErrLockdownRejected, strings.TrimSpace(line))
+		}
+	}
+	return nil
+}
+
+// HeadlessPermissionPrompt ends the stderr line of a grok that stopped a
+// tool at a permission prompt in a headless run and went on without it,
+// exit 0. Live (2026-10-29, grok 1.0.70, image_gen under --sandbox
+// strict without --allow): "permission required: imagine: <prompt> was
+// not run, as a headless run cannot ask for approval".
+const HeadlessPermissionPrompt = "was not run, as a headless run cannot ask for approval"
+
+// permissionErr fails a run whose stderr says a tool stopped at a
+// permission prompt: the task the tool was for did not happen.
+func permissionErr(out adapter.Output) error {
+	for _, line := range strings.Split(string(out.Stderr), "\n") {
+		if strings.Contains(line, HeadlessPermissionPrompt) {
+			return errors.New("grok: a tool stopped at a permission prompt, which a headless run cannot answer, so it did not run; aggy's allow rules for this kind may need a change")
 		}
 	}
 	return nil

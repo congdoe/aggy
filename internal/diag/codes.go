@@ -163,6 +163,7 @@ var (
 	CodeTimeout          = Code{"borrow.timeout"}
 	CodeInterrupted      = Code{"borrow.interrupted"}
 	CodeChildFailed      = Code{"borrow.child_failed"}
+	CodePermissionPrompt = Code{"borrow.permission_prompt"}
 	CodeAcceptTarget     = Code{"accept.target_invalid"}
 	CodeProtected        = Code{"accept.protected_path"}
 	CodeTreeChanged      = Code{"accept.worktree_changed"}
@@ -328,6 +329,7 @@ var codes = []CodeInfo{
 	{CodeFileTools, false, "The request needs Grok's media file tools, which are off.", "[media] grok_file_tools in ~/.aggy/config.toml, after reading what it uploads."},
 	{CodeNoSandbox, false, "The vendor's sandbox is not available for this kind on this CLI or host.", "Grok needs --sandbox strict in its --help and a kernel sandbox (macOS, or Linux with Landlock)."},
 	{CodeUntested, false, "The CLI's version is outside the versions the borrow lockdown was verified on.", "aggy doctor; --allow-untested runs it anyway."},
+	{CodePermissionPrompt, false, "The child stopped a tool at a permission prompt, which a headless run cannot answer, so the tool did not run (Grok: \"was not run, as a headless run cannot ask for approval\").", "aggy doctor for the CLI's version; attach aggy diag bundle to an issue: aggy's allow rules for that kind may need a change."},
 	{CodeLockdown, true, "The CLI rejected a lockdown flag, reported a tool it does not know, or ran without its sandbox, so aggy discarded the run.", "aggy doctor for the version; attach aggy diag bundle to an issue."},
 	{CodeRateLimit, false, "The vendor reported a plan or rate limit.", "aggy log shows the limit; routing skips the vendor until it lifts."},
 	{CodeAuth, false, "The vendor CLI is not signed in.", "The vendor's own login; then aggy setup."},
@@ -386,7 +388,7 @@ var codes = []CodeInfo{
 	{CodePeerUID, true, "A process of another user reached the supervisor's socket; it got no answer.", "The run directory's owner and mode (0700)."},
 	{CodeBadRequest, true, "A message on the supervisor's socket was not one aggy sends (bad JSON, an unknown type or field, a bad name).", "Which process writes to ~/.aggy/run; aggy hook and aggy switch send only valid messages."},
 	{CodeForeignSession, false, "A turn end from the CLI's tree named another session (a nested CLI), so it did not end the on-screen turn.", "Nothing, unless the on-screen CLI's own turn ends are ignored: then its session id is not the one aggy recorded."},
-	{CodeGrokShutdown, false, "Grok fires a stop hook with reason shutdown at every exit (grok 1.0.70); it ends no turn, so it did not put the CLI at its prompt or start a switch. Recorded once a minute (attrs.repeats: how many more came since the last record; attrs.own: it named the on-screen session).", "Nothing; it is expected once when Grok exits."},
+	{CodeGrokShutdown, false, "Grok fires a stop hook with reason shutdown at every exit (grok 1.0.70); it ends no turn, so it did not put the CLI at its prompt or start a switch. Only one naming the on-screen session counts; any other is a turn end of another session or of none. Recorded once a minute, and when the session ends (attrs.repeats: how many more came since the last record; attrs.tail: the record holds only those).", "Nothing; it is expected once when Grok exits."},
 	{CodeNoSession, true, "A turn end from the CLI's tree named no session, which the vendor's own hook always does, so it looks forged and was not acted on. Recorded once a minute, and when the session ends (attrs.repeats: how many more came since the last record; attrs.tail: the record holds only those).", "Which process in the session sends hook events: aggy hook forwards what the vendor gives it."},
 	{CodePeerUnknown, false, "aggy could not tell which user or process opened a connection to the supervisor's socket, so it was closed unanswered.", "Usually a process that connected and exited at once; nothing, unless hooks stop arriving."},
 	{CodeWrongVendor, true, "A hook event from the CLI's tree came from another vendor's hook than the one on screen, so it did not gate a switch.", "A nested CLI of another vendor in the session; nothing else."},

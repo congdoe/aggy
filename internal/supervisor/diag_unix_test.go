@@ -328,11 +328,14 @@ func TestAnswerRecords(t *testing.T) {
 	}
 }
 
-// TestGrokShutdownStop (T6847): Grok's exit-time stop ("reason":
-// "shutdown", live 2026-10-29, grok 1.0.70) ends no turn: no atPrompt,
-// no warnDue, no share prompt, and the preselect stays. It is recorded
-// once a minute as an ignored hook event. Another reason, another event,
-// or another vendor is unchanged.
+// TestGrokShutdownStop (T6847, #101): the on-screen Grok child's
+// exit-time stop ("reason":"shutdown", live 2026-10-29, grok 1.0.70)
+// ends no turn: no atPrompt, no warnDue, no share prompt, the preselect
+// and the hold stay. It is recorded once a minute as an ignored hook
+// event, and the repeats left at the end of the session once more. One
+// that names no session, or another session, is still the security
+// rejection or foreign turn end it would be without the reason. Another
+// reason, another event, or another vendor is unchanged.
 func TestGrokShutdownStop(t *testing.T) {
 	q, records := diagHome(t)
 	newSession := func(v adapter.Vendor) *session {
@@ -343,15 +346,28 @@ func TestGrokShutdownStop(t *testing.T) {
 		s.onHook(Request{Type: ReqHookEvent, Vendor: string(s.o.Vendor), Event: event, FromSession: true, Payload: []byte(payload)})
 		s.hookEvent(<-s.events)
 	}
-	s := newSession(adapter.Grok)
-	for range 3 {
-		deliver(s, "Stop", `{"sessionId":"me","reason":"shutdown"}`)
+	for _, held := range []bool{false, true} {
+		s := newSession(adapter.Grok)
+		s.held = held
+		for range 3 {
+			deliver(s, "Stop", `{"sessionId":"me","reason":"shutdown"}`)
+		}
+		if s.atPrompt || s.warnDue || s.held != held || s.pk.preselect != adapter.Codex || s.lastTurnEnd != "" {
+			t.Errorf("held %v: a shutdown stop acted: atPrompt %v warnDue %v held %v preselect %q", held, s.atPrompt, s.warnDue, s.held, s.pk.preselect)
+		}
+		if s.shutdownSeen.repeats != 2 {
+			t.Errorf("repeats %d, want 2", s.shutdownSeen.repeats)
+		}
+		s.flushShutdown()
+		s.flushShutdown() // nothing left: no second tail
 	}
-	if s.atPrompt || s.warnDue || s.pk.preselect != adapter.Codex || s.lastTurnEnd != "" {
-		t.Errorf("a shutdown stop counted as a turn end: atPrompt %v warnDue %v preselect %q", s.atPrompt, s.warnDue, s.pk.preselect)
-	}
-	if s.shutdownSeen.repeats != 2 {
-		t.Errorf("repeats %d, want 2", s.shutdownSeen.repeats)
+	// Forged: no session, or another one, with the shutdown reason.
+	for _, payload := range []string{`{"reason":"shutdown"}`, `{"sessionId":"other","reason":"shutdown"}`} {
+		s := newSession(adapter.Grok)
+		deliver(s, "Stop", payload)
+		if s.atPrompt || s.warnDue || s.shutdownSeen.repeats != 0 || !s.shutdownSeen.at.IsZero() {
+			t.Errorf("%s: atPrompt %v warnDue %v shutdown %+v", payload, s.atPrompt, s.warnDue, s.shutdownSeen)
+		}
 	}
 	for _, c := range []struct {
 		v              adapter.Vendor
@@ -369,14 +385,30 @@ func TestGrokShutdownStop(t *testing.T) {
 			t.Errorf("%s %s %s: not a turn end", c.v, c.event, c.payload)
 		}
 	}
-	recs := records()
-	n := 0
-	for _, r := range recs {
-		if r.Event == diag.EvHookIgnored.String() && r.Code == diag.CodeGrokShutdown.String() {
-			n++
+	count := map[string]int{}
+	tails := 0
+	for _, r := range records() {
+		count[r.Code]++
+		if r.Code == diag.CodeGrokShutdown.String() {
+			var a struct {
+				Repeats int  `json:"repeats"`
+				Tail    bool `json:"tail"`
+			}
+			if err := json.Unmarshal(r.Attrs, &a); err != nil {
+				t.Fatal(err)
+			}
+			if a.Tail {
+				tails++
+				if a.Repeats != 2 {
+					t.Errorf("tail repeats %d, want 2", a.Repeats)
+				}
+			}
 		}
 	}
-	if n != 1 {
-		t.Errorf("%d hook.grok_shutdown records, want 1", n)
+	if count[diag.CodeGrokShutdown.String()] != 4 || tails != 2 {
+		t.Errorf("%d hook.grok_shutdown records (%d tails), want 4 (2)", count[diag.CodeGrokShutdown.String()], tails)
+	}
+	if count[diag.CodeNoSession.String()] != 1 || count[diag.CodeForeignSession.String()] != 1 {
+		t.Errorf("forged shutdown stops: %d hook.no_session, %d hook.foreign_session, want 1 each", count[diag.CodeNoSession.String()], count[diag.CodeForeignSession.String()])
 	}
 }

@@ -241,12 +241,20 @@ was tested against.
   run cannot answer: grok printed `permission required: imagine: ...
   was not run, as a headless run cannot ask for approval` on stderr,
   exited 0, and made no image; with the rule it made the image (live,
-  2026-10-29, grok 1.0.70). A bare tool name is a rule for that one
-  tool; the rule is fixed in the adapter, never a wildcard or another
-  tool, and a deny still outranks it.
+  2026-10-29, grok 1.0.70). aggy's own argv (the smoke's
+  `GROK_IMAGE_ARGS`) run directly with grok 1.0.70 made the image too;
+  the full `aggy image` borrow path (`image-borrow-grok`) has not been
+  re-run. A bare tool name is a rule for that one tool; the rule is
+  fixed in the adapter, never a wildcard or another tool, and a deny
+  still outranks it. ParseHeadless fails a run whose stderr has Grok's
+  "was not run, as a headless run cannot ask for approval" line
+  (`borrow.permission_prompt`).
 - An image edit and video run without `--sandbox strict` and without the
   sandbox host check (`usesSandbox`): neither has been run live under
-  strict (TODO(T6821)). They keep the read denies (`<Lib>` below), which
+  strict (TODO(T6821)). An `--edit` resumes a session created under
+  strict, and Grok stores `--rules` with a session, so it may store the
+  sandbox or permission rules too; an edit might then hit the same
+  headless prompt. That is a live check to run. They keep the read denies (`<Lib>` below), which
   are permission rules, not part of the sandbox; their tools are checked
   as `AccessKind::Tool`, so those rules match none of them today. Video
   is untested: the test account's zero data retention turns Grok's

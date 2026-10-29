@@ -303,7 +303,10 @@ const (
 	// allowlist, MCP lockout, sandbox). The run is a failure, never
 	// retried without the flag.
 	ErrLockdown ErrorClass = "lockdown"
-	ErrUnknown  ErrorClass = "unknown"
+	// ErrPermission: a tool the run needed stopped at a permission
+	// prompt, which a headless run cannot answer, so it did not run.
+	ErrPermission ErrorClass = "permission_prompt"
+	ErrUnknown    ErrorClass = "unknown"
 )
 
 // Artifact is a file a run produced, such as a generated image.
@@ -354,7 +357,7 @@ var ErrFileTools = fmt.Errorf("needs a media tool that uploads any local image a
 
 // ErrNoCapability matches a request this CLI version cannot run safely
 // because its probe did not find a flag the kind needs (Grok's --sandbox
-// for review, research, and news). It matches ErrUnsupported too, so the
+// for review, research, news, and image generation). It matches ErrUnsupported too, so the
 // borrow passes the vendor over rather than run it without the flag.
 var ErrNoCapability = fmt.Errorf("needs a flag this CLI's --help does not list (%w)", ErrUnsupported)
 
