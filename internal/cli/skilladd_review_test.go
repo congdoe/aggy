@@ -164,9 +164,9 @@ func TestSkillRemoveRefusedDef(t *testing.T) {
 // definition is replaced.
 func TestSkillAddPreviewText(t *testing.T) {
 	src := skillSrc(t, "hello")
-	writeAt(t, filepath.Join(src, "SKILL.md"), "---\nname: \x1b]0;pwn\x07hi\ndescription: ‮abc \x1b[2J\n---\n", 0o644)
+	writeAt(t, filepath.Join(src, "SKILL.md"), "---\nname: \x1b]0;pwn\x07hi\ndescription: \u202eabc \x1b[2J\n---\n", 0o644)
 	_, out, _ := skillRun("n\n", true, "add", src)
-	if strings.ContainsAny(out, "\x1b\x07‮") {
+	if strings.ContainsAny(out, "\x1b\x07\u202e") {
 		t.Errorf("raw escape in the preview: %q", out)
 	}
 	if !strings.Contains(out, "warning: its frontmatter names it") {
