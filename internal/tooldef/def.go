@@ -46,6 +46,8 @@ type Def struct {
 	// borrow's child never gets one unless the user also sets
 	// routing.edit_network_tools: a server runs outside the CLI's own
 	// sandbox, so a steered child could read a key file and send it out.
+	// The flag is self-declared, so a user definition without the key
+	// is taken to reach the network (R80-2); a built-in's is as written.
 	Network bool `toml:"network"`
 
 	Install Install `toml:"install"`
@@ -307,6 +309,9 @@ func Parse(file string, data []byte, builtIn bool) (Def, error) {
 	}
 	if und := md.Undecoded(); len(und) > 0 {
 		return Def{}, bad(und[0].String(), "unknown key")
+	}
+	if !builtIn && !md.IsDefined("network") {
+		d.Network = true
 	}
 	if err := d.validate(builtIn); err != nil {
 		var e *Error
