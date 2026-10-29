@@ -306,8 +306,21 @@ func setSkillLinks(ctx context.Context, name string, l skillLayout, want map[str
 		}
 	}
 	ps, err := l.planSet(want)
-	if err != nil || len(ps) == 0 {
+	if err != nil {
 		return withCode(diag.CodeToolFailed, err)
+	}
+	if len(ps) == 0 {
+		if link {
+			return nil
+		}
+		// L83-5: with no link left, the pin goes too, even when the
+		// links went another way, or a later link would be refused.
+		s, err := openIndex(ctx)
+		if err != nil || s == nil {
+			return withCode(diag.CodeStore, err)
+		}
+		defer func() { _ = s.Close() }()
+		return withCode(diag.CodeStore, s.DeleteToolSkill(ctx, name))
 	}
 	s, err := store.OpenDefault(ctx)
 	if err != nil {

@@ -59,28 +59,44 @@ func toolFindings(ctx context.Context, cwd string) []checkup.Finding {
 	return append(out, boardFindings(ctx, b, refused, cwd, repo)...)
 }
 
-// toolProblem is one tool finding. A user tool's name is the person's
-// own choice, so it and the fix naming it go in Detail, which a public
-// report leaves out; a built-in's are in Message.
-func toolProblem(t tooldef.Tool, v adapter.Vendor, code string, l checkup.Level, msg, fix string) checkup.Finding {
+// toolProblem is one tool finding. msg is aggy's fixed text; detail is
+// anything else (an error, a path, a name from a config), and fix the
+// command that clears it. A public report prints Message only (H83-1):
+// a built-in's Message is its name, msg, and fix; a user tool's name is
+// the person's own choice, so its Message is msg alone, and its name,
+// the detail, and the fix go in Detail.
+func toolProblem(t tooldef.Tool, v adapter.Vendor, code string, l checkup.Level, msg, detail, fix string) checkup.Finding {
 	f := checkup.Finding{Code: code, Level: l, Vendor: v}
 	if fix != "" {
-		fix = "; fix: " + fix
+		fix = "fix: " + fix
 	}
 	if t.BuiltIn {
-		f.Message = t.Name + ": " + msg + fix
+		f.Message, f.Detail = joinNonEmpty(t.Name+": "+msg, fix), detail
 	} else {
-		f.Message, f.Detail = "a user tool: "+msg, "tool "+t.Name+fix
+		f.Message, f.Detail = "a user tool: "+msg, joinNonEmpty("tool "+t.Name, detail, fix)
 	}
 	return f
+}
+
+func joinNonEmpty(parts ...string) string {
+	return strings.Join(slices.DeleteFunc(parts, func(s string) bool { return s == "" }), "; ")
+}
+
+// refusalText is the fixed text for a launch's refusal code.
+var refusalText = map[diag.Code]string{
+	diag.CodeToolNameClash:    "a server of its name is already set",
+	diag.CodeToolRepoPath:     "the repo's path cannot go in its arguments",
+	diag.CodeToolHookApproves: "its hook approves actions you would be asked about",
+	diag.CodeToolNoFlag:       "the CLI takes no hook for one session",
+	diag.CodeToolWireFailed:   "its hook command cannot be built",
 }
 
 // boardFindings checks board b (definitions, settings, and the repo's
 // tools_off) in repo; refused are the user definitions Load left out.
 func boardFindings(ctx context.Context, b switchboard.Board, refused []error, cwd string, repo toolRepoAt) []checkup.Finding {
 	var out []checkup.Finding
-	warn := func(t tooldef.Tool, v adapter.Vendor, code diag.Code, msg, fix string) {
-		out = append(out, toolProblem(t, v, code.String(), checkup.LevelWarn, msg, fix))
+	warn := func(t tooldef.Tool, v adapter.Vendor, code diag.Code, msg, detail, fix string) {
+		out = append(out, toolProblem(t, v, code.String(), checkup.LevelWarn, msg, detail, fix))
 	}
 
 	// Definition: a refused file is off; an added one is still the file
@@ -103,36 +119,41 @@ func boardFindings(ctx context.Context, b switchboard.Board, refused []error, cw
 		defer func() { _ = s.Close() }()
 	}
 	for _, t := range b.Tools {
-		if t.BuiltIn {
+		if t.BuiltIn || s == nil || ver < toolAddedSchema {
 			continue
 		}
-		if s != nil && ver >= toolAddedSchema {
-			if err := checkAdded(ctx, s, t, true); err != nil {
-				warn(t, "", codeOf(err, diag.CodeToolChanged), "its file is not the one aggy tool add showed, so it stays off", "aggy tool remove "+t.Name+", then aggy tool add the file again and read what it runs")
-			}
+		// M83-3: aggy tool on takes a file aggy tool add never recorded,
+		// and a session's --tool does not; either is fixed by adding the
+		// file again, once the tool is off (remove refuses one that is on).
+		readd := "aggy tool off " + t.Name + ", aggy tool remove " + t.Name + ", then aggy tool add the file again and read what it runs"
+		added, ok, err := s.ToolAdded(ctx, t.Name)
+		switch {
+		case err != nil:
+			warn(t, "", diag.CodeStore, "its aggy tool add record cannot be read", err.Error(), "")
+		case !ok:
+			warn(t, "", diag.CodeToolChanged, "aggy tool add has no record of its file, so a session's --tool refuses it", "", readd)
+		case added != t.Digest:
+			warn(t, "", diag.CodeToolChanged, "its file is not the one aggy tool add showed, so aggy tool on and --tool refuse it", "", readd)
 		}
 	}
 
-	// Per vendor: what is on is wireable.
+	// Per vendor: what is on is wireable. Servers and hooks follow the
+	// switches in this repo.
 	bin, _ := toolHookBin() // "" on error: a Claude hook is then refused, as at launch
-	on := map[string][]adapter.Vendor{}
+	wired := map[string][]adapter.Vendor{}
 	for _, v := range adapter.Vendors() {
 		states := b.On(v, repo.key)
-		for _, st := range states {
-			on[st.Tool.Name] = append(on[st.Tool.Name], v)
-		}
 		// R80-3, as a launch checks it first: a tool whose linked skill
 		// changed since its first link gets no server or hook wired.
 		changed := changedSkills(ctx, states)
 		states = slices.DeleteFunc(states, func(st switchboard.State) bool {
 			err, ok := changed[st.Tool.Name]
 			if ok {
-				// Fixed text: the error names the folder's path.
 				code, why := codeOf(err, diag.CodeToolSkillChanged), "its skill folder changed since it was first linked"
 				if code != diag.CodeToolSkillChanged {
 					why = "its skill folder cannot be checked against its pin"
 				}
-				warn(st.Tool, v, code, "not wired into "+string(v)+": "+why,
+				warn(st.Tool, v, code, "not wired into "+string(v)+": "+why, err.Error(),
 					"aggy tool off "+st.Tool.Name+", read its skill folder, then aggy tool on "+st.Tool.Name)
 			}
 			return ok
@@ -141,10 +162,13 @@ func boardFindings(ctx context.Context, b switchboard.Board, refused []error, cw
 			for _, st := range states {
 				if st.Parts.MCP != nil || len(st.Parts.Hooks) > 0 {
 					out = append(out, toolProblem(st.Tool, v, diag.CodeToolUnverified.String(), checkup.LevelInfo,
-						"on for grok, not wired: unverified (what Grok's --agent changes is not verified yet)", ""))
+						"on for grok, not wired: unverified (what Grok's --agent changes is not verified yet)", "", ""))
 				}
 			}
-			continue
+			continue // L83-10: nothing is wired, so no program runs
+		}
+		for _, st := range states {
+			wired[st.Tool.Name] = append(wired[st.Tool.Name], v)
 		}
 		var taken map[string]string
 		if cwd != "" && slices.ContainsFunc(states, func(st switchboard.State) bool { return st.Parts.MCP != nil }) {
@@ -158,18 +182,19 @@ func boardFindings(ctx context.Context, b switchboard.Board, refused []error, cw
 		_, hookNo := toolwire.Hooks(states, v, bin)
 		for _, r := range append(mcpNo, hookNo...) {
 			i := slices.IndexFunc(states, func(st switchboard.State) bool { return st.Tool.Name == r.Tool })
-			warn(states[i].Tool, v, r.Code, "not wired into "+string(v)+": "+r.Why, refusalFix(r, v))
+			why, ok := refusalText[r.Code]
+			if !ok {
+				why = "refused"
+			}
+			warn(states[i].Tool, v, r.Code, "not wired into "+string(v)+": "+why, r.Why, refusalFix(r, v))
 		}
 	}
 
-	// Program: each on tool's programs resolve. A loaded definition has
-	// passed the program checks (tooldef's validator) already.
+	// Program: each wired tool's programs resolve. A loaded definition
+	// has passed the program checks (tooldef's validator) already.
 	for _, t := range b.Tools {
-		if len(on[t.Name]) == 0 {
-			continue
-		}
 		var progs []string
-		for _, v := range on[t.Name] {
+		for _, v := range wired[t.Name] {
 			p := t.PartsFor(v)
 			if p.MCP != nil {
 				progs = append(progs, p.MCP.Argv[0])
@@ -181,7 +206,8 @@ func boardFindings(ctx context.Context, b switchboard.Board, refused []error, cw
 		slices.Sort(progs)
 		for _, prog := range slices.Compact(progs) {
 			if err := resolveProgram(prog); err != nil {
-				warn(t, "", diag.CodeToolExec, "its program "+prog+" is not an executable on PATH, so it cannot start", "install "+t.Name+" "+t.Version+", or aggy tool off "+t.Name)
+				warn(t, "", diag.CodeToolExec, "a program it runs is not an executable on PATH, so it cannot start", prog+": "+err.Error(),
+					"install "+t.Name+" "+t.Version+", or aggy tool off "+t.Name)
 			}
 		}
 	}
@@ -190,15 +216,18 @@ func boardFindings(ctx context.Context, b switchboard.Board, refused []error, cw
 	problems := slices.ContainsFunc(out, func(f checkup.Finding) bool { return f.Level != checkup.LevelInfo })
 	n := 0
 	for _, t := range b.Tools {
-		if len(on[t.Name]) == 0 {
+		var costs []string
+		anyOn := false
+		for _, v := range adapter.Vendors() {
+			skillOn, partsOn := toolOnFor(b, t, v, repo.key)
+			anyOn = anyOn || skillOn || partsOn
+			costs = append(costs, string(v)+" "+toolCost(t, v, skillOn, partsOn))
+		}
+		if !anyOn {
 			continue
 		}
 		n++
-		var costs []string
-		for _, v := range adapter.Vendors() {
-			costs = append(costs, string(v)+" "+toolCost(t, v, slices.Contains(on[t.Name], v)))
-		}
-		out = append(out, toolProblem(t, "", codeToolCost, checkup.LevelInfo, "estimated tokens every turn (+ more on invoke): "+strings.Join(costs, ", "), ""))
+		out = append(out, toolProblem(t, "", codeToolCost, checkup.LevelInfo, "estimated tokens every turn (+ more on invoke): "+strings.Join(costs, ", "), "", ""))
 	}
 	if !problems {
 		msg := "no managed tool is on"
@@ -242,22 +271,23 @@ func resolveProgram(prog string) error {
 // is in place and still the one first linked (L78-4), and Grok's
 // [skills] ignore holds the folder exactly when Grok is unlinked and a
 // Claude or Codex link stays. A link of aggy's in a vendor's skill
-// folder to a tool no longer loaded is stray too. s is the index opened
-// read-only (nil when there is none), at schema version ver.
+// folder to a tool no longer loaded, or to one whose definition has no
+// skill now (H83-2), is stray too. s is the index opened read-only (nil
+// when there is none), at schema version ver.
 func skillFindings(ctx context.Context, b switchboard.Board, s *store.Store, ver int) []checkup.Finding {
 	var out []checkup.Finding
-	warn := func(t tooldef.Tool, v adapter.Vendor, code, msg, fix string) {
-		out = append(out, toolProblem(t, v, code, checkup.LevelWarn, msg, fix))
+	warn := func(t tooldef.Tool, v adapter.Vendor, code, msg, detail, fix string) {
+		out = append(out, toolProblem(t, v, code, checkup.LevelWarn, msg, detail, fix))
 	}
-	loaded := []string{skillName}
+	withSkill := []string{skillName}
 	for _, t := range b.Tools {
-		loaded = append(loaded, t.Name)
 		if !hasSkill(t) {
 			continue
 		}
+		withSkill = append(withSkill, t.Name)
 		l, err := toolSkillLayout(t)
 		if err != nil {
-			warn(t, "", diag.CodeToolSkillMissing.String(), "its skill cannot be linked: "+err.Error(), "")
+			warn(t, "", diag.CodeToolSkillMissing.String(), "its skill cannot be linked", err.Error(), "")
 			continue
 		}
 		linked := map[adapter.Vendor]bool{}
@@ -268,18 +298,18 @@ func skillFindings(ctx context.Context, b switchboard.Board, s *store.Store, ver
 			linked[v], err = l.linked(l.links[string(v)])
 			switch {
 			case err != nil:
-				warn(t, v, diag.CodeToolFailed.String(), "its skill link cannot be read: "+err.Error(), "")
+				warn(t, v, diag.CodeToolFailed.String(), "its skill link cannot be read", err.Error(), "")
 			case linked[v] && !want:
-				warn(t, v, codeToolStray, "off for "+string(v)+", but its skill is still linked, so "+string(v)+" loads it", "aggy tool off "+t.Name+" --vendor "+string(v))
+				warn(t, v, codeToolStray, "off for "+string(v)+", but its skill is still linked, so "+string(v)+" loads it", "", "aggy tool off "+t.Name+" --vendor "+string(v))
 			case !linked[v] && want && v == adapter.Grok:
-				warn(t, v, codeToolUnlinked, "on for grok, but its skill is not linked", "aggy tool on "+t.Name)
+				warn(t, v, codeToolUnlinked, "on for grok, but its skill is not linked", "", "aggy tool on "+t.Name)
 			case !linked[v] && want:
-				warn(t, v, codeToolUnlinked, "on for "+string(v)+", but its skill is not linked", "aggy tool on "+t.Name+" --vendor "+string(v))
+				warn(t, v, codeToolUnlinked, "on for "+string(v)+", but its skill is not linked", "", "aggy tool on "+t.Name+" --vendor "+string(v))
 			}
 		}
 		if anyOn {
 			if err := checkSkillStore(l.store); err != nil {
-				warn(t, "", diag.CodeToolSkillMissing.String(), "its skill folder is missing or refused",
+				warn(t, "", diag.CodeToolSkillMissing.String(), "its skill folder is missing or refused", err.Error(),
 					"copy its skill folder into ~/.aggy/skills/"+t.Name+" (a plain folder holding SKILL.md, no symlinks), then aggy tool on "+t.Name)
 			} else if t.SkillOnly() && s != nil && ver >= toolSkillSchema {
 				// A tool with a server or hook is reported per vendor
@@ -287,7 +317,7 @@ func skillFindings(ctx context.Context, b switchboard.Board, s *store.Store, ver
 				was, ok, err := s.ToolSkill(ctx, t.Name)
 				now, derr := skillDigest(l.store)
 				if err == nil && derr == nil && ok && was != now {
-					warn(t, "", diag.CodeToolSkillChanged.String(), "its skill folder changed since it was first linked, and every linked CLI loads it as it is now",
+					warn(t, "", diag.CodeToolSkillChanged.String(), "its skill folder changed since it was first linked, and every linked CLI loads it as it is now", "",
 						"aggy tool off "+t.Name+", read the folder, then aggy tool on "+t.Name)
 				}
 			}
@@ -303,15 +333,15 @@ func skillFindings(ctx context.Context, b switchboard.Board, s *store.Store, ver
 		want := !linked[adapter.Grok] && (linked[adapter.Claude] || linked[adapter.Codex])
 		switch {
 		case err != nil:
-			warn(t, adapter.Grok, codeToolGrokIgnore, "Grok's config cannot be read to check its [skills] ignore: "+err.Error(), "")
+			warn(t, adapter.Grok, codeToolGrokIgnore, "Grok's config cannot be read to check its [skills] ignore", err.Error(), "")
 		case want && !has:
-			warn(t, adapter.Grok, codeToolGrokIgnore, "off for grok, but [skills] ignore lacks its skill, so grok loads it through the Claude or Codex link", "aggy tool off "+t.Name+" --vendor grok")
+			warn(t, adapter.Grok, codeToolGrokIgnore, "off for grok, but [skills] ignore lacks its skill, so grok loads it through the Claude or Codex link", "", "aggy tool off "+t.Name+" --vendor grok")
 		case !want && has:
-			warn(t, adapter.Grok, codeToolGrokIgnore, "[skills] ignore hides its skill although no Claude or Codex link needs it", "aggy tool off "+t.Name+" --vendor grok, or aggy tool on "+t.Name)
+			warn(t, adapter.Grok, codeToolGrokIgnore, "[skills] ignore hides its skill although no Claude or Codex link needs it", "", "aggy tool off "+t.Name+" --vendor grok, or aggy tool on "+t.Name)
 		}
 	}
 
-	// Links of aggy's to a tool no longer loaded.
+	// Links of aggy's to a tool not loaded, or loaded without a skill.
 	l, err := layoutFor(skillName)
 	if err != nil {
 		return out
@@ -328,12 +358,16 @@ func skillFindings(ctx context.Context, b switchboard.Board, s *store.Store, ver
 		}
 		for _, de := range des {
 			n := de.Name()
-			if slices.Contains(loaded, n) || !tooldef.ValidName(n) {
+			if slices.Contains(withSkill, n) || !tooldef.ValidName(n) {
 				continue
 			}
 			nl, err := layoutFor(n)
 			if ok, _ := nl.linked(filepath.Join(dir, n)); err == nil && ok {
-				warn(tooldef.Tool{Def: tooldef.Def{Name: n}}, v, codeToolStray, "no tool of this name is loaded, but aggy's link to its skill stays, so "+string(v)+" loads it", "aggy tool off "+n)
+				t := tooldef.Tool{Def: tooldef.Def{Name: n}}
+				if i := slices.IndexFunc(b.Tools, func(t tooldef.Tool) bool { return t.Name == n }); i >= 0 {
+					t = b.Tools[i]
+				}
+				warn(t, v, codeToolStray, "no loaded tool of its name has a skill, but aggy's link to its skill stays, so "+string(v)+" loads it", "", "aggy tool off "+n)
 			}
 		}
 	}

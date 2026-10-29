@@ -129,12 +129,30 @@ func toolTraces(t *testing.T, tool tooldef.Tool, v adapter.Vendor, repo string) 
 	return out
 }
 
-// traceExpected says whether toolTraces must find t on v while it is on:
-// a skill always (it is linked for every repo), an MCP server or hook
-// except on Grok, whose launch wiring is gated (W71-4).
-func traceExpected(t tooldef.Tool, v adapter.Vendor) bool {
+// traceExpected lists the trace kinds toolTraces must find of t on v
+// while it is on, one per part (L83-8): a skill always (it is linked for
+// every repo); an MCP server, a hook, and a rewrite's deny rule except on
+// Grok, whose launch wiring is gated (W71-4). Each is a prefix of a
+// toolTraces line.
+func traceExpected(t tooldef.Tool, v adapter.Vendor) []string {
 	p := t.PartsFor(v)
-	return p.Skill != nil || (v != adapter.Grok && (p.MCP != nil || len(p.Hooks) > 0))
+	var out []string
+	if p.Skill != nil {
+		out = append(out, "a skill through ")
+	}
+	if v == adapter.Grok {
+		return out
+	}
+	if p.MCP != nil {
+		out = append(out, map[adapter.Vendor]string{adapter.Claude: "an --mcp-config server", adapter.Codex: "a -c server"}[v])
+	}
+	for _, h := range p.Hooks {
+		out = append(out, "a "+h.Event+" hook")
+		if h.RewritePrefix != "" {
+			out = append(out, "a deny rule for its rewrites")
+		}
+	}
+	return out
 }
 
 // traceTool sets up wiring for one tool in a fresh home with a Grok
@@ -206,8 +224,11 @@ func TestToolOffLeavesNoTrace(t *testing.T) {
 			t.Run(fmt.Sprintf("%d-%s", i, v), func(t *testing.T) {
 				tool, repo, scope := traceTool(t, name)
 				toolOK(t, append([]string{"on", name}, scope...)...)
-				if traceExpected(tool, v) && len(toolTraces(t, tool, v, repo)) == 0 {
-					t.Fatalf("%s is on for %s, but the check finds nothing", name, v)
+				got := toolTraces(t, tool, v, repo)
+				for _, want := range traceExpected(tool, v) {
+					if !slices.ContainsFunc(got, func(g string) bool { return strings.HasPrefix(g, want) }) {
+						t.Fatalf("%s is on for %s, but the check finds no %q: %q", name, v, want, got)
+					}
 				}
 
 				toolOK(t, append([]string{"off", name, "--vendor", string(v)}, scope...)...)
@@ -253,6 +274,11 @@ func TestToolGoneLeavesNoSkill(t *testing.T) {
 			writeAt(t, file, tracerTool+"# edited\n", 0o600)
 			toolOK(t, "remove", "tracer")
 		}},
+		// H83-2: off of a loaded tool whose edit dropped its [[skill]].
+		{"edit drops skill, then off", func(t *testing.T, file string) {
+			writeAt(t, file, strings.Replace(strings.Replace(tracerTool, "[[skill]]\nvendors = [\"claude\", \"codex\", \"grok\"]\npath = \"~/.aggy/skills/tracer\"\n", "", 1), "skill-md", "none", 1), 0o600)
+			toolOK(t, "off", "tracer")
+		}},
 		{"off when deleted", func(t *testing.T, file string) {
 			if err := os.Remove(file); err != nil {
 				t.Fatal(err)
@@ -289,5 +315,43 @@ func TestToolGoneLeavesNoSkill(t *testing.T) {
 				t.Errorf("grok's ignore entry stayed:\n%s", b)
 			}
 		})
+	}
+}
+
+// TestToolOffForgetsSkillPin (L83-5): off with no link left to remove
+// (the links went by hand) still forgets the skill's pin, so a changed
+// folder can be turned on again after it is read.
+func TestToolOffForgetsSkillPin(t *testing.T) {
+	traceTool(t, "caveman")
+	toolOK(t, "on", "caveman", "--vendor", "claude")
+	h := os.Getenv("HOME")
+	if err := os.Remove(filepath.Join(h, ".claude", "skills", "caveman")); err != nil {
+		t.Fatal(err)
+	}
+	writeAt(t, filepath.Join(h, ".grok", "config.toml"), "", 0o600)
+	writeAt(t, filepath.Join(os.Getenv(home.Env), "skills", "caveman", "SKILL.md"), "---\nname: caveman\ndescription: changed\n---\n", 0o644)
+	if code, _, errOut := toolRun("", false, "on", "caveman", "--vendor", "claude"); code == 0 || !strings.Contains(errOut, "tool.skill_changed") {
+		t.Fatalf("on with a changed folder: %d %q", code, errOut)
+	}
+	toolOK(t, "off", "caveman")
+	toolOK(t, "on", "caveman", "--vendor", "claude")
+}
+
+// TestToolRemoveBuiltinNamed (L83-6): removing a refused user file named
+// like a built-in leaves the built-in's settings and skill links alone.
+func TestToolRemoveBuiltinNamed(t *testing.T) {
+	traceTool(t, "caveman")
+	toolOK(t, "on", "caveman", "--vendor", "claude")
+	writeAt(t, filepath.Join(os.Getenv(home.Env), "tools", "caveman.toml"), "name = \"caveman\"\n", 0o600)
+	code, out, errOut := toolRun("", false, "remove", "caveman")
+	if code != 0 || !strings.Contains(out, "also a built-in tool; its settings and skill links are left as they are") {
+		t.Fatalf("remove: %d %q %q", code, out, errOut)
+	}
+	l, _ := layoutFor("caveman")
+	if ok, _ := l.linked(l.links["claude"]); !ok {
+		t.Error("the built-in's claude link went")
+	}
+	if _, out, _ := toolRun("", false, "status", "caveman"); !strings.Contains(statusLine(t, out, "caveman"), "caveman on off off") {
+		t.Errorf("the built-in's setting went:\n%s", out)
 	}
 }

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/checkup"
+	"github.com/congdoe/aggy/internal/devfix"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/switchboard"
@@ -61,7 +63,7 @@ func TestDoctorTools(t *testing.T) {
 				onPath(t)
 				toolOK(t, "on", "context7", "--vendor", "codex")
 			},
-			want: []string{"warning tool.exec_refused (): context7: its program context7-mcp is not an executable on PATH, so it cannot start; fix: install context7 4.4.4, or aggy tool off context7"},
+			want: []string{"warning tool.exec_refused (): context7: a program it runs is not an executable on PATH, so it cannot start; fix: install context7 4.4.4, or aggy tool off context7: context7-mcp: "},
 		},
 		{
 			name: "name clash",
@@ -70,7 +72,7 @@ func TestDoctorTools(t *testing.T) {
 				writeAt(t, filepath.Join(os.Getenv("HOME"), ".claude.json"), `{"mcpServers":{"context7":{"command":"x"}}}`, 0o600)
 				toolOK(t, "on", "context7", "--vendor", "claude")
 			},
-			want: []string{"warning tool.name_clash (claude): context7: not wired into claude: a server named context7 is already set in", "fix: rename that server in the CLI's config, or aggy tool off context7 --vendor claude"},
+			want: []string{"warning tool.name_clash (claude): context7: not wired into claude: a server of its name is already set; fix: rename that server in the CLI's config, or aggy tool off context7 --vendor claude"},
 		},
 		{
 			name: "user tool changed since add",
@@ -78,7 +80,32 @@ func TestDoctorTools(t *testing.T) {
 				traceTool(t, "tracer")
 				writeAt(t, filepath.Join(os.Getenv(home.Env), "tools", "tracer.toml"), tracerTool+"# edited\n", 0o600)
 			},
-			want: []string{"warning tool.changed_since_add (): a user tool: its file is not the one aggy tool add showed, so it stays off: tool tracer; fix: aggy tool remove tracer"},
+			want: []string{"warning tool.changed_since_add (): a user tool: its file is not the one aggy tool add showed, so aggy tool on and --tool refuse it: tool tracer; fix: aggy tool off tracer, aggy tool remove tracer, then aggy tool add the file again"},
+		},
+		{
+			// M83-3: a file put in the tools folder by hand and turned on
+			// is on; only a session's --tool refuses it.
+			name: "user tool placed by hand",
+			prepare: func(t *testing.T, _ string) {
+				writeAt(t, filepath.Join(os.Getenv(home.Env), "tools", "tracer.toml"), tracerTool, 0o600)
+				writeAt(t, filepath.Join(os.Getenv(home.Env), "skills", "tracer", "SKILL.md"), "---\nname: tracer\ndescription: t\n---\n", 0o644)
+				onPath(t, "tracer")
+				toolOK(t, "on", "tracer", "--vendor", "codex")
+			},
+			want:    []string{"warning tool.changed_since_add (): a user tool: aggy tool add has no record of its file, so a session's --tool refuses it: tool tracer; fix: aggy tool off tracer, aggy tool remove tracer, then aggy tool add the file again"},
+			notWant: []string{"so aggy tool on and --tool refuse it"},
+		},
+		{
+			// H83-2: an edit that dropped the tool's [[skill]] leaves its
+			// old links stray.
+			name: "edit dropped the skill",
+			prepare: func(t *testing.T, _ string) {
+				traceTool(t, "tracer")
+				toolOK(t, "on", "tracer", "--vendor", "codex")
+				writeAt(t, filepath.Join(os.Getenv(home.Env), "tools", "tracer.toml"),
+					strings.Replace(strings.Replace(tracerTool, "[[skill]]\nvendors = [\"claude\", \"codex\", \"grok\"]\npath = \"~/.aggy/skills/tracer\"\n", "", 1), "skill-md", "none", 1), 0o600)
+			},
+			want: []string{"warning tool-skill-stray (codex): a user tool: no loaded tool of its name has a skill, but aggy's link to its skill stays, so codex loads it: tool tracer; fix: aggy tool off tracer"},
 		},
 		{
 			name: "refused user definition",
@@ -116,7 +143,7 @@ func TestDoctorTools(t *testing.T) {
 			want: []string{
 				"warning tool-skill-unlinked (claude): caveman: on for claude, but its skill is not linked; fix: aggy tool on caveman --vendor claude",
 				"warning tool-grok-ignore (grok): caveman: off for grok, but [skills] ignore lacks its skill, so grok loads it through the Claude or Codex link; fix: aggy tool off caveman --vendor grok",
-				"warning tool-skill-stray (codex): a user tool: no tool of this name is loaded, but aggy's link to its skill stays, so codex loads it: tool tracer; fix: aggy tool off tracer",
+				"warning tool-skill-stray (codex): a user tool: no loaded tool of its name has a skill, but aggy's link to its skill stays, so codex loads it: tool tracer; fix: aggy tool off tracer",
 			},
 		},
 		{
@@ -138,7 +165,7 @@ func TestDoctorTools(t *testing.T) {
 				toolOK(t, "on", "tracer", "--vendor", "claude")
 				writeAt(t, filepath.Join(os.Getenv(home.Env), "skills", "tracer", "SKILL.md"), "---\nname: tracer\ndescription: changed\n---\n", 0o644)
 			},
-			want:    []string{"warning tool.skill_changed (claude): a user tool: not wired into claude: its skill folder changed since it was first linked: tool tracer; fix: aggy tool off tracer, read its skill folder, then aggy tool on tracer"},
+			want:    []string{"warning tool.skill_changed (claude): a user tool: not wired into claude: its skill folder changed since it was first linked: tool tracer; ", "; fix: aggy tool off tracer, read its skill folder, then aggy tool on tracer"},
 			notWant: []string{"tool.skill_changed ()", "tools-ok"},
 		},
 	} {
@@ -167,6 +194,29 @@ func TestDoctorTools(t *testing.T) {
 				t.Errorf("doctor changed files:\nbefore %s\nafter  %s", before, after)
 			}
 		})
+	}
+}
+
+// TestDoctorToolsReport (H83-1): aggy doctor --report shows no user
+// tool's name and no path from a tool finding, whatever the problem.
+func TestDoctorToolsReport(t *testing.T) {
+	_, repo, _ := traceTool(t, "tracer")
+	h := os.Getenv("HOME")
+	t.Setenv("PATH", t.TempDir()) // no program resolves
+	writeAt(t, filepath.Join(h, ".claude.json"), `{"mcpServers":{"tracer":{"command":"x"},"context7":{"command":"x"}}}`, 0o600)
+	writeAt(t, filepath.Join(os.Getenv(home.Env), "tools", "secretname.toml"), "name = \"secretname\"\nbogus = 1\n", 0o600)
+	toolOK(t, "on", "tracer", "--vendor", "claude")
+	toolOK(t, "on", "context7", "--vendor", "claude")
+	fs := toolFindings(context.Background(), repo)
+	if !strings.Contains(findingLines(fs), "tool tracer") {
+		t.Fatalf("the findings do not name tracer at all, so the report check proves nothing:\n%s", findingLines(fs))
+	}
+	var out bytes.Buffer
+	printReport(&out, doctorResult{sections: []doctorSection{{title: "Tools", findings: fs}}, home: h}, devfix.Identity{Home: h, User: "nobody-here"})
+	for _, leak := range []string{"tracer", "secretname", "claude.json", h, os.Getenv(home.Env), repo} {
+		if strings.Contains(out.String(), leak) {
+			t.Errorf("the report holds %q:\n%s", leak, out.String())
+		}
 	}
 }
 
@@ -204,7 +254,7 @@ func TestDoctorToolHookApproves(t *testing.T) {
 		Hooks: []tooldef.Hook{{Vendors: []adapter.Vendor{adapter.Claude}, Event: "PreToolUse", Decides: true, Approves: true, Argv: []string{"yes", "hook"}}}}}
 	b := switchboard.Board{Tools: []tooldef.Tool{tool}, Switches: []store.ToolSwitch{{Tool: "yes", On: true, Digest: switchboard.BuiltInDigest}}}
 	got := findingLines(boardFindings(context.Background(), b, nil, "", toolRepoAt{}))
-	if !strings.Contains(got, "warning tool.hook_approves (claude): yes: not wired into claude: its PreToolUse hook approves actions you would be asked about, so aggy never wires it; fix: aggy tool off yes --vendor claude") {
+	if !strings.Contains(got, "warning tool.hook_approves (claude): yes: not wired into claude: its hook approves actions you would be asked about; fix: aggy tool off yes --vendor claude: its PreToolUse hook approves") {
 		t.Errorf("findings:\n%s", got)
 	}
 }

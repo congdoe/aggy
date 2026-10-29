@@ -27,31 +27,35 @@ func TestToolCost(t *testing.T) {
 		return tooldef.Tool{Def: tooldef.Def{Name: "caveman", MCP: m, Skills: s, Cost: tooldef.Cost{Method: method, Tokens: tokens, Vendor: per}}}
 	}
 	for _, c := range []struct {
-		name string
-		t    tooldef.Tool
-		v    adapter.Vendor
-		on   bool
-		want string
+		name         string
+		t            tooldef.Tool
+		v            adapter.Vendor
+		skill, parts bool
+		want         string
 	}{
-		{"off", tool("static", 400, nil, mcp, nil), adapter.Claude, false, "0"},
-		{"static", tool("static", 400, nil, mcp, nil), adapter.Codex, true, "~400"},
-		{"static per vendor", tool("static", 400, map[string]int{"codex": 650}, mcp, nil), adapter.Codex, true, "~650"},
-		{"static, only another vendor's", tool("static", 0, map[string]int{"codex": 650}, mcp, nil), adapter.Claude, true, "unknown"},
-		{"mcp schema", tool("mcp-schema", 0, nil, mcp, nil), adapter.Claude, true, "unknown"},
-		{"mcp on grok, not wired", tool("mcp-schema", 0, nil, mcp, nil), adapter.Grok, true, "0"},
-		{"none", tool("none", 0, nil, mcp, nil), adapter.Codex, true, "unknown"},
-		{"skill", tool("skill-md", 0, nil, nil, sk), adapter.Grok, true, "~13 +100"},
-		{"skill and mcp", tool("skill-md", 0, nil, mcp, sk), adapter.Claude, true, "~13 +100 +unknown"},
-		{"skill and mcp on grok", tool("skill-md", 0, nil, mcp, sk), adapter.Grok, true, "~13 +100"},
+		{"off", tool("static", 400, nil, mcp, nil), adapter.Claude, false, false, "0"},
+		{"static", tool("static", 400, nil, mcp, nil), adapter.Codex, true, true, "~400"},
+		{"static per vendor", tool("static", 400, map[string]int{"codex": 650}, mcp, nil), adapter.Codex, true, true, "~650"},
+		{"static, only another vendor's", tool("static", 0, map[string]int{"codex": 650}, mcp, nil), adapter.Claude, true, true, "unknown"},
+		{"mcp schema", tool("mcp-schema", 0, nil, mcp, nil), adapter.Claude, true, true, "unknown"},
+		{"mcp on grok, not wired", tool("mcp-schema", 0, nil, mcp, nil), adapter.Grok, true, true, "0"},
+		{"none", tool("none", 0, nil, mcp, nil), adapter.Codex, true, true, "unknown"},
+		{"skill", tool("skill-md", 0, nil, nil, sk), adapter.Grok, true, true, "~13 +100"},
+		{"skill and mcp", tool("skill-md", 0, nil, mcp, sk), adapter.Claude, true, true, "~13 +100 +unknown"},
+		{"skill and mcp on grok", tool("skill-md", 0, nil, mcp, sk), adapter.Grok, true, true, "~13 +100"},
+		// M83-4: a skill follows the setting for every repo, servers the
+		// repo's: tools_off keeps the skill, a per-repo on wires no skill.
+		{"skill only, tools_off", tool("skill-md", 0, nil, mcp, sk), adapter.Claude, true, false, "~13 +100"},
+		{"mcp only, per-repo on", tool("skill-md", 0, nil, mcp, sk), adapter.Claude, false, true, "unknown"},
 	} {
-		if got := toolCost(c.t, c.v, c.on); got != c.want {
+		if got := toolCost(c.t, c.v, c.skill, c.parts); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}
 	if err := os.Remove(filepath.Join(os.Getenv(home.Env), "skills", "caveman", "SKILL.md")); err != nil {
 		t.Fatal(err)
 	}
-	if got := toolCost(tool("skill-md", 0, nil, nil, sk), adapter.Claude, true); got != "unknown" {
+	if got := toolCost(tool("skill-md", 0, nil, nil, sk), adapter.Claude, true, true); got != "unknown" {
 		t.Errorf("skill not in place: %q", got)
 	}
 }
@@ -76,5 +80,37 @@ func TestToolListCost(t *testing.T) {
 	got := findingLines(toolFindings(context.Background(), repo))
 	if !strings.Contains(got, "info tool-cost (): caveman: estimated tokens every turn (+ more on invoke): claude ~10 +2, codex 0, grok ~10 +2") {
 		t.Errorf("doctor:\n%s", got)
+	}
+
+	// M83-4: the repo's tools_off does not hide a linked skill, so its
+	// cost stays.
+	writeAt(t, filepath.Join(repo, ".aggy", "config.toml"), `tools_off = ["caveman"]`, 0o600)
+	_, out, _ = toolRun("", false, "list")
+	if got := statusLine(t, out, "caveman"); !strings.HasPrefix(got, "caveman built-in off ~10 +2 0 ~10 +2 ") {
+		t.Errorf("caveman under tools_off: %q", got)
+	}
+}
+
+// TestToolListCostPerRepo (M83-4): a tool turned on for one repo wires
+// its server there, but its skill, linked from the setting for every
+// repo, is not linked, so it costs nothing.
+func TestToolListCostPerRepo(t *testing.T) {
+	_, repo, _ := traceTool(t, "tracer")
+	t.Chdir(repo)
+	toolOK(t, "on", "tracer", "--vendor", "codex", "--repo", repo)
+	_, out, _ := toolRun("", false, "list")
+	if got := statusLine(t, out, "tracer"); !strings.HasPrefix(got, "tracer user off 0 unknown 0 ") {
+		t.Errorf("tracer's row: %q\n%s", got, out)
+	}
+}
+
+// TestToolListIndexUnreadable (L83-9): tool list still lists the tools
+// when the index cannot be read, and says the costs assume nothing on.
+func TestToolListIndexUnreadable(t *testing.T) {
+	wireHome(t)
+	writeAt(t, filepath.Join(os.Getenv(home.Env), "aggy.db"), "not a database", 0o600)
+	code, out, errOut := toolRun("", false, "list")
+	if code != 0 || !strings.Contains(out, "caveman") || !strings.Contains(errOut, "costs are shown as if no tool were turned on") {
+		t.Errorf("list: %d\n%s\n%s", code, out, errOut)
 	}
 }
