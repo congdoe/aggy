@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -223,8 +224,11 @@ func sessionTools(ctx context.Context, b switchboard.Board, v adapter.Vendor, re
 //   - Claude: ~/.claude.json's user scope and every project's local
 //     scope (W71-5), and each .mcp.json from cwd up to / (W71-5).
 //     TODO(T6708): unverified whether Claude reads a .mcp.json above
-//     the git root, so every one up to / counts; managed-mcp.json and
-//     plugin servers are not read.
+//     the git root, so every one up to / counts. Also the managed
+//     managed-mcp.json (claudeManagedMCP). TODO(T6708): plugin servers
+//     are not read; and per Claude Code's docs a managed-mcp.json takes
+//     exclusive control, so aggy's servers may then not load at all
+//     (unverified).
 //   - Codex: every config layer (codexConfigs: /etc/codex, the user's,
 //     a selected profile, and each project .codex/config.toml from the
 //     project root down to cwd), servers with enabled = false and those
@@ -263,6 +267,21 @@ func takenMCPNames(v adapter.Vendor, cwd, root string) (map[string]string, error
 				break
 			}
 		}
+		// An administrator's managed servers. A file this user cannot
+		// read is no clash aggy can see; one that cannot be parsed
+		// refuses every tool.
+		for _, f := range claudeManagedMCP {
+			names, err := projectMCPNames(f)
+			if errors.Is(err, fs.ErrPermission) {
+				err = nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			for _, n := range names {
+				out[n] = f
+			}
+		}
 	case adapter.Codex:
 		if root == "" {
 			root = cwd // Codex's project root is cwd outside git
@@ -299,6 +318,16 @@ func takenMCPNames(v adapter.Vendor, cwd, root string) (map[string]string, error
 	}
 	return out, nil
 }
+
+// claudeManagedMCP are where Claude Code reads an administrator's
+// managed-mcp.json, in .mcp.json's format, by OS, per Claude Code's MCP
+// docs ("Managed MCP configuration"); a test points it elsewhere.
+// TODO(T6708): unverified live, and the Windows path is not read (aggy
+// launches no session there yet).
+var claudeManagedMCP = map[string][]string{
+	"darwin": {"/Library/Application Support/ClaudeCode/managed-mcp.json"},
+	"linux":  {"/etc/claude-code/managed-mcp.json"},
+}[runtime.GOOS]
 
 // projectMCPNames are the server names of one .mcp.json; none when it
 // is absent.
