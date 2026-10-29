@@ -132,6 +132,57 @@ func checkSkillLinked(ctx context.Context, s *store.Store, t tooldef.Tool, dir s
 	return nil
 }
 
+// toolSkillSchema is the index version with the tool_skill table.
+const toolSkillSchema = 18
+
+// changedSkills is a launch's check of the skill pin (R80-3): for each
+// tool in on with an MCP server or hook to wire and a linked skill (a
+// tool_skill record), the error when its folder no longer hashes to the
+// digest recorded at the first link (checkSkillLinked), keyed by name.
+// The caller wires none of that tool's servers or hooks. Its links stay:
+// a link is a symlink, so a CLI reads the folder as it now is, and only
+// aggy tool off unlinks it. An index that cannot be read fails closed:
+// every such tool has an error.
+func changedSkills(ctx context.Context, on []switchboard.State) map[string]error {
+	out := map[string]error{}
+	var s *store.Store
+	var openErr error
+	opened := false
+	defer func() {
+		if s != nil {
+			_ = s.Close()
+		}
+	}()
+	for _, st := range on {
+		if !hasSkill(st.Tool) || st.Parts.MCP == nil && len(st.Parts.Hooks) == 0 {
+			continue
+		}
+		if !opened {
+			opened = true
+			var ver int
+			if s, ver, openErr = openIndexReadOnly(ctx); openErr == nil && s != nil && ver < toolSkillSchema {
+				_ = s.Close()
+				s = nil
+			}
+		}
+		if openErr != nil {
+			out[st.Tool.Name] = withCode(diag.CodeStore, fmt.Errorf("the index could not be read to check the skill folder: %w", openErr))
+			continue
+		}
+		if s == nil {
+			continue // no index, or none with tool_skill: nothing linked
+		}
+		l, err := toolSkillLayout(st.Tool)
+		if err == nil {
+			err = checkSkillLinked(ctx, s, st.Tool, l.store)
+		}
+		if err != nil {
+			out[st.Tool.Name] = err
+		}
+	}
+	return out
+}
+
 // maxSkillBytes caps what skillDigest reads of a skill folder.
 const maxSkillBytes = 8 << 20
 

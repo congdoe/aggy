@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/home"
 )
 
@@ -103,5 +104,35 @@ func TestToolSkill(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(grokConfig); strings.Contains(string(b), store) {
 		t.Errorf("the ignore entry stayed with no link left:\n%s", b)
+	}
+}
+
+// TestAddToolsSkillChanged (R80-3): a launch checks the skill pin too. A
+// tool that is on, whose linked skill folder changed since it was first
+// linked, gets no MCP server for the launch, with tool.skill_changed;
+// its link stays.
+func TestAddToolsSkillChanged(t *testing.T) {
+	src, _ := wireHome(t)
+	writeAt(t, src, demoTool+"\n[[skill]]\nvendors = [\"claude\"]\npath = \"~/.aggy/skills/demo\"\n", 0o600)
+	if code, _, errOut := toolRun("", true, "add", src, "--yes"); code != 0 {
+		t.Fatalf("add: %d %q", code, errOut)
+	}
+	skill := filepath.Join(os.Getenv(home.Env), "skills", "demo", "SKILL.md")
+	writeAt(t, skill, "---\nname: demo\ndescription: short\n---\n", 0o644)
+	if code, _, errOut := toolRun("", false, "on", "demo", "--vendor", "claude"); code != 0 {
+		t.Fatalf("on: %d %q", code, errOut)
+	}
+	repo := switchRepo(t, "")
+	req, warns, _ := wireOnce(t, adapter.Claude, nil, repo)
+	if req.MCPConfigFile == "" || len(warns) != 0 {
+		t.Fatalf("before the change: %+v %q", req, warns)
+	}
+	writeAt(t, skill, "---\nname: demo\ndescription: changed\n---\n", 0o644)
+	req, warns, _ = wireOnce(t, adapter.Claude, nil, repo)
+	if req.MCPConfigFile != "" || len(warns) != 1 || !strings.Contains(warns[0], "tool.skill_changed") {
+		t.Errorf("a changed skill was wired: %+v %q", req, warns)
+	}
+	if _, err := os.Lstat(filepath.Join(os.Getenv("HOME"), ".claude", "skills", "demo")); err != nil {
+		t.Errorf("the link went: %v", err)
 	}
 }

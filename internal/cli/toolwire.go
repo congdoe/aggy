@@ -90,6 +90,17 @@ func addTools(ctx context.Context, v adapter.Vendor, caps []string, cwd, dir str
 	b.Session, sw = sessionTools(ctx, b, v, repo.key, session, refuse)
 	warns = append(warns, sw...)
 	on := b.On(v, repo.key)
+	// R80-3: a linked skill folder changed since its first link keeps its
+	// tool's servers and hooks out of this launch.
+	if changed := changedSkills(ctx, on); len(changed) > 0 {
+		on = slices.DeleteFunc(on, func(st switchboard.State) bool {
+			err, ok := changed[st.Tool.Name]
+			if ok {
+				warns = append(warns, refuse(st.Tool.Name, codeOf(err, diag.CodeToolSkillChanged), "skill_changed", err.Error()))
+			}
+			return ok
+		})
+	}
 	warns = append(warns, addHooks(v, caps, on, req, refuse)...)
 	if !slices.ContainsFunc(on, func(st switchboard.State) bool { return st.Parts.MCP != nil }) {
 		return warns
