@@ -78,6 +78,10 @@ type Install struct {
 	CheckPattern string   `toml:"check_pattern"`
 	Install      []string `toml:"install"`
 	Prebuild     []string `toml:"prebuild"`
+	// Hint tells the person how to install the pinned version by hand.
+	// It is text aggy shows (doctor, aggy tool on, the skill-missing
+	// refusal) and never runs.
+	Hint string `toml:"hint"`
 }
 
 // MCP is a stdio MCP server for the vendors listed: Argv is the program
@@ -227,6 +231,7 @@ const (
 	maxTokens      = 1_000_000
 	maxListed      = 16
 	maxPattern     = 256
+	maxHint        = 400
 	maxMatcher     = 128
 	maxTimeout     = 600
 )
@@ -546,6 +551,9 @@ func (d Def) validateInstall() error {
 		if re.NumSubexp() != 1 {
 			return bad("want exactly one capture group, for the version")
 		}
+	}
+	if err := text("install.hint", d.Install.Hint, maxHint, false); err != nil {
+		return err
 	}
 	if err := argv("install.install", d.Install.Install, false); err != nil {
 		return err

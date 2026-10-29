@@ -276,7 +276,7 @@ Whether a tool is on is set per vendor and per repo, in aggy's state in `~/.aggy
 
 The CodeGraph index is built lazily the first time CodeGraph is turned on for a repo, then refreshed incrementally. Worktrees do not share it: a worktree gets a copy of the main checkout's index only when a session aggy launches there has CodeGraph on, the copy is refreshed for its branch, and `aggy gc` removes it with the worktree.
 
-**Tool definitions** (T6752, `internal/tooldef`). Every managed tool is described by one definition, and the switchboard works only from definitions. aggy's built-ins (CodeGraph, RTK, Headroom, Context7, Caveman, Playwright) are definitions embedded in aggy, plus a Go lifecycle hook where a tool needs one; a user adds their own as `~/.aggy/tools/<name>.toml`, and a good one can be proposed for the built-in set (CONTRIBUTING). A definition is TOML; keys are lower case, and `mcp`, `skill`, `hook`, and `init` are arrays of tables, each entry listing the vendors it supports:
+**Tool definitions** (T6752, `internal/tooldef`). Every managed tool is described by one definition, and the switchboard works only from definitions. aggy's built-ins (CodeGraph, RTK, Headroom, Context7, Caveman, Playwright) are definitions embedded in aggy (what each wires, per vendor, is in [tools.md](tools.md)), plus a Go lifecycle hook where a tool needs one; a user adds their own as `~/.aggy/tools/<name>.toml`, and a good one can be proposed for the built-in set (CONTRIBUTING). A definition is TOML; keys are lower case, and `mcp`, `skill`, `hook`, and `init` are arrays of tables, each entry listing the vendors it supports:
 
 ```toml
 name = "demo"                       # a-z, 0-9, -; the file is <name>.toml
@@ -285,7 +285,7 @@ homepage = "https://example.com/demo"   # optional; https, no user info
 version = "1.4.2"                   # pinned; a user tool's starts with a digit
 default = false                     # user tools are always off
 scope = "repo"                      # "global", or "repo"
-when = "has-ui"                     # repo scope only: a condition
+when = "has-ui"                     # repo scope only: a label shown on add and on, never checked
 network = true                      # its servers reach the network (an edit borrow needs edit_network_tools); a user tool without the key counts as true
 unverified = ["mcp", "install"]     # keys whose vendor facts are not yet in verification.md
 
@@ -294,6 +294,7 @@ check = ["demo", "--version"]       # presence and version
 check_pattern = 'demo (\d+\.\d+\.\d+)'   # finds the version; exactly one capture group
 install = ["/usr/local/bin/demo-install", "1.4.2"]   # only on aggy tool install, after asking
 prebuild = ["demo", "index", "{repo}"]               # likewise
+hint = "npm i -g demo@1.4.2"        # how to install it by hand: shown when the program is missing, never run
 
 [[mcp]]                             # a stdio MCP server; a vendor is in one entry at most
 vendors = ["claude", "codex", "grok"]
