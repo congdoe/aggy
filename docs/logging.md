@@ -307,6 +307,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `switch.no_quota` |  | After a limit, no vendor the picker offers has quota left. | aggy usage; aggy log shows the limits. |
 | `switch.limit_no_hold` |  | After a limit on a vendor with no hold signal (Codex), aggy only suggests the switch; the user picks it. | Press the switch key, then Enter. |
 | `switch.near_limit_no_quota` |  | The near-limit warning found no vendor with quota to hand off to. | aggy usage. |
+| `switch.child_gone` |  | The session picked in the switch list was no longer recorded when the switch was confirmed, so the CLI on screen was not told to exit. | aggy sessions; pick again. |
 | `peer.lineage_failed` | yes | A message on the supervisor's socket came from a process outside the on-screen CLI's process tree, so it was not acted on. | Which process of yours writes to ~/.aggy/run; a CLI's tool that outlived it is reparented and falls out. |
 | `peer.uid_mismatch` | yes | A process of another user reached the supervisor's socket; it got no answer. | The run directory's owner and mode (0700). |
 | `socket.bad_request` | yes | A message on the supervisor's socket was not one aggy sends (bad JSON, an unknown type or field, a bad name). | Which process writes to ~/.aggy/run; aggy hook and aggy switch send only valid messages. |

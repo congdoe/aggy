@@ -54,6 +54,9 @@ type picker struct {
 	confirm adapter.Vendor
 	note    bool
 	lines   []string
+	// fit, when set, is the confirmation's status line for a width, cut
+	// where it should be (T6770); statusLine still cuts its end.
+	fit func(cols int) string
 	// warning: the note is a near-limit warning (T6699), drawn on the
 	// status line as the first of forms that fits the width; the switch
 	// key opens the list with warnTo, if any, preselected.
@@ -65,20 +68,20 @@ type picker struct {
 // list sets the picker to the vendor list, its toggles cleared.
 func (p *picker) list() {
 	p.confirm, p.note, p.lines = "", false, nil
-	p.warning, p.warnTo, p.forms = false, "", nil
+	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
 	p.opts, p.editing, p.edit, p.editErr, p.stage, p.kids = Choice{}, false, nil, "", "", nil
 }
 
 // ask sets the picker to confirm a switch to v, explained by lines.
 func (p *picker) ask(v adapter.Vendor, lines ...string) {
 	p.confirm, p.note, p.lines = v, false, lines
-	p.warning, p.warnTo, p.forms = false, "", nil
+	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
 }
 
 // tell sets the picker to show a note.
 func (p *picker) tell(lines ...string) {
 	p.confirm, p.note, p.lines = "", true, lines
-	p.warning, p.warnTo, p.forms = false, "", nil
+	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
 }
 
 // warn sets the picker to a near-limit warning (T6699): a note on the
@@ -162,6 +165,9 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 // that still ends in its keys (L60-4); anything else is cut at the end.
 func (p *picker) statusLine(cols int) string {
 	line := "aggy: " + strings.Join(p.lines, " ")
+	if p.fit != nil {
+		line = p.fit(cols)
+	}
 	for _, f := range p.forms {
 		if line = f; cols <= 1 || len(f) <= cols-1 {
 			return f

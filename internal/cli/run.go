@@ -351,10 +351,14 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 		}
 	}()
 	// The picker's index reads run in the background too (O56-6), so the
-	// supervisor's loop never waits on SQLite.
+	// supervisor's loop never waits on SQLite, all on one read-only handle
+	// closed when the CLI exits (T6770).
 	parent := pl.parent.ID
-	children := refreshed(pctx, vendors, func(o adapter.Vendor) []supervisor.ChildChoice { return childChoices(parent, o, time.Now()) }, nil)
-	quota := refreshed(pctx, vendors, hasQuota, true)
+	ro := &roIndex{}
+	defer ro.close()
+	children := refreshed(pctx, vendors, func(o adapter.Vendor) []supervisor.ChildChoice { return childChoices(ro.get(), parent, o, time.Now()) }, nil)
+	quota := refreshed(pctx, vendors, func(o adapter.Vendor) bool { return hasQuota(ro.get(), o) }, true)
+	hasChild := func(o adapter.Vendor, id string) bool { return childRecorded(ro.get(), parent, o, id) }
 	// The near-limit share is read only at a turn end, and only when
 	// warn_at is on (L60-2); the supervisor calls it off its loop.
 	var used func(adapter.Vendor) (supervisor.Share, bool)
@@ -375,6 +379,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 		StartsTurn: t.Brief,
 		SessionID:  cids.current,
 		Children:   children,
+		HasChild:   hasChild,
 		Limits:     limitHit,
 		HasQuota:   quota,
 		Used:       used,
@@ -496,17 +501,11 @@ func switchCheck(ctx context.Context, cfg config.Config, cwd string) func(adapte
 // hasQuota reports whether v has no plan limit recorded now
 // (limits.State, the router's skip rule). An index aggy cannot read
 // counts as quota: the user still confirms the switch.
-func hasQuota(v adapter.Vendor) bool {
-	path, err := store.DefaultPath()
-	if err != nil {
+func hasQuota(s *store.Store, v adapter.Vendor) bool {
+	if s == nil {
 		return true
 	}
 	ctx := context.Background()
-	s, err := store.OpenReadOnly(ctx, path)
-	if err != nil {
-		return true
-	}
-	defer func() { _ = s.Close() }()
 	_, limited, err := limits.State{Store: s}.Limited(ctx, v, time.Now())
 	return err != nil || !limited
 }
@@ -514,17 +513,11 @@ func hasQuota(v adapter.Vendor) bool {
 // childChoices lists the parent's interactive children of v, latest
 // first, for the picker: a short id, the title, and when it was last
 // active, made safe for the terminal. Without an index, none.
-func childChoices(parentID string, v adapter.Vendor, now time.Time) []supervisor.ChildChoice {
-	path, err := store.DefaultPath()
-	if err != nil {
+func childChoices(s *store.Store, parentID string, v adapter.Vendor, now time.Time) []supervisor.ChildChoice {
+	if s == nil {
 		return nil
 	}
 	ctx := context.Background()
-	s, err := store.OpenReadOnly(ctx, path)
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = s.Close() }()
 	cs, err := s.Children(ctx, parentID)
 	if err != nil {
 		return nil
@@ -544,6 +537,64 @@ func childChoices(parentID string, v adapter.Vendor, now time.Time) []supervisor
 		out = append(out, supervisor.ChildChoice{ID: c.ID, Label: label})
 	}
 	return out
+}
+
+// childRecorded reports whether the parent's interactive child id of v
+// is still in the index, as plan will look for it after a switch
+// (T6770). Without an index, or when the read fails, it says yes: the
+// switch goes on, as before the check, and plan reports a child gone.
+func childRecorded(s *store.Store, parentID string, v adapter.Vendor, id string) bool {
+	if s == nil {
+		return true
+	}
+	cs, err := s.Children(context.Background(), parentID)
+	if err != nil {
+		return true
+	}
+	for _, c := range cs {
+		if c.ID == id && c.Kind == "" && c.Vendor == string(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// openIndexRO opens the index read-only; a test counts the opens.
+var openIndexRO = store.OpenReadOnly
+
+// roIndex is the one read-only index handle a launch's picker reads go
+// through (T6770), opened on first use (again after a failed open) and
+// closed by close, after which get gives nil.
+type roIndex struct {
+	mu     sync.Mutex
+	s      *store.Store
+	closed bool
+}
+
+// get returns the handle, or nil while the index cannot be opened.
+func (r *roIndex) get() *store.Store {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.s == nil && !r.closed {
+		if path, err := store.DefaultPath(); err == nil {
+			if s, err := openIndexRO(context.Background(), path); err == nil {
+				r.s = s
+			}
+		}
+	}
+	return r.s
+}
+
+// close closes the handle for good. A read already running on it ends
+// first (database/sql's Close waits for it) or fails.
+func (r *roIndex) close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closed = true
+	if r.s != nil {
+		_ = r.s.Close()
+		r.s = nil
+	}
 }
 
 // probeCaps probes v's CLI at path for the flags whose presence is only

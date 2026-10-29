@@ -77,6 +77,11 @@ type Options struct {
 	// first, for the picker (T6665): with more than one, picking v asks
 	// which. Nil lists none (the latest is resumed).
 	Children func(v adapter.Vendor) []ChildChoice
+	// HasChild says whether the child id picked for v is still recorded,
+	// read fresh: Children may be stale. It is called off the main loop
+	// once a switch to a picked child is confirmed, before the exit
+	// command is typed (T6770). Nil skips the check.
+	HasChild func(v adapter.Vendor, id string) bool
 	// Limits gets the vendor on screen each time it reports its plan
 	// limit (T6667); HasQuota says whether a vendor has none recorded. On
 	// a limit, the first vendor of Vendors with quota is preselected and,
