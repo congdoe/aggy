@@ -225,7 +225,7 @@ func usedShare(v adapter.Vendor, cache *limits.AllowanceCache, thread string) (s
 	if !ok {
 		return supervisor.Share{}, false
 	}
-	return supervisor.Share{Used: u.Used, Window: fmt.Sprintf("%dm@%d", u.Minutes, u.ResetsAt), Reset: time.Unix(u.ResetsAt, 0)}, true
+	return supervisor.Share{Used: u.Used, Window: fmt.Sprintf("%dm@%d", u.Minutes, u.ResetsAt), Minutes: u.Minutes, Reset: time.Unix(u.ResetsAt, 0)}, true
 }
 
 // shareLeft renders what a window has left, floored to a tenth so it is

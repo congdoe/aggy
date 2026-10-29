@@ -66,6 +66,15 @@ Filters:
 // diagPollEvery is how often --follow looks for new records.
 var diagPollEvery = time.Second
 
+// diagReopenTries is how many reopens of diag.db in a row --follow may
+// fail (one per poll, say while diag.db is being created) before it
+// gives up (T6811); diagPolled runs at each poll with the failures in a
+// row so far, for tests.
+var (
+	diagReopenTries = 5
+	diagPolled      = func(fails int) {}
+)
+
 func runDiag(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := execrun.NotifyContext(context.Background())
 	defer stop()
@@ -278,18 +287,24 @@ func diagList(ctx context.Context, args []string, now func() time.Time, export b
 		last = recs[len(recs)-1].Row
 	}
 	flt.Limit = 0
+	fails := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-time.After(diagPollEvery):
 		}
+		diagPolled(fails)
 		if !v.HasDiag() {
 			// diag.db did not exist when the view opened; look again.
 			nv, err := openDiagView(ctx)
 			if err != nil {
-				return quit(err)
+				if fails++; fails >= diagReopenTries || ctx.Err() != nil {
+					return quit(err)
+				}
+				continue // the old view stays; the next poll tries again
 			}
+			fails = 0
 			// v stays open until nv replaces it: the deferred Close needs one.
 			_ = v.Close()
 			v = nv
