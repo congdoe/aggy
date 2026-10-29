@@ -10,10 +10,11 @@ import (
 )
 
 // A tool's local proxy (T6780): StartProxy starts it for one on-screen
-// session, health-checks it, and registers it, and only then may PTYEnv
-// pass that vendor's base-URL variable pointing at it. Stop unregisters
-// it and kills its process group. Borrow children never get one: Env,
-// their only environment, still refuses every base-URL variable.
+// session, health-checks it, checks the listener on its address is its
+// own, and registers it, and only then may PTYEnv pass that vendor's
+// base-URL variable pointing at it. Stop unregisters it and kills its
+// process group. Borrow children never get one: Env, their only
+// environment, still refuses every base-URL variable.
 
 // ProxySpec is one proxy to start.
 type ProxySpec struct {
@@ -46,8 +47,14 @@ var (
 	ErrProxyPortTaken = errors.New("execrun: the proxy's port is already in use")
 	// ErrProxyUnhealthy: it did not answer its health check in time.
 	ErrProxyUnhealthy = errors.New("execrun: the proxy did not answer its health check")
-	// ErrProxyExited: it exited before it was healthy, or right after.
+	// ErrProxyExited: it exited before it was healthy.
 	ErrProxyExited = errors.New("execrun: the proxy exited")
+	// ErrProxyNotOwned: the process listening on the address is not in
+	// the proxy's process group (another process bound the port while
+	// the proxy started), or this system cannot tell (T6780).
+	ErrProxyNotOwned = errors.New("execrun: the listener on the proxy's address is not the proxy aggy started")
+	// ErrProxyInterrupted: a signal arrived while aggy waited for it.
+	ErrProxyInterrupted = errors.New("execrun: interrupted while starting the proxy")
 )
 
 // Proxy is a running proxy.
@@ -55,9 +62,16 @@ type Proxy struct {
 	spec ProxySpec
 	url  string
 	done chan struct{} // closed once the process is reaped
+	died chan struct{} // closed when it exits on its own while in use
 	stop sync.Once
 	// kill signals the process group; nil on systems with none.
 	kill func(graceful bool)
+
+	mu       sync.Mutex
+	live     bool   // registered: a CLI may point at it
+	stopping bool   // Stop began: its exit is expected
+	hold     func() // closes the placeholder listener (holdLoopback)
+	holdErr  error
 }
 
 // Env is the variable that points the CLI at the proxy.
@@ -73,28 +87,51 @@ func (p *Proxy) Exited() bool {
 	}
 }
 
+// Died is closed when the proxy exits on its own while a CLI may point
+// at it. By then aggy holds its address with a placeholder that accepts
+// and closes each connection, reading nothing, so no other process can
+// take the port and the CLI's requests fail rather than go elsewhere;
+// HoldErr says whether that worked. The placeholder lasts until Stop.
+func (p *Proxy) Died() <-chan struct{} { return p.died }
+
+// HoldErr is why the placeholder could not take the address, once Died
+// is closed; nil when it holds it.
+func (p *Proxy) HoldErr() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.holdErr
+}
+
 // Stop unregisters the proxy, so no CLI started after it gets its
 // variable, and ends its process group: SIGTERM, then SIGKILL after
-// two seconds. It returns once the process is reaped.
+// two seconds. It returns once the process is reaped, and then closes
+// the placeholder, if one holds the address.
 func (p *Proxy) Stop() {
 	p.stop.Do(func() {
+		p.mu.Lock()
+		p.stopping, p.live = true, false
+		p.mu.Unlock()
 		proxies.Lock()
 		delete(proxies.m, p)
 		proxies.Unlock()
-		if p.kill == nil {
-			return
-		}
-		if !p.Exited() {
-			p.kill(true)
-		}
-		select {
-		case <-p.done:
-		case <-time.After(2 * time.Second):
+		if p.kill != nil {
 			if !p.Exited() {
-				p.kill(false)
+				p.kill(true)
 			}
-			<-p.done
+			select {
+			case <-p.done:
+			case <-time.After(2 * time.Second):
+				if !p.Exited() {
+					p.kill(false)
+				}
+				<-p.done
+			}
 		}
+		p.mu.Lock()
+		if p.hold != nil {
+			p.hold()
+		}
+		p.mu.Unlock()
 	})
 }
 

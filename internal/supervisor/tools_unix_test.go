@@ -77,6 +77,25 @@ func TestToolsChangedOffersResume(t *testing.T) {
 	wantExit(t, done, Exit{SwitchTo: adapter.Claude, Next: Choice{Vendor: adapter.Claude, Resume: true}})
 }
 
+// TestToolsNudge (T6780 HIGH-2): the launch's nudge, when the session's
+// tool proxy died, reads the tools again like a notice and offers the
+// resume without it.
+func TestToolsNudge(t *testing.T) {
+	ft := &fakeTools{set: ToolSet{"headroom": "mcp+proxy"}}
+	nudge := make(chan struct{}, 1)
+	ts, c, done, sock := switchRunOn(t, false, adapter.Claude, func(o *Options) {
+		o.Tools, o.ToolsAtLaunch, o.ToolsNudge = ft.get, ToolSet{"headroom": "mcp+proxy"}, nudge
+	})
+	ft.put(ToolSet{"headroom": "mcp"})
+	nudge <- struct{}{}
+	_ = request(t, sock, stopLine)
+	poll(t, "the offer", []byte(`aggy: tools ~headroom, same session -> claude.`), ts.screen)
+	confirm(t, ts)
+	c.waitGot(t, []byte("/exit\r"))
+	c.quit(0)
+	wantExit(t, done, Exit{SwitchTo: adapter.Claude, Next: Choice{Vendor: adapter.Claude, Resume: true}})
+}
+
 // TestToolsChangedUnchanged: a notice whose settings leave the session's
 // tools as launched offers nothing.
 func TestToolsChangedUnchanged(t *testing.T) {

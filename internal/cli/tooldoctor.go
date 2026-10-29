@@ -176,6 +176,10 @@ func boardFindings(ctx context.Context, b switchboard.Board, refused []error, cw
 				out = append(out, toolProblem(st.Tool, v, codeToolProxy, checkup.LevelInfo,
 					"its local proxy is on for "+string(v)+": every request of an on-screen "+string(v)+" session, the login token included, goes through it",
 					px.Listen+" through "+px.Env[v]+"; aggy tool off "+st.Tool.Name+" --vendor "+string(v)+" turns it off", ""))
+				if n := proxiesOn(b, v, repo.key); n > 1 {
+					warn(st.Tool, v, diag.CodeProxyConflict, "its proxy is on for "+string(v)+" with another tool's, so a launch starts neither", "",
+						"aggy tool off <one of them> --vendor "+string(v))
+				}
 			}
 		}
 		var taken map[string]string

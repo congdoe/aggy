@@ -40,6 +40,31 @@ func portTaken(addr netip.AddrPort) bool {
 	return true
 }
 
+// holdLoopback takes addr after a proxy died mid-session (HIGH-2), so
+// no other process can bind it while the CLI still points there: it
+// accepts each connection and closes it at once, reading nothing, so no
+// request byte (a token among them) is ever received. The returned func
+// closes it.
+func holdLoopback(addr netip.AddrPort) (func(), error) {
+	if !addr.Addr().IsLoopback() {
+		return nil, ErrProxyNotOwned
+	}
+	ln, err := net.Listen("tcp", addr.String())
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	return func() { _ = ln.Close() }, nil
+}
+
 // healthy reports whether a GET of path at addr answers 2xx within a
 // second. A redirect is not followed and counts as unhealthy.
 func healthy(ctx context.Context, addr netip.AddrPort, path string) bool {

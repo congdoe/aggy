@@ -1,6 +1,7 @@
 package switchboard
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -94,7 +95,10 @@ func TestStateProxy(t *testing.T) {
 	px := tool("px", "global", true, false, adapter.Claude, adapter.Codex)
 	px.Proxy = &tooldef.Proxy{Vendors: []adapter.Vendor{adapter.Claude}, Argv: []string{"px"}, Listen: "127.0.0.1:8787", Health: "/h",
 		Env: map[adapter.Vendor]string{adapter.Claude: "ANTHROPIC_BASE_URL"}}
-	ok := func(s store.ToolSwitch) store.ToolSwitch { s.Proxy = true; return builtIn(s) }
+	ok := func(s store.ToolSwitch) store.ToolSwitch {
+		s.ProxyDigest = tooldef.ProxyDigest(*px.Proxy, adapter.Vendor(s.Vendor))
+		return builtIn(s)
+	}
 	for _, c := range []struct {
 		name    string
 		sws     []store.ToolSwitch
@@ -122,6 +126,26 @@ func TestStateProxy(t *testing.T) {
 				t.Errorf("on %v proxy %v (%s), want %v %v", st.On, st.Parts.Proxy != nil, st.Why, c.on, c.prx)
 			}
 		})
+	}
+	// HIGH-1 (consent): a confirmation is of the proxy as it was; a new
+	// argv, port, or health path in a release asks again.
+	for _, edit := range []func(*tooldef.Proxy){
+		func(p *tooldef.Proxy) { p.Argv = []string{"px", "--evil"} },
+		func(p *tooldef.Proxy) { p.Listen = "127.0.0.1:9999" },
+		func(p *tooldef.Proxy) { p.Health = "/other" },
+	} {
+		newer := px
+		np := *px.Proxy
+		np.Argv = slices.Clone(np.Argv)
+		edit(&np)
+		newer.Proxy = &np
+		st := (Board{Switches: []store.ToolSwitch{ok(sw("px", "claude", "", true))}}).State(newer, adapter.Claude, "")
+		if !st.On || st.Parts.Proxy != nil || !st.ProxyChanged {
+			t.Errorf("%+v: on %v proxy %v changed %v", np, st.On, st.Parts.Proxy != nil, st.ProxyChanged)
+		}
+	}
+	if st := (Board{Switches: []store.ToolSwitch{ok(sw("px", "claude", "", true))}}).State(px, adapter.Claude, ""); st.ProxyChanged {
+		t.Error("an unchanged proxy counts as changed")
 	}
 	user := px
 	user.BuiltIn = false

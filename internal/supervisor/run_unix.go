@@ -228,6 +228,8 @@ func Run(o Options) (Exit, error) {
 			s.offerToolsNote()
 		case <-s.toolNotes:
 			s.readTools()
+		case <-s.o.ToolsNudge:
+			s.readTools()
 		case r := <-s.toolReads:
 			s.toolsRead(r)
 		case h := <-s.o.Limits:

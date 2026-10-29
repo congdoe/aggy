@@ -17,12 +17,15 @@ package tooldef
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/netip"
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -138,6 +141,19 @@ type Proxy struct {
 var ProxyVars = map[adapter.Vendor]string{
 	adapter.Claude: "ANTHROPIC_BASE_URL",
 	adapter.Grok:   "GROK_MODELS_BASE_URL",
+}
+
+// ProxyDigest is the sha256, in hex, of what the person confirms when
+// turning p on for vendor v: the vendor, the argv, the listen address,
+// the health path, and the variable. A confirmation holds only while it
+// matches, so a built-in whose proxy changes with a release, or an
+// edited user file, asks again.
+func ProxyDigest(p Proxy, v adapter.Vendor) string {
+	h := sha256.New()
+	for _, s := range append([]string{string(v), p.Listen, p.Health, p.Env[v], strconv.Itoa(len(p.Argv))}, p.Argv...) {
+		fmt.Fprintf(h, "%d:%s\x00", len(s), s)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // Addr is the proxy's listen address, which the validator has checked.

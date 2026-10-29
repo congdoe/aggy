@@ -953,9 +953,12 @@ arm64 with `DO_NOT_TRACK=1`. No vendor config was edited, and no tool's
   `headroom mcp install` edits every agent config it finds: never run it.
 - **Headroom proxy (T6780): unverified, for the owner's live check.**
   From docs.headroomlabs.ai/docs/proxy (latest, not pinned) and the
-  README, not from 0.42.0 itself: `headroom proxy` takes `--host`
-  (default `127.0.0.1`) and `--port` (default `8787`); `GET /health`
-  answers JSON with `"status": "healthy"`; Claude Code is pointed at it
+  README, and source-read by a #93 reviewer (not run):
+  `headroom/cli/proxy.py:296,334` defines `--host` (default
+  `127.0.0.1`) and `--port` (default `8787`);
+  `headroom/proxy/server.py:4274` serves `GET /health`, which answers
+  JSON with `"status": "healthy"`; `headroom/telemetry/beacon.py:60-95`
+  turns the beacon off when `DO_NOT_TRACK` is set; Claude Code is pointed at it
   with `ANTHROPIC_BASE_URL=http://localhost:8787`; Codex and Grok are
   routed by `headroom wrap` or a config edit, with no environment
   variable documented, so aggy's definition supports claude only; an
@@ -969,6 +972,17 @@ arm64 with `DO_NOT_TRACK=1`. No vendor config was edited, and no tool's
   `DO_NOT_TRACK=1`, and sends no beacon then; and one Claude turn with
   `ANTHROPIC_BASE_URL=http://127.0.0.1:8787`. Until then the definition
   lists `proxy` in `unverified` (TODO(T6780)).
+- **Claude and an HTTP proxy in the environment (T6780): unverified,
+  for the owner's live check.** Whether Claude Code sends a request for
+  a loopback `ANTHROPIC_BASE_URL` through `HTTP_PROXY`/`ALL_PROXY`, and
+  whether it honors `NO_PROXY` (`localhost`, `127.0.0.1`, `::1`) for
+  it. Until then aggy refuses to start a tool proxy when one of
+  `HTTP_PROXY`, `http_proxy`, `ALL_PROXY`, `all_proxy` is set and
+  `NO_PROXY`/`no_proxy` does not cover the address
+  (`tool.proxy_env_proxy`). To check: with a local proxy on
+  127.0.0.1:8787 and `HTTP_PROXY` pointing at a logging proxy, one
+  Claude turn with and without `NO_PROXY=127.0.0.1`, and whether the
+  logging proxy saw the request.
 - **Caveman.** Its installers (`npx @caveman-ai/cli`, `install.sh`) find
   the agents and their logins, edit vendor configs, add a proxy, and
   send telemetry by default. aggy uses only the `skills/caveman/` folder

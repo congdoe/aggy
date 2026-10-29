@@ -18,6 +18,16 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "freeport" {
+		// A loopback port nothing listens on, for a test's definition.
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			os.Exit(1)
+		}
+		fmt.Println(ln.Addr().(*net.TCPAddr).Port)
+		_ = ln.Close()
+		return
+	}
 	if len(os.Args) != 4 {
 		fmt.Fprintln(os.Stderr, "usage: fake-proxy <mode> <addr> <dir>")
 		os.Exit(2)

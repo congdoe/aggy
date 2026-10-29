@@ -1,6 +1,14 @@
--- aggy index schema, version 19: a tool's local proxy (T6780). proxy is 1
--- only on a row aggy tool on wrote for one named vendor after the person
--- read the warning and typed the confirmation at a terminal. Every row
--- written before, or without that confirmation, holds 0, and the tool's
--- proxy stays off for it while its other parts follow on_.
-ALTER TABLE tool_switches ADD COLUMN proxy INTEGER NOT NULL DEFAULT 0 CHECK (proxy IN (0, 1));
+-- aggy index schema, version 19: a tool's local proxy (T6780).
+-- proxy_digest is set only on a row aggy tool on --proxy wrote for one
+-- named vendor, after the person read the warning and typed the
+-- confirmation at a terminal: tooldef.ProxyDigest of what they confirmed
+-- (the vendor, argv, listen address, health path, and variable). The
+-- proxy runs only while the definition still hashes to it. Every other
+-- row holds '', and the tool's proxy stays off there while its other
+-- parts follow on_.
+--
+-- Dev note: before release this file added "proxy INTEGER" instead. An
+-- index migrated to 19 by such a build lacks proxy_digest; repair it by
+-- hand (no release has one):
+--   sqlite3 ~/.aggy/aggy.db "ALTER TABLE tool_switches ADD COLUMN proxy_digest TEXT NOT NULL DEFAULT ''"
+ALTER TABLE tool_switches ADD COLUMN proxy_digest TEXT NOT NULL DEFAULT '';
