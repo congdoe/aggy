@@ -10,8 +10,8 @@ aggy runs the official CLIs, signed in with your own accounts, and lets them wor
 
 - It never reads, copies, or stores vendor credentials. Each CLI signs in with its own flow. `aggy setup` records each CLI's version and when it checked; no CLI has a verified way for aggy to ask whether it is signed in, so aggy records that as unknown and tells you how to sign in.
 - It never sends model requests or calls a vendor API. Only the official CLIs talk to their vendors.
-- It runs no proxy and collects no telemetry. aggy's own network use is a local Unix socket in `~/.aggy/run`.
-- It never sets `*_BASE_URL` or API-key variables. Borrow children run with those removed from their environment, and `aggy doctor` warns when such settings could bill an API instead of your subscription.
+- It collects no telemetry, and routes vendor traffic through nothing unless you turn on a local proxy tool for a vendor (such as Headroom's: off by default, with a warning and a typed confirmation). aggy's own network use is a local Unix socket in `~/.aggy/run`, and a loopback health check of a proxy you turned on.
+- It never sets API-key variables, and sets a `*_BASE_URL` only to point an on-screen CLI at a local proxy you turned on for it. Borrow children run with those removed from their environment, and `aggy doctor` warns when such settings could bill an API instead of your subscription.
 
 What aggy does change, it records: every config change goes through one guarded layer and `aggy unwire` undoes it.
 

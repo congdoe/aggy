@@ -55,8 +55,11 @@ Rules every adapter follows:
   relocated forms under `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `GROK_HOME`.
   All file access goes through `internal/safefs`, which refuses those files
   by path and by file identity, and lint enforces it.
-- **No proxies or API keys.** Never set `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`,
-  `GROK_MODELS_BASE_URL`, or any API-key variable.
+- **No proxies or API keys.** An adapter never sets `ANTHROPIC_BASE_URL`,
+  `OPENAI_BASE_URL`, `GROK_MODELS_BASE_URL`, or any API-key variable. The
+  one base-URL variable an on-screen CLI may get is a local proxy tool's
+  that the user turned on for that vendor (T6780, design.md section 9),
+  which `internal/execrun` passes only while the proxy it started runs.
 - **Prompts go in files.** `HeadlessRequest.PromptFile` and
   `InteractiveRequest.BriefFile` are paths. Never put prompt text in argv,
   because macOS `ARG_MAX` is 1MB including the environment.

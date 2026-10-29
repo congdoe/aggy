@@ -70,25 +70,16 @@ func (b Board) State(t tooldef.Tool, v adapter.Vendor, repo string) State {
 	}
 	var on bool
 	var why string
-	if slices.Contains(b.Session, t.Name) {
+	sw, set := b.setting(t, v, repo)
+	if set && sw.On {
+		sw.On, sw.why = sw.check(t)
+	}
+	switch {
+	case slices.Contains(b.Session, t.Name):
 		on, why = true, "on for this session"
-	} else if sw, set := b.setting(t, v, repo); set {
-		on, why = sw.On, "off: "+sw.why
-		if on {
-			why = "on: " + sw.why
-			switch {
-			case !t.BuiltIn && sw.digest != t.Digest:
-				// A user file edited or replaced after it was turned on.
-				on, why = false, Changed
-			case t.BuiltIn && sw.digest != BuiltInDigest && sw.digest != t.Digest:
-				// S63-18: turned on for a user tool of this name, before
-				// a release made the name a built-in. (Rows a dev build
-				// wrote for a built-in hold its digest at the time, and
-				// go off once its file changes.)
-				on, why = false, WasUser
-			}
-		}
-	} else {
+	case set:
+		on, why = sw.On, sw.why
+	default:
 		// User tools are always off by default; the validator also
 		// refuses default = true on one.
 		on, why = t.Default && t.BuiltIn && t.Scope == "global", "off by default"
@@ -100,12 +91,36 @@ func (b Board) State(t tooldef.Tool, v adapter.Vendor, repo string) State {
 		return off(why)
 	}
 	st.On, st.Why, st.Parts = true, why, parts
+	// T6780: a proxy runs only on the setting that holds the person's
+	// typed confirmation for this vendor, never on a default, a session's
+	// --tool, or an "on" for every vendor.
+	if confirmed := set && sw.On && sw.proxy && sw.vendor == string(v); !confirmed {
+		st.Parts.Proxy = nil
+	}
 	return st
 }
 
+// check is an "on" setting's state once the definition's digest is
+// checked.
+func (sw setting) check(t tooldef.Tool) (bool, string) {
+	switch {
+	case !t.BuiltIn && sw.digest != t.Digest:
+		// A user file edited or replaced after it was turned on.
+		return false, Changed
+	case t.BuiltIn && sw.digest != BuiltInDigest && sw.digest != t.Digest:
+		// S63-18: turned on for a user tool of this name, before a
+		// release made the name a built-in. (Rows a dev build wrote for
+		// a built-in hold its digest at the time, and go off once its
+		// file changes.)
+		return false, WasUser
+	}
+	return true, sw.why
+}
+
 type setting struct {
-	On          bool
-	why, digest string
+	On                  bool
+	why, digest, vendor string
+	proxy               bool
 }
 
 // setting finds the most specific switch for the tool: this repo and
@@ -129,7 +144,11 @@ func (b Board) setting(t tooldef.Tool, v adapter.Vendor, repo string) (setting, 
 		if sw.On && t.Scope == "repo" && k.repo == "" {
 			continue
 		}
-		return setting{sw.On, k.why, sw.Digest}, true
+		why := "off: " + k.why
+		if sw.On {
+			why = "on: " + k.why
+		}
+		return setting{sw.On, why, sw.Digest, sw.Vendor, sw.Proxy}, true
 	}
 	return setting{}, false
 }
