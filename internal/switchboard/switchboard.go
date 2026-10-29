@@ -30,6 +30,10 @@ type Board struct {
 	// RepoOff is the tools_off of the repo the session runs in: its main
 	// checkout's and, in a linked worktree, the worktree's own.
 	RepoOff []string
+	// Unadded names the user tools aggy tool add has no record of (a
+	// file put in the tools folder by hand): an "on" for one is off, as
+	// aggy tool on and --tool refuse it (R76-F1).
+	Unadded []string
 }
 
 // State is whether a tool is on for one vendor in one repo, and why.
@@ -52,6 +56,10 @@ const Changed = "off: the definition changed since it was turned on"
 // WasUser is the reason a built-in is off although an "on" names it: the
 // on was for a user tool of the same name.
 const WasUser = "off: it was turned on for a user tool of this name; turn the built-in on to use it"
+
+// NotAdded is the reason a user tool turned on is off when aggy tool add
+// has no record of its file.
+const NotAdded = "off: aggy tool add has no record of its file; move it out of the tools folder, then aggy tool add it"
 
 // BuiltInDigest is the digest an "on" for a built-in records: a
 // built-in's own file changes with aggy's releases, so its on holds this
@@ -77,6 +85,9 @@ func (b Board) State(t tooldef.Tool, v adapter.Vendor, repo string) State {
 	sw, set := b.setting(t, v, repo)
 	if set && sw.On {
 		sw.On, sw.why = sw.check(t)
+		if sw.On && !t.BuiltIn && slices.Contains(b.Unadded, t.Name) {
+			sw.On, sw.why = false, NotAdded
+		}
 	}
 	switch {
 	case slices.Contains(b.Session, t.Name):

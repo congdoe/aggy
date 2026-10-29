@@ -57,7 +57,7 @@ func sessionToolSet(ctx context.Context, v adapter.Vendor, caps []string, cwd st
 			out[name] += "+" + part
 		}
 	}
-	skills := switchboard.Board{Tools: b.Tools, Switches: b.Switches} // as syncToolSkill links
+	skills := switchboard.Board{Tools: b.Tools, Switches: b.Switches, Unadded: b.Unadded} // as syncToolSkill links
 	b.Session = session
 	for _, st := range b.On(v, repo.key) {
 		if st.Parts.MCP != nil && (v != adapter.Codex || slices.Contains(caps, probe.CapConfigOverride)) {

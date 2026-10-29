@@ -89,6 +89,21 @@ func TestState(t *testing.T) {
 	}
 }
 
+// TestStateUnadded (R76-F1): an "on" for a user tool aggy tool add has
+// no record of is off; a built-in of that name is not affected.
+func TestStateUnadded(t *testing.T) {
+	user := tool("demo", "global", false, false, adapter.Claude)
+	b := Board{Tools: []tooldef.Tool{user}, Switches: []store.ToolSwitch{sw("demo", "", "", true)}, Unadded: []string{"demo"}}
+	if st := b.State(user, adapter.Claude, repo); st.On || st.Why != NotAdded || len(b.On(adapter.Claude, repo)) != 0 {
+		t.Errorf("unadded: on %v (%s)", st.On, st.Why)
+	}
+	bi := tool("demo", "global", true, false, adapter.Claude)
+	b = Board{Tools: []tooldef.Tool{bi}, Switches: []store.ToolSwitch{builtIn(sw("demo", "", "", true))}, Unadded: []string{"demo"}}
+	if st := b.State(bi, adapter.Claude, repo); !st.On {
+		t.Errorf("built-in: off (%s)", st.Why)
+	}
+}
+
 // TestStateProxy (T6780): a proxy runs only on an "on" for one named
 // vendor that holds the typed confirmation, and repo scope stacks on top.
 func TestStateProxy(t *testing.T) {

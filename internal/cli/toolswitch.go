@@ -124,7 +124,39 @@ func toolBoard(ctx context.Context) (switchboard.Board, *tooldef.Registry, []err
 	if b.Switches, err = toolSwitches(ctx); err != nil {
 		return b, nil, nil, err
 	}
+	if b.Unadded, err = toolUnadded(ctx, b.Tools); err != nil {
+		return b, nil, nil, err
+	}
 	return b, r, refused, nil
+}
+
+// toolUnadded names the user tools in tools that aggy tool add has no
+// record of, read-only: every one when there is no index or it predates
+// tool_added (R76-F1, switchboard.Board.Unadded).
+func toolUnadded(ctx context.Context, tools []tooldef.Tool) ([]string, error) {
+	s, v, err := openIndexReadOnly(ctx)
+	if err != nil {
+		return nil, withCode(diag.CodeStore, err)
+	}
+	if s != nil {
+		defer func() { _ = s.Close() }()
+	}
+	var out []string
+	for _, t := range tools {
+		if t.BuiltIn {
+			continue
+		}
+		ok := false
+		if s != nil && v >= toolAddedSchema {
+			if _, ok, err = s.ToolAdded(ctx, t.Name); err != nil {
+				return nil, withCode(diag.CodeStore, err)
+			}
+		}
+		if !ok {
+			out = append(out, t.Name)
+		}
+	}
+	return out, nil
 }
 
 // toolAddedSchema is the index version with the tool_added table.
