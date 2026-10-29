@@ -24,6 +24,7 @@ import (
 // finding carries the reason code a launch or aggy tool would refuse with.
 const (
 	codeToolsOK        = "tools-ok"            // info: on, and wireable
+	codeToolCost       = "tool-cost"           // info: an on tool's estimated tokens per vendor (toolCost)
 	codeToolStray      = "tool-skill-stray"    // warning: an off tool's skill is still linked
 	codeToolUnlinked   = "tool-skill-unlinked" // warning: an on tool's skill is not linked
 	codeToolGrokIgnore = "tool-grok-ignore"    // warning: Grok's [skills] ignore does not match the links
@@ -186,16 +187,23 @@ func boardFindings(ctx context.Context, b switchboard.Board, refused []error, cw
 	}
 
 	out = append(out, skillFindings(ctx, b, s, ver)...)
-	if len(out) == 0 {
+	problems := slices.ContainsFunc(out, func(f checkup.Finding) bool { return f.Level != checkup.LevelInfo })
+	n := 0
+	for _, t := range b.Tools {
+		if len(on[t.Name]) == 0 {
+			continue
+		}
+		n++
+		var costs []string
+		for _, v := range adapter.Vendors() {
+			costs = append(costs, string(v)+" "+toolCost(t, v, slices.Contains(on[t.Name], v)))
+		}
+		out = append(out, toolProblem(t, "", codeToolCost, checkup.LevelInfo, "estimated tokens every turn (+ more on invoke): "+strings.Join(costs, ", "), ""))
+	}
+	if !problems {
 		msg := "no managed tool is on"
-		if len(on) > 0 {
-			var names []string
-			for _, t := range b.Tools {
-				if len(on[t.Name]) > 0 {
-					names = append(names, t.Name)
-				}
-			}
-			msg = fmt.Sprintf("%d %s on, and wireable", len(names), plural(len(names), "tool is", "tools are"))
+		if n > 0 {
+			msg = fmt.Sprintf("%d %s on, and wireable", n, plural(n, "tool is", "tools are"))
 		}
 		out = append(out, checkup.Finding{Code: codeToolsOK, Level: checkup.LevelInfo, Message: msg})
 	}

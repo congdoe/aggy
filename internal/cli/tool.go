@@ -35,7 +35,8 @@ const toolUsage = `Usage:
 Managed tools are described by definitions: aggy's built-ins, and your
 own in ~/.aggy/tools/<name>.toml. Definitions are never read from a repo.
 
-  list     show each tool: name, built-in or user, default, source file
+  list     show each tool: name, built-in or user, default, estimated
+           token cost per vendor here (0 where off), source file
   status   show whether each tool is on, per vendor, here (or in --repo
            DIR), and why
   on, off  turn a tool on or off for every vendor, or one (--vendor),
@@ -197,13 +198,29 @@ func delegated() error {
 }
 
 func toolList(ctx context.Context, stdout, stderr io.Writer) int {
-	r, refused, err := tooldef.LoadDefault()
+	b, r, refused, err := toolBoard(ctx)
 	if err != nil {
 		toolRefuse(ctx, stderr, "tool list", diag.EvToolRefused, err)
 		return 1
 	}
+	repo := toolRepoAt{}
+	if cwd, err := os.Getwd(); err == nil {
+		repo, _ = toolRepo(cwd, false)
+	}
+	if repo.root != "" {
+		if b.RepoOff, err = repoToolsOff(repo); err != nil {
+			fmt.Fprintf(stderr, "aggy tool list: warning: %s; every tool is off in this repo until it is fixed\n", termsafe.Line(err.Error()))
+			for _, t := range b.Tools {
+				b.RepoOff = append(b.RepoOff, t.Name)
+			}
+		}
+	}
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tKIND\tDEFAULT\tSOURCE\tDESCRIPTION")
+	head := "NAME\tKIND\tDEFAULT"
+	for _, v := range adapter.Vendors() {
+		head += "\t" + strings.ToUpper(string(v))
+	}
+	fmt.Fprintln(tw, head+"\tSOURCE\tDESCRIPTION")
 	for _, t := range r.List() {
 		kind, def := "user", "off"
 		if t.BuiltIn {
@@ -212,9 +229,14 @@ func toolList(ctx context.Context, stdout, stderr io.Writer) int {
 		if t.Default {
 			def = "on"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", t.Name, kind, def, termsafe.Field(t.Source), termsafe.Field(t.Description))
+		row := []string{t.Name, kind, def}
+		for _, v := range adapter.Vendors() {
+			row = append(row, toolCost(t, v, b.State(t, v, repo.key).On))
+		}
+		fmt.Fprintln(tw, strings.Join(append(row, termsafe.Field(t.Source), termsafe.Field(t.Description)), "\t"))
 	}
 	_ = tw.Flush()
+	fmt.Fprintln(stdout, toolCostNote)
 	logRefusedDefs(ctx, stderr, "tool list", refused)
 	if len(refused) > 0 {
 		return 1
