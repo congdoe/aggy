@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -265,13 +266,36 @@ func syncToolSkill(ctx context.Context, t tooldef.Tool, b switchboard.Board, std
 		return withCode(diag.CodeToolSkillMissing, err)
 	}
 	want := map[string]bool{}
-	link := false
 	for _, v := range adapter.Vendors() {
 		if t.PartsFor(v).Skill != nil {
 			want[string(v)] = b.State(t, v, "").On
-			link = link || want[string(v)]
 		}
 	}
+	return setSkillLinks(ctx, t.Name, l, want, stdout)
+}
+
+// unlinkToolSkill takes every link of aggy's to the skill folder of
+// name out of the vendors' skill folders, and the folder out of Grok's
+// [skills] ignore (T6727): for aggy tool off of a tool that is no longer
+// loaded (refused or deleted) and aggy tool remove, whose tool is off
+// everywhere and so must leave no skill any CLI loads. A folder in a
+// vendor's skill folder that is not aggy's link is left alone.
+func unlinkToolSkill(ctx context.Context, name string, stdout io.Writer) error {
+	if name == skillName {
+		return nil // aggy's own skill is aggy skill unlink's
+	}
+	l, err := layoutFor(name)
+	if err != nil {
+		return withCode(diag.CodeToolFailed, err)
+	}
+	return setSkillLinks(ctx, name, l, map[string]bool{"claude": false, "codex": false, "grok": false}, stdout)
+}
+
+// setSkillLinks links the skill of tool name into each vendor want has
+// true and unlinks it from each it has false, through the manifest.
+func setSkillLinks(ctx context.Context, name string, l skillLayout, want map[string]bool, stdout io.Writer) error {
+	link := slices.Contains(slices.Collect(maps.Values(want)), true)
+	var err error
 	digest := ""
 	if link {
 		if err := checkSkillStore(l.store); err != nil {
@@ -293,14 +317,14 @@ func syncToolSkill(ctx context.Context, t tooldef.Tool, b switchboard.Board, std
 	if link {
 		// aggy tool on refused a folder that changed (checkSkillLinked);
 		// the first link records it.
-		if _, ok, err := s.ToolSkill(ctx, t.Name); err != nil {
+		if _, ok, err := s.ToolSkill(ctx, name); err != nil {
 			return withCode(diag.CodeStore, err)
 		} else if !ok {
-			if err := s.PutToolSkill(ctx, t.Name, digest, time.Now()); err != nil {
+			if err := s.PutToolSkill(ctx, name, digest, time.Now()); err != nil {
 				return withCode(diag.CodeStore, err)
 			}
 		}
-	} else if err := s.DeleteToolSkill(ctx, t.Name); err != nil {
+	} else if err := s.DeleteToolSkill(ctx, name); err != nil {
 		return withCode(diag.CodeStore, err)
 	}
 	m, err := manifest.Open(s)
