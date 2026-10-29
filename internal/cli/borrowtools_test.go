@@ -15,6 +15,7 @@ import (
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/fakecli"
+	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/probe"
 )
 
@@ -141,6 +142,19 @@ func TestBorrowToolsRefusals(t *testing.T) {
 	claudeManagedMCP = []string{managed}
 	check("claude managed clash", adapter.Claude, borrow.CLI{}, []string{"context7"}, diag.CodeToolNameClash)
 	claudeManagedMCP = oldManaged
+
+	// R80-4: the user's Codex config, which the child's
+	// --ignore-user-config drops, is no clash for it.
+	userCfg, err := parity.CodexConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, userCfg, "[mcp_servers.context7]\ncommand = \"x\"\n", 0o600)
+	if servers, done, err := wire(ctx, adapter.Codex, codex, []string{"context7"}, f.repo); err != nil || len(servers) != 1 {
+		t.Errorf("codex with a user server of that name: %v %v", servers, err)
+	} else {
+		done()
+	}
 
 	// Claude reads no other MCP config, so a name it loads elsewhere is no
 	// clash; Codex's project config is, and fails closed.
