@@ -158,7 +158,7 @@ func TestSwitchFromOutsideSessionIgnored(t *testing.T) {
 	default:
 	}
 	s.onHook(Request{Type: ReqHookEvent, Vendor: "claude", Event: "Stop", FromSession: true, Payload: []byte(`{"session_id":"x"}`)})
-	if ev := <-s.events; ev != (hookEvent{"Stop", "x"}) {
+	if ev := <-s.events; ev != (hookEvent{name: "Stop", sessionID: "x"}) {
 		t.Errorf("event %+v", ev)
 	}
 }
@@ -169,15 +169,15 @@ func TestSwitchFromOutsideSessionIgnored(t *testing.T) {
 // to the CLI and a turn has ended.
 func TestSwitchHolds(t *testing.T) {
 	s := &session{toChild: newByteQueue(maxQueued), o: Options{SessionID: func() string { return "me" }}}
-	stop := func(id string) func() { return func() { s.hookEvent(hookEvent{"Stop", id}) } }
+	stop := func(id string) func() { return func() { s.hookEvent(hookEvent{name: "Stop", sessionID: id}) } }
 	steps := []struct {
 		do   func()
 		want bool
 	}{
 		{stop("me"), true},
-		{func() { s.hookEvent(hookEvent{"Notification", "other"}) }, false},
+		{func() { s.hookEvent(hookEvent{name: "Notification", sessionID: "other"}) }, false},
 		{stop("me"), false}, // held
-		{func() { s.hookEvent(hookEvent{"StopFailure", "me"}) }, false},
+		{func() { s.hookEvent(hookEvent{name: "StopFailure", sessionID: "me"}) }, false},
 		{func() { s.send(nil); stop("other")() }, false}, // a nested CLI's Stop (S-9)
 		{stop(""), false},
 		{stop("me"), true}, // the user answered, and the child's turn ended

@@ -212,6 +212,7 @@ var (
 	CodeBadRequest       = Code{"socket.bad_request"}
 	CodeForeignSession   = Code{"hook.foreign_session"}
 	CodeNoSession        = Code{"hook.no_session"}
+	CodeGrokShutdown     = Code{"hook.grok_shutdown"}
 	CodePeerUnknown      = Code{"peer.cred_failed"}
 	CodeWrongVendor      = Code{"hook.wrong_vendor"}
 	CodeBadPayload       = Code{"hook.bad_payload"}
@@ -385,6 +386,7 @@ var codes = []CodeInfo{
 	{CodePeerUID, true, "A process of another user reached the supervisor's socket; it got no answer.", "The run directory's owner and mode (0700)."},
 	{CodeBadRequest, true, "A message on the supervisor's socket was not one aggy sends (bad JSON, an unknown type or field, a bad name).", "Which process writes to ~/.aggy/run; aggy hook and aggy switch send only valid messages."},
 	{CodeForeignSession, false, "A turn end from the CLI's tree named another session (a nested CLI), so it did not end the on-screen turn.", "Nothing, unless the on-screen CLI's own turn ends are ignored: then its session id is not the one aggy recorded."},
+	{CodeGrokShutdown, false, "Grok fires a stop hook with reason shutdown at every exit (grok 1.0.70); it ends no turn, so it did not put the CLI at its prompt or start a switch. Recorded once a minute (attrs.repeats: how many more came since the last record; attrs.own: it named the on-screen session).", "Nothing; it is expected once when Grok exits."},
 	{CodeNoSession, true, "A turn end from the CLI's tree named no session, which the vendor's own hook always does, so it looks forged and was not acted on. Recorded once a minute, and when the session ends (attrs.repeats: how many more came since the last record; attrs.tail: the record holds only those).", "Which process in the session sends hook events: aggy hook forwards what the vendor gives it."},
 	{CodePeerUnknown, false, "aggy could not tell which user or process opened a connection to the supervisor's socket, so it was closed unanswered.", "Usually a process that connected and exited at once; nothing, unless hooks stop arriving."},
 	{CodeWrongVendor, true, "A hook event from the CLI's tree came from another vendor's hook than the one on screen, so it did not gate a switch.", "A nested CLI of another vendor in the session; nothing else."},

@@ -327,3 +327,56 @@ func TestAnswerRecords(t *testing.T) {
 		})
 	}
 }
+
+// TestGrokShutdownStop (T6847): Grok's exit-time stop ("reason":
+// "shutdown", live 2026-10-29, grok 1.0.70) ends no turn: no atPrompt,
+// no warnDue, no share prompt, and the preselect stays. It is recorded
+// once a minute as an ignored hook event. Another reason, another event,
+// or another vendor is unchanged.
+func TestGrokShutdownStop(t *testing.T) {
+	q, records := diagHome(t)
+	newSession := func(v adapter.Vendor) *session {
+		return &session{o: Options{Diag: q, Vendor: v, SessionID: func() string { return "me" }},
+			events: make(chan hookEvent, 1), quit: make(chan struct{}), pk: &picker{preselect: adapter.Codex}}
+	}
+	deliver := func(s *session, event, payload string) {
+		s.onHook(Request{Type: ReqHookEvent, Vendor: string(s.o.Vendor), Event: event, FromSession: true, Payload: []byte(payload)})
+		s.hookEvent(<-s.events)
+	}
+	s := newSession(adapter.Grok)
+	for range 3 {
+		deliver(s, "Stop", `{"sessionId":"me","reason":"shutdown"}`)
+	}
+	if s.atPrompt || s.warnDue || s.pk.preselect != adapter.Codex || s.lastTurnEnd != "" {
+		t.Errorf("a shutdown stop counted as a turn end: atPrompt %v warnDue %v preselect %q", s.atPrompt, s.warnDue, s.pk.preselect)
+	}
+	if s.shutdownSeen.repeats != 2 {
+		t.Errorf("repeats %d, want 2", s.shutdownSeen.repeats)
+	}
+	for _, c := range []struct {
+		v              adapter.Vendor
+		event, payload string
+	}{
+		{adapter.Grok, "Stop", `{"sessionId":"me","reason":"Shutdown"}`},
+		{adapter.Grok, "Stop", `{"sessionId":"me"}`},
+		{adapter.Grok, "StopCancelled", `{"sessionId":"me","reason":"shutdown"}`},
+		{adapter.Claude, "Stop", `{"session_id":"me","reason":"shutdown"}`},
+		{adapter.Codex, "Stop", `{"session_id":"me","reason":"shutdown"}`},
+	} {
+		s := newSession(c.v)
+		deliver(s, c.event, c.payload)
+		if !s.atPrompt || !s.warnDue {
+			t.Errorf("%s %s %s: not a turn end", c.v, c.event, c.payload)
+		}
+	}
+	recs := records()
+	n := 0
+	for _, r := range recs {
+		if r.Event == diag.EvHookIgnored.String() && r.Code == diag.CodeGrokShutdown.String() {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d hook.grok_shutdown records, want 1", n)
+	}
+}

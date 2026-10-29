@@ -181,11 +181,28 @@ func turnEndNamesSession(v adapter.Vendor, event string) bool {
 // grokStopNamesSession: whether Grok's StopFailure and StopCancelled
 // payloads always carry sessionId.
 //
-// TODO(T6807-R2): unverified; a live check decides. If they can come
-// without one, set this false, so such a turn end is an ignored one
-// (no_session) rather than a security rejection, and key those apart
-// from the "" entry in ignoredTurnEnd.
+// Live-verified (2026-10-29, grok 1.0.70): sessionId was set on stop,
+// stop_failure, and stop_cancelled, so one naming none looks forged
+// (T6807-R2). If a later Grok drops it, set this false, so such a turn
+// end is an ignored one (no_session) rather than a security rejection,
+// and key those apart from the "" entry in ignoredTurnEnd.
 const grokStopNamesSession = true
+
+// ignoredShutdown records Grok's exit-time stop (grokShutdown) as an
+// ignored hook event: the first, then at most one a minute with the
+// repeats since, as ignoredTurnEnd does, since a process in the tree can
+// send any number of them. The session id is not stored.
+func (s *session) ignoredShutdown(ev hookEvent) {
+	now := time.Now()
+	f := &s.shutdownSeen
+	if !f.at.IsZero() && now.Sub(f.at) < time.Minute {
+		f.repeats++
+		return
+	}
+	attrs := map[string]any{"event": hookName(ev.name), "repeats": f.repeats, "own": ev.sessionID != "" && s.o.SessionID != nil && ev.sessionID == s.o.SessionID()}
+	*f = foreignSeen{at: now, event: ev.name}
+	s.log(diag.Rec{Event: diag.EvHookIgnored, Code: diag.CodeGrokShutdown, Msg: "Grok's exit-time stop, which ends no turn", Attrs: attrs})
+}
 
 // switchAttrs are a switch's options as record attrs: never the model's
 // name, only whether one was set.
