@@ -554,6 +554,10 @@ func toolRemove(ctx context.Context, name string, stdout io.Writer) error {
 	// while it was on (its file since edited, so off) goes too.
 	if err := unlinkToolSkill(ctx, name, stdout); err != nil {
 		fmt.Fprintf(stdout, "warning: not every skill link was removed (the changed lines above were): %s; aggy tool off %s tries again\n", termsafe.Line(err.Error()), name)
+	} else if err := forgetSkillPin(ctx, name); err != nil {
+		// M2 (#89): an off that unlinks nothing keeps the pin; a removed
+		// tool's pin goes with it.
+		fmt.Fprintf(stdout, "warning: its skill pin was not forgotten: %s\n", termsafe.Line(err.Error()))
 	}
 	return nil
 }

@@ -358,10 +358,11 @@ func TestToolGoneLeavesNoSkill(t *testing.T) {
 	}
 }
 
-// TestToolOffForgetsSkillPin (L83-5): off with no link left to remove
-// (the links went by hand) still forgets the skill's pin, so a changed
-// folder can be turned on again after it is read.
-func TestToolOffForgetsSkillPin(t *testing.T) {
+// TestToolOffKeepsSkillPin (M2 of #89, replacing L83-5): off with no
+// link left to remove (the links went by hand) keeps the skill's pin,
+// failing closed; aggy skill add --replace of the folder read pins it
+// again.
+func TestToolOffKeepsSkillPin(t *testing.T) {
 	traceTool(t, "caveman")
 	toolOK(t, "on", "caveman", "--vendor", "claude")
 	h := os.Getenv("HOME")
@@ -374,6 +375,14 @@ func TestToolOffForgetsSkillPin(t *testing.T) {
 		t.Fatalf("on with a changed folder: %d %q", code, errOut)
 	}
 	toolOK(t, "off", "caveman")
+	if code, _, errOut := toolRun("", false, "on", "caveman", "--vendor", "claude"); code == 0 || !strings.Contains(errOut, "skill add") {
+		t.Fatalf("on after a no-op off: %d %q", code, errOut)
+	}
+	read := filepath.Join(t.TempDir(), "caveman")
+	writeAt(t, filepath.Join(read, "SKILL.md"), "---\nname: caveman\ndescription: changed\n---\n", 0o644)
+	if code, _, errOut := skillRun("", true, "add", read, "--yes", "--replace"); code != 0 {
+		t.Fatalf("re-add: %q", errOut)
+	}
 	toolOK(t, "on", "caveman", "--vendor", "claude")
 }
 
