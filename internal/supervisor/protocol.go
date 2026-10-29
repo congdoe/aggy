@@ -39,6 +39,10 @@ type Request struct {
 	New   bool   `json:"new,omitempty"`
 	Model string `json:"model,omitempty"`
 	Brief bool   `json:"brief,omitempty"`
+	// Tools are managed tools an agent asks to have on for the next
+	// launch only (aggy switch --tool, T6708). The user sees them in the
+	// switch's confirmation and confirms or cancels the whole switch.
+	Tools []string `json:"tools,omitempty"`
 }
 
 // Response answers one Request.

@@ -190,7 +190,7 @@ const grokStopNamesSession = true
 // switchAttrs are a switch's options as record attrs: never the model's
 // name, only whether one was set.
 func switchAttrs(c Choice, more map[string]any) map[string]any {
-	m := map[string]any{"brief": c.Brief, "new": c.New, "model_set": c.Model != "", "child_set": c.Child != ""}
+	m := map[string]any{"brief": c.Brief, "new": c.New, "model_set": c.Model != "", "child_set": c.Child != "", "tools": len(c.Tools)}
 	for k, v := range more {
 		m[k] = v
 	}

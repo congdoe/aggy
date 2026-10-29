@@ -49,7 +49,8 @@ type target struct {
 	// Tools are turned on for this one launch only (aggy run --tool),
 	// never written to the settings; a repo's tools_off and a per-repo
 	// tool's scope still win (switchboard.Board.Session). A switch from
-	// this session does not carry them.
+	// this session does not carry them; a switch gets its own, from aggy
+	// switch --tool, which the user confirmed with the switch.
 	Tools []string
 }
 

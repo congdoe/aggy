@@ -131,6 +131,9 @@ type Choice struct {
 	New    bool
 	Model  string
 	Brief  bool
+	// Tools are turned on for the next launch only, never written to
+	// the settings (switchboard.Board.Session).
+	Tools []string
 }
 
 // ErrChecking is what CanSwitch returns while a check that takes time
