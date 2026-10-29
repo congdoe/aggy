@@ -28,9 +28,11 @@ const doctorUsage = `Usage: aggy doctor [--report]
 Checks each vendor CLI (installed, version against the versions aggy was
 tested on, sign-in), API-key and base-URL variables and vendor config
 settings that can bill an API instead of the subscription, whether each
-CLI gets this repo's shared memory and aggy's safety policy, and whether
-config files aggy changed have changed since. It changes nothing; an
-error finding goes to aggy's diagnostic log (aggy diag).
+CLI gets this repo's shared memory and aggy's safety policy, whether
+each managed tool that is on can be wired and each one that is off left
+no skill link behind (each problem names the command that fixes it),
+and whether config files aggy changed have changed since. It changes
+nothing; an error finding goes to aggy's diagnostic log (aggy diag).
 
   --report   print a version safe to paste into a public issue: home
              paths, user and host names, emails, and token-shaped text
@@ -156,6 +158,7 @@ func doctor(ctx context.Context, env checkEnv) doctorResult {
 		res.sections = append(res.sections, doctorSection{title: "General", findings: general})
 	}
 	res.sections = append(res.sections, doctorSection{title: "Parity", findings: parityFindings(env.cwd, vrs)})
+	res.sections = append(res.sections, doctorSection{title: "Tools", findings: toolFindings(ctx, env.cwd)})
 	res.sections = append(res.sections, doctorSection{title: "Config aggy changed", findings: driftFindings(ctx)})
 	return res
 }
