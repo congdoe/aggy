@@ -424,6 +424,9 @@ type session struct {
 	// maxForeign (G67-R3). Only in memory; owned by the main loop.
 	foreign     map[string]*foreignSeen
 	foreignOver foreignSeen
+	// shutdownSeen rate-limits the records of Grok's exit-time stop
+	// (ignoredShutdown). Owned by the main loop.
+	shutdownSeen foreignSeen
 	// toolNotes wakes the main loop for a tools-changed notice; toolReads
 	// brings Options.Tools' readings, toolBusy while one is in flight and
 	// toolAgain when a notice came during it (T6729). toolSeen is the set
@@ -485,9 +488,22 @@ type pendingSwitch struct {
 }
 
 // hookEvent is a hook event from the session: its name and the vendor
-// session id its payload names.
+// session id its payload names. shutdown marks a Grok Stop whose payload
+// reason is "shutdown" (grokShutdown).
 type hookEvent struct {
 	name, sessionID string
+	shutdown        bool
+}
+
+// grokShutdown reports whether a hook event is Grok's exit-time stop:
+// grok 1.0.70 fires an extra stop hook with "reason":"shutdown" at every
+// exit, interactive and headless, and a headless SIGINT gives only that
+// one (live, 2026-10-29). It ends no turn, so hookEvent ignores it. The
+// reason comes from the payload, which any process in the CLI's tree can
+// forge; ignoring a turn end is the safe direction, and the reason does
+// nothing else. Only Grok, and only Stop with that exact reason.
+func grokShutdown(v adapter.Vendor, event, reason string) bool {
+	return v == adapter.Grok && event == "Stop" && reason == "shutdown"
 }
 
 // onHook is the socket's hook callback: it passes the event on, and
@@ -508,7 +524,8 @@ func (s *session) onHook(r Request) {
 		s.logWait(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(r.Event)}})
 	}
 	if r.FromSession && r.Vendor == string(s.o.Vendor) && r.Event != "SessionStart" {
-		ev := hookEvent{name: r.Event, sessionID: hook.Parse(s.o.Vendor, r.Payload).SessionID}
+		p := hook.Parse(s.o.Vendor, r.Payload)
+		ev := hookEvent{name: r.Event, sessionID: p.SessionID, shutdown: grokShutdown(s.o.Vendor, r.Event, p.Reason)}
 		select {
 		case s.events <- ev:
 		case <-s.quit:
@@ -524,8 +541,14 @@ func (s *session) onHook(r Request) {
 // (SessionStart excepted, which onHook skips), from any session in the
 // tree, holds the switch: Notification is how Claude and Grok say they
 // wait for the user, a permission prompt among others, and its type field
-// is not verified, so every one counts.
+// is not verified, so every one counts. Grok's exit-time stop
+// (grokShutdown) is no turn end and holds nothing: it is only recorded
+// as ignored.
 func (s *session) hookEvent(ev hookEvent) {
+	if ev.shutdown {
+		s.ignoredShutdown(ev)
+		return
+	}
 	if turnEnd(ev.name) {
 		own := ""
 		if s.o.SessionID != nil {
