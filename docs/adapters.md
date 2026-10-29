@@ -235,17 +235,22 @@ was tested against.
   main ones. aggy does not set `RUST_LOG`. Research under strict plus the
   denies passed live (smoke, b972adf); news under strict has not been
   run live.
-- Image and video run without `--sandbox strict` and without the
-  sandbox host check: `strictMedia` (`internal/adapter/grok/grok.go`) is
-  off. Under strict, the live image smoke (2026-10-28, grok 1.0.70) made
-  no image, the child only saying it would, though from source the
-  output write into `<Grok home>/sessions` is allowed
-  (grok-src 559751fd: `image_gen/mod.rs:13`, `storage.rs:54-69`;
-  `paths.rs:74-78`). Cause not determined, TODO(T6751). They keep the
-  read denies (`<Lib>` below), which are permission rules, not part of
-  the sandbox; their tools are checked as `AccessKind::Tool`, so those
-  rules match none of them today. Video is untested: the test account's
-  zero data retention turns Grok's video tools off (owner item).
+- Image generation runs under `--sandbox strict`, with the host check,
+  and one allow rule, `--allow image_gen` (`strictAllow`). Under strict
+  without it, `image_gen` stops at a permission prompt that a headless
+  run cannot answer: grok printed `permission required: imagine: ...
+  was not run, as a headless run cannot ask for approval` on stderr,
+  exited 0, and made no image; with the rule it made the image (live,
+  2026-10-29, grok 1.0.70). A bare tool name is a rule for that one
+  tool; the rule is fixed in the adapter, never a wildcard or another
+  tool, and a deny still outranks it.
+- An image edit and video run without `--sandbox strict` and without the
+  sandbox host check (`usesSandbox`): neither has been run live under
+  strict (TODO(T6821)). They keep the read denies (`<Lib>` below), which
+  are permission rules, not part of the sandbox; their tools are checked
+  as `AccessKind::Tool`, so those rules match none of them today. Video
+  is untested: the test account's zero data retention turns Grok's
+  video tools off (owner item).
 - Flags: `--tools`, `--disallowed-tools`, `--max-turns`, and
   `--permission-mode plan`.
 - Research and news: `--tools web_search --no-subagents --disallowed-tools
@@ -430,13 +435,13 @@ by default is news 15 and research 30; `<run>` is `HeadlessRequest.RunDir`):
 | Kind | Claude | Codex | Grok |
 | --- | --- | --- | --- |
 | research, news | unsupported | unsupported until T6638 (`codex.Refusal`: apply_patch can confirm guessed file contents) | `grok --prompt-file <p> --output-format json --sandbox strict --deny <Lib> --tools web_search --disallowed-tools <D> --no-subagents` |
-| image | unsupported | `codex exec [-i <ref>]... --json <L without --disable image_generation> --skip-git-repo-check -- -` | `grok --prompt-file <p> --output-format json [--session-id <uuid>] --deny <Lib> --tools image_gen --disallowed-tools <D> --no-subagents` (no `--sandbox strict`: it failed live, `strictMedia` off) |
-| image `--edit` | unsupported | `codex exec [-i <ref>]... --json <L without image_generation> --skip-git-repo-check resume <id> -- -` | only with `[media] grok_file_tools`: `grok --prompt-file <p> --output-format json --resume <id> --deny <Lib> --tools image_gen,image_edit --disallowed-tools <D> --no-subagents` |
+| image | unsupported | `codex exec [-i <ref>]... --json <L without --disable image_generation> --skip-git-repo-check -- -` | `grok --prompt-file <p> --output-format json [--session-id <uuid>] --sandbox strict --allow image_gen --deny <Lib> --tools image_gen --disallowed-tools <D> --no-subagents` |
+| image `--edit` | unsupported | `codex exec [-i <ref>]... --json <L without image_generation> --skip-git-repo-check resume <id> -- -` | only with `[media] grok_file_tools`: `grok --prompt-file <p> --output-format json --resume <id> --deny <Lib> --tools image_gen,image_edit --disallowed-tools <D> --no-subagents` (no `--sandbox strict` until a live check, TODO(T6821)) |
 | video | unsupported | unsupported | only with `[media] grok_file_tools`: `grok --prompt-file <p> --output-format json --deny <Lib> --tools image_gen,image_to_video --disallowed-tools <D> --no-subagents` (unverified headless; no `--sandbox strict`) |
 | review | `claude -p --output-format json --permission-mode plan --strict-mcp-config --mcp-config <run>/mcp.json --tools Read,Grep,Glob [--setting-sources user] [--settings <run>/settings.json] [--session-id <uuid> \| --resume <id>]` | `codex exec --json <L> -- -` (in a git work tree, so no `--skip-git-repo-check`) | `grok --prompt-file <p> --output-format json --permission-mode plan --sandbox strict --deny <Lib> --tools read_file,grep,list_dir --disallowed-tools <D> --no-subagents` |
 | edit (M3; `aggy borrow` runs Codex only, see below) | `claude -p --output-format json --permission-mode acceptEdits --strict-mcp-config --mcp-config <run>/mcp.json` | `codex exec --json <L with --sandbox workspace-write, keeping shell_tool and unified_exec> -- -` (`codex.EditLockdown`) | `grok --prompt-file <p> --output-format json --tools read_file,grep,list_dir,write,search_replace --disallowed-tools <D> --no-subagents` |
 
-`--deny <Lib>` is `--deny 'Read(<HOME>/Library/**)' --deny 'Grep(<HOME>/Library/**)' --deny 'Read(<Grok home>/**)' --deny 'Grep(<Grok home>/**)'` (and the same pair for `<HOME>/.grok` when `GROK_HOME` points elsewhere), and the same pairs for their physical forms when a symlink makes them differ. On darwin, add `--deny 'Read(/System/Volumes/Data/**)' --deny 'Grep(/System/Volumes/Data/**)'` and a case-folded copy of every pair above. Last come the spelling pairs for `~*`, `~*/**`, `**/[<quotes, white space>]*` and `**/[<quotes, white space>]*/**`. For image and video, a HOME or Grok home that cannot be named in a rule drops `<Lib>` rather than refusing them.
+`--deny <Lib>` is `--deny 'Read(<HOME>/Library/**)' --deny 'Grep(<HOME>/Library/**)' --deny 'Read(<Grok home>/**)' --deny 'Grep(<Grok home>/**)'` (and the same pair for `<HOME>/.grok` when `GROK_HOME` points elsewhere), and the same pairs for their physical forms when a symlink makes them differ. On darwin, add `--deny 'Read(/System/Volumes/Data/**)' --deny 'Grep(/System/Volumes/Data/**)'` and a case-folded copy of every pair above. Last come the spelling pairs for `~*`, `~*/**`, `**/[<quotes, white space>]*` and `**/[<quotes, white space>]*/**`. For an image edit and video, a HOME or Grok home that cannot be named in a rule drops `<Lib>` rather than refusing them; image generation, under strict, is refused.
 An edit child with tools (T6709; `HeadlessRequest.MCP`, edit only) also
 gets, on Claude, its servers in `<run>/mcp.json` and `--allowedTools
 mcp__<name>,...` (one rule per server; that a bare server rule allows
