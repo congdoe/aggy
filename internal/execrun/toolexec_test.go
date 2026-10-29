@@ -45,3 +45,19 @@ func TestSetEnv(t *testing.T) {
 		}
 	}
 }
+
+// TestProxyEnv (T6822, MED-2 of #97): a proxy's environment is
+// ToolEnv's with the telemetry part: DO_NOT_TRACK=1 over the person's
+// own by default, and the person's own passed when telemetry is allowed.
+func TestProxyEnv(t *testing.T) {
+	base := []string{"HOME=/h", "DO_NOT_TRACK=0", "AGGY_SOCKET=/s", "ANTHROPIC_API_KEY=k"}
+	if got, err := ProxyEnv(base, nil, []string{DoNotTrack}); err != nil || !slices.Equal(got, []string{"HOME=/h", "DO_NOT_TRACK=1"}) {
+		t.Errorf("default: %q %v", got, err)
+	}
+	if got, err := ProxyEnv(base, []string{"DO_NOT_TRACK"}, nil); err != nil || !slices.Equal(got, []string{"HOME=/h", "DO_NOT_TRACK=0"}) {
+		t.Errorf("allowed: %q %v", got, err)
+	}
+	if _, err := ProxyEnv(base, []string{"AGGY_SOCKET"}, nil); err == nil {
+		t.Error("an aggy variable passed")
+	}
+}

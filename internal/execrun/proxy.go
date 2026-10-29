@@ -33,6 +33,8 @@ type ProxySpec struct {
 	// Wait bounds how long it may take to answer its health check;
 	// zero is ProxyWait.
 	Wait time.Duration
+	// Pass and Set are ProxyEnv's telemetry part (T6822).
+	Pass, Set []string
 }
 
 // ProxyWait is how long a proxy may take to come up. Headroom's own
@@ -166,12 +168,16 @@ func (p *Proxy) Stop() {
 
 // ProxyEnv is a proxy's environment, built from scratch as a tool
 // server's is (ToolEnv): HOME, USER, LOGNAME, PATH, TMPDIR, and the
-// locale from base, and DO_NOT_TRACK=1. Nothing else: no AGGY_*
-// variable (the socket, the trace id), no vendor key or base URL, no
-// HTTP proxy.
-func ProxyEnv(base []string) []string {
-	env, _ := ToolEnv(base, nil) // no names: it cannot fail
-	return append(env, "DO_NOT_TRACK=1")
+// locale from base, the variables pass names from base, and set over
+// them (SetEnv): the telemetry part (T6822), DO_NOT_TRACK=1 by default.
+// Nothing else: no AGGY_* variable (the socket, the trace id), no vendor
+// key or base URL, no HTTP proxy.
+func ProxyEnv(base, pass, set []string) ([]string, error) {
+	env, err := ToolEnv(base, pass)
+	if err != nil {
+		return nil, err
+	}
+	return SetEnv(env, set)
 }
 
 // proxies are the proxies running in this process, which PTYEnv checks.

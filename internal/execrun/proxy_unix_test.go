@@ -133,7 +133,7 @@ func fakeProxy(t *testing.T, mode string) (ProxySpec, string) {
 	dir := t.TempDir()
 	addr := freeAddr(t)
 	return ProxySpec{Vendor: adapter.Claude, Var: "ANTHROPIC_BASE_URL", Path: exe, Addr: addr, Health: "/health", Dir: dir, Wait: 5 * time.Second,
-		Args: []string{"-test.run=^TestFakeProxyHelper$", "--", "fakeproxy", mode, addr.String(), dir}}, dir
+		Args: []string{"-test.run=^TestFakeProxyHelper$", "--", "fakeproxy", mode, addr.String(), dir}, Set: []string{DoNotTrack}}, dir
 }
 
 // gone waits until pid is no more, and kills it if it outlives the test.

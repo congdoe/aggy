@@ -7,8 +7,10 @@
 # CLI, its login token included, then goes through headroom proxy. Never
 # headroom wrap, init, or mcp install, which edit agent configs.
 # Telemetry: aggy sets DO_NOT_TRACK=1 in its processes, the proxy
-# included (T6822). Whether this version honours it, or has an opt-out
-# of its own, is unverified (TODO(T6822)), so no telemetry_env is set.
+# included (T6822); the proxy's anonymous beacon honours it (source-read,
+# docs/verification.md, "Headroom proxy"). Whether the MCP server sends
+# anything, or has another opt-out, is unverified (TODO(T6822)), so no
+# telemetry_env is set.
 name = "headroom"
 description = "Compresses a large blob the agent holds; originals stay local and can be retrieved"
 homepage = "https://docs.headroomlabs.ai"
