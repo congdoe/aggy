@@ -159,6 +159,30 @@ func TestSkillRemoveRefusedDef(t *testing.T) {
 	}
 }
 
+// TestSkillRemoveSwappedFolder (T6820): a store folder swapped after
+// the lookup is kept, and the remove is refused.
+func TestSkillRemoveSwappedFolder(t *testing.T) {
+	src := skillSrc(t, "hello")
+	if code, _, errOut := skillRun("", true, "add", src, "--yes"); code != 0 {
+		t.Fatal(errOut)
+	}
+	dest := filepath.Join(os.Getenv(home.Env), "skills", "hello")
+	testHookBeforeSkillRemove = func() {
+		if err := os.Rename(dest, dest+".old"); err != nil {
+			t.Error(err)
+		}
+		writeAt(t, filepath.Join(dest, "keep"), "mine\n", 0o600)
+	}
+	t.Cleanup(func() { testHookBeforeSkillRemove = nil })
+	code, _, errOut := skillRun("", false, "remove", "hello")
+	if code == 0 || !strings.Contains(errOut, "changed since") {
+		t.Errorf("remove: %d %q", code, errOut)
+	}
+	if _, err := os.Lstat(filepath.Join(dest, "keep")); err != nil {
+		t.Errorf("the swapped-in folder was removed: %v", err)
+	}
+}
+
 // TestSkillAddPreviewText (L4, L5, F): the preview escapes the
 // frontmatter, warns on a name that differs or shadows, and says a
 // definition is replaced.
