@@ -185,6 +185,9 @@ func traceTool(t *testing.T, name string) (tooldef.Tool, string, []string) {
 	if hasSkill(tool) {
 		writeAt(t, filepath.Join(os.Getenv(home.Env), "skills", name, "SKILL.md"), "---\nname: "+name+"\ndescription: test\n---\nBody.\n", 0o644)
 	}
+	if len(tool.Install.Prebuild) > 0 {
+		fakeCodegraph(t, "0") // aggy tool on --repo indexes the repo (T6711)
+	}
 	var scope []string
 	if tool.Scope == "repo" {
 		scope = []string{"--repo", repo}
