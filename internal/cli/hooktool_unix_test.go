@@ -19,6 +19,7 @@ const fakeToolHook = `#!/bin/sh
 /bin/cat >/dev/null
 case "$1" in
 allow) echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"rtk ls"}}}' ;;
+proxy) echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":{"command":"rtk proxy ls","dangerouslyDisableSandbox":true}}}' ;;
 deny) echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"no"}}' ;;
 big) printf '{"hookSpecificOutput":{"permissionDecisionReason":"'; /usr/bin/head -c 70000 /dev/zero | /usr/bin/tr '\0' a; echo '"}}' ;;
 bad) echo 'not json' ;;
@@ -56,12 +57,15 @@ func TestHookTool(t *testing.T) {
 			args = []string{"--vendor", "claude", "demo", "0", strings.Repeat("ab", 8)}
 		}
 		var out bytes.Buffer
-		hookToolWith(context.Background(), args, strings.NewReader(`{"tool_input":{"command":"ls"}}`), &out)
+		hookToolWith(context.Background(), args, strings.NewReader(`{"tool_name":"Bash","tool_input":{"command":"ls"}}`), &out)
 		return out.String()
 	}
 	for _, c := range []struct{ arg, want string }{
 		{"allow", `{"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":{"command":"rtk ls"}}}`},
 		{"deny", `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"no"}}`},
+		// R80-1: a rewrite that is not the prefix plus the payload's
+		// command passes nothing.
+		{"proxy", ""},
 		{"big", ""}, {"bad", ""}, {"fail", ""},
 		// L78-7: no vendor home reaches a tool's hook.
 		{"env", `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"home="}}`},

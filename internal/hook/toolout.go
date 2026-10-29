@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
+	"strings"
+	"unicode/utf8"
 )
 
 // MaxToolOutput caps what a managed tool's hook may print. More is
@@ -26,6 +29,7 @@ const (
 	DroppedReason      = "permissionDecisionReason_invalid"
 	DroppedRewrite     = "updatedInput_undeclared"
 	DroppedInputShape  = "updatedInput_not_object"
+	DroppedRewriteForm = "updatedInput_unexpected"
 	DroppedOther       = "other"
 	droppedInnerPrefix = "hookSpecificOutput."
 )
@@ -51,9 +55,14 @@ var (
 //   - permissionDecisionReason, a string of at most MaxToolReason bytes.
 //     Claude shows a deny's reason to the model, so this text does reach
 //     the model's context (L78-6);
-//   - updatedInput, an object, and only when rewrites is set (the hook's
-//     definition declares rewrites = true, H78-1): it changes the tool
-//     call, which could step around rules matched against the original.
+//   - updatedInput, an object, and only when prefix is set (the hook's
+//     definition declares rewrites = true and its rewrite_prefix,
+//     H78-1), and only in the one form rewritten checks against
+//     payload, the hook's own input: a Bash call whose command is prefix
+//     plus the original command and whose other keys are the original's
+//     (R80-1). Any other rewrite could step around both the deny rules
+//     matched against the original and their prefixed copies
+//     (parity.RewriteDeny), which match only prefix + a denied command.
 //
 // Every other key (continue, stopReason, systemMessage,
 // additionalContext, decision, suppressOutput, ...) is dropped, so a
@@ -66,7 +75,7 @@ var (
 // (nil and ErrToolOutput): the caller prints nothing, which leaves the
 // tool call as the CLI would have handled it without the hook. dropped
 // names what was left out, in the fixed names above, each once.
-func FilterToolOutput(event string, out []byte, rewrites bool) (filtered []byte, dropped []string, err error) {
+func FilterToolOutput(event string, out, payload []byte, prefix string) (filtered []byte, dropped []string, err error) {
 	if len(bytes.TrimSpace(out)) == 0 {
 		return nil, nil, nil
 	}
@@ -131,12 +140,16 @@ func FilterToolOutput(event string, out []byte, rewrites bool) (filtered []byte,
 		case "updatedInput":
 			var obj map[string]json.RawMessage
 			switch {
-			case !rewrites:
+			case prefix == "":
 				drop(DroppedRewrite)
 			case json.Unmarshal(v, &obj) != nil || obj == nil:
 				drop(DroppedInputShape)
 			default:
-				keep[k] = v
+				if in, ok := rewritten(obj, payload, prefix); ok {
+					keep[k] = in
+				} else {
+					drop(DroppedRewriteForm)
+				}
 			}
 		default:
 			drop(named(droppedInnerPrefix, k, knownInner))
@@ -148,4 +161,55 @@ func FilterToolOutput(event string, out []byte, rewrites bool) (filtered []byte,
 	keep["hookEventName"] = json.RawMessage(`"PreToolUse"`)
 	b, err := json.Marshal(map[string]any{"hookSpecificOutput": keep})
 	return b, dropped, err
+}
+
+// rewritten checks a rewriting hook's updatedInput, upd, against the
+// call it rewrites, as Claude's hook input payload gives it (tool_name
+// and tool_input; code.claude.com/docs hooks.md, "PreToolUse input"),
+// and returns the input to pass on, built from the original's own values
+// (R80-1). It is accepted only when the call is Bash, every key of upd
+// is a key of the original tool_input, each one but command is
+// deep-equal to the original's, and command is exactly prefix + the
+// original command. Then whichever input Claude matches its rules
+// against, the policy's rules or their prefixed copies
+// (parity.RewriteDeny) cover it, and no other key
+// (dangerouslyDisableSandbox, ...) changes.
+//
+// TODO(T6813): a per-segment rewrite ("a && b" to "rtk a && rtk b") is
+// refused: accepting one needs a tokenizer that splits a command as
+// Claude does, and deny rules shown to cover each segment.
+func rewritten(upd map[string]json.RawMessage, payload []byte, prefix string) (json.RawMessage, bool) {
+	var top, orig map[string]json.RawMessage
+	var tool, cmd, newCmd string
+	if json.Unmarshal(payload, &top) != nil || json.Unmarshal(top["tool_name"], &tool) != nil || tool != "Bash" ||
+		json.Unmarshal(top["tool_input"], &orig) != nil ||
+		json.Unmarshal(orig["command"], &cmd) != nil || json.Unmarshal(upd["command"], &newCmd) != nil {
+		return nil, false
+	}
+	// Invalid UTF-8 or a lone surrogate decodes to U+FFFD, so the command
+	// passed on would not be the one Claude's rules saw.
+	if strings.TrimSpace(cmd) == "" || strings.ContainsRune(cmd, utf8.RuneError) || newCmd != prefix+cmd {
+		return nil, false
+	}
+	out := make(map[string]json.RawMessage, len(upd))
+	for k, v := range upd {
+		o, ok := orig[k]
+		if !ok {
+			return nil, false
+		}
+		if k != "command" {
+			var a, b any
+			if json.Unmarshal(v, &a) != nil || json.Unmarshal(o, &b) != nil || !reflect.DeepEqual(a, b) {
+				return nil, false
+			}
+		}
+		out[k] = o
+	}
+	c, err := json.Marshal(newCmd)
+	if err != nil {
+		return nil, false
+	}
+	out["command"] = c
+	b, err := json.Marshal(out)
+	return b, err == nil
 }

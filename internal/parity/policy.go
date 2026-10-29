@@ -95,9 +95,14 @@ var GrokDeny = denyRules("Read(**/")
 // model asked for or the hook's updatedInput (docs/verification.md), so
 // aggy covers both: every Bash rule with prefix in front, and for each
 // key file a rule matching the prefixed command wherever the name
-// appears in it. TODO(H78-1): what RTK turns cat, head, or grep of a key
-// file into is not recorded, so the key-file rules match any prefixed
-// command that names one, which also refuses harmless ones (rtk ls .env).
+// appears in it. aggy hook-tool passes a rewrite only as exactly prefix +
+// the original command (hook.FilterToolOutput, R80-1), so a Bash rule
+// that matches the original matches the rewrite here. The key files are
+// covered on the original by Read rules, which also stop the file
+// commands Claude recognizes in Bash; that set is not documented, so it
+// cannot be copied with the prefix, and the key-file rules match any
+// prefixed command that names one, which also refuses harmless ones
+// (rtk ls .env). TODO(H78-1): narrow them once that set is recorded.
 func RewriteDeny(prefix string) []string {
 	out := make([]string, 0, len(keyFiles)+len(bashDeny))
 	for _, f := range keyFiles {
