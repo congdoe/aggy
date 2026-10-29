@@ -12,10 +12,12 @@ import (
 
 // Dir is a directory opened once, for walking a tree through
 // descriptors: every call names one entry of this directory, relative to
-// its descriptor, and a subdirectory is opened relative to it too. So a
-// folder of the tree swapped for a symlink after the walk looked at it
-// is refused (ErrChanged), never followed, and nothing outside the tree
-// is read. Every entry is checked against the credential paths and
+// its descriptor, and a subdirectory is opened relative to it too.
+// os.Root keeps every open inside the tree but may follow a symlink that
+// stays in it; each opened folder and file is then checked (fstat,
+// SameFile) against the walk's Lstat of that entry, so one swapped after
+// the walk looked at it is refused (ErrChanged), and nothing outside the
+// tree is read. Every entry is checked against the credential paths and
 // identities, like the rest of safefs.
 type Dir struct {
 	r    *os.Root
@@ -132,10 +134,11 @@ func (d *Dir) OpenDir(base string, want fs.FileInfo) (*Dir, error) {
 	return sub, nil
 }
 
-// ReadFileLimit reads the regular file base of at most max bytes. The
-// open never follows a symlink (O_NOFOLLOW where the system has it), and
-// the opened file must have want's identity (the caller's Lstat of it):
-// a swap is refused with ErrChanged, anything but a regular file with
+// ReadFileLimit reads the regular file base of at most max bytes. os.Root
+// keeps the open inside the tree but may follow a symlink that stays in
+// it, so the safety is the check on the opened file: it must have want's
+// identity (the caller's Lstat of it), so a swap, through a symlink or
+// otherwise, is refused with ErrChanged; anything but a regular file with
 // ErrNotRegular, a second hard link with ErrHardLink, and more than max
 // bytes with ErrTooLarge.
 func (d *Dir) ReadFileLimit(base string, want fs.FileInfo, max int64) ([]byte, error) {

@@ -3,6 +3,8 @@ package cli
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -570,23 +572,48 @@ func skillRemove(ctx context.Context, name string, stdout io.Writer) error {
 	if err := skillInUse(ctx, name, st); err != nil {
 		return err
 	}
+	// Remove only the folder the lookup and checks saw: one put there
+	// since (a swap, or a symlink) is kept. It is checked before anything
+	// is removed, then moved aside under a private name and checked
+	// again there, so nothing can be swapped in between.
+	swapped := func(err error) error {
+		return withCode(diag.CodeToolSkillSwapped, errors.Join(fmt.Errorf("%s changed since aggy looked it up; it was not removed, run it again", st.store), err))
+	}
+	same := func(p string) (fs.FileInfo, bool) {
+		fi, err := safefs.Lstat(p)
+		return fi, err == nil && fi.IsDir() && os.SameFile(st.storeFI, fi)
+	}
+	if st.stored() {
+		testHookSkillRemove("check")
+		if _, ok := same(st.store); !ok {
+			return swapped(nil)
+		}
+	}
 	if st.defFile() {
 		if err := toolRemove(ctx, name, stdout); err != nil {
 			return err
 		}
 	}
 	if st.stored() {
-		if testHookBeforeSkillRemove != nil {
-			testHookBeforeSkillRemove()
-		}
-		// Remove only the folder the lookup and checks saw: one put
-		// there since (a swap, or a symlink) is kept.
-		if fi, err := safefs.Lstat(st.store); err != nil {
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err != nil {
 			return err
-		} else if !fi.IsDir() || !os.SameFile(st.storeFI, fi) {
-			return withCode(diag.CodeToolSkillExists, fmt.Errorf("%s changed since aggy looked it up; nothing was removed there, run it again", st.store))
 		}
-		if err := safefs.RemoveAll(st.store); err != nil {
+		aside := filepath.Join(filepath.Dir(st.store), "."+name+".rm-"+hex.EncodeToString(b[:]))
+		testHookSkillRemove("aside")
+		if err := safefs.RenameNoReplace(st.store, aside, st.storeFI); errors.Is(err, safefs.ErrChanged) {
+			return swapped(nil)
+		} else if err != nil {
+			return err
+		}
+		if fi, ok := same(aside); !ok {
+			var back error
+			if fi != nil {
+				back = safefs.RenameNoReplace(aside, st.store, fi)
+			}
+			return swapped(back)
+		}
+		if err := safefs.RemoveAll(aside); err != nil {
 			return err
 		}
 		fmt.Fprintf(stdout, "Removed %s.\n", termsafe.Field(st.store))
@@ -594,9 +621,10 @@ func skillRemove(ctx context.Context, name string, stdout io.Writer) error {
 	return forgetSkillPin(ctx, name)
 }
 
-// testHookBeforeSkillRemove runs in skillRemove right before the store
-// folder's identity check; tests swap the folder there.
-var testHookBeforeSkillRemove func()
+// testHookSkillRemove runs in skillRemove at the folder's identity check
+// ("check") and right before it is moved aside ("aside"); tests swap the
+// folder there.
+var testHookSkillRemove = func(stage string) {}
 
 // forgetSkillPin deletes name's skill pin, when there is an index.
 func forgetSkillPin(ctx context.Context, name string) error {

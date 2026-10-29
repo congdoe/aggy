@@ -285,10 +285,12 @@ func RemoveSame(name string, want fs.FileInfo) error {
 // there is kept and the call fails with an error matching fs.ErrExist.
 // On Linux (renameat2 RENAME_NOREPLACE) and macOS (renameatx_np
 // RENAME_EXCL) the rename itself refuses an existing name, so a name made
-// after the check is kept too; a file system without that flag fails
-// with ErrNoAtomicRename. Elsewhere the check and the rename are two
-// steps, and a name made in between can still be replaced. Callers use it
-// to put a finished temp file or folder in place.
+// after the check is kept too. On a file system without that flag (NFS,
+// 9p, some FUSE) a regular file is moved with link and unlink, which
+// keeps it too, and a folder is checked and then renamed. Elsewhere the
+// check and the rename are two steps, and a name made in between can
+// still be replaced. Callers use it to put a finished temp file or folder
+// in place.
 func RenameNoReplace(oldname, newname string, want fs.FileInfo) error {
 	if want == nil {
 		return &fs.PathError{Op: "Rename", Path: oldname, Err: errors.New("no identity to compare")}
@@ -314,14 +316,9 @@ func RenameNoReplace(oldname, newname string, want fs.FileInfo) error {
 		if testHookBeforeRename != nil {
 			testHookBeforeRename(newname)
 		}
-		return renameNoReplaceAt(dir, filepath.Base(from.link), base)
+		return renameNoReplaceAt(dir, filepath.Base(from.link), base, want.IsDir())
 	}), newname)
 }
-
-// ErrNoAtomicRename means the file system refused the atomic no-replace
-// rename (EINVAL, ENOSYS, or ENOTSUP): nothing was renamed, and there is
-// no fallback that could replace a name.
-var ErrNoAtomicRename = errors.New("the file system has no atomic no-replace rename")
 
 // testHookBeforeRename runs in RenameNoReplace after its checks, right
 // before the rename; tests use it to make the name in between.

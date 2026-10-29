@@ -230,6 +230,7 @@ var (
 	CodeToolIndexCopy    = Code{"tool.index_copy_refused"}
 	CodeToolSkillExists  = Code{"tool.skill_exists"}
 	CodeToolSkillRefused = Code{"tool.skill_refused"}
+	CodeToolSkillSwapped = Code{"tool.skill_swapped"}
 )
 
 const showRun = "aggy diag show <run id> for what led to it"
@@ -390,6 +391,7 @@ var codes = []CodeInfo{
 	{CodeToolChanged, true, "aggy tool on or a --tool refused a user definition that is not the file aggy tool add showed, or (--tool) one it never recorded.", "aggy tool remove <name>, then aggy tool add the file again and read what it runs."},
 	{CodeToolSkillExists, false, "aggy skill add refused: a skill folder, a built-in tool, or a user tool definition already has that name.", "Pick another --name, or pass --replace once the tool is off everywhere (aggy tool off <name>)."},
 	{CodeToolSkillRefused, true, "aggy skill add refused the folder: it is or holds a symlink, something other than a regular file or folder, a file with another hard link, no SKILL.md, or more than the entry or size cap.", "Copy the skill into a plain folder of regular files and add that."},
+	{CodeToolSkillSwapped, true, "aggy skill remove refused: the stored skill folder is no longer the one it looked up (something replaced it, or swapped in a symlink), so nothing was removed and anything moved aside was put back.", "Look at ~/.aggy/skills/<name>, then run aggy skill remove again."},
 }
 
 // LookupEvent returns event e's entry.

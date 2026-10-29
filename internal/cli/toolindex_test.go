@@ -87,18 +87,11 @@ func codegraphOff(t *testing.T, repo string) {
 	}
 }
 
-// TestCodegraphIndexOnFirstOn (T6711): aggy tool on codegraph --repo
-// runs codegraph init in the main checkout until it has finished once
-// (aggy's marker), with an environment built from scratch that keeps the
-// telemetry opt-out; the folder goes in the repo's git exclude file, so
-// git ignores it although codegraph's own .gitignore leaves itself
-// tracked; a repo it is never turned on for, or that turns it off, is
-// never indexed; a missing or failing codegraph, a symlinked index
-// folder, and an agent with no terminal are refused, and nothing is
-// recorded; at a terminal the person is asked first.
 // TestCodegraphCommittedIndex (T6820): a repo that commits
-// .codegraph/codegraph.db and aggy's marker is not indexed: status says
-// so, and aggy tool on --repo runs the first index.
+// .codegraph/codegraph.db and aggy's marker is not indexed until aggy
+// builds it: status says so, and the first of three aggy tool on --repo
+// runs the index, after which status says indexed and the others run
+// nothing. With no git to ask, status notes it.
 func TestCodegraphCommittedIndex(t *testing.T) {
 	isolate(t)
 	fakeCodegraph(t, "0")
@@ -112,12 +105,38 @@ func TestCodegraphCommittedIndex(t *testing.T) {
 		t.Errorf("status: %s", out)
 	}
 	indexes := filepath.Join(repo, ".codegraph", "indexes")
-	code, out, errOut := toolRun("", false, "on", "codegraph", "--repo", repo)
-	if code != 0 || !strings.Contains(out, "committed in the repo") || lines(t, indexes) != 1 {
-		t.Fatalf("on: %d %q %q, %d indexes", code, out, errOut, lines(t, indexes))
+	for i, vendor := range []string{"", "codex", ""} {
+		args := []string{"on", "codegraph", "--repo", repo}
+		if vendor != "" {
+			args = append(args, "--vendor", vendor)
+		}
+		if code, out, errOut := toolRun("", false, args...); code != 0 || lines(t, indexes) != 1 {
+			t.Fatalf("on %d: %d %q %q, %d indexes", i+1, code, out, errOut, lines(t, indexes))
+		}
+	}
+	if _, out, _ := toolRun("", false, "status", "--repo", repo); !strings.Contains(statusLine(t, out, "codegraph"), "indexed") || strings.Contains(out, "committed") {
+		t.Errorf("status after aggy's build: %s", out)
+	}
+
+	// An index aggy has no record of, and no git to ask.
+	other := switchRepo(t, "")
+	writeAt(t, filepath.Join(other, ".codegraph", "codegraph.db"), "db", 0o600)
+	writeAt(t, filepath.Join(other, ".codegraph", indexMarker), "x\n", 0o600)
+	t.Setenv("PATH", t.TempDir())
+	if _, out, _ := toolRun("", false, "status", "--repo", other); !strings.Contains(statusLine(t, out, "codegraph"), "indexed (git could not check)") {
+		t.Errorf("status without git: %s", out)
 	}
 }
 
+// TestCodegraphIndexOnFirstOn (T6711): aggy tool on codegraph --repo
+// runs codegraph init in the main checkout until it has finished once
+// (aggy's marker), with an environment built from scratch that keeps the
+// telemetry opt-out; the folder goes in the repo's git exclude file, so
+// git ignores it although codegraph's own .gitignore leaves itself
+// tracked; a repo it is never turned on for, or that turns it off, is
+// never indexed; a missing or failing codegraph, a symlinked index
+// folder, and an agent with no terminal are refused, and nothing is
+// recorded; at a terminal the person is asked first.
 func TestCodegraphIndexOnFirstOn(t *testing.T) {
 	isolate(t)
 	fakeCodegraph(t, "0")

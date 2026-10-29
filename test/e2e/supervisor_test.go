@@ -65,6 +65,7 @@ func buildAggy(t *testing.T) string {
 // aggySh is buildAggy's path quoted for a /bin/sh -c string, so a
 // TMPDIR with spaces or quotes still runs it.
 func aggySh(t *testing.T) string {
+	t.Helper()
 	return "'" + strings.ReplaceAll(buildAggy(t), "'", `'\''`) + "'"
 }
 

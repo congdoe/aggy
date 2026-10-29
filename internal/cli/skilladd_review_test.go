@@ -160,26 +160,39 @@ func TestSkillRemoveRefusedDef(t *testing.T) {
 }
 
 // TestSkillRemoveSwappedFolder (T6820): a store folder swapped after
-// the lookup is kept, and the remove is refused.
+// the lookup is kept and the remove is refused (tool.skill_swapped): at
+// the first check, before the definition is removed; or right before
+// the folder is moved aside, after it.
 func TestSkillRemoveSwappedFolder(t *testing.T) {
-	src := skillSrc(t, "hello")
-	if code, _, errOut := skillRun("", true, "add", src, "--yes"); code != 0 {
-		t.Fatal(errOut)
-	}
-	dest := filepath.Join(os.Getenv(home.Env), "skills", "hello")
-	testHookBeforeSkillRemove = func() {
-		if err := os.Rename(dest, dest+".old"); err != nil {
-			t.Error(err)
-		}
-		writeAt(t, filepath.Join(dest, "keep"), "mine\n", 0o600)
-	}
-	t.Cleanup(func() { testHookBeforeSkillRemove = nil })
-	code, _, errOut := skillRun("", false, "remove", "hello")
-	if code == 0 || !strings.Contains(errOut, "changed since") {
-		t.Errorf("remove: %d %q", code, errOut)
-	}
-	if _, err := os.Lstat(filepath.Join(dest, "keep")); err != nil {
-		t.Errorf("the swapped-in folder was removed: %v", err)
+	for _, stage := range []string{"check", "aside"} {
+		t.Run(stage, func(t *testing.T) {
+			src := skillSrc(t, "hello")
+			if code, _, errOut := skillRun("", true, "add", src, "--yes"); code != 0 {
+				t.Fatal(errOut)
+			}
+			state := os.Getenv(home.Env)
+			dest, def := filepath.Join(state, "skills", "hello"), filepath.Join(state, "tools", "hello.toml")
+			testHookSkillRemove = func(s string) {
+				if s != stage {
+					return
+				}
+				if err := os.Rename(dest, dest+".old"); err != nil {
+					t.Error(err)
+				}
+				writeAt(t, filepath.Join(dest, "keep"), "mine\n", 0o600)
+			}
+			t.Cleanup(func() { testHookSkillRemove = func(string) {} })
+			code, _, errOut := skillRun("", false, "remove", "hello")
+			if code == 0 || !strings.Contains(errOut, "changed since") || !strings.Contains(errOut, "tool.skill_swapped") {
+				t.Errorf("remove: %d %q", code, errOut)
+			}
+			if _, err := os.Lstat(filepath.Join(dest, "keep")); err != nil {
+				t.Errorf("the swapped-in folder was removed: %v", err)
+			}
+			if _, err := os.Lstat(def); (err == nil) != (stage == "check") {
+				t.Errorf("definition after a refusal at %s: %v", stage, err)
+			}
+		})
 	}
 }
 
