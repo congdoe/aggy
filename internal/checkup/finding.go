@@ -46,6 +46,10 @@ type Finding struct {
 	// Detail is free text from a CLI or the system, such as an error,
 	// which may hold paths and names; a report leaves it out.
 	Detail string
+	// Tool is the managed tool it concerns, or "", for aggy tool
+	// status's wired column (T6726). No output prints it: a user tool's
+	// name is the person's own (H83-1).
+	Tool string
 }
 
 // Text is the finding for the person: "<path>: <message>: <detail>",
