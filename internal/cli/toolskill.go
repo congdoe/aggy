@@ -2,11 +2,16 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"path/filepath"
+	"slices"
+	"strings"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/diag"
@@ -110,6 +115,72 @@ func checkSkillStore(dir string) error {
 	return walk(dir)
 }
 
+// checkSkillLinked is aggy tool on's check of t's skill folder in dir
+// against the digest recorded when it was first linked (L78-4).
+func checkSkillLinked(ctx context.Context, s *store.Store, t tooldef.Tool, dir string) error {
+	was, ok, err := s.ToolSkill(ctx, t.Name)
+	if err != nil || !ok {
+		return withCode(diag.CodeStore, err)
+	}
+	now, err := skillDigest(dir)
+	if err != nil {
+		return withCode(diag.CodeToolSkillMissing, err)
+	}
+	if now != was {
+		return withCode(diag.CodeToolSkillChanged, fmt.Errorf("%s changed since it was first linked; aggy tool off %s everywhere, read the folder, then turn it on again", dir, t.Name))
+	}
+	return nil
+}
+
+// maxSkillBytes caps what skillDigest reads of a skill folder.
+const maxSkillBytes = 8 << 20
+
+// skillDigest is the sha256 over a checked skill folder's (checkSkillStore)
+// regular files: each one's path relative to dir and its content, in
+// path order, each length-prefixed (L78-4).
+func skillDigest(dir string) (string, error) {
+	h := sha256.New()
+	total := 0
+	var walk func(rel string) error
+	walk = func(rel string) error {
+		des, err := safefs.ReadDir(filepath.Join(dir, rel))
+		if err != nil {
+			return err
+		}
+		slices.SortFunc(des, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+		for _, de := range des {
+			r := filepath.Join(rel, de.Name())
+			fi, err := safefs.Lstat(filepath.Join(dir, r))
+			if err != nil {
+				return err
+			}
+			switch {
+			case fi.IsDir():
+				if err := walk(r); err != nil {
+					return err
+				}
+				continue
+			case !fi.Mode().IsRegular():
+				return fmt.Errorf("%w: %s holds %s, which is not a regular file or folder", errSkillMissing, dir, r)
+			}
+			b, err := safefs.ReadFileLimit(filepath.Join(dir, r), int64(maxSkillBytes-total))
+			if err != nil {
+				return err
+			}
+			if total += len(b); total >= maxSkillBytes {
+				return fmt.Errorf("%w: %s holds more than %d bytes", errSkillMissing, dir, maxSkillBytes)
+			}
+			fmt.Fprintf(h, "%d:%s;%d:", len(r), filepath.ToSlash(r), len(b))
+			h.Write(b)
+		}
+		return nil
+	}
+	if err := walk(""); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 // skillHowTo says how to put a tool's skill in place: aggy never fetches
 // one.
 func skillHowTo(t tooldef.Tool, dir string) string {
@@ -125,7 +196,15 @@ func skillHowTo(t tooldef.Tool, dir string) string {
 // (aggy unwire undoes it). Grok's [skills] ignore gets the folder while
 // Grok is off but a Claude or Codex link is in a folder it scans
 // (T6709). A skill is linked for every repo: a per-repo on or a repo's
-// tools_off does not change its links.
+// tools_off does not change its links, and it reaches every session of
+// that CLI, aggy's or not, borrow children included (L78-4).
+//
+// The folder's digest (skillDigest) is recorded when it is first linked,
+// and aggy tool on refuses a folder that hashes otherwise
+// (checkSkillLinked, tool.skill_changed), so a changed skill gets no new
+// link. A link already made is a symlink, so it shows the folder as it
+// now is. Once no vendor links it, the record goes, and the next link
+// records the folder as it is then.
 func syncToolSkill(ctx context.Context, t tooldef.Tool, b switchboard.Board, stdout io.Writer) error {
 	if !hasSkill(t) {
 		return nil
@@ -142,8 +221,12 @@ func syncToolSkill(ctx context.Context, t tooldef.Tool, b switchboard.Board, std
 			link = link || want[string(v)]
 		}
 	}
+	digest := ""
 	if link {
 		if err := checkSkillStore(l.store); err != nil {
+			return withCode(diag.CodeToolSkillMissing, err)
+		}
+		if digest, err = skillDigest(l.store); err != nil {
 			return withCode(diag.CodeToolSkillMissing, err)
 		}
 	}
@@ -156,6 +239,19 @@ func syncToolSkill(ctx context.Context, t tooldef.Tool, b switchboard.Board, std
 		return withCode(diag.CodeStore, err)
 	}
 	defer func() { _ = s.Close() }()
+	if link {
+		// aggy tool on refused a folder that changed (checkSkillLinked);
+		// the first link records it.
+		if _, ok, err := s.ToolSkill(ctx, t.Name); err != nil {
+			return withCode(diag.CodeStore, err)
+		} else if !ok {
+			if err := s.PutToolSkill(ctx, t.Name, digest, time.Now()); err != nil {
+				return withCode(diag.CodeStore, err)
+			}
+		}
+	} else if err := s.DeleteToolSkill(ctx, t.Name); err != nil {
+		return withCode(diag.CodeStore, err)
+	}
 	m, err := manifest.Open(s)
 	if err != nil {
 		return withCode(diag.CodeStore, err)

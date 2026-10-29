@@ -158,7 +158,7 @@ image    = { minutes = 5 }
 			},
 		},
 		{name: "unknown top-level key", text: "colour = \"red\"\n", wantErr: "unknown key colour"},
-		{name: "unknown kind", text: "[routing]\nchat = [\"grok\"]\n", wantErr: "routing.chat: unknown routing key \"chat\": want a borrow kind (image, video, research, news, review, edit), review_skip_on_screen, or edit_tools"},
+		{name: "unknown kind", text: "[routing]\nchat = [\"grok\"]\n", wantErr: "routing.chat: unknown routing key \"chat\": want a borrow kind (image, video, research, news, review, edit), review_skip_on_screen, edit_tools, or edit_network_tools"},
 		// R66-4: a misspelled routing key is not called a kind.
 		{name: "misspelled routing key", text: "[routing]\nreview_skip_onscreen = true\n", wantErr: "routing.review_skip_onscreen: unknown routing key \"review_skip_onscreen\""},
 		{name: "unknown budget kind", text: "[budgets]\nchat = { minutes = 5 }\n", wantErr: "budgets.chat: unknown kind \"chat\""},

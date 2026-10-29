@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"strings"
 
 	"github.com/congdoe/aggy/internal/patch"
 	"github.com/congdoe/aggy/internal/safefs"
@@ -87,6 +88,26 @@ var ClaudeDeny = denyRules("Read(//**/")
 // "**/" glob matches anywhere, and a Read deny also covers the paths
 // shell commands such as cat name.
 var GrokDeny = denyRules("Read(**/")
+
+// RewriteDeny are the policy's deny rules again for a hook that rewrites
+// a shell command by putting prefix (such as "rtk ") in front (H78-1). It
+// is unverified whether Claude matches its rules against the command the
+// model asked for or the hook's updatedInput (docs/verification.md), so
+// aggy covers both: every Bash rule with prefix in front, and for each
+// key file a rule matching the prefixed command wherever the name
+// appears in it. TODO(H78-1): what RTK turns cat, head, or grep of a key
+// file into is not recorded, so the key-file rules match any prefixed
+// command that names one, which also refuses harmless ones (rtk ls .env).
+func RewriteDeny(prefix string) []string {
+	out := make([]string, 0, len(keyFiles)+len(bashDeny))
+	for _, f := range keyFiles {
+		out = append(out, "Bash("+prefix+"*"+strings.Trim(f, "*")+"*)")
+	}
+	for _, r := range bashDeny {
+		out = append(out, "Bash("+prefix+strings.TrimPrefix(r, "Bash("))
+	}
+	return out
+}
 
 func denyRules(readPrefix string) []string {
 	out := make([]string, 0, len(keyFiles)+len(bashDeny))

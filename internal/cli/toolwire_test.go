@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/diag"
+	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/probe"
 )
 
@@ -176,6 +178,31 @@ func TestAddToolsHooks(t *testing.T) {
 	g := req.Hooks["PreToolUse"]
 	if len(warns) != 0 || len(g) != 1 || g[0].Matcher != "Bash" || !strings.Contains(g[0].Hooks[0].Command, "/opt/bin/aggy hook-tool --vendor claude rtk 0 ") {
 		t.Errorf("hooks %+v %q", req.Hooks, warns)
+	}
+	if req.Deny != nil {
+		t.Errorf("no policy, yet deny rules: %q", req.Deny)
+	}
+	// H78-1: with the policy on, RTK's rewrite prefix adds the policy's
+	// rules again with "rtk " in front (golden), and the shared list is
+	// left as it was.
+	policy := slices.Clone(parity.ClaudeDeny)
+	req = adapter.InteractiveRequest{Deny: parity.ClaudeDeny}
+	addTools(context.Background(), adapter.Claude, []string{probe.CapSettings}, repo, filepath.Join(t.TempDir(), "l"), nil, &req)
+	want := slices.Concat(parity.ClaudeDeny, []string{
+		"Bash(rtk *.env*)", "Bash(rtk *.env.*)", "Bash(rtk *.pem*)", "Bash(rtk *.key*)",
+		"Bash(rtk *id_rsa*)", "Bash(rtk *id_dsa*)", "Bash(rtk *id_ecdsa*)", "Bash(rtk *id_ed25519*)",
+		"Bash(rtk git push * main)", "Bash(rtk git push * main *)", "Bash(rtk git push * *:main)", "Bash(rtk git push * *:main *)",
+		"Bash(rtk git push * refs/heads/main)", "Bash(rtk git push * refs/heads/main *)",
+		"Bash(rtk git push * *:refs/heads/main)", "Bash(rtk git push * *:refs/heads/main *)",
+		"Bash(rtk git push --force*)", "Bash(rtk git push -f*)", "Bash(rtk git push * --force*)", "Bash(rtk git push * -f*)", "Bash(rtk git push * +*)",
+		"Bash(rtk rm -rf*)", "Bash(rtk rm -fr*)", "Bash(rtk rm -Rf*)", "Bash(rtk rm -fR*)",
+		"Bash(rtk rm -r -f*)", "Bash(rtk rm -f -r*)", "Bash(rtk rm -R -f*)", "Bash(rtk rm -f -R*)",
+		"Bash(rtk rm -r --force*)", "Bash(rtk rm -R --force*)", "Bash(rtk rm -f --recursive*)", "Bash(rtk rm --recursive -f*)",
+		"Bash(rtk rm --force -r*)", "Bash(rtk rm --force -R*)", "Bash(rtk rm --recursive --force*)", "Bash(rtk rm --force --recursive*)",
+		"Bash(rtk git reset --hard*)", "Bash(rtk git reset * --hard*)", "Bash(rtk git clean *)",
+	})
+	if !slices.Equal(req.Deny, want) || !slices.Equal(parity.ClaudeDeny, policy) {
+		t.Errorf("deny = %q", req.Deny)
 	}
 	if req, warns, _ := wireOnce(t, adapter.Claude, nil, repo); req.Hooks != nil || len(warns) != 1 || !strings.Contains(warns[0], "tool.no_launch_flag") {
 		t.Errorf("without --settings: %+v %q", req.Hooks, warns)

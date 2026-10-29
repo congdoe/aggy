@@ -55,9 +55,11 @@ func editTools(kind adapter.Kind, asked []string, r config.Routing) ([]string, d
 // try) rather than run the child without it. The checks are the
 // launch's: the Grok gate, Codex's -c, the S63-16 file check, the repo's
 // tools_off and a per-repo tool's scope, and for Codex the fail-closed
-// name clash check. A Claude child reads no MCP config but aggy's
-// (--strict-mcp-config), so no name clashes there.
-func borrowTools(stateDir string) func(context.Context, adapter.Vendor, borrow.CLI, []string, string) ([]adapter.MCPServer, func(), error) {
+// name clash check; for Claude, which reads no MCP config but aggy's
+// (--strict-mcp-config), the managed-mcp.json only (M78-3). A tool that
+// reaches the network (network = true) is refused unless network, the
+// user's routing.edit_network_tools, is set (M78-2).
+func borrowTools(stateDir string, network bool) func(context.Context, adapter.Vendor, borrow.CLI, []string, string) ([]adapter.MCPServer, func(), error) {
 	return func(ctx context.Context, v adapter.Vendor, cli borrow.CLI, names []string, cwd string) ([]adapter.MCPServer, func(), error) {
 		refused := func(tool string, code diag.Code, why string) error {
 			attrs := map[string]any{"class": code.String(), "borrow": true}
@@ -108,12 +110,23 @@ func borrowTools(stateDir string) func(context.Context, adapter.Vendor, borrow.C
 			if st.Parts.MCP == nil {
 				return nil, nil, refused(st.Tool.Name, diag.CodeToolScope, "it has no MCP server for "+string(v)+", and a borrow child gets MCP servers only")
 			}
+			if st.Tool.Network && !network {
+				return nil, nil, refused(st.Tool.Name, diag.CodeToolNetwork, "it reaches the network, and routing.edit_network_tools is off")
+			}
 			on = append(on, st)
 		}
 		var taken map[string]string
-		if v == adapter.Codex {
-			// TODO(T6709): unverified which project config layers codex
-			// exec --ignore-user-config still reads, so every layer counts.
+		switch v {
+		case adapter.Claude:
+			// The child reads no MCP config but aggy's, except an
+			// administrator's managed one (M78-3).
+			if taken, err = claudeManagedNames(); err != nil {
+				return nil, nil, refused("", diag.CodeToolWireFailed, "the CLI's managed MCP servers could not be listed to check names: "+err.Error())
+			}
+		case adapter.Codex:
+			// TODO(L78-9): every layer counts, the user's too, which
+			// --ignore-user-config drops: an over-refusal. Which project
+			// layers codex exec still reads then is unverified.
 			if taken, err = takenMCPNames(v, cwd, repo.root); err != nil {
 				return nil, nil, refused("", diag.CodeToolWireFailed, "the CLI's own MCP servers could not be listed to check names: "+err.Error())
 			}

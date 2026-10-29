@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -267,21 +268,11 @@ func takenMCPNames(v adapter.Vendor, cwd, root string) (map[string]string, error
 				break
 			}
 		}
-		// An administrator's managed servers. A file this user cannot
-		// read is no clash aggy can see; one that cannot be parsed
-		// refuses every tool.
-		for _, f := range claudeManagedMCP {
-			names, err := projectMCPNames(f)
-			if errors.Is(err, fs.ErrPermission) {
-				err = nil
-			}
-			if err != nil {
-				return nil, err
-			}
-			for _, n := range names {
-				out[n] = f
-			}
+		managed, err := claudeManagedNames()
+		if err != nil {
+			return nil, err
 		}
+		maps.Copy(out, managed)
 	case adapter.Codex:
 		if root == "" {
 			root = cwd // Codex's project root is cwd outside git
@@ -329,6 +320,27 @@ var claudeManagedMCP = map[string][]string{
 	"linux":  {"/etc/claude-code/managed-mcp.json"},
 }[runtime.GOOS]
 
+// claudeManagedNames maps the server names in an administrator's
+// managed-mcp.json (claudeManagedMCP) to the file. A file this user
+// cannot read is no clash aggy can see; one that cannot be parsed is an
+// error, which refuses every tool.
+func claudeManagedNames() (map[string]string, error) {
+	out := map[string]string{}
+	for _, f := range claudeManagedMCP {
+		names, err := projectMCPNames(f)
+		if errors.Is(err, fs.ErrPermission) {
+			err = nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range names {
+			out[n] = f
+		}
+	}
+	return out, nil
+}
+
 // projectMCPNames are the server names of one .mcp.json; none when it
 // is absent.
 func projectMCPNames(f string) ([]string, error) {
@@ -359,7 +371,10 @@ var toolHookBin = aggyBin
 // addHooks puts the hooks of the tools in on into req, for Claude's
 // inline --settings layer: each runs aggy hook-tool, which never passes
 // an "allow" on (toolwire.Hooks). A hook that approves, and any hook
-// for Codex or Grok, is refused.
+// for Codex or Grok, is refused. When a wired hook declares rewrites and
+// the safety policy is on req (addPolicy ran first), the policy's rules
+// are added again with the hook's rewrite prefix (parity.RewriteDeny,
+// H78-1).
 func addHooks(v adapter.Vendor, caps []string, on []switchboard.State, req *adapter.InteractiveRequest, refuse func(tool string, code diag.Code, class, why string) string) []string {
 	if !slices.ContainsFunc(on, func(st switchboard.State) bool { return len(st.Parts.Hooks) > 0 }) {
 		return nil
@@ -380,5 +395,18 @@ func addHooks(v adapter.Vendor, caps []string, on []switchboard.State, req *adap
 		warns = append(warns, refuse(r.Tool, r.Code, r.Code.String(), r.Why))
 	}
 	req.Hooks = hooks
+	if len(hooks) > 0 && len(req.Deny) > 0 {
+		var prefixes []string
+		for _, st := range on {
+			for _, h := range st.Parts.Hooks {
+				if h.Rewrites && !slices.Contains(prefixes, h.RewritePrefix) {
+					prefixes = append(prefixes, h.RewritePrefix)
+				}
+			}
+		}
+		for _, p := range prefixes {
+			req.Deny = append(slices.Clip(req.Deny), parity.RewriteDeny(p)...)
+		}
+	}
 	return warns
 }

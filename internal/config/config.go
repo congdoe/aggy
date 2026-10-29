@@ -280,6 +280,11 @@ type Routing struct {
 	// child gets none: no tool definition says it is read-only yet
 	// (TODO(T6709)).
 	EditTools []string `toml:"edit_tools"`
+	// EditNetworkTools lets an edit child get a tool whose definition
+	// says network = true (M78-2). Off by default: a tool's server runs
+	// outside the CLI's sandbox, so a child steered by a prompt injection
+	// could read a .env and send it out through one.
+	EditNetworkTools bool `toml:"edit_network_tools"`
 }
 
 // MaxBorrowTools caps the tools one borrow child gets.
@@ -555,7 +560,7 @@ func unknownKinds(md toml.MetaData) error {
 				for _, kd := range adapter.Kinds() {
 					kinds = append(kinds, string(kd))
 				}
-				return fmt.Errorf("routing.%s: unknown routing key %q: want a borrow kind (%s), review_skip_on_screen, or edit_tools", k[1], k[1], strings.Join(kinds, ", "))
+				return fmt.Errorf("routing.%s: unknown routing key %q: want a borrow kind (%s), review_skip_on_screen, edit_tools, or edit_network_tools", k[1], k[1], strings.Join(kinds, ", "))
 			}
 			return fmt.Errorf("%s.%s: %w", k[0], k[1], err)
 		}

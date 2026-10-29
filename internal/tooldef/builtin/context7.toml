@@ -9,6 +9,7 @@ homepage = "https://github.com/upstash/context7"
 version = "4.4.4"
 default = false
 scope = "global"
+network = true # it queries context7's API
 unverified = ["homepage"]
 
 [install]

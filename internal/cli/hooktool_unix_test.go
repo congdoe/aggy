@@ -24,6 +24,7 @@ big) printf '{"hookSpecificOutput":{"permissionDecisionReason":"'; /usr/bin/head
 bad) echo 'not json' ;;
 fail) echo '{"hookSpecificOutput":{"permissionDecision":"deny"}}'; exit 1 ;;
 slow) /bin/sleep 5; echo '{"hookSpecificOutput":{"permissionDecision":"deny"}}' ;;
+env) echo '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"home='"$CLAUDE_CONFIG_DIR$CODEX_HOME$GROK_HOME"'"}}' ;;
 esac
 `
 
@@ -35,10 +36,16 @@ func TestHookTool(t *testing.T) {
 	isolate(t)
 	prog := filepath.Join(t.TempDir(), "fakehook")
 	writeAt(t, prog, fakeToolHook, 0o755)
+	t.Setenv("CLAUDE_CONFIG_DIR", "/claude-home")
+	t.Setenv("CODEX_HOME", "/codex-home")
+	rewrites := true
 	tool := func(arg string) tooldef.Tool {
-		return tooldef.Tool{BuiltIn: true, Digest: strings.Repeat("ab", 32), Def: tooldef.Def{Name: "demo",
-			Hooks: []tooldef.Hook{{Vendors: []adapter.Vendor{adapter.Claude}, Event: "PreToolUse", Decides: true, Timeout: 1,
-				Argv: []string{prog, arg}}}}}
+		h := tooldef.Hook{Vendors: []adapter.Vendor{adapter.Claude}, Event: "PreToolUse", Decides: true, Timeout: 1,
+			Argv: []string{prog, arg}}
+		if rewrites {
+			h.Rewrites, h.RewritePrefix = true, "rtk "
+		}
+		return tooldef.Tool{BuiltIn: true, Digest: strings.Repeat("ab", 32), Def: tooldef.Def{Name: "demo", Hooks: []tooldef.Hook{h}}}
 	}
 	run := func(arg string, args ...string) string {
 		t.Helper()
@@ -56,11 +63,19 @@ func TestHookTool(t *testing.T) {
 		{"allow", `{"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":{"command":"rtk ls"}}}`},
 		{"deny", `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"no"}}`},
 		{"big", ""}, {"bad", ""}, {"fail", ""},
+		// L78-7: no vendor home reaches a tool's hook.
+		{"env", `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"home="}}`},
 	} {
 		if got := run(c.arg); got != c.want {
 			t.Errorf("%s: %q, want %q", c.arg, got, c.want)
 		}
 	}
+	// H78-1: a hook that does not declare rewrites never rewrites.
+	rewrites = false
+	if got := run("allow"); got != "" {
+		t.Errorf("an undeclared rewrite passed: %q", got)
+	}
+	rewrites = true
 	start := time.Now()
 	if got := run("slow"); got != "" || time.Since(start) > 4*time.Second {
 		t.Errorf("slow: %q after %s", got, time.Since(start))

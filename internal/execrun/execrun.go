@@ -184,6 +184,27 @@ func HeadlessRunner(timeout time.Duration) adapter.Runner {
 	}
 }
 
+// ToolHookRunner returns a Runner for a managed tool's hook (aggy
+// hook-tool): HeadlessRunner, but with ToolEnv's environment, built from
+// scratch with no vendor home (L78-7): a tool's hook has no use for
+// CLAUDE_CONFIG_DIR, CODEX_HOME, or GROK_HOME. A command may add no
+// variables of its own.
+func ToolHookRunner(timeout time.Duration) adapter.Runner {
+	return func(ctx context.Context, c adapter.Command) (adapter.Output, error) {
+		if c.Stdin != adapter.StdinNull && c.Stdin != adapter.StdinFile {
+			return adapter.Output{}, errors.New("execrun: a tool hook reads no terminal")
+		}
+		if c.Dir == "" || !filepath.IsAbs(c.Dir) || len(c.Env) > 0 {
+			return adapter.Output{}, fmt.Errorf("execrun: a tool hook needs an absolute working dir and no added environment, got %q", c.Dir)
+		}
+		env, err := ToolEnv(os.Environ(), nil)
+		if err != nil {
+			return adapter.Output{}, err
+		}
+		return runEnv(ctx, c, timeout, false, env)
+	}
+}
+
 // notifyEnv are the variables a desktop notifier also inherits from
 // aggy: notify-send reaches the notification server over the session
 // bus, on the display.
@@ -227,6 +248,18 @@ func run(ctx context.Context, c adapter.Command, timeout time.Duration, tail boo
 			env = append(env, k+"="+v)
 		}
 	}
+	return runEnv(ctx, c, timeout, tail, env)
+}
+
+// runEnv is run with env as the command's whole environment.
+func runEnv(ctx context.Context, c adapter.Command, timeout time.Duration, tail bool, env []string) (adapter.Output, error) {
+	if !filepath.IsAbs(c.Path) || filepath.Clean(c.Path) != c.Path {
+		return adapter.Output{}, fmt.Errorf("execrun: %q is not a clean absolute path", c.Path)
+	}
+	if err := safefs.Check(c.Path); err != nil {
+		return adapter.Output{}, err
+	}
+	var err error
 	var stdin *os.File
 	if c.Stdin == adapter.StdinFile {
 		if !filepath.IsAbs(c.StdinPath) {

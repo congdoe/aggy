@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -205,5 +206,35 @@ func TestCodexRulesPatch(t *testing.T) {
 	}
 	if _, err := CodexRulesPatch(path); err == nil {
 		t.Error("symlinked rules folder accepted")
+	}
+}
+
+// TestRewriteDeny (H78-1): the rules for a hook that rewrites with "rtk "
+// cover the prefixed forms of what the policy denies, and stay in
+// Claude's rule shape.
+func TestRewriteDeny(t *testing.T) {
+	rules := RewriteDeny("rtk ")
+	if len(rules) != len(keyFiles)+len(bashDeny) || rules[0] != "Bash(rtk *.env*)" || !slices.Contains(rules, "Bash(rtk git push --force*)") {
+		t.Fatalf("rules = %q", rules)
+	}
+	re := regexp.MustCompile(`^Bash\(rtk [^,()]+\)$`)
+	for _, r := range rules {
+		if !re.MatchString(r) {
+			t.Errorf("rule %q", r)
+		}
+	}
+	denied := func(cmd string) bool {
+		return slices.ContainsFunc(rules, func(r string) bool { return bashGlob(r, cmd) })
+	}
+	for _, cmd := range []string{"rtk git push --force origin x", "rtk git push origin main", "rtk rm -rf /", "rtk git reset --hard",
+		"rtk read .env", "rtk grep KEY .env.local", "rtk cat ~/.ssh/id_rsa", "rtk head server.pem"} {
+		if !denied(cmd) {
+			t.Errorf("%q is not denied", cmd)
+		}
+	}
+	for _, cmd := range []string{"rtk git status", "rtk ls src", "git push --force"} {
+		if denied(cmd) {
+			t.Errorf("%q is denied", cmd)
+		}
 	}
 }

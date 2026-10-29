@@ -55,7 +55,7 @@ func TestFreshDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	sort.Strings(tables)
-	want := "borrows,changes,children,events,parents,probes,tool_added,tool_switches,vendors"
+	want := "borrows,changes,children,events,parents,probes,tool_added,tool_skill,tool_switches,vendors"
 	if got := strings.Join(tables, ","); got != want {
 		t.Errorf("tables = %s, want %s", got, want)
 	}
