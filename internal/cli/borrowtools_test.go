@@ -160,3 +160,36 @@ func TestBorrowToolsRefusals(t *testing.T) {
 	mustWrite(t, filepath.Join(f.repo, ".aggy", "config.toml"), `tools_off = ["context7"]`, 0o600)
 	check("repo off", adapter.Claude, borrow.CLI{}, []string{"context7"}, diag.CodeToolRepoOff)
 }
+
+// TestBorrowToolsUserNetwork (R80-2): a user definition without the
+// network key is taken to reach the network, so an edit child refuses
+// it without routing.edit_network_tools; one added saying network =
+// false is wired. aggy tool add shows which.
+func TestBorrowToolsUserNetwork(t *testing.T) {
+	f := toolsFixture(t, `["demo"]`)
+	gitRepo(t, f.repo)
+	// The fixture sets it empty (t.Setenv restores it); tool add refuses
+	// while it is set at all.
+	_ = os.Unsetenv("AGGY_DELEGATED")
+	ctx := context.Background()
+	add := func(def, shows string) {
+		t.Helper()
+		_, _, _ = toolRun("", false, "remove", "demo")
+		src := filepath.Join(t.TempDir(), "demo.toml")
+		writeAt(t, src, def, 0o644)
+		code, out, errOut := toolRun("", true, "add", src, "--yes")
+		if code != 0 || !strings.Contains(out, shows) {
+			t.Fatalf("add: %d %q %q", code, out, errOut)
+		}
+	}
+	add(demoTool, "network: reaches the network")
+	if _, _, err := borrowTools(f.state, false)(ctx, adapter.Claude, borrow.CLI{}, []string{"demo"}, f.repo); !strings.Contains(fmt.Sprint(err), "tool.borrow_network") {
+		t.Errorf("a user tool without the network key: %v", err)
+	}
+	add("network = false\n"+demoTool, "network: none")
+	servers, done, err := borrowTools(f.state, false)(ctx, adapter.Claude, borrow.CLI{}, []string{"demo"}, f.repo)
+	if err != nil || len(servers) != 1 || servers[0].Name != "demo" {
+		t.Fatalf("network = false: %+v %v", servers, err)
+	}
+	done()
+}

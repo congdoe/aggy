@@ -380,6 +380,11 @@ func previewTool(w io.Writer, d tooldef.Def, dest string) {
 		}
 	}
 	fmt.Fprintf(w, "  scope: %s; off until you turn it on\n", scope)
+	if d.Network {
+		fmt.Fprintln(w, "  network: reaches the network (the default unless the file says network = false); an edit borrow gets it only with routing.edit_network_tools")
+	} else {
+		fmt.Fprintln(w, "  network: none, as the file declares (network = false); an edit borrow may get it")
+	}
 	fmt.Fprintf(w, "  cost estimate: %s\n", d.Cost.Method)
 	if len(d.Install.Check)+len(d.Install.Install)+len(d.Install.Prebuild) > 0 {
 		fmt.Fprintln(w, "  install (nothing runs now; install and prebuild run only on aggy tool install, after asking):")

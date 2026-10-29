@@ -99,6 +99,29 @@ func manyEnv(n int) string {
 
 const mcpArgv = `argv = ["demo", "serve", "{repo}"]`
 
+// TestParseNetwork (R80-2): a user definition reaches the network unless
+// it says network = false; a built-in's flag is as written.
+func TestParseNetwork(t *testing.T) {
+	for _, c := range []struct {
+		name, text string
+		builtIn    bool
+		want       bool
+	}{
+		{"user, no key", base, false, true},
+		{"user, false", "network = false\n" + base, false, false},
+		{"user, true", "network = true\n" + base, false, true},
+		{"built-in, no key", base, true, false},
+		{"built-in, true", "network = true\n" + base, true, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d, err := Parse("demo.toml", []byte(c.text), c.builtIn)
+			if err != nil || d.Network != c.want {
+				t.Errorf("network %v, %v; want %v", d.Network, err, c.want)
+			}
+		})
+	}
+}
+
 func TestParseValid(t *testing.T) {
 	for _, c := range []struct {
 		name, text string
