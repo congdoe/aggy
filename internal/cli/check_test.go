@@ -3,6 +3,9 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +13,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
@@ -119,6 +123,53 @@ func TestCheck(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestCheckRecordsNoErrorText (G67-R4): a check that cannot start is
+// recorded with the code's text and the kind of failure, never the
+// error's text, which names the repo's program and path.
+func TestCheckRecordsNoErrorText(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGGY_HOME", state)
+	freshRun(t)
+	root := checkRepo(t, `check = [["aggy-no-such-canary-tool"], ["./plain-canary.sh"]]`, map[string]string{"plain-canary.sh": "true\n"})
+	e := defaultRepoCheckEnv()
+	e.getwd = func() (string, error) { return root, nil }
+	var out, errb bytes.Buffer
+	if code := e.check(context.Background(), nil, &out, &errb); code != 1 || !strings.Contains(out.String(), "aggy-no-such-canary-tool") {
+		t.Fatalf("code %d:\n%s%s", code, out.String(), errb.String())
+	}
+	text := allDiagText(t, state)
+	if strings.Contains(text, "canary") || strings.Contains(text, root) {
+		t.Errorf("a record holds the error's text:\n%s", text)
+	}
+	if strings.Count(text, `"failure":"start"`) != 2 || strings.Count(text, `"error_class":`) != 2 {
+		t.Errorf("records lack the failure and its class:\n%s", text)
+	}
+}
+
+func TestErrClass(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{&fs.PathError{Op: "open", Path: "/x", Err: fs.ErrNotExist}, "not_exist"},
+		{fmt.Errorf("wrap: %w", fs.ErrPermission), "permission"},
+		{fs.ErrExist, "exist"},
+		{fmt.Errorf("x: %w", context.DeadlineExceeded), "timeout"},
+		{context.Canceled, "canceled"},
+		{&fs.PathError{Op: "open", Path: "/x", Err: errors.New("is a directory")}, "path"},
+		{errors.New("/home/u/canary: no"), "other"},
+	} {
+		if got := errClass(c.err); got != c.want {
+			t.Errorf("errClass(%v) = %q, want %q", c.err, got, c.want)
+		}
+	}
+	rec := errRec(diag.Rec{Attrs: map[string]any{"kind": "k"}}, fs.ErrNotExist)
+	if rec.Attrs["kind"] != "k" || rec.Attrs["error_class"] != "not_exist" {
+		t.Errorf("errRec attrs %v", rec.Attrs)
 	}
 }
 

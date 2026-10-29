@@ -148,7 +148,7 @@ func openEdit(args []string, allowed ...string) (id string, flags map[string]boo
 // (exit 2), or a store error (exit 1).
 func editUsage(stderr io.Writer, cmd string, ev diag.Event, err error, usage string) int {
 	c := codeOf(err, diag.CodeUsage)
-	refuse(context.Background(), stderr, cmd, ev, c, err.Error(), diag.Rec{})
+	refuse(context.Background(), stderr, cmd, ev, c, err.Error(), errRec(diag.Rec{}, err))
 	if c != diag.CodeUsage {
 		return 1
 	}
@@ -289,7 +289,7 @@ func checkEditWith(ctx context.Context, args []string, env borrowEnv, ce repoChe
 		res, err = gateEdit(ctx, s, g, ce, b, wt, flags["--yes"], ask, stdout)
 	}
 	if err != nil {
-		refuse(ctx, stderr, "check", diag.EvGateRefused, codeOf(err, diag.CodeGateFailed), err.Error(), editRec(b, wt))
+		refuse(ctx, stderr, "check", diag.EvGateRefused, codeOf(err, diag.CodeGateFailed), err.Error(), errRec(editRec(b, wt), err))
 		return 1
 	}
 	if res != store.CheckPass {
@@ -315,7 +315,7 @@ func rejectWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 		err = discardEdit(ctx, s, g, b.ID, wt, env.now())
 	}
 	if err != nil {
-		refuse(ctx, stderr, "reject", diag.EvAcceptRefused, codeOf(err, diag.CodeAcceptFailed), err.Error(), editRec(b, wt))
+		refuse(ctx, stderr, "reject", diag.EvAcceptRefused, codeOf(err, diag.CodeAcceptFailed), err.Error(), errRec(editRec(b, wt), err))
 		return 1
 	}
 	fmt.Fprintf(stdout, "Rejected: removed %s and branch %s.\n", termsafe.Field(wt.Path), termsafe.Field(wt.Branch))
@@ -328,7 +328,7 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 		return 0
 	}
 	if err := acceptOS(); err != nil {
-		refuse(context.Background(), stderr, "accept", diag.EvAcceptRefused, diag.CodeAcceptOS, err.Error(), diag.Rec{})
+		refuse(context.Background(), stderr, "accept", diag.EvAcceptRefused, diag.CodeAcceptOS, err.Error(), errRec(diag.Rec{}, err))
 		return 1
 	}
 	id, flags, s, stateDir, err := openEdit(args, "--yes", "--check")
@@ -338,7 +338,7 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 	defer func() { _ = s.Close() }()
 	var rec diag.Rec
 	fail := func(err error) int {
-		refuse(context.Background(), stderr, "accept", diag.EvAcceptRefused, codeOf(err, diag.CodeAcceptFailed), err.Error(), rec)
+		refuse(context.Background(), stderr, "accept", diag.EvAcceptRefused, codeOf(err, diag.CodeAcceptFailed), err.Error(), errRec(rec, err))
 		return 1
 	}
 	// Ctrl-C, a kill, or a hangup during the checks kills their process

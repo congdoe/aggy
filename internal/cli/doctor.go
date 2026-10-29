@@ -85,7 +85,7 @@ func doctorWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 			fmt.Fprint(stdout, doctorUsage)
 			return 0
 		}
-		refuse(context.Background(), stderr, "doctor", diag.EvDoctorRefused, diag.CodeUsage, err.Error(), diag.Rec{})
+		refuse(context.Background(), stderr, "doctor", diag.EvDoctorRefused, diag.CodeUsage, err.Error(), errRec(diag.Rec{}, err))
 		fmt.Fprintf(stderr, "\n%s", doctorUsage)
 		return 2
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 
 	"github.com/congdoe/aggy/internal/diag"
@@ -43,6 +44,38 @@ func refuseWith(w *diag.Writer, ctx context.Context, stderr io.Writer, cmd strin
 func fixedMsg(code diag.Code) string {
 	c, _ := diag.LookupCode(code)
 	return c.Meaning
+}
+
+// errRec is rec with attrs.error_class, err's class: a fixed word, since
+// the record's message is the code's text and never the error's
+// (G67-R4).
+func errRec(rec diag.Rec, err error) diag.Rec {
+	attrs := map[string]any{"error_class": errClass(err)}
+	for k, v := range rec.Attrs {
+		attrs[k] = v
+	}
+	rec.Attrs = attrs
+	return rec
+}
+
+// errClass is err's class for a record: what it is, never what it says.
+func errClass(err error) string {
+	var pe *fs.PathError
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "not_exist"
+	case errors.Is(err, fs.ErrPermission):
+		return "permission"
+	case errors.Is(err, fs.ErrExist):
+		return "exist"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.As(err, &pe):
+		return "path"
+	}
+	return "other"
 }
 
 // codedError is an error with its reason code, for the paths that can
