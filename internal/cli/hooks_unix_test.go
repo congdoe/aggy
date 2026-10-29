@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,4 +79,32 @@ func TestTrustedPath(t *testing.T) {
 		t.Error("a world-writable folder below a sticky one passed")
 	}
 	_ = os.Chmod(own, 0o700)
+}
+
+// TestTrustedEntry: every entry on the way, a symlink included, must be
+// the user's or root's; a symlink of another user's in a sticky folder
+// could be repointed by that user.
+func TestTrustedEntry(t *testing.T) {
+	const me, other = 501, 502
+	for _, c := range []struct {
+		name string
+		mode fs.FileMode
+		uid  int
+		leaf bool
+		ok   bool
+	}{
+		{"own symlink", fs.ModeSymlink | 0o777, me, false, true},
+		{"root's symlink", fs.ModeSymlink | 0o777, 0, false, true},
+		{"another user's symlink", fs.ModeSymlink | 0o777, other, false, false},
+		{"unknown owner", fs.ModeDir | 0o755, -1, false, false},
+		{"sticky root folder", fs.ModeDir | fs.ModeSticky | 0o777, 0, false, true},
+		{"another user's sticky folder", fs.ModeDir | fs.ModeSticky | 0o777, other, false, false},
+		{"open folder", fs.ModeDir | 0o777, me, false, false},
+		{"group-writable binary", 0o775, me, true, false},
+		{"own binary", 0o755, me, true, true},
+	} {
+		if err := trustedEntry("/x", c.mode, c.uid, me, c.leaf); (err == nil) != c.ok {
+			t.Errorf("%s: %v", c.name, err)
+		}
+	}
 }
