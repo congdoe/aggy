@@ -39,3 +39,27 @@ func splitFrontmatter(b []byte) (front, rest []byte) {
 	cut := len(fence) + end + 1 + len(fence)
 	return b[:cut], b[cut:]
 }
+
+// Front returns the name and description lines of a skill's frontmatter,
+// each trimmed of blanks and one pair of quotes, or "" for one it lacks.
+// shortcut: single-line values only; a YAML block scalar shows as "|".
+func Front(skill []byte) (name, description string) {
+	front, _ := splitFrontmatter(skill)
+	for _, ln := range bytes.Split(front, []byte("\n")) {
+		k, v, ok := bytes.Cut(ln, []byte(":"))
+		if !ok || len(ln) > 0 && (ln[0] == ' ' || ln[0] == '\t') { // top-level keys only
+			continue
+		}
+		s := string(bytes.TrimSpace(v))
+		if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] {
+			s = s[1 : len(s)-1]
+		}
+		switch string(bytes.TrimSpace(k)) {
+		case "name":
+			name = s
+		case "description":
+			description = s
+		}
+	}
+	return name, description
+}
