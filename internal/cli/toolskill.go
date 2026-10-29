@@ -316,8 +316,8 @@ func skillHowTo(t tooldef.Tool, dir string) string {
 // and aggy tool on refuses a folder that hashes otherwise
 // (checkSkillLinked, tool.skill_changed), so a changed skill gets no new
 // link. A link already made is a symlink, so it shows the folder as it
-// now is. Once no vendor links it, the record goes, and the next link
-// records the folder as it is then.
+// now is. The record stays when no vendor links it (T6822), so a folder
+// changed while off is refused too; aggy skill add --replace pins again.
 func syncToolSkill(ctx context.Context, t tooldef.Tool, b switchboard.Board, stdout io.Writer) error {
 	if !hasSkill(t) {
 		return nil
@@ -371,10 +371,6 @@ func setSkillLinks(ctx context.Context, name string, l skillLayout, want map[str
 		return withCode(diag.CodeToolFailed, err)
 	}
 	if len(ps) == 0 {
-		// M2 (#89): nothing changes, so the pin stays, failing closed: an
-		// off that unlinks nothing must not let a changed folder in on the
-		// next on (aggy skill add --replace pins it again). Before #89 the
-		// pin went here (L83-5).
 		return nil
 	}
 	s, err := store.OpenDefault(ctx)
@@ -382,9 +378,11 @@ func setSkillLinks(ctx context.Context, name string, l skillLayout, want map[str
 		return withCode(diag.CodeStore, err)
 	}
 	defer func() { _ = s.Close() }()
+	// aggy tool on refused a folder that changed (checkSkillLinked); the
+	// first link records it. No off forgets the pin, unlinking or not
+	// (T6822): only aggy skill add --replace pins a folder again, and
+	// aggy tool remove and aggy skill remove forget it.
 	if link {
-		// aggy tool on refused a folder that changed (checkSkillLinked);
-		// the first link records it.
 		if _, ok, err := s.ToolSkill(ctx, name); err != nil {
 			return withCode(diag.CodeStore, err)
 		} else if !ok {
@@ -392,8 +390,6 @@ func setSkillLinks(ctx context.Context, name string, l skillLayout, want map[str
 				return withCode(diag.CodeStore, err)
 			}
 		}
-	} else if err := s.DeleteToolSkill(ctx, name); err != nil {
-		return withCode(diag.CodeStore, err)
 	}
 	m, err := manifest.Open(s)
 	if err != nil {

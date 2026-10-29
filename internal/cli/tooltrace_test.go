@@ -290,7 +290,7 @@ func TestToolNarrowedSkillDoctorFix(t *testing.T) {
 		t.Fatalf("doctor:\n%s", got)
 	}
 	// The file changed, so the tool is off everywhere; the fix unlinks
-	// every vendor, and the pin goes once no link is left.
+	// every vendor (the pin stays, T6822).
 	toolOK(t, "off", "tracer", "--vendor", "codex")
 	got := findingLines(toolFindings(context.Background(), repo))
 	if strings.Contains(got, "tool-skill-stray") || strings.Contains(got, "tool-grok-ignore") {
@@ -373,10 +373,10 @@ func TestToolGoneLeavesNoSkill(t *testing.T) {
 	}
 }
 
-// TestToolOffKeepsSkillPin (M2 of #89, replacing L83-5): off with no
-// link left to remove (the links went by hand) keeps the skill's pin,
-// failing closed; aggy skill add --replace of the folder read pins it
-// again.
+// TestToolOffKeepsSkillPin (M2 of #89, replacing L83-5; T6822): off
+// keeps the skill's pin whether it unlinks anything or not (here the
+// links went by hand), failing closed; aggy skill add --replace of the
+// folder read pins it again.
 func TestToolOffKeepsSkillPin(t *testing.T) {
 	traceTool(t, "caveman")
 	toolOK(t, "on", "caveman", "--vendor", "claude")

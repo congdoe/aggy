@@ -87,8 +87,10 @@ func TestToolSkill(t *testing.T) {
 	if b, _ := os.ReadFile(grokConfig); !strings.Contains(string(b), store) {
 		t.Errorf("grok's [skills] ignore lacks the skill:\n%s", b)
 	}
-	// L78-4: a folder changed after it was linked is not linked again;
-	// off everywhere forgets it, and the next on takes it as it is.
+	// L78-4: a folder changed after it was linked is not linked again.
+	// The built-in had no pin, so its first link recorded one; off
+	// everywhere unlinks it but keeps the pin (T6822), so the next on
+	// still refuses, and only aggy skill add --replace pins it again.
 	writeAt(t, filepath.Join(store, "SKILL.md"), "---\nname: caveman\ndescription: changed\n---\n", 0o644)
 	if code, _, errOut := toolRun("", false, "on", "caveman"); code != 1 || !strings.Contains(errOut, "tool.skill_changed") || linked() != "claude codex" {
 		t.Fatalf("a changed skill: %d %q %q", code, errOut, linked())
@@ -96,8 +98,16 @@ func TestToolSkill(t *testing.T) {
 	if code, _, errOut := toolRun("", false, "off", "caveman"); code != 0 || linked() != "" {
 		t.Fatalf("off: %d %q %q", code, errOut, linked())
 	}
+	if code, _, errOut := toolRun("", false, "on", "caveman", "--vendor", "claude"); code != 1 || !strings.Contains(errOut, "tool.skill_changed") || !strings.Contains(errOut, "skill add") || !strings.Contains(errOut, "--replace") || linked() != "" {
+		t.Fatalf("on after an unlinking off: %d %q %q", code, errOut, linked())
+	}
+	read := filepath.Join(t.TempDir(), "caveman")
+	writeAt(t, filepath.Join(read, "SKILL.md"), "---\nname: caveman\ndescription: changed\n---\n", 0o644)
+	if code, _, errOut := skillRun("", true, "add", read, "--yes", "--replace"); code != 0 {
+		t.Fatalf("re-pin: %d %q", code, errOut)
+	}
 	if code, _, errOut := toolRun("", false, "on", "caveman", "--vendor", "claude"); code != 0 || linked() != "claude" {
-		t.Fatalf("on again: %d %q %q", code, errOut, linked())
+		t.Fatalf("on after the re-pin: %d %q %q", code, errOut, linked())
 	}
 	if code, _, errOut := toolRun("", false, "off", "caveman"); code != 0 || linked() != "" {
 		t.Fatalf("off: %d %q %q", code, errOut, linked())
