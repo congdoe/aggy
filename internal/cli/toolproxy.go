@@ -9,9 +9,11 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/diag"
@@ -50,8 +52,27 @@ func proxyWarning(t tooldef.Tool, v adapter.Vendor) string {
 - Every program %[2]s starts (its shell commands, your MCP servers and hooks) inherits %[5]s too, so a script of yours that calls the API with your own key would go through the proxy as well.
 - If the proxy stops or misbehaves, a session using it stops working until its CLI restarts. aggy checks the proxy before each launch and starts %[2]s without it when it does not answer.
 - It never runs for borrow children.
-Turn it off with: aggy tool off %[1]s --vendor %[2]s
-`, t.Name, v, termsafe.Field(strings.Join(p.Argv, " ")), p.Listen, p.Env[v])
+%[6]sTurn it off with: aggy tool off %[1]s --vendor %[2]s
+`, t.Name, v, termsafe.Field(strings.Join(p.Argv, " ")), p.Listen, p.Env[v], experimentalLine(t))
+}
+
+// proxyExperimental is " (experimental: not verified live)" for a tool
+// whose definition lists "proxy" in unverified (the owner's decision on
+// #93), else "". It is driven by the definition only, so it goes when the
+// live check (docs/verification.md) removes "proxy" from that list.
+func proxyExperimental(t tooldef.Tool) string {
+	if slices.Contains(t.Unverified, "proxy") {
+		return " (experimental: not verified live)"
+	}
+	return ""
+}
+
+// experimentalLine is the warning's line for such a tool, else "".
+func experimentalLine(t tooldef.Tool) string {
+	if proxyExperimental(t) == "" {
+		return ""
+	}
+	return fmt.Sprintf("This proxy is experimental: its flags and health check are confirmed from %s's source, not a live run.\n", t.Name)
 }
 
 // confirmProxy shows the warning and asks the person to type
@@ -96,11 +117,11 @@ func proxyNote(t tooldef.Tool, v adapter.Vendor, st switchboard.State, others in
 	case t.Proxy == nil:
 		return ""
 	case st.Parts.Proxy != nil && others > 1:
-		return "; proxy on, but another tool's proxy is on for " + string(v) + " too, so neither starts"
+		return "; proxy on" + proxyExperimental(t) + ", but another tool's proxy is on for " + string(v) + " too, so neither starts"
 	case st.Parts.Proxy != nil && resolveProgram(t.Proxy.Argv[0]) != nil:
-		return "; proxy on, but its program is not an executable on PATH, so it cannot start"
+		return "; proxy on" + proxyExperimental(t) + ", but its program is not an executable on PATH, so it cannot start"
 	case st.Parts.Proxy != nil:
-		return "; proxy on: every request goes through " + t.Proxy.Listen
+		return "; proxy on" + proxyExperimental(t) + ": every request goes through " + t.Proxy.Listen
 	case t.PartsFor(v).Proxy == nil:
 		return "; no proxy for " + string(v)
 	case st.ProxyChanged:
@@ -150,7 +171,8 @@ type toolProxy struct {
 	env    string
 	stop   func()
 	died   <-chan struct{}
-	onDied func() // records it, once; call once died is closed
+	lost   <-chan struct{} // the CLI was killed; died follows within execrun's retries
+	onDied func()          // records it, once; call once died is closed
 	dead   atomic.Bool
 	tool   string
 	vendor adapter.Vendor
@@ -257,7 +279,7 @@ func startToolProxy(ctx context.Context, v adapter.Vendor, cwd, dir string, sess
 	if own := os.Getenv(t.Proxy.Env[v]); own != "" && t.Proxy.Env[v]+"="+own != p.Env() {
 		fmt.Fprintf(stderr, "%s: your own %s is set; %s's proxy replaces it for this %s session.\n", name, t.Proxy.Env[v], t.Name, v)
 	}
-	px := &toolProxy{env: p.Env(), died: p.Died(), tool: t.Name, vendor: v, guard: p.Guard}
+	px := &toolProxy{env: p.Env(), died: p.Died(), lost: p.Lost(), tool: t.Name, vendor: v, guard: p.Guard}
 	px.stop = func() {
 		p.Stop()
 		dlog.Log(context.Background(), diag.Rec{Event: diag.EvToolProxyStopped, Vendor: string(v), Attrs: map[string]any{"tool": t.Name}})
@@ -280,6 +302,16 @@ func startToolProxy(ctx context.Context, v adapter.Vendor, cwd, dir string, sess
 // died mid-session; "" when it did not.
 func (px *toolProxy) diedNote(name string) string {
 	if px.died != nil {
+		select {
+		case <-px.lost:
+			// The CLI was killed at the first failed take; Died comes
+			// once execrun stops retrying (at most half a second).
+			select {
+			case <-px.died:
+			case <-time.After(2 * time.Second):
+			}
+		default:
+		}
 		select {
 		case <-px.died:
 			px.onDied() // the watch may not have run yet

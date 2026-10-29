@@ -52,7 +52,7 @@ func StartProxy(ctx context.Context, s ProxySpec, base []string) (*Proxy, error)
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	p := &Proxy{spec: s, url: proxyURL(s.Addr), done: make(chan struct{}), died: make(chan struct{})}
+	p := &Proxy{spec: s, url: proxyURL(s.Addr), done: make(chan struct{}), died: make(chan struct{}), lostC: make(chan struct{})}
 	pid := cmd.Process.Pid
 	p.kill = func(graceful bool) {
 		sig := syscall.SIGKILL
@@ -118,8 +118,9 @@ func StartProxy(ctx context.Context, s ProxySpec, base []string) (*Proxy, error)
 // leaderGone runs as soon as the proxy's leader has exited, before the
 // rest of its group is killed or it is reaped. An exit nobody asked for,
 // while a CLI may point at the proxy, puts the placeholder on its
-// address at once (takeAddr); when that fails, another process has the
-// port the CLI sends its login to, and the CLI is killed at once.
+// address at once (takeAddr); when the first try fails, another process
+// may have the port the CLI sends its login to, and the CLI is killed
+// then, before any retry. p.mu is not held across the retries.
 //
 // TODO(T6780): the CLI keeps running between the proxy's exit and this
 // take, so a request it sends in that gap can reach a process that took
@@ -128,14 +129,28 @@ func StartProxy(ctx context.Context, s ProxySpec, base []string) (*Proxy, error)
 // and suspends aggy (PTY.Wait, WUNTRACED).
 func (p *Proxy) leaderGone(killRest func()) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.gone = true
 	if !p.live || p.stopping {
+		p.mu.Unlock()
 		return
 	}
-	p.hold, p.holdErr = takeAddr(p.spec.Addr, killRest)
-	if p.holdErr != nil {
+	addr := p.spec.Addr
+	p.mu.Unlock()
+	// Round 3: the CLI dies on the first failed take, not after the
+	// retries: its SDK retries a failed request within half a second.
+	hold, err := takeAddr(addr, killRest, func(err error) {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		p.lost = err
 		p.killCLI()
+		close(p.lostC)
+	})
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.hold, p.holdErr = hold, err
+	if p.lost != nil && err == nil {
+		// The proxy's own worker let go in time, but the CLI is dead.
+		p.holdErr = p.lost
 	}
 	close(p.died)
 }
@@ -144,14 +159,17 @@ func (p *Proxy) leaderGone(killRest func()) {
 // processes still hold its address.
 const takeWait = 500 * time.Millisecond
 
-// takeAddr puts the placeholder on addr. While another process of the
-// proxy's group may still hold it, it kills the group (killRest) and
-// tries again every millisecond, for at most takeWait.
-func takeAddr(addr netip.AddrPort, killRest func()) (func(), error) {
+// takeAddr puts the placeholder on addr. When the address is taken, it
+// calls lost at once (which kills the CLI), then kills what is left of
+// the proxy's group (killRest), whose own processes may still hold it,
+// and tries again every millisecond, for at most takeWait, so the
+// placeholder still lands once they are gone.
+func takeAddr(addr netip.AddrPort, killRest func(), lost func(error)) (func(), error) {
 	hold, err := holdLoopback(addr)
 	if err == nil || !errors.Is(err, syscall.EADDRINUSE) {
 		return hold, err
 	}
+	lost(err)
 	killRest()
 	for deadline := time.Now().Add(takeWait); time.Now().Before(deadline); {
 		time.Sleep(time.Millisecond)

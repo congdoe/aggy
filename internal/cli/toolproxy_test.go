@@ -98,7 +98,8 @@ func TestToolOnProxyConfirm(t *testing.T) {
 	}
 	for _, w := range []string{"WARNING", "including your login token", "third-party code with its own network access",
 		"forwards that traffic", "rewrites what the model sees", "inherits ANTHROPIC_BASE_URL", "your own key", "stops working",
-		"connects only to that loopback address", "127.0.0.1:8787", `Type "headroom claude"`, "proxy on"} {
+		"connects only to that loopback address", "127.0.0.1:8787", `Type "headroom claude"`, "proxy on",
+		"This proxy is experimental: its flags and health check are confirmed from headroom's source, not a live run."} {
 		if !strings.Contains(out, w) {
 			t.Errorf("output lacks %q:\n%s", w, out)
 		}
@@ -107,7 +108,7 @@ func TestToolOnProxyConfirm(t *testing.T) {
 		t.Errorf("claude: proxy off (%s)", st.Why)
 	}
 	_, out, _ = toolRun("", false, "status")
-	if line := statusLine(t, out, "headroom"); !strings.Contains(line, "proxy on") || !strings.Contains(line, "no proxy for codex") {
+	if line := statusLine(t, out, "headroom"); !strings.Contains(line, "proxy on (experimental: not verified live)") || !strings.Contains(line, "no proxy for codex") {
 		t.Errorf("status: %q", line)
 	}
 	// aggy doctor says so.
@@ -220,5 +221,28 @@ func TestProxyEdited(t *testing.T) {
 	writeAt(t, f, pxTool("/bin/fake", "ok", 40001, "/tmp"), 0o600)
 	if st := proxyState(t, "px", adapter.Claude); st.On || st.Parts.Proxy != nil {
 		t.Error("an edited file kept its proxy")
+	}
+}
+
+// TestProxyExperimental (owner decision on #93): the experimental label
+// follows the definition's unverified list, never the tool's name.
+func TestProxyExperimental(t *testing.T) {
+	var tl tooldef.Tool
+	tl.Name, tl.Proxy = "headroom", &tooldef.Proxy{Listen: "127.0.0.1:8787", Argv: []string{"headroom"}, Env: map[adapter.Vendor]string{adapter.Claude: "ANTHROPIC_BASE_URL"}}
+	st := switchboard.State{On: true}
+	st.Parts.Proxy = tl.Proxy
+	for _, tt := range []struct {
+		unverified []string
+		want       bool
+	}{{nil, false}, {[]string{"mcp"}, false}, {[]string{"proxy"}, true}, {[]string{"mcp", "proxy"}, true}} {
+		tl.Unverified = tt.unverified
+		note := proxyNote(tl, adapter.Claude, st, 1)
+		warn := proxyWarning(tl, adapter.Claude)
+		if got := strings.Contains(note, "(experimental: not verified live)"); got != tt.want {
+			t.Errorf("%v: status %q", tt.unverified, note)
+		}
+		if got := strings.Contains(warn, "This proxy is experimental"); got != tt.want {
+			t.Errorf("%v: warning %q", tt.unverified, warn)
+		}
 	}
 }
