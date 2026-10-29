@@ -62,9 +62,18 @@ func StartProxy(ctx context.Context, s ProxySpec, base []string) (*Proxy, error)
 		_ = syscall.Kill(-pid, sig)
 	}
 	go func() {
-		// reap kills what is left of the group once the leader exits,
-		// before it reaps it.
-		_ = reap(cmd)
+		// HIGH-2: the kernel frees the port the moment the leader exits,
+		// so aggy takes it first, before it kills what is left of the
+		// group and reaps the leader (reap's order otherwise).
+		if leaderExited(pid) {
+			p.leaderGone(func() { killGroup(cmd) })
+			killGroup(cmd)
+			_ = cmd.Wait()
+		} else {
+			_ = cmd.Wait()
+			killGroup(cmd)
+			p.leaderGone(func() {})
+		}
 		p.reaped()
 	}()
 	wait := s.Wait
@@ -93,7 +102,7 @@ func StartProxy(ctx context.Context, s ProxySpec, base []string) (*Proxy, error)
 		return nil, fmt.Errorf("%w: %v", ErrProxyNotOwned, err)
 	}
 	p.mu.Lock()
-	if p.Exited() {
+	if p.gone || p.Exited() {
 		p.mu.Unlock()
 		p.Stop()
 		return nil, out.failed(fmt.Errorf("%w right after its health check passed", ErrProxyExited))
@@ -106,16 +115,69 @@ func StartProxy(ctx context.Context, s ProxySpec, base []string) (*Proxy, error)
 	return p, nil
 }
 
-// reaped runs once the process is reaped: an exit nobody asked for,
+// leaderGone runs as soon as the proxy's leader has exited, before the
+// rest of its group is killed or it is reaped. An exit nobody asked for,
 // while a CLI may point at the proxy, puts the placeholder on its
-// address at once (holdLoopback).
+// address at once (takeAddr); when that fails, another process has the
+// port the CLI sends its login to, and the CLI is killed at once.
+//
+// TODO(T6780): the CLI keeps running between the proxy's exit and this
+// take, so a request it sends in that gap can reach a process that took
+// the port and is then killed with it. Stopping the CLI (SIGSTOP) first
+// would close the gap, but the supervisor treats a stopped CLI as Ctrl+Z
+// and suspends aggy (PTY.Wait, WUNTRACED).
+func (p *Proxy) leaderGone(killRest func()) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.gone = true
+	if !p.live || p.stopping {
+		return
+	}
+	p.hold, p.holdErr = takeAddr(p.spec.Addr, killRest)
+	if p.holdErr != nil {
+		p.killCLI()
+	}
+	close(p.died)
+}
+
+// takeWait bounds how long takeAddr retries while the proxy's own
+// processes still hold its address.
+const takeWait = 500 * time.Millisecond
+
+// takeAddr puts the placeholder on addr. While another process of the
+// proxy's group may still hold it, it kills the group (killRest) and
+// tries again every millisecond, for at most takeWait.
+func takeAddr(addr netip.AddrPort, killRest func()) (func(), error) {
+	hold, err := holdLoopback(addr)
+	if err == nil || !errors.Is(err, syscall.EADDRINUSE) {
+		return hold, err
+	}
+	killRest()
+	for deadline := time.Now().Add(takeWait); time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+		if hold, err = holdLoopback(addr); err == nil || !errors.Is(err, syscall.EADDRINUSE) {
+			return hold, err
+		}
+	}
+	return nil, err
+}
+
+// killCLI kills the guarded CLI (its group when it leads one). The
+// caller holds p.mu.
+func (p *Proxy) killCLI() {
+	switch {
+	case p.cli <= 1:
+	case p.cliGroup:
+		_ = syscall.Kill(-p.cli, syscall.SIGKILL)
+	default:
+		_ = syscall.Kill(p.cli, syscall.SIGKILL)
+	}
+}
+
+// reaped runs once the process is reaped.
 func (p *Proxy) reaped() {
 	p.mu.Lock()
-	if p.live && !p.stopping {
-		p.hold, p.holdErr = holdLoopback(p.spec.Addr)
-		close(p.died)
-	}
-	p.mu.Unlock()
+	defer p.mu.Unlock()
 	close(p.done)
 }
 

@@ -158,6 +158,88 @@ func TestStartToolProxy(t *testing.T) {
 	waitGone(t, "its child", pidIn(t, filepath.Join(dir, "child")))
 }
 
+// TestToolProxyHoldLost (T6780 HIGH-2, round 2): the proxy dies while
+// another process keeps its address, so aggy kills the guarded CLI's
+// group at once, records tool.proxy_hold_failed, and says why.
+func TestToolProxyHoldLost(t *testing.T) {
+	bin := fakecli.BuildProxy(t)
+	isolate(t)
+	t.Setenv("AGGY_SOCKET", "")
+	t.Setenv("AGGY_PARENT", "")
+	for _, k := range []string{"HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"} {
+		t.Setenv(k, "")
+	}
+	t.Chdir(t.TempDir())
+	launch, dir := proxyHome(t, bin, "escape", freePort(t, bin))
+	var stderr bytes.Buffer
+	px := startToolProxy(context.Background(), adapter.Claude, ".", launch, nil, &stderr, "aggy")
+	defer px.stop()
+	if px.env == "" {
+		t.Fatalf("no proxy: %s", stderr.String())
+	}
+	cli := exec.Command("/bin/sleep", "60")
+	cli.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cli.Start(); err != nil {
+		t.Fatal(err)
+	}
+	cliExited := make(chan struct{})
+	go func() { _ = cli.Wait(); close(cliExited) }()
+	defer func() { _ = syscall.Kill(-cli.Process.Pid, syscall.SIGKILL); <-cliExited }()
+	px.guard(cli.Process.Pid, true)
+	var esc int
+	for deadline := time.Now().Add(10 * time.Second); esc == 0 && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if b, err := os.ReadFile(filepath.Join(dir, "escaped")); err == nil {
+			esc, _ = strconv.Atoi(string(b))
+		}
+	}
+	if esc <= 1 {
+		t.Fatal("the fake never handed off its listener")
+	}
+	defer func() { _ = syscall.Kill(esc, syscall.SIGKILL); waitGone(t, "the escaped listener", esc) }()
+	_ = syscall.Kill(-pidIn(t, filepath.Join(dir, "pid")), syscall.SIGKILL)
+	start := time.Now()
+	select {
+	case <-cliExited:
+		if d := time.Since(start); d > 2*time.Second {
+			t.Errorf("the CLI was killed only after %s", d)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the CLI still runs while another process has its proxy's address")
+	}
+	n := px.diedNote("aggy")
+	for _, want := range []string{"WARNING: px's proxy stopped and another process took its address", "aggy stopped claude so it would not send your login there", "aggy resume", "tool.proxy_hold_failed"} {
+		if !strings.Contains(n, want) {
+			t.Errorf("note lacks %q: %s", want, n)
+		}
+	}
+	if text := allDiagText(t, os.Getenv("AGGY_HOME")); !strings.Contains(text, "tool.proxy_hold_failed") || !strings.Contains(text, "tool.proxy.exited") {
+		t.Errorf("diag.db: %s", text)
+	}
+}
+
+// TestToolProxyInterrupted (T6780 round 2 LOW): a signal while the proxy
+// comes up ends the launch (nothing starts), never a CLI without it.
+func TestToolProxyInterrupted(t *testing.T) {
+	bin := fakecli.BuildProxy(t)
+	isolate(t)
+	t.Setenv("AGGY_SOCKET", "")
+	t.Setenv("AGGY_PARENT", "")
+	for _, k := range []string{"HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"} {
+		t.Setenv(k, "")
+	}
+	t.Chdir(t.TempDir())
+	launch, dir := proxyHome(t, bin, "unhealthy", freePort(t, bin))
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(700*time.Millisecond, cancel)
+	var stderr bytes.Buffer
+	px := startToolProxy(ctx, adapter.Claude, ".", launch, nil, &stderr, "aggy")
+	defer px.stop()
+	if !px.interrupted || px.env != "" || strings.Contains(stderr.String(), "starts without it") {
+		t.Errorf("interrupted %v, env %q: %s", px.interrupted, px.env, stderr.String())
+	}
+	waitGone(t, "the proxy", pidIn(t, filepath.Join(dir, "pid")))
+}
+
 // freePort asks the fake proxy for a loopback port nothing listens on.
 func freePort(t *testing.T, bin string) int {
 	t.Helper()
