@@ -283,9 +283,12 @@ func RemoveSame(name string, want fs.FileInfo) error {
 // newname in the same directory, behind both checks, relative to one
 // checked descriptor for that directory. Nothing may be at newname: one
 // there is kept and the call fails with an error matching fs.ErrExist.
-// The check and the rename are two steps, so a name made in between can
-// still be replaced, as rename(2) does (a file, or an empty directory);
-// callers use it to put a finished temp file or folder in place.
+// On Linux (renameat2 RENAME_NOREPLACE) and macOS (renameatx_np
+// RENAME_EXCL) the rename itself refuses an existing name, so a name made
+// after the check is kept too; a file system without that flag fails
+// with ErrNoAtomicRename. Elsewhere the check and the rename are two
+// steps, and a name made in between can still be replaced. Callers use it
+// to put a finished temp file or folder in place.
 func RenameNoReplace(oldname, newname string, want fs.FileInfo) error {
 	if want == nil {
 		return &fs.PathError{Op: "Rename", Path: oldname, Err: errors.New("no identity to compare")}
@@ -308,9 +311,21 @@ func RenameNoReplace(oldname, newname string, want fs.FileInfo) error {
 		if err := expect("Rename", to.g, newname, dir, base, nil); err != nil {
 			return err
 		}
-		return dir.Rename(filepath.Base(from.link), base)
+		if testHookBeforeRename != nil {
+			testHookBeforeRename(newname)
+		}
+		return renameNoReplaceAt(dir, filepath.Base(from.link), base)
 	}), newname)
 }
+
+// ErrNoAtomicRename means the file system refused the atomic no-replace
+// rename (EINVAL, ENOSYS, or ENOTSUP): nothing was renamed, and there is
+// no fallback that could replace a name.
+var ErrNoAtomicRename = errors.New("the file system has no atomic no-replace rename")
+
+// testHookBeforeRename runs in RenameNoReplace after its checks, right
+// before the rename; tests use it to make the name in between.
+var testHookBeforeRename func(newname string)
 
 // expect checks, for op, that base in dir has want's identity and type, or does
 // not exist when want is nil, and is not a credential file.

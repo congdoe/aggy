@@ -5,8 +5,43 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
+
+// TestRenameNoReplaceRace (T6820): a file made at the target after the
+// check is kept on Linux and macOS, where the rename itself refuses an
+// existing name; both files are unchanged.
+func TestRenameNoReplaceRace(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("only check-then-rename on " + runtime.GOOS)
+	}
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, ".x.tmp"), filepath.Join(dir, "x")
+	if err := os.WriteFile(src, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fi, _ := os.Lstat(src)
+	testHookBeforeRename = func(string) {
+		if err := os.WriteFile(dst, []byte("old"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { testHookBeforeRename = nil })
+	err := RenameNoReplace(src, dst, fi)
+	if errors.Is(err, ErrNoAtomicRename) {
+		t.Skipf("the temp file system has no no-replace rename: %v", err)
+	}
+	if !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("err = %v, want ErrExist", err)
+	}
+	for _, c := range []struct{ name, want string }{{src, "new"}, {dst, "old"}} {
+		if b, err := os.ReadFile(c.name); err != nil || string(b) != c.want {
+			t.Errorf("%s = %q, %v; want %q", filepath.Base(c.name), b, err, c.want)
+		}
+	}
+}
 
 // TestWriteFileNoFollowKeepsRacer (B14-2): with want nil, a file made at
 // the name after the check and before the write is kept, and the call
