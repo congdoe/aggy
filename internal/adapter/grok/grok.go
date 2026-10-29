@@ -304,6 +304,10 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 	if len(req.RefImages) > 0 {
 		return adapter.Command{}, fmt.Errorf("grok: reference images: %w", adapter.ErrUnsupported)
 	}
+	if len(req.MCP) > 0 {
+		// Gated with the session tools (grokToolsVerified, T6708).
+		return adapter.Command{}, fmt.Errorf("grok: tools for a child: %w", adapter.ErrUnsupported)
+	}
 	if err := adapter.CheckWebSearch(adapter.Grok, req); err != nil {
 		return adapter.Command{}, err
 	}

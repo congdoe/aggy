@@ -258,6 +258,12 @@ func TestHeadlessRefusals(t *testing.T) {
 	if _, err := a.Headless(r); !errors.Is(err, adapter.ErrUnsupported) {
 		t.Errorf("reference images: %v, want ErrUnsupported", err)
 	}
+	// T6709: a child's tools are gated with the session's.
+	r = base
+	r.Kind, r.MCP = adapter.Edit, []adapter.MCPServer{{Name: "x", Command: "/x"}}
+	if _, err := a.Headless(r); !errors.Is(err, adapter.ErrUnsupported) {
+		t.Errorf("tools: %v, want ErrUnsupported", err)
+	}
 	// A permitted tool in another case maps to its own name.
 	r = base
 	r.Kind, r.AllowedTools, r.FileTools = adapter.Image, []string{"IMAGE_EDIT"}, true

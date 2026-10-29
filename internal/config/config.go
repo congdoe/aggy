@@ -13,6 +13,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/safefs"
+	"github.com/congdoe/aggy/internal/tooldef"
 )
 
 // FileName is the user config file inside the state directory.
@@ -272,7 +273,17 @@ type Routing struct {
 	// fresh session with its own context, so the same vendor may run it.
 	// A "not-author" review route skips that vendor either way.
 	ReviewSkipOnScreen bool `toml:"review_skip_on_screen"`
+	// EditTools names the managed tools an edit borrow's child gets
+	// (T6709): its default, and the only names aggy borrow --tool may
+	// pick for an edit, since an agent runs aggy borrow. Only the user's
+	// config has it; a repo's config never turns a tool on. A review
+	// child gets none: no tool definition says it is read-only yet
+	// (TODO(T6709)).
+	EditTools []string `toml:"edit_tools"`
 }
+
+// MaxBorrowTools caps the tools one borrow child gets.
+const MaxBorrowTools = 8
 
 // SkipsParent reports whether a borrow of kind k skips the parent's
 // vendor.
@@ -497,6 +508,17 @@ func (c Config) Validate() error {
 	if !slices.Contains([]string{"error", "warn", "info", "debug"}, c.Log.Level) {
 		return fmt.Errorf("log.level must be error, warn, info, or debug, got %q", c.Log.Level)
 	}
+	if len(c.Routing.EditTools) > MaxBorrowTools {
+		return fmt.Errorf("routing.edit_tools lists %d tools, more than %d", len(c.Routing.EditTools), MaxBorrowTools)
+	}
+	for i, n := range c.Routing.EditTools {
+		if !tooldef.ValidName(n) {
+			return fmt.Errorf("routing.edit_tools: %q is not a tool name", n)
+		}
+		if slices.Contains(c.Routing.EditTools[:i], n) {
+			return fmt.Errorf("routing.edit_tools: %q listed twice", n)
+		}
+	}
 	for _, k := range adapter.Kinds() {
 		r := c.Routing.For(k)
 		if r.NotAuthor && k != adapter.Review {
@@ -519,7 +541,7 @@ func (c Config) Validate() error {
 }
 
 // unknownKinds names an undecoded key under [routing] as an unknown
-// routing key (listing the kinds and review_skip_on_screen), and one
+// routing key (listing the kinds, review_skip_on_screen, and edit_tools), and one
 // under [budgets] as an unknown borrow kind, which read better than
 // "unknown key".
 func unknownKinds(md toml.MetaData) error {
@@ -528,12 +550,12 @@ func unknownKinds(md toml.MetaData) error {
 			continue
 		}
 		if _, err := adapter.ParseKind(k[1]); err != nil {
-			if k[0] == "routing" { // [routing] also holds review_skip_on_screen, so a typo may not be a kind
+			if k[0] == "routing" { // [routing] also holds review_skip_on_screen and edit_tools, so a typo may not be a kind
 				kinds := make([]string, 0, len(adapter.Kinds()))
 				for _, kd := range adapter.Kinds() {
 					kinds = append(kinds, string(kd))
 				}
-				return fmt.Errorf("routing.%s: unknown routing key %q: want a borrow kind (%s) or review_skip_on_screen", k[1], k[1], strings.Join(kinds, ", "))
+				return fmt.Errorf("routing.%s: unknown routing key %q: want a borrow kind (%s), review_skip_on_screen, or edit_tools", k[1], k[1], strings.Join(kinds, ", "))
 			}
 			return fmt.Errorf("%s.%s: %w", k[0], k[1], err)
 		}

@@ -44,6 +44,9 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 		{"review", adapter.HeadlessRequest{Kind: adapter.Review}, review, ""},
 		{"edit", adapter.HeadlessRequest{Kind: adapter.Edit}, cat([]string{"-p", "--output-format", "json", "--permission-mode", "acceptEdits"}, lock),
 			`{"extra_values":{"--permission-mode":["acceptEdits"]}}`},
+		{"edit with tools", adapter.HeadlessRequest{Kind: adapter.Edit, MCP: []adapter.MCPServer{{Name: "context7", Command: "/bin/aggy"}, {Name: "demo", Command: "/bin/aggy"}}},
+			cat([]string{"-p", "--output-format", "json", "--permission-mode", "acceptEdits"}, lock, []string{"--allowedTools", "mcp__context7,mcp__demo"}),
+			`{"extra_values":{"--permission-mode":["acceptEdits"]}}`},
 		{"review with a session id", adapter.HeadlessRequest{Kind: adapter.Review, SessionID: sid},
 			cat(review, []string{"--session-id", sid}), ""},
 		{"review resumed with a model", adapter.HeadlessRequest{Kind: adapter.Review, Resume: rid, Model: "opus"},
@@ -83,6 +86,10 @@ func TestHeadlessUnsupported(t *testing.T) {
 		func(r *adapter.HeadlessRequest) { r.Kind, r.AllowedTools = adapter.Review, []string{} },
 		func(r *adapter.HeadlessRequest) { r.Kind, r.WebSearch = adapter.Review, true },
 		func(r *adapter.HeadlessRequest) { r.Kind, r.RefImages = adapter.Edit, []string{"/x.png"} },
+		// T6709: a review child stays read-only.
+		func(r *adapter.HeadlessRequest) {
+			r.Kind, r.MCP = adapter.Review, []adapter.MCPServer{{Name: "x", Command: "/x"}}
+		},
 	} {
 		r := base
 		mod(&r)

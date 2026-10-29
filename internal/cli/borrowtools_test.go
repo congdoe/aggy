@@ -1,0 +1,145 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/borrow"
+	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/diag"
+	"github.com/congdoe/aggy/internal/fakecli"
+	"github.com/congdoe/aggy/internal/probe"
+)
+
+// TestEditTools (T6709): only an edit gets tools, its default is
+// routing.edit_tools, and --tool may pick only names listed there.
+func TestEditTools(t *testing.T) {
+	r := config.Routing{EditTools: []string{"context7", "codegraph"}}
+	tests := []struct {
+		name  string
+		kind  adapter.Kind
+		asked []string
+		want  []string
+		code  diag.Code
+	}{
+		{"edit default", adapter.Edit, nil, []string{"context7", "codegraph"}, diag.Code{}},
+		{"edit picks", adapter.Edit, []string{"codegraph"}, []string{"codegraph"}, diag.Code{}},
+		{"edit unlisted", adapter.Edit, []string{"demo"}, nil, diag.CodeToolUnlisted},
+		{"review gets none", adapter.Review, nil, nil, diag.Code{}},
+		{"review refuses --tool", adapter.Review, []string{"context7"}, nil, diag.CodeToolBorrowKind},
+		{"research refuses --tool", adapter.Research, []string{"context7"}, nil, diag.CodeToolBorrowKind},
+		{"image refuses --tool", adapter.Image, []string{"context7"}, nil, diag.CodeToolBorrowKind},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, code, err := editTools(tt.kind, tt.asked, r)
+			if code != tt.code || (err != nil) != (tt.code != diag.Code{}) || !slices.Equal(got, tt.want) {
+				t.Errorf("got %q %v %v, want %q %v", got, code, err, tt.want, tt.code)
+			}
+		})
+	}
+}
+
+// toolsFixture is a borrow fixture whose aggy path is testBin, with
+// routing.edit_tools set.
+func toolsFixture(t *testing.T, editTools string) *borrowFixture {
+	t.Helper()
+	f := newBorrowFixture(t, adapter.Codex, adapter.Grok, adapter.Claude)
+	oldBin, oldPath, oldCheck := hookBin, pathAggy, checkTrusted
+	hookBin = func() (string, error) { return testBin, nil }
+	pathAggy = func() (string, error) { return "", os.ErrNotExist }
+	checkTrusted = func(string) error { return nil }
+	t.Cleanup(func() { hookBin, pathAggy, checkTrusted = oldBin, oldPath, oldCheck })
+	mustWrite(t, filepath.Join(f.state, config.FileName), "[routing]\nedit_tools = "+editTools+"\n", 0o600)
+	return f
+}
+
+// TestBorrowEditToolsCommand (T6709): an edit child on Codex gets the
+// tools routing.edit_tools lists, each through aggy tool exec in a
+// private launch folder removed once it exits, with its own approval;
+// --tool picks among them; other kinds refuse --tool.
+func TestBorrowEditToolsCommand(t *testing.T) {
+	f := toolsFixture(t, `["context7"]`)
+	editRepo(t, f.repo)
+	f.env.gitPath, f.env.gitRun = gitEnv().gitPath, gitEnv().gitRun
+	f.scenario["codex"] = `{"events":[{"type":"item.completed","item":{"type":"agent_message","text":"done"}}]}`
+	code, out, errOut := f.run(t, "edit", "add a helper", "--vendor", "codex")
+	if code != 0 {
+		t.Fatalf("code %d: %s %s", code, out, errOut)
+	}
+	var child fakecli.Record
+	for _, r := range fakecli.Records(t, f.record) {
+		if r.Mode == "headless" {
+			child = r
+		}
+	}
+	args := strings.Join(child.Args, " ")
+	run := filepath.Join(f.state, "run")
+	if !strings.Contains(args, `-c mcp_servers.context7.command="`+testBin+`"`) ||
+		!strings.Contains(args, `-c mcp_servers.context7.default_tools_approval_mode="approve"`) ||
+		!strings.Contains(args, `mcp_servers.context7.args=["tool", "exec", "`+run+`/borrow-`) {
+		t.Errorf("child args: %s", args)
+	}
+	if des, _ := os.ReadDir(run); slices.ContainsFunc(des, func(de os.DirEntry) bool { return strings.HasSuffix(de.Name(), ".tools") }) {
+		t.Errorf("a launch folder outlived the child: %v", des)
+	}
+
+	// --tool names one routing.edit_tools does not list.
+	if code, _, errOut := f.run(t, "edit", "add a helper", "--vendor", "codex", "--tool", "codegraph"); code != 1 || !strings.Contains(errOut, "tool.borrow_unlisted") {
+		t.Errorf("unlisted: %d %s", code, errOut)
+	}
+	// A review never gets one.
+	if code, _, errOut := f.run(t, "review", "look", "--vendor", "codex", "--tool", "context7"); code != 2 || !strings.Contains(errOut, "tool.borrow_kind") {
+		t.Errorf("review: %d %s", code, errOut)
+	}
+}
+
+// TestBorrowToolsRefusals (T6709): what the launch refuses, a child
+// refuses too, and the vendor is passed over: Grok (gated), Codex
+// without -c, a tool off by the repo's tools_off, one with no MCP
+// server, a name the CLI already loads (fail closed), and an unknown
+// name.
+func TestBorrowToolsRefusals(t *testing.T) {
+	f := toolsFixture(t, `["context7"]`)
+	gitRepo(t, f.repo)
+	wire := borrowTools(f.state)
+	ctx := context.Background()
+	codex := borrow.CLI{Caps: []string{probe.CapConfigOverride}}
+	check := func(name string, v adapter.Vendor, cli borrow.CLI, names []string, want diag.Code) {
+		t.Helper()
+		servers, done, err := wire(ctx, v, cli, names, f.repo)
+		var te *borrow.ToolError
+		if !errors.As(err, &te) || te.Code != want || servers != nil || done != nil {
+			t.Errorf("%s: %v %v, want %v", name, servers, err, want)
+		}
+	}
+	check("grok", adapter.Grok, borrow.CLI{}, []string{"context7"}, diag.CodeToolUnverified)
+	check("codex without -c", adapter.Codex, borrow.CLI{}, []string{"context7"}, diag.CodeToolNoFlag)
+	check("unknown", adapter.Codex, codex, []string{"nope"}, diag.CodeToolUnknown)
+	check("skill only", adapter.Codex, codex, []string{"caveman"}, diag.CodeToolScope)
+
+	// Claude reads no other MCP config, so a name it loads elsewhere is no
+	// clash; Codex's project config is, and fails closed.
+	mustWrite(t, filepath.Join(f.repo, ".codex", "config.toml"), "[mcp_servers.context7]\ncommand = \"x\"\n", 0o600)
+	check("codex clash", adapter.Codex, codex, []string{"context7"}, diag.CodeToolNameClash)
+	servers, done, err := wire(ctx, adapter.Claude, borrow.CLI{}, []string{"context7"}, f.repo)
+	if err != nil || len(servers) != 1 || servers[0].Name != "context7" || servers[0].Command != testBin {
+		t.Fatalf("claude: %+v %v", servers, err)
+	}
+	if fi, err := os.Stat(servers[0].Cwd); err != nil || fi.Mode().Perm() != 0o700 || filepath.Dir(servers[0].Cwd) != filepath.Join(f.state, "run") {
+		t.Errorf("launch folder %s: %v %v", servers[0].Cwd, fi, err)
+	}
+	done()
+	if _, err := os.Stat(servers[0].Cwd); !os.IsNotExist(err) {
+		t.Errorf("done left %s: %v", servers[0].Cwd, err)
+	}
+
+	mustWrite(t, filepath.Join(f.repo, ".aggy", "config.toml"), `tools_off = ["context7"]`, 0o600)
+	check("repo off", adapter.Claude, borrow.CLI{}, []string{"context7"}, diag.CodeToolRepoOff)
+}

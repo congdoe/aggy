@@ -82,6 +82,9 @@ func TestRequestRefused(t *testing.T) {
 		// #10-13: local paths never go to a web-facing child.
 		{"research path", Request{Kind: adapter.Research, Task: "x", Repo: w.repo, Paths: []string{"/r/go.mod"}}},
 		{"news path", Request{Kind: adapter.News, Task: "x", Repo: w.repo, Paths: []string{"/r/go.mod"}}},
+		// T6709: only an edit child gets tools.
+		{"news tools", Request{Kind: adapter.News, Task: "x", Repo: w.repo, Tools: []string{"context7"}}},
+		{"review tools", func() Request { r := w.req(adapter.Review, "x"); r.Tools = []string{"context7"}; return r }()},
 	}
 	for _, tt := range tests {
 		if _, err := b.Run(context.Background(), tt.req); err == nil {
