@@ -114,20 +114,65 @@ func TestProxyDied(t *testing.T) {
 	}
 }
 
-// fakeCLI starts a stand-in for the CLI, /bin/sleep in its own session
-// as a PTY's CLI is, and returns its pid and a channel closed once it
-// exits. It is killed at the end of the test.
-func fakeCLI(t *testing.T) (int, <-chan struct{}) {
+// cliProc is a stand-in for the CLI: /bin/sleep in its own session, as
+// a PTY's CLI is. exited is closed once it exits, at is when.
+type cliProc struct {
+	pid    int
+	exited chan struct{}
+	at     time.Time
+}
+
+// fakeCLI starts one, killed at the end of the test.
+func fakeCLI(t *testing.T) *cliProc {
 	t.Helper()
 	c := exec.Command("/bin/sleep", "60")
 	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := c.Start(); err != nil {
 		t.Fatal(err)
 	}
-	exited := make(chan struct{})
-	go func() { _ = c.Wait(); close(exited) }()
-	t.Cleanup(func() { _ = syscall.Kill(-c.Process.Pid, syscall.SIGKILL); <-exited })
-	return c.Process.Pid, exited
+	cp := &cliProc{pid: c.Process.Pid, exited: make(chan struct{})}
+	go func() { _ = c.Wait(); cp.at = time.Now(); close(cp.exited) }()
+	t.Cleanup(func() { _ = syscall.Kill(-cp.pid, syscall.SIGKILL); <-cp.exited })
+	return cp
+}
+
+// killBound is how soon after the test's SIGKILL of the proxy a CLI
+// must be dead when aggy cannot take its address. It includes the
+// kernel's teardown of the killed proxy (a race-built test binary),
+// which on a loaded machine took over 200ms before the port was even
+// free, so the strict check is killedFirst's: the kill came at the first
+// failed take, a whole takeWait of retries before Died.
+const killBound = 500 * time.Millisecond
+
+// diedAt waits for Died and returns when it closed.
+func diedAt(t *testing.T, p *Proxy) time.Time {
+	t.Helper()
+	select {
+	case <-p.Died():
+		return time.Now()
+	case <-time.After(5 * time.Second):
+		t.Fatal("Died not closed")
+		return time.Time{}
+	}
+}
+
+// killedFirst checks the CLI died within killBound of start (the
+// proxy's kill), before Died, and reports the times.
+func killedFirst(t *testing.T, cli *cliProc, start, died time.Time) {
+	t.Helper()
+	select {
+	case <-cli.exited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the CLI still runs while another process has its proxy's address")
+	}
+	kill := cli.at.Sub(start)
+	t.Logf("proxy killed -> CLI dead %s; -> Died (take retries over) %s", kill, died.Sub(start))
+	if kill > killBound {
+		t.Errorf("the CLI was killed only %s after the proxy died (bound %s)", kill, killBound)
+	}
+	if gap := died.Sub(cli.at); gap < takeWait*9/10 {
+		t.Errorf("the CLI died only %s before Died: not at the first failed take, a takeWait (%s) of retries before it", gap, takeWait)
+	}
 }
 
 // pidFile waits for a helper to write its pid into f.
@@ -146,7 +191,8 @@ func pidFile(t *testing.T, f string) int {
 
 // TestProxyHoldLost (HIGH-2, round 2): when the proxy dies and another
 // process keeps its address, aggy cannot take it, so it kills the CLI's
-// whole group at once rather than let it go on sending its login there.
+// whole group at once, on the first failed take and before any retry
+// (round 3), rather than let it go on sending its login there.
 // The other process is the proxy's listener handed to a process in its
 // own session, so the loss is certain.
 func TestProxyHoldLost(t *testing.T) {
@@ -156,33 +202,27 @@ func TestProxyHoldLost(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Stop()
-	cli, cliExited := fakeCLI(t)
-	p.Guard(cli, true)
+	cli := fakeCLI(t)
+	p.Guard(cli.pid, true)
 	esc := pidFile(t, filepath.Join(dir, "escaped"))
 	defer func() { _ = syscall.Kill(esc, syscall.SIGKILL); gone(t, "the escaped listener", esc) }()
-	_ = syscall.Kill(-readPid(t, filepath.Join(dir, "pid")), syscall.SIGKILL)
 	start := time.Now()
-	select {
-	case <-p.Died():
-	case <-time.After(5 * time.Second):
-		t.Fatal("Died not closed")
-	}
+	_ = syscall.Kill(-readPid(t, filepath.Join(dir, "pid")), syscall.SIGKILL)
+	died := diedAt(t, p)
 	if p.HoldErr() == nil {
 		t.Fatal("aggy took an address another process holds")
 	}
 	select {
-	case <-cliExited:
-		if d := time.Since(start); d > 2*time.Second {
-			t.Errorf("the CLI was killed only after %s", d)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the CLI still runs while another process has its proxy's address")
+	case <-p.Lost():
+	default:
+		t.Error("Lost not closed")
 	}
+	killedFirst(t, cli, start, died)
 	// A CLI guarded after the loss is killed at once.
-	late, lateExited := fakeCLI(t)
-	p.Guard(late, true)
+	late := fakeCLI(t)
+	p.Guard(late.pid, true)
 	select {
-	case <-lateExited:
+	case <-late.exited:
 	case <-time.After(2 * time.Second):
 		t.Fatal("a CLI guarded after the loss still runs")
 	}
@@ -192,7 +232,7 @@ func TestProxyHoldLost(t *testing.T) {
 // 100µs races aggy for the port as the proxy dies. Whoever wins, the CLI
 // never keeps running while the attacker has the address: aggy holds it
 // (and the attacker never gets it while it does), or the CLI is killed
-// within two seconds.
+// within killBound, before the take's retries end (round 3).
 func TestProxyHoldRace(t *testing.T) {
 	spec, dir := fakeProxy(t, "ok")
 	p, err := StartProxy(bg, spec, nil)
@@ -200,8 +240,8 @@ func TestProxyHoldRace(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Stop()
-	cli, cliExited := fakeCLI(t)
-	p.Guard(cli, true)
+	cli := fakeCLI(t)
+	p.Guard(cli.pid, true)
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -216,23 +256,12 @@ func TestProxyHoldRace(t *testing.T) {
 	go func() { _ = a.Wait(); close(attackDone) }()
 	defer func() { _ = syscall.Kill(a.Process.Pid, syscall.SIGKILL); <-attackDone }()
 	_ = pidFile(t, filepath.Join(ad, "pid")) // it is retrying
-	_ = syscall.Kill(-readPid(t, filepath.Join(dir, "pid")), syscall.SIGKILL)
 	start := time.Now()
-	select {
-	case <-p.Died():
-	case <-time.After(5 * time.Second):
-		t.Fatal("Died not closed")
-	}
+	_ = syscall.Kill(-readPid(t, filepath.Join(dir, "pid")), syscall.SIGKILL)
+	died := diedAt(t, p)
 	if err := p.HoldErr(); err != nil {
 		t.Logf("the attacker won the port: %v", err)
-		select {
-		case <-cliExited:
-			if d := time.Since(start); d > 2*time.Second {
-				t.Errorf("the CLI was killed only after %s", d)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("the CLI still runs while the attacker has its proxy's address")
-		}
+		killedFirst(t, cli, start, died)
 		return
 	}
 	t.Log("aggy won the port")
@@ -241,7 +270,7 @@ func TestProxyHoldRace(t *testing.T) {
 		t.Error("the attacker bound the address aggy holds")
 	}
 	select {
-	case <-cliExited:
+	case <-cli.exited:
 		t.Error("the CLI was killed though aggy holds the address")
 	default:
 	}
