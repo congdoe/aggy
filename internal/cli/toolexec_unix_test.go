@@ -216,6 +216,7 @@ func TestToolExecPathOutsideRepo(t *testing.T) {
 // not in ~/.aggy.
 func TestToolExecLogsToLaunchState(t *testing.T) {
 	h := isolate(t)
+	t.Setenv("PATH", t.TempDir())
 	state := t.TempDir()
 	dir := privateLaunch(t, state)
 	if err := os.MkdirAll(filepath.Join(h, ".aggy"), 0o700); err != nil {
