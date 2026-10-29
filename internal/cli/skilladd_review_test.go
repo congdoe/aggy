@@ -144,6 +144,57 @@ func TestSkillPinKeptByNoopOff(t *testing.T) {
 	}
 }
 
+// TestSkillPinKeptByUnlinkingOff (T6822): add, on, off (which unlinks
+// the folder), edit, on refuses with tool.skill_changed and points at
+// aggy skill add --replace, the only re-pin; aggy tool remove forgets
+// the pin.
+func TestSkillPinKeptByUnlinkingOff(t *testing.T) {
+	src := skillSrc(t, "hello")
+	if code, _, errOut := skillRun("", true, "add", src, "--yes"); code != 0 {
+		t.Fatal(errOut)
+	}
+	link := filepath.Join(os.Getenv("HOME"), ".claude", "skills", "hello")
+	if code, _, errOut := toolRun("", false, "on", "hello", "--vendor", "claude"); code != 0 {
+		t.Fatal(errOut)
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatalf("not linked: %v", err)
+	}
+	if code, _, errOut := toolRun("", false, "off", "hello"); code != 0 {
+		t.Fatal(errOut)
+	}
+	if _, err := os.Lstat(link); err == nil {
+		t.Fatal("off left the link")
+	}
+	if _, ok := skillPin(t, "hello"); !ok {
+		t.Error("an unlinking off dropped the pin")
+	}
+	dest := filepath.Join(os.Getenv(home.Env), "skills", "hello")
+	writeAt(t, filepath.Join(dest, "SKILL.md"), "---\nname: hello\n---\nEVIL\n", 0o600)
+	code, _, errOut := toolRun("", false, "on", "hello", "--vendor", "claude")
+	if code == 0 || !strings.Contains(errOut, "tool.skill_changed") || !strings.Contains(errOut, "aggy skill add") || !strings.Contains(errOut, "--replace") {
+		t.Errorf("a folder changed while off: %d %q", code, errOut)
+	}
+	if _, err := os.Lstat(link); err == nil {
+		t.Error("a refused on linked the folder")
+	}
+	if code, _, errOut := skillRun("", true, "add", src, "--yes", "--replace"); code != 0 {
+		t.Fatal(errOut)
+	}
+	if code, _, errOut := toolRun("", false, "on", "hello", "--vendor", "claude"); code != 0 {
+		t.Errorf("on after the re-pin: %q", errOut)
+	}
+	if code, _, errOut := toolRun("", false, "off", "hello"); code != 0 {
+		t.Fatal(errOut)
+	}
+	if code, _, errOut := toolRun("", false, "remove", "hello"); code != 0 {
+		t.Fatal(errOut)
+	}
+	if _, ok := skillPin(t, "hello"); ok {
+		t.Error("aggy tool remove kept the pin")
+	}
+}
+
 // TestSkillRemoveRefusedDef (M3): skill remove never deletes a refused
 // or non-skill user definition.
 func TestSkillRemoveRefusedDef(t *testing.T) {
