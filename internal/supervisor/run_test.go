@@ -111,7 +111,10 @@ func poll(t *testing.T, what string, want []byte, get func() []byte) {
 func openPTY(t *testing.T) (master, slave *os.File) {
 	t.Helper()
 	var err error
-	for wait := 5 * time.Millisecond; ; wait *= 2 {
+	// Under load the teardown took over 2 s (T6808: 40 of 440 -count=20
+	// runs failed on a 2 s budget), so the retries run up to startLimit.
+	deadline := time.Now().Add(startLimit)
+	for wait := 5 * time.Millisecond; ; wait = min(2*wait, time.Second) {
 		master, slave, err = pty.Open()
 		if err == nil {
 			if err = pty.Setsize(master, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
@@ -119,7 +122,7 @@ func openPTY(t *testing.T) (master, slave *os.File) {
 				_ = master.Close()
 			}
 		}
-		if err == nil || !errors.Is(err, syscall.ENXIO) || wait > time.Second {
+		if err == nil || !errors.Is(err, syscall.ENXIO) || time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(wait)
