@@ -253,8 +253,9 @@ func startToolProxy(ctx context.Context, v adapter.Vendor, cwd, dir string, sess
 	fmt.Fprintf(stderr, "%s: starting %s's proxy for %s on %s ...\n", name, t.Name, v, t.Proxy.Listen)
 	// MED-1: a signal while it comes up stops it and goes on without it.
 	sctx, cancel := execrun.NotifyContext(ctx)
+	pass, set := toolTelemetry("", t) // T6822
 	p, err := execrun.StartProxy(sctx, execrun.ProxySpec{Vendor: v, Var: t.Proxy.Env[v], Path: prog, Args: t.Proxy.Argv[1:],
-		Addr: t.Proxy.Addr(), Health: t.Proxy.Health, Dir: dir, Wait: proxyWait}, os.Environ())
+		Addr: t.Proxy.Addr(), Health: t.Proxy.Health, Dir: dir, Wait: proxyWait, Pass: pass, Set: set}, os.Environ())
 	cancel()
 	switch {
 	case errors.Is(err, execrun.ErrProxyPortTaken):

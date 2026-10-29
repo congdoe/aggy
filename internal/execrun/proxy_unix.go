@@ -21,7 +21,7 @@ import (
 )
 
 // StartProxy starts the proxy s describes for one on-screen session, as
-// the leader of its own session and process group, with ProxyEnv(base)
+// the leader of its own session and process group, with ProxyEnv(base, s.Pass, s.Set)
 // as its whole environment, no stdin, and its output kept only as a
 // capped tail. It refuses when something already listens on s.Addr. It
 // returns once the proxy answers its health check and the listener on
@@ -41,9 +41,13 @@ func StartProxy(ctx context.Context, s ProxySpec, base []string) (*Proxy, error)
 	if portTaken(s.Addr) {
 		return nil, fmt.Errorf("%w: something already listens on %s, and aggy did not start it", ErrProxyPortTaken, s.Addr)
 	}
+	env, err := ProxyEnv(base, s.Pass, s.Set)
+	if err != nil {
+		return nil, err
+	}
 	out := &lockedTail{c: capped{max: proxyLog, tail: true}}
 	cmd := exec.Command(s.Path, s.Args...)
-	cmd.Env = ProxyEnv(base)
+	cmd.Env = env
 	cmd.Dir = s.Dir
 	cmd.Stdout, cmd.Stderr = out, out
 	// A process that escaped the group may hold the output pipe open.

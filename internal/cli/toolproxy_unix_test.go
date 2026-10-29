@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -18,6 +19,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/fakecli"
+	"github.com/congdoe/aggy/internal/home"
 )
 
 func pidIn(t *testing.T, f string) int {
@@ -60,6 +62,7 @@ func TestStartToolProxy(t *testing.T) {
 	t.Setenv("http_proxy", "")
 	t.Setenv("ALL_PROXY", "")
 	t.Setenv("all_proxy", "")
+	t.Setenv("DO_NOT_TRACK", "0")
 
 	launch, dir := proxyHome(t, bin, "ok", port)
 	var stderr bytes.Buffer
@@ -89,6 +92,10 @@ func TestStartToolProxy(t *testing.T) {
 			t.Errorf("the proxy got %s", k)
 		}
 	}
+	// T6822 (MED-2 of #97): DO_NOT_TRACK=1 over the person's own.
+	if lines := strings.Split(string(env), "\n"); !slices.Contains(lines, "DO_NOT_TRACK=1") || slices.Contains(lines, "DO_NOT_TRACK=0") {
+		t.Errorf("proxy env: %q", lines)
+	}
 
 	// Port taken: the running fake holds it, so a second launch refuses.
 	stderr.Reset()
@@ -106,6 +113,25 @@ func TestStartToolProxy(t *testing.T) {
 	waitGone(t, "its child", child)
 	if _, err := execrun.PTYEnv(nil, append(childEnv("claude", ""), px.env)); err == nil {
 		t.Error("a stopped proxy's variable still passes")
+	}
+
+	// T6822: with telemetry allowed, the person's own DO_NOT_TRACK passes.
+	writeAt(t, filepath.Join(os.Getenv(home.Env), "config.toml"), "[tools]\nallow_telemetry = true\n", 0o600)
+	stderr.Reset()
+	allowed := startToolProxy(context.Background(), adapter.Claude, ".", launch, nil, &stderr, "aggy")
+	if allowed.env == "" {
+		t.Fatalf("allowed: %s", stderr.String())
+	}
+	env, _ = os.ReadFile(filepath.Join(dir, "env"))
+	pid, child = pidIn(t, filepath.Join(dir, "pid")), pidIn(t, filepath.Join(dir, "child"))
+	allowed.stop()
+	waitGone(t, "the proxy", pid)
+	waitGone(t, "its child", child)
+	if lines := strings.Split(string(env), "\n"); !slices.Contains(lines, "DO_NOT_TRACK=0") || slices.Contains(lines, "DO_NOT_TRACK=1") {
+		t.Errorf("allowed proxy env: %q", lines)
+	}
+	if err := os.Remove(filepath.Join(os.Getenv(home.Env), "config.toml")); err != nil {
+		t.Fatal(err)
 	}
 
 	// MED-3: an HTTP proxy in the environment, not bypassed for loopback.
