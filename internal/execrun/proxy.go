@@ -59,11 +59,12 @@ var (
 
 // Proxy is a running proxy.
 type Proxy struct {
-	spec ProxySpec
-	url  string
-	done chan struct{} // closed once the process is reaped
-	died chan struct{} // closed when it exits on its own while in use
-	stop sync.Once
+	spec  ProxySpec
+	url   string
+	done  chan struct{} // closed once the process is reaped
+	died  chan struct{} // closed when it exits on its own while in use
+	lostC chan struct{} // closed when the CLI is killed (Lost)
+	stop  sync.Once
 	// kill signals the process group; nil on systems with none.
 	kill func(graceful bool)
 
@@ -73,8 +74,9 @@ type Proxy struct {
 	gone     bool   // its leader's exit was seen (leaderGone)
 	hold     func() // closes the placeholder listener (holdLoopback)
 	holdErr  error
-	cli      int  // the CLI it serves (Guard); 0 for none
-	cliGroup bool // the CLI leads its own process group
+	lost     error // the first take failed, so the CLI was killed
+	cli      int   // the CLI it serves (Guard); 0 for none
+	cliGroup bool  // the CLI leads its own process group
 }
 
 // Guard names the CLI this proxy serves: its pid, and whether it leads
@@ -88,7 +90,7 @@ func (p *Proxy) Guard(pid int, group bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.cli, p.cliGroup = pid, group
-	if p.gone && p.holdErr != nil {
+	if p.gone && p.lost != nil {
 		p.killCLI()
 	}
 }
@@ -114,8 +116,15 @@ func (p *Proxy) Exited() bool {
 // CLI is already killed (Guard). The placeholder lasts until Stop.
 func (p *Proxy) Died() <-chan struct{} { return p.died }
 
-// HoldErr is why the placeholder could not take the address, once Died
-// is closed; nil when it holds it.
+// Lost is closed the moment the guarded CLI is killed because the
+// proxy died and its address was not free (Guard), before Died, which
+// waits for the take's retries. A caller that sees it should wait for
+// Died to report.
+func (p *Proxy) Lost() <-chan struct{} { return p.lostC }
+
+// HoldErr is why the placeholder could not take the address at once,
+// once Died is closed; nil when it did. When it is not nil, the guarded
+// CLI was killed, even if the placeholder took the address later.
 func (p *Proxy) HoldErr() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
