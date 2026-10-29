@@ -329,7 +329,9 @@ func (g *gitWorktrees) remove(ctx context.Context, wt store.Worktree, rule branc
 // at head, the commit it was judged at (git update-ref's compare and
 // swap), so a commit made since keeps it. Like git branch -D, it refuses
 // a branch checked out in any worktree, which update-ref alone would
-// leave on an unborn branch.
+// leave on an unborn branch, or being rebased or bisected there (HEAD is
+// then detached, and only the rebase or bisect state names the branch),
+// and it removes the branch's config section as branch -D does.
 func (g *gitWorktrees) deleteBranch(ctx context.Context, wt store.Worktree, head string) error {
 	ref := "refs/heads/" + wt.Branch
 	out, cut, err := g.env.git(ctx, wt.Repo, "worktree", "list", "--porcelain")
@@ -344,8 +346,61 @@ func (g *gitWorktrees) deleteBranch(ctx context.Context, wt store.Worktree, head
 			return fmt.Errorf("refusing to delete branch %s: it is checked out in a worktree", wt.Branch)
 		}
 	}
-	_, _, err = g.env.git(ctx, wt.Repo, "update-ref", "-d", ref, head)
-	return err
+	if err := g.notRebasedOrBisected(ctx, wt); err != nil {
+		return err
+	}
+	if _, _, err = g.env.git(ctx, wt.Repo, "update-ref", "-d", ref, head); err != nil {
+		return err
+	}
+	o, err := g.env.gitOutput(ctx, wt.Repo, "config", "--remove-section", "branch."+wt.Branch)
+	if err != nil {
+		return err
+	}
+	if o.ExitCode != 0 && !strings.Contains(string(o.Stderr), "no such section") {
+		return fmt.Errorf("deleted branch %s, but not its config: %s", wt.Branch, strings.TrimSpace(string(o.Stderr)))
+	}
+	return nil
+}
+
+// notRebasedOrBisected refuses aggy's branch for wt while any worktree
+// of its repo is rebasing it (rebase-merge or rebase-apply's head-name
+// names its ref) or bisecting from it (BISECT_START names it), the
+// checks git branch -D makes. Like git, it reads each worktree's admin
+// dir (the common dir, and each entry under its worktrees/), so a
+// worktree whose directory is missing (an unmounted disk) is checked
+// too and does not block the delete.
+func (g *gitWorktrees) notRebasedOrBisected(ctx context.Context, wt store.Worktree) error {
+	out, _, err := g.env.git(ctx, wt.Repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return err
+	}
+	common := strings.TrimSpace(out)
+	admins := []string{common}
+	ents, err := safefs.ReadDir(filepath.Join(common, "worktrees"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("refusing to delete branch %s: %w", wt.Branch, err)
+	}
+	for _, e := range ents {
+		if e.IsDir() {
+			admins = append(admins, filepath.Join(common, "worktrees", e.Name()))
+		}
+	}
+	for _, admin := range admins {
+		for _, f := range []string{"rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"} {
+			data, err := safefs.ReadFileLimit(filepath.Join(admin, f), 4096)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("refusing to delete branch %s: %w", wt.Branch, err)
+			}
+			name := strings.TrimSpace(string(data))
+			if name == "refs/heads/"+wt.Branch || (f == "BISECT_START" && name == wt.Branch) {
+				return fmt.Errorf("refusing to delete branch %s: it is being rebased or bisected in a worktree (%s)", wt.Branch, admin)
+			}
+		}
+	}
+	return nil
 }
 
 // dropAdmin removes the admin entry of aggy's worktree wt, whose
