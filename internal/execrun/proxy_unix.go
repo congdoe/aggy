@@ -141,12 +141,13 @@ func (p *Proxy) leaderGone(killRest func()) {
 	hold, err := takeAddr(addr, killRest, func(err error) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		p.lost = err
-		p.killCLI()
-		close(p.lostC)
+		p.loseCLI(err)
 	})
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if err != nil {
+		p.loseCLI(err) // whatever the failure: never a CLI on a free port
+	}
 	p.hold, p.holdErr = hold, err
 	if p.lost != nil && err == nil {
 		// The proxy's own worker let go in time, but the CLI is dead.
@@ -159,25 +160,43 @@ func (p *Proxy) leaderGone(killRest func()) {
 // processes still hold its address.
 const takeWait = 500 * time.Millisecond
 
-// takeAddr puts the placeholder on addr. When the address is taken, it
-// calls lost at once (which kills the CLI), then kills what is left of
-// the proxy's group (killRest), whose own processes may still hold it,
-// and tries again every millisecond, for at most takeWait, so the
-// placeholder still lands once they are gone.
+// holdAddr is holdLoopback; a test replaces it to make the take fail.
+var holdAddr = holdLoopback
+
+// takeAddr puts the placeholder on addr. When the first try fails, for
+// any reason, it calls lost at once (which kills the CLI). When the
+// address is taken, it then kills what is left of the proxy's group
+// (killRest), whose own processes may still hold it, and tries again
+// every millisecond, for at most takeWait, so the placeholder still
+// lands once they are gone. Any other error ends it at once.
 func takeAddr(addr netip.AddrPort, killRest func(), lost func(error)) (func(), error) {
-	hold, err := holdLoopback(addr)
-	if err == nil || !errors.Is(err, syscall.EADDRINUSE) {
-		return hold, err
+	hold, err := holdAddr(addr)
+	if err == nil {
+		return hold, nil
 	}
 	lost(err)
+	if !errors.Is(err, syscall.EADDRINUSE) {
+		return nil, err
+	}
 	killRest()
 	for deadline := time.Now().Add(takeWait); time.Now().Before(deadline); {
 		time.Sleep(time.Millisecond)
-		if hold, err = holdLoopback(addr); err == nil || !errors.Is(err, syscall.EADDRINUSE) {
+		if hold, err = holdAddr(addr); err == nil || !errors.Is(err, syscall.EADDRINUSE) {
 			return hold, err
 		}
 	}
 	return nil, err
+}
+
+// loseCLI kills the guarded CLI and closes Lost, once: the proxy died
+// and aggy could not take its address. The caller holds p.mu.
+func (p *Proxy) loseCLI(err error) {
+	if p.lost != nil {
+		return
+	}
+	p.lost = err
+	p.killCLI()
+	close(p.lostC)
 }
 
 // killCLI kills the guarded CLI (its group when it leads one). The
