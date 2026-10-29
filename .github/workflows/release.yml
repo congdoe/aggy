@@ -1,19 +1,17 @@
 name: release
 
-# Disabled until v0.1.0. It runs only by hand, and the job is switched off
-# by its `if`. To enable it, change the trigger to
-#   push:
-#     tags: ["v*"]
-# and remove the `if`. The full checklist is in docs/release.md.
+# Runs when the owner pushes a v* tag. It makes a draft GitHub release
+# and pushes the cask to congdoe/homebrew-aggy; nothing is public until
+# the owner publishes the draft. The full checklist is in docs/release.md.
 on:
-  workflow_dispatch:
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: read
 
 jobs:
   release:
-    if: ${{ false }}
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the GitHub release and upload assets
