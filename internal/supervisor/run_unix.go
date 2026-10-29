@@ -105,7 +105,7 @@ func Run(o Options) (Exit, error) {
 		return Exit{Code: 1}, errors.New("supervisor: standard input is not a terminal")
 	}
 	t := &tty{fd: fd}
-	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, lenKnown: true, events: make(chan hookEvent, 16), asks: make(chan Choice, 1), quit: make(chan struct{}), shares: make(chan shareReading)}
+	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, lenKnown: true, events: make(chan hookEvent, 16), asks: make(chan Choice, 1), quit: make(chan struct{}), shares: make(chan shareReading), childChecks: make(chan childCheck)}
 	defer close(s.quit)
 	// The last minute's repeats, queued before the caller closes the
 	// diagnostic queue (G67-R3); deferred first, so it runs after the
@@ -225,6 +225,8 @@ func Run(o Options) (Exit, error) {
 			s.offerWarn()
 		case h := <-s.o.Limits:
 			s.onLimit(h)
+		case r := <-s.childChecks:
+			s.childChecked(r)
 		case r := <-s.shares:
 			s.shareBusy = false
 			if r.seq == s.shareSeq {
@@ -356,6 +358,10 @@ type session struct {
 	lenKnown  bool
 	popup     bool
 	cleared   bool
+	// hadAt: a popup trigger was typed since the last clean send; moved:
+	// a cursor key or newline came since the latest trigger or Ctrl+U;
+	// pastePop: the open paste's latest @ has no whitespace after it yet.
+	hadAt, moved, pastePop bool
 	// openedAt is when the picker last opened.
 	openedAt time.Time
 	// input feeds keys through the key filter (set by Run).
@@ -384,6 +390,9 @@ type session struct {
 	shares          chan shareReading
 	share           *shareReading
 	shareSeq        int
+	// childChecks brings HasChild's answers; childSeq numbers its asks.
+	childChecks chan childCheck
+	childSeq    int
 	// lastTurnEnd is the id of the record of the latest counted turn end
 	// of the on-screen child, and lastLimit of the latest limit: the
 	// causes of what each sets off (G67-2).
@@ -421,6 +430,10 @@ type pendingSwitch struct {
 	// CLI's tree can send (O56-2), so it is labeled like an agent's ask.
 	unverified bool
 	typed      bool // the exit command has been typed
+	// checkSeq is the ask of the HasChild check that runs for the
+	// confirmed switch (0: none), started at checkAt (T6770).
+	checkSeq int
+	checkAt  time.Time
 	// choice is what was picked or asked for with the vendor (T6665).
 	choice Choice
 	// rec is the id of the switch's latest diagnostic record, the cause
@@ -582,13 +595,20 @@ func refusedMsg(v adapter.Vendor, err error) string {
 // a \r not preceded by ESC (Option+Enter, a newline in Claude) and not by
 // a backslash (also a newline in Claude), even one in the read before,
 // and not inside a bracketed paste, whose markers are found across reads
-// too (T6754). After an @ or a leading / (T6754, O56-3) an Enter may only
-// accept an entry in the CLI's file or command popup and leave the text,
-// with more than was typed, in the composer: from then on every Enter
-// counts as unsent until one on a line the user explicitly emptied, with
-// Ctrl+U (unverified: it is the readline kill-line key and is assumed to
-// clear the composer) or with backspaces down to zero while aggy still
-// knew the length. When in doubt it stays dirty.
+// too (T6754). After an @, a leading / or Ctrl+R (history search) (T6754,
+// O56-3, T6770) an Enter may only accept an entry in the CLI's popup and
+// leave the text, with more than was typed, in the composer: from then on
+// every Enter counts as unsent until one on a line the user explicitly
+// emptied, with Ctrl+U (unverified: it is the readline kill-line key and
+// is assumed to clear the composer line) or with backspaces down to zero
+// while aggy still knew the length. Either counts only if no cursor key
+// or newline came since the @ (or since the last Ctrl+U): the @ may then
+// be on another line or after the cursor, and survive (T6770). A cursor
+// key after any @ of the draft may put the cursor back in its token, so
+// it opens the popup mark again. A paste's @ followed by whitespace in
+// the same paste leaves the cursor outside its token (unverified: assumed
+// to end the token, as typing a space does), so it does not set the mark.
+// When in doubt it stays dirty.
 // TODO(O56-3): aggy installs no UserPromptSubmit hook yet; a turn-start
 // hook could confirm a send, but any process in the CLI's tree can send
 // one, so it would need care before clearing this.
@@ -611,6 +631,16 @@ func (s *session) send(b []byte) {
 	s.toChild.push(b)
 }
 
+// cursorKey reports whether c moves the cursor (or starts an escape
+// sequence that may): ESC, and Ctrl+A, B, E, F, N, P.
+func cursorKey(c byte) bool {
+	switch c {
+	case esc, 0x01, 0x02, 0x05, 0x06, 0x0e, 0x10:
+		return true
+	}
+	return false
+}
+
 // compose follows one byte the user sent (see send).
 func (s *session) compose(c byte) {
 	prev := s.lastByte
@@ -619,34 +649,56 @@ func (s *session) compose(c byte) {
 	// across reads still counts.
 	s.pasteTail = append(s.pasteTail, c)
 	if bytes.HasSuffix(s.pasteTail, pasteStart) {
-		s.inPaste = true
+		s.inPaste, s.pastePop = true, false
 	} else if bytes.HasSuffix(s.pasteTail, pasteEnd) {
 		s.inPaste = false
+		if s.pastePop {
+			s.popup, s.pastePop = true, false // the cursor ends in the token
+		}
 	}
 	if n := len(pasteEnd); len(s.pasteTail) >= n {
 		s.pasteTail = append(s.pasteTail[:0], s.pasteTail[len(s.pasteTail)-n+1:]...)
 	}
+	if !s.inPaste && cursorKey(c) {
+		s.moved = true
+		if s.hadAt {
+			s.popup = true // the cursor may be back in an @ token
+		}
+	}
 	switch {
 	case c == '\r' && (prev == esc || prev == '\\' || s.inPaste):
 		s.compLen++ // a newline in the composer
+		s.moved, s.pastePop = true, false
 	case c == '\r' && s.popup:
 		s.lenKnown = false // the popup may have taken it and added text
 	case c == '\r':
-		s.compLen, s.lenKnown, s.cleared = 0, true, false // sent
+		s.compLen, s.lenKnown, s.cleared, s.hadAt, s.moved = 0, true, false, false, false // sent
 	case c == ctrlU:
 		// The line is empty, but it counts only once an Enter confirms
 		// it: in a multiline draft Ctrl+U may clear one line only.
-		s.compLen, s.lenKnown, s.popup, s.cleared = 0, true, false, true
+		s.compLen, s.lenKnown, s.cleared = 0, true, true
+		if !s.moved {
+			s.popup = false
+		}
+		s.moved = false
 	case c == 0x7f || c == 0x08:
 		if s.compLen > 0 {
 			s.compLen--
-			if s.compLen == 0 && s.lenKnown && s.popup {
-				s.popup, s.cleared = false, true
+			if s.compLen == 0 && s.lenKnown && s.popup && !s.moved {
+				s.popup, s.cleared, s.hadAt = false, true, false
 			}
 		}
 	default:
-		if c == '@' || c == '/' && s.compLen == 0 {
-			s.popup = true
+		switch {
+		case c == '@' || c == ctrlR || c == '/' && s.compLen == 0:
+			s.hadAt, s.moved = true, false
+			if s.inPaste {
+				s.pastePop = true
+			} else {
+				s.popup = true
+			}
+		case s.inPaste && (c == ' ' || c == '\t' || c == '\n'):
+			s.pastePop = false
 		}
 		s.compLen++
 	}
@@ -659,6 +711,9 @@ func (s *session) offerSwitch() {
 	now := time.Now()
 	if !s.atPrompt || now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
 		return
+	}
+	if s.sw.checkSeq != 0 && time.Since(s.sw.checkAt) < childCheckWait {
+		return // confirmed: the picked session is being checked
 	}
 	v, on := s.sw.to, s.o.Vendor
 	if s.dirty {
@@ -688,28 +743,53 @@ func (s *session) offerSwitch() {
 	// options first, then the keys, then the check; a narrow terminal
 	// cuts the end.
 	cmd, verified := adapter.ExitCommand(on)
-	var why []string
-	switch {
-	case s.sw.asked:
-		why = append(why, "the agent asks")
-	case s.sw.limit:
-		why = append(why, limitWho(LimitHit{Vendor: on, Unverified: s.sw.unverified}))
+	confirmLine := func(model string) string {
+		var why []string
+		switch {
+		case s.sw.asked:
+			why = append(why, "the agent asks")
+		case s.sw.limit:
+			why = append(why, limitWho(LimitHit{Vendor: on, Unverified: s.sw.unverified}))
+		}
+		c := s.sw.choice
+		c.Model = model
+		why = append(why, choiceNote(c)...)
+		head := "-> " + string(v) // the full line fits 80 columns without an origin
+		if len(why) > 0 {
+			head = strings.Join(why, ", ") + " " + head
+		}
+		line := fmt.Sprintf("%s. %s switches, Esc stays. See %s's prompt? It types %s.", head, keyName(s.pk.key), on, cmd)
+		if !verified {
+			line += fmt.Sprintf(" (%s is unverified.)", cmd)
+		}
+		return line
 	}
-	why = append(why, choiceNote(s.sw.choice)...)
-	head := "-> " + string(v) // the full line fits 80 columns without an origin
-	if len(why) > 0 {
-		head = strings.Join(why, ", ") + " " + head
-	}
-	line := fmt.Sprintf("%s. %s switches, Esc stays. See %s's prompt? It types %s.", head, keyName(s.pk.key), on, cmd)
-	if !verified {
-		line += fmt.Sprintf(" (%s is unverified.)", cmd)
-	}
+	line := confirmLine(s.sw.choice.Model)
 	lines := []string{line}
 	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: s.turnCause(), Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "asked": s.sw.asked, "limit": s.sw.limit})})
 	s.pk.preselect = "" // offered once (O56-5)
 	s.pk.ask(v, lines...)
+	if m := s.sw.choice.Model; m != "" {
+		// T6770: a long model name (up to maxModel) is cut first, so the
+		// keys stay on the line; past them a narrow terminal cuts the end.
+		s.pk.fit = func(cols int) string {
+			full := "aggy: " + line
+			over := strings.Index(full, keysEnd) + len(keysEnd) - (cols - 1)
+			if cols <= 1 || over <= 0 {
+				return full
+			}
+			keep := max(len(m)-over-len("..."), 1)
+			if keep >= len(m) {
+				return full
+			}
+			return "aggy: " + confirmLine(m[:keep]+"...")
+		}
+	}
 	s.openPicker()
 }
+
+// keysEnd ends the keys of a confirmation's status line.
+const keysEnd = "Esc stays."
 
 // offerWarn shows the near-limit warning (T6699) after a turn end of the
 // on-screen child, once the CLI is at its prompt and quiet, as a switch
@@ -929,6 +1009,62 @@ func choiceNote(c Choice) []string {
 	return out
 }
 
+// childCheckWait bounds how long a confirmed switch waits for HasChild
+// before the switch is offered again.
+const childCheckWait = 5 * time.Second
+
+// childCheck is one answer of Options.HasChild.
+type childCheck struct {
+	seq int
+	ok  bool
+}
+
+// confirmSwitch types the exit command for the confirmed switch, once
+// HasChild, read off the main loop, says the session picked is still
+// recorded (T6770): the picker's list may be stale, and launching a
+// session that is gone would fail after the CLI on screen has exited.
+func (s *session) confirmSwitch() {
+	id, v := s.sw.choice.Child, s.sw.to
+	if id == "" || s.o.HasChild == nil {
+		s.typeExit()
+		return
+	}
+	s.childSeq++
+	seq := s.childSeq
+	s.sw.checkSeq, s.sw.checkAt = seq, time.Now()
+	s.goSafe(func() {
+		ok := s.o.HasChild(v, id)
+		select {
+		case s.childChecks <- childCheck{seq: seq, ok: ok}:
+		case <-s.quit:
+		}
+	})
+}
+
+// childChecked takes HasChild's answer for the confirmed switch. An
+// answer for another switch or ask is dropped; so is one that lands with
+// the picker open or a turn started since, and the switch is offered
+// again once it may go on.
+func (s *session) childChecked(r childCheck) {
+	if r.seq != s.sw.checkSeq || s.sw.typed {
+		return
+	}
+	s.sw.checkSeq, s.sw.checkAt = 0, time.Time{}
+	switch {
+	case s.open || !s.atPrompt:
+		return
+	case r.ok:
+		s.typeExit()
+		return
+	}
+	v := s.sw.to
+	s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeChildGone, Cause: s.sw.rec, Msg: "the session picked is no longer recorded", Attrs: map[string]any{"to": string(v)}})
+	s.setSwitch(pendingSwitch{})
+	s.pk.tell(fmt.Sprintf("The %s session you picked is no longer recorded, so aggy did not switch.", v),
+		fmt.Sprintf("Press %s to pick again.", keyName(s.pk.key)))
+	s.openPicker()
+}
+
 // typeExit types the on-screen CLI's exit command, through the input
 // queue, after anything the user typed before it.
 //
@@ -1137,7 +1273,7 @@ func (s *session) promptInput(b []byte) {
 			return // too soon to be meant: ignored
 		}
 		s.closePicker()
-		s.typeExit()
+		s.confirmSwitch()
 	case s.pk.isKey(b):
 		to := s.pk.warnTo // a near-limit warning's suggestion (T6699)
 		s.closePicker()
@@ -1351,5 +1487,9 @@ func turnEnd(event string) bool {
 	return event == "Stop" || event == "StopCancelled" || event == "StopFailure"
 }
 
-// ctrlU clears the line in a readline-style composer.
-const ctrlU = 0x15
+// ctrlU clears the line in a readline-style composer; ctrlR starts a
+// history search (unverified: the readline key, assumed in each CLI).
+const (
+	ctrlU = 0x15
+	ctrlR = 0x12
+)

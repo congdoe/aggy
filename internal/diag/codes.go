@@ -197,6 +197,7 @@ var (
 	CodeNoQuota          = Code{"switch.no_quota"}
 	CodeLimitNoHold      = Code{"switch.limit_no_hold"}
 	CodeNearNoQuota      = Code{"switch.near_limit_no_quota"}
+	CodeChildGone        = Code{"switch.child_gone"}
 	CodeLineage          = Code{"peer.lineage_failed"}
 	CodePeerUID          = Code{"peer.uid_mismatch"}
 	CodeBadRequest       = Code{"socket.bad_request"}
@@ -347,6 +348,7 @@ var codes = []CodeInfo{
 	{CodeNoQuota, false, "After a limit, no vendor the picker offers has quota left.", "aggy usage; aggy log shows the limits."},
 	{CodeLimitNoHold, false, "After a limit on a vendor with no hold signal (Codex), aggy only suggests the switch; the user picks it.", "Press the switch key, then Enter."},
 	{CodeNearNoQuota, false, "The near-limit warning found no vendor with quota to hand off to.", "aggy usage."},
+	{CodeChildGone, false, "The session picked in the switch list was no longer recorded when the switch was confirmed, so the CLI on screen was not told to exit.", "aggy sessions; pick again."},
 	{CodeLineage, true, "A message on the supervisor's socket came from a process outside the on-screen CLI's process tree, so it was not acted on.", "Which process of yours writes to ~/.aggy/run; a CLI's tool that outlived it is reparented and falls out."},
 	{CodePeerUID, true, "A process of another user reached the supervisor's socket; it got no answer.", "The run directory's owner and mode (0700)."},
 	{CodeBadRequest, true, "A message on the supervisor's socket was not one aggy sends (bad JSON, an unknown type or field, a bad name).", "Which process writes to ~/.aggy/run; aggy hook and aggy switch send only valid messages."},

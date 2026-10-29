@@ -498,6 +498,22 @@ func TestSendDirty(t *testing.T) {
 		{"typing does not clear the popup mark", []string{"@a", "\r", "\r", "hi", "\r"}, true},
 		{"paste end split across reads", []string{"\x1b[200~x\x1b[2", "01~", "\r"}, false},
 		{"paste start split across reads", []string{"\x1b[2", "00~x\r"}, true},
+		// T6770: a cursor key or newline after the @ means Ctrl+U may
+		// leave it, and the cursor may go back into its token.
+		{"@, Option+Enter, Ctrl+U, Up, Enter", []string{"see @src/ma", "\x1b\r", "foo", "\x15", "\x1b[A", "\r"}, true},
+		{"@, backslash newline, Ctrl+U, Up, Enter", []string{"see @src/ma", "\\\r", "foo", "\x15", "\x1b[A", "\r"}, true},
+		{"@, Ctrl+A, Ctrl+U, Ctrl+E, Enter", []string{"see @src/ma", "\x01", "\x15", "\x05", "\r"}, true},
+		{"@, Ctrl+U twice, Up, Enter", []string{"see @src/ma", "\x1b\r", "foo", "\x15", "\x15", "\x1b[A", "\r"}, true},
+		{"@, Ctrl+A, backspaces to zero, Ctrl+E, Enter", []string{"@a", "\x01", "\x7f\x7f\x7f", "\x05", "\r"}, true},
+		{"@, Left, Ctrl+U twice, Enter", []string{"read @a", "\x1b[D", "\x15", "\x15", "\r"}, false},
+		{"Ctrl+R search, Enter", []string{"\x12", "foo", "\r"}, true},
+		{"Ctrl+R search, Ctrl+U, Enter", []string{"\x12", "foo", "\r", "\x15", "\r"}, false},
+		{"a clean send forgets the @", []string{"read @a", "\x15", "\r", "\x1b[A", "\r"}, false},
+		// T6770: a paste's @ token closed by whitespace leaves no popup.
+		{"paste with @ then words, Enter", []string{"\x1b[200~see @a.go now\x1b[201~", "\r"}, false},
+		{"paste with @ then words, Enter, more", []string{"\x1b[200~see @a.go now\x1b[201~", "\r", "hi", "\r"}, false},
+		{"paste ending in an @ token, Enter", []string{"\x1b[200~see @src/ma\x1b[201~", "\r"}, true},
+		{"paste with @, Up, Enter", []string{"\x1b[200~see @a.go now\x1b[201~", "\x1b[A", "\r"}, true},
 	}
 	for _, tt := range tests {
 		s := &session{toChild: newByteQueue(maxQueued), lenKnown: true}
