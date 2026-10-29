@@ -65,6 +65,18 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 			"-c", "sandbox_workspace_write.exclude_slash_tmp=true", "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
 			"--disable", "view_image", "--disable", "apps", "--disable", "plugins", "--disable", "goals",
 			"--disable", "image_generation", "--disable", "sleep_tool", "--", "-"}, ""},
+		// T6709: an edit child's tools, each approved on its own
+		// (docs/verification.md, "Launch-time MCP").
+		{"edit with a tool", adapter.HeadlessRequest{Kind: adapter.Edit, GitRepo: true, Resume: tid,
+			MCP: []adapter.MCPServer{{Name: "context7", Command: "/bin/aggy", Args: []string{"tool", "exec"}, Cwd: "/run/l"}}},
+			[]string{"exec", "--json",
+				"--strict-config", "--ignore-user-config", "--sandbox", "workspace-write",
+				"-c", "sandbox_workspace_write.exclude_slash_tmp=true", "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+				"--disable", "view_image", "--disable", "apps", "--disable", "plugins", "--disable", "goals",
+				"--disable", "image_generation", "--disable", "sleep_tool",
+				"-c", `mcp_servers.context7.command="/bin/aggy"`, "-c", `mcp_servers.context7.args=["tool", "exec"]`,
+				"-c", `mcp_servers.context7.cwd="/run/l"`, "-c", `mcp_servers.context7.default_tools_approval_mode="approve"`,
+				"resume", tid, "--", "-"}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -96,6 +108,11 @@ func TestHeadlessUnsupported(t *testing.T) {
 		func(r *adapter.HeadlessRequest) { r.Kind, r.IsolatedCwd, r.WebSearch = adapter.News, true, true },
 		func(r *adapter.HeadlessRequest) { r.AllowedTools = []string{"shell"} },
 		func(r *adapter.HeadlessRequest) { r.SessionID = "0b9d3c4e-1f2a-4b5c-8d7e-6f5a4b3c2d1e" },
+		// T6709: a review child stays read-only; image gets none either.
+		func(r *adapter.HeadlessRequest) { r.MCP = []adapter.MCPServer{{Name: "x", Command: "/x"}} },
+		func(r *adapter.HeadlessRequest) {
+			r.Kind, r.IsolatedCwd, r.MCP = adapter.Image, true, []adapter.MCPServer{{Name: "x", Command: "/x"}}
+		},
 	} {
 		r := base
 		mod(&r)

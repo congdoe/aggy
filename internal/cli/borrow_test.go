@@ -32,6 +32,9 @@ func TestParseBorrowArgs(t *testing.T) {
 		{"dash task after --", []string{"news", "--", "--weird task"}, borrowArgs{kind: "news", task: "--weird task"}, ""},
 		{"help", []string{"-h"}, borrowArgs{help: true}, ""},
 		{"fresh", []string{"news", "x", "--fresh"}, borrowArgs{kind: "news", task: "x", fresh: true}, ""},
+		{"tools", []string{"edit", "x", "--tool", "a", "--tool=b", "--tool", "a"}, borrowArgs{kind: "edit", task: "x", tools: []string{"a", "b"}}, ""},
+		{"bad tool name", []string{"edit", "x", "--tool", "../a"}, borrowArgs{}, "is not a tool name"},
+		{"too many tools", []string{"edit", "x", "--tool", "a", "--tool", "b", "--tool", "c", "--tool", "d", "--tool", "e", "--tool", "f", "--tool", "g", "--tool", "h", "--tool", "i"}, borrowArgs{}, "more than 8 --tool"},
 		{"unknown flag", []string{"news", "x", "--model", "m"}, borrowArgs{}, "unknown flag --model"},
 		{"missing value", []string{"news", "x", "--path"}, borrowArgs{}, "needs a value"},
 		{"no task", []string{"news"}, borrowArgs{}, "want a kind and one quoted task"},
@@ -50,7 +53,7 @@ func TestParseBorrowArgs(t *testing.T) {
 				t.Fatal(err)
 			}
 			if got.kind != tt.want.kind || got.task != tt.want.task || got.vendor != tt.want.vendor || got.help != tt.want.help || got.fresh != tt.want.fresh ||
-				!slices.Equal(got.paths, tt.want.paths) || !slices.Equal(got.constraints, tt.want.constraints) {
+				!slices.Equal(got.paths, tt.want.paths) || !slices.Equal(got.constraints, tt.want.constraints) || !slices.Equal(got.tools, tt.want.tools) {
 				t.Errorf("got %+v, want %+v", got, tt.want)
 			}
 		})

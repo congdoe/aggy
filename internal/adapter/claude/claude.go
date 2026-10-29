@@ -245,7 +245,17 @@ func GuardSettings(guard []string) ([]byte, error) {
 // ChildFiles returns the empty MCP config every headless run reads, and
 // the guard's settings layer when the child is guarded.
 func (a Adapter) ChildFiles(req adapter.HeadlessRequest) ([]adapter.ChildFile, error) {
-	files := []adapter.ChildFile{{Name: MCPConfigFile, Data: []byte(EmptyMCPConfig)}}
+	mcp := []byte(EmptyMCPConfig)
+	if len(req.MCP) > 0 {
+		// The child's tools (T6709): still the only MCP config it reads
+		// (--strict-mcp-config), so the user's servers stay out.
+		b, err := headlessMCP(req.MCP)
+		if err != nil {
+			return nil, err
+		}
+		mcp = b
+	}
+	files := []adapter.ChildFile{{Name: MCPConfigFile, Data: mcp}}
 	if a.guarded(req) {
 		b, err := GuardSettings(req.GuardCommand)
 		if err != nil {
@@ -254,6 +264,33 @@ func (a Adapter) ChildFiles(req adapter.HeadlessRequest) ([]adapter.ChildFile, e
 		files = append(files, adapter.ChildFile{Name: SettingsFile, Data: b})
 	}
 	return files, nil
+}
+
+// headlessMCP renders a child's servers as a Claude MCP config: stdio
+// entries of command and args (docs/verification.md, "MCP server
+// config"). Each command is aggy tool exec, which sets the server's
+// working directory and environment itself.
+// Only an edit child gets any (Headless).
+func headlessMCP(servers []adapter.MCPServer) ([]byte, error) {
+	type entry struct {
+		Command string   `json:"command"`
+		Args    []string `json:"args"`
+	}
+	m := map[string]entry{}
+	for _, s := range servers {
+		if err := adapter.CheckAbs("MCP server command", s.Command); err != nil {
+			return nil, err
+		}
+		if _, dup := m[s.Name]; dup || s.Name == "" {
+			return nil, fmt.Errorf("claude: MCP server name %q is empty or repeated", s.Name)
+		}
+		args := s.Args
+		if args == nil {
+			args = []string{}
+		}
+		m[s.Name] = entry{s.Command, args}
+	}
+	return json.Marshal(map[string]any{"mcpServers": m})
 }
 
 // Headless builds
@@ -292,6 +329,9 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 		return adapter.Command{}, fmt.Errorf("claude: %s: %w: %s", req.Kind, adapter.ErrUnsupported, adapter.ErrWebSearchKind)
 	case len(req.RefImages) > 0:
 		return adapter.Command{}, fmt.Errorf("claude: reference images: %w", adapter.ErrUnsupported)
+	case len(req.MCP) > 0 && req.Kind != adapter.Edit:
+		// A review child stays read-only: no tool says it only reads.
+		return adapter.Command{}, fmt.Errorf("claude: tools for a %s child: %w", req.Kind, adapter.ErrUnsupported)
 	}
 	if err := adapter.CheckAbs("run dir", req.RunDir); err != nil {
 		return adapter.Command{}, err
@@ -315,6 +355,19 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 	args = append(args, "--strict-mcp-config", "--mcp-config", filepath.Join(req.RunDir, MCPConfigFile))
 	if tools != nil {
 		args = append(args, "--tools", strings.Join(tools, ","))
+	}
+	if len(req.MCP) > 0 {
+		// An edit child's tools (T6709): claude -p denies a tool call no
+		// rule allows, and the live check allowed its tool by name
+		// (docs/verification.md, "Launch-time MCP"). One rule per server.
+		// TODO(T6709): a bare mcp__<server> rule allowing all of that
+		// server's tools is from Claude Code's permission docs, not
+		// verified live.
+		allow := make([]string, len(req.MCP))
+		for i, s := range req.MCP {
+			allow[i] = "mcp__" + s.Name
+		}
+		args = append(args, "--allowedTools", strings.Join(allow, ","))
 	}
 	// A review runs in the reviewed repo, whose .claude/settings.json
 	// hooks would run with no trust prompt: load the user's settings only.

@@ -216,6 +216,8 @@ var (
 	CodeToolHookOutput   = Code{"tool.hook_output"}
 	CodeToolHookFailed   = Code{"tool.hook_failed"}
 	CodeToolSkillMissing = Code{"tool.skill_missing"}
+	CodeToolBorrowKind   = Code{"tool.borrow_kind"}
+	CodeToolUnlisted     = Code{"tool.borrow_unlisted"}
 )
 
 const showRun = "aggy diag show <run id> for what led to it"
@@ -360,6 +362,8 @@ var codes = []CodeInfo{
 	{CodeToolHookOutput, true, "aggy hook-tool passed nothing on: the tool's hook printed more than 64 KiB, not one JSON object, or an answer for another event.", "Run the tool's hook by hand with the same input; aggy tool status."},
 	{CodeToolHookFailed, false, "aggy hook-tool passed nothing on: the tool's hook timed out, exited non-zero, could not start, or its definition changed or went since the session started.", "The tool's install (aggy tool status); a new session picks up a changed definition."},
 	{CodeToolSkillMissing, false, "aggy tool on refused: the tool's skill folder is not installed under ~/.aggy/skills, or resolves outside it. aggy never fetches a skill.", "Copy the skill folder into ~/.aggy/skills/<name> as aggy tool on says, then turn the tool on again."},
+	{CodeToolBorrowKind, false, "aggy borrow --tool was given for a kind other than edit. aggy cannot tell which tools read files or write, so a review stays read-only and research, news, image, and video children get no tool.", "Drop --tool, or borrow an edit."},
+	{CodeToolUnlisted, true, "aggy borrow --tool named a tool that routing.edit_tools in your ~/.aggy/config.toml does not list. An agent runs aggy borrow, so only the tools you listed there reach an edit child.", "Add the tool to routing.edit_tools if an edit child should get it."},
 	{CodeToolExec, true, "aggy tool exec refused to start a tool's MCP server: its folder is not aggy's private launch folder, the definition changed or is gone, the command is not the definition's, or a variable could not be passed.", "aggy tool status; if the definition changed, aggy tool on <name> again after reading it."},
 	{CodeToolChanged, true, "aggy tool on or a --tool refused a user definition that is not the file aggy tool add showed, or (--tool) one it never recorded.", "aggy tool remove <name>, then aggy tool add the file again and read what it runs."},
 }

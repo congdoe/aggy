@@ -23,6 +23,21 @@ func TestLockdown(t *testing.T) {
 	if err := json.Unmarshal(files[0].Data, &cfg); err != nil || len(cfg) != 1 || cfg["mcpServers"] == nil || len(cfg["mcpServers"]) != 0 {
 		t.Errorf("MCP config %s holds servers or is not JSON: %v", files[0].Data, err)
 	}
+	// T6709: an edit child's tools are the only servers in that file.
+	files, err = a.ChildFiles(adapter.HeadlessRequest{Kind: adapter.Edit, MCP: []adapter.MCPServer{
+		{Name: "context7", Command: "/bin/aggy", Args: []string{"tool", "exec"}}}})
+	if err != nil || len(files) != 1 || string(files[0].Data) != `{"mcpServers":{"context7":{"command":"/bin/aggy","args":["tool","exec"]}}}` {
+		t.Errorf("ChildFiles with a tool = %s, %v", files[0].Data, err)
+	}
+	for _, bad := range [][]adapter.MCPServer{
+		{{Name: "x", Command: "aggy"}},
+		{{Name: "", Command: "/bin/aggy"}},
+		{{Name: "x", Command: "/bin/aggy"}, {Name: "x", Command: "/bin/aggy"}},
+	} {
+		if _, err := a.ChildFiles(adapter.HeadlessRequest{Kind: adapter.Edit, MCP: bad}); err == nil {
+			t.Errorf("ChildFiles took %+v", bad)
+		}
+	}
 	if _, err := a.Headless(adapter.HeadlessRequest{Kind: adapter.Review, PromptFile: "/p", Cwd: "/w"}); err == nil {
 		t.Error("a review without a run dir was built")
 	}

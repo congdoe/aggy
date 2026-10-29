@@ -258,6 +258,11 @@ type HeadlessRequest struct {
 	// GitRepo says Cwd is inside a git work tree. Codex is then not given
 	// --skip-git-repo-check.
 	GitRepo bool
+	// MCP are the managed tools' servers for this child only (aggy borrow
+	// --tool and routing.edit_tools, T6709): edit only, since a review
+	// child stays read-only, each started through aggy tool exec. Nil means none, and the
+	// headless lockdown keeps every other server out.
+	MCP []MCPServer
 	// GuardCommand is the PreToolUse guard to wire into the child where
 	// the CLI takes a per-run hook: an absolute program path and its
 	// arguments (aggy hook pretooluse). Empty means none.

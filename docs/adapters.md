@@ -109,6 +109,8 @@ was tested against.
   `-c mcp_servers.<name>.default_tools_approval_mode="approve"`, because
   `exec` denies MCP calls otherwise. Pass them again on resume. Flags such
   as `--sandbox` go before `resume`, and they apply to the resumed thread.
+  An edit borrow child's tools (T6709) get the same `-c` keys and the
+  approval mode, after the edit lockdown and before `resume`.
   On screen, aggy sets no approval mode, and adds `.cwd` and `.env_vars`
   (fields of `RawMcpServerConfig`, `config/src/mcp_types.rs#L373-L389` at
   6aaac69; source only).
@@ -432,6 +434,14 @@ by default is news 15 and research 30; `<run>` is `HeadlessRequest.RunDir`):
 | edit (M3; `aggy borrow` runs Codex only, see below) | `claude -p --output-format json --permission-mode acceptEdits --strict-mcp-config --mcp-config <run>/mcp.json` | `codex exec --json <L with --sandbox workspace-write, keeping shell_tool and unified_exec> -- -` (`codex.EditLockdown`) | `grok --prompt-file <p> --output-format json --tools read_file,grep,list_dir,write,search_replace --disallowed-tools <D> --no-subagents` |
 
 `--deny <Lib>` is `--deny 'Read(<HOME>/Library/**)' --deny 'Grep(<HOME>/Library/**)' --deny 'Read(<Grok home>/**)' --deny 'Grep(<Grok home>/**)'` (and the same pair for `<HOME>/.grok` when `GROK_HOME` points elsewhere), and the same pairs for their physical forms when a symlink makes them differ. On darwin, add `--deny 'Read(/System/Volumes/Data/**)' --deny 'Grep(/System/Volumes/Data/**)'` and a case-folded copy of every pair above. Last come the spelling pairs for `~*`, `~*/**`, `**/[<quotes, white space>]*` and `**/[<quotes, white space>]*/**`. For image and video, a HOME or Grok home that cannot be named in a rule drops `<Lib>` rather than refusing them.
+An edit child with tools (T6709; `HeadlessRequest.MCP`, edit only) also
+gets, on Claude, its servers in `<run>/mcp.json` and `--allowedTools
+mcp__<name>,...` (one rule per server; that a bare server rule allows
+every tool of it is from Claude Code's permission docs, unverified live);
+on Codex, `-c mcp_servers.<name>.command/args/cwd[/env_vars]` and
+`default_tools_approval_mode="approve"` before `resume`; Grok refuses them
+(`ErrUnsupported`). Any other kind refuses them.
+
 `L` is `codex.Lockdown`: `--strict-config --ignore-user-config --sandbox
 read-only --disable shell_tool --disable unified_exec --disable view_image
 --disable apps --disable plugins --disable goals --disable image_generation
