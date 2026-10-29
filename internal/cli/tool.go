@@ -39,7 +39,9 @@ own in ~/.aggy/tools/<name>.toml. Definitions are never read from a repo.
   list     show each tool: name, built-in or user, default, estimated
            token cost per vendor here (0 where off), source file
   status   show whether each tool is on, per vendor, here (or in --repo
-           DIR), and why
+           DIR), and why; whether it is installed (its programs on PATH,
+           its skill folder in place), ready (its skill pin matches), and
+           wired into each vendor it is on for, as aggy doctor checks
   on, off  turn a tool on or off for every vendor, or one (--vendor),
            in every repo, or one (--repo DIR); the newest setting holds
            wherever it applies. A per-repo tool is turned on only with
