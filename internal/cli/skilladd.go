@@ -301,9 +301,8 @@ func skillAdd(ctx context.Context, a skillAddArgs, in io.Reader, tty bool, stdou
 		return err
 	}
 	// The source: a real folder (not a symlink) of regular files, read
-	// whole once, so what is shown is what is stored.
-	// TODO(T6706): walk it through one os.Root (descriptor-relative) once
-	// safefs offers that; each step is checked through safefs today.
+	// whole once, so what is shown is what is stored; readSkillTree walks
+	// it through descriptors (T6820).
 	refused := func(err error) error { return withCode(diag.CodeToolSkillRefused, err) }
 	if fi, err := safefs.Lstat(src); err != nil {
 		return err
