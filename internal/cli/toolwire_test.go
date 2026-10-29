@@ -221,6 +221,16 @@ func TestAddToolsClash(t *testing.T) {
 			}
 		})
 	}
+	// A .mcp.json above the repo that this user cannot read is no clash;
+	// in the repo it still refuses every tool.
+	for f, wired := range map[string]bool{filepath.Join(parent, ".mcp.json"): true, filepath.Join(repo, ".mcp.json"): false} {
+		writeAt(t, f, `{"mcpServers":{"context7":{}}}`, 0o000)
+		req, warns, _ := wireOnce(t, adapter.Claude, nil, sub)
+		if got := req.MCPConfigFile != ""; got != wired || wired && len(warns) != 0 {
+			t.Errorf("unreadable %s: wired %v, warns %q", f, got, warns)
+		}
+		_ = os.Remove(f)
+	}
 	// Fail closed: a file that cannot be parsed wires nothing.
 	for v, f := range map[adapter.Vendor]string{
 		adapter.Claude: filepath.Join(parent, ".mcp.json"),

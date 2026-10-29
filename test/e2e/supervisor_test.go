@@ -68,6 +68,9 @@ type world struct {
 	home, bin, cwd, record string
 	// env is added to the environment of every aggy start runs.
 	env []string
+	// lastOut is what the terminal showed in the last launchRecord: aggy's
+	// warnings, such as a tool it did not wire, for a failure message.
+	lastOut string
 }
 
 func newWorld(t *testing.T) *world {
@@ -216,6 +219,13 @@ func (s *session) send(b []byte) {
 	if _, err := s.master.Write(b); err != nil {
 		s.t.Fatal(err)
 	}
+}
+
+// screen is everything the terminal has shown so far.
+func (s *session) screen() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.out.String()
 }
 
 // exit waits for aggy to exit and returns its exit code.

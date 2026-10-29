@@ -52,6 +52,7 @@ func (w *world) launchRecord(t *testing.T, vendor string) fakecli.Record {
 	s.waitFor([]byte("READY>"))
 	s.send([]byte{0x04})
 	s.exit()
+	w.lastOut = s.screen()
 	return interactiveRecord(t, w)
 }
 
@@ -119,7 +120,7 @@ func TestToolsWiredAtLaunch(t *testing.T) {
 			case "claude":
 				f := r.Flags["--mcp-config"]
 				if len(f) != 1 || !strings.HasPrefix(f[0], filepath.Join(w.home, ".aggy", "run")+"/") || slices.Contains(r.Args, "--strict-mcp-config") {
-					t.Errorf("args %q", r.Args)
+					t.Errorf("args %q\nterminal: %q", r.Args, w.lastOut)
 				} else if _, err := os.Stat(f[0]); !os.IsNotExist(err) {
 					t.Errorf("%s left after the session: %v", f[0], err)
 				}
@@ -128,7 +129,7 @@ func TestToolsWiredAtLaunch(t *testing.T) {
 					!slices.ContainsFunc(r.Flags["-c"], func(c string) bool {
 						return strings.HasPrefix(c, `mcp_servers.context7.args=["tool", "exec", `) && strings.HasSuffix(c, `"--", "context7-mcp"]`)
 					}) {
-					t.Errorf("-c %q", r.Flags["-c"])
+					t.Errorf("-c %q\nterminal: %q", r.Flags["-c"], w.lastOut)
 				}
 			case "grok":
 				if slices.Contains(r.Args, "--agent") {
@@ -236,7 +237,7 @@ func TestToolShimSwitchResume(t *testing.T) {
 	f := c.Flags["--mcp-config"]
 	if len(f) != 1 || c.Args[0] != "--mcp-config" || !slices.Contains(c.Args, "--") ||
 		len(c.Positional) != 1 || !strings.HasPrefix(c.Positional[0], "Read the handoff brief at ") {
-		t.Fatalf("claude after the switch: args %q, prompt %q", c.Args, c.Positional)
+		t.Fatalf("claude after the switch: args %q, prompt %q\nterminal: %q", c.Args, c.Positional, s.screen())
 	}
 	if want := adapter.BriefPrompt(strings.TrimSuffix(strings.TrimPrefix(c.Positional[0], "Read the handoff brief at "), " before anything else, then continue the work it describes.")); c.Positional[0] != want {
 		t.Errorf("prompt %q", c.Positional[0])

@@ -52,4 +52,30 @@ func TestTrustedPath(t *testing.T) {
 		t.Error("a link into a writable dir passed")
 	}
 	_ = os.Chmod(open, 0o755)
+
+	// A sticky folder such as /tmp is fine above a folder of this user's
+	// (CI builds aggy under /tmp), but not as the binary's only guard
+	// against a group- or world-writable folder of its own.
+	sticky := filepath.Join(d, "sticky")
+	own := filepath.Join(sticky, "own")
+	if err := os.MkdirAll(own, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sticky, os.ModeSticky|0o777); err != nil {
+		t.Fatal(err)
+	}
+	bin = filepath.Join(own, "aggy")
+	if err := os.WriteFile(bin, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := trustedPath(bin); err != nil {
+		t.Errorf("below a sticky folder: %v", err)
+	}
+	if err := os.Chmod(own, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := trustedPath(bin); err == nil {
+		t.Error("a world-writable folder below a sticky one passed")
+	}
+	_ = os.Chmod(own, 0o700)
 }
