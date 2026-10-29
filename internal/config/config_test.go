@@ -88,6 +88,16 @@ func TestParse(t *testing.T) {
 			},
 		},
 		{name: "log days below 1", text: "[log]\nretention_days = 0\n", wantErr: "log.retention_days must be 1 to 3650"},
+		{
+			name: "tool telemetry off by default, allowed by user config",
+			text: "[tools]\nallow_telemetry = true\n",
+			check: func(t *testing.T, c Config) {
+				if Default().Tools.AllowTelemetry || !c.Tools.AllowTelemetry {
+					t.Errorf("tools.allow_telemetry: default %v, set %v", Default().Tools.AllowTelemetry, c.Tools.AllowTelemetry)
+				}
+			},
+		},
+		{name: "tools unknown key", text: "[tools]\nallow = true\n", wantErr: "unknown key tools.allow"},
 		{name: "log size too large", text: "[log]\nmax_mb = 10241\n", wantErr: "log.max_mb must be 1 to 10240"},
 		{name: "log level unknown", text: "[log]\nlevel = \"loud\"\n", wantErr: `log.level must be error, warn, info, or debug, got "loud"`},
 		{

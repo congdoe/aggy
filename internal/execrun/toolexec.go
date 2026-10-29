@@ -44,3 +44,33 @@ func ToolEnv(base, names []string) ([]string, error) {
 	}
 	return env, nil
 }
+
+// DoNotTrack is the opt-out aggy sets in every tool process it starts
+// unless the user config allows telemetry (T6822): the shim's server, a
+// tool's hook, and a prebuild.
+const DoNotTrack = "DO_NOT_TRACK=1"
+
+// SetEnv returns env with each NAME=VALUE in set in place of any value
+// env has for NAME, so the person's own value never wins over an opt-out
+// aggy sets. set may name no variable ToolEnv builds env from, and none
+// of aggy's own.
+func SetEnv(env, set []string) ([]string, error) {
+	if len(set) == 0 {
+		return env, nil
+	}
+	names := make([]string, len(set))
+	for i, kv := range set {
+		n, _, ok := strings.Cut(kv, "=")
+		if !ok || n == "" || strings.ContainsRune(kv, 0) || contains(toolPass, n) || strings.HasPrefix(n, "AGGY_") {
+			return nil, fmt.Errorf("execrun: refusing to set %q for a tool", n)
+		}
+		names[i] = n
+	}
+	out := make([]string, 0, len(env)+len(set))
+	for _, kv := range env {
+		if k, _, _ := strings.Cut(kv, "="); !contains(names, k) {
+			out = append(out, kv)
+		}
+	}
+	return append(out, set...), nil
+}

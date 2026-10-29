@@ -954,7 +954,7 @@ arm64 with `DO_NOT_TRACK=1`. No vendor config was edited, and no tool's
   connects (README, "How auto-syncing works"); `codegraph sync [path]`
   is the manual incremental update. Telemetry is on unless
   `CODEGRAPH_TELEMETRY=0` or `DO_NOT_TRACK=1` (README, "Telemetry");
-  aggy passes the person's own values through and sets neither.
+  aggy sets both unless the user config allows telemetry (T6822).
   Install: `npm install -g @colbymchenry/codegraph@1.6.2`. Its launcher
   (`npm-shim.js`) runs the bundle the npm package installed, and when
   that is missing downloads one from GitHub Releases into

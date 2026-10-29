@@ -140,7 +140,8 @@ func TestCodegraphCommittedIndex(t *testing.T) {
 func TestCodegraphIndexOnFirstOn(t *testing.T) {
 	isolate(t)
 	fakeCodegraph(t, "0")
-	t.Setenv("DO_NOT_TRACK", "1")
+	t.Setenv("DO_NOT_TRACK", "0")
+	t.Setenv("CODEGRAPH_TELEMETRY", "1")
 	t.Setenv("AGGY_SECRET_TEST", "leak")
 	repo := switchRepo(t, "")
 	other := switchRepo(t, "")
@@ -151,7 +152,9 @@ func TestCodegraphIndexOnFirstOn(t *testing.T) {
 		t.Fatalf("first on: %d %q %q, %d runs", code, out, errOut, lines(t, inits))
 	}
 	env, _ := os.ReadFile(filepath.Join(repo, ".codegraph", "env"))
-	if !strings.Contains(string(env), "DO_NOT_TRACK=1") || strings.Contains(string(env), "AGGY_SECRET_TEST") {
+	// T6822: aggy's opt-outs replace the person's own values.
+	if !strings.Contains(string(env), "DO_NOT_TRACK=1\n") || !strings.Contains(string(env), "CODEGRAPH_TELEMETRY=0\n") ||
+		strings.Contains(string(env), "DO_NOT_TRACK=0") || strings.Contains(string(env), "AGGY_SECRET_TEST") {
 		t.Errorf("init env: %s", env)
 	}
 	if b, _ := os.ReadFile(filepath.Join(repo, ".codegraph", ".gitignore")); string(b) != codegraphGitignore {
@@ -470,5 +473,24 @@ func TestPrebuildsHaveIndex(t *testing.T) {
 		if _, ok := toolIndexes[tl.Name]; ok != (len(tl.Install.Prebuild) > 0) {
 			t.Errorf("%s: prebuild %v, index known %v", tl.Name, tl.Install.Prebuild, ok)
 		}
+	}
+}
+
+// TestCodegraphIndexTelemetryAllowed (T6822): with the user config's
+// [tools] allow_telemetry, a prebuild gets no opt-out from aggy, and the
+// person's own values pass through as the definition's env allows.
+func TestCodegraphIndexTelemetryAllowed(t *testing.T) {
+	isolate(t)
+	fakeCodegraph(t, "0")
+	writeAt(t, filepath.Join(os.Getenv(home.Env), "config.toml"), "[tools]\nallow_telemetry = true\n", 0o600)
+	t.Setenv("DO_NOT_TRACK", "")
+	t.Setenv("CODEGRAPH_TELEMETRY", "1")
+	repo := switchRepo(t, "")
+	if code, _, errOut := toolRun("", false, "on", "codegraph", "--repo", repo); code != 0 {
+		t.Fatalf("on: %d %q", code, errOut)
+	}
+	env, _ := os.ReadFile(filepath.Join(repo, ".codegraph", "env"))
+	if strings.Contains(string(env), "DO_NOT_TRACK=1") || !strings.Contains(string(env), "CODEGRAPH_TELEMETRY=1\n") {
+		t.Errorf("init env: %s", env)
 	}
 }

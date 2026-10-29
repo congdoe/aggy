@@ -34,7 +34,8 @@ var execTool = execrun.ExecTool
 //
 // The server then runs in dir with an environment built from scratch
 // (execrun.ToolEnv): the basics plus the tool's declared variables, read
-// now from the CLI's environment and never written to a file.
+// now from the CLI's environment and never written to a file, and the
+// telemetry opt-outs (telemetryOff).
 func runToolExec(args []string, stderr io.Writer) int {
 	ctx := context.Background()
 	name := ""
@@ -80,6 +81,9 @@ func runToolExec(args []string, stderr io.Writer) int {
 		}
 	}
 	env, err := execrun.ToolEnv(os.Environ(), m.Env)
+	if err == nil {
+		env, err = execrun.SetEnv(env, telemetryOff(state, t))
+	}
 	if err != nil {
 		return fail("env", err)
 	}

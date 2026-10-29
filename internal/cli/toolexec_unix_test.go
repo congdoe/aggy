@@ -72,14 +72,29 @@ func TestToolExec(t *testing.T) {
 	basics := []string{"HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"}
 	for _, kv := range got.env {
 		k, _, _ := strings.Cut(kv, "=")
-		if !slices.Contains(basics, k) && kv != "DEMO_HOME=/opt/demo" {
+		if !slices.Contains(basics, k) && kv != "DEMO_HOME=/opt/demo" && kv != "DO_NOT_TRACK=1" {
 			t.Errorf("env has %q", kv)
 		}
 	}
-	for _, want := range []string{"DEMO_HOME=/opt/demo", "HOME=" + os.Getenv("HOME"), "PATH=" + bin} {
+	for _, want := range []string{"DEMO_HOME=/opt/demo", "HOME=" + os.Getenv("HOME"), "PATH=" + bin, "DO_NOT_TRACK=1"} {
 		if !slices.Contains(got.env, want) {
 			t.Errorf("env %q lacks %q", got.env, want)
 		}
+	}
+	// T6822: the user config's [tools] allow_telemetry lets telemetry
+	// through: aggy sets no DO_NOT_TRACK.
+	cfg := filepath.Join(state, "config.toml")
+	writeAt(t, cfg, "[tools]\nallow_telemetry = true\n", 0o600)
+	if code, errOut := exec(ok); code != 0 || slices.ContainsFunc(got.env, func(kv string) bool { return strings.HasPrefix(kv, "DO_NOT_TRACK=") }) {
+		t.Errorf("allowed: exit %d %q, env %q", code, errOut, got.env)
+	}
+	// A config that cannot be read sets it all the same.
+	writeAt(t, cfg, "[tools]\nallow_telemetry = true\nbogus = 1\n", 0o600)
+	if code, errOut := exec(ok); code != 0 || !slices.Contains(got.env, "DO_NOT_TRACK=1") {
+		t.Errorf("unreadable config: exit %d %q, env %q", code, errOut, got.env)
+	}
+	if err := os.Remove(cfg); err != nil {
+		t.Fatal(err)
 	}
 
 	with := func(i int, v string) []string {

@@ -188,13 +188,16 @@ func HeadlessRunner(timeout time.Duration) adapter.Runner {
 // hook-tool): HeadlessRunner, but with ToolEnv's environment, built from
 // scratch with no vendor home (L78-7): a tool's hook has no use for
 // CLAUDE_CONFIG_DIR, CODEX_HOME, or GROK_HOME. A command may add no
-// variables of its own.
-func ToolHookRunner(timeout time.Duration) adapter.Runner { return ToolRunner(timeout, nil) }
+// variables of its own; set is SetEnv's, the telemetry opt-outs (T6822).
+func ToolHookRunner(timeout time.Duration, set []string) adapter.Runner {
+	return ToolRunner(timeout, nil, set)
+}
 
 // ToolRunner is ToolHookRunner that also passes names, the variables a
 // tool's definition declares (ToolEnv), from aggy's environment: a
 // built-in's prebuild (aggy tool on, T6711) gets those of its servers.
-func ToolRunner(timeout time.Duration, names []string) adapter.Runner {
+// set is then put over them (SetEnv).
+func ToolRunner(timeout time.Duration, names, set []string) adapter.Runner {
 	return func(ctx context.Context, c adapter.Command) (adapter.Output, error) {
 		if c.Stdin != adapter.StdinNull && c.Stdin != adapter.StdinFile {
 			return adapter.Output{}, errors.New("execrun: a tool command reads no terminal")
@@ -204,6 +207,9 @@ func ToolRunner(timeout time.Duration, names []string) adapter.Runner {
 		}
 		env, err := ToolEnv(os.Environ(), names)
 		if err != nil {
+			return adapter.Output{}, err
+		}
+		if env, err = SetEnv(env, set); err != nil {
 			return adapter.Output{}, err
 		}
 		return runEnv(ctx, c, timeout, false, env)

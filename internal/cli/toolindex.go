@@ -184,7 +184,7 @@ func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, in io.R
 		if a[0] != t.Install.Prebuild[0] {
 			return fail(fmt.Errorf("%s: a rebuild runs the prebuild's program", quoteArgv(a)))
 		}
-		out, err := execrun.ToolRunner(prebuildTimeout, slices.Compact(names))(rctx, adapter.Command{Path: path, Args: a[1:], Dir: tmp})
+		out, err := execrun.ToolRunner(prebuildTimeout, slices.Compact(names), telemetryOff("", t))(rctx, adapter.Command{Path: path, Args: a[1:], Dir: tmp})
 		switch {
 		case rctx.Err() != nil:
 			err = errors.New("interrupted; nothing was recorded, and the next aggy tool on builds it again")
