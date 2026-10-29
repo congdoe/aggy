@@ -106,8 +106,8 @@ func regular(p string) bool {
 // definition's argv with {repo} filled in, through execrun with an
 // environment built from scratch (the variables the tool's servers
 // declare), no stdin, a private empty working folder, and a time limit.
-// ctx ends it, and kills its process group, on Ctrl-C, SIGTERM, or
-// SIGHUP. Any failure refuses the switch, so nothing is recorded. A repo
+// Ctrl-C, SIGTERM, or SIGHUP during the build ends it and kills its
+// process group. Any failure refuses the switch, so nothing is recorded. A repo
 // where the tool is never turned on is never indexed.
 func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, in io.Reader, tty bool, stdout io.Writer) error {
 	if !t.BuiltIn || len(t.Install.Prebuild) == 0 {
@@ -142,10 +142,23 @@ func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, in io.R
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fail(err)
 	}
-	argv, err := toolwire.Fill(t.Install.Prebuild, repo.main)
-	if err != nil {
-		return fail(err)
+	// A database without aggy's marker is an index a build left
+	// unfinished (an interrupted init). codegraph init exits 0 at once on
+	// it, so the rebuild runs instead, then init if the rebuild fails (a
+	// database without the schema, which only init rebuilds).
+	steps := [][]string{t.Install.Prebuild}
+	left := regular(filepath.Join(dir, ix.db))
+	if left && len(t.Install.Rebuild) > 0 {
+		steps = [][]string{t.Install.Rebuild, t.Install.Prebuild}
 	}
+	argvs := make([][]string, len(steps))
+	for i, st := range steps {
+		var err error
+		if argvs[i], err = toolwire.Fill(st, repo.main); err != nil {
+			return fail(err)
+		}
+	}
+	argv := argvs[0]
 	switch {
 	case tty:
 		fmt.Fprintf(stdout, "Index %s with %s? This runs %s, which writes %s/ in the repo. [y/N] ", termsafe.Field(repo.main), t.Name, quoteArgv(argv), ix.dir)
@@ -155,8 +168,9 @@ func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, in io.R
 			return errNotIndexed
 		}
 	case os.Getenv("AGGY_VENDOR") != "":
-		// An agent in a session aggy started: the first index runs the
-		// tool's code over the repo, so the person starts it.
+		// A nudge, not a security boundary: an agent in a session aggy
+		// started is asked to leave the first index, which runs the tool
+		// over the repo, to the person; clearing the variable gets past it.
 		return fail(fmt.Errorf("the first index of a repo runs %s, so you run it yourself, at a terminal: aggy tool on %s --repo %s", quoteArgv(argv), t.Name, termsafe.Field(repo.main)))
 	}
 	excluded := excludeIndex(ctx, repo.main, ix.dir, stdout)
@@ -170,23 +184,40 @@ func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, in io.R
 		return fail(err)
 	}
 	defer func() { _ = safefs.RemoveAll(tmp) }()
+	// Only the build listens for Ctrl-C, SIGTERM, and SIGHUP, and then
+	// kills its process group; a prompt ends on them as any program does.
+	rctx, stop := execrun.NotifyContext(ctx)
+	defer stop()
 	fmt.Fprintf(stdout, "Indexing %s once for %s: %s. This may take a while (up to %s); Ctrl-C cancels.\n", termsafe.Field(repo.main), t.Name, quoteArgv(argv), prebuildTimeout)
-	out, err := execrun.ToolRunner(prebuildTimeout, slices.Compact(names))(ctx, adapter.Command{Path: path, Args: argv[1:], Dir: tmp})
-	switch {
-	case ctx.Err() != nil:
-		err = errors.New("interrupted; nothing was recorded, and the next aggy tool on builds it again")
-	case err == nil && out.ExitCode != 0:
-		err = fmt.Errorf("exit %d: %s", out.ExitCode, termsafe.Field(strings.Join(borrow.Excerpt(string(out.Stderr), 5, 160), " | ")))
-		if regular(filepath.Join(dir, ix.db)) {
-			err = fmt.Errorf("%w (an index an earlier build left is there; codegraph uninit --force %s removes it)", err, termsafe.Field(repo.main))
+	for i, a := range argvs {
+		if a[0] != t.Install.Prebuild[0] {
+			return fail(fmt.Errorf("%s: a rebuild runs the prebuild's program", quoteArgv(a)))
 		}
-	}
-	if err != nil {
-		return fail(fmt.Errorf("%s: %w", quoteArgv(argv), err))
+		out, err := execrun.ToolRunner(prebuildTimeout, slices.Compact(names))(rctx, adapter.Command{Path: path, Args: a[1:], Dir: tmp})
+		switch {
+		case rctx.Err() != nil:
+			err = errors.New("interrupted; nothing was recorded, and the next aggy tool on builds it again")
+		case err == nil && out.ExitCode != 0:
+			err = fmt.Errorf("exit %d: %s", out.ExitCode, termsafe.Field(strings.Join(borrow.Excerpt(string(out.Stderr), 5, 160), " | ")))
+			if i+1 < len(argvs) {
+				fmt.Fprintf(stdout, "%s failed (%s); trying %s.\n", quoteArgv(a), termsafe.Line(err.Error()), quoteArgv(argvs[i+1]))
+				continue
+			}
+		}
+		if err != nil {
+			return fail(fmt.Errorf("%s: %w", quoteArgv(a), err))
+		}
+		break
 	}
 	dfi, err := indexDir(dir)
 	if err != nil || !regular(filepath.Join(dir, ix.db)) {
 		return fail(errors.Join(err, fmt.Errorf("%s ran but left no %s", quoteArgv(argv), filepath.Join(ix.dir, ix.db))))
+	}
+	if left && len(t.Install.Rebuild) == 0 {
+		// The prebuild may have stopped at once on the unfinished index:
+		// no marker, and the tool's server completes it on connect.
+		fmt.Fprintf(stdout, "An unfinished index was in %s; %s's server completes it when a session connects.\n", termsafe.Field(dir), t.Name)
+		return nil
 	}
 	if err := safefs.WriteFileNoFollowIn(dfi, filepath.Join(dir, indexMarker), []byte("built by aggy tool on\n"), 0o600, nil); err != nil && !errors.Is(err, fs.ErrExist) {
 		return fail(err)
