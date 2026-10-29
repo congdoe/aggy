@@ -1,6 +1,7 @@
 package diag
 
 import (
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -216,6 +217,29 @@ func TestWriterScrubsEnv(t *testing.T) {
 	t.Setenv("AGGY_HOME", "relative-canary-heron-92")
 	w := New("v-test", nil)
 	got := w.scrub("dial /tmp/sock-canary-heron-91.sock: no such file; AGGY_HOME relative-canary-heron-92 is not absolute", maxMsg)
+	if strings.Contains(got, "canary") || strings.Count(got, "[env value]") != 2 {
+		t.Errorf("scrubbed %q", got)
+	}
+}
+
+// TestWriterScrubsEnvForms (F73-2): a value set with a trailing slash,
+// or through a symlink, is scrubbed in its clean and resolved forms too.
+func TestWriterScrubsEnvForms(t *testing.T) {
+	real := filepath.Join(t.TempDir(), "real-canary-home")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link-canary-home")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GROK_HOME", link+"/")
+	w := New("v-test", nil)
+	got := w.scrub("open "+link+"/a; stat "+resolved+"/b", maxMsg)
 	if strings.Contains(got, "canary") || strings.Count(got, "[env value]") != 2 {
 		t.Errorf("scrubbed %q", got)
 	}
