@@ -512,7 +512,7 @@ Per-user state lives in `~/.aggy` (or `$AGGY_HOME`):
   research/<date>-<slug>.md   research and news reports of borrows run outside a git work tree
   research/cache/<key>.json   the research cache, by question
   recipes/<name>.toml         saved segues (M6)
-  run/<parent-id>.sock        supervisor socket for hooks and borrows
+  run/<parent-id>.sock        supervisor socket for hooks, aggy switch, and aggy tool notices
   logs/aggy.log
 ```
 

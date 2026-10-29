@@ -45,8 +45,7 @@ func TestSwitchAtTurnEnd(t *testing.T) {
 	s.mu.Unlock()
 	s.send(append([]byte("b"), key...)) // with a brief (T6683)
 	s.waitWithin([]byte("brief -> grok. Ctrl+"), offerTimeout)
-	time.Sleep(600 * time.Millisecond) // past the confirmation's guard
-	s.send([]byte{0x1c})
+	s.confirmPastGuard(time.Now())
 	// grok is on screen: end it.
 	deadline := time.Now().Add(timeout)
 	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
@@ -87,13 +86,12 @@ func TestSkillRequestedSwitch(t *testing.T) {
 	// grok itself the request is refused, which must not fail the fake.
 	sc := map[string]any{
 		"stdout":       "READY>",
-		"hook_command": []string{"/bin/sh", "-c", buildAggy(t) + " switch \"$1\" >/dev/null 2>&1 || true", "sh"},
+		"hook_command": []string{"/bin/sh", "-c", aggySh(t) + " switch \"$1\" >/dev/null 2>&1 || true", "sh"},
 		"hooks":        []map[string]any{{"event": "grok", "payload": map[string]any{}}},
 	}
 	s := w.start(t, sc, "run", "claude")
 	s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
-	time.Sleep(600 * time.Millisecond) // past the confirmation's guard
-	s.send([]byte{0x1c})
+	s.confirmPastGuard(time.Now())
 	deadline := time.Now().Add(timeout)
 	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)

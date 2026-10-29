@@ -64,7 +64,7 @@ func TestDiagSessionCanary(t *testing.T) {
 		t.Fatalf("no %s record in time", what)
 	}
 	aggy("setup", "--yes")
-	hook := buildAggy(t) + " hook --vendor claude \"$1\"; " + buildAggy(t) + " switch --new grok >/dev/null 2>&1; true"
+	hook := aggySh(t) + " hook --vendor claude \"$1\"; " + aggySh(t) + " switch --new grok >/dev/null 2>&1; true"
 	sc := map[string]any{
 		"stdout":       "READY>",
 		"stderr":       "error: " + printed + " " + secret + "\n",

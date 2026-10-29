@@ -64,7 +64,7 @@ func TestLimitSwitchWithBrief(t *testing.T) {
 		`{"type":"assistant","message":{"content":[{"type":"text","text":"use GITHUB_TOKEN=` + e2eSecret + `"}]}}` + "\n"
 	// Only Claude forwards its hooks: the next CLI, run with the same
 	// scenario, reports a limit too, which this test does not follow.
-	hook := `[ "$AGGY_VENDOR" = claude ] || exit 0; exec ` + buildAggy(t) + ` hook --vendor claude "$1"`
+	hook := `[ "$AGGY_VENDOR" = claude ] || exit 0; exec ` + aggySh(t) + ` hook --vendor claude "$1"`
 	sc := map[string]any{
 		"stdout":        "READY>",
 		"error":         "rate_limit",
@@ -165,7 +165,7 @@ func TestBorrowRoundTrip(t *testing.T) {
 	const answer = "review-wombat-answer-73"
 	// The agent's shell command, run once at the session's start: only
 	// the on-screen CLI borrows, never the child (the same scenario).
-	borrow := `[ "$AGGY_VENDOR" = claude ] || exit 0; ` + buildAggy(t) + ` borrow review "review the change" --vendor codex; echo "[borrow exit $?]"`
+	borrow := `[ "$AGGY_VENDOR" = claude ] || exit 0; ` + aggySh(t) + ` borrow review "review the change" --vendor codex; echo "[borrow exit $?]"`
 	sc := map[string]any{
 		"stdout":       "READY>",
 		"hook_command": []string{"/bin/sh", "-c", borrow, "sh"},
@@ -179,6 +179,7 @@ func TestBorrowRoundTrip(t *testing.T) {
 	_, rest, _ := strings.Cut(s.screen(), "Full report: ")
 	report, _, _ := strings.Cut(rest, "\r\n")
 	if !strings.Contains(s.screen(), "review on codex") || !strings.Contains(s.screen(), "[borrow exit 0]") ||
+		!strings.Contains(s.screen(), answer) ||
 		filepath.Dir(report) != filepath.Join(w.home, ".aggy", "inbox") {
 		t.Fatalf("the agent got no report; terminal: %q", s.screen())
 	}

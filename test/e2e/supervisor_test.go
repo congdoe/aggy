@@ -62,6 +62,21 @@ func buildAggy(t *testing.T) string {
 	return aggyBin
 }
 
+// aggySh is buildAggy's path quoted for a /bin/sh -c string, so a
+// TMPDIR with spaces or quotes still runs it.
+func aggySh(t *testing.T) string {
+	return "'" + strings.ReplaceAll(buildAggy(t), "'", `'\''`) + "'"
+}
+
+// TestMain removes the folder buildAggy built aggy in.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if aggyBin != "" {
+		_ = os.RemoveAll(filepath.Dir(aggyBin))
+	}
+	os.Exit(code)
+}
+
 // world is a temp HOME with the fakes installed under their vendor names
 // on PATH.
 type world struct {
