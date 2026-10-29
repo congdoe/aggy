@@ -30,11 +30,14 @@ func cleanPath(p string) string {
 // absolute entries, and returns a clean absolute path for the runner
 // (internal/execrun). It starts nothing. A missing binary matches
 // ErrNotFound.
-func LookPath(name string) (string, error) {
+func LookPath(name string) (string, error) { return LookPathIn(name, os.Getenv("PATH")) }
+
+// LookPathIn is LookPath on the PATH value path.
+func LookPathIn(name, path string) (string, error) {
 	if name == "" || strings.ContainsRune(name, filepath.Separator) {
 		return "", fmt.Errorf("probe: %q is not a bare program name", name)
 	}
-	for _, dir := range filepath.SplitList(cleanPath(os.Getenv("PATH"))) {
+	for _, dir := range filepath.SplitList(cleanPath(path)) {
 		p := filepath.Join(dir, name)
 		fi, err := safefs.Stat(p)
 		if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {

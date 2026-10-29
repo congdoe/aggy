@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -178,13 +179,71 @@ func TestAddToolsUnaddedRow(t *testing.T) {
 	}
 	for _, v := range adapter.Vendors() {
 		req, warns, dir := wireOnce(t, v, []string{probe.CapConfigOverride, probe.CapSettings}, repo)
-		if req.MCPConfigFile != "" || req.AgentFile != "" || req.MCP != nil || req.Hooks != nil || len(warns) != 0 || exists(t, dir) {
+		if req.MCPConfigFile != "" || req.AgentFile != "" || req.MCP != nil || req.Hooks != nil || len(warns) != 1 || !strings.Contains(warns[0], "tool demo not wired: aggy tool add has no record of its file") || !strings.Contains(warns[0], "tool.changed_since_add") || exists(t, dir) {
 			t.Errorf("%s: %+v %q", v, req, warns)
 		}
 	}
 	t.Chdir(repo)
 	if _, out, _ := toolRun("", false, "status", "demo"); !strings.Contains(out, switchboard.NotAdded) {
 		t.Errorf("status:\n%s", out)
+	}
+}
+
+// TestToolUnadded (R76-F1): with no index, or one older than tool_added,
+// every user tool is unadded and no built-in is; an index that cannot be
+// read is an error, and a launch then wires nothing.
+func TestToolUnadded(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name string
+		make func(t *testing.T, db string)
+		want []string
+		bad  bool
+	}{
+		{"no index", func(*testing.T, string) {}, []string{"demo"}, false},
+		{"recorded", func(t *testing.T, _ string) {
+			if err := recordToolAdd(ctx, "demo", "d"); err != nil {
+				t.Fatal(err)
+			}
+		}, nil, false},
+		{"older than v17", func(t *testing.T, db string) {
+			if err := recordToolAdd(ctx, "demo", "d"); err != nil {
+				t.Fatal(err)
+			}
+			d, err := sql.Open("sqlite", "file:"+db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = d.Close() }()
+			if _, err := d.Exec(`PRAGMA user_version = 16`); err != nil {
+				t.Fatal(err)
+			}
+		}, []string{"demo"}, false},
+		{"unreadable", func(t *testing.T, db string) { writeAt(t, db, "not a database", 0o600) }, nil, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, dest := wireHome(t)
+			writeAt(t, dest, demoTool, 0o600)
+			db, err := store.DefaultPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.make(t, db)
+			r, _, err := tooldef.Load(os.Getenv(home.Env))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := toolUnadded(ctx, r.List())
+			if (err != nil) != c.bad || !slices.Equal(got, c.want) {
+				t.Fatalf("toolUnadded = %q, %v", got, err)
+			}
+			if c.bad {
+				req, warns, dir := wireOnce(t, adapter.Claude, nil, t.TempDir())
+				if req.MCPConfigFile != "" || req.Hooks != nil || len(warns) != 1 || !strings.Contains(warns[0], "could not be read") || exists(t, dir) {
+					t.Errorf("launch with an unreadable index: %+v %q", req, warns)
+				}
+			}
+		})
 	}
 }
 

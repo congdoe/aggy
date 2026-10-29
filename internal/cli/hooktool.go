@@ -89,6 +89,19 @@ func hookToolWith(ctx context.Context, args []string, in io.Reader, stdout io.Wr
 		fail(diag.CodeToolHookApproves)
 		return
 	}
+	// F74-2: no PATH entry from the repo the CLI runs in picks the hook's
+	// program or reaches it; a folder that cannot be placed runs nothing.
+	cwd, err := os.Getwd()
+	if err == nil {
+		var p string
+		if p, err = toolPath(cwd); err == nil {
+			err = os.Setenv("PATH", p)
+		}
+	}
+	if err != nil {
+		fail(diag.CodeToolHookFailed)
+		return
+	}
 	path := h.Argv[0]
 	if !filepath.IsAbs(path) {
 		if path, err = probe.LookPath(path); err != nil {

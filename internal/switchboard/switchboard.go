@@ -59,7 +59,7 @@ const WasUser = "off: it was turned on for a user tool of this name; turn the bu
 
 // NotAdded is the reason a user tool turned on is off when aggy tool add
 // has no record of its file.
-const NotAdded = "off: aggy tool add has no record of its file; move it out of the tools folder, then aggy tool add it"
+const NotAdded = "off: aggy tool add has no record of its file; move it out of the tools folder, then aggy tool add it and aggy tool on it"
 
 // BuiltInDigest is the digest an "on" for a built-in records: a
 // built-in's own file changes with aggy's releases, so its on holds this

@@ -84,9 +84,19 @@ func runToolExec(args []string, stderr io.Writer) int {
 	if err != nil {
 		return fail("argv", err)
 	}
-	// F74-2: a PATH entry in the repo (direnv's PATH_add, a project's
-	// env.PATH) would let the repo pick the program and what it runs.
-	if err := os.Setenv("PATH", pathOutside(os.Getenv("PATH"), repo)); err != nil {
+	// F74-2: no PATH entry from the repo picks the program or reaches it.
+	// Outside a repo, the folder the CLI started the shim in.
+	at := repo
+	if at == "" {
+		if at, err = os.Getwd(); err != nil {
+			return fail("env", err)
+		}
+	}
+	p, err := toolPath(at)
+	if err == nil {
+		err = os.Setenv("PATH", p)
+	}
+	if err != nil {
 		return fail("env", err)
 	}
 	prog := argv[0]
@@ -136,15 +146,48 @@ func checkLaunchDir(dir string) (string, fs.FileInfo, error) {
 	return filepath.Dir(run), fi, nil
 }
 
-// pathOutside is PATH p without the entries that are repo or lie below
-// it, compared as written and canonically (F74-2). repo "" keeps all.
-func pathOutside(p, repo string) string {
-	if repo == "" {
-		return p
+// toolPath is PATH for a tool's program, the lookup of it included
+// (F74-2): without the entries a repo could have put there (direnv's
+// PATH_add, a project's env.PATH), that is any under the work tree
+// holding dir or under its main checkout, whose .envrc a linked worktree
+// nested in it inherits; outside a repo, any under dir itself, unless dir
+// is the home folder or above it, whose entries are the person's own. An
+// error means dir cannot be placed, and the caller fails closed. aggy
+// tool exec, aggy hook-tool, and a tool's proxy all use it.
+func toolPath(dir string) (string, error) {
+	if dir == "" {
+		return "", errors.New("no folder to keep PATH out of")
 	}
-	roots := []string{filepath.Clean(repo)}
-	if c, err := safefs.CanonicalPath(repo); err == nil {
-		roots = append(roots, c)
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	r, err := toolRepo(dir, false)
+	if err != nil {
+		return "", err
+	}
+	roots := []string{r.root, r.main}
+	if r.root == "" {
+		roots = []string{dir}
+		if h, err := os.UserHomeDir(); err == nil && len(pathOutside(h, roots)) == 0 {
+			roots = nil // dir is home or above it
+		}
+	}
+	return pathOutside(os.Getenv("PATH"), roots), nil
+}
+
+// pathOutside is PATH p without the entries that are one of roots or lie
+// below one, compared as written and canonically.
+func pathOutside(p string, dirs []string) string {
+	var roots []string
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		roots = append(roots, filepath.Clean(d))
+		if c, err := safefs.CanonicalPath(d); err == nil {
+			roots = append(roots, c)
+		}
 	}
 	in := func(d string) bool {
 		forms := []string{filepath.Clean(d)}

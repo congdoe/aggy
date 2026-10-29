@@ -38,6 +38,7 @@ esac
 // runs nothing.
 func TestHookTool(t *testing.T) {
 	isolate(t)
+	t.Setenv("PATH", "/usr/bin:/bin") // hook-tool rewrites it
 	prog := filepath.Join(t.TempDir(), "fakehook")
 	writeAt(t, prog, fakeToolHook, 0o755)
 	t.Setenv("CLAUDE_CONFIG_DIR", "/claude-home")
@@ -111,5 +112,63 @@ func TestHookTool(t *testing.T) {
 		if got := run("deny", args...); got != "" {
 			t.Errorf("%q: %q", args, got)
 		}
+	}
+}
+
+// TestHookToolPathOutsideRepo (F74-2): a hook's bare program is looked
+// up, and its PATH built, without the entries in the repo the CLI runs
+// in.
+func TestHookToolPathOutsideRepo(t *testing.T) {
+	isolate(t)
+	repo := switchRepo(t, "")
+	outside := t.TempDir()
+	answer := func(who string) string {
+		return "#!/bin/sh\n/bin/cat >/dev/null\necho '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"" + who + ":'\"$PATH\"'\"}}'\n"
+	}
+	writeAt(t, filepath.Join(repo, "node_modules", ".bin", "pathhook"), answer("repo"), 0o755)
+	writeAt(t, filepath.Join(outside, "pathhook"), answer("outside"), 0o755)
+	t.Setenv("PATH", filepath.Join(repo, "node_modules", ".bin")+":"+outside)
+	t.Chdir(repo)
+	old := hookTools
+	t.Cleanup(func() { hookTools = old })
+	hookTools = func() ([]tooldef.Tool, error) {
+		h := tooldef.Hook{Vendors: []adapter.Vendor{adapter.Claude}, Event: "PreToolUse", Decides: true, Timeout: 5, Argv: []string{"pathhook"}}
+		return []tooldef.Tool{{BuiltIn: true, Digest: strings.Repeat("ab", 32), Def: tooldef.Def{Name: "demo", Hooks: []tooldef.Hook{h}}}}, nil
+	}
+	var out bytes.Buffer
+	hookToolWith(context.Background(), []string{"--vendor", "claude", "demo", "0", strings.Repeat("ab", 8)},
+		strings.NewReader(`{"tool_name":"Bash","tool_input":{"command":"ls"}}`), &out)
+	if want := `"permissionDecisionReason":"outside:` + outside + `"`; !strings.Contains(out.String(), want) {
+		t.Errorf("got %q, want %s", out.String(), want)
+	}
+}
+
+// TestToolPath (F74-2): the PATH a tool program gets leaves out the work
+// tree and its main checkout (a linked worktree nested in it inherits
+// its .envrc), and outside a repo the folder itself, unless that is the
+// home folder.
+func TestToolPath(t *testing.T) {
+	isolate(t)
+	main := switchRepo(t, "")
+	wt := filepath.Join(main, ".claude", "worktrees", "w")
+	runGit(t, main, "worktree", "add", "-q", wt)
+	plain := t.TempDir()
+	keep := t.TempDir()
+	t.Setenv("PATH", strings.Join([]string{filepath.Join(main, "bin"), filepath.Join(wt, "bin"), filepath.Join(plain, "bin"), keep}, ":"))
+	for _, c := range []struct{ dir, want string }{
+		{wt, filepath.Join(plain, "bin") + ":" + keep},
+		{main, filepath.Join(plain, "bin") + ":" + keep},
+		{plain, filepath.Join(main, "bin") + ":" + filepath.Join(wt, "bin") + ":" + keep},
+	} {
+		if got, err := toolPath(c.dir); err != nil || got != c.want {
+			t.Errorf("toolPath(%s) = %q, %v, want %q", c.dir, got, err, c.want)
+		}
+	}
+	t.Setenv("HOME", plain)
+	if got, _ := toolPath(plain); !strings.Contains(got, filepath.Join(plain, "bin")) {
+		t.Errorf("home's own entries dropped: %q", got)
+	}
+	if _, err := toolPath(""); err == nil {
+		t.Error("no folder passed")
 	}
 }
