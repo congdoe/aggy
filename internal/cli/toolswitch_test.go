@@ -352,3 +352,25 @@ func TestToolDiagNoArgv(t *testing.T) {
 		}
 	}
 }
+
+// TestToolOnInstallHint (T6713-T6716): aggy tool on says how to install
+// a tool whose program is missing (aggy never installs), and that a
+// when condition such as playwright's has-ui is never checked.
+func TestToolOnInstallHint(t *testing.T) {
+	isolate(t)
+	repo := switchRepo(t, "")
+	bin := t.TempDir()
+	t.Setenv("PATH", bin)
+	_, out, errOut := toolRun("", false, "on", "context7")
+	if !strings.Contains(out, "context7-mcp is not an executable on PATH") || !strings.Contains(out, "npm i -g --ignore-scripts @upstash/context7-mcp@4.4.4") {
+		t.Errorf("context7 missing: %q %q", out, errOut)
+	}
+	_, out, errOut = toolRun("", false, "on", "playwright", "--repo", repo)
+	if !strings.Contains(out, "@playwright/mcp@0.0.83") || !strings.Contains(out, "aggy does not check that") {
+		t.Errorf("playwright: %q %q", out, errOut)
+	}
+	writeAt(t, filepath.Join(bin, "context7-mcp"), "#!/bin/sh\n", 0o755)
+	if _, out, _ = toolRun("", false, "on", "context7"); strings.Contains(out, "not an executable") {
+		t.Errorf("context7 present: %q", out)
+	}
+}

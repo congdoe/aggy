@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/home"
 )
 
@@ -36,6 +37,30 @@ func TestBuiltinsValid(t *testing.T) {
 	want := []string{"caveman", "codegraph", "context7", "headroom", "playwright", "rtk"}
 	if !slices.Equal(names, want) {
 		t.Errorf("built-ins = %v, want %v", names, want)
+	}
+	// aggy never installs: each built-in tells the person how to install
+	// its pinned version by hand (codegraph's comes with T6711).
+	for _, name := range []string{"caveman", "context7", "headroom", "playwright", "rtk"} {
+		tl, _ := r.Get(name)
+		if !strings.Contains(tl.Install.Hint, tl.Version) {
+			t.Errorf("%s: install.hint %q does not name the pinned version %s", name, tl.Install.Hint, tl.Version)
+		}
+	}
+	// T6716: playwright is per repo and off by default; has-ui is never
+	// checked (the person turns it on per repo).
+	if pw, _ := r.Get("playwright"); pw.Scope != "repo" || pw.Default {
+		t.Errorf("playwright scope %q default %v, want repo and off", pw.Scope, pw.Default)
+	}
+	// T6712: RTK is wired into Claude only (its Codex hook approves, and
+	// Grok has no subcommand), as a rewriting PreToolUse hook.
+	rtk, _ := r.Get("rtk")
+	if len(rtk.Hooks) != 1 || !slices.Equal(rtk.Hooks[0].Vendors, []adapter.Vendor{adapter.Claude}) ||
+		rtk.Hooks[0].Event != "PreToolUse" || !rtk.Hooks[0].Rewrites || !slices.Equal(rtk.Hooks[0].Argv, []string{"rtk", "hook", "claude"}) {
+		t.Errorf("rtk hooks = %+v", rtk.Hooks)
+	}
+	// T6713: Headroom is its MCP server only, never wrap or proxy.
+	if hr, _ := r.Get("headroom"); len(hr.MCP) != 1 || !slices.Equal(hr.MCP[0].Argv, []string{"headroom", "mcp", "serve"}) || len(hr.Hooks)+len(hr.Init) > 0 || !hr.Network {
+		t.Errorf("headroom = %+v", hr.Def)
 	}
 	// W71-6: the server runs in aggy's launch folder, so it is told the
 	// repo; codegraph's own form is serve --mcp --path <dir>.
