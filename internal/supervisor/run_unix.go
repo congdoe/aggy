@@ -251,7 +251,7 @@ func Run(o Options) (Exit, error) {
 			}
 			if s.sw.typed && !s.open {
 				s.pk.tell(fmt.Sprintf("%s has not exited after aggy typed its exit command, so it is still running.", s.o.Vendor),
-					fmt.Sprintf("If it exits, aggy switches to %s. To cancel, press the switch key, then Esc in the list.", s.sw.to))
+					exitNote(s.sw))
 				s.openPicker()
 			}
 		case b, ok := <-input:
@@ -269,7 +269,11 @@ func Run(o Options) (Exit, error) {
 			s.input(b)
 		case <-pending:
 			pending = nil
-			s.openList()
+			// A prompt aggy opened since the press (an offer, a note)
+			// keeps the screen: the list never opens over it (H1).
+			if !s.open {
+				s.openList()
+			}
 		case sig := <-sigs:
 			switch sig {
 			case syscall.SIGWINCH:
@@ -430,6 +434,12 @@ type session struct {
 	toolSeen            ToolSet
 	toolsDue            bool
 	toolsNote           []string
+	// toolsWaitTurn: a tools offer was turned down, so none is offered
+	// again before the next turn end (L2). toolSeq numbers the reads,
+	// toolRead is the one in flight, started at toolAt (L5).
+	toolsWaitTurn     bool
+	toolSeq, toolRead int
+	toolAt            time.Time
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -533,6 +543,7 @@ func (s *session) hookEvent(ev hookEvent) {
 		}
 		if ev.sessionID != "" && ev.sessionID == own {
 			s.atPrompt = !s.held
+			s.toolsWaitTurn = false
 			s.warnDue = true
 			s.askShare()
 			if ev.name == "Stop" && holdSignal(s.o.Vendor) && s.pk != nil {
@@ -763,6 +774,9 @@ func (s *session) offerSwitch() {
 	if !s.atPrompt || now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
 		return
 	}
+	if s.sw.resume && s.toolsWaitTurn {
+		return // one turned down at this turn end: the next one asks (L2)
+	}
 	if s.sw.checkSeq != 0 {
 		if time.Since(s.sw.checkAt) < childCheckWait {
 			return // confirmed: the picked session is being checked
@@ -841,7 +855,9 @@ func (s *session) offerSwitch() {
 	line := confirmLine(s.sw.choice.Model, tools)
 	lines := []string{line}
 	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: s.turnCause(), Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "asked": s.sw.asked, "limit": s.sw.limit, "resume": s.sw.resume})})
-	s.pk.preselect = "" // offered once (O56-5)
+	if !s.sw.resume {
+		s.pk.preselect = "" // offered once (O56-5); a limit's stays past a resume
+	}
 	s.pk.ask(v, lines...)
 	if s.sw.resume {
 		// The tools' names go first when the keys would not fit.
@@ -1059,6 +1075,15 @@ func (s *session) onLimit(h LimitHit) {
 	}
 	pre := s.withQuota()
 	s.pk.preselect = pre
+	if s.sw.resume && !s.sw.typed && pre != "" {
+		// A resume for changed tools gives way to the limit's handoff (M1).
+		if s.open && s.pk.confirm != "" {
+			s.closePicker()
+		}
+		s.log(diag.Rec{Event: diag.EvSwitchCancelled, Cause: s.lastLimit, Attrs: map[string]any{"how": "limit", "to": string(s.sw.to)}})
+		s.setSwitch(pendingSwitch{})
+		s.toolSeen = nil // a later notice offers it again
+	}
 	if s.open || s.sw.to != "" {
 		return // the picker is up, or a switch already waits
 	}
@@ -1214,6 +1239,10 @@ func (s *session) openList() {
 // get back between sequences (B13-12): mid ESC [ ? 1049 h, its on is
 // about to change.
 func (s *session) openPicker() {
+	if s.open {
+		// outMu is held while the picker is up: never lock it twice.
+		s.closePicker()
+	}
 	deadline := time.Now().Add(altSettle)
 	s.outMu.Lock()
 	for !s.alt.idle() && time.Now().Before(deadline) {
@@ -1340,6 +1369,7 @@ func (s *session) pickerInput(b []byte) {
 		s.setSwitch(pendingSwitch{to: picked, choice: c})
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked)})})
 	default: // Esc on the list cancels a waiting switch
+		s.toolsWaitTurn = s.toolsWaitTurn || s.sw.resume
 		s.setSwitch(pendingSwitch{})
 	}
 }
@@ -1373,7 +1403,11 @@ func (s *session) promptInput(b []byte) {
 		s.confirmSwitch()
 	case s.pk.isKey(b) && s.pk.resume:
 		// A tool change's note on a vendor with no hold signal: the user
-		// queues the resume, still confirmed at the turn end (T6729).
+		// queues the resume, still confirmed at the turn end (T6729). A
+		// key meant for the CLI as the note appears does not count.
+		if time.Since(s.openedAt) < confirmGuard {
+			return
+		}
 		s.closePicker()
 		if s.sw.to == "" { // an agent's ask may have come in meanwhile
 			s.queueResume(s.toolsNote, true)
@@ -1391,6 +1425,14 @@ func (s *session) promptInput(b []byte) {
 	}
 }
 
+// exitNote says what a late exit does, and how to cancel it.
+func exitNote(sw pendingSwitch) string {
+	if sw.resume {
+		return fmt.Sprintf("If it exits, aggy resumes %s on the same session. To cancel, press the switch key, then Esc in the list.", sw.to)
+	}
+	return fmt.Sprintf("If it exits, aggy switches to %s. To cancel, press the switch key, then Esc in the list.", sw.to)
+}
+
 // promptEsc is a lone Esc at a prompt aggy opened, once nothing followed
 // it within escTimeout.
 func (s *session) promptEsc() {
@@ -1401,6 +1443,7 @@ func (s *session) promptEsc() {
 	s.closePicker()
 	if confirming {
 		s.log(diag.Rec{Event: diag.EvSwitchCancelled, Cause: s.sw.rec, Attrs: map[string]any{"how": "esc_confirm", "to": string(s.sw.to)}})
+		s.toolsWaitTurn = s.toolsWaitTurn || s.sw.resume
 		s.setSwitch(pendingSwitch{})
 	}
 }

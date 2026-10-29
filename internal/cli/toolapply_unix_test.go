@@ -98,6 +98,10 @@ func TestToolSwitchNotifies(t *testing.T) {
 			t.Errorf("%v: output %q", st.args, out)
 		}
 	}
+	// L6: a tool that is not loaded says only that.
+	if code, out, _ := toolRun("", false, "off", "ghost"); code != 0 || strings.Contains(out, "takes effect") {
+		t.Errorf("off ghost: %d %q", code, out)
+	}
 }
 
 // TestSessionToolSet (T6729): what a session gets, as its launch would
@@ -133,5 +137,17 @@ func TestSessionToolSet(t *testing.T) {
 		if err != nil || !maps.Equal(got, tt.want) {
 			t.Errorf("%s: %v, %v; want %v", tt.name, got, err, tt.want)
 		}
+	}
+
+	// L7: a skill is linked for every repo, so a repo's tools_off does
+	// not take it from a session there, and it still counts.
+	skillOff := switchRepo(t, "tools_off = [\"caveman\"]\n")
+	writeAt(t, filepath.Join(os.Getenv(home.Env), "skills", "caveman", "SKILL.md"), "---\nname: caveman\ndescription: short\n---\n", 0o644)
+	if code, _, errOut := toolRun("", false, "on", "caveman", "--vendor", "claude"); code != 0 {
+		t.Fatalf("on caveman: %q", errOut)
+	}
+	got, err := sessionToolSet(ctx, adapter.Claude, claudeCaps, skillOff, nil)
+	if want := (supervisor.ToolSet{"context7": "mcp", "caveman": "skill"}); err != nil || !maps.Equal(got, want) {
+		t.Errorf("a skill under tools_off: %v, %v; want %v", got, err, want)
 	}
 }

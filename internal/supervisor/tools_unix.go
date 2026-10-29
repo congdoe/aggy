@@ -25,11 +25,16 @@ import (
 // TODO(T6729): no in-place reload is verified for any of the three CLIs
 // (docs/verification.md, "Tool reload"), so every change needs a resume.
 
-// toolReading is one answer of Options.Tools.
+// toolReading is one answer of Options.Tools, for the read seq.
 type toolReading struct {
 	set ToolSet
 	err error
+	seq int
 }
+
+// toolStale is how long a read of the session's tools may run before a
+// new notice gives up on it (as shareStale, L5).
+var toolStale = 30 * time.Second
 
 // onTools is the socket's tools-changed callback: it wakes the main loop
 // and never blocks; notices that come while one waits are one.
@@ -41,29 +46,36 @@ func (s *session) onTools() {
 }
 
 // readTools reads the session's tools off the main loop. One read runs
-// at a time; a notice during it reads again once it lands.
+// at a time; a notice during it reads again once it lands. A read in
+// flight past toolStale (a hung file system) is given up on: the notice
+// starts its own, and the old answer is dropped when it lands.
 func (s *session) readTools() {
 	if s.o.Tools == nil {
 		return
 	}
-	if s.toolBusy {
+	if s.toolBusy && time.Since(s.toolAt) <= toolStale {
 		s.toolAgain = true
 		return
 	}
-	s.toolBusy = true
+	s.toolSeq++
+	s.toolBusy, s.toolAgain, s.toolRead, s.toolAt = true, false, s.toolSeq, time.Now()
+	seq := s.toolSeq
 	s.goSafe(func() {
 		set, err := s.o.Tools()
 		select {
-		case s.toolReads <- toolReading{set: set, err: err}:
+		case s.toolReads <- toolReading{set: set, err: err, seq: seq}:
 		case <-s.quit:
 		}
 	})
 }
 
 // toolsRead takes a reading of the session's tools. Nothing happens when
-// they are the launch's, or as they were at the last offer, which the
+// they are the launch's, or as they were when last offered, which the
 // user may have turned down: only a change since asks again.
 func (s *session) toolsRead(r toolReading) {
+	if r.seq != s.toolRead {
+		return // a read given up on as stuck
+	}
 	s.toolBusy = false
 	if s.toolAgain {
 		s.toolAgain = false
@@ -81,43 +93,61 @@ func (s *session) toolsRead(r toolReading) {
 		s.log(diag.Rec{Event: diag.EvToolsChanged, Attrs: map[string]any{"changed": len(diff), "how": how}})
 	}
 	if len(diff) == 0 {
-		// Back as launched: a resume still waiting is not needed.
-		if s.toolSeen != nil {
-			s.toolSeen, s.toolsDue = nil, false
-			s.pk.resume = false
-			if s.sw.resume && !s.sw.typed {
-				rec("reverted")
-				if s.open && s.pk.confirm != "" {
-					s.closePicker()
-				}
-				s.setSwitch(pendingSwitch{})
+		// Back as launched: a resume or a note still waiting is not
+		// needed.
+		s.toolSeen, s.toolsDue = nil, false
+		if s.open && s.pk.note && s.pk.resume {
+			s.closePicker() // L4: the note is stale
+		}
+		s.pk.resume = false
+		if s.sw.resume && !s.sw.typed {
+			rec("reverted")
+			if s.open && s.pk.confirm != "" {
+				s.closePicker()
 			}
+			s.setSwitch(pendingSwitch{})
 		}
 		return
 	}
 	if s.toolSeen != nil && maps.Equal(r.set, s.toolSeen) {
 		return
 	}
-	s.toolSeen = r.set
-	if s.toolSeen == nil {
-		s.toolSeen = ToolSet{} // seen: every tool off
+	// seen marks the set acted on, so it is not offered again; only what
+	// was offered (or is waiting to be) counts (M3).
+	seen := func() {
+		s.toolSeen = r.set
+		if s.toolSeen == nil {
+			s.toolSeen = ToolSet{} // every tool off
+		}
 	}
 	switch {
 	case s.sw.typed && s.sw.resume:
 		// The exit command is typed: the resume wires the tools as they
 		// are then.
+		seen()
 		rec("waiting")
 	case s.sw.to != "" && !s.sw.resume:
-		// Another vendor waits; this vendor gets its tools when next
-		// launched.
+		// Another vendor waits. If it goes, that vendor's launch wires
+		// its own tools; if it is cancelled, the next notice offers this.
 		rec("busy")
 	case s.sw.resume:
+		// M2: the user must see what the resume brings; an open offer is
+		// closed and asked again, with its guard re-armed.
+		seen()
 		s.sw.tools = diff
+		if s.open && s.pk.confirm != "" {
+			s.closePicker()
+		}
 		rec("waiting")
 	case !holdSignal(v):
+		seen()
+		if s.open && s.pk.note && s.pk.resume {
+			s.closePicker() // shown again with the new changes
+		}
 		s.toolsDue, s.toolsNote = true, diff
 		rec("note")
 	default:
+		seen()
 		s.queueResume(diff, false)
 		rec("queued")
 	}
@@ -137,17 +167,18 @@ func (s *session) queueResume(diff []string, user bool) {
 
 // offerToolsNote shows the note for a tool change on a vendor with no
 // hold signal, once the CLI is at its prompt and quiet, the picker is
-// closed, and no switch waits; a switch or a picker in the way drops it.
+// closed, no switch waits, and none was turned down at this turn end. A
+// switch in the way drops it, and the next notice offers it again.
 func (s *session) offerToolsNote() {
 	if !s.toolsDue || s.open {
 		return
 	}
 	if s.sw.to != "" {
-		s.toolsDue = false
+		s.toolsDue, s.toolSeen = false, nil
 		return
 	}
 	now := time.Now()
-	if !s.atPrompt || now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
+	if !s.atPrompt || s.toolsWaitTurn || now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
 		return
 	}
 	s.toolsDue = false

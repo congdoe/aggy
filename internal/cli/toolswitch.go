@@ -178,7 +178,7 @@ func toolVendors(name string) ([]adapter.Vendor, error) {
 // toolSwitch is aggy tool on|off: it records one setting. Nothing runs
 // and nothing is wired here; the next launch wires what is on. Off takes
 // any tool name, loaded or not, and never reads the repo's config.
-func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) error {
+func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) (err error) {
 	if err := delegated(); err != nil {
 		return err
 	}
@@ -276,10 +276,15 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 	dlog.Log(ctx, diag.Rec{Event: diag.EvToolSwitched, Vendor: a.vendor,
 		Attrs: map[string]any{"tool": name, "repo": repo.key != "", "on": on}})
 	// Running sessions are told last, after any skill link changed, even
-	// when that failed: the setting is recorded (T6729).
+	// when that failed: the setting is recorded (T6729). What it says
+	// comes only after a success, never before an error's text (L6).
 	defer func() {
+		n := notifySessions(ctx, a.vendor, repo.key)
+		if err != nil || !loaded {
+			return
+		}
 		fmt.Fprintln(stdout, "It takes effect at the next launch.")
-		if n := notifySessions(ctx, a.vendor, repo.key); n > 0 {
+		if n > 0 {
 			fmt.Fprintf(stdout, "Told %d running aggy session(s): one whose tools changed offers to resume its CLI on the same session at the turn end (Claude and Codex; Grok's tools are not wired).\n", n)
 		}
 	}()
