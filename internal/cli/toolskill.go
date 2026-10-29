@@ -11,7 +11,6 @@ import (
 	"maps"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -206,32 +205,51 @@ type skillFile struct {
 }
 
 // readSkillTree reads every regular file under dir, in path order,
-// through safefs: no symlink at any depth, nothing but regular files
-// and folders, no file with a second hard link, at most maxSkillEntries
-// entries and under maxSkillBytes in all.
+// through one safefs.Dir per folder, each opened relative to its parent's
+// descriptor, so a folder swapped for a symlink mid-walk is refused and
+// nothing outside dir is read: no symlink at any depth (dir included),
+// nothing but regular files and folders, no file with a second hard
+// link, at most maxSkillEntries entries and under maxSkillBytes in all.
 func readSkillTree(dir string) ([]skillFile, error) {
 	bad := func(why string) error { return fmt.Errorf("%w: %s %s", errSkillMissing, dir, why) }
+	fi, err := safefs.Lstat(dir)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.IsDir() {
+		return nil, bad("is not a folder (a symlink is refused)")
+	}
+	root, err := safefs.OpenDir(dir, fi)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
 	var files []skillFile
 	n, total := 0, 0
-	var walk func(rel string) error
-	walk = func(rel string) error {
-		des, err := safefs.ReadDir(filepath.Join(dir, rel))
+	var walk func(d *safefs.Dir, rel string) error
+	walk = func(d *safefs.Dir, rel string) error {
+		des, err := d.ReadDir()
 		if err != nil {
 			return err
 		}
-		slices.SortFunc(des, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
 		for _, de := range des {
 			if n++; n > maxSkillEntries {
 				return bad(fmt.Sprintf("holds more than %d entries", maxSkillEntries))
 			}
 			r := filepath.Join(rel, de.Name())
-			fi, err := safefs.Lstat(filepath.Join(dir, r))
+			fi, err := d.Lstat(de.Name())
 			if err != nil {
 				return err
 			}
 			switch {
 			case fi.IsDir():
-				if err := walk(r); err != nil {
+				sub, err := d.OpenDir(de.Name(), fi)
+				if err != nil {
+					return err
+				}
+				err = walk(sub, r)
+				_ = sub.Close()
+				if err != nil {
 					return err
 				}
 				continue
@@ -240,7 +258,7 @@ func readSkillTree(dir string) ([]skillFile, error) {
 			case safefs.LinkCount(fi) > 1:
 				return bad("holds " + r + ", which has another hard link")
 			}
-			b, err := safefs.ReadFileLimit(filepath.Join(dir, r), int64(maxSkillBytes-total))
+			b, err := d.ReadFileLimit(de.Name(), fi, int64(maxSkillBytes-total))
 			if errors.Is(err, safefs.ErrTooLarge) {
 				return bad(fmt.Sprintf("holds more than %d bytes", maxSkillBytes))
 			} else if err != nil {
@@ -253,7 +271,7 @@ func readSkillTree(dir string) ([]skillFile, error) {
 		}
 		return nil
 	}
-	if err := walk(""); err != nil {
+	if err := walk(root, ""); err != nil {
 		return nil, err
 	}
 	return files, nil
