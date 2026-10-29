@@ -4,6 +4,7 @@ package supervisor
 
 import (
 	"bytes"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -51,7 +52,7 @@ func TestPickerOptions(t *testing.T) {
 				}
 				done, c = p.handle([]byte(in))
 			}
-			if done != tt.done || c != tt.want {
+			if done != tt.done || !reflect.DeepEqual(c, tt.want) {
 				t.Errorf("got %v %+v, want %v %+v", done, c, tt.done, tt.want)
 			}
 		})

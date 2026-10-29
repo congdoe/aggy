@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -13,9 +14,10 @@ import (
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/supervisor"
 	"github.com/congdoe/aggy/internal/termsafe"
+	"github.com/congdoe/aggy/internal/tooldef"
 )
 
-const switchUsage = "usage: aggy switch [--brief] <claude|codex|grok>\n"
+const switchUsage = "usage: aggy switch [--brief] [--tool NAME]... <claude|codex|grok>\n"
 
 // runSwitch is `aggy switch <vendor>`, which a linked skill runs inside a
 // CLI aggy supervises: it asks the supervisor to switch to vendor at the
@@ -46,8 +48,25 @@ func switchWith(args []string, getenv func(string) string, stdout, stderr io.Wri
 		switch a := args[i]; {
 		case a == "--brief":
 			req.Brief = true
+		case a == "--tool" || strings.HasPrefix(a, "--tool="):
+			name, ok := strings.CutPrefix(a, "--tool=")
+			if !ok {
+				if i+1 >= len(args) {
+					refused(diag.CodeUsage, "--tool needs a tool name", "--tool needs a tool name", "")
+					return 2
+				}
+				i++
+				name = args[i]
+			}
+			if !tooldef.ValidName(name) {
+				refused(diag.CodeUsage, "--tool takes a tool name", "--tool takes a tool name: lowercase letters, digits, and -", "")
+				return 2
+			}
+			if !slices.Contains(req.Tools, name) {
+				req.Tools = append(req.Tools, name)
+			}
 		case a == "--new" || a == "--model":
-			msg := a + " is the user's choice, in aggy's picker; an agent may ask for a vendor and --brief only"
+			msg := a + " is the user's choice, in aggy's picker; an agent may ask for a vendor, --brief, and --tool only"
 			refused(diag.CodeAgentOptions, msg, msg, "")
 			return 2
 		case strings.HasPrefix(a, "-"):

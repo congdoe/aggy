@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -51,6 +52,9 @@ func TestSwitchCommand(t *testing.T) {
 	}{
 		{"queued", []string{"grok"}, srv.Path(), 0, "when this turn ends", ""},
 		{"with a brief", []string{"--brief", "grok"}, srv.Path(), 0, "when this turn ends", ""},
+		{"with tools", []string{"--tool", "context7", "--tool=codegraph", "--tool", "context7", "grok"}, srv.Path(), 0, "when this turn ends", ""},
+		{"a bad tool name", []string{"--tool", "../x", "grok"}, srv.Path(), 2, "", "[cli.usage · run "},
+		{"--tool with no name", []string{"grok", "--tool"}, srv.Path(), 2, "", "needs a tool name"},
 		{"no --new for agents", []string{"--new", "grok"}, srv.Path(), 2, "", "[switch.agent_options · run "},
 		{"no --model for agents", []string{"--model", "grok-5", "grok"}, srv.Path(), 2, "", "user's choice"},
 		{"unknown flag", []string{"--fork", "grok"}, srv.Path(), 2, "", "usage"},
@@ -69,7 +73,8 @@ func TestSwitchCommand(t *testing.T) {
 			}
 		})
 	}
-	if len(asked) != 2 || asked[0].Vendor != "grok" || asked[0].Brief || !asked[1].Brief {
-		t.Errorf("switch requests = %+v, want grok, then grok with --brief", asked)
+	if len(asked) != 3 || asked[0].Vendor != "grok" || asked[0].Brief || !asked[1].Brief ||
+		!slices.Equal(asked[2].Tools, []string{"context7", "codegraph"}) {
+		t.Errorf("switch requests = %+v, want grok, grok with --brief, grok with two tools", asked)
 	}
 }

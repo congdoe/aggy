@@ -5,6 +5,7 @@ package supervisor
 import (
 	"bytes"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -72,7 +73,7 @@ func wantExit(t *testing.T, done <-chan Exit, want Exit) {
 	t.Helper()
 	select {
 	case ex := <-done:
-		if ex != want {
+		if !reflect.DeepEqual(ex, want) {
 			t.Errorf("exit %+v, want %+v", ex, want)
 		}
 	case <-time.After(waitLimit):
@@ -564,6 +565,9 @@ func TestSwitchOptionsCarried(t *testing.T) {
 		`{"type":"switch-request","vendor":"grok","model":"g-1"}`,
 		`{"type":"switch-request","vendor":"grok","model":"a b"}`,
 		`{"type":"hook-event","vendor":"claude","event":"Stop","payload":{},"brief":true}`,
+		`{"type":"hook-event","vendor":"claude","event":"Stop","payload":{},"tools":["x"]}`,
+		`{"type":"switch-request","vendor":"grok","tools":["../x"]}`,
+		`{"type":"switch-request","vendor":"grok","tools":["a","b","c","d","e","f","g","h","i"]}`,
 	} {
 		if r := request(t, sock, bad); strings.Contains(r, `"ok":true`) {
 			t.Errorf("%s: accepted", bad)
@@ -577,6 +581,18 @@ func TestSwitchOptionsCarried(t *testing.T) {
 	c.waitGot(t, []byte("/exit\r"))
 	c.quit(0)
 	wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok, Brief: true}})
+
+	// An agent's tools are shown in the confirmation the user answers,
+	// and reach the next launch only.
+	ts, c, done, sock = switchRun(t, false)
+	if r := request(t, sock, `{"type":"switch-request","vendor":"grok","tools":["context7","codegraph"]}`); !strings.Contains(r, `"ok":true`) {
+		t.Fatalf("reply %q", r)
+	}
+	poll(t, "the confirmation", []byte("the agent asks, tools context7,codegraph -> grok. Ctrl+"), ts.screen)
+	confirm(t, ts)
+	c.waitGot(t, []byte("/exit\r"))
+	c.quit(0)
+	wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok, Tools: []string{"context7", "codegraph"}}})
 }
 
 // limitOpts gives Run a limit channel, and quota to grok only.

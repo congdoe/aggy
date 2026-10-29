@@ -108,7 +108,7 @@ func launch(name string, t target, stderr io.Writer) int {
 			return code
 		}
 		c := next.choice
-		t = target{ParentID: next.parentID, Vendor: next.vendor, Child: c.Child, NewChild: c.New, Model: c.Model, Brief: c.Brief}
+		t = target{ParentID: next.parentID, Vendor: next.vendor, Child: c.Child, NewChild: c.New, Model: c.Model, Brief: c.Brief, Tools: c.Tools}
 	}
 }
 

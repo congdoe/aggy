@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"reflect"
 	"sync"
 	"syscall"
 	"testing"
@@ -217,7 +218,7 @@ func finish(t *testing.T, c *fakeChild, done <-chan Exit) {
 	c.quit(3)
 	select {
 	case ex := <-done:
-		if ex != (Exit{Code: 3}) {
+		if !reflect.DeepEqual(ex, Exit{Code: 3}) {
 			t.Errorf("exit %+v, want code 3 and no switch", ex)
 		}
 	case <-time.After(waitLimit):
