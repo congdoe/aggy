@@ -55,20 +55,6 @@ var toolIndexes = map[string]toolIndex{
 // interrupted build left behind never counts as an index.
 const indexMarker = ".aggy-indexed"
 
-// toolInstallHow says how to install a built-in's pinned version
-// ({version}); aggy only says it and never installs anything.
-var toolInstallHow = map[string]string{
-	"codegraph": "npm install -g @colbymchenry/codegraph@{version}", // docs/verification.md, "Managed tools"
-}
-
-// installHow is the fix for a tool whose program is missing.
-func installHow(t tooldef.Tool) string {
-	if how, ok := toolInstallHow[t.Name]; ok && t.BuiltIn {
-		return "install " + t.Name + " " + t.Version + " yourself: " + strings.ReplaceAll(how, "{version}", t.Version)
-	}
-	return "install " + t.Name + " " + t.Version
-}
-
 // prebuildTimeout bounds a prebuild. CodeGraph's README has the Linux
 // kernel indexed in under 12 minutes on two cores.
 const prebuildTimeout = 30 * time.Minute
@@ -124,7 +110,7 @@ func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, in io.R
 	}
 	path := t.Install.Prebuild[0]
 	if err := resolveProgram(path); err != nil {
-		return fail(fmt.Errorf("%s is not installed (%s: %v); %s, then turn it on again", t.Name, path, err, installHow(t)))
+		return fail(fmt.Errorf("%s is not installed (%s: %v); %s, then turn it on again", t.Name, path, err, installHowTo(t)))
 	}
 	if !filepath.IsAbs(path) {
 		var err error
