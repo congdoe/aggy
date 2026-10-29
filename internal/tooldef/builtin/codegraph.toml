@@ -27,6 +27,11 @@ unverified = ["homepage", "install"]
 check = ["codegraph", "--version"]
 check_pattern = '^(\d+\.\d+\.\d+)'
 prebuild = ["codegraph", "init", "{repo}"]
+# init exits 0 at once on a repo it counts as initialized, a database an
+# interrupted init left included; index [path] rebuilds the full index
+# from scratch (the 1.6.2 bundle's lib/dist/bin/codegraph.js, runInit and
+# the index command).
+rebuild = ["codegraph", "index", "{repo}"]
 
 [[mcp]]
 vendors = ["claude", "codex", "grok"]

@@ -4,6 +4,7 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -51,10 +52,58 @@ func TestCodegraphInitInterrupted(t *testing.T) {
 			if exists(t, filepath.Join(repo, ".codegraph", indexMarker)) {
 				t.Error("marked as indexed")
 			}
+			// The real init would say "already initialized" and exit 0 over
+			// the half-built index: the next on rebuilds it instead.
 			fakeCodegraph(t, "0")
-			if code, _, errOut := toolRun("", false, "on", "codegraph", "--repo", repo); code != 0 || lines(t, filepath.Join(repo, ".codegraph", "inits")) != 2 {
+			cg := filepath.Join(repo, ".codegraph")
+			if code, _, errOut := toolRun("", false, "on", "codegraph", "--repo", repo); code != 0 || lines(t, filepath.Join(cg, "inits")) != 1 ||
+				lines(t, filepath.Join(cg, "indexes")) != 1 || !exists(t, filepath.Join(cg, indexMarker)) {
 				t.Fatalf("again: %d %q", code, errOut)
 			}
 		})
+	}
+}
+
+// TestToolOnPromptInterrupt (T6711 F2): Ctrl-C at aggy tool on's
+// first-index question ends aggy at once: no signal is caught while it
+// waits for an answer.
+func TestToolOnPromptInterrupt(t *testing.T) {
+	if os.Getenv("AGGY_TEST_PROMPT_HELPER") != "" {
+		isolate(t)
+		fakeCodegraph(t, "0")
+		repo := switchRepo(t, "")
+		os.Exit(toolWith([]string{"on", "codegraph", "--repo", repo}, os.Stdin, true, os.Stdout, os.Stderr))
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestToolOnPromptInterrupt$")
+	cmd.Env = append(os.Environ(), "AGGY_TEST_PROMPT_HELPER=1")
+	stdin, err := cmd.StdinPipe() // held open: the answer never comes
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stdin.Close() }()
+	var out lockedBuffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill() }()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	for deadline := time.Now().Add(2 * time.Minute); !strings.Contains(out.String(), "[y/N]"); time.Sleep(25 * time.Millisecond) {
+		select {
+		case err := <-done:
+			t.Fatalf("exited (%v) before asking:\n%s", err, out.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("never asked:\n%s", out.String())
+		}
+	}
+	_ = cmd.Process.Signal(syscall.SIGINT)
+	select {
+	case err := <-done:
+		t.Logf("aggy tool on ended: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Ctrl-C at the prompt did not end aggy tool on:\n%s", out.String())
 	}
 }
