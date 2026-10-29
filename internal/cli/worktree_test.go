@@ -152,6 +152,52 @@ func TestWorktreeDeleteBranch(t *testing.T) {
 	}
 }
 
+// TestWorktreeDeleteBranchRebasing (T6778 L1): a branch being rebased in
+// a worktree, whose HEAD is then detached, is refused as git branch -D
+// refuses it; once the rebase is gone the branch is deleted, its config
+// section with it.
+func TestWorktreeDeleteBranchRebasing(t *testing.T) {
+	g, _ := newWorktrees(t)
+	repo, _ := filepath.EvalSymlinks(t.TempDir())
+	editRepo(t, repo)
+	ctx := context.Background()
+	wt, err := g.Create(ctx, repo, "3123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, wt.Path, "commit", "-q", "--allow-empty", "-m", "one")
+	gitIn(t, repo, "config", "branch."+wt.Branch+".description", "aggy's edit")
+	// A rebase that stops: the worktree's HEAD is detached mid-rebase.
+	cmd := exec.Command("git", "-c", "core.editor=true", "-c", "core.hooksPath=/dev/null", "rebase", "-x", "false", "HEAD~1")
+	cmd.Dir, cmd.Env = wt.Path, append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_EDITOR=true")
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("the rebase did not stop:\n%s", out)
+	}
+	if list := gitIn(t, repo, "worktree", "list", "--porcelain"); strings.Contains(list, "branch refs/heads/"+wt.Branch) {
+		t.Fatalf("the branch still shows as checked out, so this tests nothing:\n%s", list)
+	}
+	head := gitIn(t, repo, "rev-parse", "refs/heads/"+wt.Branch)
+	if err := g.deleteBranch(ctx, wt, head); err == nil || !strings.Contains(err.Error(), "rebased") {
+		t.Errorf("mid-rebase: err %v", err)
+	}
+	if b := gitIn(t, repo, "branch", "--list", wt.Branch); b == "" {
+		t.Fatal("a branch being rebased was deleted")
+	}
+	gitIn(t, wt.Path, "rebase", "--abort")
+	gitIn(t, repo, "worktree", "remove", "--force", wt.Path)
+	if err := g.deleteBranch(ctx, wt, head); err != nil {
+		t.Fatal(err)
+	}
+	if b := gitIn(t, repo, "branch", "--list", wt.Branch); b != "" {
+		t.Errorf("branch left: %q", b)
+	}
+	cfg := exec.Command("git", "config", "--get-regexp", `^branch\.`)
+	cfg.Dir, cfg.Env = repo, append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
+	if out, _ := cfg.CombinedOutput(); strings.Contains(string(out), wt.Branch) {
+		t.Errorf("the branch's config is left: %s", out)
+	}
+}
+
 // TestWorktreeRemoveOwned (T6687): Remove acts only on a path and branch
 // aggy made, whatever the record says.
 func TestWorktreeRemoveOwned(t *testing.T) {
