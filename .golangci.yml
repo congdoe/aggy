@@ -246,6 +246,19 @@ linters:
       - path: ^internal/safefs/fstype_darwin\.go$
         text: "use of `syscall\\.(Statfs|Statfs_t)`"
         linters: [forbidigo]
+      # The atomic no-replace rename in safefs (RenameNoReplace), relative
+      # to its checked parent's descriptor: renameat2 RENAME_NOREPLACE on
+      # Linux and renameatx_np RENAME_EXCL on macOS (golang.org/x/sys/unix,
+      # for exactly these names).
+      - path: ^internal/safefs/rename_(linux|darwin)\.go$
+        text: "import 'golang.org/x/sys/unix' is not allowed"
+        linters: [depguard]
+      - path: ^internal/safefs/rename_linux\.go$
+        text: "use of `unix\\.(Renameat2|RENAME_NOREPLACE)`"
+        linters: [forbidigo]
+      - path: ^internal/safefs/rename_darwin\.go$
+        text: "use of `unix\\.(RenameatxNp|RENAME_EXCL)`"
+        linters: [forbidigo]
       # access(2) only in safefs, behind its path check (DirWritable).
       - path: ^internal/safefs/
         text: "use of `syscall\\.Access`"
