@@ -148,7 +148,7 @@ func TestToolsChangedCodexNote(t *testing.T) {
 	if bytes.Contains(ts.screen(), []byte("same session -> codex")) {
 		t.Fatal("offered without the user")
 	}
-	ts.typeIn(t, "\x1c")
+	confirm(t, ts) // the note's key, past its guard (L1)
 	poll(t, "the offer", []byte("tools +context7, same session -> codex. Ctrl+"), ts.screen)
 	never(t, "no key", []byte("/exit"), c.received, 150*time.Millisecond)
 	confirm(t, ts)
