@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/fakecli"
 )
 
@@ -41,8 +43,8 @@ func TestSwitchAtTurnEnd(t *testing.T) {
 		key = []byte("1")
 	}
 	s.mu.Unlock()
-	s.send(key)
-	s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
+	s.send(append([]byte("b"), key...)) // with a brief (T6683)
+	s.waitWithin([]byte("brief -> grok. Ctrl+"), offerTimeout)
 	time.Sleep(600 * time.Millisecond) // past the confirmation's guard
 	s.send([]byte{0x1c})
 	// grok is on screen: end it.
@@ -63,6 +65,10 @@ func TestSwitchAtTurnEnd(t *testing.T) {
 	}
 	if len(runs[1].Flags["--session-id"]) != 1 {
 		t.Errorf("grok args %q: want a new pre-assigned session", runs[1].Args)
+	}
+	briefs, _ := filepath.Glob(filepath.Join(w.cwd, ".aggy", "briefs", "*.md"))
+	if len(briefs) != 1 || !slices.Contains(runs[1].Args, adapter.BriefPrompt(briefs[0])) {
+		t.Errorf("grok args %q: want the prompt to read the brief in %q", runs[1].Args, briefs)
 	}
 	s.restored("after the switch")
 }
