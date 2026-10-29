@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -262,12 +263,23 @@ func missingProgram(t tooldef.Tool) string {
 }
 
 // installHowTo says how to install t's pinned version by hand: its
-// definition's install.hint when it has one. aggy never installs.
+// definition's install.hint when it has one. aggy never installs. A
+// user tool's hint is the file author's, not aggy's advice, so it is
+// quoted and attributed (#86).
 func installHowTo(t tooldef.Tool) string {
-	if t.Install.Hint != "" {
-		return "install " + t.Name + " " + t.Version + " by hand (" + t.Install.Hint + ")"
+	s := "install " + t.Name + " " + t.Version + " by hand"
+	switch {
+	case t.Install.Hint == "":
+		return s
+	case t.BuiltIn:
+		return s + " (" + t.Install.Hint + ")"
 	}
-	return "install " + t.Name + " " + t.Version
+	return s + "; " + userHint(t.Install.Hint)
+}
+
+// userHint attributes a user definition's install.hint to the file.
+func userHint(h string) string {
+	return "the tool's definition, not aggy, says: " + strconv.Quote(h)
 }
 
 // refusalFix is the command that clears a launch's refusal r for v.
