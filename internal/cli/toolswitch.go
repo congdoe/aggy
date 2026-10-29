@@ -140,9 +140,10 @@ func whenText(when string) string {
 }
 
 // checkAdded is S63-16 for user tool t: its file must still be the one
-// aggy tool add showed. aggy tool on lets a file aggy tool add never
-// recorded through (needRow false); a session's --tool does not (W76-1).
-// s nil is an index with no tool_added table: no record.
+// aggy tool add showed. With needRow, which aggy tool on and a session's
+// --tool both pass (W76-1, R76-F1), a file aggy tool add never recorded
+// is refused too: one put in the tools folder by hand must go through
+// aggy tool add. s nil is an index with no tool_added table: no record.
 func checkAdded(ctx context.Context, s *store.Store, t tooldef.Tool, needRow bool) error {
 	if t.BuiltIn {
 		return nil
@@ -158,7 +159,7 @@ func checkAdded(ctx context.Context, s *store.Store, t tooldef.Tool, needRow boo
 	case ok && added != t.Digest:
 		return withCode(diag.CodeToolChanged, fmt.Errorf("%s changed since aggy tool add showed it; aggy tool remove %s, then add it again to see what it runs", t.Source, t.Name))
 	case !ok && needRow:
-		return withCode(diag.CodeToolChanged, fmt.Errorf("aggy tool add has no record of %s; aggy tool remove %s, then add it again to see what it runs", t.Source, t.Name))
+		return withCode(diag.CodeToolChanged, fmt.Errorf("aggy tool add has no record of %s: a file put in %s by hand must go through aggy tool add. Move it out of that folder, then aggy tool add <file> shows what it runs and records it", t.Source, filepath.Dir(t.Source)))
 	}
 	return nil
 }
@@ -252,7 +253,7 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, in io.Reader, tty bool
 	if on && !t.BuiltIn {
 		// #86: before anything prints the file's hint, it must be the
 		// file aggy tool add showed.
-		if err := checkAdded(ctx, s, t, false); err != nil {
+		if err := checkAdded(ctx, s, t, true); err != nil {
 			return err
 		}
 	}
@@ -474,9 +475,15 @@ func toolStatus(ctx context.Context, a toolArgs, stdout, stderr io.Writer) error
 			if !bad && st.Parts.MCP != nil {
 				code, bad = notWired[""][v] // the CLI's own MCP config cannot be read
 			}
-			if bad {
+			switch {
+			case v == adapter.Grok && !grokToolsVerified && (st.Parts.MCP != nil || len(st.Parts.Hooks) > 0):
+				// F74-3: on for Grok, as an every-vendor setting records
+				// it, but no server or hook reaches Grok while its wiring
+				// is unverified (doctor's wording; a skill is linked).
+				wired = append(wired, string(v)+" not wired: unverified")
+			case bad:
 				wired = append(wired, string(v)+" no ("+code+")")
-			} else {
+			default:
 				wired = append(wired, string(v))
 			}
 		}

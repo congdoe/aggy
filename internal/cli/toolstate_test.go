@@ -41,6 +41,14 @@ func TestToolStatusColumns(t *testing.T) {
 	if got := line("demo"); !strings.HasPrefix(got, "demo on off off yes - claude ") {
 		t.Errorf("on, installed: %q", got)
 	}
+	// F74-3: on for every vendor records Grok on, and status says its
+	// hook is not wired.
+	if code, _, errOut := toolRun("", false, "on", "demo"); code != 0 {
+		t.Fatalf("on: %d %q", code, errOut)
+	}
+	if got := line("demo"); !strings.HasPrefix(got, "demo on on on yes - claude, codex, grok not wired: unverified ") {
+		t.Errorf("on for every vendor: %q", got)
+	}
 
 	// A skill: missing, then pinned, then changed.
 	if got := line("caveman"); !strings.HasPrefix(got, "caveman off off off no: skill folder no pin - ") {

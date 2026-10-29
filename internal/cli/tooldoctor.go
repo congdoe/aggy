@@ -124,16 +124,19 @@ func boardFindings(ctx context.Context, b switchboard.Board, refused []error, cw
 		if t.BuiltIn || s == nil || ver < toolAddedSchema {
 			continue
 		}
-		// M83-3: aggy tool on takes a file aggy tool add never recorded,
-		// and a session's --tool does not; either is fixed by adding the
-		// file again, once the tool is off (remove refuses one that is on).
+		// R76-F1: aggy tool on and a session's --tool both refuse a file
+		// aggy tool add never recorded or that changed since; a changed
+		// one is fixed by adding it again once the tool is off (remove
+		// refuses one that is on), one put there by hand by moving it out
+		// and adding it, which keeps the person's only copy.
 		readd := "aggy tool off " + t.Name + ", aggy tool remove " + t.Name + ", then aggy tool add the file again and read what it runs"
 		added, ok, err := s.ToolAdded(ctx, t.Name)
 		switch {
 		case err != nil:
 			warn(t, "", diag.CodeStore, "its aggy tool add record cannot be read", err.Error(), "")
 		case !ok:
-			warn(t, "", diag.CodeToolChanged, "aggy tool add has no record of its file, so a session's --tool refuses it", "", readd)
+			warn(t, "", diag.CodeToolChanged, "aggy tool add has no record of its file, so aggy tool on and --tool refuse it", "",
+				"aggy tool off "+t.Name+", move its file out of the tools folder, then aggy tool add that file and read what it runs")
 		case added != t.Digest:
 			warn(t, "", diag.CodeToolChanged, "its file is not the one aggy tool add showed, so aggy tool on and --tool refuse it", "", readd)
 		}
