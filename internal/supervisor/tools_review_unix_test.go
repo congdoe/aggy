@@ -194,21 +194,45 @@ func TestReviewRevertClosesNote(t *testing.T) {
 
 // TestReviewOneOfferPerTurnEnd (L2): an offer turned down is not asked
 // again, whatever the settings do, before the next turn end.
+//
+// The settings change to a new set in one step: toggling off and back on
+// is racy to drive, since a read that lands after both is the set turned
+// down, which is never offered again (CI failure on #87). The reads are
+// slow, as on a loaded runner.
 func TestReviewOneOfferPerTurnEnd(t *testing.T) {
-	ts, c, done, sock, ft := toolsRun(t, false, adapter.Claude)
+	ft := &fakeTools{}
+	slow := func() (ToolSet, error) { time.Sleep(50 * time.Millisecond); return ft.get() }
+	ts, c, done, sock := switchRunOn(t, false, adapter.Claude, func(o *Options) { o.Tools, o.ToolsAtLaunch = slow, ToolSet{} })
 	ft.put(ToolSet{"context7": "mcp"})
 	_ = request(t, sock, toolsLine)
 	poll(t, "the offer", []byte("same session -> claude"), ts.screen)
 	ts.typeIn(t, "\x1b")
 	poll(t, "the offer to close", statusErased, ts.screen)
 	ts.clearScreen()
-	ft.put(ToolSet{})
-	_ = request(t, sock, toolsLine)
-	ft.put(ToolSet{"context7": "mcp"})
+	ft.put(ToolSet{"context7": "mcp", "rtk": "hook"})
 	_ = request(t, sock, toolsLine)
 	never(t, "a second offer at that turn end", []byte("same session"), ts.screen, 300*time.Millisecond)
 	_ = request(t, sock, stopLine)
-	poll(t, "the offer at the next turn end", []byte("same session -> claude"), ts.screen)
+	poll(t, "the offer at the next turn end", []byte("tools +context7 +rtk, same session -> claude"), ts.screen)
+	finish(t, c, done)
+}
+
+// TestReviewCodexNoteEscWaitsTurn (L2): Esc on a Codex tools note counts
+// as turning it down: a new change shows no note before the next turn
+// end.
+func TestReviewCodexNoteEscWaitsTurn(t *testing.T) {
+	ts, c, done, sock, ft := toolsRun(t, false, adapter.Codex)
+	ft.put(ToolSet{"context7": "mcp"})
+	_ = request(t, sock, toolsLine)
+	poll(t, "the note", []byte("Tools changed for codex: +context7 "), ts.screen)
+	ts.typeIn(t, "\x1b")
+	poll(t, "the note to close", []byte(altScreenOff), ts.screen)
+	ts.clearScreen()
+	ft.put(ToolSet{"context7": "mcp", "rtk": "mcp"})
+	_ = request(t, sock, toolsLine)
+	never(t, "a note at that turn end", []byte("Tools changed"), ts.screen, 300*time.Millisecond)
+	_ = request(t, sock, `{"type":"hook-event","vendor":"codex","event":"Stop","payload":{"session_id":"`+childSID+`"}}`)
+	poll(t, "the note at the next turn end", []byte("Tools changed for codex: +context7 +rtk "), ts.screen)
 	finish(t, c, done)
 }
 

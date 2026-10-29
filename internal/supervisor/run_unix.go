@@ -1439,8 +1439,11 @@ func (s *session) promptEsc() {
 	if !s.open || (s.pk.confirm == "" && !s.pk.note) {
 		return
 	}
-	confirming := s.pk.confirm != ""
+	confirming, toolsNote := s.pk.confirm != "", s.pk.note && s.pk.resume
 	s.closePicker()
+	if toolsNote {
+		s.toolsWaitTurn = true // a tools note turned down, as an offer (L2)
+	}
 	if confirming {
 		s.log(diag.Rec{Event: diag.EvSwitchCancelled, Cause: s.sw.rec, Attrs: map[string]any{"how": "esc_confirm", "to": string(s.sw.to)}})
 		s.toolsWaitTurn = s.toolsWaitTurn || s.sw.resume
