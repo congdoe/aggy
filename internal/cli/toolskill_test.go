@@ -41,7 +41,7 @@ func TestToolSkill(t *testing.T) {
 	}
 	// Missing: refused, says how, links nothing, records nothing.
 	code, _, errOut := toolRun("", false, "on", "caveman")
-	if code != 1 || !strings.Contains(errOut, "tool.skill_missing") || !strings.Contains(errOut, "never fetches") || linked() != "" {
+	if code != 1 || !strings.Contains(errOut, "tool.skill_missing") || !strings.Contains(errOut, "never fetches") || !strings.Contains(errOut, "tag v4.0.1") || linked() != "" {
 		t.Fatalf("missing: %d %q %q", code, errOut, linked())
 	}
 	if _, out, _ := toolRun("", false, "status", "caveman"); !strings.Contains(out, "off by default") {

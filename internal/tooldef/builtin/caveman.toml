@@ -3,7 +3,8 @@
 # vendor configs, add a proxy, and send telemetry by default.
 # Source: docs/verification.md, "Managed tools (2026-10-28)": the skill
 # is skills/caveman/SKILL.md at tag v4.0.1 (d262ab3).
-# TODO(T6715): copy skills/caveman/ at that tag into ~/.aggy/skills/caveman.
+# aggy never fetches it: the person copies skills/caveman/ at that tag
+# into ~/.aggy/skills/caveman (install.hint, shown when it is missing).
 name = "caveman"
 description = "A skill for shorter assistant replies, to save output tokens"
 homepage = "https://github.com/JuliusBrussee/caveman"
@@ -11,6 +12,9 @@ version = "4.0.1"
 default = false
 scope = "global"
 unverified = ["homepage", "install"]
+
+[install]
+hint = "never run Caveman's installers; copy skills/caveman/ from tag v4.0.1 (d262ab3) of https://github.com/JuliusBrussee/caveman into ~/.aggy/skills/caveman"
 
 [[skill]]
 vendors = ["claude", "codex", "grok"]
