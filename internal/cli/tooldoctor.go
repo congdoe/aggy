@@ -29,6 +29,7 @@ const (
 	codeToolStray      = "tool-skill-stray"    // warning: an off tool's skill is still linked
 	codeToolUnlinked   = "tool-skill-unlinked" // warning: an on tool's skill is not linked
 	codeToolGrokIgnore = "tool-grok-ignore"    // warning: Grok's [skills] ignore does not match the links
+	codeToolProxy      = "tool-proxy-on"       // info: a tool's local proxy is on for a vendor (T6780)
 )
 
 // toolFindings is aggy doctor's check of the managed tools against the
@@ -170,6 +171,12 @@ func boardFindings(ctx context.Context, b switchboard.Board, refused []error, cw
 		}
 		for _, st := range states {
 			wired[st.Tool.Name] = append(wired[st.Tool.Name], v)
+			if px := st.Parts.Proxy; px != nil {
+				// T6780: always said, problem or not.
+				out = append(out, toolProblem(st.Tool, v, codeToolProxy, checkup.LevelInfo,
+					"its local proxy is on for "+string(v)+": every request of an on-screen "+string(v)+" session, the login token included, goes through it",
+					px.Listen+" through "+px.Env[v]+"; aggy tool off "+st.Tool.Name+" --vendor "+string(v)+" turns it off", ""))
+			}
 		}
 		var taken map[string]string
 		if cwd != "" && slices.ContainsFunc(states, func(st switchboard.State) bool { return st.Parts.MCP != nil }) {
@@ -199,6 +206,9 @@ func boardFindings(ctx context.Context, b switchboard.Board, refused []error, cw
 			p := t.PartsFor(v)
 			if p.MCP != nil {
 				progs = append(progs, p.MCP.Argv[0])
+			}
+			if p.Proxy != nil && b.State(t, v, repo.key).Parts.Proxy != nil {
+				progs = append(progs, p.Proxy.Argv[0])
 			}
 			for _, h := range p.Hooks {
 				progs = append(progs, h.Argv[0])

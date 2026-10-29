@@ -47,6 +47,9 @@ own in ~/.aggy/tools/<name>.toml. Definitions are never read from a repo.
            wherever it applies. A per-repo tool is turned on only with
            --repo. A repo's .aggy/config.toml can turn a tool off
            (tools_off) and never on. It takes effect at the next launch.
+           A tool with a local proxy (Headroom) turns on only with
+           --vendor, and its proxy only after you read the warning and
+           type the confirmation at a terminal.
   add      validate a definition, show what it would run and wire per
            vendor, and copy it into ~/.aggy/tools after you answer y at a
            terminal (--yes skips the question; it never works without a

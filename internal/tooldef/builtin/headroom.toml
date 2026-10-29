@@ -2,9 +2,10 @@
 # stays local and can be retrieved (compress, retrieve, and stats tools).
 # Source: docs/verification.md, "Managed tools (2026-10-28)": headroom
 # 0.42.0 (the headroom-ai package), headroom mcp serve.
-# Never headroom proxy or wrap (they need ANTHROPIC_BASE_URL, which aggy
-# never sets), and never headroom mcp install, which edits every agent's
-# config.
+# Its [proxy] (T6780) is off until the person turns headroom on for a
+# vendor and types the confirmation at a terminal: every request of that
+# CLI, its login token included, then goes through headroom proxy. Never
+# headroom wrap, init, or mcp install, which edit agent configs.
 name = "headroom"
 description = "Compresses a large blob the agent holds; originals stay local and can be retrieved"
 homepage = "https://docs.headroomlabs.ai"
@@ -14,6 +15,7 @@ scope = "global"
 # TODO(M78-2): unverified whether headroom mcp serve reaches the network;
 # marked as if it does.
 network = true
+unverified = ["proxy"]
 
 [install]
 check = ["headroom", "--version"]
@@ -23,6 +25,22 @@ hint = "uv tool install headroom-ai==0.42.0, which needs Python 3.10 or later; n
 [[mcp]]
 vendors = ["claude", "codex", "grok"]
 argv = ["headroom", "mcp", "serve"]
+
+# TODO(T6780): unverified at 0.42.0 (docs/verification.md, "Headroom
+# proxy"): the --host and --port flags and GET /health are from
+# docs.headroomlabs.ai/docs/proxy (latest, not pinned); its README shows
+# headroom proxy --port 8787. Codex and Grok support is not verified
+# (Codex reads no base-URL variable), so claude only. Its anonymous
+# beacon is on by default per those docs; aggy's proxy env sets
+# DO_NOT_TRACK=1, which they say turns it off (unverified live).
+[proxy]
+vendors = ["claude"]
+argv = ["headroom", "proxy", "--host", "127.0.0.1", "--port", "8787"]
+listen = "127.0.0.1:8787"
+health = "/health"
+
+[proxy.env]
+claude = "ANTHROPIC_BASE_URL"
 
 [cost]
 method = "mcp-schema"

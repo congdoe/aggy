@@ -19,7 +19,9 @@ import (
 // sessionToolSet is what of the managed tools a session of vendor v in
 // cwd, with the session tools (--tool) and the CLI's probed caps, gets
 // from the settings now (T6729): per tool, "mcp" and "hook" where the
-// launch would wire them, and "skill" where aggy tool on|off linked it
+// launch would wire them, "proxy" where its confirmed proxy is on for v
+// (T6780: a running CLI keeps the env it started with, so turning one on
+// or off is offered as a resume too), and "skill" where aggy tool on|off linked it
 // for v (for every repo, whatever the repo's tools_off: L78-8). A running
 // session whose set differs from its launch's is offered a resume.
 //
@@ -63,6 +65,9 @@ func sessionToolSet(ctx context.Context, v adapter.Vendor, caps []string, cwd st
 		}
 		if len(st.Parts.Hooks) > 0 && v == adapter.Claude && slices.Contains(caps, probe.CapSettings) {
 			add(st.Tool.Name, "hook")
+		}
+		if st.Parts.Proxy != nil { // T6780: its env is fixed at launch
+			add(st.Tool.Name, "proxy")
 		}
 	}
 	for _, t := range b.Tools {

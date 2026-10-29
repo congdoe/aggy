@@ -313,6 +313,18 @@ linters:
       - path: ^(internal/supervisor/(socket(_test)?|client_unix(_test)?|peercred_(darwin|linux|other)(_test)?)|test/e2e/supervisor_test)\.go$
         text: "import 'net' is not allowed"
         linters: [depguard]
+      # A tool's local proxy (T6780), which the person turned on at a
+      # terminal: execrun connects to its loopback address to see that
+      # nothing else holds the port, and GETs its health path there.
+      # proxynet.go dials only the address tooldef.ParseListen accepted
+      # (127.0.0.1 or ::1), resolves no name, uses no HTTP proxy, and
+      # follows no redirect. Its test runs the fake proxy.
+      - path: ^internal/execrun/(proxynet|proxy_unix_test)\.go$
+        text: "import 'net(/http)?' is not allowed"
+        linters: [depguard]
+      - path: ^internal/execrun/proxynet\.go$
+        text: "use of `(net\\.Dialer|d\\.DialContext|c\\.Do)`"
+        linters: [forbidigo]
       # aggy hook reaches the supervisor socket with net.DialUnix, after
       # checking the path is aggy's own socket in its 0700 run directory.
       # No other dial, anywhere.
@@ -345,7 +357,7 @@ linters:
       - path: ^internal/(supervisor|borrow)/
         text: "`(exec\\.(Command|CommandContext)|os\\.StartProcess)`"
         linters: [forbidigo]
-      - path: ^internal/execrun/(execrun|pty_unix|direct_unix)\.go$
+      - path: ^internal/execrun/(execrun|pty_unix|direct_unix|proxy_unix)\.go$
         text: "`exec\\.(Command|CommandContext)`"
         linters: [forbidigo]
       - path: ^internal/execrun/(execrun(_unix|_other)?|pty_unix|direct_unix)\.go$

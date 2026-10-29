@@ -988,9 +988,28 @@ arm64 with `DO_NOT_TRACK=1`. No vendor config was edited, and no tool's
   first real use needs `npx playwright install`.
 - **Headroom.** Homepage <https://docs.headroomlabs.ai>, source
   <https://github.com/headroomlabs-ai/headroom>. Its full value needs
-  `headroom proxy` and `ANTHROPIC_BASE_URL`, which aggy never uses; the
-  MCP server alone offers compress, retrieve, and stats on demand.
+  `headroom proxy` and `ANTHROPIC_BASE_URL`, which aggy sets only for a
+  vendor the person turned Headroom's proxy on for (T6780); the MCP
+  server alone offers compress, retrieve, and stats on demand.
   `headroom mcp install` edits every agent config it finds: never run it.
+- **Headroom proxy (T6780): unverified, for the owner's live check.**
+  From docs.headroomlabs.ai/docs/proxy (latest, not pinned) and the
+  README, not from 0.42.0 itself: `headroom proxy` takes `--host`
+  (default `127.0.0.1`) and `--port` (default `8787`); `GET /health`
+  answers JSON with `"status": "healthy"`; Claude Code is pointed at it
+  with `ANTHROPIC_BASE_URL=http://localhost:8787`; Codex and Grok are
+  routed by `headroom wrap` or a config edit, with no environment
+  variable documented, so aggy's definition supports claude only; an
+  anonymous usage beacon is on by default, and `DO_NOT_TRACK=1`,
+  `HEADROOM_TELEMETRY=off`, or `--no-telemetry` turns it off. To check
+  at 0.42.0 by hand (never `headroom wrap`, `init`, or `mcp install`):
+  `headroom proxy --help` for the flags; `headroom proxy --host
+  127.0.0.1 --port 8787`, then `curl -sS -o /dev/null -w '%{http_code}'
+  http://127.0.0.1:8787/health` for the health path; whether it starts
+  with only `HOME`, `USER`, `LOGNAME`, `PATH`, `TMPDIR`, the locale, and
+  `DO_NOT_TRACK=1`, and sends no beacon then; and one Claude turn with
+  `ANTHROPIC_BASE_URL=http://127.0.0.1:8787`. Until then the definition
+  lists `proxy` in `unverified` (TODO(T6780)).
 - **Caveman.** Its installers (`npx @caveman-ai/cli`, `install.sh`) find
   the agents and their logins, edit vendor configs, add a proxy, and
   send telemetry by default. aggy uses only the `skills/caveman/` folder

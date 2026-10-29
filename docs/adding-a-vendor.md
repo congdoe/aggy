@@ -23,7 +23,9 @@ rest of it is.
 - **No model requests.** aggy sends nothing to any vendor: no API calls,
   no proxy, no `*_BASE_URL`, no API-key variable in a command's `Env`.
   Only the vendor CLI talks to its vendor, on the user's own sign-in.
-  Lint bans `net` outside the supervisor's local socket.
+  (A local proxy tool the user turns on, T6780, is set by the launch,
+  never by an adapter.) Lint bans `net` outside the supervisor's local
+  socket and the tool proxy's loopback health check.
 - **No `--dangerously-*`.** No flag that skips permissions, trust, or a
   sandbox (`--dangerously-*`, yolo modes, `--permission-mode
   bypassPermissions` and the like), in an adapter, a test, a fixture, or a
