@@ -76,6 +76,10 @@ type Request struct {
 	// Material is the review input (required for review, which runs in
 	// Repo, the git work tree root); internal/cli gathers it.
 	Material *Material
+	// CursorLinks are the review repo's committed symlinks with a
+	// .cursor path part (internal/cli gathers them; T6751); any refuses
+	// a Grok review (grokTrustGate).
+	CursorLinks []string
 	// Media is the file arguments of aggy image and aggy video; nil for
 	// aggy borrow.
 	Media *Media

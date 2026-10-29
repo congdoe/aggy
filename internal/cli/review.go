@@ -237,6 +237,34 @@ func (e borrowEnv) diffBase(ctx context.Context, root, base string) (string, err
 	return "", errors.New("no default branch (origin/HEAD, main, or master) to diff against; pass --base <ref>")
 }
 
+// cursorLinks returns the committed paths (git ls-files -s, mode 120000)
+// in root that are symlinks with a .cursor part, compared
+// case-insensitively; any refuses a Grok review (T6751). When git cannot
+// list them all, it returns one placeholder entry, so the Grok review is
+// still refused and other vendors are not.
+func (e borrowEnv) cursorLinks(ctx context.Context, root string) []string {
+	out, cut, err := e.git(ctx, root, "ls-files", "-s", "-z", "--",
+		":(glob,icase)**/.cursor", ":(glob,icase)**/.cursor/**")
+	if err != nil || cut {
+		return []string{"(the committed .cursor paths could not be listed)"}
+	}
+	var links []string
+	for _, entry := range strings.Split(out, "\x00") {
+		// <mode> <object> <stage>\t<path>
+		meta, path, ok := strings.Cut(entry, "\t")
+		if !ok || !strings.HasPrefix(meta, "120000 ") {
+			continue
+		}
+		for _, part := range strings.Split(path, "/") {
+			if strings.EqualFold(part, ".cursor") {
+				links = append(links, path)
+				break
+			}
+		}
+	}
+	return links
+}
+
 // maxAuthorCommits caps the commits whose trailers a review reads.
 const maxAuthorCommits = 1000
 

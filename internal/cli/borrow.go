@@ -367,6 +367,7 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 		if req.Material, err = env.reviewMaterial(ctx, req.Repo, ba.base, paths); err != nil {
 			return failErr(diag.CodeBorrowStart, fmt.Errorf("review: %w", err))
 		}
+		req.CursorLinks = env.cursorLinks(ctx, req.Repo)
 		if cfg.Routing.Review.NotAuthor { // only that route reads trailers; skip the history walk otherwise
 			req.Authors = env.reviewAuthors(ctx, req.Repo, req.Material.Base)
 		}

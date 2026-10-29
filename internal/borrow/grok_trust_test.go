@@ -143,6 +143,42 @@ func TestGrokReviewWithInstructions(t *testing.T) {
 	}
 }
 
+// TestGrokCursorLinks (T6751): a review whose repo commits a symlink
+// under a .cursor path refuses Grok, which is passed over; with none,
+// Grok runs.
+func TestGrokCursorLinks(t *testing.T) {
+	for _, links := range [][]string{nil, {".cursor"}, {"sub/.cursor"}} {
+		w := newWorld(t)
+		w.cfg.Routing.Review.Vendors = []adapter.Vendor{adapter.Grok, adapter.Claude}
+		for _, v := range adapter.Vendors() {
+			w.connected[v] = v == adapter.Grok || v == adapter.Claude
+		}
+		w.scenario[adapter.Grok] = `{"json":{"result":"grok reviewed"}}`
+		w.scenario[adapter.Claude] = `{"json":{"type":"result","result":"claude reviewed"}}`
+		req := w.req(adapter.Review, "review it")
+		req.CursorLinks = links
+		res, err := w.borrower().Run(context.Background(), req)
+		if err != nil || len(res) != 1 {
+			t.Fatalf("%q: %+v, %v", links, res, err)
+		}
+		if links == nil {
+			if res[0].Vendor != adapter.Grok {
+				t.Errorf("no links: grok passed over: %+v", res[0])
+			}
+			continue
+		}
+		if res[0].Vendor != adapter.Claude || len(res[0].Tried) != 1 || res[0].Tried[0].Vendor != adapter.Grok ||
+			!strings.Contains(res[0].Tried[0].Reason, links[0]) {
+			t.Errorf("%q: want grok passed over: %+v", links, res[0])
+		}
+		for _, r := range w.records() {
+			if r.Vendor == "grok" {
+				t.Errorf("%q: grok ran", links)
+			}
+		}
+	}
+}
+
 // TestGrokInstructionLinks (N54-2): an instruction, rules, or skill file
 // Grok would load that is a symlink, sits under a linked dir, or is
 // linked anywhere inside a rules or skill dir refuses a Grok review, and

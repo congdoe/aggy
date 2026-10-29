@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -245,6 +246,56 @@ func TestReviewFilterDriver(t *testing.T) {
 	}
 	if data, err := os.ReadFile(marker); err == nil || strings.Contains(m.Diff, "PWNED") {
 		t.Errorf("a filter driver ran: %q", data)
+	}
+}
+
+// TestCursorLinks (T6751): committed symlinks with a .cursor part, at the
+// root or nested, in any case, are listed; a regular .cursor tree and a
+// symlink elsewhere are not; a git failure gives a placeholder entry.
+// The links are index entries (mode 120000), so no file system symlink
+// is needed.
+func TestCursorLinks(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGGY_HOME", t.TempDir())
+	repo, _ := filepath.EvalSymlinks(t.TempDir())
+	gitRepo(t, repo)
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		cmd.Dir = repo
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	mustWrite(t, filepath.Join(repo, ".cursor", "rules", "x.mdc"), "---\na: b\n---\n", 0o600)
+	git("add", ".cursor")
+	git("commit", "-q", "-m", "plain cursor rules")
+	if got := gitEnv().cursorLinks(context.Background(), repo); len(got) != 0 {
+		t.Fatalf("a regular .cursor tree: %q", got)
+	}
+
+	target := filepath.Join(t.TempDir(), "target")
+	mustWrite(t, target, "../../.grok", 0o600)
+	blob := git("hash-object", "-w", target)
+	link := func(path string) { git("update-index", "--add", "--cacheinfo", "120000,"+blob+","+path) }
+	git("rm", "-r", "-q", "--cached", ".cursor")
+	link(".cursor")
+	link("sub/.cursor")
+	link("deep/x/.Cursor/rules")
+	link("docs/link") // not a .cursor path
+	link("a.cursor/x")
+	git("commit", "-q", "-m", "links")
+	got := gitEnv().cursorLinks(context.Background(), repo)
+	slices.Sort(got)
+	if want := []string{".cursor", "deep/x/.Cursor/rules", "sub/.cursor"}; !slices.Equal(got, want) {
+		t.Errorf("cursorLinks = %q, want %q", got, want)
+	}
+
+	broken := borrowEnv{gitPath: func() (string, error) { return "", errors.New("no git") }, gitRun: execrun.ExecRunner(gitTimeout)}
+	if got := broken.cursorLinks(context.Background(), repo); len(got) != 1 {
+		t.Errorf("a git failure must refuse a Grok review: %q", got)
 	}
 }
 
