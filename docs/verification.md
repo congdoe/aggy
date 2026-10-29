@@ -954,6 +954,24 @@ refuses to start inside another sandbox (S6 above), so a Grok review
 nested under a sandboxed Grok session may fail closed. The smoke script
 has no check for either yet (TODO(T6779)).
 
+## Tool reload (T6729)
+
+Not checked: whether any of the three CLIs reloads MCP servers, hooks,
+or skills in a running session. aggy knows no in-place reload, so a tool
+switched on or off for a running session takes a resume of that session
+(design.md, "Applying a switch to a running session").
+
+| Question | Verdict | What aggy does |
+| --- | --- | --- |
+| Claude: an MCP server or hook added to a running session | Launch flags only (`--mcp-config`, `--settings`, "Launch-time MCP" above: not stored with the session, re-passed on every resume) | Resume. |
+| Codex: an MCP server added to a running session | Launch flags only (`-c mcp_servers.<name>.*`) | Resume. |
+| Any CLI: a skill linked into its user skill folder while it runs | Unverified | Counted as needing a resume. |
+| Any CLI: a command or API that reloads MCP config in place | Unverified; none known | None used (TODO(T6729)). |
+| Grok | Its tools are gated (W71-4) | No offer. |
+
+A live check would start each CLI, link a skill or change its MCP config,
+and ask the agent for the new skill or tool in the next turn.
+
 ## Still open
 
 1. Codex limit event, captured live from an exhausted account: the

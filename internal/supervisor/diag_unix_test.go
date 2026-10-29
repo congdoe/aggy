@@ -311,7 +311,7 @@ func TestAnswerRecords(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var got []diag.Rec
-			resp := answer([]byte(tt.line), tt.from, nil, tt.onSwitch, func(r diag.Rec) { got = append(got, r) })
+			resp := answer([]byte(tt.line), tt.from, nil, tt.onSwitch, nil, func(r diag.Rec) { got = append(got, r) })
 			if resp.Code != tt.reply {
 				t.Errorf("reply code %q, want %q", resp.Code, tt.reply)
 			}

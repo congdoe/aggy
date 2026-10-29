@@ -396,3 +396,57 @@ func TestToolShimSwitchResume(t *testing.T) {
 		t.Errorf("tools_off: %q", r.Args)
 	}
 }
+
+// TestToolOnResumes (T6729): a tool turned on, from another terminal,
+// while a session runs is offered at the turn end as a resume of the
+// same session; the switch key restarts the CLI with its resume flag and
+// the tool's --mcp-config.
+func TestToolOnResumes(t *testing.T) {
+	w := newWorld(t)
+	sc := map[string]any{
+		"stdout":        "READY>",
+		"hook_command":  []string{buildAggy(t), "hook", "--vendor", "claude"},
+		"hooks":         []map[string]any{{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}},
+		"session_files": []map[string]any{{"path": "projects/p/{session_id}.jsonl", "content": "{}"}},
+	}
+	// rtk is on for this session only: it is the same session, so the
+	// resume keeps it.
+	s := w.start(t, sc, "run", "--tool", "rtk", "claude")
+	s.waitFor([]byte("READY>"))
+	s.send([]byte("work\r")) // a turn; the fake's Stop hook ends it
+	s.waitFor([]byte("work"))
+	code, out := w.aggyCode(t, "tool", "on", "context7", "--vendor", "claude")
+	if code != 0 || !strings.Contains(out, "Told 1 running aggy session") {
+		t.Fatalf("aggy tool on: %d\n%s", code, out)
+	}
+	s.waitWithin([]byte("tools +context7, same session -> claude. Ctrl+"), offerTimeout)
+	time.Sleep(600 * time.Millisecond) // past the confirmation's guard
+	s.send([]byte{0x1c})
+	deadline := time.Now().Add(timeout)
+	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	runs := interactiveRuns(t, w)
+	if len(runs) != 2 || runs[1].Vendor != "claude" {
+		t.Fatalf("runs = %+v\nterminal: %q", runs, s.screen())
+	}
+	id := runs[0].Flags["--session-id"]
+	if len(id) != 1 || !slices.Equal(runs[1].Flags["--resume"], id) {
+		t.Errorf("the resume's args %q: want --resume %q", runs[1].Args, id)
+	}
+	if len(runs[0].Flags["--mcp-config"]) != 0 || len(runs[1].Flags["--mcp-config"]) != 1 {
+		t.Errorf("--mcp-config: %q, then %q", runs[0].Args, runs[1].Args)
+	}
+	for i, r := range runs {
+		if f := r.Flags["--settings"]; len(f) != 1 || !strings.Contains(f[0], " hook-tool --vendor claude rtk 0 ") {
+			t.Errorf("run %d: --tool rtk's hook is not in --settings %q", i, f)
+		}
+	}
+	if runs[1].Env["AGGY_PARENT"] != runs[0].Env["AGGY_PARENT"] {
+		t.Errorf("another parent: %v", runs[1].Env)
+	}
+}

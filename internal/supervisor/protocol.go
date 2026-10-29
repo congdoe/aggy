@@ -17,6 +17,10 @@ const (
 	ReqPing          = "ping"
 	ReqHookEvent     = "hook-event"     // a vendor hook, forwarded by `aggy hook <event>`
 	ReqSwitchRequest = "switch-request" // a linked skill asks for a switch
+	// ReqToolsChanged says aggy tool on or off changed a setting (T6729).
+	// It carries nothing: the supervisor works out itself whether its own
+	// session's tools changed, and only offers a resume.
+	ReqToolsChanged = "tools-changed"
 )
 
 // Request is one message to the supervisor.

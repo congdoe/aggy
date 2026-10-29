@@ -102,6 +102,8 @@ var (
 	EvToolRefused         = Event{"tool.request.refused"}
 	EvToolDefRefused      = Event{"tool.def.refused"}
 	EvToolSwitched        = Event{"tool.switch.changed"}
+	EvToolsNotified       = Event{"tool.session.notified"}
+	EvToolsChanged        = Event{"supervisor.tools.changed"}
 	EvLaunchRefused       = Event{"supervisor.launch.refused"}
 	EvLaunched            = Event{"supervisor.child.launched"}
 	EvSessionExited       = Event{"supervisor.child.exited"}
@@ -198,6 +200,7 @@ var (
 	CodeLimitNoHold      = Code{"switch.limit_no_hold"}
 	CodeNearNoQuota      = Code{"switch.near_limit_no_quota"}
 	CodeChildGone        = Code{"switch.child_gone"}
+	CodeToolsNoHold      = Code{"switch.tools_no_hold"}
 	CodeLineage          = Code{"peer.lineage_failed"}
 	CodePeerUID          = Code{"peer.uid_mismatch"}
 	CodeBadRequest       = Code{"socket.bad_request"}
@@ -254,6 +257,8 @@ var events = []EventInfo{
 	{EvToolRefused, LevelError, "tool", "aggy tool refused or failed; no definition or switch changed.", "The code's entry."},
 	{EvToolDefRefused, LevelWarn, "tool", "A user tool definition was left out: invalid, untrusted, or colliding (attrs: file, its base name in ~/.aggy/tools, and key; never its argv).", "aggy tool list names the file and the key; fix or remove it."},
 	{EvToolSwitched, LevelInfo, "tool", "aggy tool on or off recorded a switch (attrs: tool, vendor, repo, on).", "aggy tool status shows what is on where."},
+	{EvToolsNotified, LevelInfo, "tool", "aggy tool on or off told running sessions their tools may have changed (attrs: sessions told, failed).", "supervisor.tools.changed in each session's trace."},
+	{EvToolsChanged, LevelInfo, "supervisor", "A running session's tools for its vendor and repo differ from its launch's; it offers a resume of the same session at the turn end (attrs: changed, how: queued, note, waiting, busy, or reverted).", "switch.request.offered follows at a quiet turn end."},
 	{EvLaunchRefused, LevelError, "supervisor", "aggy run, new, or resume did not put the CLI on screen, or the supervisor failed while it ran.", "The code's entry; " + showRun + "."},
 	{EvLaunched, LevelInfo, "supervisor", "A CLI went on screen (attrs: new_child, brief, model_set, direct). Its trace is the one its hooks, switches, and borrows carry.", "aggy diag show <trace id> for the whole session."},
 	{EvSessionExited, LevelInfo, "supervisor", "The on-screen CLI exited; exit_code and duration_ms say how, attrs.switch_to the vendor launched next, if any.", "A switch_to with no supervisor.child.launched after it: the next launch's supervisor.launch.refused."},
@@ -348,6 +353,7 @@ var codes = []CodeInfo{
 	{CodeNoQuota, false, "After a limit, no vendor the picker offers has quota left.", "aggy usage; aggy log shows the limits."},
 	{CodeLimitNoHold, false, "After a limit on a vendor with no hold signal (Codex), aggy only suggests the switch; the user picks it.", "Press the switch key, then Enter."},
 	{CodeNearNoQuota, false, "The near-limit warning found no vendor with quota to hand off to.", "aggy usage."},
+	{CodeToolsNoHold, false, "The tools changed on a vendor with no hold signal (Codex), so aggy only shows a note; the user starts the resume with the switch key.", "Press the switch key at the note, then confirm at the turn end."},
 	{CodeChildGone, false, "The session picked in the switch list was no longer recorded when the switch was confirmed, so the CLI on screen was not told to exit.", "aggy sessions; pick again."},
 	{CodeLineage, true, "A message on the supervisor's socket came from a process outside the on-screen CLI's process tree, so it was not acted on.", "Which process of yours writes to ~/.aggy/run; a CLI's tool that outlived it is reparented and falls out."},
 	{CodePeerUID, true, "A process of another user reached the supervisor's socket; it got no answer.", "The run directory's owner and mode (0700)."},
