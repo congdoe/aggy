@@ -130,6 +130,15 @@ func toolBoard(ctx context.Context) (switchboard.Board, *tooldef.Registry, []err
 // toolAddedSchema is the index version with the tool_added table.
 const toolAddedSchema = 17
 
+// whenText says what a definition's when condition means: a label for
+// the person, which aggy never checks.
+func whenText(when string) string {
+	if when == "has-ui" {
+		return "meant for repos with a UI (has-ui; aggy does not check, you choose the repo)"
+	}
+	return "meant for repos where " + when + " (aggy does not check; you choose the repo)"
+}
+
 // checkAdded is S63-16 for user tool t: its file must still be the one
 // aggy tool add showed. aggy tool on lets a file aggy tool add never
 // recorded through (needRow false); a session's --tool does not (W76-1).
@@ -222,22 +231,29 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 				return withCode(diag.CodeToolRepoOff, fmt.Errorf("the repo's .aggy/config.toml lists %s in tools_off, and a repo's config always wins", name))
 			}
 		}
-		if hasSkill(t) {
-			// Nothing is recorded or linked while the skill is not in place.
-			l, err := toolSkillLayout(t)
-			if err != nil {
-				return withCode(diag.CodeToolSkillMissing, err)
-			}
-			if err := checkSkillStore(l.store); err != nil {
-				return withCode(diag.CodeToolSkillMissing, fmt.Errorf("%w. %s", err, skillHowTo(t, l.store)))
-			}
-		}
 	}
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
 		return withCode(diag.CodeStore, err)
 	}
 	defer func() { _ = s.Close() }()
+	if on && !t.BuiltIn {
+		// #86: before anything prints the file's hint, it must be the
+		// file aggy tool add showed.
+		if err := checkAdded(ctx, s, t, false); err != nil {
+			return err
+		}
+	}
+	if on && hasSkill(t) {
+		// Nothing is recorded or linked while the skill is not in place.
+		l, err := toolSkillLayout(t)
+		if err != nil {
+			return withCode(diag.CodeToolSkillMissing, err)
+		}
+		if err := checkSkillStore(l.store); err != nil {
+			return withCode(diag.CodeToolSkillMissing, fmt.Errorf("%w. %s", err, skillHowTo(t, l.store)))
+		}
+	}
 	if on && hasSkill(t) {
 		l, err := toolSkillLayout(t)
 		if err != nil {
@@ -252,10 +268,7 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 	case on && t.BuiltIn:
 		sw.Digest = switchboard.BuiltInDigest
 	case on:
-		if err := checkAdded(ctx, s, t, false); err != nil {
-			return err
-		}
-		sw.Digest = t.Digest
+		sw.Digest = t.Digest // checkAdded passed above
 	}
 	if err := s.PutToolSwitch(ctx, sw); err != nil {
 		return withCode(diag.CodeStore, err)
@@ -293,7 +306,7 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 			fmt.Fprintf(stdout, "Unverified vendor facts: %s.\n", strings.Join(t.Unverified, ", "))
 		}
 		if t.When != "" {
-			fmt.Fprintf(stdout, "%s is meant for repos where %s; aggy does not check that, so turn it on only in the repos that need it.\n", name, t.When)
+			fmt.Fprintf(stdout, "%s is %s.\n", name, whenText(t.When))
 		}
 		if prog := missingProgram(t); prog != "" {
 			fmt.Fprintf(stdout, "%s is not an executable on PATH, so %s cannot start yet: %s. aggy never installs it.\n", termsafe.Field(prog), name, termsafe.Field(installHowTo(t)))

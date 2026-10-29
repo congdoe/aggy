@@ -42,6 +42,10 @@ func TestBuiltinsValid(t *testing.T) {
 	// its pinned version by hand (codegraph's comes with T6711).
 	for _, name := range []string{"caveman", "context7", "headroom", "playwright", "rtk"} {
 		tl, _ := r.Get(name)
+		// #86: aggy frames it as "install <name> <version> by hand (<hint>)".
+		if strings.HasPrefix(strings.ToLower(tl.Install.Hint), "install "+name) {
+			t.Errorf("%s: install.hint %q repeats aggy's frame", name, tl.Install.Hint)
+		}
 		if !strings.Contains(tl.Install.Hint, tl.Version) {
 			t.Errorf("%s: install.hint %q does not name the pinned version %s", name, tl.Install.Hint, tl.Version)
 		}

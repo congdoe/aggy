@@ -25,7 +25,7 @@ unverified = ["homepage", "cost"]
 [install]
 check = ["rtk", "--version"]
 check_pattern = 'rtk (\d+\.\d+\.\d+)'
-hint = "install rtk 1.1.0 by hand (verified from Homebrew); never run rtk init, which edits vendor config"
+hint = "1.1.0 was verified from Homebrew; never run rtk init, which edits vendor config"
 
 [[hook]]
 vendors = ["claude"]

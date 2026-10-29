@@ -406,7 +406,7 @@ func previewTool(w io.Writer, d tooldef.Def, dest string) {
 	if d.Scope == "repo" {
 		scope = "per repo"
 		if d.When != "" {
-			scope += ", meant for repos where " + d.When + " (aggy does not check; you choose the repo)"
+			scope += ", " + whenText(d.When)
 		}
 	}
 	fmt.Fprintf(w, "  scope: %s; off until you turn it on\n", scope)
@@ -429,7 +429,7 @@ func previewTool(w io.Writer, d tooldef.Def, dest string) {
 		fmt.Fprintf(w, "    version pattern: %s\n", strconv.Quote(d.Install.CheckPattern))
 	}
 	if d.Install.Hint != "" {
-		fmt.Fprintf(w, "    install by hand: %s\n", termsafe.Field(d.Install.Hint))
+		fmt.Fprintf(w, "    install hint, from this file (not aggy's advice): %s\n", termsafe.Field(strconv.Quote(d.Install.Hint)))
 	}
 	cmd("install", d.Install.Install)
 	cmd("prebuild", d.Install.Prebuild)

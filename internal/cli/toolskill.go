@@ -236,14 +236,18 @@ func skillDigest(dir string) (string, error) {
 // skillHowTo says how to put a tool's skill in place: aggy never fetches
 // one.
 func skillHowTo(t tooldef.Tool, dir string) string {
-	if t.Install.Hint != "" {
+	if t.BuiltIn && t.Install.Hint != "" {
 		return fmt.Sprintf("aggy never fetches a skill: %s (a plain folder holding SKILL.md, no symlinks), then run aggy tool on %s again", t.Install.Hint, t.Name)
 	}
 	src := "the skill's folder"
 	if t.Homepage != "" {
 		src = fmt.Sprintf("the skill folder from %s at version %s", t.Homepage, t.Version)
 	}
-	return fmt.Sprintf("aggy never fetches a skill. Copy %s into %s (a plain folder holding SKILL.md, no symlinks), then run aggy tool on %s again", src, dir, t.Name)
+	s := fmt.Sprintf("aggy never fetches a skill. Copy %s into %s (a plain folder holding SKILL.md, no symlinks), then run aggy tool on %s again", src, dir, t.Name)
+	if t.Install.Hint != "" {
+		s += "; " + userHint(t.Install.Hint)
+	}
+	return s
 }
 
 // syncToolSkill links t's skill into each vendor whose setting for every
