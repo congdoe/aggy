@@ -220,6 +220,23 @@ func TestDoctorToolsReport(t *testing.T) {
 	}
 }
 
+// TestDoctorUserConfigTelemetry (T6822, L4 of #97): a user config that
+// cannot be read is a warning, since tool telemetry then stays off
+// whatever it says; one that reads gives no such warning.
+func TestDoctorUserConfigTelemetry(t *testing.T) {
+	_, repo, _ := traceTool(t, "tracer")
+	cfg := filepath.Join(os.Getenv(home.Env), "config.toml")
+	writeAt(t, cfg, "[tools]\nallow_telemetry = true\n", 0o600)
+	const want = "the user config cannot be read, so tool telemetry stays off"
+	if got := findingLines(toolFindings(context.Background(), repo)); strings.Contains(got, want) {
+		t.Errorf("a config that reads:\n%s", got)
+	}
+	writeAt(t, cfg, "[tools]\nallow_telemetry = true\nbogus = 1\n", 0o600)
+	if got := findingLines(toolFindings(context.Background(), repo)); !strings.Contains(got, want) {
+		t.Errorf("an unreadable config:\n%s", got)
+	}
+}
+
 // treeState lists every path under HOME and the state dir with its
 // size, mode, and link target: what a read-only doctor must leave as is.
 func treeState(t *testing.T) string {

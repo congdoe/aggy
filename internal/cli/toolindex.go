@@ -165,7 +165,7 @@ func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, in io.R
 		return fail(fmt.Errorf("the first index of a repo runs %s, so you run it yourself, at a terminal: aggy tool on %s --repo %s", quoteArgv(argv), t.Name, termsafe.Field(repo.main)))
 	}
 	excluded := excludeIndex(ctx, repo.main, ix.dir, stdout)
-	var names []string
+	names, set := toolTelemetry("", t)
 	for _, m := range t.MCP {
 		names = append(names, m.Env...)
 	}
@@ -184,7 +184,7 @@ func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, in io.R
 		if a[0] != t.Install.Prebuild[0] {
 			return fail(fmt.Errorf("%s: a rebuild runs the prebuild's program", quoteArgv(a)))
 		}
-		out, err := execrun.ToolRunner(prebuildTimeout, slices.Compact(names), telemetryOff("", t))(rctx, adapter.Command{Path: path, Args: a[1:], Dir: tmp})
+		out, err := execrun.ToolRunner(prebuildTimeout, slices.Compact(names), set)(rctx, adapter.Command{Path: path, Args: a[1:], Dir: tmp})
 		switch {
 		case rctx.Err() != nil:
 			err = errors.New("interrupted; nothing was recorded, and the next aggy tool on builds it again")

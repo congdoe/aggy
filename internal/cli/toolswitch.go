@@ -361,6 +361,9 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, in io.Reader, tty bool
 		if t.When != "" {
 			fmt.Fprintf(stdout, "%s is %s.\n", name, whenText(t.When))
 		}
+		if s := telemetrySets(t.Def); s != "" {
+			fmt.Fprintln(stdout, s)
+		}
 		if prog := missingProgram(t); prog != "" {
 			fmt.Fprintf(stdout, "%s is not an executable on PATH, so %s cannot start yet: %s. aggy never installs it.\n", termsafe.Field(prog), name, termsafe.Field(installHowTo(t)))
 		}

@@ -151,6 +151,9 @@ func TestCodegraphIndexOnFirstOn(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "Ctrl-C cancels") || lines(t, inits) != 1 || !exists(t, filepath.Join(repo, ".codegraph", indexMarker)) {
 		t.Fatalf("first on: %d %q %q, %d runs", code, out, errOut, lines(t, inits))
 	}
+	if !strings.Contains(out, "aggy sets in every process it starts for this tool (unless [tools] allow_telemetry = true): DO_NOT_TRACK=1, CODEGRAPH_TELEMETRY=0\n") {
+		t.Errorf("on does not say what aggy sets:\n%s", out)
+	}
 	env, _ := os.ReadFile(filepath.Join(repo, ".codegraph", "env"))
 	// T6822: aggy's opt-outs replace the person's own values.
 	if !strings.Contains(string(env), "DO_NOT_TRACK=1\n") || !strings.Contains(string(env), "CODEGRAPH_TELEMETRY=0\n") ||
@@ -483,14 +486,14 @@ func TestCodegraphIndexTelemetryAllowed(t *testing.T) {
 	isolate(t)
 	fakeCodegraph(t, "0")
 	writeAt(t, filepath.Join(os.Getenv(home.Env), "config.toml"), "[tools]\nallow_telemetry = true\n", 0o600)
-	t.Setenv("DO_NOT_TRACK", "")
+	t.Setenv("DO_NOT_TRACK", "0")
 	t.Setenv("CODEGRAPH_TELEMETRY", "1")
 	repo := switchRepo(t, "")
 	if code, _, errOut := toolRun("", false, "on", "codegraph", "--repo", repo); code != 0 {
 		t.Fatalf("on: %d %q", code, errOut)
 	}
 	env, _ := os.ReadFile(filepath.Join(repo, ".codegraph", "env"))
-	if strings.Contains(string(env), "DO_NOT_TRACK=1") || !strings.Contains(string(env), "CODEGRAPH_TELEMETRY=1\n") {
+	if !strings.Contains(string(env), "DO_NOT_TRACK=0\n") || !strings.Contains(string(env), "CODEGRAPH_TELEMETRY=1\n") {
 		t.Errorf("init env: %s", env)
 	}
 }

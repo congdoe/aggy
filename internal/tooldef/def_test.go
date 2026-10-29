@@ -157,7 +157,7 @@ func TestParseValid(t *testing.T) {
 		{"shasum is not sh", strings.Replace(base, mcpArgv, `argv = ["shasum", "-a", "256"]`, 1), false},
 		{"node with a script", strings.Replace(base, mcpArgv, `argv = ["node", "/opt/demo/server.js", "--port=3000"]`, 1), false},
 		{"nice then a program", strings.Replace(base, mcpArgv, `argv = ["nice", "-n", "5", "demo", "serve"]`, 1), false},
-		{"telemetry_env", "telemetry_env = [\"DEMO_TELEMETRY=0\", \"OTHER_TRACKING=false\"]\n" + base, false},
+		{"telemetry_env", "telemetry_env = [\"DEMO_TELEMETRY=0\", \"OTHER_TRACKING=False\", \"CODEGRAPH_TELEMETRY=0\"]\n" + base, true},
 		{"an install hint", strings.Replace(base, `check = ["demo", "--version"]`, "check = [\"demo\", \"--version\"]\nhint = \"npm i -g demo@1.4.2\"", 1), false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -285,21 +285,11 @@ event = "PreModelRequest"`), false, "hook[0].event", "allow or deny"},
 		{"too many env", set(`env = ["DEMO_HOME"]`, manyEnv(maxEnv+1)), false, "mcp[0].env", "at most"},
 		{"env table", set(`env = ["DEMO_HOME"]`, `env = { DEMO_HOME = "/x" }`), false, "", ""},
 
-		// T6822: telemetry_env sets plain NAME=VALUE opt-outs only.
-		{"telemetry_env lower case", pre(`telemetry_env = ["demo_telemetry=0"]`), false, "telemetry_env[0]", "NAME=VALUE"},
-		{"telemetry_env no value", pre(`telemetry_env = ["DEMO_TELEMETRY"]`), false, "telemetry_env[0]", "NAME=VALUE"},
-		{"telemetry_env empty value", pre(`telemetry_env = ["DEMO_TELEMETRY="]`), false, "telemetry_env[0]", "NAME=VALUE"},
-		{"telemetry_env shell value", pre(`telemetry_env = ["DEMO_TELEMETRY=$(x)"]`), false, "telemetry_env[0]", "NAME=VALUE"},
-		{"telemetry_env path value", pre(`telemetry_env = ["DEMO_TELEMETRY=/tmp/x"]`), false, "telemetry_env[0]", "NAME=VALUE"},
-		{"telemetry_env twice", pre(`telemetry_env = ["DEMO_T=0", "DEMO_T=1"]`), false, "telemetry_env[1]", "twice"},
-		{"telemetry_env DO_NOT_TRACK", pre(`telemetry_env = ["DO_NOT_TRACK=0"]`), true, "telemetry_env[0]", "set by aggy"},
-		{"telemetry_env PATH", pre(`telemetry_env = ["PATH=0"]`), true, "telemetry_env[0]", "load or run"},
-		{"telemetry_env TMPDIR", pre(`telemetry_env = ["TMPDIR=x"]`), true, "telemetry_env[0]", "set by aggy"},
-		{"telemetry_env base URL", pre(`telemetry_env = ["ANTHROPIC_BASE_URL=x"]`), true, "telemetry_env[0]", "base-URL"},
-		{"telemetry_env loader", pre(`telemetry_env = ["NODE_OPTIONS=x"]`), true, "telemetry_env[0]", "load or run"},
-		{"telemetry_env aggy", pre(`telemetry_env = ["AGGY_HOME=x"]`), true, "telemetry_env[0]", "aggy's own"},
-		{"telemetry_env secret", pre(`telemetry_env = ["DEMO_TOKEN=x"]`), false, "telemetry_env[0]", "secret"},
-		{"too many telemetry_env", pre(`telemetry_env = [` + strings.Repeat(`"A=0",`, maxEnv+1) + `]`), false, "telemetry_env", "at most"},
+		// T6822: telemetry_env is a built-in's only (#97 HIGH-1);
+		// TestTelemetryEnvRefuses has the names.
+		{"telemetry_env in a user tool", pre(`telemetry_env = ["DEMO_TELEMETRY=0"]`), false, "telemetry_env", "built-in"},
+		{"telemetry_env bad name", pre(`telemetry_env = ["demo_telemetry=0"]`), true, "telemetry_env[0]", "NAME=VALUE"},
+		{"too many telemetry_env", pre(`telemetry_env = [` + strings.Repeat(`"A_TELEMETRY=0",`, maxEnv+1) + `]`), true, "telemetry_env", "at most"},
 
 		// Skill paths.
 		{"skill absolute path", on(skillOnly, set(`"~/.aggy/skills/brief"`, `"/opt/skills/brief"`)), false, "skill[0].path", "under ~/"},
@@ -452,10 +442,50 @@ func TestDesignExample(t *testing.T) {
 	if !ok || len(d.Install.Prebuild) == 0 {
 		t.Fatal("the example lacks an init step or a prebuild")
 	}
-	// A prebuild is a built-in's only too (T6711).
-	pre, post, _ := strings.Cut(user, "\nprebuild = ")
-	_, post, _ = strings.Cut(post, "\n")
-	if _, err := Parse("design.md", []byte(pre+"\n"+post), false); err != nil {
-		t.Errorf("without its init step and prebuild, the example is not a valid user tool: %v", err)
+	// A prebuild and telemetry_env are a built-in's only too (T6711,
+	// T6822).
+	for _, key := range []string{"\nprebuild = ", "\ntelemetry_env = "} {
+		pre, post, _ := strings.Cut(user, key)
+		_, post, _ = strings.Cut(post, "\n")
+		user = pre + "\n" + post
+	}
+	if _, err := Parse("design.md", []byte(user), false); err != nil {
+		t.Errorf("without its init step, prebuild, and telemetry_env, the example is not a valid user tool: %v", err)
+	}
+}
+
+// TestTelemetryEnvRefuses (T6822, #97 HIGH-1): even a built-in may set
+// only a variable that names telemetry, to a plain on/off value, and
+// never one that changes how a package runner, resolver, loader, or
+// shell behaves. CodeGraph's documented opt-out passes.
+func TestTelemetryEnvRefuses(t *testing.T) {
+	if err := telemetryEnv([]string{"CODEGRAPH_TELEMETRY=0", "DEMO_ANALYTICS=Disabled", "DEMO_OPT_OUT=yes"}, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, kv := range []string{
+		// The review's list, as written: none names telemetry.
+		"NPM_CONFIG_STRICT_SSL=false", "UV_INSECURE_HOST=1", "PIP_TRUSTED_HOST=1", "GOSUMDB=off", "HOSTALIASES=1",
+		"LOCALDOMAIN=1", "GCONV_PATH=1", "ZDOTDIR=1", "XDG_CONFIG_HOME=1", "DOTNET_STARTUP_HOOKS=1",
+		// The same families, named like telemetry: refused by prefix.
+		"NPM_CONFIG_TELEMETRY=0", "PNPM_TELEMETRY=0", "YARN_ENABLE_TELEMETRY=0", "BUN_TELEMETRY=0", "DENO_TELEMETRY=0",
+		"UV_TELEMETRY=0", "PIP_TELEMETRY=0", "PIPX_TELEMETRY=0", "COREPACK_ENABLE_TRACKING=0", "GOTELEMETRY=off",
+		"CARGO_TELEMETRY=0", "RUSTUP_TELEMETRY=0", "RUSTC_TELEMETRY=0", "XDG_TELEMETRY=0", "SSL_TELEMETRY=0",
+		"DOTNET_CLI_TELEMETRY_OPTOUT=1", "ELECTRON_TELEMETRY=0", "LUA_TELEMETRY=0", "TELEMETRY_CA_BUNDLE=0",
+		// Set by aggy, or the env rules' own refusals.
+		"DO_NOT_TRACK=0", "AGGY_TELEMETRY=0", "ANTHROPIC_TELEMETRY=0", "NODE_TELEMETRY=0", "TELEMETRY_TOKEN=0",
+		"TELEMETRY_PROXY=0", "TRACK_BASE_URL=0",
+		// Values: on/off words only.
+		"DEMO_TELEMETRY=/tmp/x", "DEMO_TELEMETRY=", "DEMO_TELEMETRY", "DEMO_TELEMETRY=$(x)", "DEMO_TELEMETRY=2",
+		"demo_telemetry=0",
+	} {
+		if err := telemetryEnv([]string{kv}, true); err == nil {
+			t.Errorf("%s passed", kv)
+		}
+	}
+	if err := telemetryEnv([]string{"DEMO_TELEMETRY=0", "DEMO_TELEMETRY=1"}, true); err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("twice: %v", err)
+	}
+	if err := telemetryEnv([]string{"CODEGRAPH_TELEMETRY=0"}, false); err == nil || !strings.Contains(err.Error(), "built-in") {
+		t.Errorf("a user definition: %v", err)
 	}
 }

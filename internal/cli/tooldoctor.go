@@ -12,6 +12,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/checkup"
+	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
@@ -49,6 +50,11 @@ func toolFindings(ctx context.Context, cwd string) []checkup.Finding {
 		repo, _ = toolRepo(cwd, false)
 	}
 	var out []checkup.Finding
+	if _, err := config.LoadDefault(); err != nil {
+		// L4 of #97: toolTelemetry fails closed on it.
+		out = append(out, checkup.Finding{Code: diag.CodeConfig.String(), Level: checkup.LevelWarn,
+			Message: "the user config cannot be read, so tool telemetry stays off (DO_NOT_TRACK=1) whatever [tools] allow_telemetry says; fix the file", Detail: err.Error()})
+	}
 	if repo.root != "" {
 		if b.RepoOff, err = repoToolsOff(repo); err != nil {
 			out = append(out, checkup.Finding{Code: diag.CodeConfig.String(), Level: checkup.LevelWarn,

@@ -91,6 +91,8 @@ func TestToolAddPreviewsThenWrites(t *testing.T) {
 				"codex:\n    MCP server: \"demo\" \"serve\" \"--stdio\"",
 				"grok:\n    PostToolUse hook: \"demo\" \"hook\"",
 				"off until you turn it on",
+				// T6822, #97 HIGH-2: what aggy sets is shown.
+				"  aggy sets in every process it starts for this tool (unless [tools] allow_telemetry = true): DO_NOT_TRACK=1\n",
 				dest,
 			} {
 				if !strings.Contains(out, w) {

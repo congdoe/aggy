@@ -429,6 +429,9 @@ func previewTool(w io.Writer, d tooldef.Def, dest string) {
 		fmt.Fprintln(w, "  network: none, as the file declares (network = false); an edit borrow may get it")
 	}
 	fmt.Fprintf(w, "  cost estimate: %s\n", d.Cost.Method)
+	if s := telemetrySets(d); s != "" {
+		fmt.Fprintln(w, "  "+s)
+	}
 	if len(d.Install.Check)+len(d.Install.Install)+len(d.Install.Prebuild) > 0 || d.Install.Hint != "" {
 		fmt.Fprintln(w, "  install (nothing runs now; install runs only on aggy tool install, after asking; a prebuild, once per repo, on aggy tool on --repo):")
 	}

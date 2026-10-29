@@ -188,9 +188,11 @@ func HeadlessRunner(timeout time.Duration) adapter.Runner {
 // hook-tool): HeadlessRunner, but with ToolEnv's environment, built from
 // scratch with no vendor home (L78-7): a tool's hook has no use for
 // CLAUDE_CONFIG_DIR, CODEX_HOME, or GROK_HOME. A command may add no
-// variables of its own; set is SetEnv's, the telemetry opt-outs (T6822).
-func ToolHookRunner(timeout time.Duration, set []string) adapter.Runner {
-	return ToolRunner(timeout, nil, set)
+// variables of its own. For telemetry (T6822) only: pass names variables
+// passed from aggy's environment (DO_NOT_TRACK, when the person allows
+// telemetry), and set is SetEnv's, the opt-outs aggy sets.
+func ToolHookRunner(timeout time.Duration, pass, set []string) adapter.Runner {
+	return ToolRunner(timeout, pass, set)
 }
 
 // ToolRunner is ToolHookRunner that also passes names, the variables a

@@ -82,12 +82,19 @@ func TestToolExec(t *testing.T) {
 		}
 	}
 	// T6822: the user config's [tools] allow_telemetry lets telemetry
-	// through: aggy sets no DO_NOT_TRACK.
+	// through: aggy sets no DO_NOT_TRACK, and the person's own passes
+	// (L1 of #97).
 	cfg := filepath.Join(state, "config.toml")
 	writeAt(t, cfg, "[tools]\nallow_telemetry = true\n", 0o600)
-	if code, errOut := exec(ok); code != 0 || slices.ContainsFunc(got.env, func(kv string) bool { return strings.HasPrefix(kv, "DO_NOT_TRACK=") }) {
+	t.Setenv("DO_NOT_TRACK", "")
+	if code, errOut := exec(ok); code != 0 || slices.ContainsFunc(got.env, func(kv string) bool { return strings.HasPrefix(kv, "DO_NOT_TRACK=1") }) {
 		t.Errorf("allowed: exit %d %q, env %q", code, errOut, got.env)
 	}
+	t.Setenv("DO_NOT_TRACK", "1")
+	if code, errOut := exec(ok); code != 0 || !slices.Contains(got.env, "DO_NOT_TRACK=1") {
+		t.Errorf("allowed, the person's own: exit %d %q, env %q", code, errOut, got.env)
+	}
+	t.Setenv("DO_NOT_TRACK", "0")
 	// A config that cannot be read sets it all the same.
 	writeAt(t, cfg, "[tools]\nallow_telemetry = true\nbogus = 1\n", 0o600)
 	if code, errOut := exec(ok); code != 0 || !slices.Contains(got.env, "DO_NOT_TRACK=1") {

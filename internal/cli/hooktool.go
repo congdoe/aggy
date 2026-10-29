@@ -111,7 +111,8 @@ func hookToolWith(ctx context.Context, args []string, in io.Reader, stdout io.Wr
 	if timeout == 0 {
 		timeout = toolwire.ToolHookTimeout
 	}
-	out, err := execrun.ToolHookRunner(time.Duration(timeout)*time.Second, telemetryOff("", tools[j]))(ctx, adapter.Command{
+	pass, set := toolTelemetry("", tools[j])
+	out, err := execrun.ToolHookRunner(time.Duration(timeout)*time.Second, pass, set)(ctx, adapter.Command{
 		Path: path, Args: h.Argv[1:], Dir: dir, Stdin: adapter.StdinFile, StdinPath: file})
 	if err != nil || out.ExitCode != 0 {
 		fail(diag.CodeToolHookFailed)

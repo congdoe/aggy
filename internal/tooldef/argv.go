@@ -158,16 +158,31 @@ func forbiddenEnv(n string) string {
 	return ""
 }
 
+var telemetryNameRE = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
+
+// Defence in depth for telemetry_env, which only built-ins have: a name
+// must say what it is for, and never be one that changes how a package
+// runner, resolver, loader, or shell behaves (#97 review).
 var (
-	telemetryNameRE  = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
-	telemetryValueRE = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,32}$`)
+	telemetryWords    = []string{"TELEMETRY", "TRACK", "ANALYTICS", "OPTOUT", "OPT_OUT"}
+	telemetryValues   = []string{"0", "1", "true", "false", "off", "no", "yes", "disabled"}
+	telemetryPrefixes = []string{"NPM_CONFIG_", "PNPM_", "YARN_", "BUN_", "DENO_", "UV_", "PIP_", "PIPX_", "COREPACK_",
+		"GO", "CARGO_", "RUSTUP_", "RUSTC_", "XDG_", "SSL_", "DOTNET_", "ELECTRON_", "LUA_"}
+	telemetryNever = []string{"HOSTALIASES", "LOCALDOMAIN", "RES_OPTIONS", "GCONV_PATH", "ZDOTDIR", "BASHOPTS",
+		"SHELLOPTS", "JDK_JAVA_OPTIONS", "DO_NOT_TRACK", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"}
 )
 
-// telemetryEnv checks telemetry_env, built-ins and user tools alike: at
-// most maxEnv NAME=VALUE entries, each name upper case and listed once,
-// never one forbiddenEnv refuses, DO_NOT_TRACK (aggy sets it), or one of
-// the basics a tool's environment is built from, and a short plain value.
-func telemetryEnv(kvs []string) error {
+// telemetryEnv checks telemetry_env: a built-in's only (a user
+// definition may not set variables), at most maxEnv NAME=VALUE entries,
+// each name upper case, naming telemetry, listed once, and none that
+// forbiddenEnv or the lists above refuse, with a plain on/off value.
+func telemetryEnv(kvs []string, builtIn bool) error {
+	if len(kvs) == 0 {
+		return nil
+	}
+	if !builtIn {
+		return &Error{Key: "telemetry_env", Msg: "only aggy's built-in tools set variables; aggy sets DO_NOT_TRACK=1 for every tool"}
+	}
 	if len(kvs) > maxEnv {
 		return &Error{Key: "telemetry_env", Msg: fmt.Sprintf("at most %d entries", maxEnv)}
 	}
@@ -176,12 +191,14 @@ func telemetryEnv(kvs []string) error {
 		bad := func(msg string) error { return &Error{Key: fmt.Sprintf("telemetry_env[%d]", i), Msg: msg} }
 		n, v, ok := strings.Cut(kv, "=")
 		switch {
-		case !ok || !telemetryNameRE.MatchString(n) || !telemetryValueRE.MatchString(v):
-			return bad("want NAME=VALUE: a name of A-Z, 0-9, and _, and a value of 1 to 32 of A-Z, a-z, 0-9, and _ . -")
+		case !ok || !telemetryNameRE.MatchString(n) || !slices.Contains(telemetryValues, strings.ToLower(v)):
+			return bad("want NAME=VALUE: a name of A-Z, 0-9, and _, and a value of " + strings.Join(telemetryValues, ", "))
+		case !slices.ContainsFunc(telemetryWords, func(w string) bool { return strings.Contains(n, w) }):
+			return bad(n + " does not name a telemetry setting (" + strings.Join(telemetryWords, ", ") + ")")
+		case slices.Contains(telemetryNever, n) || hasPrefixIn(n, telemetryPrefixes) || strings.HasSuffix(n, "_CA_BUNDLE"):
+			return bad(n + " may not be set: aggy sets it, or it changes how programs fetch, resolve, load, or run")
 		case slices.Contains(seen, n):
 			return bad(n + " listed twice")
-		case n == "DO_NOT_TRACK" || slices.Contains([]string{"USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"}, n):
-			return bad(n + " is set by aggy, not by a tool")
 		}
 		if why := forbiddenEnv(n); why != "" {
 			return bad(n + " may not be set: " + why)
