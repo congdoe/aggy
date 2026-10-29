@@ -335,7 +335,7 @@ func TestToolShimSwitchResume(t *testing.T) {
 	}
 
 	// The server ran through the shim: in the launch folder, with only
-	// the basics and PROBE_HOME.
+	// the basics, PROBE_HOME, and DO_NOT_TRACK=1 (T6822).
 	b, err := os.ReadFile(dump)
 	if err != nil {
 		t.Fatalf("the server never ran: %v", err)
@@ -350,11 +350,11 @@ func TestToolShimSwitchResume(t *testing.T) {
 	basics := []string{"HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"}
 	for _, kv := range d.Env {
 		k, _, _ := strings.Cut(kv, "=")
-		if !slices.Contains(basics, k) && kv != "PROBE_HOME=/opt/probe" {
+		if !slices.Contains(basics, k) && kv != "PROBE_HOME=/opt/probe" && kv != "DO_NOT_TRACK=1" {
 			t.Errorf("server env has %q", kv)
 		}
 	}
-	if !slices.Contains(d.Env, "PROBE_HOME=/opt/probe") || !slices.Contains(d.Env, "HOME="+w.home) {
+	if !slices.Contains(d.Env, "PROBE_HOME=/opt/probe") || !slices.Contains(d.Env, "HOME="+w.home) || !slices.Contains(d.Env, "DO_NOT_TRACK=1") {
 		t.Errorf("server env %q", d.Env)
 	}
 	if lo := w.launchLeftovers(t); len(lo) != 0 {

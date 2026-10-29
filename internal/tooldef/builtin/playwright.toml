@@ -5,6 +5,9 @@
 # Source: docs/verification.md, "Managed tools (2026-10-28)":
 # @playwright/mcp 0.0.83, whose binary is playwright-mcp. Its browsers
 # are a separate download on first use.
+# Telemetry: aggy sets DO_NOT_TRACK=1 in its processes (T6822). Whether
+# this version honours it, or has an opt-out of its own, is unverified
+# (TODO(T6822)), so no telemetry_env is set.
 name = "playwright"
 description = "Browser automation that reads the accessibility tree instead of a screenshot"
 homepage = "https://github.com/microsoft/playwright-mcp"

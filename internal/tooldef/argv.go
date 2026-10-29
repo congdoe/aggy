@@ -3,6 +3,7 @@ package tooldef
 import (
 	"fmt"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -155,4 +156,37 @@ func forbiddenEnv(n string) string {
 		return "it is a vendor CLI's, a cloud's, or aggy's own setting"
 	}
 	return ""
+}
+
+var (
+	telemetryNameRE  = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
+	telemetryValueRE = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,32}$`)
+)
+
+// telemetryEnv checks telemetry_env, built-ins and user tools alike: at
+// most maxEnv NAME=VALUE entries, each name upper case and listed once,
+// never one forbiddenEnv refuses, DO_NOT_TRACK (aggy sets it), or one of
+// the basics a tool's environment is built from, and a short plain value.
+func telemetryEnv(kvs []string) error {
+	if len(kvs) > maxEnv {
+		return &Error{Key: "telemetry_env", Msg: fmt.Sprintf("at most %d entries", maxEnv)}
+	}
+	var seen []string
+	for i, kv := range kvs {
+		bad := func(msg string) error { return &Error{Key: fmt.Sprintf("telemetry_env[%d]", i), Msg: msg} }
+		n, v, ok := strings.Cut(kv, "=")
+		switch {
+		case !ok || !telemetryNameRE.MatchString(n) || !telemetryValueRE.MatchString(v):
+			return bad("want NAME=VALUE: a name of A-Z, 0-9, and _, and a value of 1 to 32 of A-Z, a-z, 0-9, and _ . -")
+		case slices.Contains(seen, n):
+			return bad(n + " listed twice")
+		case n == "DO_NOT_TRACK" || slices.Contains([]string{"USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"}, n):
+			return bad(n + " is set by aggy, not by a tool")
+		}
+		if why := forbiddenEnv(n); why != "" {
+			return bad(n + " may not be set: " + why)
+		}
+		seen = append(seen, n)
+	}
+	return nil
 }

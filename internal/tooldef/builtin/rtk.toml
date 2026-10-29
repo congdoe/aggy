@@ -14,6 +14,9 @@
 # "allow" with every rewrite, which would approve every shell command it
 # touches, so aggy does not wire it.
 # TODO(T6712): the token cost.
+# Telemetry: aggy sets DO_NOT_TRACK=1 in its processes (T6822). Whether
+# this version honours it, or has an opt-out of its own, is unverified
+# (TODO(T6822)), so no telemetry_env is set.
 name = "rtk"
 description = "Compresses shell command output before the model sees it (Claude only)"
 homepage = "https://github.com/rtk-ai/rtk"

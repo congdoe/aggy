@@ -5,6 +5,9 @@
 # Never headroom proxy or wrap (they need ANTHROPIC_BASE_URL, which aggy
 # never sets), and never headroom mcp install, which edits every agent's
 # config.
+# Telemetry: aggy sets DO_NOT_TRACK=1 in its processes (T6822). Whether
+# this version honours it, or has an opt-out of its own, is unverified
+# (TODO(T6822)), so no telemetry_env is set.
 name = "headroom"
 description = "Compresses a large blob the agent holds; originals stay local and can be retrieved"
 homepage = "https://docs.headroomlabs.ai"

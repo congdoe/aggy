@@ -63,6 +63,10 @@ type Def struct {
 	// Unverified lists the top-level keys whose vendor facts are not yet
 	// recorded in docs/verification.md.
 	Unverified []string `toml:"unverified"`
+	// TelemetryEnv is the tool's own telemetry opt-out, as NAME=VALUE,
+	// which aggy sets with DO_NOT_TRACK=1 in every process of the tool's
+	// it starts unless the user config allows telemetry (T6822).
+	TelemetryEnv []string `toml:"telemetry_env"`
 }
 
 // Install says how to find, install, and prepare the tool. None of it
@@ -398,6 +402,9 @@ func (d Def) validate(builtIn bool) error {
 		return err
 	}
 	if err := d.Cost.validate(d); err != nil {
+		return err
+	}
+	if err := telemetryEnv(d.TelemetryEnv); err != nil {
 		return err
 	}
 	if len(d.Lifecycle) > 0 && !builtIn {

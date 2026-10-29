@@ -44,6 +44,8 @@ setup = ["npm", "ci"]
 		{name: "unknown table", text: "[routing]\nimage = [\"grok\"]\n", wantErr: "unknown key routing"},
 		{name: "user-only key", text: `default_vendor = "grok"`, wantErr: "unknown key default_vendor"},
 		{name: "a repo cannot turn notifications on", text: "[notify]\ndesktop = true\n", wantErr: "unknown key notify"},
+		// T6822: only the person's own config lets tool telemetry through.
+		{name: "a repo cannot allow tool telemetry", text: "[tools]\nallow_telemetry = true\n", wantErr: "unknown key tools"},
 		{name: "bad vendor", text: `allowed_vendors = ["gemini"]`, wantErr: "unknown vendor"},
 		{name: "duplicate vendor", text: `allowed_vendors = ["grok", "grok"]`, wantErr: "listed twice"},
 		{name: "shell string check", text: `check = ["make test"]`, wantErr: "check"},
