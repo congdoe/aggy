@@ -124,9 +124,14 @@ type session struct {
 	master *os.File
 	slave  *os.File
 	cmd    *exec.Cmd
-	mu     sync.Mutex
-	out    bytes.Buffer
-	before *term.State
+	// waited is closed once the one cmd.Wait, started by wait, has
+	// returned waitErr.
+	waitOnce sync.Once
+	waited   chan struct{}
+	waitErr  error
+	mu       sync.Mutex
+	out      bytes.Buffer
+	before   *term.State
 }
 
 func (w *world) start(t *testing.T, scenario map[string]any, args ...string) *session {
@@ -143,12 +148,23 @@ func (w *world) start(t *testing.T, scenario map[string]any, args ...string) *se
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = master.Close(); _ = slave.Close() })
+	read := make(chan struct{})
+	t.Cleanup(func() {
+		_ = master.Close()
+		_ = slave.Close()
+		// The reader ends before the test does, so it never outlives the pair.
+		select {
+		case <-read:
+		case <-time.After(timeout):
+		}
+	})
 	if err := pty.Setsize(master, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
+		close(read)
 		t.Fatal(err)
 	}
-	s := &session{t: t, master: master, slave: slave}
+	s := &session{t: t, master: master, slave: slave, waited: make(chan struct{})}
 	if s.before, err = term.GetState(int(master.Fd())); err != nil {
+		close(read)
 		t.Fatal(err)
 	}
 	s.cmd = exec.Command(buildAggy(t), args...)
@@ -163,15 +179,19 @@ func (w *world) start(t *testing.T, scenario map[string]any, args ...string) *se
 	s.cmd.Stdin, s.cmd.Stdout, s.cmd.Stderr = slave, slave, slave
 	s.cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 	if err := s.cmd.Start(); err != nil {
+		close(read)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if s.cmd.ProcessState == nil {
+		select {
+		case <-s.wait():
+		default:
 			_ = s.cmd.Process.Kill()
-			_ = s.cmd.Wait()
+			<-s.waited
 		}
 	})
 	go func() {
+		defer close(read)
 		buf := make([]byte, 4096)
 		for {
 			n, err := master.Read(buf)
@@ -228,15 +248,26 @@ func (s *session) screen() string {
 	return s.out.String()
 }
 
+// wait starts the one cmd.Wait, so exit and the cleanup never race on
+// cmd, and returns the channel closed when it returns. It starts late
+// so tests can wait4 for a stop first.
+func (s *session) wait() <-chan struct{} {
+	s.waitOnce.Do(func() {
+		go func() {
+			s.waitErr = s.cmd.Wait()
+			close(s.waited)
+		}()
+	})
+	return s.waited
+}
+
 // exit waits for aggy to exit and returns its exit code.
 func (s *session) exit() int {
 	s.t.Helper()
-	done := make(chan error, 1)
-	go func() { done <- s.cmd.Wait() }()
 	select {
-	case err := <-done:
+	case <-s.wait():
 		var ee *exec.ExitError
-		if err != nil && !errors.As(err, &ee) {
+		if err := s.waitErr; err != nil && !errors.As(err, &ee) {
 			s.t.Fatal(err)
 		}
 	case <-time.After(timeout):
