@@ -255,6 +255,37 @@ func TestToolOffLeavesNoTrace(t *testing.T) {
 	}
 }
 
+// narrowedTracer is tracerTool with its skill for Claude only.
+func narrowedTracer() string {
+	return strings.Replace(tracerTool, "vendors = [\"claude\", \"codex\", \"grok\"]\npath = ", "vendors = [\"claude\"]\npath = ", 1)
+}
+
+// TestToolNarrowedSkillDoctorFix (H84-1): once an edit narrows a tool's
+// skill to Claude, doctor reports the Codex and Grok links stray, and
+// the fix it names clears the one it is for.
+func TestToolNarrowedSkillDoctorFix(t *testing.T) {
+	_, repo, _ := traceTool(t, "tracer")
+	toolOK(t, "on", "tracer")
+	writeAt(t, filepath.Join(os.Getenv(home.Env), "tools", "tracer.toml"), narrowedTracer(), 0o600)
+	stray := "warning tool-skill-stray (codex): a user tool: off for codex, but its skill is still linked, so codex loads it: tool tracer; fix: aggy tool off tracer --vendor codex"
+	if got := findingLines(toolFindings(context.Background(), repo)); !strings.Contains(got, stray) {
+		t.Fatalf("doctor:\n%s", got)
+	}
+	// The file changed, so the tool is off everywhere; the fix unlinks
+	// every vendor, and the pin goes once no link is left.
+	toolOK(t, "off", "tracer", "--vendor", "codex")
+	got := findingLines(toolFindings(context.Background(), repo))
+	if strings.Contains(got, "tool-skill-stray") || strings.Contains(got, "tool-grok-ignore") {
+		t.Errorf("after the fix:\n%s", got)
+	}
+	l, _ := layoutFor("tracer")
+	for _, v := range []string{"claude", "codex", "grok"} {
+		if ok, _ := l.linked(l.links[v]); ok {
+			t.Errorf("%s still linked", v)
+		}
+	}
+}
+
 // changeSkill edits tracer's installed skill after its first link.
 func changeSkill(t *testing.T) {
 	t.Helper()
@@ -273,6 +304,12 @@ func TestToolGoneLeavesNoSkill(t *testing.T) {
 		{"remove", func(t *testing.T, file string) {
 			writeAt(t, file, tracerTool+"# edited\n", 0o600)
 			toolOK(t, "remove", "tracer")
+		}},
+		// H84-1: off of a loaded tool whose edit narrowed its skill's
+		// vendors unlinks the vendors it dropped too.
+		{"edit narrows skill vendors, then off", func(t *testing.T, file string) {
+			writeAt(t, file, narrowedTracer(), 0o600)
+			toolOK(t, "off", "tracer")
 		}},
 		// H83-2: off of a loaded tool whose edit dropped its [[skill]].
 		{"edit drops skill, then off", func(t *testing.T, file string) {
