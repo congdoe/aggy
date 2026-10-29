@@ -70,6 +70,13 @@ func set(old, new string) func(string) string {
 	}
 }
 
+// prebuild sets the scope line and adds install.prebuild with argv.
+func prebuild(scope, argv string) func(string) string {
+	return func(s string) string {
+		return strings.NewReplacer(`scope = "global"`, scope, `check = ["demo", "--version"]`, "check = [\"demo\"]\nprebuild = "+argv).Replace(s)
+	}
+}
+
 // pre adds top-level keys, which must come before the first table.
 func pre(extra string) func(string) string { return func(s string) string { return extra + "\n" + s } }
 
@@ -136,6 +143,7 @@ func TestParseValid(t *testing.T) {
 		{"built-in unpinned", strings.Replace(base, `"1.2.3"`, `"unpinned"`, 1), true},
 		{"built-in lifecycle", `lifecycle = ["worktree-copy", "gc", "refresh"]` + "\n" + base, true},
 		{"built-in init", base + initStep, true},
+		{"built-in prebuild", strings.NewReplacer(`scope = "global"`, `scope = "repo"`, `check = ["demo", "--version"]`, "check = [\"demo\"]\nprebuild = [\"demo\", \"index\", \"{repo}\"]").Replace(base), true},
 		{"built-in deciding hook", base + "[[hook]]\nvendors = [\"claude\"]\nevent = \"PreToolUse\"\nmatcher = \"Bash\"\ndecides = true\nargv = [\"demo\", \"hook\"]\n", true},
 		{"built-in skill under home", strings.Replace(skillOnly, `"~/.aggy/skills/brief"`, `"~/Library/brief"`, 1), true},
 		{"built-in env", strings.Replace(base, `"DEMO_HOME"`, `"CONTEXT_DIR"`, 1), true},
@@ -252,7 +260,11 @@ event = "PreModelRequest"`), false, "hook[0].event", "allow or deny"},
 		{"stray brace", set(mcpArgv, `argv = ["demo", "{repo"]`), false, "mcp[0].argv", "placeholder"},
 		{"check shell", set(`check = ["demo", "--version"]`, `check = ["bash", "-c", "demo"]`), false, "install.check", "shell"},
 		{"install relative", set(`check = ["demo", "--version"]`, "check = [\"demo\"]\ninstall = [\"./install.sh\"]"), false, "install.install", "bare name"},
-		{"prebuild shell", set(`check = ["demo", "--version"]`, "check = [\"demo\"]\nprebuild = [\"dash\", \"-c\", \"x\"]"), false, "install.prebuild", "shell"},
+		// T6711: a prebuild is a built-in per-repo tool's, naming the repo.
+		{"prebuild user", prebuild(`scope = "repo"`, `["demo", "index", "{repo}"]`), false, "install.prebuild", "built-in"},
+		{"prebuild global", prebuild(`scope = "global"`, `["demo", "index", "{repo}"]`), true, "install.prebuild", "per-repo"},
+		{"prebuild no repo", prebuild(`scope = "repo"`, `["demo", "index"]`), true, "install.prebuild", "{repo}"},
+		{"prebuild shell", prebuild(`scope = "repo"`, `["dash", "-c", "x", "{repo}"]`), true, "install.prebuild", "shell"},
 		{"check missing with mcp", set(`check = ["demo", "--version"]`, ``), false, "install.check", "program"},
 		{"check pattern without a group", set(`check = ["demo", "--version"]`, "check = [\"demo\"]\ncheck_pattern = 'v\\d+'"), false, "install.check_pattern", "capture group"},
 		{"check pattern with two groups", set(`check = ["demo", "--version"]`, "check = [\"demo\"]\ncheck_pattern = '(v)(\\d+)'"), false, "install.check_pattern", "capture group"},
@@ -415,10 +427,13 @@ func TestDesignExample(t *testing.T) {
 		t.Errorf("the example should show every part: %+v", d)
 	}
 	user, _, ok := strings.Cut(example, "[[init]]")
-	if !ok {
-		t.Fatal("the example lacks an init step")
+	if !ok || len(d.Install.Prebuild) == 0 {
+		t.Fatal("the example lacks an init step or a prebuild")
 	}
-	if _, err := Parse("design.md", []byte(user), false); err != nil {
-		t.Errorf("without its init step, the example is not a valid user tool: %v", err)
+	// A prebuild is a built-in's only too (T6711).
+	pre, post, _ := strings.Cut(user, "\nprebuild = ")
+	_, post, _ = strings.Cut(post, "\n")
+	if _, err := Parse("design.md", []byte(pre+"\n"+post), false); err != nil {
+		t.Errorf("without its init step and prebuild, the example is not a valid user tool: %v", err)
 	}
 }

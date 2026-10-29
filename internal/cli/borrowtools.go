@@ -161,6 +161,9 @@ func borrowTools(stateDir string, network bool) func(context.Context, adapter.Ve
 			done()
 			return nil, nil, refused(no[0].Tool, no[0].Code, no[0].Why)
 		}
+		// T6711: the child's worktree gets a copy of the main checkout's
+		// index; a refused copy is recorded, and the child runs without it.
+		_ = copyIndexes(ctx, on, toolwire.Names(servers), repo)
 		dlog.Log(ctx, diag.Rec{Event: diag.EvToolWired, Vendor: string(v), Attrs: map[string]any{"tools": toolwire.Names(servers), "borrow": true}})
 		return servers, done, nil
 	}

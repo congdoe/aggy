@@ -417,7 +417,7 @@ func previewTool(w io.Writer, d tooldef.Def, dest string) {
 	}
 	fmt.Fprintf(w, "  cost estimate: %s\n", d.Cost.Method)
 	if len(d.Install.Check)+len(d.Install.Install)+len(d.Install.Prebuild) > 0 {
-		fmt.Fprintln(w, "  install (nothing runs now; install and prebuild run only on aggy tool install, after asking):")
+		fmt.Fprintln(w, "  install (nothing runs now; install runs only on aggy tool install, after asking; a prebuild, once per repo, on aggy tool on --repo):")
 	}
 	cmd := func(label string, a []string) {
 		if len(a) > 0 {

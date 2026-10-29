@@ -40,6 +40,9 @@ func TestGCWorktrees(t *testing.T) {
 	if code, out, errOut := accept(f, "", false, accepted, "--yes"); code != 0 {
 		t.Fatalf("accept: %d %s %s", code, out, errOut)
 	}
+	// T6711: a worktree's copy of the CodeGraph index goes with it.
+	mustWrite(t, filepath.Join(wtA, ".codegraph", "codegraph.db"), "db", 0o600)
+	mustWrite(t, filepath.Join(wtA, ".codegraph", ".gitignore"), "*\n", 0o600)
 	pending, wtP := editBorrow(t, f, map[string]string{"b.go": "package a\n"})
 	linked, wtL := editBorrow(t, f, map[string]string{"c.go": "package a\n"})
 	if code, _, errOut := accept(f, "", false, linked, "--yes"); code != 0 {
@@ -74,8 +77,8 @@ func TestGCWorktrees(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code %d: %s %s", code, out, errOut)
 	}
-	if exists(t, wtA) || gitIn(t, f.repo, "branch", "--list", "aggy/edit-"+accepted) != "" {
-		t.Error("accepted worktree or branch left")
+	if exists(t, wtA) || exists(t, filepath.Join(wtA, ".codegraph")) || gitIn(t, f.repo, "branch", "--list", "aggy/edit-"+accepted) != "" {
+		t.Error("accepted worktree, its index copy, or its branch left")
 	}
 	if !exists(t, wtP) {
 		t.Error("a new pending worktree was removed")

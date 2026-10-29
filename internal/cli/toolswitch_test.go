@@ -147,6 +147,7 @@ func TestToolSwitchWorktree(t *testing.T) {
 	main := switchRepo(t, "")
 	wt := filepath.Join(t.TempDir(), "wt")
 	runGit(t, main, "worktree", "add", "-q", wt)
+	fakeCodegraph(t, "0") // codegraph on --repo indexes the repo (T6711)
 
 	steps := []struct {
 		args []string
@@ -322,6 +323,7 @@ func TestToolOnRefuses(t *testing.T) {
 		}
 	}
 	// A per-repo tool turns on with --repo.
+	fakeCodegraph(t, "0")
 	if code, out, errOut := toolRun("", false, "on", "codegraph", "--repo", "."); code != 0 || !strings.Contains(out, "codegraph for claude") {
 		t.Errorf("codegraph --repo: exit %d %q %q", code, out, errOut)
 	}

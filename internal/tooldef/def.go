@@ -67,8 +67,9 @@ type Def struct {
 
 // Install says how to find, install, and prepare the tool. None of it
 // runs while the tool is off: Check runs on an explicit aggy tool
-// install or check, or once the tool is on; Install and Prebuild run
-// only on an explicit aggy tool install, after asking.
+// install or check, or once the tool is on; Install runs only on an
+// explicit aggy tool install, after asking. aggy never installs a tool
+// on its own.
 type Install struct {
 	// Check confirms presence and version. It is required unless the
 	// tool is only a skill.
@@ -77,7 +78,10 @@ type Install struct {
 	// expression with exactly one capture group.
 	CheckPattern string   `toml:"check_pattern"`
 	Install      []string `toml:"install"`
-	Prebuild     []string `toml:"prebuild"`
+	// Prebuild builds a per-repo index (T6711): a built-in's only, with
+	// scope = "repo" and {repo} in its arguments. It runs once per repo,
+	// on the aggy tool on --repo that finds no index there.
+	Prebuild []string `toml:"prebuild"`
 }
 
 // MCP is a stdio MCP server for the vendors listed: Argv is the program
@@ -381,7 +385,7 @@ func (d Def) validate(builtIn bool) error {
 	if err := d.validateInit(builtIn); err != nil {
 		return err
 	}
-	if err := d.validateInstall(); err != nil {
+	if err := d.validateInstall(builtIn); err != nil {
 		return err
 	}
 	if err := d.Cost.validate(d); err != nil {
@@ -527,7 +531,7 @@ func (d Def) validateInit(builtIn bool) error {
 	return nil
 }
 
-func (d Def) validateInstall() error {
+func (d Def) validateInstall(builtIn bool) error {
 	if err := argv("install.check", d.Install.Check, !d.SkillOnly()); err != nil {
 		return err
 	}
@@ -550,7 +554,13 @@ func (d Def) validateInstall() error {
 	if err := argv("install.install", d.Install.Install, false); err != nil {
 		return err
 	}
-	return argv("install.prebuild", d.Install.Prebuild, false)
+	if len(d.Install.Prebuild) == 0 {
+		return nil
+	}
+	if !builtIn || d.Scope != "repo" || !slices.ContainsFunc(d.Install.Prebuild[1:], func(a string) bool { return strings.Contains(a, Placeholder) }) {
+		return &Error{Key: "install.prebuild", Msg: "only aggy's built-in per-repo tools have a prebuild, and it names the repo as " + Placeholder}
+	}
+	return argv("install.prebuild", d.Install.Prebuild, true)
 }
 
 func (c Cost) validate(d Def) error {

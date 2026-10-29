@@ -3,8 +3,16 @@
 # @colbymchenry/codegraph 1.6.2, codegraph serve --mcp (stdio), which
 # takes --path (W71-6): the server runs in aggy's private launch folder,
 # so it is told the repo.
-# codegraph init writes .codegraph/ inside the repo; it runs only on an
-# explicit aggy tool install, after asking.
+# The index (T6711): codegraph init [path] writes .codegraph/ inside the
+# repo. aggy runs it once per repo, on the aggy tool on --repo that finds
+# no .codegraph/codegraph.db there, never on its own and never for a repo
+# where the tool is off. The server keeps the index fresh itself: a file
+# watcher, and a catch-up on connect (codegraph 1.6.2 README, "How
+# auto-syncing works"). Without a terminal, init gets no stdin and no
+# --yes (unverified whether it asks anything; TODO(T6711)).
+# DO_NOT_TRACK and CODEGRAPH_TELEMETRY pass the person's own telemetry
+# opt-out through (README, "Telemetry"): codegraph sends anonymous usage
+# counts unless one is set.
 name = "codegraph"
 description = "Local code index: the agent asks where a symbol lives instead of grepping"
 homepage = "https://github.com/colbymchenry/codegraph"
@@ -12,16 +20,17 @@ version = "1.6.2"
 default = false
 scope = "repo"
 lifecycle = ["worktree-copy", "gc", "refresh"]
-unverified = ["homepage"]
+unverified = ["homepage", "install"]
 
 [install]
 check = ["codegraph", "--version"]
 check_pattern = '^(\d+\.\d+\.\d+)'
-prebuild = ["codegraph", "init"]
+prebuild = ["codegraph", "init", "{repo}"]
 
 [[mcp]]
 vendors = ["claude", "codex", "grok"]
 argv = ["codegraph", "serve", "--mcp", "--path", "{repo}"]
+env = ["DO_NOT_TRACK", "CODEGRAPH_TELEMETRY"]
 
 [cost]
 method = "mcp-schema"

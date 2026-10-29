@@ -207,7 +207,7 @@ func boardFindings(ctx context.Context, b switchboard.Board, refused []error, cw
 		for _, prog := range slices.Compact(progs) {
 			if err := resolveProgram(prog); err != nil {
 				warn(t, "", diag.CodeToolExec, "a program it runs is not an executable on PATH, so it cannot start", prog+": "+err.Error(),
-					"install "+t.Name+" "+t.Version+", or aggy tool off "+t.Name)
+					installHow(t)+", or aggy tool off "+t.Name)
 			}
 		}
 	}
