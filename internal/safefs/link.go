@@ -279,6 +279,39 @@ func RemoveSame(name string, want fs.FileInfo) error {
 	}), name)
 }
 
+// RenameNoReplace renames oldname, which must have want's identity, to
+// newname in the same directory, behind both checks, relative to one
+// checked descriptor for that directory. Nothing may be at newname: one
+// there is kept and the call fails with an error matching fs.ErrExist.
+// The check and the rename are two steps, so a name made in between can
+// still be replaced, as rename(2) does (a file, or an empty directory);
+// callers use it to put a finished temp file or folder in place.
+func RenameNoReplace(oldname, newname string, want fs.FileInfo) error {
+	if want == nil {
+		return &fs.PathError{Op: "Rename", Path: oldname, Err: errors.New("no identity to compare")}
+	}
+	from, err := resolve("Rename", oldname)
+	if err != nil {
+		return err
+	}
+	to, err := resolve("Rename", newname)
+	if err != nil {
+		return err
+	}
+	if filepath.Dir(from.link) != filepath.Dir(to.link) {
+		return &fs.PathError{Op: "Rename", Path: newname, Err: errors.New("not in the same directory as " + oldname)}
+	}
+	return renamePath(inParent("Rename", newname, to.link, to.linkDir, func(dir *os.Root, base string) error {
+		if err := expect("Rename", from.g, oldname, dir, filepath.Base(from.link), want); err != nil {
+			return err
+		}
+		if err := expect("Rename", to.g, newname, dir, base, nil); err != nil {
+			return err
+		}
+		return dir.Rename(filepath.Base(from.link), base)
+	}), newname)
+}
+
 // expect checks, for op, that base in dir has want's identity and type, or does
 // not exist when want is nil, and is not a credential file.
 func expect(op string, g *guard, name string, dir *os.Root, base string, want fs.FileInfo) error {

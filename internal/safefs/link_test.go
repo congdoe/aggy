@@ -175,3 +175,41 @@ func TestExpectNamesOp(t *testing.T) {
 		t.Errorf("err = %v, want a WriteFile ErrExist", err)
 	}
 }
+
+// TestRenameNoReplace (T6711): a folder is renamed into place in its own
+// directory; an existing name is kept; another directory and a changed
+// identity are refused.
+func TestRenameNoReplace(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	tmp, dst := filepath.Join(dir, ".x.tmp"), filepath.Join(dir, "x")
+	if err := os.Mkdir(tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fi, _ := os.Lstat(tmp)
+	if err := os.Mkdir(dst, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "keep"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameNoReplace(tmp, dst, fi); !errors.Is(err, fs.ErrExist) {
+		t.Errorf("onto an existing name: %v", err)
+	}
+	if err := RenameNoReplace(tmp, filepath.Join(t.TempDir(), "y"), fi); err == nil {
+		t.Error("another directory was allowed")
+	}
+	other, _ := os.Lstat(dst)
+	if err := RenameNoReplace(tmp, filepath.Join(dir, "z"), other); !errors.Is(err, ErrChanged) {
+		t.Errorf("wrong identity: %v", err)
+	}
+	if err := RenameNoReplace(tmp, filepath.Join(dir, "z"), fi); err != nil {
+		t.Fatal(err)
+	}
+	if fi2, err := os.Lstat(filepath.Join(dir, "z")); err != nil || !os.SameFile(fi, fi2) {
+		t.Errorf("not moved: %v", err)
+	}
+	if _, err := os.Lstat(tmp); err == nil {
+		t.Error("the old name is still there")
+	}
+}

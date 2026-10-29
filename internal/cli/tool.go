@@ -17,6 +17,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/borrow"
 	"github.com/congdoe/aggy/internal/diag"
+	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -109,7 +110,10 @@ func toolWith(args []string, in io.Reader, tty bool, stdout, stderr io.Writer) i
 		fmt.Fprint(stderr, toolUsage)
 		return 2
 	}
-	ctx := context.Background()
+	// Ctrl-C, SIGTERM, or SIGHUP ends a prebuild aggy tool on runs, and
+	// kills its process group (T6711).
+	ctx, stop := execrun.NotifyContext(context.Background())
+	defer stop()
 	cmd := "tool " + args[0]
 	usageErr := func() int {
 		refuse(ctx, stderr, cmd, diag.EvToolRefused, diag.CodeUsage, "bad arguments", diag.Rec{})
@@ -148,7 +152,7 @@ func toolWith(args []string, in io.Reader, tty bool, stdout, stderr io.Writer) i
 		if len(a.pos) != 1 || a.yes {
 			return usageErr()
 		}
-		if err := toolSwitch(ctx, a, args[0] == "on", stdout); err != nil {
+		if err := toolSwitch(ctx, a, args[0] == "on", in, tty, stdout); err != nil {
 			return fail(err)
 		}
 		return 0
