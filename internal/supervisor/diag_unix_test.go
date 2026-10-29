@@ -74,10 +74,14 @@ func TestDiagSwitchRecords(t *testing.T) {
 	c.waitGot(t, []byte(typed))
 	_ = request(t, sock, `{"type":"hook-event","vendor":"claude","event":"Stop","payload":{"session_id":"`+childSID+`","error":"`+said+`"}}`)
 	poll(t, "the unsent-text note", []byte("you have not sent"), ts.screen)
+	mark := len(ts.screen())
 	ts.typeIn(t, "\x1b")
-	time.Sleep(100 * time.Millisecond)
-	// Cleared and sent empty: the next turn end offers it.
+	poll(t, "the note to close", []byte(altScreenOff), func() []byte { return ts.screen()[mark:] })
+	// Cleared and sent empty: the next turn end offers it. Run follows the
+	// composer before it passes keys on, so once the CLI has them the
+	// turn ends below cannot overtake them.
 	ts.typeIn(t, "\x15\r")
+	c.waitGot(t, []byte(typed+"\x15\r"))
 	_ = request(t, sock, `{"type":"hook-event","vendor":"claude","event":"Stop","payload":{"session_id":"`+said+`"}}`)
 	_ = request(t, sock, `{"type":"hook-event","vendor":"claude","event":"Stop","payload":{"session_id":"`+childSID+`"}}`)
 	poll(t, "the confirmation", []byte("-> grok. Ctrl+"), ts.screen)
