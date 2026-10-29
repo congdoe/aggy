@@ -207,7 +207,7 @@ func boardFindings(ctx context.Context, b switchboard.Board, refused []error, cw
 		for _, prog := range slices.Compact(progs) {
 			if err := resolveProgram(prog); err != nil {
 				warn(t, "", diag.CodeToolExec, "a program it runs is not an executable on PATH, so it cannot start", prog+": "+err.Error(),
-					"install "+t.Name+" "+t.Version+", or aggy tool off "+t.Name)
+					installHowTo(t)+", or aggy tool off "+t.Name)
 			}
 		}
 	}
@@ -238,6 +238,36 @@ func boardFindings(ctx context.Context, b switchboard.Board, refused []error, cw
 		out = append(out, checkup.Finding{Code: codeToolsOK, Level: checkup.LevelInfo, Message: msg})
 	}
 	return out
+}
+
+// missingProgram is the first program among t's MCP servers and hooks
+// that does not resolve as a launch would find it, or "".
+func missingProgram(t tooldef.Tool) string {
+	for _, v := range adapter.Vendors() {
+		p := t.PartsFor(v)
+		var progs []string
+		if p.MCP != nil {
+			progs = append(progs, p.MCP.Argv[0])
+		}
+		for _, h := range p.Hooks {
+			progs = append(progs, h.Argv[0])
+		}
+		for _, prog := range progs {
+			if resolveProgram(prog) != nil {
+				return prog
+			}
+		}
+	}
+	return ""
+}
+
+// installHowTo says how to install t's pinned version by hand: its
+// definition's install.hint when it has one. aggy never installs.
+func installHowTo(t tooldef.Tool) string {
+	if t.Install.Hint != "" {
+		return "install " + t.Name + " " + t.Version + " by hand (" + t.Install.Hint + ")"
+	}
+	return "install " + t.Name + " " + t.Version
 }
 
 // refusalFix is the command that clears a launch's refusal r for v.

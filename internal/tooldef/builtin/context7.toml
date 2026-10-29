@@ -15,6 +15,7 @@ unverified = ["homepage"]
 [install]
 check = ["context7-mcp", "--version"]
 check_pattern = '^(\d+\.\d+\.\d+)'
+hint = "npm i -g --ignore-scripts @upstash/context7-mcp@4.4.4"
 
 [[mcp]]
 vendors = ["claude", "codex", "grok"]

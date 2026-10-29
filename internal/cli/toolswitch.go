@@ -292,6 +292,12 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 		if len(t.Unverified) > 0 {
 			fmt.Fprintf(stdout, "Unverified vendor facts: %s.\n", strings.Join(t.Unverified, ", "))
 		}
+		if t.When != "" {
+			fmt.Fprintf(stdout, "%s is meant for repos where %s; aggy does not check that, so turn it on only in the repos that need it.\n", name, t.When)
+		}
+		if prog := missingProgram(t); prog != "" {
+			fmt.Fprintf(stdout, "%s is not an executable on PATH, so %s cannot start yet: %s. aggy never installs it.\n", termsafe.Field(prog), name, termsafe.Field(installHowTo(t)))
+		}
 	}
 	// MCP servers and hooks are wired at launch (addTools); a skill is
 	// linked now, for every repo.

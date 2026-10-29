@@ -149,6 +149,7 @@ func TestParseValid(t *testing.T) {
 		{"shasum is not sh", strings.Replace(base, mcpArgv, `argv = ["shasum", "-a", "256"]`, 1), false},
 		{"node with a script", strings.Replace(base, mcpArgv, `argv = ["node", "/opt/demo/server.js", "--port=3000"]`, 1), false},
 		{"nice then a program", strings.Replace(base, mcpArgv, `argv = ["nice", "-n", "5", "demo", "serve"]`, 1), false},
+		{"an install hint", strings.Replace(base, `check = ["demo", "--version"]`, "check = [\"demo\", \"--version\"]\nhint = \"npm i -g demo@1.4.2\"", 1), false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if _, err := Parse("demo.toml", []byte(c.text), c.builtIn); err != nil {
@@ -257,6 +258,8 @@ event = "PreModelRequest"`), false, "hook[0].event", "allow or deny"},
 		{"check pattern without a group", set(`check = ["demo", "--version"]`, "check = [\"demo\"]\ncheck_pattern = 'v\\d+'"), false, "install.check_pattern", "capture group"},
 		{"check pattern with two groups", set(`check = ["demo", "--version"]`, "check = [\"demo\"]\ncheck_pattern = '(v)(\\d+)'"), false, "install.check_pattern", "capture group"},
 		{"check pattern invalid", set(`check = ["demo", "--version"]`, "check = [\"demo\"]\ncheck_pattern = '(v'"), false, "install.check_pattern", "regular expression"},
+		{"hint too long", set(`check = ["demo", "--version"]`, "check = [\"demo\"]\nhint = \""+strings.Repeat("h", maxHint+1)+"\""), false, "install.hint", "bytes"},
+		{"escaped bell in the hint", set(`check = ["demo", "--version"]`, `check = ["demo"]`+"\n"+`hint = "npm i\u0007"`), false, "install.hint", "control"},
 		{"check pattern without check", on(skillOnly, post("[install]\ncheck_pattern = '(v)'\n")), false, "install.check_pattern", "needs install.check"},
 
 		// Env allowlist: user tools pass only their own variables.

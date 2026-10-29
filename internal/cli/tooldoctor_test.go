@@ -63,7 +63,7 @@ func TestDoctorTools(t *testing.T) {
 				onPath(t)
 				toolOK(t, "on", "context7", "--vendor", "codex")
 			},
-			want: []string{"warning tool.exec_refused (): context7: a program it runs is not an executable on PATH, so it cannot start; fix: install context7 4.4.4, or aggy tool off context7: context7-mcp: "},
+			want: []string{"warning tool.exec_refused (): context7: a program it runs is not an executable on PATH, so it cannot start; fix: install context7 4.4.4 by hand (npm i -g --ignore-scripts @upstash/context7-mcp@4.4.4), or aggy tool off context7: context7-mcp: "},
 		},
 		{
 			name: "name clash",

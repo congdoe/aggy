@@ -406,7 +406,7 @@ func previewTool(w io.Writer, d tooldef.Def, dest string) {
 	if d.Scope == "repo" {
 		scope = "per repo"
 		if d.When != "" {
-			scope += ", only where " + d.When
+			scope += ", meant for repos where " + d.When + " (aggy does not check; you choose the repo)"
 		}
 	}
 	fmt.Fprintf(w, "  scope: %s; off until you turn it on\n", scope)
@@ -416,7 +416,7 @@ func previewTool(w io.Writer, d tooldef.Def, dest string) {
 		fmt.Fprintln(w, "  network: none, as the file declares (network = false); an edit borrow may get it")
 	}
 	fmt.Fprintf(w, "  cost estimate: %s\n", d.Cost.Method)
-	if len(d.Install.Check)+len(d.Install.Install)+len(d.Install.Prebuild) > 0 {
+	if len(d.Install.Check)+len(d.Install.Install)+len(d.Install.Prebuild) > 0 || d.Install.Hint != "" {
 		fmt.Fprintln(w, "  install (nothing runs now; install and prebuild run only on aggy tool install, after asking):")
 	}
 	cmd := func(label string, a []string) {
@@ -427,6 +427,9 @@ func previewTool(w io.Writer, d tooldef.Def, dest string) {
 	cmd("check", d.Install.Check)
 	if d.Install.CheckPattern != "" {
 		fmt.Fprintf(w, "    version pattern: %s\n", strconv.Quote(d.Install.CheckPattern))
+	}
+	if d.Install.Hint != "" {
+		fmt.Fprintf(w, "    install by hand: %s\n", termsafe.Field(d.Install.Hint))
 	}
 	cmd("install", d.Install.Install)
 	cmd("prebuild", d.Install.Prebuild)
