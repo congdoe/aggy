@@ -28,13 +28,14 @@ Common to all of them:
 
 - **What it does.** Compresses a large blob the agent already holds. The original stays local and can be retrieved.
 - **What aggy wires.** The MCP server `headroom mcp serve`, which offers compress, retrieve, and stats, for Claude and Codex.
+- **Its proxy (T6780), off by default.** `aggy tool on headroom --vendor claude`, at a terminal, with the typed confirmation, also starts `headroom proxy --host 127.0.0.1 --port 8787` for each on-screen Claude session, health-checks `GET /health`, sets `ANTHROPIC_BASE_URL=http://127.0.0.1:8787` for that CLI only, and stops it when the CLI exits. Every Claude request, the login token included, then passes through Headroom. Claude only: Codex and Grok support are unverified. The flags and the health path come from Headroom's docs and are not checked at 0.42.0; its anonymous beacon is on by default there, and aggy sets `DO_NOT_TRACK=1` in its environment, which those docs say turns it off (TODO(T6780), docs/verification.md).
 - **What it never runs:**
-  - `headroom wrap` or `headroom proxy`. They need `ANTHROPIC_BASE_URL`, which aggy never sets, so aggy puts no proxy in front of any CLI. The opt-in local proxy capability (T6780) is separate and not built.
+  - `headroom wrap` or `headroom init`, which wrap or edit the agents themselves.
   - `headroom mcp install`, which edits every agent config it finds.
 - **Version.** `headroom-ai` 0.42.0. Install it with `uv tool install headroom-ai==0.42.0`, which needs Python 3.10 or later. It takes about 7 s to start cold.
 - **Network.** Marked `true`, because whether the MCP server reaches the network is unverified. So an edit borrow gets it only with `routing.edit_network_tools`.
 - **Cost.** `mcp-schema`, which shows as `unknown`.
-- **Limits.** The MCP server works only on demand, on what the agent passes it. Most of Headroom's value comes through the proxy, which aggy does not use.
+- **Limits.** The MCP server works only on demand, on what the agent passes it. Most of Headroom's value comes through the proxy, which stays off until you turn it on for a vendor.
 
 ## Context7 (T6714)
 

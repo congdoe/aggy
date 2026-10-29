@@ -286,6 +286,15 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(warn))
 		}
 	}
+	// T6780: a tool's proxy, once the launch is recorded, so a refused
+	// launch never starts one. It is stopped when this CLI exits, before
+	// a switch or resume launches the next. Any failure is a warning and
+	// the CLI starts without it.
+	px := startToolProxy(ctx, v, pl.child.Cwd, memDir, t.Tools, stderr, name)
+	defer px.stop()
+	if px.env != "" {
+		cmd.Env = append(cmd.Env, px.env)
+	}
 	// The child's id when known at launch: Claude's and Grok's
 	// pre-assigned or resumed one (the only id the index records for
 	// them), or a resumed Codex thread. A new Codex child's id comes from

@@ -15,8 +15,15 @@ type ToolSwitch struct {
 	On     bool
 	// Digest is the sha256 of the definition turned on ("" for off).
 	Digest string
-	At     time.Time
+	// Proxy is the person's typed confirmation of the tool's proxy for
+	// Vendor, which is never "" then (T6780). Without it the proxy stays
+	// off, whatever On says.
+	Proxy bool
+	At    time.Time
 }
+
+// toolProxySchema is the index version with tool_switches.proxy.
+const toolProxySchema = 19
 
 // PutToolSwitch records sw. It replaces every setting of the tool that
 // sw covers (the same or a narrower vendor and repo), so the newest
@@ -34,8 +41,8 @@ func (s *Store) PutToolSwitch(ctx context.Context, sw ToolSwitch) error {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO tool_switches (tool, vendor, repo, on_, digest, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		sw.Tool, sw.Vendor, sw.Repo, sw.On, sw.Digest, millis(sw.At)); err != nil {
+		`INSERT INTO tool_switches (tool, vendor, repo, on_, digest, proxy, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		sw.Tool, sw.Vendor, sw.Repo, sw.On, sw.Digest, sw.Proxy && sw.On && sw.Vendor != "", millis(sw.At)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -73,10 +80,20 @@ func (s *Store) ToolAdded(ctx context.Context, tool string) (string, bool, error
 	return d, err == nil, err
 }
 
-// ToolSwitches returns every setting, by tool, repo, and vendor.
+// ToolSwitches returns every setting, by tool, repo, and vendor. An
+// index opened read-only before version 19 has no proxy column: every
+// proxy is off there.
 func (s *Store) ToolSwitches(ctx context.Context) ([]ToolSwitch, error) {
+	v, err := s.Version(ctx)
+	if err != nil {
+		return nil, err
+	}
+	proxy := "0"
+	if v >= toolProxySchema {
+		proxy = "proxy"
+	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT tool, vendor, repo, on_, digest, updated_at FROM tool_switches ORDER BY tool, repo, vendor`)
+		`SELECT tool, vendor, repo, on_, digest, `+proxy+`, updated_at FROM tool_switches ORDER BY tool, repo, vendor`)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +102,7 @@ func (s *Store) ToolSwitches(ctx context.Context) ([]ToolSwitch, error) {
 	for rows.Next() {
 		var sw ToolSwitch
 		var at int64
-		if err := rows.Scan(&sw.Tool, &sw.Vendor, &sw.Repo, &sw.On, &sw.Digest, &at); err != nil {
+		if err := rows.Scan(&sw.Tool, &sw.Vendor, &sw.Repo, &sw.On, &sw.Digest, &sw.Proxy, &at); err != nil {
 			return nil, err
 		}
 		sw.At = fromMillis(at)

@@ -96,6 +96,24 @@ func Build(t testing.TB) Fakes {
 	return f
 }
 
+// BuildProxy compiles testdata/fakes/proxy, the stand-in for a tool's
+// local proxy (T6780), into a temp dir for t and returns its path.
+func BuildProxy(t testing.TB) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("fakecli: cannot locate the source tree")
+	}
+	bin := filepath.Join(t.TempDir(), "fake-proxy")
+	cmd := exec.Command(goTool, "build", "-o", bin, ".")
+	cmd.Dir = filepath.Join(filepath.Dir(file), "..", "..", "testdata", "fakes", "proxy")
+	cmd.Env = append(append([]string{}, buildEnv...), "CGO_ENABLED=0", "GOTOOLCHAIN=local")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("fakecli: go build: %v\n%s", err, out)
+	}
+	return bin
+}
+
 // WriteScenario writes a scenario JSON document to a temp file and returns
 // its path.
 func WriteScenario(t testing.TB, json string) string {

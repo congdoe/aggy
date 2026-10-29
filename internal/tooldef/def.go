@@ -7,7 +7,9 @@
 // same validator, which bounds sizes and counts, refuses control and
 // format characters, takes commands only as argv (never a shell string),
 // takes a program only as a bare PATH name or an absolute path, and
-// refuses base-URL, proxy, and secret environment names. A program is
+// refuses base-URL, proxy, and secret environment names. The one route
+// to a vendor is a [proxy] part (T6780): a loopback address and, per
+// vendor, the one base-URL variable ProxyVars allows. A program is
 // still arbitrary code: the preview on add and the explicit turn-on are
 // the real gate, and the program checks are defence in depth.
 // Definitions are never read from a repo.
@@ -17,6 +19,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"slices"
@@ -52,10 +55,14 @@ type Def struct {
 
 	Install Install `toml:"install"`
 	MCP     []MCP   `toml:"mcp"`
-	Skills  []Skill `toml:"skill"`
-	Hooks   []Hook  `toml:"hook"`
-	Init    []Init  `toml:"init"`
-	Cost    Cost    `toml:"cost"`
+	// Proxy is a local proxy the vendor CLI's requests go through
+	// (T6780). It is off until the person turns the tool on for a vendor
+	// at a terminal and types the confirmation; see Proxy.
+	Proxy  *Proxy  `toml:"proxy"`
+	Skills []Skill `toml:"skill"`
+	Hooks  []Hook  `toml:"hook"`
+	Init   []Init  `toml:"init"`
+	Cost   Cost    `toml:"cost"`
 
 	// Lifecycle names the Go hooks a built-in has: worktree-copy, gc,
 	// refresh. A user tool has none.
@@ -99,6 +106,56 @@ type MCP struct {
 	Vendors []adapter.Vendor `toml:"vendors"`
 	Argv    []string         `toml:"argv"`
 	Env     []string         `toml:"env"`
+}
+
+// Proxy is a local proxy aggy starts for an on-screen session of each
+// vendor it is on for, health-checks before the CLI starts, and stops
+// when the CLI exits (T6780). Every request of that CLI, its login token
+// included, then passes through the proxy's process, so it is never on
+// by default, never for a borrow child, and only for a vendor the
+// person named and confirmed at a terminal.
+type Proxy struct {
+	// Vendors are the vendors the proxy supports; Env names, per
+	// vendor, the variable the CLI is pointed at it with, which must be
+	// that vendor's entry in ProxyVars.
+	Vendors []adapter.Vendor          `toml:"vendors"`
+	Env     map[adapter.Vendor]string `toml:"env"`
+	// Argv starts the proxy in the foreground. It never holds {repo}.
+	Argv []string `toml:"argv"`
+	// Listen is where it listens: 127.0.0.1:<port> or [::1]:<port>.
+	Listen string `toml:"listen"`
+	// Health is the HTTP path that answers 2xx once it is ready.
+	Health string `toml:"health"`
+}
+
+// ProxyVars is the allowlist of the variables a proxy may set, one per
+// vendor: the CLI's own base-URL variable. Claude: ANTHROPIC_BASE_URL
+// (code.claude.com env-vars docs; docs/adapters.md, "Proxy and API-key
+// routes"). Grok: GROK_MODELS_BASE_URL (docs/verification.md: custom
+// inference base URL). Codex has none: it does not read
+// OPENAI_BASE_URL, only openai_base_url in its config
+// (docs/verification.md), which aggy never writes.
+var ProxyVars = map[adapter.Vendor]string{
+	adapter.Claude: "ANTHROPIC_BASE_URL",
+	adapter.Grok:   "GROK_MODELS_BASE_URL",
+}
+
+// Addr is the proxy's listen address, which the validator has checked.
+func (p Proxy) Addr() netip.AddrPort { a, _ := ParseListen(p.Listen); return a }
+
+// ParseListen parses a proxy's listen address: 127.0.0.1 or ::1 only,
+// with a port from 1024 to 65535.
+func ParseListen(s string) (netip.AddrPort, error) {
+	a, err := netip.ParseAddrPort(s)
+	switch {
+	case err != nil:
+		return netip.AddrPort{}, errors.New("want 127.0.0.1:<port> or [::1]:<port>")
+	case a.Addr() != netip.MustParseAddr("127.0.0.1") && a.Addr() != netip.IPv6Loopback():
+		return netip.AddrPort{}, errors.New("a proxy listens on loopback only: 127.0.0.1 or ::1")
+	case a.Port() < 1024:
+		return netip.AddrPort{}, errors.New("want a port from 1024 to 65535")
+	}
+	return a, nil
 }
 
 // Skill is a skill folder (holding SKILL.md) linked into each listed
@@ -161,16 +218,21 @@ type Parts struct {
 	Skill *Skill
 	Hooks []Hook
 	Init  []Init
+	// Proxy is set when the proxy supports the vendor. The switchboard
+	// keeps it only where the person confirmed it (switchboard.State).
+	Proxy *Proxy
 }
 
 // Empty reports whether the tool has nothing for that vendor.
 func (p Parts) Empty() bool {
-	return p.MCP == nil && p.Skill == nil && len(p.Hooks) == 0 && len(p.Init) == 0
+	return p.MCP == nil && p.Skill == nil && len(p.Hooks) == 0 && len(p.Init) == 0 && p.Proxy == nil
 }
 
-// SkillOnly reports whether d is only skills: no MCP server, hook, or
-// init step.
-func (d Def) SkillOnly() bool { return len(d.MCP) == 0 && len(d.Hooks) == 0 && len(d.Init) == 0 }
+// SkillOnly reports whether d is only skills: no MCP server, hook, init
+// step, or proxy.
+func (d Def) SkillOnly() bool {
+	return len(d.MCP) == 0 && len(d.Hooks) == 0 && len(d.Init) == 0 && d.Proxy == nil
+}
 
 // PartsFor returns the parts of d that support vendor v. A vendor is in
 // at most one [[mcp]] and one [[skill]] entry.
@@ -195,6 +257,9 @@ func (d Def) PartsFor(v adapter.Vendor) Parts {
 		if slices.Contains(i.Vendors, v) {
 			p.Init = append(p.Init, i)
 		}
+	}
+	if d.Proxy != nil && slices.Contains(d.Proxy.Vendors, v) {
+		p.Proxy = d.Proxy
 	}
 	return p
 }
@@ -242,6 +307,7 @@ const (
 	maxHint        = 400
 	maxMatcher     = 128
 	maxTimeout     = 600
+	maxHealth      = 128
 )
 
 var (
@@ -251,6 +317,7 @@ var (
 	matcherRE     = regexp.MustCompile(`^[A-Za-z0-9_|.*]+$`)
 	keyRE         = regexp.MustCompile(`^[a-z_]+$`)
 	prefixRE      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31} $`)
+	healthRE      = regexp.MustCompile(`^/[A-Za-z0-9/._-]*$`)
 )
 
 // Fixed vocabularies.
@@ -259,7 +326,7 @@ var (
 	conditions = []string{"has-ui"}
 	costs      = []string{"mcp-schema", "skill-md", "static", "none"}
 	lifecycles = []string{"worktree-copy", "gc", "refresh"}
-	topKeys    = []string{"version", "homepage", "install", "mcp", "skill", "hook", "init", "cost", "network"}
+	topKeys    = []string{"version", "homepage", "install", "mcp", "skill", "hook", "init", "cost", "network", "proxy"}
 )
 
 // hookEvents are the hook events each CLI has. Claude: code.claude.com
@@ -375,8 +442,8 @@ func (d Def) validate(builtIn bool) error {
 	if d.When != "" && (d.Scope != "repo" || !slices.Contains(conditions, d.When)) {
 		return bad("when", "only with scope = \"repo\", one of %q", conditions)
 	}
-	if len(d.MCP) == 0 && len(d.Skills) == 0 && len(d.Hooks) == 0 && len(d.Init) == 0 {
-		return bad("mcp", "a tool needs at least one part: mcp, skill, hook, or init")
+	if len(d.MCP) == 0 && len(d.Skills) == 0 && len(d.Hooks) == 0 && len(d.Init) == 0 && d.Proxy == nil {
+		return bad("mcp", "a tool needs at least one part: mcp, skill, hook, init, or proxy")
 	}
 	if d.SkillOnly() && d.Scope == "repo" {
 		// L78-8: a skill is linked for every repo, never for one.
@@ -392,6 +459,9 @@ func (d Def) validate(builtIn bool) error {
 		return err
 	}
 	if err := d.validateInit(builtIn); err != nil {
+		return err
+	}
+	if err := d.validateProxy(); err != nil {
 		return err
 	}
 	if err := d.validateInstall(builtIn); err != nil {
@@ -436,6 +506,57 @@ func (d Def) validateMCP(builtIn bool) error {
 		}
 	}
 	return nil
+}
+
+// validateProxy checks [proxy], for built-ins and user tools alike: a
+// loopback listen address, a health path, an argv without {repo}, and
+// per vendor exactly the variable ProxyVars allows.
+func (d Def) validateProxy() error {
+	p := d.Proxy
+	if p == nil {
+		return nil
+	}
+	bad := func(key, f string, a ...any) error { return &Error{Key: "proxy." + key, Msg: fmt.Sprintf(f, a...)} }
+	if err := vendors("proxy.vendors", p.Vendors); err != nil {
+		return err
+	}
+	for _, v := range p.Vendors {
+		want, ok := ProxyVars[v]
+		if !ok {
+			return bad("vendors", "%s has no base-URL variable aggy may set (only %s)", v, proxyVarList())
+		}
+		if got := p.Env[v]; got != want {
+			return bad("env."+string(v), "want %q, the one variable a proxy may set for %s", want, v)
+		}
+	}
+	for v := range p.Env {
+		if !slices.Contains(p.Vendors, v) {
+			return bad("env", "names a vendor not in proxy.vendors")
+		}
+	}
+	if err := argv("proxy.argv", p.Argv, true); err != nil {
+		return err
+	}
+	if slices.ContainsFunc(p.Argv, func(a string) bool { return strings.Contains(a, Placeholder) }) {
+		return bad("argv", "a proxy runs for the session, never with %s", Placeholder)
+	}
+	if _, err := ParseListen(p.Listen); err != nil {
+		return bad("listen", "%v", err)
+	}
+	if len(p.Health) > maxHealth || !healthRE.MatchString(p.Health) || strings.Contains(p.Health, "..") {
+		return bad("health", "want an HTTP path of at most %d of A-Z, a-z, 0-9, and / . _ -, starting with /", maxHealth)
+	}
+	return nil
+}
+
+func proxyVarList() string {
+	var out []string
+	for _, v := range adapter.Vendors() {
+		if n, ok := ProxyVars[v]; ok {
+			out = append(out, string(v)+": "+n)
+		}
+	}
+	return strings.Join(out, ", ")
 }
 
 func (d Def) validateSkills(builtIn bool) error {

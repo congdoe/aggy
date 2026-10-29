@@ -24,7 +24,7 @@ aggy's managed tools (CodeGraph, RTK, Headroom, Context7, Caveman, Playwright) a
 1. Write the definition and try it as your own: `aggy tool add demo.toml` validates it and shows what it would run and wire per vendor before copying it to `~/.aggy/tools/`.
 2. Open a PR that adds it as `internal/tooldef/builtin/<name>.toml`. It must pass the same validator (`go test ./internal/tooldef` fails otherwise), pin a `version`, keep `default = false`, and say in the PR what the tool does, its license, and what it sends off the machine, if anything.
 3. Cite every vendor fact (a command, flag, hook event, or config key) from the tool's or the vendor's docs at that version, or a live check recorded in `docs/verification.md`. Anything else goes in `unverified`.
-4. A tool that needs a proxy, a base URL, an API key in the environment, or a shell string is out of scope.
+4. A tool that needs an API key in the environment or a shell string is out of scope. A tool that works as a local proxy declares it in `[proxy]` (loopback only, the vendor's allowlisted base-URL variable, a health path); it stays off until the person turns it on for a vendor and types the confirmation (design.md section 9, T6780).
 
 ## Sign-off
 

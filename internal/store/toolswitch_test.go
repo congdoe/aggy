@@ -7,6 +7,36 @@ import (
 	"time"
 )
 
+// TestToolSwitchProxy (T6780): the proxy confirmation is kept only on an
+// "on" for one named vendor.
+func TestToolSwitchProxy(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	for _, sw := range []ToolSwitch{
+		{Tool: "a", Vendor: "claude", On: true, Proxy: true},
+		{Tool: "b", Vendor: "", On: true, Proxy: true},
+		{Tool: "c", Vendor: "claude", On: false, Proxy: true},
+		{Tool: "d", Vendor: "claude", On: true},
+	} {
+		if err := s.PutToolSwitch(ctx, sw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.ToolSwitches(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sw := range got {
+		if sw.Proxy != (sw.Tool == "a") {
+			t.Errorf("%s: proxy %v", sw.Tool, sw.Proxy)
+		}
+	}
+}
+
 // TestPutToolSwitch: a setting replaces every narrower setting of the
 // same tool that it covers, and nothing else.
 func TestPutToolSwitch(t *testing.T) {
