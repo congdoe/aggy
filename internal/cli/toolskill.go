@@ -128,7 +128,7 @@ func checkSkillLinked(ctx context.Context, s *store.Store, t tooldef.Tool, dir s
 		return withCode(diag.CodeToolSkillMissing, err)
 	}
 	if now != was {
-		return withCode(diag.CodeToolSkillChanged, fmt.Errorf("%s changed since it was first linked; aggy tool off %s everywhere, read the folder, then turn it on again", dir, t.Name))
+		return withCode(diag.CodeToolSkillChanged, fmt.Errorf("%s changed since it was pinned (by aggy skill add, or its first link); read it, then aggy tool off %s everywhere and aggy skill add <the folder you read> --replace to store and pin it", dir, t.Name))
 	}
 	return nil
 }
@@ -353,17 +353,11 @@ func setSkillLinks(ctx context.Context, name string, l skillLayout, want map[str
 		return withCode(diag.CodeToolFailed, err)
 	}
 	if len(ps) == 0 {
-		if link {
-			return nil
-		}
-		// L83-5: with no link left, the pin goes too, even when the
-		// links went another way, or a later link would be refused.
-		s, err := openIndex(ctx)
-		if err != nil || s == nil {
-			return withCode(diag.CodeStore, err)
-		}
-		defer func() { _ = s.Close() }()
-		return withCode(diag.CodeStore, s.DeleteToolSkill(ctx, name))
+		// M2 (#89): nothing changes, so the pin stays, failing closed: an
+		// off that unlinks nothing must not let a changed folder in on the
+		// next on (aggy skill add --replace pins it again). Before #89 the
+		// pin went here (L83-5).
+		return nil
 	}
 	s, err := store.OpenDefault(ctx)
 	if err != nil {

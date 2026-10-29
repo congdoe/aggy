@@ -42,9 +42,10 @@ func splitFrontmatter(b []byte) (front, rest []byte) {
 
 // Front returns the name and description lines of a skill's frontmatter,
 // each trimmed of blanks and one pair of quotes, or "" for one it lacks.
-// shortcut: single-line values only; a YAML block scalar shows as "|".
+// CRLF line ends are read as LF.
+// shortcut: single-line values only; a YAML block scalar (| or >) is "".
 func Front(skill []byte) (name, description string) {
-	front, _ := splitFrontmatter(skill)
+	front, _ := splitFrontmatter(bytes.ReplaceAll(skill, []byte("\r\n"), []byte("\n")))
 	for _, ln := range bytes.Split(front, []byte("\n")) {
 		k, v, ok := bytes.Cut(ln, []byte(":"))
 		if !ok || len(ln) > 0 && (ln[0] == ' ' || ln[0] == '\t') { // top-level keys only
@@ -53,6 +54,8 @@ func Front(skill []byte) (name, description string) {
 		s := string(bytes.TrimSpace(v))
 		if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] {
 			s = s[1 : len(s)-1]
+		} else if s != "" && (s[0] == '|' || s[0] == '>') {
+			s = "" // a block scalar: its text is on the lines below
 		}
 		switch string(bytes.TrimSpace(k)) {
 		case "name":
