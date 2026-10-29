@@ -72,16 +72,27 @@ var ptyExtraNames = []string{"AGGY_VENDOR", "AGGY_MODEL", "AGGY_SOCKET", "AGGY_P
 // AGGY_VENDOR and AGGY_MODEL (a child's own, never inherited: a stale
 // one would land in its commits' trailers), followed by extra. An extra
 // entry must be KEY=value with a key in ptyExtraNames: aggy never adds
-// API keys, base URLs, or anything else to the user's session.
+// API keys, base URLs, or anything else to the user's session. The one
+// exception is a tool proxy's (T6780): the vendor's base-URL variable,
+// set to exactly the URL of a proxy StartProxy started and still runs
+// for that vendor, the one extra AGGY_VENDOR names.
 func PTYEnv(base, extra []string) ([]string, error) {
 	set := map[string]bool{"AGGY_VENDOR": true, "AGGY_MODEL": true}
+	var vendor adapter.Vendor
 	for _, kv := range extra {
-		k, _, ok := strings.Cut(kv, "=")
+		if v, ok := strings.CutPrefix(kv, "AGGY_VENDOR="); ok {
+			vendor = adapter.Vendor(v)
+		}
+	}
+	for _, kv := range extra {
+		k, v, ok := strings.Cut(kv, "=")
 		if !ok || k == "" {
 			return nil, fmt.Errorf("execrun: bad environment entry %q", kv)
 		}
 		if !contains(ptyExtraNames, k) {
-			return nil, fmt.Errorf("execrun: refusing to pass %s to an interactive CLI (only %s may be added)", k, strings.Join(ptyExtraNames, ", "))
+			if set[k] || !proxyGrant(k, v, vendor) {
+				return nil, fmt.Errorf("execrun: refusing to pass %s to an interactive CLI (only %s may be added, and a running tool proxy's own variable)", k, strings.Join(ptyExtraNames, ", "))
+			}
 		}
 		set[k] = true
 	}

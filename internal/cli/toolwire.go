@@ -129,15 +129,9 @@ func addTools(ctx context.Context, v adapter.Vendor, caps []string, cwd, dir str
 	}
 	// W71-10: the folder is aggy's own, 0700, and the file lands in the
 	// folder checked, never through a symlink swapped in after.
-	if err := safefs.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-		return append(warns, failed("mkdir", err)...)
-	}
-	dirFi, err := safefs.Lstat(dir)
-	if err == nil && !ownPrivateDir(dirFi) {
-		err = fmt.Errorf("%s is not a private (0700) directory of this user", dir)
-	}
+	dirFi, class, err := launchDir(dir)
 	if err != nil {
-		return append(warns, failed("dir", err)...)
+		return append(warns, failed(class, err)...)
 	}
 	write := func(name string, data []byte, err error) (string, error) {
 		if err != nil {
@@ -165,6 +159,19 @@ func addTools(ctx context.Context, v adapter.Vendor, caps []string, cwd, dir str
 	warns = append(warns, copyIndexes(ctx, on, toolwire.Names(servers), repo)...) // T6711, before the CLI starts
 	dlog.Log(ctx, diag.Rec{Event: diag.EvToolWired, Vendor: string(v), Attrs: map[string]any{"tools": toolwire.Names(servers)}})
 	return warns
+}
+
+// launchDir makes the launch's private folder when missing and checks
+// it is aggy's own (0700, W71-10). class names the step that failed.
+func launchDir(dir string) (fs.FileInfo, string, error) {
+	if err := safefs.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return nil, "mkdir", err
+	}
+	fi, err := safefs.Lstat(dir)
+	if err == nil && !ownPrivateDir(fi) {
+		err = fmt.Errorf("%s is not a private (0700) directory of this user", dir)
+	}
+	return fi, "dir", err
 }
 
 // sessionTools keeps the names of session (--tool) that may turn on for

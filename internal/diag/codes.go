@@ -130,6 +130,9 @@ var (
 	EvToolExecRefused     = Event{"tool.exec.refused"}
 	EvToolIndexed         = Event{"tool.index.done"}
 	EvToolIndexRefused    = Event{"tool.index.refused"}
+	EvToolProxyStarted    = Event{"tool.proxy.started"}
+	EvToolProxyRefused    = Event{"tool.proxy.refused"}
+	EvToolProxyStopped    = Event{"tool.proxy.stopped"}
 	EvHookToolFiltered    = Event{"hook.tool.filtered"}
 	EvHookToolFailed      = Event{"hook.tool.failed"}
 )
@@ -228,6 +231,12 @@ var (
 	CodeToolSkillChanged = Code{"tool.skill_changed"}
 	CodeToolIndexFailed  = Code{"tool.index_failed"}
 	CodeToolIndexCopy    = Code{"tool.index_copy_refused"}
+	CodeProxyVendor      = Code{"tool.proxy_vendor_needed"}
+	CodeProxyConfirm     = Code{"tool.proxy_not_confirmed"}
+	CodeProxyPortTaken   = Code{"tool.proxy_port_taken"}
+	CodeProxyUnhealthy   = Code{"tool.proxy_unhealthy"}
+	CodeProxyFailed      = Code{"tool.proxy_failed"}
+	CodeProxyConflict    = Code{"tool.proxy_conflict"}
 )
 
 const showRun = "aggy diag show <run id> for what led to it"
@@ -290,6 +299,9 @@ var events = []EventInfo{
 	{EvToolWired, LevelInfo, "tool", "A launch wired the tools that are on into the CLI it started (attrs: tools, the names wired).", "aggy tool status shows why each is on."},
 	{EvToolIndexed, LevelInfo, "tool", "A built-in's per-repo index was built (aggy tool on --repo, attrs.step init) or copied into a linked worktree at a launch (attrs.step copy) (attrs: tool).", "Nothing; the tool's server keeps the index fresh."},
 	{EvToolIndexRefused, LevelWarn, "tool", "A built-in's per-repo index was not built or not copied (attrs: tool, step: init or copy). aggy tool on refused for init; a launch went on without the copy.", "The code's entry; the warning aggy printed."},
+	{EvToolProxyStarted, LevelInfo, "tool", "A launch started a tool's local proxy and pointed the on-screen CLI at it (attrs: tool). Every request of that CLI, its login token included, passes through the proxy until the CLI exits.", "aggy tool status shows where it is on; aggy tool off <name> --vendor <vendor> turns it off for the next launch."},
+	{EvToolProxyRefused, LevelWarn, "tool", "A launch did not use a tool's proxy that is on (attrs: tool, class: the step); the CLI started without it, talking to its vendor directly.", "The code's entry; the warning aggy printed."},
+	{EvToolProxyStopped, LevelInfo, "tool", "The CLI exited and aggy stopped the tool's proxy, its whole process group (attrs: tool).", "Nothing."},
 	{EvToolExecRefused, LevelError, "tool", "aggy tool exec, which a vendor CLI runs to start a tool's MCP server, refused to start it (attrs: tool, check: the step that failed). The CLI shows the server as failed.", "The code's entry; aggy tool status."},
 }
 
@@ -385,6 +397,12 @@ var codes = []CodeInfo{
 	{CodeToolIndexFailed, false, "aggy tool on --repo refused a built-in with a per-repo index: its program is not installed; the index folder is a symlink; an agent with no terminal asked for the first index; or the index build (codegraph init) failed, was interrupted, or timed out. Nothing was recorded.", "The message says which: install the pinned version yourself (aggy never installs anything), or run aggy tool on at a terminal, then turn it on again."},
 	{CodeToolIndexCopy, false, "A launch in one of aggy's edit worktrees did not copy the main checkout's index: the index folder or a file in it is a symlink or not a regular file, it is over the size cap, or a source changed while being copied. No database was left; the session started without it.", "The warning names the file; the tool can still build its own index there."},
 	{CodeToolExec, true, "aggy tool exec refused to start a tool's MCP server: its folder is not aggy's private launch folder, the definition changed or is gone, the command is not the definition's, or a variable could not be passed.", "aggy tool status; if the definition changed, aggy tool on <name> again after reading it."},
+	{CodeProxyVendor, false, "aggy tool on refused a tool with a local proxy without --vendor: aggy never turns a proxy on for a vendor the person did not name.", "aggy tool on <name> --vendor <vendor>."},
+	{CodeProxyConfirm, true, "aggy tool on refused a tool's local proxy: there was no terminal, the typed confirmation did not match, or it ran inside an aggy session or a borrow child. A proxy sees every request, the login token included, so only the person at a terminal turns one on.", "Run aggy tool on <name> --vendor <vendor> yourself, in a terminal outside any aggy session, and type the confirmation it asks for."},
+	{CodeProxyPortTaken, true, "A launch did not start a tool's proxy: something already listens on its loopback port, and aggy never points a CLI at a process it did not start. The CLI started without the proxy.", "Find what holds the port (lsof -i :<port>); stop it if it is a proxy you left running."},
+	{CodeProxyUnhealthy, false, "A launch did not use a tool's proxy: it did not answer its health check in time, answered other than 2xx, or exited. aggy stopped it and started the CLI without it.", "Run the tool's proxy by hand to see why; aggy doctor checks its program."},
+	{CodeProxyFailed, false, "A launch did not start a tool's proxy: its program is not on PATH, the launch folder could not be made, or it could not start. The CLI started without it.", "The warning aggy printed; aggy doctor."},
+	{CodeProxyConflict, false, "A launch started no tool proxy: more than one tool with a proxy is on for the vendor, and a CLI has one base URL.", "aggy tool off one of them for that vendor."},
 	{CodeToolChanged, true, "aggy tool on or a --tool refused a user definition that is not the file aggy tool add showed, or (--tool) one it never recorded.", "aggy tool remove <name>, then aggy tool add the file again and read what it runs."},
 }
 

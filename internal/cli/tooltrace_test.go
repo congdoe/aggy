@@ -226,7 +226,23 @@ func TestToolOffLeavesNoTrace(t *testing.T) {
 			// look like a trace.
 			t.Run(fmt.Sprintf("%d-%s", i, v), func(t *testing.T) {
 				tool, repo, scope := traceTool(t, name)
-				toolOK(t, append([]string{"on", name}, scope...)...)
+				if tool.Proxy == nil {
+					toolOK(t, append([]string{"on", name}, scope...)...)
+				} else {
+					// T6780: a tool with a proxy turns on per named
+					// vendor, its proxy with a typed confirmation (Grok's
+					// tools are gated).
+					t.Setenv("AGGY_SOCKET", "")
+					for _, w := range []adapter.Vendor{adapter.Claude, adapter.Codex} {
+						args := append([]string{"on", name, "--vendor", string(w)}, scope...)
+						if code, _, errOut := toolRun(name+" "+string(w)+"\n", true, args...); code != 0 {
+							t.Fatalf("aggy tool %q: %d %s", args, code, errOut)
+						}
+					}
+					if proxyState(t, name, adapter.Claude).Parts.Proxy == nil {
+						t.Fatal("its proxy is not on for claude")
+					}
+				}
 				got := toolTraces(t, tool, v, repo)
 				for _, want := range traceExpected(tool, v) {
 					if !slices.ContainsFunc(got, func(g string) bool { return strings.HasPrefix(g, want) }) {
@@ -237,6 +253,9 @@ func TestToolOffLeavesNoTrace(t *testing.T) {
 				toolOK(t, append([]string{"off", name, "--vendor", string(v)}, scope...)...)
 				if tr := toolTraces(t, tool, v, repo); len(tr) > 0 {
 					t.Errorf("%s off for %s left: %q", name, v, tr)
+				}
+				if st := proxyState(t, name, v); st.Parts.Proxy != nil {
+					t.Errorf("%s off for %s left its proxy on", name, v)
 				}
 				if l, _ := layoutFor(name); v == adapter.Grok && hasSkill(tool) {
 					claude, _ := l.linked(l.links["claude"])

@@ -87,3 +87,45 @@ func TestState(t *testing.T) {
 		})
 	}
 }
+
+// TestStateProxy (T6780): a proxy runs only on an "on" for one named
+// vendor that holds the typed confirmation, and repo scope stacks on top.
+func TestStateProxy(t *testing.T) {
+	px := tool("px", "global", true, false, adapter.Claude, adapter.Codex)
+	px.Proxy = &tooldef.Proxy{Vendors: []adapter.Vendor{adapter.Claude}, Argv: []string{"px"}, Listen: "127.0.0.1:8787", Health: "/h",
+		Env: map[adapter.Vendor]string{adapter.Claude: "ANTHROPIC_BASE_URL"}}
+	ok := func(s store.ToolSwitch) store.ToolSwitch { s.Proxy = true; return builtIn(s) }
+	for _, c := range []struct {
+		name    string
+		sws     []store.ToolSwitch
+		session []string
+		v       adapter.Vendor
+		repo    string
+		on, prx bool
+	}{
+		{"confirmed for claude", []store.ToolSwitch{ok(sw("px", "claude", "", true))}, nil, adapter.Claude, repo, true, true},
+		{"unconfirmed on", []store.ToolSwitch{builtIn(sw("px", "claude", "", true))}, nil, adapter.Claude, repo, true, false},
+		{"on for every vendor", []store.ToolSwitch{ok(sw("px", "", "", true))}, nil, adapter.Claude, repo, true, false},
+		{"session only", nil, []string{"px"}, adapter.Claude, repo, true, false},
+		{"session with a confirmed row", []store.ToolSwitch{ok(sw("px", "claude", "", true))}, []string{"px"}, adapter.Claude, repo, true, true},
+		{"unsupported vendor", []store.ToolSwitch{ok(sw("px", "codex", "", true))}, nil, adapter.Codex, repo, true, false},
+		{"confirmed in this repo", []store.ToolSwitch{ok(sw("px", "claude", repo, true))}, nil, adapter.Claude, repo, true, true},
+		{"confirmed in another repo", []store.ToolSwitch{ok(sw("px", "claude", "/r/other", true))}, nil, adapter.Claude, repo, false, false},
+		{"repo off beats confirmed", []store.ToolSwitch{ok(sw("px", "claude", "", true)), sw("px", "claude", repo, false)}, nil, adapter.Claude, repo, false, false},
+		{"repo on, unconfirmed, beats confirmed", []store.ToolSwitch{ok(sw("px", "claude", "", true)), builtIn(sw("px", "", repo, true))}, nil, adapter.Claude, repo, true, false},
+		{"default never", nil, nil, adapter.Claude, repo, false, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := Board{Tools: []tooldef.Tool{px}, Switches: c.sws, Session: c.session}
+			st := b.State(px, c.v, c.repo)
+			if st.On != c.on || (st.Parts.Proxy != nil) != c.prx {
+				t.Errorf("on %v proxy %v (%s), want %v %v", st.On, st.Parts.Proxy != nil, st.Why, c.on, c.prx)
+			}
+		})
+	}
+	user := px
+	user.BuiltIn = false
+	if st := (Board{Switches: []store.ToolSwitch{changed(ok(sw("px", "claude", "", true)))}}).State(user, adapter.Claude, ""); st.On || st.Parts.Proxy != nil {
+		t.Error("a changed user file keeps its proxy")
+	}
+}
