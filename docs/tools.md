@@ -51,7 +51,7 @@ Common to all of them:
 - **What aggy wires.** Caveman is only a skill. aggy links `~/.aggy/skills/caveman` into `~/.claude/skills`, `~/.agents/skills`, and `~/.grok/skills` for each vendor that has it on.
   - **Grok.** While Grok has it off but a Claude or Codex link stays, the folder goes on Grok's `[skills] ignore`.
   - **Invoking it.** Use `/caveman` in Claude and Grok, and `$caveman` in Codex. That follows the skill folder conventions aggy's own skill uses (`/aggy`, `$aggy`). The command name comes from the skill's frontmatter.
-- **Version.** Tag v4.0.1 (d262ab3). aggy never fetches it, and never runs Caveman's installers, which edit vendor configs, add a proxy, and send telemetry by default. Instead, copy `skills/caveman/` from that tag into `~/.aggy/skills/caveman` yourself. `aggy tool on caveman` refuses until the folder is in place.
+- **Version.** Tag v4.0.1 (d262ab3). aggy never fetches it, and never runs Caveman's installers, which edit vendor configs, add a proxy, and send telemetry by default. Instead, copy `skills/caveman/` from that tag into `~/.aggy/skills/caveman` yourself, or run `aggy skill add <that folder> --replace`, which shows the files and their sha256 and stores the folder for the built-in (no user definition). `aggy tool on caveman` refuses until the folder is in place.
 - **Network.** None.
 - **Cost.** `skill-md`: the installed `SKILL.md`'s bytes / 4.
 - **Limits.**

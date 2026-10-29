@@ -29,6 +29,8 @@ import (
 const skillUsage = `Usage: aggy skill link [--vendor V] [--dry-run]
        aggy skill unlink [--vendor V] [--dry-run]
        aggy skill status
+       aggy skill add <dir> [--name N] [--yes] [--replace]
+       aggy skill remove <name>
 
 Installs aggy's skill once, in ~/.aggy/skills/aggy, and links it into
 each vendor CLI's user skill folder, where it is /aggy in Claude Code and
@@ -49,6 +51,16 @@ Every change goes through the manifest; aggy unwire undoes it.
 
   --vendor V   claude, codex, or grok (default: all three)
   --dry-run    show the changes and make none
+
+add stores your own skill folder (holding SKILL.md, regular files only,
+no symlinks) once, in ~/.aggy/skills/<name> (the folder's name, or
+--name), with a user tool definition that is only that skill, off. It
+shows the skill's frontmatter, files, size, and sha256 first, and stores
+it after you answer y at a terminal (--yes skips the question; it never
+works without a terminal). aggy tool on <name> [--vendor V] then links
+it. --replace replaces a folder of that name, or stores one for a
+built-in tool's skill; never while the tool is on. remove deletes the
+folder and the definition; refused while the tool is on.
 `
 
 // skillName is the skill's folder name and its invocation name.
@@ -146,6 +158,9 @@ func runSkill(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	op := args[0]
+	if op == "add" || op == "remove" {
+		return skillManage(args, os.Stdin, isTerminal(os.Stdin), stdout, stderr)
+	}
 	fl := flag.NewFlagSet("skill", flag.ContinueOnError)
 	fl.SetOutput(io.Discard)
 	vendor := fl.String("vendor", "", "")

@@ -37,3 +37,16 @@ func TestEstimate(t *testing.T) {
 		}
 	}
 }
+
+func TestFront(t *testing.T) {
+	tests := []struct{ in, name, desc string }{
+		{"no frontmatter", "", ""},
+		{"---\nname: demo\ndescription: \"Does a thing\"\nmeta:\n  name: inner\n---\nbody", "demo", "Does a thing"},
+		{"---\nname: 'q'\n---\n", "q", ""},
+	}
+	for _, tt := range tests {
+		if n, d := Front([]byte(tt.in)); n != tt.name || d != tt.desc {
+			t.Errorf("Front(%q) = %q, %q, want %q, %q", tt.in, n, d, tt.name, tt.desc)
+		}
+	}
+}
