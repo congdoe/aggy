@@ -237,32 +237,84 @@ func (e borrowEnv) diffBase(ctx context.Context, root, base string) (string, err
 	return "", errors.New("no default branch (origin/HEAD, main, or master) to diff against; pass --base <ref>")
 }
 
-// cursorLinks returns the committed paths (git ls-files -s, mode 120000)
-// in root that are symlinks with a .cursor part, compared
-// case-insensitively; any refuses a Grok review (T6751). When git cannot
-// list them all, it returns one placeholder entry, so the Grok review is
-// still refused and other vendors are not.
-func (e borrowEnv) cursorLinks(ctx context.Context, root string) []string {
-	out, cut, err := e.git(ctx, root, "ls-files", "-s", "-z", "--",
-		":(glob,icase)**/.cursor", ":(glob,icase)**/.cursor/**")
-	if err != nil || cut {
-		return []string{"(the committed .cursor paths could not be listed)"}
+// cursorSpecs select every path with a part like .cursor. git's icase
+// folds ASCII only, and APFS also takes .curſor (U+017F) for .cursor, so
+// the glob is wide and each part is compared with strings.EqualFold.
+var cursorSpecs = []string{"--", ":(glob,icase)**/.cur*or", ":(glob,icase)**/.cur*or/**"}
+
+// cursorLinks returns the paths in root with a .cursor part that are
+// symlinks in the index (mode 120000, in the repo or its submodules), or
+// that are, or sit under, a symlink in the work tree, which Grok reads.
+// The work tree candidates are the index entries and the untracked and
+// ignored files (git ls-files -o, which does not recurse into
+// submodules). Any refuses a Grok review (T6751). An error means the
+// check did not finish, which refuses it too.
+func (e borrowEnv) cursorLinks(ctx context.Context, root string) ([]string, error) {
+	staged, cut, err := e.git(ctx, root, append([]string{"ls-files", "-s", "-z", "--recurse-submodules"}, cursorSpecs...)...)
+	if err == nil && cut {
+		err = errors.New("git ls-files: too many .cursor paths")
+	}
+	if err != nil {
+		return nil, err
+	}
+	other, cut, err := e.git(ctx, root, append([]string{"ls-files", "-o", "-z"}, cursorSpecs...)...)
+	if err == nil && cut {
+		err = errors.New("git ls-files: too many .cursor paths")
+	}
+	if err != nil {
+		return nil, err
 	}
 	var links []string
-	for _, entry := range strings.Split(out, "\x00") {
-		// <mode> <object> <stage>\t<path>
-		meta, path, ok := strings.Cut(entry, "\t")
-		if !ok || !strings.HasPrefix(meta, "120000 ") {
-			continue
-		}
-		for _, part := range strings.Split(path, "/") {
-			if strings.EqualFold(part, ".cursor") {
-				links = append(links, path)
-				break
-			}
+	seen := map[string]bool{}
+	add := func(p string) {
+		if !seen[p] {
+			seen[p] = true
+			links = append(links, p)
 		}
 	}
-	return links
+	check := func(path string, indexLink bool) error {
+		parts := strings.Split(path, "/")
+		if !slices.ContainsFunc(parts, func(s string) bool { return strings.EqualFold(s, ".cursor") }) {
+			return nil
+		}
+		if indexLink {
+			add(path)
+			return nil
+		}
+		for i := range parts {
+			p := strings.Join(parts[:i+1], "/")
+			fi, err := safefs.Lstat(filepath.Join(root, filepath.FromSlash(p)))
+			switch {
+			case errors.Is(err, fs.ErrNotExist):
+				return nil
+			case err != nil:
+				return err
+			case fi.Mode()&fs.ModeSymlink != 0:
+				add(p)
+				return nil
+			}
+		}
+		return nil
+	}
+	for _, entry := range strings.Split(staged, "\x00") {
+		// <mode> <object> <stage>\t<path>
+		meta, path, ok := strings.Cut(entry, "\t")
+		if !ok {
+			continue
+		}
+		if err := check(path, strings.HasPrefix(meta, "120000 ")); err != nil {
+			return nil, err
+		}
+	}
+	for _, path := range strings.Split(other, "\x00") {
+		if path == "" {
+			continue
+		}
+		if err := check(path, false); err != nil {
+			return nil, err
+		}
+	}
+	return links, nil
 }
 
 // maxAuthorCommits caps the commits whose trailers a review reads.

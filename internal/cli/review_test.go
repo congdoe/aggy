@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -249,53 +250,109 @@ func TestReviewFilterDriver(t *testing.T) {
 	}
 }
 
-// TestCursorLinks (T6751): committed symlinks with a .cursor part, at the
-// root or nested, in any case, are listed; a regular .cursor tree and a
-// symlink elsewhere are not; a git failure gives a placeholder entry.
-// The links are index entries (mode 120000), so no file system symlink
-// is needed.
+// TestCursorLinks (T6751): symlinks with a .cursor part are listed: in
+// the index (mode 120000) at the root or nested, in any case or as
+// .curſor, in a submodule's index, and (not on Windows) untracked or
+// ignored ones in the work tree. A regular .cursor tree, tracked or
+// ignored, and a symlink elsewhere are not. No program from the repo's
+// or the submodule's git config runs, and a git failure is an error.
 func TestCursorLinks(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("AGGY_HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	repo, _ := filepath.EvalSymlinks(t.TempDir())
-	gitRepo(t, repo)
-	git := func(args ...string) string {
+	marker := gitRepo(t, repo) // its config sets an fsmonitor that touches marker
+	gitIn := func(dir string, args ...string) string {
 		t.Helper()
-		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
-		cmd.Dir = repo
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main"}, args...)...)
+		cmd.Dir = dir
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 		return strings.TrimSpace(string(out))
 	}
+	git := func(args ...string) string { t.Helper(); return gitIn(repo, args...) }
+	links := func() []string {
+		t.Helper()
+		got, err := gitEnv().cursorLinks(context.Background(), repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		slices.Sort(got)
+		return got
+	}
 	mustWrite(t, filepath.Join(repo, ".cursor", "rules", "x.mdc"), "---\na: b\n---\n", 0o600)
-	git("add", ".cursor")
+	mustWrite(t, filepath.Join(repo, "ign", ".cursor", "rules", "y.mdc"), "---\na: b\n---\n", 0o600)
+	mustWrite(t, filepath.Join(repo, ".gitignore"), "ign/\nign2/\n", 0o600)
+	git("add", ".cursor", ".gitignore")
 	git("commit", "-q", "-m", "plain cursor rules")
-	if got := gitEnv().cursorLinks(context.Background(), repo); len(got) != 0 {
+	if got := links(); len(got) != 0 {
 		t.Fatalf("a regular .cursor tree: %q", got)
 	}
 
 	target := filepath.Join(t.TempDir(), "target")
 	mustWrite(t, target, "../../.grok", 0o600)
 	blob := git("hash-object", "-w", target)
-	link := func(path string) { git("update-index", "--add", "--cacheinfo", "120000,"+blob+","+path) }
+	link := func(dir, path string) {
+		gitIn(dir, "update-index", "--add", "--cacheinfo", "120000,"+blob+","+path)
+	}
 	git("rm", "-r", "-q", "--cached", ".cursor")
-	link(".cursor")
-	link("sub/.cursor")
-	link("deep/x/.Cursor/rules")
-	link("docs/link") // not a .cursor path
-	link("a.cursor/x")
+	link(repo, ".cursor")
+	link(repo, "sub/.cursor")
+	link(repo, "deep/x/.Cursor/rules")
+	link(repo, "long/.curſor") // APFS takes it for .cursor
+	link(repo, "docs/link")    // not a .cursor path
+	link(repo, "a.cursor/x")
 	git("commit", "-q", "-m", "links")
-	got := gitEnv().cursorLinks(context.Background(), repo)
-	slices.Sort(got)
-	if want := []string{".cursor", "deep/x/.Cursor/rules", "sub/.cursor"}; !slices.Equal(got, want) {
+
+	// A submodule whose index holds a .cursor link, and whose own config
+	// sets an fsmonitor.
+	up := t.TempDir()
+	gitIn(up, "init", "-q")
+	mustWrite(t, filepath.Join(up, "f"), "f\n", 0o600)
+	gitIn(up, "add", "f")
+	upBlob := gitIn(up, "hash-object", "-w", target)
+	gitIn(up, "update-index", "--add", "--cacheinfo", "120000,"+upBlob+",.cursor")
+	gitIn(up, "commit", "-q", "-m", "up")
+	// By hand: git submodule is a shell script that needs tools the
+	// test's PATH lacks.
+	git("clone", "-q", up, "mod")
+	mustWrite(t, filepath.Join(repo, ".gitmodules"), "[submodule \"mod\"]\n\tpath = mod\n\turl = "+up+"\n", 0o600)
+	git("config", "submodule.mod.url", up)
+	git("update-index", "--add", "--cacheinfo", "160000,"+gitIn(up, "rev-parse", "HEAD")+",mod")
+	git("add", ".gitmodules")
+	git("commit", "-q", "-m", "submodule")
+	subMarker := filepath.Join(t.TempDir(), "sub-ran")
+	gitIn(filepath.Join(repo, "mod"), "config", "core.fsmonitor", "touch "+subMarker)
+
+	want := []string{".cursor", "deep/x/.Cursor/rules", "long/.curſor", "mod/.cursor", "sub/.cursor"}
+	if runtime.GOOS != "windows" {
+		for _, l := range []string{"wt/.cursor", "ign2/.cursor"} { // untracked, ignored
+			p := filepath.Join(repo, filepath.FromSlash(l))
+			if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(t.TempDir(), p); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want = append(want, "ign2/.cursor", "wt/.cursor")
+		slices.Sort(want)
+	}
+	_ = os.Remove(marker)
+	if got := links(); !slices.Equal(got, want) {
 		t.Errorf("cursorLinks = %q, want %q", got, want)
+	}
+	for _, m := range []string{marker, subMarker} {
+		if _, err := os.Stat(m); err == nil {
+			t.Errorf("an fsmonitor from git config ran (%s)", m)
+		}
 	}
 
 	broken := borrowEnv{gitPath: func() (string, error) { return "", errors.New("no git") }, gitRun: execrun.ExecRunner(gitTimeout)}
-	if got := broken.cursorLinks(context.Background(), repo); len(got) != 1 {
-		t.Errorf("a git failure must refuse a Grok review: %q", got)
+	if _, err := broken.cursorLinks(context.Background(), repo); err == nil {
+		t.Error("a git failure gave no error")
 	}
 }
 
