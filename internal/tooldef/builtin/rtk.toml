@@ -1,4 +1,6 @@
-# RTK: compresses shell output before the model sees it; failures stay.
+# RTK: compresses shell output before the model sees it. Which output it
+# leaves whole (a failing command's, say) is RTK's own behaviour, not in
+# verification.md (docs/tools.md).
 # Source: docs/verification.md, "Managed tools (2026-10-28)": rtk 1.1.0,
 # rtk hook claude (there is no Grok subcommand).
 #
@@ -13,7 +15,7 @@
 # touches, so aggy does not wire it.
 # TODO(T6712): the token cost.
 name = "rtk"
-description = "Compresses shell command output before the model sees it; failures stay"
+description = "Compresses shell command output before the model sees it (Claude only)"
 homepage = "https://github.com/rtk-ai/rtk"
 version = "1.1.0"
 default = false
@@ -23,6 +25,7 @@ unverified = ["homepage", "cost"]
 [install]
 check = ["rtk", "--version"]
 check_pattern = 'rtk (\d+\.\d+\.\d+)'
+hint = "install rtk 1.1.0 by hand (verified from Homebrew); never run rtk init, which edits vendor config"
 
 [[hook]]
 vendors = ["claude"]
