@@ -585,3 +585,36 @@ func TestDiagSQLCaps(t *testing.T) {
 		t.Errorf("--timeout took %s", d)
 	}
 }
+
+// TestDiagFollowReopenFails (T6808): --follow started before diag.db
+// exists reopens its view once the file appears; a reopen that fails is
+// an error (code 1), not a panic on a nil view in the deferred Close.
+func TestDiagFollowReopenFails(t *testing.T) {
+	newBorrowFixture(t)
+	path, err := store.DiagPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("diag.db exists before the test: %v", err)
+	}
+	old := diagPollEvery
+	diagPollEvery = 10 * time.Millisecond
+	t.Cleanup(func() { diagPollEvery = old })
+	var out syncBuilder
+	done := make(chan int)
+	go func() { done <- diagWith(context.Background(), []string{"--follow", "--jsonl"}, time.Now, &out, &out) }()
+	time.Sleep(50 * time.Millisecond)
+	// Not a database: the reopen fails.
+	if err := os.WriteFile(path, []byte("not a database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-done:
+		if code != 1 {
+			t.Errorf("code %d, want 1: %s", code, out.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("--follow did not end on a failed reopen: %s", out.String())
+	}
+}

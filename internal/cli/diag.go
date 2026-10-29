@@ -286,10 +286,13 @@ func diagList(ctx context.Context, args []string, now func() time.Time, export b
 		}
 		if !v.HasDiag() {
 			// diag.db did not exist when the view opened; look again.
-			_ = v.Close()
-			if v, err = openDiagView(ctx); err != nil {
+			nv, err := openDiagView(ctx)
+			if err != nil {
 				return quit(err)
 			}
+			// v stays open until nv replaces it: the deferred Close needs one.
+			_ = v.Close()
+			v = nv
 		}
 		flt.AfterRow = last
 		recs, err := v.Records(ctx, flt)
