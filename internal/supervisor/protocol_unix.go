@@ -35,9 +35,9 @@ func decodeRequest(line []byte) (Request, error) {
 		return r, errors.New("bad request: new, model, and brief are for switch-request")
 	}
 	switch r.Type {
-	case ReqPing:
+	case ReqPing, ReqToolsChanged:
 		if r.Vendor != "" || r.Event != "" || r.Payload != nil {
-			return r, errors.New("bad request: ping takes no fields")
+			return r, fmt.Errorf("bad request: %s takes no fields", r.Type)
 		}
 	case ReqHookEvent:
 		if _, err := adapter.ParseVendor(r.Vendor); err != nil {
@@ -71,10 +71,14 @@ func decodeRequest(line []byte) (Request, error) {
 // answer handles one request line. onHook, if set, gets each valid
 // hook-event, with FromSession set to fromSession. A switch-request must
 // be FromSession; onSwitch, if set, takes it or says why not, and without
-// it (aggy --direct) switching is refused. log, if set, gets a record of
+// it (aggy --direct) switching is refused. A tools-changed notice is
+// taken from any peer of this uid, since aggy tool on runs in any
+// terminal: onTools, if set, only makes the session read its tools
+// again, and nothing it does confirms anything; without it (aggy
+// --direct) the notice is refused. log, if set, gets a record of
 // each message refused or not acted on; a hook-event from the session is
 // left to onHook to record.
-func answer(line []byte, fromSession bool, onHook func(Request), onSwitch func(Request) error, log func(diag.Rec)) Response {
+func answer(line []byte, fromSession bool, onHook func(Request), onSwitch func(Request) error, onTools func(), log func(diag.Rec)) Response {
 	if log == nil {
 		log = func(diag.Rec) {}
 	}
@@ -92,6 +96,13 @@ func answer(line []byte, fromSession bool, onHook func(Request), onSwitch func(R
 	switch r.Type {
 	case ReqPing:
 		return Response{OK: true, Type: "pong"}
+	case ReqToolsChanged:
+		if onTools == nil {
+			return refuse(diag.EvSwitchRefused, diag.CodeNotSupervised, errors.New("this session cannot resume (aggy --direct); the tools take effect at its next launch"),
+				map[string]any{"from_session": fromSession})
+		}
+		onTools()
+		return Response{OK: true}
 	case ReqHookEvent:
 		// The supervisor acts on a turn end only when FromSession, and
 		// even then only as a hint (Run, T6664).

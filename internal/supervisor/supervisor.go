@@ -102,7 +102,20 @@ type Options struct {
 	// nothing. ChildID is the on-screen child's id in the index, for them.
 	Diag    *diag.Queue
 	ChildID string
+	// Tools returns what of the managed tools this session's CLI would
+	// get if it were launched now, for its vendor and repo (T6729); it is
+	// called off the main loop when a tools-changed notice comes over the
+	// socket. ToolsAtLaunch is what this launch got. When the two differ
+	// (and not as they did at the last offer), the session offers to
+	// resume the same vendor on the same session at the turn end. Nil
+	// Tools never offers.
+	Tools         func() (ToolSet, error)
+	ToolsAtLaunch ToolSet
 }
+
+// ToolSet maps a managed tool's name to what a session gets of it (such
+// as "mcp+skill"); a tool the session gets nothing of is absent.
+type ToolSet map[string]string
 
 // Share is how much of a vendor's limit is used: Used, 0 to 1, of the
 // window named Window, Minutes long (0: unknown), which resets at Reset
@@ -141,6 +154,10 @@ type Choice struct {
 	// Tools are turned on for the next launch only, never written to
 	// the settings (switchboard.Board.Session).
 	Tools []string
+	// Resume is a restart of the vendor on screen on the same session,
+	// so it gets the tools as they are now set (T6729); Vendor is the
+	// one on screen, and no other field is set.
+	Resume bool
 }
 
 // ErrChecking is what CanSwitch returns while a check that takes time

@@ -262,6 +262,14 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 	}
 	dlog.Log(ctx, diag.Rec{Event: diag.EvToolSwitched, Vendor: a.vendor,
 		Attrs: map[string]any{"tool": name, "repo": repo.key != "", "on": on}})
+	// Running sessions are told last, after any skill link changed, even
+	// when that failed: the setting is recorded (T6729).
+	defer func() {
+		fmt.Fprintln(stdout, "It takes effect at the next launch.")
+		if n := notifySessions(ctx, a.vendor, repo.key); n > 0 {
+			fmt.Fprintf(stdout, "Told %d running aggy session(s): one whose tools changed offers to resume its CLI on the same session at the turn end (Claude and Codex; Grok's tools are not wired).\n", n)
+		}
+	}()
 
 	if !loaded {
 		fmt.Fprintf(stdout, "%s is not loaded; its settings say off.\n", name)
@@ -306,7 +314,6 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, stdout io.Writer) erro
 		// H83-2: an edit that dropped the tool's [[skill]] leaves no link.
 		return fmt.Errorf("the setting is recorded, but not every old skill link was removed (the changed lines above were): %w", err)
 	}
-	fmt.Fprintln(stdout, "It takes effect at the next launch.")
 	return nil
 }
 

@@ -108,6 +108,14 @@ func launch(name string, t target, stderr io.Writer) int {
 			return code
 		}
 		c := next.choice
+		if c.Resume {
+			// T6729: the same child again, so it is wired with the tools
+			// as now set. It is the same session, so its --tool names and
+			// one-launch model carry over, unlike a switch; --no-policy
+			// does not (S-6), and it gets no brief.
+			t = target{ParentID: next.parentID, Vendor: next.vendor, Child: next.child, Model: t.Model, Tools: t.Tools}
+			continue
+		}
 		t = target{ParentID: next.parentID, Vendor: next.vendor, Child: c.Child, NewChild: c.New, Model: c.Model, Brief: c.Brief, Tools: c.Tools}
 	}
 }
@@ -118,6 +126,7 @@ type switchTo struct {
 	vendor   adapter.Vendor
 	parentID string
 	choice   supervisor.Choice
+	child    string // the child that was on screen, for a resume (T6729)
 }
 
 // diagQueue is how many records the supervisor's diagnostic queue holds;
@@ -366,8 +375,18 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 		var allowance limits.AllowanceCache
 		used = func(o adapter.Vendor) (supervisor.Share, bool) { return usedShare(o, &allowance, cids.current()) }
 	}
+	// The tools this launch got, from the settings, so a tool switched on
+	// or off while it runs is offered as a resume (T6729). Without them
+	// (a repo config or index aggy cannot read) none is offered.
+	var tools func() (supervisor.ToolSet, error)
+	toolBase, err := sessionToolSet(ctx, v, caps, pl.child.Cwd, t.Tools)
+	if err == nil {
+		tools = func() (supervisor.ToolSet, error) { return sessionToolSet(pctx, v, caps, pl.child.Cwd, t.Tools) }
+	}
 	ex, err := supervisor.Run(supervisor.Options{
-		In: os.Stdin, Out: os.Stdout, Command: cmd,
+		Tools:         tools,
+		ToolsAtLaunch: toolBase,
+		In:            os.Stdin, Out: os.Stdout, Command: cmd,
 		Start:      startPTY,
 		SwitchKey:  key,
 		Vendors:    vendors,
@@ -400,7 +419,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	}
 	exited(ex.Code, ex.SwitchTo)
 	if ex.SwitchTo != "" {
-		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next}
+		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next, child: pl.child.ID}
 	}
 	return ex.Code
 }

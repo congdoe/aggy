@@ -105,7 +105,8 @@ func Run(o Options) (Exit, error) {
 		return Exit{Code: 1}, errors.New("supervisor: standard input is not a terminal")
 	}
 	t := &tty{fd: fd}
-	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, lenKnown: true, events: make(chan hookEvent, 16), asks: make(chan Choice, 1), quit: make(chan struct{}), shares: make(chan shareReading), childChecks: make(chan childCheck)}
+	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, lenKnown: true, events: make(chan hookEvent, 16), asks: make(chan Choice, 1), quit: make(chan struct{}), shares: make(chan shareReading), childChecks: make(chan childCheck),
+		toolNotes: make(chan struct{}, 1), toolReads: make(chan toolReading)}
 	defer close(s.quit)
 	// The last minute's repeats, queued before the caller closes the
 	// diagnostic queue (G67-R3); deferred first, so it runs after the
@@ -120,6 +121,7 @@ func Run(o Options) (Exit, error) {
 		}
 		defer func() { _ = srv.Close() }()
 		srv.SetLog(s.logWait)
+		srv.SetTools(s.onTools)
 		if o.CanSwitch != nil {
 			srv.SetSwitch(s.onSwitch)
 		}
@@ -202,7 +204,7 @@ func Run(o Options) (Exit, error) {
 		// check polls a switch that waits for the turn end.
 		// It also polls a near-limit warning due at a turn end.
 		var check <-chan time.Time
-		if (s.sw.to != "" && !s.sw.typed || s.warnDue) && !s.open {
+		if (s.sw.to != "" && !s.sw.typed || s.warnDue || s.toolsDue) && !s.open {
 			check = time.After(switchPoll)
 		}
 		select {
@@ -223,6 +225,11 @@ func Run(o Options) (Exit, error) {
 				s.offerSwitch()
 			}
 			s.offerWarn()
+			s.offerToolsNote()
+		case <-s.toolNotes:
+			s.readTools()
+		case r := <-s.toolReads:
+			s.toolsRead(r)
 		case h := <-s.o.Limits:
 			s.onLimit(h)
 		case r := <-s.childChecks:
@@ -411,6 +418,18 @@ type session struct {
 	// maxForeign (G67-R3). Only in memory; owned by the main loop.
 	foreign     map[string]*foreignSeen
 	foreignOver foreignSeen
+	// toolNotes wakes the main loop for a tools-changed notice; toolReads
+	// brings Options.Tools' readings, toolBusy while one is in flight and
+	// toolAgain when a notice came during it (T6729). toolSeen is the set
+	// last acted on (nil: none since launch or since it went back as
+	// launched); toolsDue: a note for a vendor with no hold signal waits
+	// to be shown, naming toolsNote.
+	toolNotes           chan struct{}
+	toolReads           chan toolReading
+	toolBusy, toolAgain bool
+	toolSeen            ToolSet
+	toolsDue            bool
+	toolsNote           []string
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -438,6 +457,10 @@ type pendingSwitch struct {
 	// CLI's tree can send (O56-2), so it is labeled like an agent's ask.
 	unverified bool
 	typed      bool // the exit command has been typed
+	// resume: a restart of the vendor on screen on the same session, for
+	// the tool changes named in tools (T6729).
+	resume bool
+	tools  []string
 	// checkSeq is the ask of the HasChild check that runs for the
 	// confirmed switch (0: none), started at checkAt (T6770).
 	checkSeq int
@@ -572,6 +595,19 @@ func (s *session) offered(v adapter.Vendor) error {
 	}
 	if s.o.CanSwitch == nil {
 		return errors.New("this session cannot switch")
+	}
+	if err := s.o.CanSwitch(v); err != nil {
+		return &checkError{err}
+	}
+	return nil
+}
+
+// resumable says why the vendor on screen cannot be resumed now (the
+// repo's allowed_vendors, its CLI gone from PATH, the safety policy), or
+// nil (T6729).
+func (s *session) resumable(v adapter.Vendor) error {
+	if s.o.CanSwitch == nil {
+		return errors.New("this session cannot resume")
 	}
 	if err := s.o.CanSwitch(v); err != nil {
 		return &checkError{err}
@@ -736,6 +772,10 @@ func (s *session) offerSwitch() {
 		s.sw.checkSeq, s.sw.checkAt = 0, time.Time{}
 	}
 	v, on := s.sw.to, s.o.Vendor
+	what := "switch to " + string(v)
+	if s.sw.resume {
+		what = fmt.Sprintf("resume %s with the changed tools", v)
+	}
 	if s.dirty {
 		// S-1: the exit command would go after the unsent text and send
 		// both, so the switch waits; the user is told once.
@@ -743,19 +783,27 @@ func (s *session) offerSwitch() {
 			s.toldDirty = true
 			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeUnsentText, Cause: s.turnCause(),
 				Msg: "the switch waits: text the user typed is not sent", Attrs: map[string]any{"to": string(v)}})
-			s.pk.tell(fmt.Sprintf("aggy is ready to switch to %s, but you typed text you have not sent to %s.", v, on),
+			again := fmt.Sprintf("next turn end, or when you pick %s again after that Enter.", v)
+			if s.sw.resume {
+				again = "next turn end."
+			}
+			s.pk.tell(fmt.Sprintf("aggy is ready to %s, but you typed text you have not sent to %s.", what, on),
 				"Send it, or clear it (Ctrl+U or Backspace) and press Enter on the empty prompt; aggy asks again at the",
-				fmt.Sprintf("next turn end, or when you pick %s again after that Enter.", v))
+				again)
 			s.openPicker()
 		}
 		return
 	}
-	if err := s.offered(v); errors.Is(err, ErrChecking) {
+	check := s.offered
+	if s.sw.resume {
+		check = s.resumable
+	}
+	if err := check(v); errors.Is(err, ErrChecking) {
 		return // offered once the check is done
 	} else if err != nil {
-		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchVendor, Cause: s.turnCause(), Msg: refusedMsg(v, err), Attrs: map[string]any{"to": string(v)}})
+		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchVendor, Cause: s.turnCause(), Msg: refusedMsg(v, err), Attrs: map[string]any{"to": string(v), "resume": s.sw.resume}})
 		s.setSwitch(pendingSwitch{})
-		s.pk.tell(fmt.Sprintf("Cannot switch to %s: %v", v, err))
+		s.pk.tell(fmt.Sprintf("Cannot %s: %v", what, err))
 		s.openPicker()
 		return
 	}
@@ -763,9 +811,12 @@ func (s *session) offerSwitch() {
 	// options first, then the keys, then the check; a narrow terminal
 	// cuts the end.
 	cmd, verified := adapter.ExitCommand(on)
-	confirmLine := func(model string) string {
+	tools := "tools " + strings.Join(s.sw.tools, " ")
+	confirmLine := func(model, tools string) string {
 		var why []string
 		switch {
+		case s.sw.resume:
+			why = append(why, tools)
 		case s.sw.asked:
 			why = append(why, "the agent asks")
 		case s.sw.limit:
@@ -774,21 +825,34 @@ func (s *session) offerSwitch() {
 		c := s.sw.choice
 		c.Model = model
 		why = append(why, choiceNote(c)...)
-		head := "-> " + string(v) // the full line fits 80 columns without an origin
-		if len(why) > 0 {
-			head = strings.Join(why, ", ") + " " + head
+		head, does, sep := "-> "+string(v), "switches", " " // the full line fits 80 columns without an origin
+		if s.sw.resume {
+			head, does, sep = "same session -> "+string(v), "resumes", ", "
 		}
-		line := fmt.Sprintf("%s. %s switches, Esc stays. See %s's prompt? It types %s.", head, keyName(s.pk.key), on, cmd)
+		if len(why) > 0 {
+			head = strings.Join(why, ", ") + sep + head
+		}
+		line := fmt.Sprintf("%s. %s %s, Esc stays. See %s's prompt? It types %s.", head, keyName(s.pk.key), does, on, cmd)
 		if !verified {
 			line += fmt.Sprintf(" (%s is unverified.)", cmd)
 		}
 		return line
 	}
-	line := confirmLine(s.sw.choice.Model)
+	line := confirmLine(s.sw.choice.Model, tools)
 	lines := []string{line}
-	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: s.turnCause(), Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "asked": s.sw.asked, "limit": s.sw.limit})})
+	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: s.turnCause(), Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "asked": s.sw.asked, "limit": s.sw.limit, "resume": s.sw.resume})})
 	s.pk.preselect = "" // offered once (O56-5)
 	s.pk.ask(v, lines...)
+	if s.sw.resume {
+		// The tools' names go first when the keys would not fit.
+		s.pk.fit = func(cols int) string {
+			full := "aggy: " + line
+			if cols <= 1 || strings.Index(full, keysEnd)+len(keysEnd) <= cols-1 {
+				return full
+			}
+			return "aggy: " + confirmLine("", "tools changed")
+		}
+	}
 	if m := s.sw.choice.Model; m != "" {
 		// T6770: a long model name (up to maxModel) is cut first, so the
 		// keys stay on the line; past them a narrow terminal cuts the end.
@@ -802,7 +866,7 @@ func (s *session) offerSwitch() {
 			if keep >= len(m) {
 				return full
 			}
-			return "aggy: " + confirmLine(m[:keep]+"...")
+			return "aggy: " + confirmLine(m[:keep]+"...", tools)
 		}
 	}
 	s.openPicker()
@@ -1129,7 +1193,7 @@ const altSettle = 50 * time.Millisecond
 // openList opens the picker on the vendor list.
 func (s *session) openList() {
 	s.pk.list()
-	s.pk.waiting, s.pk.checking = s.sw.to, false
+	s.pk.waiting, s.pk.checking, s.pk.resume = s.sw.to, false, s.sw.resume
 	// After a limit, Enter takes the suggested vendor, with a brief.
 	s.pk.opts.Brief = s.pk.preselect != ""
 	// Starts the checks that take time (the policy probe) for every
@@ -1307,6 +1371,13 @@ func (s *session) promptInput(b []byte) {
 		}
 		s.closePicker()
 		s.confirmSwitch()
+	case s.pk.isKey(b) && s.pk.resume:
+		// A tool change's note on a vendor with no hold signal: the user
+		// queues the resume, still confirmed at the turn end (T6729).
+		s.closePicker()
+		if s.sw.to == "" { // an agent's ask may have come in meanwhile
+			s.queueResume(s.toolsNote, true)
+		}
 	case s.pk.isKey(b):
 		to := s.pk.warnTo // a near-limit warning's suggestion (T6699)
 		s.closePicker()
