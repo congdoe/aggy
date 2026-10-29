@@ -31,7 +31,7 @@ func decodeRequest(line []byte) (Request, error) {
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return r, errors.New("bad request: more than one JSON value on the line")
 	}
-	if r.Type != ReqSwitchRequest && (r.New || r.Model != "" || r.Brief) {
+	if r.Type != ReqSwitchRequest && (r.New || r.Model != "" || r.Brief || r.Tools != nil) {
 		return r, errors.New("bad request: new, model, and brief are for switch-request")
 	}
 	switch r.Type {
@@ -104,7 +104,7 @@ func answer(line []byte, fromSession bool, onHook func(Request), onSwitch func(R
 		}
 		return Response{OK: true}
 	default: // ReqSwitchRequest
-		attrs := map[string]any{"to": r.Vendor, "brief": r.Brief, "new": r.New, "model_set": r.Model != "", "origin": "agent"}
+		attrs := map[string]any{"to": r.Vendor, "brief": r.Brief, "new": r.New, "model_set": r.Model != "", "tools": len(r.Tools), "origin": "agent"}
 		if !fromSession {
 			return refuse(diag.EvSwitchRefused, diag.CodeLineage, errors.New("switch-request from outside this session"), attrs)
 		}

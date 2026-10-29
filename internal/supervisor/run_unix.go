@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/hook"
+	"github.com/congdoe/aggy/internal/tooldef"
 )
 
 // drainWait bounds how long Run waits, after the CLI exits, for its last
@@ -499,6 +501,9 @@ func (s *session) hookEvent(ev hookEvent) {
 	s.atPrompt, s.held = false, true
 }
 
+// maxSwitchTools caps the tools a switch-request may name.
+const maxSwitchTools = 8
+
 // onSwitch takes a switch-request from the session (the socket refuses
 // any other): the vendor must be one the picker offers and CanSwitch
 // allows. It queues it for the main loop, which asks the user at the
@@ -512,7 +517,14 @@ func (s *session) onSwitch(r Request) error {
 	if r.New || r.Model != "" {
 		// O56-1: a new session or a model is the user's choice, in the
 		// picker; the agent may ask for a vendor and a brief only.
-		return coded(diag.CodeAgentOptions, errors.New("an agent may ask for a vendor and a brief only; a new session or a model for the launch is the user's choice, in aggy's picker"))
+		return coded(diag.CodeAgentOptions, errors.New("an agent may ask for a vendor, a brief, and tools only; a new session or a model for the launch is the user's choice, in aggy's picker"))
+	}
+	// Tools for the next launch: names only, shown to the user in the
+	// confirmation, which takes or cancels the whole switch. Whether each
+	// is defined, applies, and is not in the repo's tools_off is decided
+	// at that launch, as for aggy run --tool.
+	if len(r.Tools) > maxSwitchTools || slices.ContainsFunc(r.Tools, func(n string) bool { return !tooldef.ValidName(n) }) {
+		return coded(diag.CodeUsage, fmt.Errorf("--tool takes at most %d tool names, each lowercase letters, digits, and -", maxSwitchTools))
 	}
 	if err := s.offered(v); err != nil && !errors.Is(err, ErrChecking) {
 		return coded(diag.CodeSwitchVendor, err)
@@ -521,7 +533,7 @@ func (s *session) onSwitch(r Request) error {
 		return coded(diag.CodeSwitchBusy, errors.New("a switch is already waiting"))
 	}
 	// The only one past the swap; the channel holds one.
-	s.asks <- Choice{Vendor: v, Brief: r.Brief}
+	s.asks <- Choice{Vendor: v, Brief: r.Brief, Tools: slices.Clone(r.Tools)}
 	return nil
 }
 
@@ -910,6 +922,9 @@ func choiceNote(c Choice) []string {
 	}
 	if c.Brief {
 		out = append(out, "brief")
+	}
+	if len(c.Tools) > 0 {
+		out = append(out, "tools "+strings.Join(c.Tools, ","))
 	}
 	return out
 }
