@@ -27,23 +27,40 @@ func trustedPath(p string) error {
 			if err != nil {
 				return err
 			}
-			if fi.Mode()&fs.ModeSymlink == 0 {
-				st, ok := fi.Sys().(*syscall.Stat_t)
-				if ok && int(st.Uid) != os.Getuid() && st.Uid != 0 {
-					return fmt.Errorf("%s belongs to another user, so aggy will not have every CLI session run it", d)
-				}
-				// A sticky folder (/tmp) is writable by others, but none
-				// of them can rename or remove an entry they do not own,
-				// and the entry below it is checked as this user's or
-				// root's in turn, so it cannot be replaced.
-				if fi.Mode().Perm()&0o022 != 0 && (d == q || fi.Mode()&fs.ModeSticky == 0 || !fi.IsDir()) {
-					return fmt.Errorf("%s is writable by others (mode %#o), so aggy will not have every CLI session run aggy from below it", d, fi.Mode().Perm())
-				}
+			uid := -1
+			if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+				uid = int(st.Uid)
+			}
+			if err := trustedEntry(d, fi.Mode(), uid, os.Getuid(), d == q); err != nil {
+				return err
 			}
 			if d == filepath.Dir(d) {
 				break
 			}
 		}
+	}
+	return nil
+}
+
+// trustedEntry checks one entry on the way to the binary: d, with its
+// mode and owner uid (-1 when unknown), for the user me; leaf is the
+// binary itself.
+//
+// Every entry, a symlink too, must be the user's or root's: in a sticky
+// folder the owner of an entry can remove and recreate it, so another
+// user's symlink there could later point elsewhere. A non-symlink must
+// also be writable by neither group nor others, except a sticky folder
+// (/tmp) above the binary: nobody else can rename or remove an entry in
+// it they do not own, and the entry below it is checked in turn.
+func trustedEntry(d string, mode fs.FileMode, uid, me int, leaf bool) error {
+	if uid != me && uid != 0 {
+		return fmt.Errorf("%s belongs to another user, so aggy will not have every CLI session run it", d)
+	}
+	if mode&fs.ModeSymlink != 0 {
+		return nil // a symlink's own mode bits mean nothing
+	}
+	if mode.Perm()&0o022 != 0 && (leaf || mode&fs.ModeSticky == 0 || !mode.IsDir()) {
+		return fmt.Errorf("%s is writable by others (mode %#o), so aggy will not have every CLI session run aggy from below it", d, mode.Perm())
 	}
 	return nil
 }
