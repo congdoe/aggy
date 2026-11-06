@@ -22,6 +22,9 @@ func TestPromptText(t *testing.T) {
 		{"task and date", Prompt{Kind: adapter.News, Task: "what shipped in go 1.27?", Today: today},
 			[]string{"Kind: news", "Today's date: 2026-10-28", "## Task\n\nwhat shipped in go 1.27?\n", "publish date"},
 			[]string{"## Paths", "## Constraints"}},
+		// T6892: Codex does not load AGENTS.md for an edit child by itself.
+		{"edit names AGENTS.md", Prompt{Kind: adapter.Edit, Task: "fix it", Today: today},
+			[]string{"If AGENTS.md exists at the root of this directory, read it first"}, nil},
 		{"paths and constraints", Prompt{Kind: adapter.Review, Task: "review", Paths: []string{"/r/a.go", "/r/b"},
 			Constraints: []string{"focus on races"}, Today: today},
 			[]string{"## Paths\n\n- /r/a.go\n- /r/b\n", "## Constraints\n\n- focus on races\n", "Do not change any file"}, []string{"looked like secrets"}},

@@ -270,6 +270,13 @@ func TestBorrowEditCommand(t *testing.T) {
 		t.Errorf("stored %+v, %v", wt, err)
 	}
 	noMarkers(t, markers)
+	// T6892: the child left the user's Codex config alone: a fake that
+	// writes project trust as Codex does found a decision for its cwd.
+	if data, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".codex", "config.toml")); err == nil {
+		t.Errorf("the edit child wrote the user's Codex config:\n%s", data)
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 
 	for _, v := range []string{"grok", "claude"} {
 		code, out, errOut = f.run(t, "edit", "add a helper", "--vendor", v)
