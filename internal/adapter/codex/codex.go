@@ -124,9 +124,7 @@ func lockdown(k adapter.Kind) []string {
 // shell write to /private/tmp or $TMPDIR fails with "operation not
 // permitted" while one in the repo works). Unverified: whether exec's
 // default web search is on for an edit child (no recorded flag turns it
-// off), and whether Codex treats a linked worktree as its main repo for
-// project trust; with the user config ignored, no trust entry is loaded
-// either way.
+// off). Headless adds projectOverride after this set.
 var EditLockdown = editLockdown()
 
 func editLockdown() []string {
@@ -144,6 +142,41 @@ func editLockdown() []string {
 		}
 	}
 	return out
+}
+
+// projectOverride is the -c that keeps an edit child from writing project
+// trust to the user's config.toml. Codex's thread/start (which codex exec
+// runs in process) persists trust_level = "trusted" for the main checkout
+// when the cwd has no trust decision, is not projectless, and the sandbox
+// can write it; a --sandbox read-only child never does, and
+// --ignore-user-config does not stop it: it also hides any entry already
+// there
+// (https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/app-server/src/request_processors/thread_processor.rs#L1419).
+// An explicit decision for the cwd skips the write, and untrusted is the one
+// that keeps the worktree's .codex config and hooks unloaded
+// (config/src/loader/mod.rs#L1127 at that commit); it is a session override,
+// so nothing is persisted. It also stops Codex loading AGENTS.md
+// (core/src/agents_md.rs#L64), so the edit prompt names that file. Approval
+// and sandbox stay as they were: exec sets approval to never and the sandbox
+// is explicit (exec/src/lib.rs#L591, core/src/config/mod.rs#L3894).
+//
+// The value is a table, not a dotted key: an override's key is split on
+// every '.' (config/src/overrides.rs#L22), and a state dir path holds one.
+// Lookup tries the cwd's canonical form, then its spelling
+// (config/src/project_trust.rs#L62), and Codex's cwd is the physical one, so
+// both a symlinked and a resolved req.Cwd get an entry. A value that does not
+// parse becomes a string, which --strict-config refuses, so the borrow fails.
+// Source only: docs/verification.md, "Codex project trust in an edit child".
+func projectOverride(cwd string) []string {
+	keys := []string{cwd}
+	if r, err := filepath.EvalSymlinks(cwd); err == nil && r != cwd {
+		keys = []string{r, cwd}
+	}
+	entries := make([]string, len(keys))
+	for i, k := range keys {
+		entries[i] = tomlString(k) + `={trust_level="untrusted"}`
+	}
+	return []string{"-c", "projects={" + strings.Join(entries, ",") + "}"}
 }
 
 // Refusal returns the one refusal of research and news on Codex, which
@@ -246,7 +279,7 @@ func (a Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, e
 //
 // Image and review get the Lockdown flag set (image keeps image
 // generation); --skip-git-repo-check is added unless GitRepo. Edit runs
-// with EditLockdown (M3). Research and news are ErrUnsupported
+// with EditLockdown and projectOverride (M3). Research and news are ErrUnsupported
 // (Refusal; TODO(T6638)), as are video, AllowedTools (no recorded
 // tool allowlist), and a pre-assigned SessionID. MaxTurns is ignored:
 // codex exec has no turn limit. Codex hooks need hash trust and hooks
@@ -306,6 +339,7 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 		}
 	case adapter.Edit:
 		args = append(args, EditLockdown...)
+		args = append(args, projectOverride(req.Cwd)...)
 	default:
 		return adapter.Command{}, fmt.Errorf("codex: unknown kind %q", req.Kind)
 	}

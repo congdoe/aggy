@@ -64,6 +64,7 @@ Confidence words: *Source-verified*, *Help-verified*, *Doc-verified*,
 | Managed tools | Pinned versions, binaries, `--version` output, and MCP or hook commands of RTK, CodeGraph, Context7, Playwright MCP, and Headroom; Caveman's skill folder. | Live-confirmed (2026-10-28) |
 | Codex CLI details | `codex exec resume`, `--ignore-user-config` on `exec` only, greedy `-i`. | Help/Source-verified; parts Live-confirmed |
 | API and route settings | Listed in adapters.md. | Source/Doc-verified |
+| Codex project trust in an edit child (T6892) | `codex exec` under workspace-write persists the main checkout as trusted, whatever `--ignore-user-config` says. A session `-c projects=...` decision skips the write. | Write Live-observed and Source-verified; fix Source-verified, not run live |
 | Same-vendor nested review (T6779) | A Claude review borrow run from inside an on-screen Claude Code session routes to Claude and runs as a fresh headless session. Codex under Codex and Grok under Grok are not run. | Claude Live-confirmed; Codex and Grok unverified |
 
 ## Codex hooks (T6616)
@@ -623,9 +624,8 @@ and only `HOME` and `PATH` set:
 | --- | --- | --- | --- |
 | Edit lockdown | `codex exec --strict-config --ignore-user-config --sandbox workspace-write --disable view_image --disable apps --disable plugins --disable goals --disable image_generation --disable sleep_tool "<prompt>"` | Confirmed | Exit 0. The shell tool created `./inside.txt` holding "OK" in the cwd. A write to `$HOME/<scratch canary dir>/out.txt`, outside the cwd, failed with `operation not permitted`, and the file was not created. |
 
-Not checked: whether exec's default web search is on under this set, and
-whether Codex resolves a linked worktree to its main repo for project
-trust (with `--ignore-user-config` no trust entry loads). `codex.EditLockdown` is this set.
+Not checked: whether exec's default web search is on under this set.
+`codex.EditLockdown` is this set.
 
 Temp dirs (K46-2), live 2026-10-28, codex-cli 0.164.0, scratch repo, `TMPDIR`
 set to a scratch dir:
@@ -641,6 +641,23 @@ struct (`writable_roots`, `network_access`, `exclude_tmpdir_env_var`,
 check gate still refuses a main checkout under `/tmp`, `/private/tmp`, or
 `$TMPDIR`, and accept keeps its patch file in its own `run` dir, as defense
 in depth for other temp roots and older Codex versions.
+
+## Codex project trust in an edit child (T6892)
+
+Observed in a live audit, 2026-11-06, codex-cli 0.164.0: after `aggy borrow
+edit` in a never-trusted repo, the user's `config.toml` had gained
+`[projects."<main checkout>"]` with `trust_level = "trusted"`, modified at
+the edit child's start, and `aggy run codex` there showed no trust dialog.
+
+The cause is source-verified at commit 6aaac69 (adapters.md has the links):
+`thread/start` persists that entry under the edit lockdown. The fix,
+`-c projects={"<cwd>"={trust_level="untrusted"}}`, is source only: it has not
+been run live. A maintainer's check: run `aggy borrow edit` in a never-trusted
+scratch repo and compare `config.toml` before and after. It must not change,
+and the borrow must succeed, which also shows `--strict-config` takes the
+override. Also unseen live: that the child reads `AGENTS.md` when the prompt
+tells it to. Entries earlier aggy versions caused stay in the user's config:
+aggy does not remove them, since it cannot tell them from the user's own.
 
 ## Codex CLI details
 
@@ -1204,7 +1221,9 @@ Not established:
 8. Grok's `auto_compact_threshold_percent` at 1.0.70, and the context
    window of the user's model, before aggy sets Grok's compaction below
    200,000 tokens (T6673).
-9. aggy's installed hooks firing live in each CLI (T6616 for Codex).
+9. The Codex edit child's `projects` override (T6892): the config file
+   stays the same across a real edit borrow.
+10. aggy's installed hooks firing live in each CLI (T6616 for Codex).
    How each runs the command is source- or doc-verified (Claude `sh -c`,
    Codex `$SHELL -lc`, Grok "an inline shell command"); what Grok does
    with a hook that cannot start is not stated (aggy's command exits 0

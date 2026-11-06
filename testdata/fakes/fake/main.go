@@ -28,6 +28,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -722,6 +723,9 @@ func (f *fake) main(args []string) int {
 		return fail(3, "%v", err)
 	}
 	if headless {
+		if err := f.persistProjectTrust(); err != nil {
+			return fail(3, "%v", err)
+		}
 		f.headlessOutput()
 	} else if !f.sc.RawEcho {
 		fmt.Print(f.expand(f.sc.Stdout))
@@ -1030,6 +1034,73 @@ func (f *fake) writeFiles() error {
 		}
 	}
 	return nil
+}
+
+// persistProjectTrust does what codex exec's thread/start does for a new
+// thread: with no trust decision for the cwd, in a git checkout, under a
+// sandbox that can write the cwd, it appends trust_level = "trusted" for the
+// main checkout to the user's config.toml, even under --ignore-user-config
+// (codex 6aaac69, app-server/src/request_processors/thread_processor.rs:1419,
+// git-utils/src/trust.rs). A decision can only come from a -c projects table
+// here: the fake reads no config.toml.
+func (f *fake) persistProjectTrust() error {
+	if f.vendor != "codex" || f.sub != "exec" || f.value("--sandbox") != "workspace-write" {
+		return nil
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	cwd, err := filepath.EvalSymlinks(wd)
+	if err != nil {
+		return err
+	}
+	for _, v := range f.flags["-c"] {
+		if strings.HasPrefix(v, "projects={") && strings.Contains(v, strconv.Quote(cwd)+"={trust_level=") {
+			return nil
+		}
+	}
+	root := mainCheckout(cwd)
+	if root == "" {
+		return nil
+	}
+	p := filepath.Join(vendorHome("codex"), "config.toml")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	_, err = fmt.Fprintf(file, "\n[projects.%s]\ntrust_level = \"trusted\"\n", strconv.Quote(root))
+	return err
+}
+
+// mainCheckout is the git work tree holding dir, or the main checkout when
+// that is a linked worktree; "" outside git.
+func mainCheckout(dir string) string {
+	for d := dir; ; d = filepath.Dir(d) {
+		fi, err := os.Lstat(filepath.Join(d, ".git"))
+		if err == nil && fi.IsDir() {
+			return d
+		}
+		if err == nil {
+			b, err := os.ReadFile(filepath.Join(d, ".git"))
+			if err != nil {
+				return ""
+			}
+			gitDir := strings.TrimSpace(strings.TrimPrefix(string(b), "gitdir:"))
+			if real, err := filepath.EvalSymlinks(gitDir); err == nil {
+				gitDir = real
+			}
+			// <main>/.git/worktrees/<id>
+			return filepath.Dir(filepath.Dir(filepath.Dir(gitDir)))
+		}
+		if d == filepath.Dir(d) {
+			return ""
+		}
+	}
 }
 
 // runHooks calls the hook command once per hook, with the event name as

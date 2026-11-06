@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -27,6 +28,101 @@ func scenario(t *testing.T, name string) string {
 	return string(b)
 }
 
+// TestEditLeavesUserConfig (T6892): an edit child in a linked worktree does
+// not change the user's Codex config. The fake persists project trust as
+// Codex's thread/start does; the control shows it would without the override.
+func TestEditLeavesUserConfig(t *testing.T) {
+	h := fakecli.NewHarness(t, fakecli.Build(t))
+	main := filepath.Join(h.Cwd, "main")
+	admin := filepath.Join(main, ".git", "worktrees", "wt")
+	wt := filepath.Join(h.Cwd, "state.d", "wt")
+	link := filepath.Join(h.Cwd, "link")
+	for _, d := range []string{admin, wt} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := safefs.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(wt, link); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(h.Home, ".codex", "config.toml")
+	const before = "model = \"mine\"\n"
+	write := func() {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(cfg), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := safefs.WriteFile(cfg, []byte(before), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tests := []struct {
+		name  string
+		cwd   string
+		strip bool
+		want  string
+	}{
+		{"resolved cwd", wt, false, before},
+		{"symlinked cwd", link, false, before},
+		{"control: no override", wt, true, before + "\n[projects.\"" + main + "\"]\ntrust_level = \"trusted\"\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			write()
+			c, err := New().Headless(adapter.HeadlessRequest{Kind: adapter.Edit, GitRepo: true, PromptFile: h.Prompt, Cwd: tt.cwd})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.strip {
+				i := slices.IndexFunc(c.Args, func(a string) bool { return strings.HasPrefix(a, "projects=") })
+				if i < 1 {
+					t.Fatalf("no override in %q", c.Args)
+				}
+				c.Args = slices.Delete(c.Args, i-1, i+1)
+			}
+			if out, _ := h.Run(t, c, ""); out.ExitCode != 0 {
+				t.Fatalf("exit %d: %s", out.ExitCode, out.Stderr)
+			}
+			got, err := safefs.ReadFile(cfg)
+			if err != nil || string(got) != tt.want {
+				t.Errorf("config.toml = %q, %v; want %q", got, err, tt.want)
+			}
+		})
+	}
+}
+
+// TestProjectOverride (T6892): the value is one TOML table whose keys hold
+// any path; a dotted key would split at a '.' in the state dir's path.
+func TestProjectOverride(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	const entry = `={trust_level="untrusted"}`
+	tests := []struct {
+		name, cwd, want string
+	}{
+		{"a dot in the path", "/home/u/.aggy/worktrees/x", `projects={"/home/u/.aggy/worktrees/x"` + entry + `}`},
+		{"quote and backslash", `/a"b\c`, `projects={"/a\"b\\c"` + entry + `}`},
+		{"a symlink: the real path first", link, `projects={"` + dir + `"` + entry + `,"` + link + `"` + entry + `}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := projectOverride(tt.cwd)
+			if len(got) != 2 || got[0] != "-c" || got[1] != tt.want {
+				t.Errorf("got %q, want -c %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHeadlessGoldenArgv(t *testing.T) {
 	h := fakecli.NewHarness(t, fakecli.Build(t))
 	a := New()
@@ -41,6 +137,8 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 		"--disable", "apps", "--disable", "plugins", "--disable", "goals", "--disable", "sleep_tool"}
 	skip := []string{"--skip-git-repo-check"}
 	end := []string{"--", "-"}
+	// T6892: a session-only decision, so Codex persists no project trust.
+	trust := `projects={"` + h.Cwd + `"={trust_level="untrusted"}}`
 	tests := []struct {
 		name     string
 		req      adapter.HeadlessRequest
@@ -64,7 +162,7 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 			"--strict-config", "--ignore-user-config", "--sandbox", "workspace-write",
 			"-c", "sandbox_workspace_write.exclude_slash_tmp=true", "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
 			"--disable", "view_image", "--disable", "apps", "--disable", "plugins", "--disable", "goals",
-			"--disable", "image_generation", "--disable", "sleep_tool", "--", "-"}, ""},
+			"--disable", "image_generation", "--disable", "sleep_tool", "-c", trust, "--", "-"}, ""},
 		// T6709: an edit child's tools, each approved on its own
 		// (docs/verification.md, "Launch-time MCP").
 		{"edit with a tool", adapter.HeadlessRequest{Kind: adapter.Edit, GitRepo: true, Resume: tid,
@@ -73,7 +171,7 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 				"--strict-config", "--ignore-user-config", "--sandbox", "workspace-write",
 				"-c", "sandbox_workspace_write.exclude_slash_tmp=true", "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
 				"--disable", "view_image", "--disable", "apps", "--disable", "plugins", "--disable", "goals",
-				"--disable", "image_generation", "--disable", "sleep_tool",
+				"--disable", "image_generation", "--disable", "sleep_tool", "-c", trust,
 				"-c", `mcp_servers.context7.command="/bin/aggy"`, "-c", `mcp_servers.context7.args=["tool", "exec"]`,
 				"-c", `mcp_servers.context7.cwd="/run/l"`, "-c", `mcp_servers.context7.default_tools_approval_mode="approve"`,
 				"resume", tid, "--", "-"}, ""},

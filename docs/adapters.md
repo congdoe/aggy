@@ -510,9 +510,53 @@ needs to read files), so no MCP server, `writable_roots`, or
 `network_access` from the user's `config.toml` widens the sandbox. That
 combination was run live (verification.md, "Codex edit lockdown"): a
 write in the cwd worked and one outside it was refused. Whether exec's
-default web search is on for it, and whether Codex treats a linked
-worktree as its main repo for project trust, are unverified (no recorded
-flag turns web search off). Claude's
+default web search is on for it is unverified (no recorded flag turns it
+off).
+
+The edit child also gets `-c projects={"<cwd>"={trust_level="untrusted"}}`
+(`codex.projectOverride`), because `--ignore-user-config` does not keep it
+out of the user's `config.toml`. At Codex commit 6aaac69 (source, not yet run
+live; verification.md, "Codex project trust in an edit child"):
+
+- `thread/start`, which `codex exec` runs in process with the cwd always set
+  ([exec/src/lib.rs#L1454](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/exec/src/lib.rs#L1454)), persists
+  `trust_level = "trusted"` to `$CODEX_HOME/config.toml` when the requested
+  cwd has no trust decision, is not projectless, and the sandbox can write it
+  ([thread_processor.rs#L1419](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/app-server/src/request_processors/thread_processor.rs#L1419)).
+  No flag turns this off. Codex's own tests pin both exceptions: a read-only
+  sandbox writes nothing, so no other borrow kind is affected, and an explicit
+  `untrusted` stays
+  ([thread_start.rs#L1772, L1800](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/app-server/tests/suite/v2/thread_start.rs#L1772)).
+- The key is the main checkout, not the worktree: `resolve_root_git_project_for_trust`
+  follows a linked worktree's `.git` file to its common dir
+  ([git-utils/src/trust.rs#L203](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/git-utils/src/trust.rs#L203)).
+- `--ignore-user-config` makes this worse, not better: the user's entries
+  are not loaded, so the decision is always absent, and a project the user
+  marked `untrusted` would be overwritten.
+- The check sees the session's `-c` layer, since `get_active_project` runs on
+  the merged config ([project_trust.rs#L76](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/config/src/project_trust.rs#L76)),
+  and `exec` hands its overrides to the in-process server
+  ([exec/src/lib.rs#L734](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/exec/src/lib.rs#L734)). `thread/start`
+  uses the same `projects` override itself when the write fails.
+- `TrustLevel` has only `trusted` and `untrusted`
+  ([config_types.rs#L642](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/protocol/src/config_types.rs#L642)).
+  `trusted` would load the worktree's `.codex` config and hooks
+  ([loader/mod.rs#L1127](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/config/src/loader/mod.rs#L1127)), so aggy
+  passes `untrusted`. With exec's approval (`never`,
+  [exec/src/lib.rs#L591](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/exec/src/lib.rs#L591)) and an explicit sandbox, what it changes is:
+  Codex does not load `AGENTS.md`
+  ([agents_md.rs#L64](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/core/src/agents_md.rs#L64)), so the edit
+  prompt tells the child to read it, and no shell snapshot
+  ([shell_snapshot.rs#L48](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/core/src/unified_exec/shell_snapshot.rs#L48)).
+- It must be a table: an override's key is split on every `.`
+  ([overrides.rs#L22](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/config/src/overrides.rs#L22)) and a state
+  dir path holds one, while the value is parsed as TOML
+  ([config_override.rs#L55](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/utils/cli/src/config_override.rs#L55)).
+  Codex's cwd is physical, so a symlinked cwd gets an entry for its real path
+  too. A value that does not parse becomes a string, which fails as a type
+  error, so the borrow fails rather than running without it.
+
+Claude's
 `acceptEdits` under `-p` and a Grok child writing with `write` and
 `search_replace` (which take any absolute path, with no sandbox recorded
 for a writing child) are unverified, so the borrow passes them over
