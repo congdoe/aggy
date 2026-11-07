@@ -1,5 +1,7 @@
 package supervisor
 
+import "bytes"
+
 // The switch key is the only input aggy looks at. It arrives either as its
 // legacy control byte (Ctrl+\ is 0x1c) or, once a CLI turns on the kitty
 // keyboard protocol, as a CSI-u report (Ctrl+\ is ESC [ 92 ; 5 u). Inside
@@ -10,10 +12,13 @@ package supervisor
 // keys and the mouse, so it needs no parsing beyond the paste state.
 
 // keyEvent is one piece of input: data for the CLI, or a switch-key press
-// (data then holds its bytes, for passing it on).
+// (data then holds its bytes, for passing it on). report: the data is the
+// terminal's own reply to the CLI (terminalReport's kinds), which is nobody's
+// typing. mouse: it is a click or a drag, which may do something in the CLI
+// but types no text.
 type keyEvent struct {
-	press bool
-	data  []byte
+	press, report, mouse bool
+	data                 []byte
 }
 
 const esc = 0x1b
@@ -31,6 +36,62 @@ type keyFilter struct {
 	code    int  // its kitty key code, e.g. 92 for '\'
 	inPaste bool
 	matched int // bytes of the next paste marker matched so far
+	// held is an escape sequence that has begun and has not ended, which may
+	// be a terminal's reply or a key's report split across reads. It reaches
+	// nobody until it ends or flush gives it up, so a reply's digits never
+	// count as typing or pick a vendor. A lone Esc is not held: it has to
+	// reach the CLI at once, so a split just after Esc counts as typed, the
+	// safe side.
+	held []byte
+}
+
+// maxHeld bounds a held sequence: one longer goes on as keys.
+const maxHeld = 4 << 10
+
+// holding reports whether a sequence is held for the next read.
+func (f *keyFilter) holding() bool { return len(f.held) > 0 }
+
+// flush gives up on the held sequence: it is input after all.
+func (f *keyFilter) flush() []keyEvent {
+	if len(f.held) == 0 {
+		return nil
+	}
+	b := f.held
+	f.held = nil
+	for _, c := range b {
+		f.track(c)
+	}
+	return []keyEvent{{data: b}}
+}
+
+// strip is feed for input read while a prompt of aggy's is up, which takes the
+// bytes as they came: the terminal's replies come out whole, for the CLI, and
+// rest is everything else, in order. A sequence split across reads is held as
+// feed holds it. Inside a paste everything is rest.
+func (f *keyFilter) strip(b []byte) (reports, rest []byte) {
+	if f.inPaste {
+		return nil, b
+	}
+	if len(f.held) > 0 {
+		b = append(f.held, b...)
+		f.held = nil
+	}
+	for i := 0; i < len(b); i++ {
+		if b[i] == esc {
+			n, k := scanReport(b[i:])
+			switch k {
+			case isReport:
+				reports = append(reports, b[i:i+n]...)
+				i += n - 1
+				continue
+			case mayBeReport:
+				f.held = append([]byte(nil), b[i:]...)
+				return reports, rest
+			}
+		}
+		rest = append(rest, b[i])
+	}
+	return reports, rest
 }
 
 func newKeyFilter(key byte) *keyFilter {
@@ -46,9 +107,14 @@ func kittyCode(b byte) int {
 	return int(b | 0x40) // 0x1c '\', 0x1d ']', 0x1e '^', 0x1f '_'
 }
 
-// feed splits b into data and presses. The data slices alias b.
+// feed splits b into data, the terminal's replies, mouse reports, and presses.
+// The data slices alias b, or a copy of it joined to the held sequence.
 func (f *keyFilter) feed(b []byte) []keyEvent {
 	var out []keyEvent
+	if len(f.held) > 0 {
+		b = append(f.held, b...)
+		f.held = nil
+	}
 	start := 0
 	flush := func(end int) {
 		if end > start {
@@ -76,12 +142,191 @@ func (f *keyFilter) feed(b []byte) []keyEvent {
 					f.matched = 0
 					continue
 				}
+				n, k := scanReport(b[i:])
+				switch k {
+				case isReport, isMouse:
+					flush(i)
+					out = append(out, keyEvent{report: k == isReport, mouse: k == isMouse, data: b[i : i+n]})
+					i += n - 1
+					start = i + 1
+					f.matched = 0
+					continue
+				case mayBeReport:
+					flush(i)
+					f.held = append([]byte(nil), b[i:]...)
+					return out
+				}
 			}
 		}
 		f.track(c)
 	}
 	flush(len(b))
 	return out
+}
+
+// reportKind is what scanReport found.
+type reportKind int
+
+const (
+	notReport   reportKind = iota // a key, as far as aggy can say
+	isReport                      // the terminal's own reply, or the wheel, or a hover
+	isMouse                       // a click or a drag
+	mayBeReport                   // it could still become one: more bytes are needed
+)
+
+// scanReport reads the escape sequence at the start of b, which starts with
+// ESC, and says what it is and how long. These are replies a terminal sends a
+// CLI that asked, none of which can submit anything: focus events, CPR, DA1 and
+// DA2, DSR, window reports, DECRPM, the kitty keyboard query's answer, whole
+// OSC, DCS, and APC strings (OSC 11, XTVERSION, XTGETTCAP), and the mouse
+// wheel and a hover, in SGR or X10 encoding. A key's sequence, a click, and a
+// paste marker are not; a click or a drag can do something, as far as aggy
+// knows, so it is isMouse. ESC alone is notReport: see keyFilter.held.
+func scanReport(b []byte) (int, reportKind) {
+	if len(b) < 2 || len(b) > maxHeld {
+		return 0, notReport
+	}
+	switch b[1] {
+	case '[':
+		return scanCSI(b)
+	case ']', 'P', '_':
+		return scanString(b)
+	}
+	return 0, notReport
+}
+
+// scanCSI is scanReport for ESC [.
+func scanCSI(b []byte) (int, reportKind) {
+	if len(b) == 2 {
+		return 0, mayBeReport
+	}
+	switch b[2] {
+	case 'M':
+		if len(b) < 6 {
+			return 0, mayBeReport
+		}
+		// X10: three bytes, each its value plus 32.
+		if b[3] < 32 || b[4] < 32 || b[5] < 32 {
+			return 0, notReport
+		}
+		return 6, mouseKind(int(b[3]) - 32)
+	case '<':
+		return scanSGRMouse(b)
+	}
+	i, colon := 2, false
+	for i < len(b) && (b[i] >= '0' && b[i] <= '9' || b[i] == ';' || b[i] == '?' || b[i] == '>' || b[i] == ':') {
+		colon = colon || b[i] == ':'
+		i++
+	}
+	if i == len(b) {
+		return 0, mayBeReport // also a kitty key's report, split
+	}
+	if colon {
+		return 0, notReport
+	}
+	switch b[i] {
+	case 'I', 'O':
+		if i == 2 {
+			return 3, isReport
+		}
+	case 'R', 'c', 'n', 't':
+		return i + 1, isReport
+	case '$':
+		if i+1 == len(b) {
+			return 0, mayBeReport
+		}
+		if b[i+1] == 'y' && !bytes.ContainsRune(b[2:i], '>') {
+			return i + 2, isReport
+		}
+	case 'u':
+		if b[2] == '?' && !bytes.ContainsAny(b[3:i], ";?>") {
+			return i + 1, isReport
+		}
+	}
+	return 0, notReport
+}
+
+// scanSGRMouse is scanCSI for ESC [ <: button ; column ; row, then M or m.
+func scanSGRMouse(b []byte) (int, reportKind) {
+	i, field, button, digits := 3, 0, 0, 0
+	for ; i < len(b); i++ {
+		switch c := b[i]; {
+		case c >= '0' && c <= '9':
+			if digits++; digits > 7 {
+				return 0, notReport
+			}
+			if field == 0 {
+				button = button*10 + int(c-'0')
+			}
+		case c == ';' && digits > 0 && field < 2:
+			field, digits = field+1, 0
+		case (c == 'M' || c == 'm') && digits > 0 && field == 2:
+			return i + 1, mouseKind(button)
+		default:
+			return 0, notReport
+		}
+	}
+	return 0, mayBeReport
+}
+
+// mouseKind sorts a mouse report by its button code: the wheel (bit 64, bits
+// up to 16 being modifiers) and a move with no button held (bit 32, low bits
+// 3) cannot submit anything. xterm's ctlseqs give the codes.
+func mouseKind(button int) reportKind {
+	switch {
+	case button >= 64 && button <= 95, button >= 32 && button <= 63 && button&3 == 3:
+		return isReport
+	}
+	return isMouse
+}
+
+// scanString is scanReport for a whole OSC, DCS, or APC string, ended by BEL
+// or ST. Any other control character means it was never one: Alt+P and text.
+func scanString(b []byte) (int, reportKind) {
+	for i := 2; i < len(b); i++ {
+		switch c := b[i]; {
+		case c == 0x07:
+			return i + 1, isReport
+		case c == esc:
+			if i+1 == len(b) {
+				return 0, mayBeReport
+			}
+			if b[i+1] == '\\' {
+				return i + 2, isReport
+			}
+			return 0, notReport
+		case c < 0x20:
+			return 0, notReport
+		}
+	}
+	return 0, mayBeReport
+}
+
+// terminalReport reports whether b is only such replies, whole.
+func terminalReport(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	for len(b) > 0 {
+		if b[0] != esc {
+			return false
+		}
+		n, k := scanReport(b)
+		if k != isReport {
+			return false
+		}
+		b = b[n:]
+	}
+	return true
+}
+
+// mouseOnly reports whether b is one click or drag, whole.
+func mouseOnly(b []byte) bool {
+	if len(b) == 0 || b[0] != esc {
+		return false
+	}
+	n, k := scanReport(b)
+	return k == isMouse && n == len(b)
 }
 
 // track advances the paste-marker match by one byte. The markers start

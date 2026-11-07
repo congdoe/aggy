@@ -197,6 +197,66 @@ func TestSwitchNoTurnYet(t *testing.T) {
 	})
 }
 
+// TestTerminalRepliesAreNotTyped (T6897): a CLI asks its terminal things at
+// launch and turns on focus reporting, and the terminal answers. None of the
+// answers is typing: the switch is offered, not refused for unsent text.
+func TestTerminalRepliesAreNotTyped(t *testing.T) {
+	setup := func(t *testing.T, w *world) {
+		t.Helper()
+		c := exec.Command(buildAggy(t), "setup", "--yes")
+		c.Dir = w.cwd
+		c.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("aggy setup: %v\n%s", err, out)
+		}
+	}
+	tests := []struct {
+		name    string
+		replies []string
+	}{
+		{"device attributes before any typing", []string{"\x1b[?62;22c"}},
+		{"focus out and in after a turn", []string{"\x1b[O", "\x1b[I"}},
+		{"cursor, colour, version, modes", []string{"\x1b[24;80R", "\x1b]11;rgb:0000/0000/0000\x1b\\", "\x1bP>|fake(1)\x1b\\", "\x1b[>0;276;0c", "\x1b[?2026;2$y"}},
+		{"x10 wheel", []string{"\x1b[M`!!"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			setup(t, w)
+			sc := map[string]any{
+				"term_queries": "\x1b[c\x1b[>c\x1b[6n\x1b]11;?\x1b\\\x1b[>q\x1b[?2026$p\x1b[?1004h",
+				"stdout":       "READY>",
+				"hook_command": []string{buildAggy(t), "hook", "--vendor", "claude"},
+				"hooks":        []map[string]any{{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}},
+			}
+			s := w.start(t, sc, "run", "claude")
+			s.waitFor([]byte("\x1b[?1004h"))
+			s.waitFor([]byte("READY>"))
+			for _, r := range tt.replies {
+				s.send([]byte(r))
+				time.Sleep(20 * time.Millisecond)
+			}
+			s.send([]byte{0x1c})
+			s.waitFor([]byte("aggy: switch vendor"))
+			key := []byte("2")
+			if strings.Contains(s.screen(), "1  grok") {
+				key = []byte("1")
+			}
+			s.send(key)
+			s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
+			if strings.Contains(s.screen(), "you typed text") {
+				t.Fatalf("a terminal's reply counted as typing: %q", s.screen())
+			}
+			s.confirmPastGuard(time.Now())
+			w.waitRuns(t, s, 2)
+			s.send([]byte("/exit\r"))
+			if code := s.exit(); code != 0 {
+				t.Fatalf("aggy exit = %d", code)
+			}
+		})
+	}
+}
+
 // askThenStop is a hook command for a fake: Stop from vendor goes to aggy
 // hook, ending the turn the skill ran in, since aggy offers no switch before
 // a turn end; any other event names the vendor aggy switch asks for.
