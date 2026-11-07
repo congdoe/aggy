@@ -27,8 +27,9 @@ import (
 // id:
 //
 //   - Claude and Grok get a pre-assigned --session-id (adapters.md), and
-//     that is the only id recorded. A later /clear starts another
-//     session the index does not follow.
+//     that is the only id this records. A later /clear or /resume starts
+//     or opens another session, which the supervisor follows on its own
+//     evidence and childIDs records at exit (session.followSession).
 //   - Codex cannot be given an id. A thread id a Codex hook reports is a
 //     claim, kept only when the socket found the hook's process in the
 //     on-screen CLI's tree (supervisor.Request.FromSession, peer-pid
@@ -42,8 +43,8 @@ import (
 //     recorded. Once recorded, the id is not replaced.
 //
 // The id goes to the events log under the parent id, and to onID, which
-// records it on the child row (childIDs.set): first wins there too, so
-// after a /clear the child still names the conversation it started with.
+// records it on the child row (childIDs.set): first wins there too. A move
+// goes through childIDs.settle instead.
 type sessionIndex struct {
 	parentID string
 	vendor   adapter.Vendor

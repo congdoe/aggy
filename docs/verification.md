@@ -410,6 +410,27 @@ and `~/Library` denies.
 | `aggy-video-default-refused` | PASS |
 | `video-borrow-grok` | FAIL, environment: the account has zero data retention, and Grok's `image_to_video` reported "Video generation tools are unavailable under zero data retention (ZDR)"; aggy's artifact gate correctly found no file. Testing Grok video needs ZDR off or a user-hosted bucket (owner item). |
 
+## Session changes inside a CLI (T6901)
+
+- **Claude, doc-verified** (`hooks.md`, read 2026-11-07, not seen live):
+  `SessionStart`'s `source` is "`startup` for new sessions, `resume` for
+  resumed sessions, `clear` after `/clear`, `compact` after compaction, or
+  `fork` for a new session forked from an existing one". `SessionEnd`'s reasons
+  include `clear` ("Session cleared with `/clear` command") and `resume`
+  ("Session switched via interactive `/resume`"). That `session_id` then names
+  the new session is implied, not stated.
+- **Codex, source only:** the same five values
+  (`hooks/schema/generated/session-start.command.input.schema.json`). Which of
+  `/clear`, `/new`, and `/resume` sends which is unverified.
+- **Grok, unverified:** no `source` is recorded, nor whether `/clear` fires
+  `SessionStart`.
+- **Unverified on all three:** that one CLI spawns every hook from one process
+  at one depth. To confirm (T6895, T6896, the owner's live checks): under aggy,
+  one turn, `/clear`, one turn, then the switch key and a pick. The status line
+  should come at that turn's end with no `hook.follow_refused` in `aggy log`,
+  and `aggy resume` should open the session after the `/clear`. Do it again with
+  `/resume`.
+
 ## Folder trust as `aggy doctor` reads it (T6899)
 
 Codex only, source only: the `[projects."<path>"]` table's `trust_level` in

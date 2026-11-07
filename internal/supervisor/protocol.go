@@ -38,6 +38,10 @@ type Request struct {
 	// includes the CLI's own tool subprocesses, so it is a hint, not
 	// proof that the CLI itself sent it.
 	FromSession bool `json:"-"`
+	// Chain is set with it: the sender's pid up to the on-screen CLI's, sender
+	// first, as the lineage walk found them. It says how far below the CLI
+	// the sender runs, which a session change is checked by (followsFrom).
+	Chain []int `json:"-"`
 	// New, Model, and Brief qualify a switch-request (T6665): a new child
 	// instead of the latest, a model for that one launch, a brief.
 	New   bool   `json:"new,omitempty"`

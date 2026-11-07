@@ -62,24 +62,32 @@ var (
 // its child, so a pid that names a newer process than the child it was
 // read from has been freed and reused mid-walk, and the walk stops.
 func descends(pid, root int) bool {
+	_, ok := lineageTo(pid, root)
+	return ok
+}
+
+// lineageTo is descends, with the pids it walked: pid first, root last.
+func lineageTo(pid, root int) ([]int, bool) {
 	if pid <= 0 || root <= 0 {
-		return false
+		return nil, false
 	}
+	var chain []int
 	childStart := int64(math.MaxInt64)
 	for range maxLineageDepth {
 		ppid, start, err := procInfo(pid)
 		if err != nil || start > childStart {
-			return false
+			return nil, false
 		}
+		chain = append(chain, pid)
 		if pid == root {
-			return true
+			return chain, true
 		}
 		if pid <= 1 || ppid == pid || ppid <= 0 {
-			return false
+			return nil, false
 		}
 		pid, childStart = ppid, start
 	}
-	return false
+	return nil, false
 }
 
 // pidfdFallback reports whether a failed SO_PEERPIDFD may fall back to

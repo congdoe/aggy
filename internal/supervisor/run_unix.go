@@ -350,7 +350,9 @@ func Run(o Options) (Exit, error) {
 				if switches && s.signalled {
 					switches = s.signalStops(w.code)
 				}
-				ex.TurnRan, ex.Signalled = s.turnRan, s.signalled
+				if o.Facts != nil {
+					*o.Facts = RunFacts{TurnRan: s.turnRan, Signalled: s.signalled}
+				}
 				if switches {
 					ex.SwitchTo, ex.Next = s.sw.to, s.sw.choice
 					ex.Next.Vendor = s.sw.to
@@ -493,6 +495,15 @@ type session struct {
 	// of the on-screen child, and lastLimit of the latest limit: the
 	// causes of what each sets off (G67-2).
 	lastTurnEnd, lastLimit string
+	// followed is the session id the on-screen CLI moved to (followSession),
+	// "" until then; host is the lineage of the shallowest hook seen naming
+	// the on-screen session, the evidence for a move. Owned by the main loop.
+	// afterEnter counts the bytes typed since the last Enter.
+	followed   string
+	host       []int
+	afterEnter int
+	// hookSeen: a hook of the vendor on screen came from the session.
+	hookSeen atomic.Bool
 	// foreign is, per session id a turn end named that was not the
 	// on-screen one, when it was last recorded and how many came since
 	// (G67-4); foreignOver is the same for all the sessions past
@@ -594,6 +605,9 @@ type hookEvent struct {
 	name, sessionID string
 	shutdown, idle  bool
 	request         string // an OpenCode permission or question's id
+	// source is a SessionStart's source; chain, the sender's lineage.
+	source string
+	chain  []int
 }
 
 // claudeIdle reports whether a hook event is Claude's idle reminder, which says
@@ -637,10 +651,11 @@ func (s *session) onHook(r Request) {
 	case r.Event == "SessionStart":
 		s.logWait(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(r.Event)}})
 	}
-	if r.FromSession && r.Vendor == string(s.o.Vendor) && r.Event != "SessionStart" {
+	if r.FromSession && r.Vendor == string(s.o.Vendor) {
+		s.hookSeen.Store(true)
 		p := hook.Parse(s.o.Vendor, r.Payload)
 		ev := hookEvent{name: r.Event, sessionID: p.SessionID, shutdown: grokShutdown(s.o.Vendor, r.Event, p.Reason), request: p.Request,
-			idle: claudeIdle(s.o.Vendor, r.Event, p.NotificationType)}
+			idle: claudeIdle(s.o.Vendor, r.Event, p.NotificationType), source: p.Source, chain: r.Chain}
 		select {
 		case s.events <- ev:
 		case <-s.quit:
@@ -665,9 +680,16 @@ func (s *session) hookEvent(ev hookEvent) {
 	if s.openCodeEvent(ev) {
 		return
 	}
-	own := ""
-	if s.o.SessionID != nil {
+	own := s.followed
+	if own == "" && s.o.SessionID != nil {
 		own = s.o.SessionID()
+	}
+	if own != "" && ev.sessionID == own && len(ev.chain) > 0 && (s.host == nil || len(ev.chain) < len(s.host)) {
+		s.host = slices.Clone(ev.chain)
+	}
+	if ev.name == "SessionStart" {
+		s.sessionStart(ev, own)
+		return
 	}
 	if ev.shutdown && ev.sessionID != "" && ev.sessionID == own {
 		s.ignoredShutdown()
@@ -725,6 +747,90 @@ func (s *session) hookEvent(ev hookEvent) {
 	s.atPrompt, s.held = false, true
 }
 
+// sessionMoves reports whether a SessionStart of v with this source says the
+// CLI on screen moved to another session. Claude: "resume" for a resumed
+// session, "clear" after /clear, "fork" for a new session forked from an
+// existing one (hooks.md, SessionStart input; SessionEnd's reasons say the old
+// session ends "with /clear" and "via interactive /resume", read 2026-11-07).
+// Codex: the same values (session-start.command.input.schema.json at
+// rust-v0.164.0; which of its commands sends which is unverified). "startup"
+// and "compact" stay in the session, or are a nested CLI's. Grok's payload has
+// no source that is recorded, so any SessionStart may be a move there, and only
+// its lineage says otherwise (unverified; what would confirm it: T6896's /clear
+// on Grok under aggy, and the id its next Stop names). A vendor with another way
+// to see a session change (OpenCode has no SessionStart, T6953) calls
+// followSession with its own evidence.
+func sessionMoves(v adapter.Vendor, source string) bool {
+	if v == adapter.Grok {
+		return true
+	}
+	return source == "clear" || source == "resume" || source == "fork"
+}
+
+// followsFrom reports whether a hook with this lineage ran where the CLI's own
+// hooks run: as deep below the CLI as the shallowest hook that named the
+// on-screen session, and through the same processes above its own shell. A
+// nested claude -p or codex exec runs below the agent's shell tool, and its
+// hooks below its own process, so they are deeper, and another process's. That
+// is why the check exists: the id is what keeps a nested CLI's Stop from
+// counting, so it must not move on that nested CLI's word.
+//
+// It does not stop a tool that pipes JSON into aggy hook from the same depth:
+// such a tool can as well forge a Stop naming the id it can read in the CLI's
+// arguments, so this gives it nothing new. What the id then does is count turn
+// ends, and a switch still asks the user. Recording the id for a later resume
+// needs a session file besides (internal/cli, childIDs).
+func (s *session) followsFrom(chain []int) bool {
+	above := func(c []int) []int { return c[min(2, len(c)-1):] }
+	return len(s.host) > 0 && len(chain) == len(s.host) && slices.Equal(above(chain), above(s.host))
+}
+
+// sessionStart takes a SessionStart hook. Naming the session on screen, or no
+// other, it means nothing here; naming another, with a source that says the CLI
+// moved, it is followed if it ran where the CLI's own hooks run.
+func (s *session) sessionStart(ev hookEvent, own string) {
+	if ev.sessionID == "" || ev.sessionID == own || own == "" || !sessionMoves(s.o.Vendor, ev.source) {
+		return
+	}
+	if adapter.ValidSessionID(s.o.Vendor, ev.sessionID) != nil || !s.followsFrom(ev.chain) {
+		s.log(diag.Rec{Event: diag.EvHookIgnored, Code: diag.CodeFollowRefused, Msg: "a session start that says the CLI moved, from outside where its own hooks run",
+			Attrs: map[string]any{"event": hookName(ev.name), "source": safeSource(ev.source), "known_host": s.host != nil}})
+		return
+	}
+	via := "session_start"
+	if ev.source != "" {
+		via = safeSource(ev.source)
+	}
+	s.followSession(ev.sessionID, via)
+}
+
+// safeSource is a source for a record: any process in the tree can pick it.
+func safeSource(source string) string {
+	switch source {
+	case "startup", "resume", "clear", "compact", "fork":
+		return source
+	}
+	return "other"
+}
+
+// followSession makes id the on-screen session, on the evidence via: a turn end
+// counts only if it names id from now on. The CLI has just moved, so no turn runs
+// and, unless the user typed since their last Enter, its composer is empty: the
+// Enter that ran the command (a leading /) leaves the prompt in doubt, and no
+// turn end comes to settle it.
+func (s *session) followSession(id, via string) {
+	s.followed = id
+	s.log(diag.Rec{Event: diag.EvSessionFollowed, Attrs: map[string]any{"via": via}})
+	s.atPrompt, s.queued, s.queuedWait = !s.held, 0, false
+	if s.afterEnter == 0 {
+		s.compLen, s.lenKnown, s.popup, s.cleared, s.hadAt, s.moved, s.pastePop = 0, true, false, false, false, false, false
+		s.dirty, s.toldDirty, s.inputSinceTurn = false, false, false
+	}
+	if f := s.o.OnFollow; f != nil {
+		s.goSafe(func() { f(id, via) })
+	}
+}
+
 // maxSwitchTools caps the tools a switch-request may name.
 const maxSwitchTools = 8
 
@@ -737,6 +843,9 @@ func (s *session) onSwitch(r Request) error {
 	if !holdSignal(s.o.Vendor) {
 		return coded(diag.CodeAgentNoHold, fmt.Errorf("an agent cannot ask for a switch away from %s: aggy cannot tell when %s waits for an approval, so only the user may start one, with aggy's switch key",
 			s.o.Vendor, s.o.Vendor))
+	}
+	if s.o.HooksMissing && !s.hookSeen.Load() {
+		return coded(diag.CodeHooksMissing, fmt.Errorf("aggy's hooks for %s are not installed, so aggy would never see a turn end to switch at; run aggy hooks install, then start a new session", s.o.Vendor))
 	}
 	if r.New || r.Model != "" {
 		// O56-1: a new session or a model is the user's choice, in the
@@ -868,6 +977,11 @@ func (s *session) send(b []byte) {
 		return
 	}
 	s.inputSinceTurn = true
+	if i := bytes.LastIndexByte(b, '\r'); i >= 0 {
+		s.afterEnter = len(b) - i - 1
+	} else {
+		s.afterEnter += len(b)
+	}
 	tabSends := false
 	if bytes.IndexByte(typed, '\r') >= 0 || csiEnter.Match(typed) {
 		// An Enter with text, while a turn may be running, may queue a
@@ -1760,6 +1874,7 @@ func (s *session) openList() {
 	s.pk.list()
 	s.pk.waiting, s.pk.checking, s.pk.resume = s.sw.to, false, s.sw.resume
 	s.pk.noTurn, s.pk.on = !s.turnRan, s.o.Vendor
+	s.pk.noHooks = s.o.HooksMissing && !s.hookSeen.Load()
 	s.pk.stalePick = s.sw.toldNoTurn && !s.sw.typed && time.Since(s.sw.toldAt) > noTurnPickFresh
 	s.pk.limitLine = ""
 	if s.limitDue != nil {

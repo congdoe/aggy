@@ -78,6 +78,7 @@ func TestSwitchAtTurnEnd(t *testing.T) {
 // CLI's tree as a skill would, queues a switch the user confirms.
 func TestSkillRequestedSwitch(t *testing.T) {
 	w := newWorld(t)
+	w.aggyIn(t, "hooks", "install", "--vendor", "claude") // an agent's switch needs them (T6848)
 	setup := exec.Command(buildAggy(t), "setup", "--yes")
 	setup.Dir = w.cwd
 	setup.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
@@ -197,6 +198,75 @@ func TestSwitchNoTurnYet(t *testing.T) {
 			t.Errorf("the exit command reached the CLI: %q", s.screen())
 		}
 	})
+}
+
+// TestSwitchSurvivesClear (T6901): a turn, /clear, which moves the CLI to a new
+// session, a turn there, and the switch fires at its end; a later resume opens
+// the session the CLI moved to.
+func TestSwitchSurvivesClear(t *testing.T) {
+	w := newWorld(t)
+	w.aggyIn(t, "setup", "--yes")
+	stop := []map[string]any{{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}}
+	sc := map[string]any{
+		"stdout":        "READY>",
+		"hook_command":  []string{buildAggy(t), "hook", "--vendor", "claude"},
+		"hooks":         stop,
+		"clear_hooks":   []map[string]any{{"event": "SessionStart", "payload": map[string]any{"session_id": "{session_id}", "source": "clear"}}},
+		"session_files": startedFiles(),
+	}
+	s := w.start(t, sc, "run", "claude")
+	s.waitFor([]byte("READY>"))
+	s.send([]byte("/clear\r"))
+	s.waitFor([]byte("/clear"))
+	time.Sleep(500 * time.Millisecond) // the hook lands
+	s.send([]byte("work\r"))
+	s.waitFor([]byte("work"))
+	s.send([]byte{0x1c})
+	s.waitFor([]byte("aggy: switch vendor"))
+	key := []byte("2")
+	if strings.Contains(s.screen(), "1  grok") {
+		key = []byte("1")
+	}
+	s.send(key)
+	s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
+	s.confirmPastGuard(time.Now())
+	w.waitRuns(t, s, 2)
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	runs := interactiveRuns(t, w)
+	if len(runs) != 2 {
+		t.Fatalf("runs = %+v", runs)
+	}
+	assigned := runs[0].Flags["--session-id"]
+	if len(assigned) != 1 {
+		t.Fatalf("claude args %q", runs[0].Args)
+	}
+	// The parent's latest claude session is the one it moved to, not the one
+	// it was given at launch.
+	r := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "claude", "--continue")
+	r.waitFor([]byte("READY>"))
+	r.send([]byte{0x04})
+	r.exit()
+	last := interactiveRuns(t, w)[2]
+	if last.Vendor != "claude" || len(last.Flags["--resume"]) != 1 || last.Flags["--resume"][0] == assigned[0] {
+		t.Errorf("resume args %q: want --resume of the session after /clear, not %s", last.Args, assigned[0])
+	}
+}
+
+// TestLaunchWarnsWithoutHooks (T6848): with no hooks installed, aggy says so at
+// launch and names the fix. TestAgentSwitchWithoutHooks has the refusal.
+func TestLaunchWarnsWithoutHooks(t *testing.T) {
+	w := newWorld(t)
+	w.aggyIn(t, "setup", "--yes")
+	s := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "run", "claude")
+	s.waitFor([]byte("READY>"))
+	if !strings.Contains(s.screen(), "aggy hooks install sets them up") {
+		t.Errorf("no launch warning: %q", s.screen())
+	}
+	s.send([]byte{0x04})
+	s.exit()
 }
 
 // TestDeclinedDialogGoesBack (T6899): the CLI switched to closes at a dialog
