@@ -72,3 +72,13 @@ func TestForward(t *testing.T) {
 		}
 	}
 }
+
+// TestParseNotificationType (T6898): Claude's and Grok's spellings of the field.
+func TestParseNotificationType(t *testing.T) {
+	if got := Parse(adapter.Claude, []byte(`{"notification_type":"idle_prompt"}`)).NotificationType; got != "idle_prompt" {
+		t.Errorf("claude: %q", got)
+	}
+	if got := Parse(adapter.Grok, []byte(`{"notificationType":"x"}`)).NotificationType; got != "x" {
+		t.Errorf("grok: %q", got)
+	}
+}
