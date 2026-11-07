@@ -8,17 +8,15 @@ func (f *keyFilter) holding() bool { return len(f.held) > 0 }
 // strip is feed for input read while a prompt of aggy's is up, which takes the
 // bytes as they came: the terminal's replies come out whole, for the CLI, and
 // rest is everything else, in order. A sequence split across reads is held as
-// feed holds it. Inside a paste everything is rest.
+// feed holds it. Inside a paste everything is rest: the markers are followed
+// here too, even for one that opens and closes in this read.
 func (f *keyFilter) strip(b []byte) (reports, rest []byte) {
-	if f.inPaste {
-		return nil, b
-	}
 	if len(f.held) > 0 {
 		b = append(f.held, b...)
 		f.held = nil
 	}
 	for i := 0; i < len(b); i++ {
-		if b[i] == esc {
+		if b[i] == esc && !f.inPaste {
 			n, k := scanReport(b[i:])
 			switch k {
 			case isReport:
@@ -30,6 +28,7 @@ func (f *keyFilter) strip(b []byte) (reports, rest []byte) {
 				return reports, rest
 			}
 		}
+		f.track(b[i])
 		rest = append(rest, b[i])
 	}
 	return reports, rest

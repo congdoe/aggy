@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/fakecli"
+
+	"github.com/congdoe/aggy/internal/transcript"
 )
 
 // TestSwitchAtTurnEnd (T6664): a vendor picked mid-session waits for the
@@ -212,7 +215,7 @@ func TestSwitchSurvivesClear(t *testing.T) {
 		"hook_command":  []string{buildAggy(t), "hook", "--vendor", "claude"},
 		"hooks":         stop,
 		"clear_hooks":   []map[string]any{{"event": "SessionStart", "payload": map[string]any{"session_id": "{session_id}", "source": "clear"}}},
-		"session_files": startedFiles(),
+		"session_files": append(startedFiles(), map[string]any{"path": "projects/" + transcript.ClaudeProjectDir(w.cwd) + "/{session_id}.jsonl", "content": "{}\n"}),
 	}
 	s := w.start(t, sc, "run", "claude")
 	s.waitFor([]byte("READY>"))
@@ -272,9 +275,13 @@ func TestLaunchWarnsWithoutHooks(t *testing.T) {
 // TestDeclinedDialogGoesBack (T6899): the CLI switched to closes at a dialog
 // (the raw_echo fake runs no hook, saves nothing, and exits 0): aggy says so and
 // reopens the CLI before it, and the child that never started is not the
-// parent's latest afterwards.
+// parent's latest afterwards. With no sessions folder to look in aggy cannot
+// tell, so it goes back nowhere: TestCannotTellEndsAggy.
 func TestDeclinedDialogGoesBack(t *testing.T) {
 	w := newWorld(t)
+	if err := os.MkdirAll(filepath.Join(w.home, ".grok", "sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	c := exec.Command(buildAggy(t), "setup", "--yes")
 	c.Dir = w.cwd
 	c.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
@@ -308,6 +315,42 @@ func TestDeclinedDialogGoesBack(t *testing.T) {
 		t.Fatalf("interactive runs = %+v, want claude, grok, claude", runs)
 	}
 	s.restored("after going back")
+}
+
+// TestCannotTellEndsAggy (T6899): the same, on a vendor with no sessions folder:
+// that says nothing about the CLI, so aggy ends as usual and reopens nothing.
+func TestCannotTellEndsAggy(t *testing.T) {
+	w := newWorld(t)
+	c := exec.Command(buildAggy(t), "setup", "--yes")
+	c.Dir = w.cwd
+	c.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("aggy setup: %v\n%s", err, out)
+	}
+	s := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "run", "claude")
+	s.waitFor([]byte("READY>"))
+	s.send([]byte{0x1c})
+	s.waitFor([]byte("aggy: switch vendor"))
+	key := []byte("2")
+	if strings.Contains(s.screen(), "1  grok") {
+		key = []byte("1")
+	}
+	s.send(key)
+	s.waitWithin([]byte("will not type /exit into it"), offerTimeout)
+	s.send([]byte("k"))
+	s.waitFor([]byte("k"))
+	s.send([]byte{0x04})
+	w.waitRuns(t, s, 2)
+	s.send([]byte{0x04})
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	if strings.Contains(s.screen(), "closed before it started") {
+		t.Errorf("aggy went back on no evidence: %q", s.screen())
+	}
+	if runs := interactiveRuns(t, w); len(runs) != 2 {
+		t.Fatalf("interactive runs = %+v, want claude, grok", runs)
+	}
 }
 
 // TestTerminalRepliesAreNotTyped (T6897): a CLI asks its terminal things at

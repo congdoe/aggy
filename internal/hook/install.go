@@ -137,6 +137,33 @@ func Missing(src []byte, bin string, want []Entry) (int, error) {
 	return n, nil
 }
 
+// Presence is how a hooks file stands against a list of entries, by event.
+type Presence struct {
+	Exact  []string // aggy's hook, with this binary's path
+	Stale  []string // aggy's hook, with another path
+	Absent []string // no hook of aggy's
+}
+
+// Survey says how src stands against want, with Missing's errors.
+func Survey(src []byte, bin string, want []Entry) (Presence, error) {
+	var p Presence
+	for _, e := range want {
+		st, err := entryState(src, bin, e)
+		if err != nil {
+			return Presence{}, err
+		}
+		switch {
+		case st.exact != nil:
+			p.Exact = append(p.Exact, e.Event)
+		case st.stale != nil:
+			p.Stale = append(p.Stale, e.Event)
+		default:
+			p.Absent = append(p.Absent, e.Event)
+		}
+	}
+	return p, nil
+}
+
 // state is where an entry stands in a file.
 type state struct {
 	root  *node

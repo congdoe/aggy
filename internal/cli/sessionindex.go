@@ -111,23 +111,27 @@ func (x *sessionIndex) hook(r supervisor.Request) {
 }
 
 // sawRollout reports whether a rollout that was not there at launch has shown
-// up, this CLI's or not. It looks once more itself, since a CLI can exit
-// between two polls.
-func (x *sessionIndex) sawRollout() bool {
+// up, this CLI's or not, and whether aggy could look at all: no watch, or a
+// sessions folder that is not there, says nothing. It looks once more itself,
+// since a CLI can exit between two polls.
+func (x *sessionIndex) sawRollout() (seen, known bool) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if len(x.seen) > 0 {
-		return true
+		return true, true
 	}
 	if x.watchDir == "" {
-		return false
+		return false, false
+	}
+	if fi, err := safefs.Stat(x.watchDir); err != nil || !fi.IsDir() {
+		return false, false
 	}
 	for id := range codexRollouts(x.watchDir, x.watchStart, time.Now()) {
 		if _, old := x.watchBefore[id]; !old {
-			return true
+			return true, true
 		}
 	}
-	return false
+	return false, true
 }
 
 // saw records rollouts the watch found new (id to path), and checks the
@@ -194,30 +198,53 @@ const maxMetaLine = 1 << 20
 // (recorder.rs#L968) is traced through the client, not seen live.
 // TODO(T6616): confirm a live TUI rollout's source is "cli".
 func verifyRollout(path, id string) rolloutVerdict {
+	v, _ := readRolloutMeta(path, id)
+	return v
+}
+
+// rolloutInDir reports whether path is the interactive TUI's own rollout of id,
+// run in one of cwds: session_meta's cwd (SessionMeta, protocol/src/protocol.rs
+// #L3275 at 6aaac694), compared as written and resolved. A nested or other repo's
+// rollout is not this child's.
+func rolloutInDir(path, id string, cwds []string) bool {
+	v, cwd := readRolloutMeta(path, id)
+	if v != rolloutTUI || cwd == "" {
+		return false
+	}
+	if slices.Contains(cwds, filepath.Clean(cwd)) {
+		return true
+	}
+	c, err := safefs.CanonicalPath(cwd)
+	return err == nil && slices.Contains(cwds, c)
+}
+
+// readRolloutMeta is verifyRollout's reading, and the cwd the line names.
+func readRolloutMeta(path, id string) (rolloutVerdict, string) {
 	f, err := safefs.OpenRegular(path)
 	if err != nil {
-		return rolloutPending
+		return rolloutPending, ""
 	}
 	defer func() { _ = f.Close() }()
 	line, err := bufio.NewReaderSize(io.LimitReader(f, maxMetaLine), 64<<10).ReadBytes('\n')
 	if err != nil {
 		if len(line) >= maxMetaLine {
-			return rolloutOther
+			return rolloutOther, ""
 		}
-		return rolloutPending // no whole line yet
+		return rolloutPending, "" // no whole line yet
 	}
 	var m struct {
 		Type    string `json:"type"`
 		Payload struct {
 			ID     string          `json:"id"`
 			Source json.RawMessage `json:"source"`
+			Cwd    string          `json:"cwd"`
 		} `json:"payload"`
 	}
 	if json.Unmarshal(line, &m) != nil || m.Type != "session_meta" || m.Payload.ID != id ||
 		string(m.Payload.Source) != `"cli"` {
-		return rolloutOther
+		return rolloutOther, ""
 	}
-	return rolloutTUI
+	return rolloutTUI, m.Payload.Cwd
 }
 
 // set records id, once.
