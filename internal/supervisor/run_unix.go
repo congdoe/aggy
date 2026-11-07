@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -205,7 +206,7 @@ func Run(o Options) (Exit, error) {
 		// check polls a switch that waits for the turn end.
 		// It also polls a near-limit warning due at a turn end.
 		var check <-chan time.Time
-		if (s.sw.to != "" && !s.sw.typed || s.warnDue || s.toolsDue) && !s.open {
+		if (s.sw.to != "" && !s.sw.typed || s.warnDue || s.toolsDue || s.limitDue != nil) && !s.open {
 			check = time.After(switchPoll)
 		}
 		select {
@@ -227,6 +228,7 @@ func Run(o Options) (Exit, error) {
 			}
 			s.offerWarn()
 			s.offerToolsNote()
+			s.offerLimitNote()
 		case <-s.toolNotes:
 			s.readTools()
 		case <-s.o.ToolsNudge:
@@ -365,10 +367,13 @@ type session struct {
 	// signalled: aggy passed a signal on to the CLI, so its exit is no
 	// choice of the user's. noTurnOpen: the open note is tellNoTurn's.
 	signalled, noTurnOpen bool
-	// sentAny: some input has gone to the CLI since it launched. Any of it
-	// may have started a turn, in whatever encoding the terminal sends Enter
-	// (CR, CSI 13 u, a paste), so aggy does not try to tell which.
-	sentAny bool
+	// inputSinceTurn: input has gone to the CLI since its last counted turn
+	// end, or its launch. Any of it may have started a turn, in whatever
+	// encoding the terminal sends Enter, so notices that can wait do not try
+	// to tell (mayBeRunning). A terminal's own reports do not count.
+	inputSinceTurn bool
+	// limitDue is a limit's note waiting until it cannot hold a turn's output.
+	limitDue *limitNote
 	// held: a hook other than a turn end (a Notification: maybe a
 	// permission prompt) came from the session, and the user has not
 	// typed to the CLI since. A turn end does not clear it: a nested
@@ -493,6 +498,8 @@ type pendingSwitch struct {
 	typed      bool // the exit command has been typed
 	// picked: the user chose this switch, in the picker or a note.
 	picked bool
+	// toldAt is when toldNoTurn was set: a pick goes stale (noTurnPickFresh).
+	toldAt time.Time
 	// toldNoTurn: the list this was picked from said to quit the CLI, so its
 	// clean exit now completes the switch, unless they cancel it or a turn
 	// end brings the normal offer (T6893). noteShown: tellNoTurn's note came
@@ -600,12 +607,22 @@ func (s *session) hookEvent(ev hookEvent) {
 			if s.noTurnOpen {
 				s.closePicker() // the offer takes over
 			}
-			s.atPrompt = !s.held
+			if s.open && s.pk.noTurn {
+				// The list's words about no turn end are over; the rows they
+				// took are blanked.
+				s.pk.noTurn, s.pk.padRows = false, noTurnListRows
+				if s.pk.confirm == "" && !s.pk.note && s.pk.stage == "" {
+					s.pk.draw(s.o.Out, s.pickerOverCLI)
+				}
+				s.pk.padRows = 0
+			}
+			s.atPrompt, s.inputSinceTurn = !s.held, false
 			s.toolsWaitTurn = false
 			s.warnDue = true
 			s.askShare()
 			if ev.name == "Stop" && holdSignal(s.o.Vendor) && s.pk != nil {
 				s.pk.preselect = "" // a turn ended without a limit (O56-5)
+				s.limitDue = nil
 			}
 		}
 		return
@@ -730,13 +747,17 @@ func refusedMsg(v adapter.Vendor, err error) string {
 // Enter as CSI 13 u, which never clears it, so it cannot be switched
 // from by aggy. Upgrade if T6684 finds one.
 func (s *session) send(b []byte) {
+	if terminalReport(b) {
+		s.toChild.push(b) // the terminal answering the CLI, not the user
+		return
+	}
 	s.lastIn = time.Now()
 	s.held = false
 	if len(b) == 0 {
 		return
 	}
-	s.sentAny = true
-	if bytes.IndexByte(b, '\r') >= 0 {
+	s.inputSinceTurn = true
+	if bytes.IndexByte(b, '\r') >= 0 || csiEnter.Match(b) {
 		s.atPrompt, s.toldDirty = false, false // an Enter may start a turn
 	}
 	for _, c := range b {
@@ -744,6 +765,39 @@ func (s *session) send(b []byte) {
 	}
 	s.dirty = !s.lenKnown || s.compLen > 0 || s.popup || s.cleared
 	s.toChild.push(b)
+}
+
+// csiEnter matches Enter in the kitty keyboard protocol (CSI 13 u, with any
+// modifiers or event type) and in xterm's modifyOtherKeys (CSI 27 ; m ; 13 ~).
+// Which encoding Claude's and Grok's terminals are put in is unverified.
+var csiEnter = regexp.MustCompile(`\x1b\[(13(:[0-9]*)*(;[0-9:]*)*u|27;[0-9]+;13~)`)
+
+// terminalReport reports whether b is only replies a terminal sends a CLI that
+// asked: focus events, cursor and device reports, and whole OSC, DCS, and APC
+// strings. None can submit anything, so none is input. Bracketed pastes and
+// key sequences do not match, and a reply split across reads counts as input,
+// the safe side.
+func terminalReport(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	for len(b) > 0 {
+		m := reportSeq.Find(b)
+		if m == nil {
+			return false
+		}
+		b = b[len(m):]
+	}
+	return true
+}
+
+var reportSeq = regexp.MustCompile(`^\x1b(\[[IO]|\[[0-9;?>]*[Rcnt]|\[[0-9;?]*\$y|[\]P_][^\x07\x1b]*(\x07|\x1b\\))`)
+
+// mayBeRunning reports whether a turn may be running, so a notice that can wait
+// must, since an open notice holds the CLI's output until a key. Only a launch
+// or turn end with no input since, and no sign the CLI is busy, says none is.
+func (s *session) mayBeRunning() bool {
+	return !s.atPrompt || s.inputSinceTurn
 }
 
 // cursorKey reports whether c moves the cursor (or starts an escape
@@ -836,7 +890,7 @@ func (s *session) offerSwitch() {
 	// A notice must never hold output while a turn may be running, and
 	// without a turn end only a launch given no input and no brief has none.
 	// The list this was picked from has already told the user (markNoTurn).
-	if !s.turnRan && (s.sentAny || s.o.StartsTurn) {
+	if !s.turnRan && s.mayBeRunning() {
 		return
 	}
 	if s.turnRan && !s.atPrompt {
@@ -972,16 +1026,32 @@ func (s *session) tellNoTurn(what string) {
 		return
 	}
 	s.sw.noteShown, s.sw.toldNoTurn = true, true
+	if s.sw.toldAt.IsZero() {
+		s.sw.toldAt = time.Now()
+	}
 	on := s.o.Vendor
 	cmd, _ := adapter.ExitCommand(on)
-	s.pk.tell(fmt.Sprintf("aggy is ready to %s, but it has seen no turn end from %s since it opened.", what, on),
-		fmt.Sprintf("It may be showing a dialog (an update or trust prompt), so aggy will not type %s into it.", cmd),
-		fmt.Sprintf("Quit %s yourself and aggy will %s, if it exits cleanly.", on, what),
-		"If you send a message instead, aggy asks at that turn's end if it sees one; some CLIs report none until their hook is approved.",
+	// Each line fits 80 columns: over the CLI's screen a longer one is cut.
+	s.pk.tell(fmt.Sprintf("aggy is ready to %s,", what),
+		fmt.Sprintf("but it has seen no turn end from %s since it opened.", on),
+		"It may be showing a dialog (an update or trust prompt),",
+		fmt.Sprintf("so aggy will not type %s into it.", cmd),
+		fmt.Sprintf("Quit %s yourself within %d minutes and aggy will %s,", on, noTurnPickMinutes, what),
+		"if it exits cleanly.",
+		"If you send a message instead, aggy asks at that turn's end if it sees one;",
+		"some CLIs report none until their hook is approved.",
 		fmt.Sprintf("To cancel, press %s, then Esc in the list.", keyName(s.pk.key)))
 	s.openPicker()
 	s.noTurnOpen = true
 }
+
+// noTurnPickMinutes is how long a pick told to quit the CLI stays good. Where
+// no turn end is ever counted (Codex with no approved hook) nothing else ends
+// it, and a quit long after, for another reason, should not land in another CLI.
+const noTurnPickMinutes = 10
+
+// noTurnPickFresh is noTurnPickMinutes; tests shorten it.
+var noTurnPickFresh = noTurnPickMinutes * time.Minute
 
 // markNoTurn notes a pick from a list that said to quit the CLI (openList):
 // with no turn ended, its clean exit now completes the switch.
@@ -989,7 +1059,7 @@ func (s *session) markNoTurn() {
 	if s.turnRan {
 		return
 	}
-	s.sw.toldNoTurn = true
+	s.sw.toldNoTurn, s.sw.toldAt = true, time.Now()
 	s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeNoTurnYet, Cause: s.sw.rec,
 		Msg: "no turn has ended since the CLI launched, so aggy does not type its exit command", Attrs: map[string]any{"to": string(s.sw.to)}})
 }
@@ -1027,6 +1097,11 @@ func (s *session) exitSwitches(code int) bool {
 	}
 	if code != 0 {
 		return unclean(fmt.Sprintf("%s exited with code %d", on, code))
+	}
+	if !s.sw.typed && time.Since(s.sw.toldAt) > noTurnPickFresh {
+		s.log(diag.Rec{Event: diag.EvSwitchCancelled, Cause: s.sw.rec, Exit: diag.Int(code), Attrs: map[string]any{"how": "stale_pick", "to": string(v)}})
+		s.exitLine(fmt.Sprintf("you picked %s over %d minutes ago, so aggy did not %s. Pick it again, then quit.", v, noTurnPickMinutes, what))
+		return false
 	}
 	check := s.offered
 	if s.sw.resume {
@@ -1077,6 +1152,40 @@ func (s *session) drainSignals(sigs <-chan os.Signal) {
 	}
 }
 
+// limitNote is a limit's note: pre is the vendor it suggests, "" if none has
+// quota.
+type limitNote struct {
+	h   LimitHit
+	pre adapter.Vendor
+}
+
+// offerLimitNote shows a limit's note once no turn may be running and the CLI
+// is quiet (T6941). Where no turn end is ever counted, it never shows: the CLI
+// shows its own limit error, and the list, with the vendor preselected, says it
+// (openList). A switch in the way drops it.
+func (s *session) offerLimitNote() {
+	if s.limitDue == nil || s.open {
+		return
+	}
+	if s.sw.to != "" {
+		s.limitDue = nil
+		return
+	}
+	now := time.Now()
+	if s.mayBeRunning() || now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
+		return
+	}
+	n := *s.limitDue
+	s.limitDue = nil
+	if n.pre == "" {
+		s.pk.tell(fmt.Sprintf("%s, and no other vendor aggy offers has quota left.", limitWho(n.h)))
+	} else {
+		s.pk.tell(fmt.Sprintf("%s. %s has quota left: press %s, then Enter, to switch to it with a brief.", limitWho(n.h), n.pre, keyName(s.pk.key)),
+			fmt.Sprintf("aggy cannot tell when %s waits for an approval, so it does not offer the switch itself.", s.o.Vendor))
+	}
+	s.openPicker()
+}
+
 // keysEnd ends the keys of a confirmation's status line.
 const keysEnd = "Esc stays."
 
@@ -1100,7 +1209,7 @@ func (s *session) offerWarn() {
 	if !s.warnDue {
 		return
 	}
-	if !s.atPrompt || s.sw.to != "" || s.open {
+	if s.mayBeRunning() || s.sw.to != "" || s.open {
 		s.warnDue = false
 		return
 	}
@@ -1279,13 +1388,10 @@ func (s *session) onLimit(h LimitHit) {
 	switch {
 	case pre == "":
 		s.log(diag.Rec{Event: diag.EvLimitNotOffered, Code: diag.CodeNoQuota, Cause: s.lastLimit})
-		s.pk.tell(fmt.Sprintf("%s, and no other vendor aggy offers has quota left.", limitWho(h)))
-		s.openPicker()
+		s.limitDue = &limitNote{h: h}
 	case !holdSignal(v):
 		s.log(diag.Rec{Event: diag.EvLimitNotOffered, Code: diag.CodeLimitNoHold, Cause: s.lastLimit, Attrs: map[string]any{"to": string(pre)}})
-		s.pk.tell(fmt.Sprintf("%s. %s has quota left: press %s, then Enter, to switch to it with a brief.", limitWho(h), pre, keyName(s.pk.key)),
-			fmt.Sprintf("aggy cannot tell when %s waits for an approval, so it does not offer the switch itself.", v))
-		s.openPicker()
+		s.limitDue = &limitNote{h: h, pre: pre}
 	default:
 		s.setSwitch(pendingSwitch{to: pre, limit: true, unverified: h.Unverified, choice: Choice{Vendor: pre, Brief: true}})
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Cause: s.lastLimit,
@@ -1335,6 +1441,7 @@ type childCheck struct {
 // recorded (T6770): the picker's list may be stale, and launching a
 // session that is gone would fail after the CLI on screen has exited.
 func (s *session) confirmSwitch() {
+	s.signalled = false // only one from here on stops this switch
 	id, v := s.sw.choice.Child, s.sw.to
 	if id == "" || s.o.HasChild == nil {
 		s.typeExit()
@@ -1400,7 +1507,6 @@ func (s *session) typeExit() {
 	cmd, _ := adapter.ExitCommand(s.o.Vendor)
 	s.toChild.push([]byte(cmd + "\r"))
 	s.sw.typed = true
-	s.signalled = false // only one from here on stops this switch
 	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchConfirmed, Cause: s.sw.rec, Attrs: map[string]any{"to": string(s.sw.to)}})
 	s.exitBy = time.After(exitWait)
 }
@@ -1417,6 +1523,12 @@ func (s *session) openList() {
 	s.pk.list()
 	s.pk.waiting, s.pk.checking, s.pk.resume = s.sw.to, false, s.sw.resume
 	s.pk.noTurn, s.pk.on = !s.turnRan, s.o.Vendor
+	s.pk.limitLine = ""
+	if s.limitDue != nil {
+		// The person came to the list first: it says what the note would.
+		s.pk.limitLine = limitWho(s.limitDue.h) + "."
+		s.limitDue = nil
+	}
 	// After a limit, Enter takes the suggested vendor, with a brief.
 	s.pk.opts.Brief = s.pk.preselect != ""
 	// Starts the checks that take time (the policy probe) for every
