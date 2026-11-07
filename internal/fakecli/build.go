@@ -31,15 +31,16 @@ const (
 
 // Fakes holds the paths of the built binaries.
 type Fakes struct {
-	Dir    string // the directory holding them all
-	Claude string
-	Codex  string
-	Grok   string
-	Hook   string
-	MCP    string // fake-mcp, a stand-in MCP server (testdata/fakes)
+	Dir      string // the directory holding them all
+	Claude   string
+	Codex    string
+	Grok     string
+	OpenCode string
+	Hook     string
+	MCP      string // fake-mcp, a stand-in MCP server (testdata/fakes)
 }
 
-// For returns the fake for vendor ("claude", "codex", "grok", "hook", or "mcp").
+// For returns the fake for vendor ("claude", "codex", "grok", "opencode", "hook", or "mcp").
 func (f Fakes) For(vendor string) string {
 	return filepath.Join(f.Dir, "fake-"+vendor)
 }
@@ -86,13 +87,13 @@ func Build(t testing.TB) Fakes {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, v := range []string{"codex", "grok", "hook", "mcp"} {
+	for _, v := range []string{"codex", "grok", "opencode", "hook", "mcp"} {
 		if err := safefs.WriteFile(filepath.Join(dir, "fake-"+v), data, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	f := Fakes{Dir: dir}
-	f.Claude, f.Codex, f.Grok, f.Hook, f.MCP = f.For("claude"), f.For("codex"), f.For("grok"), f.For("hook"), f.For("mcp")
+	f.Claude, f.Codex, f.Grok, f.OpenCode, f.Hook, f.MCP = f.For("claude"), f.For("codex"), f.For("grok"), f.For("opencode"), f.For("hook"), f.For("mcp")
 	return f
 }
 

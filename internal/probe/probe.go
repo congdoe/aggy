@@ -109,6 +109,17 @@ const (
 	// aggy checks the host itself; callers add it at locate time, never
 	// to the cache, since the kernel can change under the same CLI.
 	CapKernelSandbox = "kernel-sandbox"
+	// CapStandalone is opencode --standalone, a private server per launch:
+	// a running shared service does not pick up per-launch config, so
+	// aggy's rules could not reach it (docs/verification.md, T6930).
+	CapStandalone = "standalone"
+	// CapSession is opencode --session <id>, on the full screen.
+	CapSession = "session"
+	// CapMiniSession is the same flag on opencode mini, which an untrusted
+	// repo gets.
+	CapMiniSession = "mini-session"
+	// CapAuto is opencode --auto, the full-auto setting.
+	CapAuto = "auto"
 )
 
 // lsmPath lists the Linux security modules the kernel runs.
@@ -179,6 +190,16 @@ var Specs = map[adapter.Vendor]Spec{
 			{CapRules, 0, "--rules", Option},
 			{CapDeny, 0, "--deny", Option},
 			{CapSandbox, 0, "--sandbox", Option},
+		},
+	},
+	adapter.OpenCode: {
+		Programs: []string{"opencode"},
+		Help:     [][]string{{"--help"}, {"mini", "--help"}},
+		Features: []Feature{
+			{CapStandalone, 0, "--standalone", Option},
+			{CapSession, 0, "--session", Option},
+			{CapAuto, 0, "--auto", Option},
+			{CapMiniSession, 1, "--session", Option},
 		},
 	},
 	adapter.Codex: {
