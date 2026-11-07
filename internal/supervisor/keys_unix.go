@@ -35,7 +35,7 @@ func (f *keyFilter) strip(b []byte) (reports, rest []byte) {
 	return reports, rest
 }
 
-// terminalReport reports whether b is only such replies, whole.
+// terminalReport reports whether b is only what scanReport calls replies, whole.
 func terminalReport(b []byte) bool {
 	if len(b) == 0 {
 		return false
