@@ -25,7 +25,7 @@ var inlineProjects = regexp.MustCompile(`(?m)^[ \t]*"?projects"?[ \t]*=`)
 
 // ErrCodexTrustConflict means the config already says something else about the
 // folder, which is the person's to change.
-var ErrCodexTrustConflict = errors.New("Codex's config already sets this folder's trust to something else")
+var ErrCodexTrustConflict = errors.New("parity: Codex's config already sets this folder's trust to something else")
 
 // CodexTrustState says whether the config at path already trusts dir.
 func CodexTrustState(path, dir string) (trusted bool, hash string, err error) {
