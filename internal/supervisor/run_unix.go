@@ -778,10 +778,14 @@ func (s *session) hookEvent(ev hookEvent) {
 // its lineage says otherwise (unverified; what would confirm it: T6896's /clear
 // on Grok under aggy, and the id its next Stop names). A vendor with another way
 // to see a session change (OpenCode has no SessionStart, T6953) calls
-// followSession with its own evidence.
+// followSession with its own evidence, so a SessionStart sent to OpenCode's
+// socket moves nothing.
 func sessionMoves(v adapter.Vendor, source string) bool {
-	if v == adapter.Grok {
+	switch v {
+	case adapter.Grok:
 		return true
+	case adapter.OpenCode:
+		return false
 	}
 	return source == "clear" || source == "resume" || source == "fork"
 }
@@ -1071,7 +1075,20 @@ func (s *session) followKeys(typed []byte) {
 // pointer passes on a click or a drag. It may do something in the CLI, so it
 // counts as input (an approval answered with the mouse, a turn started), but it
 // types nothing. It may move the cursor, as a cursor key does.
+//
+// On OpenCode a click is no typing: its plugin reports what a click answered, so
+// the click clears no hold (typedOf). In the gap between the exit command's
+// letters and its Enter it waits with the keys, as it could land on a dialog or
+// move the cursor out of the composer before that Enter (finishExit).
 func (s *session) pointer(b []byte) {
+	if s.exitGap {
+		s.gapKeys = append(s.gapKeys, b...)
+		return
+	}
+	if s.o.Vendor == adapter.OpenCode {
+		s.toChild.push(b)
+		return
+	}
 	s.lastIn = time.Now()
 	s.held = false
 	s.inputSinceTurn = true
