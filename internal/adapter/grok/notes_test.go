@@ -74,3 +74,58 @@ func TestRunNotes(t *testing.T) {
 		})
 	}
 }
+
+// TestSelfTestHistory (T6951): the history is found under another working dir's
+// name, is no record when missing, and is unreadable when over the cap, never
+// silently no evidence.
+func TestSelfTestHistory(t *testing.T) {
+	const token = "aggy-canary-x"
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, sessions string)
+		want  adapter.SelfTestEvidence
+	}{
+		{"missing", func(*testing.T, string) {}, adapter.SelfTestEvidence{NoRecord: true}},
+		{"under the cwd as resolved", func(t *testing.T, s string) {
+			writeHistory(t, filepath.Join(s, EncodeCwd("/private/w"), sid), token)
+		}, adapter.SelfTestEvidence{Read: true}},
+		{"over the cap", func(t *testing.T, s string) {
+			p := writeHistory(t, filepath.Join(s, EncodeCwd("/w"), sid), "x")
+			if err := os.Truncate(p, maxHistory+1); err != nil {
+				t.Fatal(err)
+			}
+		}, adapter.SelfTestEvidence{Unreadable: true}},
+		{"under two working dirs", func(t *testing.T, s string) {
+			writeHistory(t, filepath.Join(s, "a", sid), "x")
+			writeHistory(t, filepath.Join(s, "b", sid), "x")
+		}, adapter.SelfTestEvidence{Unreadable: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh := t.TempDir()
+			tt.setup(t, filepath.Join(gh, "sessions"))
+			a := Adapter{Getenv: func(k string) string {
+				if k == "GROK_HOME" {
+					return gh
+				}
+				return ""
+			}}
+			got := a.SelfTestEvidence(adapter.HeadlessRequest{Cwd: "/w"}, adapter.HeadlessResult{SessionID: sid}, adapter.Output{}, token)
+			if got.Read != tt.want.Read || got.Unreadable != tt.want.Unreadable || got.NoRecord != tt.want.NoRecord {
+				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func writeHistory(t *testing.T, dir, body string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "chat_history.jsonl")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}

@@ -78,7 +78,7 @@ func (a Adapter) historyShowsDenial(cwd, id string) bool {
 	if adapter.ValidSessionID(adapter.Grok, id) != nil || !filepath.IsAbs(a.Home()) {
 		return false
 	}
-	data, err := safefs.ReadFileLimit(filepath.Join(a.Home(), "sessions", EncodeCwd(cwd), id, "chat_history.jsonl"), maxHistory)
+	data, err := a.history(cwd, id)
 	if err != nil {
 		return false
 	}
