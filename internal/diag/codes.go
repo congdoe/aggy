@@ -84,6 +84,9 @@ var (
 	EvCodexLockdown       = Event{"adapter.codex.lockdown_rejected"}
 	EvGrokLockdown        = Event{"adapter.grok.lockdown_rejected"}
 	EvGrokSandboxRefused  = Event{"adapter.grok.sandbox_refused"}
+	EvGuardRefused        = Event{"hook.guard.refused"}
+	EvGuardMissing        = Event{"hook.guard.missing"}
+	EvTrustRefused        = Event{"trust.request.refused"}
 	EvAcceptRefused       = Event{"accept.request.refused"}
 	EvAcceptApplied       = Event{"accept.diff.applied"}
 	EvAcceptDeclined      = Event{"accept.diff.declined"}
@@ -218,6 +221,10 @@ var (
 	CodePeerUnknown      = Code{"peer.cred_failed"}
 	CodeWrongVendor      = Code{"hook.wrong_vendor"}
 	CodeBadPayload       = Code{"hook.bad_payload"}
+	CodeGuardRefused     = Code{"guard.refused"}
+	CodeGuardMissing     = Code{"guard.no_report"}
+	CodeTrustBadDir      = Code{"trust.bad_dir"}
+	CodeTrustBadFile     = Code{"trust.bad_file"}
 	CodeToolChanged      = Code{"tool.changed_since_add"}
 	CodeToolNameClash    = Code{"tool.name_clash"}
 	CodeToolRepoPath     = Code{"tool.repo_path"}
@@ -261,6 +268,9 @@ var events = []EventInfo{
 	{EvClaudeLockdown, LevelError, "adapter.claude", "Claude Code rejected a lockdown flag; the run was discarded.", "aggy doctor for the version; attach aggy diag bundle to an issue."},
 	{EvCodexLockdown, LevelError, "adapter.codex", "Codex rejected a lockdown flag; the run was discarded.", "aggy doctor for the version; attach aggy diag bundle to an issue."},
 	{EvGrokLockdown, LevelError, "adapter.grok", "Grok rejected a lockdown flag, reported an unknown tool, or ran without its sandbox; the run was discarded.", "aggy doctor for the version; attach aggy diag bundle to an issue."},
+	{EvGuardRefused, LevelWarn, "hook", "aggy's OpenCode guard refused a tool call: a variable declaration in a shell command, a real path outside the repo, a call from another folder, or opencode auth export.", "The code's entry; the model saw the same reason."},
+	{EvGuardMissing, LevelWarn, "hook", "aggy's OpenCode guard did not report in time, so its refusals may not be running; a plugin that fails to load gives no error.", "The code's entry."},
+	{EvTrustRefused, LevelError, "trust", "aggy trust refused; nothing was changed.", "The code's entry."},
 	{EvGrokSandboxRefused, LevelWarn, "adapter.grok", "Grok was passed over: its sandbox is not available for this kind on this CLI or host.", "sandbox.missing."},
 	{EvAcceptRefused, LevelError, "accept", "aggy accept refused or failed; nothing was applied.", "The code's entry; aggy diag show <borrow id>."},
 	{EvAcceptApplied, LevelInfo, "accept", "An edit's diff was applied to the main checkout.", "git status in the main checkout."},
@@ -394,6 +404,10 @@ var codes = []CodeInfo{
 	{CodeNoSession, true, "A turn end from the CLI's tree named no session, which the vendor's own hook always does, so it looks forged and was not acted on. Recorded once a minute, and when the session ends (attrs.repeats: how many more came since the last record; attrs.tail: the record holds only those).", "Which process in the session sends hook events: aggy hook forwards what the vendor gives it."},
 	{CodePeerUnknown, false, "aggy could not tell which user or process opened a connection to the supervisor's socket, so it was closed unanswered.", "Usually a process that connected and exited at once; nothing, unless hooks stop arriving."},
 	{CodeWrongVendor, true, "A hook event from the CLI's tree came from another vendor's hook than the one on screen, so it did not gate a switch.", "A nested CLI of another vendor in the session; nothing else."},
+	{CodeGuardRefused, false, "aggy's OpenCode guard refused a tool call. It reads the raw input, so it catches mistakes only.", "Run the command another way, or at the terminal yourself."},
+	{CodeGuardMissing, false, "aggy's OpenCode guard did not report from the launch's folder in time. OpenCode's rules from aggy's config still apply; the guard's own refusals may not.", "Quit and start again; aggy doctor for the CLI's version. A same-user process can overwrite or unload the plugin."},
+	{CodeTrustBadDir, false, "aggy trust was given a path that is not a folder aggy can resolve.", "The path; aggy resolves it to its repo root."},
+	{CodeTrustBadFile, false, "aggy could not read or change its list of repos trusted for OpenCode (opencode-trust.json in aggy's state folder).", "The file's contents, or aggy unwire."},
 	{CodeBadPayload, false, "aggy hook could not read the vendor's hook payload, or it was not a JSON object.", "The vendor CLI's version; aggy doctor."},
 	{CodeToolNameClash, false, "A tool that is on was not wired: the CLI already loads an MCP server of that name from the user's or the repo's config, and aggy never replaces or merges into one.", "Rename or remove that server in the CLI's config, or turn the tool off."},
 	{CodeToolRepoPath, false, "A tool that is on was not wired: its arguments hold {repo}, and the session is not in a repo, or the repo's path holds a character other than letters, digits, and / . _ + @ -.", "Run the session in a repo whose path has only those characters."},

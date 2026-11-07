@@ -17,6 +17,7 @@ import (
 )
 
 const hookUsage = `Usage: aggy hook pretooluse
+       aggy hook opencode-guard
        aggy hook --vendor V <event>
 
 Called by a vendor CLI's hook, with the JSON payload on stdin. aggy hooks
@@ -25,6 +26,11 @@ install writes these calls into each CLI's hook config.
   pretooluse   the guard in borrow children: denies shell commands that
                run claude -p, codex exec, grok -p, or aggy borrow. An
                accident guard, not a security boundary.
+  opencode-guard
+               the check aggy's OpenCode plugin runs before each tool call:
+               refuses a variable declaration, a real path outside the repo,
+               and opencode auth export. Mistakes only, not a security
+               boundary.
   <event>      a Claude, Codex, or Grok hook event (Stop, StopFailure,
                StopCancelled, SessionStart, Notification). The
                payload is parsed as JSON and forwarded to the aggy
@@ -56,6 +62,8 @@ func hookWith(args []string, in io.Reader, getenv func(string) string, stdout, s
 			return 0
 		case "pretooluse", "PreToolUse":
 			return preToolUse(in, stderr)
+		case "opencode-guard":
+			return openCodeGuard(in, getenv, stderr)
 		}
 	}
 	if len(args) != 3 || args[0] != "--vendor" {
@@ -176,4 +184,23 @@ func preToolUse(in io.Reader, stderr io.Writer) int {
 		return 2
 	}
 	return 0
+}
+
+// openCodeGuard runs the check behind the plugin's execute.before. Its exit
+// code decides, so a crash or a hang refuses too; the plugin passes stderr
+// to the model as the tool's error, ending with the reason code and run id.
+func openCodeGuard(in io.Reader, getenv func(string) string, stderr io.Writer) int {
+	b, err := io.ReadAll(io.LimitReader(in, hook.MaxPayload+1))
+	if err != nil || len(b) > hook.MaxPayload {
+		b = nil // refused as unreadable
+	}
+	d := hook.OpenCodeGuard(b, hook.OpenCodeEnv{Getenv: getenv})
+	if !d.Deny {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hookTimeout)
+	defer cancel()
+	dlog.Log(ctx, diag.Rec{Event: diag.EvGuardRefused, Code: diag.CodeGuardRefused, Msg: "aggy's guard refused an OpenCode tool call", Vendor: string(adapter.OpenCode)})
+	fmt.Fprintf(stderr, "%s %s\n", d.Reason, dlog.Tag(diag.CodeGuardRefused))
+	return 2
 }
