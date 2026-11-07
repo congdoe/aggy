@@ -158,7 +158,7 @@ func TestSwitchFromOutsideSessionIgnored(t *testing.T) {
 	default:
 	}
 	s.onHook(Request{Type: ReqHookEvent, Vendor: "claude", Event: "Stop", FromSession: true, Payload: []byte(`{"session_id":"x"}`)})
-	if ev := <-s.events; ev != (hookEvent{name: "Stop", sessionID: "x"}) {
+	if ev := <-s.events; ev.name != "Stop" || ev.sessionID != "x" || ev.shutdown || ev.idle || ev.source != "" || ev.chain != nil {
 		t.Errorf("event %+v", ev)
 	}
 }

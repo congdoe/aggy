@@ -33,6 +33,9 @@ type picker struct {
 	// list says aggy will not type its exit command (T6893).
 	noTurn bool
 	on     adapter.Vendor
+	// noHooks: aggy's hooks for on are not installed and none has arrived
+	// (T6848), so it will see no turn end after a message either.
+	noHooks bool
 	// padRows blanks that many rows below the list, as its text shrinks over
 	// the CLI's screen. limitLine says a limit hit whose note did not show.
 	padRows   int
@@ -160,9 +163,15 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 			lines = append(lines, "",
 				fmt.Sprintf("aggy has seen no turn end from %s since it opened, and it may be", p.on),
 				fmt.Sprintf("showing a dialog, so aggy will not type %s.", cmd),
-				fmt.Sprintf("To switch, quit %s yourself within %d minutes; it must exit cleanly.", p.on, noTurnPickMinutes),
-				"After a message, aggy asks at that turn's end if it sees one; some CLIs",
-				"report none until their hook is approved.")
+				fmt.Sprintf("To switch, quit %s yourself within %d minutes; it must exit cleanly.", p.on, noTurnPickMinutes))
+			if p.noHooks {
+				lines = append(lines,
+					fmt.Sprintf("aggy's hooks for %s are not installed, so aggy sees no turn end at all.", p.on),
+					"aggy hooks install sets them up, for the next session.")
+			} else {
+				lines = append(lines, "After a message, aggy asks at that turn's end if it sees one; some CLIs",
+					"report none until their hook is approved.")
+			}
 		}
 		if p.stalePick && p.waiting != "" {
 			lines = append(lines, fmt.Sprintf("Your pick of %s is over %d minutes old: pick it again to switch when you quit.", p.waiting, noTurnPickMinutes))

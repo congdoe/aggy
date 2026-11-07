@@ -166,8 +166,8 @@ type unstarted struct{ vendor adapter.Vendor }
 // dialog is unverified. Quitting before the first message looks the same, and
 // is treated the same: going back is one more quit, while a CLI gone with no way
 // back loses the session on screen.
-func childStarted(ex supervisor.Exit, child store.Child, id string, began time.Time, sawRollout func() bool, files *sessionFiles) bool {
-	if ex.TurnRan {
+func childStarted(facts supervisor.RunFacts, child store.Child, id string, began time.Time, sawRollout func() bool, files *sessionFiles) bool {
+	if facts.TurnRan {
 		return true
 	}
 	v, err := adapter.ParseVendor(child.Vendor)
@@ -287,6 +287,9 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	var warns []string
 	if pl.child.Kind != "" {
 		warns = append(warns, borrowNote(pl))
+	}
+	if hooksMissing(v) {
+		warns = append(warns, fmt.Sprintf("aggy's hooks for %s are not installed, so aggy sees no turn end and no limit in it: a switch means quitting %s yourself. aggy hooks install sets them up", v, v))
 	}
 	if len(t.Loosens) > 0 {
 		warns = append(warns, "your flags "+strings.Join(t.Loosens, ", ")+" loosen approvals, the sandbox, or hook trust for this launch; --no-policy lets them through")
@@ -532,7 +535,9 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 			return set, err
 		}
 	}
+	var facts supervisor.RunFacts
 	ex, err := supervisor.Run(supervisor.Options{
+		Facts:         &facts,
 		Tools:         tools,
 		ToolsAtLaunch: toolBase,
 		ToolsNudge:    proxyNudge,
@@ -555,17 +560,23 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 		// OpenCode takes a brief in its instructions, so none starts a turn.
 		StartsTurn: t.Brief && v != adapter.OpenCode,
 		SessionID:  cids.current,
-		Children:   children,
-		HasChild:   hasChild,
-		Limits:     limitHit,
-		HasQuota:   quota,
-		Used:       used,
-		WarnAt:     eff.Switch.WarnAt,
-		Diag:       q,
-		ChildID:    pl.child.ID,
+		OnFollow:   cids.follow,
+		// T6848: only when aggy can say so for this binary; one that cannot
+		// be checked refuses nothing.
+		HooksMissing: hooksMissing(v),
+		Children:     children,
+		HasChild:     hasChild,
+		Limits:       limitHit,
+		HasQuota:     quota,
+		Used:         used,
+		WarnAt:       eff.Switch.WarnAt,
+		Diag:         q,
+		ChildID:      pl.child.ID,
 	})
 	px.guard(0, false) // the CLI was reaped: never signal its pid again
 	dlog.Release()
+	// Before the next launch, whose brief reads this child's transcript.
+	cids.settle(ctx, appendEvent, &sessionFiles{})
 	if err != nil {
 		r := ids
 		r.Event, r.Code, r.Cause, r.Msg = diag.EvLaunchRefused, diag.CodeLaunchFailed, cause, "the supervisor failed"
@@ -583,8 +594,8 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	}
 	// A signal to aggy or a signal that killed the CLI never leads to another
 	// launch; only launch knows whether there is a CLI to go back to.
-	if ex.Signalled || ex.Code >= 128 || !t.fromSwitch() ||
-		childStarted(ex, pl.child, cids.current(), began, index.sawRollout, &sessionFiles{}) {
+	if facts.Signalled || ex.Code >= 128 || !t.fromSwitch() || cids.didMove() ||
+		childStarted(facts, pl.child, cids.current(), began, index.sawRollout, &sessionFiles{}) {
 		return ex.Code
 	}
 	next.unstarted = &unstarted{vendor: v}
@@ -598,6 +609,19 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 		_, _ = s.DeleteUnstartedChild(ctx, pl.child.ID)
 	}
 	return ex.Code
+}
+
+// hooksMissing reports whether aggy knows v's hooks are not installed for this
+// binary. A hook of another aggy binary still reports, so it is only a hint: the
+// supervisor lets an arriving hook overrule it. Codex's also need the person's
+// approval, which aggy cannot check; that stays the list's words.
+func hooksMissing(v adapter.Vendor) bool {
+	bin, err := aggyBin()
+	if err != nil {
+		return false
+	}
+	state, _ := hookStatus(v, bin)
+	return state == hookMissing
 }
 
 // refreshEvery is how often refreshed reads again.

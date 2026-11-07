@@ -650,9 +650,17 @@ func shortID(id string) string {
 }
 
 // childIDs records the on-screen child's vendor session id once the
-// session index knows it. The row keeps the first id (a /clear does not
-// move it). A Codex child gets no id at launch, so its lease is taken
-// here, when the id is confirmed, and held until the CLI exits.
+// session index knows it. A Codex child gets no id at launch, so its lease is
+// taken here, when the id is confirmed, and held until the CLI exits. When the
+// CLI moves to another session (/clear, /resume; the supervisor follows it on
+// a hook from where the CLI's own hooks run, session.followSession), follow
+// makes that the id, and settle records it on the row as the CLI exits, once a
+// session file backs it: a resume starts a CLI on that id, so it takes more
+// than a hook's word, which a tool in the CLI's tree can forge. A file to back
+// it also takes writing to the vendor's folder, which is no more than rewriting
+// the session file aggy would resume anyway. No file (a /clear and no message
+// after it) leaves the row on the session that has turns, as claude --continue
+// does.
 type childIDs struct {
 	s     *store.Store
 	child store.Child
@@ -661,18 +669,70 @@ type childIDs struct {
 	lease *store.Lease
 	done  bool
 	id    string // a new Codex child's id, once recorded and leased
+	moved string // the session the CLI moved to, once followed
+	via   string // the evidence for it
 }
 
 // current is the child's vendor session id: the one given at launch, or
 // a new Codex child's once the index recorded it; "" until then. The
 // supervisor counts only turn ends that name it (S-9).
 func (c *childIDs) current() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.moved != "" {
+		return c.moved
+	}
 	if c.child.VendorSessionID != "" {
 		return c.child.VendorSessionID
 	}
+	return c.id
+}
+
+// follow is supervisor.Options.OnFollow.
+func (c *childIDs) follow(id, via string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.id
+	c.moved, c.via = id, via
+}
+
+// didMove reports whether the CLI moved to another session while it ran.
+func (c *childIDs) didMove() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.moved != ""
+}
+
+// settle records the session the CLI moved to on the child's row, if its session
+// file backs it: found on disk, and for Codex the interactive TUI's own rollout
+// (verifyRollout), so a nested codex exec's never is. An id another child holds
+// stays off this one. Errors are dropped: the row stays as it was.
+func (c *childIDs) settle(ctx context.Context, record func(store.Event) error, files *sessionFiles) {
+	c.mu.Lock()
+	from, to, via := c.child.VendorSessionID, c.moved, c.via
+	if from == "" {
+		from = c.id
+	}
+	c.mu.Unlock()
+	v, err := adapter.ParseVendor(c.child.Vendor)
+	if to == "" || from == "" || err != nil {
+		return
+	}
+	if _, err := files.LastChanged(v, to, c.child.VendorHome, c.child.Cwd, c.child.CreatedAt); err != nil {
+		return
+	}
+	if v == adapter.Codex {
+		path, ok := files.rolloutPath(v, to, c.child.VendorHome)
+		if !ok || verifyRollout(path, to) != rolloutTUI {
+			return
+		}
+	}
+	if moved, err := c.s.MoveChildSession(ctx, c.child.ID, from, to); err != nil || !moved {
+		return
+	}
+	if record != nil {
+		_ = record(store.Event{At: time.Now(), ParentID: c.child.ParentID, Type: store.EventSession,
+			Detail: map[string]any{"vendor": string(v), "session": to, "via": "followed " + via}})
+	}
 }
 
 // set is sessionIndex.onID. Errors are dropped: a failed write must not
