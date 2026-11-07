@@ -106,18 +106,19 @@ func TestBacktrackAsksFirst(t *testing.T) {
 		{"Esc, Esc, Ctrl+T, Enter", []string{"\x1b", "\x1b", "\x14", "\r"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			ts, c, done, _ := switchRunTurned(t, adapter.Codex, func(*Options) { waitNoteQuiet = 30 * time.Millisecond })
+			ts, c, done, _ := switchRunTurned(t, adapter.Codex)
 			for _, k := range tt.keys {
 				ts.typeIn(t, k)
 				c.waitGot(t, []byte(k))
 				time.Sleep(70 * time.Millisecond)
 			}
-			// The Enter may have started a turn, so the note says that too, and
-			// the next pick both says none runs and confirms.
-			ts.typeIn(t, "\x1c1")
-			poll(t, "the note", []byte("cannot tell if the prompt is empty"), ts.screen)
-			ts.typeIn(t, "\x1b")
-			time.Sleep(escTimeout + 60*time.Millisecond)
+			// The Enter may have started a turn, so the list says that and the
+			// doubt, and nothing is held; the next pick says none runs and confirms.
+			ts.typeIn(t, "\x1c")
+			poll(t, "the list's words", []byte("cannot tell if the prompt is empty"), ts.screen)
+			ts.typeIn(t, "1")
+			poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+			time.Sleep(100 * time.Millisecond)
 			if bytes.Contains(c.received(), []byte("/exit")) {
 				t.Fatalf("typed before any confirm: %q", c.received())
 			}
@@ -239,9 +240,8 @@ func TestDailyClaude(t *testing.T) {
 	const (
 		line  = "status line"
 		doubt = "note: cannot tell"
-		moved = "note: moved"
-		waits = "note: waits"
-		both  = "note: waits, cannot tell"
+		waits = "list said so; waits"
+		both  = "list said so, and cannot tell; waits"
 	)
 	type step struct{ kind, keys string }
 	k := func(s string) step { return step{"k", s} }
@@ -259,7 +259,7 @@ func TestDailyClaude(t *testing.T) {
 		{"/clear with a name, no hook", []step{k("/clear old\r")}, false, both, line},
 		{"/compact, compact hook, no turn end", []step{k("/compact\r"), C}, false, both, line},
 		{"/compact, its turn end", []step{k("/compact\r"), C, S}, false, line, ""},
-		{"/compact, a message, turn end", []step{k("/compact\r"), C, k("hello\r"), S}, false, doubt, line},
+		{"/compact, a message, turn end", []step{k("/compact\r"), C, k("hello\r"), S}, false, both, line},
 		{"/compact, a message, turn end, real timing", []step{k("/compact\r"), C, k("hello\r"), S}, true, both, line},
 		{"/model closed with Esc, a message", []step{k("/model\r"), k("\x1b"), k("hello\r"), S}, false, line, ""},
 		{"/model, real timing", []step{k("/model\r"), k("\x1b"), k("hello\r"), S}, true, line, ""},
@@ -287,8 +287,7 @@ func TestDailyClaude(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ts, c, done, sock := switchRunTurned(t, adapter.Claude, func(*Options) {
-				// The note comes after a shortened release, and well before a real one.
-				waitNoteQuiet, queuedQuiet = 150*time.Millisecond, 50*time.Millisecond
+				queuedQuiet = 50 * time.Millisecond
 				if tt.real {
 					queuedQuiet = realQueuedQuiet
 				}
@@ -309,24 +308,28 @@ func TestDailyClaude(t *testing.T) {
 				}
 				time.Sleep(70 * time.Millisecond)
 			}
+			// What the list said, and what shows after it closes: a note would
+			// come back to the alternate screen, so it shows in what follows.
 			shown := func(seen int) string {
 				out := ts.screen()[seen:]
-				has := func(w string) bool { return bytes.Contains(out, []byte(w)) }
+				list, after := out, []byte(nil)
+				if i := bytes.Index(out, []byte(altScreenOff)); i >= 0 {
+					list, after = out[:i], out[i:]
+				}
+				has := func(w string) bool { return bytes.Contains(after, []byte(w)) }
 				switch {
 				case has("Esc stays"):
 					return line
 				case has("have not sent"):
 					return "note: unsent"
-				case has("started a turn") && has("prompt is empty"):
-					return both
-				case has("started a turn"):
-					return waits
 				case has("prompt is empty"):
 					return doubt
-				case has("moved to another session"):
-					return moved
 				case has("waiting for you"):
 					return "note: held"
+				case bytes.Contains(list, []byte("cannot tell if the prompt is empty")):
+					return both
+				case bytes.Contains(list, []byte("A turn may be running")):
+					return waits
 				}
 				return "SILENT"
 			}
@@ -339,8 +342,10 @@ func TestDailyClaude(t *testing.T) {
 				t.Errorf("first pick: %q, want %q", got, tt.first)
 			}
 			if tt.second != "" {
-				ts.typeIn(t, "\x1b")
-				time.Sleep(escTimeout + 60*time.Millisecond)
+				if got != waits && got != both { // no note up: an Esc would reach the CLI
+					ts.typeIn(t, "\x1b")
+					time.Sleep(escTimeout + 60*time.Millisecond)
+				}
 				seen = len(ts.screen())
 				ts.typeIn(t, "\x1c")
 				time.Sleep(60 * time.Millisecond)
@@ -361,15 +366,16 @@ func TestDailyClaude(t *testing.T) {
 // status line at the second pick. The person's Esc there drops the switch, and a
 // third pick starts over, with the prompt as it was: the note, not a silent wait.
 func TestCompactThirdPick(t *testing.T) {
-	ts, c, done, sock := switchRunTurned(t, adapter.Claude, func(*Options) { waitNoteQuiet = 50 * time.Millisecond })
+	ts, c, done, sock := switchRunTurned(t, adapter.Claude)
 	ts.typeIn(t, "/compact\r")
 	c.waitGot(t, []byte("/compact\r"))
 	_ = request(t, sock, fmt.Sprintf(`{"type":"hook-event","vendor":"claude","event":"SessionStart","payload":{"session_id":%q,"source":"compact"}}`, childSID))
 	time.Sleep(70 * time.Millisecond)
-	ts.typeIn(t, "\x1c2")
-	poll(t, "the first note", []byte("started a turn"), ts.screen)
-	ts.typeIn(t, "\x1b")
-	time.Sleep(escTimeout + 60*time.Millisecond)
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list's words", []byte("cannot tell if the prompt is empty"), ts.screen)
+	ts.typeIn(t, "2")
+	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+	time.Sleep(60 * time.Millisecond)
 	seen := len(ts.screen())
 	since := func() []byte { return ts.screen()[seen:] }
 	ts.typeIn(t, "\x1c")
@@ -435,50 +441,324 @@ func TestLocalCommandKeepsPrompt(t *testing.T) {
 	})
 }
 
-// TestTellWaitsHoldsNoOutput (T6897): a CLI that keeps drawing is running: no note.
-func TestTellWaitsHoldsNoOutput(t *testing.T) {
-	ts, c, done, _ := switchRunTurned(t, adapter.Claude, func(*Options) { waitNoteQuiet = 200 * time.Millisecond })
-	ts.typeIn(t, "go\r")
-	c.waitGot(t, []byte("go\r"))
-	seen := len(ts.screen())
-	ts.typeIn(t, "\x1c2")
-	since := func() []byte { return ts.screen()[seen:] }
-	poll(t, "the list to close", []byte(altScreenOff), since)
-	seen = len(ts.screen())
-	stop := time.After(600 * time.Millisecond)
-loop:
-	for {
-		select {
-		case <-stop:
-			break loop
-		case <-time.After(50 * time.Millisecond):
-			c.print(".")
+// TestOutputFlowsThroughTheWait (T6897): a pick that waits holds nothing. The list
+// has said why, so after it closes no note opens, however long the CLI is silent,
+// and all it draws reaches the terminal, at the real queuedQuiet or short of it.
+func TestOutputFlowsThroughTheWait(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		keys []string
+		stop bool
+	}{
+		{"an Enter may have started a turn", []string{"go\r"}, false},
+		{"a message queued, real timing", []string{"go\r", "more\r"}, true},
+		{"the prompt in doubt too", []string{"fix @a.go\r"}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ts, c, done, sock := switchRunTurned(t, adapter.Claude, func(*Options) { queuedQuiet = realQueuedQuiet })
+			for _, k := range tt.keys {
+				ts.typeIn(t, k)
+				c.waitGot(t, []byte(k))
+			}
+			if tt.stop {
+				_ = request(t, sock, stopLine)
+				time.Sleep(60 * time.Millisecond)
+			}
+			ts.typeIn(t, "\x1c")
+			poll(t, "the list's words", []byte("A turn may be running in claude"), ts.screen)
+			ts.typeIn(t, "2")
+			poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+			seen := len(ts.screen())
+			since := func() []byte { return ts.screen()[seen:] }
+			// Silences past every quiet the supervisor knows of in this harness,
+			// with drawing between them: each draw must come through at once.
+			for i := range 4 {
+				time.Sleep(300 * time.Millisecond)
+				mark := fmt.Sprintf("DRAW%d", i)
+				c.print(mark)
+				poll(t, mark, []byte(mark), since)
+			}
+			if out := since(); bytes.Contains(out, []byte(altScreenOn)) || bytes.Contains(out, []byte("Esc stays")) {
+				t.Errorf("something opened during the wait: %q", out)
+			}
+			finish(t, c, done)
+		})
+	}
+}
+
+// TestListSaysWhenAPickWaits (T6897): the list's words come only when a pick would
+// wait, and a turn end while it is open blanks them, with the rows they took.
+func TestListSaysWhenAPickWaits(t *testing.T) {
+	var b bytes.Buffer
+	p := &picker{mayRun: true, doubtSaid: true, on: adapter.OpenCode, vendors: []adapter.Vendor{adapter.Claude}}
+	p.draw(&b, false)
+	seen := 0
+	for _, l := range strings.Split(b.String(), "\r\n") {
+		if strings.Contains(l, "may be running") || strings.Contains(l, "pick the vendor again") || strings.Contains(l, "cannot tell") {
+			seen++
+			if len(l) > 80 {
+				t.Errorf("%d columns: %q", len(l), l)
+			}
 		}
 	}
-	if bytes.Contains(since(), []byte("started a turn")) {
-		t.Errorf("a note while the CLI drew: %q", since())
+	if seen != 3 {
+		t.Errorf("%d lines: %q", seen, b.String())
 	}
-	poll(t, "the note, once it is quiet", []byte("started a turn"), since)
+	ts, c, done, sock := switchRunTurned(t, adapter.Claude)
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list", []byte("brief: off"), ts.screen)
+	if bytes.Contains(ts.screen(), []byte("may be running")) {
+		t.Errorf("after a turn end, with no input: %q", ts.screen())
+	}
+	ts.typeIn(t, "\x1b")
+	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+	ts.typeIn(t, "go\r")
+	c.waitGot(t, []byte("go\r"))
+	seenAt := len(ts.screen())
+	since := func() []byte { return ts.screen()[seenAt:] }
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list's words", []byte("may be running"), since)
+	seenAt = len(ts.screen())
+	_ = request(t, sock, stopLine)
+	poll(t, "the redraw", []byte("brief: off"), since)
+	if bytes.Contains(since(), []byte("may be running")) {
+		t.Errorf("the words stayed after the turn end: %q", since())
+	}
+	ts.typeIn(t, "\x1b")
+	poll(t, "the list to close again", []byte(altScreenOff), since)
 	finish(t, c, done)
 }
 
-// TestTellWaitsLinesFit: each of the note's lines fits 80 columns.
-func TestTellWaitsLinesFit(t *testing.T) {
-	s := openCodeSession(t)
-	t.Cleanup(s.closePicker)
-	s.o.Vendor, s.sw.to, s.sw.picked = adapter.OpenCode, adapter.OpenCode, true
-	s.lenKnown, s.popup = false, true
-	old := waitNoteQuiet
-	waitNoteQuiet = 0
-	t.Cleanup(func() { waitNoteQuiet = old })
-	s.tellWaits()
-	if len(s.pk.lines) != 4 {
-		t.Fatalf("lines = %q", s.pk.lines)
+// TestFollowLeavesTurnState (T6901): a move changes the id and nothing about a
+// turn. Codex sends SessionStart inside the turn, so one may be running.
+func TestFollowLeavesTurnState(t *testing.T) {
+	s := turned(adapter.Codex)
+	s.send([]byte("/clear"))
+	s.send([]byte("\r"))
+	s.send([]byte("do the work"))
+	s.send([]byte("\r"))
+	s.queued, s.queuedWait = 1, true
+	s.hookEvent(hookEvent{name: "SessionStart", sessionID: movedSID, source: "clear", chain: ownChain2})
+	if s.atPrompt || !s.mayBeRunning() || !s.inputSinceTurn {
+		t.Errorf("atPrompt %v, mayBeRunning %v, inputSinceTurn %v", s.atPrompt, s.mayBeRunning(), s.inputSinceTurn)
 	}
-	for _, l := range s.pk.lines {
-		if len(l) > 80 {
-			t.Errorf("%d columns: %q", len(l), l)
+	if s.queued != 1 || !s.queuedWait {
+		t.Errorf("queued %d, queuedWait %v", s.queued, s.queuedWait)
+	}
+	if !s.dirty {
+		t.Error("a message after the command is not the command alone: the doubt must stay")
+	}
+	if got := s.o.SessionID(); got == "" || s.followed != movedSID {
+		t.Errorf("followed %q", s.followed)
+	}
+}
+
+// TestFollowMidTurnNoOffer (T6901): through Run, the status line does not come
+// and /exit is not typed while that turn runs.
+func TestFollowMidTurnNoOffer(t *testing.T) {
+	ts, c, done, sock := switchRunTurned(t, adapter.Codex)
+	ts.typeIn(t, "/clear\r")
+	c.waitGot(t, []byte("/clear\r"))
+	time.Sleep(60 * time.Millisecond)
+	ts.typeIn(t, "do the work\r")
+	c.waitGot(t, []byte("do the work\r"))
+	ts.typeIn(t, "\x1c1")
+	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+	_ = request(t, sock, fmt.Sprintf(`{"type":"hook-event","vendor":"codex","event":"SessionStart","payload":{"session_id":%q,"source":"clear"}}`, movedSID))
+	never(t, "an offer mid-turn", []byte("Esc stays"), ts.screen, 300*time.Millisecond)
+	finish(t, c, done)
+}
+
+// TestFollowDoubtOnlyForCommand (T6901): the move clears only what its command
+// left, not text around it, nor a newline taken for an Enter.
+func TestFollowDoubtOnlyForCommand(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		keys  []string
+		dirty bool
+	}{
+		{"only the command", []string{"/clear", "\r"}, false},
+		{"in one read", []string{"/clear\r"}, false},
+		{"a list after it", []string{"/resume", "\r", "\x1b[B", "\r"}, false},
+		{"a draft after it", []string{"/resume", "\r", "abc"}, true},
+		{"option+enter after a draft", []string{"/resume", "\r", "abc", "\x1b\r"}, true},
+		{"backslash enter after a draft", []string{"/resume", "\r", "abc", "\\\r"}, true},
+		{"a message after it, in one read", []string{"/clear\rdo it\r"}, true},
+		{"a message after it", []string{"/clear", "\r", "do it", "\r"}, true},
+		{"an @ in it", []string{"/clear @a", "\r"}, true},
+		{"text before it", []string{"x /clear", "\r"}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := turned(adapter.Claude)
+			for _, k := range tt.keys {
+				s.send([]byte(k))
+			}
+			s.hookEvent(hookEvent{name: "SessionStart", sessionID: movedSID, source: "resume", chain: ownChain2})
+			if s.followed != movedSID {
+				t.Fatalf("not followed")
+			}
+			if s.dirty != tt.dirty {
+				t.Errorf("dirty = %v, want %v", s.dirty, tt.dirty)
+			}
+		})
+	}
+}
+
+// TestRefusedMoveSays (T6901): a move refused leaves turn ends uncounted, so the
+// list says so, with a way out that works, and never that none was seen.
+func TestRefusedMoveSays(t *testing.T) {
+	t.Run("no baseline: Codex reopened, /clear first", func(t *testing.T) {
+		ts, c, done, sock := switchRunOn(t, false, adapter.Codex)
+		ts.typeIn(t, "/clear\r")
+		c.waitGot(t, []byte("/clear\r"))
+		_ = request(t, sock, fmt.Sprintf(`{"type":"hook-event","vendor":"codex","event":"SessionStart","payload":{"session_id":%q,"source":"clear"}}`, movedSID))
+		_ = request(t, sock, fmt.Sprintf(`{"type":"hook-event","vendor":"codex","event":"Stop","payload":{"session_id":%q}}`, movedSID))
+		time.Sleep(60 * time.Millisecond)
+		ts.typeIn(t, "\x1c")
+		poll(t, "the list", []byte("brief: off"), ts.screen)
+		for _, want := range []string{"a session aggy could not confirm", "quit it yourself", "has counted no turn end"} {
+			if !bytes.Contains(ts.screen(), []byte(want)) {
+				t.Errorf("no %q: %q", want, ts.screen())
+			}
 		}
+		if bytes.Contains(ts.screen(), []byte("has seen no turn end")) {
+			t.Error("the list says no turn end was seen")
+		}
+		ts.typeIn(t, "\x1b")
+		poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+		finish(t, c, done)
+	})
+	t.Run("a turn counted: picking twice is the way out", func(t *testing.T) {
+		s := turned(adapter.Claude)
+		s.hookEvent(hookEvent{name: "SessionStart", sessionID: nestedSID, source: "clear", chain: nestedChain})
+		if !s.moveRefused {
+			t.Fatal("not recorded")
+		}
+		var b bytes.Buffer
+		p := &picker{moveRefused: true, on: adapter.Claude}
+		p.draw(&b, false)
+		if !strings.Contains(b.String(), "pick the vendor twice") {
+			t.Errorf("list: %q", b.String())
+		}
+		for _, l := range strings.Split(b.String(), "\r\n") {
+			if strings.Contains(l, "confirm") || strings.Contains(l, "may not count") {
+				if len(l) > 80 {
+					t.Errorf("%d columns: %q", len(l), l)
+				}
+			}
+		}
+		// A turn end naming the session on screen ends the doubt.
+		s.hookEvent(hookEvent{name: "Stop", sessionID: childSID, chain: ownChain})
+		if s.moveRefused {
+			t.Error("a counted turn end left the words")
+		}
+	})
+}
+
+// TestHeldDeadlineFixed (T6897): keys wait for a split sequence 50 ms from its
+// first byte, so key repeat after Alt+] cannot keep them back.
+func TestHeldDeadlineFixed(t *testing.T) {
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
+	ts.typeIn(t, "\x1b]")
+	start := time.Now()
+	for time.Since(start) < 500*time.Millisecond {
+		ts.typeIn(t, "a")
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !bytes.Contains(c.received(), []byte("a")) {
+		t.Errorf("after %v of key repeat the CLI has %q", time.Since(start), c.received())
+	}
+	c.waitGot(t, []byte("aaaa"))
+	finish(t, c, done)
+}
+
+// TestWaitingOptionsStayWithVendor (T6902): a waiting switch's options are that
+// vendor's: a pick of another drops them, and one toggled here stays.
+func TestWaitingOptionsStayWithVendor(t *testing.T) {
+	ts, c, done, sock := switchRunTurned(t, adapter.Claude) // vendors: codex, grok
+	ts.typeIn(t, "go\r")
+	c.waitGot(t, []byte("go\r"))
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list", []byte("brief: off"), ts.screen)
+	ts.typeIn(t, "m")
+	ts.typeIn(t, "gpt-5\r")
+	poll(t, "the model", []byte("gpt-5"), ts.screen)
+	ts.typeIn(t, "1") // codex
+	time.Sleep(100 * time.Millisecond)
+	seen := len(ts.screen())
+	since := func() []byte { return ts.screen()[seen:] }
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list again", []byte("gpt-5"), since)
+	ts.typeIn(t, "2") // grok instead
+	time.Sleep(100 * time.Millisecond)
+	// From here on: the list itself still showed the model.
+	seen = len(ts.screen())
+	_ = request(t, sock, stopLine)
+	poll(t, "the status line", []byte("Esc stays"), since)
+	if bytes.Contains(since(), []byte("gpt-5")) {
+		t.Errorf("the model for codex went with the pick of grok: %q", since())
+	}
+	finish(t, c, done)
+}
+
+// TestPickDropsOnlySeed: a toggle made in this list is for this pick.
+func TestPickDropsOnlySeed(t *testing.T) {
+	p := &picker{waiting: adapter.Codex, seed: Choice{Model: "gpt-5", New: true, Brief: true},
+		opts: Choice{Model: "other", New: true, Brief: true}}
+	_, c := p.choose(adapter.Grok)
+	if c.Model != "other" || c.New || c.Brief {
+		t.Errorf("other vendor: %+v", c)
+	}
+	p = &picker{waiting: adapter.Codex, seed: Choice{Model: "gpt-5", New: true},
+		opts: Choice{Model: "gpt-5", New: true}}
+	if _, c = p.choose(adapter.Codex); c.Model != "gpt-5" || !c.New {
+		t.Errorf("same vendor: %+v", c)
+	}
+}
+
+// TestRepickKeepsAgentTools (T6902): the list cannot set an agent's tools, so
+// picking the same vendor again keeps them.
+func TestRepickKeepsAgentTools(t *testing.T) {
+	ts, c, done, sock := switchRunTurned(t, adapter.Claude)
+	ts.typeIn(t, "go\r")
+	c.waitGot(t, []byte("go\r"))
+	_ = request(t, sock, `{"type":"switch-request","vendor":"grok","tools":["context7"]}`)
+	time.Sleep(60 * time.Millisecond)
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list", []byte("brief: off"), ts.screen)
+	time.Sleep(60 * time.Millisecond)
+	seen := len(ts.screen())
+	ts.typeIn(t, "2")
+	since := func() []byte { return ts.screen()[seen:] }
+	poll(t, "the status line", []byte("Esc stays"), since)
+	if !bytes.Contains(since(), []byte("context7")) {
+		t.Errorf("the agent's tool is gone from the offer: %q", since())
+	}
+	finish(t, c, done)
+}
+
+// TestStripFollowsPaste (T6897): a report-shaped paste at a prompt of aggy's is
+// the paste's, opened and closed in one read or across reads.
+func TestStripFollowsPaste(t *testing.T) {
+	f := newKeyFilter(0x1c)
+	rep, rest := f.strip([]byte("\x1b[200~\x1b[I1\x1b[201~"))
+	if len(rep) != 0 || string(rest) != "\x1b[200~\x1b[I1\x1b[201~" {
+		t.Errorf("reports %q, rest %q", rep, rest)
+	}
+	if f.inPaste {
+		t.Error("still in the paste")
+	}
+	f = newKeyFilter(0x1c)
+	_, _ = f.strip([]byte("\x1b[200~a"))
+	if rep, _ = f.strip([]byte("\x1b[Ib")); len(rep) != 0 {
+		t.Errorf("reports %q", rep)
+	}
+	_, _ = f.strip([]byte("\x1b[201~"))
+	if f.inPaste {
+		t.Error("the close marker was missed")
+	}
+	if rep, _ = f.strip([]byte("\x1b[I")); len(rep) == 0 {
+		t.Error("a reply after the paste is not one")
 	}
 }
 

@@ -40,6 +40,9 @@ type picker struct {
 	// moveRefused: a hook said on moved to another session and aggy could not
 	// confirm it, so turn ends there may not count.
 	moveRefused bool
+	// mayRun: a turn may be running or a message queued, so a pick waits for a
+	// turn end; doubtSaid: the prompt is in doubt too, and the list says that.
+	mayRun, doubtSaid bool
 	// seed is what opts took from the switch waiting, which is waiting's alone.
 	seed Choice
 	// padRows blanks that many rows below the list, as its text shrinks over
@@ -126,6 +129,7 @@ func (p *picker) warn(to adapter.Vendor, forms ...string) {
 const (
 	noTurnListRows  = 6
 	moveRefusedRows = 2
+	mayRunRows      = 3
 )
 
 // draw writes the picker: on the alternate screen, or, when the CLI is
@@ -170,6 +174,15 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 			lines = append(lines, "", fmt.Sprintf("Switching to %s; Esc cancels it.", p.waiting))
 		case p.waiting != "":
 			lines = append(lines, "", fmt.Sprintf("Switching to %s when this turn ends; Esc cancels it, picking it again says no turn is running.", p.waiting))
+		}
+		if p.mayRun {
+			// Each fits 80 columns. mayRunRows counts these with the blank.
+			lines = append(lines, "",
+				fmt.Sprintf("A turn may be running in %s, or a message queued. aggy switches when it", p.on),
+				"ends. If nothing is running, pick the vendor again after this to go on.")
+			if p.doubtSaid {
+				lines = append(lines, "aggy also cannot tell if the prompt is empty, so look at it first.")
+			}
 		}
 		if p.moveRefused {
 			// Each fits 80 columns. Where nothing else would say to quit by hand
