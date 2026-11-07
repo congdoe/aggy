@@ -118,7 +118,7 @@ func launch(name string, t target, stderr io.Writer) int {
 // it gets no brief.
 func sameChildAgain(t target, next switchTo) target {
 	return target{ParentID: next.parentID, Vendor: next.vendor, Child: next.child, SameChild: true,
-		Model: t.Model, Tools: t.Tools, Extra: t.SafeExtra, SafeExtra: t.SafeExtra, FlagNotes: t.FlagNotes}
+		Model: t.Model, Tools: t.Tools, Extra: t.SafeExtra, SafeExtra: t.SafeExtra, FlagNotes: t.FlagNotes, Dirs: t.Dirs}
 }
 
 // switchTo is the vendor a CLI exited for, its parent, and the switch's
@@ -176,6 +176,9 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	}
 	v := adapter.Vendor(pl.child.Vendor)
 	ids = diag.Rec{Parent: pl.parent.ID, Child: pl.child.ID, Vendor: string(v)}
+	if err := gateDirFlags(&t, pl.child.Cwd); err != nil {
+		return fail(diag.CodeFlagLoosens, err)
+	}
 	if pl.remakeCwd {
 		remove, err := remakeBorrowDir(pl.child.Cwd)
 		if err != nil {

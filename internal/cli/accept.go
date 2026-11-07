@@ -86,7 +86,7 @@ func editTarget(ctx context.Context, s *store.Store, g *gitWorktrees, id string)
 func sessionOpenErr(id string, cur store.GCWorktree, err error) error {
 	switch {
 	case err != nil:
-		return fmt.Errorf("borrow %s: aggy cannot tell whether its session is open: %w", id, err)
+		return withCode(diag.CodeStore, fmt.Errorf("borrow %s: aggy cannot tell whether its session is open: %w", id, err))
 	case cur.Held:
 		return fmt.Errorf("borrow %s: its session is open in another aggy; close it first", id)
 	}

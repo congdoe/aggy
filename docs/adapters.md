@@ -636,45 +636,61 @@ it is `--flag=value`.
   `--settings`, `--append-system-prompt-file` (and `--append-system-prompt`),
   `--mcp-config`; Codex `--no-alt-screen`, and `-c` on
   `developer_instructions`, `model`, or `mcp_servers.*`; Grok `--session-id`
-  (`-s`), `--no-alt-screen`, `--rules`, `--deny` (and its alias
-  `--disallowedTools`), `--agent`.
+  (`-s`), `--no-alt-screen`, `--rules` (and its alias `--append-system-prompt`),
+  `--deny` (and its alias `--disallowedTools`), `--agent`.
 - Refused, because the session would not be the one aggy recorded: Claude
   `--fork-session`, `-p`, `--worktree`, `--bg`, `--cloud`, and the like;
-  Codex `-C`, `--remote`, `--worktree`; Grok `--fork-session`, `-p`,
-  `--prompt-file`, `--prompt-json`, `--cwd`, `--worktree` (`-w`), `--worktree-ref`.
+  Codex `-C`, `--remote`, `--worktree`; Grok `--fork-session`, `-p` (`--single`,
+  `--print`), `--prompt-file`, `--prompt-json`, `--load`, `--cwd`, `--worktree`
+  (`-w`), `--worktree-ref`, `--local-workspace*`. Grok `--installer` too, which
+  writes its config outside aggy's manifest.
 - Refused unless `--no-policy`, then noted at launch and logged
   (`loosening_flags`): anything naming `dangerously`, on every vendor; Claude
   `--permission-mode` outside `default` (`manual`), `acceptEdits`, `plan`, `auto`,
-  and `dontAsk`, and `--agents` naming `bypassPermissions`; Codex `--yolo`,
-  `--approve-for-me`, `--not-so-yolo`, `-a` but `on-request` or `untrusted`, `-s
-  danger-full-access`, `--profile`, every `--enable`, `--disable` of a feature
-  whose name says it is a safety layer (`hooks`, `codex_hooks`, sandbox, approval,
-  guardian, permission features), `--add-dir` of `/`, `$HOME`, or a folder holding
-  it, and `-c` of any key but a short list that changes only display and
-  reasoning, or `features.<name>=false` that `--disable` would pass; Grok
-  `--always-approve`, any flag naming `approve`, `yolo`, or `bypass`, any
-  `--permission-mode` but `plan` or `default`, any `--sandbox` but `strict`, and
-  `--agents` naming `bypassPermissions`.
-- Passed, with a line at launch: Codex `--add-dir` (more writable roots; whether
-  the rules file applies there is unverified); Claude `--safe-mode` and `--bare`
-  (hooks and MCP servers do not load, per the reference; whether that covers
-  aggy's `--settings` hooks is unverified). Gating them would cost the deny rules,
-  which still apply.
-- Passed, on purpose: Claude `--allowedTools`, `--agents` without
-  `bypassPermissions`, and `--permission-mode auto` ask less, and Claude documents
-  that deny rules block in every mode and that an allow rule cannot carve an
-  exception out of one (permission-modes.md, permissions.md). Codex's
-  `--approve-for-me` stays gated because the same is unverified for its rules file.
-  Unverified too: whether aggy's rules file still applies under `--profile`.
+  and `dontAsk`; Codex `--yolo`, `--approve-for-me`, `--not-so-yolo`, `-a` but
+  `on-request` or `untrusted`, `-s danger-full-access`, `--disable` of a feature
+  that is a safety layer (`hooks`, `codex_hooks`, sandbox, approval, guardian,
+  permission features, `credential_masking`, `secret_auth_storage`,
+  `code_mode_only`), and `-c` of any key but a short list that changes only display
+  and reasoning, or `features.<name>=false` that `--disable` would pass; Grok
+  `--always-approve`, `--trust` and `--trust-folder` (they persist hook trust), any
+  flag naming `approve`, `approval`, `yolo`, `bypass`, `no-sandbox`, or
+  `skip-permission`, any `--permission-mode` but `plan` or `default`, and any
+  `--sandbox` but `strict`.
+- `--agents` on Claude and Grok is decoded as JSON: refused unless `--no-policy`
+  when any `permissionMode` is one that vendor's `--permission-mode` table gates
+  (on Grok, `auto` and `dontAsk` among them), when `bypassPermissions` is any
+  value, or when the value is not JSON aggy can read, such as a file. `--agent x`
+  may name a repo's agent file, which aggy does not read (TODO(T6895)).
+- `--add-dir` on Codex and Grok is judged at launch, in `internal/cli`, since an
+  adapter touches no disk: resolved against the directory the CLI starts in (the
+  child's on a resume), and refused unless `--no-policy` when it is, holds, or is
+  inside a home's key folders or a vendor's config folder
+  (`safefs.HoldsSecrets`, which compares paths the way safefs does: symlinks, case,
+  the macOS firmlink). A value aggy cannot make a path of counts.
+- Passed, with a line at launch: Codex `--profile` and `--enable`, since forcing
+  `--no-policy` to keep a daily profile drops the whole safety policy, which is less
+  safe than a noted pass (whether aggy's rules file applies under a profile is
+  unverified, TODO(T6895)); other `--add-dir` values on Codex and Grok (more
+  folders; that the policy applies in them is unverified); Claude `--safe-mode` and
+  `--bare` (hooks and MCP servers do not load, per the reference; whether that
+  covers aggy's `--settings` hooks is unverified). Gating these would cost the
+  policy, which still applies.
+- Passed, on purpose: Claude `--allowedTools`, other `--agents`, and
+  `--permission-mode auto` ask less, and Claude documents that deny rules block in
+  every mode and that an allow rule cannot carve an exception out of one
+  (permission-modes.md, permissions.md). Codex's `--approve-for-me` stays gated
+  because the same is unverified for its rules file.
 
 Sources: Claude code.claude.com/docs/en/cli-reference, permission-modes,
 permissions (read 2026-11-07); Codex
 learn.chatgpt.com/docs/developer-commands?surface=cli (read 2026-11-07), and at
 `6aaac69` `features/src/lib.rs`, `features/src/legacy.rs`, and
-`utils/cli/src/approval_mode_cli_arg.rs`; Grok `grok --help` at 1.0.77
-(`docs/verification.md`, T6952). A flag a table does not list passes, and the CLI
-refuses what it does not take. Whether Codex takes every top-level flag after
-`resume <id>` is unverified (the reference lists model and sandbox overrides
+`utils/cli/src/approval_mode_cli_arg.rs`; Grok `grok --help` at 1.0.77 and
+`PagerArgs` in `crates/codegen/xai-grok-pager/src/app/cli.rs` at grok-build
+`2bdd1d6a` (`docs/verification.md`, T6952). A flag a table does not list passes,
+and the CLI refuses what it does not take. Whether Codex takes every top-level flag
+after `resume <id>` is unverified (the reference lists model and sandbox overrides
 there).
 
 Shared memory (`<repo>/.aggy/memory.md`, design.md section 10) goes on
