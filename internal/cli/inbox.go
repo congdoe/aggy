@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/borrow"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -45,27 +46,30 @@ func inboxWith(args []string, now func() time.Time, stdout, stderr io.Writer) in
 			fmt.Fprint(stdout, inboxUsage)
 			return 0
 		}
-		fmt.Fprintf(stderr, "aggy inbox: %v\n\n%s", err, inboxUsage)
-		return 2
+		return cmdUsage(stderr, "inbox", err.Error(), inboxUsage)
 	}
 	if fl.NArg() > 1 {
-		fmt.Fprintf(stderr, "aggy inbox: unexpected arguments\n\n%s", inboxUsage)
-		return 2
+		return cmdUsage(stderr, "inbox", "unexpected arguments", inboxUsage)
 	}
 	path, err := store.DefaultPath()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy inbox: %v\n", err)
-		return 1
+		return cmdErr(stderr, "inbox", diag.CodeStore, err)
 	}
 	if _, err := safefs.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		if fl.NArg() == 1 {
+			// An id names a report, and with no index there is none.
+			if code, ok := checkBorrowPrefix(strings.ToLower(fl.Arg(0)), stderr); !ok {
+				return code
+			}
+			return cmdFail(stderr, "inbox", diag.CodeNotFound, "no borrow "+strings.ToLower(fl.Arg(0)))
+		}
 		fmt.Fprintln(stdout, "No reports yet.")
 		return 0
 	}
 	ctx := context.Background()
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy inbox: %s\n", termsafe.Field(err.Error()))
-		return 1
+		return cmdErr(stderr, "inbox", diag.CodeStore, err)
 	}
 	defer func() { _ = s.Close() }()
 	if fl.NArg() == 1 {
@@ -73,8 +77,7 @@ func inboxWith(args []string, now func() time.Time, stdout, stderr io.Writer) in
 	}
 	rows, err := s.InboxBorrows(ctx, *all)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy inbox: %s\n", termsafe.Field(err.Error()))
-		return 1
+		return cmdErr(stderr, "inbox", diag.CodeStore, err)
 	}
 	if len(rows) == 0 {
 		if *all {
@@ -101,54 +104,53 @@ func inboxWith(args []string, now func() time.Time, stdout, stderr io.Writer) in
 	return 0
 }
 
+// checkBorrowPrefix refuses what cannot be the start of a borrow id.
+func checkBorrowPrefix(prefix string, stderr io.Writer) (int, bool) {
+	if len(prefix) < minPrefix || len(prefix) > 16 || strings.Trim(prefix, "0123456789abcdef") != "" {
+		return cmdUsage(stderr, "inbox", fmt.Sprintf("%q is not a borrow id (at least %d hex digits)", prefix, minPrefix), ""), false
+	}
+	return 0, true
+}
+
 // showReport prints the report of the borrow whose id starts with
 // prefix and marks it read. The report holds child output, so every
 // line goes through termsafe. It is read from the inbox path the id
 // names, never from a path stored in the row.
 func showReport(ctx context.Context, s *store.Store, prefix string, now func() time.Time, stdout, stderr io.Writer) int {
 	prefix = strings.ToLower(prefix)
-	if len(prefix) < minPrefix || len(prefix) > 16 || strings.Trim(prefix, "0123456789abcdef") != "" {
-		fmt.Fprintf(stderr, "aggy inbox: %q is not a borrow id (at least %d hex digits)\n", termsafe.Field(prefix), minPrefix)
-		return 2
+	if code, ok := checkBorrowPrefix(prefix, stderr); !ok {
+		return code
 	}
 	rows, err := s.BorrowsByPrefix(ctx, prefix)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy inbox: %s\n", termsafe.Field(err.Error()))
-		return 1
+		return cmdErr(stderr, "inbox", diag.CodeStore, err)
 	}
 	switch {
 	case len(rows) == 0:
-		fmt.Fprintf(stderr, "aggy inbox: no borrow %s\n", prefix)
-		return 1
+		return cmdFail(stderr, "inbox", diag.CodeNotFound, "no borrow "+prefix)
 	case len(rows) > 1:
-		fmt.Fprintf(stderr, "aggy inbox: %s matches %d borrows; give more of the id\n", prefix, len(rows))
-		return 1
+		return cmdFail(stderr, "inbox", diag.CodeAmbiguousID, fmt.Sprintf("%s matches %d borrows; give more of the id", prefix, len(rows)))
 	}
 	b := rows[0]
 	// The id is joined into a path below: it must be exactly what aggy
 	// makes, whatever the row holds.
 	if !borrow.ValidID(b.ID) {
-		fmt.Fprintf(stderr, "aggy inbox: borrow id %s is not 16 hex digits\n", termsafe.Field(b.ID))
-		return 1
+		return cmdFail(stderr, "inbox", diag.CodeStore, fmt.Sprintf("borrow id %s is not 16 hex digits", b.ID))
 	}
 	if b.ReportPath == "" {
-		fmt.Fprintf(stderr, "aggy inbox: borrow %s has no report (status %s)\n", b.ID, termsafe.Field(b.Status))
-		return 1
+		return cmdFail(stderr, "inbox", diag.CodeNotFound, fmt.Sprintf("borrow %s has no report (status %s)", b.ID, b.Status))
 	}
 	dir, err := home.Dir()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy inbox: %v\n", err)
-		return 1
+		return cmdErr(stderr, "inbox", diag.CodeStore, err)
 	}
 	data, err := safefs.ReadFileLimit(borrow.ReportPath(dir, b.ID), maxReport)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy inbox: %s\n", termsafe.Field(err.Error()))
-		return 1
+		return cmdErr(stderr, "inbox", diag.CodeStore, err)
 	}
 	fmt.Fprintln(stdout, termsafe.Lines(strings.TrimRight(string(data), "\n")))
 	if err := s.MarkBorrowRead(ctx, b.ID, now()); err != nil {
-		fmt.Fprintf(stderr, "aggy inbox: %s\n", termsafe.Field(err.Error()))
-		return 1
+		return cmdErr(stderr, "inbox", diag.CodeStore, err)
 	}
 	return 0
 }

@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/manifest"
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/patch"
@@ -51,8 +52,7 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprint(stdout, mcpUsage)
 			return 0
 		}
-		fmt.Fprint(stderr, mcpUsage)
-		return 2
+		return cmdUsage(stderr, "mcp", "name a subcommand", mcpUsage)
 	}
 	fl := flag.NewFlagSet("mcp wire", flag.ContinueOnError)
 	fl.SetOutput(io.Discard)
@@ -61,12 +61,10 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 	var named []string
 	fl.Func("server", "", func(n string) error { named = append(named, n); return nil })
 	if err := fl.Parse(args[1:]); err != nil || fl.NArg() > 0 {
-		fmt.Fprintf(stderr, "aggy mcp wire: bad arguments\n\n%s", mcpUsage)
-		return 2
+		return cmdUsage(stderr, "mcp wire", "bad arguments", mcpUsage)
 	}
 	fail := func(err error) int {
-		fmt.Fprintf(stderr, "aggy mcp wire: %s\n", termsafe.Line(err.Error()))
-		return 1
+		return cmdErr(stderr, "mcp wire", diag.CodeWireFailed, err)
 	}
 	vendors := []adapter.Vendor{adapter.Codex, adapter.Grok}
 	switch *only {
@@ -74,8 +72,7 @@ func runMCP(args []string, stdout, stderr io.Writer) int {
 	case "codex", "grok":
 		vendors = []adapter.Vendor{adapter.Vendor(*only)}
 	default:
-		fmt.Fprintf(stderr, "aggy mcp wire: --vendor must be codex or grok\n\n%s", mcpUsage)
-		return 2
+		return cmdUsage(stderr, "mcp wire", "--vendor must be codex or grok", mcpUsage)
 	}
 	src, err := parity.ClaudeJSONPath(os.Getenv)
 	if err != nil {

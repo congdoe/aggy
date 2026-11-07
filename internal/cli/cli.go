@@ -195,7 +195,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, usage)
 		return 0
 	default:
-		fmt.Fprintf(stderr, "aggy: unknown command %q\n\n%s", args[0], usage)
-		return 2
+		return cmdUsage(stderr, "", fmt.Sprintf("unknown command %q", args[0]), usage)
 	}
 }

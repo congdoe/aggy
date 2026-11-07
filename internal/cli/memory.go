@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/manifest"
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/patch"
@@ -53,8 +54,7 @@ type memoryEntry struct {
 func runMemory(args []string, stdout, stderr io.Writer) int {
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy memory: %v\n", err)
-		return 1
+		return cmdErr(stderr, "memory", diag.CodeWireFailed, err)
 	}
 	return memoryWith(args, cwd, os.Stdin, isTerminal(os.Stdin), stdout, stderr)
 }
@@ -65,8 +65,7 @@ func memoryWith(args []string, cwd string, in io.Reader, tty bool, stdout, stder
 			fmt.Fprint(stdout, memoryUsage)
 			return 0
 		}
-		fmt.Fprint(stderr, memoryUsage)
-		return 2
+		return cmdUsage(stderr, "memory", "name a subcommand", memoryUsage)
 	}
 	fl := flag.NewFlagSet("memory import", flag.ContinueOnError)
 	fl.SetOutput(io.Discard)
@@ -76,12 +75,10 @@ func memoryWith(args []string, cwd string, in io.Reader, tty bool, stdout, stder
 	yes := fl.Bool("yes", false, "")
 	dryRun := fl.Bool("dry-run", false, "")
 	if err := fl.Parse(args[1:]); err != nil || fl.NArg() > 0 || *from != "claude" || (*yes && *dryRun) {
-		fmt.Fprintf(stderr, "aggy memory import: bad arguments\n\n%s", memoryUsage)
-		return 2
+		return cmdUsage(stderr, "memory import", "bad arguments", memoryUsage)
 	}
 	fail := func(err error) int {
-		fmt.Fprintf(stderr, "aggy memory import: %s\n", termsafe.Line(err.Error()))
-		return 1
+		return cmdErrDry(stderr, "memory import", diag.CodeWireFailed, err, *dryRun)
 	}
 	root, inRepo := repoRoot(cwd)
 	if *dir == "" {

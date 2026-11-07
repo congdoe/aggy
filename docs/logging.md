@@ -39,7 +39,7 @@ Each record is one row of the `records` table. The record schema is versioned (`
 | `schema` | int | the record schema version |
 | `ts` | int | Unix milliseconds, UTC |
 | `level` | text | `error`, `warn`, `info`, or `debug`, from the event's registry entry |
-| `component` | text | `borrow`, `accept`, `check`, `gc`, `setup`, `doctor`, `adapter.claude`, `adapter.codex`, `adapter.grok`, `supervisor`, `switch`, `hook`, `diag`; later `tool` |
+| `component` | text | `cli`, `borrow`, `accept`, `check`, `gc`, `setup`, `doctor`, `adapter.claude`, `adapter.codex`, `adapter.grok`, `supervisor`, `switch`, `hook`, `diag`; later `tool` |
 | `event` | text | the stable dotted event name |
 | `code` | text | the stable reason code; empty for a plain info event |
 | `msg` | text | short and scrubbed: aggy's own words. A refusal's or error's record holds its code's registry text, not the message aggy printed, which can quote argv, a path, an environment value, or git's or a vendor CLI's own text; when an error caused it, `attrs.error_class` says what kind (`not_exist`, `permission`, `exist`, `timeout`, `canceled`, `path`, or `other`) |
@@ -79,7 +79,7 @@ Every record carries them, so any problem can be followed end to end with one qu
 
 ## What aggy prints
 
-Every refusal or error aggy prints on the instrumented paths ends with `[<code> · run <run id>]`:
+Every refusal or error aggy prints ends with `[<code> · run <run id>]`, and writes a record under that run, with the exceptions below:
 
 ```text
 aggy borrow: aggy borrow does not run inside a borrow child (AGGY_DELEGATED is set): borrows are one hop [borrow.one_hop · run 01JBX4M6T0Q2W8Y5C3N7R9D1FA]
@@ -87,7 +87,13 @@ aggy accept: refusing: the diff touches .github/workflows/ci.yml, ... [accept.pr
 borrow 4f1c2a9e0b7d3c55: research on grok (default model): lockdown in 3s, 0 tokens [lockdown.rejected · run 01JBX4P...]
 ```
 
-The message is the one aggy printed before; the code and run id are added. Usage errors print the usage text after the tagged line. `aggy doctor`'s error findings end with `[doctor.error_finding · run …]`, and `aggy check`'s failed commands and its summary line with `[check.failed · run …]`. A dry run prints its refusals without the tag, since it stores no record.
+The message is the one aggy printed before; the code and run id are added. Usage errors print the usage text after the tagged line. `aggy doctor`'s error findings end with `[doctor.error_finding · run …]`, and `aggy check`'s failed commands and its summary line with `[check.failed · run …]`.
+
+- A dry run prints its refusals without the tag, since it stores no record.
+- `aggy diag`'s own refusals carry the tag and write no record, since every form of it only reads. So do `aggy hook`'s guard denials, which a vendor CLI reads on a deadline.
+- `aggy hook`'s timeout note carries no tag: the hook has no time left to write the record the tag would name.
+
+A warning, where the command goes on (`aggy tool list` with unreadable settings, `aggy gc` skipping an unreadable log), is not a refusal and has no tag.
 
 ### Exit codes
 
@@ -217,6 +223,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `tool.switch.changed` | info | tool | aggy tool on or off recorded a switch (attrs: tool, vendor, repo, on). | aggy tool status shows what is on where. |
 | `tool.session.notified` | info | tool | aggy tool on or off told running sessions their tools may have changed (attrs: sessions told, failed). | supervisor.tools.changed in each session's trace. |
 | `supervisor.tools.changed` | info | supervisor | A running session's tools for its vendor and repo differ from its launch's; it offers a resume of the same session at the turn end (attrs: changed, how: queued, note, waiting, busy, or reverted). | switch.request.offered follows at a quiet turn end. |
+| `cli.command.refused` | error | cli | A command refused its arguments or failed; the code says why. | The code's entry; aggy diag show &lt;run id&gt; for what led to it. |
 | `supervisor.launch.refused` | error | supervisor | aggy run, new, or resume did not put the CLI on screen, or the supervisor failed while it ran. | The code's entry; aggy diag show &lt;run id&gt; for what led to it. |
 | `supervisor.child.launched` | info | supervisor | A CLI went on screen (attrs: new_child, brief, model_set, direct). Its trace is the one its hooks, switches, and borrows carry. | aggy diag show &lt;trace id&gt; for the whole session. |
 | `supervisor.child.exited` | info | supervisor | The on-screen CLI exited; exit_code and duration_ms say how, attrs.switch_to the vendor launched next, if any. | A switch_to with no supervisor.child.launched after it: the next launch's supervisor.launch.refused. |
@@ -254,6 +261,13 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | --- | --- | --- | --- |
 | `cli.usage` |  | Bad arguments or flags. | Run the command with --help. |
 | `cli.flag_clash` |  | A flag for the vendor CLI clashes with what aggy passes it at launch. | Drop the flag; the message says what aggy does instead. Run the CLI itself if you need it. |
+| `cli.vendor_not_allowed` |  | This repo's allowed_vendors does not list that vendor. | The repo's .aggy/config.toml. |
+| `cli.ambiguous_id` |  | More than one session or borrow starts with that id. | Give more of the id. |
+| `cli.not_in_repo` |  | The command needs a git work tree, and this directory is in none. | Run it inside the repo. |
+| `cli.failed` |  | The command could not finish; the message says what failed. | The message; aggy diag show &lt;run id&gt; for what led to it. |
+| `wire.failed` |  | aggy could not make or plan a config change (hooks, skill, memory, MCP servers, policy, or attribution); what was applied is in the manifest. | The message; aggy unwire undoes what was applied. |
+| `unwire.refused` |  | aggy unwire left a change as it is: the file changed after aggy changed it, or the change cannot be undone safely. | The message says how to undo it by hand, or to see what --force would overwrite. |
+| `unwire.failed` |  | aggy unwire tried to undo a change and could not write the file. | The file's permissions and disk. |
 | `cli.not_found` |  | No session, borrow, change, or file has that id or name. | List them: aggy sessions, aggy session, aggy inbox, or aggy log. |
 | `cli.config_invalid` |  | A config file could not be read or is invalid. | The message names the file and key; fix it. |
 | `store.unavailable` |  | The index (~/.aggy/aggy.db) could not be opened, read, or written. | aggy doctor; the state dir's permissions and free space. |

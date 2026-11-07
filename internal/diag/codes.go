@@ -105,6 +105,7 @@ var (
 	EvToolsNotified       = Event{"tool.session.notified"}
 	EvToolsChanged        = Event{"supervisor.tools.changed"}
 	EvLaunchRefused       = Event{"supervisor.launch.refused"}
+	EvCommandRefused      = Event{"cli.command.refused"}
 	EvLaunched            = Event{"supervisor.child.launched"}
 	EvSessionExited       = Event{"supervisor.child.exited"}
 	EvSwitchQueued        = Event{"switch.request.queued"}
@@ -144,6 +145,13 @@ var (
 	CodeConfig           = Code{"cli.config_invalid"}
 	CodeFlagClash        = Code{"cli.flag_clash"}
 	CodeNotFound         = Code{"cli.not_found"}
+	CodeAmbiguousID      = Code{"cli.ambiguous_id"}
+	CodeNotAllowed       = Code{"cli.vendor_not_allowed"}
+	CodeNotInRepo        = Code{"cli.not_in_repo"}
+	CodeCommandFailed    = Code{"cli.failed"}
+	CodeWireFailed       = Code{"wire.failed"}
+	CodeUnwireRefused    = Code{"unwire.refused"}
+	CodeUnwireFailed     = Code{"unwire.failed"}
 	CodeStore            = Code{"store.unavailable"}
 	CodeOneHop           = Code{"borrow.one_hop"}
 	CodeBorrowInvalid    = Code{"borrow.invalid_request"}
@@ -284,6 +292,7 @@ var events = []EventInfo{
 	{EvToolSwitched, LevelInfo, "tool", "aggy tool on or off recorded a switch (attrs: tool, vendor, repo, on).", "aggy tool status shows what is on where."},
 	{EvToolsNotified, LevelInfo, "tool", "aggy tool on or off told running sessions their tools may have changed (attrs: sessions told, failed).", "supervisor.tools.changed in each session's trace."},
 	{EvToolsChanged, LevelInfo, "supervisor", "A running session's tools for its vendor and repo differ from its launch's; it offers a resume of the same session at the turn end (attrs: changed, how: queued, note, waiting, busy, or reverted).", "switch.request.offered follows at a quiet turn end."},
+	{EvCommandRefused, LevelError, "cli", "A command refused its arguments or failed; the code says why.", "The code's entry; " + showRun + "."},
 	{EvLaunchRefused, LevelError, "supervisor", "aggy run, new, or resume did not put the CLI on screen, or the supervisor failed while it ran.", "The code's entry; " + showRun + "."},
 	{EvLaunched, LevelInfo, "supervisor", "A CLI went on screen (attrs: new_child, brief, model_set, direct). Its trace is the one its hooks, switches, and borrows carry.", "aggy diag show <trace id> for the whole session."},
 	{EvSessionExited, LevelInfo, "supervisor", "The on-screen CLI exited; exit_code and duration_ms say how, attrs.switch_to the vendor launched next, if any.", "A switch_to with no supervisor.child.launched after it: the next launch's supervisor.launch.refused."},
@@ -321,6 +330,13 @@ var events = []EventInfo{
 var codes = []CodeInfo{
 	{CodeUsage, false, "Bad arguments or flags.", "Run the command with --help."},
 	{CodeFlagClash, false, "A flag for the vendor CLI clashes with what aggy passes it at launch.", "Drop the flag; the message says what aggy does instead. Run the CLI itself if you need it."},
+	{CodeNotAllowed, false, "This repo's allowed_vendors does not list that vendor.", "The repo's .aggy/config.toml."},
+	{CodeAmbiguousID, false, "More than one session or borrow starts with that id.", "Give more of the id."},
+	{CodeNotInRepo, false, "The command needs a git work tree, and this directory is in none.", "Run it inside the repo."},
+	{CodeCommandFailed, false, "The command could not finish; the message says what failed.", "The message; " + showRun + "."},
+	{CodeWireFailed, false, "aggy could not make or plan a config change (hooks, skill, memory, MCP servers, policy, or attribution); what was applied is in the manifest.", "The message; aggy unwire undoes what was applied."},
+	{CodeUnwireRefused, false, "aggy unwire left a change as it is: the file changed after aggy changed it, or the change cannot be undone safely.", "The message says how to undo it by hand, or to see what --force would overwrite."},
+	{CodeUnwireFailed, false, "aggy unwire tried to undo a change and could not write the file.", "The file's permissions and disk."},
 	{CodeNotFound, false, "No session, borrow, change, or file has that id or name.", "List them: aggy sessions, aggy session, aggy inbox, or aggy log."},
 	{CodeConfig, false, "A config file could not be read or is invalid.", "The message names the file and key; fix it."},
 	{CodeStore, false, "The index (~/.aggy/aggy.db) could not be opened, read, or written.", "aggy doctor; the state dir's permissions and free space."},

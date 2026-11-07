@@ -49,30 +49,25 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		case name == "--tool":
 			if !hasVal {
 				if len(args) < 2 {
-					fmt.Fprint(stderr, usage)
-					return 2
+					return cmdUsage(stderr, "run", "--tool needs a name", usage)
 				}
 				args, val = args[1:], args[1]
 			}
 			if !tooldef.ValidName(val) {
-				fmt.Fprintf(stderr, "aggy run: %q is not a tool name\n", val)
-				return 2
+				return cmdUsage(stderr, "run", fmt.Sprintf("%q is not a tool name", val), "")
 			}
 			tools = append(tools, val)
 		default:
-			fmt.Fprint(stderr, usage)
-			return 2
+			return cmdUsage(stderr, "run", fmt.Sprintf("unknown flag %q; aggy claude, codex, or grok take the CLI's own flags", args[0]), usage)
 		}
 		args = args[1:]
 	}
 	if len(args) != 1 {
-		fmt.Fprint(stderr, usage)
-		return 2
+		return cmdUsage(stderr, "run", "name one vendor", usage)
 	}
 	v, err := adapter.ParseVendor(args[0])
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy run: %v\n", err)
-		return 2
+		return cmdUsage(stderr, "run", err.Error(), "")
 	}
 	return launch("aggy run", target{New: true, Vendor: v, Direct: direct, NoPolicy: noPolicy, Tools: tools}, stderr)
 }

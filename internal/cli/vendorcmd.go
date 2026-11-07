@@ -119,8 +119,7 @@ func runContinue(args []string, stderr io.Writer) int {
 			t.NoPolicy = true
 		case "--continue", "-c":
 		default:
-			fmt.Fprint(stderr, "usage: aggy --continue [--no-policy]\n")
-			return 2
+			return cmdUsage(stderr, "", "aggy --continue takes only --no-policy", "usage: aggy --continue [--no-policy]\n")
 		}
 	}
 	return launch("aggy", t, stderr)

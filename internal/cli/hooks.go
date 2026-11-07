@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/hook"
 	"github.com/congdoe/aggy/internal/manifest"
 	"github.com/congdoe/aggy/internal/patch"
@@ -212,28 +213,27 @@ func runHooks(args []string, stdout, stderr io.Writer) int {
 	vendor := fl.String("vendor", "", "")
 	dryRun := fl.Bool("dry-run", false, "")
 	if err := fl.Parse(args[1:]); err != nil || fl.NArg() > 0 {
-		fmt.Fprintf(stderr, "aggy hooks: bad arguments\n\n%s", hooksUsage)
-		return 2
+		return cmdUsage(stderr, "hooks", "bad arguments", hooksUsage)
 	}
 	vendors := adapter.Vendors()
 	if *vendor != "" {
 		v, err := adapter.ParseVendor(*vendor)
 		if err != nil {
-			fmt.Fprintf(stderr, "aggy hooks: %v\n", err)
-			return 2
+			return cmdUsage(stderr, "hooks", err.Error(), "")
 		}
 		vendors = []adapter.Vendor{v}
 	}
+	if op != "status" && op != "install" {
+		return cmdUsage(stderr, "hooks", fmt.Sprintf("unknown subcommand %q", op), hooksUsage)
+	}
 	bin, err := aggyBin()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy hooks: %s\n", termsafe.Line(err.Error()))
-		return 1
+		return cmdErrDry(stderr, "hooks", diag.CodeWireFailed, err, *dryRun)
 	}
 	switch op {
 	case "status":
 		if *vendor != "" || *dryRun {
-			fmt.Fprintln(stderr, "aggy hooks status takes no flags")
-			return 2
+			return cmdUsage(stderr, "hooks status", "takes no flags", "")
 		}
 		code := 0
 		for _, v := range adapter.Vendors() {
@@ -244,18 +244,13 @@ func runHooks(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "%-7s %s\n", v, termsafe.Line(st+note))
 		}
 		return code
-	case "install":
-	default:
-		fmt.Fprintf(stderr, "aggy hooks: unknown subcommand %q\n\n%s", op, hooksUsage)
-		return 2
 	}
 	var ps []patch.Patch
 	var notes []string
 	for _, v := range vendors {
 		p, err := planHooks(v, bin)
 		if err != nil {
-			fmt.Fprintf(stderr, "aggy hooks install: %s: %s\n", v, termsafe.Line(err.Error()))
-			return 1
+			return cmdErrDry(stderr, "hooks install", diag.CodeWireFailed, fmt.Errorf("%s: %w", v, err), *dryRun)
 		}
 		ps = append(ps, p.patches...)
 		if p.note != "" {
@@ -264,7 +259,7 @@ func runHooks(args []string, stdout, stderr io.Writer) int {
 	}
 	if *dryRun {
 		if _, err := manifest.Preview(stdout, ps); err != nil {
-			return 1
+			return cmdErrDry(stderr, "hooks install", diag.CodeWireFailed, err, true)
 		}
 		return 0
 	}
@@ -276,14 +271,12 @@ func runHooks(args []string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy hooks: %v\n", err)
-		return 1
+		return cmdErr(stderr, "hooks", diag.CodeStore, err)
 	}
 	defer func() { _ = s.Close() }()
 	m, err := manifest.Open(s)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy hooks: %v\n", err)
-		return 1
+		return cmdErr(stderr, "hooks", diag.CodeWireFailed, err)
 	}
 	runID := manifest.NewRunID()
 	cs, err := m.Run(ctx, manifest.Write, runID, ps, io.Discard)
@@ -293,8 +286,7 @@ func runHooks(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy hooks install: %s\n", termsafe.Line(err.Error()))
-		return 1
+		return cmdErr(stderr, "hooks install", diag.CodeWireFailed, err)
 	}
 	printNotes(stdout, notes)
 	fmt.Fprintf(stdout, "Done (run %s). aggy unwire --run %s undoes it.\n", runID, runID)
