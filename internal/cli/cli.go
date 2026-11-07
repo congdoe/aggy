@@ -88,6 +88,9 @@ Commands:
   memory    Import Claude's memory into the shared .aggy/memory.md
   policy    Wire aggy's safety policy into Codex (Claude and Grok get it per launch)
   trust     Trust a repo: aggy trust <dir>, or --opencode for OpenCode's full screen
+  permissions
+            List and change the rules every CLI shares, and take suggestions
+  config    List and change aggy's settings: harness, model, permission mode
   mcp       Copy Claude's public MCP servers into Codex and Grok
   attribution
             Install the commit hook that adds Aggy-Vendor and Aggy-Model
@@ -192,6 +195,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runPolicy(args[1:], stdout, stderr)
 	case "trust":
 		return runTrust(args[1:], stdout, stderr)
+	case "permissions":
+		return runPermissions(args[1:], stdout, stderr)
+	case "config":
+		return runConfig(args[1:], stdout, stderr)
 	case "mcp":
 		return runMCP(args[1:], stdout, stderr)
 	case "attribution":

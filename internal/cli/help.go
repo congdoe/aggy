@@ -73,7 +73,7 @@ var commandHelp = map[string]string{
 	"sessions": sessionsUsage, "session": sessionUsage, "setup": setupUsage, "doctor": doctorUsage,
 	"log": logUsage, "diag": diagUsage, "stats": statsUsage, "usage": usageUsage, "dev": devUsage,
 	"unwire": unwireUsage, "skill": skillUsage, "tool": toolUsage, "hooks": hooksUsage,
-	"memory": memoryUsage, "policy": policyUsage, "mcp": mcpUsage, "attribution": attributionUsage,
+	"memory": memoryUsage, "policy": policyUsage, "permissions": permissionsUsage, "config": configUsage, "mcp": mcpUsage, "attribution": attributionUsage,
 	"check": checkUsage, "gc": gcUsage, "version": versionUsage, "--version": versionUsage, "-v": versionUsage,
 	"help": helpUsage,
 }

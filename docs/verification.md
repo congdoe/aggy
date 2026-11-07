@@ -1511,7 +1511,7 @@ Real OpenCode 2.2.5 against a loopback fake model in a temp `HOME`, with no cred
 
 ## Claude Code session file fields (2026-11-06)
 
-Read on the owner's machine, by key and count only, from 39 session files of the last 30 days, at the installed Claude Code. Not a documented format. Shell calls appear as `tool_use` blocks named `Bash` with `input.command`; session lines carry `permissionMode` and `cwd`; `tool_result` blocks carry `tool_use_id` and `is_error` when a call failed. A full scan of 730 MB in Python took 2.7 seconds. `is_error` does not separate a denied command from a failed one.
+Read on the owner's machine, by key and count only, from 39 session files of the last 30 days, at the installed Claude Code. Not a documented format. Shell calls appear as `tool_use` blocks named `Bash` with `input.command`; session lines carry `permissionMode` and `cwd`; `tool_result` blocks carry `tool_use_id` and `is_error` when a call failed. A full scan of 730 MB in Python took 2.7 seconds. `is_error` does not separate a denied command from a failed one. Not every line carries `permissionMode`, so `internal/suggest` keeps the last one a file named. Its fixture, `internal/suggest/testdata/session.jsonl`, is built by hand from this list, not from a real session; a live check should compare it with a current session file's keys.
 
 ## Approvals across CLIs (T6914)
 

@@ -1,0 +1,22 @@
+{"type":"summary","summary":"built by hand from the recorded fields, no real session"}
+{"type":"user","cwd":"/repo","sessionId":"s","permissionMode":"auto","message":{"role":"user","content":"please look"}}
+{"type":"assistant","cwd":"/repo","sessionId":"s","message":{"role":"assistant","content":[{"type":"text","text":"ok"},{"type":"tool_use","id":"a1","name":"Bash","input":{"command":"git status"}}]}}
+{"type":"user","cwd":"/repo","sessionId":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"a1","content":"clean"}]}}
+{"type":"assistant","cwd":"/repo/sub","message":{"content":[{"type":"tool_use","id":"a2","name":"Bash","input":{"command":"git status"}},{"type":"tool_use","id":"a3","name":"Bash","input":{"command":"go vet ./..."}}]}}
+{"type":"user","cwd":"/repo/sub","message":{"content":[{"type":"tool_result","tool_use_id":"a2","content":"clean"},{"type":"tool_result","tool_use_id":"a3","content":"ok","is_error":false}]}}
+{"type":"assistant","cwd":"/repo","message":{"content":[{"type":"tool_use","id":"a4","name":"Bash","input":{"command":"make bad"}}]}}
+{"type":"user","cwd":"/repo","message":{"content":[{"type":"tool_result","tool_use_id":"a4","content":"refused or failed","is_error":true}]}}
+{"type":"assistant","cwd":"/repo","message":{"content":[{"type":"tool_use","id":"a5","name":"Read","input":{"file_path":"/repo/x"}}]}}
+{"type":"user","cwd":"/repo","message":{"content":[{"type":"tool_result","tool_use_id":"a5","content":"text"}]}}
+{"type":"assistant","cwd":"/other","message":{"content":[{"type":"tool_use","id":"a6","name":"Bash","input":{"command":"ls other"}}]}}
+{"type":"user","cwd":"/other","message":{"content":[{"type":"tool_result","tool_use_id":"a6","content":"x"}]}}
+{"type":"assistant","cwd":"/repo","message":{"content":[{"type":"tool_use","id":"a7","name":"Bash","input":{"command":"git status && rm x"}}]}}
+{"type":"user","cwd":"/repo","message":{"content":[{"type":"tool_result","tool_use_id":"a7","content":"x"}]}}
+{"type":"assistant","cwd":"/repo","message":{"content":[{"type":"tool_use","id":"a8","name":"Bash","input":{"command":"curl -H Authorization:Bearer-ghp_abcdefghijklmnopqrstuvwxyz0123456789 x"}}]}}
+{"type":"user","cwd":"/repo","message":{"content":[{"type":"tool_result","tool_use_id":"a8","content":"x"}]}}
+{"type":"user","cwd":"/repo","permissionMode":"default","message":{"role":"user","content":"ask me now"}}
+{"type":"assistant","cwd":"/repo","message":{"content":[{"type":"tool_use","id":"a9","name":"Bash","input":{"command":"whoami"}}]}}
+{"type":"user","cwd":"/repo","message":{"content":[{"type":"tool_result","tool_use_id":"a9","content":"me"}]}}
+not json at all
+{"type":"user","cwd":"/repo","permissionMode":"auto","message":{"role":"user","content":"unfinished line next"}}
+{"type":"assistant","cwd":"/repo","message":{"content":[{"type":"tool_use",
