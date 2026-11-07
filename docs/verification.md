@@ -1184,7 +1184,7 @@ Not established:
 
 ## OpenCode 2.2.5 as an on-screen harness (2026-11-06, spike T6930)
 
-The owner approved these runs for this spike only, on macOS, with OpenCode 2.2.5 (MIT, source at tag `v2.2.5`, commit `9bbb8ce`; paths below are under `packages/`). Every command used `--standalone` or a test server of its own, none used `--auto`, and no vendor credential file was opened. 17 runs tried to reach a model on the owner's sign-ins, and 3 of those reached none (a dead port and two bad model names).
+The owner approved these runs for this spike only, on macOS, with OpenCode 2.2.5 (MIT, source at tag `v2.2.5`, commit `9bbb8ce`; paths below are under `packages/`). Every command used `--standalone` or a test server of its own, and no vendor credential file was opened. In the first round none used `--auto` and 17 runs tried to reach a model on the owner's sign-ins, 3 of which reached none (a dead port and two bad model names). A second round, below, tested `--auto`.
 
 Each fact is marked by how it was established:
 
@@ -1218,7 +1218,7 @@ Each fact is marked by how it was established:
 | `permissions` ask-all | Live (xAI) | Every call rejected, exit 0, one stderr line per request |
 | `tool.use` deny on `read`, `edit`, `shell`, `external_directory` | Live (xAI) | All blocked, error type `permission.rejected`, but `grep` still returned an inside file's lines; `glob` and `execute` also ran |
 | Path deny on `read` and `external_directory` | Live (xAI) | The read tool was blocked; `cat`, `cd` then `cat`, and `python3` all read the file. OpenCode has no OS sandbox (source search) |
-| `--auto` | Source (`core/src/permission.ts`, `cli/src/run/noninteractive.ts`, `web/src/content/docs/permissions.mdx`) | Answers `ask` with once; denies still hold. `--yolo` and `--dangerously-skip-permissions` are hidden aliases. Not run |
+| `--auto` | Source (`core/src/permission.ts`, `cli/src/run/noninteractive.ts`, `web/src/content/docs/permissions.mdx`) | Answers `ask` with once; denies still hold. `--yolo` and `--dangerously-skip-permissions` are hidden aliases. Run in the second round, below |
 | "Always allow" | Fake-model, source | Saved in the `permission` table of `opencode.db` per project, for example `shell` `echo *`; a later session used it. Configured denies are checked first (source). The docs page saying "current session" is out of date |
 
 ### On-screen
@@ -1305,7 +1305,80 @@ Source only (`core/src/plugin/provider/chatgpt.ts`, `core/src/plugin/provider/op
 | Service and stale config | Source (`cli/src/server-process.ts`) | Config variables are read at server start, so per-launch config cannot reach a running service. Never run, per the owner's rule |
 | Headless exit | Live | 0 on success, including denied tools; 1 on a transport error or bad model (`provider.no-route`, 0.5 s) |
 
-Not established: a real plan limit on either plan; which sign-in method the owner used for OpenAI; whether a provider key from `{file:}` reaches a request header; SIGTERM and SIGHUP behaviour; the service path.
+### `--auto` under the proposed launch (second round)
+
+The owner lifted the `--auto` ban for this round only. It added 8 real runs, 25 in all, and every launch first asserted that its real working folder and `PWD` were inside the temporary folder. The launch is `OPENCODE_DISABLE_PROJECT_CONFIG=1` with `OPENCODE_CONFIG=<file>` holding `policies`, in a folder with a hostile `opencode.json` and plugin, which had no effect in any run. Shell test commands were harmless, with a loopback port nothing listens on and planted canaries; the "database" was a planted decoy.
+
+**What `--auto` does**
+
+| Check | Evidence | Result |
+|---|---|---|
+| Mechanism | Source (`tui/src/routes/session/index.tsx`, `cli/src/run/noninteractive.ts`) | The client answers each `ask` with once, so nothing is saved (fake-model: no `permission` row) |
+| Headless | Live (xAI, OpenAI), fake-model | Undenied shell and write ran with no prompt, exit 0; without the flag, `ask` rules reject |
+| Hard denies | Live (xAI, OpenAI), fake-model | `shell:rm *` held live and in the fake runs, a `read:` deny in the fake runs; exit 0, and the model saw the error |
+| `opencode --auto` on screen | Live (OpenAI), fake-model | No dialog; the command ran; a denied command did not |
+| `--auto` resuming with `--session` | Live, fake-model | Works, including a headless resume from xAI to OpenAI. The flag is per launch: resuming without it shows the dialog again |
+| `session.permissions: "autoaccept"` in `OPENCODE_CLI_CONFIG_CONTENT` | Fake-model | Same as the flag on the full screen; ignored by `mini` |
+| `opencode mini --auto` | Fake-model | No such flag: exit 1 |
+| `mini` with no `ask` rules | Live (xAI), fake-model | No dialog, since the default is allow, and `permissions` allow-all in `OPENCODE_CONFIG` gave the same; a `policies` deny held. An `ask` rule shows a dialog with no flag to skip it |
+| `OPENCODE_CONFIG_CONTENT` `model` with `OPENCODE_CONFIG` policies and `--auto` | Live (OpenAI), fake-model | Works together, headless and on screen |
+| That `model` on a provider the policy denies | Fake-model | **Falls to another allowed model, exit 0, with no error**, so `/switch` must check the model it got |
+
+**Text-matching denies on shell.** Fake-model, under `--auto`, 26 command shapes. The rule's text is matched against each simple command, not the whole line (source, `core/src/shell/parse.ts`), so a pipe is never part of what it sees.
+
+| Rule | Blocked | Ran |
+|---|---|---|
+| `shell:curl * \| *` | None | All but one, including a plain `curl … \| cat`: **it matches nothing** |
+| `shell:curl *` | Pipe, `&&`, `;`, variable URL, subshell, `$()`, backticks, extra spaces, newline, function | `sh -c`, `bash -c`, variable command, script file, `"curl"`, `c'ur'l`, `\curl`, absolute path, `env`, `command`, `eval`, `xargs`, `base64 \| sh`, `${IFS}`, heredoc |
+| `shell:*curl*` | All of those shapes where the word appears literally | Variable command, `c'ur'l`, `base64 \| sh` |
+
+Under all three rules, one `python3 -c` shape was refused by the shell scanner, before any rule, so it is not a deny: other `python3 -c` commands ran in the first round. A script that already exists under another name was not tried; the script-file case was only caught by `*curl*` because the command that wrote it held the word.
+
+**Shell read of a planted decoy database, by path.** Fake-model. Denies on `read`, `grep`, and `external_directory`, plus `shell:*decoy*` and `shell:*opencode.db*`.
+
+- Blocked: read tool, grep tool, `cat <path>`, `cd <path> && cat`, a command holding the literal path.
+- **Read the decoy:** `cat ../dec*/open*.db`, `(cd ../dec*; cat open*)`, a variable-built path, `find … -exec cat`, a script, and `cp` then `cat`.
+- Live on both plans, with only a `read:` deny, `cat` read it.
+
+So a deny cannot protect a file from the shell. OpenCode has no OS sandbox.
+
+**Plugin guard.** A plugin from `OPENCODE_CONFIG` registers `execute.before` and runs a stand-in script with the tool name and input; a non-zero result throws.
+
+| Check | Evidence | Result |
+|---|---|---|
+| Stand-in refuses | Live (xAI), fake-model | The tool did not run, under `--auto`; exit 0; the model saw the stand-in's text as the tool's error, and quoted it |
+| Stand-in crashes, hangs past its limit, or is missing | Fake-model | All refused: the plugin's throw fails closed (source: `plugin/src/promise/adapter.ts`) |
+| Other tools | Fake-model | `write` was refused the same way. `execute`'s inner calls and subagents were not tried |
+| Repo plugin, or repo config removing the guard, with project config off | Fake-model | No effect; the guard ran and the repo's plugin did not |
+| The same with project config on | Fake-model | **The repo disabled the guard** and the command ran |
+| **Guard plugin has a syntax error, or its folder is missing** | Fake-model | **Fails open: no error, exit 0, and the command ran**, so aggy must confirm the guard loaded before trusting a session |
+
+**Tampering from the model's own shell.** Fake-model, own server. The model runs as the same user.
+
+- Overwriting the `OPENCODE_CONFIG` file **took effect in 3 s and removed a deny**: config reloads when the file changes.
+- Overwriting the plugin file did not change the running guard after 3 s. A later launch would load the new file (not run).
+
+**Key file.** Fake-model, dummy values, `{file:}` in per-launch config, own server. The dummy key did reach the request header.
+
+| Step | Key sent |
+|---|---|
+| First turn | The file's value |
+| File rewritten, then a new turn | The old value: read once, not per request |
+| File deleted, then new turns, including 70 s later | The old value still works |
+| File deleted, turn from a **new folder** | **None, and no error from OpenCode** |
+| File deleted, config file changed | **None** |
+| File recreated, config file changed | The new value |
+
+So the value is read at config load, per folder. Deleting the file after load works only until the session moves to another folder or config reloads.
+
+| Exposure | Evidence | Result |
+|---|---|---|
+| Tool shell's environment, `ps eww`, and files under `HOME` | Fake-model | The key value was in none of them |
+| `/api/config`, `/api/provider`, `/api/model` | Fake-model | **All return the key to anyone with the server password** |
+| `OPENCODE_PASSWORD` in tool shells | Fake-model | **Set under `opencode serve`**, and the model's shell used it to fetch the key from `/api/config`. Absent under `--standalone` |
+| A plugin deleting it in `shell.create.before` | Fake-model | Removed from the tool shell, but `ps eww` still shows the password to the same user |
+
+Not established: a real plan limit on either plan; which sign-in method the owner used for OpenAI; whether a provider key from `{file:}` reaches a real vendor's request header (the fake model received it); SIGTERM and SIGHUP behaviour; the service path.
 
 ## Still open
 
