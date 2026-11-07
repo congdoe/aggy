@@ -475,6 +475,12 @@ func printResult(w io.Writer, r borrow.Result) {
 	for _, l := range borrow.Excerpt(text, 8, 160) {
 		fmt.Fprintf(w, "  %s\n", termsafe.Line(l))
 	}
+	if r.ChildSaid != "" {
+		fmt.Fprintf(w, "  %s\n", borrow.ChildSaidHeading)
+		for _, l := range strings.Split(r.ChildSaid, "\n") {
+			fmt.Fprintf(w, "    %s\n", termsafe.Line(l))
+		}
+	}
 	if r.Status == "done" && (r.Kind == adapter.Image || r.Kind == adapter.Video) {
 		fmt.Fprintf(w, "  %d files made, %d kept\n", r.Made, len(r.Artifacts))
 	}

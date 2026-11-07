@@ -182,14 +182,20 @@ var ErrTimeout = errors.New("borrow: time limit reached")
 // which a model or a web page may have shaped: print them only through
 // termsafe, and never run them.
 type Result struct {
-	ID         string
-	Kind       adapter.Kind
-	Vendor     adapter.Vendor
-	Model      string
-	Status     string // done, failed, or killed
-	Outcome    string // "ok" or an adapter.ErrorClass
-	Text       string
-	Detail     string // the error, when the borrow failed
+	ID      string
+	Kind    adapter.Kind
+	Vendor  adapter.Vendor
+	Model   string
+	Status  string // done, failed, or killed
+	Outcome string // "ok" or an adapter.ErrorClass
+	Text    string
+	Detail  string // the error, when the borrow failed
+	// ChildSaid is the start of the child's own reply when it left no file an
+	// image or video borrow could keep, since only the child knows why (such
+	// as an account's zero data retention). It is redacted and terminal-safe
+	// (childReason), and goes only to the short report and the private inbox
+	// report: never the diagnostic log, the index, or anything to paste.
+	ChildSaid  string
 	Artifacts  []adapter.Artifact
 	Tokens     int64
 	Elapsed    time.Duration
@@ -725,6 +731,9 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 			if res.Artifacts, derr = deliver(req, res, passed, parsed.SessionID, now); derr != nil {
 				res.Status, res.Outcome, res.Detail = "failed", string(adapter.ErrUnknown), strings.TrimSpace(res.Detail+"\n"+derr.Error())
 				end.Status, end.Outcome = res.Status, res.Outcome
+				if len(passed) == 0 {
+					res.ChildSaid = childReason(parsed.Text)
+				}
 			}
 		}
 		for _, x := range res.Artifacts {

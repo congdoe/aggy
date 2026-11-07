@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -109,6 +111,57 @@ func TestImageEditGrokRefused(t *testing.T) {
 	}
 	if recs := fakecli.Records(t, f.record); slices.ContainsFunc(recs, func(r fakecli.Record) bool { return r.Mode == "headless" }) {
 		t.Error("a refused edit ran a child")
+	}
+}
+
+// TestVideoNoFileSaysWhy (T6924): a child that made no file gets its own
+// reason into the short report and the inbox, escaped and without a line that
+// holds a secret, and into nothing else aggy keeps.
+func TestVideoNoFileSaysWhy(t *testing.T) {
+	const sentinel = "ZDRSENTINEL"
+	secret := "sk-ant-api03-" + strings.Repeat("a1B2", 12)
+	f := newBorrowFixture(t, adapter.Grok)
+	cfg := "[media]\ngrok_file_tools = true\n"
+	if err := os.WriteFile(filepath.Join(f.state, "config.toml"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := json.Marshal(map[string]any{"json": map[string]string{
+		"text": "image_to_video failed: " + sentinel + " zero data retention\nkey: " + secret + "\nbell \x1b[31mred",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.scenario["grok"] = string(reply)
+	code, out, errOut := f.media(t, adapter.Video, "a clip", "--out", "clip.mp4")
+	if code == 0 {
+		t.Fatalf("code 0, stdout %q", out)
+	}
+	if !strings.Contains(out, "left no file that passed") || !strings.Contains(out, "image_to_video failed: "+sentinel) {
+		t.Errorf("stdout %q stderr %q", out, errOut)
+	}
+	if strings.Contains(out, secret) || strings.Contains(out, "\x1b") {
+		t.Errorf("stdout not scrubbed: %q", out)
+	}
+	found := false
+	err = filepath.WalkDir(f.state, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if !bytes.Contains(data, []byte(sentinel)) {
+			return nil
+		}
+		if filepath.Base(filepath.Dir(p)) != "inbox" {
+			t.Errorf("the child's reason is in %s", p)
+		}
+		found = true
+		return nil
+	})
+	if err != nil || !found {
+		t.Errorf("walk %v, in the inbox %v", err, found)
 	}
 }
 
