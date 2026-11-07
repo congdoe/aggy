@@ -8,19 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
-
-// guardRefuses is the guard's answer on one shell command.
-func guardRefuses(t *testing.T, root, cmd string) bool {
-	t.Helper()
-	b, err := json.Marshal(OpenCodeInput{Tool: "shell", Directory: root, Root: root, Command: cmd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return OpenCodeGuard(b, OpenCodeEnv{Getenv: func(string) string { return "" }}).Deny
-}
 
 // plantsGit are shapes that change which git a following `git status` runs,
 // with nothing else for OpenCode to ask about in most of them (scan.ts at
@@ -46,7 +38,6 @@ var plantsGit = []string{
 	"[[ -n \"$(PATH=./bin; git status)\" ]]",
 	"cat <<EOF\n$(PATH=./bin; git status)\nEOF",
 	"cat <<EOF; PATH=./bin; git status\nbody\nEOF",
-	// The old parser lost its place on each of these, and missed what followed.
 	"[[ ${#} ]]; PATH=./bin; git status",
 	"for i in ${#a}; do :; done; PATH=./bin; git status",
 	"for i in $((1<<2)); do :; done\nPATH=./bin\ngit status",
@@ -56,9 +47,21 @@ var plantsGit = []string{
 	"cat <<EOF\nEOF\nPATH=./bin; git status",
 	"PATH[0]=./bin; git status",
 	"path=(./bin); git status",
+	"path+=(./bin); git status",
+	"path[1]=./bin; git status",
 	"for path in ./bin; do git status; done",
+	"for path (./bin) git status",
 	"git() { ./bin/git; }; git status",
+	"git ( ) { ./bin/git; }; git status",
+	"git\t()\t{ ./bin/git; }; git status",
+	"git()\n{ ./bin/git; }\ngit status",
+	"\"git\"() { ./bin/git; }; git status",
+	"\\git() { ./bin/git; }; git status",
 	"function git { ./bin/git; }; git status",
+	"function git() { ./bin/git; }; git status",
+	"function -T git { ./bin/git; }; git status",
+	"git foo() { ./bin/git; }; git status",
+	"function foo git { ./bin/git; }; git status",
 	"PA\\\nTH=./bin; git status",
 	"! PATH=./bin; git status",
 	"true; PATH=./bin; git status",
@@ -66,71 +69,154 @@ var plantsGit = []string{
 	"builtin export PATH=./bin; git status",
 	"FOO=1 export PATH=./bin; git status",
 	"repeat 1 PATH=./bin; git status",
+	"# note\\\nPATH=./bin:$PATH\ngit status",
+	"git status # x\\\nPATH=./bin\ngit status",
+	"#\\\nPATH=./bin\ngit status",
+	"time -p for PATH in ./bin; do git status; done",
+	"time -p if PATH=./bin; then git status; fi",
+	"! time -p for PATH in ./bin; do git status; done",
+	"time -p while PATH=./bin; git status; do break; done",
+	"PATH[x[0]]=./bin; git status",
+	">x PATH=./bin; git status",
+	"eval PATH=./bin; git status",
+	"read PATH <<<./bin; git status",
+	"printf -v PATH ./bin; git status",
+	"declare -n r=PATH; r=./bin; git status",
+	"X=PATH; export \"$X=./bin\"; git status",
+	"X=PA; export \"${X}TH=./bin\"; git status",
+	"Y=./bin; X=PA$'\\x54'H; declare -x \"$X=$Y\"; git status",
+	": ${PATH:=./bin}; unset x; git status",
 }
 
-// TestGuardRefusesWhatSetsVariables has each shape H1 and H2 found, and others
-// that OpenCode's scanner gives no resource for.
-func TestGuardRefusesWhatSetsVariables(t *testing.T) {
+// settingDirectives are other shapes the scan must refuse. They do not plant a
+// git, or not through PATH: they set a listed variable, or use a spelling only
+// the raw text shows.
+var settingDirectives = []string{
+	"(( GIT_CONFIG_COUNT = 0 )); git status",
+	"((PATH=1)); git status",
+	"unset PATH; git status",
+	"echo $((PATH=1)); git status",
+	"echo ${PATH:=./bin}; git status",
+	"echo ${PATH=./bin}; git status",
+	"echo ${PATH::=./bin}; git status",
+	"echo ${PATH[0]:=./bin}; git status",
+	"for GIT_DIR in x; do git status; done",
+	"GIT_CONFIG_VALUE_0=./evil; git status",
+	"LD_PRELOAD=./x.so git status",
+	"export DYLD_INSERT_LIBRARIES=./x.dylib",
+	"BASH_ENV=./x; git status",
+	"export 'BASH_FUNC_git%%=() { ./bin/git; }'",
+	"ENV=./x; git status",
+	"ZDOTDIR=./x; git status",
+	"HOME=./x; git status",
+	"XDG_CONFIG_HOME=./x; git status",
+	"IFS=x; git status",
+	"CDPATH=./x; git status",
+	"SHELL=./x; git status",
+	"PAGER=./x; git log --oneline -20",
+	"MANPAGER=./x; git status",
+	"EDITOR=./x; git status",
+	"VISUAL=./x; git status",
+	"RIPGREP_CONFIG_PATH=./x; git status",
+	"cdpath=(./x); git status",
+	"fpath=(./x); git status",
+	"manpath=(./x); git status",
+	"read path; git status",
+	"read -r path; git status",
+	"select path in ./bin; do git status; break; done",
+	"foreach path (./bin) git status",
+	"echo ${path:=./bin}; git status",
+	"ls() { ./bin/git; }; ls",
+	"function pwd { ./bin/git; }; pwd",
+	"declare $X=1",
+	"typeset \"$X=1\"",
+	"export -- $X=1",
+	"export A=1 $X=2",
+	"readonly `echo X`=1",
+	"local \"$X\"",
+	"integer $X=1",
+	"float $X=1",
+	"set -- PATH=./bin; export \"$@\"",
+}
+
+var guardRuleWords = []string{"git", "ls", "pwd"}
+
+// guardRefuses is the guard's answer on one shell command.
+func guardRefuses(t *testing.T, root, cmd string) bool {
+	t.Helper()
+	b, err := json.Marshal(OpenCodeInput{Tool: "shell", Directory: root, Root: root, Command: cmd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return OpenCodeGuard(b, OpenCodeEnv{RuleWords: guardRuleWords, Getenv: func(string) string { return "" }}).Deny
+}
+
+// TestGuardShapes holds both sides of the scan: every shape two rounds of
+// review found is refused, and what a session runs all day is not.
+func TestGuardShapes(t *testing.T) {
 	root := resolved(t)
-	shapes := append([]string{
-		"(( GIT_CONFIG_COUNT = 0 )); git status",
-		"((PATH=1)); git status",
-		"(( i++ )); git status",
-		"for ((i=0;i<1;i++)); do git status; done",
-		"FOO=(a b); git status",
-		"unset PATH; git status",
-		"declare FOO=1; git status",
-		"readonly FOO=1; git status",
-		"local FOO=1",
-		"export\tFOO=1; git status",
-		"echo $((PATH=1)); git status",
-		"echo ${PATH:=./bin}; git status",
-		"for no_proxy in x; do git status; done",
-		"for GIT_DIR in x; do git status; done",
-		"a=1 b=2",
-	}, plantsGit...)
-	for _, c := range shapes {
-		if !guardRefuses(t, root, c) {
-			t.Errorf("allowed %q", c)
+	for _, list := range []struct {
+		name   string
+		shapes []string
+		want   bool
+	}{
+		{"plants a git", plantsGit, true},
+		{"sets a listed variable", settingDirectives, true},
+		{"a review's bypass", reviewBypasses, true},
+		{"everyday, but names a listed variable", everydayRefused, true},
+		{"everyday", everydayCommands, false},
+		{"passes by design", reviewDesignPasses, false},
+	} {
+		for _, c := range list.shapes {
+			if got := guardRefuses(t, root, c); got != list.want {
+				t.Errorf("%s: %q: refused = %v, want %v", list.name, c, got, list.want)
+			}
 		}
 	}
 }
 
-// TestGuardAllowsEverydayCommands holds the other side: what a session runs
-// all day must not stop.
-func TestGuardAllowsEverydayCommands(t *testing.T) {
-	root := resolved(t)
+// TestGuardNames: the refusal names what to rewrite.
+func TestGuardNames(t *testing.T) {
+	cases := []struct{ cmd, want string }{
+		{"PATH=./bin; git status", "names PATH"},
+		{"true; GIT_DIR=x", "names GIT_DIR"},
+		{"path=(x)", "names path"},
+		{"for fpath in x; do :; done", "names fpath"},
+		{"echo $PATH; HOME=x", "names HOME"},
+		{"git() { :; }", "named git"},
+		{"function ls { :; }", "named ls"},
+		{"export \"$X=1\"", "from a $ expansion"},
+	}
+	for _, c := range cases {
+		if why := shellScan(c.cmd, guardRuleWords); !strings.Contains(why, c.want) {
+			t.Errorf("%q: %q, want %q", c.cmd, why, c.want)
+		}
+	}
+}
+
+// TestGuardFunctionNamesComeFromTheRules: the names come from the rules rendered
+// (parity.OpenCodeRuleWords), so another function is nobody's business.
+func TestGuardFunctionNamesComeFromTheRules(t *testing.T) {
+	if why := shellScan("make() { :; }", guardRuleWords); why != "" {
+		t.Errorf("no rule starts with make: %q", why)
+	}
+	if why := shellScan("make() { :; }", []string{"make"}); why == "" {
+		t.Error("a rule starting with make should count")
+	}
+}
+
+// TestGuardDocumentedGaps pins what docs/design.md says the scan does not
+// catch, so a change to either side shows.
+func TestGuardDocumentedGaps(t *testing.T) {
 	for _, c := range []string{
-		"git status",
-		"git commit -m \"a=b\"",
-		"git commit -m 'export a=b; c=d'",
-		"git commit -m \"fix foo() in the for loop\"",
-		"git log --format='%H' -- 'a;b=1'",
-		"go test -run=TestX ./...",
-		"VAR=1 go test ./...",
-		"echo a=b",
-		"echo hi > out.txt",
-		"for f in *.go; do gofmt -l \"$f\"; done",
-		"for f in a b\ndo echo \"$f\"; done",
-		"while read f; do echo \"$f\"; done < list",
-		"if [ -f x ]; then echo y; fi",
-		"case x in x) echo hi;; esac",
-		"[[ -f go.mod ]] && go test ./...",
-		"[[ $a == b ]] && echo y",
-		"(( a == 1 )) && echo y",
-		"(( a <= 1 )) && echo y",
-		"echo ${HOME}",
-		"echo $((1+2))",
-		"echo \"$(git rev-parse HEAD)\"",
-		"git log --format=%H $(git merge-base a b)..HEAD",
-		"cat <<EOF\nhello\nEOF",
-		"cat <<'EOF'\nsome text, no equals\nEOF",
-		"cd sub && make",
-		"ls -la | head -5",
-		"(cd sub && make)",
+		"FOO=1; export FOO; git status", // a variable that is not on the list
+		"export P\"A\"TH=./bin; git status",
+		"export PA\\TH=./bin; git status",
+		"eval \"PA\"\"TH=./bin\"; git status",
+		"git foo() ./bin/git; git status", // zsh; OpenCode's own scanner fails this call
 	} {
-		if guardRefuses(t, root, c) {
-			t.Errorf("refused %q", c)
+		if why := shellScan(c, guardRuleWords); why != "" {
+			t.Errorf("%q: refused (%q); correct docs/design.md", c, why)
 		}
 	}
 }
@@ -190,8 +276,11 @@ func TestGuardAgainstRealShells(t *testing.T) {
 		return err == nil
 	}
 	ranSomewhere := 0
-	allowed := []string{"git status", "git commit -m \"PATH=./bin\"", "for f in ./bin; do git status; done", "echo PATH=./bin; git status", "cat <<'EOF'\ntext\nEOF\ngit status"}
-	for _, cmd := range append(append([]string{}, plantsGit...), allowed...) {
+	// What the guard allows must not run the planted git, in any shell. This
+	// is everything from the reviews that passes by design, and the plain forms.
+	allowed := append([]string{"git status", "git commit -m \"see ./bin\"", "for f in ./bin; do git status; done", "cat <<'EOF'\ntext\nEOF\ngit status", "FOO=./bin; git status"}, reviewDesignPasses...)
+	shapes := slices.Concat(plantsGit, reviewBypasses, allowed)
+	for _, cmd := range shapes {
 		for _, sh := range shells {
 			if ranIn(sh, cmd) {
 				ranSomewhere++

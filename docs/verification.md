@@ -1606,3 +1606,14 @@ An agent ran these under the owner's approval for this work (at most 40 real Ope
 - **Source, run directly.** `packages/core/src/shell/scan.ts` at `v2.2.5`, run under Node with its first line removed and no vendor CLI, gives these only `git status` as a resource: bare assignments anywhere, including in `$(...)`, `( )`, `{ }`, `if`, `case`, and a `while` or `until` condition; `PATH[0]=`, `FOO=(a b)`; a declaration word; a `for` or `select` variable; `for (( ))`; and `(( ))` in the bash and zsh dialects. `read`, `printf -v`, `getopts`, `FOO=1 export X=1`, `command export`, and `${X:=1}` are resources, so they ask. `alias` and `foreach` are opaque, so they ask.
 - **Real shells.** `TestGuardAgainstRealShells` runs each shape through bash, zsh, sh, and dash where present, with a planted git; any that runs it must be refused.
 - **Live, the owner's sign-in.** After these fixes, on the full screen in a trusted temporary repo: a real turn, the guard's report, and a switch with no brief: `/exit` and its later Enter came through the session's loop, no exit timeout, and the fake Claude started.
+
+### Guard scan and last review fixes (2026-11-07, T6932)
+
+**Runs: none.** The 40 real runs were used. Nothing below has run against the real OpenCode.
+
+- **The guard's raw-text scan** (`internal/hook/opencode.go`) replaced the word parser. It is checked by unit tests and by `TestGuardAgainstRealShells` only, against bash, zsh, sh, and dash with a planted git. The live refusal recorded above was by the parser it replaced, so **the scan's refusal reaching the model through the plugin is unverified**. So is the plugin's new `auto` option reaching the guard on a real launch; the process test runs the guard with the fake's environment.
+- **Source, for skipping the scan under `--auto`.** `tui/src/context/permission.tsx` at `v2.2.5` returns `autoaccept` whenever `args.auto` is set, so the flag cannot be turned off during a session; `component/dialog-config.tsx` offers `session.permissions` as a setting, so a session started without the flag can be put on auto, and then keeps the scan. Reasoned from `core/src/shell/scan.ts`, not run: denies match each simple command's text, which a declaration does not change.
+- **`aggy opencode`** ran against the fake CLI only (`TestOpenCodeCommand`, in `test/e2e`).
+- **Unverified, for the owner's terminal.** The backspaces that take `/exit` back when keys are typed or Esc is pressed in the 0.5 s gap have never run on the real screen, only against the fake. On a real session: start a switch, type a letter in the gap, and check that the prompt holds only that letter; then again with Esc on the list.
+- **`--direct` cannot signal the group.** The CLI shares aggy's process group there, for the terminal's job control, so the kill 10 s after a signal reaches the CLI alone, and its tool shells may run on. The pass-through's kill reaches the group.
+

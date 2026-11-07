@@ -29,9 +29,10 @@ install writes these calls into each CLI's hook config.
                accident guard, not a security boundary.
   opencode-guard
                the check aggy's OpenCode plugin runs before each tool call:
-               refuses a variable declaration, a real path outside the repo,
-               and opencode auth export. Mistakes only, not a security
-               boundary.
+               refuses a command that names a variable an allowed command
+               reads or defines a function by an allowed command's name, a
+               real path outside the repo, and opencode auth export. Mistakes
+               only, not a security boundary.
   <event>      a Claude, Codex, or Grok hook event (Stop, StopFailure,
                StopCancelled, SessionStart, Notification). The
                payload is parsed as JSON and forwarded to the aggy
@@ -195,7 +196,11 @@ func openCodeGuard(in io.Reader, getenv func(string) string, stderr io.Writer) i
 	if err != nil || len(b) > hook.MaxPayload {
 		b = nil // refused as unreadable
 	}
-	d := hook.OpenCodeGuard(b, hook.OpenCodeEnv{Getenv: getenv, DeniedNames: parity.OpenCodeDeniedNames()})
+	words, err := parity.OpenCodeRuleWords()
+	if err != nil {
+		b = nil // refused as unreadable: the rules aggy ships do not render
+	}
+	d := hook.OpenCodeGuard(b, hook.OpenCodeEnv{Getenv: getenv, DeniedNames: parity.OpenCodeDeniedNames(), RuleWords: words})
 	if !d.Deny {
 		return 0
 	}

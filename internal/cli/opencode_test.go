@@ -142,6 +142,10 @@ func TestOpenCodeScreenSplit(t *testing.T) {
 			if len(doc.Plugins) != 1 || doc.Plugins[0].Options["root"] != repo {
 				t.Fatalf("plugins = %+v: the guard's root is the repo root", doc.Plugins)
 			}
+			// The guard skips its scan only on the launch's own word.
+			if _, auto := doc.Plugins[0].Options["auto"]; auto != c.wantAuto {
+				t.Fatalf("plugin options = %v, want auto %v", doc.Plugins[0].Options, c.wantAuto)
+			}
 		})
 	}
 }
@@ -460,5 +464,75 @@ func TestReportNamesOpenCode(t *testing.T) {
 	printReport(&b, doctorResult{versions: map[adapter.Vendor]string{adapter.OpenCode: "2.2.5"}}, devfix.Identity{})
 	if !strings.Contains(b.String(), "opencode: 2.2.5") {
 		t.Fatalf("%s", b.String())
+	}
+}
+
+// TestOpenCodeCommand: aggy opencode takes aggy's flags and refuses every other,
+// before anything starts.
+func TestOpenCodeCommand(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--bogus"}, "none of OpenCode's own flags"},
+		{[]string{"--agent=x"}, "none of OpenCode's own flags"},
+		{[]string{"-m"}, "none of OpenCode's own flags"},
+		{[]string{"--auto"}, "[opencode] auto"},
+		{[]string{"--session", "x"}, "gives each session its id"},
+		{[]string{"--standalone"}, "always passes it"},
+		{[]string{"say hi"}, "not a flag"},
+		{[]string{"--continue", "--resume"}, "not both"},
+		{[]string{"--tool"}, "--tool needs a name"},
+	}
+	for _, c := range cases {
+		t.Run(strings.Join(c.args, " "), func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("AGGY_HOME", t.TempDir())
+			var out, errb bytes.Buffer
+			if code := Run(append([]string{"opencode"}, c.args...), &out, &errb); code != 2 {
+				t.Fatalf("exit = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(errb.String(), c.want) {
+				t.Errorf("stderr = %q, want %q", errb.String(), c.want)
+			}
+		})
+	}
+	for _, flag := range []string{"--model", "--continue", "--resume"} {
+		if _, err := passFlags(adapter.OpenCode).Parse([]string{flag, "x"}, false); flag != "--continue" && err != nil {
+			t.Errorf("%s: %v", flag, err)
+		}
+	}
+}
+
+// TestOpenCodeUntrustedNoteNamesTheRealRoot: reached through a link, the note
+// says the repo to trust, and aggy trust records the real one.
+func TestOpenCodeUntrustedNoteNamesTheRealRoot(t *testing.T) {
+	repo, dir := openCodeWorld(t)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(repo, link); err != nil {
+		t.Fatal(err)
+	}
+	s, err := prepareOpenCode(openCodeInput{cfg: effective(config.Default(), config.RepoConfig{}), caps: openCodeCaps, cwd: link, dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note := openCodeUntrustedNote(s.root); !strings.Contains(note, repo) || strings.Contains(note, link) {
+		t.Errorf("note = %q, want %q", note, repo)
+	}
+}
+
+// TestProbeCapsGivesTheVersion: the launch's one probe also gives the version the
+// new-version note needs, so no second probe starts the CLI 3 more times.
+func TestProbeCapsGivesTheVersion(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "opencode")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho 2.2.5\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, version, err := probeCaps(context.Background(), adapter.OpenCode, bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != "2.2.5" {
+		t.Errorf("version = %q", version)
 	}
 }

@@ -44,7 +44,7 @@ Usage:
   aggy -r, --resume [id]
                     Reopen the session with this id, or the latest here
   aggy <vendor> [flags]
-                    Start claude, codex, or grok with the CLI's own flags
+                    Start claude, codex, grok, or opencode, with its flags
                     (aggy claude --model x); flags that clash with aggy's are
                     refused
   aggy <command>
@@ -154,7 +154,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runContinue(args[1:], stderr)
 	case "--resume", "-r":
 		return runResumeFlag(args[1:], stdout, stderr)
-	case "claude", "codex", "grok":
+	case "claude", "codex", "grok", "opencode":
 		return runVendor(adapter.Vendor(args[0]), args[1:], stderr)
 	case "new":
 		return runNew(args[1:], stdout, stderr)

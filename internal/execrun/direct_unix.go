@@ -40,15 +40,23 @@ func RunDirectStarted(c adapter.Command, started func(pid int)) (int, error) {
 	if started != nil {
 		started(d.cmd.Process.Pid)
 	}
-	done := make(chan struct{})
-	defer close(done)
-	var kill *time.Timer
+	done, stopped := make(chan struct{}), make(chan struct{})
 	defer func() {
-		if kill != nil {
-			kill.Stop()
-		}
+		close(done)
+		<-stopped
 	}()
 	go func() {
+		defer close(stopped)
+		// Only this goroutine touches the timer. The CLI shares aggy's process
+		// group (see StartDirect), so its children cannot be signalled as a
+		// group without signalling aggy and the shell's job too: the kill
+		// reaches the CLI alone.
+		var kill *time.Timer
+		defer func() {
+			if kill != nil {
+				kill.Stop()
+			}
+		}()
 		for {
 			select {
 			case s := <-sigs:

@@ -32,6 +32,7 @@ const maxInstruction = 512 << 10
 type openCodeSetup struct {
 	launch adapter.OpenCodeLaunch
 	warns  []string
+	root   string // the repo root, by its real path
 }
 
 // openCodeInput is what a launch hands prepareOpenCode.
@@ -62,6 +63,7 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 		return out, err
 	}
 	root, _ := repoRoot(real)
+	out.root = root
 	trusted, trustWarn := openCodeTrusted(root)
 	if trustWarn != "" {
 		out.warns = append(out.warns, trustWarn)
@@ -121,7 +123,7 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 	}
 	data, err := parity.OpenCodeConfig{
 		Trusted: trusted, Providers: providers, Model: in.model, Instructions: notes,
-		Plugin: pluginDir, Aggy: bin, Root: root, NoPolicy: in.noPolicy,
+		Plugin: pluginDir, Aggy: bin, Root: root, NoPolicy: in.noPolicy, Auto: out.launch.Auto,
 	}.Render()
 	if err != nil {
 		return out, err
@@ -194,9 +196,9 @@ func readInstruction(path string) (string, error) {
 	return parity.CleanMemory(string(b)), nil
 }
 
-// openCodeUntrustedNote says what an untrusted repo gets.
-func openCodeUntrustedNote(cwd string) string {
-	root, _ := repoRoot(cwd)
+// openCodeUntrustedNote says what an untrusted repo gets. root is the real
+// one, as trust records it: a link to a repo must name the repo it leads to.
+func openCodeUntrustedNote(root string) string {
 	return fmt.Sprintf("this repo is not trusted for OpenCode, so it gets opencode mini, the whitelist, and a model chosen at launch. For anything more, use Claude Code here, or aggy trust --opencode %s", root)
 }
 
@@ -263,7 +265,7 @@ const codeOpenCodeManaged = "opencode-managed-config"
 // openCodeSetupNote is what setup says about OpenCode, the design's own
 // words (docs/design.md, section 15).
 const openCodeSetupNote = `  Under aggy, your global OpenCode config does nothing: each launch brings its own.
-  aggy runs it when you name it (aggy run opencode). To offer it in the switch
+  aggy runs it when you name it (aggy opencode). To offer it in the switch
   list, add it to [switch] order in aggy's config.
   aggy gives guardrails against mistakes, not protection from a hostile repo or a
   tricked model. A model's shell runs as you with no OS sandbox.

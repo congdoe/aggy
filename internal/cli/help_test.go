@@ -61,7 +61,7 @@ func TestHelpSubcommands(t *testing.T) {
 		{"memory", "import", "--help"}, {"policy", "wire", "--help"}, {"mcp", "wire", "-h"},
 		{"attribution", "wire", "--help"}, {"diag", "show", "--help"}, {"diag", "codes", "-h"},
 		{"dev", "capture", "--help"}, {"dev", "scrub", "-h"},
-		{"resume", "abcd", "--help"}, {"run", "claude", "--help"}, {"claude", "--model", "x", "--help"},
+		{"resume", "abcd", "--help"}, {"run", "claude", "--help"}, {"claude", "--model", "x", "--help"}, {"opencode", "--help"},
 		{"borrow", "research", "--help"}, {"switch", "--brief", "-h"},
 	}
 	for _, args := range tests {

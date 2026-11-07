@@ -1811,7 +1811,9 @@ func (s *session) pickerInput(b []byte) {
 		// stays until the user's next Enter, which offerSwitch reports.
 		// The new pick's options replace the old.
 		if s.askOpen() {
-			if !s.askTold {
+			// Only an ask a turn end outlived can be a lost reply. Before one
+			// the dialog may well be up, and the exit command would land on it.
+			if !s.askStale || !s.askTold {
 				s.tellAskWaits(picked)
 				return
 			}

@@ -360,3 +360,22 @@ func TestOpenCodeGuardProcess(t *testing.T) {
 		t.Error("an unreadable payload passed: the guard must fail closed")
 	}
 }
+
+// TestOpenCodeCommand: aggy opencode is the same launch as aggy run opencode,
+// and takes aggy's model flag.
+func TestOpenCodeCommand(t *testing.T) {
+	w := openCodeWorldE2E(t)
+	s := w.start(t, openCodeScenario(t, "opencode"), "opencode", "--model", "xai/grok-4")
+	s.waitWithin([]byte("READY>"), offerTimeout)
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	runs := interactiveRuns(t, w)
+	if len(runs) != 1 || runs[0].Vendor != "opencode" {
+		t.Fatalf("runs = %+v", runs)
+	}
+	if !strings.Contains(strings.Join(runs[0].Args, " "), "-m xai/grok-4") {
+		t.Errorf("args = %q: mini takes the model on its command line", runs[0].Args)
+	}
+}
