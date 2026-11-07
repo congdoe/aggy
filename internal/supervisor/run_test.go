@@ -165,6 +165,10 @@ func startRunOpts(t *testing.T, double time.Duration, setup func(*fakeChild), op
 		// The pair is torn down before the next test opens one: the slave
 		// first, then the master, whose reader then ends.
 		_ = slave.Close()
+		// The reader Run started may sit in a read of the slave, which
+		// the close does not interrupt and which keeps the pair alive, so
+		// the master's read would run to the limit below. A line ends it.
+		_, _ = master.Write([]byte("\n"))
 		_ = master.Close()
 		select {
 		case <-read:

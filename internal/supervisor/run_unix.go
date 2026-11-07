@@ -262,6 +262,7 @@ func Run(o Options) (Exit, error) {
 				// The terminal is gone: hang up the CLI, as a closed
 				// terminal would.
 				input = nil
+				s.signalled = true
 				_ = child.Signal(syscall.SIGHUP)
 				continue
 			}
@@ -284,6 +285,7 @@ func Run(o Options) (Exit, error) {
 			case syscall.SIGTSTP:
 				s.suspend(false)
 			default:
+				s.signalled = true
 				_ = child.Signal(sig.(syscall.Signal))
 			}
 		case w := <-waits:
@@ -298,12 +300,12 @@ func Run(o Options) (Exit, error) {
 				case <-outDone:
 				case <-time.After(drainWait):
 				}
-				// Only an exit after aggy typed the exit command, or
-				// after it told the user to quit for the switch they
-				// picked, is a switch; any other CLI the user quit ends
+				// Only an exit after aggy typed the exit command, or a
+				// clean one after it told the user to quit for the switch
+				// they picked, is a switch; any other CLI that exited ends
 				// aggy.
 				ex := Exit{Code: w.code}
-				if s.sw.typed || s.sw.toldNoTurn {
+				if s.sw.typed || s.handExitSwitches(w.code) {
 					ex.SwitchTo, ex.Next = s.sw.to, s.sw.choice
 					ex.Next.Vendor = s.sw.to
 					s.log(diag.Rec{Event: diag.EvSwitchCompleted, Cause: s.sw.rec, Exit: diag.Int(w.code), Attrs: switchAttrs(ex.Next, map[string]any{"to": string(s.sw.to), "by_hand": !s.sw.typed})})
@@ -359,6 +361,9 @@ type session struct {
 	// the exit command's Enter could accept it, so aggy never types it
 	// (T6893). A user's Enter is no evidence: it may only answer a dialog.
 	turnRan bool
+	// signalled: aggy passed a signal on to the CLI, so its exit is no
+	// choice of the user's. noTurnOpen: the open note is tellNoTurn's.
+	signalled, noTurnOpen bool
 	// held: a hook other than a turn end (a Notification: maybe a
 	// permission prompt) came from the session, and the user has not
 	// typed to the CLI since. A turn end does not clear it: a nested
@@ -483,9 +488,11 @@ type pendingSwitch struct {
 	typed      bool // the exit command has been typed
 	// picked: the user chose this switch, in the picker or a note.
 	picked bool
-	// toldNoTurn: the user was told to quit the CLI themselves, so its exit
-	// now completes the switch, unless they cancel it (T6893).
-	toldNoTurn bool
+	// toldNoTurn: the user was told to quit the CLI themselves, so its
+	// clean exit now completes the switch, unless they cancel it or a turn
+	// end brings the normal offer (T6893). noteAgain: picked again, so the
+	// note shows again.
+	toldNoTurn, noteAgain bool
 	// resume: a restart of the vendor on screen on the same session, for
 	// the tool changes named in tools (T6729).
 	resume bool
@@ -584,6 +591,10 @@ func (s *session) hookEvent(ev hookEvent) {
 		}
 		if ev.sessionID != "" && ev.sessionID == own {
 			s.turnRan = true
+			s.sw.toldNoTurn, s.sw.noteAgain = false, false
+			if s.noTurnOpen {
+				s.closePicker() // the offer takes over
+			}
 			s.atPrompt = !s.held
 			s.toolsWaitTurn = false
 			s.warnDue = true
@@ -813,7 +824,15 @@ func (s *session) compose(c byte) {
 // repo config or PATH may have changed since the pick.
 func (s *session) offerSwitch() {
 	now := time.Now()
-	if !s.atPrompt || now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
+	if !s.turnRan && !s.sw.picked {
+		return // an agent's, a limit's, or a tool change's: only a turn end offers it
+	}
+	// With no turn ended, atPrompt says nothing: an Enter that clears it may
+	// only have answered a dialog, and the note below types nothing.
+	if s.turnRan && !s.atPrompt {
+		return
+	}
+	if now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
 		return
 	}
 	if s.sw.resume && s.toolsWaitTurn {
@@ -831,9 +850,6 @@ func (s *session) offerSwitch() {
 	what := "switch to " + string(v)
 	if s.sw.resume {
 		what = fmt.Sprintf("resume %s with the changed tools", v)
-	}
-	if !s.turnRan && !s.sw.picked {
-		return // an agent's, a limit's, or a tool change's: only a turn end offers it
 	}
 	if s.dirty && s.turnRan {
 		// S-1: the exit command would go after the unsent text and send
@@ -941,19 +957,53 @@ func (s *session) offerSwitch() {
 // command because no turn has ended since this CLI launched (T6893), and
 // what to do instead. what is the switch, as a verb phrase.
 func (s *session) tellNoTurn(what string) {
-	if s.sw.toldNoTurn {
+	if s.sw.toldNoTurn && !s.sw.noteAgain {
 		return
 	}
-	s.sw.toldNoTurn = true
+	s.sw.toldNoTurn, s.sw.noteAgain = true, false
 	on := s.o.Vendor
 	cmd, _ := adapter.ExitCommand(on)
 	s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeNoTurnYet, Cause: s.sw.rec,
 		Msg: "no turn has ended since the CLI launched, so aggy does not type its exit command", Attrs: map[string]any{"to": string(s.sw.to)}})
-	s.pk.tell(fmt.Sprintf("aggy is ready to %s, but %s has not ended a turn since it opened.", what, on),
+	s.pk.tell(fmt.Sprintf("aggy is ready to %s, but it has seen no turn end from %s since it opened.", what, on),
 		fmt.Sprintf("It may be showing a dialog (an update or trust prompt), so aggy will not type %s into it.", cmd),
-		fmt.Sprintf("Quit %s yourself and aggy will %s, or send a message and aggy asks when that turn ends.", on, what),
+		fmt.Sprintf("Quit %s yourself and aggy will %s, if it exits cleanly.", on, what),
+		"If you send a message instead, aggy asks at that turn's end if it sees one; some CLIs report none until their hook is approved.",
 		fmt.Sprintf("To cancel, press %s, then Esc in the list.", keyName(s.pk.key)))
 	s.openPicker()
+	s.noTurnOpen = true
+}
+
+// handExitSwitches says whether the CLI's exit with code completes a switch
+// that tellNoTurn told the user to quit for: only a clean exit with no signal
+// passed on, since a crash or a signal is no answer to the note, and only
+// while the session picked is still recorded, as confirmSwitch checks. It
+// says why not, in the record and, for a session gone, on the terminal.
+func (s *session) handExitSwitches(code int) bool {
+	if !s.sw.toldNoTurn {
+		return false
+	}
+	if code != 0 || s.signalled {
+		s.log(diag.Rec{Event: diag.EvSwitchCancelled, Cause: s.sw.rec, Exit: diag.Int(code), Attrs: map[string]any{"how": "unclean_exit", "to": string(s.sw.to), "signalled": s.signalled}})
+		return false
+	}
+	id, v := s.sw.choice.Child, s.sw.to
+	if id == "" || s.o.HasChild == nil {
+		return true
+	}
+	ans := make(chan bool, 1)
+	s.goSafe(func() { ans <- s.o.HasChild(v, id) })
+	select {
+	case ok := <-ans:
+		if !ok {
+			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeChildGone, Cause: s.sw.rec, Msg: "the session picked is no longer recorded", Attrs: map[string]any{"to": string(v)}})
+			s.leaveAlt()
+			fmt.Fprintf(s.o.Out, "\r\naggy: the %s session you picked is no longer recorded, so aggy did not switch.\r\n", v)
+		}
+		return ok
+	case <-time.After(childCheckWait):
+		return true // the launch's plan checks it again
+	}
 }
 
 // keysEnd ends the keys of a confirmation's status line.
@@ -1260,6 +1310,10 @@ func (s *session) childChecked(r childCheck) {
 //
 // It sends no Esc first to clear a menu: what Esc does at each CLI's
 // prompt and approval menus is not in docs/verification.md (S-3).
+//
+// TODO(T6917): Codex can open a rate-limit popup at turn completion whose
+// first item is "Switch to <model>" (unverified live), and turnRan does not
+// guard that: the Enter after the exit command could land on it.
 func (s *session) typeExit() {
 	switch {
 	case !s.turnRan:
@@ -1351,6 +1405,7 @@ func (s *session) closePicker() {
 	if !s.open {
 		return
 	}
+	s.noTurnOpen = false
 	if s.statusRows > 0 {
 		s.pk.eraseStatus(s.o.Out, s.statusRows, s.alt.on)
 	} else {
@@ -1428,7 +1483,7 @@ func (s *session) pickerInput(b []byte) {
 			return
 		}
 		s.atPrompt, s.toldDirty = true, false
-		s.sw.choice, s.sw.asked, s.sw.picked, s.sw.toldNoTurn = c, false, true, false
+		s.sw.choice, s.sw.asked, s.sw.picked, s.sw.noteAgain = c, false, true, true
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Cause: s.sw.rec, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked), "again": true})})
 	case picked != "":
 		if err := s.offered(picked); err != nil && !errors.Is(err, ErrChecking) {
