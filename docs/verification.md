@@ -64,7 +64,7 @@ Confidence words: *Source-verified*, *Help-verified*, *Doc-verified*,
 | Managed tools | Pinned versions, binaries, `--version` output, and MCP or hook commands of RTK, CodeGraph, Context7, Playwright MCP, and Headroom; Caveman's skill folder. | Live-confirmed (2026-10-28) |
 | Codex CLI details | `codex exec resume`, `--ignore-user-config` on `exec` only, greedy `-i`. | Help/Source-verified; parts Live-confirmed |
 | API and route settings | Listed in adapters.md. | Source/Doc-verified |
-| Codex project trust in an edit child (T6892) | `codex exec` under workspace-write persists the main checkout as trusted, whatever `--ignore-user-config` says. A session `-c projects=...` decision skips the write. | Write Live-observed and Source-verified; fix Source-verified, not run live |
+| Codex project trust in an edit child (T6892) | `codex exec` under workspace-write writes a project entry to the user's config, whatever `--ignore-user-config` says, unless a trust level is set. aggy sets one for the session. | Write Source-verified; fix Source-verified, not run live |
 | Same-vendor nested review (T6779) | A Claude review borrow run from inside an on-screen Claude Code session routes to Claude and runs as a fresh headless session. Codex under Codex and Grok under Grok are not run. | Claude Live-confirmed; Codex and Grok unverified |
 
 ## Codex hooks (T6616)
@@ -644,20 +644,16 @@ in depth for other temp roots and older Codex versions.
 
 ## Codex project trust in an edit child (T6892)
 
-Observed in a live audit, 2026-11-06, codex-cli 0.164.0: after `aggy borrow
-edit` in a never-trusted repo, the user's `config.toml` had gained
-`[projects."<main checkout>"]` with `trust_level = "trusted"`, modified at
-the edit child's start, and `aggy run codex` there showed no trust dialog.
-
-The cause is source-verified at commit 6aaac69 (adapters.md has the links):
-`thread/start` persists that entry under the edit lockdown. The fix,
-`-c projects={"<cwd>"={trust_level="untrusted"}}`, is source only: it has not
-been run live. A maintainer's check: run `aggy borrow edit` in a never-trusted
-scratch repo and compare `config.toml` before and after. It must not change,
-and the borrow must succeed, which also shows `--strict-config` takes the
-override. Also unseen live: that the child reads `AGENTS.md` when the prompt
-tells it to. Entries earlier aggy versions caused stay in the user's config:
-aggy does not remove them, since it cannot tell them from the user's own.
+Source-verified at commit 6aaac69 (adapters.md has the links): under the edit
+lockdown, `thread/start` writes a project entry to the user's `config.toml`
+unless a trust level is set for the cwd, so aggy sets one for the session with
+`-C <cwd> -c projects={"<cwd>"={trust_level="untrusted"}}`. That is source
+only: it has not been run live. A maintainer's check: run `aggy borrow edit` in
+a never-trusted scratch repo and compare `config.toml` before and after. It
+must not change, and the borrow must succeed, which also shows `--strict-config`
+takes the override. On macOS, repeat it with `AGGY_HOME` spelled in another case
+or through `/System/Volumes/Data`. Also unseen live: that the child reads
+`AGENTS.override.md` or `AGENTS.md` when the prompt tells it to.
 
 ## Codex CLI details
 

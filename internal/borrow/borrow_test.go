@@ -24,7 +24,7 @@ func TestPromptText(t *testing.T) {
 			[]string{"## Paths", "## Constraints"}},
 		// T6892: Codex does not load AGENTS.md for an edit child by itself.
 		{"edit names AGENTS.md", Prompt{Kind: adapter.Edit, Task: "fix it", Today: today},
-			[]string{"If AGENTS.md exists at the root of this directory, read it first"}, nil},
+			[]string{"If AGENTS.override.md exists at the root of this directory, read it first", "do the same with AGENTS.md"}, nil},
 		{"paths and constraints", Prompt{Kind: adapter.Review, Task: "review", Paths: []string{"/r/a.go", "/r/b"},
 			Constraints: []string{"focus on races"}, Today: today},
 			[]string{"## Paths\n\n- /r/a.go\n- /r/b\n", "## Constraints\n\n- focus on races\n", "Do not change any file"}, []string{"looked like secrets"}},

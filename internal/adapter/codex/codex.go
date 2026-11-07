@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/patch"
@@ -144,39 +145,39 @@ func editLockdown() []string {
 	return out
 }
 
-// projectOverride is the -c that keeps an edit child from writing project
-// trust to the user's config.toml. Codex's thread/start (which codex exec
-// runs in process) persists trust_level = "trusted" for the main checkout
-// when the cwd has no trust decision, is not projectless, and the sandbox
-// can write it; a --sandbox read-only child never does, and
-// --ignore-user-config does not stop it: it also hides any entry already
-// there
+// projectOverride is what keeps an edit child from writing a project entry
+// to the user's config.toml. Codex's thread/start (which codex exec runs in
+// process) writes one for the main checkout when the cwd has no trust level,
+// is not projectless, and the sandbox can write it; a --sandbox read-only
+// child never does, and --ignore-user-config does not stop it
 // (https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/app-server/src/request_processors/thread_processor.rs#L1419).
-// An explicit decision for the cwd skips the write, and untrusted is the one
-// that keeps the worktree's .codex config and hooks unloaded
-// (config/src/loader/mod.rs#L1127 at that commit); it is a session override,
-// so nothing is persisted. It also stops Codex loading AGENTS.md
-// (core/src/agents_md.rs#L64), so the edit prompt names that file. Approval
-// and sandbox stay as they were: exec sets approval to never and the sandbox
-// is explicit (exec/src/lib.rs#L591, core/src/config/mod.rs#L3894).
+// A level for the cwd skips the write; it is a session override, so nothing
+// is written. untrusted also stops Codex loading AGENTS.md
+// (core/src/agents_md.rs#L64 at that commit), so the edit prompt names it.
+// Approval and sandbox stay as they were: exec sets approval to never and
+// the sandbox is explicit (exec/src/lib.rs#L591, core/src/config/mod.rs#L3894).
+//
+// The key must be spelled as Codex spells the cwd, and without -C that is
+// getcwd's answer, which no path aggy holds is sure to match: on macOS it
+// has the file system's own case and Unicode form, and no firmlink prefix.
+// aggy cannot ask for it (F_GETPATH needs a raw syscall, which lint bans),
+// so it tells Codex the cwd instead: with -C the config's cwd is the argument
+// as given (utils/cli/src/shared_options.rs#L67, core/src/config/mod.rs#L3568),
+// and the lookup tries that spelling after the canonical one
+// (config/src/project_trust.rs#L62). A sandbox root is canonicalized apart
+// from this (sandboxing/src/seatbelt.rs#L461).
 //
 // The value is a table, not a dotted key: an override's key is split on
-// every '.' (config/src/overrides.rs#L22), and a state dir path holds one.
-// Lookup tries the cwd's canonical form, then its spelling
-// (config/src/project_trust.rs#L62), and Codex's cwd is the physical one, so
-// both a symlinked and a resolved req.Cwd get an entry. A value that does not
-// parse becomes a string, which --strict-config refuses, so the borrow fails.
+// every '.' (config/src/overrides.rs#L22), and a state dir path holds one. A
+// value that does not parse becomes a string, which --strict-config refuses,
+// so the borrow fails. Codex reads the path lossily (project_trust.rs#L32), so
+// a path that is not UTF-8 cannot be a key and is refused.
 // Source only: docs/verification.md, "Codex project trust in an edit child".
-func projectOverride(cwd string) []string {
-	keys := []string{cwd}
-	if r, err := filepath.EvalSymlinks(cwd); err == nil && r != cwd {
-		keys = []string{r, cwd}
+func projectOverride(cwd string) ([]string, error) {
+	if !utf8.ValidString(cwd) {
+		return nil, fmt.Errorf("codex: edit: the working directory %q is not valid UTF-8, so aggy cannot name it to Codex exactly: %w", cwd, adapter.ErrUnsupported)
 	}
-	entries := make([]string, len(keys))
-	for i, k := range keys {
-		entries[i] = tomlString(k) + `={trust_level="untrusted"}`
-	}
-	return []string{"-c", "projects={" + strings.Join(entries, ",") + "}"}
+	return []string{"-C", cwd, "-c", "projects={" + tomlString(cwd) + `={trust_level="untrusted"}}`}, nil
 }
 
 // Refusal returns the one refusal of research and news on Codex, which
@@ -339,7 +340,11 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 		}
 	case adapter.Edit:
 		args = append(args, EditLockdown...)
-		args = append(args, projectOverride(req.Cwd)...)
+		o, err := projectOverride(req.Cwd)
+		if err != nil {
+			return adapter.Command{}, err
+		}
+		args = append(args, o...)
 	default:
 		return adapter.Command{}, fmt.Errorf("codex: unknown kind %q", req.Kind)
 	}
