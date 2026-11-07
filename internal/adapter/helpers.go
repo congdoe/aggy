@@ -130,6 +130,14 @@ func ValidSessionID(v Vendor, id string) error {
 	case strings.HasPrefix(id, "-"):
 		return fmt.Errorf("adapter: %s session id %q starts with -", v, id)
 	}
+	if v == OpenCode {
+		// A session id must start with "ses" (schema/src/session-id.ts at
+		// v2.2.5); aggy makes and accepts only ses_ and letters and digits.
+		if !openCodeSessionRE.MatchString(id) {
+			return fmt.Errorf("adapter: %s session id %q is not ses_ and up to 64 letters and digits", v, id)
+		}
+		return nil
+	}
 	for _, r := range id {
 		if !strings.ContainsRune(idChars, r) {
 			return fmt.Errorf("adapter: %s session id %q has a character outside [A-Za-z0-9-]", v, id)
@@ -140,6 +148,9 @@ func ValidSessionID(v Vendor, id string) error {
 	}
 	return nil
 }
+
+// openCodeSessionRE is what ValidSessionID accepts for OpenCode.
+var openCodeSessionRE = regexp.MustCompile(`^ses_[A-Za-z0-9]{1,64}$`)
 
 // idChars are the characters a session id may hold.
 const idChars = "-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"

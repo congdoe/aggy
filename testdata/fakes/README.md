@@ -1,6 +1,6 @@
 # Fake CLIs
 
-`fake-claude`, `fake-codex`, and `fake-grok` stand in for the vendor CLIs, so tests never run a real vendor CLI or need a login. `fake-hook` records hook calls. `fake-mcp` stands in for an MCP server: it appends its arguments (after the first), working directory, and whole environment as one JSON line to the absolute path in its first argument, and exits. All five are one program, `fake/`, named by its binary name (or `AGGY_FAKE_VENDOR`).
+`fake-claude`, `fake-codex`, `fake-grok`, and `fake-opencode` stand in for the vendor CLIs, so tests never run a real vendor CLI or need a login. `fake-hook` records hook calls. `fake-mcp` stands in for an MCP server: it appends its arguments (after the first), working directory, and whole environment as one JSON line to the absolute path in its first argument, and exits. All six are one program, `fake/`, named by its binary name (or `AGGY_FAKE_VENDOR`).
 
 Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go build` into a temp dir. They are not built by `go build ./...`.
 
@@ -8,7 +8,7 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 
 - A fake refuses to run (exit 97) when `HOME` is unset, relative, or the real user's home, or when any vendor home (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`, else `$HOME/.<vendor>`) is relative or inside the real home. Paths are compared by name, after resolving symlinks and case-insensitively on darwin, and by file identity: every existing ancestor of each candidate is compared with `os.SameFile` against the real home and the real `~/.claude`, `~/.codex`, and `~/.grok`, which catches spellings such as macOS's `/System/Volumes/Data` firmlink or a case-folded `ſ`. Tests set `HOME` to a temp dir and clear or set the three vendor variables.
 - It accepts only the flags recorded in [docs/adapters.md](../../docs/adapters.md). Any other flag fails with exit 2 and the CLI's own message (commander's `error: unknown option '<flag>'` for Claude, clap's `error: unexpected argument '<flag>' found` for Codex and Grok), so an adapter that invents a flag fails its test. A scenario can allow more with `extra_flags` and `extra_switches`.
-- It never reads anything except the scenario file, its stdin, Grok's `--prompt-file`, Claude's first `--mcp-config` file, and, on `codex exec`, a linked worktree's `.git` file.
+- It never reads anything except the scenario file, its stdin, Grok's `--prompt-file`, Claude's first `--mcp-config` file, OpenCode's `$OPENCODE_CONFIG` and the files its `instructions` name, and, on `codex exec`, a linked worktree's `.git` file.
 - `codex exec` (not `exec resume`) with `--sandbox workspace-write` in a git checkout writes a project entry as the real one does: it appends one for the main checkout to the vendor home's `config.toml`, whatever `--ignore-user-config` says, unless a `-c projects={...}` names getcwd's path or `-C`'s argument as given (codex 6aaac69, `app-server/src/request_processors/thread_processor.rs:1419`).
 
 ## Environment
@@ -16,7 +16,7 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 | Variable | Meaning |
 | --- | --- |
 | `AGGY_FAKE_SCENARIO` | Path of the scenario JSON file. Unset means the defaults: success, no output. |
-| `AGGY_FAKE_RECORD` | A file each run appends one JSON line to: vendor, mode, pid, args, parsed flags, positionals, cwd, stdin, Grok's headless prompt, the content of Claude's first `--mcp-config` file (`mcp_config`), whether stdin was a terminal, the session id, the names of every environment variable, and the values of `AGGY_*` ones. `fakecli.Records` reads it. |
+| `AGGY_FAKE_RECORD` | A file each run appends one JSON line to: vendor, mode, pid, args, parsed flags, positionals, cwd, stdin, Grok's headless prompt, the content of Claude's first `--mcp-config` file (`mcp_config`), whether stdin was a terminal, the session id, the names of every environment variable, and the values of `AGGY_*` ones (for OpenCode, also of `OPENCODE_*`, `GIT_CONFIG_*`, and `PWD`, plus the launch's config and the text of its instructions). `fakecli.Records` reads it. |
 | `AGGY_FAKE_VENDOR` | Overrides the vendor taken from the binary name. |
 
 ## Flags honored
@@ -29,6 +29,9 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 | `codex exec [resume <id>]` (the exec flags go before `resume`) | `-c`, `-C`, `--disable` (repeatable), `--sandbox`, `-i <value>...` | `--json`, `--ignore-user-config`, `--skip-git-repo-check`, `--strict-config` |
 | `codex exec resume <id>`, after `resume` | `-c` | |
 | `codex resume <id>` | `-c` | `--no-alt-screen` |
+| `opencode` | `--session` | `--standalone`, `--auto` |
+| `opencode mini` | `--session`, `-m` | `--standalone` |
+| `opencode session export <id>` | | `--standalone` |
 
 Claude's `--resume` takes an optional value, as the real CLI does: it takes the next argument only when that does not start with `-`, so `--resume --permission-mode plan` is a bare `--resume`. Codex's `-i` takes one or more values, up to the next argument that starts with `-` (a lone `-` is a value), as clap's `num_args = 1..` does, and splits each on commas, as its `value_delimiter = ','` does. `codex exec resume` takes only its own flags, so exec flags placed after `resume` fail as unknown.
 
@@ -80,6 +83,7 @@ A JSON object. Every field is optional, and unknown fields are an error.
 | `session_files` | objects | `{"path": "...", "content": "..."}` files written under the vendor's home. The path must stay inside it. |
 | `cwd_files` | objects | `{"path": "...", "content": "..."}` files written under the working dir, as an edit child would. The path must stay inside it. |
 | `sleep_ms` | int | Delay before output, for timeout tests. |
+| `opencode_export` | string | What `opencode session export` prints. |
 | `start_mcp` | bool | Claude: after the hooks, start each server of the first `--mcp-config` file (`command` and `args`) once, with the fake's own environment and working directory, and wait for it. With `fake-mcp` as the server, a test sees what the server got. |
 | `raw_echo` | bool | An interactive run that acts like a full-screen CLI: raw mode, then `stdout`, then every byte read echoed back; each resize prints `[winch <rows>x<cols>]`; Ctrl+Z (0x1a) stops it with SIGSTOP and prints `[continued]` on resume; Ctrl+D (0x04) exits. For the supervisor tests in `test/e2e`. |
 | `replies` | objects | `{"args": [...], "stdout": "...", "stderr": "...", "exit_code": N}`: the fixed answer to that exact argument list, given before any flag is parsed. For commands docs/adapters.md does not record, such as a sign-in status check a test supplies (no vendor's is verified). The run is recorded with mode `reply`. |

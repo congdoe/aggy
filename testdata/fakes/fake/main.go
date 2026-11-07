@@ -1,4 +1,4 @@
-// Command fake is fake-claude, fake-codex, fake-grok, and fake-hook: a
+// Command fake is fake-claude, fake-codex, fake-grok, fake-opencode, and fake-hook: a
 // stand-in for the vendor CLIs that follows a scenario file, so tests never
 // run a real vendor CLI or need a login. The vendor is the binary's name
 // without the "fake-" prefix, or $AGGY_FAKE_VENDOR. See ../README.md for
@@ -71,6 +71,8 @@ type Scenario struct {
 	// StartMCP makes claude start each server of its --mcp-config file
 	// once and wait for it, after the hooks.
 	StartMCP bool `json:"start_mcp"`
+	// OpenCodeExport is what `opencode session export` prints.
+	OpenCodeExport string `json:"opencode_export"`
 	// ExtraValues adds accepted values to a flag with a recorded value
 	// set, e.g. {"--sandbox": ["workspace-write"]}.
 	ExtraValues map[string][]string `json:"extra_values"`
@@ -178,6 +180,13 @@ func (f *fake) validate(headless bool) error {
 			}
 		}
 	}
+	// A session id must start with "ses" (schema/src/session-id.ts at
+	// v2.2.5).
+	for _, v := range f.flags["--session"] {
+		if !strings.HasPrefix(v, "ses") {
+			return fmt.Errorf("--session must start with ses, got %q", v)
+		}
+	}
 	// Recorded: --session-id takes a UUID (Claude and Grok).
 	for _, v := range f.flags["--session-id"] {
 		if !uuidRE.MatchString(v) {
@@ -253,25 +262,29 @@ type SessionFile struct {
 
 // Record is one line appended to $AGGY_FAKE_RECORD per run.
 type Record struct {
-	Vendor        string              `json:"vendor"`
-	Mode          string              `json:"mode"`
-	Args          []string            `json:"args"`
-	Cwd           string              `json:"cwd"`
-	Env           map[string]string   `json:"env"`
-	EnvKeys       []string            `json:"env_keys"`
-	StdinTerminal bool                `json:"stdin_terminal"`
-	Stdin         string              `json:"stdin"`
-	Prompt        string              `json:"prompt,omitempty"` // grok's -p value or --prompt-file contents
-	SessionID     string              `json:"session_id,omitempty"`
-	Flags         map[string][]string `json:"flags,omitempty"`
-	Positional    []string            `json:"positional,omitempty"`
+	Vendor        string            `json:"vendor"`
+	Mode          string            `json:"mode"`
+	Args          []string          `json:"args"`
+	Cwd           string            `json:"cwd"`
+	Env           map[string]string `json:"env"`
+	EnvKeys       []string          `json:"env_keys"`
+	StdinTerminal bool              `json:"stdin_terminal"`
+	Stdin         string            `json:"stdin"`
+	Prompt        string            `json:"prompt,omitempty"` // grok's -p value or --prompt-file contents
+	// The OpenCode launch's config and the text of its instructions,
+	// from an interactive run.
+	OpenCodeConfig       json.RawMessage     `json:"opencode_config,omitempty"`
+	OpenCodeInstructions []string            `json:"opencode_instructions,omitempty"`
+	SessionID            string              `json:"session_id,omitempty"`
+	Flags                map[string][]string `json:"flags,omitempty"`
+	Positional           []string            `json:"positional,omitempty"`
 	// MCPConfig is the content of the first --mcp-config file, if any.
 	MCPConfig json.RawMessage `json:"mcp_config,omitempty"`
 	PID       int             `json:"pid"`
 }
 
 // Versions the vendor facts were recorded against (docs/adapters.md).
-var defaultVersion = map[string]string{"claude": "2.1.311", "codex": "0.164.0", "grok": "1.0.70"}
+var defaultVersion = map[string]string{"claude": "2.1.311", "codex": "0.164.0", "grok": "1.0.70", "opencode": "2.2.5"}
 
 // flagSpec lists the flags a vendor command accepts: value flags take an
 // argument, switches do not.
@@ -341,6 +354,20 @@ var specs = map[string]flagSpec{
 	"codex resume": {
 		values:   []string{"-c"},
 		switches: []string{"--no-alt-screen"},
+	},
+	// OpenCode 2.2.5: cli/src/commands/commands.ts at v2.2.5, and the
+	// live checks in docs/verification.md (T6930). The top level has no
+	// model flag.
+	"opencode": {
+		values:   []string{"--session"},
+		switches: []string{"--standalone", "--auto"},
+	},
+	"opencode mini": {
+		values:   []string{"--session", "-m"},
+		switches: []string{"--standalone"},
+	},
+	"opencode session export": {
+		switches: []string{"--standalone"},
 	},
 }
 
@@ -564,6 +591,16 @@ func (f *fake) parse(args []string) error {
 		args = args[1:]
 		key = "codex " + f.sub
 	}
+	if f.vendor == "opencode" && len(args) > 0 && args[0] == "mini" {
+		f.sub = "mini"
+		args = args[1:]
+		key = "opencode mini"
+	}
+	if f.vendor == "opencode" && len(args) > 1 && args[0] == "session" && args[1] == "export" {
+		f.sub = "session export"
+		args = args[2:]
+		key = "opencode session export"
+	}
 	var spec flagSpec
 	var values, switches []string
 	use := func(k string) {
@@ -715,6 +752,11 @@ func (f *fake) main(args []string) int {
 		return fail(2, "%s: %v", f.vendor, err)
 	}
 	f.id = f.sessionID()
+	if f.sub == "session export" {
+		f.record("export", args)
+		fmt.Print(f.expand(f.sc.OpenCodeExport))
+		return f.sc.ExitCode
+	}
 	if f.vendor == "grok" {
 		for _, list := range f.flags["--tools"] {
 			for _, name := range strings.Split(list, ",") {
@@ -834,7 +876,7 @@ func (f *fake) helpText() string {
 	}
 	key := f.vendor
 	if f.sub != "" {
-		key = "codex " + f.sub
+		key = f.vendor + " " + f.sub
 	}
 	spec := specs[key]
 	var b strings.Builder
@@ -884,6 +926,14 @@ func (f *fake) sessionID() string {
 			return f.positional[0]
 		}
 		return fresh
+	case "opencode":
+		if f.sub == "session export" && len(f.positional) > 0 {
+			return f.positional[0]
+		}
+		if s := f.value("--session"); s != "" {
+			return s
+		}
+		return "ses_fake" + strings.ReplaceAll(fresh, "-", "")
 	default:
 		if r := f.value("--resume"); r != "" && !f.has("--fork-session") {
 			return r
@@ -1296,12 +1346,38 @@ func (f *fake) record(mode string, args []string) {
 	for _, kv := range os.Environ() {
 		k, v, _ := strings.Cut(kv, "=")
 		r.EnvKeys = append(r.EnvKeys, k)
-		if strings.HasPrefix(k, "AGGY_") {
+		if strings.HasPrefix(k, "AGGY_") || f.vendor == "opencode" && (strings.HasPrefix(k, "OPENCODE_") || strings.HasPrefix(k, "GIT_CONFIG_") || k == "PWD") {
 			r.Env[k] = v
 		}
 	}
 	sort.Strings(r.EnvKeys)
+	if f.vendor == "opencode" && mode == "interactive" {
+		r.OpenCodeConfig, r.OpenCodeInstructions = openCodeConfig()
+	}
 	appendJSON(p, r)
+}
+
+// openCodeConfig reads the file $OPENCODE_CONFIG names, and each file its
+// instructions name, as the real CLI does at load, so a test sees what the
+// session would get: the launch removes them when the CLI exits.
+func openCodeConfig() (json.RawMessage, []string) {
+	b, err := os.ReadFile(os.Getenv("OPENCODE_CONFIG"))
+	if err != nil || !json.Valid(b) {
+		return nil, nil
+	}
+	var doc struct {
+		Instructions []string `json:"instructions"`
+	}
+	_ = json.Unmarshal(b, &doc)
+	var texts []string
+	for _, p := range doc.Instructions {
+		t, err := os.ReadFile(p)
+		if err != nil {
+			t = []byte("unreadable: " + p)
+		}
+		texts = append(texts, string(t))
+	}
+	return b, texts
 }
 
 func appendJSON(path string, v any) {

@@ -17,27 +17,37 @@ const (
 	Claude Vendor = "claude"
 	Codex  Vendor = "codex"
 	Grok   Vendor = "grok"
+	// OpenCode is an open harness (docs/design.md, section 15): on screen
+	// only. It is not in Vendors, so it has no borrows, hooks, tools, or
+	// default route, and its adapter refuses Headless.
+	OpenCode Vendor = "opencode"
 )
 
-// Vendors returns every supported vendor in a stable order.
+// Vendors returns the subscription vendors in a stable order: those with
+// borrows, installed hooks, and managed tools.
 func Vendors() []Vendor { return []Vendor{Claude, Codex, Grok} }
+
+// Known returns every vendor aggy can name: Vendors, then the open
+// harnesses, which are only ever on screen, and only when the person asks.
+func Known() []Vendor { return append(Vendors(), OpenCode) }
 
 // ParseVendor returns the vendor named s, or an error naming the valid ones.
 func ParseVendor(s string) (Vendor, error) {
-	for _, v := range Vendors() {
+	for _, v := range Known() {
 		if string(v) == s {
 			return v, nil
 		}
 	}
-	return "", fmt.Errorf("unknown vendor %q (want claude, codex, or grok)", s)
+	return "", fmt.Errorf("unknown vendor %q (want claude, codex, grok, or opencode)", s)
 }
 
 // ExitCommand is the line the supervisor types into vendor v's session,
 // at a turn end, to end it for a switch, and whether that is verified.
-// It is "/exit" for every vendor, unverified: docs/verification.md has no
-// live check of it yet (docs/adapters.md). The supervisor asks the user
-// before it types anything, verified or not.
-func ExitCommand(Vendor) (cmd string, verified bool) { return "/exit", false }
+// It is "/exit" for every vendor, unverified except on OpenCode, where
+// it exits 0 with nothing open (docs/verification.md, T6930); the others
+// have no live check of it yet (docs/adapters.md). The supervisor asks
+// the user before it types anything, verified or not.
+func ExitCommand(v Vendor) (cmd string, verified bool) { return "/exit", v == OpenCode }
 
 // Kind is what a borrow is for. The on-screen agent picks the kind; aggy
 // picks the vendor.
@@ -187,6 +197,26 @@ type InteractiveRequest struct {
 	// PassFlags.Parse let through. Each adapter puts them after its own
 	// arguments and before a brief pointer.
 	Extra []string
+	// OpenCode is how an OpenCode session is launched; only that adapter
+	// reads it, and it refuses to build a command without it.
+	OpenCode *OpenCodeLaunch
+}
+
+// OpenCodeLaunch is what the launch made for one OpenCode session
+// (docs/design.md, section 15). Everything else OpenCode needs from aggy
+// (rules, instructions, the guard) is in ConfigFile.
+type OpenCodeLaunch struct {
+	// Mini runs `opencode mini`: any repo not trusted for OpenCode. A
+	// repo's screen plugin runs on the full screen, with nothing to stop
+	// it, and not on mini.
+	Mini bool
+	// Auto answers every ask with once (--auto). Only on the full screen:
+	// mini has no such flag, and the launch allows it only in a trusted
+	// repo.
+	Auto bool
+	// ConfigFile and ConfigDir are absolute paths in the folder aggy made
+	// for this launch: OPENCODE_CONFIG and OPENCODE_CONFIG_DIR.
+	ConfigFile, ConfigDir string
 }
 
 // HookGroup is one matcher group of a Claude-format hooks config.

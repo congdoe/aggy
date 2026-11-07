@@ -126,6 +126,17 @@ const (
 	CapStrictConfig = "strict-config"
 	CapSkipGitCheck = "skip-git-repo-check"
 	CapCwd          = "cwd"
+	// CapStandalone is opencode --standalone, a private server per launch:
+	// a running shared service does not pick up per-launch config, so
+	// aggy's rules could not reach it (docs/verification.md, T6930).
+	CapStandalone = "standalone"
+	// CapSession is opencode --session <id>, on the full screen.
+	CapSession = "session"
+	// CapMiniSession is the same flag on opencode mini, which an untrusted
+	// repo gets.
+	CapMiniSession = "mini-session"
+	// CapAuto is opencode --auto, the full-auto setting.
+	CapAuto = "auto"
 )
 
 // lsmPath lists the Linux security modules the kernel runs.
@@ -202,6 +213,16 @@ var Specs = map[adapter.Vendor]Spec{
 			{CapPromptFile, 0, "--prompt-file", Option},
 			{CapNoSubagents, 0, "--no-subagents", Option},
 			{CapAllow, 0, "--allow", Option},
+		},
+	},
+	adapter.OpenCode: {
+		Programs: []string{"opencode"},
+		Help:     [][]string{{"--help"}, {"mini", "--help"}},
+		Features: []Feature{
+			{CapStandalone, 0, "--standalone", Option},
+			{CapSession, 0, "--session", Option},
+			{CapAuto, 0, "--auto", Option},
+			{CapMiniSession, 1, "--session", Option},
 		},
 	},
 	adapter.Codex: {
