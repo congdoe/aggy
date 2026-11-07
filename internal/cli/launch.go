@@ -297,8 +297,8 @@ func (p *launchPlan) borrowChild(cfg config.Config, t target, c store.Child, fil
 	if err := adapter.ValidSessionID(v, c.VendorSessionID); err != nil {
 		return fmt.Errorf("%s has an invalid id in the index: %w", what, err)
 	}
-	switch k := adapter.Kind(c.Kind); {
-	case k == adapter.Image || k == adapter.Video:
+	switch adapter.Kind(c.Kind) {
+	case adapter.Image, adapter.Video:
 		if !borrowTempDir(c) {
 			return fmt.Errorf("%s cannot be resumed: %s is not a borrow's temp dir", what, termsafe.Line(c.Cwd))
 		}
