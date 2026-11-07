@@ -9,7 +9,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"syscall"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/safefs"
@@ -40,12 +42,22 @@ func RunDirectStarted(c adapter.Command, started func(pid int)) (int, error) {
 	}
 	done := make(chan struct{})
 	defer close(done)
+	var kill *time.Timer
+	defer func() {
+		if kill != nil {
+			kill.Stop()
+		}
+	}()
 	go func() {
 		for {
 			select {
 			case s := <-sigs:
 				if s == syscall.SIGTERM || s == syscall.SIGHUP {
 					_ = d.cmd.Process.Signal(s)
+					// OpenCode's full screen ignores both (live, 2.2.5).
+					if kill == nil && slices.Contains(c.Env, "AGGY_VENDOR=opencode") {
+						kill = time.AfterFunc(directKillWait, func() { _ = d.cmd.Process.Kill() })
+					}
 				}
 			case <-done:
 				return
@@ -54,6 +66,9 @@ func RunDirectStarted(c adapter.Command, started func(pid int)) (int, error) {
 	}()
 	return d.Wait()
 }
+
+// directKillWait is how long OpenCode has to exit after a signal to aggy.
+var directKillWait = 10 * time.Second
 
 // Direct is an interactive vendor CLI started by StartDirect: on aggy's
 // own terminal, not in a pseudo-terminal.

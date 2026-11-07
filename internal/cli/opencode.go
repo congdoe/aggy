@@ -22,6 +22,7 @@ import (
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
+	"github.com/congdoe/aggy/internal/store"
 )
 
 // maxInstruction caps one instruction file aggy copies for OpenCode.
@@ -53,9 +54,15 @@ type openCodeInput struct {
 // [policy] says: without --standalone or the guard's binary, none of
 // aggy's rules would apply.
 func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
-	root, _ := repoRoot(in.cwd)
-	trusted, trustWarn := openCodeTrusted(root)
 	var out openCodeSetup
+	// By its real path: a link in a trusted repo to another folder is that
+	// folder, whose plugins would run.
+	real, err := safefs.RealPath(in.cwd)
+	if err != nil {
+		return out, err
+	}
+	root, _ := repoRoot(real)
+	trusted, trustWarn := openCodeTrusted(root)
 	if trustWarn != "" {
 		out.warns = append(out.warns, trustWarn)
 	}
@@ -256,11 +263,32 @@ const codeOpenCodeManaged = "opencode-managed-config"
 // openCodeSetupNote is what setup says about OpenCode, the design's own
 // words (docs/design.md, section 15).
 const openCodeSetupNote = `  Under aggy, your global OpenCode config does nothing: each launch brings its own.
+  aggy runs it when you name it (aggy run opencode). To offer it in the switch
+  list, add it to [switch] order in aggy's config.
   aggy gives guardrails against mistakes, not protection from a hostile repo or a
   tricked model. A model's shell runs as you with no OS sandbox.
   Full auto ([opencode] auto = true, only in a repo you ran aggy trust --opencode on)
   has no classifier like Claude's: whatever is not denied runs with no prompt.
 `
+
+// openCodeVersionCheck is the version_checks row that says the person has been
+// told about this CLI version, once.
+const openCodeVersionCheck = "screen_warned"
+
+// openCodeNewVersionNote warns about a CLI newer than aggy was tested on, once
+// for each version. It never refuses: the owner wants a vendor update to keep
+// working, and on screen the person can see what happens.
+func openCodeNewVersionNote(ctx context.Context, s *store.Store, version string) string {
+	if c, err := adapter.CompareVersions(version, opencode.Tested.Max); err != nil || c <= 0 {
+		return ""
+	}
+	v := string(adapter.OpenCode)
+	if _, err := s.GetVersionCheck(ctx, v, version, openCodeVersionCheck, opencode.Tested.Max); err == nil {
+		return ""
+	}
+	_ = s.PutVersionCheck(ctx, store.VersionCheck{Vendor: v, Version: version, Check: openCodeVersionCheck, Stamp: opencode.Tested.Max, Passed: true, Reason: "told", At: time.Now()})
+	return fmt.Sprintf("OpenCode %s is newer than the %s aggy was tested on. It starts anyway, but aggy's rules, guard, and switch may not hold: watch for the guard's warning, and aggy says this once for each version.", version, opencode.Tested.Max)
+}
 
 // openCodeExportTimeout bounds one `session export`.
 const openCodeExportTimeout = 30 * time.Second

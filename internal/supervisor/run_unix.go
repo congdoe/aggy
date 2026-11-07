@@ -293,6 +293,9 @@ func Run(o Options) (Exit, error) {
 			default:
 				s.signalled = true
 				_ = child.Signal(sig.(syscall.Signal))
+				if sig == syscall.SIGTERM || sig == syscall.SIGHUP {
+					s.killAfterHangup(child)
+				}
 			}
 		case w := <-waits:
 			switch {
@@ -490,7 +493,17 @@ type session struct {
 	// and questions it has seen open (opencode_unix.go).
 	guardSeen  bool
 	hangupKill *time.Timer // killAfterHangup
-	asked      map[string]bool
+	// exitGap: OpenCode has the exit command's letters and waits for its
+	// Enter; gapKeys are what the user typed since (finishExit). askStale: a
+	// turn ended with an ask still open, so its reply was lost; askTold: the
+	// user was told an ask holds the switch, so picking again releases it.
+	exitGap           bool
+	gapKeys           []byte
+	askStale, askTold bool
+	// slashLine: the composer's text began with /, a command. On OpenCode an
+	// Enter runs it and leaves no text, unlike a popup that fills in a name.
+	slashLine bool
+	asked     map[string]bool
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -643,6 +656,7 @@ func (s *session) hookEvent(ev hookEvent) {
 				s.pk.padRows = 0
 			}
 			s.atPrompt, s.inputSinceTurn, s.queuedWait = !s.held, false, false
+			s.askStale = s.askOpen()
 			if s.queued > 0 {
 				s.queued--
 				s.atPrompt, s.queuedWait = false, true
@@ -786,6 +800,10 @@ func (s *session) send(b []byte) {
 		s.toChild.push(b) // the terminal's own reports: no typing at all
 		return
 	}
+	if s.exitGap {
+		s.gapKeys = append(s.gapKeys, b...) // finishExit decides where they go
+		return
+	}
 	s.lastIn = time.Now()
 	s.held = false
 	if len(b) == 0 {
@@ -919,6 +937,9 @@ func (s *session) compose(c byte) {
 	case c == '\r' && (prev == esc || prev == '\\' || s.inPaste) || c == '\n':
 		s.compLen++ // a newline in the composer
 		s.moved, s.pastePop = true, false
+	case c == '\r' && s.popup && s.slashLine && s.o.Vendor == adapter.OpenCode:
+		// A command runs and leaves no text (/models opens a dialog, live).
+		s.compLen, s.lenKnown, s.cleared, s.hadAt, s.moved, s.popup, s.slashLine = 0, true, false, false, false, false, false
 	case c == '\r' && s.popup:
 		s.lenKnown = false // the popup may have taken it and added text
 	case c == '\r':
@@ -946,6 +967,7 @@ func (s *session) compose(c byte) {
 	default:
 		switch {
 		case c == '@' || c == ctrlR || c == '/' && s.compLen == 0:
+			s.slashLine = c == '/' && !s.hadAt
 			s.hadAt, s.moved = true, false
 			if s.inPaste {
 				s.pastePop = true
@@ -973,7 +995,13 @@ func (s *session) offerSwitch() {
 	if !s.turnRan && s.mayBeRunning() {
 		return
 	}
-	if s.turnRan && !s.atPrompt || s.askOpen() {
+	if s.askOpen() {
+		if s.askStale && !s.askTold {
+			s.tellAskWaits(s.sw.to)
+		}
+		return
+	}
+	if s.turnRan && !s.atPrompt {
 		return
 	}
 	if s.refuseSignalled() {
@@ -1782,6 +1810,13 @@ func (s *session) pickerInput(b []byte) {
 		// Not past a hold (S-3), and not past unsent text (S-8): that
 		// stays until the user's next Enter, which offerSwitch reports.
 		// The new pick's options replace the old.
+		if s.askOpen() {
+			if !s.askTold {
+				s.tellAskWaits(picked)
+				return
+			}
+			s.releaseAsks() // told, and picked again: the user says none is waiting
+		}
 		if s.held {
 			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "picked again, but the CLI waits for the user"})
 			s.pk.tell(fmt.Sprintf("%s said it is waiting for you (a permission prompt or another notice).", s.o.Vendor),
@@ -1808,6 +1843,9 @@ func (s *session) pickerInput(b []byte) {
 		s.setSwitch(pendingSwitch{to: picked, choice: c, picked: true})
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked)})})
 		s.markNoTurn()
+		if s.askOpen() {
+			s.tellAskWaits(picked)
+		}
 	default: // Esc on the list cancels a waiting switch
 		s.toolsWaitTurn = s.toolsWaitTurn || s.sw.resume
 		s.setSwitch(pendingSwitch{})

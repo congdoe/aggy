@@ -16,6 +16,11 @@ func TestOpenCodeDefaults(t *testing.T) {
 	if !slices.Equal(c.OpenCode.Providers, []string{"openai", "xai"}) {
 		t.Errorf("providers = %q", c.OpenCode.Providers)
 	}
+	// TODO(T6937): the plan table and first-run questions add it; until then
+	// the person does, by naming it in [switch] order.
+	if slices.Contains(c.Switch.Order, adapter.OpenCode) {
+		t.Error("the picker offers opencode before the person added it")
+	}
 	r := c.Routing
 	for _, route := range []Route{r.Image, r.Video, r.Research, r.News, r.Review, r.Edit} {
 		if slices.Contains(route.Vendors, adapter.OpenCode) {

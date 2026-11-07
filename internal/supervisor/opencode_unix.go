@@ -3,6 +3,8 @@
 package supervisor
 
 import (
+	"bytes"
+	"fmt"
 	"syscall"
 	"time"
 
@@ -37,6 +39,10 @@ func (s *session) startGuardWatch() {
 	}()
 }
 
+// TODO(T6953): a session changed on screen (/new, /sessions, /open) makes the
+// turn ends name another id, so they are ignored and no switch is offered, and
+// a brief reads the session aggy launched.
+
 // openCodeEvent handles the events only OpenCode's plugin sends, and says
 // whether that is all there is to do. Asked events go on to hookEvent's
 // hold, like any event that is no turn end.
@@ -49,6 +55,9 @@ func (s *session) openCodeEvent(ev hookEvent) bool {
 		return false
 	}
 	switch ev.name {
+	case exitEnterCheck:
+		s.finishExit()
+		return true
 	case guardCheck:
 		if !s.guardSeen {
 			s.log(diag.Rec{Event: diag.EvGuardMissing, Code: diag.CodeGuardMissing, Msg: "no report from aggy's OpenCode guard"})
@@ -71,6 +80,7 @@ func (s *session) openCodeEvent(ev hookEvent) bool {
 			}
 			s.asked[ev.request] = true
 		}
+		s.askStale, s.askTold = false, false
 		return false
 	case hook.EventPermissionReplied, hook.EventQuestionReplied:
 		delete(s.asked, ev.request)
@@ -78,7 +88,7 @@ func (s *session) openCodeEvent(ev hookEvent) bool {
 		// CLI. Once none is open the hold has done its job; a turn end
 		// still has to come before a switch.
 		if len(s.asked) == 0 {
-			s.held = false
+			s.held, s.askStale, s.askTold = false, false, false
 		}
 		s.log(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(ev.name)}})
 		return true
@@ -107,7 +117,13 @@ func (s *session) typedOf(b []byte) []byte {
 // timed out (live, 2.2.5). Sent 0.6s apart it runs. mini took either.
 var exitEnterGap = 500 * time.Millisecond
 
-// typeExitCommand types the vendor's exit command and its Enter.
+// exitEnterCheck is the session's own event when the gap is over. Like
+// guardCheck, its name cannot come over the socket.
+const exitEnterCheck = "exit enter check"
+
+// typeExitCommand types the vendor's exit command and its Enter. On OpenCode
+// the Enter waits for the gap, and comes through the session's loop, so what
+// happened in the gap is known first (finishExit).
 func (s *session) typeExitCommand() {
 	cmd, _ := adapter.ExitCommand(s.o.Vendor)
 	if s.o.Vendor != adapter.OpenCode || exitEnterGap <= 0 {
@@ -115,16 +131,86 @@ func (s *session) typeExitCommand() {
 		return
 	}
 	s.toChild.push([]byte(cmd))
-	time.AfterFunc(exitEnterGap, func() { s.toChild.push([]byte("\r")) })
+	s.exitGap, s.gapKeys = true, nil
+	time.AfterFunc(exitEnterGap, func() {
+		select {
+		case s.events <- hookEvent{name: exitEnterCheck}:
+		case <-s.quit:
+		}
+	})
+}
+
+// finishExit ends the gap. It sends the Enter unless the gap changed things:
+// over a dialog that Enter would choose Allow once (fake model, T6930), and
+// behind keys the user just typed it would send them with the command.
+//
+// This leaves one race (docs/design.md): a dialog OpenCode has opened but not
+// yet reported, since its report comes through a process the plugin starts.
+func (s *session) finishExit() {
+	if !s.exitGap {
+		return
+	}
+	cmd, _ := adapter.ExitCommand(s.o.Vendor)
+	keys := s.gapKeys
+	s.exitGap, s.gapKeys = false, nil
+	to := s.sw.to
+	cancel := func(how string) {
+		s.log(diag.Rec{Event: diag.EvSwitchCancelled, Cause: s.sw.rec, Attrs: map[string]any{"how": how, "to": string(to)}})
+		s.setSwitch(pendingSwitch{})
+		s.exitBy = nil
+	}
+	switch {
+	case s.askOpen():
+		cancel("dialog_in_gap")
+		// The letters may be in the prompt, or a dialog may have dropped
+		// them, so they count as unsent text until the user clears them.
+		s.compLen, s.lenKnown, s.dirty = len(cmd), true, true
+		s.pk.tell(fmt.Sprintf("%s asked you something as aggy was about to exit it, so aggy did not press Enter and nothing was answered.", s.o.Vendor),
+			fmt.Sprintf("%s may be in its prompt: answer the question, clear that text, and pick %s again.", cmd, to))
+		s.openPicker()
+		if len(keys) > 0 {
+			s.send(keys)
+		}
+	case len(keys) > 0:
+		// Take the command back and pass on what was typed, so nothing is
+		// lost and nothing is sent.
+		cancel("typed_in_gap")
+		s.toChild.push(bytes.Repeat([]byte{0x7f}, len(cmd)))
+		s.send(keys)
+		s.pk.tell(fmt.Sprintf("You typed as aggy was about to exit %s, so it stayed, with your text in its prompt.", s.o.Vendor),
+			fmt.Sprintf("Pick %s again to switch.", to))
+		s.openPicker()
+	default:
+		s.toChild.push([]byte("\r"))
+	}
+}
+
+// tellAskWaits tells the user why a switch to v is waiting on an ask with no
+// answer, and that picking v again goes on. A reply can be lost (a plugin
+// reloaded, a report that failed), and nothing else would clear it.
+func (s *session) tellAskWaits(v adapter.Vendor) {
+	s.askTold = true
+	s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "the switch waits: a permission or question has no reply", Attrs: map[string]any{"to": string(v)}})
+	s.pk.tell(fmt.Sprintf("%s reported a permission or a question with no answer yet, so aggy will not type its exit command over it.", s.o.Vendor),
+		fmt.Sprintf("Check its prompt and answer it. If nothing is waiting there, pick %s again to go on.", v))
+	s.openPicker()
+}
+
+// releaseAsks drops every open ask, on the user's word that none is waiting.
+func (s *session) releaseAsks() {
+	s.asked = nil
+	s.held, s.askStale, s.askTold = false, false, false
+	s.atPrompt = s.atPrompt || s.turnRan
 }
 
 // hangupWait is how long OpenCode has to exit after its terminal is gone.
 var hangupWait = 10 * time.Second
 
-// killAfterHangup ends OpenCode when a hang-up does not. The full screen
-// ignored SIGHUP and SIGTERM and ran on with no terminal (live, 2.2.5), and
-// under full auto a session nobody can see should not keep running.
-func (s *session) killAfterHangup(child Child) {
+// killAfterHangup ends OpenCode when a hang-up or a SIGTERM to aggy does not.
+// The full screen ignored both and ran on with no terminal (live, 2.2.5), and
+// under full auto a session nobody can see should not keep running. A SIGKILL
+// to aggy cannot be handled, so a session can still outlive that one.
+func (s *session) killAfterHangup(child interface{ Signal(syscall.Signal) error }) {
 	if s.o.Vendor == adapter.OpenCode && s.hangupKill == nil {
 		s.hangupKill = time.AfterFunc(hangupWait, func() { _ = child.Signal(syscall.SIGKILL) })
 	}

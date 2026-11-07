@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,10 +11,13 @@ import (
 	"testing"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/adapter/opencode"
 	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/devfix"
 	"github.com/congdoe/aggy/internal/patch"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
+	"github.com/congdoe/aggy/internal/store"
 )
 
 // openCodeWorld is a temp HOME and state folder with a git repo in it.
@@ -372,5 +376,89 @@ func TestOpenCodeManagedFindings(t *testing.T) {
 	fs := openCodeManagedFindings()
 	if len(fs) != 1 || fs[0].Path != present || fs[0].Code != codeOpenCodeManaged {
 		t.Fatalf("present: %+v", fs)
+	}
+}
+
+// TestOpenCodeNewVersionNote (M8): a newer CLI starts, and the person is told
+// once for each version.
+func TestOpenCodeNewVersionNote(t *testing.T) {
+	openCodeWorld(t)
+	ctx := context.Background()
+	s, err := store.OpenDefault(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	for _, c := range []struct {
+		version string
+		want    bool
+	}{
+		{opencode.Tested.Max, false},
+		{"2.2.4", false},
+		{"not a version", false},
+		{"", false},
+		{"2.3.0", true},
+		{"2.3.0", false},
+		{"2.3.1", true},
+	} {
+		if got := openCodeNewVersionNote(ctx, s, c.version); (got != "") != c.want {
+			t.Errorf("%q: %q, want a note %v", c.version, got, c.want)
+		}
+	}
+}
+
+// TestOpenCodeRootIsReal (L3): a link in a trusted repo to an untrusted folder
+// is that folder, whose plugins would run.
+func TestOpenCodeRootIsReal(t *testing.T) {
+	repo, dir := openCodeWorld(t)
+	trustRepo(t, repo)
+	evil := filepath.Join(filepath.Dir(repo), "untrusted")
+	if err := os.Mkdir(evil, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(repo, "link")
+	if err := os.Symlink(evil, link); err != nil {
+		t.Fatal(err)
+	}
+	s, err := prepareOpenCode(openCodeInput{cfg: effective(config.Default(), config.RepoConfig{}), caps: openCodeCaps, cwd: link, dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.launch.Mini {
+		t.Fatal("a link out of a trusted repo got the full screen")
+	}
+}
+
+// TestOpenCodeRootWithVariable (L2): the launch refuses, rather than have
+// OpenCode expand a repo folder's name in its config.
+func TestOpenCodeRootWithVariable(t *testing.T) {
+	repo, dir := openCodeWorld(t)
+	odd := filepath.Join(repo, "{env:HOME}")
+	if err := os.Mkdir(odd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(odd, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := prepareOpenCode(openCodeInput{cfg: effective(config.Default(), config.RepoConfig{}), caps: openCodeCaps, cwd: odd, dir: dir})
+	if err == nil || !strings.Contains(err.Error(), "expand") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestTrustDoneNamesTheOrder (L5): with trusts in one file, undoing an earlier
+// one is blocked by a later one, and the line that offers it must say so.
+func TestTrustDoneNamesTheOrder(t *testing.T) {
+	if !strings.Contains(trustDone, "any trust made after it") {
+		t.Fatalf("%q", trustDone)
+	}
+}
+
+// TestReportNamesOpenCode (L7): the report's version lines have every vendor.
+func TestReportNamesOpenCode(t *testing.T) {
+	var b strings.Builder
+	printReport(&b, doctorResult{versions: map[adapter.Vendor]string{adapter.OpenCode: "2.2.5"}}, devfix.Identity{})
+	if !strings.Contains(b.String(), "opencode: 2.2.5") {
+		t.Fatalf("%s", b.String())
 	}
 }
