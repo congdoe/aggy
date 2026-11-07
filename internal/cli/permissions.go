@@ -16,6 +16,7 @@ import (
 	"github.com/congdoe/aggy/internal/permissions"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
+	"github.com/congdoe/aggy/internal/termsafe"
 	"github.com/congdoe/aggy/internal/transcript"
 )
 
@@ -93,18 +94,22 @@ func permissionInput(dir string) permissions.Input {
 	return in
 }
 
-// gitTracks asks git whether it tracks path, under main. It lists what is
-// tracked and compares without case, since git's pathspec matches case exactly
-// and a file system that folds case opens .CLAUDE/settings.local.json by the
-// lowercase path. git's own config cannot run anything here (gitSafe), and an
-// error, or a list cut short, counts as tracked.
+// settingsPathspec finds a tracked settings.local.json whatever its case, so the
+// answer stays small in a large repo. git's icase folds ASCII only, and a file
+// system can also fold the long s to s, hence the glob and trackedFold after it.
+const settingsPathspec = ":(icase,glob).claude/*ettings.local.json"
+
+// gitTracks asks git whether it tracks path, under main, without case, since a
+// file system that folds case opens .CLAUDE/settings.local.json by the lowercase
+// path. git's own config cannot run anything here (gitSafe), and an error, or a
+// list cut short, counts as tracked.
 func gitTracks(ctx context.Context, main string) func(string) (bool, error) {
 	return func(path string) (bool, error) {
 		rel, err := filepath.Rel(main, path)
 		if err != nil {
 			return true, err
 		}
-		out, cut, err := defaultBorrowEnv().git(ctx, main, "ls-files", "-z")
+		out, cut, err := defaultBorrowEnv().git(ctx, main, "ls-files", "-z", "--", settingsPathspec)
 		if err != nil {
 			return true, err
 		}
@@ -155,6 +160,9 @@ func addPermissions(v adapter.Vendor, caps []string, s permissions.Set, req *ada
 		return notes
 	}
 	r := s.Render(v)
+	if r.Lost != "" {
+		notes = append(notes, fmt.Sprintf("none of your allow rules from aggy reach Grok this session: the rule %s cannot reach it, and it might have stopped one", termsafe.Field(r.Lost)))
+	}
 	skipped := len(r.Skipped)
 	for _, k := range s.Skipped {
 		// What a CLI reads itself is not aggy's to pass on, and Codex's file is
@@ -210,8 +218,8 @@ func skippedNote(n int, name string) string {
 // the repo in its payload. Its gate only decides when to scan, so it errs wide:
 // it does not ask git or trust, and it adds what the running launch rendered, as
 // a rule removed since is still in OpenCode's config. It starts nothing. When a
-// file cannot be read, the rules are unknown, and scanAlways says so: the gate
-// then has nothing to go by, so every command is scanned.
+// file cannot be read, the rules are unknown, and scanAlways says so: every
+// command is scanned, for the rules aggy ships as well as these.
 func guardRules(payload []byte, getenv func(string) string) (rules []string, scanAlways bool) {
 	var in struct {
 		Root string `json:"root"`
@@ -224,7 +232,7 @@ func guardRules(payload []byte, getenv func(string) string) (rules []string, sca
 	pi.Tracked = func(string) (bool, error) { return false, nil }
 	s := permissions.Load(pi)
 	shared, _ := parity.OpenCodeShared(s)
-	return append(shared.Allow, renderedOpenCodeAllows(getenv("OPENCODE_CONFIG"))...), s.FileErr != nil || s.Withhold != ""
+	return append(shared.Allow, renderedOpenCodeAllows(getenv("OPENCODE_CONFIG"))...), s.FileErr != nil || len(s.Problems) > 0
 }
 
 // renderedOpenCodeAllows reads the shell allows of a rendered config.

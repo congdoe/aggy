@@ -65,6 +65,9 @@ type Skip struct {
 type Problem struct {
 	Path string
 	Why  string
+	// Repo says the file came with the repo, or could have, so the problem costs
+	// only that file's rules: otherwise a repo could turn off the person's allows.
+	Repo bool
 }
 
 // FileError is a mistake in aggy's own rules file, by line where it has one. A
@@ -212,15 +215,40 @@ func Load(in Input) Set {
 	s := Set{Trusted: in.Trusted}
 	s.loadClaude(filepath.Join(in.ClaudeDir, "settings.json"), FromClaudeUser, in.Trusted)
 	if in.Main != "" {
+		n := len(s.Problems)
 		s.loadLocal(in)
+		if len(s.Problems) > n {
+			for i := n; i < len(s.Problems); i++ {
+				s.Problems[i].Repo = true
+			}
+			s.Rules = slices.DeleteFunc(s.Rules, func(r Rule) bool { return r.Origin == FromClaudeLocal })
+		}
 	}
 	s.loadAggy(in)
 	s.loadGrok(in)
 	s.loadCodex(in)
-	if len(s.Problems) > 0 {
+	if slices.ContainsFunc(s.Problems, func(p Problem) bool { return !p.Repo }) {
 		s.Withhold = "aggy could not read every source of rules, so a deny may be missing, and it sends no allow from them until that is fixed"
 	}
 	return s
+}
+
+// AggyFileError reads aggy's own file alone, for a switch to check before it
+// closes the CLI on screen.
+func AggyFileError(path string) *FileError {
+	var s Set
+	s.loadAggy(Input{AggyFile: path})
+	return s.FileErr
+}
+
+// followHome resolves a link in the person's own Claude folder, as stow and
+// chezmoi make: it is in the home, not the repo. RealPath refuses a credential
+// file, and ReadConfig then takes only a regular file, not through a link.
+func followHome(path string) (string, error) {
+	if _, err := safefs.Lstat(path); err != nil {
+		return path, nil //nolint:nilerr // read reports it, or that it is not there
+	}
+	return safefs.RealPath(path)
 }
 
 // read returns a config file, or nil when it is not there.
@@ -230,20 +258,29 @@ func (s *Set) read(path string) []byte {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil
 	case err != nil:
-		s.Problems = append(s.Problems, Problem{path, err.Error()})
+		s.Problems = append(s.Problems, Problem{Path: path, Why: err.Error()})
 		return nil
 	}
 	return b
 }
 
 func (s *Set) loadClaude(path string, o Origin, trusted bool) {
-	b := s.read(path)
+	from := path
+	if o == FromClaudeUser {
+		real, err := followHome(path)
+		if err != nil {
+			s.Problems = append(s.Problems, Problem{Path: path, Why: err.Error()})
+			return
+		}
+		from = real
+	}
+	b := s.read(from)
 	if b == nil {
 		return
 	}
 	var f claudeFile
 	if err := json.Unmarshal(b, &f); err != nil {
-		s.Problems = append(s.Problems, Problem{path, err.Error()})
+		s.Problems = append(s.Problems, Problem{Path: path, Why: err.Error()})
 		return
 	}
 	s.addObject(f.Permissions, o, path, trusted)
@@ -260,7 +297,7 @@ func (s *Set) loadLocal(in Input) {
 	path := filepath.Join(in.Main, ".claude", "settings.local.json")
 	if _, err := safefs.Lstat(path); err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
-			s.Problems = append(s.Problems, Problem{path, err.Error()})
+			s.Problems = append(s.Problems, Problem{Path: path, Why: err.Error()})
 		}
 		return
 	}
@@ -282,7 +319,7 @@ func (s *Set) loadLocal(in Input) {
 	}
 	var f claudeFile
 	if err := json.Unmarshal(b, &f); err != nil {
-		s.Problems = append(s.Problems, Problem{path, err.Error()})
+		s.Problems = append(s.Problems, Problem{Path: path, Why: err.Error()})
 		return
 	}
 	for _, r := range f.Permissions.Allow {
@@ -363,7 +400,7 @@ func (s *Set) addNarrowing(k Kind, rules []string, from Origin, path string) {
 					s.FileErr = &FileError{path, 0, why}
 				}
 			} else {
-				s.Problems = append(s.Problems, Problem{path, why})
+				s.Problems = append(s.Problems, Problem{Path: path, Why: why})
 			}
 			continue
 		}

@@ -79,6 +79,12 @@ func TestGrokReadsRulesItsOwnWay(t *testing.T) {
 		{"Bash(ls)", false, true},
 		{"Bash(git status)", false, true},
 		{"Bash(git status)", true, true},
+		{"Bash(cat *)", false, false},
+		{"Bash(cat *)", true, false},
+		{"Bash(ls *)", true, false},
+		{"Bash(make *)", true, false},
+		{"Bash(cat x)", false, true},
+		{"Read(./docs/**)", false, true},
 		// Exact, it is read-only; as a prefix, it reaches git diff --output=x.
 		{"Bash(git diff --stat)", false, false},
 		{"Bash(git diff --stat)", true, true},
@@ -119,6 +125,9 @@ func TestGrokLostRuleStopsAllows(t *testing.T) {
 			t.Errorf("%s: %+v", tc.rule, r)
 		}
 		assertNamed(t, r, "Bash(make build): the rule "+tc.rule+" cannot reach Grok")
+		if r.Lost != tc.rule {
+			t.Errorf("lost: %q, want %q", r.Lost, tc.rule)
+		}
 		if c := s.Render(adapter.Claude); len(c.Allow) != 2 {
 			t.Errorf("Claude takes every rule: %+v", c)
 		}

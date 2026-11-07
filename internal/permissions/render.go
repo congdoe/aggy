@@ -16,6 +16,8 @@ type Rendered struct {
 	Mode string
 	// Skipped are rules this CLI will not get, and why.
 	Skipped []Skip
+	// Lost is the deny or ask that cannot reach this CLI and so stopped its allows.
+	Lost string
 }
 
 // ReadsItself says the CLI loads rules from that origin on its own. Grok reads
@@ -108,6 +110,7 @@ func (r *Rendered) renderGrok(mine []Rule, trusted bool) {
 		why := grokAllowProblem(rule.Text, trusted)
 		if why == "" && lost != "" {
 			why = "the rule " + lost + " cannot reach Grok, and it might have stopped this one, so no allow from aggy goes to Grok"
+			r.Lost = lost
 		}
 		if why != "" {
 			r.Skipped = append(r.Skipped, Skip{rule, why})
@@ -137,18 +140,26 @@ func grokRuleProblem(rule string) string {
 // ? and [...] are wildcards too (bash_command_matches_pattern, policy.rs:648 at
 // grok-build 2bdd1d6a). So Bash(?? *) would match sh -c evil, and Bash(sudo sh)
 // allows sudo sh -c x. Each is judged as what Grok would make of it.
+//
+// Whether a Grok rule stops at a redirect is unverified, so no wildcard rule goes:
+// Bash(cat *) might allow cat x > ~/.bashrc. A live run settles it: grok --allow
+// 'Bash(cat *)', then a model's cat x > y, to see if it asks. An exact rule goes,
+// as it is the person's one command, though the same gap applies past its prefix.
 func grokAllowProblem(rule string, trusted bool) string {
 	if why := grokRuleProblem(rule); why != "" {
 		return why
 	}
-	if _, _, ok := BashCommand(rule); ok {
+	if _, wild, ok := BashCommand(rule); ok {
 		if strings.ContainsAny(rule, "?[") {
 			return "? and [ are wildcards on Grok, though not in Claude's rules"
+		}
+		if wild {
+			return "whether a wildcard rule stops at a redirect on Grok is unverified, so only exact rules go"
 		}
 		switch class, why := CheckAllow(PrefixForm(rule)); {
 		case class == Drop:
 			return "Grok takes an exact rule as a prefix, and that form is too wide: " + why
-		case class == RepoCode && !trusted:
+		case class == RepoCode && !trusted && !StaysReadOnlyAsPrefix(rule):
 			return "Grok takes an exact rule as a prefix, and that form waits for trust: " + why
 		}
 	}

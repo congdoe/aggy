@@ -64,8 +64,8 @@ func TestPermissionsAddRemove(t *testing.T) {
 	}
 
 	// A dry run has no side effects, and needs no keyboard.
-	code, out, errb := run("permissions", "add", "allow", "Bash(git log -5)", "--dry-run")
-	if code != 0 || !strings.Contains(out, "git log -5") {
+	code, out, errb := run("permissions", "add", "allow", "Bash(git log --oneline -20)", "--dry-run")
+	if code != 0 || !strings.Contains(out, "git log --oneline -20") {
 		t.Errorf("dry run: %d %q %q", code, out, errb)
 	}
 	if aggyFileText(t) != "" {
@@ -73,7 +73,7 @@ func TestPermissionsAddRemove(t *testing.T) {
 	}
 
 	// A model's shell has no terminal: refused, tagged, nothing changed.
-	code, _, errb = run("permissions", "add", "allow", "Bash(git log -5)")
+	code, _, errb = run("permissions", "add", "allow", "Bash(git log --oneline -20)")
 	if code != 1 || !strings.Contains(errb, "[permissions.not_at_keyboard · run ") {
 		t.Errorf("no terminal: %d %q", code, errb)
 	}
@@ -82,7 +82,7 @@ func TestPermissionsAddRemove(t *testing.T) {
 	}
 
 	atKeyboard(t, "y\n")
-	if code, out, errb = run("permissions", "add", "allow", "Bash(git log -5)"); code != 0 {
+	if code, out, errb = run("permissions", "add", "allow", "Bash(git log --oneline -20)"); code != 0 {
 		t.Fatalf("add: %d %q %q", code, out, errb)
 	}
 	if !strings.Contains(out, "next launch or switch") || !strings.Contains(out, "aggy unwire") {
@@ -91,12 +91,12 @@ func TestPermissionsAddRemove(t *testing.T) {
 	if !strings.Contains(aggyFileText(t), key) {
 		t.Errorf("the default scope is this repo: %s", aggyFileText(t))
 	}
-	if code, out, _ = run("permissions", "add", "allow", "Bash(git log -5)"); code != 0 || !strings.Contains(out, "already") {
+	if code, out, _ = run("permissions", "add", "allow", "Bash(git log --oneline -20)"); code != 0 || !strings.Contains(out, "already") {
 		t.Errorf("again: %d %q", code, out)
 	}
 	// It is in force, with its source.
 	code, out, _ = run("permissions", "list")
-	if code != 0 || !strings.Contains(out, "Bash(git log -5)  [aggy, this repo]") {
+	if code != 0 || !strings.Contains(out, "Bash(git log --oneline -20)  [aggy, this repo]") {
 		t.Errorf("list: %d %q", code, out)
 	}
 

@@ -323,7 +323,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			}
 		}
 		if oc.launch.Mini {
-			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(openCodeUntrustedNote(oc.root)))
+			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(openCodeUntrustedNote(oc.root, rules.HeldLocal)))
 		}
 	}
 	cmd, err := a.Interactive(req)
@@ -531,12 +531,22 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		SessionID:  cids.current,
 		Children:   children,
 		HasChild:   hasChild,
-		Limits:     limitHit,
-		HasQuota:   quota,
-		Used:       used,
-		WarnAt:     eff.Switch.WarnAt,
-		Diag:       q,
-		ChildID:    pl.child.ID,
+		SwitchBlocked: func() string {
+			path, err := permissionsFile()
+			if err != nil {
+				return ""
+			}
+			if e := permissions.AggyFileError(path); e != nil {
+				return termsafe.Line(e.Error())
+			}
+			return ""
+		},
+		Limits:   limitHit,
+		HasQuota: quota,
+		Used:     used,
+		WarnAt:   eff.Switch.WarnAt,
+		Diag:     q,
+		ChildID:  pl.child.ID,
 	})
 	px.guard(0, false) // the CLI was reaped: never signal its pid again
 	dlog.Release()

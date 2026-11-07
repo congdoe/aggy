@@ -526,7 +526,7 @@ func TestOpenCodeUntrustedNoteNamesTheRealRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if note := openCodeUntrustedNote(s.root); !strings.Contains(note, repo) || strings.Contains(note, link) {
+	if note := openCodeUntrustedNote(s.root, 0); !strings.Contains(note, repo) || strings.Contains(note, link) {
 		t.Errorf("note = %q, want %q", note, repo)
 	}
 }

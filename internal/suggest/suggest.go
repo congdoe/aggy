@@ -220,13 +220,13 @@ func Plain(cmd string) bool {
 
 // secretWords mark a command that may carry a secret. Better to miss a
 // suggestion than to store one.
-var secretWords = []string{"secret", "token", "password", "passwd", "credential", "apikey", "api_key", "api-key", "auth", "pass", "private", "bearer", "login"}
+var secretWords = []string{"secret", "token", "password", "passwd", "credential", "apikey", "api_key", "api-key", "auth", "pass", "private", "bearer", "login", "keygen"}
 
 var (
 	// urlUserinfo is user:secret@ or token@ in a URL.
 	urlUserinfo = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s]*@`)
 	// inlineSecret is curl -u a:b, mysql -pX, and redis-cli -a X.
-	inlineSecret = regexp.MustCompile(`(^|\s)-u\s+\S+:\S+|^(mysql|mariadb|mysqldump)\s(.*\s)?-p\S+|^redis-cli\s(.*\s)?-a\s`)
+	inlineSecret = regexp.MustCompile(`(^|\s)-u\s+\S+:\S+|(^|\s)--[a-z-]*key(=|\s)|^(mysql|mariadb|mysqldump)\s(.*\s)?-p\S+|^redis-cli\s(.*\s)?-a\s`)
 )
 
 func secretShaped(cmd string) bool {
