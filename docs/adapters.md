@@ -559,7 +559,8 @@ yet run live; verification.md, "Codex project trust in an edit child"):
   ([project_trust.rs#L62](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/config/src/project_trust.rs#L62)). That spelling is also
   the Seatbelt writable root, which keeps it: only a symlink directly under `/`
   is resolved ([system_aliases.rs#L12](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/utils/absolute-path/src/system_aliases.rs#L12)),
-  and any other symlink in it is an error
+  and any other symlink in it is an error, so the borrow resolves the worktree's
+  path before the adapter builds the command
   ([seatbelt.rs#L445, L464](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/sandboxing/src/seatbelt.rs#L445)). So aggy
   removes the `/System/Volumes/Data` prefix from both `-C` and the key on macOS,
   since a root spelled that way probably stops the child writing (unverified

@@ -268,3 +268,26 @@ func TestFirmlinkFoldedSpelling(t *testing.T) {
 		}
 	}
 }
+
+// TestWithoutDataVolume (T6938): the prefix goes in any case, only as a whole
+// path part, and only where the firmlink exists.
+func TestWithoutDataVolume(t *testing.T) {
+	old := stripFirmlink
+	t.Cleanup(func() { stripFirmlink = old })
+	for _, tt := range []struct {
+		strip    bool
+		in, want string
+	}{
+		{true, "/System/Volumes/Data/Users/u", "/Users/u"},
+		{true, "/system/volumes/DATA/Users/u", "/Users/u"},
+		{true, "/System/Volumes/Database/u", "/System/Volumes/Database/u"},
+		{true, "/System/Volumes/Data", "/System/Volumes/Data"},
+		{true, "/Users/u", "/Users/u"},
+		{false, "/System/Volumes/Data/Users/u", "/System/Volumes/Data/Users/u"},
+	} {
+		stripFirmlink = tt.strip
+		if got := WithoutDataVolume(tt.in); got != tt.want {
+			t.Errorf("strip %v: WithoutDataVolume(%s) = %q, want %q", tt.strip, tt.in, got, tt.want)
+		}
+	}
+}

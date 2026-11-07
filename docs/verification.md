@@ -670,6 +670,8 @@ A maintainer's check, which never touches the real `~/.codex`:
 6. On macOS, repeat with `AGGY_HOME` spelled through `/System/Volumes/Data`, then
    in another case. Record whether the child's change landed in each: the first
    should since aggy removes the prefix, and the second is unverified.
+7. Record the scrubbed results here (no paths, ids, or tokens), then remove the
+   scratch `CODEX_HOME`, `AGGY_HOME`, and repo.
 
 ## Codex CLI details
 
