@@ -3,6 +3,7 @@ package hook
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"path/filepath"
 	"regexp"
@@ -38,6 +39,9 @@ type OpenCodeInput struct {
 	PatchText string `json:"patchText"`
 	// Pattern is read for glob only: grep's is a regular expression.
 	Pattern string `json:"pattern"`
+	// Auto says the launch used full auto, from the plugin's options, which
+	// come from aggy's per-launch config and not from the tool call.
+	Auto bool `json:"auto"`
 }
 
 // OpenCodeEnv is what the guard reads from outside the payload.
@@ -53,17 +57,19 @@ type OpenCodeEnv struct {
 	// DeniedNames are the file names to refuse in any case
 	// (parity.OpenCodeDeniedNames, which this package cannot import).
 	DeniedNames []string
+	// RuleWords are the first words of the rendered shell allow rules
+	// (parity.OpenCodeRuleWords): a function by one of these names would run
+	// in place of an allowed command.
+	RuleWords []string
 }
 
 // The refusals' words. They go to the model, as the tool's error.
 const (
-	whyBadPayload  = "aggy's guard could not read this call, so it was refused."
-	whyDeclaration = "aggy's guard refuses a variable declaration in a shell command (OpenCode's permission check skips them, so one before an allowed command could change what it runs). Pass the value on the command it is for, or use a script the person can read."
-	whyUnsure      = "aggy's guard cannot follow this command's shell syntax exactly, and it looks like it sets a variable or defines a function, which OpenCode's permission check does not see. Use plain commands; to write a file, use the edit tool rather than a heredoc."
-	whyDeniedName  = "aggy's guard refuses this file by its name: it may hold a secret, whatever its case."
-	whyAuthExport  = "aggy's guard refuses `opencode auth export`: it prints sign-in secrets."
-	whyFolder      = "aggy's guard refuses a tool call from another folder than the one this session was launched in: that project's settings and trust were not checked."
-	whyOutside     = "aggy's guard refuses a path outside this repo: its real location is elsewhere, or a link points out of the repo. Ask the person to copy it in, if it is needed."
+	whyBadPayload = "aggy's guard could not read this call, so it was refused."
+	whyDeniedName = "aggy's guard refuses this file by its name: it may hold a secret, whatever its case."
+	whyAuthExport = "aggy's guard refuses `opencode auth export`: it prints sign-in secrets."
+	whyFolder     = "aggy's guard refuses a tool call from another folder than the one this session was launched in: that project's settings and trust were not checked."
+	whyOutside    = "aggy's guard refuses a path outside this repo: its real location is elsewhere, or a link points out of the repo. Ask the person to copy it in, if it is needed."
 )
 
 // authExportRE matches the command by its words, in any spacing. It sees
@@ -129,8 +135,12 @@ func OpenCodeGuard(payload []byte, env OpenCodeEnv) Decision {
 		case in.Workdir != "" && !inside(in.Workdir):
 			return Decision{Deny: true, Reason: whyOutside}
 		}
-		if why := shellRefusal(in.Command); why != "" {
-			return Decision{Deny: true, Reason: why}
+		// Full auto runs any command with no prompt, so what the scan protects
+		// is not there to protect (docs/design.md).
+		if !in.Auto {
+			if why := shellScan(in.Command, env.RuleWords); why != "" {
+				return Decision{Deny: true, Reason: why}
+			}
 		}
 	case "patch", "apply_patch":
 		for _, m := range patchFileRE.FindAllStringSubmatch(in.PatchText, -1) {
@@ -246,214 +256,200 @@ func ownToolOutput(tool, real string, env OpenCodeEnv) bool {
 	return within(real, dir) && real != dir
 }
 
-// declarations are the words OpenCode's shell scanner skips as permission
-// resources (core/src/shell/scan.ts at v2.2.5, BASH_DECLARATIONS).
-var declarations = []string{"declare", "typeset", "export", "readonly", "local", "unset", "unsetenv"}
+// sensitiveVars are the variables that change what the shipped whitelist runs
+// (parity.OpenCodeStarter: git status, diff, log, and branch, ls, and pwd), or
+// where the session's shell starts. A trailing * is a prefix.
+//
+// Not listed: GOOS and CGO_ENABLED, and the language tools' GOFLAGS,
+// NODE_OPTIONS, PYTHON*, PERL5*, and RUBY*. No shipped rule runs those tools.
+// One could reach them only through a repo's hook or filter in that language,
+// which already runs whatever it says, and `PYTHONPATH=. pytest` is everyday.
+var sensitiveVars = []string{
+	"PATH",                // which git or ls runs at all
+	"GIT_*",               // git's config, repo, and helpers: GIT_CONFIG_COUNT, GIT_DIR, GIT_EXTERNAL_DIFF, GIT_PAGER
+	"LD_*",                // loads a library into any program, on Linux
+	"DYLD_*",              // the same on macOS
+	"GCONV_PATH",          // loads a module into a glibc program that converts text, as git log can
+	"BASH_ENV",            // a file each bash script git starts runs first
+	"BASH_FUNC_*",         // a function bash imports from the environment, under any name
+	"ENV",                 // the same file for sh
+	"SHELLOPTS",           // bash options a child bash starts with
+	"BASHOPTS",            // the same
+	"ZDOTDIR",             // where zsh finds its startup files
+	"HOME",                // ~/.gitconfig, so core.pager, aliases, and filters
+	"XDG_*",               // $XDG_CONFIG_HOME/git/config, the same
+	"IFS",                 // how the shell splits an allowed command's words
+	"CDPATH",              // which folder a cd before the command lands in
+	"FPATH",               // zsh's functions, tied to fpath
+	"MANPATH",             // tied to manpath, so a rule below covers both spellings
+	"SHELL",               // the shell programs start commands with
+	"PAGER",               // the program git log and diff pipe through
+	"MANPAGER",            // the same for man, which git help runs
+	"LESSOPEN",            // a command less runs on each file, when it is the pager
+	"LESSCLOSE",           // the same, on closing
+	"EDITOR",              // what git starts for a message
+	"VISUAL",              // the same
+	"RIPGREP_CONFIG_PATH", // flags rg reads from a file, where a rule names rg
+}
 
-// assignmentRE is a word that sets a variable.
-var assignmentRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=`)
+// tiedVars are zsh's lower-case arrays tied to PATH and its like. `path` is a
+// common word, so only a shape that sets one counts.
+var tiedVars = []string{"path", "cdpath", "fpath", "manpath"}
 
-// statementWords may come before a statement's own first word.
-var statementWords = []string{"then", "elif", "else", "do", "!", "time", "command", "builtin"}
-
-// compoundWords start syntax the parser below does not follow, at a
-// statement's head.
-var compoundWords = []string{"if", "for", "case", "select", "while", "until", "function", "repeat", "foreach", "coproc"}
-
-// unsureText is raw text that means the parser below may lose its place, or
-// that hides what it runs inside what looks like a word: heredocs, $”, $"",
-// arithmetic, [[, ${, and command substitution, in or out of quotes.
-var unsureText = []string{"<<", "$'", `$"`, "((", "[[", "${", "$(", "`"}
-
-// The whole-text scan, for a command the parser cannot be sure of. Each
-// ignores quotes on purpose, so it refuses some harmless text.
 var (
-	// A name and `=`, `+=`, or `:=`, with no word character before it, so
-	// `--flag=x`, `$x=`, and `a/b=c` do not count.
-	anyAssignRE = regexp.MustCompile(`(?:^|[^\w\-./:=$@%+,~])[A-Za-z_]\w*(?:\[[^\]\n]*\])?\+?:?=`)
-	anyDeclRE   = regexp.MustCompile(`(?:^|[\s;&|(){}` + "`" + `"'!])(?:declare|typeset|export|readonly|local|unset|unsetenv)(?:\s|;|$)`)
-	// Inside (( )) a name may be set with spaces, and by any operator.
-	anyArithRE = regexp.MustCompile(`[A-Za-z_]\w*(?:\[[^\]\n]*\])?\s*(?:[-+*/%&|^]|<<|>>)?=(?:[^=]|$)`)
-	anyStepRE  = regexp.MustCompile(`(?s)\(\(.*(?:\+\+|--)`)
-	// name() or `function name`: a definition shadows the command it names.
-	anyFuncRE = regexp.MustCompile(`(?:^|[\s;&|(){}])(?:[^\s;&|(){}'"$]+[ \t]*\([ \t]*\)|function[ \t])`)
-	anyLoopRE = regexp.MustCompile(`(?:^|[\s;&|(){}])(?:for|select|foreach)[ \t]+([^;\n(]*)`)
+	// shellWordRE finds each run of name characters in the raw text.
+	shellWordRE = regexp.MustCompile(`[A-Za-z0-9_]+`)
+	// bracedSetRE is what follows a name in ${NAME:=x}, ${NAME=x}, ${NAME::=x}
+	// (zsh), and each of them with a subscript: expansions that set it.
+	bracedSetRE = regexp.MustCompile(`^(?:\[[^\]\n]*\])?:{0,2}=`)
+	// tiedSetRE is what follows a tied name where it is set.
+	tiedSetRE = regexp.MustCompile(`^(?:\+?=|:{1,2}=|\[)`)
+	// tiedLoopRE is a tied name as a loop's or read's variable.
+	tiedLoopRE = regexp.MustCompile(`(?:^|[\s;&|(){}])(?:for|select|foreach|read)[ \t]+(?:-\S+[ \t]+)*(path|cdpath|fpath|manpath)(?:[\s;(]|$)`)
+	// declWordRE is a declaration builtin and the rest of its statement.
+	declWordRE = regexp.MustCompile(`(?:^|[\s;&|(){}!])(?:declare|typeset|export|readonly|local|integer|float)[ \t]+([^;&|\n]*)`)
 )
 
-// plainLoopVarRE is a loop variable that cannot be one a program reads, by
-// the usual naming: environment variables are upper case.
-var plainLoopVarRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+// A byte before a tied name that makes it part of a longer word, as in
+// --path=x, a/path=x, or k=v,path=x, so not a variable being set.
+const tiedNotSetAfter = "-./:=@%+,~?"
 
-// lowerEnvNames are lower-case names that do change a program: zsh ties these
-// to PATH and its like, and git and curl read the proxy ones.
-var lowerEnvNames = []string{"path", "cdpath", "fpath", "manpath", "mailpath", "module_path", "psvar", "fignore", "watch", "argv"}
-
-// shellRefusal says why the guard refuses cmd, or "". OpenCode's permission
-// check gives some statements no resource to ask about
-// (core/src/shell/scan.ts at v2.2.5): a bare assignment anywhere, a declaration
-// word, a for or select variable, and (( )). So `for PATH in ./bin; do git
-// status; done` ran ./bin/git with no prompt under an allowed `git status`.
+// shellScan says why the guard refuses cmd, or "". OpenCode's permission
+// check gives some statements no resource to ask about (core/src/shell/scan.ts
+// at v2.2.5): a bare assignment anywhere, a declaration word, a for or select
+// variable, and (( )). So `for PATH in ./bin; do git status; done` ran ./bin/git
+// with no prompt under an allowed `git status`.
 //
-// A plain command is read word by word, so `git commit -m "a=b"` passes. Only
-// syntax it follows exactly gets that: anything else is scanned as raw text, and
-// refused if anything in it looks like it sets a variable or defines a function.
-// `read` and `printf -v` also set one, but they are resources, so they ask.
+// This does not parse shell, and it knows nothing of quotes: parsing was
+// bypassed in each review, and refused everyday commands. It looks at the raw
+// text, so it refuses a commit message that names PATH, and it allows any
+// other declaration. A line continuation is the one thing the shell removes
+// before anything else, so the text is also read with those gone: `PA\<newline>
+// TH=x` sets PATH, and `# note\<newline>PATH=x` only does as raw text.
 //
-// It catches mistakes, not a hostile model: a variable, a script, or base64
-// gets past it (docs/design.md).
-func shellRefusal(cmd string) string {
-	cmd = strings.ReplaceAll(cmd, "\\\n", "") // the shell removes these first
-	stmts, sure := statements(cmd)
-	for _, t := range unsureText {
-		sure = sure && !strings.Contains(cmd, t)
+// It catches mistakes, not a hostile model: a name assembled at run time gets
+// past it (docs/design.md).
+//
+// The zsh form `git foo() ./bin/git`, a function with two names and no braces,
+// is not refused here, since telling it from a commit message needs parsing.
+// OpenCode's scanner cannot analyze it, and that fails the call (scan.ts and
+// shell/parse.ts at v2.2.5).
+//
+// TODO(T6953): a name split by quotes or a backslash, `export P"A"TH=./bin`, gets
+// past this with no prompt. The review's remaining shapes are there too.
+func shellScan(cmd string, ruleWords []string) string {
+	if why := scanText(cmd, ruleWords); why != "" {
+		return why
 	}
-	for _, words := range stmts {
-		if head := statementHead(words); head < len(words) && slices.Contains(compoundWords, words[head]) {
-			sure = false
-		}
-	}
-	if !sure {
-		if setsAnything(cmd) {
-			return whyUnsure
-		}
-		return ""
-	}
-	for _, words := range stmts {
-		if onlyDeclares(words) {
-			return whyDeclaration
-		}
+	if joined := strings.ReplaceAll(cmd, "\\\n", ""); joined != cmd {
+		return scanText(joined, ruleWords)
 	}
 	return ""
 }
 
-// setsAnything is the raw-text scan.
-func setsAnything(cmd string) bool {
-	if anyAssignRE.MatchString(cmd) || anyDeclRE.MatchString(cmd) || anyFuncRE.MatchString(cmd) {
-		return true
+// scanText is one pass over the text.
+func scanText(text string, ruleWords []string) string {
+	for _, loc := range shellWordRE.FindAllStringIndex(text, -1) {
+		word, before, after := text[loc[0]:loc[1]], text[:loc[0]], text[loc[1]:]
+		tied := slices.Contains(tiedVars, word)
+		if !tied && !sensitiveVar(word) {
+			continue
+		}
+		if readsVar(before, after) {
+			continue
+		}
+		if tied && (!tiedSetRE.MatchString(after) || (before != "" && strings.IndexByte(tiedNotSetAfter, before[len(before)-1]) >= 0)) {
+			continue
+		}
+		return whyVariable(word)
 	}
-	if strings.Contains(cmd, "((") && (anyArithRE.MatchString(cmd) || anyStepRE.MatchString(cmd)) {
-		return true
+	if m := tiedLoopRE.FindStringSubmatch(text); m != nil {
+		return whyVariable(m[1])
 	}
-	for _, m := range anyLoopRE.FindAllStringSubmatch(cmd, -1) {
-		for _, name := range strings.Fields(m[1]) {
-			if name == "in" {
-				break
-			}
-			if !plainLoopVarRE.MatchString(name) || slices.Contains(lowerEnvNames, name) || strings.HasSuffix(name, "_proxy") {
+	for _, name := range ruleWords {
+		if definesFunction(text, name) {
+			return fmt.Sprintf("aggy's guard refuses this shell command: it looks like it defines a function named %s, which would run in place of the allowed command, and OpenCode's permission check would not ask. Rewrite the command without that text.", name)
+		}
+	}
+	if dynamicDeclaration(text) {
+		return "aggy's guard refuses this shell command: a declaration (declare, typeset, export, readonly, local, integer, or float) takes its variable's name from a $ expansion, so aggy cannot tell which variable it sets. Rewrite it with the name spelled out."
+	}
+	return ""
+}
+
+// whyVariable is the refusal that names the variable.
+func whyVariable(name string) string {
+	return fmt.Sprintf("aggy's guard refuses this shell command: it names %s, which can change what an allowed command runs, and OpenCode's permission check does not see a variable being set. Reading it as $%s is fine; any other mention counts, in a comment or a commit message too. Rewrite the command without it.", name, name)
+}
+
+// sensitiveVar reports a word in sensitiveVars.
+func sensitiveVar(word string) bool {
+	for _, n := range sensitiveVars {
+		if p, ok := strings.CutSuffix(n, "*"); ok {
+			if strings.HasPrefix(word, p) {
 				return true
 			}
+		} else if word == n {
+			return true
 		}
 	}
 	return false
 }
 
-// statementHead is the index of a statement's own first word.
-func statementHead(words []string) int {
-	i := 0
-	for i < len(words) && slices.Contains(statementWords, words[i]) {
-		i++
+// readsVar reports an appearance that reads the variable: $NAME, or ${NAME
+// and ${#NAME and ${!NAME unless the expansion sets it.
+func readsVar(before, after string) bool {
+	if strings.HasSuffix(before, "$") {
+		return true
 	}
-	return i
+	for _, open := range []string{"${", "${#", "${!"} {
+		if strings.HasSuffix(before, open) {
+			return !bracedSetRE.MatchString(after)
+		}
+	}
+	return false
 }
 
-// onlyDeclares reports a statement that only declares. `FOO=1 git status`
-// does not count: it is one command, which the permission check sees whole,
-// and it prompts.
-func onlyDeclares(words []string) bool {
-	i := statementHead(words)
-	j := i
-	for j < len(words) && assignmentRE.MatchString(words[j]) {
-		j++
+// definesFunction reports text that looks like it defines a function called
+// name: name(), name (), function name, and zsh's forms with several names,
+// `name other() {` and `function other name {`. A name in quotes or after a
+// backslash counts, as the shells take those too.
+func definesFunction(text, name string) bool {
+	q := regexp.QuoteMeta(name)
+	const start = `(?:^|[\s;&|(){}])`
+	const word = `[^\s;&|(){}]+`
+	for _, pattern := range []string{
+		start + `["'\\]?` + q + `["']?\s*\(\s*\)`,
+		start + `function\s+(?:-\S+\s+)*["'\\]?` + q + `(?:[\s;&|(){}"']|$)`,
+		start + q + `(?:[ \t]+` + word + `)+[ \t]*\(\s*\)\s*[{(]`,
+		start + `function(?:[ \t]+` + word + `)+[ \t]+` + q + `\b[^;&|\n]*[{(]`,
+	} {
+		if regexp.MustCompile(pattern).MatchString(text) {
+			return true
+		}
 	}
-	switch {
-	case j < len(words):
-		return slices.Contains(declarations, words[j])
-	default:
-		return j > i
-	}
+	return false
 }
 
-// statements splits a plain shell command into the words of each statement,
-// and says whether it could follow it all. It only has to find where
-// statements begin, in text with none of unsureText. Quoted text keeps its
-// place in a word with its quotes gone, so `"X=1"` is not told from X=1: that
-// errs towards refusing. An unterminated quote and `()` are not sure.
-func statements(cmd string) ([][]string, bool) {
-	var (
-		out    [][]string
-		words  []string
-		word   strings.Builder
-		inWord bool
-		sure   = true
-	)
-	endWord := func() {
-		if inWord {
-			words = append(words, word.String())
-			word.Reset()
-			inWord = false
+// dynamicDeclaration reports a declaration builtin with a $ or a backquote
+// where a name goes: in its first word after the options, before any =, or at
+// the start of a later word that has an =. Its value may hold either.
+func dynamicDeclaration(text string) bool {
+	for _, m := range declWordRE.FindAllStringSubmatch(text, -1) {
+		first := true
+		for _, f := range strings.Fields(m[1]) {
+			if first && (f[0] == '-' || f[0] == '+') {
+				continue
+			}
+			name, _, hasValue := strings.Cut(f, "=")
+			switch {
+			case first && strings.ContainsAny(name, "$`"):
+				return true
+			case !first && hasValue && strings.ContainsAny(strings.TrimLeft(f, `"'`)[:1], "$`"):
+				return true
+			}
+			first = false
 		}
 	}
-	endStatement := func() {
-		endWord()
-		if len(words) > 0 {
-			out = append(out, words)
-			words = nil
-		}
-	}
-	for i := 0; i < len(cmd); i++ {
-		c := cmd[i]
-		switch c {
-		case '\\':
-			i++
-			if i < len(cmd) && cmd[i] != '\n' {
-				word.WriteByte(cmd[i])
-				inWord = true
-			}
-		case '\'':
-			inWord = true
-			j := strings.IndexByte(cmd[i+1:], '\'')
-			if j < 0 {
-				word.WriteString(cmd[i+1:])
-				i = len(cmd)
-				sure = false
-				break
-			}
-			word.WriteString(cmd[i+1 : i+1+j])
-			i += j + 1
-		case '"':
-			inWord = true
-			for i++; i < len(cmd) && cmd[i] != '"'; i++ {
-				if cmd[i] == '\\' && i+1 < len(cmd) {
-					i++
-				}
-				word.WriteByte(cmd[i])
-			}
-			if i >= len(cmd) {
-				sure = false
-			}
-		case ' ', '\t':
-			endWord()
-		case '#':
-			if inWord {
-				word.WriteByte(c)
-				break
-			}
-			for i < len(cmd) && cmd[i] != '\n' {
-				i++
-			}
-			i--
-		case '(':
-			if strings.HasPrefix(strings.TrimLeft(cmd[i+1:], " \t"), ")") {
-				sure = false // name(), a function, or a zsh empty list
-			}
-			endStatement()
-		case '\n', ';', '&', '|', ')', '{', '}':
-			endStatement()
-		default:
-			inWord = true
-			word.WriteByte(c)
-		}
-	}
-	endStatement()
-	return out, sure
+	return false
 }

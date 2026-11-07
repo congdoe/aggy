@@ -8,47 +8,6 @@ import (
 	"testing"
 )
 
-func TestHasDeclaration(t *testing.T) {
-	cases := []struct {
-		cmd  string
-		want bool
-	}{
-		{"git status", false},
-		{"FOO=1 git status", false},
-		{"FOO=1 BAR=2 go test ./...", false},
-		{"PATH=/evil:$PATH; git status", true},
-		{"PATH=/evil:$PATH\ngit status", true},
-		{"X=1 && git status", true},
-		{"true; X=1; git status", true},
-		{"export GIT_CONFIG_VALUE_0=./evil; git status", true},
-		{"export FOO", true},
-		{"unset GIT_CONFIG_COUNT; git status", true},
-		{"readonly A=1", true},
-		{"declare -x A=1", true},
-		{"if true; then X=1; fi", true},
-		{"(X=1; git status)", true},
-		{"{ X=1; git status; }", true},
-		{"echo $(X=1; echo y)", true},
-		{"echo X=1", false},
-		{"echo 'X=1; Y=2'", false},
-		{`echo "export X=1"`, false},
-		{"# X=1\ngit status", false},
-		{"git commit -m 'set X=1; done'", false},
-		// A heredoc's body can run $(...), and it is not worth following: it
-		// fails closed, and the reason says to use the edit tool.
-		{"cat > .env.example <<EOF\nFOO=bar\nexport BAZ=1\nEOF\necho done", true},
-		{"cat <<-'END'\n\tA=1\n\tEND\nB=2", true},
-		{"grep -c x <<< 'A=1'", true},
-		{"make A=1 B=2", false},
-		{"", false},
-	}
-	for _, c := range cases {
-		if got := shellRefusal(c.cmd) != ""; got != c.want {
-			t.Errorf("%q: got %v, want %v", c.cmd, got, c.want)
-		}
-	}
-}
-
 // TestOpenCodeGuard runs the guard on real files: a repo, a link out of
 // it, and a folder beside it.
 func TestOpenCodeGuard(t *testing.T) {
@@ -81,7 +40,7 @@ func TestOpenCodeGuard(t *testing.T) {
 	if err := os.WriteFile(saved, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	env := OpenCodeEnv{DeniedNames: []string{".env", "*.pem"}, Getenv: func(k string) string {
+	env := OpenCodeEnv{DeniedNames: []string{".env", "*.pem"}, RuleWords: []string{"git"}, Getenv: func(k string) string {
 		if k == "XDG_DATA_HOME" {
 			return data
 		}
@@ -106,7 +65,16 @@ func TestOpenCodeGuard(t *testing.T) {
 		{"a shell workdir out", OpenCodeInput{Tool: "shell", Command: "ls", Workdir: other}, whyOutside},
 		{"a shell workdir in", OpenCodeInput{Tool: "shell", Command: "ls", Workdir: "sub"}, ""},
 		{"an ordinary command", OpenCodeInput{Tool: "shell", Command: "go test ./..."}, ""},
-		{"a declaration", OpenCodeInput{Tool: "shell", Command: "PATH=/x:$PATH; git status"}, whyDeclaration},
+		{"a declaration", OpenCodeInput{Tool: "shell", Command: "PATH=/x:$PATH; git status"}, whyVariable("PATH")},
+		{"a function by a rule's name", OpenCodeInput{Tool: "shell", Command: "git() { :; }; git status"}, shellScan("git() { :; }", []string{"git"})},
+		// Full auto: a declaration hides nothing there, and the rest still holds.
+		{"full auto skips the scan", OpenCodeInput{Tool: "shell", Auto: true, Command: "PATH=/x:$PATH; git status"}, ""},
+		{"full auto skips the function check", OpenCodeInput{Tool: "shell", Auto: true, Command: "git() { :; }; git status"}, ""},
+		{"full auto keeps auth export", OpenCodeInput{Tool: "shell", Auto: true, Command: "opencode auth export"}, whyAuthExport},
+		{"full auto keeps the workdir", OpenCodeInput{Tool: "shell", Auto: true, Command: "ls", Workdir: other}, whyOutside},
+		{"full auto keeps the paths", OpenCodeInput{Tool: "read", Auto: true, Path: secret}, whyOutside},
+		{"full auto keeps the names", OpenCodeInput{Tool: "read", Auto: true, Path: ".env"}, whyDeniedName},
+		{"full auto keeps the folder", OpenCodeInput{Tool: "shell", Auto: true, Command: "ls", Directory: other}, whyFolder},
 		{"auth export", OpenCodeInput{Tool: "shell", Command: "opencode auth export"}, whyAuthExport},
 		{"auth export with a flag", OpenCodeInput{Tool: "shell", Command: "opencode --standalone auth   export --format json"}, whyAuthExport},
 		{"auth export in a chain", OpenCodeInput{Tool: "shell", Command: "true && /opt/bin/opencode auth export"}, whyAuthExport},

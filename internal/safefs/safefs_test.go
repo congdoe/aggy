@@ -143,6 +143,21 @@ func TestChannelDBListedOnlyForASecondName(t *testing.T) {
 	if calls != 0 {
 		t.Errorf("listed %d times for an ordinary file", calls)
 	}
+	// A folder has several links, and is never a database: no listing, or
+	// each check of one lists the real data folder.
+	folder := filepath.Join(home, "folder")
+	if err := os.MkdirAll(filepath.Join(folder, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RealPath(folder); err != nil {
+		t.Fatal(err)
+	}
+	if err := Check(folder); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Errorf("listed %d times for a folder", calls)
+	}
 	link := filepath.Join(home, "hard")
 	if err := os.Link(db, link); err != nil {
 		t.Fatal(err)

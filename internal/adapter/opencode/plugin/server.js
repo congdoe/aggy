@@ -44,12 +44,13 @@ export default {
   id: "aggy-guard",
   setup: async (ctx) => {
     const { aggy, root } = ctx.options
+    const auto = ctx.options.auto === "1"
     const directory = ctx.location.directory
 
     // Every call is checked. A check that crashes, hangs, or is missing
     // refuses: a throw here fails that tool call alone.
     await ctx.tool.hook("execute.before", async (e) => {
-      const r = await run(aggy, ["hook", "opencode-guard"], { tool: e.tool, directory, root, ...guardFields(e.input) }, GUARD_MS)
+      const r = await run(aggy, ["hook", "opencode-guard"], { tool: e.tool, directory, root, auto, ...guardFields(e.input) }, GUARD_MS)
       if (r.failed) {
         const why = r.stderr.trim().slice(0, MAX_REASON)
         throw new Error(why || "aggy's guard did not answer, so this call was refused")

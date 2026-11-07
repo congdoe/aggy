@@ -181,8 +181,120 @@ func TestDialogInGap(t *testing.T) {
 	if !s.open || !strings.Contains(strings.Join(s.pk.lines, " "), "/exit may be in its prompt") {
 		t.Errorf("not told: open %v, %q", s.open, s.pk.lines)
 	}
-	if got := sentTo(s); got != "x" {
-		t.Errorf("sent %q, want only the key, which goes to the dialog", got)
+	if got := sentTo(s); got != "" {
+		t.Errorf("sent %q to the dialog", got)
+	}
+}
+
+// TestKeysInGapNotSentToADialog (M-c): an Enter typed in the gap, with a dialog
+// reported in the same gap, would choose Allow once. It is not sent, and the
+// person is told.
+func TestKeysInGapNotSentToADialog(t *testing.T) {
+	s := gapSession(t)
+	s.hookEvent(hookEvent{name: hook.EventPermissionAsked, sessionID: "ses_a", request: "r1"})
+	s.send([]byte("x\r"))
+	s.hookEvent(hookEvent{name: exitEnterCheck})
+	if got := sentTo(s); got != "" {
+		t.Errorf("sent %q", got)
+	}
+	if !strings.Contains(strings.Join(s.pk.lines, " "), "was not sent") {
+		t.Errorf("not told: %q", s.pk.lines)
+	}
+}
+
+// TestEscInGap: Esc on the list in the gap calls the switch off, so no Enter
+// goes after the letters: OpenCode would exit, and aggy with it.
+func TestEscInGap(t *testing.T) {
+	cases := []struct {
+		name  string
+		ask   bool
+		keys  string
+		sent  string
+		dirty bool
+	}{
+		{"nothing else", false, "", "\x7f\x7f\x7f\x7f\x7f", false},
+		{"keys typed", false, "hi", "\x7f\x7f\x7f\x7f\x7fhi", true},
+		{"a dialog up", true, "", "", true},
+		{"a dialog up and keys typed", true, "x\r", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := gapSession(t)
+			if c.ask {
+				s.hookEvent(hookEvent{name: hook.EventPermissionAsked, sessionID: "ses_a", request: "r1"})
+			}
+			if c.keys != "" {
+				s.send([]byte(c.keys))
+			}
+			s.pk.vendors = []adapter.Vendor{adapter.Claude}
+			s.openPicker()
+			s.pk.note, s.pk.confirm = false, ""
+			s.pickerInput([]byte{0x1b})
+			if s.sw.to != "" || s.sw.typed {
+				t.Fatalf("the switch stands: %+v", s.sw)
+			}
+			s.hookEvent(hookEvent{name: exitEnterCheck})
+			if s.exitBy != nil {
+				t.Error("a late exit would still end aggy")
+			}
+			if got := sentTo(s); got != c.sent {
+				t.Errorf("sent %q, want %q", got, c.sent)
+			}
+			if s.dirty != c.dirty {
+				t.Errorf("dirty = %v", s.dirty)
+			}
+		})
+	}
+}
+
+// TestPickAgainDoesNotPassARealDialog (M-d): with a dialog up and the turn still
+// running, picking twice must not drop the ask: the exit command would land on
+// the dialog. Only an ask a turn end outlived can be released.
+func TestPickAgainDoesNotPassARealDialog(t *testing.T) {
+	s := openCodeSession(t)
+	t.Cleanup(s.closePicker)
+	s.pk.vendors = []adapter.Vendor{adapter.Claude}
+	s.o.Vendors = s.pk.vendors
+	s.o.CanSwitch = func(adapter.Vendor) error { return nil }
+	s.hookEvent(hookEvent{name: hook.EventPermissionAsked, sessionID: "ses_a", request: "r1"})
+	pick := func() {
+		t.Helper()
+		s.openPicker()
+		s.pk.note, s.pk.confirm = false, ""
+		s.pickerInput([]byte("1"))
+	}
+	pick()
+	if s.sw.to != adapter.Claude {
+		t.Fatalf("not queued: %+v", s.sw)
+	}
+	if strings.Contains(strings.Join(s.pk.lines, " "), "pick claude again") {
+		t.Errorf("offered a way past a live dialog: %q", s.pk.lines)
+	}
+	for range 2 {
+		pick()
+		if !s.askOpen() {
+			t.Fatal("a pick dropped an ask with no turn end")
+		}
+	}
+	s.send([]byte("\x1b[B"))
+	s.typeExit()
+	if s.sw.typed {
+		t.Fatal("the exit command was typed over a live dialog")
+	}
+	// The turn ends with it still open: now it can be a lost reply. Told once,
+	// then the next pick goes on.
+	s.closePicker()
+	s.hookEvent(hookEvent{name: "Stop", sessionID: "ses_a"})
+	if !s.askStale {
+		t.Fatal("not stale after a turn end")
+	}
+	pick()
+	if !s.askOpen() || !strings.Contains(strings.Join(s.pk.lines, " "), "pick claude again") {
+		t.Fatalf("not told: open %v, %q", s.askOpen(), s.pk.lines)
+	}
+	pick()
+	if s.askOpen() {
+		t.Fatal("told, and picked again: the ask should be released")
 	}
 }
 

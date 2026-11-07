@@ -41,7 +41,8 @@ func (s *session) startGuardWatch() {
 
 // TODO(T6953): a session changed on screen (/new, /sessions, /open) makes the
 // turn ends name another id, so they are ignored and no switch is offered, and
-// a brief reads the session aggy launched.
+// a brief reads the session aggy launched. The re-review of T6932 found that
+// /undo reaches the same harm.
 
 // openCodeEvent handles the events only OpenCode's plugin sends, and says
 // whether that is all there is to do. Asked events go on to hookEvent's
@@ -160,17 +161,25 @@ func (s *session) finishExit() {
 		s.exitBy = nil
 	}
 	switch {
+	case to == "":
+		// Esc on the list in the gap called the switch off, and logged it. No
+		// Enter: OpenCode would exit, and aggy with it.
+		s.exitBy = nil
+		s.takeBackExit(cmd, keys)
 	case s.askOpen():
 		cancel("dialog_in_gap")
 		// The letters may be in the prompt, or a dialog may have dropped
 		// them, so they count as unsent text until the user clears them.
 		s.compLen, s.lenKnown, s.dirty = len(cmd), true, true
-		s.pk.tell(fmt.Sprintf("%s asked you something as aggy was about to exit it, so aggy did not press Enter and nothing was answered.", s.o.Vendor),
-			fmt.Sprintf("%s may be in its prompt: answer the question, clear that text, and pick %s again.", cmd, to))
-		s.openPicker()
+		lines := []string{fmt.Sprintf("%s asked you something as aggy was about to exit it, so aggy did not press Enter and nothing was answered.", s.o.Vendor),
+			fmt.Sprintf("%s may be in its prompt: answer the question, clear that text, and pick %s again.", cmd, to)}
+		// They were typed before anyone could see the dialog, and an Enter among
+		// them would choose Allow once.
 		if len(keys) > 0 {
-			s.send(keys)
+			lines = append(lines, "What you typed in that moment was not sent.")
 		}
+		s.pk.tell(lines...)
+		s.openPicker()
 	case len(keys) > 0:
 		// Take the command back and pass on what was typed, so nothing is
 		// lost and nothing is sent.
@@ -185,14 +194,40 @@ func (s *session) finishExit() {
 	}
 }
 
+// takeBackExit removes the exit command's letters after the switch was called
+// off in the gap, and passes on what was typed. With a dialog up the letters
+// may have been dropped, and backspaces or keys would go to the dialog, so
+// the letters count as unsent text and the keys are not sent.
+func (s *session) takeBackExit(cmd string, keys []byte) {
+	if s.askOpen() {
+		s.compLen, s.lenKnown, s.dirty = len(cmd), true, true
+		lines := []string{fmt.Sprintf("%s asked you something as the switch was called off, so %s may be in its prompt.", s.o.Vendor, cmd)}
+		if len(keys) > 0 {
+			lines = append(lines, "What you typed in that moment was not sent.")
+		}
+		s.pk.tell(lines...)
+		s.openPicker()
+		return
+	}
+	s.toChild.push(bytes.Repeat([]byte{0x7f}, len(cmd)))
+	if len(keys) > 0 {
+		s.send(keys)
+	}
+}
+
 // tellAskWaits tells the user why a switch to v is waiting on an ask with no
-// answer, and that picking v again goes on. A reply can be lost (a plugin
-// reloaded, a report that failed), and nothing else would clear it.
+// answer. Once a turn has ended with it still open, its reply was lost, or
+// the turn could not have ended (a plugin reloaded, a report that failed), and
+// nothing else would clear it, so picking v again goes on. Before that the
+// dialog may well be up, and only an answer or a turn end moves things on.
 func (s *session) tellAskWaits(v adapter.Vendor) {
-	s.askTold = true
-	s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "the switch waits: a permission or question has no reply", Attrs: map[string]any{"to": string(v)}})
-	s.pk.tell(fmt.Sprintf("%s reported a permission or a question with no answer yet, so aggy will not type its exit command over it.", s.o.Vendor),
-		fmt.Sprintf("Check its prompt and answer it. If nothing is waiting there, pick %s again to go on.", v))
+	s.askTold = s.askStale
+	s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "the switch waits: a permission or question has no reply", Attrs: map[string]any{"to": string(v), "stale": s.askStale}})
+	next := fmt.Sprintf("Check its prompt and answer it. aggy switches to %s after the turn ends.", v)
+	if s.askStale {
+		next = fmt.Sprintf("Check its prompt and answer it. If nothing is waiting there, pick %s again to go on.", v)
+	}
+	s.pk.tell(fmt.Sprintf("%s reported a permission or a question with no answer yet, so aggy will not type its exit command over it.", s.o.Vendor), next)
 	s.openPicker()
 }
 

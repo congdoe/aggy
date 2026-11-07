@@ -11,12 +11,13 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/claude"
 	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
+	"github.com/congdoe/aggy/internal/adapter/opencode"
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/termsafe"
 	"github.com/congdoe/aggy/internal/tooldef"
 )
 
-const vendorUsage = `Usage: aggy <claude|codex|grok> [--direct] [--no-policy] [--tool NAME]... [the CLI's own flags]
+const vendorUsage = `Usage: aggy <claude|codex|grok|opencode> [--direct] [--no-policy] [--tool NAME]... [the CLI's own flags]
 
 Starts a new session of that CLI here, with the CLI's own flags, as if you
 had opened it yourself: aggy claude --model opus --permission-mode plan.
@@ -40,11 +41,15 @@ A flag that loosens approvals, the sandbox, or hook trust (--dangerously-*,
 cannot tell is harmless) needs --no-policy, and aggy notes it at launch. A
 bare word is taken as a value only after a flag aggy knows takes one; for any
 other flag write --flag=value.
+
+aggy opencode takes only the flags above, none of OpenCode's own. Its model
+is provider/model, and a resumed session keeps its own. Full auto is the
+[opencode] auto setting, in a repo you ran aggy trust --opencode on.
 `
 
 // passFlags is v's table of flags aggy takes over or refuses.
 func passFlags(v adapter.Vendor) adapter.PassFlags {
-	return map[adapter.Vendor]adapter.Adapter{adapter.Claude: claude.Adapter{}, adapter.Codex: codex.Adapter{}, adapter.Grok: grok.New()}[v].PassFlags()
+	return map[adapter.Vendor]adapter.Adapter{adapter.Claude: claude.Adapter{}, adapter.Codex: codex.Adapter{}, adapter.Grok: grok.New(), adapter.OpenCode: opencode.New()}[v].PassFlags()
 }
 
 // launchUsageErr prints a launch command's usage error: the tagged line,
@@ -99,6 +104,9 @@ func runVendor(v adapter.Vendor, args []string, stderr io.Writer) int {
 			code = diag.CodeFlagLoosens
 		}
 		return launchUsageErr(stderr, name, code, err.Error(), "")
+	}
+	if v == adapter.OpenCode && len(p.Extra) > 0 {
+		return launchUsageErr(stderr, name, diag.CodeFlagClash, fmt.Sprintf("aggy passes none of OpenCode's own flags yet, so not %q", p.Extra[0]), vendorUsage)
 	}
 	t.Model, t.Extra, t.SafeExtra, t.Loosens = p.Model, p.Extra, p.Safe, p.Loosens
 	switch {

@@ -43,10 +43,13 @@ func (Adapter) LockdownCaps(adapter.Kind) []string { return nil }
 // new-version self-test never runs on OpenCode.
 func (Adapter) SelfTestKind() adapter.Kind { return adapter.Research }
 
-// PassFlags refuses the flags aggy passes itself. `aggy opencode` is not a
-// command yet (aggy run opencode is), so Interactive refuses any Extra.
+// PassFlags is `aggy opencode`'s table. It passes none of OpenCode's own flags
+// yet, so runVendor and Interactive refuse any Extra.
 func (Adapter) PassFlags() adapter.PassFlags {
 	return adapter.PassFlags{
+		Model:    []string{"--model"},
+		Continue: []string{"--continue"},
+		Resume:   []string{"--resume"},
 		Refused: []adapter.RefusedFlag{
 			{Names: []string{"--session", "-s"}, Why: "aggy gives each session its id"},
 			{Names: []string{"--standalone"}, Why: "aggy always passes it"},

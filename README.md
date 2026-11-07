@@ -56,6 +56,7 @@ aggy inbox             # unread borrow reports
 aggy                   # start a new session here on your default vendor, as claude does
 aggy -c                # reopen the latest session here (aggy -r <id> for another)
 aggy claude --model opus --permission-mode plan   # a vendor CLI with its own flags
+aggy opencode --model xai/grok-4                  # OpenCode, on the plans and keys you set up
 aggy skill link        # let each CLI call aggy itself
 aggy policy wire       # write aggy's safety policy into Codex (Claude and Grok get it per launch)
 aggy memory import --from claude   # copy Claude's memory into .aggy/memory.md, after a diff
@@ -100,7 +101,7 @@ required = false   # start with a warning instead of refusing
 
 - The shared memory (`.aggy/memory.md`) reaches Codex and Grok on their command line, which other local users can read with `ps`. So does the payload Codex passes to a legacy `notify` hook you set yourself (aggy installs none). Keep secrets out of the memory; see [docs/design.md](docs/design.md), section 13.
 - The safety policy is a guardrail against an agent's mistakes, not a sandbox.
-- OpenCode (`aggy run opencode`) gets guardrails against mistakes, not protection from a hostile repo or a tricked model: a model's shell runs as you with no OS sandbox, so it can reach OpenCode's logins and aggy's config. A repo you have not trusted with `aggy trust --opencode <dir>` opens in `opencode mini`; a trusted one opens the full screen, and its screen plugins run before any guard. See [docs/design.md](docs/design.md), section 15.
+- OpenCode (`aggy opencode`) gets guardrails against mistakes, not protection from a hostile repo or a tricked model: a model's shell runs as you with no OS sandbox, so it can reach OpenCode's logins and aggy's config. A repo you have not trusted with `aggy trust --opencode <dir>` opens in `opencode mini`; a trusted one opens the full screen, and its screen plugins run before any guard. See [docs/design.md](docs/design.md), section 15.
 
 ## Not affiliated
 

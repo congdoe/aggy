@@ -418,8 +418,9 @@ func (g *guard) idMatch(fi fs.FileInfo) bool {
 	// A file reached by its own name in a channel's folder is caught by
 	// pathMatch. The folder is listed only for a file with a second name,
 	// which is rare, since a channel's name cannot be known in advance: a
-	// listing on every call doubled the cost of every safefs call.
-	if linkCount(fi) <= 1 {
+	// listing on every call doubled the cost of every safefs call. A folder
+	// has several links by nature, and it is no database.
+	if fi.IsDir() || linkCount(fi) <= 1 {
 		return false
 	}
 	for _, d := range g.dbDirs {

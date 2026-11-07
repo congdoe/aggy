@@ -59,7 +59,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 			}
 			tools = append(tools, val)
 		default:
-			return cmdUsage(stderr, "run", fmt.Sprintf("unknown flag %q; aggy claude, codex, or grok take the CLI's own flags", args[0]), usage)
+			return cmdUsage(stderr, "run", fmt.Sprintf("unknown flag %q; aggy claude, codex, grok, or opencode take a CLI's flags", args[0]), usage)
 		}
 		args = args[1:]
 	}
@@ -197,7 +197,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	// The probe finds the flags whose presence is only known from help:
 	// Codex --no-alt-screen and -c, Claude --settings, Grok --rules and
 	// --deny.
-	caps, err := probeCaps(ctx, v, path)
+	caps, version, err := probeCaps(ctx, v, path)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: probing %s: %s; starting it without the flags help must list\n", name, v, termsafe.Line(err.Error()))
 	}
@@ -297,13 +297,13 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 		for _, w := range oc.warns {
 			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
 		}
-		if probed, err := (opencode.Adapter{Path: path}).Probe(ctx, execrun.ExecRunner(probeTimeout)); err == nil {
-			if w := openCodeNewVersionNote(ctx, s, probed.Version); w != "" {
+		if version != "" {
+			if w := openCodeNewVersionNote(ctx, s, version); w != "" {
 				fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
 			}
 		}
 		if oc.launch.Mini {
-			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(openCodeUntrustedNote(pl.child.Cwd)))
+			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(openCodeUntrustedNote(oc.root)))
 		}
 	}
 	cmd, err := a.Interactive(req)
@@ -599,7 +599,7 @@ func switchCheck(ctx context.Context, cfg config.Config, cwd string) func(adapte
 			r = &result{}
 			probed[next] = r
 			go func() {
-				caps, err := probeCaps(ctx, next, path)
+				caps, _, err := probeCaps(ctx, next, path)
 				mu.Lock()
 				defer mu.Unlock()
 				r.done, r.caps, r.err = true, caps, err
@@ -723,15 +723,15 @@ func (r *roIndex) close() {
 }
 
 // probeCaps probes v's CLI at path for the flags whose presence is only
-// known from its help.
-func probeCaps(ctx context.Context, v adapter.Vendor, path string) ([]string, error) {
+// known from its help, and its version.
+func probeCaps(ctx context.Context, v adapter.Vendor, path string) ([]string, string, error) {
 	probed, err := map[adapter.Vendor]adapter.Adapter{adapter.Claude: claude.Adapter{Path: path},
 		adapter.Codex: codex.Adapter{Path: path}, adapter.Grok: grok.Adapter{Path: path},
 		adapter.OpenCode: opencode.Adapter{Path: path}}[v].Probe(ctx, execrun.ExecRunner(probeTimeout))
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return probed.Capabilities, nil
+	return probed.Capabilities, probed.Version, nil
 }
 
 // pickerVendors lists the vendors in order, except on, that aggy setup

@@ -9,7 +9,7 @@ const (
 	runHelpText = `Usage: aggy run [--direct] [--no-policy] [--tool NAME]... <claude|codex|grok|opencode>
 
 Starts a new session of that CLI here, under aggy. For the CLI's own flags,
-use aggy claude, aggy codex, or aggy grok.
+use aggy claude, aggy codex, aggy grok, or aggy opencode.
 
   --direct      On your terminal, without aggy's pass-through (no switch key)
   --no-policy   Without aggy's safety policy
@@ -68,7 +68,7 @@ var commandHelp = map[string]string{
 	"hook-tool": hookToolUsage, "trust": trustUsage, "switch": switchUsage, "run": runHelpText, "--direct": runHelpText,
 	"new": newUsage, "resume": resumeUsage, "--resume": resumeUsage, "-r": resumeUsage,
 	"--continue": continueUsage, "-c": continueUsage, "--no-policy": runHelpText,
-	"claude": vendorUsage, "codex": vendorUsage, "grok": vendorUsage,
+	"claude": vendorUsage, "codex": vendorUsage, "grok": vendorUsage, "opencode": vendorUsage,
 	"sessions": sessionsUsage, "session": sessionUsage, "setup": setupUsage, "doctor": doctorUsage,
 	"log": logUsage, "diag": diagUsage, "stats": statsUsage, "usage": usageUsage, "dev": devUsage,
 	"unwire": unwireUsage, "skill": skillUsage, "tool": toolUsage, "hooks": hooksUsage,

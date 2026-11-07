@@ -157,3 +157,32 @@ func TestOpenCodeRenderRest(t *testing.T) {
 		}
 	}
 }
+
+// TestOpenCodeRuleWords: the guard's function check follows the rendered rules.
+func TestOpenCodeRuleWords(t *testing.T) {
+	got, err := OpenCodeRuleWords()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"git", "ls", "pwd"}; !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestOpenCodeAutoOption: only a launch with full auto tells the guard so.
+func TestOpenCodeAutoOption(t *testing.T) {
+	for _, auto := range []bool{false, true} {
+		b, err := OpenCodeConfig{Providers: []string{"xai"}, Plugin: "/p", Aggy: "/a", Root: "/r", Auto: auto}.Render()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc openCodeDoc
+		if err := json.Unmarshal(b, &doc); err != nil {
+			t.Fatal(err)
+		}
+		_, got := doc.Plugins[0].Options["auto"]
+		if got != auto {
+			t.Errorf("auto %v: options %v", auto, doc.Plugins[0].Options)
+		}
+	}
+}

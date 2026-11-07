@@ -85,6 +85,9 @@ type OpenCodeConfig struct {
 	// NoPolicy leaves out the safety policy's denies (aggy run
 	// --no-policy). The whitelist, providers, and guard stay.
 	NoPolicy bool
+	// Auto tells the guard this launch runs with --auto, so it skips its scan
+	// of the command's text (docs/design.md).
+	Auto bool
 }
 
 // openCodeRule is a permission or policy statement.
@@ -92,6 +95,26 @@ type openCodeRule struct {
 	Action   string `json:"action"`
 	Resource string `json:"resource"`
 	Effect   string `json:"effect"`
+}
+
+// OpenCodeRuleWords are the first words of the shell rules a launch renders,
+// once each. A function by one of these names would run in place of an allowed
+// command, so the guard refuses defining one.
+func OpenCodeRuleWords() ([]string, error) {
+	rules, err := openCodePermissions(false)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, r := range rules {
+		if r.Action != "shell" {
+			continue
+		}
+		if w, _, _ := strings.Cut(r.Resource, " "); !slices.Contains(out, w) {
+			out = append(out, w)
+		}
+	}
+	return out, nil
 }
 
 // openCodePlugin is a plugin entry with its options
@@ -220,6 +243,10 @@ func (c OpenCodeConfig) Render() ([]byte, error) {
 	if c.Plugin == "" || c.Aggy == "" || c.Root == "" {
 		return nil, errors.New("parity: an OpenCode launch needs its guard")
 	}
+	options := map[string]string{"aggy": c.Aggy, "root": c.Root}
+	if c.Auto {
+		options["auto"] = "1"
+	}
 	doc := openCodeDoc{
 		Model:        c.Model,
 		Permissions:  perms,
@@ -227,7 +254,7 @@ func (c OpenCodeConfig) Render() ([]byte, error) {
 		Instructions: c.Instructions,
 		Plugins: []openCodePlugin{{
 			Package: "file://" + c.Plugin,
-			Options: map[string]string{"aggy": c.Aggy, "root": c.Root},
+			Options: options,
 		}},
 	}
 	if doc.Instructions == nil {
