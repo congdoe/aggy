@@ -177,7 +177,7 @@ func TestTurnEndEvidence(t *testing.T) {
 		{"@ and Enter with no turn end", []string{"@fi\r"}, nil, true, false},
 		{"a foreign turn end is no evidence", []string{"fix @a.go\r"}, []hookEvent{foreign}, true, false},
 		{"input since the Enter is known", []string{"@fi\r", "x"}, []hookEvent{stop}, false, true},
-		{"a key since the Enter is known", []string{"@fi\r", "\x1b[A"}, []hookEvent{stop}, false, true},
+		{"a key since the Enter", []string{"@fi\r", "\x1b[A"}, []hookEvent{stop}, true, false},
 		{"text typed after a clean turn stays known", []string{"go\r", "draft"}, []hookEvent{stop}, false, true},
 		{"an @ Enter during a turn: no evidence", []string{"go\r", "@fi\r"}, []hookEvent{stop}, true, false},
 		{"Esc mid-turn, then an approval's Enter", []string{"go\r", "\x1b", "\r"}, []hookEvent{stop}, false, false},
@@ -291,6 +291,12 @@ func TestDailyClaude(t *testing.T) {
 		{"focus out and in", []step{k("hello\r"), S, k("\x1b[O"), k("\x1b[I")}, false, line, ""},
 		{"wheel", []step{k("hello\r"), S, k("\x1b[<64;10;5M")}, false, line, ""},
 		{"text, Ctrl+U, Enter", []step{k("abc"), k("\x15"), k("\r")}, false, waits, line},
+		{"Shift+Tab", []step{k("\x1b[Z")}, false, line, ""},
+		{"Page Up", []step{k("\x1b[5~")}, false, line, ""},
+		{"Up, Down", []step{k("\x1b[A"), k("\x1b[B")}, false, doubt, line},
+		{"Ctrl+O", []step{k("\x0f")}, false, line, ""},
+		{"Ctrl+C", []step{k("\x03")}, false, line, ""},
+		{"/model, arrow, Esc", []step{k("/model\r"), k("\x1b[B"), k("\x1b")}, false, doubt, line},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ts, c, done, sock := switchRunTurned(t, adapter.Claude, func(*Options) {
