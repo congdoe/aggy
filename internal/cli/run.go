@@ -531,15 +531,8 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		SessionID:  cids.current,
 		Children:   children,
 		HasChild:   hasChild,
-		SwitchBlocked: func() string {
-			path, err := permissionsFile()
-			if err != nil {
-				return ""
-			}
-			if e := permissions.AggyFileError(path); e != nil {
-				return termsafe.Line(e.Error())
-			}
-			return ""
+		SwitchBlocked: func(o adapter.Vendor, id string) string {
+			return switchBlocked(childCwd(ro.get(), parent, o, id, pl.child.Cwd))
 		},
 		Limits:   limitHit,
 		HasQuota: quota,
@@ -719,6 +712,23 @@ func childRecorded(s *store.Store, parentID string, v adapter.Vendor, id string)
 		}
 	}
 	return false
+}
+
+// childCwd is the folder a switch to child id launches in, else fallback.
+func childCwd(s *store.Store, parentID string, v adapter.Vendor, id, fallback string) string {
+	if s == nil || id == "" {
+		return fallback
+	}
+	cs, err := s.Children(context.Background(), parentID)
+	if err != nil {
+		return fallback
+	}
+	for _, c := range cs {
+		if c.ID == id && c.Vendor == string(v) && c.Cwd != "" {
+			return c.Cwd
+		}
+	}
+	return fallback
 }
 
 // openIndexRO opens the index read-only; a test counts the opens.

@@ -477,21 +477,108 @@ func TestLocalAllowsWaitForTrust(t *testing.T) {
 	}
 }
 
-// TestRepoFileCostsOnlyItself: a repo cannot turn off the person's allows by
-// bringing a bad file; the person's own bad file still withholds them.
-func TestRepoFileCostsOnlyItself(t *testing.T) {
-	for _, body := range []string{"{", `{"permissions":{"allow":["Bash(ls)"],"deny":["not a rule"]}}`} {
-		f := newFixture(t)
-		f.in.Trusted = true
-		write(t, f.local(), body)
-		write(t, f.in.AggyFile, `{"permissions":{"allow":["Bash(make x)"]}}`)
-		s := Load(f.in)
-		if s.Withhold != "" || len(s.Problems) != 1 {
-			t.Fatalf("%s: %+v", body, s)
-		}
-		if got := texts(s.Rules, Allow); !slices.Equal(got, []string{"Bash(make x)@aggy"}) {
-			t.Errorf("%s: %q", body, got)
-		}
+// TestLocalFileWhoseProblem: a clone brings only a tracked file or a link, and
+// those must leave the person's allows alone. The person's own untracked file keeps
+// every valid deny and ask, and a mistake in it withholds, as a deny may be missing.
+func TestLocalFileWhoseProblem(t *testing.T) {
+	notTracked := func(string) (bool, error) { return false, nil }
+	tracked := func(string) (bool, error) { return true, nil }
+	for _, tc := range []struct {
+		name    string
+		body    string
+		tracked func(string) (bool, error)
+		link    string // "file" or "dir"
+		repo    bool
+		denies  []string
+		asks    []string
+	}{
+		{name: "trailing comma", body: `{"permissions":{"deny":["Bash(git push x)"],}}`, tracked: notTracked},
+		{name: "typo in a deny", body: `{"permissions":{"deny":["Bash(git push x)","Bash("],"ask":["Bash(npm publish)"]}}`, tracked: notTracked,
+			denies: []string{"Bash(git push x)@claude-local"}, asks: []string{"Bash(npm publish)@claude-local"}},
+		{name: "typo in an ask", body: `{"permissions":{"deny":["Bash(git push x)"],"ask":["Bash("]}}`, tracked: notTracked,
+			denies: []string{"Bash(git push x)@claude-local"}},
+		{name: "tracked, bad JSON", body: "{", tracked: tracked, repo: true},
+		{name: "git cannot say, bad JSON", body: "{", repo: true},
+		{name: "linked file", body: `{"permissions":{"deny":["Bash(git push x)"]}}`, tracked: notTracked, link: "file", repo: true},
+		{name: "linked folder", body: `{"permissions":{"deny":["Bash(git push x)"]}}`, tracked: notTracked, link: "dir", repo: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.in.Trusted = true
+			f.in.Tracked = tc.tracked
+			write(t, f.in.AggyFile, `{"permissions":{"allow":["Bash(make x)"]}}`)
+			elsewhere := filepath.Join(filepath.Dir(f.in.Main), "elsewhere")
+			switch tc.link {
+			case "":
+				write(t, f.local(), tc.body)
+			case "file":
+				write(t, filepath.Join(elsewhere, "real.json"), tc.body)
+				if err := os.MkdirAll(filepath.Dir(f.local()), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(elsewhere, "real.json"), f.local()); err != nil {
+					t.Fatal(err)
+				}
+			case "dir":
+				write(t, filepath.Join(elsewhere, "settings.local.json"), tc.body)
+				if err := os.Symlink(elsewhere, filepath.Dir(f.local())); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s := Load(f.in)
+			if len(s.Problems) != 1 || s.Problems[0].Repo != tc.repo {
+				t.Fatalf("problems: %+v", s.Problems)
+			}
+			if got := texts(s.Rules, Deny); !slices.Equal(got, tc.denies) {
+				t.Errorf("denies: %q", got)
+			}
+			if got := texts(s.Rules, Ask); !slices.Equal(got, tc.asks) {
+				t.Errorf("asks: %q", got)
+			}
+			r := s.Render(adapter.Claude)
+			if tc.repo {
+				if s.Withhold != "" || !slices.Equal(r.Allow, []string{"Bash(make x)"}) {
+					t.Errorf("a repo turned off the person's allows: %q, %q", s.Withhold, r.Allow)
+				}
+				return
+			}
+			if !strings.Contains(s.Withhold, f.local()) || !strings.Contains(s.Withhold, "a deny may be missing") || len(r.Allow) != 0 {
+				t.Errorf("withhold %q, allow %q", s.Withhold, r.Allow)
+			}
+		})
+	}
+}
+
+// TestLinkToCredentialIsTheRepos: safefs refuses it by path, and a clone can still
+// bring the link, so it must not turn off the person's allows either.
+func TestLinkToCredentialIsTheRepos(t *testing.T) {
+	f := newFixture(t)
+	home := filepath.Dir(f.in.Main)
+	write(t, filepath.Join(home, ".codex", "auth.json"), "{}")
+	if err := os.MkdirAll(filepath.Dir(f.local()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, ".codex", "auth.json"), f.local()); err != nil {
+		t.Fatal(err)
+	}
+	if s := Load(f.in); s.Withhold != "" || len(s.Problems) != 1 || !s.Problems[0].Repo {
+		t.Errorf("%+v", s)
+	}
+}
+
+// TestNoClaudeFolder: with HOME unset an empty folder must not join into a relative
+// path, or the repo's committed settings.json is read as the person's.
+func TestNoClaudeFolder(t *testing.T) {
+	f := newFixture(t)
+	write(t, filepath.Join(f.in.Main, "settings.json"), `{"permissions":{"allow":["Bash(ls)"],"defaultMode":"auto"}}`)
+	t.Chdir(f.in.Main)
+	f.in.ClaudeDir = ""
+	s := Load(f.in)
+	if len(s.Rules) != 0 || s.Mode != "" {
+		t.Errorf("read the repo's file as the person's: %+v", s)
+	}
+	if len(s.Problems) != 1 || s.Problems[0].Repo || s.Withhold == "" {
+		t.Errorf("%+v", s)
 	}
 }
 

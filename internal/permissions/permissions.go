@@ -65,8 +65,10 @@ type Skip struct {
 type Problem struct {
 	Path string
 	Why  string
-	// Repo says the file came with the repo, or could have, so the problem costs
-	// only that file's rules: otherwise a repo could turn off the person's allows.
+	// Repo says a clone could have brought it: the file is tracked, git cannot say,
+	// or it or .claude is a link. It costs only that file's allows, or a repo could
+	// turn off the person's. Any other problem is the person's own, where a deny
+	// may be missing, so it withholds this layer's allows.
 	Repo bool
 }
 
@@ -213,31 +215,29 @@ func UnknownKeys(b []byte) []string {
 // allow from this layer goes out, as a deny in it may be missing.
 func Load(in Input) Set {
 	s := Set{Trusted: in.Trusted}
-	s.loadClaude(filepath.Join(in.ClaudeDir, "settings.json"), FromClaudeUser, in.Trusted)
+	if in.ClaudeDir == "" {
+		// Joined, an empty folder would read the repo's own settings.json as theirs.
+		s.Problems = append(s.Problems, Problem{Path: "~/.claude/settings.json", Why: "aggy cannot find Claude's config folder, as HOME is not set, so your rules there went unread"})
+	} else {
+		s.loadClaude(filepath.Join(in.ClaudeDir, "settings.json"), FromClaudeUser, in.Trusted)
+	}
 	if in.Main != "" {
-		n := len(s.Problems)
 		s.loadLocal(in)
-		if len(s.Problems) > n {
-			for i := n; i < len(s.Problems); i++ {
-				s.Problems[i].Repo = true
-			}
-			s.Rules = slices.DeleteFunc(s.Rules, func(r Rule) bool { return r.Origin == FromClaudeLocal })
-		}
 	}
 	s.loadAggy(in)
 	s.loadGrok(in)
 	s.loadCodex(in)
-	if slices.ContainsFunc(s.Problems, func(p Problem) bool { return !p.Repo }) {
-		s.Withhold = "aggy could not read every source of rules, so a deny may be missing, and it sends no allow from them until that is fixed"
+	if i := slices.IndexFunc(s.Problems, func(p Problem) bool { return !p.Repo }); i >= 0 {
+		s.Withhold = fmt.Sprintf("aggy could not use all of %s, so a deny may be missing, and it sends no allow from its rules until that is fixed", s.Problems[i].Path)
 	}
 	return s
 }
 
-// AggyFileError reads aggy's own file alone, for a switch to check before it
-// closes the CLI on screen.
-func AggyFileError(path string) *FileError {
+// AggyFileError reads aggy's own file alone, with the repo's section by repoKey as
+// a launch does, for a switch to check before it closes the CLI on screen.
+func AggyFileError(path, repoKey string) *FileError {
 	var s Set
-	s.loadAggy(Input{AggyFile: path})
+	s.loadAggy(Input{AggyFile: path, RepoKey: repoKey})
 	return s.FileErr
 }
 
@@ -291,14 +291,32 @@ func (s *Set) loadClaude(path string, o Origin, trusted bool) {
 	}
 }
 
-// loadLocal reads <main>/.claude/settings.local.json unless git tracks it. A
-// tracked file's allows are named as skipped, so the person can see why.
+// loadLocal reads <main>/.claude/settings.local.json unless git tracks it. A clone
+// can bring only a tracked file or a tracked link, so only those count as the
+// repo's: their allows are named as skipped, and a problem with one is Repo. An
+// untracked regular file is the person's, with every valid deny and ask kept.
 func (s *Set) loadLocal(in Input) {
 	path := filepath.Join(in.Main, ".claude", "settings.local.json")
-	if _, err := safefs.Lstat(path); err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			s.Problems = append(s.Problems, Problem{Path: path, Why: err.Error()})
-		}
+	repos := func(why string) {
+		s.Problems = append(s.Problems, Problem{Path: path, Why: why, Repo: true})
+	}
+	dir, err := safefs.Lstat(filepath.Dir(path))
+	if errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	file, ferr := safefs.Lstat(path)
+	if errors.Is(ferr, fs.ErrNotExist) {
+		return
+	}
+	switch {
+	case (err == nil && dir.Mode()&fs.ModeSymlink != 0) || (ferr == nil && file.Mode()&fs.ModeSymlink != 0) || errors.Is(ferr, safefs.ErrAuthPath):
+		repos("this file or its folder is a link, which a clone could bring")
+		return
+	case err != nil:
+		s.Problems = append(s.Problems, Problem{Path: path, Why: err.Error()})
+		return
+	case ferr != nil:
+		s.Problems = append(s.Problems, Problem{Path: path, Why: ferr.Error()})
 		return
 	}
 	why := ""
@@ -313,13 +331,14 @@ func (s *Set) loadLocal(in Input) {
 		s.loadClaude(path, FromClaudeLocal, in.Trusted)
 		return
 	}
-	b := s.read(path)
-	if b == nil {
+	b, err := safefs.ReadConfig(path, MaxFile)
+	if err != nil {
+		repos(err.Error())
 		return
 	}
 	var f claudeFile
 	if err := json.Unmarshal(b, &f); err != nil {
-		s.Problems = append(s.Problems, Problem{Path: path, Why: err.Error()})
+		repos(err.Error())
 		return
 	}
 	for _, r := range f.Permissions.Allow {

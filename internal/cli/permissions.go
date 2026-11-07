@@ -145,13 +145,37 @@ func loadPermissions(ctx context.Context, dir string, cfg config.Config) permiss
 	return s
 }
 
+// switchBlocked says why the next launch in dir would refuse, so a switch must not
+// close the CLI on screen.
+func switchBlocked(dir string) string {
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		return termsafe.Line(err.Error())
+	}
+	if _, err := repoEffective(cfg, dir); err != nil {
+		return termsafe.Line(err.Error())
+	}
+	path, err := permissionsFile()
+	if err != nil {
+		return ""
+	}
+	if e := permissions.AggyFileError(path, permissionInput(dir).RepoKey); e != nil {
+		return termsafe.Line(e.Error())
+	}
+	return ""
+}
+
 // addPermissions puts the shared rules on req for vendor v, and returns the
 // launch's notes. A rule that cannot reach a CLI never stops the launch: it
 // only means that CLI asks.
 func addPermissions(v adapter.Vendor, caps []string, s permissions.Set, req *adapter.InteractiveRequest) []string {
 	var notes []string
 	for _, p := range s.Problems {
-		notes = append(notes, fmt.Sprintf("a permissions file is not used: %s: %s", p.Path, p.Why))
+		if p.Repo {
+			notes = append(notes, fmt.Sprintf("a permissions file that could have come with this repo is not used: %s: %s", p.Path, p.Why))
+			continue
+		}
+		notes = append(notes, fmt.Sprintf("a deny may be missing, from %s: %s", p.Path, p.Why))
 	}
 	if s.Withhold != "" {
 		notes = append(notes, s.Withhold)
