@@ -28,10 +28,9 @@ and style.
   --edit PATH      change an image aggy made: resumes the same child
                    session on the same vendor (from PATH's sidecar in
                    .aggy/assets) and writes the result over PATH, or to
-                   --out. On Grok this needs image_edit, which reads a
-                   local image at any path the model names and uploads
-                   it to xAI: off unless grok_file_tools = true under
-                   [media] in ~/.aggy/config.toml
+                   --out. Codex images only: an image Grok made is
+                   refused, since its session's temp dir is gone; make a
+                   new image, or make it with --vendor codex
   --vendor V       codex or grok, skipping routing
   --allow-untested run a CLI outside the tested versions without aggy's checks
 `

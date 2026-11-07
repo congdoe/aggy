@@ -411,6 +411,8 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 		switch {
 		case errors.Is(err, borrow.ErrDelegated):
 			c = diag.CodeOneHop
+		case errors.Is(err, borrow.ErrGrokEdit):
+			c = diag.CodeGrokEdit
 		case borrow.Invalid(err):
 			c = diag.CodeBorrowInvalid
 		case errors.As(err, &none):

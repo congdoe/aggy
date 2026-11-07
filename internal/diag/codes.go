@@ -161,6 +161,7 @@ var (
 	CodeStore            = Code{"store.unavailable"}
 	CodeOneHop           = Code{"borrow.one_hop"}
 	CodeBorrowInvalid    = Code{"borrow.invalid_request"}
+	CodeGrokEdit         = Code{"borrow.grok_edit"}
 	CodeNoVendor         = Code{"borrow.no_vendor"}
 	CodeBorrowStart      = Code{"borrow.start_failed"}
 	CodeCLIMissing       = Code{"vendor.cli_missing"}
@@ -359,6 +360,7 @@ var codes = []CodeInfo{
 	{CodeStore, false, "The index (~/.aggy/aggy.db) could not be opened, read, or written.", "aggy doctor; the state dir's permissions and free space."},
 	{CodeOneHop, true, "aggy borrow or aggy gc ran inside a borrow child (AGGY_DELEGATED is set): borrows are one hop.", "Run it from your own shell. A child that tries this was steered to; read its task."},
 	{CodeBorrowInvalid, false, "The borrow request failed validation: an empty or too long task, a bad path or constraint, or a flag the kind does not take.", "aggy borrow --help."},
+	{CodeGrokEdit, false, "aggy image --edit named an image Grok made. Grok keeps a session under its working directory, and the borrow's temp dir is gone, so a resumed child cannot start; no child ran.", "Make a new image with a full brief, or make it with --vendor codex, whose images --edit can change."},
 	{CodeNoVendor, false, "No candidate vendor could start the borrow.", "aggy diag --run <run id> --event borrow.vendor.skipped lists why each was passed over; aggy setup."},
 	{CodeBorrowStart, false, "The borrow failed after a vendor was chosen, while making its dirs, worktree, or records (the concurrency caps included).", showRun + "; aggy doctor."},
 	{CodeCLIMissing, false, "The vendor's CLI is not on PATH, or its probe failed.", "aggy setup."},

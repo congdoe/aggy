@@ -29,7 +29,8 @@ type Media struct {
 	// N is the number of variants asked for; 0 means 1.
 	N int
 	// Resume is the vendor session an --edit continues, from the
-	// sidecar of the image edited; Request.Vendor is that vendor.
+	// sidecar of the image edited; Request.Vendor is that vendor, which
+	// may not be Grok (ErrGrokEdit).
 	Resume string
 }
 
@@ -85,12 +86,24 @@ func (m *Media) validate(req Request) error {
 		if err != nil || req.Kind != adapter.Image {
 			return errors.New("an edit resumes an image session on the vendor that made it")
 		}
+		if v == adapter.Grok {
+			return ErrGrokEdit
+		}
 		if err := adapter.ValidSessionID(v, m.Resume); err != nil {
 			return err
 		}
 	}
 	return nil
 }
+
+// ErrGrokEdit refuses an --edit of an image Grok made, before routing, a
+// grok_file_tools hint, or any child: the sidecar's vendor is the only one
+// that has the session, so nothing can fall through to another. Grok keeps a
+// session under its working directory, and an image child's temp dir went
+// with its borrow, so the resumed child fails in a second, on 0 tokens, with
+// the session's folder gone (live, grok 1.0.77; verification.md, T6923).
+// Keeping run dirs for later would change the borrow lockdown.
+var ErrGrokEdit = errors.New("--edit cannot change an image Grok made: Grok keeps a session under its working directory, and this one's temp dir ended with its borrow, so nothing was started. Make a new image with a full brief (aggy image \"<brief>\" --out PATH), or make it with --vendor codex, whose images --edit can change")
 
 // constraints are the lines m adds to the child's prompt.
 func (m *Media) constraints() []string {
