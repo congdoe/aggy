@@ -1411,6 +1411,10 @@ So the value is read at config load, per folder. Deleting the file after load wo
 
 Not established: a real plan limit on either plan; which sign-in method the owner used for OpenAI; whether a provider key from `{file:}` reaches a real vendor's request header (the fake model received it); SIGTERM and SIGHUP behaviour; the service path.
 
+## Claude Code session file fields (2026-11-06)
+
+Read on the owner's machine, by key and count only, from 39 session files of the last 30 days, at the installed Claude Code. Not a documented format. Shell calls appear as `tool_use` blocks named `Bash` with `input.command`; session lines carry `permissionMode` and `cwd`; `tool_result` blocks carry `tool_use_id` and `is_error` when a call failed. A full scan of 730 MB in Python took 2.7 seconds. `is_error` does not separate a denied command from a failed one.
+
 ## Still open
 
 1. Codex limit event, captured live from an exhausted account: the
