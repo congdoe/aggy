@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/adapter/opencode"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/probe"
@@ -237,9 +238,13 @@ func (p *launchPlan) newChildOf(ctx context.Context, s *store.Store, cfg config.
 	c.VendorHome, _ = (&sessionFiles{}).home(v)
 	if v != adapter.Codex {
 		// Claude and Grok take --session-id <uuid>; Codex cannot be given
-		// an id in advance (docs/adapters.md).
+		// an id in advance (docs/adapters.md). OpenCode's --session takes a
+		// new id of its own shape.
 		if c.VendorSessionID, err = newUUID(); err != nil {
 			return err
+		}
+		if v == adapter.OpenCode {
+			c.VendorSessionID = opencode.NewSessionID(c.VendorSessionID)
 		}
 	}
 	p.child, p.newChild = c, true
@@ -262,7 +267,8 @@ func defaultVendor(ctx context.Context, s *store.Store, cfg config.Config, allow
 		}
 	}
 	for _, v := range allowed {
-		if out[string(v)] {
+		// An open harness opens only when the person named it.
+		if out[string(v)] || v == adapter.OpenCode {
 			continue
 		}
 		if _, err := probe.LookPath(vendorBin(v)); err == nil {

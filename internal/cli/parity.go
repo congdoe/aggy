@@ -133,11 +133,12 @@ func codexConfigs(cwd, root string) ([]parity.CodexConfig, error) {
 
 // Why the safety policy does not reach a vendor (policyDelivery).
 const (
-	whyNoSettings  = "claude --help does not list --settings"
-	whyNoDeny      = "grok --help does not list --deny"
-	whyRulesMissed = "the Codex rules file is not written; run aggy policy wire"
-	whyRulesOther  = "the Codex rules file is not aggy's current policy; undo it with aggy unwire, then run aggy policy wire"
-	whyRulesError  = "cannot check the Codex rules file"
+	whyNoSettings   = "claude --help does not list --settings"
+	whyNoDeny       = "grok --help does not list --deny"
+	whyRulesMissed  = "the Codex rules file is not written; run aggy policy wire"
+	whyRulesOther   = "the Codex rules file is not aggy's current policy; undo it with aggy unwire, then run aggy policy wire"
+	whyRulesError   = "cannot check the Codex rules file"
+	whyNoStandalone = "opencode --help does not list --standalone"
 )
 
 // policyDelivery says whether vendor v gets the safety policy, given its
@@ -153,6 +154,12 @@ func policyDelivery(v adapter.Vendor, caps []string) (why string, err error) {
 	case adapter.Grok:
 		if !slices.Contains(caps, probe.CapDeny) {
 			return whyNoDeny, nil
+		}
+	case adapter.OpenCode:
+		// Rendered per launch (prepareOpenCode), which needs a private
+		// server: a shared service keeps the config it started with.
+		if !slices.Contains(caps, probe.CapStandalone) {
+			return whyNoStandalone, nil
 		}
 	case adapter.Codex:
 		path, err := parity.CodexRulesPath()

@@ -106,11 +106,15 @@ func briefWith(args []string, e borrowEnv, stdout, stderr io.Writer) int {
 		in.MissingTools = missingTools(in.From, in.To, root, e.getenv)
 	}
 	in.Task, in.TaskErr = brief.ReadTask(cwd)
-	home, err := transcript.Home(in.From, e.getenv)
-	if err == nil {
-		in.Transcript, err = transcript.Tail(in.From, home, adapter.SessionRef{ID: *session, Cwd: cwd}, *turns)
+	if in.From == adapter.OpenCode {
+		in.Transcript, in.TranscriptErr = openCodeTranscript(context.Background(), adapter.SessionRef{ID: *session, Cwd: cwd}, *turns)
+	} else {
+		home, err := transcript.Home(in.From, e.getenv)
+		if err == nil {
+			in.Transcript, err = transcript.Tail(in.From, home, adapter.SessionRef{ID: *session, Cwd: cwd}, *turns)
+		}
+		in.TranscriptErr = err
 	}
-	in.TranscriptErr = err
 	if inRepo {
 		in.GitStatus, in.DiffStat, in.GitErr = e.gitState(context.Background(), root)
 	} else {
@@ -176,6 +180,10 @@ func childBrief(ctx context.Context, s *store.Store, e borrowEnv, pl launchPlan)
 		v, err := adapter.ParseVendor(c.Vendor)
 		if err != nil {
 			return v, adapter.Transcript{}, err
+		}
+		if v == adapter.OpenCode {
+			tr, err := openCodeTranscript(ctx, adapter.SessionRef{ID: c.VendorSessionID, Cwd: c.Cwd}, turns)
+			return v, tr, err
 		}
 		home := c.VendorHome
 		if home == "" {
@@ -259,6 +267,14 @@ func showBrief(name string, t target, stdout, stderr io.Writer) int {
 // is said so instead of guessed.
 func missingTools(from, to adapter.Vendor, root string, getenv func(string) string) []string {
 	var out []string
+	if from == adapter.OpenCode || to == adapter.OpenCode {
+		// Its launch loads no MCP server (T6932), so nothing can be compared;
+		// say so plainly rather than as a failure.
+		if to == adapter.OpenCode {
+			return []string{"MCP servers: an OpenCode session under aggy has none"}
+		}
+		return nil
+	}
 	have, err := parity.MCPNames(from, root, getenv)
 	if err == nil {
 		var gets []string

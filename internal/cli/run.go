@@ -16,6 +16,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/claude"
 	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
+	"github.com/congdoe/aggy/internal/adapter/opencode"
 	"github.com/congdoe/aggy/internal/brief"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/diag"
@@ -36,7 +37,7 @@ import (
 // terminal (runDirect). --no-policy starts it without the safety policy
 // (launch). --tool turns a tool on for this session only (target.Tools).
 func runRun(args []string, stdout, stderr io.Writer) int {
-	const usage = "usage: aggy run [--direct] [--no-policy] [--tool NAME]... <claude|codex|grok>\n"
+	const usage = "usage: aggy run [--direct] [--no-policy] [--tool NAME]... <claude|codex|grok|opencode>\n"
 	var direct, noPolicy bool
 	var tools []string
 	for len(args) > 0 && strings.HasPrefix(args[0], "--") {
@@ -200,6 +201,8 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 		a = codex.Adapter{Caps: caps}
 	case adapter.Grok:
 		a = grok.New()
+	case adapter.OpenCode:
+		a = opencode.New()
 	}
 	key, err := config.ParseKey(cfg.Switch.Key)
 	if err != nil {
@@ -241,7 +244,12 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	// The tools that are on, for this child's own vendor and repo: a
 	// switch or resume is wired again for the CLI it starts. Their files
 	// share the launch's private folder, removed when the CLI exits.
-	tw := addTools(ctx, v, caps, pl.child.Cwd, memDir, t.Tools, &req)
+	var tw []string
+	if v == adapter.OpenCode && len(t.Tools) > 0 {
+		tw = []string{"managed tools are not wired to OpenCode yet, so --tool is ignored here"}
+	} else if v != adapter.OpenCode {
+		tw = addTools(ctx, v, caps, pl.child.Cwd, memDir, t.Tools, &req)
+	}
 	defer func() { _ = safefs.RemoveAll(memDir) }()
 	for _, w := range append(append(warns, mw...), tw...) {
 		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
@@ -257,6 +265,20 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 		}
 		if req.BriefFile, err = brief.Path(pl.child.Cwd, pl.child.ID); err != nil {
 			return fail(diag.CodeLaunchFailed, err)
+		}
+	}
+	if v == adapter.OpenCode {
+		oc, err := prepareOpenCode(openCodeInput{cfg: eff, caps: caps, cwd: pl.child.Cwd, dir: memDir,
+			model: pl.child.Model, memory: req.Memory, brief: briefText, noPolicy: t.NoPolicy})
+		if err != nil {
+			return fail(diag.CodePolicy, err)
+		}
+		req.OpenCode = &oc.launch
+		for _, w := range oc.warns {
+			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
+		}
+		if oc.launch.Mini {
+			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(openCodeUntrustedNote(pl.child.Cwd)))
 		}
 	}
 	cmd, err := a.Interactive(req)
@@ -290,7 +312,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	// launch never starts one. It is stopped when this CLI exits, before
 	// a switch or resume launches the next. Any failure is a warning and
 	// the CLI starts without it.
-	px := startToolProxy(ctx, v, pl.child.Cwd, memDir, t.Tools, stderr, name)
+	px := startToolProxy(ctx, v, pl.child.Cwd, memDir, proxyTools(v, t.Tools), stderr, name)
 	defer px.stop()
 	if px.interrupted {
 		fmt.Fprintf(stderr, "%s: interrupted; nothing started %s\n", name, dlog.Tag(diag.CodeProxyFailed))
@@ -422,7 +444,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	// (a repo config or index aggy cannot read) none is offered.
 	var tools func() (supervisor.ToolSet, error)
 	toolBase, err := sessionToolSet(ctx, v, caps, pl.child.Cwd, t.Tools)
-	if err == nil {
+	if err == nil && v != adapter.OpenCode {
 		tools = func() (supervisor.ToolSet, error) {
 			set, err := sessionToolSet(pctx, v, caps, pl.child.Cwd, t.Tools)
 			px.withoutProxy(set)
@@ -442,14 +464,15 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 			}
 			return ch, err
 		},
-		SwitchKey:  key,
-		Vendors:    vendors,
-		RunDir:     runDir,
-		ParentID:   parentID,
-		OnHook:     onHook,
-		Vendor:     v,
-		CanSwitch:  canSwitch,
-		StartsTurn: t.Brief,
+		SwitchKey: key,
+		Vendors:   vendors,
+		RunDir:    runDir,
+		ParentID:  parentID,
+		OnHook:    onHook,
+		Vendor:    v,
+		CanSwitch: canSwitch,
+		// OpenCode takes a brief in its instructions, so none starts a turn.
+		StartsTurn: t.Brief && v != adapter.OpenCode,
 		SessionID:  cids.current,
 		Children:   children,
 		HasChild:   hasChild,
@@ -675,7 +698,8 @@ func (r *roIndex) close() {
 // known from its help.
 func probeCaps(ctx context.Context, v adapter.Vendor, path string) ([]string, error) {
 	probed, err := map[adapter.Vendor]adapter.Adapter{adapter.Claude: claude.Adapter{Path: path},
-		adapter.Codex: codex.Adapter{Path: path}, adapter.Grok: grok.Adapter{Path: path}}[v].Probe(ctx, execrun.ExecRunner(probeTimeout))
+		adapter.Codex: codex.Adapter{Path: path}, adapter.Grok: grok.Adapter{Path: path},
+		adapter.OpenCode: opencode.Adapter{Path: path}}[v].Probe(ctx, execrun.ExecRunner(probeTimeout))
 	if err != nil {
 		return nil, err
 	}
@@ -715,7 +739,16 @@ func pickerVendors(order []adapter.Vendor, on adapter.Vendor) []adapter.Vendor {
 
 // vendorBin is the vendor CLI's command name.
 func vendorBin(v adapter.Vendor) string {
-	return map[adapter.Vendor]string{adapter.Claude: claude.Bin, adapter.Codex: codex.Bin, adapter.Grok: grok.Bin}[v]
+	return map[adapter.Vendor]string{adapter.Claude: claude.Bin, adapter.Codex: codex.Bin, adapter.Grok: grok.Bin, adapter.OpenCode: opencode.Bin}[v]
+}
+
+// proxyTools are the --tool names a tool proxy may start for: none on
+// OpenCode, which has no managed tools yet.
+func proxyTools(v adapter.Vendor, tools []string) []string {
+	if v == adapter.OpenCode {
+		return nil
+	}
+	return tools
 }
 
 // newUUID returns a random (version 4) UUID.

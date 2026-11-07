@@ -15,6 +15,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/claude"
 	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
+	"github.com/congdoe/aggy/internal/adapter/opencode"
 	"github.com/congdoe/aggy/internal/checkup"
 	"github.com/congdoe/aggy/internal/devfix"
 	"github.com/congdoe/aggy/internal/diag"
@@ -42,9 +43,10 @@ const probeTimeout = 30 * time.Second
 
 // vendorNames are the vendors' product names, for output.
 var vendorNames = map[adapter.Vendor]string{
-	adapter.Claude: "Claude Code",
-	adapter.Codex:  "Codex",
-	adapter.Grok:   "Grok Build",
+	adapter.Claude:   "Claude Code",
+	adapter.Codex:    "Codex",
+	adapter.Grok:     "Grok Build",
+	adapter.OpenCode: "OpenCode",
 }
 
 // checkEnv is what setup and doctor need from the outside world, so tests
@@ -66,7 +68,7 @@ type checkEnv struct {
 func defaultCheckEnv() checkEnv {
 	cwd, _ := os.Getwd()
 	return checkEnv{
-		adapters: []adapter.Adapter{claude.New(), codex.New(), grok.New()},
+		adapters: []adapter.Adapter{claude.New(), codex.New(), grok.New(), opencode.New()},
 		run:      execrun.ExecRunner(probeTimeout),
 		in:       os.Stdin,
 		tty:      isTerminal(os.Stdin),
@@ -253,6 +255,9 @@ func (r *setupRun) vendor(ctx context.Context, a adapter.Adapter) int {
 	r.printVendor(res)
 	for _, f := range checkup.ForVendor(r.findings, v) {
 		fmt.Fprintf(r.out, "  %s: %s\n", f.Level, termsafe.Field(f.Text(r.env.home)))
+	}
+	if v == adapter.OpenCode && res.Installed {
+		fmt.Fprint(r.out, openCodeSetupNote)
 	}
 	steps := a.SignIn().Steps
 	switch {
