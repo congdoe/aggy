@@ -102,10 +102,10 @@ func TestFollowClearsDoubt(t *testing.T) {
 		s := &session{toChild: newByteQueue(maxQueued), lenKnown: true, atPrompt: true, quit: make(chan struct{}),
 			o: Options{Vendor: adapter.Claude, SessionID: func() string { return childSID }}}
 		s.hookEvent(hookEvent{name: "Stop", sessionID: childSID, chain: ownChain})
-		s.send([]byte("/clear"))
+		s.send([]byte("/resume")) // no local command, unlike /clear
 		s.send([]byte("\r"))
 		if !s.dirty || s.atPrompt {
-			t.Fatalf("after /clear: dirty %v, atPrompt %v", s.dirty, s.atPrompt)
+			t.Fatalf("after /resume: dirty %v, atPrompt %v", s.dirty, s.atPrompt)
 		}
 		return s
 	}

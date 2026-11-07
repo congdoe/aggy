@@ -515,6 +515,15 @@ type session struct {
 	slashOnly, slashEntered bool
 	movedQuiet, moveRefused bool
 	escEmpty, escTwice      bool
+	// cmdLine is what was typed since the last Enter, while cmdBad is false:
+	// printable keys only, no cursor key, no edit, no paste. localEnter: the
+	// Enter just composed ended a line the vendor's docs list as starting no
+	// model turn (adapter.LocalCommand).
+	cmdLine            []byte
+	cmdBad, localEnter bool
+	// typedSince: text was typed or pasted since the last Enter, in an earlier
+	// read. Cursor keys are not text: Down and Enter answer an approval's menu.
+	typedSince              bool
 	escDoubt, enterAtPrompt bool
 	// hookSeen: a hook of the vendor on screen came from the session.
 	hookSeen atomic.Bool
@@ -600,6 +609,8 @@ type pendingSwitch struct {
 	// no key has reached the composer since. doubtOK: the person picked again
 	// after it, so the status line may ask, saying so.
 	toldDoubt, doubtOK bool
+	// toldWaits: tellWaits's note came for this pick.
+	toldWaits bool
 	// resume: a restart of the vendor on screen on the same session, for
 	// the tool changes named in tools (T6729).
 	resume bool
@@ -1015,7 +1026,7 @@ func (s *session) send(b []byte) {
 		// An Enter with text, while a turn may be running, may queue a
 		// message. A bare one on an empty prompt queues nothing: it answers
 		// an approval or a menu, which most turns have.
-		if !s.atPrompt && (s.dirty || !bareEnter(typed)) {
+		if !s.atPrompt && (s.typedSince || !bareEnter(typed)) {
 			s.queued++
 			s.queuedWait = false
 		}
@@ -1057,6 +1068,12 @@ func (s *session) followKeys(typed []byte) {
 		s.slashOnly = false
 	}
 	s.sw.toldDoubt, s.sw.doubtOK = false, false
+	switch {
+	case enter:
+		s.typedSince = false
+	case typed[0] != esc || bytes.Contains(typed, pasteStart):
+		s.typedSince = true
+	}
 	onlyEsc := isEsc(typed) || len(bytes.Trim(typed, "\x1b")) == 0
 	switch {
 	case onlyEsc:
@@ -1079,7 +1096,14 @@ func (s *session) followKeys(typed []byte) {
 		s.compLen = before // an Esc types nothing
 	}
 	if typed[0] != esc && enter && bytes.IndexByte(typed, '\r') < len(typed)-1 {
-		s.slashOnly = false // more came after the Enter, in this read
+		s.slashOnly, s.localEnter = false, false // more came after the Enter, in this read
+	}
+	if s.localEnter {
+		// It starts no turn, so the prompt it was typed at is still the prompt,
+		// and the next message is an ordinary Enter there. Any doubt stays until
+		// a turn end: it may have opened a dialog, and aggy cannot see one.
+		s.localEnter = false
+		s.atPrompt = s.enterAtPrompt
 	}
 	if s.escEmpty && enter {
 		// On an empty composer Codex takes Esc, Esc, Enter as a backtrack, which
@@ -1220,11 +1244,21 @@ func cursorKey(c byte) bool {
 	return false
 }
 
+// maxCmdLine bounds cmdLine: no vendor's listed command is near it.
+const maxCmdLine = 32
+
 // compose follows one byte the user sent (see send).
 func (s *session) compose(c byte) {
 	prev := s.lastByte
 	s.lastByte = c
 	s.afterEnter++
+	switch {
+	case c == '\r':
+	case c < 0x20 || c > 0x7e || s.inPaste || len(s.cmdLine) >= maxCmdLine:
+		s.cmdBad = true
+	default:
+		s.cmdLine = append(s.cmdLine, c)
+	}
 	// The paste markers, found with the bytes before, so one split
 	// across reads still counts.
 	s.pasteTail = append(s.pasteTail, c)
@@ -1252,6 +1286,7 @@ func (s *session) compose(c byte) {
 		// turn end can settle, and no counted text.
 		s.escDoubt, s.moved, s.pastePop, s.slashOnly = true, true, false, false
 		s.afterEnter = 0
+		s.cmdLine, s.cmdBad = s.cmdLine[:0], false
 	case c == '\r' && (prev == esc || prev == '\\' || s.inPaste) || c == '\n':
 		// A newline in the composer. An Esc just before counts however long ago
 		// it came, as Option+Enter split across reads looks the same.
@@ -1266,10 +1301,13 @@ func (s *session) compose(c byte) {
 		s.lenKnown = false // the popup may have taken it and added text
 		s.afterEnter = 0
 		s.slashEntered = s.slashOnly
+		s.localEnter = s.slashOnly && !s.moved && !s.cmdBad && adapter.LocalCommand(s.o.Vendor, string(s.cmdLine))
+		s.cmdLine, s.cmdBad = s.cmdLine[:0], false
 	case c == '\r':
 		s.compLen, s.lenKnown, s.cleared, s.hadAt, s.moved = 0, true, false, false, false // sent
 		s.afterEnter = 0
 		s.slashOnly, s.slashEntered, s.escDoubt = false, false, false
+		s.cmdLine, s.cmdBad = s.cmdLine[:0], false
 	case c == ctrlU:
 		// The line is empty, but it counts only once an Enter confirms
 		// it: in a multiline draft Ctrl+U may clear one line only. Only
@@ -1329,6 +1367,7 @@ func (s *session) offerSwitch() {
 		return
 	}
 	if s.turnRan && !s.atPrompt {
+		s.tellWaits()
 		return
 	}
 	if s.refuseSignalled() {
@@ -2242,6 +2281,33 @@ func (s *session) tellHeld(v adapter.Vendor) {
 	s.openPicker()
 }
 
+// waitNoteQuiet is how long the CLI and the typing must be silent before a pick
+// that waits says why. A running turn keeps drawing (as queuedQuiet assumes, also
+// unverified), so a note does not hold its output. A variable for tests.
+var waitNoteQuiet = 3 * time.Second
+
+// tellWaits says, once per pick, why a pick waits with nothing to see: a message
+// may be queued, or an Enter may have started a turn. Picking again says none
+// runs. If the prompt is in doubt too it says that, so that pick is the confirm.
+func (s *session) tellWaits() {
+	now := time.Now()
+	if !s.sw.picked || s.sw.toldWaits || s.sw.resume || s.held || now.Sub(s.lastIn) < waitNoteQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < waitNoteQuiet {
+		return
+	}
+	s.sw.toldWaits = true
+	v := s.sw.to
+	lines := []string{fmt.Sprintf("The switch to %s waits for a turn end: your last Enter may have", v),
+		fmt.Sprintf("started a turn in %s, or queued a message, and nothing shows it is over.", s.o.Vendor)}
+	if s.doubt() {
+		s.sw.toldDoubt = true
+		lines = append(lines, "aggy also cannot tell if the prompt is empty, so look at it.")
+	}
+	lines = append(lines, fmt.Sprintf("If nothing is running, Esc here and pick %s again. That spends no turn.", v))
+	s.pk.tell(lines...)
+	s.openPicker()
+	s.noTurnOpen = true // a counted turn end closes it, and the offer takes over
+}
+
 // doubtLines are the note when aggy cannot tell if the prompt is empty. Each fits
 // 80 columns with the longest what, a switch's.
 func doubtLines(what string, on, to adapter.Vendor) []string {
@@ -2253,8 +2319,9 @@ func doubtLines(what string, on, to adapter.Vendor) []string {
 // tellMoved says why a switch to v waits after the CLI moved to another session:
 // /clear and /resume end no turn, so no turn end comes unless a message is sent.
 //
-// TODO(T6895): Claude could be exempt, since its SessionStart comes outside a
-// turn, once the plan flow's "clear context" is checked live.
+// A typed /clear on Claude does not come here: it leaves the prompt as it was
+// (adapter.LocalCommand). TODO(T6895): the rest of Claude's moves could be exempt
+// too, once the plan flow's "clear context" is checked live.
 func (s *session) tellMoved(v adapter.Vendor) {
 	s.pk.tell(movedLines(s.o.Vendor, v)...)
 	s.openPicker()
