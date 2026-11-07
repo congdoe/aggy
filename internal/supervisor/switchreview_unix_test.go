@@ -127,7 +127,7 @@ func TestBacktrackAsksFirst(t *testing.T) {
 			time.Sleep(60 * time.Millisecond)
 			ts.typeIn(t, "1")
 			since := func() []byte { return ts.screen()[seen:] }
-			poll(t, "the status line", []byte("can't tell if the prompt is empty"), since)
+			poll(t, "the status line", []byte("can't tell if prompt is empty"), since)
 			if bytes.Contains(c.received(), []byte("/exit")) {
 				t.Fatalf("typed before the confirm: %q", c.received())
 			}
@@ -139,6 +139,7 @@ func TestBacktrackAsksFirst(t *testing.T) {
 // TestEscThenTextOnce: a single Esc, then a message, is the everyday interrupt
 // and stays clean; two Escs do not, until a turn from it ends.
 func TestEscThenText(t *testing.T) {
+	noSettleGap(t)
 	s := turned(adapter.Codex)
 	for _, k := range []string{"\x1b", "hello", "\r"} {
 		s.send([]byte(k))
@@ -161,6 +162,7 @@ func TestEscThenText(t *testing.T) {
 
 // TestTurnEndEvidence (T6897): when a counted turn end clears doubt.
 func TestTurnEndEvidence(t *testing.T) {
+	noSettleGap(t) // TestSettleNeedsAGap has the gap
 	stop := hookEvent{name: "Stop", sessionID: childSID, chain: ownChain}
 	foreign := hookEvent{name: "Stop", sessionID: nestedSID, chain: nestedChain}
 	for _, tt := range []struct {
@@ -174,8 +176,8 @@ func TestTurnEndEvidence(t *testing.T) {
 		{"a command that ran a turn", []string{"/compact\r"}, []hookEvent{stop}, false, false},
 		{"@ and Enter with no turn end", []string{"@fi\r"}, nil, true, false},
 		{"a foreign turn end is no evidence", []string{"fix @a.go\r"}, []hookEvent{foreign}, true, false},
-		{"input since the Enter", []string{"@fi\r", "x"}, []hookEvent{stop}, true, false},
-		{"a key since the Enter", []string{"@fi\r", "\x1b[A"}, []hookEvent{stop}, true, false},
+		{"input since the Enter is known", []string{"@fi\r", "x"}, []hookEvent{stop}, false, true},
+		{"a key since the Enter is known", []string{"@fi\r", "\x1b[A"}, []hookEvent{stop}, false, true},
 		{"text typed after a clean turn stays known", []string{"go\r", "draft"}, []hookEvent{stop}, false, true},
 		{"an @ Enter during a turn: no evidence", []string{"go\r", "@fi\r"}, []hookEvent{stop}, true, false},
 		{"Esc mid-turn, then an approval's Enter", []string{"go\r", "\x1b", "\r"}, []hookEvent{stop}, false, false},
@@ -259,8 +261,8 @@ func TestDailyClaude(t *testing.T) {
 		{"/clear with a name, no hook", []step{k("/clear old\r")}, false, both, line},
 		{"/compact, compact hook, no turn end", []step{k("/compact\r"), C}, false, both, line},
 		{"/compact, its turn end", []step{k("/compact\r"), C, S}, false, line, ""},
-		{"/compact, a message, turn end", []step{k("/compact\r"), C, k("hello\r"), S}, false, both, line},
-		{"/compact, a message, turn end, real timing", []step{k("/compact\r"), C, k("hello\r"), S}, true, both, line},
+		{"/compact, a message, turn end", []step{k("/compact\r"), C, k("hello\r"), S}, false, line, ""},
+		{"/compact, a message, turn end, real timing", []step{k("/compact\r"), C, k("hello\r"), S}, true, waits, line},
 		{"/model closed with Esc, a message", []step{k("/model\r"), k("\x1b"), k("hello\r"), S}, false, line, ""},
 		{"/model, real timing", []step{k("/model\r"), k("\x1b"), k("hello\r"), S}, true, line, ""},
 		{"/model still open", []step{k("/model\r")}, false, doubt, line},
@@ -270,12 +272,17 @@ func TestDailyClaude(t *testing.T) {
 		{"a custom command, no turn end", []step{k("/mine\r")}, false, both, line},
 		{"@file in a message", []step{k("fix @a.go please\r"), S}, false, line, ""},
 		{"@file, no turn end", []step{k("@fi\r")}, false, both, line},
+		{"@file, Enter accepts, Enter sends, turn end", []step{k("fix @a.g\r"), k("\r"), S}, false, line, ""},
+		{"@file, Enter accepts, Enter sends, real timing", []step{k("fix @a.g\r"), k("\r"), S}, true, line, ""},
+		{"@file, Enter accepts, more text, send, turn end", []step{k("fix @a.g\r"), k("please\r"), S}, false, line, ""},
+		{"@file, Enter accepts, more text, real timing", []step{k("fix @a.g\r"), k("please\r"), S}, true, waits, line},
 		{"a message, no turn end yet", []step{k("go\r")}, false, waits, line},
 		{"Esc interrupts, a message", []step{k("go\r"), k("\x1b"), k("hello\r"), S}, false, line, ""},
 		{"Esc interrupts, a message, real timing", []step{k("go\r"), k("\x1b"), k("hello\r"), S}, true, waits, line},
 		{"a message sent during a turn, real timing", []step{k("go\r"), k("more\r"), S}, true, waits, line},
 		{"Esc on an empty prompt", []step{k("\x1b")}, false, doubt, line},
 		{"Esc interrupts, Up, Enter", []step{k("go\r"), k("\x1b"), k("\x1b[A"), k("\r"), S}, false, line, ""},
+		{"Esc interrupts, Up, Enter, real timing", []step{k("go\r"), k("\x1b"), k("\x1b[A"), k("\r"), S}, true, waits, line},
 		{"approval with Enter", []step{k("go\r"), k("\r"), S}, false, line, ""},
 		{"approval: Down, Enter", []step{k("go\r"), k("\x1b[B"), k("\r"), S}, false, line, ""},
 		{"approval: Down, Enter, real timing", []step{k("go\r"), k("\x1b[B"), k("\r"), S}, true, line, ""},
@@ -381,7 +388,7 @@ func TestCompactThirdPick(t *testing.T) {
 	ts.typeIn(t, "\x1c")
 	time.Sleep(60 * time.Millisecond)
 	ts.typeIn(t, "2")
-	poll(t, "the status line", []byte("can't tell if the prompt is empty"), since)
+	poll(t, "the status line", []byte("can't tell if prompt is empty"), since)
 	ts.typeIn(t, "\x1b")
 	time.Sleep(escTimeout + 60*time.Millisecond)
 	seen = len(ts.screen())
@@ -453,6 +460,7 @@ func TestOutputFlowsThroughTheWait(t *testing.T) {
 		{"an Enter may have started a turn", []string{"go\r"}, false},
 		{"a message queued, real timing", []string{"go\r", "more\r"}, true},
 		{"the prompt in doubt too", []string{"fix @a.go\r"}, false},
+		{"Up, Enter during a turn, real timing", []string{"go\r", "\x1b[A", "\r"}, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ts, c, done, sock := switchRunTurned(t, adapter.Claude, func(*Options) { queuedQuiet = realQueuedQuiet })
