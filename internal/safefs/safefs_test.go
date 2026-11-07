@@ -82,6 +82,16 @@ func TestRefusesAuthPaths(t *testing.T) {
 		{"codex mcp relocated", "CODEX_HOME", func(_, r string) string { return filepath.Join(r, ".credentials.json") }},
 		{"grok mcp", "", func(h, _ string) string { return filepath.Join(h, ".grok", "mcp_credentials.json") }},
 		{"grok mcp relocated", "GROK_HOME", func(_, r string) string { return filepath.Join(r, "mcp_credentials.json") }},
+		{"opencode db", "", func(h, _ string) string { return filepath.Join(h, ".local", "share", "opencode", "opencode.db") }},
+		{"opencode wal", "", func(h, _ string) string { return filepath.Join(h, ".local", "share", "opencode", "opencode.db-wal") }},
+		{"opencode shm", "", func(h, _ string) string { return filepath.Join(h, ".local", "share", "opencode", "opencode.db-shm") }},
+		{"opencode legacy auth", "", func(h, _ string) string { return filepath.Join(h, ".local", "share", "opencode", "auth.json") }},
+		{"opencode channel db", "", func(h, _ string) string { return filepath.Join(h, ".local", "share", "opencode", "opencode-next.db") }},
+		{"opencode channel wal", "", func(h, _ string) string {
+			return filepath.Join(h, ".local", "share", "opencode", "opencode-next.db-wal")
+		}},
+		{"opencode relocated", "XDG_DATA_HOME", func(_, r string) string { return filepath.Join(r, "opencode", "opencode.db") }},
+		{"opencode channel relocated", "XDG_DATA_HOME", func(_, r string) string { return filepath.Join(r, "opencode", "opencode-beta.db") }},
 	}
 	for _, tt := range tests {
 		for _, exists := range []bool{false, true} {
@@ -107,6 +117,40 @@ func TestRefusesAuthPaths(t *testing.T) {
 					}
 				}
 			})
+		}
+	}
+}
+
+// TestOpenCodeBesideDB: what the path check refuses stops at the database,
+// so a repo's own file of that name and a saved tool output are not caught.
+func TestOpenCodeNamedDB(t *testing.T) {
+	home := fakeHome(t)
+	for _, c := range []struct{ value, want string }{
+		{filepath.Join(home, "elsewhere.db"), filepath.Join(home, "elsewhere.db")},
+		{filepath.Join(home, "elsewhere.db"), filepath.Join(home, "elsewhere.db-wal")},
+		{"mine.db", filepath.Join(home, ".local", "share", "opencode", "mine.db")},
+	} {
+		t.Setenv("OPENCODE_DB", c.value)
+		assertRefused(t, c.want)
+	}
+	t.Setenv("OPENCODE_DB", ":memory:")
+	if _, err := Lstat(filepath.Join(home, ":memory:")); errors.Is(err, ErrAuthPath) {
+		t.Errorf(":memory: names no file: %v", err)
+	}
+}
+
+func TestOpenCodeBesideDB(t *testing.T) {
+	home := fakeHome(t)
+	for _, p := range []string{
+		filepath.Join(home, ".local", "share", "opencode", "tool-output", "tool_1"),
+		filepath.Join(home, ".local", "share", "opencode", "opencode-notes.txt"),
+		filepath.Join(home, "repo", "opencode.db"),
+		filepath.Join(home, "repo", "opencode-next.db"),
+		filepath.Join(home, "repo", "auth.json"),
+	} {
+		writeFake(t, p)
+		if b, err := ReadFile(p); err != nil || string(b) != "fake" {
+			t.Errorf("%s: %q, %v", p, b, err)
 		}
 	}
 }
