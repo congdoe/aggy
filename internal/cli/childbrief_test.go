@@ -16,10 +16,12 @@ import (
 )
 
 // writeCodexTurns writes a Codex session file for id under the temp HOME
-// with one user turn at each of times.
+// with one user turn at each of times, in the local-time date folder of
+// its first turn.
 func writeCodexTurns(t *testing.T, id string, turns map[string]time.Time, order []string) {
 	t.Helper()
-	p := filepath.Join(os.Getenv("HOME"), ".codex", "sessions", "2026", "10", "28", "rollout-x-"+id+".jsonl")
+	day := turns[order[0]].Local()
+	p := filepath.Join(os.Getenv("HOME"), ".codex", "sessions", day.Format("2006"), day.Format("01"), day.Format("02"), "rollout-x-"+id+".jsonl")
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		t.Fatal(err)
 	}
