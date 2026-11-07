@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -30,11 +31,13 @@ type Config struct {
 	Budgets       Budgets        `toml:"budgets"`
 	Media         Media          `toml:"media"`
 	Policy        Policy         `toml:"policy"`
-	Notify        Notify         `toml:"notify"`
-	Worktree      UserWorktree   `toml:"worktree"`
-	GC            GC             `toml:"gc"`
-	Log           Log            `toml:"log"`
-	Tools         Tools          `toml:"tools"`
+	// OpenCode configures that harness.
+	OpenCode OpenCode     `toml:"opencode"`
+	Notify   Notify       `toml:"notify"`
+	Worktree UserWorktree `toml:"worktree"`
+	GC       GC           `toml:"gc"`
+	Log      Log          `toml:"log"`
+	Tools    Tools        `toml:"tools"`
 }
 
 // Tools is user config for managed tools' processes. A repo's
@@ -129,6 +132,22 @@ type Media struct {
 	GrokFileTools bool `toml:"grok_file_tools"`
 }
 
+// OpenCode configures the OpenCode harness (docs/design.md, section 15). It
+// is user config only: a repo's .aggy/config.toml has no such table.
+type OpenCode struct {
+	// Auto is full auto: OpenCode's --auto answers each ask with once.
+	// Denies still hold. It applies only in a repo trusted for OpenCode.
+	// OpenCode has no classifier like Claude's, and aggy adds none.
+	Auto bool `toml:"auto"`
+	// Providers are those a session may use, narrowed by a repo's
+	// allowed_vendors. openai and xai are the plans allowed in writing
+	// (docs/design.md); keys come with aggy key.
+	Providers []string `toml:"providers"`
+}
+
+// providerRE is an OpenCode provider id, as in opencode models' provider/model.
+var providerRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
 // Policy configures aggy's safety policy. It is user config only: a
 // repo's .aggy/config.toml has no such table.
 type Policy struct {
@@ -140,9 +159,10 @@ type Policy struct {
 
 // Vendors holds per-vendor settings.
 type Vendors struct {
-	Claude VendorConfig `toml:"claude"`
-	Codex  VendorConfig `toml:"codex"`
-	Grok   VendorConfig `toml:"grok"`
+	Claude   VendorConfig `toml:"claude"`
+	Codex    VendorConfig `toml:"codex"`
+	Grok     VendorConfig `toml:"grok"`
+	OpenCode VendorConfig `toml:"opencode"`
 }
 
 // VendorConfig is one vendor's settings.
@@ -161,6 +181,8 @@ func (vs Vendors) For(v adapter.Vendor) VendorConfig {
 		return vs.Codex
 	case adapter.Grok:
 		return vs.Grok
+	case adapter.OpenCode:
+		return vs.OpenCode
 	}
 	return VendorConfig{}
 }
@@ -375,10 +397,11 @@ func vendors(vs ...adapter.Vendor) Route { return Route{Vendors: vs} }
 // tools, not benchmarks; budgets follow the build plan.
 func Default() Config {
 	return Config{
-		Switch: Switch{Order: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok}, Key: DefaultSwitchKey, WarnAt: DefaultWarnAt},
-		Policy: Policy{Required: true},
-		GC:     GC{PendingWorktreeDays: 30, AcceptedWorktreeDays: 30, ClosedChildDays: 30, InboxDays: 30},
-		Log:    Log{RetentionDays: 14, MaxMB: 50, Level: "info"},
+		OpenCode: OpenCode{Providers: []string{"openai", "xai"}},
+		Switch:   Switch{Order: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok, adapter.OpenCode}, Key: DefaultSwitchKey, WarnAt: DefaultWarnAt},
+		Policy:   Policy{Required: true},
+		GC:       GC{PendingWorktreeDays: 30, AcceptedWorktreeDays: 30, ClosedChildDays: 30, InboxDays: 30},
+		Log:      Log{RetentionDays: 14, MaxMB: 50, Level: "info"},
 		Routing: Routing{
 			// TODO(T6638): Codex is left out of news and research on
 			// purpose. Its apply_patch tool cannot be turned off, and its
@@ -471,6 +494,10 @@ func Parse(text string) (Config, error) {
 	return cfg, nil
 }
 
+// openCodeNever are providers no launch allows (parity.OpenCodeAlwaysDenied,
+// which says why; anthropic waits for aggy key).
+var openCodeNever = []string{"claude-agent", "opencode", "anthropic"}
+
 // Validate checks vendor names and budgets.
 func (c Config) Validate() error {
 	if c.DefaultVendor != "" {
@@ -493,6 +520,20 @@ func (c Config) Validate() error {
 	}
 	if _, err := ParseKey(c.Switch.Key); err != nil {
 		return err
+	}
+	for _, p := range c.OpenCode.Providers {
+		switch {
+		case !providerRE.MatchString(p):
+			return fmt.Errorf("opencode.providers: %q is not a provider id", p)
+		case slices.Contains(openCodeNever, p):
+			return fmt.Errorf("opencode.providers: aggy never allows %q on OpenCode", p)
+		}
+	}
+	r := &c.Routing
+	for _, route := range []Route{r.Image, r.Video, r.Research, r.News, r.Review, r.Edit} {
+		if slices.Contains(route.Vendors, adapter.OpenCode) {
+			return errors.New("routing: opencode runs on screen only, so a borrow cannot route to it")
+		}
 	}
 	if !(c.Switch.WarnAt >= 0 && c.Switch.WarnAt <= 1) { // NaN fails too
 		return fmt.Errorf("switch.warn_at must be 0 (off) to 1, got %v", c.Switch.WarnAt)
