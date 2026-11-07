@@ -1882,8 +1882,13 @@ func (s *session) openList() {
 		s.pk.limitLine = limitWho(s.limitDue.h) + "."
 		s.limitDue = nil
 	}
-	// After a limit, Enter takes the suggested vendor, with a brief.
+	// After a limit, Enter takes the suggested vendor, with a brief. A switch
+	// that waits shows its own options, so picking it again keeps them.
 	s.pk.opts.Brief = s.pk.preselect != ""
+	if s.sw.to != "" && !s.sw.resume {
+		s.pk.opts.Brief = s.pk.opts.Brief || s.sw.choice.Brief
+		s.pk.opts.New, s.pk.opts.Model = s.sw.choice.New, s.sw.choice.Model
+	}
 	// Starts the checks that take time (the policy probe) for every
 	// vendor offered, in the background, so a pick rarely waits.
 	if s.o.CanSwitch != nil {
