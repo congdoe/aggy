@@ -27,9 +27,9 @@ func switchRun(t *testing.T, startsTurn bool) (*termSide, *fakeChild, <-chan Exi
 // other two, in claude, codex, grok order.
 func switchRunOn(t *testing.T, startsTurn bool, vendor adapter.Vendor, more ...func(*Options)) (*termSide, *fakeChild, <-chan Exit, string) {
 	t.Helper()
-	oldQ, oldW, oldG, oldE := switchQuiet, exitWait, confirmGuard, escTimeout
-	switchQuiet, exitWait, confirmGuard, escTimeout = 50*time.Millisecond, 300*time.Millisecond, 100*time.Millisecond, 20*time.Millisecond
-	t.Cleanup(func() { switchQuiet, exitWait, confirmGuard, escTimeout = oldQ, oldW, oldG, oldE })
+	oldQ, oldW, oldG, oldE, oldQQ := switchQuiet, exitWait, confirmGuard, escTimeout, queuedQuiet
+	switchQuiet, exitWait, confirmGuard, escTimeout, queuedQuiet = 50*time.Millisecond, 300*time.Millisecond, 100*time.Millisecond, 20*time.Millisecond, 300*time.Millisecond
+	t.Cleanup(func() { switchQuiet, exitWait, confirmGuard, escTimeout, queuedQuiet = oldQ, oldW, oldG, oldE, oldQQ })
 	run := filepath.Join(shortDir(t), "run")
 	ts, c, done := startRunOpts(t, 20*time.Millisecond, nil, func(o *Options) {
 		o.RunDir, o.ParentID, o.StartsTurn = run, pid, startsTurn

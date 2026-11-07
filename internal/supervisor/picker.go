@@ -37,6 +37,9 @@ type picker struct {
 	// the CLI's screen. limitLine says a limit hit whose note did not show.
 	padRows   int
 	limitLine string
+	// stalePick: the waiting switch was picked too long ago for a quit to
+	// complete it.
+	stalePick bool
 	vendors   []adapter.Vendor
 	key       byte
 	// children lists a vendor's children in the open parent (T6665).
@@ -160,6 +163,9 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 				fmt.Sprintf("To switch, quit %s yourself within %d minutes; it must exit cleanly.", p.on, noTurnPickMinutes),
 				"After a message, aggy asks at that turn's end if it sees one; some CLIs",
 				"report none until their hook is approved.")
+		}
+		if p.stalePick && p.waiting != "" {
+			lines = append(lines, fmt.Sprintf("Your pick of %s is over %d minutes old: pick it again to switch when you quit.", p.waiting, noTurnPickMinutes))
 		}
 		if p.waiting != "" {
 			if p.checking {
