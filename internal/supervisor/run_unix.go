@@ -150,6 +150,7 @@ func Run(o Options) (Exit, error) {
 		srv.SetRoot(child.Pid())
 	}
 	s.child = child
+	s.startGuardWatch()
 	outDone := make(chan struct{})
 	s.goSafe(func() { s.copyOut(); close(outDone) })
 	input := inputOf(o.In)
@@ -483,6 +484,10 @@ type session struct {
 	toolsWaitTurn     bool
 	toolSeq, toolRead int
 	toolAt            time.Time
+	// guardSeen: OpenCode's guard has reported; asked holds the permissions
+	// and questions it has seen open (opencode_unix.go).
+	guardSeen bool
+	asked     map[string]bool
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -540,6 +545,7 @@ type pendingSwitch struct {
 type hookEvent struct {
 	name, sessionID string
 	shutdown        bool
+	request         string // an OpenCode permission or question's id
 }
 
 // grokShutdown reports whether a hook event is Grok's exit-time stop:
@@ -572,7 +578,7 @@ func (s *session) onHook(r Request) {
 	}
 	if r.FromSession && r.Vendor == string(s.o.Vendor) && r.Event != "SessionStart" {
 		p := hook.Parse(s.o.Vendor, r.Payload)
-		ev := hookEvent{name: r.Event, sessionID: p.SessionID, shutdown: grokShutdown(s.o.Vendor, r.Event, p.Reason)}
+		ev := hookEvent{name: r.Event, sessionID: p.SessionID, shutdown: grokShutdown(s.o.Vendor, r.Event, p.Reason), request: p.Request}
 		select {
 		case s.events <- ev:
 		case <-s.quit:
@@ -594,6 +600,9 @@ func (s *session) onHook(r Request) {
 // another one takes the turn-end paths below, so a forged one is still
 // a security rejection (#101).
 func (s *session) hookEvent(ev hookEvent) {
+	if s.openCodeEvent(ev) {
+		return
+	}
 	own := ""
 	if s.o.SessionID != nil {
 		own = s.o.SessionID()
@@ -769,29 +778,34 @@ func (s *session) send(b []byte) {
 		s.toChild.push(b) // the terminal answering the CLI, not the user
 		return
 	}
+	typed := s.typedOf(b)
+	if len(typed) == 0 && len(b) > 0 {
+		s.toChild.push(b) // the terminal's own reports: no typing at all
+		return
+	}
 	s.lastIn = time.Now()
 	s.held = false
 	if len(b) == 0 {
 		return
 	}
 	s.inputSinceTurn = true
-	if bytes.IndexByte(b, '\r') >= 0 || csiEnter.Match(b) {
+	if bytes.IndexByte(typed, '\r') >= 0 || csiEnter.Match(typed) {
 		// An Enter with text, while a turn may be running, may queue a
 		// message. A bare one on an empty prompt queues nothing: it answers
 		// an approval or a menu, which most turns have.
-		if !s.atPrompt && (s.dirty || !bareEnter(b)) {
+		if !s.atPrompt && (s.dirty || !bareEnter(typed)) {
 			s.queued++
 			s.queuedWait = false
 		}
 		s.atPrompt, s.toldDirty = false, false // an Enter may start a turn
-	} else if !s.atPrompt && tabKey.Match(b) && (s.dirty || string(tabKey.Find(b)) != string(b)) {
+	} else if !s.atPrompt && tabKey.Match(typed) && (s.dirty || string(tabKey.Find(typed)) != string(typed)) {
 		// Tab with text queues a message on Codex during a turn:
 		// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/chat_composer.rs#L3531
 		// It may do something else elsewhere; the quiet gap covers that.
 		s.queued++
 		s.queuedWait = false
 	}
-	for _, c := range b {
+	for _, c := range typed {
 		s.compose(c)
 	}
 	s.dirty = !s.lenKnown || s.compLen > 0 || s.popup || s.cleared
@@ -952,7 +966,7 @@ func (s *session) offerSwitch() {
 	if !s.turnRan && s.mayBeRunning() {
 		return
 	}
-	if s.turnRan && !s.atPrompt {
+	if s.turnRan && !s.atPrompt || s.askOpen() {
 		return
 	}
 	if s.refuseSignalled() {
@@ -1594,7 +1608,7 @@ func (s *session) typeExit() {
 	case s.dirty:
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeUnsentText, Cause: s.sw.rec, Msg: "the switch key was pressed, but text the user typed is not sent"})
 		return
-	case s.held:
+	case s.held, s.askOpen():
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "the switch key was pressed, but the CLI waits for the user"})
 		return
 	}
@@ -1725,6 +1739,9 @@ func (s *session) pickerInput(b []byte) {
 	if terminalReport(b) {
 		s.toChild.push(b) // no key of the user's: it closes nothing
 		return
+	}
+	if b = s.typedOf(b); len(b) == 0 {
+		return // the mouse moved: aggy's prompts take keys only
 	}
 	if s.pk.confirm != "" || s.pk.note {
 		s.promptInput(b)
