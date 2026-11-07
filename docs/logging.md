@@ -356,7 +356,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `guard.refused` |  | aggy's OpenCode guard refused a tool call. It reads the raw input, so it catches mistakes only. | Run the command another way, or at the terminal yourself. |
 | `guard.no_report` |  | aggy's OpenCode guard did not report from the launch's folder in time. OpenCode's rules from aggy's config still apply; the guard's own refusals may not. | Quit and start again; aggy doctor for the CLI's version. A same-user process can overwrite or unload the plugin. |
 | `trust.bad_dir` |  | aggy trust was given a path that is not a folder aggy can resolve. | The path; aggy resolves it to its repo root. |
-| `trust.bad_file` |  | aggy could not read or change its list of repos trusted for OpenCode (opencode-trust.json in aggy's state folder). | The file's contents, or aggy unwire. |
+| `trust.bad_file` |  | aggy could not read or change its list of trusted repos (trust.json or opencode-trust.json in aggy's state folder). | The file's contents, or aggy unwire. |
 | `hook.bad_payload` |  | aggy hook could not read the vendor's hook payload, or it was not a JSON object. | The vendor CLI's version; aggy doctor. |
 | `tool.name_clash` |  | A tool that is on was not wired: the CLI already loads an MCP server of that name from the user's or the repo's config, and aggy never replaces or merges into one. | Rename or remove that server in the CLI's config, or turn the tool off. |
 | `tool.repo_path` |  | A tool that is on was not wired: its arguments hold {repo}, and the session is not in a repo, or the repo's path holds a character other than letters, digits, and / . _ + @ -. | Run the session in a repo whose path has only those characters. |
