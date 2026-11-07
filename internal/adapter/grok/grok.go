@@ -305,7 +305,8 @@ func onlyValue(flag, ok string) func(string) error {
 
 // PassFlags is Grok's table for aggy grok, from grok --help at 1.0.77
 // (docs/verification.md, T6952). A flag it does not list passes for the CLI to
-// refuse (it is a clap parser, grok-src cli.rs; no refusal was run live), and a
+// refuse (inferred from the help's clap-like format; no refusal was run live, and
+// the source was not read for this), and a
 // new flag needs no aggy change. So a name that sounds like an approval or
 // bypass switch is gated whether or not it exists yet (LoosensIf), --yolo, which
 // that help does not list, among them. --always-approve is listed, "Auto-approve
