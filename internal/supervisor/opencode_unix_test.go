@@ -3,6 +3,7 @@
 package supervisor
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,18 @@ func openCodeSession(t *testing.T) *session {
 		t: &tty{fd: -1}, pk: &picker{key: 0x1c}, toChild: newByteQueue(maxQueued), atPrompt: true, turnRan: true, lenKnown: true, quit: make(chan struct{})}
 }
 
+// popAll is b and whatever else is queued now, up to the exit command.
+func popAll(s *session, b []byte) []byte {
+	for !bytes.HasSuffix(b, []byte("/exit")) {
+		next, ok := s.toChild.pop()
+		if !ok {
+			break
+		}
+		b = append(b, next...)
+	}
+	return b
+}
+
 func sentTo(s *session) string {
 	s.toChild.close()
 	var got []byte
@@ -82,7 +95,7 @@ func TestOpenCodeExitWaitsForAReply(t *testing.T) {
 			if s.held {
 				t.Fatal("typing should clear held")
 			}
-			s.atPrompt, s.dirty = true, false
+			s.atPrompt = true
 			s.typeExit()
 			if s.sw.typed {
 				t.Fatal("the exit command was typed over an open dialog")
@@ -109,10 +122,46 @@ func TestOpenCodeExitWaitsForAReply(t *testing.T) {
 			if !s.sw.typed {
 				t.Fatal("the exit command should now be typed")
 			}
-			if got := sentTo(s); !strings.HasSuffix(got, "/exit\r") {
-				t.Fatalf("sent %q", got)
+			if b, ok := s.toChild.pop(); !ok || !bytes.HasSuffix(popAll(s, b), []byte("/exit")) {
+				t.Fatal("no exit command was typed")
 			}
 		})
+	}
+}
+
+// TestExitEnterGap: on the full screen an Enter in the same burst as the
+// letters was lost (live), so it comes on its own, later.
+func TestExitEnterGap(t *testing.T) {
+	old := exitEnterGap
+	t.Cleanup(func() { exitEnterGap = old })
+	exitEnterGap = 30 * time.Millisecond
+	s := openCodeSession(t)
+	s.typeExitCommand()
+	first, ok := s.toChild.pop()
+	if !ok || string(first) != "/exit" {
+		t.Fatalf("first = %q", first)
+	}
+	second, ok := s.toChild.pop() // waits for the gap
+	if !ok || string(second) != "\r" {
+		t.Fatalf("second = %q", second)
+	}
+}
+
+// TestDialogKeysAreNotComposerText: live, an Esc that rejected a permission
+// left the switch waiting on "text you have not sent", for good.
+func TestDialogKeysAreNotComposerText(t *testing.T) {
+	for _, keys := range []string{"\x1b", "\x1b[C", "no thanks\r"} {
+		s := openCodeSession(t)
+		s.hookEvent(hookEvent{name: hook.EventPermissionAsked, sessionID: "ses_a", request: "r1"})
+		s.send([]byte(keys))
+		if s.dirty || !s.lenKnown || s.compLen != 0 {
+			t.Errorf("%q: dirty %v, lenKnown %v, compLen %d", keys, s.dirty, s.lenKnown, s.compLen)
+		}
+		s.hookEvent(hookEvent{name: hook.EventPermissionReplied, sessionID: "ses_a", request: "r1"})
+		s.send([]byte("x"))
+		if !s.dirty {
+			t.Errorf("%q: typing after the reply is composer text", keys)
+		}
 	}
 }
 

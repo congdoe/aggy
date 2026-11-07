@@ -150,6 +150,7 @@ func Run(o Options) (Exit, error) {
 	}
 	s.child = child
 	s.startGuardWatch()
+	defer s.stopHangupKill()
 	outDone := make(chan struct{})
 	s.goSafe(func() { s.copyOut(); close(outDone) })
 	input := inputOf(o.In)
@@ -265,6 +266,7 @@ func Run(o Options) (Exit, error) {
 				input = nil
 				s.signalled = true
 				_ = child.Signal(syscall.SIGHUP)
+				s.killAfterHangup(child)
 				continue
 			}
 			if s.open {
@@ -467,8 +469,9 @@ type session struct {
 	toolAt            time.Time
 	// guardSeen: OpenCode's guard has reported; asked holds the permissions
 	// and questions it has seen open (opencode_unix.go).
-	guardSeen bool
-	asked     map[string]bool
+	guardSeen  bool
+	hangupKill *time.Timer // killAfterHangup
+	asked      map[string]bool
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -753,10 +756,14 @@ func (s *session) send(b []byte) {
 	if bytes.IndexByte(typed, '\r') >= 0 {
 		s.atPrompt, s.toldDirty = false, false // an Enter may start a turn
 	}
-	for _, c := range typed {
-		s.compose(c)
+	// Keys answering OpenCode's dialog never reach its composer. Without this
+	// an Esc or an arrow there left the switch waiting on "unsent text" (live).
+	if !s.askOpen() {
+		for _, c := range typed {
+			s.compose(c)
+		}
+		s.dirty = !s.lenKnown || s.compLen > 0 || s.popup || s.cleared
 	}
-	s.dirty = !s.lenKnown || s.compLen > 0 || s.popup || s.cleared
 	s.toChild.push(b)
 }
 
@@ -1411,8 +1418,7 @@ func (s *session) typeExit() {
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "the switch key was pressed, but the CLI waits for the user"})
 		return
 	}
-	cmd, _ := adapter.ExitCommand(s.o.Vendor)
-	s.toChild.push([]byte(cmd + "\r"))
+	s.typeExitCommand()
 	s.sw.typed = true
 	s.signalled = false // only one from here on stops this switch
 	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchConfirmed, Cause: s.sw.rec, Attrs: map[string]any{"to": string(s.sw.to)}})

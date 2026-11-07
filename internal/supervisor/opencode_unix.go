@@ -3,6 +3,7 @@
 package supervisor
 
 import (
+	"syscall"
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -89,3 +90,40 @@ func (s *session) openCodeEvent(ev hookEvent) bool {
 // over a dialog, the exit command's letters are dropped and its Enter
 // chooses Allow once (fake model, T6930).
 func (s *session) askOpen() bool { return len(s.asked) > 0 }
+
+// exitEnterGap separates the exit command's letters from its Enter on
+// OpenCode. The full screen opens a slash menu on the letters, and an Enter
+// in the same burst is lost: the command sat in its composer and the switch
+// timed out (live, 2.2.5). Sent 0.6s apart it runs. mini took either.
+var exitEnterGap = 500 * time.Millisecond
+
+// typeExitCommand types the vendor's exit command and its Enter.
+func (s *session) typeExitCommand() {
+	cmd, _ := adapter.ExitCommand(s.o.Vendor)
+	if s.o.Vendor != adapter.OpenCode || exitEnterGap <= 0 {
+		s.toChild.push([]byte(cmd + "\r"))
+		return
+	}
+	s.toChild.push([]byte(cmd))
+	time.AfterFunc(exitEnterGap, func() { s.toChild.push([]byte("\r")) })
+}
+
+// hangupWait is how long OpenCode has to exit after its terminal is gone.
+var hangupWait = 10 * time.Second
+
+// killAfterHangup ends OpenCode when a hang-up does not. The full screen
+// ignored SIGHUP and SIGTERM and ran on with no terminal (live, 2.2.5), and
+// under full auto a session nobody can see should not keep running.
+func (s *session) killAfterHangup(child Child) {
+	if s.o.Vendor == adapter.OpenCode && s.hangupKill == nil {
+		s.hangupKill = time.AfterFunc(hangupWait, func() { _ = child.Signal(syscall.SIGKILL) })
+	}
+}
+
+// stopHangupKill drops the kill once the CLI has gone, so a reused process
+// group is never signalled.
+func (s *session) stopHangupKill() {
+	if s.hangupKill != nil {
+		s.hangupKill.Stop()
+	}
+}
