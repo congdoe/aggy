@@ -101,7 +101,8 @@ func (m *Media) validate(req Request) error {
 // that has the session, so nothing can fall through to another. Grok keeps a
 // session under its working directory, and an image child's temp dir went
 // with its borrow, so the resumed child fails in a second, on 0 tokens, with
-// the session's folder gone (live, grok 1.0.77; verification.md, T6923).
+// the session's folder gone (2026-11-06 agent audit, grok 1.0.77; the exact
+// cause is partly inferred: verification.md, T6923).
 // Keeping run dirs for later would change the borrow lockdown.
 var ErrGrokEdit = errors.New("--edit cannot change an image Grok made: Grok keeps a session under its working directory, and this one's temp dir ended with its borrow, so nothing was started. Make a new image with a full brief (aggy image \"<brief>\" --out PATH), or make it with --vendor codex, whose images --edit can change")
 
