@@ -87,6 +87,50 @@ func TestPolicyOnCommandLine(t *testing.T) {
 	}
 }
 
+// TestSharedRulesOnCommandLine: an aggy session's command line carries the
+// person's rules beside the policy. Nothing is written to vendor config.
+func TestSharedRulesOnCommandLine(t *testing.T) {
+	write := func(t *testing.T, path, text string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(t *testing.T, w *world, vendor string) fakecli.Record {
+		t.Helper()
+		s := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "run", vendor)
+		s.waitFor([]byte("READY>"))
+		s.send([]byte{0x04})
+		s.exit()
+		return interactiveRecord(t, w)
+	}
+	t.Run("claude", func(t *testing.T) {
+		w := newWorld(t)
+		write(t, filepath.Join(w.home, ".aggy", "permissions.json"), `{"permissions":{"allow":["Bash(gh pr list)"],"ask":["Bash(git push *)"]}}`)
+		vals := run(t, w, "claude").Flags["--settings"]
+		if len(vals) != 1 || !strings.Contains(vals[0], `"allow":["Bash(gh pr list)"]`) || !strings.Contains(vals[0], `"ask":["Bash(git push *)"]`) || !strings.Contains(vals[0], `"Read(//**/.env)"`) {
+			t.Errorf("--settings = %q", vals)
+		}
+		if _, err := os.Stat(filepath.Join(w.home, ".claude", "settings.json")); !os.IsNotExist(err) {
+			t.Errorf("vendor config was written: %v", err)
+		}
+	})
+	t.Run("grok", func(t *testing.T) {
+		w := newWorld(t)
+		write(t, filepath.Join(w.home, ".aggy", "permissions.json"), `{"permissions":{"allow":["Bash(gh pr list)"]}}`)
+		r := run(t, w, "grok")
+		if vals := r.Flags["--allow"]; len(vals) != 1 || vals[0] != "Bash(gh pr list)" {
+			t.Errorf("--allow = %q; args %q", vals, r.Args)
+		}
+		if len(r.Flags["--deny"]) < 10 {
+			t.Errorf("the policy's denies must stay: %q", r.Flags["--deny"])
+		}
+	})
+}
+
 // TestPolicyFailsClosed: aggy run refuses to start a CLI the safety
 // policy cannot reach (here Codex with no rules file) and starts nothing;
 // --no-policy starts it anyway.

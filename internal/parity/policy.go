@@ -116,6 +116,18 @@ func RewriteDeny(prefix string) []string {
 	return out
 }
 
+// PrefixedDeny is RewriteDeny for the person's own Bash denies: Claude matches
+// a rewritten command, so each needs a copy with the prefix in front.
+func PrefixedDeny(prefix string, rules []string) []string {
+	var out []string
+	for _, r := range rules {
+		if rest, ok := strings.CutPrefix(r, "Bash("); ok {
+			out = append(out, "Bash("+prefix+rest)
+		}
+	}
+	return out
+}
+
 func denyRules(readPrefix string) []string {
 	out := make([]string, 0, len(keyFiles)+len(bashDeny))
 	for _, f := range keyFiles {

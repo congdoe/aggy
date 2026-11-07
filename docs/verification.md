@@ -1511,7 +1511,27 @@ Real OpenCode 2.2.5 against a loopback fake model in a temp `HOME`, with no cred
 
 ## Claude Code session file fields (2026-11-06)
 
-Read on the owner's machine, by key and count only, from 39 session files of the last 30 days, at the installed Claude Code. Not a documented format. Shell calls appear as `tool_use` blocks named `Bash` with `input.command`; session lines carry `permissionMode` and `cwd`; `tool_result` blocks carry `tool_use_id` and `is_error` when a call failed. A full scan of 730 MB in Python took 2.7 seconds. `is_error` does not separate a denied command from a failed one.
+Read on the owner's machine, by key and count only, from 39 session files of the last 30 days, at the installed Claude Code. Not a documented format. Shell calls appear as `tool_use` blocks named `Bash` with `input.command`; session lines carry `permissionMode` and `cwd`; `tool_result` blocks carry `tool_use_id` and `is_error` when a call failed. A full scan of 730 MB in Python took 2.7 seconds. `is_error` does not separate a denied command from a failed one. Not every line carries `permissionMode`, so `internal/suggest` keeps the last one a file named. Its fixture, `internal/suggest/testdata/session.jsonl`, is built by hand from this list, not from a real session; a live check should compare it with a current session file's keys.
+
+## Shared permissions (T6912 to T6916)
+
+Docs and source only, read 2026-11-07. No real CLI was run, and none of this has been checked live. A maintainer's live check should settle each of these:
+
+1. Claude honours `allow`, `ask`, and `defaultMode` in an inline `--settings` layer. `permission-modes.md` names `--settings` for `permissions.defaultMode`, and `settings.md` says lists merge; a fake CLI only proves the argv.
+2. Grok on screen with `--allow <rule>` and `--permission-mode <mode>` together with its `--deny` flags, and on a resume. `--allow` is in the T6952 help; a deny outranks an allow in source (`decision_rank`, `policy.rs:791`, grok-build `2bdd1d6a`). `grok --help` may show a flag for ask rules, which is unverified, so none is passed.
+3. Codex's `trust_level` under `[projects."<dir>"]` trusts a repo, and whether a worktree goes by its main checkout. Where Claude and Grok keep a folder's trust is T6895's.
+4. Claude's project folder name under `projects/` for `aggy permissions suggest` (`transcript.ClaudeProjectDir`, already marked unverified), and that the fixture in `internal/suggest/testdata` still fits a current session file.
+
+Facts used, with sources: Claude drops "Blanket `Bash(*)` or `PowerShell(*)`", "Wildcarded interpreters like `Bash(python*)`", "Package-manager run commands", "`Agent` allow rules", and `Monitor` rules on entering auto mode, while "Narrow rules like `Bash(npm test)` stay in effect" (`permission-modes.md`, "How the classifier evaluates actions"). `Bash(ls:*)` means `Bash(ls *)`, and "A `*` at the end, with a space before it, also matches the bare command" (`permissions.md`, "Wildcard patterns"). Grok reads `~/.claude/settings.json` and a project's `settings.json` and `settings.local.json`, and `defaultMode` from them; `--allow RULE` and `--deny RULE` repeat; `grok --permission-mode auto` sets the mode (`user-guide/22-permissions-and-safety.md`, grok-build `2bdd1d6a`).
+
+## Approvals across CLIs (T6914)
+
+Source only, read 2026-11-07. No real CLI was run for this task, and none of this has been checked live.
+
+- **Grok.** Grants are in `sessions/<encoded root>/permission.toml` under its home (`user-guide/22-permissions-and-safety.md`, "Persistence Is Per Project", grok-build `2bdd1d6a`). The folder is the repo root, or the launch folder outside a repo, and each worktree has its own (`permission_scope_root`, `xai-grok-workspace/src/permission/state.rs`). The name is the root URL-encoded by the `urlencoding` crate, or a blake3 form past 255 bytes (`encode_cwd_dirname`, `xai-grok-config/src/paths.rs`); aggy computes only the first and names a path too long. Fields, from `PermissionState` in `state.rs`: `allow_bash_execute`, `allowed_bash_commands` (literal prefixes), `disallowed_bash_commands`, `allowed_bash_globs`, `allowed_web_fetch_domains`, `disallowed_web_fetch_domains`, `allowed_mcp_tools`, `allowed_mcp_servers`, `disallowed_mcp_tools`. The guide says dangerous commands never honor a remembered prefix, and aggy does not hold that list, so an approved command carries as the exact command. How Grok's MCP names map to Claude's is unverified, so those are named and not carried. A `permission_<client>.toml` variant is not read. A live check should make one grant of each kind, read the file, and confirm the folder name and fields.
+- **Codex.** Approvals append to `rules/default.rules` (`DEFAULT_POLICY_FILE`, `core/src/exec_policy.rs` at `rust-v0.164.0`) as `prefix_rule(pattern=[...], decision="allow")`, its tokens JSON strings (`blocking_append_allow_prefix_rule`, `execpolicy/src/amend.rs`). aggy parses that one-line shape as text and never runs it; a rule written by hand in another shape is named. A live check should approve a command with "don't ask again" and read the line back.
+- **Claude.** "Yes, and don't ask again" saves to `.claude/settings.local.json` at the git repository root, "resolved through worktrees to the main checkout" (`permissions.md`, read 2026-11-07).
+- **OpenCode.** Always allow rows are in `opencode.db`, beside its sign-ins, which aggy never opens.
 
 ## Still open
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/home"
+	"github.com/congdoe/aggy/internal/permissions"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/tooldef"
 )
@@ -32,6 +33,7 @@ type Config struct {
 	Media         Media          `toml:"media"`
 	Versions      Versions       `toml:"versions"`
 	Policy        Policy         `toml:"policy"`
+	Permissions   Permissions    `toml:"permissions"`
 	// OpenCode configures that harness.
 	OpenCode OpenCode     `toml:"opencode"`
 	Notify   Notify       `toml:"notify"`
@@ -161,6 +163,16 @@ type OpenCode struct {
 // providerRE is an OpenCode provider id, as in opencode models' provider/model.
 var providerRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
+// Permissions is the person's permission settings (docs/design.md, section
+// 10). It is user config only: a repo's .aggy/config.toml has no such table,
+// so a clone cannot change a mode.
+type Permissions struct {
+	// Mode is the permission mode Claude and Grok start in, over the one in
+	// Claude's own settings. Empty leaves that one in force. bypassPermissions
+	// is refused: aggy never adds a loosening setting on its own.
+	Mode string `toml:"mode"`
+}
+
 // Policy configures aggy's safety policy. It is user config only: a
 // repo's .aggy/config.toml has no such table.
 type Policy struct {
@@ -183,6 +195,9 @@ type VendorConfig struct {
 	// Model is passed to the CLI unchanged. Empty passes no model flag, so
 	// the vendor uses its own default.
 	Model string `toml:"model"`
+	// Off turns this harness off: aggy neither opens it nor borrows from it,
+	// and a repo cannot turn it back on.
+	Off bool `toml:"off"`
 }
 
 // For returns the settings of vendor v.
@@ -514,6 +529,11 @@ var openCodeNever = []string{"claude-agent", "opencode", "anthropic"}
 
 // Validate checks vendor names and budgets.
 func (c Config) Validate() error {
+	if c.Permissions.Mode != "" {
+		if _, err := permissions.CheckMode(c.Permissions.Mode); err != nil {
+			return fmt.Errorf("permissions.mode: %w", err)
+		}
+	}
 	if c.DefaultVendor != "" {
 		if _, err := adapter.ParseVendor(string(c.DefaultVendor)); err != nil {
 			return fmt.Errorf("default_vendor: %w", err)

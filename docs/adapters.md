@@ -717,6 +717,14 @@ gets no memory and `aggy run` says why. Codex's cloud-managed config
 layers are not files aggy can read, so a value set there is replaced
 without notice.
 
+The person's shared rules (design.md section 10, `internal/permissions`) go
+on the same command line, for an on-screen session only, never a borrow:
+`InteractiveRequest.Rules`, Claude in the inline `--settings` layer beside the
+denies, Grok as `--allow`, `--deny`, and `--permission-mode`, each only when the
+probe finds the flag. Each gets only the rules it does not read itself.
+OpenCode takes exact commands in its rendered config (`parity.OpenCodeShared`).
+Codex takes none yet.
+
 The safety policy (design.md section 10) is per launch for Claude and
 Grok: Claude `--settings '{"permissions":{"deny":[...]}}'` when the probe
 finds `--settings`, Grok one `--deny <rule>` per rule when it finds

@@ -80,6 +80,8 @@ var (
 	errAmbiguousID = errors.New("give more of the id")
 	// errNotAllowed: the repo's allowed_vendors leaves the vendor out.
 	errNotAllowed = errors.New("this repo's allowed_vendors does not list")
+	// errHarnessOff: the person turned the vendor off in aggy's config.
+	errHarnessOff = errors.New("this harness is turned off")
 	// errBorrowNoScreen: research and news children never go on screen.
 	errBorrowNoScreen = errors.New("does not go on screen: by rule it never gets file-reading or MCP tools, an on-screen session has them, and its transcript may hold text from the web; aggy inbox shows its report")
 )
@@ -91,7 +93,7 @@ func launchCode(err error, def diag.Code) diag.Code {
 		return diag.CodeNotFound
 	case errors.Is(err, errAmbiguousID):
 		return diag.CodeAmbiguousID
-	case errors.Is(err, errNotAllowed):
+	case errors.Is(err, errNotAllowed), errors.Is(err, errHarnessOff):
 		return diag.CodeNotAllowed
 	case errors.Is(err, errBorrowNoScreen):
 		return diag.CodeBorrowNoScreen
@@ -479,6 +481,9 @@ func allowedIn(cfg config.Config, dir string, v adapter.Vendor) (config.Effectiv
 	eff, err := repoEffective(cfg, dir)
 	if err != nil {
 		return eff, err
+	}
+	if cfg.Vendors.For(v).Off {
+		return eff, fmt.Errorf("%w: aggy config set harness.%s on", errHarnessOff, v)
 	}
 	if !eff.Allows(v) {
 		return eff, fmt.Errorf("%w %s", errNotAllowed, v)

@@ -88,7 +88,7 @@ These CLIs update constantly, so a newer version in the same major version is no
 
 Every session aggy starts gets the repo's `.aggy/memory.md` (at most 4 KB, framed as notes, not instructions) at session start: Claude through a private file, Codex and Grok on their command line. `aggy memory import --from claude` fills it from Claude's own memory after showing the diff, and `aggy unwire` takes it back.
 
-Every session also gets aggy's safety policy: never read `.env` or key files, never push to main, no `rm -rf`, `git reset --hard`, `git clean`, or force push. Claude and Grok get deny rules on their command line; Codex reads a rules file that `aggy policy wire` writes once. The policy only adds denials and never loosens your own settings. If a CLI cannot get it (its help lacks the flag, or Codex's rules file is not wired), aggy refuses to start that CLI. To start it anyway, pass `--no-policy` (`aggy --no-policy`, `aggy run --no-policy codex`, `aggy new --no-policy`, `aggy resume --no-policy <id>`), or set this in `~/.aggy/config.toml` (a repo's config cannot):
+Every session also gets aggy's safety policy: never read `.env` or key files, never push to main, no `rm -rf`, `git reset --hard`, `git clean`, or force push. Claude and Grok get deny rules on their command line; Codex reads a rules file that `aggy policy wire` writes once. The policy only adds denials, and beyond it aggy adds only the allows you list yourself. If a CLI cannot get it (its help lacks the flag, or Codex's rules file is not wired), aggy refuses to start that CLI. To start it anyway, pass `--no-policy` (`aggy --no-policy`, `aggy run --no-policy codex`, `aggy new --no-policy`, `aggy resume --no-policy <id>`), or set this in `~/.aggy/config.toml` (a repo's config cannot):
 
 ```toml
 [policy]
@@ -96,6 +96,20 @@ required = false   # start with a warning instead of refusing
 ```
 
 `aggy doctor` shows, per CLI, whether it gets the memory and the policy.
+
+## One set of permissions
+
+Rules use Claude Code's format, so an approval given once holds on Claude Code, Grok, and OpenCode. aggy reads them from `~/.claude/settings.json`, your repo's untracked `.claude/settings.local.json`, and its own `~/.aggy/permissions.json`, and it picks up what you approved in Grok and Codex at each launch and switch. It adds only the allows you list yourself: a repo's committed rules never become allows, and each allow passes the filter Claude applies on entering auto mode (no blanket shell access, no wildcarded interpreters, no package-manager run commands). An allow that runs a repo's own code applies only in a repo you trusted. Deny always wins, and nothing is written to a vendor's config for a session.
+
+```sh
+aggy permissions show                              # the rules in force, where each came from, what was skipped and why
+aggy permissions add allow 'Bash(gh pr list)'      # for this repo; --everywhere for all of them
+aggy permissions suggest                           # propose commands you ran in Claude Code; you confirm each
+aggy trust .                                       # let allows that run this repo's own code apply here
+aggy config                                        # default harness and model, permission mode, harness on or off
+```
+
+Changes are for you at a terminal, apply at the next launch or switch, and `aggy unwire` undoes them. Codex gets none of these rules yet; it keeps asking in its own way. OpenCode takes exact commands only, so a rule with a wildcard is named and skipped.
 
 ## Known limits
 

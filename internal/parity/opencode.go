@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/congdoe/aggy/internal/permissions"
 )
 
 // OpenCode's per-launch config (docs/design.md, section 15). It is written
@@ -82,6 +84,8 @@ type OpenCodeConfig struct {
 	// Root is the launch's repo root (its folder, outside a repo): the
 	// guard refuses a tool call outside it.
 	Root string
+	// Shared are the person's rules (OpenCodeShared), exact allows only.
+	Shared OpenCodeSharedRules
 	// NoPolicy leaves out the safety policy's denies (aggy run
 	// --no-policy). The whitelist, providers, and guard stay.
 	NoPolicy bool
@@ -97,10 +101,11 @@ type openCodeRule struct {
 	Effect   string `json:"effect"`
 }
 
-// OpenCodeShellRules are the shell allow rules a launch renders. The guard scans
-// a command's text only if it holds one, as only then can nothing prompt.
-func OpenCodeShellRules() ([]string, error) {
-	rules, err := openCodePermissions(false)
+// OpenCodeShellRules are the shell allow rules a launch renders: the starter,
+// and extra, the person's exact rules (OpenCodeSharedRules.Allow). The guard
+// scans a command's text only if it holds one, as only then can nothing prompt.
+func OpenCodeShellRules(extra []string) ([]string, error) {
+	rules, err := openCodePermissions(false, OpenCodeSharedRules{Allow: extra})
 	if err != nil {
 		return nil, err
 	}
@@ -111,6 +116,23 @@ func OpenCodeShellRules() ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// OpenCodeRenderedAllows reads the shell allows back from a rendered config.
+func OpenCodeRenderedAllows(data []byte) []string {
+	var doc struct {
+		Permissions []openCodeRule `json:"permissions"`
+	}
+	if json.Unmarshal(data, &doc) != nil {
+		return nil
+	}
+	var out []string
+	for _, r := range doc.Permissions {
+		if r.Action == "shell" && r.Effect == "allow" {
+			out = append(out, r.Resource)
+		}
+	}
+	return out
 }
 
 // openCodePlugin is a plugin entry with its options
@@ -142,10 +164,93 @@ func ExactRule(cmd string) error {
 	return nil
 }
 
+// openCodeNever are commands never listed, exact or not: they run code or read
+// arbitrary paths (docs/design.md, section 15, "Whitelist").
+var openCodeNever = []string{"python", "python2", "python3", "node", "npx", "find", "rg", "awk", "sed", "cat", "sh", "bash", "zsh", "perl", "ruby"}
+
+// OpenCodeSharedRules are the person's rules as OpenCode takes them.
+type OpenCodeSharedRules struct {
+	// Allow are exact shell commands, as a rule's resource.
+	Allow []string
+	// Ask are shell commands to ask about, where a * keeps its wildcard
+	// meaning: a wider ask only asks more.
+	Ask []string
+	// Deny are tool.use statements.
+	Deny []string
+}
+
+// OpenCodeShared renders a rule set for OpenCode, and names what it cannot
+// take. A rule that cannot be exact is skipped, never guessed at, since * and ?
+// keep their wildcard meaning in a rule and {file:} expands.
+func OpenCodeShared(s permissions.Set) (OpenCodeSharedRules, []permissions.Skip) {
+	var out OpenCodeSharedRules
+	var skipped []permissions.Skip
+	for _, r := range s.Rules {
+		why := ""
+		switch r.Kind {
+		case permissions.Allow:
+			var cmd string
+			if cmd, why = openCodeAllow(r.Text); why == "" {
+				out.Allow = append(out.Allow, cmd)
+			}
+		case permissions.Ask:
+			cmd, _, ok := permissions.BashCommand(r.Text)
+			switch {
+			case !ok:
+				why = "OpenCode takes only shell rules from aggy so far"
+			case strings.ContainsAny(cmd, "?{\n\r"):
+				why = "OpenCode would read ? or { in this rule differently"
+			default:
+				out.Ask = append(out.Ask, cmd)
+			}
+		case permissions.Deny:
+			cmd, _, ok := permissions.BashCommand(r.Text)
+			switch {
+			case !ok:
+				why = "OpenCode takes only shell rules from aggy so far"
+			case strings.ContainsAny(cmd, "?{\n\r"):
+				why = "OpenCode would read ? or { in this rule differently"
+			default:
+				out.Deny = append(out.Deny, "shell:"+cmd)
+			}
+		}
+		if why != "" {
+			skipped = append(skipped, permissions.Skip{Rule: r, Why: why})
+		}
+	}
+	return out, skipped
+}
+
+// openCodeAllow returns the exact command an allow lists, or why it lists none.
+func openCodeAllow(rule string) (cmd, why string) {
+	cmd, wild, ok := permissions.BashCommand(rule)
+	switch {
+	case !ok:
+		return "", "OpenCode takes only exact shell commands from aggy"
+	case wild:
+		return "", "it has a wildcard, and a rule here matches exactly: Bash(git diff *) would allow git diff --output=<file>"
+	}
+	if err := ExactRule(cmd); err != nil {
+		return "", "it holds *, ?, or {, which an OpenCode rule cannot match exactly"
+	}
+	// A rule matches one simple command, so one with an operator never
+	// matches, and a leading assignment is a declaration the check skips.
+	first, _, _ := strings.Cut(cmd, " ")
+	switch {
+	case strings.ContainsAny(cmd, ";|&<>`$()"):
+		return "", "it is more than one plain command"
+	case strings.Contains(first, "="):
+		return "", "it starts by setting a variable"
+	case slices.Contains(openCodeNever, first):
+		return "", first + " runs code or reads any path, so it is never listed for OpenCode"
+	}
+	return cmd, ""
+}
+
 // openCodePermissions renders the whitelist: an ask on everything, then
 // the listed rules, since policies only ever deny (fake model). A later
-// rule wins.
-func openCodePermissions(trusted bool) ([]openCodeRule, error) {
+// rule wins, so the person's asks go last.
+func openCodePermissions(trusted bool, shared OpenCodeSharedRules) ([]openCodeRule, error) {
 	rules := []openCodeRule{{"*", "*", "ask"}}
 	for _, a := range openCodeUIActions {
 		rules = append(rules, openCodeRule{a, "*", "allow"})
@@ -156,10 +261,22 @@ func openCodePermissions(trusted bool) ([]openCodeRule, error) {
 		}
 		rules = append(rules, openCodeRule{"shell", c, "allow"})
 	}
+	for _, c := range shared.Allow {
+		if slices.Contains(OpenCodeStarter, c) {
+			continue
+		}
+		if err := ExactRule(c); err != nil {
+			return nil, err
+		}
+		rules = append(rules, openCodeRule{"shell", c, "allow"})
+	}
 	if trusted {
 		for _, t := range openCodeReadTools {
 			rules = append(rules, openCodeRule{t, "*", "allow"})
 		}
+	}
+	for _, c := range shared.Ask {
+		rules = append(rules, openCodeRule{"shell", c, "ask"})
 	}
 	return rules, nil
 }
@@ -215,6 +332,10 @@ func openCodePolicies(c OpenCodeConfig) ([]openCodeRule, error) {
 			rules = append(rules, openCodeRule{"tool.use", r, "deny"})
 		}
 	}
+	// The person's own denies hold under --no-policy too: it drops aggy's.
+	for _, r := range c.Shared.Deny {
+		rules = append(rules, openCodeRule{"tool.use", r, "deny"})
+	}
 	return rules, nil
 }
 
@@ -228,7 +349,7 @@ func (c OpenCodeConfig) Render() ([]byte, error) {
 			return nil, fmt.Errorf("parity: OpenCode would expand %q in its config, so this folder cannot be used with it", v)
 		}
 	}
-	perms, err := openCodePermissions(c.Trusted)
+	perms, err := openCodePermissions(c.Trusted, c.Shared)
 	if err != nil {
 		return nil, err
 	}

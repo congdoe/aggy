@@ -161,6 +161,9 @@ func doctor(ctx context.Context, env checkEnv) doctorResult {
 		res.sections = append(res.sections, doctorSection{title: "General", findings: general})
 	}
 	res.sections = append(res.sections, doctorSection{title: "Parity", findings: parityFindings(env.cwd, vrs)})
+	if fs := permissionFindings(ctx); len(fs) > 0 {
+		res.sections = append(res.sections, doctorSection{title: "Permissions and settings", findings: fs})
+	}
 	res.sections = append(res.sections, doctorSection{title: "Tools", findings: toolFindings(ctx, env.cwd)})
 	res.sections = append(res.sections, doctorSection{title: "Config aggy changed", findings: driftFindings(ctx)})
 	return res
