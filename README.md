@@ -100,10 +100,11 @@ required = false   # start with a warning instead of refusing
 
 - The shared memory (`.aggy/memory.md`) reaches Codex and Grok on their command line, which other local users can read with `ps`. So does the payload Codex passes to a legacy `notify` hook you set yourself (aggy installs none). Keep secrets out of the memory; see [docs/design.md](docs/design.md), section 13.
 - The safety policy is a guardrail against an agent's mistakes, not a sandbox.
+- OpenCode (`aggy run opencode`) gets guardrails against mistakes, not protection from a hostile repo or a tricked model: a model's shell runs as you with no OS sandbox, so it can reach OpenCode's logins and aggy's config. A repo you have not trusted with `aggy trust --opencode <dir>` opens in `opencode mini`; a trusted one opens the full screen, and its screen plugins run before any guard. See [docs/design.md](docs/design.md), section 15.
 
 ## Not affiliated
 
-aggy is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by Anthropic, OpenAI, or xAI. Claude Code, Codex, and Grok Build are their respective owners' products and trademarks, named here only to say what aggy works with.
+aggy is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by Anthropic, OpenAI, xAI, or the makers of OpenCode. Claude Code, Codex, Grok Build, and OpenCode are their respective owners' products and trademarks, named here only to say what aggy works with.
 
 The vendor CLIs and subscriptions are yours: aggy runs the CLIs you installed, signed in with your own accounts, and every task it starts uses your plan. You are responsible for following each vendor's terms.
 
