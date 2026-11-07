@@ -120,12 +120,12 @@ func CheckAllow(rule string) (Class, string) {
 	if strings.Trim(cmd, "* ") == "" {
 		return Drop, "blanket shell access"
 	}
-	first, _, _ := strings.Cut(strings.TrimSpace(cmd), " ")
+	first, rest, byPath := programOf(cmd)
 	if strings.Contains(first, "*") {
 		// Bash(python*) and Bash(* --help) both match programs nobody named.
 		return Drop, "a wildcard in the program's name can match any program"
 	}
-	if form, ok := runFormOf(cmd, wild); ok {
+	if form, ok := runFormOf(strings.TrimSpace(first+" "+rest), wild); ok {
 		return Drop, "a package manager's run command (" + form + ") runs whatever it is given"
 	}
 	switch {
@@ -135,12 +135,39 @@ func CheckAllow(rule string) (Class, string) {
 		return Drop, fmt.Sprintf("%s runs the command after it, so a wildcard here runs any command", first)
 	case slices.Contains(interpreters, first):
 		return RepoCode, first + " runs code"
-	case strings.Contains(first, "/"):
+	case byPath:
 		return RepoCode, "it runs a program by its path"
 	case slices.Contains(repoRunners, first):
 		return RepoCode, first + " runs what the repo defines"
 	}
 	return Keep, ""
+}
+
+// programOf finds the program a command runs: past leading variable settings,
+// and by its base name, so /usr/bin/python3 * and FOO=1 python * are read as
+// python. byPath says it was named by a path. The rest is what follows it.
+func programOf(cmd string) (first, rest string, byPath bool) {
+	rest = strings.TrimSpace(cmd)
+	for {
+		first, rest, _ = strings.Cut(rest, " ")
+		rest = strings.TrimSpace(rest)
+		if !isAssignment(first) || rest == "" {
+			break
+		}
+	}
+	if i := strings.LastIndexByte(first, '/'); i >= 0 {
+		first, byPath = first[i+1:], true
+	}
+	return first, rest, byPath
+}
+
+// isAssignment is a word like NAME=value.
+func isAssignment(w string) bool {
+	name, _, ok := strings.Cut(w, "=")
+	if !ok || name == "" {
+		return false
+	}
+	return !strings.ContainsAny(name, "*/-.")
 }
 
 // runFormOf finds the run form cmd is, or, for a wildcard rule, one its fixed
