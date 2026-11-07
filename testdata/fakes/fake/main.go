@@ -93,6 +93,12 @@ type Scenario struct {
 	// on Ctrl+Z (0x1a) and prints "[continued]" when resumed, and exits on
 	// Ctrl+D (0x04).
 	RawEcho bool `json:"raw_echo"`
+	// TermQueries is written to the terminal before anything else in an
+	// interactive run, as a CLI asks its terminal things at launch (device
+	// attributes, focus reporting). A line-mode run drops the replies from
+	// what it reads, as a CLI does; a raw_echo run echoes them, so a test sees
+	// what reached it.
+	TermQueries string `json:"term_queries"`
 }
 
 // Reply is the fixed answer to one exact argument list.
@@ -800,8 +806,11 @@ func (f *fake) main(args []string) int {
 				}
 			}
 		}
-	} else if !f.sc.RawEcho {
-		fmt.Print(f.expand(f.sc.Stdout))
+	} else {
+		fmt.Print(f.sc.TermQueries)
+		if !f.sc.RawEcho {
+			fmt.Print(f.expand(f.sc.Stdout))
+		}
 	}
 	if f.sc.Stderr != "" {
 		fmt.Fprint(os.Stderr, f.expand(f.sc.Stderr))
@@ -1295,13 +1304,17 @@ func rawEcho(banner string) error {
 	}
 }
 
+// termReply matches what a terminal sends back unasked for by the keyboard, as
+// far as term_queries can ask.
+var termReply = regexp.MustCompile(`\x1b(\[[0-9;?>$]*[IORcnty]|\[<[0-9;]*[Mm]|\[M...|[\]P_][^\x07\x1b]*(\x07|\x1b\\))`)
+
 // waitForExit reads lines until "/exit" or EOF, like a session waiting at
 // its prompt. Every other non-empty line is a turn, which ends by calling
 // the hooks again.
 func (f *fake) waitForExit() {
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
-		switch strings.TrimSpace(sc.Text()) {
+		switch strings.TrimSpace(termReply.ReplaceAllString(sc.Text(), "")) {
 		case "/exit":
 			return
 		case "":
