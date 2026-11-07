@@ -27,6 +27,8 @@ One set of rules for every CLI, in Claude Code's format. Rules take effect at
 the next launch or switch, and a deny always wins.
 
   list                       List the rules for this repo, with each one's source
+  show                       The same, plus what each CLI gets, and what was
+                             skipped and why
   add <allow|ask|deny> RULE  Add a rule for this repo, or --everywhere
   remove <allow|ask|deny> RULE
                              Remove one of aggy's rules, for this repo or --everywhere
@@ -63,6 +65,8 @@ func runPermissions(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "list":
 		return permissionsList(args[1:], stdout, stderr)
+	case "show":
+		return permissionsShow(args[1:], stdout, stderr)
 	case "add":
 		return permissionsChange(args[1:], false, stdout, stderr)
 	case "remove":
