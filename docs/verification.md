@@ -1178,9 +1178,134 @@ Live, in an empty temporary git folder, with `--standalone` and without `--auto`
 
 Not established:
 
-- **What the reported cost means.** The turn's `step_finish` event reported a non-zero `cost`. The owner signed in with the SuperGrok option, and their account showed usage and no charge, so this is taken as a price estimate from one turn, not proven. No API-key variable was set in the shell that ran it.
+- **What the reported cost means.** The turn's `step_finish` event reported a non-zero `cost`. The owner signed in with the SuperGrok option, and their account showed usage and no charge. No API-key variable was set in the shell that ran it. Read later in the source (T6930, below): a cost the endpoint reports is used first, otherwise the model's price table times the tokens, and OpenAI's plan methods empty that table while xAI's does not. So the figure is most likely a table estimate, though whether xAI's endpoint reports its own cost was not checked. It is not proof of billing either way.
 - **Whether the deny rule is enforced.** The config loaded, but the turn called no tool.
 - **Limits, longer sessions, and tiers other than the owner's.** xAI's page doesn't say how use counts against a plan's limits, and Hermes's docs report that xAI can return 403 on some tiers.
+
+## OpenCode 2.2.5 as an on-screen harness (2026-11-06, spike T6930)
+
+The owner approved these runs for this spike only, on macOS, with OpenCode 2.2.5 (MIT, source at tag `v2.2.5`, commit `9bbb8ce`; paths below are under `packages/`). Every command used `--standalone` or a test server of its own, none used `--auto`, and no vendor credential file was opened. 17 runs tried to reach a model on the owner's sign-ins, and 3 of those reached none (a dead port and two bad model names).
+
+Each fact is marked by how it was established:
+
+- **Live**: the real OpenCode, either on the owner's xAI or OpenAI sign-in or in a temporary `HOME`, where no model was needed.
+- **Fake-model**: the real OpenCode against a loopback test server, in a temporary `HOME` with no credentials and no key. It shows what OpenCode does, not what a vendor does.
+- **Source**: read at the tag, not run.
+
+**Exception to the temp-folder rule.** Run 17 (`opencode mini`) was meant for a temporary folder, but mini takes its location from `$PWD`, which the test script had not updated, so it ran in an aggy checkout. The model ran one harmless `echo` with no prompt, and no file changed. It left a session row and a snapshot folder in OpenCode's data directory, kept for the owner to decide on.
+
+### Repo config and safety
+
+| Check | Evidence | Result |
+|---|---|---|
+| Trust prompt | Source, live | None in the source; none on interactive launches |
+| Repo plugin in `.opencode/plugins` | Live (`debug config`) | Its code ran with no prompt |
+| Repo local MCP server | Live (`debug agents`) | Its command ran with no prompt |
+| `{file:../outside}` and `{env:NAME}` in repo config | Live (`debug config`) | Both substituted |
+| Repo `providers.xai.settings.baseURL` | Live (signed-in xAI, a port with no listener) | `provider.transport`, exit 1: the request went to the repo's address. Whether the sign-in header goes with it was not checked |
+| `OPENCODE_DISABLE_PROJECT_CONFIG=1` | Live, fake-model | Repo config, plugin, MCP server, agents, base URL, and repo skills all have no effect; `AGENTS.md` is dropped too (fake-model) |
+| Load order | Source (`core/src/config.ts`) | Managed policies, integrations, global, `OPENCODE_CONFIG`, repo files, `.opencode`, `OPENCODE_CONFIG_CONTENT`, managed settings |
+| `policies` in `OPENCODE_CONFIG` against a repo's allow | Live | The per-launch deny holds; a repo's agent with allow-all is still denied; the repo's plugin and MCP server did not run |
+| `policies` in `OPENCODE_CONFIG_CONTENT` against a repo's allow | Live (`models`) | The repo wins: policies take the earliest loaded. The user's global config outranks `OPENCODE_CONFIG` the same way (source) |
+| `permissions` in `OPENCODE_CONFIG_CONTENT` against a repo agent | Live (`debug agents`) | The repo agent keeps its allow-all rule |
+
+### Permissions
+
+| Check | Evidence | Result |
+|---|---|---|
+| No config | Live (xAI) | Reads inside and outside the folder, a write, and shell all ran, with no ask, exit 0 |
+| `permissions` deny-all | Live (xAI) | No canary reached, exit 0. Tools are hidden from the model, and it made 170 failed `skill` calls in 127 s before answering |
+| `permissions` ask-all | Live (xAI) | Every call rejected, exit 0, one stderr line per request |
+| `tool.use` deny on `read`, `edit`, `shell`, `external_directory` | Live (xAI) | All blocked, error type `permission.rejected`, but `grep` still returned an inside file's lines; `glob` and `execute` also ran |
+| Path deny on `read` and `external_directory` | Live (xAI) | The read tool was blocked; `cat`, `cd` then `cat`, and `python3` all read the file. OpenCode has no OS sandbox (source search) |
+| `--auto` | Source (`core/src/permission.ts`, `cli/src/run/noninteractive.ts`, `web/src/content/docs/permissions.mdx`) | Answers `ask` with once; denies still hold. `--yolo` and `--dangerously-skip-permissions` are hidden aliases. Not run |
+| "Always allow" | Fake-model, source | Saved in the `permission` table of `opencode.db` per project, for example `shell` `echo *`; a later session used it. Configured denies are checked first (source). The docs page saying "current session" is out of date |
+
+### On-screen
+
+| Check | Evidence | Result |
+|---|---|---|
+| First screen, no sign-in, new folder | Live | No dialog; first output under 0.5 s |
+| Alternate screen | Live | `opencode` uses it, with mouse reporting; `opencode mini` uses neither |
+| `/exit` with nothing open | Live | Exit 0 |
+| `/exit` then Enter over a permission dialog | Fake-model | The letters were dropped and **Enter chose Allow once: the command ran** |
+| Ctrl-C over a permission dialog | Fake-model | Declined the call; the app stayed open |
+| Ctrl-C on an empty prompt | Live | Exit 0 |
+| `--session <new id>` | Live, fake-model | The session takes that id; the exit screen prints it |
+| Location | Live (`mini`), source (`run`, `cli/src/run/run.ts`) | Both use `$PWD`, so a launch must set it |
+
+### Models
+
+| Check | Evidence | Result |
+|---|---|---|
+| Top-level `--model` | Live (help), source | None; `run` and `mini` have `-m` |
+| `model` in `OPENCODE_CONFIG_CONTENT`, new session | Live (OpenAI) | Session on that model; export confirms |
+| Same, resuming | Fake-model | The session's own model wins |
+| `POST /api/session/:id/model` | Fake-model (own `opencode serve`; also `opencode api session.switchModel`) | HTTP 204; a running screen says it switched; `session.model.selected` names old and new |
+| xAI to OpenAI, and back, after a tool call | Live (4 runs), source (`core/src/session/runner/to-llm-message.ts`) | Exit 0 both ways; the word and the file's contents survived. Provider-bound metadata is dropped on a change |
+| `opencode models` | Live | 0.5 s, works with `--standalone`, one `provider/model` per line, respects `provider.use` policies. Help documents the command, not the format as stable |
+| API-key variables in the environment | Fake-model (dummy values, sent nowhere) | `ANTHROPIC_API_KEY` adds 20 `anthropic/*`; `XAI_API_KEY` adds xAI as an environment connection |
+| Claude route | Source (`core/src/plugin/provider/claude-agent`) | `claude-agent` runs the local `claude` through the Agent SDK once connected; not connected here, so not listed |
+
+### MCP config
+
+Format, from source (`schema/src/mcp.ts`, `schema/src/config/mcp.ts`). The key is `mcp.servers.<name>`, and `mcp.timeout` sets a default:
+
+| `type` | Fields |
+|---|---|
+| `local` | `command` (array, required), `cwd`, `environment`, `disabled`, `codemode`, `timeout`, `protocol` |
+| `remote` | `url` (required), `headers`, `oauth` (object or `false`), `disabled`, `codemode`, `timeout`, `protocol` |
+
+| Check | Evidence | Result |
+|---|---|---|
+| A `local` entry in repo config starts | Live | Ran with no prompt |
+| `mcp.use` deny in `OPENCODE_CONFIG` | Live | The entry did not start |
+| An entry in per-launch config | Source (`core/src/config.ts`) | Read like any config document. No per-launch server was run, so aggy's copied servers are unverified |
+| `opencode mcp list --standalone` | Live | Printed none while the repo's entry had started. Not explained, so it is not a reliable check |
+
+### OpenAI sign-in methods
+
+Source only (`core/src/plugin/provider/chatgpt.ts`, `core/src/plugin/provider/openai.ts`). No method other than the owner's existing one was run, and the record does not say which that is.
+
+| | Sign in with ChatGPT | Codex browser and Codex device code, both labelled legacy |
+|---|---|---|
+| Method id | `chatgpt-token-sharing` | `chatgpt-browser`, `chatgpt-headless` |
+| Flow | Browser only, with a local callback | Browser with a local callback, or a device code |
+| Client | User-owned: registered at first sign-in, its id kept in the credential's metadata | One fixed id in the source |
+| Scope and token | `chatgpt.tokens.use.direct`; the ID token is verified; a sign-in without token sharing fails | `openid profile email offline_access`; no ID-token check found |
+| Endpoint | `https://api.openai.com/v1` | `https://chatgpt.com/backend-api/codex` |
+| Transport | HTTP | WebSocket by default |
+| Compaction | Summary | `x-codex-beta-features: remote_compaction_v2` header |
+| Models | A fixed list of 18, including `gpt-5.5` | Only above `gpt-5.5`, without bare `gpt-5.6`; image limited to `gpt-image-2` |
+| Price table | Emptied | Emptied |
+| Limit | `subscription_sharing_usage_limit_exceeded` becomes `provider.chatgpt-limit` and is not retried | Same mapping if that body appears; no retry exception and no legacy-specific limit shape found |
+
+- **Storage.** Each is an `oauth` row in the `credential` table of `opencode.db` under the `openai` integration, apart from xAI's row. An older `chatgpt-browser` row holding a client id is rewritten to `chatgpt-token-sharing` at load.
+- **Telling them apart.** `auth list` shows integration, label, and `stored`. Its JSON connections have only `id`, `label`, `method`, and `type` (keys checked live), and `method` is `oauth` for all three. `auth export` prints secrets and was not run. So no safe command names the method. By source only, `openai/gpt-5.5` in `opencode models` means the legacy methods are not in use, because they disable it. It is listed on the owner's sign-in; no legacy sign-in was run to confirm the contrast.
+
+### Signals, transcripts, instructions
+
+| Check | Evidence | Result |
+|---|---|---|
+| Turn end | Fake-model | `session.execution.succeeded`, with `sessionID`, on `/api/event` (401 without password) and to a plugin. `.failed` and `.interrupted` are in `schema/src/session-event.ts` (source) |
+| Plugin from per-launch config, project config off | Fake-model | Loaded; the repo's did not |
+| Plugin slash command | Fake-model | Ran from the screen with no model request |
+| `opencode api` | Source (`cli/src/commands/handlers/api.ts`) | Buffers the response, so it cannot stream events |
+| Limit type | Fake-model, source (`core/src/session/to-session-error.ts`, `core/src/model-retry.ts`) | `provider.chatgpt-limit` from the ChatGPT code; `provider.rate-limit` from a plain 429, in `session.retry.scheduled`, up to 10 retries (about 84 s). No real limit was hit, and no xAI-specific type exists |
+| Event format | Live | The same event types and fields on xAI and OpenAI; no model or provider in them |
+| `session export` | Live | `info.model`, per-message model, and `model-switched` entries. It calls an `experimental` API |
+| `session list --format json` | Live | `id`, `title`, `directory`, `projectId`, `created`, `updated`; no model |
+| Storage | Source, file names only | SQLite `opencode.db`, which also holds credentials, so transcripts must come through `opencode session`, never the file |
+| `CLAUDE.md`, repo and `~/.claude` | Fake-model | **Not read**, including with no `AGENTS.md`. The `rules` docs page saying it is read is out of date |
+| `instructions` in per-launch config | Live | Reaches the model, including with project config off |
+| `AGENTS.md` | Fake-model | Reaches the model with project config on |
+| Skills | Fake-model | `~/.claude/skills`, `~/.agents/skills` always; repo `.claude`, `.agents`, `.opencode` skills only with project config on |
+| `step_finish.cost` | Live, source (`core/src/session/usage.ts`) | xAI non-zero, OpenAI 0. A cost the endpoint reports is used first, otherwise the price table. OpenAI's plan methods empty that table; xAI's does not |
+| Standalone cost | Fake-model | About 0.6 s per launch; two at once both finished |
+| Service and stale config | Source (`cli/src/server-process.ts`) | Config variables are read at server start, so per-launch config cannot reach a running service. Never run, per the owner's rule |
+| Headless exit | Live | 0 on success, including denied tools; 1 on a transport error or bad model (`provider.no-route`, 0.5 s) |
+
+Not established: a real plan limit on either plan; which sign-in method the owner used for OpenAI; whether a provider key from `{file:}` reaches a request header; SIGTERM and SIGHUP behaviour; the service path.
 
 ## Still open
 
