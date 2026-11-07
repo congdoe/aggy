@@ -187,7 +187,7 @@ func (s *session) finishExit() {
 		cancel("typed_in_gap")
 		s.toChild.push(bytes.Repeat([]byte{0x7f}, len(cmd)))
 		s.send(keys)
-		s.pk.tell(fmt.Sprintf("You typed as aggy was about to exit %s, so it stayed, with your text in its prompt.", s.o.Vendor),
+		s.pk.tell(fmt.Sprintf("You typed or clicked as aggy was about to exit %s, so it stayed; anything typed is in its prompt.", s.o.Vendor),
 			fmt.Sprintf("Pick %s again to switch.", to))
 		s.openPicker()
 	default:

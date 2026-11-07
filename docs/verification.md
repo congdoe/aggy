@@ -1585,10 +1585,18 @@ real CLI.
   aggy's clock, so skew can read as never started. That only goes back: a resumed
   row is never removed.
 
+- A refused move leaves the row on the id it had, since `settle` needs a followed
+  id: a session reached that way is not what a later resume opens.
+- A paste that spans a prompt of aggy's: `strip` and the key filter each follow the
+  markers, so the first read's bytes are seen twice; harmless so far.
+- The doubt note's words, and its second pick, have not been tried on a real CLI.
+  That Claude's `/compact` ends a turn (so no doubt follows) is unverified.
+
 Read from the Codex source at 6aaac694, not seen live: `SessionStart` hooks run
 from `run_turn` (`core/src/session/turn.rs#L340`); idle, Tab does not submit a `!`
 command, and during a turn it queues one (`chat_composer.rs#L3531`, tests at L10170
-and L9893); the backtrack (`tui/src/app_backtrack.rs`, header);
+and L9893); the backtrack (`tui/src/app_backtrack.rs`, header) and its preview keys
+(`app_backtrack/legacy_input.rs#L195`, from the reviewer's reading, not rechecked);
 `SessionMeta.cwd` (`protocol/src/protocol.rs#L3275`). A `$` popup taking Tab
 (`chat_composer.rs#L2255`) comes from the reviewer's reading and was not rechecked.
 

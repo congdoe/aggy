@@ -204,7 +204,7 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 				shortID(par.ID), t.starting(), shortID(par.ID))
 			p.newParent = true
 		default:
-			if p.parent, err = latestStarted(ctx, s, key, cwd, par, t.Preview); err != nil {
+			if p.parent, err = latestStarted(ctx, s, key, cwd, par, t, stderr); err != nil {
 				return p, err
 			}
 		}
@@ -242,13 +242,16 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 	// The interactive child last on screen: the most recently active one that
 	// can be reopened, or the one picked by id. Any other counts only when no
 	// other does (T6899).
-	var last, unstarted *store.Child
+	var last, unstarted, noID *store.Child
 	for i := range children {
 		if (children[i].Kind == "" || borrowOK && children[i].ID == pick) && (pick == "" || children[i].ID == pick) &&
 			(t.Vendor == "" || children[i].Vendor == string(t.Vendor)) {
 			if pick == "" && !reopenable(children[i]) {
 				if unstarted == nil {
 					unstarted = &children[i]
+				}
+				if noID == nil && children[i].VendorSessionID == "" && !neverStarted(children[i]) {
+					noID = &children[i]
 				}
 				continue
 			}
@@ -258,6 +261,8 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 	}
 	if last == nil {
 		last = unstarted
+	} else if noID != nil && last.VendorSessionID != "" {
+		noteHidden(stderr, *noID, *last, t)
 	}
 	if last != nil && last.Kind != "" {
 		return p, p.borrowChild(cfg, t, *last, files)
@@ -319,26 +324,45 @@ func reopenable(c store.Child) bool {
 	return !neverStarted(c) && (c.Kind != "" || c.VendorSessionID != "")
 }
 
+// noteHidden says that a resume opens opened because the newer session hidden
+// cannot be reopened: it may well have had turns.
+func noteHidden(stderr io.Writer, hidden, opened store.Child, t target) {
+	verb := "opening"
+	if t.Preview {
+		verb = "a launch would open"
+	}
+	fmt.Fprintf(stderr, "aggy: the newer %s session here cannot be reopened, since aggy never learned its id; %s the %s session %s.\n",
+		hidden.Vendor, verb, opened.Vendor, shortID(opened.ID))
+}
+
 // latestStarted is the parent aggy resume reopens in dir: the most recently
 // active one with a child that can be reopened, else latest. A parent left only
 // with a child that never started, or with no id, must not hide the session
 // before it (T6899).
-func latestStarted(ctx context.Context, s *store.Store, key, dir string, latest store.Parent, readOnly bool) (store.Parent, error) {
+func latestStarted(ctx context.Context, s *store.Store, key, dir string, latest store.Parent, t target, stderr io.Writer) (store.Parent, error) {
 	ps, err := s.ParentsInDir(ctx, key, dir)
 	if err != nil {
 		return latest, err
 	}
+	var hidden *store.Child
 	for _, par := range ps {
 		if replaced(par) {
 			continue
 		}
-		children, err := planRefresh(ctx, s, par.ID, &sessionFiles{readOnly: readOnly})
+		children, err := planRefresh(ctx, s, par.ID, &sessionFiles{readOnly: t.Preview})
 		if err != nil {
 			return latest, err
 		}
-		for _, c := range children {
+		for i, c := range children {
 			if c.Kind == "" && reopenable(c) {
+				// The chosen parent's own children say theirs in planChild.
+				if hidden != nil {
+					noteHidden(stderr, *hidden, c, t)
+				}
 				return par, nil
+			}
+			if c.Kind == "" && hidden == nil && c.VendorSessionID == "" && !neverStarted(c) {
+				hidden = &children[i]
 			}
 		}
 	}
