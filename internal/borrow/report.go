@@ -35,11 +35,13 @@ const (
 
 // childReason is the start of a child's reply, for a borrow that failed
 // without saying why in any field aggy reads. The reply is the model's and
-// may quote a web page or a tool: control characters are escaped, and a line
-// that holds a secret is dropped.
+// may quote a web page or a tool: a line that holds a secret is dropped, and
+// then control characters are escaped. Redacting comes first, on plain line
+// ends: an escaped CR would keep a key on one line from being seen as the name
+// of the value on the next.
 func childReason(text string) string {
-	clean, _ := redact.Lines(termsafe.Lines(text))
-	return strings.Join(Excerpt(clean, childReasonLines, childReasonWidth), "\n")
+	clean, _ := redact.Lines(strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(text))
+	return strings.Join(Excerpt(termsafe.Lines(clean), childReasonLines, childReasonWidth), "\n")
 }
 
 // ChildSaidHeading introduces Result.ChildSaid wherever it is shown.
