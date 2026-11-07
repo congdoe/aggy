@@ -211,3 +211,71 @@ func TestPlanBareIsFresh(t *testing.T) {
 		t.Errorf("plan = %+v, want a new parent on the default vendor, not the last vendor used", p)
 	}
 }
+
+// TestGateDirFlags (T6952): a folder flag is judged by the folder it reaches
+// from the directory the CLI starts in, not by how it is spelled.
+func TestGateDirFlags(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(root, "home")
+	child := filepath.Join(home, "a", "b")
+	other := filepath.Join(root, "srv", "x", "y")
+	for _, d := range []string{child, other, filepath.Join(home, ".ssh"), filepath.Join(home, ".codex")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HOME", home)
+	for _, v := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME"} {
+		t.Setenv(v, "")
+	}
+	toHome := filepath.Join(root, "to-home")
+	if err := os.Symlink(home, toHome); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name  string
+		dir   string
+		cwd   string
+		gated bool
+	}{
+		{"home", home, other, true},
+		{"the root", "/", other, true},
+		{"a link to home", toHome, other, true},
+		{"the keys", filepath.Join(home, ".ssh"), other, true},
+		{"a vendor's folder", filepath.Join(home, ".codex"), other, true},
+		{"tilde", "~", other, true},
+		{"tilde slash", "~/", other, true},
+		{"tilde keys", "~/.ssh", other, true},
+		{"another's tilde", "~root", other, true},
+		{"relative, up to home from the child's cwd", "../..", child, true},
+		{"the same word from elsewhere", "../..", other, false},
+		{"a project", other, child, false},
+		{"under home", "~/a", other, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := adapter.DirFlag{Name: "--add-dir", Value: tt.dir}
+			safe := []string{"--search", "--add-dir", tt.dir}
+			tg := target{Dirs: []adapter.DirFlag{d}, SafeExtra: safe}
+			err := gateDirFlags(&tg, tt.cwd)
+			if got := errors.Is(err, adapter.ErrLoosens); got != tt.gated {
+				t.Fatalf("err = %v, want gated %v", err, tt.gated)
+			}
+			tg = target{NoPolicy: true, Dirs: []adapter.DirFlag{d}, SafeExtra: safe}
+			if err := gateDirFlags(&tg, tt.cwd); err != nil {
+				t.Fatal(err)
+			}
+			wantSafe := safe
+			var wantLoosens []string
+			if tt.gated {
+				wantSafe, wantLoosens = []string{"--search"}, []string{"--add-dir"}
+			}
+			if !slices.Equal(tg.SafeExtra, wantSafe) || !slices.Equal(tg.Loosens, wantLoosens) {
+				t.Errorf("with --no-policy: safe %q, loosens %q", tg.SafeExtra, tg.Loosens)
+			}
+		})
+	}
+}

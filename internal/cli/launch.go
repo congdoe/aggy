@@ -65,6 +65,8 @@ type target struct {
 	Extra, SafeExtra, Loosens []string
 	// FlagNotes are the launch lines of the flags given (PassFlags.Noted).
 	FlagNotes []string
+	// Dirs are the folders the flags name, for gateDirFlags.
+	Dirs []adapter.DirFlag
 	// SameChild says Child is the child that was on screen, reopened for a
 	// tool change, so it may be a borrow's. A switch's Child never may.
 	SameChild bool

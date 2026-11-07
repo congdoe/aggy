@@ -303,9 +303,10 @@ func (a Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, e
 // no short form here. aggy never adds a loosening flag on its own, and one
 // the person gives needs --no-policy: every --dangerously-* (PassFlags.Parse),
 // --yolo, --approve-for-me, -a never, -s danger-full-access, a -c of a key
-// aggy cannot tell is harmless, which could say the same thing, the --enable
-// and --disable that the reference says translate to such a -c, --profile,
-// and an --add-dir that takes in $HOME. --approve-for-me is gated although
+// aggy cannot tell is harmless, which could say the same thing, a --disable of
+// a safety feature, which the reference says translates to such a -c, and an
+// --add-dir that holds $HOME or keys (at launch: DirFlags). --profile, --enable,
+// and other --add-dirs pass with a line at launch. --approve-for-me is gated although
 // Claude's --allowedTools is not: Claude documents that its deny rules hold,
 // and whether Codex's rules file holds under it is unverified.
 func (Adapter) PassFlags() adapter.PassFlags {
@@ -325,26 +326,51 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			{Names: []string{"--ask-for-approval", "-a"}, Check: checkApproval},
 			{Names: []string{"--sandbox", "-s"}, Check: checkSandbox},
 			{Names: []string{"--disable"}, Check: checkDisable},
-			{Names: []string{"--enable"}, Check: checkEnable},
-			{Names: []string{"--profile", "-p"}, Check: checkProfile},
-			{Names: []string{"--add-dir"}, Check: checkAddDir},
+			{Names: []string{"--enable"}, Check: adapter.AnyValue},
+			{Names: []string{"--profile", "-p"}, Check: adapter.AnyValue},
+			{Names: []string{"--add-dir"}, Check: adapter.AnyValue},
 		},
-		Values: []string{"--image", "-i", "--local-provider"},
-		Noted:  []adapter.NotedFlag{{Names: []string{"--add-dir"}, Note: addDirNote}},
+		Values:   []string{"--image", "-i", "--local-provider"},
+		DirFlags: []string{"--add-dir"},
+		Noted: []adapter.NotedFlag{
+			{Names: []string{"--add-dir"}, Note: addDirNote},
+			{Names: []string{"--profile", "-p"}, Note: profileNote},
+			{Names: []string{"--enable"}, Note: enableNote},
+		},
 	}
 }
 
-// addDirNote is the launch line of --add-dir. The reference says it grants
-// write access; a folder that takes in $HOME is gated (checkAddDir).
-const addDirNote = "--add-dir gives Codex's sandbox more folders it may write in; aggy's safety policy does not say what happens in them beyond its rules file, and that the rules apply there is unverified"
+// The launch lines of the flags that pass with one. A gate would ask for
+// --no-policy, which drops the whole safety policy: for a daily profile or a
+// feature, that is less safe than a noted pass.
+const (
+	// addDirNote: the reference says it grants write access. A folder that
+	// holds $HOME or keys is gated at launch (internal/cli, safefs.HoldsSecrets).
+	addDirNote = "--add-dir gives Codex's sandbox more folders it may write in; that aggy's rules file applies in them is unverified"
+	// profileNote: --profile layers the person's own
+	// $CODEX_HOME/<name>.config.toml over the base config (reference), which can
+	// say approval_policy "never" and sandbox_mode "danger-full-access". aggy
+	// does not read it.
+	// TODO(T6895): whether aggy's rules file applies under a profile is
+	// unverified. Confirm with a profile on a throwaway CODEX_HOME and a command
+	// the rules forbid.
+	profileNote = "--profile layers your own config over Codex's, which can change approvals and the sandbox; aggy does not read it, and that aggy's rules file still applies is unverified"
+	// enableNote: the reference says --enable translates to -c
+	// features.<name>=true. -c stays gated, since aggy does not see a whole
+	// -c value as one feature's name and can say nothing at launch about it.
+	enableNote = "--enable turns on a Codex feature, which can add a tool; aggy has not reviewed what it does"
+)
 
 // safetyFeatureWords mark a Codex feature whose name says it is part of a
 // safety layer, so turning it off could loosen one (features/src/lib.rs at
 // 6aaac69: hooks, its old name codex_hooks in legacy.rs, guardian_*,
 // exec_permission_approvals, the sandbox backends, network_proxy, and so on).
 // A name list would go stale, and one that is too broad only asks for
-// --no-policy.
-var safetyFeatureWords = []string{"hook", "sandbox", "landlock", "approval", "guardian", "permission", "request_rule", "network_proxy"}
+// --no-policy. The last three have no such word in their names (rust-v0.164.0):
+// credential_masking masks credentials, secret_auth_storage encrypts the CLI's
+// auth, and code_mode_only restricts the tools the model sees.
+var safetyFeatureWords = []string{"hook", "sandbox", "landlock", "approval", "guardian", "permission", "request_rule", "network_proxy",
+	"credential_masking", "secret_auth_storage", "code_mode_only"}
 
 // checkDisable gates turning off a feature that is part of a safety layer.
 // The reference: --disable "translates to -c features.<name>=false". Turning
@@ -356,48 +382,6 @@ func checkDisable(name string) error {
 		if strings.Contains(low, w) {
 			return fmt.Errorf("--disable %s: %w", name, adapter.ErrLoosens)
 		}
-	}
-	return nil
-}
-
-// checkEnable gates every --enable, which the reference says translates to -c
-// features.<name>=true: a feature turned on can be a new tool, and aggy cannot
-// tell which are harmless.
-func checkEnable(name string) error {
-	return fmt.Errorf("--enable %s: %w", name, adapter.ErrLoosens)
-}
-
-// checkProfile gates --profile, which layers the person's own
-// $CODEX_HOME/<name>.config.toml over the base config (reference): it can say
-// approval_policy "never" and sandbox_mode "danger-full-access", and aggy does
-// not read it. Unverified: whether aggy's rules file still applies under a
-// profile. Confirm with a profile on a throwaway CODEX_HOME and a command the
-// rules forbid.
-func checkProfile(name string) error {
-	return fmt.Errorf("--profile %s: %w", name, adapter.ErrLoosens)
-}
-
-// checkAddDir gates an --add-dir of $HOME, or of a folder that holds it, or /:
-// it makes every credential under $HOME writable. A word aggy cannot make a
-// path of counts as such a folder.
-func checkAddDir(dir string) error {
-	gated := fmt.Errorf("--add-dir %s: %w", dir, adapter.ErrLoosens)
-	if dir == "~" || strings.HasPrefix(dir, "~/") && strings.Trim(dir, "~/.") == "" {
-		return gated
-	}
-	if strings.HasPrefix(dir, "~") {
-		return nil // a folder under $HOME, or another's: the launch note covers it
-	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return gated
-	}
-	if abs == string(filepath.Separator) {
-		return gated
-	}
-	home := os.Getenv("HOME")
-	if home != "" && (home == abs || strings.HasPrefix(home, abs+string(filepath.Separator))) {
-		return gated
 	}
 	return nil
 }

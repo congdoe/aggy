@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/store"
 )
 
@@ -82,7 +83,8 @@ func TestSessionOpenErr(t *testing.T) {
 	if err := sessionOpenErr("b", store.GCWorktree{Held: true}, nil); err == nil || !strings.Contains(err.Error(), "open in another aggy") {
 		t.Errorf("held: %v", err)
 	}
-	if err := sessionOpenErr("b", store.GCWorktree{}, errors.New("database is locked")); err == nil || !strings.Contains(err.Error(), "cannot tell") {
+	err := sessionOpenErr("b", store.GCWorktree{}, errors.New("database is locked"))
+	if err == nil || !strings.Contains(err.Error(), "cannot tell") || codeOf(withCode(diag.CodeAcceptTarget, err), diag.CodeAcceptTarget) != diag.CodeStore {
 		t.Errorf("unread: %v", err)
 	}
 }

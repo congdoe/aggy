@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -13,6 +15,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/grok"
 	"github.com/congdoe/aggy/internal/adapter/opencode"
 	"github.com/congdoe/aggy/internal/diag"
+	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/termsafe"
 	"github.com/congdoe/aggy/internal/tooldef"
 )
@@ -37,12 +40,13 @@ why), a prompt, and a subcommand: type the prompt once the session starts,
 and run the CLI itself for its subcommands and its own --help.
 
 A flag that could get past aggy's safety policy or hooks (--dangerously-*,
---permission-mode bypassPermissions, --yolo, -a never, and on codex --profile,
---enable, --disable hooks, --add-dir of your home, and a -c aggy cannot tell is
-harmless) needs --no-policy, and aggy notes it at launch. A flag that only asks
-you less passes where your deny rules still hold, as on claude --allowedTools
-and --permission-mode auto. A bare word is taken as a value only after a flag
-aggy knows takes one; for any other flag write --flag=value.
+--permission-mode bypassPermissions, --yolo, -a never, --add-dir of your home or
+a folder of keys on codex and grok, and on codex --disable hooks and a -c aggy
+cannot tell is harmless) needs --no-policy, and aggy notes it at launch. A flag
+that only asks you less passes where your deny rules still hold, as on claude
+--allowedTools and --permission-mode auto, and some pass with a line at launch,
+as on codex --profile and --enable. A bare word is taken as a value only after a
+flag aggy knows takes one; for any other flag write --flag=value.
 
 aggy opencode takes only the flags above, none of OpenCode's own. Its model
 is provider/model. As on the other CLIs, --model on a resume applies in opencode
@@ -111,7 +115,7 @@ func runVendor(v adapter.Vendor, args []string, stderr io.Writer) int {
 	if v == adapter.OpenCode && len(p.Extra) > 0 {
 		return launchUsageErr(stderr, name, diag.CodeFlagClash, fmt.Sprintf("aggy passes none of OpenCode's own flags yet, so not %q", p.Extra[0]), vendorUsage)
 	}
-	t.Model, t.Extra, t.SafeExtra, t.Loosens, t.FlagNotes = p.Model, p.Extra, p.Safe, p.Loosens, p.Notes
+	t.Model, t.Extra, t.SafeExtra, t.Loosens, t.FlagNotes, t.Dirs = p.Model, p.Extra, p.Safe, p.Loosens, p.Notes, p.Dirs
 	switch {
 	case p.Continue && p.Resume:
 		return launchUsageErr(stderr, name, diag.CodeUsage, "use --continue or --resume, not both", vendorUsage)
@@ -155,4 +159,66 @@ func sessionArg(arg string) (string, string) {
 		return "", fmt.Sprintf("%q is not a session id (at least 4 hex digits; aggy sessions lists them)", termsafe.Field(arg))
 	}
 	return id, ""
+}
+
+// gateDirFlags gates a folder flag whose folder would give the session a home
+// or keys (safefs.HoldsSecrets). It runs once the plan knows cwd, the directory
+// the CLI will start in, which on a resume is the child's and not aggy's, since
+// a relative value means that one there. An adapter touches no disk, so this is
+// here. With --no-policy the flag goes through as any loosening flag does: noted,
+// and kept from a later launch of the session.
+func gateDirFlags(t *target, cwd string) error {
+	kept := t.Dirs[:0:0]
+	for _, d := range t.Dirs {
+		if !dirHoldsSecrets(d.Value, cwd) {
+			kept = append(kept, d)
+			continue
+		}
+		if !t.NoPolicy {
+			return fmt.Errorf("%s %s is, holds, or is inside your home's keys or a vendor's config: %w", d.Name, d.Value, adapter.ErrLoosens)
+		}
+		t.Loosens = append(t.Loosens, d.Name)
+		t.SafeExtra = withoutFlag(t.SafeExtra, d)
+	}
+	t.Dirs = kept
+	return nil
+}
+
+// dirHoldsSecrets reports whether a folder flag's value, read against cwd, holds
+// secrets. A value it cannot make a path of counts: a ~user, or an error.
+func dirHoldsSecrets(dir, cwd string) bool {
+	switch {
+	case dir == "~" || strings.HasPrefix(dir, "~/"):
+		// The CLI may or may not expand it: both readings are checked.
+		home := os.Getenv("HOME")
+		if home == "" {
+			return true
+		}
+		if dirHoldsSecrets(home+strings.TrimPrefix(dir, "~"), cwd) {
+			return true
+		}
+	case strings.HasPrefix(dir, "~"):
+		return true
+	}
+	if !filepath.IsAbs(dir) {
+		// Not Join: a ".." keeps its physical meaning through a symlink.
+		dir = cwd + string(filepath.Separator) + dir
+	}
+	held, err := safefs.HoldsSecrets(dir)
+	return err != nil || held
+}
+
+// withoutFlag is words without d, written as two words or with an =.
+func withoutFlag(words []string, d adapter.DirFlag) []string {
+	var out []string
+	for i := 0; i < len(words); i++ {
+		switch {
+		case words[i] == d.Name+"="+d.Value:
+		case words[i] == d.Name && i+1 < len(words) && words[i+1] == d.Value:
+			i++
+		default:
+			out = append(out, words[i])
+		}
+	}
+	return out
 }

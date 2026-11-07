@@ -205,13 +205,17 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 // CLI reference (code.claude.com/docs/en/cli-reference, read 2026-11-06).
 // aggy never adds a loosening flag on its own, and one the person gives
 // needs --no-policy: every --dangerously-* (PassFlags.Parse), --permission-mode
-// outside the modes that ask or deny, and --agents naming bypassPermissions.
+// outside the modes that ask or deny, and --agents with such a mode or a value
+// aggy cannot read.
 //
 // --allowedTools, a subagent's other permission modes, and --permission-mode
 // auto do ask less, and pass: "Deny rules block in every mode" and "An allow
 // rule can't carve an exception out of a deny rule" (permission-modes.md and
 // permissions.md, read 2026-11-07), and deny rules are aggy's policy here.
 // Gating them would cost that policy for what it does not protect.
+//
+// TODO(T6895): --agent x names an agent, which may be a repo's own file with a
+// permissionMode in it; aggy does not read it.
 func (Adapter) PassFlags() adapter.PassFlags {
 	const elsewhere = "it starts no on-screen session in this directory for aggy to record"
 	return adapter.PassFlags{
@@ -252,14 +256,9 @@ func checkPermissionMode(mode string) error {
 	return fmt.Errorf("--permission-mode %s: %w", mode, adapter.ErrLoosens)
 }
 
-// checkAgents gates inline subagents that name bypassPermissions, which says
-// what the gated --permission-mode says.
-func checkAgents(val string) error {
-	if strings.Contains(val, "bypassPermissions") {
-		return fmt.Errorf("--agents with bypassPermissions: %w", adapter.ErrLoosens)
-	}
-	return nil
-}
+// checkAgents gates inline subagents with a mode the --permission-mode table
+// gates, or that aggy cannot read.
+func checkAgents(val string) error { return adapter.CheckAgents(val, checkPermissionMode) }
 
 // noHooksNote is the launch line of --safe-mode and --bare. The reference says
 // hooks and MCP servers do not load under either ("permissions work normally"
