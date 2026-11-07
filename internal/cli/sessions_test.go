@@ -90,12 +90,12 @@ func TestSessionArgs(t *testing.T) {
 	}{
 		{[]string{"resume", "zz"}, "is not a session id"},
 		{[]string{"resume", "abc"}, "is not a session id"},
-		{[]string{"resume", "abcd", "x"}, "usage: aggy resume"},
+		{[]string{"resume", "abcd", "x"}, "Usage: aggy resume"},
 		{[]string{"resume", "\x1b[2Jabcd"}, "is not a session id"},
 		{[]string{"new", "gpt"}, "unknown vendor"},
-		{[]string{"new", "--brief"}, "usage: aggy new"},
-		{[]string{"sessions", "x"}, "usage: aggy sessions"},
-		{[]string{"session", "x"}, "usage: aggy session"},
+		{[]string{"new", "--brief"}, "Usage: aggy new"},
+		{[]string{"sessions", "x"}, "Usage: aggy sessions"},
+		{[]string{"session", "x"}, "Usage: aggy session"},
 	}
 	for _, tt := range tests {
 		var out, errb bytes.Buffer

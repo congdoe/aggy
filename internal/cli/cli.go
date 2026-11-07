@@ -93,9 +93,8 @@ Commands:
             trailers to commits made under aggy
   check     Run the repo's typecheck, lint, and tests from .aggy/config.toml
   version   Print the aggy version
-  help      Show this help
-
-aggy is pre-alpha. Nothing else is implemented yet.
+  help      Show this help, or a command's: aggy help <command>, or
+            aggy <command> --help
 `
 
 // Run executes aggy with args, which exclude the program name, and returns
@@ -104,8 +103,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		return launch("aggy", target{New: true}, stderr)
 	}
+	if u, ok := commandHelp[args[0]]; ok && wantsHelp(args[1:]) {
+		fmt.Fprint(stdout, u)
+		return 0
+	}
 	switch args[0] {
 	case "version", "--version", "-v":
+		if len(args) > 1 {
+			return cmdUsage(stderr, "version", "takes no arguments", versionUsage)
+		}
 		fmt.Fprintf(stdout, "aggy %s\n", version())
 		return 0
 	case "borrow":
@@ -148,7 +154,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "--resume", "-r":
 		return runResume(args[1:], stdout, stderr)
 	case "claude", "codex", "grok":
-		return runVendor(adapter.Vendor(args[0]), args[1:], stdout, stderr)
+		return runVendor(adapter.Vendor(args[0]), args[1:], stderr)
 	case "new":
 		return runNew(args[1:], stdout, stderr)
 	case "resume":
@@ -191,7 +197,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runCheck(args[1:], stdout, stderr)
 	case "gc":
 		return runGC(args[1:], stdout, stderr)
-	case "help", "--help", "-h":
+	case "help":
+		return runHelp(args[1:], stdout, stderr)
+	case "--help", "-h":
 		fmt.Fprint(stdout, usage)
 		return 0
 	default:

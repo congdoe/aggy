@@ -154,7 +154,10 @@ func entryState(path string) (patch.State, error) {
 }
 
 func runSkill(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+	if len(args) == 0 {
+		return cmdUsage(stderr, "skill", "name a subcommand", skillUsage)
+	}
+	if args[0] == "help" {
 		fmt.Fprint(stdout, skillUsage)
 		return 0
 	}

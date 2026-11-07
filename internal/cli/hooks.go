@@ -203,7 +203,10 @@ func sameFile(a, b string) bool {
 }
 
 func runHooks(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+	if len(args) == 0 {
+		return cmdUsage(stderr, "hooks", "name a subcommand", hooksUsage)
+	}
+	if args[0] == "help" {
 		fmt.Fprint(stdout, hooksUsage)
 		return 0
 	}

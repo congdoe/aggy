@@ -17,7 +17,14 @@ import (
 	"github.com/congdoe/aggy/internal/tooldef"
 )
 
-const switchUsage = "usage: aggy switch [--brief] [--tool NAME]... <claude|codex|grok>\n"
+const switchUsage = `Usage: aggy switch [--brief] [--tool NAME]... <claude|codex|grok>
+
+From inside a CLI aggy runs: asks aggy to switch to a vendor at the turn end.
+You confirm the switch in aggy's picker.
+
+  --brief       Give the next session a handoff brief
+  --tool NAME   Turn a tool on for the next session only
+`
 
 // runSwitch is `aggy switch <vendor>`, which a linked skill runs inside a
 // CLI aggy supervises: it asks the supervisor to switch to vendor at the

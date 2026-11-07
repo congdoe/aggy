@@ -24,7 +24,7 @@ import (
 func runNew(args []string, _, stderr io.Writer) int {
 	noPolicy, args := cutNoPolicy(args)
 	if len(args) > 1 || (len(args) == 1 && strings.HasPrefix(args[0], "-")) {
-		return cmdUsage(stderr, "new", "bad arguments", "usage: aggy new [--no-policy] [claude|codex|grok]\n")
+		return cmdUsage(stderr, "new", "bad arguments", newUsage)
 	}
 	var v adapter.Vendor
 	if len(args) == 1 {
@@ -42,7 +42,7 @@ func runNew(args []string, _, stderr io.Writer) int {
 // with id, with that child on screen (aggy session lists child ids). Flags
 // may come before or after the id.
 func runResume(args []string, stdout, stderr io.Writer) int {
-	const use = "usage: aggy resume [--no-policy] [--brief [--show]] [id]\n"
+	use := resumeUsage
 	var t target
 	var show bool
 	var ids []string
@@ -95,7 +95,7 @@ func openIndex(ctx context.Context) (*store.Store, error) {
 // printed.
 func runSessions(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 0 {
-		return cmdUsage(stderr, "sessions", "takes no arguments", "usage: aggy sessions\n")
+		return cmdUsage(stderr, "sessions", "takes no arguments", sessionsUsage)
 	}
 	ctx := context.Background()
 	s, err := openIndex(ctx)
@@ -145,7 +145,7 @@ func runSessions(args []string, stdout, stderr io.Writer) int {
 // Borrows are children too.
 func runSession(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 0 {
-		return cmdUsage(stderr, "session", "takes no arguments", "usage: aggy session\n")
+		return cmdUsage(stderr, "session", "takes no arguments", sessionUsage)
 	}
 	ctx := context.Background()
 	s, err := openIndex(ctx)
