@@ -370,7 +370,7 @@ func TestToolShimSwitchResume(t *testing.T) {
 
 	// A resume wires it again, --mcp-config first.
 	_ = os.Remove(w.record)
-	s = w.start(t, map[string]any{"stdout": "READY>"})
+	s = w.start(t, map[string]any{"stdout": "READY>"}, "resume")
 	s.waitFor([]byte("READY>"))
 	s.send([]byte("/exit\r"))
 	if code := s.exit(); code != 0 {

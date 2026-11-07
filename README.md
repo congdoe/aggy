@@ -53,7 +53,9 @@ aggy borrow review "Check this change for bugs"          # run inside a git work
 aggy image "Hero image, 1200x630, the text 'aggy'" --out docs/hero.png
 aggy inbox             # unread borrow reports
 
-aggy run claude        # start a vendor CLI under aggy (pass-through; switching is M2)
+aggy                   # start a new session here on your default vendor, as claude does
+aggy -c                # reopen the latest session here (aggy -r <id> for another)
+aggy claude --model opus --permission-mode plan   # a vendor CLI with its own flags
 aggy skill link        # let each CLI call aggy itself
 aggy policy wire       # write aggy's safety policy into Codex (Claude and Grok get it per launch)
 aggy memory import --from claude   # copy Claude's memory into .aggy/memory.md, after a diff

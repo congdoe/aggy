@@ -99,7 +99,7 @@ func TestPlan(t *testing.T) {
 			},
 		},
 		{
-			name: "bare with no parent here starts one on the default vendor",
+			name: "resume with no parent here starts one on the default vendor",
 			seed: func(t *testing.T, s *store.Store, dir string) {
 				seedParent(t, s, "99999999-0000-4000-8000-000000000000", t.TempDir(),
 					store.Child{ID: "x", Vendor: "grok", VendorSessionID: sidB})
@@ -111,7 +111,7 @@ func TestPlan(t *testing.T) {
 			},
 		},
 		{
-			name: "bare resumes the child last on screen",
+			name: "resume reopens the child last on screen",
 			seed: func(t *testing.T, s *store.Store, dir string) {
 				seedParent(t, s, "p0000000-0000-4000-8000-000000000000", dir,
 					store.Child{ID: "old", Vendor: "grok", VendorSessionID: sidB},

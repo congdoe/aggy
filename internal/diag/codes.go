@@ -143,6 +143,8 @@ var (
 var (
 	CodeUsage            = Code{"cli.usage"}
 	CodeConfig           = Code{"cli.config_invalid"}
+	CodeFlagClash        = Code{"cli.flag_clash"}
+	CodeNotFound         = Code{"cli.not_found"}
 	CodeStore            = Code{"store.unavailable"}
 	CodeOneHop           = Code{"borrow.one_hop"}
 	CodeBorrowInvalid    = Code{"borrow.invalid_request"}
@@ -321,6 +323,8 @@ var events = []EventInfo{
 
 var codes = []CodeInfo{
 	{CodeUsage, false, "Bad arguments or flags.", "Run the command with --help."},
+	{CodeFlagClash, false, "A flag for the vendor CLI clashes with what aggy passes it at launch.", "Drop the flag; the message says what aggy does instead. Run the CLI itself if you need it."},
+	{CodeNotFound, false, "No session, borrow, change, or file has that id or name.", "List them: aggy sessions, aggy session, aggy inbox, or aggy log."},
 	{CodeConfig, false, "A config file could not be read or is invalid.", "The message names the file and key; fix it."},
 	{CodeStore, false, "The index (~/.aggy/aggy.db) could not be opened, read, or written.", "aggy doctor; the state dir's permissions and free space."},
 	{CodeOneHop, true, "aggy borrow or aggy gc ran inside a borrow child (AGGY_DELEGATED is set): borrows are one hop.", "Run it from your own shell. A child that tries this was steered to; read its task."},

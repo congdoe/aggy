@@ -21,6 +21,8 @@ var _ Adapter = stub{}
 
 func (stub) Vendor() Vendor { return Grok }
 
+func (stub) PassFlags() PassFlags { return PassFlags{} }
+
 func (stub) TestedVersions() VersionRange { return VersionRange{Min: "1.0.70", Max: "1.0.70"} }
 func (stub) LockdownCaps(Kind) []string   { return nil }
 func (stub) SelfTestKind() Kind           { return Research }

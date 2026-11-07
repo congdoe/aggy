@@ -283,6 +283,10 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 		{"new", alt, adapter.InteractiveRequest{}, []string{"--no-alt-screen"}},
 		{"new with a brief", alt, adapter.InteractiveRequest{BriefFile: brief}, []string{"--no-alt-screen", adapter.BriefPrompt(brief)}},
 		{"resume", alt, adapter.InteractiveRequest{Resume: tid}, []string{"resume", "--no-alt-screen", tid}},
+		// T6903: the user's flags come after the id, so none can take it
+		// as its value, and before a brief.
+		{"the CLI's own flags", alt, adapter.InteractiveRequest{BriefFile: brief, Extra: []string{"-c", "foo=bar"}}, []string{"--no-alt-screen", "-c", "foo=bar", adapter.BriefPrompt(brief)}},
+		{"the CLI's own flags on a resume", alt, adapter.InteractiveRequest{Resume: tid, Extra: []string{"-c", "foo=bar"}}, []string{"resume", "--no-alt-screen", tid, "-c", "foo=bar"}},
 		// --no-alt-screen is not verified for Codex: without the probe
 		// finding it in help, it is left out.
 		{"new, help lacks the flag", nil, adapter.InteractiveRequest{}, nil},
