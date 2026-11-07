@@ -91,6 +91,19 @@ var plantsGit = []string{
 	"export 'PA'TH=./bin; git status",
 	"export PA\\\n\"T\"H=./bin; git status",
 	"eval \"PA\"\"TH=./bin\"; git status",
+	"PATH=./bin; g\"it\"   status",
+	"PATH=./bin; \\git status",
+	"PATH=./bin; command git status",
+	"PATH=./bin; /usr/bin/git status",
+	"PATH=./bin; git\tstatus",
+	"PATH=./bin; git \\\nstatus",
+	"for x path in a ./bin; do git status; done",
+	"for x y path in a b ./bin; do git status; done",
+	"x=TH; export A=1 PA$x=./bin; git status",
+	"`git() { ./bin/git; }; git status`; echo",
+	"BASH_CMDS[git]=./bin/git; git status",
+	"commands[git]=./bin/git; git status",
+	"functions[git]=./bin/git; git status",
 }
 
 // settingDirectives are other shapes the scan must refuse. They do not plant a
@@ -122,6 +135,13 @@ var settingDirectives = []string{
 	"EDITOR=./x; git status",
 	"VISUAL=./x; git status",
 	"RIPGREP_CONFIG_PATH=./x; git status",
+	"export DEVELOPER_DIR=./dev; git status",
+	"export TOOLCHAINS=x; git status",
+	"export LESS=+q LESSKEY=x; git log --oneline -20",
+	"export PS4='$(./bin/git)'; git status",
+	"aliases[git]=./bin/git; git status",
+	"x=GIT; unset ${x}_CONFIG_COUNT; git status",
+	"read a path; git status",
 	"cdpath=(./x); git status",
 	"fpath=(./x); git status",
 	"manpath=(./x); git status",
@@ -143,7 +163,8 @@ var settingDirectives = []string{
 	"set -- PATH=./bin; export \"$@\"",
 }
 
-var guardRuleWords = []string{"git", "ls", "pwd"}
+// guardRules stands for parity.OpenCodeShellRules, which this package cannot import.
+var guardRules = []string{"git status", "git status --short", "git diff --no-ext-diff --no-textconv", "git diff --no-ext-diff --no-textconv --stat", "git log --oneline -20", "git branch --show-current", "ls", "pwd"}
 
 // guardRefuses is the guard's answer on one shell command.
 func guardRefuses(t *testing.T, root, cmd string) bool {
@@ -152,7 +173,7 @@ func guardRefuses(t *testing.T, root, cmd string) bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return OpenCodeGuard(b, OpenCodeEnv{RuleWords: guardRuleWords, Getenv: func(string) string { return "" }}).Deny
+	return OpenCodeGuard(b, OpenCodeEnv{ShellRules: guardRules, Getenv: func(string) string { return "" }}).Deny
 }
 
 // TestGuardShapes holds both sides of the scan: every shape two rounds of
@@ -162,66 +183,151 @@ func TestGuardShapes(t *testing.T) {
 	for _, list := range []struct {
 		name   string
 		shapes []string
+		suffix string
 		want   bool
 	}{
-		{"plants a git", plantsGit, true},
-		{"sets a listed variable", settingDirectives, true},
-		{"a review's bypass", reviewBypasses, true},
-		{"everyday, but names a listed variable", everydayRefused, true},
-		{"everyday", everydayCommands, false},
-		{"passes by design", reviewDesignPasses, false},
+		{"plants a git", plantsGit, "", true},
+		// Some name no rule themselves, and only a rule beside them matters.
+		{"sets a listed variable", settingDirectives, "\ngit status", true},
+		{"a review's bypass", reviewBypasses, "", true},
+		{"everyday, but beside a rule", everydayRefused, "", true},
+		{"everyday", everydayCommands, "", false},
+		{"passes by design", reviewDesignPasses, "", false},
+		{"no rule, so it asks", noRuleShapes, "", false},
 	} {
 		for _, c := range list.shapes {
-			if got := guardRefuses(t, root, c); got != list.want {
-				t.Errorf("%s: %q: refused = %v, want %v", list.name, c, got, list.want)
+			if got := guardRefuses(t, root, c+list.suffix); got != list.want {
+				t.Errorf("%s: %q: refused = %v, want %v", list.name, c+list.suffix, got, list.want)
 			}
 		}
 	}
 }
 
-// TestGuardNames: the refusal names what to rewrite.
+// TestGuardScansInFullOnceItCannotTell: with a rule the list does not hold, or no
+// list, it goes back to scanning everything, whichever side says so.
+func TestGuardScansInFullOnceItCannotTell(t *testing.T) {
+	root := resolved(t)
+	for _, c := range noRuleShapes {
+		b, err := json.Marshal(OpenCodeInput{Tool: "shell", Directory: root, Root: root, Command: c})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fromPlugin, err := json.Marshal(OpenCodeInput{Tool: "shell", Directory: root, Root: root, Command: c, Always: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		get := func(string) string { return "" }
+		for name, d := range map[string]Decision{
+			"the plugin says so": OpenCodeGuard(fromPlugin, OpenCodeEnv{ShellRules: guardRules, Getenv: get}),
+			"the repo's mark":    OpenCodeGuard(b, OpenCodeEnv{ShellRules: guardRules, Getenv: get, AlwaysSeen: func(string) bool { return true }}),
+			"no rules to go by":  OpenCodeGuard(b, OpenCodeEnv{Getenv: get}),
+		} {
+			// A function needs a rule's name, which an empty list cannot give.
+			needsName := name == "no rules to go by" && !strings.Contains(c, "PATH") && !strings.Contains(c, "$X")
+			if !d.Deny && !needsName {
+				t.Errorf("%s: %q passed", name, c)
+			}
+		}
+	}
+}
+
+// TestGuardNames: the refusal names what to rewrite, and gives a way round.
 func TestGuardNames(t *testing.T) {
 	cases := []struct{ cmd, want string }{
 		{"PATH=./bin; git status", "names PATH"},
-		{"true; GIT_DIR=x", "names GIT_DIR"},
-		{"path=(x)", "names path"},
-		{"for fpath in x; do :; done", "names fpath"},
-		{"echo $PATH; HOME=x", "names HOME"},
-		{"git() { :; }", "named git"},
-		{"function ls { :; }", "named ls"},
-		{"export \"$X=1\"", "from a $ expansion"},
+		{"true; GIT_DIR=x; ls", "names GIT_DIR"},
+		{"path=(x); ls", "names path"},
+		{"for fpath in x; do ls; done", "names fpath"},
+		{"echo $PATH; HOME=x; ls", "names HOME"},
+		{"git() { :; }; git status", "named git"},
+		{"function ls { :; }; ls", "named ls"},
+		{"export \"$X=1\"; ls", "from a $ expansion"},
 	}
 	for _, c := range cases {
-		if why := shellScan(c.cmd, guardRuleWords); !strings.Contains(why, c.want) {
+		why := shellScan(c.cmd, guardRules, false)
+		if !strings.Contains(why, c.want) || !strings.Contains(why, "git --no-pager") {
 			t.Errorf("%q: %q, want %q", c.cmd, why, c.want)
+		}
+		if len(why) > 590 {
+			t.Errorf("%q: %d bytes: the plugin keeps 600, and the tag goes after it", c.cmd, len(why))
 		}
 	}
 }
 
 // TestGuardFunctionNamesComeFromTheRules: the names come from the rules rendered
-// (parity.OpenCodeRuleWords), so another function is nobody's business.
+// (parity.OpenCodeShellRules), so another function is nobody's business.
 func TestGuardFunctionNamesComeFromTheRules(t *testing.T) {
-	if why := shellScan("make() { :; }", guardRuleWords); why != "" {
+	if why := shellScan("make() { :; }; ls", guardRules, false); why != "" {
 		t.Errorf("no rule starts with make: %q", why)
 	}
-	if why := shellScan("make() { :; }", []string{"make"}); why == "" {
+	if why := shellScan("make() { :; }; make", []string{"make"}, false); why == "" {
 		t.Error("a rule starting with make should count")
 	}
 }
 
-// TestGuardQuoteRemovalCosts pins the false refusals docs/design.md says that
-// form brings: the raw text alone passes these.
+// TestHoldsRule: as words, in any spacing; a longer word is not the rule.
+func TestHoldsRule(t *testing.T) {
+	cases := []struct {
+		text string
+		want bool
+	}{
+		{"git status", true},
+		{"git   status", true},
+		{"git\tstatus --short", true},
+		{"true; git status", true},
+		{"/usr/bin/git status", true},
+		{"mygit status", false},
+		{"git status-x", false},
+		{"git log", false},
+		{"git log --oneline -20", true},
+		{"git log --oneline -200", false},
+		{"ls", true},
+		{"git ls-files", false},
+		{"lsof", false},
+		{"cd x && ls", true},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := holdsRule(c.text, guardRules); got != c.want {
+			t.Errorf("%q: got %v", c.text, got)
+		}
+	}
+}
+
+// TestDynamicDeclaration: a name, in any word, not a value.
+func TestDynamicDeclaration(t *testing.T) {
+	cases := []struct {
+		text string
+		want bool
+	}{
+		{"export $X=1", true},
+		{"export \"$X=1\"", true},
+		{"export A=1 PA$x=2", true},
+		{"export A=1 $X=2", true},
+		{"export A=1 $X", true},
+		{"unset ${x}_COUNT", true},
+		{"export A=$X B=$Y", false},
+		{"local x=$1", false},
+		{"export FOO=\"$(git rev-parse HEAD)\"", false},
+		{"declare -A m=([a]=$b)", false},
+		{"export A", false},
+	}
+	for _, c := range cases {
+		if got := dynamicDeclaration(c.text); got != c.want {
+			t.Errorf("%q: got %v", c.text, got)
+		}
+	}
+}
+
+// TestGuardQuoteRemovalCosts pins a false refusal docs/design.md says that form
+// brings, beside a rule: the raw text alone passes this.
 func TestGuardQuoteRemovalCosts(t *testing.T) {
-	for _, c := range []string{
-		"rg 'git\\(\\)' src",
-		"echo \"export \\$FOO=1\"",
-	} {
-		if scanText(c, guardRuleWords) != "" {
-			t.Errorf("%q: the raw text should pass", c)
-		}
-		if shellScan(c, guardRuleWords) == "" {
-			t.Errorf("%q: passed; correct docs/design.md", c)
-		}
+	c := "rg 'git\\(\\)' src; ls"
+	if scanText(c, firstWords(guardRules)) != "" {
+		t.Errorf("%q: the raw text should pass", c)
+	}
+	if shellScan(c, guardRules, false) == "" {
+		t.Errorf("%q: passed; correct docs/design.md", c)
 	}
 }
 
@@ -229,11 +335,13 @@ func TestGuardQuoteRemovalCosts(t *testing.T) {
 // catch, so a change to either side shows.
 func TestGuardDocumentedGaps(t *testing.T) {
 	for _, c := range []string{
-		"FOO=1; export FOO; git status",     // a variable that is not on the list
-		"eval \"${X}TH=./bin\"; git status", // built at run time, and eval asks
-		"git foo() ./bin/git; git status",   // zsh; OpenCode's own scanner fails this call
+		"FOO=1; export FOO; git status",                  // a variable that is not on the list
+		"eval \"${X}TH=./bin\"; git status",              // built at run time, and eval asks
+		"x=GIT; (( ${x}_CONFIG_COUNT = 0 )); git status", // built at run time, with no resource
+		"git foo() ./bin/git; git status",                // zsh; OpenCode's own scanner fails this call
+		"PATH=./bin; npm test",                           // no rule on the list, and it asks unless Always allow was given outside aggy
 	} {
-		if why := shellScan(c, guardRuleWords); why != "" {
+		if why := shellScan(c, guardRules, false); why != "" {
 			t.Errorf("%q: refused (%q); correct docs/design.md", c, why)
 		}
 	}

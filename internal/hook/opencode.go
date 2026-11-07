@@ -42,6 +42,9 @@ type OpenCodeInput struct {
 	// Auto says the launch used full auto, from the plugin's options, which
 	// come from aggy's per-launch config and not from the tool call.
 	Auto bool `json:"auto"`
+	// Always says the plugin saw a permission answered with Always allow this
+	// session, so a rule outside the rendered list is in force.
+	Always bool `json:"always"`
 }
 
 // OpenCodeEnv is what the guard reads from outside the payload.
@@ -57,10 +60,12 @@ type OpenCodeEnv struct {
 	// DeniedNames are the file names to refuse in any case
 	// (parity.OpenCodeDeniedNames, which this package cannot import).
 	DeniedNames []string
-	// RuleWords are the first words of the rendered shell allow rules
-	// (parity.OpenCodeRuleWords): a function by one of these names would run
-	// in place of an allowed command.
-	RuleWords []string
+	// ShellRules are the rendered shell allow rules (parity.OpenCodeShellRules).
+	// None means the scan always runs.
+	ShellRules []string
+	// AlwaysSeen says this repo has had a permission answered with Always allow
+	// under aggy, in any session. Nil means no.
+	AlwaysSeen func(root string) bool
 }
 
 // The refusals' words. They go to the model, as the tool's error.
@@ -138,7 +143,8 @@ func OpenCodeGuard(payload []byte, env OpenCodeEnv) Decision {
 		// Full auto runs any command with no prompt, so what the scan protects
 		// is not there to protect (docs/design.md).
 		if !in.Auto {
-			if why := shellScan(in.Command, env.RuleWords); why != "" {
+			always := in.Always || (env.AlwaysSeen != nil && env.AlwaysSeen(root))
+			if why := shellScan(in.Command, env.ShellRules, always); why != "" {
 				return Decision{Deny: true, Reason: why}
 			}
 		}
@@ -274,9 +280,11 @@ var sensitiveVars = []string{
 	"LD_*",                // loads a library into any program, on Linux
 	"DYLD_*",              // the same on macOS
 	"GCONV_PATH",          // loads a module into a glibc program that converts text, as git log can
-	"BASH_ENV",            // a file each bash script git starts runs first
-	"BASH_FUNC_*",         // a function bash imports from the environment, under any name
-	"ENV",                 // the same file for sh
+	"BASH_*",              // BASH_ENV, a file each bash script runs first; BASH_FUNC_x%%, an imported function; BASH_CMDS, the command hash
+	"ENV",                 // the same file as BASH_ENV, for sh
+	"DEVELOPER_DIR",       // on macOS /usr/bin/git is a shim, which runs the xcrun under this folder
+	"TOOLCHAINS",          // which toolchain the same shim's xcrun looks in
+	"PS4",                 // text a shell expands when it traces, which SHELLOPTS can turn on in a child
 	"SHELLOPTS",           // bash options a child bash starts with
 	"BASHOPTS",            // the same
 	"ZDOTDIR",             // where zsh finds its startup files
@@ -290,14 +298,17 @@ var sensitiveVars = []string{
 	"MANPAGER",            // the same for man, which git help runs
 	"LESSOPEN",            // a command less runs on each file, when it is the pager
 	"LESSCLOSE",           // the same, on closing
+	"LESS",                // less's own flags, which can run a command
+	"LESSKEY",             // a file of its key bindings and settings
 	"EDITOR",              // what git starts for a message
 	"VISUAL",              // the same
 	"RIPGREP_CONFIG_PATH", // flags rg reads from a file, where a rule names rg
 }
 
-// tiedVars are zsh's lower-case arrays tied to PATH and its like. `path` is a
-// common word, so only a shape that sets one counts.
-var tiedVars = []string{"path", "cdpath", "fpath", "manpath"}
+// tiedVars are zsh's lower-case arrays tied to PATH and its like, and the
+// zsh/parameter arrays that hold its hash, functions, and aliases. They are
+// common words, so only a shape that sets one counts.
+var tiedVars = []string{"path", "cdpath", "fpath", "manpath", "commands", "functions", "aliases"}
 
 var (
 	// quoteMarksRE is what the shell removes from a word once it has read it.
@@ -309,10 +320,10 @@ var (
 	bracedSetRE = regexp.MustCompile(`^(?:\[[^\]\n]*\])?:{0,2}=`)
 	// tiedSetRE is what follows a tied name where it is set.
 	tiedSetRE = regexp.MustCompile(`^(?:\+?=|:{1,2}=|\[)`)
-	// tiedLoopRE is a tied name as a loop's or read's variable.
-	tiedLoopRE = regexp.MustCompile(`(?:^|[\s;&|(){}])(?:for|select|foreach|read)[ \t]+(?:-\S+[ \t]+)*(path|cdpath|fpath|manpath)(?:[\s;(]|$)`)
+	// loopWordsRE is a loop's or read's words, up to the end of the statement.
+	loopWordsRE = regexp.MustCompile(`(?:^|[\s;&|(){}])(?:for|select|foreach|read)[ \t]+([^;&|()<>\n]*)`)
 	// declWordRE is a declaration builtin and the rest of its statement.
-	declWordRE = regexp.MustCompile(`(?:^|[\s;&|(){}!])(?:declare|typeset|export|readonly|local|integer|float)[ \t]+([^;&|\n]*)`)
+	declWordRE = regexp.MustCompile(`(?:^|[\s;&|(){}!])(?:declare|typeset|export|readonly|local|integer|float|unset|unsetenv)[ \t]+([^;&|\n]*)`)
 )
 
 // A byte before a tied name that makes it part of a longer word, as in
@@ -325,14 +336,20 @@ const tiedNotSetAfter = "-./:=@%+,~?"
 // variable, and (( )). So `for PATH in ./bin; do git status; done` ran ./bin/git
 // with no prompt under an allowed `git status`.
 //
+// That matters only when every command left is allowed, so nothing prompts. If
+// the text holds no allow rule, OpenCode asks, and the person sees the command:
+// a refusal there would only replace a prompt they could answer. So the scan
+// runs when the text holds a rule (holdsRule), when always says a rule outside
+// the rendered list is in force, or when there is no list to go by.
+//
 // This does not parse shell, and it knows nothing of quotes: parsing was
 // bypassed in each review, and refused everyday commands. It looks at the raw
-// text, so it refuses a commit message that names PATH, and it allows any
-// other declaration. It reads three forms, and any one can refuse. A line
-// continuation is the one thing the shell removes before anything else, so the
-// second has those gone: `PA\<newline>TH=x` sets PATH, and `# note\<newline>PATH=x`
-// only does as raw text. The third also has quotes and backslashes gone, as
-// `export P"A"TH=x` sets PATH with no prompt.
+// text, so it refuses a commit message that names PATH beside an allowed
+// command, and it allows any other declaration. It reads three forms, and any
+// one can refuse. A line continuation is the one thing the shell removes before
+// anything else, so the second has those gone: `PA\<newline>TH=x` sets PATH, and
+// `# note\<newline>PATH=x` only does as raw text. The third also has quotes and
+// backslashes gone, as `export P"A"TH=x` sets PATH with no prompt.
 //
 // It catches mistakes, not a hostile model: a name assembled at run time gets
 // past it (docs/design.md).
@@ -342,16 +359,60 @@ const tiedNotSetAfter = "-./:=@%+,~?"
 // OpenCode's scanner cannot analyze it, and that fails the call (scan.ts and
 // shell/parse.ts at v2.2.5).
 //
-// TODO(T6953): the review's remaining shapes.
-func shellScan(cmd string, ruleWords []string) string {
-	if why := scanText(cmd, ruleWords); why != "" {
-		return why
-	}
+// TODO(T6953): the review's remaining shapes, and an Always allow given outside
+// aggy, which is saved per project in opencode.db, so aggy cannot see it.
+func shellScan(cmd string, rules []string, always bool) string {
 	joined := strings.ReplaceAll(cmd, "\\\n", "")
-	if why := scanText(joined, ruleWords); why != "" {
-		return why
+	forms := []string{cmd, joined, quoteMarksRE.ReplaceAllString(joined, "")}
+	if !always && len(rules) > 0 && !slices.ContainsFunc(forms, func(f string) bool { return holdsRule(f, rules) }) {
+		return ""
 	}
-	return scanText(quoteMarksRE.ReplaceAllString(joined, ""), ruleWords)
+	for _, f := range forms {
+		if why := scanText(f, firstWords(rules)); why != "" {
+			return why
+		}
+	}
+	return ""
+}
+
+// holdsRule reports text that holds an allow rule as words, with its whitespace
+// collapsed. OpenCode needs far less: a resource must be the rule exactly, as
+// its Wildcard.match has no whitespace rule and rawWords are not used for the
+// match (permission.ts and util/wildcard.ts at v2.2.5). So `\git status`,
+// `command git status`, and `/usr/bin/git status` all ask, but they count here,
+// since over-matching only runs the scan.
+func holdsRule(text string, rules []string) bool {
+	text = strings.Join(strings.Fields(text), " ")
+	wordByte := func(c byte) bool {
+		return c == '_' || c == '-' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+	}
+	for _, r := range rules {
+		for from := 0; ; {
+			i := strings.Index(text[from:], r)
+			if i < 0 {
+				break
+			}
+			i += from
+			end := i + len(r)
+			if (i == 0 || !wordByte(text[i-1])) && (end == len(text) || !wordByte(text[end])) {
+				return true
+			}
+			from = i + 1
+		}
+	}
+	return false
+}
+
+// firstWords are the rules' first words, once each: a function by one of these
+// names would run in place of an allowed command.
+func firstWords(rules []string) []string {
+	var out []string
+	for _, r := range rules {
+		if w, _, _ := strings.Cut(r, " "); !slices.Contains(out, w) {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 // scanText is one pass over the text.
@@ -370,23 +431,42 @@ func scanText(text string, ruleWords []string) string {
 		}
 		return whyVariable(word)
 	}
-	if m := tiedLoopRE.FindStringSubmatch(text); m != nil {
-		return whyVariable(m[1])
+	if name := tiedLoopVar(text); name != "" {
+		return whyVariable(name)
 	}
 	for _, name := range ruleWords {
 		if definesFunction(text, name) {
-			return fmt.Sprintf("aggy's guard refuses this shell command: it looks like it defines a function named %s, which would run in place of the allowed command, and OpenCode's permission check would not ask. Rewrite the command without that text.", name)
+			return fmt.Sprintf("aggy's guard refuses this shell command: beside an allowed command, it looks like it defines a function named %s, which would run in its place, and OpenCode's permission check would not ask. Rewrite it without that text. "+guardRoutes, name)
 		}
 	}
 	if dynamicDeclaration(text) {
-		return "aggy's guard refuses this shell command: a declaration (declare, typeset, export, readonly, local, integer, or float) takes its variable's name from a $ expansion, so aggy cannot tell which variable it sets. Rewrite it with the name spelled out."
+		return "aggy's guard refuses this shell command: beside an allowed command, a declaration (declare, typeset, export, readonly, local, integer, float, or unset) takes its variable's name from a $ expansion, so aggy cannot tell which variable it sets. Rewrite it with the name spelled out. " + guardRoutes
+	}
+	return ""
+}
+
+// guardRoutes is the way round for the usual reasons to name one.
+const guardRoutes = "For a pager use git --no-pager, for a commit message git commit -F, and for a search the grep tool."
+
+// tiedLoopVar finds a tied name among a loop's or read's variables: any of
+// its words, up to `in`. A flag is no name, nor is what follows `in`.
+func tiedLoopVar(text string) string {
+	for _, m := range loopWordsRE.FindAllStringSubmatch(text, -1) {
+		for _, f := range strings.Fields(m[1]) {
+			if f == "in" {
+				break
+			}
+			if slices.Contains(tiedVars, f) {
+				return f
+			}
+		}
 	}
 	return ""
 }
 
 // whyVariable is the refusal that names the variable.
 func whyVariable(name string) string {
-	return fmt.Sprintf("aggy's guard refuses this shell command: it names %s, which can change what an allowed command runs, and OpenCode's permission check does not see a variable being set. Reading it as $%s is fine; any other mention counts, in a comment or a commit message too. Rewrite the command without it.", name, name)
+	return fmt.Sprintf("aggy's guard refuses this shell command: beside an allowed command, it names %s, which can change what that command runs, and OpenCode's permission check does not see a variable being set. Reading it as $%s is fine; any other mention counts, in a comment or a commit message too. Run the allowed command on its own, or rewrite without the name. "+guardRoutes, name, name)
 }
 
 // sensitiveVar reports a word in sensitiveVars.
@@ -423,7 +503,7 @@ func readsVar(before, after string) bool {
 // backslash counts, as the shells take those too.
 func definesFunction(text, name string) bool {
 	q := regexp.QuoteMeta(name)
-	const start = `(?:^|[\s;&|(){}])`
+	const start = `(?:^|[\s;&|(){}` + "`" + `])`
 	const word = `[^\s;&|(){}]+`
 	for _, pattern := range []string{
 		start + `["'\\]?` + q + `["']?\s*\(\s*\)`,
@@ -439,8 +519,9 @@ func definesFunction(text, name string) bool {
 }
 
 // dynamicDeclaration reports a declaration builtin with a $ or a backquote
-// where a name goes: in its first word after the options, before any =, or at
-// the start of a later word that has an =. Its value may hold either.
+// where a name goes: in any word's text before its =, or at the start of a word
+// with no =, which may expand to a whole assignment, except that in the first
+// word it counts anywhere. A value may hold either: `export A=$X B=$Y` passes.
 func dynamicDeclaration(text string) bool {
 	for _, m := range declWordRE.FindAllStringSubmatch(text, -1) {
 		first := true
@@ -449,10 +530,11 @@ func dynamicDeclaration(text string) bool {
 				continue
 			}
 			name, _, hasValue := strings.Cut(f, "=")
+			trimmed := strings.TrimLeft(f, `"'`)
 			switch {
-			case first && strings.ContainsAny(name, "$`"):
+			case (first || hasValue) && strings.ContainsAny(name, "$`"):
 				return true
-			case !first && hasValue && strings.ContainsAny(strings.TrimLeft(f, `"'`)[:1], "$`"):
+			case !hasValue && trimmed != "" && strings.ContainsAny(trimmed[:1], "$`"):
 				return true
 			}
 			first = false

@@ -45,12 +45,16 @@ export default {
   setup: async (ctx) => {
     const { aggy, root } = ctx.options
     const auto = ctx.options.auto === "1"
+    // Always allow saves a rule aggy did not render, so the guard must stop
+    // going by its list. aggy keeps this per repo too (aggy hook
+    // opencode-always), as the rule outlives this plugin and this session.
+    let always = false
     const directory = ctx.location.directory
 
     // Every call is checked. A check that crashes, hangs, or is missing
     // refuses: a throw here fails that tool call alone.
     await ctx.tool.hook("execute.before", async (e) => {
-      const r = await run(aggy, ["hook", "opencode-guard"], { tool: e.tool, directory, root, auto, ...guardFields(e.input) }, GUARD_MS)
+      const r = await run(aggy, ["hook", "opencode-guard"], { tool: e.tool, directory, root, auto, always, ...guardFields(e.input) }, GUARD_MS)
       if (r.failed) {
         const why = r.stderr.trim().slice(0, MAX_REASON)
         throw new Error(why || "aggy's guard did not answer, so this call was refused")
@@ -68,6 +72,10 @@ export default {
     send("GuardLoaded", { directory })
     ;(async () => {
       for await (const event of ctx.event.subscribe({ types: Object.keys(report) })) {
+        if (event.type === "permission.replied" && event.data.reply === "always") {
+          always = true
+          run(aggy, ["hook", "opencode-always"], { root }, HOOK_MS)
+        }
         const make = report[event.type]
         if (make) send(...make(event.data))
       }
