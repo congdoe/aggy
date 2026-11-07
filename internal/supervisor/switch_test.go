@@ -708,8 +708,10 @@ func TestSwitchOnLimitCodex(t *testing.T) {
 	ch := make(chan LimitHit, 1)
 	ts, c, done, sock := switchRunOn(t, true, adapter.Codex, limitOpts(ch, adapter.Grok))
 	ch <- LimitHit{Vendor: adapter.Codex}
-	poll(t, "the note", []byte("codex hit its limit. grok has quota left"), ts.screen)
+	// T6941: a turn is running, so the note waits for its end.
+	never(t, "the note mid-turn", []byte("hit its limit"), ts.screen, 200*time.Millisecond)
 	_ = request(t, sock, `{"type":"hook-event","vendor":"codex","event":"Stop","payload":{"session_id":"`+childSID+`"}}`)
+	poll(t, "the note", []byte("codex hit its limit. grok has quota left"), ts.screen)
 	time.Sleep(200 * time.Millisecond)
 	if bytes.Contains(c.received(), []byte("/exit")) || bytes.Contains(ts.screen(), []byte("switches, Esc stays")) {
 		t.Fatal("a limit on codex offered a switch by itself")
