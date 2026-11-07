@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/congdoe/aggy/internal/patch"
@@ -48,6 +49,41 @@ func ParseVendor(s string) (Vendor, error) {
 // have no live check of it yet (docs/adapters.md). The supervisor asks
 // the user before it types anything, verified or not.
 func ExitCommand(v Vendor) (cmd string, verified bool) { return "/exit", v == OpenCode }
+
+// localCommands are, per vendor, the commands that start no model turn. Each
+// comes from the vendor's docs; a vendor with none sourced has none, which is the
+// safe side: its command's Enter counts as maybe starting a turn.
+//
+// Claude: code.claude.com/docs/en/commands.md, "All commands", read 2026-11-07,
+// which says most entries are "built-in commands whose behavior is coded into the
+// CLI" and marks those that are "a prompt handed to Claude" as Skill. None of these
+// is so marked, and each row describes a dialog or a display, not a model request;
+// not seen live (TODO(T6895)). /compact is out: it summarizes the conversation, so
+// it may run a turn. So are custom commands and skills, and any command with
+// arguments. Whether a user's own skill can take one of these names is unverified.
+//
+// Codex is empty on purpose as well: its SessionStart comes inside a turn, so a
+// move there says nothing of a turn (session.followSession).
+var localCommands = map[Vendor][]string{
+	Claude: {
+		"/clear",       // "Start a new conversation with empty context"
+		"/model",       // "With no argument, opens a picker"
+		"/usage",       // "Show session cost, plan usage limits, and activity stats"
+		"/cost",        // "Alias for /usage"
+		"/status",      // "Open the Settings interface on the Status tab"
+		"/help",        // "Show help and available commands"
+		"/config",      // "Open the Settings interface"
+		"/permissions", // "Opens an interactive dialog"
+		"/memory",      // "Edit CLAUDE.md files, ... and view auto memory entries"
+		"/context",     // "Visualize current context usage as a colored grid"
+	},
+}
+
+// LocalCommand reports whether line, whole, is a command of v's that starts no
+// model turn.
+func LocalCommand(v Vendor, line string) bool {
+	return slices.Contains(localCommands[v], line)
+}
 
 // Kind is what a borrow is for. The on-screen agent picks the kind; aggy
 // picks the vendor.
