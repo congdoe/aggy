@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
@@ -41,44 +42,37 @@ func runLog(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprint(stdout, logUsage)
 			return 0
 		}
-		fmt.Fprintf(stderr, "aggy log: %v\n\n%s", err, logUsage)
-		return 2
+		return cmdUsage(stderr, "log", err.Error(), logUsage)
 	}
 	if fl.NArg() > 0 || *n < 0 {
-		fmt.Fprintf(stderr, "aggy log: unexpected arguments\n\n%s", logUsage)
-		return 2
+		return cmdUsage(stderr, "log", "unexpected arguments", logUsage)
 	}
 	path, err := store.DefaultPath()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy log: %v\n", err)
-		return 1
+		return cmdErr(stderr, "log", diag.CodeStore, err)
 	}
 	if _, err := safefs.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		fmt.Fprintln(stdout, "No events yet.")
 		return 0
 	} else if err != nil {
-		fmt.Fprintf(stderr, "aggy log: %v\n", err)
-		return 1
+		return cmdErr(stderr, "log", diag.CodeStore, err)
 	}
 	// Read only: aggy log never creates, migrates, or writes the index.
 	ctx := context.Background()
 	s, err := store.OpenReadOnly(ctx, path)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy log: %v\n", err)
-		return 1
+		return cmdErr(stderr, "log", diag.CodeStore, err)
 	}
 	defer func() { _ = s.Close() }()
 	if v, err := s.Version(ctx); err != nil {
-		fmt.Fprintf(stderr, "aggy log: %v\n", err)
-		return 1
+		return cmdErr(stderr, "log", diag.CodeStore, err)
 	} else if v < logSchema {
 		fmt.Fprintf(stdout, "The index is at schema version %d and has no event log yet. Run another aggy command to upgrade it.\n", v)
 		return 0
 	}
 	events, err := s.Events(ctx, store.EventFilter{ParentID: *parent, Limit: *n})
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy log: %v\n", store.ReadError(err))
-		return 1
+		return cmdErr(stderr, "log", diag.CodeStore, store.ReadError(err))
 	}
 	if len(events) == 0 {
 		fmt.Fprintln(stdout, "No events yet.")

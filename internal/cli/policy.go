@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/manifest"
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/patch"
@@ -42,19 +43,16 @@ func runPolicy(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprint(stdout, policyUsage)
 			return 0
 		}
-		fmt.Fprint(stderr, policyUsage)
-		return 2
+		return cmdUsage(stderr, "policy", "name a subcommand", policyUsage)
 	}
 	fl := flag.NewFlagSet("policy wire", flag.ContinueOnError)
 	fl.SetOutput(io.Discard)
 	dryRun := fl.Bool("dry-run", false, "")
 	if err := fl.Parse(args[1:]); err != nil || fl.NArg() > 0 {
-		fmt.Fprintf(stderr, "aggy policy wire: bad arguments\n\n%s", policyUsage)
-		return 2
+		return cmdUsage(stderr, "policy wire", "bad arguments", policyUsage)
 	}
 	fail := func(err error) int {
-		fmt.Fprintf(stderr, "aggy policy wire: %s\n", termsafe.Line(err.Error()))
-		return 1
+		return cmdErrDry(stderr, "policy wire", diag.CodeWireFailed, err, *dryRun)
 	}
 	path, err := parity.CodexRulesPath()
 	if err != nil {
@@ -67,7 +65,7 @@ func runPolicy(args []string, stdout, stderr io.Writer) int {
 	ps := []patch.Patch{p}
 	if *dryRun {
 		if _, err := manifest.Preview(stdout, ps); err != nil {
-			return 1
+			return fail(err)
 		}
 		return 0
 	}

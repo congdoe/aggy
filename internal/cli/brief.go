@@ -14,9 +14,9 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/brief"
 	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/store"
-	"github.com/congdoe/aggy/internal/termsafe"
 	"github.com/congdoe/aggy/internal/transcript"
 )
 
@@ -57,12 +57,10 @@ func briefWith(args []string, e borrowEnv, stdout, stderr io.Writer) int {
 			fmt.Fprint(stdout, briefUsage)
 			return 0
 		}
-		fmt.Fprintf(stderr, "aggy brief: %v\n\n%s", err, briefUsage)
-		return 2
+		return cmdUsage(stderr, "brief", err.Error(), briefUsage)
 	}
 	usageErr := func(msg string) int {
-		fmt.Fprintf(stderr, "aggy brief: %s\n\n%s", msg, briefUsage)
-		return 2
+		return cmdUsage(stderr, "brief", msg, briefUsage)
 	}
 	switch {
 	case fl.NArg() > 0:
@@ -82,8 +80,7 @@ func briefWith(args []string, e borrowEnv, stdout, stderr io.Writer) int {
 	}
 	cwd, err := e.cwd()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy brief: %v\n", err)
-		return 1
+		return cmdErr(stderr, "brief", diag.CodeCommandFailed, err)
 	}
 	root, inRepo := repoRoot(cwd)
 	if *to != "" {
@@ -93,12 +90,10 @@ func briefWith(args []string, e borrowEnv, stdout, stderr io.Writer) int {
 		// A brief carries repo content, so it obeys allowed_vendors.
 		eff, err := repoEffective(config.Config{}, root)
 		if err != nil {
-			fmt.Fprintf(stderr, "aggy brief: %v\n", err)
-			return 1
+			return cmdErr(stderr, "brief", diag.CodeCommandFailed, err)
 		}
 		if !eff.Allows(in.To) {
-			fmt.Fprintf(stderr, "aggy brief: this repo's allowed_vendors does not list %s\n", in.To)
-			return 1
+			return cmdFail(stderr, "brief", diag.CodeNotAllowed, fmt.Sprintf("this repo's allowed_vendors does not list %s", in.To))
 		}
 	}
 
@@ -219,8 +214,11 @@ func childBrief(ctx context.Context, s *store.Store, e borrowEnv, pl launchPlan)
 // last-active times from the session files (refreshChildren).
 func showBrief(name string, t target, stdout, stderr io.Writer) int {
 	fail := func(err error) int {
-		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(err.Error()))
-		return 1
+		code := diag.CodeLaunchFailed
+		if errors.Is(err, errNoSession) {
+			code = diag.CodeNotFound
+		}
+		return cmdErr(stderr, strings.TrimPrefix(name, "aggy "), code, err)
 	}
 	ctx := context.Background()
 	s, err := openIndex(ctx)

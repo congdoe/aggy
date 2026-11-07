@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/manifest"
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/patch"
@@ -40,25 +41,29 @@ git never runs it.
   --dry-run   show the change and make none
 `
 
+// errNotInRepo matches a command that needs a git work tree and has none.
+var errNotInRepo = errors.New("is in no git work tree")
+
 func runAttribution(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "wire" {
 		if len(args) > 0 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
 			fmt.Fprint(stdout, attributionUsage)
 			return 0
 		}
-		fmt.Fprint(stderr, attributionUsage)
-		return 2
+		return cmdUsage(stderr, "attribution", "name a subcommand", attributionUsage)
 	}
 	fl := flag.NewFlagSet("attribution wire", flag.ContinueOnError)
 	fl.SetOutput(io.Discard)
 	dryRun := fl.Bool("dry-run", false, "")
 	if err := fl.Parse(args[1:]); err != nil || fl.NArg() > 0 {
-		fmt.Fprintf(stderr, "aggy attribution wire: bad arguments\n\n%s", attributionUsage)
-		return 2
+		return cmdUsage(stderr, "attribution wire", "bad arguments", attributionUsage)
 	}
 	fail := func(err error) int {
-		fmt.Fprintf(stderr, "aggy attribution wire: %s\n", termsafe.Line(err.Error()))
-		return 1
+		code := diag.CodeWireFailed
+		if errors.Is(err, errNotInRepo) {
+			code = diag.CodeNotInRepo
+		}
+		return cmdErrDry(stderr, "attribution wire", code, err, *dryRun)
 	}
 	env := defaultBorrowEnv()
 	ctx := context.Background()
@@ -77,7 +82,7 @@ func runAttribution(args []string, stdout, stderr io.Writer) int {
 	ps := []patch.Patch{p}
 	if *dryRun {
 		if _, err := manifest.Preview(stdout, ps); err != nil {
-			return 1
+			return fail(err)
 		}
 		return 0
 	}
@@ -113,7 +118,7 @@ func runAttribution(args []string, stdout, stderr io.Writer) int {
 func (e borrowEnv) attributionHookPath(ctx context.Context, cwd string) (string, error) {
 	root, ok := repoRoot(cwd)
 	if !ok {
-		return "", fmt.Errorf("%s is in no git work tree", cwd)
+		return "", fmt.Errorf("%s: %w", cwd, errNotInRepo)
 	}
 	out, err := e.gitOutput(ctx, root, "config", "--show-scope", "--get-all", "core.hooksPath")
 	if err != nil {

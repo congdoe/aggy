@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -11,7 +12,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/borrow"
-	"github.com/congdoe/aggy/internal/termsafe"
+	"github.com/congdoe/aggy/internal/diag"
 )
 
 const imageUsage = `Usage: aggy image "<brief>" --out PATH [--vendor codex|grok] [--ref IMG]... [--n N]
@@ -143,23 +144,21 @@ func mediaWith(kind adapter.Kind, args []string, env borrowEnv, stdout, stderr i
 	if kind == adapter.Video {
 		name, usage, flags = "aggy video", videoUsage, []string{"--out", "--vendor"}
 	}
+	cmd := strings.TrimPrefix(name, "aggy ")
 	ma, err := parseMediaArgs(args, flags)
 	if err != nil {
-		fmt.Fprintf(stderr, "%s: %s\n\n%s", name, termsafe.Field(err.Error()), usage)
-		return 2
+		return cmdUsage(stderr, cmd, err.Error(), usage)
 	}
 	if ma.help {
 		fmt.Fprint(stdout, usage)
 		return 0
 	}
 	if ma.out == "" && ma.edit == "" {
-		fmt.Fprintf(stderr, "%s: --out is required\n\n%s", name, usage)
-		return 2
+		return cmdUsage(stderr, cmd, "--out is required", usage)
 	}
 	cwd, err := env.cwd()
 	if err != nil {
-		fmt.Fprintf(stderr, "%s: %v\n", name, err)
-		return 1
+		return cmdErr(stderr, cmd, diag.CodeCommandFailed, err)
 	}
 	media := &borrow.Media{N: ma.n}
 	if ma.edit != "" {
@@ -169,12 +168,14 @@ func mediaWith(kind adapter.Kind, args []string, env borrowEnv, stdout, stderr i
 		edited := absIn(cwd, ma.edit)
 		sc, err := borrow.ReadSidecar(root, edited)
 		if err != nil {
-			fmt.Fprintf(stderr, "%s: --edit: %s\n", name, termsafe.Field(err.Error()))
-			return 1
+			code := diag.CodeCommandFailed
+			if errors.Is(err, fs.ErrNotExist) {
+				code = diag.CodeNotFound
+			}
+			return cmdErr(stderr, cmd, code, fmt.Errorf("--edit: %w", err))
 		}
 		if ma.vendor != "" && ma.vendor != sc.Vendor {
-			fmt.Fprintf(stderr, "%s: --edit resumes the %s session that made %s; --vendor %s cannot\n", name, sc.Vendor, termsafe.Field(edited), termsafe.Field(ma.vendor))
-			return 2
+			return cmdUsage(stderr, cmd, fmt.Sprintf("--edit resumes the %s session that made %s; --vendor %s cannot", sc.Vendor, edited, ma.vendor), "")
 		}
 		ma.vendor, media.Resume = sc.Vendor, sc.SessionID
 		if ma.out == "" {

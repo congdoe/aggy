@@ -14,6 +14,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/limits"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -44,12 +45,10 @@ func runUsage(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprint(stdout, usageUsage)
 			return 0
 		}
-		fmt.Fprintf(stderr, "aggy usage: %v\n\n%s", err, usageUsage)
-		return 2
+		return cmdUsage(stderr, "usage", err.Error(), usageUsage)
 	}
 	if fl.NArg() > 0 {
-		fmt.Fprintf(stderr, "aggy usage: unexpected arguments\n\n%s", usageUsage)
-		return 2
+		return cmdUsage(stderr, "usage", "unexpected arguments", usageUsage)
 	}
 	// An unreadable config only changes the near-limit mark (L60-5).
 	warnAt := config.DefaultWarnAt
@@ -62,8 +61,7 @@ func runUsage(args []string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	s, version, err := openIndexReadOnly(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy usage: %v\n", store.ReadError(err))
-		return 1
+		return cmdErr(stderr, "usage", diag.CodeStore, store.ReadError(err))
 	}
 	var rows []store.BorrowUsage
 	var statuses []store.VendorStatus
@@ -73,13 +71,11 @@ func runUsage(args []string, stdout, stderr io.Writer) int {
 		// every vendor is listed; a failed read of the table is an error.
 		if version >= vendorsSchema {
 			if statuses, err = s.VendorStatuses(ctx); err != nil {
-				fmt.Fprintf(stderr, "aggy usage: %v\n", store.ReadError(err))
-				return 1
+				return cmdErr(stderr, "usage", diag.CodeStore, store.ReadError(err))
 			}
 		}
 		if rows, err = s.BorrowUsageSince(ctx, now.Add(-usageWindow)); err != nil {
-			fmt.Fprintf(stderr, "aggy usage: %v\n", store.ReadError(err))
-			return 1
+			return cmdErr(stderr, "usage", diag.CodeStore, store.ReadError(err))
 		}
 	}
 	vendors := usageVendors(statuses)

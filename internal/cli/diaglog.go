@@ -36,8 +36,50 @@ func refuseWith(w *diag.Writer, ctx context.Context, stderr io.Writer, cmd strin
 	} else {
 		msg = termsafe.Field(msg)
 	}
-	fmt.Fprintf(stderr, "aggy %s: %s\n", cmd, msg)
+	if cmd == "" {
+		fmt.Fprintf(stderr, "aggy: %s\n", msg)
+	} else {
+		fmt.Fprintf(stderr, "aggy %s: %s\n", cmd, msg)
+	}
 	return id
+}
+
+// cmdErr prints and records a command's error under its code; exit 1.
+func cmdErr(stderr io.Writer, cmd string, code diag.Code, err error) int {
+	refuse(context.Background(), stderr, cmd, diag.EvCommandRefused, code, err.Error(), errRec(diag.Rec{}, err))
+	return 1
+}
+
+// cmdFail is cmdErr with aggy's own words.
+func cmdFail(stderr io.Writer, cmd string, code diag.Code, msg string) int {
+	refuse(context.Background(), stderr, cmd, diag.EvCommandRefused, code, msg, diag.Rec{})
+	return 1
+}
+
+// cmdUsage prints and records a usage error, with the usage text after the
+// tagged line unless it is empty; exit 2.
+func cmdUsage(stderr io.Writer, cmd, msg, usage string) int {
+	refuse(context.Background(), stderr, cmd, diag.EvCommandRefused, diag.CodeUsage, msg, diag.Rec{})
+	if usage != "" {
+		fmt.Fprintf(stderr, "\n%s", usage)
+	}
+	return 2
+}
+
+// cmdErrDry is cmdErr for a command that may be a dry run: one prints the
+// error alone, and writes no record.
+func cmdErrDry(stderr io.Writer, cmd string, code diag.Code, err error, dryRun bool) int {
+	refuseWith(writerFor(dryRun), context.Background(), stderr, cmd, diag.EvCommandRefused, code, err.Error(), errRec(diag.Rec{}, err))
+	return 1
+}
+
+// writerFor is the log a command's refusal goes through: none for a dry
+// run, which writes nothing, so it prints no tag either.
+func writerFor(dryRun bool) *diag.Writer {
+	if dryRun {
+		return nil
+	}
+	return dlog
 }
 
 // fixedMsg is a record's message for code: its registry text.
