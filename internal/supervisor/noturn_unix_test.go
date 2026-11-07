@@ -4,7 +4,9 @@ package supervisor
 
 import (
 	"fmt"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -105,12 +107,16 @@ func TestSwitchNoTurnYet(t *testing.T) {
 		c.quit(0)
 		wantExit(t, done, Exit{SwitchTo: adapter.Codex, Next: Choice{Vendor: adapter.Codex}})
 	})
-	t.Run("Enter is no turn: picking again shows the note again", func(t *testing.T) {
+	// Enter may only have answered a dialog: the first pick still shows the
+	// note, and quitting completes the switch. A second pick shows it again.
+	t.Run("Enter is no turn: the note shows, and again on a second pick", func(t *testing.T) {
 		ts, c, done, _ := switchRunOn(t, false, adapter.Claude)
-		ts.typeIn(t, "\r") // may only answer a dialog
+		ts.typeIn(t, "\r")
 		c.waitGot(t, []byte("\r"))
 		ts.typeIn(t, "\x1c1")
-		never(t, "the note before a pick says no turn runs", []byte(noTurnNote), ts.screen, 200*time.Millisecond)
+		note(t, ts)
+		noExit(t, c)
+		ts.clearScreen()
 		ts.typeIn(t, "\x1c")
 		poll(t, "the list", []byte("Switching to codex"), ts.screen)
 		ts.typeIn(t, "1")
@@ -154,6 +160,77 @@ func TestSwitchNoTurnYet(t *testing.T) {
 		c.waitGot(t, []byte("/exit\r"))
 		c.quit(0)
 		wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok, Brief: true}})
+	})
+	// T6893 review: a crash or a signal is no answer to the note.
+	t.Run("a crash ends aggy with its code", func(t *testing.T) {
+		ts, c, done, _ := switchRunOn(t, false, adapter.Claude)
+		ts.typeIn(t, "\x1c1")
+		note(t, ts)
+		c.quit(137)
+		wantExit(t, done, Exit{Code: 137})
+	})
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
+		t.Run("a forwarded "+sig.String()+" ends aggy, even at exit 0", func(t *testing.T) {
+			ts, c, done, _ := switchRunOn(t, false, adapter.Claude)
+			ts.typeIn(t, "\x1c1")
+			note(t, ts)
+			if err := syscall.Kill(os.Getpid(), sig); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case got := <-c.sigs:
+				if got != sig {
+					t.Fatalf("the CLI got %v", got)
+				}
+			case <-time.After(waitLimit):
+				t.Fatal("the signal was not passed on")
+			}
+			c.quit(0)
+			wantExit(t, done, Exit{})
+		})
+	}
+	// A counted turn end ends the promise: the offer takes over the note, and
+	// a CLI that then exits with nothing typed ends aggy.
+	t.Run("a turn end clears it: a later exit ends aggy", func(t *testing.T) {
+		ts, c, done, sock := switchRunOn(t, false, adapter.Claude)
+		ts.typeIn(t, "\x1c1")
+		note(t, ts)
+		_ = request(t, sock, stopLine)
+		poll(t, "the confirmation", []byte("-> codex. Ctrl+"), ts.screen)
+		noExit(t, c)
+		c.quit(0)
+		wantExit(t, done, Exit{})
+	})
+	t.Run("the note promises no ask a CLI cannot give", func(t *testing.T) {
+		ts, c, done, _ := switchRunOn(t, false, adapter.Codex)
+		ts.typeIn(t, "\x1c1")
+		note(t, ts)
+		poll(t, "the conditional ask", []byte("if it sees one; some CLIs report none"), ts.screen)
+		finish(t, c, done)
+	})
+	t.Run("a picked session that has gone: no switch, and it says so", func(t *testing.T) {
+		for _, recorded := range []bool{true, false} {
+			ts, c, done, _ := switchRunOn(t, false, adapter.Claude, func(o *Options) {
+				o.Children = func(v adapter.Vendor) []ChildChoice {
+					if v == adapter.Grok {
+						return []ChildChoice{{"g2", "latest"}, {"g1", "older"}}
+					}
+					return nil
+				}
+				o.HasChild = func(_ adapter.Vendor, id string) bool { return recorded && id == "g1" }
+			})
+			ts.typeIn(t, "\x1c2")
+			poll(t, "the child list", []byte("which session?"), ts.screen)
+			ts.typeIn(t, "2")
+			note(t, ts)
+			c.quit(0)
+			if recorded {
+				wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok, Child: "g1"}})
+				continue
+			}
+			wantExit(t, done, Exit{})
+			poll(t, "the line", []byte("no longer recorded"), ts.screen)
+		}
 	})
 	t.Run("a Codex limit's list leads to the note", func(t *testing.T) {
 		ch := make(chan LimitHit, 1)

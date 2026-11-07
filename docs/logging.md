@@ -224,7 +224,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `switch.request.offered` | info | switch | The turn ended and aggy asked the user to confirm the switch. | switch.request.confirmed or switch.request.cancelled follows. |
 | `switch.request.confirmed` | info | switch | The user pressed the switch key at the confirmation; aggy typed the CLI's exit command. | switch.request.completed, or switch.exit.timed_out if the CLI did not exit. |
 | `switch.request.refused` | warn | switch | A switch was refused, or held back until the user acts; the code says why. | The code's entry; aggy diag show &lt;run id&gt; for what led to it. |
-| `switch.request.cancelled` | info | switch | The user cancelled a waiting switch (attrs.how: esc_confirm or esc_list). | Nothing, unless the user did not cancel it. |
+| `switch.request.cancelled` | info | switch | A waiting switch ended: the user cancelled it (attrs.how: esc_confirm or esc_list), or the CLI they were told to quit crashed or was signalled (unclean_exit). | Nothing, unless the user did not cancel it. |
 | `switch.request.completed` | info | switch | The CLI exited after aggy typed its exit command; the next vendor is launched. | The next supervisor.child.launched in the same trace. |
 | `switch.exit.timed_out` | warn | switch | The CLI had not exited a while after aggy typed its exit command; the switch still stands. | The CLI's screen: a turn or a menu may have taken the exit command. |
 | `switch.picker.opened` | info | switch | The switch picker opened on the vendor list (attrs.preselect: a vendor suggested after a limit or a near-limit warning). | switch.picker.chosen or switch.picker.dismissed follows. |
@@ -308,7 +308,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `supervisor.unreachable` |  | The supervisor's socket did not answer: the session has ended, or the socket path is not aggy's. | Is aggy still running the session? AGGY_SOCKET must be in ~/.aggy/run. |
 | `policy.unreachable` |  | The safety policy cannot be applied to the vendor's CLI, so aggy did not start it. | aggy doctor; --no-policy or [policy] required = false start it anyway. |
 | `switch.unsent_text` |  | Text the user typed and did not send is at the CLI's prompt: the exit command would send it, so the switch waits. | Send or clear the text, then press Enter on the empty prompt. |
-| `switch.no_turn_yet` |  | No turn has ended since the CLI launched, so it may be showing a dialog: aggy does not type the exit command into it. | Quit the CLI yourself and the switch completes, or send a message and aggy asks when that turn ends. |
+| `switch.no_turn_yet` |  | No turn has ended since the CLI launched, so it may be showing a dialog: aggy does not type the exit command into it. | Quit the CLI yourself and the switch completes if it exits cleanly; after a message, aggy asks at that turn's end if it sees one. |
 | `switch.agent_no_hold` |  | The agent asked for a switch away from a vendor with no hold signal (Codex), which only the user may start. | Press aggy's switch key. |
 | `switch.agent_options` |  | The agent asked for a new session or a model, which are the user's choice in the picker. | Press aggy's switch key and choose them there. |
 | `switch.vendor_unavailable` |  | The vendor cannot be switched to now: on screen already, not offered, not allowed by the repo, not on PATH, or the safety policy cannot reach it. | The record's msg; aggy setup; the repo's allowed_vendors. |
