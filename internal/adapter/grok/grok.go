@@ -146,8 +146,8 @@ var (
 	// nothing" (live check C2, 2026-10-28), which fails a borrow closed.
 	// Denying web_search takes them along: the review argv, run live
 	// (C3, 2026-10-28), left the model reporting only read_file, grep,
-	// and list_dir, with no warning. --disable-web-search (not in a
-	// recorded help) is unverified and not needed, so it is not passed.
+	// and list_dir, with no warning. --disable-web-search (in help at
+	// 1.0.77, not run) is not needed, so it is not passed.
 	Lockdown = []string{
 		"read_file", "grep", "list_dir", "write", "search_replace", "run_terminal_cmd", "web_fetch",
 		"Agent", "search_tool", "use_tool", "image_gen", "image_edit", "image_to_video",
@@ -303,37 +303,63 @@ func onlyValue(flag, ok string) func(string) error {
 	}
 }
 
-// PassFlags is Grok's table for aggy grok, from the flags recorded in
-// docs/adapters.md ("Grok": --session-id, --resume, --fork-session,
-// --continue, --no-alt-screen, --rules, --deny, --agent, --prompt-file) and
-// docs/verification.md (-r, and -p as --single). No full flag list of grok
-// is recorded, so the table is unverified for any other flag: those pass,
-// and the CLI refuses what it does not take. Unverified guesses, gated in
-// case they exist: --yolo and --always-approve, and any --permission-mode
-// but plan or --sandbox but strict, the values recorded. --dangerously-* is
-// gated by PassFlags.Parse. aggy never adds any of them on its own.
+// PassFlags is Grok's table for aggy grok, from grok --help at 1.0.77
+// (docs/verification.md, T6952). A flag it does not list passes for the CLI to
+// refuse (it is a clap parser, grok-src cli.rs; no refusal was run live), and a
+// new flag needs no aggy change. So a name that sounds like an approval or
+// bypass switch is gated whether or not it exists yet (LoosensIf), --yolo, which
+// that help does not list, among them. --always-approve is listed, "Auto-approve
+// all tool executions". Any --permission-mode but plan or default, whose rules
+// aggy has not seen Grok apply, and any --sandbox but strict, the profile
+// recorded, are gated; help lists no profile names. --agents is gated when it
+// names bypassPermissions, one of help's modes. --allow passes: a deny outranks
+// an allow (decision_rank, policy.rs:791 at grok-build 2bdd1d6a). --dangerously-*
+// is gated by PassFlags.Parse. aggy never adds any of them on its own.
 func (Adapter) PassFlags() adapter.PassFlags {
+	const elsewhere = "it runs the session somewhere aggy does not record"
 	return adapter.PassFlags{
-		Model:    []string{"--model"},
-		Continue: []string{"--continue"},
+		Model:    []string{"--model", "-m"},
+		Continue: []string{"--continue", "-c"},
 		Resume:   []string{"--resume", "-r"},
 		Refused: []adapter.RefusedFlag{
-			{Names: []string{"--session-id"}, Why: "aggy gives each new session its id"},
+			{Names: []string{"--session-id", "-s"}, Why: "aggy gives each new session its id"},
 			{Names: []string{"--fork-session"}, Why: "aggy keeps one vendor session per child"},
 			{Names: []string{"--no-alt-screen"}, Why: "aggy always passes it"},
 			{Names: []string{"--rules"}, Why: "aggy passes the shared memory with it"},
-			{Names: []string{"--deny"}, Why: "aggy's safety policy uses it; add yours in Grok's config"},
+			{Names: []string{"--deny", "--disallowedTools"}, Why: "aggy's safety policy uses it; add yours in Grok's config"},
 			{Names: []string{"--agent"}, Why: "aggy passes the managed tools' servers with it"},
-			{Names: []string{"--prompt-file", "--single", "-p"}, Why: "aggy runs an on-screen session; aggy borrow runs one task headless"},
-			{Names: []string{"--version"}, Why: "run grok --version"},
-			{Names: []string{"--yolo", "--always-approve"}, UnlessNoPolicy: true}, // unverified names
+			{Names: []string{"--prompt-file", "--prompt-json", "--single", "-p"}, Why: "aggy runs an on-screen session; aggy borrow runs one task headless"},
+			{Names: []string{"--cwd"}, Why: "aggy starts the CLI in the session's directory; cd there first"},
+			{Names: []string{"--worktree", "-w", "--worktree-ref", "--ref"}, Why: elsewhere},
+			{Names: []string{"--version", "-v"}, Why: "run grok --version"},
+			{Names: []string{"--always-approve"}, UnlessNoPolicy: true},
 		},
 		Checked: []adapter.CheckedFlag{
-			{Names: []string{"--permission-mode"}, Check: onlyValue("--permission-mode", "plan")}, // unverified beyond plan
-			{Names: []string{"--sandbox"}, Check: onlyValue("--sandbox", "strict")},               // unverified beyond strict
+			{Names: []string{"--permission-mode"}, Check: checkPermissionMode},
+			{Names: []string{"--sandbox"}, Check: onlyValue("--sandbox", "strict")},
+			{Names: []string{"--agents"}, Check: checkAgents},
 		},
-		Values: []string{"--tools", "--disallowed-tools", "--max-turns", "--allow", "--output-format"},
+		Values: []string{"--add-dir", "--allow", "--allowedTools", "--allowed-tools", "--debug-file", "--disallowed-tools",
+			"--effort", "--json-schema", "--leader-socket", "--max-turns", "--output-format", "--reasoning-effort",
+			"--system-prompt", "--system-prompt-override", "--tools"},
+		LoosensIf: []string{"approve", "yolo", "bypass"},
 	}
+}
+
+// checkPermissionMode passes plan and default, the mode nothing changes.
+func checkPermissionMode(mode string) error {
+	if mode == "default" {
+		return nil
+	}
+	return onlyValue("--permission-mode", "plan")(mode)
+}
+
+// checkAgents gates inline subagents that name bypassPermissions.
+func checkAgents(val string) error {
+	if strings.Contains(val, "bypassPermissions") {
+		return fmt.Errorf("--agents with bypassPermissions: %w", adapter.ErrLoosens)
+	}
+	return nil
 }
 
 // Headless builds

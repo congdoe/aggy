@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,5 +70,19 @@ func TestEditWorktreeRespectsLease(t *testing.T) {
 	errb.Reset()
 	if code := rejectWith([]string{id}, f.env, &out, &errb); code != 0 {
 		t.Errorf("reject after close: code %d: %s", code, errb.String())
+	}
+}
+
+// TestSessionOpenErr (T6952): a lease aggy could not read refuses, as an open
+// session does.
+func TestSessionOpenErr(t *testing.T) {
+	if err := sessionOpenErr("b", store.GCWorktree{}, nil); err != nil {
+		t.Errorf("no session: %v", err)
+	}
+	if err := sessionOpenErr("b", store.GCWorktree{Held: true}, nil); err == nil || !strings.Contains(err.Error(), "open in another aggy") {
+		t.Errorf("held: %v", err)
+	}
+	if err := sessionOpenErr("b", store.GCWorktree{}, errors.New("database is locked")); err == nil || !strings.Contains(err.Error(), "cannot tell") {
+		t.Errorf("unread: %v", err)
 	}
 }
