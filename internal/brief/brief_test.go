@@ -276,7 +276,7 @@ func TestBuildUnread(t *testing.T) {
 			t.Errorf("the brief claims %q:\n%s", bad, out)
 		}
 	}
-	for _, want := range []string{"a codex session ran", "no record of the codex session's id"} {
+	for _, want := range []string{"a codex session may have run", "no record of the codex session's id"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the brief does not say %q:\n%s", want, out)
 		}
