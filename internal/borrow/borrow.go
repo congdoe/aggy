@@ -155,6 +155,9 @@ type Deps struct {
 	Tools func(ctx context.Context, v adapter.Vendor, cli CLI, names []string, cwd string) (servers []adapter.MCPServer, done func(), err error)
 	// Diag is the diagnostic log; nil logs nothing.
 	Diag *diag.Writer
+	// OnLimit records a limit a self-test ran into, as a child's would be, so
+	// the router's skip rule sees it. Nil records nothing.
+	OnLimit func(ctx context.Context, v adapter.Vendor)
 	// Notice prints one line for the person, such as a new CLI version
 	// passing its checks. Its text may hold the CLI's version. Nil prints
 	// nothing.
@@ -665,8 +668,13 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 	rec.Event, rec.Cause, rec.Duration, rec.Exit = diag.EvBorrowChildExited, cause, res.Elapsed, diag.Int(out.ExitCode)
 	cause = b.Diag.Log(ctx, rec)
 	end := store.BorrowEnd{EndedAt: b.Now()}
-	if watched != "" && fileDigest(watched) != watchedBefore {
-		res.Warnings = append(res.Warnings, fmt.Sprintf("%s changed while this edit ran; aggy keeps that file out of the child's reach only as far as its flags do, so check it (you, or another Codex session, may have changed it)", watched))
+	if watched != "" {
+		switch after := fileDigest(watched); {
+		case after == digestUnreadable || watchedBefore == digestUnreadable:
+			res.Warnings = append(res.Warnings, fmt.Sprintf("aggy could not read %s around this edit, so it cannot say whether the child changed it; check it", watched))
+		case after != watchedBefore:
+			res.Warnings = append(res.Warnings, fmt.Sprintf("%s changed while this edit ran; aggy keeps that file out of the child's reach only as far as its flags do, so check it (you, or another Codex session, may have changed it)", watched))
+		}
 	}
 	parsed, perr := a.ParseHeadless(hreq, out)
 	res.Text, res.Tokens = parsed.Text, parsed.Tokens

@@ -301,6 +301,34 @@ type FeatureChecker interface {
 	NewFeatures(out Output) ([]string, error)
 }
 
+// SelfTestEvidence is what a finished self-test's own record shows beyond the
+// child's reply, which a model can get wrong.
+type SelfTestEvidence struct {
+	// Read says the planted token is in the record, so the child read it.
+	Read bool
+	// Tools names tools the record shows the child using that the self-test
+	// kind's lockdown should have left it without.
+	Tools []string
+}
+
+// SelfTestWitness is implemented by an adapter whose CLI keeps a record of a
+// run's tool use that aggy can read. Claude has none: its JSON reply carries
+// only the final result, so there the reply is all a self-test has.
+type SelfTestWitness interface {
+	SelfTestEvidence(req HeadlessRequest, res HeadlessResult, out Output, token string) SelfTestEvidence
+}
+
+// SelfTestSettings is implemented by an adapter whose self-test loads the
+// user's own settings, so the user can change its result.
+type SelfTestSettings interface {
+	// SelfTestInputs are the files whose content the result depends on: a
+	// change to one tests again.
+	SelfTestInputs() []string
+	// SelfTestHint says what in them can make a child read the file, and
+	// what to do about it.
+	SelfTestHint() string
+}
+
 // ConfigWatcher is implemented by an adapter whose edit child could write
 // the user's own CLI config: a borrow compares the file before and after.
 type ConfigWatcher interface {

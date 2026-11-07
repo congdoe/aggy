@@ -73,6 +73,8 @@ A JSON object. Every field is optional, and unknown fields are an error.
 | `hook_payload_in` | string | `stdin` (default) or `arg`, for where the payload goes. |
 | `hooks` | objects | `{"event": "Stop", "payload": {...}}`, called in order at turn end. With `error: rate_limit` and no hooks, Claude and Grok call `StopFailure` with `{"error":"rate_limit"}`. Codex has no failure hook. |
 | `read_file` | string | A headless run prints this file, relative to its working dir, on stdout: a child whose lockdown let it read outside that dir. |
+| `chat_history` | string | The text of Grok's `chat_history.jsonl` for this run. |
+| `read_file_quiet` | bool | Puts that file in Grok's `chat_history.jsonl` instead: a child that read it and said otherwise. |
 | `images` | int | Number of images to write where the CLI does: `$CODEX_HOME/generated_images/<thread-id>/N.png`, or `$GROK_HOME/sessions/<url-encoded cwd>/<sessionId>/images/N.jpg`. Claude's image path is not recorded, so Claude refuses. |
 | `videos` | int | Grok only: number of videos to write at `$GROK_HOME/sessions/<url-encoded cwd>/<sessionId>/videos/N.mp4`, where grok-build's video tools save them (source, not live). |
 | `session_files` | objects | `{"path": "...", "content": "..."}` files written under the vendor's home. The path must stay inside it. |

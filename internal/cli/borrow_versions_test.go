@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/fakecli"
 )
 
 // TestBorrowNewVersion runs aggy borrow against the fake at a version above
@@ -21,10 +22,10 @@ func TestBorrowNewVersion(t *testing.T) {
 	}{
 		{
 			name:       "checks pass",
-			scenario:   `{"version":"1.0.99","json":{"text":"Summary"}}`,
+			scenario:   `{"version":"1.0.99","json":{"text":"NO ACCESS"}}`,
 			args:       []string{"news", "what shipped?"},
-			wantStdout: []string{"grok 1.0.99: checked here, not verified by a release", "Summary"},
-			wantStderr: []string{"grok 1.0.99 is newer than aggy's tested versions: checked here and passed (help, self-test)"},
+			wantStdout: []string{"grok 1.0.99: checked here, not verified by a release", "NO ACCESS"},
+			wantStderr: []string{"grok 1.0.99 is newer than aggy's tested versions: checked here (help, a child reported it could not read a planted file)"},
 		},
 		{
 			name:       "help lacks a flag",
@@ -66,5 +67,33 @@ func TestBorrowNewVersion(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestBorrowSelfTestLimit: a limit a self-test ran into reaches the router, so
+// the next borrow skips the vendor and starts nothing.
+func TestBorrowSelfTestLimit(t *testing.T) {
+	f := newBorrowFixture(t, adapter.Grok)
+	f.scenario["grok"] = `{"version":"1.0.99","json":{"error":"rate_limit"},"exit_code":1}`
+	if code, out, errOut := f.run(t, "news", "what shipped?", "--vendor", "grok"); code != 1 || !strings.Contains(errOut, "rate_limit") {
+		t.Fatalf("code %d, stdout %q, stderr %q", code, out, errOut)
+	}
+	runs := func() int {
+		n := 0
+		for _, r := range fakecli.Records(t, f.record) {
+			if r.Mode == "headless" {
+				n++
+			}
+		}
+		return n
+	}
+	if n := runs(); n != 1 {
+		t.Fatalf("runs = %d", n)
+	}
+	if code, _, _ := f.run(t, "news", "what shipped?", "--vendor", "grok"); code == 0 {
+		t.Error("the second borrow ran")
+	}
+	if n := runs(); n != 1 {
+		t.Errorf("runs after the limit = %d, want the router to have skipped grok", n)
 	}
 }
