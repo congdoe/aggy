@@ -328,7 +328,7 @@ func hookStatus(v adapter.Vendor, bin string) (state, note string) {
 		return hookError, ": " + err.Error()
 	}
 	switch {
-	case len(pr.Exact) == 0 && len(pr.Stale) == 0:
+	case len(pr.Exact) == 0 && len(pr.Stale) == 0 && len(pr.Absent) > 0:
 		return hookMissing, note
 	case len(pr.Absent) > 0:
 		return hookPartial, note

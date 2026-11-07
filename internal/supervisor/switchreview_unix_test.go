@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/hook"
 )
 
 // turned is a tracker on v with one counted turn end, so it has a baseline.
@@ -355,5 +356,134 @@ func TestStripFollowsPaste(t *testing.T) {
 	}
 	if rep, _ = f.strip([]byte("\x1b[I")); len(rep) == 0 {
 		t.Error("a reply after the paste is not one")
+	}
+}
+
+// TestOpenCodeClickIsNoInput (T6897, with T6932): a click on OpenCode is no typing.
+// It goes to the CLI and leaves a hold and the tracker alone, however it arrives.
+func TestOpenCodeClickIsNoInput(t *testing.T) {
+	const click = "\x1b[<0;10;10M"
+	for _, tt := range []struct {
+		name string
+		do   func(*session)
+	}{
+		{"from the filter", func(s *session) { s.pointer([]byte(click)) }},
+		{"through send", func(s *session) { s.send([]byte(click)) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := openCodeSession(t)
+			s.held = true
+			tt.do(s)
+			if !s.held || s.inputSinceTurn || s.moved || s.dirty {
+				t.Errorf("held %v, inputSinceTurn %v, moved %v, dirty %v", s.held, s.inputSinceTurn, s.moved, s.dirty)
+			}
+			if got := sentTo(s); got != click {
+				t.Errorf("sent %q", got)
+			}
+		})
+	}
+}
+
+// TestClickInExitGap (T6897, with T6932): a click between /exit and its Enter
+// waits with the keys, so that Enter is not sent behind it, on either path.
+func TestClickInExitGap(t *testing.T) {
+	const click = "\x1b[<0;10;10M"
+	for _, tt := range []struct {
+		name string
+		do   func(*session)
+	}{
+		{"from the filter", func(s *session) { s.pointer([]byte(click)) }},
+		{"through send", func(s *session) { s.send([]byte(click)) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := gapSession(t)
+			tt.do(s)
+			if string(s.gapKeys) != click {
+				t.Fatalf("gapKeys = %q", s.gapKeys)
+			}
+			s.hookEvent(hookEvent{name: exitEnterCheck})
+			if s.sw.to != "" {
+				t.Errorf("the switch stands: %+v", s.sw)
+			}
+			got := sentTo(s)
+			if strings.Contains(got, "\r") {
+				t.Errorf("Enter sent behind the click: %q", got)
+			}
+			if !strings.HasSuffix(got, click) {
+				t.Errorf("the click was lost: %q", got)
+			}
+		})
+	}
+}
+
+// TestAskWinsOverHold (T6898, with T6932): an open ask holds too, and tellHeld's
+// words offer an Enter that would choose Allow once, so the ask's own note comes
+// first, and only an ask a turn end outlived is released, on a second pick.
+func TestAskWinsOverHold(t *testing.T) {
+	ask := hookEvent{name: hook.EventPermissionAsked, sessionID: "ses_a", request: "r1"}
+	pick := func(s *session) string {
+		t.Helper()
+		s.pk.list()
+		s.pk.vendors = []adapter.Vendor{adapter.Claude}
+		s.pickerInput([]byte("1"))
+		words := strings.Join(s.pk.lines, " ")
+		s.closePicker()
+		return words
+	}
+	newSession := func(t *testing.T) *session {
+		s := openCodeSession(t)
+		s.o.Vendors, s.o.CanSwitch = []adapter.Vendor{adapter.Claude}, func(adapter.Vendor) error { return nil }
+		s.hookEvent(ask)
+		if !s.held || !s.askOpen() {
+			t.Fatalf("held %v, askOpen %v", s.held, s.askOpen())
+		}
+		return s
+	}
+	t.Run("before a turn end, no pick releases it", func(t *testing.T) {
+		s := newSession(t)
+		for range 3 {
+			words := pick(s)
+			if !strings.Contains(words, "permission or a question") || strings.Contains(words, "empty prompt") {
+				t.Fatalf("words: %q", words)
+			}
+		}
+		if !s.askOpen() || !s.held {
+			t.Errorf("released: asked %v, held %v", s.asked, s.held)
+		}
+	})
+	t.Run("a turn end outlived it: told, then picked again", func(t *testing.T) {
+		s := newSession(t)
+		s.hookEvent(hookEvent{name: "Stop", sessionID: "ses_a"})
+		if !s.askStale {
+			t.Fatal("not stale")
+		}
+		if words := pick(s); !strings.Contains(words, "pick claude again") {
+			t.Fatalf("words: %q", words)
+		}
+		if !s.askOpen() {
+			t.Fatal("released by the first pick")
+		}
+		pick(s)
+		if s.askOpen() || s.held {
+			t.Errorf("not released: asked %v, held %v", s.asked, s.held)
+		}
+	})
+}
+
+// TestOpenCodeNeverFollows (T6901, with T6932): OpenCode has no SessionStart, so
+// one sent to its socket moves nothing, whatever it says and wherever it ran.
+func TestOpenCodeNeverFollows(t *testing.T) {
+	for _, source := range []string{"clear", "resume", "fork", "startup", ""} {
+		if sessionMoves(adapter.OpenCode, source) {
+			t.Errorf("source %q moves", source)
+		}
+	}
+	s := openCodeSession(t)
+	called := false
+	s.o.OnFollow = func(string, string) { called = true }
+	s.hookEvent(hookEvent{name: "Stop", sessionID: "ses_a", chain: ownChain})
+	s.hookEvent(hookEvent{name: "SessionStart", sessionID: "ses_b", source: "clear", chain: ownChain2})
+	if s.followed != "" || called || s.moveRefused {
+		t.Errorf("followed %q, called %v, moveRefused %v", s.followed, called, s.moveRefused)
 	}
 }
