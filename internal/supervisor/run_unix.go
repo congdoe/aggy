@@ -502,8 +502,7 @@ type session struct {
 	// popup took; a newline in the composer is not one. slashOnly: the composer
 	// has held only a leading / command since the last clean send, and
 	// slashEntered: its Enter has been pressed, so a move may clear that doubt.
-	// movedQuiet: the CLI moved, and neither a turn end nor an Enter has come
-	// since. moveRefused: a hook said it moved, and aggy could not confirm it.
+	// moveRefused: a hook said it moved, and aggy could not confirm it.
 	// escEmpty: an Esc reached an empty composer, and no text has been typed
 	// since: an Enter now may bring text back. escTwice: two have, so keys that
 	// look like text may be a preview's (Codex's backtrack), and only an Enter
@@ -513,7 +512,7 @@ type session struct {
 	host                    []int
 	afterEnter              int
 	slashOnly, slashEntered bool
-	movedQuiet, moveRefused bool
+	moveRefused             bool
 	escEmpty, escTwice      bool
 	// cmdLine is what was typed since the last Enter, while cmdBad is false:
 	// printable keys only, no cursor key, no edit, no paste. localEnter: the
@@ -609,8 +608,6 @@ type pendingSwitch struct {
 	// no key has reached the composer since. doubtOK: the person picked again
 	// after it, so the status line may ask, saying so.
 	toldDoubt, doubtOK bool
-	// toldWaits: tellWaits's note came for this pick.
-	toldWaits bool
 	// resume: a restart of the vendor on screen on the same session, for
 	// the tool changes named in tools (T6729).
 	resume bool
@@ -743,7 +740,7 @@ func (s *session) hookEvent(ev hookEvent) {
 			if s.noTurnOpen {
 				s.closePicker() // the offer takes over
 			}
-			if s.open && (s.pk.noTurn || s.pk.moveRefused) {
+			if s.open && (s.pk.noTurn || s.pk.moveRefused || s.pk.mayRun) {
 				// The list's words about no turn end, or about a move it could
 				// not confirm, are over; the rows they took are blanked.
 				s.pk.padRows = 0
@@ -753,13 +750,19 @@ func (s *session) hookEvent(ev hookEvent) {
 				if s.pk.moveRefused {
 					s.pk.padRows += moveRefusedRows
 				}
-				s.pk.noTurn, s.pk.moveRefused = false, false
+				if s.pk.mayRun {
+					s.pk.padRows += mayRunRows
+				}
+				if s.pk.doubtSaid {
+					s.pk.padRows++
+				}
+				s.pk.noTurn, s.pk.moveRefused, s.pk.mayRun, s.pk.doubtSaid = false, false, false, false
 				if s.pk.confirm == "" && !s.pk.note && s.pk.stage == "" {
 					s.pk.draw(s.o.Out, s.pickerOverCLI)
 				}
 				s.pk.padRows = 0
 			}
-			s.movedQuiet, s.moveRefused = false, false // it names the session on screen
+			s.moveRefused = false // it names the session on screen
 			s.settleDoubt()
 			s.atPrompt, s.inputSinceTurn, s.queuedWait = !s.held, false, false
 			s.askStale = s.askOpen()
@@ -862,11 +865,11 @@ func safeSource(source string) string {
 // first message after /clear already running (core/src/session/turn.rs#L340 at
 // 6aaac694, source only, not seen live). So atPrompt, inputSinceTurn, and the
 // queue stay as they were, and the next turn end, or a pick that says no turn
-// runs, settles them; tellMoved says so at a pick. The one doubt a move does
+// runs, settles them; the list says so. The one doubt a move does
 // settle is the one its own command left: a composer that held only that leading
 // / command, with nothing typed since its Enter, has been emptied by the command.
 func (s *session) followSession(id, via string) {
-	s.followed, s.movedQuiet, s.moveRefused = id, true, false
+	s.followed, s.moveRefused = id, false
 	s.log(diag.Rec{Event: diag.EvSessionFollowed, Attrs: map[string]any{"via": via}})
 	if s.afterEnter == 0 && s.slashOnly && s.slashEntered {
 		s.compLen, s.lenKnown, s.popup, s.cleared, s.hadAt, s.moved, s.pastePop = 0, true, false, false, false, false, false
@@ -1032,7 +1035,6 @@ func (s *session) send(b []byte) {
 		}
 		s.enterAtPrompt = s.atPrompt && !s.askOpen()
 		s.atPrompt, s.toldDirty = false, false // an Enter may start a turn
-		s.movedQuiet = false
 	} else if tabKey.Match(typed) && (s.dirty || string(tabKey.Find(typed)) != string(typed)) {
 		// Tab with text queues a message on Codex during a turn:
 		// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/chat_composer.rs#L3531
@@ -1367,8 +1369,7 @@ func (s *session) offerSwitch() {
 		return
 	}
 	if s.turnRan && !s.atPrompt {
-		s.tellWaits()
-		return
+		return // the list said so: a notice here could hold a turn's output
 	}
 	if s.refuseSignalled() {
 		return
@@ -2053,6 +2054,10 @@ func (s *session) openList() {
 	s.pk.noTurn, s.pk.on = !s.turnRan, s.o.Vendor
 	s.pk.noHooks = s.o.HooksMissing && !s.hookSeen.Load()
 	s.pk.moveRefused = s.moveRefused
+	// A pick would wait: section 5's rule is to say so here, in the list the
+	// person opened, and never in a notice that could hold a turn's output.
+	s.pk.mayRun = s.turnRan && !s.atPrompt && !s.held
+	s.pk.doubtSaid = s.pk.mayRun && s.doubt()
 	s.pk.stalePick = s.sw.toldNoTurn && !s.sw.typed && time.Since(s.sw.toldAt) > noTurnPickFresh
 	s.pk.limitLine = ""
 	if s.limitDue != nil {
@@ -2227,7 +2232,7 @@ func (s *session) pickerInput(b []byte) {
 		}
 		c.Tools = s.sw.choice.Tools // the list cannot set them, so an agent's stay
 		s.sw.choice, s.sw.asked, s.sw.picked, s.sw.noteShown = c, false, true, false
-		s.sw.doubtOK = s.sw.toldDoubt // told, and picked again: the person has looked
+		s.sw.doubtOK = s.sw.toldDoubt || s.pk.doubtSaid // told, and picked again: the person has looked
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Cause: s.sw.rec, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked), "again": true})})
 		s.markNoTurn()
 	case picked != "":
@@ -2237,7 +2242,7 @@ func (s *session) pickerInput(b []byte) {
 			s.openPicker()
 			return
 		}
-		s.setSwitch(pendingSwitch{to: picked, choice: c, picked: true})
+		s.setSwitch(pendingSwitch{to: picked, choice: c, picked: true, toldDoubt: s.pk.doubtSaid})
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked)})})
 		s.markNoTurn()
 		switch {
@@ -2247,8 +2252,6 @@ func (s *session) pickerInput(b []byte) {
 			// Without a turn end the list has already said what to do.
 			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "picked, but the CLI waits for the user"})
 			s.tellHeld(picked)
-		case s.movedQuiet && s.turnRan && !s.atPrompt:
-			s.tellMoved(picked)
 		}
 	default: // Esc on the list cancels a waiting switch
 		s.toolsWaitTurn = s.toolsWaitTurn || s.sw.resume
@@ -2269,57 +2272,12 @@ func (s *session) tellHeld(v adapter.Vendor) {
 	s.openPicker()
 }
 
-// waitNoteQuiet is how long the CLI and the typing must be silent before a pick
-// that waits says why. A running turn keeps drawing (as queuedQuiet assumes, also
-// unverified), so a note does not hold its output. A variable for tests.
-var waitNoteQuiet = 3 * time.Second
-
-// tellWaits says, once per pick, why a pick waits with nothing to see: a message
-// may be queued, or an Enter may have started a turn. Picking again says none
-// runs. If the prompt is in doubt too it says that, so that pick is the confirm.
-func (s *session) tellWaits() {
-	now := time.Now()
-	if !s.sw.picked || s.sw.toldWaits || s.sw.resume || s.held || now.Sub(s.lastIn) < waitNoteQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < waitNoteQuiet {
-		return
-	}
-	s.sw.toldWaits = true
-	v := s.sw.to
-	lines := []string{fmt.Sprintf("The switch to %s waits for a turn end: your last Enter may have", v),
-		fmt.Sprintf("started a turn in %s, or queued a message, and nothing shows it is over.", s.o.Vendor)}
-	if s.doubt() {
-		s.sw.toldDoubt = true
-		lines = append(lines, "aggy also cannot tell if the prompt is empty, so look at it.")
-	}
-	lines = append(lines, fmt.Sprintf("If nothing is running, Esc here and pick %s again. That spends no turn.", v))
-	s.pk.tell(lines...)
-	s.openPicker()
-	s.noTurnOpen = true // a counted turn end closes it, and the offer takes over
-}
-
 // doubtLines are the note when aggy cannot tell if the prompt is empty. Each fits
 // 80 columns with the longest what, a switch's.
 func doubtLines(what string, on, to adapter.Vendor) []string {
 	return []string{fmt.Sprintf("aggy is ready to %s, but cannot tell if %s's prompt is empty:", what, on),
 		"a command, a popup, or Esc may have left text there that aggy cannot see.",
 		fmt.Sprintf("Look at it. If nothing there matters, pick %s again, and aggy asks first.", to)}
-}
-
-// tellMoved says why a switch to v waits after the CLI moved to another session:
-// /clear and /resume end no turn, so no turn end comes unless a message is sent.
-//
-// A typed /clear on Claude does not come here: it leaves the prompt as it was
-// (adapter.LocalCommand). TODO(T6895): the rest of Claude's moves could be exempt
-// too, once the plan flow's "clear context" is checked live.
-func (s *session) tellMoved(v adapter.Vendor) {
-	s.pk.tell(movedLines(s.o.Vendor, v)...)
-	s.openPicker()
-}
-
-// movedLines are tellMoved's words. Each fits 80 columns.
-func movedLines(on, to adapter.Vendor) []string {
-	return []string{fmt.Sprintf("%s moved to another session, and aggy cannot tell if a turn runs there,", on),
-		fmt.Sprintf("so the switch to %s waits for a turn end, and none may come.", to),
-		fmt.Sprintf("If no turn is running, Esc here and pick %s again. That spends no turn.", to)}
 }
 
 // promptInput handles a key at a prompt aggy opened on its own (a
