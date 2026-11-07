@@ -64,6 +64,9 @@ type Event struct {
 	Error string
 	// Reason is Grok's StopCancelled cause, such as user_interrupt.
 	Reason string
+	// NotificationType is which kind of Notification fired, such as
+	// Claude's idle_prompt or permission_prompt.
+	NotificationType string
 }
 
 // Parse reads the fields aggy uses from a (projected) payload of v.
@@ -74,9 +77,9 @@ func Parse(v adapter.Vendor, payload []byte) Event {
 	s := func(k string) string { x, _ := m[k].(string); return x }
 	switch v {
 	case adapter.Grok:
-		return Event{SessionID: s("sessionId"), Error: s("error"), Reason: s("reason")}
+		return Event{SessionID: s("sessionId"), Error: s("error"), Reason: s("reason"), NotificationType: s("notificationType")}
 	}
-	return Event{SessionID: s("session_id"), Source: s("source"), Error: s("error")}
+	return Event{SessionID: s("session_id"), Source: s("source"), Error: s("error"), NotificationType: s("notification_type")}
 }
 
 // Forward reports whether a hook installed for vendor label should be

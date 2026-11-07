@@ -406,7 +406,7 @@ var codes = []CodeInfo{
 	{CodeAgentOptions, false, "The agent asked for a new session or a model, which are the user's choice in the picker.", "Press aggy's switch key and choose them there."},
 	{CodeSwitchVendor, false, "The vendor cannot be switched to now: on screen already, not offered, not allowed by the repo, not on PATH, or the safety policy cannot reach it.", "The record's msg; aggy setup; the repo's allowed_vendors."},
 	{CodeSwitchBusy, false, "Another switch is already waiting.", "Wait for it, or cancel it in the picker."},
-	{CodeSwitchHeld, false, "The CLI said it waits for the user (a permission prompt or a notice), so the switch waits.", "Answer the CLI, or send a message; the switch goes on at the next turn end."},
+	{CodeSwitchHeld, false, "The CLI said it waits for the user (a permission prompt or a notice), so the switch waits.", "Answer the CLI, and the switch goes on at that turn's end. If nothing is waiting on screen, press Enter on the empty prompt and pick the vendor again, which spends no turn."},
 	{CodeNotSupervised, false, "aggy switch ran outside a session aggy supervises, or in one started with --direct.", "Press aggy's switch key in a session started with aggy run."},
 	{CodeExitTimeout, false, "The CLI did not exit within the wait after aggy typed its exit command.", "The CLI's screen; cancel with the switch key, then Esc."},
 	{CodeNoQuota, false, "After a limit, no vendor the picker offers has quota left.", "aggy usage; aggy log shows the limits."},

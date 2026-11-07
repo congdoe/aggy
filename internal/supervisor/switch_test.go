@@ -212,6 +212,71 @@ func TestSwitchHolds(t *testing.T) {
 	}
 }
 
+// TestSwitchIdleHoldsNothing (T6898): Claude's idle reminder holds no switch,
+// and clears no hold; Grok's type values are not recorded, so any of its holds,
+// and any other Claude type.
+func TestSwitchIdleHoldsNothing(t *testing.T) {
+	idle := hookEvent{name: "Notification", sessionID: "me", idle: true}
+	s := &session{toChild: newByteQueue(maxQueued), o: Options{SessionID: func() string { return "me" }}}
+	s.hookEvent(hookEvent{name: "Stop", sessionID: "me"})
+	s.hookEvent(idle)
+	if !s.atPrompt || s.held {
+		t.Errorf("after idle: atPrompt %v, held %v", s.atPrompt, s.held)
+	}
+	s.hookEvent(hookEvent{name: "Notification", sessionID: "me"})
+	s.hookEvent(idle)
+	if s.atPrompt || !s.held {
+		t.Errorf("idle after a hold: atPrompt %v, held %v", s.atPrompt, s.held)
+	}
+	for _, tt := range []struct {
+		v      adapter.Vendor
+		event  string
+		typ    string
+		isIdle bool
+	}{
+		{adapter.Claude, "Notification", "idle_prompt", true},
+		{adapter.Claude, "Notification", "permission_prompt", false},
+		{adapter.Claude, "Notification", "", false},
+		{adapter.Claude, "Stop", "idle_prompt", false},
+		{adapter.Grok, "Notification", "idle_prompt", false},
+		{adapter.Codex, "Notification", "idle_prompt", false},
+	} {
+		if got := claudeIdle(tt.v, tt.event, tt.typ); got != tt.isIdle {
+			t.Errorf("claudeIdle(%s, %s, %q) = %v", tt.v, tt.event, tt.typ, got)
+		}
+	}
+
+	// The repro: one turn, the reminder, a pick: the status line asks.
+	ts, c, done, sock := switchRunTurned(t, adapter.Claude)
+	_ = request(t, sock, `{"type":"hook-event","vendor":"claude","event":"Notification","payload":{"session_id":"`+childSID+`","notification_type":"idle_prompt"}}`)
+	ts.typeIn(t, "\x1c2")
+	poll(t, "the status line", []byte("-> grok. Ctrl+"), ts.screen)
+	finish(t, c, done)
+}
+
+// TestSwitchHeldFirstPickSays (T6898): a first pick past a hold says at once why
+// it waits and names the way out that spends no turn, and that way works.
+func TestSwitchHeldFirstPickSays(t *testing.T) {
+	ts, c, done, sock := switchRunTurned(t, adapter.Claude)
+	_ = request(t, sock, notifyLine)
+	// The hold reaches the main loop in order with a Stop that does not clear it.
+	_ = request(t, sock, stopLine)
+	ts.typeIn(t, "\x1c2")
+	poll(t, "the note", []byte("said it is waiting for you"), ts.screen)
+	poll(t, "the free way out", []byte("press Enter on the empty prompt"), ts.screen)
+	never(t, "an offer", []byte("-> grok. Ctrl+"), ts.screen, 150*time.Millisecond)
+	ts.typeIn(t, "\x1b")
+	poll(t, "the note to close", []byte(altScreenOff), ts.screen)
+	time.Sleep(50 * time.Millisecond)
+	ts.typeIn(t, "\r")
+	c.waitGot(t, []byte("\r"))
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list", []byte("Switching to grok"), ts.screen)
+	ts.typeIn(t, "2")
+	poll(t, "the status line, no turn spent", []byte("-> grok. Ctrl+"), ts.screen)
+	finish(t, c, done)
+}
+
 // TestSwitchConfirmEscStays: Esc at the confirmation types nothing and
 // drops the switch.
 func TestSwitchConfirmEscStays(t *testing.T) {
