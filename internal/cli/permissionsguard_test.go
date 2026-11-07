@@ -42,10 +42,39 @@ func TestTrackedFold(t *testing.T) {
 		{"a\x00.CLAUDE/settings.local.json\x00", true},
 		{".Claude/SETTINGS.LOCAL.JSON\x00", true},
 		{".claude/ſettings.local.json\x00", true}, // the long s folds to s
+		{".claude/settingſ.local.json\x00", true},
+		{".claude/settings.local.jſon\x00", true},
 		{".claude/settings.local.json.bak\x00", false},
 	} {
 		if got := trackedFold(tc.list, rel); got != tc.want {
 			t.Errorf("%q: %v", tc.list, got)
+		}
+	}
+}
+
+// TestGitTracksLongS: git's pathspec must bring each name back, for trackedFold.
+func TestGitTracksLongS(t *testing.T) {
+	isolate(t)
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{".claude/ſettings.local.json", true},
+		{".claude/settingſ.local.json", true},
+		{".claude/settings.local.jſon", true},
+		{".CLAUDE/settingſ.local.json", true},
+		{".claude/other.json", false},
+		{".claude/sub/settings.local.json", false},
+	} {
+		repo := realGitRepo(t)
+		cmd := exec.Command("git", "-C", repo, "update-index", "--index-info")
+		cmd.Stdin = strings.NewReader("100644 " + strings.Repeat("e", 40) + "\t" + tc.name + "\n")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+		got, err := gitTracks(context.Background(), repo)(filepath.Join(repo, ".claude", "settings.local.json"))
+		if err != nil || got != tc.want {
+			t.Errorf("%q: %v %v", tc.name, got, err)
 		}
 	}
 }
