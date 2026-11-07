@@ -204,6 +204,20 @@ func (f *sessionFiles) codexRollout(root, id string, started, now time.Time) (ti
 	return time.Time{}, errNoSessionFile
 }
 
+// rolloutPath is the path of id's Codex rollout as LastChanged indexed it (call
+// that first, on this sessionFiles); vendorHome as for LastChanged.
+func (f *sessionFiles) rolloutPath(v adapter.Vendor, id, vendorHome string) (string, bool) {
+	h := filepath.Clean(vendorHome)
+	if vendorHome == "" || !filepath.IsAbs(h) {
+		var err error
+		if h, err = f.home(v); err != nil {
+			return "", false
+		}
+	}
+	r, ok := f.rollouts[filepath.Join(h, "sessions")][id]
+	return r.path, ok
+}
+
 // indexRollouts lists every date folder under root that is there (not
 // through a symlink) and maps each rollout's thread id to it.
 func indexRollouts(root string) map[string]codexRolloutAt {

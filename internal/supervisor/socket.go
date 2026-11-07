@@ -188,21 +188,24 @@ func (s *Server) logger() func(diag.Rec) {
 // fromSession reports whether the process that opened c, at pid, is in
 // the CLI's tree (lineage.go): it pins that process, waits up to
 // rootWait for SetRoot, walks pid's parents, and checks the pinned
-// process still has pid.
-func (s *Server) fromSession(c *net.UnixConn, pid int) bool {
+// process still has pid. chain is what the walk went through, pid first.
+func (s *Server) fromSession(c *net.UnixConn, pid int) (chain []int, ok bool) {
 	same, release, err := peerInstance(c, pid)
 	if err != nil {
-		return false
+		return nil, false
 	}
 	defer release()
 	select {
 	case <-s.rootSet:
 	case <-s.done:
-		return false
+		return nil, false
 	case <-time.After(rootWait):
-		return false
+		return nil, false
 	}
-	return descends(pid, s.root) && same()
+	if chain, ok = lineageTo(pid, s.root); !ok || !same() {
+		return nil, false
+	}
+	return chain, true
 }
 
 // privateDir makes dir a 0700 directory owned by aggy's uid: it creates
@@ -416,7 +419,14 @@ func (s *Server) serve(c *net.UnixConn) {
 		s.logger()(diag.Rec{Event: diag.EvHookRejected, Code: diag.CodePeerUID, Msg: "a connection from another user", Attrs: map[string]any{"uid": uid}})
 		return
 	}
-	from := s.fromSession(c, peerPID)
+	chain, from := s.fromSession(c, peerPID)
+	onHook := s.onHook
+	if onHook != nil {
+		onHook = func(r Request) {
+			r.Chain = chain
+			s.onHook(r)
+		}
+	}
 	r := bufio.NewReaderSize(c, MaxMessage+1)
 	for {
 		_ = c.SetDeadline(time.Now().Add(connIdle))
@@ -432,7 +442,7 @@ func (s *Server) serve(c *net.UnixConn) {
 		s.mu.Lock()
 		onSwitch, onTools, log := s.onSwitch, s.onTools, s.log
 		s.mu.Unlock()
-		resp := answer(line[:len(line)-1], from, s.onHook, onSwitch, onTools, log)
+		resp := answer(line[:len(line)-1], from, onHook, onSwitch, onTools, log)
 		reply(c, resp)
 		if !resp.OK || !from {
 			return

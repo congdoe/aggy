@@ -73,6 +73,16 @@ type Options struct {
 	// it). Only a turn-end hook whose payload names this id counts (S-9):
 	// a nested CLI in the session's tree has its own. Nil counts none.
 	SessionID func() string
+	// Facts, when set, is filled in as the CLI exits.
+	Facts *RunFacts
+	// OnFollow gets the session id the on-screen CLI moved to, and the evidence
+	// (followSession): the launch records it once a session file backs it. It
+	// is called off the main loop. It may be nil.
+	OnFollow func(id, via string)
+	// HooksMissing: aggy's hooks are not installed for Vendor, so until a hook
+	// does arrive no turn end can be counted: an agent's switch is refused,
+	// and the list says so (T6848).
+	HooksMissing bool
 	// Children lists the open parent's interactive children of v, latest
 	// first, for the picker (T6665): with more than one, picking v asks
 	// which. Nil lists none (the latest is resumed).
@@ -181,11 +191,13 @@ type Exit struct {
 	// SwitchTo.
 	SwitchTo adapter.Vendor
 	Next     Choice
-	// TurnRan: a turn end of the on-screen child was counted. Signalled: aggy
-	// got a signal to pass on, so nothing may be launched after this. They say
-	// whether a CLI that was switched to ever started (T6899).
-	TurnRan, Signalled bool
 }
+
+// RunFacts is what a session saw, for the caller to tell whether a CLI that was
+// switched to ever started (T6899). TurnRan: a turn end of the on-screen child
+// was counted. Signalled: aggy got a signal to pass on, so nothing may be
+// launched after this.
+type RunFacts struct{ TurnRan, Signalled bool }
 
 // SocketEnv is env plus the variables that lead hooks and skills inside
 // the CLI to the socket: AGGY_SOCKET and AGGY_PARENT.
