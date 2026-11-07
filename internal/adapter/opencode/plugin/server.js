@@ -14,7 +14,7 @@ const MAX_REASON = 600
 const guardFields = (input) => {
   const i = input && typeof input === "object" ? input : {}
   const text = (v) => (typeof v === "string" ? v : undefined)
-  return { path: text(i.path), command: text(i.command), workdir: text(i.workdir), patchText: text(i.patchText) }
+  return { path: text(i.path), command: text(i.command), workdir: text(i.workdir), patchText: text(i.patchText), pattern: text(i.pattern) }
 }
 
 // How each event is told to aggy (schema/src/session-event.ts,

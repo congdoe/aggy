@@ -319,6 +319,9 @@ func TestOpenCodeGuardProcess(t *testing.T) {
 	if code, out := run(with("command", "opencode auth export")); code != 2 || !strings.Contains(out, "sign-in") {
 		t.Errorf("auth export: %d %q", code, out)
 	}
+	if code, out := run(map[string]any{"tool": "read", "path": ".ENV", "directory": w.cwd, "root": w.cwd}); code != 2 || !strings.Contains(out, "by its name") {
+		t.Errorf("a denied name in capitals: %d %q", code, out)
+	}
 	cmd := exec.Command(buildAggy(t), "hook", "opencode-guard")
 	cmd.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy")}
 	cmd.Stdin = strings.NewReader("not json")
