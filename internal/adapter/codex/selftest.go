@@ -17,12 +17,13 @@ import (
 var selfTestQuiet = []string{"", "agent_message", "reasoning", "todo_list", "error", "web_search"}
 
 // patchWrote reports whether a file_change event says the patch went through,
-// under a read-only sandbox that should have refused it. A failed one is the
-// quiet case, and in_progress is what item.started carries. Statuses are
+// under a read-only sandbox that should have refused it. Statuses are
 // PatchApplyStatus (exec_events.rs#L178 at 6aaac69): in_progress, completed,
-// failed. Any other value on a finished item counts as written. Source only.
-func patchWrote(eventType, status string) bool {
-	return eventType == "item.completed" && status != "failed"
+// failed. Only completed counts, so a status renamed in a later Codex is not a
+// final failure for that version. At rust-v0.164.0 a patch the review lockdown
+// refuses emits no item at all (verification.md, T6929, question 5). Source only.
+func patchWrote(eventType string, status statusField) bool {
+	return eventType == "item.completed" && status == "completed"
 }
 
 // SelfTestEvidence reads the exec --json stream, which shows each tool call.
