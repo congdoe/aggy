@@ -1,0 +1,25 @@
+{
+  "info": {
+    "id": "ses_aggyfixture000A",
+    "projectID": "0000000000000000000000000000000000000000",
+    "model": {"id": "grok-build-0.1", "providerID": "xai", "variant": "default"},
+    "outcome": "succeeded",
+    "time": {"created": 1794015495202, "updated": 1794015502502},
+    "title": "Remember a word and read a file"
+  },
+  "messages": [
+    {"id": "msg_1", "time": {"created": 1794015495255}, "text": "Remember this made-up word: quillomet.", "files": [], "type": "user"},
+    {"id": "msg_2", "time": {"created": 1794015495266, "streamed": 1794015497144, "completed": 1794015497145}, "type": "assistant", "agent": "build",
+     "model": {"id": "grok-build-0.1", "providerID": "xai", "variant": "default"},
+     "content": [{"type": "reasoning", "text": "I need to read the file."}, {"type": "tool", "id": "call_1", "name": "read"}]},
+    {"id": "msg_3", "time": {"created": 1794015497152, "streamed": 1794015497966, "completed": 1794015497967}, "type": "assistant", "agent": "build",
+     "model": {"id": "grok-build-0.1", "providerID": "xai", "variant": "default"},
+     "content": [{"type": "reasoning", "text": ""}, {"type": "text", "text": "OK"}]},
+    {"id": "msg_4", "time": {"created": 1794015497969}, "type": "idle", "outcome": "succeeded"},
+    {"id": "msg_5", "time": {"created": 1794015498665}, "type": "model-switched", "model": {"id": "gpt-5.6-luna", "providerID": "openai"}, "previous": {"id": "grok-build-0.1", "providerID": "xai", "variant": "default"}},
+    {"id": "msg_6", "time": {"created": 1794015498734}, "text": "What was the word?", "files": [], "type": "user"},
+    {"id": "msg_7", "time": {"created": 1794015498800}, "type": "assistant", "agent": "build",
+     "model": {"id": "gpt-5.6-luna", "providerID": "openai"},
+     "content": [{"type": "text", "text": "quillomet"}]}
+  ]
+}
