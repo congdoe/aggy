@@ -1184,7 +1184,7 @@ Not established:
 
 ## OpenCode 2.2.5 as an on-screen harness (2026-11-06, spike T6930)
 
-**Who ran these.** Agents ran every check here, not the owner. On 2026-11-06 the owner approved agents running OpenCode live for this spike only, which is an exception to the rule in `CLAUDE.md` that agents never run real vendor CLIs. It covers OpenCode alone: the real Claude, Codex, and Grok CLIs were not run.
+**Who ran these.** Agents ran the checks here, except the two marked as the owner's. On 2026-11-06 the owner approved agents running OpenCode live for this spike only, which is an exception to the rule in `CLAUDE.md` that agents never run real vendor CLIs. It covers OpenCode alone: the real Claude, Codex, and Grok CLIs were not run.
 
 Runs were on macOS, with OpenCode 2.2.5 (MIT, source at tag `v2.2.5`, commit `9bbb8ce`; paths below are under `packages/`). Every command used `--standalone` or a test server of its own, and no vendor credential file was opened. In the first round none used `--auto` and 17 runs tried to reach a model on the owner's sign-ins, 3 of which reached none (a dead port and two bad model names). A second round, below, tested `--auto`. A third round, after review, used no real model.
 
@@ -1238,7 +1238,7 @@ Each fact is marked by how it was established:
 |---|---|---|
 | First screen, no sign-in, new folder | Live | No dialog; first output under 0.5 s |
 | Alternate screen | Live | `opencode` uses it, with mouse reporting; `opencode mini` uses neither |
-| Changing model in `opencode mini` | Owner's try (2026-11-06), fake-model, source (`tui/src/mini/footer.command.tsx`) | The owner found no `/model` and set a model only at launch with `-m`. Rechecked: `/model` gives "No matching items". **But the Ctrl-P menu has "Switch model"**, and after choosing a second model the next turn reached the fake server on it. So mini lacks the slash command, not the ability |
+| Changing model in `opencode mini` | Owner's try (2026-11-06), fake-model, source (`tui/src/mini/footer.command.tsx`) | The owner found no `/model` and set a model only at launch with `-m`. Rechecked: `/model` gives "No matching items". **But the Ctrl-P menu has "Switch model"**, and after choosing a second model the next turn reached the fake server on it. The owner then used Ctrl-P "Switch model" on a real session (2026-11-06). So mini lacks the slash command, not the ability |
 | `/exit` with nothing open | Live | Exit 0 |
 | `/exit` then Enter over a permission dialog | Fake-model | The letters were dropped and **Enter chose Allow once: the command ran** |
 | Ctrl-C over a permission dialog | Fake-model | Declined the call; the app stayed open |
@@ -1439,12 +1439,12 @@ Scripts named in a repo's `.git/config`, all under exact rules:
 
 | Setting | Command | Script ran | What stopped it |
 |---|---|---|---|
-| `core.fsmonitor` | `git status`, also after `cd` into a nested repo | **Yes** | `git -c core.fsmonitor=false status`, or launch env `GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0=core.fsmonitor`, `GIT_CONFIG_VALUE_0=false`; a model's `GIT_CONFIG_COUNT=0` prefix then prompts |
+| `core.fsmonitor` | `git status`, also after `cd` into a nested repo | **Yes** | `git -c core.fsmonitor=false status`, or launch env `GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0=core.fsmonitor`, `GIT_CONFIG_VALUE_0=false`; a model's `GIT_CONFIG_COUNT=0` prefix then prompts, but `export GIT_CONFIG_VALUE_0=<command>; git status` or `PATH=<dir>:$PATH; git status` ran with no prompt, since declarations aren't checked (`core/src/shell/parse.ts`) |
 | `diff.external` | `git diff` | **Yes** | Launch env `GIT_EXTERNAL_DIFF=true`, or `diff.external` emptied the same way; rule `git diff --no-ext-diff --no-textconv` |
 | `diff.<driver>.command` with `.gitattributes` | `git diff` | **Yes** | Rule `git diff --no-ext-diff --no-textconv` |
 | `filter.<name>.clean` with `.gitattributes` | `git diff` | **Yes** (`git status` did not, in this one test) | Not found; that rule was not tried against it |
 | `core.pager` | `git log`, no terminal | No | |
-| `post-index-change` hook | `git status` | No, in this one test | |
+| `post-index-change` hook | `git status` | Yes, once a tracked file's time changed; no in the first test, which changed none | |
 
 **5. The `execute.before` guard.** Fake-model, allow-all rules, so only the guard decides. It sees the raw tool input only, so it can't reliably see redirects or flags. A guard that refuses text naming a protected path:
 
@@ -1466,6 +1466,16 @@ Scripts named in a repo's `.git/config`, all under exact rules:
 | Deleting the rows (temp database only) | Back to asking. `/api/permission/saved` also has a DELETE (source, not run) |
 
 Not established: a real plan limit on either plan; which sign-in method the owner used for OpenAI, beyond the source inference above; whether a provider key from `{file:}` reaches a real vendor's request header (the fake model received it); SIGTERM and SIGHUP behaviour; the service path.
+
+## OpenCode, second review (2026-11-06, fake model)
+
+Real OpenCode 2.2.5 against a loopback fake model in a temp `HOME`, with no credentials.
+
+- With only exact rules, declarations before an allowed command ran arbitrary code with no prompt, as the `core.fsmonitor` row says. Substitutions, function definitions, heredocs, `trap`, and an `if` wrapper still prompted.
+- `*` and `?` in a rule keep their wildcard meaning, and `{file:}` in a rule is expanded: `rm -f *.tmp` allowed `rm -f keep a.tmp`.
+- `/open` on the full screen moved a `--auto` session to another known project, where a command ran with no prompt. That project's screen plugin should not load (source only).
+- A plugin or a policy planted in the `OPENCODE_CONFIG_DIR` folder took effect in a later launch in another repo.
+- `run -m` with a denied provider, a resume after its provider was denied, and no allowed provider each exited 1 with no request. `mini -m` is untested.
 
 ## Claude Code session file fields (2026-11-06)
 
