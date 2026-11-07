@@ -410,6 +410,16 @@ and `~/Library` denies.
 | `aggy-video-default-refused` | PASS |
 | `video-borrow-grok` | FAIL, environment: the account has zero data retention, and Grok's `image_to_video` reported "Video generation tools are unavailable under zero data retention (ZDR)"; aggy's artifact gate correctly found no file. Testing Grok video needs ZDR off or a user-hosted bucket (owner item). |
 
+## Folder trust as `aggy doctor` reads it (T6899)
+
+Codex only, source only: the `[projects."<path>"]` table's `trust_level` in
+`config.toml` (see "Codex project trust in an edit child"). That the TUI's
+trust dialog writes the same entry, and what each CLI exits with when its
+dialog is declined, are unverified: T6895 and T6896 wait for the owner to
+accept trust dialogs. To confirm: decline each CLI's dialog once under `aggy`,
+note the exit code, then check `config.toml` after accepting Codex's. Claude's
+and Grok's stored answers are not recorded, so doctor says nothing for them.
+
 ## Grok project config and folder trust (source only)
 
 From grok-build source at `2bdd1d6`, not run live. Grok loads project

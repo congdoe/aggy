@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/adapter/grok"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/supervisor"
 )
 
 // sessionStore is a store in a temp AGGY_HOME, with HOME a temp dir.
@@ -558,5 +560,181 @@ func TestChildEnv(t *testing.T) {
 func TestPlanBadModel(t *testing.T) {
 	if _, err := plan(context.Background(), nil, config.Config{}, t.TempDir(), target{Model: "a b"}, time.Now(), io.Discard); err == nil {
 		t.Error("a bad model was planned")
+	}
+}
+
+// TestPlanSkipsUnstartedChild (T6899): a child that never started does not count
+// as the parent's latest, nor its parent as the directory's, when anything
+// else there has started. Named by id it still goes on screen; alone it does
+// too, with the usual note.
+func TestPlanSkipsUnstartedChild(t *testing.T) {
+	ctx, s, dir, claudeID := unstartedWorld(t)
+	got, err := plan(ctx, s, config.Config{}, dir, target{}, time.Now(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.child.Vendor != "claude" || got.resume != claudeID {
+		t.Errorf("latest = %s %s, want the claude child %s", got.child.Vendor, got.resume, claudeID)
+	}
+	// A later parent that holds only a child that never started hides nothing.
+	later := time.Now().Add(time.Hour)
+	if err := s.InsertParent(ctx, store.Parent{ID: "bb22", Dir: dir, DirKey: mustCanon(t, dir), CreatedAt: later, LastActive: later}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertChild(ctx, store.Child{ID: "c-later", ParentID: "bb22", Vendor: "grok", VendorSessionID: "99999999-2222-4333-8444-555555555555", Cwd: dir, Status: "open", CreatedAt: later, LastActive: later}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = plan(ctx, s, config.Config{}, dir, target{}, time.Now(), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got.parent.ID != "aa11" || got.resume != claudeID {
+		t.Errorf("reopened parent %s session %s, want aa11 %s", got.parent.ID, got.resume, claudeID)
+	}
+	// A switch to the vendor whose only child never started starts a new one.
+	if got, err = plan(ctx, s, config.Config{}, dir, target{ParentID: "aa11", Vendor: adapter.Grok}, time.Now(), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if !got.newChild || got.child.Vendor != "grok" {
+		t.Errorf("switch to grok: new %v vendor %s", got.newChild, got.child.Vendor)
+	}
+}
+
+// unstartedWorld is a parent aa11 in a temp HOME with a Claude child that has a
+// session file and a later Grok child that has none and never had.
+func unstartedWorld(t *testing.T) (context.Context, *store.Store, string, string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("GROK_HOME", "")
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("AGGY_HOME", filepath.Join(home, ".aggy"))
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	s, err := store.OpenDefault(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	const claudeID, grokID = "11111111-2222-4333-8444-555555555555", "22222222-2222-4333-8444-555555555555"
+	now := time.Now()
+	if err := s.InsertParent(ctx, store.Parent{ID: "aa11", Dir: dir, DirKey: mustCanon(t, dir), LastVendor: "grok", CreatedAt: now, LastActive: now}); err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range []store.Child{{ID: "c-claude", Vendor: "claude", VendorSessionID: claudeID}, {ID: "c-grok", Vendor: "grok", VendorSessionID: grokID}} {
+		at := now.Add(time.Duration(i) * time.Minute)
+		c.ParentID, c.Cwd, c.Status, c.CreatedAt, c.LastActive = "aa11", dir, "open", at, at
+		if err := s.InsertChild(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	proj := filepath.Join(home, ".claude", "projects", claudeProjectDir(dir))
+	if err := os.MkdirAll(proj, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, claudeID+".jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".grok", "sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return ctx, s, dir, claudeID
+}
+
+func mustCanon(t *testing.T, dir string) string {
+	t.Helper()
+	key, err := safefs.CanonicalPath(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+// TestChildStarted (T6899) is the evidence that a CLI got past its dialogs.
+func TestChildStarted(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GROK_HOME", "")
+	const id = "22222222-2222-4333-8444-555555555555"
+	cwd := t.TempDir()
+	dir := filepath.Join(home, ".grok", "sessions", grok.EncodeCwd(cwd), id)
+	child := store.Child{Vendor: "grok", Cwd: cwd}
+	now := time.Now()
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if childStarted(supervisor.Exit{}, child, id, now, nil, &sessionFiles{}) {
+		t.Error("no file and no turn counted as started")
+	}
+	if !childStarted(supervisor.Exit{TurnRan: true}, child, id, now, nil, &sessionFiles{}) {
+		t.Error("a counted turn did not count")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !childStarted(supervisor.Exit{}, child, id, now, nil, &sessionFiles{}) {
+		t.Error("a session file written since the launch did not count")
+	}
+	if childStarted(supervisor.Exit{}, child, id, now.Add(time.Hour), nil, &sessionFiles{}) {
+		t.Error("a resumed session's old file counted")
+	}
+	codex := store.Child{Vendor: "codex", Cwd: cwd}
+	if childStarted(supervisor.Exit{}, codex, "", now, func() bool { return false }, &sessionFiles{}) {
+		t.Error("a Codex child with no rollout counted")
+	}
+	if !childStarted(supervisor.Exit{}, codex, "", now, func() bool { return true }, &sessionFiles{}) {
+		t.Error("a Codex child with a new rollout did not count")
+	}
+}
+
+// TestSawRolloutLooksAgain (T6899): a rollout written just before the CLI exits,
+// between two polls, still counts; one there before the launch does not.
+func TestSawRolloutLooksAgain(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessions")
+	now := time.Now()
+	day := filepath.Join(dir, now.Format("2006"), now.Format("01"), now.Format("02"))
+	if err := os.MkdirAll(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const old, fresh = "019a0000-0000-7000-8000-000000000001", "019a0000-0000-7000-8000-000000000002"
+	write := func(id string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(day, "rollout-2026-01-01T00-00-00-"+id+".jsonl"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(old)
+	x := newSessionIndex("p", adapter.Codex)
+	x.watchDir, x.watchStart, x.watchBefore = dir, now, codexRollouts(dir, now, now)
+	if len(x.watchBefore) != 1 {
+		t.Fatalf("before = %v", x.watchBefore)
+	}
+	if x.sawRollout() {
+		t.Error("a rollout from before the launch counted")
+	}
+	write(fresh)
+	if !x.sawRollout() {
+		t.Error("a new rollout did not count")
+	}
+}
+
+// TestFromSwitch: only a switch's launch has a CLI to go back to.
+func TestFromSwitch(t *testing.T) {
+	for _, tt := range []struct {
+		t    target
+		want bool
+	}{
+		{target{}, false},
+		{target{New: true, Vendor: adapter.Grok}, false},
+		{target{ParentID: "p"}, false},
+		{target{ParentID: "p", Vendor: adapter.Grok}, true},
+		{target{ParentID: "p", Vendor: adapter.Grok, SameChild: true}, false},
+	} {
+		if got := tt.t.fromSwitch(); got != tt.want {
+			t.Errorf("%+v: %v", tt.t, got)
+		}
 	}
 }

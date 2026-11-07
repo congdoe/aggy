@@ -70,7 +70,7 @@ func TestLimitSwitchWithBrief(t *testing.T) {
 		"error":         "rate_limit",
 		"hook_command":  []string{"/bin/sh", "-c", hook, "sh"},
 		"hooks":         []map[string]any{{"event": "StopFailure", "payload": map[string]any{"error": "rate_limit", "session_id": "{session_id}"}}},
-		"session_files": []map[string]any{{"path": "projects/" + transcript.ClaudeProjectDir(w.cwd) + "/{session_id}.jsonl", "content": turns}},
+		"session_files": append(startedFiles(), map[string]any{"path": "projects/" + transcript.ClaudeProjectDir(w.cwd) + "/{session_id}.jsonl", "content": turns}),
 	}
 	s := w.start(t, sc, "run", "claude")
 	s.waitWithin([]byte("claude reports a limit (unverified)"), offerTimeout)

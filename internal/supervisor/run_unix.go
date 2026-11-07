@@ -350,6 +350,7 @@ func Run(o Options) (Exit, error) {
 				if switches && s.signalled {
 					switches = s.signalStops(w.code)
 				}
+				ex.TurnRan, ex.Signalled = s.turnRan, s.signalled
 				if switches {
 					ex.SwitchTo, ex.Next = s.sw.to, s.sw.choice
 					ex.Next.Vendor = s.sw.to

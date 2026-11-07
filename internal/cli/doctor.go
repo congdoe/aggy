@@ -56,6 +56,7 @@ const (
 	codeIndexOld       = "index-old"        // warning: the index predates drift checks
 	codeNoIndex        = "no-index"         // info: aggy has recorded nothing yet
 	codeHooks          = "hooks"            // info, or warning when aggy cannot install them as is
+	codeFolderTrust    = "folder_trust"     // warning: a CLI may ask about this folder at launch
 )
 
 // driftSchema is the oldest index schema whose changes have a kind.

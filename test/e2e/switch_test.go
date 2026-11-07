@@ -28,9 +28,10 @@ func TestSwitchAtTurnEnd(t *testing.T) {
 		t.Fatalf("aggy setup: %v\n%s", err, out)
 	}
 	sc := map[string]any{
-		"stdout":       "READY>",
-		"hook_command": []string{buildAggy(t), "hook", "--vendor", "claude"},
-		"hooks":        []map[string]any{{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}},
+		"stdout":        "READY>",
+		"hook_command":  []string{buildAggy(t), "hook", "--vendor", "claude"},
+		"hooks":         []map[string]any{{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}},
+		"session_files": startedFiles(),
 	}
 	s := w.start(t, sc, "run", "claude")
 	s.waitFor([]byte("READY>"))
@@ -90,6 +91,7 @@ func TestSkillRequestedSwitch(t *testing.T) {
 		"hook_command": askThenStop(t, adapter.Claude, ""),
 		"hooks": []map[string]any{{"event": "grok", "payload": map[string]any{}},
 			{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}},
+		"session_files": startedFiles(),
 	}
 	s := w.start(t, sc, "run", "claude")
 	s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
@@ -133,7 +135,7 @@ func TestSwitchNoTurnYet(t *testing.T) {
 		}
 		s.send(key)
 	}
-	sc := map[string]any{"raw_echo": true, "stdout": "READY>"}
+	sc := map[string]any{"raw_echo": true, "stdout": "READY>", "session_files": startedFiles()}
 
 	t.Run("quit by hand switches", func(t *testing.T) {
 		w := newWorld(t)
@@ -197,6 +199,47 @@ func TestSwitchNoTurnYet(t *testing.T) {
 	})
 }
 
+// TestDeclinedDialogGoesBack (T6899): the CLI switched to closes at a dialog
+// (the raw_echo fake runs no hook, saves nothing, and exits 0): aggy says so and
+// reopens the CLI before it, and the child that never started is not the
+// parent's latest afterwards.
+func TestDeclinedDialogGoesBack(t *testing.T) {
+	w := newWorld(t)
+	c := exec.Command(buildAggy(t), "setup", "--yes")
+	c.Dir = w.cwd
+	c.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("aggy setup: %v\n%s", err, out)
+	}
+	sc := map[string]any{"raw_echo": true, "stdout": "READY>"}
+	s := w.start(t, sc, "run", "claude")
+	s.waitFor([]byte("READY>"))
+	s.send([]byte{0x1c})
+	s.waitFor([]byte("aggy: switch vendor"))
+	key := []byte("2")
+	if strings.Contains(s.screen(), "1  grok") {
+		key = []byte("1")
+	}
+	s.send(key)
+	s.waitWithin([]byte("will not type /exit into it"), offerTimeout)
+	s.send([]byte("k")) // the note closes; the key goes to the CLI
+	s.waitFor([]byte("k"))
+	s.send([]byte{0x04}) // quit claude by hand, as the note says
+	w.waitRuns(t, s, 2)
+	s.send([]byte{0x04}) // grok closes at its dialog
+	s.waitWithin([]byte("grok closed before it started"), offerTimeout)
+	w.waitRuns(t, s, 3)
+	s.send([]byte{0x04})
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	runs := interactiveRuns(t, w)
+	if len(runs) != 3 || runs[0].Vendor != "claude" || runs[1].Vendor != "grok" || runs[2].Vendor != "claude" {
+		t.Fatalf("interactive runs = %+v, want claude, grok, claude", runs)
+	}
+	s.restored("after going back")
+}
+
 // TestTerminalRepliesAreNotTyped (T6897): a CLI asks its terminal things at
 // launch and turns on focus reporting, and the terminal answers. None of the
 // answers is typing: the switch is offered, not refused for unsent text.
@@ -224,10 +267,11 @@ func TestTerminalRepliesAreNotTyped(t *testing.T) {
 			w := newWorld(t)
 			setup(t, w)
 			sc := map[string]any{
-				"term_queries": "\x1b[c\x1b[>c\x1b[6n\x1b]11;?\x1b\\\x1b[>q\x1b[?2026$p\x1b[?1004h",
-				"stdout":       "READY>",
-				"hook_command": []string{buildAggy(t), "hook", "--vendor", "claude"},
-				"hooks":        []map[string]any{{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}},
+				"term_queries":  "\x1b[c\x1b[>c\x1b[6n\x1b]11;?\x1b\\\x1b[>q\x1b[?2026$p\x1b[?1004h",
+				"stdout":        "READY>",
+				"hook_command":  []string{buildAggy(t), "hook", "--vendor", "claude"},
+				"hooks":         []map[string]any{{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}},
+				"session_files": startedFiles(),
 			}
 			s := w.start(t, sc, "run", "claude")
 			s.waitFor([]byte("\x1b[?1004h"))
