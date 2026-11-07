@@ -264,6 +264,10 @@ func ownToolOutput(tool, real string, env OpenCodeEnv) bool {
 // NODE_OPTIONS, PYTHON*, PERL5*, and RUBY*. No shipped rule runs those tools.
 // One could reach them only through a repo's hook or filter in that language,
 // which already runs whatever it says, and `PYTHONPATH=. pytest` is everyday.
+// IFS: shells split only expansions, and no shipped rule holds one, so it cannot
+// change an exact rule's command (TestGuardAgainstRealShells), and `while IFS=
+// read -r line` is among the commonest loops there are. A rule with an expansion
+// would need it back.
 var sensitiveVars = []string{
 	"PATH",                // which git or ls runs at all
 	"GIT_*",               // git's config, repo, and helpers: GIT_CONFIG_COUNT, GIT_DIR, GIT_EXTERNAL_DIFF, GIT_PAGER
@@ -278,7 +282,6 @@ var sensitiveVars = []string{
 	"ZDOTDIR",             // where zsh finds its startup files
 	"HOME",                // ~/.gitconfig, so core.pager, aliases, and filters
 	"XDG_*",               // $XDG_CONFIG_HOME/git/config, the same
-	"IFS",                 // how the shell splits an allowed command's words
 	"CDPATH",              // which folder a cd before the command lands in
 	"FPATH",               // zsh's functions, tied to fpath
 	"MANPATH",             // tied to manpath, so a rule below covers both spellings
@@ -297,6 +300,8 @@ var sensitiveVars = []string{
 var tiedVars = []string{"path", "cdpath", "fpath", "manpath"}
 
 var (
+	// quoteMarksRE is what the shell removes from a word once it has read it.
+	quoteMarksRE = regexp.MustCompile(`["'\\]`)
 	// shellWordRE finds each run of name characters in the raw text.
 	shellWordRE = regexp.MustCompile(`[A-Za-z0-9_]+`)
 	// bracedSetRE is what follows a name in ${NAME:=x}, ${NAME=x}, ${NAME::=x}
@@ -323,9 +328,11 @@ const tiedNotSetAfter = "-./:=@%+,~?"
 // This does not parse shell, and it knows nothing of quotes: parsing was
 // bypassed in each review, and refused everyday commands. It looks at the raw
 // text, so it refuses a commit message that names PATH, and it allows any
-// other declaration. A line continuation is the one thing the shell removes
-// before anything else, so the text is also read with those gone: `PA\<newline>
-// TH=x` sets PATH, and `# note\<newline>PATH=x` only does as raw text.
+// other declaration. It reads three forms, and any one can refuse. A line
+// continuation is the one thing the shell removes before anything else, so the
+// second has those gone: `PA\<newline>TH=x` sets PATH, and `# note\<newline>PATH=x`
+// only does as raw text. The third also has quotes and backslashes gone, as
+// `export P"A"TH=x` sets PATH with no prompt.
 //
 // It catches mistakes, not a hostile model: a name assembled at run time gets
 // past it (docs/design.md).
@@ -335,16 +342,16 @@ const tiedNotSetAfter = "-./:=@%+,~?"
 // OpenCode's scanner cannot analyze it, and that fails the call (scan.ts and
 // shell/parse.ts at v2.2.5).
 //
-// TODO(T6953): a name split by quotes or a backslash, `export P"A"TH=./bin`, gets
-// past this with no prompt. The review's remaining shapes are there too.
+// TODO(T6953): the review's remaining shapes.
 func shellScan(cmd string, ruleWords []string) string {
 	if why := scanText(cmd, ruleWords); why != "" {
 		return why
 	}
-	if joined := strings.ReplaceAll(cmd, "\\\n", ""); joined != cmd {
-		return scanText(joined, ruleWords)
+	joined := strings.ReplaceAll(cmd, "\\\n", "")
+	if why := scanText(joined, ruleWords); why != "" {
+		return why
 	}
-	return ""
+	return scanText(quoteMarksRE.ReplaceAllString(joined, ""), ruleWords)
 }
 
 // scanText is one pass over the text.

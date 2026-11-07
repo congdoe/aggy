@@ -26,8 +26,6 @@ var reviewBypasses = []string{
 	"bash -c 'PATH=./bin; git status'",
 	"sh -c 'PATH=./bin git status'",
 	"$'PATH\\x3d./bin'; git status",
-	"IFS=x; git status",
-	"IFS= read -r x",
 	"set -- PATH=./bin; export \"$@\"",
 	"read PATH <<<./bin; git status",
 	"printf -v PATH ./bin; git status",
@@ -60,6 +58,8 @@ var reviewBypasses = []string{
 // purpose. They name no variable on the list, or OpenCode gives them a resource
 // of their own, so they ask (scan.ts at v2.2.5).
 var reviewDesignPasses = []string{
+	"IFS=x; git status",
+	"IFS= read -r x",
 	"alias git=./bin/git; git status",
 	"source ./bin/x; git status",
 	". ./bin/x; git status",
@@ -76,6 +76,8 @@ var reviewDesignPasses = []string{
 
 // everydayCommands are what a session runs all day. They must pass.
 var everydayCommands = []string{
+	"while IFS= read -r line; do echo \"$line\"; done < f",
+	"git ls-files | while IFS= read -r f; do wc -l \"$f\"; done",
 	"for f in *.go; do gofmt -l \"$f\"; done",
 	"for f in $(git ls-files '*.go'); do wc -l \"$f\"; done",
 	"for i in 1 2 3; do echo $i; done",
@@ -201,6 +203,4 @@ var everydayCommands = []string{
 var everydayRefused = []string{
 	"HOME=/tmp npm test",
 	"export PATH=$PATH:/x && go test",
-	"git ls-files | while IFS= read -r f; do wc -l \"$f\"; done",
-	"while IFS= read -r line; do echo \"$line\"; done < f",
 }
