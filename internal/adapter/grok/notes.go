@@ -11,10 +11,17 @@ import (
 	"github.com/congdoe/aggy/internal/safefs"
 )
 
-// PolicyDenied starts a tool's result when Grok's permission gate refused it.
-// Live, grok 1.0.70 (verification.md S4) and, in the 2026-11-06 agent audit,
+// PolicyDenied starts the reason Grok's permission gate gives for refusing a
+// tool. Live, grok 1.0.70 (verification.md S4) and, in the 2026-11-06 agent audit,
 // 1.0.77 (T6922): "Denied by permission policy: deny rule on read matching ...".
 const PolicyDenied = "Denied by permission policy"
+
+// notExecuted joins a tool's name to that reason in the message Grok writes:
+// "Tool `<name>` was not executed: <reason>" (grok-build 2bdd1d6a,
+// xai-grok-shell/src/session/acp_session_impl/tool_calls.rs:1925-1926).
+// Unverified: that 1.0.77's history holds exactly this (verification.md, T6929,
+// question 6), so the bare reason counts too.
+const notExecuted = " was not executed: "
 
 // RunNotes says when a review's read tools were refused, which the reply does
 // not have to mention. aggy's "~*" and "~*/**" deny rules (readDeny) also
@@ -72,7 +79,7 @@ func inside(p, dir string) bool {
 }
 
 // historyShowsDenial reports whether a tool_result line of the session's
-// chat_history.jsonl starts with PolicyDenied. Only those lines, and only at the
+// chat_history.jsonl is a denial (isDenial). Only those lines, and only at the
 // start: the prompt holds the diff under review, and a file a tool read can
 // quote anything. A tool_result's content is taken as text or as text parts,
 // since its shape is source only (SelfTestEvidence).
@@ -89,11 +96,23 @@ func (a Adapter) historyShowsDenial(cwd, id string) bool {
 			Type    string          `json:"type"`
 			Content json.RawMessage `json:"content"`
 		}
-		if json.Unmarshal(line, &e) == nil && e.Type == "tool_result" && strings.HasPrefix(strings.TrimSpace(resultText(e.Content)), PolicyDenied) {
+		if json.Unmarshal(line, &e) == nil && e.Type == "tool_result" && isDenial(resultText(e.Content)) {
 			return true
 		}
 	}
 	return false
+}
+
+// isDenial reports whether a tool's result is the gate's refusal, bare or in
+// the "Tool `x` was not executed" message.
+func isDenial(text string) bool {
+	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, "Tool `") {
+		if _, reason, ok := strings.Cut(text, notExecuted); ok {
+			text = reason
+		}
+	}
+	return strings.HasPrefix(text, PolicyDenied)
 }
 
 // resultText is a tool_result's text: a string, or the first of its text parts.
