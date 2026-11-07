@@ -189,6 +189,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | --- | --- | --- | --- | --- |
 | `borrow.request.refused` | error | borrow | aggy borrow refused or failed outside the child's own run: before a child started, or while recording one. | The code's entry; aggy diag show &lt;run id&gt; for what led to it. |
 | `borrow.vendor.skipped` | info | borrow | A candidate vendor could not start the borrow, and the next one was tried. | The code says why; aggy setup and aggy doctor for that vendor. |
+| `borrow.version.checked` | info | borrow | A check of a CLI newer than the tested range ran; attrs hold the check, its result, and the version. | A failed check is cached for that version; a new CLI version or aggy release checks again. |
 | `borrow.child.started` | info | borrow | The borrow was recorded and its child CLI started. | A started borrow with no borrow.run.finished was cut short: aggy diag show &lt;borrow id&gt;. |
 | `borrow.child.exited` | info | borrow | The child CLI exited; exit_code and duration_ms say how. | A non-zero exit is classed by the next record (borrow.run.failed). |
 | `borrow.run.failed` | warn | borrow | The borrow ran and failed; the code is the vendor's error class. | The code's entry; aggy inbox &lt;borrow id&gt; for the report. |
@@ -264,7 +265,8 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `adapter.no_capability` |  | The CLI's --help lacks a flag the lockdown needs. | Update the CLI; aggy setup shows its version. |
 | `adapter.file_tools_off` |  | The request needs Grok's media file tools, which are off. | [media] grok_file_tools in ~/.aggy/config.toml, after reading what it uploads. |
 | `sandbox.missing` |  | The vendor's sandbox is not available for this kind on this CLI or host. | Grok needs --sandbox strict in its --help and a kernel sandbox (macOS, or Linux with Landlock). |
-| `lockdown.untested_version` |  | The CLI's version is outside the versions the borrow lockdown was verified on. | aggy doctor; --allow-untested runs it anyway. |
+| `lockdown.untested_version` |  | The CLI's version is below the tested range, a new major version, or unreadable, so aggy does not borrow on it. | aggy doctor; --allow-untested runs it anyway. |
+| `lockdown.version_check_failed` |  | A CLI newer than the tested range failed or could not finish aggy's check on this machine (a lockdown flag gone from help, a Codex feature not reviewed, or the canary self-test), so routing passed it over. | The passed over line names which; aggy diag --event borrow.version.checked; --allow-untested runs it anyway; a result that was not final is tried again on the next borrow. |
 | `borrow.permission_prompt` |  | The child stopped a tool at a permission prompt, which a headless run cannot answer, so the tool did not run (Grok: "was not run, as a headless run cannot ask for approval"). | aggy doctor for the CLI's version; attach aggy diag bundle to an issue: aggy's allow rules for that kind may need a change. |
 | `lockdown.rejected` | yes | The CLI rejected a lockdown flag, reported a tool it does not know, or ran without its sandbox, so aggy discarded the run. | aggy doctor for the version; attach aggy diag bundle to an issue. |
 | `vendor.rate_limit` |  | The vendor reported a plan or rate limit. | aggy log shows the limit; routing skips the vendor until it lifts. |

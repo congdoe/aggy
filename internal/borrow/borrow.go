@@ -67,8 +67,8 @@ type Request struct {
 	// Authors are the vendors a review's commits name in their
 	// Aggy-Vendor trailers: untrusted, so they only steer routing.
 	Authors []adapter.Vendor
-	// AllowUntested runs a CLI whose version is outside the adapter's
-	// tested range (--allow-untested).
+	// AllowUntested runs a CLI outside the adapter's tested range with none
+	// of the version checks (--allow-untested).
 	AllowUntested bool
 	// Fresh skips the research cache (--fresh). A fresh report still
 	// replaces the cached one.
@@ -109,6 +109,9 @@ type CLI struct {
 	// VersionLine is the first --version line when Version is "".
 	VersionLine string
 	Caps        []string
+	// HelpIncomplete says a help run failed, so a missing capability may
+	// only mean that (probe.ErrIncomplete).
+	HelpIncomplete bool
 }
 
 // Deps is what a borrow needs from the outside world. internal/cli fills
@@ -152,6 +155,10 @@ type Deps struct {
 	Tools func(ctx context.Context, v adapter.Vendor, cli CLI, names []string, cwd string) (servers []adapter.MCPServer, done func(), err error)
 	// Diag is the diagnostic log; nil logs nothing.
 	Diag *diag.Writer
+	// Notice prints one line for the person, such as a new CLI version
+	// passing its checks. Its text may hold the CLI's version. Nil prints
+	// nothing.
+	Notice func(string)
 }
 
 // Caps are the concurrency limits of design section 7: at most 2 borrows
@@ -200,6 +207,12 @@ type Result struct {
 	// Worktree is an edit child's worktree, kept for aggy accept or
 	// aggy reject.
 	Worktree store.Worktree
+	// CLIVersion and VersionNote name a CLI outside the tested range and how
+	// it came to run; both "" inside it.
+	CLIVersion  string
+	VersionNote string
+	// Warnings are things the person should know about a borrow that ran.
+	Warnings []string
 }
 
 // Borrower runs borrows.
@@ -469,12 +482,6 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 	if err := Supports(a, req.Kind); err != nil {
 		return Result{}, &preStartError{err, adapterCode(err)}
 	}
-	// The lockdown flags were verified on the tested versions only: a
-	// newer CLI may take them differently, so it needs the caller's
-	// say-so.
-	if w := adapter.VersionWarning(a, cli.Version, cli.VersionLine); w != "" && !req.AllowUntested {
-		return Result{}, &preStartError{fmt.Errorf("%s; the borrow lockdown was verified only there, so aggy will not borrow on it (pass --allow-untested to run it anyway)", w), diag.CodeUntested}
-	}
 	if err := grokTrustGate(v, req); err != nil {
 		return Result{}, &preStartError{err, diag.CodeUnsupported}
 	}
@@ -483,11 +490,20 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 			return Result{}, &preStartError{err, diag.CodeUnsupported}
 		}
 	}
+	// The lockdown flags were verified on the tested versions only, so a
+	// CLI outside them must pass the checks (versioncheck.go).
+	vc, err := b.checkVersion(ctx, a, v, cli, req)
+	if err != nil {
+		return Result{}, err
+	}
 	budget := b.Config.Budgets.For(req.Kind)
 	model := b.Config.Vendors.For(v).Model
 	now := b.Now()
 	id := newID()
-	res := Result{ID: id, Kind: req.Kind, Vendor: v, Model: model}
+	res := Result{ID: id, Kind: req.Kind, Vendor: v, Model: model, VersionNote: vc.note}
+	if vc.note != "" {
+		res.CLIVersion = cli.Version
+	}
 	markRecorded := func() {}
 
 	dirs, err := b.makeDirs(req)
@@ -589,6 +605,23 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 		return Result{}, err
 	}
 	cmd.Path = cli.Path
+	if vc.selfTest {
+		if err := b.selfTest(ctx, a, v, cli, req, model, vc); err != nil {
+			return Result{}, err
+		}
+	}
+	if vc.note != "" && !req.AllowUntested {
+		if err := b.announceVersion(ctx, v, cli, vc); err != nil {
+			return Result{}, err
+		}
+	}
+	// A later Codex could write the user's config some other way than the
+	// one projectOverride stops, so an edit compares the file around the run.
+	var watched, watchedBefore string
+	if w, ok := a.(adapter.ConfigWatcher); ok && req.Kind == adapter.Edit {
+		watched = w.UserConfigFile()
+		watchedBefore = fileDigest(watched)
+	}
 
 	parent, err := b.Store.ParentForDir(ctx, req.Repo, "borrows", newID(), now)
 	if err != nil {
@@ -632,6 +665,9 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 	rec.Event, rec.Cause, rec.Duration, rec.Exit = diag.EvBorrowChildExited, cause, res.Elapsed, diag.Int(out.ExitCode)
 	cause = b.Diag.Log(ctx, rec)
 	end := store.BorrowEnd{EndedAt: b.Now()}
+	if watched != "" && fileDigest(watched) != watchedBefore {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("%s changed while this edit ran; aggy keeps that file out of the child's reach only as far as its flags do, so check it (you, or another Codex session, may have changed it)", watched))
+	}
 	parsed, perr := a.ParseHeadless(hreq, out)
 	res.Text, res.Tokens = parsed.Text, parsed.Tokens
 	end.VendorSessionID, end.Tokens = parsed.SessionID, parsed.Tokens
@@ -696,9 +732,6 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 		return res, err
 	}
 	if req.Kind == adapter.Edit {
-		// TODO(T6929): nothing compares Codex's config.toml before and after
-		// an edit borrow, so a later Codex that writes to it some other way
-		// would go unnoticed (codex.projectOverride).
 		// Whatever the outcome: the worktree stays for accept or reject.
 		tree, err := b.Worktrees.Tree(ctx, res.Worktree)
 		if err == nil {

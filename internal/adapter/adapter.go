@@ -285,6 +285,28 @@ type ChildFiler interface {
 	ChildFiles(req HeadlessRequest) ([]ChildFile, error)
 }
 
+// FeatureChecker is implemented by an adapter whose lockdown lists what to
+// turn off instead of what to keep, so a tool new in a later CLI would be
+// on. It lets a borrow compare the CLI's own feature list with what aggy
+// reviewed, without a model call.
+type FeatureChecker interface {
+	// FeatureCommand is the command that prints the feature list. The
+	// caller sets its Path and Dir.
+	FeatureCommand() Command
+	// FeatureBaseline names what was reviewed, so a cached result is dropped
+	// when an aggy release reviews more.
+	FeatureBaseline() string
+	// NewFeatures reads the command's output: the features on that aggy has
+	// not reviewed as on. An error means the output says nothing either way.
+	NewFeatures(out Output) ([]string, error)
+}
+
+// ConfigWatcher is implemented by an adapter whose edit child could write
+// the user's own CLI config: a borrow compares the file before and after.
+type ConfigWatcher interface {
+	UserConfigFile() string
+}
+
 // ErrorClass is aggy's classification of a failed run. Adapters map each
 // vendor's own error values onto these.
 type ErrorClass string
@@ -384,6 +406,18 @@ type Adapter interface {
 	// TestedVersions is the range of CLI versions this adapter was tested
 	// on. VersionWarning compares a probed version with it.
 	TestedVersions() VersionRange
+
+	// LockdownCaps lists the probe capabilities (flags in the CLI's help)
+	// a borrow of kind k cannot be locked down without. A CLI above the
+	// tested range must show them all before it runs (design section 7).
+	// A flag whose presence in the real help is not recorded still counts:
+	// the check then fails closed, with the flag named.
+	LockdownCaps(k Kind) []string
+
+	// SelfTestKind is the kind whose lockdown runs the new-version
+	// self-test: one that leaves the child no tool reading outside its
+	// working dir, so a planted canary must not come back.
+	SelfTestKind() Kind
 
 	// Probe checks the installed CLI through run: path, version, and
 	// capabilities. It never reads credential files. Sign-in status is

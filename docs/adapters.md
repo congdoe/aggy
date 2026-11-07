@@ -38,6 +38,8 @@ can be tested against recorded output with no vendor installed.
 | --- | --- |
 | `Vendor()` | Names the vendor: `claude`, `codex`, or `grok`. |
 | `TestedVersions()` | The CLI version range the adapter was tested on. |
+| `LockdownCaps(kind)` | The probe capabilities, flags in `--help`, a kind's lockdown needs. Checked on a CLI above that range. |
+| `SelfTestKind()` | The kind whose lockdown runs the new-version self-test: one that leaves no tool able to read outside the working dir. |
 | `Probe(ctx, run)` | Reports the CLI's path, version, and capabilities. It never reads tokens; `Connected` stays false (sign-in is `SignIn`). |
 | `SignIn()` | The vendor's own sign-in step, as text, and a verified sign-in status check if there is one. `adapter.CheckSignIn` runs the check through the caller's runner. |
 | `Interactive(req)` | Builds the command for an on-screen session: new session, resume, or fork. It sets a model only when one is given, and points to a brief file when there is one. |
@@ -385,9 +387,9 @@ live on 2026-10-28. A CLI that rejects any of these flags, Codex under
 tool` (it then ignores the whole `--tools` allowlist, or removes nothing
 for a `--disallowed-tools` name) fails the borrow closed with the error
 class `lockdown` (`adapter.CheckLockdown`, `adapter.ErrLockdownRejected`);
-aggy never retries without the flag. A CLI whose version is outside the
-adapter's tested range, or unreadable, is refused for borrows unless
-`--allow-untested` is passed, since the lockdown was verified only there.
+aggy never retries without the flag. A CLI outside the adapter's tested
+range is refused or checked first ("Tested versions" below), since the
+lockdown was verified only there.
 
 **Review input.** Codex keeps the full lockdown for review, which leaves it
 no tool that reads a file, so every vendor's reviewer gets its input in
@@ -755,12 +757,25 @@ Each declares it as `Tested` and through `TestedVersions()`.
 version falls outside that range or cannot be parsed (then it quotes
 `line`, the first line `--version` printed, trimmed, capped at 80
 characters, and `[redacted]` when secret-shaped), and "" inside it, for
-`aggy doctor` to show, and `aggy borrow` refuses such a CLI unless
-`--allow-untested` is passed. Versions compare the semver way (pre-release
+`aggy doctor` alone to show. `adapter.ClassifyVersion` decides what a borrow
+does (design.md section 7, "When a CLI updates"): in range it runs; below
+Min, a new major version, or unreadable it refuses; above Max it runs the
+help check (`LockdownCaps`), Codex's feature check, and the self-test
+(`SelfTestKind`), and caches them per vendor and version in the store.
+`--allow-untested` skips all of that. Versions compare the semver way (pre-release
 identifiers numerically where both are numbers, build metadata ignored),
 and `x.y` means `x.y.0`. A `--version` aggy cannot read does not fail the
 probe: `Version` stays empty, nothing is cached, and the warning reports
 it.
+
+What the new-version checks rest on, and how far each is confirmed:
+
+| Fact | Status | If it is wrong |
+| --- | --- | --- |
+| `codex features list` prints `name  stage  enabled` for each entry of `FEATURES`, after a config load and no model call ([main.rs#L1921](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/cli/src/main.rs#L1921), [cloud_config.rs](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/cli/src/cloud_config.rs)) | Source; not run live | Output aggy cannot read passes Codex over, and the next borrow asks again. That load also builds Codex's cloud config loader, so the CLI may talk to its vendor; when it does was not traced. |
+| The features on by default at `rust-v0.164.0` (`codex.featuresOn`, from [features/src/lib.rs](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/features/src/lib.rs)) | Source | A feature the running CLI reports on that the table has off passes Codex over, naming it. |
+| Every flag in `LockdownCaps` is listed by the real `--help` of the tested CLI | Codex: clap source, none hidden. Claude and Grok: the flags were run live, but no help text is recorded, and Claude's help is known to omit `--append-system-prompt-file` | A help that omits one passes that vendor over on every new version, naming the flag. Remove it from `LockdownCaps` after a live check; `CheckLockdown` still catches a rejection. |
+| A plan-mode `claude -p --tools Read,Grep,Glob` refuses to read `../canary.txt` | Unverified live | A read that succeeds is a final failure for that version, so Claude is passed over on each new version until the self-test kind or the review lockdown changes. |
 
 ### Unconfirmed facts and their fallbacks
 

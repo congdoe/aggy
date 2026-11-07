@@ -182,8 +182,13 @@ trust-skipping flag, and no edit to the real vendor config. Scrub session
 ids, paths, and tokens before recording the result.
 
 `Tested` is the version range those facts were checked on. Outside it,
-`aggy doctor` warns and `aggy borrow` refuses unless `--allow-untested`
-is passed (`adapter.VersionWarning`).
+`aggy doctor` warns (`adapter.VersionWarning`) and `aggy borrow` refuses or
+checks the CLI first (`adapter.ClassifyVersion`, design.md section 7, "When a
+CLI updates"). So an adapter also says which flags a kind's lockdown needs in
+help (`LockdownCaps`; `TestLockdownCapsCoverFlags` fails when one is missing,
+and each needs a probe feature) and which kind runs the self-test
+(`SelfTestKind`). A vendor whose lockdown lists what to turn off instead of
+what to keep also implements `adapter.FeatureChecker`.
 
 ## Fakes and tests
 

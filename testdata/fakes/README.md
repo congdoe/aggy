@@ -32,7 +32,7 @@ Tests build them with `fakecli.Build(t)` from `internal/fakecli`, which runs `go
 
 Claude's `--resume` takes an optional value, as the real CLI does: it takes the next argument only when that does not start with `-`, so `--resume --permission-mode plan` is a bare `--resume`. Codex's `-i` takes one or more values, up to the next argument that starts with `-` (a lone `-` is a value), as clap's `num_args = 1..` does, and splits each on commas, as its `value_delimiter = ','` does. `codex exec resume` takes only its own flags, so exec flags placed after `resume` fail as unknown.
 
-Every command also takes `--version` and `--help` (`-h`). The generated help lists the honored flags; `codex --help` lists `exec` and `resume` in a `Commands:` block, `codex exec --help` lists `resume`, and `codex exec resume --help` names a `[SESSION_ID]` argument. `--flag=value` works too. Grok's `--continue` is recorded in the proposal (§3) and in docs/adapters.md.
+`codex features list` prints the lockdown's eight features plus one more on and one off, in the format of `cli/src/main.rs#L1951` at codex 6aaac69; a scenario's `replies` replace it. Every command also takes `--version` and `--help` (`-h`). The generated help lists the honored flags; `codex --help` lists `exec` and `resume` in a `Commands:` block, `codex exec --help` lists `resume`, and `codex exec resume --help` names a `[SESSION_ID]` argument. `--flag=value` works too. Grok's `--continue` is recorded in the proposal (§3) and in docs/adapters.md.
 
 Values are checked where docs/adapters.md records them, with exit 2 otherwise:
 
@@ -72,6 +72,7 @@ A JSON object. Every field is optional, and unknown fields are an error.
 | `hook_command` | strings | The hook program and its leading arguments. The event name is appended. |
 | `hook_payload_in` | string | `stdin` (default) or `arg`, for where the payload goes. |
 | `hooks` | objects | `{"event": "Stop", "payload": {...}}`, called in order at turn end. With `error: rate_limit` and no hooks, Claude and Grok call `StopFailure` with `{"error":"rate_limit"}`. Codex has no failure hook. |
+| `read_file` | string | A headless run prints this file, relative to its working dir, on stdout: a child whose lockdown let it read outside that dir. |
 | `images` | int | Number of images to write where the CLI does: `$CODEX_HOME/generated_images/<thread-id>/N.png`, or `$GROK_HOME/sessions/<url-encoded cwd>/<sessionId>/images/N.jpg`. Claude's image path is not recorded, so Claude refuses. |
 | `videos` | int | Grok only: number of videos to write at `$GROK_HOME/sessions/<url-encoded cwd>/<sessionId>/videos/N.mp4`, where grok-build's video tools save them (source, not live). |
 | `session_files` | objects | `{"path": "...", "content": "..."}` files written under the vendor's home. The path must stay inside it. |

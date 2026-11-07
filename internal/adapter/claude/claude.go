@@ -47,6 +47,22 @@ var Tested = adapter.VersionRange{Min: "2.1.311", Max: "2.1.312"}
 // TestedVersions returns Tested.
 func (Adapter) TestedVersions() adapter.VersionRange { return Tested }
 
+// LockdownCaps returns the flags kind k's lockdown needs in help. The
+// --tools allowlist means a tool new in a later CLI stays out of a review.
+func (Adapter) LockdownCaps(k adapter.Kind) []string {
+	caps := []string{probe.CapHeadless, probe.CapJSONOutput, probe.CapPermissionMode, probe.CapStrictMCP, probe.CapMCPConfig}
+	if k == adapter.Review {
+		caps = append(caps, probe.CapTools, probe.CapSettingSources)
+	}
+	return caps
+}
+
+// SelfTestKind returns review, the only kind aggy runs on Claude. It keeps
+// Read, so the self-test leans on Claude refusing a read outside the cwd
+// that a headless run cannot ask to allow. Unverified live: that a plan-mode
+// claude -p refuses it (docs/verification.md, T6929).
+func (Adapter) SelfTestKind() adapter.Kind { return adapter.Review }
+
 // SignIn returns Claude's own sign-in step, from docs/design.md section 2.
 // No sign-in status command is verified in docs/adapters.md, so there is
 // no Check and the status is unknown, and the step is only printed:

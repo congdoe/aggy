@@ -32,8 +32,7 @@ and style.
                    it to xAI: off unless grok_file_tools = true under
                    [media] in ~/.aggy/config.toml
   --vendor V       codex or grok, skipping routing
-  --allow-untested run a CLI whose version is outside the versions the
-                   borrow lockdown was verified on
+  --allow-untested run a CLI outside the tested versions without aggy's checks
 `
 
 const videoUsage = `Usage: aggy video "<brief>" --out PATH.mp4 [--vendor grok]
@@ -53,8 +52,7 @@ in ~/.aggy/config.toml (a repo's config cannot).
 
   --out PATH       where the video goes, inside this repo (.mp4)
   --vendor V       grok, skipping routing
-  --allow-untested run a CLI whose version is outside the versions the
-                   borrow lockdown was verified on
+  --allow-untested run a CLI outside the tested versions without aggy's checks
 `
 
 // mediaArgs is a parsed aggy image or aggy video command line.

@@ -99,6 +99,43 @@ func (r VersionRange) Contains(version string) (bool, error) {
 	return lo >= 0 && hi <= 0, nil
 }
 
+// VersionClass is what a borrow does with a CLI version.
+type VersionClass int
+
+// Version classes.
+const (
+	// VersionTested is inside the tested range: the borrow runs.
+	VersionTested VersionClass = iota
+	// VersionNew is above Max in the same major version: the borrow runs
+	// once this machine's checks pass (internal/borrow, design section 7).
+	VersionNew
+	// VersionRefused is below Min, a new major version, or unreadable: the
+	// borrow refuses it unless the caller says otherwise (--allow-untested).
+	VersionRefused
+)
+
+// ClassifyVersion classes version against r.
+func ClassifyVersion(r VersionRange, version string) VersionClass {
+	lo, err := CompareVersions(version, r.Min)
+	if err != nil {
+		return VersionRefused
+	}
+	hi, err := CompareVersions(version, r.Max)
+	switch {
+	case err != nil || lo < 0:
+		return VersionRefused
+	case hi <= 0:
+		return VersionTested
+	}
+	mv, mm := versionRE.FindStringSubmatch(version), versionRE.FindStringSubmatch(r.Max)
+	major, _ := strconv.ParseUint(mv[1], 10, 64)
+	maxMajor, _ := strconv.ParseUint(mm[1], 10, 64)
+	if major != maxMajor {
+		return VersionRefused
+	}
+	return VersionNew
+}
+
 // VersionWarning returns a warning when version, as a probe found it, is
 // outside the versions the adapter was tested on, or empty or unreadable
 // (a probe that could not read --version records "" and the first line it

@@ -47,6 +47,20 @@ var Tested = adapter.VersionRange{Min: "0.164.0", Max: "0.164.0"}
 // TestedVersions returns Tested.
 func (Adapter) TestedVersions() adapter.VersionRange { return Tested }
 
+// LockdownCaps returns the flags kind k's lockdown needs in help.
+func (Adapter) LockdownCaps(k adapter.Kind) []string {
+	caps := []string{probe.CapHeadless, probe.CapJSONOutput, probe.CapStrictConfig, probe.CapIgnoreUserConfig, probe.CapSandbox, probe.CapDisable}
+	if k == adapter.Edit {
+		return append(caps, probe.CapConfigOverride, probe.CapCwd)
+	}
+	return append(caps, probe.CapSkipGitCheck)
+}
+
+// SelfTestKind returns review: the full lockdown, which leaves no tool
+// that reads a file. An edit child keeps its shell and reads anywhere by
+// design, so a canary could not show a refusal there.
+func (Adapter) SelfTestKind() adapter.Kind { return adapter.Review }
+
 // SignIn returns Codex's own sign-in step, from docs/design.md section 2.
 // No sign-in status command is verified in docs/adapters.md, so there is
 // no Check and the status is unknown, and the step is only printed:

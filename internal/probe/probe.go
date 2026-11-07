@@ -109,6 +109,23 @@ const (
 	// aggy checks the host itself; callers add it at locate time, never
 	// to the cache, since the kernel can change under the same CLI.
 	CapKernelSandbox = "kernel-sandbox"
+	// The rest of the lockdown flags, for the check on a new CLI version
+	// (Adapter.LockdownCaps). Each was run live on the tested version
+	// (docs/adapters.md); that the real help lists it is recorded only
+	// where docs/verification.md says so, and a help that omits one fails
+	// that check closed, naming it.
+	CapMCPConfig   = "mcp-config"        // claude --mcp-config
+	CapStrictMCP   = "strict-mcp-config" // claude --strict-mcp-config
+	CapPromptFile  = "prompt-file"       // grok --prompt-file
+	CapNoSubagents = "no-subagents"      // grok --no-subagents
+	CapAllow       = "allow"             // grok --allow
+	// CapStrictConfig, CapSkipGitCheck, and CapCwd are codex exec's
+	// --strict-config, --skip-git-repo-check, and -C, none of them hidden
+	// from clap's help in source (exec/src/cli.rs and
+	// utils/cli/src/shared_options.rs at 6aaac69).
+	CapStrictConfig = "strict-config"
+	CapSkipGitCheck = "skip-git-repo-check"
+	CapCwd          = "cwd"
 )
 
 // lsmPath lists the Linux security modules the kernel runs.
@@ -160,6 +177,9 @@ var Specs = map[adapter.Vendor]Spec{
 			{CapPermissionMode, 0, "--permission-mode", Option},
 			{CapSettings, 0, "--settings", Option},
 			{CapSettingSources, 0, "--setting-sources", Option},
+			{CapTools, 0, "--tools", Option},
+			{CapMCPConfig, 0, "--mcp-config", Option},
+			{CapStrictMCP, 0, "--strict-mcp-config", Option},
 		},
 	},
 	adapter.Grok: {
@@ -179,6 +199,9 @@ var Specs = map[adapter.Vendor]Spec{
 			{CapRules, 0, "--rules", Option},
 			{CapDeny, 0, "--deny", Option},
 			{CapSandbox, 0, "--sandbox", Option},
+			{CapPromptFile, 0, "--prompt-file", Option},
+			{CapNoSubagents, 0, "--no-subagents", Option},
+			{CapAllow, 0, "--allow", Option},
 		},
 	},
 	adapter.Codex: {
@@ -198,6 +221,9 @@ var Specs = map[adapter.Vendor]Spec{
 			{CapImageInput, 1, "-i", Option},
 			{CapIgnoreUserConfig, 0, "--ignore-user-config", Option},
 			{CapIgnoreUserConfig, 1, "--ignore-user-config", Option},
+			{CapStrictConfig, 1, "--strict-config", Option},
+			{CapSkipGitCheck, 1, "--skip-git-repo-check", Option},
+			{CapCwd, 1, "-C", Option},
 		},
 	},
 }
