@@ -72,8 +72,10 @@ func inside(p, dir string) bool {
 }
 
 // historyShowsDenial reports whether a tool_result line of the session's
-// chat_history.jsonl holds PolicyDenied. Only those lines: the prompt holds
-// the diff under review, which can quote anything.
+// chat_history.jsonl starts with PolicyDenied. Only those lines, and only at the
+// start: the prompt holds the diff under review, and a file a tool read can
+// quote anything. A tool_result's content is taken as text or as text parts,
+// since its shape is source only (SelfTestEvidence).
 func (a Adapter) historyShowsDenial(cwd, id string) bool {
 	if adapter.ValidSessionID(adapter.Grok, id) != nil || !filepath.IsAbs(a.Home()) {
 		return false
@@ -84,11 +86,27 @@ func (a Adapter) historyShowsDenial(cwd, id string) bool {
 	}
 	for _, line := range bytes.Split(data, []byte("\n")) {
 		var e struct {
-			Type string `json:"type"`
+			Type    string          `json:"type"`
+			Content json.RawMessage `json:"content"`
 		}
-		if json.Unmarshal(line, &e) == nil && e.Type == "tool_result" && bytes.Contains(line, []byte(PolicyDenied)) {
+		if json.Unmarshal(line, &e) == nil && e.Type == "tool_result" && strings.HasPrefix(strings.TrimSpace(resultText(e.Content)), PolicyDenied) {
 			return true
 		}
 	}
 	return false
+}
+
+// resultText is a tool_result's text: a string, or the first of its text parts.
+func resultText(content json.RawMessage) string {
+	var text string
+	if json.Unmarshal(content, &text) == nil {
+		return text
+	}
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(content, &parts) == nil && len(parts) > 0 {
+		return parts[0].Text
+	}
+	return ""
 }
