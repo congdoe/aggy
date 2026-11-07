@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	runHelpText = `Usage: aggy run [--direct] [--no-policy] [--tool NAME]... <claude|codex|grok>
+	runHelpText = `Usage: aggy run [--direct] [--no-policy] [--tool NAME]... <claude|codex|grok|opencode>
 
 Starts a new session of that CLI here, under aggy. For the CLI's own flags,
 use aggy claude, aggy codex, or aggy grok.
@@ -15,7 +15,7 @@ use aggy claude, aggy codex, or aggy grok.
   --no-policy   Without aggy's safety policy
   --tool NAME   Turn a tool on for this session only
 `
-	newUsage = `Usage: aggy new [--no-policy] [claude|codex|grok]
+	newUsage = `Usage: aggy new [--no-policy] [claude|codex|grok|opencode]
 
 Starts another session in this directory. The old ones stay listed. Without
 a vendor it uses default_vendor, else the first one connected.
@@ -65,7 +65,7 @@ For the hooks aggy wires into a session for a managed tool, not for people.
 var commandHelp = map[string]string{
 	"borrow": borrowUsage, "image": imageUsage, "video": videoUsage, "inbox": inboxUsage,
 	"accept": acceptUsage, "reject": acceptUsage, "brief": briefUsage, "hook": hookUsage,
-	"hook-tool": hookToolUsage, "switch": switchUsage, "run": runHelpText, "--direct": runHelpText,
+	"hook-tool": hookToolUsage, "trust": trustUsage, "switch": switchUsage, "run": runHelpText, "--direct": runHelpText,
 	"new": newUsage, "resume": resumeUsage, "--resume": resumeUsage, "-r": resumeUsage,
 	"--continue": continueUsage, "-c": continueUsage, "--no-policy": runHelpText,
 	"claude": vendorUsage, "codex": vendorUsage, "grok": vendorUsage,

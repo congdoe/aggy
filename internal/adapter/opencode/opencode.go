@@ -43,6 +43,18 @@ func (Adapter) LockdownCaps(adapter.Kind) []string { return nil }
 // new-version self-test never runs on OpenCode.
 func (Adapter) SelfTestKind() adapter.Kind { return adapter.Research }
 
+// PassFlags refuses the flags aggy passes itself. `aggy opencode` is not a
+// command yet (aggy run opencode is), so Interactive refuses any Extra.
+func (Adapter) PassFlags() adapter.PassFlags {
+	return adapter.PassFlags{
+		Refused: []adapter.RefusedFlag{
+			{Names: []string{"--session", "-s"}, Why: "aggy gives each session its id"},
+			{Names: []string{"--standalone"}, Why: "aggy always passes it"},
+			{Names: []string{"--auto"}, Why: "full auto is the [opencode] auto setting, in a repo trusted for OpenCode"},
+		},
+	}
+}
+
 // TestedVersions returns Tested.
 func (Adapter) TestedVersions() adapter.VersionRange { return Tested }
 
@@ -119,6 +131,9 @@ func launchEnv(cwd string, l *adapter.OpenCodeLaunch) []string {
 // session ignores for its own. A brief and the memory are in the config's
 // instructions too, so req.BriefFile and req.Memory are not read here.
 func (a Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, error) {
+	if len(req.Extra) > 0 {
+		return adapter.Command{}, errors.New("opencode: aggy passes none of its other flags yet")
+	}
 	l := req.OpenCode
 	if l == nil {
 		return adapter.Command{}, errors.New("opencode: no launch config, so aggy's rules would not reach it")

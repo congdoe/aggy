@@ -17,7 +17,7 @@ import (
 	"github.com/congdoe/aggy/internal/tooldef"
 )
 
-const switchUsage = `Usage: aggy switch [--brief] [--tool NAME]... <claude|codex|grok>
+const switchUsage = `Usage: aggy switch [--brief] [--tool NAME]... <claude|codex|grok|opencode>
 
 From inside a CLI aggy runs: asks aggy to switch to a vendor at the turn end.
 You confirm the switch in aggy's picker.
