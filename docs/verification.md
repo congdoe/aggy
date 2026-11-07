@@ -732,7 +732,11 @@ the fields named here.
   (`rate_limit`, `overloaded`, `authentication_failed`, ..., `unknown`),
   optional `error_details` and `last_assistant_message`; its output and
   exit code are ignored. `Notification` adds `message`, `title`, and
-  `notification_type`. A command hook that exits with anything
+  `notification_type`; per the docs (read 2026-11-07), `idle_prompt` is
+  "Claude finished responding about 60 seconds ago and you haven't typed
+  since" and `permission_prompt` is "Claude needs you to approve a tool use
+  or a sandboxed command's network request, and the prompt has waited about
+  six seconds". Doc-verified; not seen live. A command hook that exits with anything
   but 0 or 2, including one that cannot start (the shell's 127), is a
   non-blocking error: a "`<hook> hook error`" notice, and the action goes
   on ("Other exit codes"; `onFailure: "block"` changes that, and has no

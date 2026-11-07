@@ -587,11 +587,25 @@ type pendingSwitch struct {
 
 // hookEvent is a hook event from the session: its name and the vendor
 // session id its payload names. shutdown marks a Grok Stop whose payload
-// reason is "shutdown" (grokShutdown).
+// reason is "shutdown" (grokShutdown); idle, Claude's idle reminder
+// (claudeIdle).
 type hookEvent struct {
 	name, sessionID string
-	shutdown        bool
+	shutdown, idle  bool
 	request         string // an OpenCode permission or question's id
+}
+
+// claudeIdle reports whether a hook event is Claude's idle reminder, which says
+// nothing is waiting: hooks.md, Notification matcher, `idle_prompt` is "Claude
+// finished responding about 60 seconds ago and you haven't typed since"
+// (read 2026-11-07; not seen live, T6895). A permission prompt is its own type,
+// `permission_prompt`. The type comes from the payload, which any process in
+// the CLI's tree can forge, but this only keeps a new hold from starting: it
+// clears no hold, so a forged one lets nothing through. Only Claude, and only
+// that exact type: every other type holds, Grok's too, whose values are not
+// recorded.
+func claudeIdle(v adapter.Vendor, event, notificationType string) bool {
+	return v == adapter.Claude && event == "Notification" && notificationType == "idle_prompt"
 }
 
 // grokShutdown reports whether a hook event is Grok's exit-time stop:
@@ -624,7 +638,8 @@ func (s *session) onHook(r Request) {
 	}
 	if r.FromSession && r.Vendor == string(s.o.Vendor) && r.Event != "SessionStart" {
 		p := hook.Parse(s.o.Vendor, r.Payload)
-		ev := hookEvent{name: r.Event, sessionID: p.SessionID, shutdown: grokShutdown(s.o.Vendor, r.Event, p.Reason), request: p.Request}
+		ev := hookEvent{name: r.Event, sessionID: p.SessionID, shutdown: grokShutdown(s.o.Vendor, r.Event, p.Reason), request: p.Request,
+			idle: claudeIdle(s.o.Vendor, r.Event, p.NotificationType)}
 		select {
 		case s.events <- ev:
 		case <-s.quit:
@@ -639,8 +654,8 @@ func (s *session) onHook(r Request) {
 // or one whose id is not known yet, is ignored. Every other event
 // (SessionStart excepted, which onHook skips), from any session in the
 // tree, holds the switch: Notification is how Claude and Grok say they
-// wait for the user, a permission prompt among others, and its type field
-// is not verified, so every one counts. Grok's exit-time stop
+// wait for the user, a permission prompt among others, so every one counts
+// but Claude's idle reminder (claudeIdle). Grok's exit-time stop
 // (grokShutdown) of the on-screen child itself is no turn end and holds
 // nothing: it is only recorded as ignored. One that names no session or
 // another one takes the turn-end paths below, so a forged one is still
@@ -699,6 +714,10 @@ func (s *session) hookEvent(ev hookEvent) {
 				s.limitDue = nil
 			}
 		}
+		return
+	}
+	if ev.idle {
+		s.log(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(ev.name), "holds": false}})
 		return
 	}
 	s.log(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(ev.name), "holds": true}})
@@ -1884,9 +1903,7 @@ func (s *session) pickerInput(b []byte) {
 		}
 		if s.held {
 			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "picked again, but the CLI waits for the user"})
-			s.pk.tell(fmt.Sprintf("%s said it is waiting for you (a permission prompt or another notice).", s.o.Vendor),
-				fmt.Sprintf("Answer it, or send a message; aggy switches to %s at the next turn end.", picked))
-			s.openPicker()
+			s.tellHeld(picked)
 			return
 		}
 		// Without a turn end, no pick can say no turn is running: a turn
@@ -1908,13 +1925,31 @@ func (s *session) pickerInput(b []byte) {
 		s.setSwitch(pendingSwitch{to: picked, choice: c, picked: true})
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked)})})
 		s.markNoTurn()
-		if s.askOpen() {
-			s.tellAskWaits(picked)
+		switch {
+		case s.askOpen():
+			s.tellAskWaits(picked) // its own words, and the way past a stale ask
+		case s.held && s.turnRan:
+			// Without a turn end the list has already said what to do.
+			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "picked, but the CLI waits for the user"})
+			s.tellHeld(picked)
 		}
 	default: // Esc on the list cancels a waiting switch
 		s.toolsWaitTurn = s.toolsWaitTurn || s.sw.resume
 		s.setSwitch(pendingSwitch{})
 	}
+}
+
+// tellHeld says why a switch to v waits for a hold, and the way out that costs
+// no turn: an Enter on the empty prompt clears the hold, and a pick then says no
+// turn is running. That Enter would answer an open prompt, so it is only for
+// when none is on screen. Each line fits 80 columns.
+func (s *session) tellHeld(v adapter.Vendor) {
+	s.pk.tell(fmt.Sprintf("%s said it is waiting for you (a permission prompt or another notice),", s.o.Vendor),
+		fmt.Sprintf("so the switch to %s waits. If it asks you something, answer it:", v),
+		"aggy goes on at that turn's end.",
+		"If nothing is waiting on screen, Esc here, press Enter on the empty prompt,",
+		fmt.Sprintf("and pick %s again. That spends no turn; sending a message would.", v))
+	s.openPicker()
 }
 
 // promptInput handles a key at a prompt aggy opened on its own (a
