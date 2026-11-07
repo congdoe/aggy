@@ -178,6 +178,46 @@ func TestOpenCodeShellRules(t *testing.T) {
 	}
 }
 
+// TestOpenCodeSharedNeverListed: the same normalizing as the filter, so another
+// spelling of a command that runs code or reads any path is not a way in.
+func TestOpenCodeSharedNeverListed(t *testing.T) {
+	var s permissions.Set
+	for _, r := range []string{
+		"Bash(/bin/cat /etc/passwd)", "Bash(/usr/bin/python3 x.py)", "Bash(python3.12 x.py)", "Bash(env python3 x.py)", "Bash(env x)",
+		"Bash(git -c alias.x=!id x)", "Bash(head .env)", "Bash(deno eval x)", "Bash(git  status)", "Bash(PYTHON x.py)", "Bash(\\cat x)", "Bash(sudo make)",
+	} {
+		s.Rules = append(s.Rules, permissions.Rule{Kind: permissions.Allow, Text: r, Origin: permissions.FromAggy})
+	}
+	s.Rules = append(s.Rules, permissions.Rule{Kind: permissions.Allow, Text: "Bash(make build)", Origin: permissions.FromAggy})
+	got, skipped := OpenCodeShared(s)
+	if !slices.Equal(got.Allow, []string{"make build"}) {
+		t.Errorf("allow: %q", got.Allow)
+	}
+	if len(skipped) != 12 {
+		t.Errorf("skipped: %+v", skipped)
+	}
+}
+
+// TestOpenCodeSharedLostRule: never fewer denies, in any form.
+func TestOpenCodeSharedLostRule(t *testing.T) {
+	rules := func(extra ...permissions.Rule) permissions.Set {
+		return permissions.Set{Rules: append([]permissions.Rule{{Kind: permissions.Allow, Text: "Bash(make build)", Origin: permissions.FromAggy}}, extra...)}
+	}
+	for _, r := range []permissions.Rule{
+		{Kind: permissions.Deny, Text: "Bash(x {file:y})", Origin: permissions.FromAggy},
+		{Kind: permissions.Ask, Text: "Bash(x ?)", Origin: permissions.FromAggy},
+	} {
+		if got, _ := OpenCodeShared(rules(r)); len(got.Allow) != 0 {
+			t.Errorf("%s: %q", r.Text, got.Allow)
+		}
+	}
+	s := rules()
+	s.Withhold = "a file could not be read"
+	if got, skipped := OpenCodeShared(s); len(got.Allow) != 0 || len(skipped) != 1 || skipped[0].Why != s.Withhold {
+		t.Errorf("%+v, %+v", got, skipped)
+	}
+}
+
 // TestOpenCodeShared: a rule that cannot be exact is named, never guessed at.
 func TestOpenCodeShared(t *testing.T) {
 	rule := func(k permissions.Kind, text string) permissions.Rule {
@@ -195,7 +235,6 @@ func TestOpenCodeShared(t *testing.T) {
 		rule(permissions.Allow, "Bash(FOO=1 git status)"),
 		rule(permissions.Allow, "Read(./x)"),
 		rule(permissions.Ask, "Bash(git push *)"),
-		rule(permissions.Ask, "Bash(x {file:y})"),
 		rule(permissions.Ask, "Edit"),
 		rule(permissions.Deny, "Bash(curl *)"),
 		rule(permissions.Deny, "Read(./.env)"),
@@ -204,7 +243,7 @@ func TestOpenCodeShared(t *testing.T) {
 	if !slices.Equal(got.Allow, []string{"gh pr list"}) || !slices.Equal(got.Ask, []string{"git push *"}) || !slices.Equal(got.Deny, []string{"shell:curl *"}) {
 		t.Errorf("%+v", got)
 	}
-	if len(skipped) != 12 {
+	if len(skipped) != 11 {
 		t.Errorf("skipped %d: %+v", len(skipped), skipped)
 	}
 	for _, k := range skipped {

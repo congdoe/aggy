@@ -3,21 +3,29 @@ package permissions
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 )
 
-// Class says what the filter makes of an allow rule.
+// Class says what the filter makes of an allow rule. The filter is an
+// allow-list at heart: only a known read-only form applies everywhere, so a
+// program aggy has never heard of fails closed and waits for trust.
 type Class int
 
 const (
-	// Keep is an allow that applies wherever its source does.
+	// Keep is a known read-only form: it applies wherever its source does.
 	Keep Class = iota
-	// RepoCode runs the repo's own code, so it applies only in a trusted repo.
+	// RepoCode may run a repo's own code, or aggy does not know it, so it
+	// applies only in a trusted repo.
 	RepoCode
 	// Drop is never passed on.
 	Drop
 )
+
+// toolName is what may stand before a rule's parenthesis. Nothing starting
+// with a dash can pass, so a rule can never be read as a flag of a CLI.
+var toolName = regexp.MustCompile(`^[A-Za-z*][A-Za-z0-9_*-]*$`)
 
 // ParseRule splits a rule into its tool and specifier. Claude writes one as
 // Tool or Tool(specifier) (permissions.md, read 2026-11-07).
@@ -25,15 +33,16 @@ func ParseRule(rule string) (tool, spec string, hasSpec bool, err error) {
 	if rule == "" || strings.TrimSpace(rule) != rule || strings.ContainsAny(rule, "\n\r\x00") {
 		return "", "", false, errors.New("a rule is one line with no space around it")
 	}
+	bad := errors.New("a rule is Tool or Tool(specifier)")
 	open := strings.IndexByte(rule, '(')
 	if open < 0 {
-		if strings.ContainsAny(rule, ") ") {
-			return "", "", false, errors.New("a rule is Tool or Tool(specifier)")
+		if !toolName.MatchString(rule) {
+			return "", "", false, bad
 		}
 		return rule, "", false, nil
 	}
-	if open == 0 || !strings.HasSuffix(rule, ")") {
-		return "", "", false, errors.New("a rule is Tool or Tool(specifier)")
+	if !toolName.MatchString(rule[:open]) || !strings.HasSuffix(rule, ")") {
+		return "", "", false, bad
 	}
 	return rule[:open], rule[open+1 : len(rule)-1], true, nil
 }
@@ -47,10 +56,26 @@ func BashCommand(rule string) (cmd string, wild, ok bool) {
 	if err != nil || tool != "Bash" || !has {
 		return "", false, false
 	}
+	return shellCommand(spec)
+}
+
+func shellCommand(spec string) (cmd string, wild, ok bool) {
 	if c, cut := strings.CutSuffix(spec, ":*"); cut {
 		spec = c + " *"
 	}
 	return spec, strings.Contains(spec, "*"), true
+}
+
+// PrefixForm is a Bash rule as a CLI that matches exact rules as prefixes reads
+// it: Bash(sudo sh) also allows sudo sh -c x there. Grok does
+// (matches_command_prefix, policy.rs:648 at grok-build 2bdd1d6a). Any other rule
+// comes back as it is.
+func PrefixForm(rule string) string {
+	cmd, wild, ok := BashCommand(rule)
+	if !ok || wild {
+		return rule
+	}
+	return "Bash(" + cmd + " *)"
 }
 
 // Claude drops these on entering auto mode: "Blanket Bash(*) or
@@ -58,27 +83,34 @@ func BashCommand(rule string) (cmd string, wild, ok bool) {
 // "Package-manager run commands", "Agent allow rules", and "Monitor allow
 // rules, because Claude Code runs Monitor commands through the shell"
 // (permission-modes.md, "How the classifier evaluates actions", read
-// 2026-11-07). It names no full list, so the lists below are aggy's reading
-// of those words, not a copy of Claude's. A word missing from them only means
-// the rule reaches a CLI as the person wrote it; deny rules still win.
+// 2026-11-07). The page names no full list, so the lists below are aggy's
+// reading of those words, and they are not what keeps an unknown program out:
+// that is the read-only list, as anything not on it waits for trust.
 
-// wholeTools are tools whose rules aggy never passes, with any specifier.
-var wholeTools = []string{"Agent", "Monitor"}
+// wholeTools are tools whose rules aggy never passes, with any specifier. Task
+// is another name for Agent (Claude's docs).
+var wholeTools = []string{"agent", "task", "monitor"}
 
-// interpreters run whatever text they are given. wrappers run the command
-// after them, so a wildcard after one is as open as a blanket rule.
+// interpreters and shells run whatever text they are given, or a script.
 var interpreters = []string{
-	"python", "python2", "python3", "pypy", "pypy3", "node", "nodejs", "deno", "bun", "ts-node", "tsx",
-	"ruby", "irb", "perl", "php", "lua", "bash", "sh", "zsh", "fish", "dash", "ksh", "csh", "tcsh",
-	"pwsh", "powershell", "osascript", "awk", "gawk", "mawk",
+	"python", "py", "pypy", "node", "nodejs", "deno", "bun", "ts-node", "tsx", "ruby", "irb", "perl", "php", "lua", "luajit",
+	"julia", "rscript", "r", "elixir", "erl", "clojure", "scala", "kotlin", "groovy", "guile", "racket", "tclsh", "expect",
+	"bash", "sh", "zsh", "fish", "dash", "ash", "ksh", "csh", "tcsh", "pwsh", "powershell", "cmd", "busybox", "toybox",
+	"osascript", "awk", "gawk", "mawk", "sed", "gdb", "vim", "vi", "nvim", "emacs", "ex", "ed",
+	"iex", "invoke-expression", "invoke-command", "start-process",
 }
 
-var wrappers = []string{
-	"env", "sudo", "doas", "su", "xargs", "eval", "exec", "command", "builtin", "nohup", "time", "timeout",
-	"nice", "ionice", "stdbuf", "watch", "parallel", "ssh", "script",
+// runners run the command after them, so a wildcard after one is as open as a
+// blanket rule.
+var runners = []string{
+	"env", "sudo", "doas", "su", "xargs", "eval", "exec", "command", "builtin", "nohup", "time", "timeout", "nice", "ionice",
+	"stdbuf", "watch", "parallel", "ssh", "script", "setsid", "flock", "find", "caffeinate", "chroot", "tmux", "screen",
+	"nix-shell", "unshare", "strace", "ltrace", "dtruss", "fd",
 }
 
-// runForms are package managers' commands for running something by name.
+// runForms are commands for running something by name, in package managers and
+// tools like them. A wildcard form is dropped; an exact one names one thing a
+// repo defines, so it waits for trust.
 var runForms = []string{
 	"npm run", "npm run-script", "npm exec", "npm x", "npx",
 	"pnpm run", "pnpm exec", "pnpm dlx", "pnpx",
@@ -87,14 +119,74 @@ var runForms = []string{
 	"deno run", "deno task", "deno eval",
 	"uv run", "uvx", "uv tool run", "pipx run", "poetry run", "pdm run", "pipenv run", "hatch run", "conda run",
 	"cargo run", "go run", "dotnet run", "composer run", "composer exec", "bundle exec", "gem exec", "swift run",
+	"docker run", "docker exec", "podman run", "podman exec", "nix run", "nix develop", "nix shell",
+	"devbox run", "direnv exec", "mise exec", "mise x", "mise run", "asdf exec",
 }
 
-// repoRunners run what the repo defines: a build file, a test suite, a script.
-var repoRunners = []string{
-	"make", "gmake", "just", "task", "rake", "ninja", "cmake", "gradle", "gradlew", "mvn", "mvnw", "ant", "bazel", "tox", "nox",
-	"pytest", "jest", "vitest", "mocha", "rspec", "phpunit", "tsc", "eslint", "webpack", "vite", "turbo", "nx",
-	"npm", "pnpm", "yarn", "cargo", "go", "dotnet", "composer", "bundle", "gem", "pip", "pip3", "swift",
-	"source", ".",
+// runVerbs are the words that make a package manager run something, wherever
+// flags put them: npm -w x exec, yarn workspace x run.
+var runVerbs = []string{"run", "run-script", "exec", "x", "dlx", "eval", "node", "task", "tool", "workspace", "shell", "develop"}
+
+var runPrograms = []string{
+	"npm", "pnpm", "yarn", "bun", "deno", "uv", "pipx", "poetry", "pdm", "pipenv", "hatch", "conda", "cargo", "go", "dotnet",
+	"composer", "bundle", "gem", "swift", "docker", "podman", "nix", "devbox", "direnv", "mise", "asdf",
+}
+
+// readTools read, and a rule for one names what. A bare one waits for trust.
+var readTools = []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch"}
+
+// readOnlyAny are read-only with any arguments, so a wildcard is fine.
+var readOnlyAny = []string{"git status", "ls", "pwd", "cat", "grep", "head", "tail", "wc", "stat", "du", "df", "whoami", "uname", "which"}
+
+// readOnlyExact are read-only only with the arguments written out: git diff
+// --output=x and git log --output=x write a file, rg --pre runs a program, and
+// file -C and date with a time change things too.
+var readOnlyExact = []string{"git diff", "git log", "git show", "git blame", "git branch --show-current", "rg", "file", "date"}
+
+// riskyFlags make a read-only form write a file or run something.
+var riskyFlags = []string{"--output", "--pre", "--ext-diff", "--textconv", "--exec", "--open-files-in-pager"}
+
+// neverListed read any path, on top of what interpreters and runners do. OpenCode
+// lists none of them, even exact (docs/design.md, section 15, "Whitelist").
+var neverListed = []string{"rg", "cat", "head", "tail", "grep", "less", "more", "xxd", "od", "strings", "nl", "dd", "tar", "cp", "mv"}
+
+// versionSuffix is a program's version: python3.12, node22, perl5.34, python3.13t.
+var versionSuffix = regexp.MustCompile(`^([a-z][a-z_+-]*?)-?[0-9][0-9.]*t?$`)
+
+// NormalProgram is the program a word names, however it is spelled: \python,
+// "python", /usr/bin/python3.12, PYTHON, and python.exe are all python.
+func NormalProgram(word string) string {
+	word = strings.TrimLeft(word, `\"'`)
+	word = strings.TrimRight(word, `"'`)
+	if i := strings.LastIndexByte(word, '/'); i >= 0 {
+		word = word[i+1:]
+	}
+	word = strings.TrimSuffix(strings.ToLower(word), ".exe")
+	if m := versionSuffix.FindStringSubmatch(word); m != nil {
+		return m[1]
+	}
+	return word
+}
+
+// commandWords are a command's words past any variable it sets first, which a
+// shell runs the same way (FOO=1 python x runs python).
+func commandWords(cmd string) []string {
+	words := strings.Fields(cmd)
+	for len(words) > 0 && strings.Contains(words[0], "=") && !strings.ContainsAny(words[0], "*?[") {
+		words = words[1:]
+	}
+	return words
+}
+
+// NeverListed reports a command OpenCode's whitelist never takes, exact or not:
+// it runs code or reads any path, by the same normalizing as the filter.
+func NeverListed(cmd string) bool {
+	words := commandWords(cmd)
+	if len(words) == 0 {
+		return true
+	}
+	p := NormalProgram(words[0])
+	return slices.Contains(interpreters, p) || slices.Contains(runners, p) || slices.Contains(neverListed, p)
 }
 
 // CheckAllow classifies an allow rule, and says why when it is not Keep.
@@ -103,94 +195,148 @@ func CheckAllow(rule string) (Class, string) {
 	if err != nil {
 		return Drop, err.Error()
 	}
+	low := strings.ToLower(tool)
 	switch {
-	case slices.Contains(wholeTools, tool):
+	case slices.Contains(wholeTools, low):
 		return Drop, tool + " rules can run anything, and Claude drops them in auto mode"
-	case tool == "PowerShell":
-		if !has || strings.Trim(spec, "* ") == "" {
-			return Drop, "blanket shell access"
-		}
+	case low == "bash":
+		// Only Claude's own spelling can be read-only; another can only be held.
+		return checkShell(spec, has, tool == "Bash")
+	case low == "powershell":
+		return checkShell(spec, has, false)
+	case strings.Contains(tool, "*") && (!strings.HasPrefix(low, "mcp__") || strings.Trim(low[5:], "*_") == ""):
+		return Drop, "a wildcard in a tool's name can match any tool"
+	case slices.Contains(readTools, tool) && has && strings.Trim(strings.TrimPrefix(spec, "domain:"), "*/. ") != "":
 		return Keep, ""
-	case tool != "Bash":
-		return Keep, ""
-	case !has:
+	}
+	return RepoCode, "it is not a known read-only form, so it waits for trust"
+}
+
+// checkShell classifies a shell command. It looks at the whole rule as one
+// command: TODO(T6955): judge each part of a compound rule (cd x && npm run *).
+// For now such a rule is never read-only, so it waits for trust.
+func checkShell(spec string, has, readOnlyAllowed bool) (Class, string) {
+	if !has {
 		return Drop, "blanket shell access"
 	}
-	cmd, wild, _ := BashCommand(rule)
-	if strings.Trim(cmd, "* ") == "" {
+	cmd, wild, _ := shellCommand(spec)
+	if strings.Trim(cmd, "*? ") == "" {
 		return Drop, "blanket shell access"
 	}
-	first, rest, byPath := programOf(cmd)
-	if strings.Contains(first, "*") {
-		// Bash(python*) and Bash(* --help) both match programs nobody named.
+	words := commandWords(cmd)
+	if len(words) == 0 {
+		return Drop, "a rule that only sets a variable can match any command"
+	}
+	if strings.ContainsAny(words[0], "*?[") {
+		// Bash(python*), Bash(* --help), and Bash(?? *) match programs nobody named.
 		return Drop, "a wildcard in the program's name can match any program"
 	}
-	if form, ok := runFormOf(strings.TrimSpace(first+" "+rest), wild); ok {
-		return Drop, "a package manager's run command (" + form + ") runs whatever it is given"
+	program := NormalProgram(words[0])
+	if form, ok := runForm(program, words[1:], wild); ok {
+		if wild {
+			return Drop, "a wildcard on a run command (" + form + ") runs whatever it is given"
+		}
+		return RepoCode, form + " runs what the repo defines"
 	}
 	switch {
-	case wild && slices.Contains(interpreters, first):
-		return Drop, "a wildcarded interpreter runs any code"
-	case wild && slices.Contains(wrappers, first):
-		return Drop, fmt.Sprintf("%s runs the command after it, so a wildcard here runs any command", first)
-	case slices.Contains(interpreters, first):
-		return RepoCode, first + " runs code"
-	case byPath:
-		return RepoCode, "it runs a program by its path"
-	case slices.Contains(repoRunners, first):
-		return RepoCode, first + " runs what the repo defines"
-	}
-	return Keep, ""
-}
-
-// programOf finds the program a command runs: past leading variable settings,
-// and by its base name, so /usr/bin/python3 * and FOO=1 python * are read as
-// python. byPath says it was named by a path. The rest is what follows it.
-func programOf(cmd string) (first, rest string, byPath bool) {
-	rest = strings.TrimSpace(cmd)
-	for {
-		first, rest, _ = strings.Cut(rest, " ")
-		rest = strings.TrimSpace(rest)
-		if !isAssignment(first) || rest == "" {
-			break
+	case program == "git" && gitRunsAnything(words[1:], wild):
+		// git -c core.sshCommand=x, git -c alias.x=!id, and git * include any command.
+		return Drop, "git with a wildcard or a config option first can run any command"
+	case slices.Contains(interpreters, program):
+		if wild {
+			return Drop, "a wildcarded interpreter runs any code"
 		}
+		return RepoCode, program + " runs code"
+	case slices.Contains(runners, program):
+		if wild {
+			return Drop, fmt.Sprintf("%s runs a command it is given, so a wildcard here runs any command", program)
+		}
+		if slices.ContainsFunc(words[1:], func(w string) bool { return slices.Contains(interpreters, NormalProgram(w)) }) {
+			return Drop, program + " in front of an interpreter runs any code"
+		}
+		return RepoCode, program + " runs a command it is given"
 	}
-	if i := strings.LastIndexByte(first, '/'); i >= 0 {
-		first, byPath = first[i+1:], true
+	if readOnlyAllowed && isReadOnly(cmd, wild) {
+		return Keep, ""
 	}
-	return first, rest, byPath
+	if strings.Contains(words[0], "/") {
+		return RepoCode, "it runs a program by its path, so it waits for trust"
+	}
+	return RepoCode, "it is not a known read-only form, so it waits for trust"
 }
 
-// isAssignment is a word like NAME=value.
-func isAssignment(w string) bool {
-	name, _, ok := strings.Cut(w, "=")
-	if !ok || name == "" {
-		return false
+func gitRunsAnything(args []string, wild bool) bool {
+	if len(args) == 0 {
+		return wild
 	}
-	return !strings.ContainsAny(name, "*/-.")
+	first := args[0]
+	if slices.Contains([]string{"-c", "--config-env", "--exec-path"}, first) || strings.HasPrefix(first, "--config-env=") || strings.HasPrefix(first, "--exec-path=") {
+		return true
+	}
+	return strings.HasPrefix(first, "*") || (wild && strings.HasPrefix(first, "-"))
 }
 
-// runFormOf finds the run form cmd is, or, for a wildcard rule, one its fixed
-// words could still reach: Bash(npm *) includes npm run.
-func runFormOf(cmd string, wild bool) (string, bool) {
-	words := strings.Fields(cmd)
+// runForm finds the run form a command is, or one a wildcard rule could reach:
+// Bash(npm *) includes npm run, and so do npm ru* and npm --prefix . *.
+func runForm(program string, args []string, wild bool) (string, bool) {
+	words := append([]string{program}, args...)
+	fixed := words
+	if i := slices.IndexFunc(words, func(w string) bool { return strings.ContainsAny(w, "*?[") }); i >= 0 {
+		fixed = words[:i]
+	}
 	for _, form := range runForms {
 		fw := strings.Fields(form)
 		if len(words) >= len(fw) && slices.Equal(words[:len(fw)], fw) {
 			return form, true
 		}
-		if !wild {
-			continue
-		}
-		fixed := words
-		if i := slices.IndexFunc(words, func(w string) bool { return strings.Contains(w, "*") }); i >= 0 {
-			fixed = words[:i]
-		}
-		if len(fixed) < len(fw) && slices.Equal(fixed, fw[:len(fixed)]) {
+		if wild && len(fixed) < len(fw) && slices.Equal(fixed, fw[:len(fixed)]) {
 			return form, true
 		}
 	}
+	if !slices.Contains(runPrograms, program) {
+		return "", false
+	}
+	for _, w := range args {
+		if slices.Contains(runVerbs, w) {
+			return program + " " + w, true
+		}
+	}
+	if !wild {
+		return "", false
+	}
+	if len(args) > 0 && strings.HasPrefix(args[0], "-") {
+		return program + " with an option first", true
+	}
+	// A wildcard inside the subcommand's own word: npm ru*, npm t*.
+	if len(fixed) == 1 && len(args) > 0 {
+		head, _, _ := strings.Cut(args[0], "*")
+		if head != "" && slices.ContainsFunc(runVerbs, func(v string) bool { return strings.HasPrefix(v, head) }) {
+			return program + " " + args[0], true
+		}
+	}
 	return "", false
+}
+
+// isReadOnly reports one of the known read-only forms, written exactly: no path,
+// no capitals, no leading variable, no operator, and no flag that writes or runs.
+func isReadOnly(cmd string, wild bool) bool {
+	if strings.ContainsAny(cmd, ";|&<>`$()\\\"'\n") {
+		return false
+	}
+	words := strings.Fields(cmd)
+	for _, w := range words {
+		if slices.ContainsFunc(riskyFlags, func(f string) bool { return strings.HasPrefix(w, f) }) {
+			return false
+		}
+	}
+	has := func(form string) bool {
+		fw := strings.Fields(form)
+		return len(words) >= len(fw) && slices.Equal(words[:len(fw)], fw)
+	}
+	if slices.ContainsFunc(readOnlyAny, has) {
+		return true
+	}
+	return !wild && slices.ContainsFunc(readOnlyExact, has)
 }
 
 // Modes aggy passes on. bypassPermissions is left out: aggy never adds a

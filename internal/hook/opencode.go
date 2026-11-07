@@ -387,6 +387,12 @@ func holdsRule(text string, rules []string) bool {
 		return c == '_' || c == '-' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 	}
 	for _, r := range rules {
+		// A rule is compared collapsed too, or two spaces in it would never
+		// be found in the text, and the gate would pass over the scan.
+		r = strings.Join(strings.Fields(r), " ")
+		if r == "" {
+			continue
+		}
 		for from := 0; ; {
 			i := strings.Index(text[from:], r)
 			if i < 0 {

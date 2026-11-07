@@ -37,8 +37,8 @@ func ReadsItself(v adapter.Vendor, o Origin) bool {
 // a name it does not know is unverified, so anything else is named, not sent.
 var grokTools = []string{"Bash", "Read", "Edit", "Grep", "WebFetch"}
 
-// Render picks what vendor v takes. Codex takes nothing yet: its rule files
-// are global, and the hook that would answer per repo is not built
+// Render picks what vendor v takes. Codex takes nothing yet, TODO(T6955): its
+// rule files are global, and the hook that would answer per repo is not built
 // (docs/design.md, section 10). OpenCode has its own rendering
 // (parity.OpenCodeShared).
 func (s Set) Render(v adapter.Vendor) Rendered {
@@ -67,25 +67,37 @@ func (s Set) Render(v adapter.Vendor) Rendered {
 				r.Deny = append(r.Deny, rule.Text)
 			}
 		}
-		return r
+	} else {
+		r.renderGrok(mine, s.Trusted)
 	}
-	r.renderGrok(mine)
+	if s.Withhold != "" {
+		for _, a := range r.Allow {
+			r.Skipped = append(r.Skipped, Skip{Rule{Allow, a, "", ""}, s.Withhold})
+		}
+		r.Allow = nil
+	}
 	return r
 }
 
-func (r *Rendered) renderGrok(mine []Rule) {
-	var unsentAsks []string
+// renderGrok is Grok's share. A deny or ask that cannot reach Grok could have
+// stopped one of the allows, and working out which is not safe (Bash rules are
+// not the only kind), so with one, no allow from this layer goes to Grok at all.
+func (r *Rendered) renderGrok(mine []Rule, trusted bool) {
+	lost := ""
 	for _, rule := range mine {
-		switch {
-		case rule.Kind == Ask:
-			// TODO(T6913): Grok's guide documents --allow and --deny only; a
-			// flag for ask rules is unverified. A live grok --help would
-			// confirm one.
-			r.Skipped = append(r.Skipped, Skip{rule, "Grok has no flag for ask rules that aggy can confirm (unverified)"})
-			unsentAsks = append(unsentAsks, rule.Text)
-		case rule.Kind == Deny && strings.Contains(rule.Text, ","):
-			r.Skipped = append(r.Skipped, Skip{rule, "Grok splits a --deny value on commas"})
-		case rule.Kind == Deny:
+		switch rule.Kind {
+		case Ask:
+			// TODO(T6955): Grok's guide and cli.rs at 2bdd1d6a document --allow
+			// and --deny only; a flag for ask rules is unverified.
+			why := "Grok has no flag for ask rules that aggy can confirm (unverified)"
+			r.Skipped = append(r.Skipped, Skip{rule, why})
+			lost = rule.Text
+		case Deny:
+			if why := grokRuleProblem(rule.Text); why != "" {
+				r.Skipped = append(r.Skipped, Skip{rule, why})
+				lost = rule.Text
+				continue
+			}
 			r.Deny = append(r.Deny, rule.Text)
 		}
 	}
@@ -93,7 +105,11 @@ func (r *Rendered) renderGrok(mine []Rule) {
 		if rule.Kind != Allow {
 			continue
 		}
-		if why := grokAllowProblem(rule.Text, unsentAsks); why != "" {
+		why := grokAllowProblem(rule.Text, trusted)
+		if why == "" && lost != "" {
+			why = "the rule " + lost + " cannot reach Grok, and it might have stopped this one, so no allow from aggy goes to Grok"
+		}
+		if why != "" {
 			r.Skipped = append(r.Skipped, Skip{rule, why})
 			continue
 		}
@@ -101,8 +117,9 @@ func (r *Rendered) renderGrok(mine []Rule) {
 	}
 }
 
-// grokAllowProblem says why an allow cannot go to Grok as --allow.
-func grokAllowProblem(rule string, asks []string) string {
+// grokRuleProblem says why any rule cannot be one value of a Grok flag. The
+// flags split on commas (value_delimiter, src/app/cli.rs at 2bdd1d6a).
+func grokRuleProblem(rule string) string {
 	tool, _, _, err := ParseRule(rule)
 	switch {
 	case err != nil:
@@ -110,40 +127,30 @@ func grokAllowProblem(rule string, asks []string) string {
 	case !slices.Contains(grokTools, tool):
 		return "Grok writes rules for this tool differently, and the mapping is unverified"
 	case strings.Contains(rule, ","):
-		return "Grok splits an --allow value on commas"
-	}
-	// Grok matches a Bash rule as a prefix with no word boundary
-	// (22-permissions-and-safety.md, "Bash Rules"), so one word would also
-	// allow every longer command that starts with it.
-	if cmd, wild, ok := BashCommand(rule); ok && !wild && !strings.Contains(cmd, " ") {
-		return "Grok would take one word as a prefix: " + cmd + " would also match every command starting with it"
-	}
-	for _, a := range asks {
-		if Overlap(rule, a) {
-			return "it overlaps " + a + ", an ask rule Grok cannot get, and an ask beats an allow"
-		}
+		return "Grok splits a flag's value on commas"
 	}
 	return ""
 }
 
-// Overlap reports that two rules could match the same call: the same rule, or
-// Bash rules where the fixed words of one start the other.
-func Overlap(a, b string) bool {
-	if a == b {
-		return true
+// grokAllowProblem says why an allow cannot go to Grok as --allow. Grok matches a
+// Bash rule as a word-boundary prefix, or as a glob over the whole command, where
+// ? and [...] are wildcards too (bash_command_matches_pattern, policy.rs:648 at
+// grok-build 2bdd1d6a). So Bash(?? *) would match sh -c evil, and Bash(sudo sh)
+// allows sudo sh -c x. Each is judged as what Grok would make of it.
+func grokAllowProblem(rule string, trusted bool) string {
+	if why := grokRuleProblem(rule); why != "" {
+		return why
 	}
-	ca, wa, oka := BashCommand(a)
-	cb, wb, okb := BashCommand(b)
-	if !oka || !okb {
-		return false
-	}
-	fixed := func(c string, wild bool) string {
-		if !wild {
-			return c
+	if _, _, ok := BashCommand(rule); ok {
+		if strings.ContainsAny(rule, "?[") {
+			return "? and [ are wildcards on Grok, though not in Claude's rules"
 		}
-		f, _, _ := strings.Cut(c, "*")
-		return strings.TrimSpace(f)
+		switch class, why := CheckAllow(PrefixForm(rule)); {
+		case class == Drop:
+			return "Grok takes an exact rule as a prefix, and that form is too wide: " + why
+		case class == RepoCode && !trusted:
+			return "Grok takes an exact rule as a prefix, and that form waits for trust: " + why
+		}
 	}
-	fa, fb := fixed(ca, wa), fixed(cb, wb)
-	return (wa && strings.HasPrefix(fb, fa)) || (wb && strings.HasPrefix(fa, fb))
+	return ""
 }

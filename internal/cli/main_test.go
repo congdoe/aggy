@@ -18,6 +18,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	claudeManagedMCP = []string{filepath.Join(dir, "managed-mcp.json")}
+	unwireGate = func(func(string) string) error { return nil }
 	code := fakecli.IsolatedMain(m)
 	_ = os.RemoveAll(dir)
 	os.Exit(code)

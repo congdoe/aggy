@@ -109,9 +109,9 @@ func TestSharedRulesOnCommandLine(t *testing.T) {
 	}
 	t.Run("claude", func(t *testing.T) {
 		w := newWorld(t)
-		write(t, filepath.Join(w.home, ".aggy", "permissions.json"), `{"permissions":{"allow":["Bash(gh pr list)"],"ask":["Bash(git push *)"]}}`)
+		write(t, filepath.Join(w.home, ".aggy", "permissions.json"), `{"permissions":{"allow":["Bash(git log -5)"],"ask":["Bash(git push *)"]}}`)
 		vals := run(t, w, "claude").Flags["--settings"]
-		if len(vals) != 1 || !strings.Contains(vals[0], `"allow":["Bash(gh pr list)"]`) || !strings.Contains(vals[0], `"ask":["Bash(git push *)"]`) || !strings.Contains(vals[0], `"Read(//**/.env)"`) {
+		if len(vals) != 1 || !strings.Contains(vals[0], `"allow":["Bash(git log -5)"]`) || !strings.Contains(vals[0], `"ask":["Bash(git push *)"]`) || !strings.Contains(vals[0], `"Read(//**/.env)"`) {
 			t.Errorf("--settings = %q", vals)
 		}
 		if _, err := os.Stat(filepath.Join(w.home, ".claude", "settings.json")); !os.IsNotExist(err) {
@@ -120,15 +120,44 @@ func TestSharedRulesOnCommandLine(t *testing.T) {
 	})
 	t.Run("grok", func(t *testing.T) {
 		w := newWorld(t)
-		write(t, filepath.Join(w.home, ".aggy", "permissions.json"), `{"permissions":{"allow":["Bash(gh pr list)"]}}`)
+		write(t, filepath.Join(w.home, ".aggy", "permissions.json"), `{"permissions":{"allow":["Bash(git status)"]}}`)
 		r := run(t, w, "grok")
-		if vals := r.Flags["--allow"]; len(vals) != 1 || vals[0] != "Bash(gh pr list)" {
+		if vals := r.Flags["--allow"]; len(vals) != 1 || vals[0] != "Bash(git status)" {
 			t.Errorf("--allow = %q; args %q", vals, r.Args)
 		}
 		if len(r.Flags["--deny"]) < 10 {
 			t.Errorf("the policy's denies must stay: %q", r.Flags["--deny"])
 		}
 	})
+	t.Run("grok never sees a rule it reads wider", func(t *testing.T) {
+		w := newWorld(t)
+		write(t, filepath.Join(w.home, ".aggy", "permissions.json"), `{"permissions":{"allow":["Bash(?? *)","Bash(pyth?n *)","Bash(sudo sh)","Bash(git status)"]}}`)
+		if vals := run(t, w, "grok").Flags["--allow"]; len(vals) != 1 || vals[0] != "Bash(git status)" {
+			t.Errorf("--allow = %q", vals)
+		}
+	})
+	t.Run("a key aggy does not use keeps the denies", func(t *testing.T) {
+		w := newWorld(t)
+		write(t, filepath.Join(w.home, ".aggy", "permissions.json"), `{"$schema":"https://x","permissions":{"deny":["Bash(git nope *)"],"additionalDirectories":["/x"]}}`)
+		vals := run(t, w, "claude").Flags["--settings"]
+		if len(vals) != 1 || !strings.Contains(vals[0], "Bash(git nope *)") {
+			t.Errorf("--settings = %q", vals)
+		}
+	})
+	for _, args := range [][]string{{"run", "claude"}, {"run", "grok"}, {"run", "--no-policy", "claude"}} {
+		t.Run("a broken file refuses "+strings.Join(args, " "), func(t *testing.T) {
+			w := newWorld(t)
+			write(t, filepath.Join(w.home, ".aggy", "permissions.json"), "{\"permissions\":{\"deny\":[\"Bash(x y)\"]},\n}")
+			s := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, args...)
+			s.waitFor([]byte("permissions.bad_file"))
+			if code := s.exit(); code == 0 {
+				t.Errorf("exit 0: %s", s.screen())
+			}
+			if text := s.screen(); !strings.Contains(text, "permissions.json") || !strings.Contains(text, "line 2") || strings.Contains(text, "READY>") {
+				t.Errorf("%s", text)
+			}
+		})
+	}
 }
 
 // TestPolicyFailsClosed: aggy run refuses to start a CLI the safety

@@ -4,8 +4,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/congdoe/aggy/internal/adapter"
 )
 
 func TestCheckAllow(t *testing.T) {
@@ -20,7 +23,7 @@ func TestCheckAllow(t *testing.T) {
 		{"Bash(:*)", Drop},
 		{"PowerShell", Drop},
 		{"PowerShell(*)", Drop},
-		{"PowerShell(Get-ChildItem *)", Keep},
+		{"PowerShell(Get-ChildItem *)", RepoCode},
 		{"Agent", Drop},
 		{"Agent(Explore)", Drop},
 		{"Monitor", Drop},
@@ -34,26 +37,26 @@ func TestCheckAllow(t *testing.T) {
 		{"Bash(sudo *)", Drop},
 		{"Bash(xargs *)", Drop},
 		{"Bash(npm run *)", Drop},
-		{"Bash(npm run build)", Drop},
+		{"Bash(npm run build)", RepoCode},
 		{"Bash(npm *)", Drop},
 		{"Bash(npx *)", Drop},
-		{"Bash(npx tsc)", Drop},
-		{"Bash(pnpm exec foo)", Drop},
-		{"Bash(uv run pytest)", Drop},
-		{"Bash(go run .)", Drop},
+		{"Bash(npx tsc)", RepoCode},
+		{"Bash(pnpm exec foo)", RepoCode},
+		{"Bash(uv run pytest)", RepoCode},
+		{"Bash(go run .)", RepoCode},
 		{"Bash(go *)", Drop},
 		{"Bash(cargo *)", Drop},
 		{"Bash(cargo run:*)", Drop},
-		{"Bash(bundle exec rspec)", Drop},
+		{"Bash(bundle exec rspec)", RepoCode},
 		{"Bash(/usr/bin/python3 *)", Drop},
 		{"Bash(FOO=1 python3 *)", Drop},
-		{"Bash(/usr/local/bin/npm run build)", Drop},
+		{"Bash(/usr/local/bin/npm run build)", RepoCode},
 		{"Bash(/bin/sh *)", Drop},
 		{"Bash(/usr/bin/env *)", Drop},
-		{"Bash(FOO=1 npm run x)", Drop},
+		{"Bash(FOO=1 npm run x)", RepoCode},
 		{"Bash(./node_modules/.bin/tsc)", RepoCode},
 		{"Bash(/opt/x/tool *)", RepoCode},
-		{"Bash(FOO=1 git status)", Keep},
+		{"Bash(FOO=1 git status)", RepoCode},
 		{"Bash(python3 tool.py)", RepoCode},
 		{"Bash(npm test)", RepoCode},
 		{"Bash(npm test *)", RepoCode},
@@ -63,12 +66,107 @@ func TestCheckAllow(t *testing.T) {
 		{"Bash(./scripts/ci.sh)", RepoCode},
 		{"Bash(bin/aggy *)", RepoCode},
 		{"Bash(git status)", Keep},
-		{"Bash(git diff *)", Keep},
-		{"Bash(gh pr view *)", Keep},
-		{"Read", Keep},
+		{"Bash(git diff *)", RepoCode},
+		{"Bash(git diff --stat)", Keep},
+		{"Bash(git diff --output=x)", RepoCode},
+		{"Bash(rg x)", Keep},
+		{"Bash(rg *)", RepoCode},
+		{"Bash(rg --pre x y)", RepoCode},
+		{"Bash(ls *)", Keep},
+		{"Bash(cat *)", Keep},
+		{"Bash(grep *)", Keep},
+		{"Bash(pwd)", Keep},
+		{"Bash(gh pr view *)", RepoCode},
+		{"Read", RepoCode},
 		{"Read(./docs/**)", Keep},
 		{"WebFetch(domain:example.com)", Keep},
-		{"mcp__puppeteer__*", Keep},
+		{"mcp__puppeteer__*", RepoCode},
+		// An unknown program fails closed.
+		{"Bash(prettier *)", RepoCode},
+		{"Bash(rails *)", RepoCode},
+		{"Bash(terraform *)", RepoCode},
+		// The review's spellings: each is one of the classes above.
+		{"Bash(python3.12 *)", Drop},
+		{"Bash(python3.12 -c *)", Drop},
+		{"Bash(node22 *)", Drop},
+		{"Bash(perl5.34 *)", Drop},
+		{"Bash(ruby3.3 *)", Drop},
+		{"Bash(lua5.4 *)", Drop},
+		{"Bash(php8.3 *)", Drop},
+		{"Bash(julia *)", Drop},
+		{"Bash(Rscript *)", Drop},
+		{"Bash(busybox *)", Drop},
+		{"Bash(ash *)", Drop},
+		{"Bash(PYTHON *)", Drop},
+		{"Bash(Python3 *)", Drop},
+		{"Bash(\\python *)", Drop},
+		{"Bash(\"python\" *)", Drop},
+		{"Bash(python\t-c *)", Drop},
+		{"Bash(sudo\t*)", Drop},
+		{"Bash(MAKE *)", RepoCode},
+		{"bash(*)", Drop},
+		{"BASH(*)", Drop},
+		{"Bash (*)", Drop},
+		{"bash(ls)", RepoCode},
+		{"*", Drop},
+		{"mcp__*", Drop},
+		{"Task", Drop},
+		{"Task(*)", Drop},
+		{"PowerShell(python *)", Drop},
+		{"PowerShell(npm run *)", Drop},
+		{"PowerShell(iex *)", Drop},
+		{"PowerShell(make *)", RepoCode},
+		{"PowerShell(git status)", RepoCode},
+		{"Bash(devbox run *)", Drop},
+		{"Bash(direnv exec *)", Drop},
+		{"Bash(mise exec *)", Drop},
+		{"Bash(docker exec *)", Drop},
+		{"Bash(docker run *)", Drop},
+		{"Bash(nix run *)", Drop},
+		{"Bash(nix-shell *)", Drop},
+		{"Bash(docker compose *)", RepoCode},
+		{"Bash(git -c *)", Drop},
+		{"Bash(git *)", Drop},
+		{"Bash(git:*)", Drop},
+		{"Bash(git --no-pager *)", Drop},
+		{"Bash(git -c alias.x=!id x)", Drop},
+		{"Bash(git --no-pager log)", RepoCode},
+		{"Bash(setsid *)", Drop},
+		{"Bash(flock *)", Drop},
+		{"Bash(find *)", Drop},
+		{"Bash(watch *)", Drop},
+		{"Bash(ionice *)", Drop},
+		{"Bash(caffeinate *)", Drop},
+		{"Bash(chroot *)", Drop},
+		{"Bash(tmux *)", Drop},
+		{"Bash(vim *)", Drop},
+		{"Bash(sed *)", Drop},
+		{"Bash(npm --prefix . run *)", Drop},
+		{"Bash(npm -w x exec *)", Drop},
+		{"Bash(pnpm -r exec *)", Drop},
+		{"Bash(yarn workspace x run *)", Drop},
+		{"Bash(cargo --quiet run *)", Drop},
+		{"Bash(npm ru*)", Drop},
+		{"Bash(npm t*)", Drop},
+		{"Bash(np* run *)", Drop},
+		{"Bash(uv *)", Drop},
+		{"Bash(sudo sh)", Drop},
+		{"Bash(env python)", Drop},
+		{"Bash(xargs sh)", Drop},
+		{"Bash(sudo make)", RepoCode},
+		{"Bash(?? *)", Drop},
+		{"Bash(pyth?n *)", Drop},
+		{"Bash(pyth[o]n *)", Drop},
+		{"Bash(FOO=1 *)", Drop},
+		{"Bash(FOO=$(x) python *)", Drop},
+		{"--always-approve", Drop},
+		{"-x", Drop},
+		// A compound rule is never read-only: TODO(T6955) judges each part.
+		{"Bash(ls && curl x)", RepoCode},
+		{"Bash(ls | sh)", RepoCode},
+		// A read-only form written any other way waits.
+		{"Bash(/bin/ls)", RepoCode},
+		{"Bash(GIT status)", RepoCode},
 		{"Bash(", Drop},
 		{" Bash(ls)", Drop},
 		{"Bash(ls\n)", Drop},
@@ -157,8 +255,11 @@ func TestLoadSources(t *testing.T) {
 	write(t, f.local(), `{"permissions":{"allow":["Bash(git diff *)","Bash(npm test)"],"ask":["Bash(git push *)"]}}`)
 	write(t, f.in.AggyFile, `{"permissions":{"allow":["Bash(ls)"]},"repos":{"`+f.in.Main+`":{"allow":["Bash(pwd)"]},"/other":{"allow":["Bash(whoami)"]}}}`)
 	s := Load(f.in)
-	if got := strings.Join(texts(s.Rules, Allow), " "); got != "Bash(git status)@claude-user Bash(git diff *)@claude-local Bash(ls)@aggy Bash(pwd)@aggy-repo" {
+	if got := strings.Join(texts(s.Rules, Allow), " "); got != "Bash(git status)@claude-user Bash(ls)@aggy Bash(pwd)@aggy-repo" {
 		t.Errorf("allow: %s", got)
+	}
+	if s.HeldLocal != 2 {
+		t.Errorf("a repo's local allows wait for trust: %d held", s.HeldLocal)
 	}
 	if got := strings.Join(texts(s.Rules, Ask), " "); got != "Bash(git push *)@claude-local" {
 		t.Errorf("ask: %s", got)
@@ -250,23 +351,88 @@ func TestLocalSymlinksRefused(t *testing.T) {
 	if err := os.Symlink(real, f.local()); err != nil {
 		t.Fatal(err)
 	}
-	if s := Load(f.in); len(s.Rules) != 0 || len(s.Problems) != 1 {
+	if s := Load(f.in); len(s.Rules) != 0 || len(s.Problems) != 1 || s.Withhold == "" {
 		t.Errorf("linked file: %+v", s)
 	}
 }
 
-func TestBadFilesAreProblems(t *testing.T) {
+// TestBadFiles: never fewer denies. aggy's own file refuses the launch, by line;
+// another CLI's file withholds this layer's allows, and the launch goes on.
+func TestBadFiles(t *testing.T) {
+	const deny = `"deny":["Bash(git push *)"]`
+	for _, tc := range []struct {
+		name, body string
+		line       int
+		notes      int
+		bad        bool
+	}{
+		{"trailing comma", "{\"permissions\":{" + deny + "},\n}", 2, 0, true},
+		{"wrong type", `{"permissions":{"deny":"Bash(git push *)"}}`, 1, 0, true},
+		{"text after", `{"permissions":{` + deny + `}} garbage`, 1, 0, true},
+		{"a bad deny", `{"permissions":{"deny":[" bad"]}}`, 0, 0, true},
+		{"a bad repo ask", `{"repos":{"/x":{"ask":["-x"]}},"permissions":{"ask":["-x"]}}`, 0, 0, true},
+		{"$schema", `{"$schema":"https://x","permissions":{` + deny + `}}`, 0, 0, false},
+		{"additionalDirectories", `{"permissions":{` + deny + `,"additionalDirectories":["/x"]}}`, 0, 1, false},
+		{"a key at the top", `{"future":1,"permissions":{` + deny + `}}`, 0, 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			write(t, f.in.AggyFile, tc.body)
+			s := Load(f.in)
+			if tc.bad {
+				if s.FileErr == nil || s.FileErr.Line != tc.line || !strings.Contains(s.FileErr.Error(), f.in.AggyFile) {
+					t.Fatalf("file error: %+v", s.FileErr)
+				}
+				return
+			}
+			if s.FileErr != nil || s.Withhold != "" || len(s.Notes) != tc.notes {
+				t.Errorf("%+v", s)
+			}
+			if got := texts(s.Rules, Deny); len(got) != 1 {
+				t.Errorf("the deny went missing: %q", got)
+			}
+		})
+	}
+
+	for _, body := range []string{`{not json`, `{"permissions":{"deny":3}}`, `{"permissions":{"deny":[" bad"]}}`} {
+		f := newFixture(t)
+		f.in.Trusted = true
+		write(t, filepath.Join(f.in.ClaudeDir, "settings.json"), body)
+		write(t, f.in.AggyFile, `{"permissions":{"allow":["Bash(ls)"],"deny":["Bash(x y)"]}}`)
+		s := Load(f.in)
+		if s.FileErr != nil || len(s.Problems) != 1 || s.Withhold == "" {
+			t.Fatalf("%s: %+v", body, s)
+		}
+		for _, v := range []adapter.Vendor{adapter.Claude, adapter.Grok} {
+			r := s.Render(v)
+			if len(r.Allow) != 0 || !slices.Contains(r.Deny, "Bash(x y)") || !slices.ContainsFunc(r.Skipped, func(k Skip) bool { return k.Why == s.Withhold }) {
+				t.Errorf("%s: %s: %+v", body, v, r)
+			}
+		}
+	}
+
 	f := newFixture(t)
-	write(t, f.in.AggyFile, `{"permissions":{"alow":["Bash(ls)"]}}`)
-	write(t, filepath.Join(f.in.ClaudeDir, "settings.json"), `{not json`)
-	s := Load(f.in)
-	if len(s.Rules) != 0 || len(s.Problems) != 2 {
+	write(t, f.in.AggyFile, `{"permissions":{"defaultMode":"bypassPermissions","deny":["Bash(rm x)"]}}`)
+	if s := Load(f.in); s.Mode != "" || s.FileErr != nil || len(s.Notes) != 1 || len(s.Rules) != 1 {
 		t.Errorf("%+v", s)
 	}
-	f = newFixture(t)
-	write(t, f.in.AggyFile, `{"permissions":{"defaultMode":"bypassPermissions","deny":["Bash(rm x)"," bad"]}}`)
+}
+
+// TestLocalAllowsWaitForTrust: an archive with a planted .git, or a name git and
+// the file system disagree on, makes a committed file look like the person's.
+func TestLocalAllowsWaitForTrust(t *testing.T) {
+	f := newFixture(t)
+	write(t, f.local(), `{"permissions":{"allow":["Bash(git status)","Bash(make x)"],"deny":["Bash(x y)"]}}`)
+	s := Load(f.in)
+	if got := texts(s.Rules, Allow); len(got) != 0 || s.HeldLocal != 2 {
+		t.Errorf("untrusted: %q, held %d", got, s.HeldLocal)
+	}
+	if got := texts(s.Rules, Deny); len(got) != 1 {
+		t.Errorf("a deny narrows, so it stays: %q", got)
+	}
+	f.in.Trusted = true
 	s = Load(f.in)
-	if s.Mode != "" || len(s.Problems) != 1 || !hasSkip(s, " bad") || len(s.Rules) != 1 {
-		t.Errorf("%+v", s)
+	if got := texts(s.Rules, Allow); len(got) != 2 || s.HeldLocal != 0 {
+		t.Errorf("trusted: %q, held %d", got, s.HeldLocal)
 	}
 }

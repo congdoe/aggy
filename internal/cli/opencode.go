@@ -127,6 +127,9 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 	if n := len(skipped); n > 0 {
 		out.warns = append(out.warns, skippedNote(n, "OpenCode"))
 	}
+	if n := in.rules.HeldLocal; n > 0 {
+		out.warns = append(out.warns, fmt.Sprintf("this repo's .claude/settings.local.json has %d allow rules aggy holds until you trust the repo: aggy trust <dir>", n))
+	}
 	data, err := parity.OpenCodeConfig{
 		Trusted: trusted, Providers: providers, Model: in.model, Instructions: notes,
 		Plugin: pluginDir, Aggy: bin, Root: root, NoPolicy: in.noPolicy, Auto: out.launch.Auto,

@@ -59,6 +59,20 @@ func repoTrusted(key string) bool {
 	return slices.Contains(t.Repos, key)
 }
 
+// repoIsTrusted is either kind of trust: aggy trust, or aggy trust --opencode,
+// so the person has one step, not two.
+func repoIsTrusted(repo toolRepoAt) bool {
+	if repoTrusted(repo.key) {
+		return true
+	}
+	for _, root := range []string{repo.main, repo.root} {
+		if trusted, _ := openCodeTrusted(root); trusted {
+			return true
+		}
+	}
+	return false
+}
+
 // permissionInput says where the rules for dir come from.
 func permissionInput(dir string) permissions.Input {
 	var in permissions.Input
@@ -68,7 +82,7 @@ func permissionInput(dir string) permissions.Input {
 	in.CodexHome, _ = transcript.Home(adapter.Codex, os.Getenv)
 	if repo, err := toolRepo(dir, false); err == nil && repo.main != "" {
 		in.Main, in.RepoKey = repo.main, repo.key
-		in.Trusted = repoTrusted(repo.key)
+		in.Trusted = repoIsTrusted(repo)
 		if real, err := safefs.RealPath(repo.root); err == nil {
 			in.Worktree = real
 		}
@@ -79,20 +93,36 @@ func permissionInput(dir string) permissions.Input {
 	return in
 }
 
-// gitTracks asks git whether it tracks path, under main. git's own config
-// cannot run anything here (gitSafe), and an error counts as tracked.
+// gitTracks asks git whether it tracks path, under main. It lists what is
+// tracked and compares without case, since git's pathspec matches case exactly
+// and a file system that folds case opens .CLAUDE/settings.local.json by the
+// lowercase path. git's own config cannot run anything here (gitSafe), and an
+// error, or a list cut short, counts as tracked.
 func gitTracks(ctx context.Context, main string) func(string) (bool, error) {
 	return func(path string) (bool, error) {
 		rel, err := filepath.Rel(main, path)
 		if err != nil {
 			return true, err
 		}
-		out, _, err := defaultBorrowEnv().git(ctx, main, "ls-files", "-z", "--", rel)
+		out, cut, err := defaultBorrowEnv().git(ctx, main, "ls-files", "-z")
 		if err != nil {
 			return true, err
 		}
-		return out != "", nil
+		if cut {
+			return true, nil
+		}
+		return trackedFold(out, rel), nil
 	}
+}
+
+// trackedFold reports rel in git's -z list, whatever its case.
+func trackedFold(list, rel string) bool {
+	for _, p := range strings.Split(list, "\x00") {
+		if strings.EqualFold(p, rel) {
+			return true
+		}
+	}
+	return false
 }
 
 // loadPermissions reads the rules in force for dir, and the mode the person
@@ -117,14 +147,20 @@ func addPermissions(v adapter.Vendor, caps []string, s permissions.Set, req *ada
 	for _, p := range s.Problems {
 		notes = append(notes, fmt.Sprintf("a permissions file is not used: %s: %s", p.Path, p.Why))
 	}
+	if s.Withhold != "" {
+		notes = append(notes, s.Withhold)
+	}
+	notes = append(notes, s.Notes...)
 	if v != adapter.Claude && v != adapter.Grok {
 		return notes
 	}
 	r := s.Render(v)
 	skipped := len(r.Skipped)
 	for _, k := range s.Skipped {
-		// What a CLI reads itself is not aggy's to pass on, so it is no note.
-		if !permissions.ReadsItself(v, k.Origin) {
+		// What a CLI reads itself is not aggy's to pass on, and Codex's file is
+		// global, so a held approval from it would repeat at every launch in
+		// every untrusted repo: aggy permissions show lists those.
+		if !permissions.ReadsItself(v, k.Origin) && k.Origin != permissions.FromCodexGrant {
 			skipped++
 		}
 	}
@@ -145,8 +181,8 @@ func addPermissions(v adapter.Vendor, caps []string, s permissions.Set, req *ada
 			r.Allow = nil
 		}
 		if len(r.Deny) > 0 && !slices.Contains(caps, probe.CapDeny) {
-			notes = append(notes, "grok --help does not list --deny, so your deny rules from aggy do not reach this session")
-			r.Deny = nil
+			notes = append(notes, "grok --help does not list --deny, so your deny rules from aggy do not reach this session, and neither do your allows, since a deny might have stopped one")
+			r.Deny, r.Allow = nil, nil
 		}
 		if r.Mode != "" && !slices.Contains(caps, probe.CapPermissionMode) {
 			notes = append(notes, "grok --help does not list --permission-mode, so the mode set in aggy does not reach this session")
@@ -173,20 +209,22 @@ func skippedNote(n int, name string) string {
 // guardRules are the person's exact rules the OpenCode guard must count, for
 // the repo in its payload. Its gate only decides when to scan, so it errs wide:
 // it does not ask git or trust, and it adds what the running launch rendered, as
-// a rule removed since is still in OpenCode's config. It starts nothing, and a
-// payload it cannot read gives none: the guard then refuses or scans anyway.
-func guardRules(payload []byte, getenv func(string) string) []string {
+// a rule removed since is still in OpenCode's config. It starts nothing. When a
+// file cannot be read, the rules are unknown, and scanAlways says so: the gate
+// then has nothing to go by, so every command is scanned.
+func guardRules(payload []byte, getenv func(string) string) (rules []string, scanAlways bool) {
 	var in struct {
 		Root string `json:"root"`
 	}
 	if err := json.Unmarshal(payload, &in); err != nil || in.Root == "" {
-		return nil
+		return nil, false
 	}
 	pi := permissionInput(in.Root)
 	pi.Trusted = true
 	pi.Tracked = func(string) (bool, error) { return false, nil }
-	shared, _ := parity.OpenCodeShared(permissions.Load(pi))
-	return append(shared.Allow, renderedOpenCodeAllows(getenv("OPENCODE_CONFIG"))...)
+	s := permissions.Load(pi)
+	shared, _ := parity.OpenCodeShared(s)
+	return append(shared.Allow, renderedOpenCodeAllows(getenv("OPENCODE_CONFIG"))...), s.FileErr != nil || s.Withhold != ""
 }
 
 // renderedOpenCodeAllows reads the shell allows of a rendered config.

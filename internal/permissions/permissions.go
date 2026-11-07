@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"path/filepath"
@@ -60,10 +61,26 @@ type Skip struct {
 	Why string
 }
 
-// Problem is a source that could not be read, or a mode not passed on.
+// Problem is a source that could not be read.
 type Problem struct {
 	Path string
 	Why  string
+}
+
+// FileError is a mistake in aggy's own rules file, by line where it has one. A
+// launch refuses to start on one: a deny there would otherwise be lost, and the
+// file is the person's to fix.
+type FileError struct {
+	Path string
+	Line int
+	Msg  string
+}
+
+func (e *FileError) Error() string {
+	if e.Line > 0 {
+		return fmt.Sprintf("%s line %d: %s; fix it, aggy doctor says more", e.Path, e.Line, e.Msg)
+	}
+	return fmt.Sprintf("%s: %s; fix it, aggy doctor says more", e.Path, e.Msg)
 }
 
 // Set is what one repo gets.
@@ -75,6 +92,17 @@ type Set struct {
 	Rules    []Rule
 	Skipped  []Skip
 	Problems []Problem
+	// Trusted is the repo's trust, for what a CLI's own matching makes of a rule.
+	Trusted bool
+	// FileErr is a mistake in aggy's own file, which refuses a launch.
+	FileErr *FileError
+	// Withhold says why no allow from this layer goes out at all: a source could
+	// not be read, so a deny in it may be missing. Never fewer denies.
+	Withhold string
+	// Notes are things to say that change nothing, such as a key aggy skips.
+	Notes []string
+	// HeldLocal counts allows in a repo's settings.local.json waiting for trust.
+	HeldLocal int
 }
 
 // Input says where to read from.
@@ -128,22 +156,60 @@ type AggyFile struct {
 	Repos       map[string]RepoRules `json:"repos,omitempty"`
 }
 
-// ParseAggyFile decodes the file, refusing a key aggy does not know: a
-// misspelled "deny" must not leave someone thinking a rule holds.
+// ParseAggyFile decodes the file. A key aggy does not know is no error, since
+// $schema and additionalDirectories are valid in this format: UnknownKeys names
+// them. Bad JSON, a wrong type, or text after the JSON is an error.
 func ParseAggyFile(b []byte) (AggyFile, error) {
 	var f AggyFile
 	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
 	if err := dec.Decode(&f); err != nil {
 		return AggyFile{}, err
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return AggyFile{}, &json.SyntaxError{Offset: dec.InputOffset()}
 	}
 	return f, nil
 }
 
-// Load reads every source. It never fails: what cannot be read is a Problem,
-// and its rules do not apply.
+// UnknownKeys lists keys in the file aggy does not act on. $schema is left out:
+// it is only for editors.
+func UnknownKeys(b []byte) []string {
+	var top map[string]json.RawMessage
+	if json.Unmarshal(b, &top) != nil {
+		return nil
+	}
+	var out []string
+	object := func(where string, raw json.RawMessage, known ...string) {
+		var m map[string]json.RawMessage
+		if json.Unmarshal(raw, &m) != nil {
+			return
+		}
+		for _, k := range slices.Sorted(maps.Keys(m)) {
+			if !slices.Contains(known, k) {
+				out = append(out, where+k)
+			}
+		}
+	}
+	for _, k := range slices.Sorted(maps.Keys(top)) {
+		if k != "$schema" && k != "permissions" && k != "repos" {
+			out = append(out, k)
+		}
+	}
+	object("permissions.", top["permissions"], "defaultMode", "allow", "ask", "deny")
+	var repos map[string]json.RawMessage
+	if json.Unmarshal(top["repos"], &repos) == nil {
+		for _, k := range slices.Sorted(maps.Keys(repos)) {
+			object("repos entry: ", repos[k], "allow", "ask", "deny")
+		}
+	}
+	return out
+}
+
+// Load reads every source. A mistake in aggy's own file is FileErr, which a
+// launch refuses on. A source that cannot be read is a Problem, and with one no
+// allow from this layer goes out, as a deny in it may be missing.
 func Load(in Input) Set {
-	var s Set
+	s := Set{Trusted: in.Trusted}
 	s.loadClaude(filepath.Join(in.ClaudeDir, "settings.json"), FromClaudeUser, in.Trusted)
 	if in.Main != "" {
 		s.loadLocal(in)
@@ -151,6 +217,9 @@ func Load(in Input) Set {
 	s.loadAggy(in)
 	s.loadGrok(in)
 	s.loadCodex(in)
+	if len(s.Problems) > 0 {
+		s.Withhold = "aggy could not read every source of rules, so a deny may be missing, and it sends no allow from them until that is fixed"
+	}
 	return s
 }
 
@@ -225,19 +294,27 @@ func (s *Set) loadAggy(in Input) {
 	if in.AggyFile == "" {
 		return
 	}
-	b := s.read(in.AggyFile)
-	if b == nil {
+	b, err := safefs.ReadConfig(in.AggyFile, MaxFile)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return
+	case err != nil:
+		s.FileErr = &FileError{in.AggyFile, 0, "aggy cannot read this file: " + err.Error()}
 		return
 	}
 	f, err := ParseAggyFile(b)
 	if err != nil {
-		s.Problems = append(s.Problems, Problem{in.AggyFile, err.Error()})
+		e := decodeError(b, err)
+		s.FileErr = &FileError{in.AggyFile, e.Line, e.Msg}
 		return
+	}
+	for _, k := range UnknownKeys(b) {
+		s.Notes = append(s.Notes, fmt.Sprintf("%s: aggy does not use %s", FileName, k))
 	}
 	s.addObject(f.Permissions, FromAggy, in.AggyFile, in.Trusted)
 	if m := f.Permissions.DefaultMode; m != "" {
 		if mode, err := CheckMode(m); err != nil {
-			s.Problems = append(s.Problems, Problem{in.AggyFile, err.Error()})
+			s.Notes = append(s.Notes, FileName+": "+err.Error())
 		} else {
 			s.Mode, s.ModeFrom = mode, FromAggy
 		}
@@ -273,24 +350,42 @@ func (s *Set) addObject(o Object, from Origin, path string, trusted bool) {
 	}
 }
 
+// addNarrowing adds denies or asks. One that is not a rule is a person's intent
+// aggy cannot carry out, so it counts like a file aggy could not read.
 func (s *Set) addNarrowing(k Kind, rules []string, from Origin, path string) {
 	for _, r := range rules {
 		rule := Rule{k, r, from, path}
 		if _, _, _, err := ParseRule(r); err != nil {
 			s.Skipped = append(s.Skipped, Skip{rule, err.Error()})
+			why := fmt.Sprintf("the %s rule %q is not a rule", k, r)
+			if from == FromAggy || from == FromAggyRepo {
+				if s.FileErr == nil {
+					s.FileErr = &FileError{path, 0, why}
+				}
+			} else {
+				s.Problems = append(s.Problems, Problem{path, why})
+			}
 			continue
 		}
 		s.add(rule)
 	}
 }
 
-// AddAllow passes an allow through the filter.
+// AddAllow passes an allow through the filter. An allow from a repo's
+// settings.local.json also waits for trust whatever it says: an archive with a
+// planted .git, or a name git and the file system disagree on, can make a
+// committed file look like the person's. Claude reads that file itself, behind
+// its own trust step, and needs nothing from aggy for it.
 func (s *Set) AddAllow(r Rule, trusted bool) {
-	switch class, why := CheckAllow(r.Text); {
+	class, why := CheckAllow(r.Text)
+	switch {
 	case class == Drop:
 		s.Skipped = append(s.Skipped, Skip{r, why})
+	case r.Origin == FromClaudeLocal && !trusted:
+		s.HeldLocal++
+		s.Skipped = append(s.Skipped, Skip{r, "a repo's settings.local.json could have come with the repo, so its allows wait for trust (aggy trust <dir>)"})
 	case class == RepoCode && !trusted:
-		s.Skipped = append(s.Skipped, Skip{r, fmt.Sprintf("%s, and this repo is not trusted (aggy trust <dir>)", why)})
+		s.Skipped = append(s.Skipped, Skip{r, fmt.Sprintf("%s (aggy trust <dir>)", why)})
 	default:
 		s.add(r)
 	}

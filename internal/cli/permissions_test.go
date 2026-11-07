@@ -127,7 +127,7 @@ func TestGuardBadPermissionsFile(t *testing.T) {
 func TestAddPermissions(t *testing.T) {
 	isolate(t)
 	s := permissions.Set{
-		Mode: "auto", ModeFrom: permissions.FromConfig,
+		Mode: "auto", ModeFrom: permissions.FromConfig, Trusted: true,
 		Rules: []permissions.Rule{
 			{Kind: permissions.Allow, Text: "Bash(gh pr list)", Origin: permissions.FromAggy},
 			{Kind: permissions.Deny, Text: "Bash(curl *)", Origin: permissions.FromAggy},

@@ -49,6 +49,9 @@ func permissionsShow(args []string, stdout, stderr io.Writer) int {
 			printed = true
 		}
 		fmt.Fprintf(stdout, "  %s %s  [%s]%s\n    %s\n", k.Kind, termsafe.Field(k.Text), originName(k.Origin), on, termsafe.Line(k.Why))
+		if self := appliedBy(k.Origin); self != "" && on == "" {
+			fmt.Fprintf(stdout, "    aggy does not pass this on, but%s, from its own file\n", self)
+		}
 	}
 	for _, k := range s.Skipped {
 		skip(k, "")
@@ -59,9 +62,7 @@ func permissionsShow(args []string, stdout, stderr io.Writer) int {
 	for _, k := range openCodeSkipped {
 		skip(k, " on OpenCode")
 	}
-	for _, p := range s.Problems {
-		fmt.Fprintf(stdout, "\nNot read: %s: %s\n", termsafe.Field(p.Path), termsafe.Line(p.Why))
-	}
+	printPermissionsTroubles(stdout, s)
 	fmt.Fprintln(stdout, "\nNot shown: OpenCode's Always allow, which it keeps in opencode.db beside its sign-ins, and aggy never opens that.")
 	return 0
 }

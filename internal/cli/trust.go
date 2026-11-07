@@ -27,20 +27,23 @@ import (
 const trustUsage = `Usage: aggy trust <dir>
        aggy trust --opencode <dir>
 
-aggy trust <dir> says you trust the repo holding <dir>: your allow rules that
-run a repo's own code (make, npm test, ./scripts/x) apply there, and so do your
-approvals from Codex, and Codex loads it as trusted. Claude and Grok keep their
-own trust, which aggy does not handle yet: each still asks you itself.
+aggy trust <dir> says you trust the repo holding <dir>: your allow rules beyond
+the known read-only ones apply there, those in its .claude/settings.local.json
+and your approvals from Codex among them, and Codex loads it as trusted. Claude
+and Grok keep their own trust, which aggy does not handle yet: each still asks
+you itself.
 
-aggy trust --opencode <dir> is separate. It lets the repo open the full OpenCode
-screen under aggy, with OpenCode's own model command, and reads with no prompt.
-Without it, a repo gets opencode mini and the whitelist. [opencode] auto = true
-in aggy's config then applies there too. It does not change how Codex or Grok
-load the repo.
+aggy trust --opencode <dir> does that for aggy's rules too. It also lets the repo
+open the full OpenCode screen under aggy, with OpenCode's own model command, and
+reads with no prompt. Without it, a repo gets opencode mini and the whitelist.
+[opencode] auto = true in aggy's config then applies there too. It does not change
+how Codex or Grok load the repo.
 
-Each asks once, at a terminal, and never from a session's own tool shell. Each
-records the repo root, so a subfolder is treated the same. A repo cannot trust
-itself: this is kept in aggy's own state folder. aggy unwire undoes it.
+Each asks once, at a terminal, and refuses in a session's own tool shell. That
+holds against mistakes, not a model that tries: it can give itself a terminal with
+script, and pipe y. Each records the repo root, so a subfolder is treated the
+same. A repo cannot trust itself: this is kept in aggy's own state folder. aggy
+unwire undoes it. Your home folder and / cannot be trusted.
 
   --opencode   trust it for OpenCode
   --dry-run    show the change and make none
@@ -52,8 +55,7 @@ itself: this is kept in aggy's own state folder. aggy unwire undoes it.
 // Do not read ~/.claude.json for it before then.
 const repoTrustWarning = `Trust %s?
 
-- aggy: your allow rules that run a repo's own code (make, npm test, ./scripts/x),
-  and your approvals from Codex, now apply here.
+- aggy: %s
 - Codex: %s
 - Claude and Grok: not handled yet. aggy does not know where they keep a folder's
   trust, so each still asks you itself when it first opens this folder.
@@ -138,10 +140,13 @@ func runTrust(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(diag.CodeTrustBadDir, err)
 	}
+	root, _ := repoRoot(dir)
+	if err := tooBroadToTrust(dir, root); err != nil {
+		return fail(diag.CodeTrustBadDir, err)
+	}
 	if !*forOpenCode {
 		return trustFolder(ctx, dir, *dryRun, fail, stdout)
 	}
-	root, _ := repoRoot(dir)
 	key, err := safefs.CanonicalPath(root)
 	if err != nil {
 		return fail(diag.CodeTrustBadDir, err)
@@ -181,6 +186,23 @@ func runTrust(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// tooBroadToTrust refuses / and the home folder, or a repo at either: trust there
+// would cover everything the person has.
+func tooBroadToTrust(paths ...string) error {
+	home := ""
+	if h := os.Getenv("HOME"); h != "" {
+		if real, err := safefs.RealPath(h); err == nil {
+			home = real
+		}
+	}
+	for _, p := range paths {
+		if p == "/" || (p != "" && p == home) {
+			return fmt.Errorf("%s holds too much to trust as one repo; name the repo itself", p)
+		}
+	}
+	return nil
+}
+
 // trustFolder is aggy trust <dir>: aggy's own record, and Codex's key, as one run
 // of the manifest. A Codex config it cannot change is said and left alone: the
 // person asked to trust the repo, and aggy's record does not depend on it.
@@ -190,29 +212,37 @@ func trustFolder(ctx context.Context, dir string, dryRun bool, fail func(diag.Co
 		return fail(diag.CodeTrustBadDir, err)
 	}
 	main, key := repo.main, repo.key
-	if main == "" {
-		if key, err = safefs.CanonicalPath(dir); err != nil {
-			return fail(diag.CodeTrustBadDir, err)
-		}
+	inRepo := main != ""
+	if !inRepo {
 		main = dir
 	}
-	path, err := trustFile()
-	if err != nil {
-		return fail(diag.CodeStore, err)
-	}
-	p, already, err := trustPatch(path, key)
-	if err != nil {
-		return fail(diag.CodeTrustBadFile, err)
-	}
+	// Outside a git repo aggy has no rules to apply here, so it records nothing
+	// and claims nothing: only Codex's key can change.
 	var ps []patch.Patch
-	if !already {
-		ps = append(ps, p)
+	aggyLine := "this folder is in no git repo, so your allow rules from aggy do not apply here, trusted or not."
+	if inRepo {
+		aggyLine = "your allow rules beyond the known read-only ones, those in this repo's\n  .claude/settings.local.json and your approvals from Codex among them, now apply here."
+		path, err := trustFile()
+		if err != nil {
+			return fail(diag.CodeStore, err)
+		}
+		p, already, err := trustPatch(path, key)
+		if err != nil {
+			return fail(diag.CodeTrustBadFile, err)
+		}
+		if !already {
+			ps = append(ps, p)
+		}
 	}
 	codexLine, codexPatch := codexTrust(main)
 	if codexPatch != nil {
 		ps = append(ps, *codexPatch)
 	}
 	if len(ps) == 0 {
+		if !inRepo {
+			fmt.Fprintf(stdout, "Nothing to change for %s: %s\nCodex: %s\n", termsafe.Field(main), aggyLine, termsafe.Lines(codexLine))
+			return 0
+		}
 		fmt.Fprintf(stdout, "%s is already trusted.\n", termsafe.Field(main))
 		return 0
 	}
@@ -226,7 +256,7 @@ func trustFolder(ctx context.Context, dir string, dryRun bool, fail func(diag.Co
 	if err := personGate(os.Getenv); err != nil {
 		return fail(diag.CodeNoTerminal, err)
 	}
-	fmt.Fprintf(stdout, repoTrustWarning, termsafe.Field(main), termsafe.Lines(codexLine))
+	fmt.Fprintf(stdout, repoTrustWarning, termsafe.Field(main), aggyLine, termsafe.Lines(codexLine))
 	if !confirmed(stdout, "Trust it?") {
 		fmt.Fprintln(stdout, "Not trusted.")
 		return 1

@@ -10,25 +10,36 @@ import (
 	"strings"
 )
 
-// list returns the rules of a kind.
-func (o *Object) list(k Kind) *[]string {
+func (o *Object) list(k Kind) []string {
 	switch k {
 	case Allow:
-		return &o.Allow
+		return o.Allow
 	case Ask:
-		return &o.Ask
+		return o.Ask
 	}
-	return &o.Deny
+	return o.Deny
 }
 
-func (r *RepoRules) list(k Kind) *[]string {
+func (r *RepoRules) list(k Kind) []string {
 	switch k {
 	case Allow:
-		return &r.Allow
+		return r.Allow
 	case Ask:
-		return &r.Ask
+		return r.Ask
 	}
-	return &r.Deny
+	return r.Deny
+}
+
+// matchingKey finds the key the file holds for a repo: it is edited by hand, so
+// it may be spelled another way than the canonical path.
+func matchingKey(keys []string, repoKey string) string {
+	slices.Sort(keys)
+	for _, k := range keys {
+		if k == repoKey || canonical(k) == repoKey {
+			return k
+		}
+	}
+	return repoKey
 }
 
 // Edit is one change to aggy's own file. RepoKey "" means every repo.
@@ -41,39 +52,64 @@ type Edit struct {
 
 // Apply changes the file's text, with the rule in or out. It is deterministic,
 // and applying it to its own output returns that output, as internal/patch
-// needs. The file has no comments, so encoding it again loses only spacing.
+// needs. It edits the document as it stands, so a key aggy does not use, such as
+// $schema, stays; the file has no comments, so only spacing can change.
 func (e Edit) Apply(src []byte) ([]byte, error) {
-	var f AggyFile
+	doc := map[string]any{}
 	if len(src) > 0 {
-		var err error
-		if f, err = ParseAggyFile(src); err != nil {
+		if _, err := ParseAggyFile(src); err != nil {
 			return nil, fmt.Errorf("%s is not valid: %w; aggy doctor says where", FileName, err)
 		}
+		if err := json.Unmarshal(src, &doc); err != nil {
+			return nil, err
+		}
 	}
-	list := f.Permissions.list(e.Kind)
-	var repo RepoRules
-	if e.RepoKey != "" {
-		repo = f.Repos[e.RepoKey]
-		list = repo.list(e.Kind)
+	section := func(m map[string]any, key string) map[string]any {
+		if sub, ok := m[key].(map[string]any); ok {
+			return sub
+		}
+		sub := map[string]any{}
+		m[key] = sub
+		return sub
 	}
-	if i := slices.Index(*list, e.Rule); e.Remove && i >= 0 {
-		*list = slices.Delete(*list, i, i+1)
-	} else if !e.Remove && i < 0 {
-		*list = append(*list, e.Rule)
+	var object map[string]any
+	var repos map[string]any
+	key := e.RepoKey
+	if key == "" {
+		object = section(doc, "permissions")
 	} else {
+		repos = section(doc, "repos")
+		key = matchingKey(slices.Collect(maps.Keys(repos)), key)
+		object = section(repos, key)
+	}
+	var list []any
+	if l, ok := object[string(e.Kind)].([]any); ok {
+		list = l
+	}
+	i := slices.IndexFunc(list, func(v any) bool { return v == e.Rule })
+	switch {
+	case e.Remove && i >= 0:
+		list = slices.Delete(list, i, i+1)
+	case !e.Remove && i < 0:
+		list = append(list, e.Rule)
+	default:
 		return src, nil
 	}
-	if e.RepoKey != "" {
-		if f.Repos == nil {
-			f.Repos = map[string]RepoRules{}
-		}
-		if len(repo.Allow)+len(repo.Ask)+len(repo.Deny) == 0 {
-			delete(f.Repos, e.RepoKey)
-		} else {
-			f.Repos[e.RepoKey] = repo
-		}
+	if len(list) == 0 {
+		delete(object, string(e.Kind))
+	} else {
+		object[string(e.Kind)] = list
 	}
-	out, err := json.MarshalIndent(f, "", "  ")
+	if key != "" && len(object) == 0 {
+		delete(repos, key)
+	}
+	if key != "" && len(repos) == 0 {
+		delete(doc, "repos")
+	}
+	if p, ok := doc["permissions"].(map[string]any); ok && len(p) == 0 {
+		delete(doc, "permissions")
+	}
+	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return nil, err
 	}
@@ -90,10 +126,10 @@ func Has(src []byte, k Kind, rule, repoKey string) (bool, error) {
 		return false, err
 	}
 	if repoKey == "" {
-		return slices.Contains(*f.Permissions.list(k), rule), nil
+		return slices.Contains(f.Permissions.list(k), rule), nil
 	}
-	r := f.Repos[repoKey]
-	return slices.Contains(*r.list(k), rule), nil
+	r := f.Repos[matchingKey(slices.Collect(maps.Keys(f.Repos)), repoKey)]
+	return slices.Contains(r.list(k), rule), nil
 }
 
 // LineError is a mistake in the hand-edited file, by line where it has one.
@@ -112,6 +148,10 @@ func CheckFile(src []byte) []LineError {
 		return []LineError{decodeError(src, err)}
 	}
 	var out []LineError
+	for _, k := range UnknownKeys(src) {
+		last := k[strings.LastIndexAny(k, ". ")+1:]
+		out = append(out, LineError{lineOf(src, `"`+last+`"`), "aggy does not use this key", k})
+	}
 	if m := f.Permissions.DefaultMode; m != "" {
 		if _, err := CheckMode(m); err != nil {
 			out = append(out, LineError{lineOf(src, `"defaultMode"`), "defaultMode is not a mode aggy passes on", err.Error()})
@@ -158,11 +198,7 @@ func decodeError(src []byte, err error) LineError {
 	case errors.As(err, &typ):
 		return LineError{lineAt(src, typ.Offset), "a value here has the wrong type", err.Error()}
 	}
-	// encoding/json names an unknown field in its text only.
-	if name, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
-		return LineError{lineOf(src, name), "aggy does not know this key", err.Error()}
-	}
-	return LineError{0, "this is not valid", err.Error()}
+	return LineError{0, "this is not valid JSON", err.Error()}
 }
 
 func lineAt(src []byte, offset int64) int {

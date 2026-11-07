@@ -265,7 +265,7 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 	}
 	for _, r := range append(slices.Clone(req.Deny), req.Rules.Deny...) {
 		// --deny splits its value on commas (src/app/cli.rs at 2bdd1d6a).
-		if r == "" || strings.ContainsAny(r, ",\x00") {
+		if r == "" || strings.HasPrefix(r, "-") || strings.ContainsAny(r, ",\x00") {
 			return adapter.Command{}, fmt.Errorf("grok: deny rule %q cannot be passed as one --deny value", r)
 		}
 		args = append(args, "--deny", r)
@@ -274,7 +274,7 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		// A deny outranks an allow (decision_rank, policy.rs:791 at
 		// grok-build 2bdd1d6a), so the policy's denies still hold.
 		// TODO(T6895): not yet run live on screen.
-		if r == "" || strings.ContainsAny(r, ",\x00") {
+		if r == "" || strings.HasPrefix(r, "-") || strings.ContainsAny(r, ",\x00") {
 			return adapter.Command{}, fmt.Errorf("grok: allow rule %q cannot be passed as one --allow value", r)
 		}
 		args = append(args, "--allow", r)

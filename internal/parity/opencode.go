@@ -164,10 +164,6 @@ func ExactRule(cmd string) error {
 	return nil
 }
 
-// openCodeNever are commands never listed, exact or not: they run code or read
-// arbitrary paths (docs/design.md, section 15, "Whitelist").
-var openCodeNever = []string{"python", "python2", "python3", "node", "npx", "find", "rg", "awk", "sed", "cat", "sh", "bash", "zsh", "perl", "ruby"}
-
 // OpenCodeSharedRules are the person's rules as OpenCode takes them.
 type OpenCodeSharedRules struct {
 	// Allow are exact shell commands, as a rule's resource.
@@ -185,6 +181,9 @@ type OpenCodeSharedRules struct {
 func OpenCodeShared(s permissions.Set) (OpenCodeSharedRules, []permissions.Skip) {
 	var out OpenCodeSharedRules
 	var skipped []permissions.Skip
+	// A shell deny or ask OpenCode cannot take could have stopped a shell
+	// allow, or a source could not be read: then no allow from this layer goes.
+	withhold := s.Withhold
 	for _, r := range s.Rules {
 		why := ""
 		switch r.Kind {
@@ -200,6 +199,7 @@ func OpenCodeShared(s permissions.Set) (OpenCodeSharedRules, []permissions.Skip)
 				why = "OpenCode takes only shell rules from aggy so far"
 			case strings.ContainsAny(cmd, "?{\n\r"):
 				why = "OpenCode would read ? or { in this rule differently"
+				withhold = "the rule " + r.Text + " cannot reach OpenCode, and it might have stopped this one"
 			default:
 				out.Ask = append(out.Ask, cmd)
 			}
@@ -210,6 +210,7 @@ func OpenCodeShared(s permissions.Set) (OpenCodeSharedRules, []permissions.Skip)
 				why = "OpenCode takes only shell rules from aggy so far"
 			case strings.ContainsAny(cmd, "?{\n\r"):
 				why = "OpenCode would read ? or { in this rule differently"
+				withhold = "the rule " + r.Text + " cannot reach OpenCode, and it might have stopped this one"
 			default:
 				out.Deny = append(out.Deny, "shell:"+cmd)
 			}
@@ -217,6 +218,12 @@ func OpenCodeShared(s permissions.Set) (OpenCodeSharedRules, []permissions.Skip)
 		if why != "" {
 			skipped = append(skipped, permissions.Skip{Rule: r, Why: why})
 		}
+	}
+	if withhold != "" {
+		for _, c := range out.Allow {
+			skipped = append(skipped, permissions.Skip{Rule: permissions.Rule{Kind: permissions.Allow, Text: "Bash(" + c + ")"}, Why: withhold})
+		}
+		out.Allow = nil
 	}
 	return out, skipped
 }
@@ -237,12 +244,17 @@ func openCodeAllow(rule string) (cmd, why string) {
 	// matches, and a leading assignment is a declaration the check skips.
 	first, _, _ := strings.Cut(cmd, " ")
 	switch {
-	case strings.ContainsAny(cmd, ";|&<>`$()"):
+	case strings.ContainsAny(cmd, ";|&<>`$()\\\"'"):
 		return "", "it is more than one plain command"
 	case strings.Contains(first, "="):
 		return "", "it starts by setting a variable"
-	case slices.Contains(openCodeNever, first):
+	case strings.Join(strings.Fields(cmd), " ") != cmd:
+		return "", "its spacing would never match a command OpenCode sees"
+	case permissions.NeverListed(cmd):
 		return "", first + " runs code or reads any path, so it is never listed for OpenCode"
+	}
+	if class, why := permissions.CheckAllow(rule); class == permissions.Drop {
+		return "", why
 	}
 	return cmd, ""
 }
