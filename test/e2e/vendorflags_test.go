@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -74,5 +76,23 @@ func TestSafeModeNoted(t *testing.T) {
 	recs := fakecli.Records(t, w.record)
 	if !slices.Contains(recs[len(recs)-1].Args, "--safe-mode") {
 		t.Errorf("args = %q", recs[len(recs)-1].Args)
+	}
+}
+
+// TestAddDirHomeRefused (T6952): a link to $HOME is refused at launch, before
+// the CLI starts.
+func TestAddDirHomeRefused(t *testing.T) {
+	w := newWorld(t)
+	link := filepath.Join(t.TempDir(), "to-home")
+	if err := os.Symlink(w.home, link); err != nil {
+		t.Fatal(err)
+	}
+	s := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "codex", "--add-dir", link)
+	s.waitFor([]byte("cli.flag_needs_no_policy"))
+	if code := s.exit(); code == 0 {
+		t.Error("exit 0")
+	}
+	if n := len(fakecli.Records(t, w.record)); n != 0 {
+		t.Errorf("the CLI started %d times", n)
 	}
 }

@@ -303,19 +303,26 @@ func onlyValue(flag, ok string) func(string) error {
 	}
 }
 
-// PassFlags is Grok's table for aggy grok, from grok --help at 1.0.77
-// (docs/verification.md, T6952). A flag it does not list passes for the CLI to
-// refuse (inferred from the help's clap-like format; no refusal was run live, and
-// the source was not read for this), and a
-// new flag needs no aggy change. So a name that sounds like an approval or
-// bypass switch is gated whether or not it exists yet (LoosensIf), --yolo, which
-// that help does not list, among them. --always-approve is listed, "Auto-approve
-// all tool executions". Any --permission-mode but plan or default, whose rules
-// aggy has not seen Grok apply, and any --sandbox but strict, the profile
-// recorded, are gated; help lists no profile names. --agents is gated when it
-// names bypassPermissions, one of help's modes. --allow passes: a deny outranks
-// an allow (decision_rank, policy.rs:791 at grok-build 2bdd1d6a). --dangerously-*
-// is gated by PassFlags.Parse. aggy never adds any of them on its own.
+// PassFlags is Grok's table for aggy grok, from two sources (verification.md,
+// T6952): grok --help at 1.0.77, and PagerArgs in
+// crates/codegen/xai-grok-pager/src/app/cli.rs at grok-build 2bdd1d6a, read for
+// the hidden flags and aliases help leaves out. No tag or commit for 1.0.77 is
+// public, and that tree is older (it has no --add-dir), so a hidden flag added
+// since is not known. It is a clap parser there, so a flag it does not define is
+// refused by the CLI; no refusal was run live.
+//
+// Gated: --always-approve and its aliases --yolo and --dangerously-skip-permissions;
+// --trust and --trust-folder, which persist hook trust; any name holding a word
+// in LoosensIf, in case a later CLI adds it; any --permission-mode but plan or
+// default, whose rules aggy has not seen Grok apply; any --sandbox but strict, the
+// profile recorded; --agents with such a mode or a value aggy cannot read; and an
+// --add-dir that holds $HOME or keys, at launch (DirFlags). --allow passes: a deny
+// outranks an allow (decision_rank, policy.rs:791 at grok-build 2bdd1d6a).
+// aggy never adds any of them on its own.
+//
+// TODO(T6895): --agent x names an agent, which may be a repo's own file with a
+// permissionMode in it; aggy does not read it (and refuses --agent here today,
+// since it passes its own).
 func (Adapter) PassFlags() adapter.PassFlags {
 	const elsewhere = "it runs the session somewhere aggy does not record"
 	return adapter.PassFlags{
@@ -326,24 +333,30 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			{Names: []string{"--session-id", "-s"}, Why: "aggy gives each new session its id"},
 			{Names: []string{"--fork-session"}, Why: "aggy keeps one vendor session per child"},
 			{Names: []string{"--no-alt-screen"}, Why: "aggy always passes it"},
-			{Names: []string{"--rules"}, Why: "aggy passes the shared memory with it"},
+			{Names: []string{"--rules", "--append-system-prompt"}, Why: "aggy passes the shared memory with it"},
 			{Names: []string{"--deny", "--disallowedTools"}, Why: "aggy's safety policy uses it; add yours in Grok's config"},
 			{Names: []string{"--agent"}, Why: "aggy passes the managed tools' servers with it"},
-			{Names: []string{"--prompt-file", "--prompt-json", "--single", "-p"}, Why: "aggy runs an on-screen session; aggy borrow runs one task headless"},
+			{Names: []string{"--load"}, Why: "it resumes a session aggy's index does not pick; use --resume"},
+			{Names: []string{"--prompt-file", "--prompt-json", "--single", "--print", "-p"}, Why: "aggy runs an on-screen session; aggy borrow runs one task headless"},
 			{Names: []string{"--cwd"}, Why: "aggy starts the CLI in the session's directory; cd there first"},
-			{Names: []string{"--worktree", "-w", "--worktree-ref", "--ref"}, Why: elsewhere},
+			{Names: []string{"--worktree", "-w", "--worktree-ref", "--ref", "--local-workspace", "--local-workspace-attach", "--local-workspace-cwd"}, Why: elsewhere},
+			{Names: []string{"--installer"}, Why: "it writes Grok's config.toml outside aggy's manifest"},
 			{Names: []string{"--version", "-v"}, Why: "run grok --version"},
-			{Names: []string{"--always-approve"}, UnlessNoPolicy: true},
+			{Names: []string{"--always-approve", "--trust", "--trust-folder"}, UnlessNoPolicy: true},
 		},
 		Checked: []adapter.CheckedFlag{
 			{Names: []string{"--permission-mode"}, Check: checkPermissionMode},
 			{Names: []string{"--sandbox"}, Check: onlyValue("--sandbox", "strict")},
 			{Names: []string{"--agents"}, Check: checkAgents},
+			{Names: []string{"--add-dir"}, Check: adapter.AnyValue},
 		},
-		Values: []string{"--add-dir", "--allow", "--allowedTools", "--allowed-tools", "--debug-file", "--disallowed-tools",
-			"--effort", "--json-schema", "--leader-socket", "--max-turns", "--output-format", "--reasoning-effort",
+		Values: []string{"--allow", "--allowedTools", "--allowed-tools", "--background-wait-timeout", "--client-identifier",
+			"--compaction-detail", "--compaction-mode", "--debug-file", "--disallowed-tools", "--effort", "--hunk-tracker-mode",
+			"--json-schema", "--leader-socket", "--max-turns", "--output-format", "--reasoning-effort", "--storage-mode",
 			"--system-prompt", "--system-prompt-override", "--tools"},
-		LoosensIf: []string{"approve", "yolo", "bypass"},
+		LoosensIf: []string{"approve", "approval", "yolo", "bypass", "no-sandbox", "skip-permission"},
+		DirFlags:  []string{"--add-dir"},
+		Noted:     []adapter.NotedFlag{{Names: []string{"--add-dir"}, Note: "--add-dir lets Grok work in more folders; that aggy's deny rules cover them is unverified"}},
 	}
 }
 
@@ -355,13 +368,9 @@ func checkPermissionMode(mode string) error {
 	return onlyValue("--permission-mode", "plan")(mode)
 }
 
-// checkAgents gates inline subagents that name bypassPermissions.
-func checkAgents(val string) error {
-	if strings.Contains(val, "bypassPermissions") {
-		return fmt.Errorf("--agents with bypassPermissions: %w", adapter.ErrLoosens)
-	}
-	return nil
-}
+// checkAgents gates inline subagents with a mode the --permission-mode table
+// gates, auto and dontAsk among them, or that aggy cannot read.
+func checkAgents(val string) error { return adapter.CheckAgents(val, checkPermissionMode) }
 
 // Headless builds
 //

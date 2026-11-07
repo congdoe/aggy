@@ -1,8 +1,10 @@
 package adapter
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 )
@@ -30,7 +32,15 @@ type PassFlags struct {
 	// LoosensIf gates any flag whose name holds one of these words, for a CLI
 	// with no list of its flags to compare a new one with.
 	LoosensIf []string
+	// DirFlags name a folder the session gets. They are also in Checked, so
+	// their value is the next word. An adapter touches no disk, so Parse only
+	// lists them (ParsedFlags.Dirs), for the launch to resolve against the
+	// directory the CLI starts in.
+	DirFlags []string
 }
+
+// DirFlag is one folder a flag on the command line names.
+type DirFlag struct{ Name, Value string }
 
 // NotedFlag is a flag that passes and is worth a line at launch: it changes
 // something aggy relies on, but gating it would cost the whole safety policy
@@ -70,6 +80,8 @@ type ParsedFlags struct {
 	Loosens []string
 	// Notes are the lines the flags in Noted ask for, each once.
 	Notes []string
+	// Dirs are the values of DirFlags, as typed.
+	Dirs []DirFlag
 }
 
 // ErrLoosens matches a flag that loosens approvals, the sandbox, or hook
@@ -139,6 +151,13 @@ func (p PassFlags) Parse(args []string, noPolicy bool) (ParsedFlags, error) {
 				}
 			}
 			words := args[before : i+1]
+			if slices.Contains(p.DirFlags, name) {
+				dir := val
+				if !hasVal {
+					dir = args[i]
+				}
+				out.Dirs = append(out.Dirs, DirFlag{Name: name, Value: dir})
+			}
 			out.Extra = append(out.Extra, words...)
 			if loosens {
 				out.Loosens = append(out.Loosens, name)
@@ -234,4 +253,49 @@ func (p PassFlags) checkPassed(args []string, i *int, name, val string, hasVal, 
 		}
 	}
 	return loosens, nil
+}
+
+// AnyValue is the Check of a flag that takes any value, listed in Checked so
+// its value is read here, also when stuck to a short flag.
+func AnyValue(string) error { return nil }
+
+// CheckAgents reads an --agents value, which defines subagents inline, through
+// the JSON decoder, so an escape cannot hide a word. Every value of a key that
+// normalizes to permissionMode goes through checkMode, and bypassPermissions as
+// any other string counts too. All of a repeated key is seen, since CLIs differ
+// on which wins. A value that is not a JSON object, such as a file's path, cannot
+// be inspected, so it loosens as far as aggy can tell.
+func CheckAgents(val string, checkMode func(string) error) error {
+	gated := fmt.Errorf("--agents: %w", ErrLoosens)
+	// The decoder's Token takes text cut short for a clean end.
+	if !json.Valid([]byte(val)) {
+		return gated
+	}
+	dec := json.NewDecoder(strings.NewReader(val))
+	first, err := dec.Token()
+	if d, ok := first.(json.Delim); err != nil || !ok || d != '{' {
+		return gated
+	}
+	afterMode := false
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return gated
+		}
+		s, isString := tok.(string)
+		if isString && strings.EqualFold(s, "bypassPermissions") {
+			return gated
+		}
+		if afterMode {
+			if !isString || checkMode(s) != nil {
+				return gated
+			}
+			afterMode = false
+			continue
+		}
+		afterMode = isString && strings.EqualFold(strings.NewReplacer("-", "", "_", "").Replace(s), "permissionMode")
+	}
 }

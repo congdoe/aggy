@@ -400,6 +400,58 @@ func RealPath(name string) (string, error) {
 	return t.real, nil
 }
 
+// secretHomeDirs are folders under a home that hold keys of tools other than
+// the vendor CLIs.
+var secretHomeDirs = []string{".ssh", ".gnupg", ".aws"}
+
+// HoldsSecrets reports whether giving a program the folder name would give it
+// a home, a vendor's config folder, or a home's key folders: name is one of
+// them, holds one, or is inside a config or key folder. It resolves name as the
+// kernel would and compares paths the way safefs does (NFC, the macOS firmlink,
+// case-folded where the file system ignores case), so a symlink or another
+// spelling does not get past it. A credential path counts. It reads no file.
+func HoldsSecrets(name string) (bool, error) {
+	t, err := resolve("HoldsSecrets", name)
+	if errors.Is(err, ErrAuthPath) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	np := normPath(t.real)
+	homes, err := homeDirs()
+	if err != nil {
+		return false, err
+	}
+	both := func(p string) []string {
+		out := []string{normPath(p)}
+		if r, err := resolveExisting(p); err == nil {
+			out = append(out, normPath(r))
+		}
+		return out
+	}
+	var inner []string
+	for _, h := range homes {
+		for _, n := range both(h) {
+			if under(n, np) {
+				return true, nil
+			}
+		}
+		for _, d := range secretHomeDirs {
+			inner = append(inner, both(filepath.Join(h, d))...)
+		}
+	}
+	for _, p := range t.g.paths {
+		inner = append(inner, filepath.Dir(p))
+	}
+	for _, d := range inner {
+		if under(np, d) || under(d, np) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // under reports whether the normalized path d is p or lies below it.
 func under(d, p string) bool {
 	if p == string(filepath.Separator) {
