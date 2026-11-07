@@ -666,28 +666,25 @@ func TestChildStarted(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if childStarted(supervisor.RunFacts{}, child, id, now, nil, &sessionFiles{}) {
-		t.Error("no file and no turn counted as started")
+	check := func(what string, got, want startEvidence) {
+		t.Helper()
+		if got != want {
+			t.Errorf("%s = %v, want %v", what, got, want)
+		}
 	}
-	if !childStarted(supervisor.RunFacts{TurnRan: true}, child, id, now, nil, &sessionFiles{}) {
-		t.Error("a counted turn did not count")
-	}
+	facts := supervisor.RunFacts{}
+	check("no file, a folder to look in", childStarted(facts, child, id, true, now, nil, &sessionFiles{}), startNever)
+	check("a counted turn", childStarted(supervisor.RunFacts{TurnRan: true}, child, id, true, now, nil, &sessionFiles{}), startYes)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if !childStarted(supervisor.RunFacts{}, child, id, now, nil, &sessionFiles{}) {
-		t.Error("a session file written since the launch did not count")
-	}
-	if childStarted(supervisor.RunFacts{}, child, id, now.Add(time.Hour), nil, &sessionFiles{}) {
-		t.Error("a resumed session's old file counted")
-	}
+	check("a file since the launch", childStarted(facts, child, id, false, now, nil, &sessionFiles{}), startYes)
+	check("a resumed session's old file", childStarted(facts, child, id, false, now.Add(time.Hour), nil, &sessionFiles{}), startNever)
+	check("a new child's file, whatever the clock", childStarted(facts, child, id, true, now.Add(time.Hour), nil, &sessionFiles{}), startYes)
 	codex := store.Child{Vendor: "codex", Cwd: cwd}
-	if childStarted(supervisor.RunFacts{}, codex, "", now, func() bool { return false }, &sessionFiles{}) {
-		t.Error("a Codex child with no rollout counted")
-	}
-	if !childStarted(supervisor.RunFacts{}, codex, "", now, func() bool { return true }, &sessionFiles{}) {
-		t.Error("a Codex child with a new rollout did not count")
-	}
+	check("no rollout, watched", childStarted(facts, codex, "", true, now, func() (bool, bool) { return false, true }, &sessionFiles{}), startNever)
+	check("a new rollout", childStarted(facts, codex, "", true, now, func() (bool, bool) { return true, true }, &sessionFiles{}), startYes)
+	check("no watch", childStarted(facts, codex, "", true, now, func() (bool, bool) { return false, false }, &sessionFiles{}), startUnknown)
 }
 
 // TestSawRolloutLooksAgain (T6899): a rollout written just before the CLI exits,
@@ -712,11 +709,11 @@ func TestSawRolloutLooksAgain(t *testing.T) {
 	if len(x.watchBefore) != 1 {
 		t.Fatalf("before = %v", x.watchBefore)
 	}
-	if x.sawRollout() {
-		t.Error("a rollout from before the launch counted")
+	if seen, known := x.sawRollout(); seen || !known {
+		t.Errorf("a rollout from before the launch: seen %v, known %v", seen, known)
 	}
 	write(fresh)
-	if !x.sawRollout() {
+	if seen, _ := x.sawRollout(); !seen {
 		t.Error("a new rollout did not count")
 	}
 }
@@ -804,19 +801,20 @@ func TestChildIDsSettle(t *testing.T) {
 		}
 	})
 	for _, tt := range []struct {
-		name, meta, want string
+		name, source, want string
 	}{
-		{"the TUI's rollout moves it", `{"type":"session_meta","payload":{"id":"` + codexNew + `","source":"cli"}}`, codexNew},
-		{"a nested codex exec's never does", `{"type":"session_meta","payload":{"id":"` + codexNew + `","source":"exec"}}`, codexOld},
+		{"the TUI's rollout moves it", "cli", codexNew},
+		{"a nested codex exec's never does", "exec", codexOld},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s, c, home := setup(t, "codex", codexOld)
+			meta := `{"type":"session_meta","payload":{"id":"` + codexNew + `","source":"` + tt.source + `","cwd":"` + c.Cwd + `"}}`
 			now := time.Now().UTC()
 			day := filepath.Join(home, ".codex", "sessions", now.Format("2006"), now.Format("01"), now.Format("02"))
 			if err := os.MkdirAll(day, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(day, "rollout-2026-01-01T00-00-00-"+codexNew+".jsonl"), []byte(tt.meta+"\n"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(day, "rollout-2026-01-01T00-00-00-"+codexNew+".jsonl"), []byte(meta+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			ids := &childIDs{s: s, child: c}

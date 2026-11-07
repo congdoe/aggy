@@ -165,7 +165,7 @@ func childBrief(ctx context.Context, s *store.Store, e borrowEnv, pl launchPlan)
 	var others []store.Child
 	var unread []store.Child
 	if !pl.newParent {
-		cs, err := planRefresh(ctx, s, pl.parent.ID, &sessionFiles{})
+		cs, err := planRefresh(ctx, s, pl.parent.ID, &sessionFiles{readOnly: pl.preview})
 		if err != nil {
 			return "", err
 		}
@@ -247,9 +247,9 @@ func childBrief(ctx context.Context, s *store.Store, e borrowEnv, pl launchPlan)
 }
 
 // showBrief prints the brief launch would write with t.Brief for the
-// child t opens (--brief --show), and launches nothing. It writes no
-// brief and no launch to the index; like aggy session, it may raise
-// last-active times from the session files (refreshChildren).
+// child t opens (--brief --show), and launches nothing. It writes nothing:
+// no brief, no launch, and none of what refreshChildren would record
+// (target.Preview).
 func showBrief(name string, t target, stdout, stderr io.Writer) int {
 	t.Preview = true
 	fail := func(err error) int {

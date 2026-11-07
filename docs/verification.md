@@ -1568,6 +1568,30 @@ Source only, read 2026-11-07. No real CLI was run for this task, and none of thi
 - **Claude.** "Yes, and don't ask again" saves to `.claude/settings.local.json` at the git repository root, "resolved through worktrees to the main checkout" (`permissions.md`, read 2026-11-07).
 - **OpenCode.** Always allow rows are in `opencode.db`, beside its sign-ins, which aggy never opens.
 
+## Switching, known limits left as they are (T6895, batch 4 review, 2026-11-07)
+
+From the adversarial review of T6897 to T6902. All fail on the safe side or stay
+small; each has a `TODO(T6895)` or is noted here, and none has been run against a
+real CLI.
+
+- Unknown terminal replies (XTQMODKEYS, XTSMGRAPHICS) and a whole reply at the head
+  of a burst past `maxHeld` count as typed: the prompt stays in doubt.
+- A click counts as input and types nothing, so a click that fills the composer or
+  starts a turn is seen only through `inputSinceTurn`.
+- A CLI that exits 130 on its own after Ctrl+C reads as killed by a signal, so a
+  declined dialog closed that way ends aggy rather than going back.
+- A session file expired before aggy recorded `file_seen` reads as never started.
+- A resumed session's "unchanged since launch" still compares file time with
+  aggy's clock, so skew can read as never started. That only goes back: a resumed
+  row is never removed.
+
+Read from the Codex source at 6aaac694, not seen live: `SessionStart` hooks run
+from `run_turn` (`core/src/session/turn.rs#L340`); idle, Tab does not submit a `!`
+command, and during a turn it queues one (`chat_composer.rs#L3531`, tests at L10170
+and L9893); the backtrack (`tui/src/app_backtrack.rs`, header);
+`SessionMeta.cwd` (`protocol/src/protocol.rs#L3275`). A `$` popup taking Tab
+(`chat_composer.rs#L2255`) comes from the reviewer's reading and was not rechecked.
+
 ## Still open
 
 1. Codex limit event, captured live from an exhausted account: the
