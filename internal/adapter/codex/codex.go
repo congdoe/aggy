@@ -284,6 +284,10 @@ func (a Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, e
 	if req.Resume != "" {
 		args = append(args, req.Resume)
 	}
+	// After the id on a resume, where no flag can take it as a value. The
+	// docs list model and sandbox overrides on resume, not every flag
+	// (unverified for the rest): the CLI says so if it refuses one.
+	args = append(args, req.Extra...)
 	if req.BriefFile != "" {
 		if err := adapter.CheckAbs("brief file", req.BriefFile); err != nil {
 			return adapter.Command{}, err
@@ -291,6 +295,46 @@ func (a Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, e
 		args = append(args, adapter.BriefPrompt(req.BriefFile))
 	}
 	return adapter.Command{Path: Bin, Args: args, Env: req.Env, Dir: req.Cwd, Stdin: adapter.StdinTerminal}, nil
+}
+
+// PassFlags is Codex's table for aggy codex. The flags are the Codex CLI
+// reference (learn.chatgpt.com/docs/developer-commands?surface=cli, read
+// 2026-11-06). -c is Codex's config override there, so aggy's continue has
+// no short form here. Whether the bypass flag keeps the rules file aggy's
+// policy lives in is unverified, so it needs --no-policy.
+func (Adapter) PassFlags() adapter.PassFlags {
+	return adapter.PassFlags{
+		Model:    []string{"--model", "-m"},
+		Continue: []string{"--continue"},
+		Resume:   []string{"--resume"},
+		Refused: []adapter.RefusedFlag{
+			{Names: []string{"--no-alt-screen"}, Why: "aggy passes it when the CLI has it"},
+			{Names: []string{"--cd", "-C"}, Why: "aggy starts the CLI in the session's directory; cd there first"},
+			{Names: []string{"--remote", "--remote-auth-token-env", "--worktree"}, Why: "it runs the session somewhere aggy does not record"},
+			{Names: []string{"--version", "-V"}, Why: "run codex --version"},
+			{Names: []string{"--dangerously-bypass-approvals-and-sandbox", "--yolo"},
+				Why: "it may skip the rules file that holds aggy's safety policy; add --no-policy to run without the policy", UnlessNoPolicy: true},
+		},
+		Checked: []adapter.CheckedFlag{{Names: []string{"--config", "-c"}, Check: checkConfigOverride}},
+	}
+}
+
+// checkConfigOverride refuses a -c override of the keys aggy sets with -c
+// itself at launch (Interactive): the memory, the model, and the managed
+// tools' servers.
+func checkConfigOverride(val string) error {
+	key, _, _ := strings.Cut(val, "=")
+	root, _, _ := strings.Cut(strings.TrimSpace(key), ".")
+	root = strings.Trim(root, `"' `)
+	switch root {
+	case "developer_instructions":
+		return fmt.Errorf("-c %s clashes with aggy: aggy passes the shared memory with it", root)
+	case "model":
+		return fmt.Errorf("-c %s clashes with aggy: use --model", root)
+	case "mcp_servers":
+		return fmt.Errorf("-c %s clashes with aggy: aggy passes the managed tools' servers with it; add yours with codex mcp", root)
+	}
+	return nil
 }
 
 // Headless builds

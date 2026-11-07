@@ -110,10 +110,10 @@ func launch(name string, t target, stderr io.Writer) int {
 		c := next.choice
 		if c.Resume {
 			// T6729: the same child again, so it is wired with the tools
-			// as now set. It is the same session, so its --tool names and
-			// one-launch model carry over, unlike a switch; --no-policy
-			// does not (S-6), and it gets no brief.
-			t = target{ParentID: next.parentID, Vendor: next.vendor, Child: next.child, Model: t.Model, Tools: t.Tools}
+			// as now set. It is the same session, so its --tool names,
+			// one-launch model, and CLI flags carry over, unlike a switch;
+			// --no-policy does not (S-6), and it gets no brief.
+			t = target{ParentID: next.parentID, Vendor: next.vendor, Child: next.child, Model: t.Model, Tools: t.Tools, Extra: t.Extra}
 			continue
 		}
 		t = target{ParentID: next.parentID, Vendor: next.vendor, Child: c.Child, NewChild: c.New, Model: c.Model, Brief: c.Brief, Tools: c.Tools}
@@ -170,6 +170,9 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	}
 	defer func() { _ = s.Close() }()
 	pl, err := plan(ctx, s, cfg, cwd, t, time.Now(), stderr)
+	if errors.Is(err, errNoSession) {
+		return fail(diag.CodeNotFound, err)
+	}
 	if err != nil {
 		return fail(diag.CodeLaunchFailed, err)
 	}
@@ -216,6 +219,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	}
 	sweepMemoryDirs(runDir, time.Now())
 	req := pl.interactiveRequest()
+	req.Extra = t.Extra
 	// The policy is checked before the launch is recorded (commit), so a
 	// refused launch adds no parent, child, or lease. plan's refresh may
 	// already have raised last-active times from session files (D19-9).
@@ -338,7 +342,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	launched := ids
 	launched.Event, launched.VendorSession = diag.EvLaunched, assigned
 	launched.Attrs = map[string]any{"new_child": pl.newChild, "new_parent": pl.newParent, "resumed": pl.resume != "",
-		"brief": t.Brief, "model_set": t.Model != "", "direct": t.Direct}
+		"brief": t.Brief, "model_set": t.Model != "", "direct": t.Direct, "cli_flags": len(t.Extra)}
 	// Queued, like the rest of the session's records, so the launch
 	// never waits on the disk (G67-6).
 	cause := q.Log(launched)

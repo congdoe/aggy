@@ -183,6 +183,10 @@ type InteractiveRequest struct {
 	// only: Claude takes them in its inline --settings layer, next to
 	// Deny. Each command runs aggy hook-tool, never a tool directly.
 	Hooks map[string][]HookGroup
+	// Extra are the user's own flags for the CLI (aggy <vendor> ...), which
+	// PassFlags.Parse let through. Each adapter puts them after its own
+	// arguments and before a brief pointer.
+	Extra []string
 }
 
 // HookGroup is one matcher group of a Claude-format hooks config.
@@ -458,6 +462,10 @@ type Adapter interface {
 
 	// Interactive builds the command for an on-screen session.
 	Interactive(req InteractiveRequest) (Command, error)
+
+	// PassFlags says which of the CLI's own flags aggy takes over or
+	// refuses at aggy <vendor>; every other flag goes to the CLI.
+	PassFlags() PassFlags
 
 	// Headless builds the command for one borrow run.
 	Headless(req HeadlessRequest) (Command, error)

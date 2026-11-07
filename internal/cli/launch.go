@@ -25,6 +25,10 @@ type target struct {
 	// (empty means the default vendor).
 	New    bool
 	Vendor adapter.Vendor
+	// Continue reopens the session last active in the current directory
+	// that can still be reopened (of Vendor, when set), and is an error
+	// when there is none (aggy --continue, aggy <vendor> --continue).
+	Continue bool
 	// ParentID reopens that parent (an id or a unique prefix), or, when
 	// no parent's id has that prefix, the parent of the one interactive
 	// child whose id does, with that child on screen. Empty, and not New,
@@ -52,7 +56,14 @@ type target struct {
 	// this session does not carry them; a switch gets its own, from aggy
 	// switch --tool, which the user confirmed with the switch.
 	Tools []string
+	// Extra are the CLI's own flags from aggy <vendor>, for this session
+	// only: a resume of the same session keeps them, a switch does not.
+	Extra []string
 }
+
+// errNoSession matches a plan that found no session the id or the
+// directory names.
+var errNoSession = errors.New("no session")
 
 // launchPlan is what a launch puts on screen.
 type launchPlan struct {
@@ -103,7 +114,7 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 		// A prefix of both a parent and a child is ambiguous (G34-8).
 		switch n := len(ps) + len(kids); {
 		case n == 0:
-			return p, fmt.Errorf("no session %s (aggy sessions and aggy session list them)", t.ParentID)
+			return p, fmt.Errorf("%w %s (aggy sessions and aggy session list them)", errNoSession, t.ParentID)
 		case n > 1:
 			return p, fmt.Errorf("%d sessions start with %s; give more of the id", n, t.ParentID)
 		case len(ps) == 1:
@@ -111,6 +122,12 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 		default:
 			p.parent, pick = par, kids[0]
 		}
+	case t.Continue:
+		par, id, err := latestResumable(ctx, s, cwd, t.Vendor)
+		if err != nil {
+			return p, err
+		}
+		p.parent, pick = par, id
 	default:
 		key, err := safefs.CanonicalPath(cwd)
 		if err != nil {
@@ -171,6 +188,9 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 	}
 	short := shortID(p.parent.ID)
 	switch {
+	case last == nil && pick != "" && t.Child == "" && t.Vendor != "":
+		// aggy claude -r <id of a Codex child>.
+		return p, fmt.Errorf("session %s is not a %s session", shortID(pick), t.Vendor)
 	case last == nil && pick != "":
 		// The child named went from the index while it was refreshed
 		// (G34-9): starting another one instead would surprise.
@@ -207,6 +227,41 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 	p.child, p.resume = *last, last.VendorSessionID
 	p.child.Model = cfg.Vendors.For(v).Model
 	return p, nil
+}
+
+// latestResumable finds the session --continue reopens: the interactive
+// child last active in dir (of v, when set) that can still be reopened, in
+// whichever of dir's parents holds it, since every bare aggy starts a
+// parent of its own and one quit before its first message saves nothing.
+func latestResumable(ctx context.Context, s *store.Store, dir string, v adapter.Vendor) (store.Parent, string, error) {
+	key, err := safefs.CanonicalPath(dir)
+	if err != nil {
+		return store.Parent{}, "", err
+	}
+	ps, err := s.ParentsInDir(ctx, key, dir)
+	if err != nil {
+		return store.Parent{}, "", err
+	}
+	for _, par := range ps {
+		if replaced(par) {
+			continue
+		}
+		children, err := planRefresh(ctx, s, par.ID, &sessionFiles{})
+		if err != nil {
+			return store.Parent{}, "", err
+		}
+		for _, c := range children {
+			if c.Kind == "" && (v == "" || c.Vendor == string(v)) && c.VendorSessionID != "" &&
+				c.Status != stateClosed && c.Status != stateGone {
+				return par, c.ID, nil
+			}
+		}
+	}
+	what := "session"
+	if v != "" {
+		what = string(v) + " session"
+	}
+	return store.Parent{}, "", fmt.Errorf("%w to continue: no %s here can be reopened (aggy sessions lists them; aggy starts a new one)", errNoSession, what)
 }
 
 // newChildOf plans a new interactive child of v (empty means the default

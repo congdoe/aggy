@@ -617,6 +617,38 @@ text nor a live check in `docs/verification.md` records it. Codex gets it
 only when the launch probe finds it in `codex --help` (capability
 `no-alt-screen`); Grok always gets it, from the Grok session notes above.
 
+The user's own flags (`aggy <vendor> [flags]`, `InteractiveRequest.Extra`)
+go after everything above and before the brief pointer: after the id on a
+Codex resume, so no flag can take the id as its value. Each adapter's
+`PassFlags` table says which flags aggy takes over (`--model`, `--continue`,
+`--resume`, so the index stays true) and which it refuses; the rest pass
+unchanged, so a new vendor flag needs no aggy change. `PassFlags.Parse` is
+generic: a new vendor supplies a table only.
+
+- Refused, because aggy passes the flag at launch: Claude `--session-id`,
+  `--settings`, `--append-system-prompt-file` (and `--append-system-prompt`),
+  `--mcp-config`; Codex `--no-alt-screen`, and `-c` on
+  `developer_instructions`, `model`, or `mcp_servers.*`; Grok `--session-id`,
+  `--no-alt-screen`, `--rules`, `--deny`, `--agent`.
+- Refused, because the session would not be the one aggy recorded: Claude
+  `--fork-session`, `-p`, `--worktree`, `--bg`, `--cloud`, and the like;
+  Codex `-C`, `--remote`, `--worktree`; Grok `--fork-session`, `-p`,
+  `--prompt-file`.
+- Refused unless `--no-policy`: Codex `--yolo` and
+  `--dangerously-bypass-approvals-and-sandbox`, since whether they keep the
+  rules file that holds the policy is unverified. Claude's
+  `--permission-mode bypassPermissions` passes: "Deny rules block in every
+  mode, including `bypassPermissions`"
+  (code.claude.com/docs/en/permission-modes, read 2026-11-06).
+
+Sources, read 2026-11-06: Claude code.claude.com/docs/en/cli-reference;
+Codex learn.chatgpt.com/docs/developer-commands?surface=cli. Grok has no full
+flag list recorded, so its table holds only flags recorded in this file and
+in `docs/verification.md`; any other Grok flag passes, unverified, and the CLI
+refuses what it does not take. Whether Codex takes every top-level flag after
+`resume <id>` is unverified (the reference lists model and sandbox overrides
+there).
+
 Shared memory (`<repo>/.aggy/memory.md`, design.md section 10) goes on
 the interactive argv only: Claude `--append-system-prompt-file <file>`
 (live-verified, missing from `--help`), where the file is a 0600 copy

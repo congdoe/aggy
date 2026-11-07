@@ -68,9 +68,9 @@ func runResume(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if len(args) == 1 {
-		id := strings.ToLower(args[0])
-		if len(id) < 4 || len(id) > 36 || strings.Trim(id, "0123456789abcdef-") != "" {
-			fmt.Fprintf(stderr, "aggy resume: %q is not a session id (at least 4 hex digits; aggy sessions lists them)\n", termsafe.Field(args[0]))
+		id, msg := sessionArg(args[0])
+		if msg != "" {
+			fmt.Fprintf(stderr, "aggy resume: %s\n", msg)
 			return 2
 		}
 		t.ParentID = id
