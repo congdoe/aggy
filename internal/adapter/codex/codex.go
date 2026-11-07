@@ -302,8 +302,12 @@ func (a Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, e
 // 2026-11-06). -c is Codex's config override there, so aggy's continue has
 // no short form here. aggy never adds a loosening flag on its own, and one
 // the person gives needs --no-policy: every --dangerously-* (PassFlags.Parse),
-// --yolo, --approve-for-me, -a never, -s danger-full-access, and a -c of a key
-// aggy cannot tell is harmless, which could say the same thing.
+// --yolo, --approve-for-me, -a never, -s danger-full-access, a -c of a key
+// aggy cannot tell is harmless, which could say the same thing, the --enable
+// and --disable that the reference says translate to such a -c, --profile,
+// and an --add-dir that takes in $HOME. --approve-for-me is gated although
+// Claude's --allowedTools is not: Claude documents that its deny rules hold,
+// and whether Codex's rules file holds under it is unverified.
 func (Adapter) PassFlags() adapter.PassFlags {
 	return adapter.PassFlags{
 		Model:    []string{"--model", "-m"},
@@ -320,14 +324,90 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			{Names: []string{"--config", "-c"}, Check: checkConfigOverride},
 			{Names: []string{"--ask-for-approval", "-a"}, Check: checkApproval},
 			{Names: []string{"--sandbox", "-s"}, Check: checkSandbox},
+			{Names: []string{"--disable"}, Check: checkDisable},
+			{Names: []string{"--enable"}, Check: checkEnable},
+			{Names: []string{"--profile", "-p"}, Check: checkProfile},
+			{Names: []string{"--add-dir"}, Check: checkAddDir},
 		},
-		Values: []string{"--add-dir", "--disable", "--enable", "--image", "-i", "--local-provider", "--profile", "-p"},
+		Values: []string{"--image", "-i", "--local-provider"},
+		Noted:  []adapter.NotedFlag{{Names: []string{"--add-dir"}, Note: addDirNote}},
 	}
 }
 
-// checkApproval gates -a never, and any value the reference does not list.
+// addDirNote is the launch line of --add-dir. The reference says it grants
+// write access; a folder that takes in $HOME is gated (checkAddDir).
+const addDirNote = "--add-dir gives Codex's sandbox more folders it may write in; aggy's safety policy does not say what happens in them beyond its rules file, and that the rules apply there is unverified"
+
+// safetyFeatureWords mark a Codex feature whose name says it is part of a
+// safety layer, so turning it off could loosen one (features/src/lib.rs at
+// 6aaac69: hooks, its old name codex_hooks in legacy.rs, guardian_*,
+// exec_permission_approvals, the sandbox backends, network_proxy, and so on).
+// A name list would go stale, and one that is too broad only asks for
+// --no-policy.
+var safetyFeatureWords = []string{"hook", "sandbox", "landlock", "approval", "guardian", "permission", "request_rule", "network_proxy"}
+
+// checkDisable gates turning off a feature that is part of a safety layer.
+// The reference: --disable "translates to -c features.<name>=false". Turning
+// off hooks also stops aggy's own Codex hooks. Any other feature passes: it
+// takes a tool away.
+func checkDisable(name string) error {
+	low := strings.ToLower(name)
+	for _, w := range safetyFeatureWords {
+		if strings.Contains(low, w) {
+			return fmt.Errorf("--disable %s: %w", name, adapter.ErrLoosens)
+		}
+	}
+	return nil
+}
+
+// checkEnable gates every --enable, which the reference says translates to -c
+// features.<name>=true: a feature turned on can be a new tool, and aggy cannot
+// tell which are harmless.
+func checkEnable(name string) error {
+	return fmt.Errorf("--enable %s: %w", name, adapter.ErrLoosens)
+}
+
+// checkProfile gates --profile, which layers the person's own
+// $CODEX_HOME/<name>.config.toml over the base config (reference): it can say
+// approval_policy "never" and sandbox_mode "danger-full-access", and aggy does
+// not read it. Unverified: whether aggy's rules file still applies under a
+// profile. Confirm with a profile on a throwaway CODEX_HOME and a command the
+// rules forbid.
+func checkProfile(name string) error {
+	return fmt.Errorf("--profile %s: %w", name, adapter.ErrLoosens)
+}
+
+// checkAddDir gates an --add-dir of $HOME, or of a folder that holds it, or /:
+// it makes every credential under $HOME writable. A word aggy cannot make a
+// path of counts as such a folder.
+func checkAddDir(dir string) error {
+	gated := fmt.Errorf("--add-dir %s: %w", dir, adapter.ErrLoosens)
+	if dir == "~" || strings.HasPrefix(dir, "~/") && strings.Trim(dir, "~/.") == "" {
+		return gated
+	}
+	if strings.HasPrefix(dir, "~") {
+		return nil // a folder under $HOME, or another's: the launch note covers it
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return gated
+	}
+	if abs == string(filepath.Separator) {
+		return gated
+	}
+	home := os.Getenv("HOME")
+	if home != "" && (home == abs || strings.HasPrefix(home, abs+string(filepath.Separator))) {
+		return gated
+	}
+	return nil
+}
+
+// checkApproval gates -a never, and any value that is not known to ask at
+// least as often as on-request. untrusted asks more: the CLI at 6aaac69 takes
+// only on-request and never (utils/cli/src/approval_mode_cli_arg.rs), so there
+// it refuses untrusted itself; aggy lets it pass as harmless either way.
 func checkApproval(val string) error {
-	if val == "on-request" {
+	if val == "on-request" || val == "untrusted" {
 		return nil
 	}
 	return fmt.Errorf("--ask-for-approval %s: %w", val, adapter.ErrLoosens)
@@ -351,9 +431,17 @@ var configHarmless = []string{"model_reasoning_effort", "model_reasoning_summary
 
 // checkConfigOverride refuses a -c override of the keys aggy sets with -c
 // itself at launch (Interactive): the memory, the model, and the managed
-// tools' servers. Of the rest, only configHarmless passes without --no-policy.
+// tools' servers. Of the rest, only configHarmless and what --disable would
+// let through pass without --no-policy.
 func checkConfigOverride(val string) error {
-	key, _, hasValue := strings.Cut(val, "=")
+	key, value, hasValue := strings.Cut(val, "=")
+	if name, ok := strings.CutPrefix(strings.TrimSpace(key), "features."); ok && strings.TrimSpace(value) == "false" && !strings.Contains(name, ".") {
+		// The same as --disable, which the reference says it translates to.
+		if err := checkDisable(strings.Trim(name, `"' `)); err != nil {
+			return fmt.Errorf("-c features.%s=false: %w", name, adapter.ErrLoosens)
+		}
+		return nil
+	}
 	root, _, _ := strings.Cut(strings.TrimSpace(key), ".")
 	root = strings.Trim(root, `"' `)
 	if hasValue && slices.Contains(configHarmless, root) {

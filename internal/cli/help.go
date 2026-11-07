@@ -45,7 +45,8 @@ title. aggy resume <id> reopens one.
 
 Lists the children of the open session (or the latest in this directory):
 vendor, kind, title, model, last active, and status. Borrows are children too.
-aggy resume <child id> reopens one.
+aggy resume <child id> reopens one, except a research or news child: aggy inbox
+has its report.
 `
 	versionUsage = `Usage: aggy version
 

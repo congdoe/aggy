@@ -383,7 +383,7 @@ var codes = []CodeInfo{
 	{CodeChildFailed, false, "The child failed for another reason: unparsed output, an unknown error class, or a runner error.", "aggy inbox <borrow id> for the report."},
 	{CodeAcceptTarget, false, "No such edit borrow, or it is running, already accepted or rejected, or its worktree was removed.", "aggy inbox; aggy diag show <borrow id>."},
 	{CodeProtected, true, "The diff touches .git, a symlink or submodule, the hooks path, or a file that holds hooks, CI, config, or instructions.", "Review the worktree by hand; never accept such a diff blind."},
-	{CodeTreeChanged, true, "The worktree changed after the borrow ended (a process the child left behind?).", "Review the worktree by hand."},
+	{CodeTreeChanged, true, "The worktree changed after the borrow ended (edits in an on-screen session of this child, or a process it left behind?).", "Review the worktree by hand."},
 	{CodeDirty, false, "The main checkout has changes in the paths the diff touches.", "Commit or stash them, then accept again."},
 	{CodeAcceptFailed, false, "Another accept error: git failed, or the diff no longer applies.", "The record's msg; git status."},
 	{CodeStateTempDir, true, "aggy's state dir, where accept writes the patch, is under a temp dir an edit child's sandbox may write.", "Set AGGY_HOME to a dir outside temp dirs."},

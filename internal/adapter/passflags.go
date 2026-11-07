@@ -25,6 +25,19 @@ type PassFlags struct {
 	// A bare word after any other flag is refused: it could be a prompt or
 	// a subcommand. --flag=value needs no entry.
 	Values []string
+	// Noted are flags that pass, with a line for the person at launch.
+	Noted []NotedFlag
+	// LoosensIf gates any flag whose name holds one of these words, for a CLI
+	// with no list of its flags to compare a new one with.
+	LoosensIf []string
+}
+
+// NotedFlag is a flag that passes and is worth a line at launch: it changes
+// something aggy relies on, but gating it would cost the whole safety policy
+// for less than that policy gives.
+type NotedFlag struct {
+	Names []string
+	Note  string
 }
 
 // RefusedFlag is a group of spellings refused for one reason.
@@ -55,6 +68,8 @@ type ParsedFlags struct {
 	Safe []string
 	// Loosens names the flags --no-policy let through.
 	Loosens []string
+	// Notes are the lines the flags in Noted ask for, each once.
+	Notes []string
 }
 
 // ErrLoosens matches a flag that loosens approvals, the sandbox, or hook
@@ -118,6 +133,11 @@ func (p PassFlags) Parse(args []string, noPolicy bool) (ParsedFlags, error) {
 			if err != nil {
 				return out, err
 			}
+			for _, n := range p.Noted {
+				if slices.Contains(n.Names, name) && !slices.Contains(out.Notes, n.Note) {
+					out.Notes = append(out.Notes, n.Note)
+				}
+			}
 			words := args[before : i+1]
 			out.Extra = append(out.Extra, words...)
 			if loosens {
@@ -180,6 +200,11 @@ func (p PassFlags) checkPassed(args []string, i *int, name, val string, hasVal, 
 	}
 	if strings.Contains(name, "dangerously") {
 		return gate(fmt.Errorf("%s: %w", name, ErrLoosens))
+	}
+	for _, w := range p.LoosensIf {
+		if strings.Contains(name, w) {
+			return gate(fmt.Errorf("%s: %w", name, ErrLoosens))
+		}
 	}
 	names := []string{name}
 	if !strings.HasPrefix(name, "--") && len(name) > 2 {

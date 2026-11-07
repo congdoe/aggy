@@ -192,7 +192,7 @@ func TestBorrowNote(t *testing.T) {
 	}{
 		{launchPlan{child: store.Child{Kind: "review"}}, []string{"lockdown no longer applies"}, "permission prompts apply"},
 		{launchPlan{child: store.Child{Kind: "image"}, remakeCwd: true}, []string{"removed when the session ends"}, "permission prompts apply"},
-		{launchPlan{child: store.Child{Kind: "edit"}}, []string{"aggy accept refuses", "memory.md is not loaded"}, "permission prompts apply"},
+		{launchPlan{child: store.Child{Kind: "edit"}}, []string{"aggy accept refuses", "CLAUDE.md, AGENTS.md, and .claude/settings.json", "memory.md is not loaded"}, "permission prompts apply"},
 	}
 	for _, tt := range tests {
 		got := borrowNote(tt.pl)

@@ -58,3 +58,21 @@ func TestResumeFlagAgrees(t *testing.T) {
 		})
 	}
 }
+
+// TestSafeModeNoted (T6952): a flag worth a line at launch reaches the CLI
+// without --no-policy, and the person sees the line.
+func TestSafeModeNoted(t *testing.T) {
+	w := newWorld(t)
+	sc := map[string]any{"raw_echo": true, "stdout": "READY>", "extra_switches": []string{"--safe-mode"}}
+	s := w.start(t, sc, "claude", "--safe-mode")
+	s.waitFor([]byte("may not run"))
+	s.waitFor([]byte("READY>"))
+	s.send([]byte{0x04})
+	if code := s.exit(); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	recs := fakecli.Records(t, w.record)
+	if !slices.Contains(recs[len(recs)-1].Args, "--safe-mode") {
+		t.Errorf("args = %q", recs[len(recs)-1].Args)
+	}
+}
