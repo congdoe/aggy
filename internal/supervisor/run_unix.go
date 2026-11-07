@@ -179,12 +179,18 @@ func Run(o Options) (Exit, error) {
 	// pending is a first switch-key press waiting to see whether a second
 	// follows within double; it fires when none does.
 	var pending <-chan time.Time
+	var apply func([]keyEvent)
+	// heldBy gives up on an escape sequence the filter holds for the next read.
+	var heldBy <-chan time.Time
 	// input takes the user's keys while no picker is up, and the keys a
 	// prompt aggy opened hands back (S-11): through the one key filter,
 	// so its paste and split-sequence state stays right.
-	s.input = func(b []byte) {
-		for _, ev := range filter.feed(b) {
+	s.input = func(b []byte) { apply(filter.feed(b)) }
+	apply = func(evs []keyEvent) {
+		for _, ev := range evs {
 			switch {
+			case ev.report:
+				s.toChild.push(ev.data) // the terminal answering the CLI: it opens and closes nothing
 			case s.open:
 				s.pickerInput(ev.data)
 			case ev.press && pending != nil:
@@ -199,12 +205,20 @@ func Run(o Options) (Exit, error) {
 				pending = nil
 				s.openList()
 				s.pickerInput(ev.data)
+			case ev.mouse:
+				s.pointer(ev.data)
 			default:
 				s.send(ev.data)
 			}
 		}
 	}
 	for {
+		switch {
+		case !filter.holding():
+			heldBy = nil
+		case heldBy == nil:
+			heldBy = time.After(splitWait)
+		}
 		// check polls a switch that waits for the turn end.
 		// It also polls a near-limit warning due at a turn end.
 		var check <-chan time.Time
@@ -272,11 +286,28 @@ func Run(o Options) (Exit, error) {
 				s.killAfterHangup(child)
 				continue
 			}
+			// heldBy keeps running: it counts from the first byte held, so
+			// key repeat after Alt+] cannot keep the keys back.
 			if s.open {
-				s.pickerInput(b)
+				reports, rest := filter.strip(b)
+				if len(reports) > 0 {
+					s.toChild.push(reports)
+				}
+				if len(rest) > 0 {
+					s.pickerInput(rest)
+				}
 				continue
 			}
 			s.input(b)
+		case <-heldBy:
+			heldBy = nil
+			if evs := filter.flush(); s.open {
+				for _, ev := range evs {
+					s.pickerInput(ev.data)
+				}
+			} else {
+				apply(evs)
+			}
 		case <-pending:
 			pending = nil
 			// A prompt aggy opened since the press (an offer, a note)
@@ -319,6 +350,9 @@ func Run(o Options) (Exit, error) {
 				s.drainSignals(sigs) // the check above can wait some seconds
 				if switches && s.signalled {
 					switches = s.signalStops(w.code)
+				}
+				if o.Facts != nil {
+					*o.Facts = RunFacts{TurnRan: s.turnRan, Signalled: s.signalled}
 				}
 				if switches {
 					ex.SwitchTo, ex.Next = s.sw.to, s.sw.choice
@@ -399,9 +433,8 @@ type session struct {
 	// typed to the CLI since. A turn end does not clear it: a nested
 	// CLI's Stop can follow a prompt that is still open (S-3).
 	held bool
-	// dirty: the user typed something after their last Enter, which the
-	// CLI may still hold unsent; toldDirty: they were told it blocks the
-	// switch.
+	// dirty: the composer may hold something: known text or doubt (knownText,
+	// doubt). toldDirty: they were told known text blocks the switch.
 	dirty, toldDirty bool
 	// lastByte is the last byte sent to the CLI; inPaste: a bracketed
 	// paste was opened and not closed.
@@ -462,6 +495,29 @@ type session struct {
 	// of the on-screen child, and lastLimit of the latest limit: the
 	// causes of what each sets off (G67-2).
 	lastTurnEnd, lastLimit string
+	// followed is the session id the on-screen CLI moved to (followSession),
+	// "" until then; host is the lineage of the shallowest hook seen naming
+	// the on-screen session, the evidence for a move. Owned by the main loop.
+	// afterEnter counts the bytes sent since the last Enter that sent or that a
+	// popup took; a newline in the composer is not one. slashOnly: the composer
+	// has held only a leading / command since the last clean send, and
+	// slashEntered: its Enter has been pressed, so a move may clear that doubt.
+	// movedQuiet: the CLI moved, and neither a turn end nor an Enter has come
+	// since. moveRefused: a hook said it moved, and aggy could not confirm it.
+	// escEmpty: an Esc reached an empty composer, and no text has been typed
+	// since: an Enter now may bring text back. escTwice: two have, so keys that
+	// look like text may be a preview's (Codex's backtrack), and only an Enter
+	// ends it. escDoubt: such an Enter came. enterAtPrompt: the last Enter was
+	// sent with the CLI at its prompt, so it may have started a turn (settleDoubt).
+	followed                string
+	host                    []int
+	afterEnter              int
+	slashOnly, slashEntered bool
+	movedQuiet, moveRefused bool
+	escEmpty, escTwice      bool
+	escDoubt, enterAtPrompt bool
+	// hookSeen: a hook of the vendor on screen came from the session.
+	hookSeen atomic.Bool
 	// foreign is, per session id a turn end named that was not the
 	// on-screen one, when it was last recorded and how many came since
 	// (G67-4); foreignOver is the same for all the sessions past
@@ -540,6 +596,10 @@ type pendingSwitch struct {
 	// end brings the normal offer (T6893). noteShown: tellNoTurn's note came
 	// up for this pick.
 	toldNoTurn, noteShown bool
+	// toldDoubt: the note that aggy cannot tell if the prompt is empty came, and
+	// no key has reached the composer since. doubtOK: the person picked again
+	// after it, so the status line may ask, saying so.
+	toldDoubt, doubtOK bool
 	// resume: a restart of the vendor on screen on the same session, for
 	// the tool changes named in tools (T6729).
 	resume bool
@@ -557,11 +617,28 @@ type pendingSwitch struct {
 
 // hookEvent is a hook event from the session: its name and the vendor
 // session id its payload names. shutdown marks a Grok Stop whose payload
-// reason is "shutdown" (grokShutdown).
+// reason is "shutdown" (grokShutdown); idle, Claude's idle reminder
+// (claudeIdle).
 type hookEvent struct {
 	name, sessionID string
-	shutdown        bool
+	shutdown, idle  bool
 	request         string // an OpenCode permission or question's id
+	// source is a SessionStart's source; chain, the sender's lineage.
+	source string
+	chain  []int
+}
+
+// claudeIdle reports whether a hook event is Claude's idle reminder, which says
+// nothing is waiting: hooks.md, Notification matcher, `idle_prompt` is "Claude
+// finished responding about 60 seconds ago and you haven't typed since"
+// (read 2026-11-07; not seen live, T6895). A permission prompt is its own type,
+// `permission_prompt`. The type comes from the payload, which any process in
+// the CLI's tree can forge, but this only keeps a new hold from starting: it
+// clears no hold, so a forged one lets nothing through. Only Claude, and only
+// that exact type: every other type holds, Grok's too, whose values are not
+// recorded.
+func claudeIdle(v adapter.Vendor, event, notificationType string) bool {
+	return v == adapter.Claude && event == "Notification" && notificationType == "idle_prompt"
 }
 
 // grokShutdown reports whether a hook event is Grok's exit-time stop:
@@ -592,9 +669,11 @@ func (s *session) onHook(r Request) {
 	case r.Event == "SessionStart":
 		s.logWait(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(r.Event)}})
 	}
-	if r.FromSession && r.Vendor == string(s.o.Vendor) && r.Event != "SessionStart" {
+	if r.FromSession && r.Vendor == string(s.o.Vendor) {
+		s.hookSeen.Store(true)
 		p := hook.Parse(s.o.Vendor, r.Payload)
-		ev := hookEvent{name: r.Event, sessionID: p.SessionID, shutdown: grokShutdown(s.o.Vendor, r.Event, p.Reason), request: p.Request}
+		ev := hookEvent{name: r.Event, sessionID: p.SessionID, shutdown: grokShutdown(s.o.Vendor, r.Event, p.Reason), request: p.Request,
+			idle: claudeIdle(s.o.Vendor, r.Event, p.NotificationType), source: p.Source, chain: r.Chain}
 		select {
 		case s.events <- ev:
 		case <-s.quit:
@@ -609,8 +688,8 @@ func (s *session) onHook(r Request) {
 // or one whose id is not known yet, is ignored. Every other event
 // (SessionStart excepted, which onHook skips), from any session in the
 // tree, holds the switch: Notification is how Claude and Grok say they
-// wait for the user, a permission prompt among others, and its type field
-// is not verified, so every one counts. Grok's exit-time stop
+// wait for the user, a permission prompt among others, so every one counts
+// but Claude's idle reminder (claudeIdle). Grok's exit-time stop
 // (grokShutdown) of the on-screen child itself is no turn end and holds
 // nothing: it is only recorded as ignored. One that names no session or
 // another one takes the turn-end paths below, so a forged one is still
@@ -619,9 +698,16 @@ func (s *session) hookEvent(ev hookEvent) {
 	if s.openCodeEvent(ev) {
 		return
 	}
-	own := ""
-	if s.o.SessionID != nil {
+	own := s.followed
+	if own == "" && s.o.SessionID != nil {
 		own = s.o.SessionID()
+	}
+	if own != "" && ev.sessionID == own && len(ev.chain) > 0 && (s.host == nil || len(ev.chain) < len(s.host)) {
+		s.host = slices.Clone(ev.chain)
+	}
+	if ev.name == "SessionStart" {
+		s.sessionStart(ev, own)
+		return
 	}
 	if ev.shutdown && ev.sessionID != "" && ev.sessionID == own {
 		s.ignoredShutdown()
@@ -646,15 +732,24 @@ func (s *session) hookEvent(ev hookEvent) {
 			if s.noTurnOpen {
 				s.closePicker() // the offer takes over
 			}
-			if s.open && s.pk.noTurn {
-				// The list's words about no turn end are over; the rows they
-				// took are blanked.
-				s.pk.noTurn, s.pk.padRows = false, noTurnListRows
+			if s.open && (s.pk.noTurn || s.pk.moveRefused) {
+				// The list's words about no turn end, or about a move it could
+				// not confirm, are over; the rows they took are blanked.
+				s.pk.padRows = 0
+				if s.pk.noTurn {
+					s.pk.padRows += noTurnListRows
+				}
+				if s.pk.moveRefused {
+					s.pk.padRows += moveRefusedRows
+				}
+				s.pk.noTurn, s.pk.moveRefused = false, false
 				if s.pk.confirm == "" && !s.pk.note && s.pk.stage == "" {
 					s.pk.draw(s.o.Out, s.pickerOverCLI)
 				}
 				s.pk.padRows = 0
 			}
+			s.movedQuiet, s.moveRefused = false, false // it names the session on screen
+			s.settleDoubt()
 			s.atPrompt, s.inputSinceTurn, s.queuedWait = !s.held, false, false
 			s.askStale = s.askOpen()
 			if s.queued > 0 {
@@ -671,8 +766,106 @@ func (s *session) hookEvent(ev hookEvent) {
 		}
 		return
 	}
+	if ev.idle {
+		s.log(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(ev.name), "holds": false}})
+		return
+	}
 	s.log(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(ev.name), "holds": true}})
 	s.atPrompt, s.held = false, true
+}
+
+// sessionMoves reports whether a SessionStart of v with this source says the
+// CLI on screen moved to another session. Claude: "resume" for a resumed
+// session, "clear" after /clear, "fork" for a new session forked from an
+// existing one (hooks.md, SessionStart input; SessionEnd's reasons say the old
+// session ends "with /clear" and "via interactive /resume", read 2026-11-07).
+// Codex: the same values (session-start.command.input.schema.json at
+// rust-v0.164.0; which of its commands sends which is unverified). "startup"
+// and "compact" stay in the session, or are a nested CLI's. Grok's payload has
+// no source that is recorded, so any SessionStart may be a move there, and only
+// its lineage says otherwise (unverified; what would confirm it: T6896's /clear
+// on Grok under aggy, and the id its next Stop names). A vendor with another way
+// to see a session change (OpenCode has no SessionStart, T6953) calls
+// followSession with its own evidence, so a SessionStart sent to OpenCode's
+// socket moves nothing.
+func sessionMoves(v adapter.Vendor, source string) bool {
+	switch v {
+	case adapter.Grok:
+		return true
+	case adapter.OpenCode:
+		return false
+	}
+	return source == "clear" || source == "resume" || source == "fork"
+}
+
+// followsFrom reports whether a hook with this lineage ran where the CLI's own
+// hooks run: as deep below the CLI as the shallowest hook that named the
+// on-screen session, and through the same processes above its own shell. A
+// nested claude -p or codex exec runs below the agent's shell tool, and its
+// hooks below its own process, so they are deeper, and another process's. That
+// is why the check exists: the id is what keeps a nested CLI's Stop from
+// counting, so it must not move on that nested CLI's word.
+//
+// It does not stop a tool that pipes JSON into aggy hook from the same depth:
+// such a tool can as well forge a Stop naming the id it can read in the CLI's
+// arguments, so this gives it nothing new. What the id then does is count turn
+// ends, and a switch still asks the user. Recording the id for a later resume
+// needs a session file besides (internal/cli, childIDs).
+func (s *session) followsFrom(chain []int) bool {
+	above := func(c []int) []int { return c[min(2, len(c)-1):] }
+	return len(s.host) > 0 && len(chain) == len(s.host) && slices.Equal(above(chain), above(s.host))
+}
+
+// sessionStart takes a SessionStart hook. Naming the session on screen, or no
+// other, it means nothing here; naming another, with a source that says the CLI
+// moved, it is followed if it ran where the CLI's own hooks run.
+func (s *session) sessionStart(ev hookEvent, own string) {
+	if ev.sessionID == "" || ev.sessionID == own || own == "" || !sessionMoves(s.o.Vendor, ev.source) {
+		return
+	}
+	if adapter.ValidSessionID(s.o.Vendor, ev.sessionID) != nil || !s.followsFrom(ev.chain) {
+		s.log(diag.Rec{Event: diag.EvHookIgnored, Code: diag.CodeFollowRefused, Msg: "a session start that says the CLI moved, from outside where its own hooks run",
+			Attrs: map[string]any{"event": hookName(ev.name), "source": safeSource(ev.source), "known_host": s.host != nil}})
+		s.moveRefused = true
+		return
+	}
+	via := "session_start"
+	if ev.source != "" {
+		via = safeSource(ev.source)
+	}
+	s.followSession(ev.sessionID, via)
+}
+
+// safeSource is a source for a record: any process in the tree can pick it.
+func safeSource(source string) string {
+	switch source {
+	case "startup", "resume", "clear", "compact", "fork":
+		return source
+	}
+	return "other"
+}
+
+// followSession makes id the on-screen session, on the evidence via: a turn end
+// counts only if it names id from now on. It says nothing about whether a turn
+// runs: Codex sends SessionStart inside run_turn, so the move can come with the
+// first message after /clear already running (core/src/session/turn.rs#L340 at
+// 6aaac694, source only, not seen live). So atPrompt, inputSinceTurn, and the
+// queue stay as they were, and the next turn end, or a pick that says no turn
+// runs, settles them; tellMoved says so at a pick. The one doubt a move does
+// settle is the one its own command left: a composer that held only that leading
+// / command, with nothing typed since its Enter, has been emptied by the command.
+func (s *session) followSession(id, via string) {
+	s.followed, s.movedQuiet, s.moveRefused = id, true, false
+	s.log(diag.Rec{Event: diag.EvSessionFollowed, Attrs: map[string]any{"via": via}})
+	if s.afterEnter == 0 && s.slashOnly && s.slashEntered {
+		s.compLen, s.lenKnown, s.popup, s.cleared, s.hadAt, s.moved, s.pastePop = 0, true, false, false, false, false, false
+		s.slashOnly, s.slashEntered = false, false
+		s.toldDirty = false
+		s.updateDirty()
+	}
+	if f := s.o.OnFollow; f != nil {
+		s.goSafe(func() { f(id, via) })
+	}
 }
 
 // maxSwitchTools caps the tools a switch-request may name.
@@ -687,6 +880,9 @@ func (s *session) onSwitch(r Request) error {
 	if !holdSignal(s.o.Vendor) {
 		return coded(diag.CodeAgentNoHold, fmt.Errorf("an agent cannot ask for a switch away from %s: aggy cannot tell when %s waits for an approval, so only the user may start one, with aggy's switch key",
 			s.o.Vendor, s.o.Vendor))
+	}
+	if s.o.HooksMissing && !s.hookSeen.Load() {
+		return coded(diag.CodeHooksMissing, fmt.Errorf("aggy's hooks for %s are not installed, so aggy would never see a turn end to switch at; run aggy hooks install, then start a new session", s.o.Vendor))
 	}
 	if r.New || r.Model != "" {
 		// O56-1: a new session or a model is the user's choice, in the
@@ -795,6 +991,10 @@ func (s *session) send(b []byte) {
 		s.toChild.push(b) // the terminal answering the CLI, not the user
 		return
 	}
+	if mouseOnly(b) {
+		s.pointer(b)
+		return
+	}
 	typed := s.typedOf(b)
 	if len(typed) == 0 && len(b) > 0 {
 		s.toChild.push(b) // the terminal's own reports: no typing at all
@@ -810,7 +1010,8 @@ func (s *session) send(b []byte) {
 		return
 	}
 	s.inputSinceTurn = true
-	if bytes.IndexByte(typed, '\r') >= 0 || csiEnter.Match(typed) {
+	enter := bytes.IndexByte(typed, '\r') >= 0
+	if enter || csiEnter.Match(typed) {
 		// An Enter with text, while a turn may be running, may queue a
 		// message. A bare one on an empty prompt queues nothing: it answers
 		// an approval or a menu, which most turns have.
@@ -818,32 +1019,164 @@ func (s *session) send(b []byte) {
 			s.queued++
 			s.queuedWait = false
 		}
+		s.enterAtPrompt = s.atPrompt && !s.askOpen()
 		s.atPrompt, s.toldDirty = false, false // an Enter may start a turn
-	} else if !s.atPrompt && tabKey.Match(typed) && (s.dirty || string(tabKey.Find(typed)) != string(typed)) {
+		s.movedQuiet = false
+	} else if tabKey.Match(typed) && (s.dirty || string(tabKey.Find(typed)) != string(typed)) {
 		// Tab with text queues a message on Codex during a turn:
 		// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/chat_composer.rs#L3531
-		// It may do something else elsewhere; the quiet gap covers that.
-		s.queued++
-		s.queuedWait = false
+		// It may do something else elsewhere; the quiet gap covers that. Idle on
+		// Codex it may start a turn, as an Enter may. Either way the text stays
+		// in doubt: idle, Tab does not submit a ! command (the same lines, and
+		// the same file's tab_does_not_submit_for_bang_shell_command, L10170), a
+		// $ popup takes it (L2255, read by review), and another CLI may complete
+		// a word. Unsent text under /exit is the worse mistake, so a message Tab
+		// did queue leaves the unsent-text note until Ctrl+U and an Enter.
+		switch {
+		case !s.atPrompt:
+			s.queued++
+			s.queuedWait = false
+		case s.o.Vendor == adapter.Codex && !s.popup:
+			s.atPrompt = false
+		}
 	}
 	// Keys answering OpenCode's dialog never reach its composer. Without this
 	// an Esc or an arrow there left the switch waiting on "unsent text" (live).
 	if !s.askOpen() {
-		for _, c := range typed {
-			s.compose(c)
-		}
-		s.dirty = !s.lenKnown || s.compLen > 0 || s.popup || s.cleared
+		s.followKeys(typed)
 	}
 	s.toChild.push(b)
 }
+
+// followKeys follows keys that reach the composer, past any dialog.
+func (s *session) followKeys(typed []byte) {
+	enter := bytes.IndexByte(typed, '\r') >= 0
+	// Text after a command's Enter is no longer just the command. A key sequence
+	// is not text: /resume's list takes arrows and an Enter.
+	if typed[0] != esc && s.slashEntered && string(typed) != "\r" {
+		s.slashOnly = false
+	}
+	s.sw.toldDoubt, s.sw.doubtOK = false, false
+	onlyEsc := isEsc(typed) || len(bytes.Trim(typed, "\x1b")) == 0
+	switch {
+	case onlyEsc:
+		if s.escEmpty || s.compLen == 0 {
+			s.escTwice = s.escEmpty || len(typed) > 1 && !isEsc(typed)
+			s.escEmpty = true
+		}
+	case typed[0] != esc && typed[0] != '\r' && !s.escTwice:
+		// The everyday interrupt: an Esc, then a message. After two Escs on an
+		// empty composer Codex is in its backtrack preview, whose keys include
+		// h, l, j, k and Ctrl+T (app_backtrack/legacy_input.rs#L195 at 6aaac694),
+		// so they end nothing there.
+		s.escEmpty = false
+	}
+	before := s.compLen
+	for _, c := range typed {
+		s.compose(c)
+	}
+	if onlyEsc {
+		s.compLen = before // an Esc types nothing
+	}
+	if typed[0] != esc && enter && bytes.IndexByte(typed, '\r') < len(typed)-1 {
+		s.slashOnly = false // more came after the Enter, in this read
+	}
+	if s.escEmpty && enter {
+		// On an empty composer Codex takes Esc, Esc, Enter as a backtrack, which
+		// puts an earlier prompt back in the composer (tui/src/app_backtrack.rs
+		// at 6aaac694, source only, not seen live), with cursor keys allowed
+		// in between. Another CLI may do alike, and aggy does not read the screen.
+		s.escDoubt, s.escEmpty, s.escTwice = true, false, false
+	}
+	s.updateDirty()
+}
+
+// knownText reports characters aggy counted and has not seen sent. The exit
+// command would send them, so they block a switch until sent or cleared.
+func (s *session) knownText() bool { return s.lenKnown && s.compLen > 0 && !s.popup }
+
+// doubt reports that the composer may hold text aggy did not count, or that it
+// cannot say what its keys did: a popup may have taken an Enter, a command may
+// have left text, and an Esc on an empty composer may bring text back. The
+// person can see the screen and aggy cannot, so this does not block: they are
+// told, and confirm (offerSwitch).
+func (s *session) doubt() bool {
+	return !s.knownText() && (!s.lenKnown || s.popup || s.cleared || s.escEmpty || s.escDoubt)
+}
+
+func (s *session) updateDirty() {
+	s.dirty = !s.lenKnown || s.compLen > 0 || s.popup || s.cleared || s.escDoubt
+}
+
+// settleDoubt takes a counted turn end as evidence about the composer. With
+// nothing sent since the last Enter, an Esc before that Enter brought nothing
+// back that a turn did not then take. If that Enter also went at the prompt, a
+// turn ran from it, so it sent what was there: the composer is empty.
+//
+// That can be wrong: a turn the Enter did not start, such as one a background
+// task starts, can end just after a popup took the Enter. The composer then
+// holds text aggy calls empty, and only the status line's "See its prompt?" is
+// left (docs/design.md, TestTurnEndEvidence). An Enter sent while a turn runs is
+// no evidence: it may have answered an approval, or queued.
+func (s *session) settleDoubt() {
+	if s.afterEnter != 0 {
+		return
+	}
+	s.escEmpty, s.escTwice, s.escDoubt = false, false, false
+	if s.enterAtPrompt {
+		s.compLen, s.lenKnown, s.popup, s.cleared, s.hadAt, s.moved, s.pastePop = 0, true, false, false, false, false, false
+		s.slashOnly, s.slashEntered = false, false
+	}
+	s.updateDirty()
+}
+
+// pointer passes on a click or a drag. It may do something in the CLI, so it
+// counts as input (an approval answered with the mouse, a turn started), but it
+// types nothing. It may move the cursor, as a cursor key does.
+//
+// On OpenCode a click is no typing: its plugin reports what a click answered, so
+// the click clears no hold (typedOf). In the gap between the exit command's
+// letters and its Enter it waits with the keys, as it could land on a dialog or
+// move the cursor out of the composer before that Enter (finishExit).
+func (s *session) pointer(b []byte) {
+	if s.exitGap {
+		s.gapKeys = append(s.gapKeys, b...)
+		return
+	}
+	if s.o.Vendor == adapter.OpenCode {
+		s.toChild.push(b)
+		return
+	}
+	s.lastIn = time.Now()
+	s.held = false
+	s.inputSinceTurn = true
+	s.moved = true
+	s.slashOnly = false
+	s.afterEnter++
+	s.sw.toldDoubt, s.sw.doubtOK = false, false
+	if s.hadAt {
+		s.popup = true // the cursor may be back in an @ token
+	}
+	// TODO(T6895): a click may start a turn or fill the composer; only
+	// inputSinceTurn says so, and an open switch can still fire on it.
+	s.updateDirty()
+	s.toChild.push(b)
+}
+
+// splitWait is how long an escape sequence split across reads may wait for the
+// rest of it. Terminals write one reply at a time, so this only has to cover
+// the gap between two reads of one write. A variable for tests.
+var splitWait = 50 * time.Millisecond
 
 // csiEnter matches Enter in the kitty keyboard protocol (CSI 13 u, with any
 // modifiers or event type) and in xterm's modifyOtherKeys (CSI 27 ; m ; 13 ~).
 // Which encoding Claude's and Grok's terminals are put in is unverified.
 var csiEnter = regexp.MustCompile(`\x1b\[((13|57414)(:[0-9]*)*(;[0-9:]*)*u|27;[0-9]+;13~)`)
 
-// tabKey matches Tab, plain or in the kitty keyboard protocol.
-var tabKey = regexp.MustCompile(`\t|\x1b\[9(;[0-9:]*)?u`)
+// tabKey matches a plain Tab press, as a byte or in the kitty keyboard protocol
+// (with no modifier but Caps or Num Lock, and a press or repeat): Shift+Tab,
+// Ctrl+Tab, and a release queue nothing.
+var tabKey = regexp.MustCompile(`\t|\x1b\[9(;(1|65|129|193)(:[12])?)?u`)
 
 // bareEnter reports whether b is one Enter and nothing else.
 func bareEnter(b []byte) bool {
@@ -869,28 +1202,6 @@ func (s *session) releaseQueued() {
 	s.atPrompt, s.inputSinceTurn = !s.held, false
 }
 
-// terminalReport reports whether b is only replies a terminal sends a CLI that
-// asked: focus events, cursor and device reports, and whole OSC, DCS, and APC
-// strings, and the mouse wheel. None can submit anything, so none is input. A
-// click can, as far as aggy knows, so it stays input, as do bracketed pastes and
-// key sequences do not match, and a reply split across reads counts as input,
-// the safe side.
-func terminalReport(b []byte) bool {
-	if len(b) == 0 {
-		return false
-	}
-	for len(b) > 0 {
-		m := reportSeq.Find(b)
-		if m == nil {
-			return false
-		}
-		b = b[len(m):]
-	}
-	return true
-}
-
-var reportSeq = regexp.MustCompile(`^\x1b(\[[IO]|\[[0-9;?>]*[Rcnt]|\[[0-9;?]*\$y|\[\?[0-9]*u|\[<(6[4-9]|[78][0-9]|9[0-5]);[0-9]+;[0-9]+[Mm]|[\]P_][^\x00-\x1f]*(\x07|\x1b\\))`)
-
 // mayBeRunning reports whether a turn may be running, so a notice that can wait
 // must, since an open notice holds the CLI's output until a key. Only a launch
 // or turn end with no input since, and no sign the CLI is busy, says none is.
@@ -913,6 +1224,7 @@ func cursorKey(c byte) bool {
 func (s *session) compose(c byte) {
 	prev := s.lastByte
 	s.lastByte = c
+	s.afterEnter++
 	// The paste markers, found with the bytes before, so one split
 	// across reads still counts.
 	s.pasteTail = append(s.pasteTail, c)
@@ -934,16 +1246,30 @@ func (s *session) compose(c byte) {
 		}
 	}
 	switch {
+	case c == '\r' && prev == esc && s.compLen == 0 && !s.inPaste:
+		// An Esc and an Enter on an empty composer, or Option+Enter split across
+		// reads: it may bring text back, or answer an approval. Doubt, which a
+		// turn end can settle, and no counted text.
+		s.escDoubt, s.moved, s.pastePop, s.slashOnly = true, true, false, false
+		s.afterEnter = 0
 	case c == '\r' && (prev == esc || prev == '\\' || s.inPaste) || c == '\n':
-		s.compLen++ // a newline in the composer
-		s.moved, s.pastePop = true, false
+		// A newline in the composer. An Esc just before counts however long ago
+		// it came, as Option+Enter split across reads looks the same.
+		s.compLen++
+		s.moved, s.pastePop, s.slashOnly = true, false, false
 	case c == '\r' && s.popup && s.slashLine && s.o.Vendor == adapter.OpenCode:
 		// A command runs and leaves no text (/models opens a dialog, live).
 		s.compLen, s.lenKnown, s.cleared, s.hadAt, s.moved, s.popup, s.slashLine = 0, true, false, false, false, false, false
+		s.afterEnter = 0
+		s.slashOnly, s.slashEntered, s.escDoubt = false, false, false
 	case c == '\r' && s.popup:
 		s.lenKnown = false // the popup may have taken it and added text
+		s.afterEnter = 0
+		s.slashEntered = s.slashOnly
 	case c == '\r':
 		s.compLen, s.lenKnown, s.cleared, s.hadAt, s.moved = 0, true, false, false, false // sent
+		s.afterEnter = 0
+		s.slashOnly, s.slashEntered, s.escDoubt = false, false, false
 	case c == ctrlU:
 		// The line is empty, but it counts only once an Enter confirms
 		// it: in a multiline draft Ctrl+U may clear one line only. Only
@@ -968,6 +1294,7 @@ func (s *session) compose(c byte) {
 		switch {
 		case c == '@' || c == ctrlR || c == '/' && s.compLen == 0:
 			s.slashLine = c == '/' && !s.hadAt
+			s.slashOnly = c == '/' && !s.hadAt && !s.inPaste
 			s.hadAt, s.moved = true, false
 			if s.inPaste {
 				s.pastePop = true
@@ -1026,7 +1353,7 @@ func (s *session) offerSwitch() {
 	if s.sw.resume {
 		what = fmt.Sprintf("resume %s with the changed tools", v)
 	}
-	if s.dirty && s.turnRan {
+	if s.knownText() && s.turnRan {
 		// S-1: the exit command would go after the unsent text and send
 		// both, so the switch waits; the user is told once.
 		if !s.toldDirty {
@@ -1043,6 +1370,20 @@ func (s *session) offerSwitch() {
 			s.openPicker()
 		}
 		return
+	}
+	if s.turnRan && s.doubt() && !s.sw.doubtOK {
+		// A tool change's resume has no re-pick: its status line says it alone.
+		if !s.sw.resume {
+			if !s.sw.toldDoubt {
+				s.sw.toldDoubt = true
+				s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodePromptDoubt, Cause: s.turnCause(),
+					Msg: "the switch waits: aggy cannot tell if the prompt is empty", Attrs: map[string]any{"to": string(v)}})
+				s.pk.tell(doubtLines(what, on, v)...)
+				s.openPicker()
+			}
+			return
+		}
+		s.sw.doubtOK = true
 	}
 	check := s.offered
 	if s.sw.resume {
@@ -1068,6 +1409,9 @@ func (s *session) offerSwitch() {
 	tools := "tools " + strings.Join(s.sw.tools, " ")
 	confirmLine := func(model, tools string) string {
 		var why []string
+		if s.turnRan && s.doubt() {
+			why = append(why, "can't tell if the prompt is empty")
+		}
 		switch {
 		case s.sw.resume:
 			why = append(why, tools)
@@ -1640,7 +1984,10 @@ func (s *session) typeExit() {
 	case !s.turnRan:
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeNoTurnYet, Cause: s.sw.rec, Msg: "the switch key was pressed, but no turn has ended since the CLI launched"})
 		return
-	case s.dirty:
+	case s.doubt() && !s.sw.doubtOK:
+		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodePromptDoubt, Cause: s.sw.rec, Msg: "the switch key was pressed, but the prompt has changed since the person confirmed", Attrs: map[string]any{"to": string(s.sw.to)}})
+		return
+	case s.knownText():
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeUnsentText, Cause: s.sw.rec, Msg: "the switch key was pressed, but text the user typed is not sent"})
 		return
 	case s.held, s.askOpen():
@@ -1665,6 +2012,8 @@ func (s *session) openList() {
 	s.pk.list()
 	s.pk.waiting, s.pk.checking, s.pk.resume = s.sw.to, false, s.sw.resume
 	s.pk.noTurn, s.pk.on = !s.turnRan, s.o.Vendor
+	s.pk.noHooks = s.o.HooksMissing && !s.hookSeen.Load()
+	s.pk.moveRefused = s.moveRefused
 	s.pk.stalePick = s.sw.toldNoTurn && !s.sw.typed && time.Since(s.sw.toldAt) > noTurnPickFresh
 	s.pk.limitLine = ""
 	if s.limitDue != nil {
@@ -1672,8 +2021,15 @@ func (s *session) openList() {
 		s.pk.limitLine = limitWho(s.limitDue.h) + "."
 		s.limitDue = nil
 	}
-	// After a limit, Enter takes the suggested vendor, with a brief.
+	// After a limit, Enter takes the suggested vendor, with a brief. A switch
+	// that waits shows its own options, so picking it again keeps them; they are
+	// that vendor's, so a pick of another drops them (picker.choose).
 	s.pk.opts.Brief = s.pk.preselect != ""
+	if s.sw.to != "" && !s.sw.resume {
+		s.pk.seed = Choice{Brief: s.sw.choice.Brief && !s.pk.opts.Brief, New: s.sw.choice.New, Model: s.sw.choice.Model}
+		s.pk.opts.Brief = s.pk.opts.Brief || s.sw.choice.Brief
+		s.pk.opts.New, s.pk.opts.Model = s.sw.choice.New, s.sw.choice.Model
+	}
 	// Starts the checks that take time (the policy probe) for every
 	// vendor offered, in the background, so a pick rarely waits.
 	if s.o.CanSwitch != nil {
@@ -1821,9 +2177,7 @@ func (s *session) pickerInput(b []byte) {
 		}
 		if s.held {
 			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "picked again, but the CLI waits for the user"})
-			s.pk.tell(fmt.Sprintf("%s said it is waiting for you (a permission prompt or another notice).", s.o.Vendor),
-				fmt.Sprintf("Answer it, or send a message; aggy switches to %s at the next turn end.", picked))
-			s.openPicker()
+			s.tellHeld(picked)
 			return
 		}
 		// Without a turn end, no pick can say no turn is running: a turn
@@ -1832,7 +2186,9 @@ func (s *session) pickerInput(b []byte) {
 		if s.turnRan { // the user says no turn is running
 			s.queued, s.queuedWait = 0, false
 		}
+		c.Tools = s.sw.choice.Tools // the list cannot set them, so an agent's stay
 		s.sw.choice, s.sw.asked, s.sw.picked, s.sw.noteShown = c, false, true, false
+		s.sw.doubtOK = s.sw.toldDoubt // told, and picked again: the person has looked
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Cause: s.sw.rec, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked), "again": true})})
 		s.markNoTurn()
 	case picked != "":
@@ -1845,13 +2201,58 @@ func (s *session) pickerInput(b []byte) {
 		s.setSwitch(pendingSwitch{to: picked, choice: c, picked: true})
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked)})})
 		s.markNoTurn()
-		if s.askOpen() {
-			s.tellAskWaits(picked)
+		switch {
+		case s.askOpen():
+			s.tellAskWaits(picked) // its own words, and the way past a stale ask
+		case s.held && s.turnRan:
+			// Without a turn end the list has already said what to do.
+			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "picked, but the CLI waits for the user"})
+			s.tellHeld(picked)
+		case s.movedQuiet && s.turnRan && !s.atPrompt:
+			s.tellMoved(picked)
 		}
 	default: // Esc on the list cancels a waiting switch
 		s.toolsWaitTurn = s.toolsWaitTurn || s.sw.resume
 		s.setSwitch(pendingSwitch{})
 	}
+}
+
+// tellHeld says why a switch to v waits for a hold, and the way out that costs
+// no turn: an Enter on the empty prompt clears the hold, and a pick then says no
+// turn is running. That Enter would answer an open prompt, so it is only for
+// when none is on screen. Each line fits 80 columns.
+func (s *session) tellHeld(v adapter.Vendor) {
+	s.pk.tell(fmt.Sprintf("%s said it is waiting for you (a permission prompt or another notice),", s.o.Vendor),
+		fmt.Sprintf("so the switch to %s waits. If it asks you something, answer it:", v),
+		"aggy goes on at that turn's end.",
+		"If nothing is waiting on screen, Esc here, press Enter on the empty prompt,",
+		fmt.Sprintf("and pick %s again. That spends no turn; sending a message would.", v))
+	s.openPicker()
+}
+
+// doubtLines are the note when aggy cannot tell if the prompt is empty. Each fits
+// 80 columns with the longest what, a switch's.
+func doubtLines(what string, on, to adapter.Vendor) []string {
+	return []string{fmt.Sprintf("aggy is ready to %s, but cannot tell if %s's prompt is empty:", what, on),
+		"a command, a popup, or Esc may have left text there that aggy cannot see.",
+		fmt.Sprintf("Look at it. If nothing there matters, pick %s again, and aggy asks first.", to)}
+}
+
+// tellMoved says why a switch to v waits after the CLI moved to another session:
+// /clear and /resume end no turn, so no turn end comes unless a message is sent.
+//
+// TODO(T6895): Claude could be exempt, since its SessionStart comes outside a
+// turn, once the plan flow's "clear context" is checked live.
+func (s *session) tellMoved(v adapter.Vendor) {
+	s.pk.tell(movedLines(s.o.Vendor, v)...)
+	s.openPicker()
+}
+
+// movedLines are tellMoved's words. Each fits 80 columns.
+func movedLines(on, to adapter.Vendor) []string {
+	return []string{fmt.Sprintf("%s moved to another session, and aggy cannot tell if a turn runs there,", on),
+		fmt.Sprintf("so the switch to %s waits for a turn end, and none may come.", to),
+		fmt.Sprintf("If no turn is running, Esc here and pick %s again. That spends no turn.", to)}
 }
 
 // promptInput handles a key at a prompt aggy opened on its own (a

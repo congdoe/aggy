@@ -47,7 +47,7 @@ func switchWith(args []string, getenv func(string) string, stdout, stderr io.Wri
 	// never does (G67-1). This process's trace is the supervisor's
 	// (AGGY_TRACE), so its record joins the session's.
 	refused := func(code diag.Code, msg, shown string, v adapter.Vendor) {
-		dlog.Log(ctx, diag.Rec{Event: diag.EvSwitchRefused, Code: code, Msg: msg, Vendor: string(v)})
+		dlog.Log(ctx, diag.Rec{Event: diag.EvSwitchRefused, Code: code, Msg: msg, Vendor: onScreen(), Attrs: map[string]any{"to": string(v)}})
 		fmt.Fprintf(stderr, "aggy switch: %s %s\n", termsafe.Line(shown), dlog.Tag(code))
 	}
 	var rest []string
@@ -119,10 +119,20 @@ func switchWith(args []string, getenv func(string) string, stdout, stderr io.Wri
 		if c, ok := diag.CodeNamed(resp.Code); ok {
 			code = c.Name
 		}
-		dlog.Log(ctx, diag.Rec{Event: diag.EvSwitchRefused, Code: code, Msg: "the supervisor refused it", Vendor: string(v), NoRefusal: true})
+		dlog.Log(ctx, diag.Rec{Event: diag.EvSwitchRefused, Code: code, Msg: "the supervisor refused it", Vendor: onScreen(), Attrs: map[string]any{"to": string(v)}, NoRefusal: true})
 		fmt.Fprintf(stderr, "aggy switch: refused: %s %s\n", termsafe.Line(resp.Error), dlog.Tag(code))
 		return 1
 	}
 	fmt.Fprintf(stdout, "aggy will offer the user a switch to %s when this turn ends. End your turn now; the user decides.\n", v)
 	return 0
+}
+
+// onScreen is the vendor aggy has on screen, as a record's vendor; "" when
+// AGGY_VENDOR names none. The switch's target goes in attrs.to (T6848).
+func onScreen() string {
+	v, err := adapter.ParseVendor(os.Getenv("AGGY_VENDOR"))
+	if err != nil {
+		return ""
+	}
+	return string(v)
 }

@@ -410,6 +410,37 @@ and `~/Library` denies.
 | `aggy-video-default-refused` | PASS |
 | `video-borrow-grok` | FAIL, environment: the account has zero data retention, and Grok's `image_to_video` reported "Video generation tools are unavailable under zero data retention (ZDR)"; aggy's artifact gate correctly found no file. Testing Grok video needs ZDR off or a user-hosted bucket (owner item). |
 
+## Session changes inside a CLI (T6901)
+
+- **Claude, doc-verified** (`hooks.md`, read 2026-11-07, not seen live):
+  `SessionStart`'s `source` is "`startup` for new sessions, `resume` for
+  resumed sessions, `clear` after `/clear`, `compact` after compaction, or
+  `fork` for a new session forked from an existing one". `SessionEnd`'s reasons
+  include `clear` ("Session cleared with `/clear` command") and `resume`
+  ("Session switched via interactive `/resume`"). That `session_id` then names
+  the new session is implied, not stated.
+- **Codex, source only:** the same five values
+  (`hooks/schema/generated/session-start.command.input.schema.json`). Which of
+  `/clear`, `/new`, and `/resume` sends which is unverified.
+- **Grok, unverified:** no `source` is recorded, nor whether `/clear` fires
+  `SessionStart`.
+- **Unverified on all three:** that one CLI spawns every hook from one process
+  at one depth. To confirm (T6895, T6896, the owner's live checks): under aggy,
+  one turn, `/clear`, one turn, then the switch key and a pick. The status line
+  should come at that turn's end with no `hook.follow_refused` in `aggy log`,
+  and `aggy resume` should open the session after the `/clear`. Do it again with
+  `/resume`.
+
+## Folder trust as `aggy doctor` reads it (T6899)
+
+Codex only, source only: the `[projects."<path>"]` table's `trust_level` in
+`config.toml` (see "Codex project trust in an edit child"). That the TUI's
+trust dialog writes the same entry, and what each CLI exits with when its
+dialog is declined, are unverified: T6895 and T6896 wait for the owner to
+accept trust dialogs. To confirm: decline each CLI's dialog once under `aggy`,
+note the exit code, then check `config.toml` after accepting Codex's. Claude's
+and Grok's stored answers are not recorded, so doctor says nothing for them.
+
 ## Grok project config and folder trust (source only)
 
 From grok-build source at `2bdd1d6`, not run live. Grok loads project
@@ -732,7 +763,11 @@ the fields named here.
   (`rate_limit`, `overloaded`, `authentication_failed`, ..., `unknown`),
   optional `error_details` and `last_assistant_message`; its output and
   exit code are ignored. `Notification` adds `message`, `title`, and
-  `notification_type`. A command hook that exits with anything
+  `notification_type`; per the docs (read 2026-11-07), `idle_prompt` is
+  "Claude finished responding about 60 seconds ago and you haven't typed
+  since" and `permission_prompt` is "Claude needs you to approve a tool use
+  or a sandboxed command's network request, and the prompt has waited about
+  six seconds". Doc-verified; not seen live. A command hook that exits with anything
   but 0 or 2, including one that cannot start (the shell's 127), is a
   non-blocking error: a "`<hook> hook error`" notice, and the action goes
   on ("Other exit codes"; `onFailure: "block"` changes that, and has no
@@ -1512,6 +1547,38 @@ Real OpenCode 2.2.5 against a loopback fake model in a temp `HOME`, with no cred
 ## Claude Code session file fields (2026-11-06)
 
 Read on the owner's machine, by key and count only, from 39 session files of the last 30 days, at the installed Claude Code. Not a documented format. Shell calls appear as `tool_use` blocks named `Bash` with `input.command`; session lines carry `permissionMode` and `cwd`; `tool_result` blocks carry `tool_use_id` and `is_error` when a call failed. A full scan of 730 MB in Python took 2.7 seconds. `is_error` does not separate a denied command from a failed one.
+
+## Switching, known limits left as they are (T6895, batch 4 review, 2026-11-07)
+
+From the adversarial review of T6897 to T6902. All fail on the safe side or stay
+small; each has a `TODO(T6895)` or is noted here, and none has been run against a
+real CLI.
+
+- Unknown terminal replies (XTQMODKEYS, XTSMGRAPHICS) and a whole reply at the head
+  of a burst past `maxHeld` count as typed: the prompt stays in doubt.
+- A click counts as input and types nothing, so a click that fills the composer or
+  starts a turn is seen only through `inputSinceTurn`.
+- A CLI that exits 130 on its own after Ctrl+C reads as killed by a signal, so a
+  declined dialog closed that way ends aggy rather than going back.
+- A session file expired before aggy recorded `file_seen` reads as never started.
+- A resumed session's "unchanged since launch" still compares file time with
+  aggy's clock, so skew can read as never started. That only goes back: a resumed
+  row is never removed.
+
+- A refused move leaves the row on the id it had, since `settle` needs a followed
+  id: a session reached that way is not what a later resume opens.
+- A paste that spans a prompt of aggy's: `strip` and the key filter each follow the
+  markers, so the first read's bytes are seen twice; harmless so far.
+- The doubt note's words, and its second pick, have not been tried on a real CLI.
+  That Claude's `/compact` ends a turn (so no doubt follows) is unverified.
+
+Read from the Codex source at 6aaac694, not seen live: `SessionStart` hooks run
+from `run_turn` (`core/src/session/turn.rs#L340`); idle, Tab does not submit a `!`
+command, and during a turn it queues one (`chat_composer.rs#L3531`, tests at L10170
+and L9893); the backtrack (`tui/src/app_backtrack.rs`, header) and its preview keys
+(`app_backtrack/legacy_input.rs#L195`, from the reviewer's reading, not rechecked);
+`SessionMeta.cwd` (`protocol/src/protocol.rs#L3275`). A `$` popup taking Tab
+(`chat_composer.rs#L2255`) comes from the reviewer's reading and was not rechecked.
 
 ## Still open
 

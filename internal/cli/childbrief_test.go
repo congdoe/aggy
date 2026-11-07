@@ -210,3 +210,118 @@ func TestResumeBriefThroughPlan(t *testing.T) {
 		t.Errorf("resume <child> --brief --show = %d: %s\n%s", code, errb.String(), out.String())
 	}
 }
+
+// TestChildBriefClaims (T6900): what a brief says when the session before it
+// left no turns to read, or never started.
+func TestChildBriefClaims(t *testing.T) {
+	type kid struct {
+		id, vendor, session string
+		turns               bool // it has a session file with a turn
+	}
+	const claudeID = "11111111-2222-4333-8444-555555555555"
+	const grokID = "22222222-2222-4333-8444-555555555555"
+	tests := []struct {
+		name         string
+		kids         []kid // oldest first
+		want, reject []string
+	}{
+		{"a Codex turn whose id was never recorded",
+			[]kid{{id: "c1", vendor: "codex"}},
+			[]string{"a codex session may have run", "no record of the codex session's id"},
+			[]string{"no other CLI has run", "There is no earlier session"}},
+		{"a child that never started hides no turns",
+			[]kid{{id: "c1", vendor: "claude", session: claudeID, turns: true}, {id: "c2", vendor: "grok", session: grokID}},
+			[]string{"running in claude", "real turn text"},
+			[]string{"running in grok", "no other CLI has run"}},
+		{"only a child that never started",
+			[]kid{{id: "c2", vendor: "grok", session: grokID}},
+			[]string{"no other CLI has run"},
+			[]string{"running in grok"}},
+		{"turns beside an unrecorded session",
+			[]kid{{id: "c1", vendor: "claude", session: claudeID, turns: true}, {id: "c2", vendor: "codex"}},
+			[]string{"running in claude", "real turn text", "no record of the codex session's id"},
+			[]string{"no other CLI has run"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := sessionStore(t)
+			home := os.Getenv("HOME")
+			ctx := context.Background()
+			dir, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			par := store.Parent{ID: "aa11", Dir: dir, CreatedAt: now, LastActive: now}
+			if err := s.InsertParent(ctx, par); err != nil {
+				t.Fatal(err)
+			}
+			for _, d := range []string{filepath.Join(home, ".grok", "sessions"), filepath.Join(home, ".codex", "sessions")} {
+				if err := os.MkdirAll(d, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i, k := range tt.kids {
+				at := now.Add(time.Duration(i-5) * time.Minute)
+				c := store.Child{ID: k.id, ParentID: par.ID, Vendor: k.vendor, VendorSessionID: k.session, Cwd: dir, Status: "open", CreatedAt: at, LastActive: at}
+				if err := s.InsertChild(ctx, c); err != nil {
+					t.Fatal(err)
+				}
+				if k.turns {
+					proj := filepath.Join(home, ".claude", "projects", claudeProjectDir(dir))
+					if err := os.MkdirAll(proj, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					line := `{"type":"user","message":{"role":"user","content":"real turn text"}}` + "\n"
+					if err := os.WriteFile(filepath.Join(proj, k.session+".jsonl"), []byte(line), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			pl := launchPlan{parent: par, newChild: true, child: store.Child{ID: "new", ParentID: par.ID, Vendor: "grok", Cwd: dir}}
+			out, err := childBrief(ctx, s, defaultBorrowEnv(), pl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, w := range tt.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("no %q in:\n%s", w, out)
+				}
+			}
+			for _, r := range tt.reject {
+				if strings.Contains(out, r) {
+					t.Errorf("%q in:\n%s", r, out)
+				}
+			}
+		})
+	}
+}
+
+// TestPlanPreviewWording (T6900): --show launches nothing, so its notes do not
+// say aggy is starting a session.
+func TestPlanPreviewWording(t *testing.T) {
+	s := sessionStore(t)
+	home := os.Getenv("HOME")
+	ctx := context.Background()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := s.InsertParent(ctx, store.Parent{ID: "aa11", Dir: dir, CreatedAt: now, LastActive: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".grok", "sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertChild(ctx, store.Child{ID: "c1", ParentID: "aa11", Vendor: "grok", VendorSessionID: "22222222-2222-4333-8444-555555555555", Cwd: dir, Status: "open", CreatedAt: now, LastActive: now}); err != nil {
+		t.Fatal(err)
+	}
+	var note strings.Builder
+	if _, err := plan(ctx, s, config.Config{}, dir, target{ParentID: "aa11", Preview: true}, now, &note); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(note.String(), "a launch would start a new grok session") || strings.Contains(note.String(), "; starting") {
+		t.Errorf("note = %q", note.String())
+	}
+}

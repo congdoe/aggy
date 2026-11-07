@@ -143,12 +143,14 @@ func TestToolForOneSession(t *testing.T) {
 func TestToolSessionSwitch(t *testing.T) {
 	w := newWorld(t)
 	w.aggyIn(t, "setup", "--yes")
+	w.aggyIn(t, "hooks", "install", "--vendor", "grok") // an agent's switch needs them (T6848)
 	_ = os.Remove(w.record)
 	sc := map[string]any{
 		"stdout":       "READY>",
 		"hook_command": askThenStop(t, adapter.Grok, ""),
 		"hooks": []map[string]any{{"event": "claude", "payload": map[string]any{}},
 			{"event": "Stop", "payload": map[string]any{"sessionId": "{session_id}"}}},
+		"session_files": startedFiles(),
 	}
 	s := w.start(t, sc, "run", "--tool", "context7", "grok")
 	s.waitWithin([]byte("-> claude. Ctrl+"), offerTimeout)
@@ -269,6 +271,7 @@ func TestToolShimSwitchResume(t *testing.T) {
 	w := newWorld(t)
 	w.env = []string{"PROBE_HOME=/opt/probe", "PROBE_SECRET_TOKEN=leak-canary", "NODE_OPTIONS=--require /tmp/x.js"}
 	w.aggyIn(t, "setup", "--yes")
+	w.aggyIn(t, "hooks", "install", "--vendor", "grok") // an agent's switch needs them (T6848)
 	dump := filepath.Join(w.home, "dump.jsonl")
 	def := strings.NewReplacer("{bin}", w.bin, "{dump}", dump).Replace(probeTool)
 	src := filepath.Join(t.TempDir(), "probe.toml") // outside home, which traces scans

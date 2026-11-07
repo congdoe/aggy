@@ -20,8 +20,9 @@ import (
 // saved with DECSC: that slot is the CLI's own, and a full-screen CLI or
 // pager may hold a position there (B13-13).
 const (
-	altScreenOn  = "\x1b[?1049h\x1b[H\x1b[2J"
-	altScreenOff = "\x1b[?1049l"
+	altScreenOn    = "\x1b[?1049h" + altScreenClear
+	altScreenClear = "\x1b[H\x1b[2J"
+	altScreenOff   = "\x1b[?1049l"
 )
 
 // picker is the minimal switch menu: the connected vendors in switch.order
@@ -33,6 +34,14 @@ type picker struct {
 	// list says aggy will not type its exit command (T6893).
 	noTurn bool
 	on     adapter.Vendor
+	// noHooks: aggy's hooks for on are not installed and none has arrived
+	// (T6848), so it will see no turn end after a message either.
+	noHooks bool
+	// moveRefused: a hook said on moved to another session and aggy could not
+	// confirm it, so turn ends there may not count.
+	moveRefused bool
+	// seed is what opts took from the switch waiting, which is waiting's alone.
+	seed Choice
 	// padRows blanks that many rows below the list, as its text shrinks over
 	// the CLI's screen. limitLine says a limit hit whose note did not show.
 	padRows   int
@@ -78,6 +87,10 @@ type picker struct {
 	// queues a resume of the vendor on screen; in the list, the switch
 	// waiting is that resume.
 	resume bool
+	// onAlt: draw took the terminal to the alternate screen and erase has not
+	// brought it back. 1049h saves the cursor each time, so a second one would
+	// save the alternate screen's over the CLI's (xterm's ctlseqs).
+	onAlt bool
 }
 
 // list sets the picker to the vendor list, its toggles cleared.
@@ -85,6 +98,7 @@ func (p *picker) list() {
 	p.confirm, p.note, p.lines, p.resume = "", false, nil, false
 	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
 	p.opts, p.editing, p.edit, p.editErr, p.stage, p.kids = Choice{}, false, nil, "", "", nil
+	p.seed = Choice{}
 }
 
 // ask sets the picker to confirm a switch to v, explained by lines.
@@ -107,8 +121,12 @@ func (p *picker) warn(to adapter.Vendor, forms ...string) {
 	p.warning, p.warnTo, p.forms = true, to, forms
 }
 
-// noTurnListRows is the rows draw's no-turn text takes.
-const noTurnListRows = 6
+// noTurnListRows is the rows draw's no-turn text takes; moveRefusedRows the
+// refused move's.
+const (
+	noTurnListRows  = 6
+	moveRefusedRows = 2
+)
 
 // draw writes the picker: on the alternate screen, or, when the CLI is
 // already on it (overCLI), over the top lines of the CLI's screen.
@@ -153,16 +171,35 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 		case p.waiting != "":
 			lines = append(lines, "", fmt.Sprintf("Switching to %s when this turn ends; Esc cancels it, picking it again says no turn is running.", p.waiting))
 		}
+		if p.moveRefused {
+			// Each fits 80 columns. Where nothing else would say to quit by hand
+			// or pick twice, this does; moveRefusedRows counts these.
+			way := "if no turn is running, pick the vendor twice."
+			if p.noTurn {
+				way = "to switch, quit it yourself, as below."
+			}
+			lines = append(lines, fmt.Sprintf("%s said it moved to a session aggy could not confirm.", p.on), "Its turn ends may not count: "+way)
+		}
 		if p.noTurn {
 			cmd, _ := adapter.ExitCommand(p.on)
+			seen := fmt.Sprintf("aggy has seen no turn end from %s since it opened, and it may be", p.on)
+			if p.moveRefused {
+				seen = fmt.Sprintf("aggy has counted no turn end from %s since it opened, and it may be", p.on)
+			}
 			// Each fits 80 columns: over the CLI's screen a longer one is cut.
 			// noTurnListRows counts these with the blank.
 			lines = append(lines, "",
-				fmt.Sprintf("aggy has seen no turn end from %s since it opened, and it may be", p.on),
+				seen,
 				fmt.Sprintf("showing a dialog, so aggy will not type %s.", cmd),
-				fmt.Sprintf("To switch, quit %s yourself within %d minutes; it must exit cleanly.", p.on, noTurnPickMinutes),
-				"After a message, aggy asks at that turn's end if it sees one; some CLIs",
-				"report none until their hook is approved.")
+				fmt.Sprintf("To switch, quit %s yourself within %d minutes; it must exit cleanly.", p.on, noTurnPickMinutes))
+			if p.noHooks {
+				lines = append(lines,
+					fmt.Sprintf("aggy's hooks for %s are not installed, so aggy sees no turn end at all.", p.on),
+					"aggy hooks install sets them up, for the next session.")
+			} else {
+				lines = append(lines, "After a message, aggy asks at that turn's end if it sees one; some CLIs",
+					"report none until their hook is approved.")
+			}
 		}
 		if p.stalePick && p.waiting != "" {
 			lines = append(lines, fmt.Sprintf("Your pick of %s is over %d minutes old: pick it again to switch when you quit.", p.waiting, noTurnPickMinutes))
@@ -199,7 +236,12 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 			fmt.Fprintf(&b, "\x1b[%d;1H\x1b[2K%s", i+1, l)
 		}
 	} else {
-		b.WriteString(altScreenOn)
+		if p.onAlt {
+			b.WriteString(altScreenClear)
+		} else {
+			b.WriteString(altScreenOn)
+		}
+		p.onAlt = true
 		for _, l := range lines {
 			b.WriteString(l + "\r\n")
 		}
@@ -259,6 +301,7 @@ func (p *picker) erase(w io.Writer, overCLI bool) {
 	if overCLI {
 		return
 	}
+	p.onAlt = false
 	_, _ = io.WriteString(w, altScreenOff)
 }
 
@@ -355,6 +398,20 @@ func (p *picker) handle(b []byte) (done bool, c Choice) {
 // choose picks v with the list's toggles, or, when v has several
 // children in the parent and no new one is asked for, shows them.
 func (p *picker) choose(v adapter.Vendor) (bool, Choice) {
+	if v != p.waiting {
+		// The waiting switch's options are for its vendor. Only those still as
+		// they came go: a toggle the person changed here is for this pick.
+		if p.seed.Model != "" && p.opts.Model == p.seed.Model {
+			p.opts.Model = ""
+		}
+		if p.seed.New {
+			p.opts.New = false
+		}
+		if p.seed.Brief {
+			p.opts.Brief = false
+		}
+		p.seed = Choice{}
+	}
 	if !p.opts.New && p.children != nil {
 		if kids := p.children(v); len(kids) > 1 {
 			p.stage, p.kids = v, kids

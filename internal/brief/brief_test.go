@@ -266,3 +266,28 @@ func TestBuildGrokShrinkEnds(t *testing.T) {
 		t.Errorf("caller's turn changed to %q", turns[0].Text)
 	}
 }
+
+// TestBuildUnread (T6900): a session whose id was never recorded rules out
+// saying no CLI ran, or that there is no earlier session.
+func TestBuildUnread(t *testing.T) {
+	out := Build(Input{To: adapter.Grok, Unread: []adapter.Vendor{adapter.Codex}})
+	for _, bad := range []string{"no other CLI has run", "There is no earlier session"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("the brief claims %q:\n%s", bad, out)
+		}
+	}
+	for _, want := range []string{"a codex session may have run", "no record of the codex session's id"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the brief does not say %q:\n%s", want, out)
+		}
+	}
+	back := Build(Input{To: adapter.Claude, Since: time.Unix(1000, 0), Unread: []adapter.Vendor{adapter.Codex}})
+	if strings.Contains(back, "No other CLI worked") || !strings.Contains(back, "no record of the codex session's id") {
+		t.Errorf("a return brief:\n%s", back)
+	}
+	beside := Build(Input{To: adapter.Grok, From: adapter.Claude, Unread: []adapter.Vendor{adapter.Codex},
+		Transcript: adapter.Transcript{Turns: []adapter.Turn{{Role: "user", Text: "real turn"}}}})
+	if !strings.Contains(beside, "real turn") || !strings.Contains(beside, "no record of the codex session's id") || !strings.Contains(beside, "running in claude") {
+		t.Errorf("beside turns:\n%s", beside)
+	}
+}

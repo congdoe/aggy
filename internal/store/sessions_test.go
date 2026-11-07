@@ -218,3 +218,81 @@ func TestSetChildSessionIDLeased(t *testing.T) {
 		}
 	}
 }
+
+// TestDeleteUnstartedChild (T6899): only a child with no file seen and no lease
+// goes; it is a no-op for one that has either.
+func TestDeleteUnstartedChild(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	t0 := time.UnixMilli(1_000_000).UTC()
+	if err := s.InsertParent(ctx, Parent{ID: "p1", Dir: "/a", CreatedAt: t0, LastActive: t0}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []Child{
+		{ID: "fresh", VendorSessionID: "sf"},
+		{ID: "seen", VendorSessionID: "ss"},
+		{ID: "leased", VendorSessionID: "sl"},
+	} {
+		c.ParentID, c.Vendor, c.Cwd, c.CreatedAt, c.LastActive = "p1", "grok", "/a", t0, t0
+		if err := s.InsertChild(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetChildFileSeen(ctx, "seen"); err != nil {
+		t.Fatal(err)
+	}
+	l, err := s.AcquireLease(ctx, "grok", "sl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Release(ctx) }()
+	for id, want := range map[string]bool{"fresh": true, "seen": false, "leased": false, "missing": false} {
+		if got, err := s.DeleteUnstartedChild(ctx, id); err != nil || got != want {
+			t.Errorf("%s: deleted %v, %v; want %v", id, got, err, want)
+		}
+	}
+	cs, err := s.Children(ctx, "p1")
+	if err != nil || len(cs) != 2 {
+		t.Errorf("children = %+v, %v", cs, err)
+	}
+}
+
+// TestMoveChildSession (T6901): the row and its lease move to the new id, unless
+// the row's id changed or another child holds the new one.
+func TestMoveChildSession(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	t0 := time.UnixMilli(1_000_000).UTC()
+	if err := s.InsertParent(ctx, Parent{ID: "p1", Dir: "/a", CreatedAt: t0, LastActive: t0}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []Child{{ID: "c1", VendorSessionID: "s1"}, {ID: "c2", VendorSessionID: "s2"}} {
+		c.ParentID, c.Vendor, c.Cwd, c.CreatedAt, c.LastActive = "p1", "claude", "/a", t0, t0
+		if err := s.InsertChild(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l, err := s.AcquireLease(ctx, "claude", "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Release(ctx) }()
+	for _, tt := range []struct {
+		name, from, to string
+		want           bool
+	}{
+		{"another child's id", "s1", "s2", false},
+		{"stale from", "gone", "s3", false},
+		{"moved", "s1", "s3", true},
+	} {
+		if got, err := s.MoveChildSession(ctx, "c1", tt.from, tt.to); err != nil || got != tt.want {
+			t.Errorf("%s: %v, %v", tt.name, got, err)
+		}
+	}
+	if _, alive, _ := s.LeaseHolder(ctx, "claude", "s3"); !alive {
+		t.Error("the lease did not move with the id")
+	}
+	if _, alive, _ := s.LeaseHolder(ctx, "claude", "s1"); alive {
+		t.Error("the old id is still leased")
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -97,19 +98,45 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 func launch(name string, t target, stderr io.Writer) int {
 	q := dlog.Queue(diagQueue)
 	defer q.Close(diagFlush)
+	// before is the launch the CLI on screen was switched from, to go back to
+	// when that CLI never starts (T6899).
+	var before *reopen
 	for {
 		var next switchTo
 		code := launchOnce(name, &t, stderr, &next, q)
 		if next.vendor == "" {
-			return code
+			if next.unstarted == nil || before == nil {
+				return code
+			}
+			u := next.unstarted
+			q.Log(diag.Rec{Event: diag.EvSwitchReturned, Code: diag.CodeNeverStarted, Parent: before.next.parentID, Vendor: string(u.vendor),
+				Attrs: map[string]any{"from": string(u.vendor), "to": string(before.next.vendor), "exit": code}})
+			fmt.Fprintf(stderr, "%s: %s %s\n", name, goBackLine(u.vendor, before.next), dlog.Tag(diag.CodeNeverStarted))
+			t = sameChildAgain(before.t, before.next)
+			before = nil
+			continue
 		}
 		c := next.choice
 		if c.Resume {
 			t = sameChildAgain(t, next)
+			before = nil
 			continue
 		}
+		// next.from is the same session, for going back to it.
+		before = &reopen{t: t, next: switchTo{vendor: next.from, parentID: next.parentID, child: next.child, fromID: next.fromID}}
 		t = target{ParentID: next.parentID, Vendor: next.vendor, Child: c.Child, NewChild: c.New, Model: c.Model, Brief: c.Brief, Tools: c.Tools}
 	}
+}
+
+// goBackLine says what follows a CLI of vendor from that never started. A child
+// with no session id cannot be reopened, so plan makes a new one there, and the
+// line must not call that going back.
+func goBackLine(from adapter.Vendor, to switchTo) string {
+	const closed = "%s closed before it started (a dialog declined, or quit before your first message), "
+	if to.fromID == "" {
+		return fmt.Sprintf(closed+"so aggy opens a new %s session: it never learned the id of the one before. Quit %s to leave aggy.", from, to.vendor, to.vendor)
+	}
+	return fmt.Sprintf(closed+"so aggy goes back to %s. Quit %s to leave aggy.", from, to.vendor, to.vendor)
 }
 
 // sameChildAgain is the target of T6729's resume: the same child again, so it
@@ -123,12 +150,80 @@ func sameChildAgain(t target, next switchTo) target {
 }
 
 // switchTo is the vendor a CLI exited for, its parent, and the switch's
-// options.
+// options. unstarted, with no vendor, says the CLI never started (T6899).
 type switchTo struct {
-	vendor   adapter.Vendor
-	parentID string
-	choice   supervisor.Choice
-	child    string // the child that was on screen, for a resume (T6729)
+	vendor    adapter.Vendor
+	parentID  string
+	choice    supervisor.Choice
+	child     string         // the child that was on screen, for a resume (T6729)
+	from      adapter.Vendor // the vendor that was on screen
+	fromID    string         // its session id, "" if aggy never learned it
+	unstarted *unstarted
+}
+
+// reopen is a launch to go back to: its target, and that child as a switchTo.
+type reopen struct {
+	t    target
+	next switchTo
+}
+
+// unstarted is a CLI that closed before it started.
+type unstarted struct{ vendor adapter.Vendor }
+
+// startEvidence is what the CLI just run left behind about getting past its
+// launch dialogs.
+type startEvidence int
+
+const (
+	startUnknown startEvidence = iota // aggy cannot tell: keep the row, go back nowhere
+	startYes
+	startNever
+)
+
+// childStarted looks for that evidence: a counted turn end, a session file (for
+// a new child, any: its id is new, so a file behind aggy's clock is still its
+// own; for a resumed one, changed since the launch), or, for a new Codex child
+// with no id yet, a rollout new since then (another Codex's counts too: the safe
+// side, which just ends aggy as before). A SessionStart hook is no evidence:
+// whether a CLI sends it before its trust dialog is unverified. Quitting before
+// the first message looks the same as a declined dialog, and is treated the same.
+//
+// startNever takes a folder aggy can read, of a recorded layout, that lacks the
+// file. One that is not there at all (an unmounted disk, a vendor whose layout
+// aggy cannot read) says nothing, and going back from it could delete a row with
+// a session behind it. So does a miss in Claude's project folders, whose layout
+// is unverified (errNotInScan): a file somewhere aggy does not look is possible.
+// TODO(T6895): a live check of that layout can move Claude to startNever.
+func childStarted(facts supervisor.RunFacts, child store.Child, id string, newChild bool, began time.Time, sawRollout func() (seen, known bool), files *sessionFiles) startEvidence {
+	if facts.TurnRan {
+		return startYes
+	}
+	v, err := adapter.ParseVendor(child.Vendor)
+	if err != nil {
+		return startUnknown
+	}
+	if id == "" {
+		if sawRollout == nil {
+			return startUnknown
+		}
+		switch seen, known := sawRollout(); {
+		case seen:
+			return startYes
+		case known:
+			return startNever
+		}
+		return startUnknown
+	}
+	t, err := files.LastChanged(v, id, child.VendorHome, child.Cwd, child.CreatedAt)
+	switch {
+	case errors.Is(err, errNoSessionFile):
+		return startNever
+	case err != nil:
+		return startUnknown
+	case newChild || !t.Before(began.Truncate(time.Second)): // file times can be whole seconds
+		return startYes
+	}
+	return startNever
 }
 
 // diagQueue is how many records the supervisor's diagnostic queue holds;
@@ -241,6 +336,9 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	var warns []string
 	if pl.child.Kind != "" {
 		warns = append(warns, borrowNote(pl))
+	}
+	if w := hookWarning(v); w != "" {
+		warns = append(warns, w)
 	}
 	if len(t.Loosens) > 0 {
 		warns = append(warns, "your flags "+strings.Join(t.Loosens, ", ")+" loosen approvals, the sandbox, or hook trust for this launch; --no-policy lets them through")
@@ -434,7 +532,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		}
 		return code
 	}
-	onHook, stopIndex := startIndex(parentID, v, assigned, cids.set)
+	onHook, stopIndex, index := startIndex(parentID, v, assigned, cids.set)
 	defer stopIndex()
 	// A limit reaches the picker (T6667) without ever blocking the watch.
 	limitHit := make(chan supervisor.LimitHit, 1)
@@ -487,7 +585,9 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			return set, err
 		}
 	}
+	var facts supervisor.RunFacts
 	ex, err := supervisor.Run(supervisor.Options{
+		Facts:         &facts,
 		Tools:         tools,
 		ToolsAtLaunch: toolBase,
 		ToolsNudge:    proxyNudge,
@@ -510,17 +610,23 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		// OpenCode takes a brief in its instructions, so none starts a turn.
 		StartsTurn: t.Brief && v != adapter.OpenCode,
 		SessionID:  cids.current,
-		Children:   children,
-		HasChild:   hasChild,
-		Limits:     limitHit,
-		HasQuota:   quota,
-		Used:       used,
-		WarnAt:     eff.Switch.WarnAt,
-		Diag:       q,
-		ChildID:    pl.child.ID,
+		OnFollow:   cids.follow,
+		// T6848: only when aggy can say so for this binary; one that cannot
+		// be checked refuses nothing.
+		HooksMissing: hooksMissing(v),
+		Children:     children,
+		HasChild:     hasChild,
+		Limits:       limitHit,
+		HasQuota:     quota,
+		Used:         used,
+		WarnAt:       eff.Switch.WarnAt,
+		Diag:         q,
+		ChildID:      pl.child.ID,
 	})
 	px.guard(0, false) // the CLI was reaped: never signal its pid again
 	dlog.Release()
+	// Before the next launch, whose brief reads this child's transcript.
+	cids.settle(ctx, appendEvent, &sessionFiles{})
 	if err != nil {
 		r := ids
 		r.Event, r.Code, r.Cause, r.Msg = diag.EvLaunchRefused, diag.CodeLaunchFailed, cause, "the supervisor failed"
@@ -533,9 +639,55 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	}
 	exited(ex.Code, ex.SwitchTo)
 	if ex.SwitchTo != "" {
-		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next, child: pl.child.ID}
+		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next, child: pl.child.ID, from: v, fromID: cids.current()}
+		return ex.Code
+	}
+	// A signal to aggy or a signal that killed the CLI never leads to another
+	// launch; only launch knows whether there is a CLI to go back to.
+	// TODO(T6895): a CLI's own exit code 130 after Ctrl+C reads as a signal here,
+	// so it ends aggy: the safe side.
+	if facts.Signalled || ex.Code >= 128 || !t.fromSwitch() || cids.didMove() ||
+		childStarted(facts, pl.child, cids.current(), pl.newChild, began, index.sawRollout, &sessionFiles{}) != startNever {
+		return ex.Code
+	}
+	next.unstarted = &unstarted{vendor: v}
+	if pl.newChild {
+		// It has nothing behind it, and it must not stay the parent's latest.
+		cids.release(ctx)
+		if lease != nil {
+			_ = lease.Release(ctx)
+			lease = nil
+		}
+		_, _ = s.DeleteUnstartedChild(ctx, pl.child.ID)
 	}
 	return ex.Code
+}
+
+// hooksMissing reports whether aggy's turn-end hook for v is not installed, for
+// any aggy binary: then aggy sees no turn end. Only that makes an agent's switch
+// wait forever. It is only a hint: the supervisor lets an arriving hook overrule
+// it. Codex's also need the person's approval, which aggy cannot check; that
+// stays the list's words.
+func hooksMissing(v adapter.Vendor) bool {
+	pr, err := hookPresence(v)
+	return err == nil && slices.Contains(pr.Absent, "Stop")
+}
+
+// hookWarning is the launch's line about v's hooks, "" when they are in place.
+func hookWarning(v adapter.Vendor) string {
+	if hooksMissing(v) {
+		return fmt.Sprintf("aggy's hooks for %s are not installed, so aggy sees no turn end and no limit in it: a switch means quitting %s yourself. aggy hooks install sets them up", v, v)
+	}
+	pr, err := hookPresence(v)
+	switch {
+	case err != nil:
+		return ""
+	case len(pr.Absent) > 0:
+		return fmt.Sprintf("some of aggy's hooks for %s are not installed (%s), so aggy may miss what they report. aggy hooks install adds them", v, strings.Join(pr.Absent, ", "))
+	case len(pr.Stale) > 0:
+		return fmt.Sprintf("aggy's hooks for %s call another aggy binary; they report while it is there. aggy hooks install points them at this one", v)
+	}
+	return ""
 }
 
 // refreshEvery is how often refreshed reads again.

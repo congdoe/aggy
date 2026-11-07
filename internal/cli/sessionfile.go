@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/grok"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/transcript"
 )
 
 // sessionFiles finds a vendor session's files in the vendor's sessions
@@ -47,6 +49,9 @@ import (
 type sessionFiles struct {
 	getenv func(string) string // nil means os.Getenv
 	now    func() time.Time    // nil means time.Now
+
+	// readOnly: refreshChildren writes nothing to the index (aggy brief --show).
+	readOnly bool
 
 	claudeDirs map[string][]string                  // project folders per root, listed once
 	rollouts   map[string]map[string]codexRolloutAt // Codex rollouts per root, by thread id, listed once
@@ -204,6 +209,72 @@ func (f *sessionFiles) codexRollout(root, id string, started, now time.Time) (ti
 	return time.Time{}, errNoSessionFile
 }
 
+// inDir reports whether session id's file is where cwd keeps its sessions, with
+// no scan of other folders: Claude's project folder for cwd, Grok's encoded cwd
+// folder, and for Codex a TUI rollout whose session_meta names cwd (rolloutInDir).
+// cwd is tried as recorded and resolved, since a CLI may record either. Claude's
+// folder name is unverified, so a miss only leaves things as they were.
+func (f *sessionFiles) inDir(v adapter.Vendor, id, vendorHome, cwd string, started time.Time) bool {
+	if cwd == "" {
+		return false
+	}
+	if _, err := f.LastChanged(v, id, vendorHome, cwd, started); err != nil {
+		return false
+	}
+	h, err := f.homeOf(v, vendorHome)
+	if err != nil {
+		return false
+	}
+	cwds := []string{cwd}
+	if c, err := safefs.CanonicalPath(cwd); err == nil && c != cwd {
+		cwds = append(cwds, c)
+	}
+	switch v {
+	case adapter.Claude:
+		root := filepath.Join(h, "projects")
+		for _, c := range cwds {
+			for _, name := range []string{claudeProjectDir(c), transcript.ClaudeProjectDir(c)} {
+				if d := filepath.Join(root, name); realDir(root, d) {
+					if _, ok := regularMtime(filepath.Join(d, id+".jsonl")); ok {
+						return true
+					}
+				}
+			}
+		}
+	case adapter.Grok:
+		root := filepath.Join(h, "sessions")
+		for _, c := range cwds {
+			if realDir(root, filepath.Join(root, grok.EncodeCwd(c), id)) {
+				return true
+			}
+		}
+	case adapter.Codex:
+		path, ok := f.rolloutPath(v, id, vendorHome)
+		return ok && rolloutInDir(path, id, cwds)
+	}
+	return false
+}
+
+// homeOf is vendorHome when it is an absolute path, else this environment's.
+func (f *sessionFiles) homeOf(v adapter.Vendor, vendorHome string) (string, error) {
+	h := filepath.Clean(vendorHome)
+	if vendorHome != "" && filepath.IsAbs(h) {
+		return h, nil
+	}
+	return f.home(v)
+}
+
+// rolloutPath is the path of id's Codex rollout as LastChanged indexed it (call
+// that first, on this sessionFiles); vendorHome as for LastChanged.
+func (f *sessionFiles) rolloutPath(v adapter.Vendor, id, vendorHome string) (string, bool) {
+	h, err := f.homeOf(v, vendorHome)
+	if err != nil {
+		return "", false
+	}
+	r, ok := f.rollouts[filepath.Join(h, "sessions")][id]
+	return r.path, ok
+}
+
 // indexRollouts lists every date folder under root that is there (not
 // through a symlink) and maps each rollout's thread id to it.
 func indexRollouts(root string) map[string]codexRolloutAt {
@@ -359,7 +430,7 @@ func refreshChildren(ctx context.Context, s *store.Store, parentID string, files
 	if err != nil {
 		return nil, err
 	}
-	raised := false
+	raised, moved := false, false
 	for i := range cs {
 		c := &cs[i]
 		if c.Kind != "" || c.Status != "open" {
@@ -383,6 +454,13 @@ func refreshChildren(ctx context.Context, s *store.Store, parentID string, files
 		t, err := files.LastChanged(v, c.VendorSessionID, c.VendorHome, c.Cwd, c.CreatedAt)
 		switch {
 		case err == nil:
+			if files.readOnly {
+				c.FileSeen = true
+				if t.After(c.LastActive) {
+					c.LastActive, moved = t, true
+				}
+				continue
+			}
 			if !c.FileSeen {
 				if err := s.SetChildFileSeen(ctx, c.ID); err != nil {
 					return nil, err
@@ -406,6 +484,25 @@ func refreshChildren(ctx context.Context, s *store.Store, parentID string, files
 		default:
 			c.Status = stateUnknown
 		}
+	}
+	if moved {
+		// As Children sorts, so a preview plans the child a launch would.
+		limit := time.Now()
+		active := func(c store.Child) time.Time {
+			if c.LastActive.After(limit) {
+				return limit
+			}
+			return c.LastActive
+		}
+		slices.SortStableFunc(cs, func(a, b store.Child) int {
+			if n := active(b).Compare(active(a)); n != 0 {
+				return n
+			}
+			if n := b.CreatedAt.Compare(a.CreatedAt); n != 0 {
+				return n
+			}
+			return strings.Compare(a.ID, b.ID)
+		})
 	}
 	if !raised {
 		return cs, nil

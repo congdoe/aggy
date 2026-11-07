@@ -42,7 +42,8 @@ func (s *session) startGuardWatch() {
 // TODO(T6953): a session changed on screen (/new, /sessions, /open) makes the
 // turn ends name another id, so they are ignored and no switch is offered, and
 // a brief reads the session aggy launched. The re-review of T6932 found that
-// /undo reaches the same harm.
+// /undo reaches the same harm. session.followSession is the way in, once there
+// is evidence of a move; nothing calls it for OpenCode yet.
 
 // openCodeEvent handles the events only OpenCode's plugin sends, and says
 // whether that is all there is to do. Asked events go on to hookEvent's
@@ -186,7 +187,7 @@ func (s *session) finishExit() {
 		cancel("typed_in_gap")
 		s.toChild.push(bytes.Repeat([]byte{0x7f}, len(cmd)))
 		s.send(keys)
-		s.pk.tell(fmt.Sprintf("You typed as aggy was about to exit %s, so it stayed, with your text in its prompt.", s.o.Vendor),
+		s.pk.tell(fmt.Sprintf("You typed or clicked as aggy was about to exit %s, so it stayed; anything typed is in its prompt.", s.o.Vendor),
 			fmt.Sprintf("Pick %s again to switch.", to))
 		s.openPicker()
 	default:

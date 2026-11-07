@@ -70,7 +70,22 @@ type target struct {
 	// SameChild says Child is the child that was on screen, reopened for a
 	// tool change, so it may be a borrow's. A switch's Child never may.
 	SameChild bool
+	// Preview: nothing launches (--brief --show), so a note says what a launch
+	// would do.
+	Preview bool
 }
+
+// starting is what a note says a launch does.
+func (t target) starting() string {
+	if t.Preview {
+		return "a launch would start"
+	}
+	return "starting"
+}
+
+// fromSwitch reports whether t is a switch's launch, which has a CLI to go back
+// to: a vendor in a parent, and not the same child again.
+func (t target) fromSwitch() bool { return t.ParentID != "" && t.Vendor != "" && !t.SameChild }
 
 // Errors launchCode gives their own reason code.
 var (
@@ -112,10 +127,13 @@ type launchPlan struct {
 	// remakeCwd says the child's working dir is a finished borrow's empty
 	// temp dir, which launchOnce makes again for the session.
 	remakeCwd bool
+	// preview: nothing launches (target.Preview), so nothing is written.
+	preview bool
 }
 
 // plan decides the parent and child a launch opens. It writes only what
-// refreshChildren finds on disk; the launch itself is recorded by commit.
+// refreshChildren finds on disk, and for a preview nothing; the launch itself is
+// recorded by commit.
 // Notes for the user (a session the vendor no longer has, an id never
 // recorded) go to stderr. A switch's one-launch model (T6665) is set on
 // the child here, so a new child's index row records it (O56-7); it is
@@ -129,6 +147,7 @@ func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t 
 	if err == nil && t.Model != "" {
 		p.child.Model = t.Model
 	}
+	p.preview = t.Preview
 	return p, err
 }
 
@@ -160,7 +179,7 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 			p.parent, pick = par, kids[0]
 		}
 	case t.Continue:
-		par, id, err := latestResumable(ctx, s, cwd, t.Vendor)
+		par, id, err := latestResumable(ctx, s, cwd, t.Vendor, t.Preview)
 		if err != nil {
 			return p, err
 		}
@@ -179,11 +198,13 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 		case replaced(par):
 			// A directory removed and made again (a re-clone) is another
 			// project: its old sessions are not resumed by default.
-			fmt.Fprintf(stderr, "aggy: this directory was replaced since session %s; starting a new session. aggy resume %s reopens the old one.\n",
-				shortID(par.ID), shortID(par.ID))
+			fmt.Fprintf(stderr, "aggy: this directory was replaced since session %s; %s a new session. aggy resume %s reopens the old one.\n",
+				shortID(par.ID), t.starting(), shortID(par.ID))
 			p.newParent = true
 		default:
-			p.parent = par
+			if p.parent, err = latestStarted(ctx, s, key, cwd, par, t, stderr); err != nil {
+				return p, err
+			}
 		}
 	}
 	if !p.newParent && replaced(p.parent) {
@@ -211,20 +232,35 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 	if t.Child != "" {
 		pick = t.Child
 	}
-	files := &sessionFiles{}
+	files := &sessionFiles{readOnly: t.Preview}
 	children, err := planRefresh(ctx, s, p.parent.ID, files)
 	if err != nil {
 		return p, err
 	}
-	// The interactive child last on screen: the most recently active one,
-	// or the one picked by id.
-	var last *store.Child
+	// The interactive child last on screen: the most recently active one that
+	// can be reopened, or the one picked by id. Any other counts only when no
+	// other does (T6899).
+	var last, unstarted, noID *store.Child
 	for i := range children {
 		if (children[i].Kind == "" || borrowOK && children[i].ID == pick) && (pick == "" || children[i].ID == pick) &&
 			(t.Vendor == "" || children[i].Vendor == string(t.Vendor)) {
+			if pick == "" && !reopenable(children[i]) {
+				if unstarted == nil {
+					unstarted = &children[i]
+				}
+				if noID == nil && children[i].VendorSessionID == "" && !neverStarted(children[i]) {
+					noID = &children[i]
+				}
+				continue
+			}
 			last = &children[i]
 			break
 		}
+	}
+	if last == nil {
+		last = unstarted
+	} else if noID != nil && last.VendorSessionID != "" {
+		noteHidden(stderr, *noID, *last, t)
 	}
 	if last != nil && last.Kind != "" {
 		return p, p.borrowChild(cfg, t, *last, files)
@@ -249,14 +285,14 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 		if last.Status == stateClosed {
 			why = "its directory was removed"
 		}
-		fmt.Fprintf(stderr, "aggy: the last %s session of %s cannot be resumed (%s); starting a new %s session. The parent's other sessions are kept.\n",
-			last.Vendor, short, why, last.Vendor)
+		fmt.Fprintf(stderr, "aggy: the last %s session of %s cannot be resumed (%s); %s a new %s session. The parent's other sessions are kept.\n",
+			last.Vendor, short, why, t.starting(), last.Vendor)
 		return p, p.newChildOf(ctx, s, cfg, adapter.Vendor(last.Vendor), now)
 	case last.VendorSessionID == "":
 		// A Codex child whose id the session index never confirmed (its
 		// hooks not installed or not approved, or no turn saved).
-		fmt.Fprintf(stderr, "aggy: the last %s session of %s has no recorded session id; starting a new %s session.\n",
-			last.Vendor, short, last.Vendor)
+		fmt.Fprintf(stderr, "aggy: the last %s session of %s has no recorded session id; %s a new %s session.\n",
+			last.Vendor, short, t.starting(), last.Vendor)
 		return p, p.newChildOf(ctx, s, cfg, adapter.Vendor(last.Vendor), now)
 	}
 	v, err := adapter.ParseVendor(last.Vendor)
@@ -270,6 +306,65 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 	p.child, p.resume = *last, last.VendorSessionID
 	p.child.Model = cfg.Vendors.For(v).Model
 	return p, nil
+}
+
+// neverStarted reports whether c, as refreshChildren left it, is an interactive
+// child with no session file now and none ever seen: its CLI closed at a launch
+// dialog, or before the first message. There is nothing to reopen.
+func neverStarted(c store.Child) bool {
+	return c.Kind == "" && c.Status == stateGone && !c.FileSeen
+}
+
+// reopenable reports whether a resume could put c back on screen. A child with
+// no session id cannot: its turns, if it had any, are out of aggy's reach, which
+// is why brief's reading of neverStarted stays apart from this.
+func reopenable(c store.Child) bool {
+	return !neverStarted(c) && (c.Kind != "" || c.VendorSessionID != "")
+}
+
+// noteHidden says that a resume opens opened because the newer session hidden
+// cannot be reopened: it may well have had turns.
+func noteHidden(stderr io.Writer, hidden, opened store.Child, t target) {
+	verb := "opening"
+	if t.Preview {
+		verb = "a launch would open"
+	}
+	fmt.Fprintf(stderr, "aggy: the newer %s session here cannot be reopened, since aggy never learned its id; %s the %s session %s.\n",
+		hidden.Vendor, verb, opened.Vendor, shortID(opened.ID))
+}
+
+// latestStarted is the parent aggy resume reopens in dir: the most recently
+// active one with a child that can be reopened, else latest. A parent left only
+// with a child that never started, or with no id, must not hide the session
+// before it (T6899).
+func latestStarted(ctx context.Context, s *store.Store, key, dir string, latest store.Parent, t target, stderr io.Writer) (store.Parent, error) {
+	ps, err := s.ParentsInDir(ctx, key, dir)
+	if err != nil {
+		return latest, err
+	}
+	var hidden *store.Child
+	for _, par := range ps {
+		if replaced(par) {
+			continue
+		}
+		children, err := planRefresh(ctx, s, par.ID, &sessionFiles{readOnly: t.Preview})
+		if err != nil {
+			return latest, err
+		}
+		for i, c := range children {
+			if c.Kind == "" && reopenable(c) {
+				// The chosen parent's own children say theirs in planChild.
+				if hidden != nil {
+					noteHidden(stderr, *hidden, c, t)
+				}
+				return par, nil
+			}
+			if c.Kind == "" && hidden == nil && c.VendorSessionID == "" && !neverStarted(c) {
+				hidden = &children[i]
+			}
+		}
+	}
+	return latest, nil
 }
 
 // borrowChild plans a finished borrow's child on screen (aggy resume <child
@@ -370,7 +465,7 @@ func remakeBorrowDir(cwd string) (func(), error) {
 // child last active in dir (of v, when set) that can still be reopened, in
 // whichever of dir's parents holds it, since every bare aggy starts a
 // parent of its own and one quit before its first message saves nothing.
-func latestResumable(ctx context.Context, s *store.Store, dir string, v adapter.Vendor) (store.Parent, string, error) {
+func latestResumable(ctx context.Context, s *store.Store, dir string, v adapter.Vendor, readOnly bool) (store.Parent, string, error) {
 	key, err := safefs.CanonicalPath(dir)
 	if err != nil {
 		return store.Parent{}, "", err
@@ -383,7 +478,7 @@ func latestResumable(ctx context.Context, s *store.Store, dir string, v adapter.
 		if replaced(par) {
 			continue
 		}
-		children, err := planRefresh(ctx, s, par.ID, &sessionFiles{})
+		children, err := planRefresh(ctx, s, par.ID, &sessionFiles{readOnly: readOnly})
 		if err != nil {
 			return store.Parent{}, "", err
 		}
@@ -595,9 +690,18 @@ func shortID(id string) string {
 }
 
 // childIDs records the on-screen child's vendor session id once the
-// session index knows it. The row keeps the first id (a /clear does not
-// move it). A Codex child gets no id at launch, so its lease is taken
-// here, when the id is confirmed, and held until the CLI exits.
+// session index knows it. A Codex child gets no id at launch, so its lease is
+// taken here, when the id is confirmed, and held until the CLI exits. When the
+// CLI moves to another session (/clear, /resume; the supervisor follows it on
+// a hook from where the CLI's own hooks run, session.followSession), follow
+// makes that the id, and settle records it on the row as the CLI exits, once a
+// session file of this child's directory backs it: a resume starts a CLI on that
+// id, so it takes more than a hook's word, which a tool in the CLI's tree can
+// forge, and a session of another repo must not become this child's. That
+// guards against a mistake, not against a tool that can write to the vendor's
+// folder: it can as well rewrite the session aggy would resume. No file (a /clear
+// and no message after it) leaves the row on the session that has turns, as
+// claude --continue does.
 type childIDs struct {
 	s     *store.Store
 	child store.Child
@@ -606,18 +710,65 @@ type childIDs struct {
 	lease *store.Lease
 	done  bool
 	id    string // a new Codex child's id, once recorded and leased
+	moved string // the session the CLI moved to, once followed
+	via   string // the evidence for it
 }
 
 // current is the child's vendor session id: the one given at launch, or
 // a new Codex child's once the index recorded it; "" until then. The
 // supervisor counts only turn ends that name it (S-9).
 func (c *childIDs) current() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.moved != "" {
+		return c.moved
+	}
 	if c.child.VendorSessionID != "" {
 		return c.child.VendorSessionID
 	}
+	return c.id
+}
+
+// follow is supervisor.Options.OnFollow.
+func (c *childIDs) follow(id, via string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.id
+	c.moved, c.via = id, via
+}
+
+// didMove reports whether the CLI moved to another session while it ran.
+func (c *childIDs) didMove() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.moved != ""
+}
+
+// settle records the session the CLI moved to on the child's row, if its session
+// file backs it: found where this child's directory keeps its sessions, and for
+// Codex the interactive TUI's own rollout, of this directory (rolloutInDir), so a
+// nested codex exec's never is. An id another child holds stays off this one.
+// Errors are dropped: the row stays as it was.
+func (c *childIDs) settle(ctx context.Context, record func(store.Event) error, files *sessionFiles) {
+	c.mu.Lock()
+	from, to, via := c.child.VendorSessionID, c.moved, c.via
+	if from == "" {
+		from = c.id
+	}
+	c.mu.Unlock()
+	v, err := adapter.ParseVendor(c.child.Vendor)
+	if to == "" || from == "" || err != nil {
+		return
+	}
+	if !files.inDir(v, to, c.child.VendorHome, c.child.Cwd, c.child.CreatedAt) {
+		return
+	}
+	if moved, err := c.s.MoveChildSession(ctx, c.child.ID, from, to); err != nil || !moved {
+		return
+	}
+	if record != nil {
+		_ = record(store.Event{At: time.Now(), ParentID: c.child.ParentID, Type: store.EventSession,
+			Detail: map[string]any{"vendor": string(v), "session": to, "via": "followed " + via}})
+	}
 }
 
 // set is sessionIndex.onID. Errors are dropped: a failed write must not

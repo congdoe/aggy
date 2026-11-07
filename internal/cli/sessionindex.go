@@ -27,8 +27,9 @@ import (
 // id:
 //
 //   - Claude and Grok get a pre-assigned --session-id (adapters.md), and
-//     that is the only id recorded. A later /clear starts another
-//     session the index does not follow.
+//     that is the only id this records. A later /clear or /resume starts
+//     or opens another session, which the supervisor follows on its own
+//     evidence and childIDs records at exit (session.followSession).
 //   - Codex cannot be given an id. A thread id a Codex hook reports is a
 //     claim, kept only when the socket found the hook's process in the
 //     on-screen CLI's tree (supervisor.Request.FromSession, peer-pid
@@ -42,8 +43,8 @@ import (
 //     recorded. Once recorded, the id is not replaced.
 //
 // The id goes to the events log under the parent id, and to onID, which
-// records it on the child row (childIDs.set): first wins there too, so
-// after a /clear the child still names the conversation it started with.
+// records it on the child row (childIDs.set): first wins there too. A move
+// goes through childIDs.settle instead.
 type sessionIndex struct {
 	parentID string
 	vendor   adapter.Vendor
@@ -61,6 +62,12 @@ type sessionIndex struct {
 	rejected map[string]bool   // Codex: claims whose rollout is not the TUI's
 	seen     map[string]string // Codex: new rollouts the watch has seen, id to path
 	known    chan struct{}     // closed once an id is recorded
+
+	// watched is set while the sessions folder is watched: the folder, when
+	// the watch started, and the rollouts already there.
+	watchDir    string
+	watchStart  time.Time
+	watchBefore map[string]string
 }
 
 // maxClaims bounds the claims kept; a session sees one, plus one per
@@ -101,6 +108,30 @@ func (x *sessionIndex) hook(r supervisor.Request) {
 	}
 	x.mu.Unlock()
 	x.check()
+}
+
+// sawRollout reports whether a rollout that was not there at launch has shown
+// up, this CLI's or not, and whether aggy could look at all: no watch, or a
+// sessions folder that is not there, says nothing. It looks once more itself,
+// since a CLI can exit between two polls.
+func (x *sessionIndex) sawRollout() (seen, known bool) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if len(x.seen) > 0 {
+		return true, true
+	}
+	if x.watchDir == "" {
+		return false, false
+	}
+	if fi, err := safefs.Stat(x.watchDir); err != nil || !fi.IsDir() {
+		return false, false
+	}
+	for id := range codexRollouts(x.watchDir, x.watchStart, time.Now()) {
+		if _, old := x.watchBefore[id]; !old {
+			return true, true
+		}
+	}
+	return false, true
 }
 
 // saw records rollouts the watch found new (id to path), and checks the
@@ -167,30 +198,53 @@ const maxMetaLine = 1 << 20
 // (recorder.rs#L968) is traced through the client, not seen live.
 // TODO(T6616): confirm a live TUI rollout's source is "cli".
 func verifyRollout(path, id string) rolloutVerdict {
+	v, _ := readRolloutMeta(path, id)
+	return v
+}
+
+// rolloutInDir reports whether path is the interactive TUI's own rollout of id,
+// run in one of cwds: session_meta's cwd (SessionMeta, protocol/src/protocol.rs
+// #L3275 at 6aaac694), compared as written and resolved. A nested or other repo's
+// rollout is not this child's.
+func rolloutInDir(path, id string, cwds []string) bool {
+	v, cwd := readRolloutMeta(path, id)
+	if v != rolloutTUI || cwd == "" {
+		return false
+	}
+	if slices.Contains(cwds, filepath.Clean(cwd)) {
+		return true
+	}
+	c, err := safefs.CanonicalPath(cwd)
+	return err == nil && slices.Contains(cwds, c)
+}
+
+// readRolloutMeta is verifyRollout's reading, and the cwd the line names.
+func readRolloutMeta(path, id string) (rolloutVerdict, string) {
 	f, err := safefs.OpenRegular(path)
 	if err != nil {
-		return rolloutPending
+		return rolloutPending, ""
 	}
 	defer func() { _ = f.Close() }()
 	line, err := bufio.NewReaderSize(io.LimitReader(f, maxMetaLine), 64<<10).ReadBytes('\n')
 	if err != nil {
 		if len(line) >= maxMetaLine {
-			return rolloutOther
+			return rolloutOther, ""
 		}
-		return rolloutPending // no whole line yet
+		return rolloutPending, "" // no whole line yet
 	}
 	var m struct {
 		Type    string `json:"type"`
 		Payload struct {
 			ID     string          `json:"id"`
 			Source json.RawMessage `json:"source"`
+			Cwd    string          `json:"cwd"`
 		} `json:"payload"`
 	}
 	if json.Unmarshal(line, &m) != nil || m.Type != "session_meta" || m.Payload.ID != id ||
 		string(m.Payload.Source) != `"cli"` {
-		return rolloutOther
+		return rolloutOther, ""
 	}
-	return rolloutTUI
+	return rolloutTUI, m.Payload.Cwd
 }
 
 // set records id, once.
@@ -218,9 +272,10 @@ func (x *sessionIndex) set(id, source, via string) {
 // known at launch (Claude's and Grok's pre-assigned or resumed one, a
 // resumed Codex thread) is recorded at once; otherwise, for Codex, it
 // starts the sessions folder watch. onID (may be nil) gets the recorded
-// id. stop ends the watch once the CLI has exited.
-func startIndex(parentID string, v adapter.Vendor, assigned string, onID func(string)) (onHook func(supervisor.Request), stop func()) {
-	x := newSessionIndex(parentID, v)
+// id. stop ends the watch once the CLI has exited. x is the index, to ask
+// what it saw.
+func startIndex(parentID string, v adapter.Vendor, assigned string, onID func(string)) (onHook func(supervisor.Request), stop func(), x *sessionIndex) {
+	x = newSessionIndex(parentID, v)
 	x.onID = onID
 	done := make(chan struct{})
 	if assigned != "" {
@@ -230,10 +285,11 @@ func startIndex(parentID string, v adapter.Vendor, assigned string, onID func(st
 		if dir, err := codexSessionsDir(); err == nil {
 			start := time.Now()
 			before := codexRollouts(dir, start, start)
+			x.watchDir, x.watchStart, x.watchBefore = dir, start, before
 			go x.watchCodex(dir, start, before, done)
 		}
 	}
-	return x.hook, func() { close(done) }
+	return x.hook, func() { close(done) }, x
 }
 
 // codexSessionsDir is the Codex home's sessions folder.

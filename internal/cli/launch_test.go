@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/adapter/grok"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/supervisor"
 )
 
 // sessionStore is a store in a temp AGGY_HOME, with HOME a temp dir.
@@ -558,5 +560,287 @@ func TestChildEnv(t *testing.T) {
 func TestPlanBadModel(t *testing.T) {
 	if _, err := plan(context.Background(), nil, config.Config{}, t.TempDir(), target{Model: "a b"}, time.Now(), io.Discard); err == nil {
 		t.Error("a bad model was planned")
+	}
+}
+
+// TestPlanSkipsUnstartedChild (T6899): a child that never started does not count
+// as the parent's latest, nor its parent as the directory's, when anything
+// else there has started. Named by id it still goes on screen; alone it does
+// too, with the usual note.
+func TestPlanSkipsUnstartedChild(t *testing.T) {
+	ctx, s, dir, claudeID := unstartedWorld(t)
+	got, err := plan(ctx, s, config.Config{}, dir, target{}, time.Now(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.child.Vendor != "claude" || got.resume != claudeID {
+		t.Errorf("latest = %s %s, want the claude child %s", got.child.Vendor, got.resume, claudeID)
+	}
+	// A later parent that holds only a child that never started hides nothing.
+	later := time.Now().Add(time.Hour)
+	if err := s.InsertParent(ctx, store.Parent{ID: "bb22", Dir: dir, DirKey: mustCanon(t, dir), CreatedAt: later, LastActive: later}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertChild(ctx, store.Child{ID: "c-later", ParentID: "bb22", Vendor: "grok", VendorSessionID: "99999999-2222-4333-8444-555555555555", Cwd: dir, Status: "open", CreatedAt: later, LastActive: later}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = plan(ctx, s, config.Config{}, dir, target{}, time.Now(), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got.parent.ID != "aa11" || got.resume != claudeID {
+		t.Errorf("reopened parent %s session %s, want aa11 %s", got.parent.ID, got.resume, claudeID)
+	}
+	// A switch to the vendor whose only child never started starts a new one.
+	if got, err = plan(ctx, s, config.Config{}, dir, target{ParentID: "aa11", Vendor: adapter.Grok}, time.Now(), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if !got.newChild || got.child.Vendor != "grok" {
+		t.Errorf("switch to grok: new %v vendor %s", got.newChild, got.child.Vendor)
+	}
+}
+
+// unstartedWorld is a parent aa11 in a temp HOME with a Claude child that has a
+// session file and a later Grok child that has none and never had.
+func unstartedWorld(t *testing.T) (context.Context, *store.Store, string, string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("GROK_HOME", "")
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("AGGY_HOME", filepath.Join(home, ".aggy"))
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	s, err := store.OpenDefault(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	const claudeID, grokID = "11111111-2222-4333-8444-555555555555", "22222222-2222-4333-8444-555555555555"
+	now := time.Now()
+	if err := s.InsertParent(ctx, store.Parent{ID: "aa11", Dir: dir, DirKey: mustCanon(t, dir), LastVendor: "grok", CreatedAt: now, LastActive: now}); err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range []store.Child{{ID: "c-claude", Vendor: "claude", VendorSessionID: claudeID}, {ID: "c-grok", Vendor: "grok", VendorSessionID: grokID}} {
+		at := now.Add(time.Duration(i) * time.Minute)
+		c.ParentID, c.Cwd, c.Status, c.CreatedAt, c.LastActive = "aa11", dir, "open", at, at
+		if err := s.InsertChild(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	proj := filepath.Join(home, ".claude", "projects", claudeProjectDir(dir))
+	if err := os.MkdirAll(proj, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, claudeID+".jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".grok", "sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return ctx, s, dir, claudeID
+}
+
+func mustCanon(t *testing.T, dir string) string {
+	t.Helper()
+	key, err := safefs.CanonicalPath(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+// TestChildStarted (T6899) is the evidence that a CLI got past its dialogs.
+func TestChildStarted(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GROK_HOME", "")
+	const id = "22222222-2222-4333-8444-555555555555"
+	cwd := t.TempDir()
+	dir := filepath.Join(home, ".grok", "sessions", grok.EncodeCwd(cwd), id)
+	child := store.Child{Vendor: "grok", Cwd: cwd}
+	now := time.Now()
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	check := func(what string, got, want startEvidence) {
+		t.Helper()
+		if got != want {
+			t.Errorf("%s = %v, want %v", what, got, want)
+		}
+	}
+	facts := supervisor.RunFacts{}
+	check("no file, a folder to look in", childStarted(facts, child, id, true, now, nil, &sessionFiles{}), startNever)
+	check("a counted turn", childStarted(supervisor.RunFacts{TurnRan: true}, child, id, true, now, nil, &sessionFiles{}), startYes)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	check("a file since the launch", childStarted(facts, child, id, false, now, nil, &sessionFiles{}), startYes)
+	check("a resumed session's old file", childStarted(facts, child, id, false, now.Add(time.Hour), nil, &sessionFiles{}), startNever)
+	check("a new child's file, whatever the clock", childStarted(facts, child, id, true, now.Add(time.Hour), nil, &sessionFiles{}), startYes)
+	codex := store.Child{Vendor: "codex", Cwd: cwd}
+	check("no rollout, watched", childStarted(facts, codex, "", true, now, func() (bool, bool) { return false, true }, &sessionFiles{}), startNever)
+	check("a new rollout", childStarted(facts, codex, "", true, now, func() (bool, bool) { return true, true }, &sessionFiles{}), startYes)
+	check("no watch", childStarted(facts, codex, "", true, now, func() (bool, bool) { return false, false }, &sessionFiles{}), startUnknown)
+}
+
+// TestSawRolloutLooksAgain (T6899): a rollout written just before the CLI exits,
+// between two polls, still counts; one there before the launch does not.
+func TestSawRolloutLooksAgain(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessions")
+	now := time.Now()
+	day := filepath.Join(dir, now.Format("2006"), now.Format("01"), now.Format("02"))
+	if err := os.MkdirAll(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const old, fresh = "019a0000-0000-7000-8000-000000000001", "019a0000-0000-7000-8000-000000000002"
+	write := func(id string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(day, "rollout-2026-01-01T00-00-00-"+id+".jsonl"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(old)
+	x := newSessionIndex("p", adapter.Codex)
+	x.watchDir, x.watchStart, x.watchBefore = dir, now, codexRollouts(dir, now, now)
+	if len(x.watchBefore) != 1 {
+		t.Fatalf("before = %v", x.watchBefore)
+	}
+	if seen, known := x.sawRollout(); seen || !known {
+		t.Errorf("a rollout from before the launch: seen %v, known %v", seen, known)
+	}
+	write(fresh)
+	if seen, _ := x.sawRollout(); !seen {
+		t.Error("a new rollout did not count")
+	}
+}
+
+// TestChildIDsSettle (T6901): the moved id reaches the row only with a session
+// file behind it, keeps the row's lease, and for Codex only as the TUI's rollout.
+func TestChildIDsSettle(t *testing.T) {
+	const oldID, newID = "11111111-2222-4333-8444-555555555555", "99999999-2222-4333-8444-555555555555"
+	const codexOld, codexNew = "019a0000-0000-7000-8000-000000000001", "019a0000-0000-7000-8000-000000000002"
+	setup := func(t *testing.T, vendor, id string) (*store.Store, store.Child, string) {
+		t.Helper()
+		s := sessionStore(t)
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		if err := s.InsertParent(context.Background(), store.Parent{ID: "aa11", Dir: dir, CreatedAt: now, LastActive: now}); err != nil {
+			t.Fatal(err)
+		}
+		c := store.Child{ID: "c1", ParentID: "aa11", Vendor: vendor, VendorSessionID: id, Cwd: dir, Status: "open", CreatedAt: now, LastActive: now}
+		if err := s.InsertChild(context.Background(), c); err != nil {
+			t.Fatal(err)
+		}
+		return s, c, os.Getenv("HOME")
+	}
+	idOf := func(t *testing.T, s *store.Store) string {
+		t.Helper()
+		cs, err := s.Children(context.Background(), "aa11")
+		if err != nil || len(cs) != 1 {
+			t.Fatalf("children: %+v, %v", cs, err)
+		}
+		return cs[0].VendorSessionID
+	}
+	ctx := context.Background()
+
+	t.Run("no file leaves the row", func(t *testing.T) {
+		s, c, home := setup(t, "claude", oldID)
+		if err := os.MkdirAll(filepath.Join(home, ".claude", "projects"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		ids := &childIDs{s: s, child: c}
+		ids.follow(newID, "clear")
+		if ids.current() != newID {
+			t.Errorf("current = %q", ids.current())
+		}
+		ids.settle(ctx, nil, &sessionFiles{})
+		if got := idOf(t, s); got != oldID {
+			t.Errorf("row = %q, want the old id", got)
+		}
+	})
+	t.Run("a file moves the row and its lease", func(t *testing.T) {
+		s, c, home := setup(t, "claude", oldID)
+		proj := filepath.Join(home, ".claude", "projects", claudeProjectDir(c.Cwd))
+		if err := os.MkdirAll(proj, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(proj, newID+".jsonl"), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		l, err := s.AcquireLease(ctx, "claude", oldID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = l.Release(ctx) }()
+		var events []store.Event
+		ids := &childIDs{s: s, child: c}
+		ids.follow(newID, "clear")
+		ids.settle(ctx, func(e store.Event) error { events = append(events, e); return nil }, &sessionFiles{})
+		if got := idOf(t, s); got != newID {
+			t.Errorf("row = %q, want the new id", got)
+		}
+		if _, alive, _ := s.LeaseHolder(ctx, "claude", newID); !alive {
+			t.Error("the lease did not move")
+		}
+		if len(events) != 1 {
+			t.Errorf("events = %+v", events)
+		}
+	})
+	t.Run("never moves without a follow", func(t *testing.T) {
+		s, c, _ := setup(t, "claude", oldID)
+		(&childIDs{s: s, child: c}).settle(ctx, nil, &sessionFiles{})
+		if got := idOf(t, s); got != oldID {
+			t.Errorf("row = %q", got)
+		}
+	})
+	for _, tt := range []struct {
+		name, source, want string
+	}{
+		{"the TUI's rollout moves it", "cli", codexNew},
+		{"a nested codex exec's never does", "exec", codexOld},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, c, home := setup(t, "codex", codexOld)
+			meta := `{"type":"session_meta","payload":{"id":"` + codexNew + `","source":"` + tt.source + `","cwd":"` + c.Cwd + `"}}`
+			now := time.Now().UTC()
+			day := filepath.Join(home, ".codex", "sessions", now.Format("2006"), now.Format("01"), now.Format("02"))
+			if err := os.MkdirAll(day, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(day, "rollout-2026-01-01T00-00-00-"+codexNew+".jsonl"), []byte(meta+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ids := &childIDs{s: s, child: c}
+			ids.follow(codexNew, "clear")
+			ids.settle(ctx, nil, &sessionFiles{})
+			if got := idOf(t, s); got != tt.want {
+				t.Errorf("row = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestFromSwitch: only a switch's launch has a CLI to go back to.
+func TestFromSwitch(t *testing.T) {
+	for _, tt := range []struct {
+		t    target
+		want bool
+	}{
+		{target{}, false},
+		{target{New: true, Vendor: adapter.Grok}, false},
+		{target{ParentID: "p"}, false},
+		{target{ParentID: "p", Vendor: adapter.Grok}, true},
+		{target{ParentID: "p", Vendor: adapter.Grok, SameChild: true}, false},
+	} {
+		if got := tt.t.fromSwitch(); got != tt.want {
+			t.Errorf("%+v: %v", tt.t, got)
+		}
 	}
 }

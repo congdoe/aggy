@@ -158,7 +158,7 @@ func TestSwitchFromOutsideSessionIgnored(t *testing.T) {
 	default:
 	}
 	s.onHook(Request{Type: ReqHookEvent, Vendor: "claude", Event: "Stop", FromSession: true, Payload: []byte(`{"session_id":"x"}`)})
-	if ev := <-s.events; ev != (hookEvent{name: "Stop", sessionID: "x"}) {
+	if ev := <-s.events; ev.name != "Stop" || ev.sessionID != "x" || ev.shutdown || ev.idle || ev.source != "" || ev.chain != nil {
 		t.Errorf("event %+v", ev)
 	}
 }
@@ -210,6 +210,71 @@ func TestSwitchHolds(t *testing.T) {
 	if bytes.Contains(c.received(), []byte("/exit")) {
 		t.Error("/exit was typed")
 	}
+}
+
+// TestSwitchIdleHoldsNothing (T6898): Claude's idle reminder holds no switch,
+// and clears no hold; Grok's type values are not recorded, so any of its holds,
+// and any other Claude type.
+func TestSwitchIdleHoldsNothing(t *testing.T) {
+	idle := hookEvent{name: "Notification", sessionID: "me", idle: true}
+	s := &session{toChild: newByteQueue(maxQueued), o: Options{SessionID: func() string { return "me" }}}
+	s.hookEvent(hookEvent{name: "Stop", sessionID: "me"})
+	s.hookEvent(idle)
+	if !s.atPrompt || s.held {
+		t.Errorf("after idle: atPrompt %v, held %v", s.atPrompt, s.held)
+	}
+	s.hookEvent(hookEvent{name: "Notification", sessionID: "me"})
+	s.hookEvent(idle)
+	if s.atPrompt || !s.held {
+		t.Errorf("idle after a hold: atPrompt %v, held %v", s.atPrompt, s.held)
+	}
+	for _, tt := range []struct {
+		v      adapter.Vendor
+		event  string
+		typ    string
+		isIdle bool
+	}{
+		{adapter.Claude, "Notification", "idle_prompt", true},
+		{adapter.Claude, "Notification", "permission_prompt", false},
+		{adapter.Claude, "Notification", "", false},
+		{adapter.Claude, "Stop", "idle_prompt", false},
+		{adapter.Grok, "Notification", "idle_prompt", false},
+		{adapter.Codex, "Notification", "idle_prompt", false},
+	} {
+		if got := claudeIdle(tt.v, tt.event, tt.typ); got != tt.isIdle {
+			t.Errorf("claudeIdle(%s, %s, %q) = %v", tt.v, tt.event, tt.typ, got)
+		}
+	}
+
+	// The repro: one turn, the reminder, a pick: the status line asks.
+	ts, c, done, sock := switchRunTurned(t, adapter.Claude)
+	_ = request(t, sock, `{"type":"hook-event","vendor":"claude","event":"Notification","payload":{"session_id":"`+childSID+`","notification_type":"idle_prompt"}}`)
+	ts.typeIn(t, "\x1c2")
+	poll(t, "the status line", []byte("-> grok. Ctrl+"), ts.screen)
+	finish(t, c, done)
+}
+
+// TestSwitchHeldFirstPickSays (T6898): a first pick past a hold says at once why
+// it waits and names the way out that spends no turn, and that way works.
+func TestSwitchHeldFirstPickSays(t *testing.T) {
+	ts, c, done, sock := switchRunTurned(t, adapter.Claude)
+	_ = request(t, sock, notifyLine)
+	// The hold reaches the main loop in order with a Stop that does not clear it.
+	_ = request(t, sock, stopLine)
+	ts.typeIn(t, "\x1c2")
+	poll(t, "the note", []byte("said it is waiting for you"), ts.screen)
+	poll(t, "the free way out", []byte("press Enter on the empty prompt"), ts.screen)
+	never(t, "an offer", []byte("-> grok. Ctrl+"), ts.screen, 150*time.Millisecond)
+	ts.typeIn(t, "\x1b")
+	poll(t, "the note to close", []byte(altScreenOff), ts.screen)
+	time.Sleep(50 * time.Millisecond)
+	ts.typeIn(t, "\r")
+	c.waitGot(t, []byte("\r"))
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list", []byte("Switching to grok"), ts.screen)
+	ts.typeIn(t, "2")
+	poll(t, "the status line, no turn spent", []byte("-> grok. Ctrl+"), ts.screen)
+	finish(t, c, done)
 }
 
 // TestSwitchConfirmEscStays: Esc at the confirmation types nothing and
@@ -736,5 +801,75 @@ func TestSwitchOnLimitNoQuota(t *testing.T) {
 	poll(t, "the note", []byte("no other vendor aggy offers has quota left"), ts.screen)
 	ts.typeIn(t, "\x1b")
 	never(t, "no switch", []byte("switches, Esc stays"), ts.screen, 300*time.Millisecond)
+	finish(t, c, done)
+}
+
+// TestPickerOneAltScreen (T6902, F17): a toggle redraws the list without going to
+// the alternate screen again: 1049h saves the cursor each time, and the CLI's
+// would be lost. An open and an Esc make exactly one each.
+func TestPickerOneAltScreen(t *testing.T) {
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list", []byte("brief: off"), ts.screen)
+	ts.typeIn(t, "b")
+	poll(t, "the toggle", []byte("brief: on"), ts.screen)
+	ts.typeIn(t, "n")
+	poll(t, "the other toggle", []byte("new session: on"), ts.screen)
+	ts.typeIn(t, "\x1b")
+	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+	if on, off := bytes.Count(ts.screen(), []byte("\x1b[?1049h")), bytes.Count(ts.screen(), []byte(altScreenOff)); on != 1 || off != 1 {
+		t.Errorf("1049h %d times, 1049l %d times: %q", on, off, ts.screen())
+	}
+	// The next open goes there again.
+	seen := len(ts.screen())
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list again", []byte("\x1b[?1049h"), func() []byte { return ts.screen()[seen:] })
+	ts.typeIn(t, "\x1b")
+	finish(t, c, done)
+}
+
+// TestRepickKeepsBriefOnStatusLine (T6902, F18): the repro, past a turn end: pick
+// with b, it waits for the next turn; pick it again; the status line has the brief.
+func TestRepickKeepsBriefOnStatusLine(t *testing.T) {
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
+	ts.typeIn(t, "go\r")
+	c.waitGot(t, []byte("go\r"))
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list", []byte("brief: off"), ts.screen)
+	ts.typeIn(t, "b")
+	poll(t, "the toggle", []byte("brief: on"), ts.screen)
+	ts.typeIn(t, "2")
+	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+	never(t, "an offer mid-turn", []byte("-> grok. Ctrl+"), ts.screen, 100*time.Millisecond)
+	ts.typeIn(t, "\x1c")
+	time.Sleep(50 * time.Millisecond)
+	ts.typeIn(t, "2")
+	poll(t, "the status line", []byte("brief -> grok. Ctrl+"), ts.screen)
+	finish(t, c, done)
+}
+
+// TestWaitingOptionsTurnedOff (T6902, F18): turning the brief off at the list
+// reaches the status line.
+func TestWaitingOptionsTurnedOff(t *testing.T) {
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
+	ts.typeIn(t, "go\r")
+	c.waitGot(t, []byte("go\r"))
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list", []byte("brief: off"), ts.screen)
+	ts.typeIn(t, "b")
+	poll(t, "the toggle", []byte("brief: on"), ts.screen)
+	ts.typeIn(t, "2")
+	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+	seen := len(ts.screen())
+	since := func() []byte { return ts.screen()[seen:] }
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list says brief on", []byte("brief: on"), since)
+	ts.typeIn(t, "b")
+	poll(t, "the toggle off", []byte("brief: off"), since)
+	ts.typeIn(t, "2")
+	poll(t, "the status line", []byte("-> grok. Ctrl+"), since)
+	if bytes.Contains(since(), []byte("brief -> grok")) {
+		t.Errorf("the brief stayed on: %q", since())
+	}
 	finish(t, c, done)
 }

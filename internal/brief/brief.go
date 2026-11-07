@@ -20,8 +20,12 @@ const maxGit = 16 << 10
 // output, which only internal/cli may run. An Err field set means that
 // part could not be read; the brief says so and goes on without it.
 type Input struct {
-	From adapter.Vendor // the CLI being left; empty when none ran before
+	From adapter.Vendor // the CLI being left; empty when none can be read
 	To   adapter.Vendor // the CLI that reads the brief
+	// Unread are the CLIs of sessions here whose ids aggy never recorded, most
+	// recent first (a Codex child with no hook approved), so whether they ran
+	// a turn and what it said is unknown.
+	Unread []adapter.Vendor
 
 	Task    string
 	TaskErr error
@@ -208,8 +212,11 @@ func build(in Input, turns []string, removed []int, dropped int) string {
 	for _, n := range removed {
 		b.removed += n
 	}
-	// From is empty when no other CLI ran in this session.
+	// From is empty when no other CLI's session can be read. Saying that none
+	// ran takes knowing that no session's id went unrecorded.
 	switch {
+	case in.Since.IsZero() && in.From == "" && len(in.Unread) > 0:
+		fmt.Fprintf(&b, "# Handoff brief\n\nThere may be earlier work here: a %s session may have run, and aggy cannot read it. ", in.Unread[0])
 	case in.Since.IsZero() && in.From == "":
 		b.WriteString("# Handoff brief\n\nYou are starting on this work; no other CLI has run in this session. ")
 	case in.Since.IsZero():
@@ -251,10 +258,14 @@ func build(in Input, turns []string, removed []int, dropped int) string {
 	case in.TranscriptErr != nil:
 		b.failed("The previous session's transcript", in.TranscriptErr)
 	}
+	for _, v := range in.Unread {
+		fmt.Fprintf(&b, "aggy has no record of the %s session's id here, so any turns in it could not be read and are not in this brief.\n", v)
+	}
 	switch {
 	case in.TranscriptErr != nil && !back:
 	case len(turns) == 0 && dropped > 0:
 		fmt.Fprintf(&b, "All %d turns read were left out to keep this brief within its size limit; the full transcript has them.\n", dropped)
+	case len(turns) == 0 && in.From == "" && len(in.Unread) > 0:
 	case len(turns) == 0 && back && in.From == "":
 		b.WriteString("No other CLI worked in this session since you left, so nothing was added since.\n")
 	case len(turns) == 0 && back:

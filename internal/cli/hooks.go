@@ -306,6 +306,8 @@ func printNotes(w io.Writer, notes []string) {
 const (
 	hookInstalled = "installed"
 	hookMissing   = "not installed (aggy hooks install)"
+	hookPartial   = "partly installed (aggy hooks install adds the rest)"
+	hookStale     = "installed for another aggy binary (aggy hooks install updates them)"
 	hookError     = "cannot be installed as is"
 )
 
@@ -321,8 +323,50 @@ func hookStatus(v adapter.Vendor, bin string) (state, note string) {
 	if p.note != "" {
 		note = ": " + p.note
 	}
-	if len(p.patches) > 0 {
+	pr, err := surveyHooks(v, bin)
+	if err != nil {
+		return hookError, ": " + err.Error()
+	}
+	switch {
+	case len(pr.Exact) == 0 && len(pr.Stale) == 0 && len(pr.Absent) > 0:
 		return hookMissing, note
+	case len(pr.Absent) > 0:
+		return hookPartial, note
+	case len(pr.Stale) > 0:
+		return hookStale, note
 	}
 	return hookInstalled, note
+}
+
+// surveyHooks says how v's hooks stand against bin, across its hook files. It
+// writes nothing.
+func surveyHooks(v adapter.Vendor, bin string) (hook.Presence, error) {
+	var all hook.Presence
+	files, err := hookFiles(v)
+	if err != nil {
+		return all, err
+	}
+	for _, f := range files {
+		src, _, err := readMaybe(f.path)
+		if err != nil {
+			return all, err
+		}
+		pr, err := hook.Survey(src, bin, f.entries)
+		if err != nil {
+			return all, fmt.Errorf("%s: %w", f.path, err)
+		}
+		all.Exact = append(all.Exact, pr.Exact...)
+		all.Stale = append(all.Stale, pr.Stale...)
+		all.Absent = append(all.Absent, pr.Absent...)
+	}
+	return all, nil
+}
+
+// hookPresence is surveyHooks for this binary.
+func hookPresence(v adapter.Vendor) (hook.Presence, error) {
+	bin, err := aggyBin()
+	if err != nil {
+		return hook.Presence{}, err
+	}
+	return surveyHooks(v, bin)
 }

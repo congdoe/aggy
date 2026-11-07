@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/fakecli"
+
+	"github.com/congdoe/aggy/internal/transcript"
 )
 
 // TestSwitchAtTurnEnd (T6664): a vendor picked mid-session waits for the
@@ -28,9 +31,10 @@ func TestSwitchAtTurnEnd(t *testing.T) {
 		t.Fatalf("aggy setup: %v\n%s", err, out)
 	}
 	sc := map[string]any{
-		"stdout":       "READY>",
-		"hook_command": []string{buildAggy(t), "hook", "--vendor", "claude"},
-		"hooks":        []map[string]any{{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}},
+		"stdout":        "READY>",
+		"hook_command":  []string{buildAggy(t), "hook", "--vendor", "claude"},
+		"hooks":         []map[string]any{{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}},
+		"session_files": startedFiles(),
 	}
 	s := w.start(t, sc, "run", "claude")
 	s.waitFor([]byte("READY>"))
@@ -77,6 +81,7 @@ func TestSwitchAtTurnEnd(t *testing.T) {
 // CLI's tree as a skill would, queues a switch the user confirms.
 func TestSkillRequestedSwitch(t *testing.T) {
 	w := newWorld(t)
+	w.aggyIn(t, "hooks", "install", "--vendor", "claude") // an agent's switch needs them (T6848)
 	setup := exec.Command(buildAggy(t), "setup", "--yes")
 	setup.Dir = w.cwd
 	setup.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
@@ -90,6 +95,7 @@ func TestSkillRequestedSwitch(t *testing.T) {
 		"hook_command": askThenStop(t, adapter.Claude, ""),
 		"hooks": []map[string]any{{"event": "grok", "payload": map[string]any{}},
 			{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}},
+		"session_files": startedFiles(),
 	}
 	s := w.start(t, sc, "run", "claude")
 	s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
@@ -133,7 +139,7 @@ func TestSwitchNoTurnYet(t *testing.T) {
 		}
 		s.send(key)
 	}
-	sc := map[string]any{"raw_echo": true, "stdout": "READY>"}
+	sc := map[string]any{"raw_echo": true, "stdout": "READY>", "session_files": startedFiles()}
 
 	t.Run("quit by hand switches", func(t *testing.T) {
 		w := newWorld(t)
@@ -195,6 +201,217 @@ func TestSwitchNoTurnYet(t *testing.T) {
 			t.Errorf("the exit command reached the CLI: %q", s.screen())
 		}
 	})
+}
+
+// TestSwitchSurvivesClear (T6901): a turn, /clear, which moves the CLI to a new
+// session, a turn there, and the switch fires at its end; a later resume opens
+// the session the CLI moved to.
+func TestSwitchSurvivesClear(t *testing.T) {
+	w := newWorld(t)
+	w.aggyIn(t, "setup", "--yes")
+	stop := []map[string]any{{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}}
+	sc := map[string]any{
+		"stdout":        "READY>",
+		"hook_command":  []string{buildAggy(t), "hook", "--vendor", "claude"},
+		"hooks":         stop,
+		"clear_hooks":   []map[string]any{{"event": "SessionStart", "payload": map[string]any{"session_id": "{session_id}", "source": "clear"}}},
+		"session_files": append(startedFiles(), map[string]any{"path": "projects/" + transcript.ClaudeProjectDir(w.cwd) + "/{session_id}.jsonl", "content": "{}\n"}),
+	}
+	s := w.start(t, sc, "run", "claude")
+	s.waitFor([]byte("READY>"))
+	s.send([]byte("/clear\r"))
+	s.waitFor([]byte("/clear"))
+	time.Sleep(500 * time.Millisecond) // the hook lands
+	s.send([]byte("work\r"))
+	s.waitFor([]byte("work"))
+	s.send([]byte{0x1c})
+	s.waitFor([]byte("aggy: switch vendor"))
+	key := []byte("2")
+	if strings.Contains(s.screen(), "1  grok") {
+		key = []byte("1")
+	}
+	s.send(key)
+	s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
+	s.confirmPastGuard(time.Now())
+	w.waitRuns(t, s, 2)
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	runs := interactiveRuns(t, w)
+	if len(runs) != 2 {
+		t.Fatalf("runs = %+v", runs)
+	}
+	assigned := runs[0].Flags["--session-id"]
+	if len(assigned) != 1 {
+		t.Fatalf("claude args %q", runs[0].Args)
+	}
+	// The parent's latest claude session is the one it moved to, not the one
+	// it was given at launch.
+	r := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "claude", "--continue")
+	r.waitFor([]byte("READY>"))
+	r.send([]byte{0x04})
+	r.exit()
+	last := interactiveRuns(t, w)[2]
+	if last.Vendor != "claude" || len(last.Flags["--resume"]) != 1 || last.Flags["--resume"][0] == assigned[0] {
+		t.Errorf("resume args %q: want --resume of the session after /clear, not %s", last.Args, assigned[0])
+	}
+}
+
+// TestLaunchWarnsWithoutHooks (T6848): with no hooks installed, aggy says so at
+// launch and names the fix. TestAgentSwitchWithoutHooks has the refusal.
+func TestLaunchWarnsWithoutHooks(t *testing.T) {
+	w := newWorld(t)
+	w.aggyIn(t, "setup", "--yes")
+	s := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "run", "claude")
+	s.waitFor([]byte("READY>"))
+	if !strings.Contains(s.screen(), "aggy hooks install sets them up") {
+		t.Errorf("no launch warning: %q", s.screen())
+	}
+	s.send([]byte{0x04})
+	s.exit()
+}
+
+// TestDeclinedDialogGoesBack (T6899): the CLI switched to closes at a dialog
+// (the raw_echo fake runs no hook, saves nothing, and exits 0): aggy says so and
+// reopens the CLI before it, and the child that never started is not the
+// parent's latest afterwards. With no sessions folder to look in aggy cannot
+// tell, so it goes back nowhere: TestCannotTellEndsAggy.
+func TestDeclinedDialogGoesBack(t *testing.T) {
+	w := newWorld(t)
+	if err := os.MkdirAll(filepath.Join(w.home, ".grok", "sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	c := exec.Command(buildAggy(t), "setup", "--yes")
+	c.Dir = w.cwd
+	c.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("aggy setup: %v\n%s", err, out)
+	}
+	sc := map[string]any{"raw_echo": true, "stdout": "READY>"}
+	s := w.start(t, sc, "run", "claude")
+	s.waitFor([]byte("READY>"))
+	s.send([]byte{0x1c})
+	s.waitFor([]byte("aggy: switch vendor"))
+	key := []byte("2")
+	if strings.Contains(s.screen(), "1  grok") {
+		key = []byte("1")
+	}
+	s.send(key)
+	s.waitWithin([]byte("will not type /exit into it"), offerTimeout)
+	s.send([]byte("k")) // the note closes; the key goes to the CLI
+	s.waitFor([]byte("k"))
+	s.send([]byte{0x04}) // quit claude by hand, as the note says
+	w.waitRuns(t, s, 2)
+	s.send([]byte{0x04}) // grok closes at its dialog
+	s.waitWithin([]byte("grok closed before it started"), offerTimeout)
+	w.waitRuns(t, s, 3)
+	s.send([]byte{0x04})
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	runs := interactiveRuns(t, w)
+	if len(runs) != 3 || runs[0].Vendor != "claude" || runs[1].Vendor != "grok" || runs[2].Vendor != "claude" {
+		t.Fatalf("interactive runs = %+v, want claude, grok, claude", runs)
+	}
+	s.restored("after going back")
+}
+
+// TestCannotTellEndsAggy (T6899): the same, on a vendor with no sessions folder:
+// that says nothing about the CLI, so aggy ends as usual and reopens nothing.
+func TestCannotTellEndsAggy(t *testing.T) {
+	w := newWorld(t)
+	c := exec.Command(buildAggy(t), "setup", "--yes")
+	c.Dir = w.cwd
+	c.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("aggy setup: %v\n%s", err, out)
+	}
+	s := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "run", "claude")
+	s.waitFor([]byte("READY>"))
+	s.send([]byte{0x1c})
+	s.waitFor([]byte("aggy: switch vendor"))
+	key := []byte("2")
+	if strings.Contains(s.screen(), "1  grok") {
+		key = []byte("1")
+	}
+	s.send(key)
+	s.waitWithin([]byte("will not type /exit into it"), offerTimeout)
+	s.send([]byte("k"))
+	s.waitFor([]byte("k"))
+	s.send([]byte{0x04})
+	w.waitRuns(t, s, 2)
+	s.send([]byte{0x04})
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	if strings.Contains(s.screen(), "closed before it started") {
+		t.Errorf("aggy went back on no evidence: %q", s.screen())
+	}
+	if runs := interactiveRuns(t, w); len(runs) != 2 {
+		t.Fatalf("interactive runs = %+v, want claude, grok", runs)
+	}
+}
+
+// TestTerminalRepliesAreNotTyped (T6897): a CLI asks its terminal things at
+// launch and turns on focus reporting, and the terminal answers. None of the
+// answers is typing: the switch is offered, not refused for unsent text.
+func TestTerminalRepliesAreNotTyped(t *testing.T) {
+	setup := func(t *testing.T, w *world) {
+		t.Helper()
+		c := exec.Command(buildAggy(t), "setup", "--yes")
+		c.Dir = w.cwd
+		c.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("aggy setup: %v\n%s", err, out)
+		}
+	}
+	tests := []struct {
+		name    string
+		replies []string
+	}{
+		{"device attributes before any typing", []string{"\x1b[?62;22c"}},
+		{"focus out and in after a turn", []string{"\x1b[O", "\x1b[I"}},
+		{"cursor, colour, version, modes", []string{"\x1b[24;80R", "\x1b]11;rgb:0000/0000/0000\x1b\\", "\x1bP>|fake(1)\x1b\\", "\x1b[>0;276;0c", "\x1b[?2026;2$y"}},
+		{"x10 wheel", []string{"\x1b[M`!!"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			setup(t, w)
+			sc := map[string]any{
+				"term_queries":  "\x1b[c\x1b[>c\x1b[6n\x1b]11;?\x1b\\\x1b[>q\x1b[?2026$p\x1b[?1004h",
+				"stdout":        "READY>",
+				"hook_command":  []string{buildAggy(t), "hook", "--vendor", "claude"},
+				"hooks":         []map[string]any{{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}},
+				"session_files": startedFiles(),
+			}
+			s := w.start(t, sc, "run", "claude")
+			s.waitFor([]byte("\x1b[?1004h"))
+			s.waitFor([]byte("READY>"))
+			for _, r := range tt.replies {
+				s.send([]byte(r))
+				time.Sleep(20 * time.Millisecond)
+			}
+			s.send([]byte{0x1c})
+			s.waitFor([]byte("aggy: switch vendor"))
+			key := []byte("2")
+			if strings.Contains(s.screen(), "1  grok") {
+				key = []byte("1")
+			}
+			s.send(key)
+			s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
+			if strings.Contains(s.screen(), "you typed text") {
+				t.Fatalf("a terminal's reply counted as typing: %q", s.screen())
+			}
+			s.confirmPastGuard(time.Now())
+			w.waitRuns(t, s, 2)
+			s.send([]byte("/exit\r"))
+			if code := s.exit(); code != 0 {
+				t.Fatalf("aggy exit = %d", code)
+			}
+		})
+	}
 }
 
 // askThenStop is a hook command for a fake: Stop from vendor goes to aggy
