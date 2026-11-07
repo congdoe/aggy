@@ -31,10 +31,14 @@ const (
 type picker struct {
 	// noTurn: no turn end of on has been counted since it launched, so the
 	// list says aggy will not type its exit command (T6893).
-	noTurn  bool
-	on      adapter.Vendor
-	vendors []adapter.Vendor
-	key     byte
+	noTurn bool
+	on     adapter.Vendor
+	// padRows blanks that many rows below the list, as its text shrinks over
+	// the CLI's screen. limitLine says a limit hit whose note did not show.
+	padRows   int
+	limitLine string
+	vendors   []adapter.Vendor
+	key       byte
 	// children lists a vendor's children in the open parent (T6665).
 	children func(adapter.Vendor) []ChildChoice
 	// opts are the list's toggles for the next pick: n (new child), b
@@ -100,6 +104,9 @@ func (p *picker) warn(to adapter.Vendor, forms ...string) {
 	p.warning, p.warnTo, p.forms = true, to, forms
 }
 
+// noTurnListRows is the rows draw's no-turn text takes.
+const noTurnListRows = 6
+
 // draw writes the picker: on the alternate screen, or, when the CLI is
 // already on it (overCLI), over the top lines of the CLI's screen.
 func (p *picker) draw(w io.Writer, overCLI bool) {
@@ -132,6 +139,9 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 			}
 			lines = append(lines, fmt.Sprintf(" %s%d  %s", mark, i+1, v))
 		}
+		if p.limitLine != "" {
+			lines = append(lines, "", p.limitLine)
+		}
 		switch {
 		case p.waiting != "" && p.resume:
 			lines = append(lines, "", fmt.Sprintf("Resuming %s on the same session, for the changed tools, when this turn ends; Esc cancels it.", p.waiting))
@@ -142,10 +152,14 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 		}
 		if p.noTurn {
 			cmd, _ := adapter.ExitCommand(p.on)
+			// Each fits 80 columns: over the CLI's screen a longer one is cut.
+			// noTurnListRows counts these with the blank.
 			lines = append(lines, "",
-				fmt.Sprintf("aggy has seen no turn end from %s since it opened, and it may be showing a dialog,", p.on),
-				fmt.Sprintf("so aggy will not type %s. To switch, quit %s yourself; it must exit cleanly.", cmd, p.on),
-				"After a message, aggy asks at that turn's end if it sees one; some CLIs report none until their hook is approved.")
+				fmt.Sprintf("aggy has seen no turn end from %s since it opened, and it may be", p.on),
+				fmt.Sprintf("showing a dialog, so aggy will not type %s.", cmd),
+				fmt.Sprintf("To switch, quit %s yourself within %d minutes; it must exit cleanly.", p.on, noTurnPickMinutes),
+				"After a message, aggy asks at that turn's end if it sees one; some CLIs",
+				"report none until their hook is approved.")
 		}
 		if p.waiting != "" {
 			if p.checking {
@@ -164,7 +178,14 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 				lines = append(lines, p.editErr)
 			}
 		}
-		lines = append(lines, "", "Number or Enter to switch at the turn end, Esc to go back.")
+		footer := "Number or Enter to switch at the turn end, Esc to go back."
+		if p.noTurn {
+			footer = "Number or Enter to pick, Esc to go back."
+		}
+		lines = append(lines, "", footer)
+		for range p.padRows {
+			lines = append(lines, "")
+		}
 	}
 	var b strings.Builder
 	if overCLI {

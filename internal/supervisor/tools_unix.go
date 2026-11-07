@@ -178,7 +178,7 @@ func (s *session) offerToolsNote() {
 		return
 	}
 	now := time.Now()
-	if !s.atPrompt || s.toolsWaitTurn || now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
+	if s.mayBeRunning() || s.toolsWaitTurn || now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
 		return
 	}
 	s.toolsDue = false

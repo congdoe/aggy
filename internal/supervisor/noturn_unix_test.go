@@ -326,7 +326,7 @@ func TestSwitchNoTurnYet(t *testing.T) {
 		ts, c, done, _ := switchRunOn(t, false, adapter.Codex)
 		ts.typeIn(t, "\x1c1")
 		note(t, ts)
-		poll(t, "the conditional ask", []byte("if it sees one; some CLIs report none"), ts.screen)
+		poll(t, "the conditional ask", []byte("some CLIs report none"), ts.screen)
 		finish(t, c, done)
 	})
 	t.Run("a picked session that has gone: no switch, and it says so", func(t *testing.T) {
