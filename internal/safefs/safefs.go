@@ -259,6 +259,18 @@ func isVol(p string) bool { return refuseVol && under(p, volPrefix) }
 // does not follow a firmlink, so the prefix is removed lexically.
 const dataVolume = "/System/Volumes/Data"
 
+// WithoutDataVolume returns p without macOS's data volume prefix, in any case,
+// and p itself elsewhere or on any other path. It only rewrites the spelling,
+// so the result is the same directory only where that prefix's firmlink
+// reaches it; a path it does not reach simply fails to open.
+func WithoutDataVolume(p string) string {
+	n := len(dataVolume)
+	if stripFirmlink && len(p) > n && p[n] == '/' && strings.EqualFold(p[:n], dataVolume) {
+		return p[n:]
+	}
+	return p
+}
+
 // stripFirmlink is true where dataVolume firmlinks exist. It is a
 // variable so tests can exercise it on any OS.
 var stripFirmlink = runtime.GOOS == "darwin"

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -126,6 +127,26 @@ func TestProjectOverride(t *testing.T) {
 			got, err := projectOverride(tt.cwd)
 			if err != nil || !slices.Equal(got, []string{"-C", tt.cwd, "-c", tt.want}) {
 				t.Errorf("got %q, %v; want -C %s -c %s", got, err, tt.cwd, tt.want)
+			}
+		})
+	}
+	// -C and the key are one spelling: cleaned, and on macOS without the
+	// firmlink prefix, which a Seatbelt writable root would keep.
+	spelled := []struct{ name, cwd, want string }{
+		{"not clean", "/a/./b/../c/", "/a/c"},
+		{"the data volume", "/System/Volumes/Data/Users/u/w", "/Users/u/w"},
+		{"the data volume in another case", "/system/volumes/DATA/Users/u/w", "/Users/u/w"},
+		{"only a prefix of a name", "/System/Volumes/Database/w", "/System/Volumes/Database/w"},
+	}
+	for _, tt := range spelled {
+		t.Run(tt.name, func(t *testing.T) {
+			want := tt.want
+			if runtime.GOOS != "darwin" && strings.Contains(tt.name, "data volume") {
+				want = tt.cwd
+			}
+			got, err := projectOverride(tt.cwd)
+			if err != nil || !slices.Equal(got, []string{"-C", want, "-c", `projects={"` + want + `"` + entry + `}`}) {
+				t.Errorf("got %q, %v; want the spelling %s", got, err, want)
 			}
 		})
 	}

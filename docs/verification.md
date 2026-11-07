@@ -648,12 +648,28 @@ Source-verified at commit 6aaac69 (adapters.md has the links): under the edit
 lockdown, `thread/start` writes a project entry to the user's `config.toml`
 unless a trust level is set for the cwd, so aggy sets one for the session with
 `-C <cwd> -c projects={"<cwd>"={trust_level="untrusted"}}`. That is source
-only: it has not been run live. A maintainer's check: run `aggy borrow edit` in
-a never-trusted scratch repo and compare `config.toml` before and after. It
-must not change, and the borrow must succeed, which also shows `--strict-config`
-takes the override. On macOS, repeat it with `AGGY_HOME` spelled in another case
-or through `/System/Volumes/Data`. Also unseen live: that the child reads
-`AGENTS.override.md` or `AGENTS.md` when the prompt tells it to.
+only: it has not been run live.
+
+A maintainer's check, which never touches the real `~/.codex`:
+
+1. Point `CODEX_HOME` at a new scratch dir and run `codex login` there, so the
+   scratch home is signed in; copy no credential file. Set `AGGY_HOME` to a
+   scratch dir outside temp dirs.
+2. Make a never-trusted scratch repo with one committed file, an
+   `AGENTS.override.md` saying to end every report with one made-up word, and
+   an `AGENTS.md` saying to end it with another.
+3. Record `shasum "$CODEX_HOME/config.toml"`, or that the file does not exist.
+4. Run `aggy borrow edit "add a line saying hello to notes.txt" --vendor codex`.
+5. All of these must hold:
+   - `config.toml` is byte for byte as in step 3;
+   - the borrow succeeded, which also shows `--strict-config` takes the override;
+   - the child's change landed: `git -C "$AGGY_HOME/worktrees/<borrow id>" status
+     --short` lists `notes.txt` and it holds the line, since a child the sandbox
+     refused can still report success;
+   - the report ends with the `AGENTS.override.md` word, not the `AGENTS.md` one.
+6. On macOS, repeat with `AGGY_HOME` spelled through `/System/Volumes/Data`, then
+   in another case. Record whether the child's change landed in each: the first
+   should since aggy removes the prefix, and the second is unverified.
 
 ## Codex CLI details
 

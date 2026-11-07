@@ -14,6 +14,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/patch"
 	"github.com/congdoe/aggy/internal/probe"
+	"github.com/congdoe/aggy/internal/safefs"
 )
 
 // Bin is the program name of the Codex CLI.
@@ -164,8 +165,17 @@ func editLockdown() []string {
 // so it tells Codex the cwd instead: with -C the config's cwd is the argument
 // as given (utils/cli/src/shared_options.rs#L67, core/src/config/mod.rs#L3568),
 // and the lookup tries that spelling after the canonical one
-// (config/src/project_trust.rs#L62). A sandbox root is canonicalized apart
-// from this (sandboxing/src/seatbelt.rs#L461).
+// (config/src/project_trust.rs#L62).
+//
+// That spelling also becomes the Seatbelt writable root, which keeps it: only
+// a symlink directly under / is resolved, and any other symlink in it is an
+// error (sandboxing/src/seatbelt.rs#L445, #L464,
+// utils/absolute-path/src/system_aliases.rs#L12). So the firmlink prefix, which
+// is no symlink, goes from both -C and the key, as a root under it would
+// likely not cover the kernel's path for the same files (unverified live). A
+// directory the firmlink does not reach then fails at -C, which is loud. A cwd
+// in another case or Unicode form stays as given: whether Seatbelt allows
+// writes under one is unverified.
 //
 // The value is a table, not a dotted key: an override's key is split on
 // every '.' (config/src/overrides.rs#L22), and a state dir path holds one. A
@@ -177,6 +187,7 @@ func projectOverride(cwd string) ([]string, error) {
 	if !utf8.ValidString(cwd) {
 		return nil, fmt.Errorf("codex: edit: the working directory %q is not valid UTF-8, so aggy cannot name it to Codex exactly: %w", cwd, adapter.ErrUnsupported)
 	}
+	cwd = safefs.WithoutDataVolume(filepath.Clean(cwd))
 	return []string{"-C", cwd, "-c", "projects={" + tomlString(cwd) + `={trust_level="untrusted"}}`}, nil
 }
 
