@@ -223,6 +223,7 @@ func Run(o Options) (Exit, error) {
 				s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchBusy, Msg: "the agent's switch came after the user's pick", Attrs: map[string]any{"to": string(c.Vendor)}})
 			}
 		case <-check:
+			s.releaseQueued()
 			if s.sw.to != "" && !s.sw.typed {
 				s.offerSwitch()
 			}
@@ -308,7 +309,12 @@ func Run(o Options) (Exit, error) {
 				// they picked, is a switch; any other CLI that exited ends
 				// aggy, saying so if the user picked one.
 				ex := Exit{Code: w.code}
-				if s.exitSwitches(w.code) {
+				switches := s.exitSwitches(w.code)
+				s.drainSignals(sigs) // the check above can wait some seconds
+				if switches && s.signalled {
+					switches = s.signalStops(w.code)
+				}
+				if switches {
 					ex.SwitchTo, ex.Next = s.sw.to, s.sw.choice
 					ex.Next.Vendor = s.sw.to
 					s.log(diag.Rec{Event: diag.EvSwitchCompleted, Cause: s.sw.rec, Exit: diag.Int(w.code), Attrs: switchAttrs(ex.Next, map[string]any{"to": string(s.sw.to), "by_hand": !s.sw.typed})})
@@ -364,14 +370,22 @@ type session struct {
 	// the exit command's Enter could accept it, so aggy never types it
 	// (T6893). A user's Enter is no evidence: it may only answer a dialog.
 	turnRan bool
-	// signalled: aggy passed a signal on to the CLI, so its exit is no
-	// choice of the user's. noTurnOpen: the open note is tellNoTurn's.
+	// signalled: aggy got a signal to pass on. It never clears: a signal can
+	// race the key that confirms a switch, in either order, and a signal to
+	// aggy must never lead to launching the next CLI. noTurnOpen: the open
+	// note is tellNoTurn's.
 	signalled, noTurnOpen bool
 	// inputSinceTurn: input has gone to the CLI since its last counted turn
 	// end, or its launch. Any of it may have started a turn, in whatever
 	// encoding the terminal sends Enter, so notices that can wait do not try
 	// to tell (mayBeRunning). A terminal's own reports do not count.
 	inputSinceTurn bool
+	// queued counts messages sent while a turn may already be running: each
+	// may start its own turn as the one before ends. queuedWait: the last
+	// counted turn end had one queued, so it left atPrompt false, until the
+	// next turn end, or queuedQuiet (releaseQueued).
+	queued     int
+	queuedWait bool
 	// limitDue is a limit's note waiting until it cannot hold a turn's output.
 	limitDue *limitNote
 	// held: a hook other than a turn end (a Notification: maybe a
@@ -616,7 +630,11 @@ func (s *session) hookEvent(ev hookEvent) {
 				}
 				s.pk.padRows = 0
 			}
-			s.atPrompt, s.inputSinceTurn = !s.held, false
+			s.atPrompt, s.inputSinceTurn, s.queuedWait = !s.held, false, false
+			if s.queued > 0 {
+				s.queued--
+				s.atPrompt, s.queuedWait = false, true
+			}
 			s.toolsWaitTurn = false
 			s.warnDue = true
 			s.askShare()
@@ -758,6 +776,13 @@ func (s *session) send(b []byte) {
 	}
 	s.inputSinceTurn = true
 	if bytes.IndexByte(b, '\r') >= 0 || csiEnter.Match(b) {
+		// An Enter with text, while a turn may be running, may queue a
+		// message. A bare one on an empty prompt queues nothing: it answers
+		// an approval or a menu, which most turns have.
+		if !s.atPrompt && (s.dirty || !bareEnter(b)) {
+			s.queued++
+		}
+		s.queuedWait = false
 		s.atPrompt, s.toldDirty = false, false // an Enter may start a turn
 	}
 	for _, c := range b {
@@ -770,11 +795,36 @@ func (s *session) send(b []byte) {
 // csiEnter matches Enter in the kitty keyboard protocol (CSI 13 u, with any
 // modifiers or event type) and in xterm's modifyOtherKeys (CSI 27 ; m ; 13 ~).
 // Which encoding Claude's and Grok's terminals are put in is unverified.
-var csiEnter = regexp.MustCompile(`\x1b\[(13(:[0-9]*)*(;[0-9:]*)*u|27;[0-9]+;13~)`)
+var csiEnter = regexp.MustCompile(`\x1b\[((13|57414)(:[0-9]*)*(;[0-9:]*)*u|27;[0-9]+;13~)`)
+
+// bareEnter reports whether b is one Enter and nothing else.
+func bareEnter(b []byte) bool {
+	return string(b) == "\r" || string(csiEnter.Find(b)) == string(b)
+}
+
+// queuedQuiet is how long the CLI and the typing must be silent to release a
+// turn end that had a message queued. Without it, an Enter with text that
+// queued nothing (an answer to the CLI's question) would stop every later
+// notice and offer, since no further turn end comes. That a running turn keeps
+// drawing, so that this silence means none runs, is unverified on all three
+// CLIs; if one runs silent this long a notice can hold its output. A variable
+// for tests.
+var queuedQuiet = 10 * time.Second
+
+// releaseQueued ends a wait for a queued turn that shows no sign of running.
+func (s *session) releaseQueued() {
+	now := time.Now()
+	if !s.queuedWait || now.Sub(s.lastIn) < queuedQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < queuedQuiet {
+		return
+	}
+	s.queued, s.queuedWait = 0, false
+	s.atPrompt = !s.held
+}
 
 // terminalReport reports whether b is only replies a terminal sends a CLI that
 // asked: focus events, cursor and device reports, and whole OSC, DCS, and APC
-// strings. None can submit anything, so none is input. Bracketed pastes and
+// strings, and the mouse wheel. None can submit anything, so none is input. A
+// click can, as far as aggy knows, so it stays input, as do bracketed pastes and
 // key sequences do not match, and a reply split across reads counts as input,
 // the safe side.
 func terminalReport(b []byte) bool {
@@ -791,7 +841,7 @@ func terminalReport(b []byte) bool {
 	return true
 }
 
-var reportSeq = regexp.MustCompile(`^\x1b(\[[IO]|\[[0-9;?>]*[Rcnt]|\[[0-9;?]*\$y|[\]P_][^\x07\x1b]*(\x07|\x1b\\))`)
+var reportSeq = regexp.MustCompile(`^\x1b(\[[IO]|\[[0-9;?>]*[Rcnt]|\[[0-9;?]*\$y|\[\?[0-9]*u|\[<(6[4-9]|[78][0-9]|9[0-5]);[0-9]+;[0-9]+[Mm]|[\]P_][^\x00-\x1f]*(\x07|\x1b\\))`)
 
 // mayBeRunning reports whether a turn may be running, so a notice that can wait
 // must, since an open notice holds the CLI's output until a key. Only a launch
@@ -1066,7 +1116,7 @@ func (s *session) markNoTurn() {
 
 // exitSwitches says whether the CLI's exit with code completes the waiting
 // switch, and tells the user why not when they picked one. A typed exit
-// command completes it unless aggy got a signal since. So does a clean exit
+// command completes it unless aggy has got a signal. So does a clean exit
 // the list said to make, with no signal, a session picked still recorded (as
 // confirmSwitch checks), and the vendor still allowed (as offerSwitch checks).
 func (s *session) exitSwitches(code int) bool {
@@ -1078,11 +1128,6 @@ func (s *session) exitSwitches(code int) bool {
 	if s.sw.resume {
 		what = "resume " + string(v)
 	}
-	unclean := func(why string) bool {
-		s.log(diag.Rec{Event: diag.EvSwitchCancelled, Cause: s.sw.rec, Exit: diag.Int(code), Attrs: map[string]any{"how": "unclean_exit", "to": string(v), "signalled": s.signalled}})
-		s.exitLine(fmt.Sprintf("%s, so aggy did not %s.", why, what))
-		return false
-	}
 	if s.sw.typed && !s.signalled {
 		return true
 	}
@@ -1093,14 +1138,16 @@ func (s *session) exitSwitches(code int) bool {
 		return false
 	}
 	if s.signalled {
-		return unclean("aggy was sent a signal")
+		return s.signalStops(code)
 	}
 	if code != 0 {
-		return unclean(fmt.Sprintf("%s exited with code %d", on, code))
+		s.log(diag.Rec{Event: diag.EvSwitchCancelled, Cause: s.sw.rec, Exit: diag.Int(code), Attrs: map[string]any{"how": "unclean_exit", "to": string(v), "signalled": false}})
+		s.exitLine(fmt.Sprintf("%s exited with code %d, so aggy did not %s.", on, code, what))
+		return false
 	}
 	if !s.sw.typed && time.Since(s.sw.toldAt) > noTurnPickFresh {
 		s.log(diag.Rec{Event: diag.EvSwitchCancelled, Cause: s.sw.rec, Exit: diag.Int(code), Attrs: map[string]any{"how": "stale_pick", "to": string(v)}})
-		s.exitLine(fmt.Sprintf("you picked %s over %d minutes ago, so aggy did not %s. Pick it again, then quit.", v, noTurnPickMinutes, what))
+		s.exitLine(fmt.Sprintf("you picked %s over %d minutes ago, so aggy did not %s. Open aggy again to switch.", v, noTurnPickMinutes, what))
 		return false
 	}
 	check := s.offered
@@ -1128,6 +1175,19 @@ func (s *session) exitSwitches(code int) bool {
 	case <-time.After(childCheckWait):
 		return true // the launch's plan checks it again
 	}
+}
+
+// signalStops records and says that a signal stopped the waiting switch, and
+// returns false, for the caller's result.
+func (s *session) signalStops(code int) bool {
+	v := s.sw.to
+	what := "switch to " + string(v)
+	if s.sw.resume {
+		what = "resume " + string(v)
+	}
+	s.log(diag.Rec{Event: diag.EvSwitchCancelled, Cause: s.sw.rec, Exit: diag.Int(code), Attrs: map[string]any{"how": "unclean_exit", "to": string(v), "signalled": true}})
+	s.exitLine(fmt.Sprintf("aggy was sent a signal, so aggy did not %s.", what))
+	return false
 }
 
 // exitLine tells the user, as aggy exits, why a switch did not happen.
@@ -1441,7 +1501,6 @@ type childCheck struct {
 // recorded (T6770): the picker's list may be stale, and launching a
 // session that is gone would fail after the CLI on screen has exited.
 func (s *session) confirmSwitch() {
-	s.signalled = false // only one from here on stops this switch
 	id, v := s.sw.choice.Child, s.sw.to
 	if id == "" || s.o.HasChild == nil {
 		s.typeExit()
@@ -1523,6 +1582,7 @@ func (s *session) openList() {
 	s.pk.list()
 	s.pk.waiting, s.pk.checking, s.pk.resume = s.sw.to, false, s.sw.resume
 	s.pk.noTurn, s.pk.on = !s.turnRan, s.o.Vendor
+	s.pk.stalePick = s.sw.toldNoTurn && !s.sw.typed && time.Since(s.sw.toldAt) > noTurnPickFresh
 	s.pk.limitLine = ""
 	if s.limitDue != nil {
 		// The person came to the list first: it says what the note would.
@@ -1627,6 +1687,10 @@ func (s *session) repaint() {
 }
 
 func (s *session) pickerInput(b []byte) {
+	if terminalReport(b) {
+		s.toChild.push(b) // no key of the user's: it closes nothing
+		return
+	}
 	if s.pk.confirm != "" || s.pk.note {
 		s.promptInput(b)
 		return
@@ -1670,6 +1734,9 @@ func (s *session) pickerInput(b []byte) {
 		// Without a turn end, no pick can say no turn is running: a turn
 		// may be, and atPrompt would let a notice hold it.
 		s.atPrompt, s.toldDirty = s.atPrompt || s.turnRan, false
+		if s.turnRan { // the user says no turn is running
+			s.queued, s.queuedWait = 0, false
+		}
 		s.sw.choice, s.sw.asked, s.sw.picked, s.sw.noteShown = c, false, true, false
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Cause: s.sw.rec, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked), "again": true})})
 		s.markNoTurn()

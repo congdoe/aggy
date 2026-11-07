@@ -26,6 +26,51 @@ func TestStalePick(t *testing.T) {
 	poll(t, "why", []byte("you picked codex over 10 minutes ago, so aggy did not switch to codex."), ts.screen)
 }
 
+// TestStalePickList (T6941): a list reopened after a pick expired says so.
+func TestStalePickList(t *testing.T) {
+	old := noTurnPickFresh
+	t.Cleanup(func() { noTurnPickFresh = old })
+	noTurnPickFresh = 0
+	ts, c, done, _ := switchRunOn(t, false, adapter.Claude)
+	ts.typeIn(t, "x")
+	c.waitGot(t, []byte("x"))
+	ts.typeIn(t, "\x1c1")
+	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+	time.Sleep(time.Millisecond)
+	ts.clearScreen()
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list", []byte("Your pick of codex is over 10 minutes old"), ts.screen)
+	ts.typeIn(t, "\x1b")
+	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+	finish(t, c, done)
+}
+
+// TestEnterEncodings (T6941): each terminal's Enter is seen, bare or with text.
+func TestEnterEncodings(t *testing.T) {
+	for _, tt := range []struct {
+		in          string
+		enter, bare bool
+	}{
+		{"\x1b[13u", true, true},
+		{"\x1b[13;1u", true, true},
+		{"\x1b[57414u", true, true},
+		{"\x1b[27;1;13~", true, true},
+		{"hi\x1b[13u", true, false},
+		{"\x1b[14u", false, false},
+		{"\x1b[113u", false, false},
+	} {
+		if got := csiEnter.MatchString(tt.in); got != tt.enter {
+			t.Errorf("csiEnter(%q) = %v", tt.in, got)
+		}
+		if got := bareEnter([]byte(tt.in)); got != tt.bare {
+			t.Errorf("bareEnter(%q) = %v", tt.in, got)
+		}
+	}
+	if !bareEnter([]byte("\r")) || bareEnter([]byte("hi\r")) {
+		t.Error("CR")
+	}
+}
+
 // TestTerminalReport (T6941): only whole replies a terminal sends a CLI are not
 // input; a key or a paste always is.
 func TestTerminalReport(t *testing.T) {
@@ -53,6 +98,13 @@ func TestTerminalReport(t *testing.T) {
 		{"\x1b[Ix", false},
 		{"x\x1b[I", false},
 		{"\x1b]11;rgb", false},
+		{"\x1b]0;x\rmore\x07", false},
+		{"\x1b[?1u", true},
+		{"\x1b[<64;10;10M", true},
+		{"\x1b[<65;10;10m", true},
+		{"\x1b[<0;10;10M", false},
+		{"\x1b[<32;10;10M", false},
+		{"\x1b[1u", false},
 	} {
 		if got := terminalReport([]byte(tt.in)); got != tt.want {
 			t.Errorf("terminalReport(%q) = %v, want %v", tt.in, got, tt.want)
