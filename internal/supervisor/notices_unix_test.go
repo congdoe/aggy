@@ -4,6 +4,7 @@ package supervisor
 
 import (
 	"os"
+	"os/signal"
 	"strings"
 	"syscall"
 	"testing"
@@ -11,6 +12,9 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 )
+
+// nonStopTurnEnd is a limit's turn end, which keeps a waiting limit's note.
+const nonStopTurnEnd = `{"type":"hook-event","vendor":"claude","event":"StopFailure","payload":{"session_id":"` + childSID + `"}}`
 
 // streams checks that the CLI's output reaches the terminal, past the quiet
 // gap, with no key pressed and no notice holding it.
@@ -93,6 +97,48 @@ func TestNoticesHoldNoOutput(t *testing.T) {
 		poll(t, "the note at the turn end", []byte("Tools changed for codex"), ts.screen)
 		finish(t, c, done)
 	})
+	// The HIGH of T6941's review: a message queued during a turn starts its own
+	// turn as that one ends, so that turn end says nothing is running.
+	t.Run("a message queued during the turn", func(t *testing.T) {
+		ch := make(chan LimitHit, 1)
+		ts, c, done, sock := switchRunTurned(t, adapter.Claude, limitOpts(ch), func(*Options) { queuedQuiet = time.Hour })
+		ts.typeIn(t, "first\r")
+		c.waitGot(t, []byte("first\r"))
+		ts.typeIn(t, "second\r")
+		c.waitGot(t, []byte("second\r"))
+		_ = request(t, sock, stopLine) // the first turn's end: the second runs
+		ch <- LimitHit{Vendor: adapter.Claude}
+		streams(t, ts, c, "hit its limit")
+		mark := len(ts.screen())
+		_ = request(t, sock, nonStopTurnEnd)
+		poll(t, "the note at the second turn's end", []byte("hit its limit"), func() []byte { return ts.screen()[mark:] })
+		finish(t, c, done)
+	})
+	t.Run("a queued message that started nothing: the quiet gap releases", func(t *testing.T) {
+		ch := make(chan LimitHit, 1)
+		ts, c, done, sock := switchRunTurned(t, adapter.Claude, limitOpts(ch))
+		ts.typeIn(t, "first\r")
+		c.waitGot(t, []byte("first\r"))
+		ts.typeIn(t, "an answer\r")
+		c.waitGot(t, []byte("an answer\r"))
+		_ = request(t, sock, stopLine)
+		ch <- LimitHit{Vendor: adapter.Claude}
+		never(t, "the note before the gap", []byte("hit its limit"), ts.screen, 100*time.Millisecond)
+		poll(t, "the note after the gap", []byte("hit its limit"), ts.screen)
+		finish(t, c, done)
+	})
+	t.Run("a bare Enter during a turn queues nothing", func(t *testing.T) {
+		ch := make(chan LimitHit, 1)
+		ts, c, done, sock := switchRunTurned(t, adapter.Claude, limitOpts(ch), func(*Options) { queuedQuiet = time.Hour })
+		ts.typeIn(t, "first\r")
+		c.waitGot(t, []byte("first\r"))
+		ts.typeIn(t, "\r") // an approval
+		time.Sleep(10 * time.Millisecond)
+		_ = request(t, sock, stopLine)
+		ch <- LimitHit{Vendor: adapter.Claude}
+		poll(t, "the note", []byte("hit its limit"), ts.screen)
+		finish(t, c, done)
+	})
 	t.Run("a terminal's reply is not input", func(t *testing.T) {
 		ts, c, done, _ := switchRunOn(t, false, adapter.Codex)
 		ts.typeIn(t, "\x1b[I")
@@ -145,12 +191,75 @@ func TestNoTurnNoteFits(t *testing.T) {
 	finish(t, c, done)
 }
 
-// TestSignalAfterConfirmStops (T6941): a signal taken after the user confirmed,
-// but before the picked session's check lets aggy type the exit command, stops
-// the switch, though the CLI survives it and exits cleanly.
-func TestSignalAfterConfirmStops(t *testing.T) {
-	release := make(chan struct{})
-	ts, c, done, _ := switchRunTurned(t, adapter.Claude, func(o *Options) {
+// TestSignalStopsConfirmedSwitch (T6941): a signal to aggy never leads to the
+// next CLI, in either order against the key that confirms the switch.
+func TestSignalStopsConfirmedSwitch(t *testing.T) {
+	signal := func(t *testing.T, c *fakeChild) {
+		t.Helper()
+		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-c.sigs: // the loop has taken it
+		case <-time.After(waitLimit):
+			t.Fatal("the signal was not passed on")
+		}
+	}
+	for _, tt := range []struct {
+		name          string
+		beforeConfirm bool
+	}{
+		{"taken before the confirmation", true},
+		{"taken while the picked session is checked", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			entered, release := make(chan struct{}, 1), make(chan struct{})
+			ts, c, done, _ := switchRunTurned(t, adapter.Claude, func(o *Options) {
+				o.Children = func(v adapter.Vendor) []ChildChoice {
+					if v == adapter.Grok {
+						return []ChildChoice{{"g2", "latest"}, {"g1", "older"}}
+					}
+					return nil
+				}
+				o.HasChild = func(adapter.Vendor, string) bool {
+					select {
+					case entered <- struct{}{}:
+					default:
+					}
+					<-release
+					return true
+				}
+			})
+			ts.typeIn(t, "\x1c2")
+			poll(t, "the child list", []byte("which session?"), ts.screen)
+			ts.typeIn(t, "2")
+			poll(t, "the confirmation", []byte("-> grok"), ts.screen)
+			if tt.beforeConfirm {
+				signal(t, c)
+			}
+			confirm(t, ts)
+			select {
+			case <-entered:
+			case <-time.After(waitLimit):
+				t.Fatal("the confirmation was not taken")
+			}
+			if !tt.beforeConfirm {
+				signal(t, c)
+			}
+			close(release)
+			c.waitGot(t, []byte("/exit\r"))
+			c.quit(0)
+			wantExit(t, done, Exit{})
+			poll(t, "why", []byte("aggy was sent a signal, so aggy did not switch to grok."), ts.screen)
+		})
+	}
+}
+
+// TestSignalDuringExitCheck (T6941): a signal while aggy checks the picked
+// session, after the CLI quit, stops the switch.
+func TestSignalDuringExitCheck(t *testing.T) {
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	ts, c, done, _ := switchRunOn(t, false, adapter.Claude, func(o *Options) {
 		o.Children = func(v adapter.Vendor) []ChildChoice {
 			if v == adapter.Grok {
 				return []ChildChoice{{"g2", "latest"}, {"g1", "older"}}
@@ -158,26 +267,47 @@ func TestSignalAfterConfirmStops(t *testing.T) {
 			return nil
 		}
 		o.HasChild = func(adapter.Vendor, string) bool {
+			entered <- struct{}{}
 			<-release
 			return true
 		}
 	})
+	ts.typeIn(t, "x")
+	c.waitGot(t, []byte("x"))
 	ts.typeIn(t, "\x1c2")
 	poll(t, "the child list", []byte("which session?"), ts.screen)
 	ts.typeIn(t, "2")
-	poll(t, "the confirmation", []byte("-> grok"), ts.screen)
-	confirm(t, ts)
+	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+	c.quit(0)
+	select {
+	case <-entered:
+	case <-time.After(waitLimit):
+		t.Fatal("the session was not checked")
+	}
+	got := make(chan os.Signal, 1)
+	signal.Notify(got, syscall.SIGTERM)
+	defer signal.Stop(got)
 	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-c.sigs:
-	case <-time.After(waitLimit):
-		t.Fatal("the signal was not passed on")
-	}
+	<-got
+	time.Sleep(20 * time.Millisecond) // every Notify channel has it
 	close(release)
-	c.waitGot(t, []byte("/exit\r"))
-	c.quit(0)
 	wantExit(t, done, Exit{})
 	poll(t, "why", []byte("aggy was sent a signal, so aggy did not switch to grok."), ts.screen)
+}
+
+// TestReportKeepsNote (T6941): a terminal's reply, such as focus coming back,
+// does not close a note nobody has read; a key does.
+func TestReportKeepsNote(t *testing.T) {
+	ch := make(chan LimitHit, 1)
+	ts, c, done, _ := switchRunOn(t, false, adapter.Codex, limitOpts(ch, adapter.Grok))
+	ch <- LimitHit{Vendor: adapter.Codex}
+	poll(t, "the note", []byte("codex hit its limit"), ts.screen)
+	ts.typeIn(t, "\x1b[I")
+	c.waitGot(t, []byte("\x1b[I"))
+	never(t, "the note closing", []byte(altScreenOff), ts.screen, 200*time.Millisecond)
+	ts.typeIn(t, "\x1b")
+	poll(t, "the note to close", []byte(altScreenOff), ts.screen)
+	finish(t, c, done)
 }
