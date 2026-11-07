@@ -74,68 +74,69 @@ type CodeInfo struct {
 
 // Events.
 var (
-	EvBorrowRefused       = Event{"borrow.request.refused"}
-	EvBorrowVendorSkipped = Event{"borrow.vendor.skipped"}
-	EvBorrowChildStarted  = Event{"borrow.child.started"}
-	EvBorrowChildExited   = Event{"borrow.child.exited"}
-	EvBorrowFailed        = Event{"borrow.run.failed"}
-	EvBorrowFinished      = Event{"borrow.run.finished"}
-	EvClaudeLockdown      = Event{"adapter.claude.lockdown_rejected"}
-	EvCodexLockdown       = Event{"adapter.codex.lockdown_rejected"}
-	EvGrokLockdown        = Event{"adapter.grok.lockdown_rejected"}
-	EvGrokSandboxRefused  = Event{"adapter.grok.sandbox_refused"}
-	EvAcceptRefused       = Event{"accept.request.refused"}
-	EvAcceptApplied       = Event{"accept.diff.applied"}
-	EvAcceptDeclined      = Event{"accept.diff.declined"}
-	EvGateRefused         = Event{"check.gate.refused"}
-	EvGateDecided         = Event{"check.gate.decided"}
-	EvCheckRefused        = Event{"check.run.refused"}
-	EvCheckCommandFailed  = Event{"check.command.failed"}
-	EvCheckFinished       = Event{"check.run.finished"}
-	EvGCRefused           = Event{"gc.run.refused"}
-	EvGCRemoved           = Event{"gc.item.removed"}
-	EvGCRemoveFailed      = Event{"gc.item.failed"}
-	EvSetupChecked        = Event{"setup.vendor.checked"}
-	EvSetupFailed         = Event{"setup.run.failed"}
-	EvDoctorError         = Event{"doctor.finding.error"}
-	EvDoctorRefused       = Event{"doctor.run.refused"}
-	EvToolRefused         = Event{"tool.request.refused"}
-	EvToolDefRefused      = Event{"tool.def.refused"}
-	EvToolSwitched        = Event{"tool.switch.changed"}
-	EvToolsNotified       = Event{"tool.session.notified"}
-	EvToolsChanged        = Event{"supervisor.tools.changed"}
-	EvLaunchRefused       = Event{"supervisor.launch.refused"}
-	EvLaunched            = Event{"supervisor.child.launched"}
-	EvSessionExited       = Event{"supervisor.child.exited"}
-	EvSwitchQueued        = Event{"switch.request.queued"}
-	EvSwitchOffered       = Event{"switch.request.offered"}
-	EvSwitchConfirmed     = Event{"switch.request.confirmed"}
-	EvSwitchRefused       = Event{"switch.request.refused"}
-	EvSwitchCancelled     = Event{"switch.request.cancelled"}
-	EvSwitchCompleted     = Event{"switch.request.completed"}
-	EvSwitchExitLate      = Event{"switch.exit.timed_out"}
-	EvPickerOpened        = Event{"switch.picker.opened"}
-	EvPickerChosen        = Event{"switch.picker.chosen"}
-	EvPickerDismissed     = Event{"switch.picker.dismissed"}
-	EvLimitReceived       = Event{"switch.limit.received"}
-	EvLimitNotOffered     = Event{"switch.limit.not_offered"}
-	EvNearLimitWarned     = Event{"switch.near_limit.warned"}
-	EvHookAccepted        = Event{"hook.event.accepted"}
-	EvHookRejected        = Event{"hook.event.rejected"}
-	EvHookIgnored         = Event{"hook.event.ignored"}
-	EvHookForwardFailed   = Event{"hook.forward.failed"}
-	EvQueueDropped        = Event{"diag.queue.dropped"}
-	EvToolWireRefused     = Event{"tool.wire.refused"}
-	EvToolWired           = Event{"tool.wire.done"}
-	EvToolExecRefused     = Event{"tool.exec.refused"}
-	EvToolIndexed         = Event{"tool.index.done"}
-	EvToolIndexRefused    = Event{"tool.index.refused"}
-	EvToolProxyStarted    = Event{"tool.proxy.started"}
-	EvToolProxyRefused    = Event{"tool.proxy.refused"}
-	EvToolProxyStopped    = Event{"tool.proxy.stopped"}
-	EvToolProxyExited     = Event{"tool.proxy.exited"}
-	EvHookToolFiltered    = Event{"hook.tool.filtered"}
-	EvHookToolFailed      = Event{"hook.tool.failed"}
+	EvBorrowRefused        = Event{"borrow.request.refused"}
+	EvBorrowVendorSkipped  = Event{"borrow.vendor.skipped"}
+	EvBorrowVersionChecked = Event{"borrow.version.checked"}
+	EvBorrowChildStarted   = Event{"borrow.child.started"}
+	EvBorrowChildExited    = Event{"borrow.child.exited"}
+	EvBorrowFailed         = Event{"borrow.run.failed"}
+	EvBorrowFinished       = Event{"borrow.run.finished"}
+	EvClaudeLockdown       = Event{"adapter.claude.lockdown_rejected"}
+	EvCodexLockdown        = Event{"adapter.codex.lockdown_rejected"}
+	EvGrokLockdown         = Event{"adapter.grok.lockdown_rejected"}
+	EvGrokSandboxRefused   = Event{"adapter.grok.sandbox_refused"}
+	EvAcceptRefused        = Event{"accept.request.refused"}
+	EvAcceptApplied        = Event{"accept.diff.applied"}
+	EvAcceptDeclined       = Event{"accept.diff.declined"}
+	EvGateRefused          = Event{"check.gate.refused"}
+	EvGateDecided          = Event{"check.gate.decided"}
+	EvCheckRefused         = Event{"check.run.refused"}
+	EvCheckCommandFailed   = Event{"check.command.failed"}
+	EvCheckFinished        = Event{"check.run.finished"}
+	EvGCRefused            = Event{"gc.run.refused"}
+	EvGCRemoved            = Event{"gc.item.removed"}
+	EvGCRemoveFailed       = Event{"gc.item.failed"}
+	EvSetupChecked         = Event{"setup.vendor.checked"}
+	EvSetupFailed          = Event{"setup.run.failed"}
+	EvDoctorError          = Event{"doctor.finding.error"}
+	EvDoctorRefused        = Event{"doctor.run.refused"}
+	EvToolRefused          = Event{"tool.request.refused"}
+	EvToolDefRefused       = Event{"tool.def.refused"}
+	EvToolSwitched         = Event{"tool.switch.changed"}
+	EvToolsNotified        = Event{"tool.session.notified"}
+	EvToolsChanged         = Event{"supervisor.tools.changed"}
+	EvLaunchRefused        = Event{"supervisor.launch.refused"}
+	EvLaunched             = Event{"supervisor.child.launched"}
+	EvSessionExited        = Event{"supervisor.child.exited"}
+	EvSwitchQueued         = Event{"switch.request.queued"}
+	EvSwitchOffered        = Event{"switch.request.offered"}
+	EvSwitchConfirmed      = Event{"switch.request.confirmed"}
+	EvSwitchRefused        = Event{"switch.request.refused"}
+	EvSwitchCancelled      = Event{"switch.request.cancelled"}
+	EvSwitchCompleted      = Event{"switch.request.completed"}
+	EvSwitchExitLate       = Event{"switch.exit.timed_out"}
+	EvPickerOpened         = Event{"switch.picker.opened"}
+	EvPickerChosen         = Event{"switch.picker.chosen"}
+	EvPickerDismissed      = Event{"switch.picker.dismissed"}
+	EvLimitReceived        = Event{"switch.limit.received"}
+	EvLimitNotOffered      = Event{"switch.limit.not_offered"}
+	EvNearLimitWarned      = Event{"switch.near_limit.warned"}
+	EvHookAccepted         = Event{"hook.event.accepted"}
+	EvHookRejected         = Event{"hook.event.rejected"}
+	EvHookIgnored          = Event{"hook.event.ignored"}
+	EvHookForwardFailed    = Event{"hook.forward.failed"}
+	EvQueueDropped         = Event{"diag.queue.dropped"}
+	EvToolWireRefused      = Event{"tool.wire.refused"}
+	EvToolWired            = Event{"tool.wire.done"}
+	EvToolExecRefused      = Event{"tool.exec.refused"}
+	EvToolIndexed          = Event{"tool.index.done"}
+	EvToolIndexRefused     = Event{"tool.index.refused"}
+	EvToolProxyStarted     = Event{"tool.proxy.started"}
+	EvToolProxyRefused     = Event{"tool.proxy.refused"}
+	EvToolProxyStopped     = Event{"tool.proxy.stopped"}
+	EvToolProxyExited      = Event{"tool.proxy.exited"}
+	EvHookToolFiltered     = Event{"hook.tool.filtered"}
+	EvHookToolFailed       = Event{"hook.tool.failed"}
 )
 
 // Codes.
@@ -153,6 +154,7 @@ var (
 	CodeFileTools        = Code{"adapter.file_tools_off"}
 	CodeNoSandbox        = Code{"sandbox.missing"}
 	CodeUntested         = Code{"lockdown.untested_version"}
+	CodeVersionCheck     = Code{"lockdown.version_check_failed"}
 	CodeLockdown         = Code{"lockdown.rejected"}
 	CodeRateLimit        = Code{"vendor.rate_limit"}
 	CodeAuth             = Code{"vendor.auth"}
@@ -254,6 +256,7 @@ const showRun = "aggy diag show <run id> for what led to it"
 var events = []EventInfo{
 	{EvBorrowRefused, LevelError, "borrow", "aggy borrow refused or failed outside the child's own run: before a child started, or while recording one.", "The code's entry; " + showRun + "."},
 	{EvBorrowVendorSkipped, LevelInfo, "borrow", "A candidate vendor could not start the borrow, and the next one was tried.", "The code says why; aggy setup and aggy doctor for that vendor."},
+	{EvBorrowVersionChecked, LevelInfo, "borrow", "A check of a CLI newer than the tested range ran; attrs hold the check, its result, and the version.", "A failed check is cached for that version; a new CLI version or aggy release checks again."},
 	{EvBorrowChildStarted, LevelInfo, "borrow", "The borrow was recorded and its child CLI started.", "A started borrow with no borrow.run.finished was cut short: aggy diag show <borrow id>."},
 	{EvBorrowChildExited, LevelInfo, "borrow", "The child CLI exited; exit_code and duration_ms say how.", "A non-zero exit is classed by the next record (borrow.run.failed)."},
 	{EvBorrowFailed, LevelWarn, "borrow", "The borrow ran and failed; the code is the vendor's error class.", "The code's entry; aggy inbox <borrow id> for the report."},
@@ -329,7 +332,8 @@ var codes = []CodeInfo{
 	{CodeNoCapability, false, "The CLI's --help lacks a flag the lockdown needs.", "Update the CLI; aggy setup shows its version."},
 	{CodeFileTools, false, "The request needs Grok's media file tools, which are off.", "[media] grok_file_tools in ~/.aggy/config.toml, after reading what it uploads."},
 	{CodeNoSandbox, false, "The vendor's sandbox is not available for this kind on this CLI or host.", "Grok needs --sandbox strict in its --help and a kernel sandbox (macOS, or Linux with Landlock)."},
-	{CodeUntested, false, "The CLI's version is outside the versions the borrow lockdown was verified on.", "aggy doctor; --allow-untested runs it anyway."},
+	{CodeUntested, false, "The CLI's version is below the tested range, a new major version, or unreadable, so aggy does not borrow on it.", "aggy doctor; --allow-untested runs it anyway."},
+	{CodeVersionCheck, false, "A CLI newer than the tested range failed or could not finish aggy's check on this machine (a lockdown flag gone from help, a Codex feature not reviewed, or the canary self-test), so routing passed it over.", "The passed over line names which; aggy diag --event borrow.version.checked; --allow-untested runs it anyway; a result that was not final is tried again on the next borrow."},
 	{CodePermissionPrompt, false, "The child stopped a tool at a permission prompt, which a headless run cannot answer, so the tool did not run (Grok: \"was not run, as a headless run cannot ask for approval\").", "aggy doctor for the CLI's version; attach aggy diag bundle to an issue: aggy's allow rules for that kind may need a change."},
 	{CodeLockdown, true, "The CLI rejected a lockdown flag, reported a tool it does not know, or ran without its sandbox, so aggy discarded the run.", "aggy doctor for the version; attach aggy diag bundle to an issue."},
 	{CodeRateLimit, false, "The vendor reported a plan or rate limit.", "aggy log shows the limit; routing skips the vendor until it lifts."},

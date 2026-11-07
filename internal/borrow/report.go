@@ -39,6 +39,9 @@ func reportText(r Result, req Request, sessionID string, started time.Time) stri
 	if sessionID != "" {
 		fmt.Fprintf(&b, "- Child session: %s\n", sessionID)
 	}
+	if r.VersionNote != "" {
+		fmt.Fprintf(&b, "- CLI version: %s %s (%s)\n", r.Vendor, r.CLIVersion, r.VersionNote)
+	}
 	if r.Kind == adapter.Image || r.Kind == adapter.Video {
 		fmt.Fprintf(&b, "- Files made: %d, kept: %d\n", r.Made, len(r.Artifacts))
 	}
@@ -50,6 +53,9 @@ func reportText(r Result, req Request, sessionID string, started time.Time) stri
 	}
 	for _, x := range r.Refused {
 		fmt.Fprintf(&b, "- Refused file: %s\n", x)
+	}
+	for _, x := range r.Warnings {
+		fmt.Fprintf(&b, "- Warning: %s\n", x)
 	}
 	b.WriteString("\n## Task\n\n")
 	b.WriteString(strings.TrimSpace(req.Task))

@@ -43,6 +43,7 @@ setup = ["npm", "ci"]
 		{name: "unknown key", text: "allowed_vendors = []\nmodel = \"x\"\n", wantErr: "unknown key model"},
 		{name: "unknown table", text: "[routing]\nimage = [\"grok\"]\n", wantErr: "unknown key routing"},
 		{name: "user-only key", text: `default_vendor = "grok"`, wantErr: "unknown key default_vendor"},
+		{name: "a repo cannot touch the version self-test", text: "[versions]\nself_test = false\n", wantErr: "unknown key versions"},
 		{name: "a repo cannot turn notifications on", text: "[notify]\ndesktop = true\n", wantErr: "unknown key notify"},
 		// T6822: only the person's own config lets tool telemetry through.
 		{name: "a repo cannot allow tool telemetry", text: "[tools]\nallow_telemetry = true\n", wantErr: "unknown key tools"},

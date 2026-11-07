@@ -45,8 +45,9 @@ Kinds: image, video, research, news, review, edit.
                    two vendors (research only)
   --base REF       review: diff against REF instead of the merge-base
                    with the default branch
-  --allow-untested run a CLI whose version is outside the versions the
-                   borrow lockdown was verified on
+  --allow-untested run a CLI outside the tested versions without aggy's
+                   checks: below them, a new major version, unreadable, or
+                   newer and not passing its check on this machine
   --fresh          research and news: ask again instead of reusing the
                    report on the same question (a day for news, a week
                    for research)
@@ -355,6 +356,7 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 		Worktrees: &gitWorktrees{env: env, stateDir: stateDir, out: stderr, allow: cfg.Worktree, cfgPath: filepath.Join(stateDir, config.FileName)},
 		Tools:     borrowTools(stateDir, cfg.Routing.EditNetworkTools),
 		Diag:      dlog,
+		Notice:    func(s string) { fmt.Fprintf(stderr, "aggy borrow: %s\n", termsafe.Field(s)) },
 	})
 	req := borrow.Request{
 		Kind: kind, Task: ba.task, Paths: paths, Constraints: ba.constraints,
@@ -454,6 +456,12 @@ func printResult(w io.Writer, r borrow.Result) {
 	for _, a := range r.Tried {
 		fmt.Fprintf(w, "  passed over %s: %s\n", a.Vendor, termsafe.Field(a.Reason))
 	}
+	if r.VersionNote != "" {
+		fmt.Fprintf(w, "  %s %s: %s\n", r.Vendor, termsafe.Field(r.CLIVersion), r.VersionNote)
+	}
+	for _, x := range r.Warnings {
+		fmt.Fprintf(w, "  warning: %s\n", termsafe.Line(x))
+	}
 	text := r.Text
 	if r.Status != "done" {
 		text = r.Detail
@@ -525,7 +533,7 @@ func (w *borrowWorld) locate(ctx context.Context, v adapter.Vendor) (borrow.CLI,
 	if v == adapter.Grok && w.env.kernelSandbox != nil && w.env.kernelSandbox() == nil {
 		caps = append(slices.Clone(caps), probe.CapKernelSandbox)
 	}
-	return borrow.CLI{Path: path, Version: res.Version, VersionLine: res.VersionLine, Caps: caps}, nil
+	return borrow.CLI{Path: path, Version: res.Version, VersionLine: res.VersionLine, Caps: caps, HelpIncomplete: err != nil}, nil
 }
 
 // borrowRouter is internal/router behind the borrow package's Router

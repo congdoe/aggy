@@ -60,6 +60,9 @@ type Scenario struct {
 	// CwdFiles are files an edit child writes under its working dir.
 	CwdFiles []SessionFile `json:"cwd_files"`
 	SleepMS  int           `json:"sleep_ms"`
+	// ReadFile makes a headless run print this file, relative to its working
+	// dir, on stdout: a child whose lockdown let it read outside that dir.
+	ReadFile string `json:"read_file"`
 	// StartMCP makes claude start each server of its --mcp-config file
 	// once and wait for it, after the hooks.
 	StartMCP bool `json:"start_mcp"`
@@ -674,6 +677,11 @@ func (f *fake) main(args []string) int {
 		}
 		return fail(2, "%s: %v", f.vendor, err)
 	}
+	if f.vendor == "codex" && len(args) == 2 && args[0] == "features" && args[1] == "list" {
+		f.record("features", args)
+		fmt.Print(defaultCodexFeatures)
+		return 0
+	}
 	if f.has("--version") {
 		f.record("version", args)
 		fmt.Print(f.versionText())
@@ -727,6 +735,11 @@ func (f *fake) main(args []string) int {
 			return fail(3, "%v", err)
 		}
 		f.headlessOutput()
+		if f.sc.ReadFile != "" {
+			if b, err := os.ReadFile(f.sc.ReadFile); err == nil {
+				os.Stdout.Write(b)
+			}
+		}
 	} else if !f.sc.RawEcho {
 		fmt.Print(f.expand(f.sc.Stdout))
 	}
@@ -779,6 +792,21 @@ func (f *fake) versionText() string {
 	// that holds the version number.
 	return fmt.Sprintf("%s %s (fake)\n", f.vendor, v)
 }
+
+// defaultCodexFeatures is codex features list: the lockdown's eight, one
+// other on by default, and one off, in the format of cli/src/main.rs#L1951
+// at codex 6aaac69. A scenario's replies replace it.
+const defaultCodexFeatures = `apps               stable             true
+goals              stable             true
+image_generation   stable             true
+multi_agent        stable             true
+plugins            stable             true
+shell_tool         stable             true
+sleep_tool         stable             true
+standalone_search  under development  false
+unified_exec       stable             true
+view_image         stable             true
+`
 
 // helpText lists the flags the fake honors, unless the scenario gives the
 // text. The real help formats are not recorded.

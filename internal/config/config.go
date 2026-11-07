@@ -29,6 +29,7 @@ type Config struct {
 	Routing       Routing        `toml:"routing"`
 	Budgets       Budgets        `toml:"budgets"`
 	Media         Media          `toml:"media"`
+	Versions      Versions       `toml:"versions"`
 	Policy        Policy         `toml:"policy"`
 	Notify        Notify         `toml:"notify"`
 	Worktree      UserWorktree   `toml:"worktree"`
@@ -116,6 +117,17 @@ type Notify struct {
 	// for the person, a borrow finishes, or a vendor hits its limit
 	// (internal/notify). Off by default.
 	Desktop bool `toml:"desktop"`
+}
+
+// Versions says how a borrow treats a CLI newer than aggy's tested range
+// (design section 7). It is user config only: a repo's config has no such
+// key, so a cloned repo can neither spend quota on the self-test nor turn
+// it off.
+type Versions struct {
+	// SelfTest runs the one minimal canary run on a new CLI version. Off,
+	// the help and feature checks still run, and a failure already recorded
+	// still passes the vendor over.
+	SelfTest bool `toml:"self_test"`
 }
 
 // Media holds opt-ins for media tools. It is user config only: a repo's
@@ -375,10 +387,11 @@ func vendors(vs ...adapter.Vendor) Route { return Route{Vendors: vs} }
 // tools, not benchmarks; budgets follow the build plan.
 func Default() Config {
 	return Config{
-		Switch: Switch{Order: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok}, Key: DefaultSwitchKey, WarnAt: DefaultWarnAt},
-		Policy: Policy{Required: true},
-		GC:     GC{PendingWorktreeDays: 30, AcceptedWorktreeDays: 30, ClosedChildDays: 30, InboxDays: 30},
-		Log:    Log{RetentionDays: 14, MaxMB: 50, Level: "info"},
+		Switch:   Switch{Order: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok}, Key: DefaultSwitchKey, WarnAt: DefaultWarnAt},
+		Policy:   Policy{Required: true},
+		Versions: Versions{SelfTest: true},
+		GC:       GC{PendingWorktreeDays: 30, AcceptedWorktreeDays: 30, ClosedChildDays: 30, InboxDays: 30},
+		Log:      Log{RetentionDays: 14, MaxMB: 50, Level: "info"},
 		Routing: Routing{
 			// TODO(T6638): Codex is left out of news and research on
 			// purpose. Its apply_patch tool cannot be turned off, and its

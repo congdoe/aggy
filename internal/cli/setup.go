@@ -285,8 +285,9 @@ func (r *setupRun) vendor(ctx context.Context, a adapter.Adapter) int {
 	return 0
 }
 
-// printVendor prints what a check found. The version, path, warning, and
-// error come from the CLI or the disk, so they go through termsafe.
+// printVendor prints what a check found. The version, path, and error come
+// from the CLI or the disk, so they go through termsafe. A version outside
+// the tested range is aggy doctor's to warn about (design section 7).
 func (r *setupRun) printVendor(res checkup.Vendor) {
 	if !res.Installed {
 		fmt.Fprintf(r.out, "  not found on PATH\n")
@@ -297,9 +298,6 @@ func (r *setupRun) printVendor(res checkup.Vendor) {
 		version = "unreadable"
 	}
 	fmt.Fprintf(r.out, "  found %s, version %s\n", termsafe.Field(checkup.ShowPath(res.Path, r.env.home)), termsafe.Field(version))
-	if res.VersionWarning != "" {
-		fmt.Fprintf(r.out, "  warning: %s\n", termsafe.Field(res.VersionWarning))
-	}
 	for _, err := range []error{res.ProbeErr, res.SignInErr} {
 		if err != nil {
 			fmt.Fprintf(r.out, "  error: %s\n", termsafe.Field(err.Error()))

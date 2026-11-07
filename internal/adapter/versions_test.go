@@ -28,6 +28,38 @@ func TestCompareVersions(t *testing.T) {
 	}
 }
 
+// TestClassifyVersion: above Max in the same major is new, and everything else
+// outside the range is refused, as design section 7 says.
+func TestClassifyVersion(t *testing.T) {
+	claude := VersionRange{Min: "2.1.311", Max: "2.1.312"}
+	codex := VersionRange{Min: "0.164.0", Max: "0.164.0"}
+	tests := []struct {
+		r       VersionRange
+		version string
+		want    VersionClass
+	}{
+		{claude, "2.1.311", VersionTested},
+		{claude, "2.1.312", VersionTested},
+		{claude, "2.1.319", VersionNew},
+		{claude, "2.2.0", VersionNew},
+		{claude, "2.1.313-beta.1", VersionNew},
+		{claude, "2.1.310", VersionRefused},
+		{claude, "3.0.0", VersionRefused},
+		{claude, "1.9.9", VersionRefused},
+		{claude, "", VersionRefused},
+		{claude, "unreadable", VersionRefused},
+		{codex, "0.165.0", VersionNew},
+		{codex, "0.200.3", VersionNew},
+		{codex, "0.163.9", VersionRefused},
+		{codex, "1.0.0", VersionRefused},
+	}
+	for _, tt := range tests {
+		if got := ClassifyVersion(tt.r, tt.version); got != tt.want {
+			t.Errorf("ClassifyVersion(%s, %q) = %d, want %d", tt.r, tt.version, got, tt.want)
+		}
+	}
+}
+
 func TestVersionWarning(t *testing.T) {
 	var a Adapter = stub{} // tested on 1.0.70
 	tests := []struct {

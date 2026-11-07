@@ -1542,3 +1542,19 @@ Read on the owner's machine, by key and count only, from 39 session files of the
    Codex `$SHELL -lc`, Grok "an inline shell command"); what Grok does
    with a hook that cannot start is not stated (aggy's command exits 0
    either way).
+
+## Surviving vendor updates (T6929)
+
+Source only, at Codex `6aaac69`. No real CLI was run for this task, and none of this has been checked live.
+
+- `codex features list` loads config and prints each entry of `FEATURES` as `name  stage  enabled`, sorted, and makes no model request on that path ([main.rs#L1921](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/cli/src/main.rs#L1921) to #L1953). Stages include the two-word `under development`, and one key holds a dot (`guardianv2.thread_context`), both in [features/src/lib.rs](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/features/src/lib.rs). `codex features --help` is one of the help runs above, so the subcommand is confirmed; its output is not.
+- That load goes through [cli/src/cloud_config.rs](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/cli/src/cloud_config.rs), which builds a cloud config loader from the CLI's own auth, so a signed-in CLI may contact its vendor. Whether it does for a given account was not traced. Only the vendor's CLI does this, and aggy passes it no credentials.
+- The command loads config with default loader overrides and has no `--ignore-user-config`, which is `exec`-only ([exec/src/cli.rs#L45](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/exec/src/cli.rs#L45)), so its `enabled` column is not exactly what a child with that flag gets. aggy cannot point it at an empty `CODEX_HOME`: `execrun.Env` refuses to override a vendor home. It runs in an empty dir, so no project config counts.
+- `default_enabled: true` at this commit, 62 of the 182 entries, is `codex.featuresOn`; `secret_auth_storage` is on only on Windows. Lockdown's eight are all among them.
+- The daemon has its own `codex app-server daemon version` ([main.rs#L2441](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/cli/src/main.rs#L2441)), and `--no-daemon` keeps an on-screen session off it.
+
+A maintainer's live check should settle, on the current CLIs:
+
+1. `codex features list` from a clean config: every row parses, and nothing on is outside `codex.featuresOn`.
+2. `claude --help` and `grok --help` list every flag in `LockdownCaps`.
+3. The self-test prompt under Claude's review flags: does it refuse `../canary.txt`? Until this is known, a new Claude version may be passed over on every update.

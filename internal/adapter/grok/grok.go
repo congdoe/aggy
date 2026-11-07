@@ -56,6 +56,29 @@ var Tested = adapter.VersionRange{Min: "1.0.70", Max: "1.0.70"}
 // TestedVersions returns Tested.
 func (Adapter) TestedVersions() adapter.VersionRange { return Tested }
 
+// LockdownCaps returns the flags kind k's lockdown needs in help. The
+// --tools allowlist means a tool new in a later CLI stays out.
+func (Adapter) LockdownCaps(k adapter.Kind) []string {
+	caps := []string{probe.CapPromptFile, probe.CapJSONOutput, probe.CapTools, probe.CapDisallowTools, probe.CapNoSubagents}
+	if usesDeny(k) {
+		caps = append(caps, probe.CapDeny)
+	}
+	switch k {
+	case adapter.Research, adapter.News:
+		caps = append(caps, probe.CapSandbox)
+	case adapter.Image:
+		caps = append(caps, probe.CapSandbox, probe.CapAllow)
+	case adapter.Review:
+		caps = append(caps, probe.CapSandbox, probe.CapPermissionMode)
+	}
+	return caps
+}
+
+// SelfTestKind returns research, whose only tools are web search: a Grok
+// review keeps read_file, and strict leaves a temp dir readable
+// (docs/verification.md S1), so review could not show a refusal.
+func (Adapter) SelfTestKind() adapter.Kind { return adapter.Research }
+
 // SignIn returns Grok's own sign-in step, from docs/design.md section 2.
 // No sign-in status command is verified in docs/adapters.md, so there is
 // no Check and the status is unknown, and the step is only printed:
