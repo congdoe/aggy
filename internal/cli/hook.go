@@ -12,6 +12,7 @@ import (
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/hook"
+	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/supervisor"
 	"github.com/congdoe/aggy/internal/termsafe"
 )
@@ -194,7 +195,7 @@ func openCodeGuard(in io.Reader, getenv func(string) string, stderr io.Writer) i
 	if err != nil || len(b) > hook.MaxPayload {
 		b = nil // refused as unreadable
 	}
-	d := hook.OpenCodeGuard(b, hook.OpenCodeEnv{Getenv: getenv})
+	d := hook.OpenCodeGuard(b, hook.OpenCodeEnv{Getenv: getenv, DeniedNames: parity.OpenCodeDeniedNames()})
 	if !d.Deny {
 		return 0
 	}

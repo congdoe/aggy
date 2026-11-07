@@ -34,14 +34,16 @@ func TestHasDeclaration(t *testing.T) {
 		{`echo "export X=1"`, false},
 		{"# X=1\ngit status", false},
 		{"git commit -m 'set X=1; done'", false},
-		{"cat > .env.example <<EOF\nFOO=bar\nexport BAZ=1\nEOF\necho done", false},
+		// A heredoc's body can run $(...), and it is not worth following: it
+		// fails closed, and the reason says to use the edit tool.
+		{"cat > .env.example <<EOF\nFOO=bar\nexport BAZ=1\nEOF\necho done", true},
 		{"cat <<-'END'\n\tA=1\n\tEND\nB=2", true},
-		{"grep -c x <<< 'A=1'", false},
+		{"grep -c x <<< 'A=1'", true},
 		{"make A=1 B=2", false},
 		{"", false},
 	}
 	for _, c := range cases {
-		if got := hasDeclaration(c.cmd); got != c.want {
+		if got := shellRefusal(c.cmd) != ""; got != c.want {
 			t.Errorf("%q: got %v, want %v", c.cmd, got, c.want)
 		}
 	}
@@ -79,7 +81,7 @@ func TestOpenCodeGuard(t *testing.T) {
 	if err := os.WriteFile(saved, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	env := OpenCodeEnv{Getenv: func(k string) string {
+	env := OpenCodeEnv{DeniedNames: []string{".env", "*.pem"}, Getenv: func(k string) string {
 		if k == "XDG_DATA_HOME" {
 			return data
 		}
@@ -117,6 +119,31 @@ func TestOpenCodeGuard(t *testing.T) {
 		{"not the data folder", OpenCodeInput{Tool: "read", Path: filepath.Join(data, "opencode", "opencode.db")}, whyOutside},
 		{"from another folder", OpenCodeInput{Tool: "shell", Command: "ls", Directory: other}, whyFolder},
 		{"a tool it does not know", OpenCodeInput{Tool: "websearch"}, ""},
+		// H3: OpenCode expands these itself (file-access.ts).
+		{"~ alone", OpenCodeInput{Tool: "read", Path: "~"}, whyOutside},
+		{"~/", OpenCodeInput{Tool: "read", Path: "~/.ssh/id_rsa"}, whyOutside},
+		{"~/ in edit", OpenCodeInput{Tool: "edit", Path: "~/.bashrc"}, whyOutside},
+		{"~/ in write", OpenCodeInput{Tool: "write", Path: "~/.bashrc"}, whyOutside},
+		{"~/ in glob", OpenCodeInput{Tool: "glob", Path: "~"}, whyOutside},
+		{"~/ in grep", OpenCodeInput{Tool: "grep", Path: "~/.ssh"}, whyOutside},
+		{"~/ as a workdir", OpenCodeInput{Tool: "shell", Command: "ls", Workdir: "~"}, whyOutside},
+		{"~/ deeper as a workdir", OpenCodeInput{Tool: "shell", Command: "ls", Workdir: "~/.ssh"}, whyOutside},
+		{"~user", OpenCodeInput{Tool: "read", Path: "~root/x"}, whyOutside},
+		{"~/ in a patch", OpenCodeInput{Tool: "patch", PatchText: "*** Begin Patch\n*** Add File: ~/.bashrc\n+x\n*** End Patch"}, whyOutside},
+		{"a patch header indented", OpenCodeInput{Tool: "patch", PatchText: "*** Begin Patch\n  *** Add File: ../outside\n+x\n*** End Patch"}, whyOutside},
+		{"a patch with CRLF", OpenCodeInput{Tool: "patch", PatchText: "*** Begin Patch\r\n*** Add File: ../outside\r\n+x\r\n*** End Patch"}, whyOutside},
+		{"a patch header with two spaces", OpenCodeInput{Tool: "patch", PatchText: "***  Add File: ../outside\n"}, whyOutside},
+		{"a glob pattern with ~", OpenCodeInput{Tool: "glob", Pattern: "~/.ssh/*"}, whyOutside},
+		{"a glob pattern absolute", OpenCodeInput{Tool: "glob", Pattern: "/etc/*"}, whyOutside},
+		{"a glob pattern with dot dot", OpenCodeInput{Tool: "glob", Pattern: "../*"}, whyOutside},
+		{"a glob pattern with dot dot in braces", OpenCodeInput{Tool: "glob", Pattern: "{a,../b}/*"}, whyOutside},
+		{"a glob pattern inside", OpenCodeInput{Tool: "glob", Pattern: "**/*.go"}, ""},
+		{"a path on a tool it does not know", OpenCodeInput{Tool: "list", Path: other}, whyOutside},
+		// L1: a policy's rule matches case exactly.
+		{"a denied name", OpenCodeInput{Tool: "read", Path: ".env"}, whyDeniedName},
+		{"a denied name in capitals", OpenCodeInput{Tool: "read", Path: ".ENV"}, whyDeniedName},
+		{"a denied name in grep", OpenCodeInput{Tool: "grep", Path: "sub/Server.PEM"}, whyDeniedName},
+		{"a name like it", OpenCodeInput{Tool: "read", Path: "env.go"}, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

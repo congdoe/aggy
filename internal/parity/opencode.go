@@ -54,6 +54,11 @@ var OpenCodeAlwaysDenied = []string{"claude-agent", "opencode", "anthropic"}
 // where a rule can see a path: sessions and credentials share opencode.db.
 var openCodeCredentials = []string{"opencode.db", "opencode.db-*", "auth.json"}
 
+// OpenCodeDeniedNames are the file names the guard also refuses in any case.
+func OpenCodeDeniedNames() []string {
+	return append(slices.Clone(keyFiles), openCodeCredentials...)
+}
+
 // openCodePathTools take a file path as their resource; external_directory
 // a directory path; grep and glob their pattern, not a path, so a path deny
 // on them only catches a pattern naming the file (core/src/tool/plugin).
@@ -154,7 +159,7 @@ func OpenCodeShellDeny() []string {
 // openCodePathDeny is one deny per tool on each protected file name, at
 // any depth. A path deny stops the tool, not `cat` in the shell.
 func openCodePathDeny() []string {
-	names := append(slices.Clone(keyFiles), openCodeCredentials...)
+	names := OpenCodeDeniedNames()
 	var out []string
 	for _, tool := range openCodePathTools {
 		for _, n := range names {
