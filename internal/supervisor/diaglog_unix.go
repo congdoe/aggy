@@ -9,6 +9,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/diag"
+	"github.com/congdoe/aggy/internal/hook"
 )
 
 // codedError is a refusal with its reason code (docs/logging.md); its
@@ -67,7 +68,8 @@ const sockLogWait = 100 * time.Millisecond
 // else "other", since any process in the CLI's tree can pick the name.
 func hookName(event string) string {
 	switch event {
-	case "Stop", "StopFailure", "StopCancelled", "SessionStart", "Notification":
+	case "Stop", "StopFailure", "StopCancelled", "SessionStart", "Notification",
+		hook.EventGuardLoaded, hook.EventPermissionAsked, hook.EventPermissionReplied, hook.EventQuestionAsked, hook.EventQuestionReplied:
 		return event
 	}
 	return "other"
