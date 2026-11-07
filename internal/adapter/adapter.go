@@ -60,7 +60,11 @@ func ExitCommand(v Vendor) (cmd string, verified bool) { return "/exit", v == Op
 // is so marked, and each row describes a dialog or a display, not a model request;
 // not seen live (TODO(T6895)). /compact is out: it summarizes the conversation, so
 // it may run a turn. So are custom commands and skills, and any command with
-// arguments. Whether a user's own skill can take one of these names is unverified.
+// arguments.
+//
+// TODO(T6895): a live check settles whether a user's own skill can take one of
+// these names. If it can, its Enter counts as starting no turn, atPrompt stays
+// true during that turn, and a doubt note could hold its output (docs/design.md).
 //
 // Codex is empty on purpose as well: its SessionStart comes inside a turn, so a
 // move there says nothing of a turn (session.followSession).

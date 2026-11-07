@@ -445,9 +445,11 @@ type session struct {
 	// clean send, while lenKnown (an Enter a popup may have taken leaves
 	// it unknown); popup is set once an @ or a leading / was typed since
 	// then; cleared is set when the user emptied the line, until the
-	// Enter that confirms it (T6754, O56-3).
+	// Enter that confirms it (T6754, O56-3). draftLen counts the bytes
+	// typed since the last Enter of any kind, popup or not (knownText).
 	pasteTail []byte
 	compLen   int
+	draftLen  int
 	lenKnown  bool
 	popup     bool
 	cleared   bool
@@ -520,10 +522,16 @@ type session struct {
 	// model turn (adapter.LocalCommand).
 	cmdLine            []byte
 	cmdBad, localEnter bool
-	// typedSince: text was typed or pasted since the last Enter, in an earlier
-	// read. Cursor keys are not text: Down and Enter answer an approval's menu.
+	// typedSince: text was typed or pasted, or a line recalled with Up, since the
+	// last Enter, in an earlier read. Other cursor keys are not text: Down and
+	// Enter answer an approval's menu.
 	typedSince              bool
 	escDoubt, enterAtPrompt bool
+	// popupEnter: an Enter went at the prompt with a popup up, and no turn end has
+	// come since, so a later Enter may be the one that sent the line. enterAt: when
+	// the last Enter went (settleDoubt).
+	popupEnter bool
+	enterAt    time.Time
 	// hookSeen: a hook of the vendor on screen came from the session.
 	hookSeen atomic.Bool
 	// foreign is, per session id a turn end named that was not the
@@ -764,6 +772,10 @@ func (s *session) hookEvent(ev hookEvent) {
 			}
 			s.moveRefused = false // it names the session on screen
 			s.settleDoubt()
+			s.popupEnter = false
+			// Told of the doubt, and promised this turn end: its status line says
+			// the doubt again and goes on from there. No key has come since.
+			s.sw.doubtOK = s.sw.doubtOK || s.sw.toldDoubt
 			s.atPrompt, s.inputSinceTurn, s.queuedWait = !s.held, false, false
 			s.askStale = s.askOpen()
 			if s.queued > 0 {
@@ -1073,7 +1085,10 @@ func (s *session) followKeys(typed []byte) {
 	switch {
 	case enter:
 		s.typedSince = false
-	case typed[0] != esc || bytes.Contains(typed, pasteStart):
+	case typed[0] != esc || bytes.Contains(typed, pasteStart) || upKey.Match(typed):
+		// Up and an Enter may send a line from history. On an approval's menu they
+		// only answer it, and a pick then waits falsely, for the next turn end or
+		// the queue's quiet: the safe side, and rare.
 		s.typedSince = true
 	}
 	onlyEsc := isEsc(typed) || len(bytes.Trim(typed, "\x1b")) == 0
@@ -1090,12 +1105,12 @@ func (s *session) followKeys(typed []byte) {
 		// so they end nothing there.
 		s.escEmpty = false
 	}
-	before := s.compLen
+	before, beforeDraft := s.compLen, s.draftLen
 	for _, c := range typed {
 		s.compose(c)
 	}
 	if onlyEsc {
-		s.compLen = before // an Esc types nothing
+		s.compLen, s.draftLen = before, beforeDraft // an Esc types nothing
 	}
 	if typed[0] != esc && enter && bytes.IndexByte(typed, '\r') < len(typed)-1 {
 		s.slashOnly, s.localEnter = false, false // more came after the Enter, in this read
@@ -1117,13 +1132,18 @@ func (s *session) followKeys(typed []byte) {
 	s.updateDirty()
 }
 
-// knownText reports characters aggy counted and has not seen sent. The exit
-// command would send them, so they block a switch until sent or cleared.
-func (s *session) knownText() bool { return s.lenKnown && s.compLen > 0 && !s.popup }
+// knownText reports characters aggy counted and has not seen sent: any since the
+// last Enter, popup or not, so `hi @bob` and a line typed after /cost are known.
+// The exit command would send them, so they block a switch until sent or cleared.
+// Keys typed into a dialog aggy cannot see (a /model picker's arrows) count too,
+// and block falsely: the safe side, with Ctrl+U and an Enter as the way out.
+func (s *session) knownText() bool {
+	return s.draftLen > 0 || s.lenKnown && s.compLen > 0 && !s.popup
+}
 
 // doubt reports that the composer may hold text aggy did not count, or that it
-// cannot say what its keys did: a popup may have taken an Enter, a command may
-// have left text, and an Esc on an empty composer may bring text back. The
+// cannot say what its keys did: a popup may have taken the last Enter, a command
+// may have left text, and an Esc on an empty composer may bring text back. The
 // person can see the screen and aggy cannot, so this does not block: they are
 // told, and confirm (offerSwitch).
 func (s *session) doubt() bool {
@@ -1134,22 +1154,28 @@ func (s *session) updateDirty() {
 	s.dirty = !s.lenKnown || s.compLen > 0 || s.popup || s.cleared || s.escDoubt
 }
 
+// settleTurnGap is how long after the last Enter a turn end must come to say
+// anything about that Enter: sooner, it is more likely an interrupted turn's late
+// Stop than the end of a turn the Enter started. A variable for tests.
+var settleTurnGap = time.Second
+
 // settleDoubt takes a counted turn end as evidence about the composer. With
 // nothing sent since the last Enter, an Esc before that Enter brought nothing
-// back that a turn did not then take. If that Enter also went at the prompt, a
-// turn ran from it, so it sent what was there: the composer is empty.
+// back that a turn did not then take. If that Enter also went at the prompt, or
+// an earlier one did with a popup up and no turn end has come since, a turn ran
+// from them, so they sent what was there: the composer is empty.
 //
 // That can be wrong: a turn the Enter did not start, such as one a background
-// task starts, can end just after a popup took the Enter. The composer then
-// holds text aggy calls empty, and only the status line's "See its prompt?" is
-// left (docs/design.md, TestTurnEndEvidence). An Enter sent while a turn runs is
-// no evidence: it may have answered an approval, or queued.
+// task starts, can end a second or more after a popup took the Enter. The
+// composer then holds text aggy calls empty, and only the status line's "See its
+// prompt?" is left (docs/design.md, TestTurnEndEvidence). An Enter sent while a
+// turn runs is no evidence: it may have answered an approval, or queued.
 func (s *session) settleDoubt() {
-	if s.afterEnter != 0 {
+	if s.afterEnter != 0 || time.Since(s.enterAt) < settleTurnGap {
 		return
 	}
 	s.escEmpty, s.escTwice, s.escDoubt = false, false, false
-	if s.enterAtPrompt {
+	if s.enterAtPrompt || s.popupEnter {
 		s.compLen, s.lenKnown, s.popup, s.cleared, s.hadAt, s.moved, s.pastePop = 0, true, false, false, false, false, false
 		s.slashOnly, s.slashEntered = false, false
 	}
@@ -1203,6 +1229,10 @@ var csiEnter = regexp.MustCompile(`\x1b\[((13|57414)(:[0-9]*)*(;[0-9:]*)*u|27;[0
 // (with no modifier but Caps or Num Lock, and a press or repeat): Shift+Tab,
 // Ctrl+Tab, and a release queue nothing.
 var tabKey = regexp.MustCompile(`\t|\x1b\[9(;(1|65|129|193)(:[12])?)?u`)
+
+// upKey matches a plain Up press: CSI, application mode, or the kitty form with
+// no modifier but Caps or Num Lock.
+var upKey = regexp.MustCompile(`\x1b(\[(1;(1|65|129|193)(:[12])?)?|O)A`)
 
 // bareEnter reports whether b is one Enter and nothing else.
 func bareEnter(b []byte) bool {
@@ -1287,27 +1317,31 @@ func (s *session) compose(c byte) {
 		// reads: it may bring text back, or answer an approval. Doubt, which a
 		// turn end can settle, and no counted text.
 		s.escDoubt, s.moved, s.pastePop, s.slashOnly = true, true, false, false
-		s.afterEnter = 0
+		s.draftLen, s.afterEnter = 0, 0
 		s.cmdLine, s.cmdBad = s.cmdLine[:0], false
 	case c == '\r' && (prev == esc || prev == '\\' || s.inPaste) || c == '\n':
 		// A newline in the composer. An Esc just before counts however long ago
 		// it came, as Option+Enter split across reads looks the same.
 		s.compLen++
+		s.draftLen++
 		s.moved, s.pastePop, s.slashOnly = true, false, false
 	case c == '\r' && s.popup && s.slashLine && s.o.Vendor == adapter.OpenCode:
 		// A command runs and leaves no text (/models opens a dialog, live).
 		s.compLen, s.lenKnown, s.cleared, s.hadAt, s.moved, s.popup, s.slashLine = 0, true, false, false, false, false, false
-		s.afterEnter = 0
+		s.draftLen, s.afterEnter = 0, 0
 		s.slashOnly, s.slashEntered, s.escDoubt = false, false, false
 	case c == '\r' && s.popup:
 		s.lenKnown = false // the popup may have taken it and added text
-		s.afterEnter = 0
+		s.popupEnter = s.popupEnter || s.enterAtPrompt
+		s.draftLen, s.afterEnter = 0, 0
 		s.slashEntered = s.slashOnly
 		s.localEnter = s.slashOnly && !s.moved && !s.cmdBad && adapter.LocalCommand(s.o.Vendor, string(s.cmdLine))
 		s.cmdLine, s.cmdBad = s.cmdLine[:0], false
 	case c == '\r':
+		// TODO(T6895): an Enter that answers an approval leaves a draft under it in
+		// the composer, and aggy counts it as sent. Only "See its prompt?" is left.
 		s.compLen, s.lenKnown, s.cleared, s.hadAt, s.moved = 0, true, false, false, false // sent
-		s.afterEnter = 0
+		s.draftLen, s.popupEnter, s.afterEnter = 0, false, 0
 		s.slashOnly, s.slashEntered, s.escDoubt = false, false, false
 		s.cmdLine, s.cmdBad = s.cmdLine[:0], false
 	case c == ctrlU:
@@ -1323,7 +1357,11 @@ func (s *session) compose(c byte) {
 			s.popup = false
 		}
 		s.compLen, s.lenKnown, s.cleared, s.moved = 0, true, true, false
+		s.draftLen = 0
 	case c == 0x7f || c == 0x08:
+		if s.draftLen > 0 {
+			s.draftLen--
+		}
 		if s.compLen > 0 {
 			s.compLen--
 			if s.compLen == 0 && s.lenKnown && s.popup && !s.moved {
@@ -1345,6 +1383,10 @@ func (s *session) compose(c byte) {
 			s.pastePop = false
 		}
 		s.compLen++
+		s.draftLen++
+	}
+	if s.afterEnter == 0 {
+		s.enterAt = time.Now()
 	}
 }
 
@@ -1447,10 +1489,13 @@ func (s *session) offerSwitch() {
 	// cuts the end.
 	cmd, verified := adapter.ExitCommand(on)
 	tools := "tools " + strings.Join(s.sw.tools, " ")
+	// short is how far a doubt's line is shortened (the fit below).
+	short := 0
+	inDoubt := s.turnRan && s.doubt()
 	confirmLine := func(model, tools string) string {
 		var why []string
-		if s.turnRan && s.doubt() {
-			why = append(why, "can't tell if the prompt is empty")
+		if inDoubt {
+			why = append(why, []string{"can't tell if the prompt is empty", "can't tell if prompt is empty", "can't tell if empty"}[short])
 		}
 		switch {
 		case s.sw.resume:
@@ -1462,8 +1507,12 @@ func (s *session) offerSwitch() {
 		}
 		c := s.sw.choice
 		c.Model = model
-		why = append(why, choiceNote(c)...)
-		head, does, sep := "-> "+string(v), "switches", " " // the full line fits 80 columns without an origin
+		notes := choiceNote(c)
+		if short == 2 && c.New {
+			notes[0] = "new"
+		}
+		why = append(why, notes...)
+		head, does, sep := "-> "+string(v), "switches", " " // the full line fits 80 columns with no origin or doubt
 		if s.sw.resume {
 			head, does, sep = "same session -> "+string(v), "resumes", ", "
 		}
@@ -1471,6 +1520,9 @@ func (s *session) offerSwitch() {
 			head = strings.Join(why, ", ") + sep + head
 		}
 		line := fmt.Sprintf("%s. %s %s, Esc stays. See %s's prompt? It types %s.", head, keyName(s.pk.key), does, on, cmd)
+		if short > 0 {
+			line = fmt.Sprintf("%s. %s types %s, %s", head, keyName(s.pk.key), cmd, keysEnd)
+		}
 		if !verified {
 			line += fmt.Sprintf(" (%s is unverified.)", cmd)
 		}
@@ -1486,7 +1538,7 @@ func (s *session) offerSwitch() {
 	if s.sw.resume {
 		// The tools' names go first when the keys would not fit.
 		s.pk.fit = func(cols int) string {
-			full := "aggy: " + line
+			full := "aggy: " + confirmLine(s.sw.choice.Model, tools)
 			if cols <= 1 || strings.Index(full, keysEnd)+len(keysEnd) <= cols-1 {
 				return full
 			}
@@ -1497,7 +1549,7 @@ func (s *session) offerSwitch() {
 		// T6770: a long model name (up to maxModel) is cut first, so the
 		// keys stay on the line; past them a narrow terminal cuts the end.
 		s.pk.fit = func(cols int) string {
-			full := "aggy: " + line
+			full := "aggy: " + confirmLine(m, tools)
 			over := strings.Index(full, keysEnd) + len(keysEnd) - (cols - 1)
 			if cols <= 1 || over <= 0 {
 				return full
@@ -1507,6 +1559,33 @@ func (s *session) offerSwitch() {
 				return full
 			}
 			return "aggy: " + confirmLine(m[:keep]+"...", tools)
+		}
+	}
+	if inDoubt {
+		// In doubt the person must see that the key types into that prompt, so the
+		// command moves in front of the end of the keys, and the line shortens until
+		// they fit: at 80 columns for any vendor a switch can go to (OpenCode is only
+		// ever on screen), with new and brief on.
+		base := s.pk.fit
+		s.pk.fit = func(cols int) string {
+			defer func() { short = 0 }()
+			var l string
+			for short = range 3 {
+				l = "aggy: " + confirmLine(s.sw.choice.Model, tools)
+				if base != nil {
+					l = base(cols)
+				}
+				if cols <= 1 || short == 0 && len(l) <= cols-1 {
+					return l
+				}
+				if end := strings.Index(l, keysEnd) + len(keysEnd); short > 0 && end <= cols-1 {
+					if len(l) > cols-1 {
+						l = l[:end] // no half of the note on /exit being unverified
+					}
+					return l
+				}
+			}
+			return l
 		}
 	}
 	s.openPicker()
