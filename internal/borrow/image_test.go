@@ -3,6 +3,7 @@ package borrow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -229,7 +230,6 @@ func TestEditResumes(t *testing.T) {
 		want     []string // in the resumed run's args
 	}{
 		{adapter.Codex, `{"images":1}`, []string{"resume"}},
-		{adapter.Grok, `{"images":1,"json":{"result":"images/1.jpg"}}`, []string{"--resume", "image_gen,image_edit"}},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.vendor), func(t *testing.T) {
@@ -386,36 +386,62 @@ func TestVideo(t *testing.T) {
 }
 
 // TestFileToolsOffByDefault (B15-2): without the user's opt-in, a video
-// borrow and a Grok image edit start nothing, and the refusal names the
-// config key and the upload risk.
+// borrow starts nothing, and the refusal names the config key and the upload
+// risk.
 func TestFileToolsOffByDefault(t *testing.T) {
-	for _, edit := range []bool{false, true} {
-		t.Run(map[bool]string{false: "video", true: "grok edit"}[edit], func(t *testing.T) {
+	w := newWorld(t)
+	w.scenario[adapter.Grok] = `{"images":1,"json":{"result":"images/1.jpg"}}`
+	req := w.req(adapter.Video, "a thing")
+	req.Vendor = "grok"
+	req.Media = &Media{Out: filepath.Join(w.repo, "intro.mp4")}
+	_, err := w.borrower().Run(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), "grok_file_tools = true under [media]") || !strings.Contains(err.Error(), "uploads to xAI") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(w.records()) != 0 {
+		t.Error("a child ran")
+	}
+}
+
+// TestGrokEditRefused (T6923): an --edit of a Grok image starts no child and
+// asks no router, so it cannot fall through to a vendor without the session,
+// with grok_file_tools on or off. The reason names what works.
+func TestGrokEditRefused(t *testing.T) {
+	for _, optIn := range []bool{false, true} {
+		t.Run(map[bool]string{false: "opt-in off", true: "opt-in on"}[optIn], func(t *testing.T) {
 			w := newWorld(t)
+			w.cfg.Media.GrokFileTools = optIn
 			w.scenario[adapter.Grok] = `{"images":1,"json":{"result":"images/1.jpg"}}`
-			req := w.req(adapter.Video, "a thing")
+			w.scenario[adapter.Codex] = `{"images":1}`
+			req := w.req(adapter.Image, "a hero image")
 			req.Vendor = "grok"
-			req.Media = &Media{Out: filepath.Join(w.repo, "intro.mp4")}
-			if edit {
-				// A new image needs no opt-in; its edit does.
-				req.Kind, req.Media.Out = adapter.Image, filepath.Join(w.repo, "hero.jpg")
-				first, err := w.borrower().Run(context.Background(), req)
-				if err != nil || first[0].Status != "done" {
-					t.Fatalf("first %+v, %v", first, err)
-				}
-				sc, err := ReadSidecar(w.repo, req.Media.Out)
-				if err != nil {
-					t.Fatal(err)
-				}
-				req.Media = &Media{Out: req.Media.Out, Resume: sc.SessionID}
+			req.Media = &Media{Out: filepath.Join(w.repo, "hero.jpg")}
+			first, err := w.borrower().Run(context.Background(), req)
+			if err != nil || first[0].Status != "done" {
+				t.Fatalf("first %+v, %v", first, err)
 			}
-			runs := len(w.records())
-			_, err := w.borrower().Run(context.Background(), req)
-			if err == nil || !strings.Contains(err.Error(), "grok_file_tools = true under [media]") || !strings.Contains(err.Error(), "uploads to xAI") {
-				t.Fatalf("err = %v", err)
+			sc, err := ReadSidecar(w.repo, req.Media.Out)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if len(w.records()) != runs {
-				t.Error("a child ran")
+			runs, chooses := len(w.records()), w.chooses
+			req = w.req(adapter.Image, "darker")
+			req.Vendor = sc.Vendor
+			req.Media = &Media{Out: filepath.Join(w.repo, "hero.jpg"), Resume: sc.SessionID}
+			res, err := w.borrower().Run(context.Background(), req)
+			if !errors.Is(err, ErrGrokEdit) || !Invalid(err) || len(res) != 0 {
+				t.Fatalf("res %+v, err %v", res, err)
+			}
+			for _, want := range []string{"new image", "--vendor codex"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("reason %q lacks %q", err, want)
+				}
+			}
+			if strings.Contains(err.Error(), "grok_file_tools") {
+				t.Errorf("reason %q offers an opt-in that would not help", err)
+			}
+			if len(w.records()) != runs || w.chooses != chooses {
+				t.Errorf("runs %d to %d, router asked %d to %d times", runs, len(w.records()), chooses, w.chooses)
 			}
 		})
 	}
