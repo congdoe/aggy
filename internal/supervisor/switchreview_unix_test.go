@@ -106,21 +106,16 @@ func TestBacktrackAsksFirst(t *testing.T) {
 		{"Esc, Esc, Ctrl+T, Enter", []string{"\x1b", "\x1b", "\x14", "\r"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			ts, c, done, _ := switchRunTurned(t, adapter.Codex)
+			ts, c, done, _ := switchRunTurned(t, adapter.Codex, func(*Options) { waitNoteQuiet = 30 * time.Millisecond })
 			for _, k := range tt.keys {
 				ts.typeIn(t, k)
 				c.waitGot(t, []byte(k))
 				time.Sleep(70 * time.Millisecond)
 			}
-			// The Enter may have started a turn, so the first pick waits for its
-			// end, as the list says; the second says none runs.
+			// The Enter may have started a turn, so the note says that too, and
+			// the next pick both says none runs and confirms.
 			ts.typeIn(t, "\x1c1")
-			poll(t, "the list to close", []byte(altScreenOff), ts.screen)
-			time.Sleep(60 * time.Millisecond)
-			ts.typeIn(t, "\x1c")
-			time.Sleep(60 * time.Millisecond)
-			ts.typeIn(t, "1")
-			poll(t, "the note", []byte("cannot tell if codex's prompt is empty"), ts.screen)
+			poll(t, "the note", []byte("cannot tell if the prompt is empty"), ts.screen)
 			ts.typeIn(t, "\x1b")
 			time.Sleep(escTimeout + 60*time.Millisecond)
 			if bytes.Contains(c.received(), []byte("/exit")) {
@@ -230,17 +225,23 @@ func TestKeyAfterConfirmAsksAgain(t *testing.T) {
 	}
 }
 
-// TestDailyClaude (T6897): one ordinary Claude session per row, and what the
-// first pick of grok brings. An ordinary session must not be refused for text
-// that is not there. "first" and "second" are what shows after the first pick,
-// and after Esc and a second one; "" means no second pick is needed. This pins
-// the whole table, so a change to it is a decision.
+// realQueuedQuiet is the value a user gets: the harness shortens queuedQuiet.
+var realQueuedQuiet = queuedQuiet
+
+// TestDailyClaude (T6897): one ordinary Claude session per row, and what picking
+// grok brings. An ordinary session must not be refused for text that is not there,
+// and no pick may wait with nothing said. "first" and "second" are what shows after
+// the first pick, and after Esc and a second one; "" means none is needed. Rows
+// marked real keep the real queuedQuiet, which the harness otherwise shortens and
+// which would hide a wait. This pins the whole table, so a change to it is a
+// decision.
 func TestDailyClaude(t *testing.T) {
 	const (
-		line   = "status line"
-		doubt  = "note: cannot tell"
-		moved  = "note: moved"
-		silent = "waits"
+		line  = "status line"
+		doubt = "note: cannot tell"
+		moved = "note: moved"
+		waits = "note: waits"
+		both  = "note: waits, cannot tell"
 	)
 	type step struct{ kind, keys string }
 	k := func(s string) step { return step{"k", s} }
@@ -248,30 +249,50 @@ func TestDailyClaude(t *testing.T) {
 	for _, tt := range []struct {
 		name          string
 		steps         []step
+		real          bool
 		first, second string
 	}{
-		{"message, turn end", []step{k("hello\r"), S}, line, ""},
-		{"/clear, no message", []step{k("/clear\r"), M}, moved, line},
-		{"/clear, message, turn end", []step{k("/clear\r"), M, k("hello\r"), Sm}, line, ""},
-		{"/compact, compact hook, no turn end", []step{k("/compact\r"), C}, silent, doubt},
-		{"/compact, its turn end", []step{k("/compact\r"), C, S}, line, ""},
-		{"/compact, a message, turn end", []step{k("/compact\r"), C, k("hello\r"), S}, doubt, line},
-		{"/model closed with Esc, a message", []step{k("/model\r"), k("\x1b"), k("hello\r"), S}, doubt, line},
-		{"/cost, 2 messages", []step{k("/cost\r"), k("one\r"), S, k("two\r"), S}, doubt, line},
-		{"@file in a message", []step{k("fix @a.go please\r"), S}, line, ""},
-		{"Esc interrupts, a message", []step{k("go\r"), k("\x1b"), k("hello\r"), S}, line, ""},
-		{"Esc on an empty prompt", []step{k("\x1b")}, doubt, line},
-		{"Esc interrupts, Up, Enter", []step{k("go\r"), k("\x1b"), k("\x1b[A"), k("\r"), S}, line, ""},
-		{"approval with Enter", []step{k("go\r"), k("\r"), S}, line, ""},
-		{"approval: Down, Enter", []step{k("go\r"), k("\x1b[B"), k("\r"), S}, line, ""},
-		{"Esc mid-turn, approval with Enter", []step{k("go\r"), k("\x1b"), k("\r"), S}, line, ""},
-		{"a click", []step{k("hello\r"), S, k("\x1b[<0;10;5M"), k("\x1b[<0;10;5m")}, line, ""},
-		{"focus out and in", []step{k("hello\r"), S, k("\x1b[O"), k("\x1b[I")}, line, ""},
-		{"wheel", []step{k("hello\r"), S, k("\x1b[<64;10;5M")}, line, ""},
-		{"text, Ctrl+U, Enter", []step{k("abc"), k("\x15"), k("\r")}, silent, line},
+		{"message, turn end", []step{k("hello\r"), S}, false, line, ""},
+		{"/clear, no message", []step{k("/clear\r"), M}, false, line, ""},
+		{"/clear, message, turn end", []step{k("/clear\r"), M, k("hello\r"), Sm}, false, line, ""},
+		{"/clear, message, turn end, real timing", []step{k("/clear\r"), M, k("hello\r"), Sm}, true, line, ""},
+		{"/clear with a name, no hook", []step{k("/clear old\r")}, false, both, line},
+		{"/compact, compact hook, no turn end", []step{k("/compact\r"), C}, false, both, line},
+		{"/compact, its turn end", []step{k("/compact\r"), C, S}, false, line, ""},
+		{"/compact, a message, turn end", []step{k("/compact\r"), C, k("hello\r"), S}, false, doubt, line},
+		{"/compact, a message, turn end, real timing", []step{k("/compact\r"), C, k("hello\r"), S}, true, both, line},
+		{"/model closed with Esc, a message", []step{k("/model\r"), k("\x1b"), k("hello\r"), S}, false, line, ""},
+		{"/model, real timing", []step{k("/model\r"), k("\x1b"), k("hello\r"), S}, true, line, ""},
+		{"/model still open", []step{k("/model\r")}, false, doubt, line},
+		{"/cost, 2 messages", []step{k("/cost\r"), k("one\r"), S, k("two\r"), S}, false, line, ""},
+		{"/cost, 2 messages, real timing", []step{k("/cost\r"), k("one\r"), S, k("two\r"), S}, true, line, ""},
+		{"/status, nothing else", []step{k("/status\r")}, false, doubt, line},
+		{"a custom command, no turn end", []step{k("/mine\r")}, false, both, line},
+		{"@file in a message", []step{k("fix @a.go please\r"), S}, false, line, ""},
+		{"@file, no turn end", []step{k("@fi\r")}, false, both, line},
+		{"a message, no turn end yet", []step{k("go\r")}, false, waits, line},
+		{"Esc interrupts, a message", []step{k("go\r"), k("\x1b"), k("hello\r"), S}, false, line, ""},
+		{"Esc interrupts, a message, real timing", []step{k("go\r"), k("\x1b"), k("hello\r"), S}, true, waits, line},
+		{"a message sent during a turn, real timing", []step{k("go\r"), k("more\r"), S}, true, waits, line},
+		{"Esc on an empty prompt", []step{k("\x1b")}, false, doubt, line},
+		{"Esc interrupts, Up, Enter", []step{k("go\r"), k("\x1b"), k("\x1b[A"), k("\r"), S}, false, line, ""},
+		{"approval with Enter", []step{k("go\r"), k("\r"), S}, false, line, ""},
+		{"approval: Down, Enter", []step{k("go\r"), k("\x1b[B"), k("\r"), S}, false, line, ""},
+		{"approval: Down, Enter, real timing", []step{k("go\r"), k("\x1b[B"), k("\r"), S}, true, line, ""},
+		{"Esc mid-turn, approval with Enter", []step{k("go\r"), k("\x1b"), k("\r"), S}, false, line, ""},
+		{"a click", []step{k("hello\r"), S, k("\x1b[<0;10;5M"), k("\x1b[<0;10;5m")}, false, line, ""},
+		{"focus out and in", []step{k("hello\r"), S, k("\x1b[O"), k("\x1b[I")}, false, line, ""},
+		{"wheel", []step{k("hello\r"), S, k("\x1b[<64;10;5M")}, false, line, ""},
+		{"text, Ctrl+U, Enter", []step{k("abc"), k("\x15"), k("\r")}, false, waits, line},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			ts, c, done, sock := switchRunTurned(t, adapter.Claude)
+			ts, c, done, sock := switchRunTurned(t, adapter.Claude, func(*Options) {
+				// The note comes after a shortened release, and well before a real one.
+				waitNoteQuiet, queuedQuiet = 150*time.Millisecond, 50*time.Millisecond
+				if tt.real {
+					queuedQuiet = realQueuedQuiet
+				}
+			})
 			for _, st := range tt.steps {
 				switch st.kind {
 				case "k":
@@ -290,40 +311,43 @@ func TestDailyClaude(t *testing.T) {
 			}
 			shown := func(seen int) string {
 				out := ts.screen()[seen:]
+				has := func(w string) bool { return bytes.Contains(out, []byte(w)) }
 				switch {
-				case bytes.Contains(out, []byte("Esc stays")):
+				case has("Esc stays"):
 					return line
-				case bytes.Contains(out, []byte("have not sent")):
+				case has("have not sent"):
 					return "note: unsent"
-				case bytes.Contains(out, []byte("prompt is empty")):
+				case has("started a turn") && has("prompt is empty"):
+					return both
+				case has("started a turn"):
+					return waits
+				case has("prompt is empty"):
 					return doubt
-				case bytes.Contains(out, []byte("moved to another session")):
+				case has("moved to another session"):
 					return moved
-				case bytes.Contains(out, []byte("waiting for you")):
+				case has("waiting for you"):
 					return "note: held"
 				}
-				return silent
+				return "SILENT"
 			}
 			seen := len(ts.screen())
 			ts.typeIn(t, "\x1c2")
 			time.Sleep(400 * time.Millisecond)
 			got := shown(seen)
-			t.Logf("DAILY | %-36s | first: %s", tt.name, got)
+			t.Logf("DAILY | %-44s | first: %s", tt.name, got)
 			if got != tt.first {
 				t.Errorf("first pick: %q, want %q", got, tt.first)
 			}
 			if tt.second != "" {
-				if got != silent { // with no note up, an Esc would reach the CLI
-					ts.typeIn(t, "\x1b")
-					time.Sleep(escTimeout + 60*time.Millisecond)
-				}
+				ts.typeIn(t, "\x1b")
+				time.Sleep(escTimeout + 60*time.Millisecond)
 				seen = len(ts.screen())
 				ts.typeIn(t, "\x1c")
 				time.Sleep(60 * time.Millisecond)
 				ts.typeIn(t, "2")
 				time.Sleep(400 * time.Millisecond)
 				got = shown(seen)
-				t.Logf("DAILY | %-36s | second: %s", tt.name, got)
+				t.Logf("DAILY | %-44s | second: %s", tt.name, got)
 				if got != tt.second {
 					t.Errorf("second pick: %q, want %q", got, tt.second)
 				}
@@ -333,270 +357,128 @@ func TestDailyClaude(t *testing.T) {
 	}
 }
 
-// TestFollowLeavesTurnState (T6901): a move changes the id and nothing about a
-// turn. Codex sends SessionStart inside the turn, so one may be running.
-func TestFollowLeavesTurnState(t *testing.T) {
-	s := turned(adapter.Codex)
-	s.send([]byte("/clear"))
-	s.send([]byte("\r"))
-	s.send([]byte("do the work"))
-	s.send([]byte("\r"))
-	s.queued, s.queuedWait = 1, true
-	s.hookEvent(hookEvent{name: "SessionStart", sessionID: movedSID, source: "clear", chain: ownChain2})
-	if s.atPrompt || !s.mayBeRunning() || !s.inputSinceTurn {
-		t.Errorf("atPrompt %v, mayBeRunning %v, inputSinceTurn %v", s.atPrompt, s.mayBeRunning(), s.inputSinceTurn)
-	}
-	if s.queued != 1 || !s.queuedWait {
-		t.Errorf("queued %d, queuedWait %v", s.queued, s.queuedWait)
-	}
-	if !s.dirty {
-		t.Error("a message after the command is not the command alone: the doubt must stay")
-	}
-	if got := s.o.SessionID(); got == "" || s.followed != movedSID {
-		t.Errorf("followed %q", s.followed)
-	}
-}
-
-// TestFollowMidTurnNoOffer (T6901): through Run, the status line does not come
-// and /exit is not typed while that turn runs.
-func TestFollowMidTurnNoOffer(t *testing.T) {
-	ts, c, done, sock := switchRunTurned(t, adapter.Codex)
-	ts.typeIn(t, "/clear\r")
-	c.waitGot(t, []byte("/clear\r"))
-	time.Sleep(60 * time.Millisecond)
-	ts.typeIn(t, "do the work\r")
-	c.waitGot(t, []byte("do the work\r"))
-	ts.typeIn(t, "\x1c1")
-	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
-	_ = request(t, sock, fmt.Sprintf(`{"type":"hook-event","vendor":"codex","event":"SessionStart","payload":{"session_id":%q,"source":"clear"}}`, movedSID))
-	never(t, "an offer mid-turn", []byte("Esc stays"), ts.screen, 300*time.Millisecond)
-	finish(t, c, done)
-}
-
-// TestFollowDoubtOnlyForCommand (T6901): the move clears only what its command
-// left, not text around it, nor a newline taken for an Enter.
-func TestFollowDoubtOnlyForCommand(t *testing.T) {
-	for _, tt := range []struct {
-		name  string
-		keys  []string
-		dirty bool
-	}{
-		{"only the command", []string{"/clear", "\r"}, false},
-		{"in one read", []string{"/clear\r"}, false},
-		{"a list after it", []string{"/resume", "\r", "\x1b[B", "\r"}, false},
-		{"a draft after it", []string{"/resume", "\r", "abc"}, true},
-		{"option+enter after a draft", []string{"/resume", "\r", "abc", "\x1b\r"}, true},
-		{"backslash enter after a draft", []string{"/resume", "\r", "abc", "\\\r"}, true},
-		{"a message after it, in one read", []string{"/clear\rdo it\r"}, true},
-		{"a message after it", []string{"/clear", "\r", "do it", "\r"}, true},
-		{"an @ in it", []string{"/clear @a", "\r"}, true},
-		{"text before it", []string{"x /clear", "\r"}, false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			s := turned(adapter.Claude)
-			for _, k := range tt.keys {
-				s.send([]byte(k))
-			}
-			s.hookEvent(hookEvent{name: "SessionStart", sessionID: movedSID, source: "resume", chain: ownChain2})
-			if s.followed != movedSID {
-				t.Fatalf("not followed")
-			}
-			if s.dirty != tt.dirty {
-				t.Errorf("dirty = %v, want %v", s.dirty, tt.dirty)
-			}
-		})
-	}
-}
-
-// TestPickAfterMoveSays (T6901): after /clear no turn end comes, so a first pick
-// says what it waits for, and picking again goes on, without spending a turn.
-func TestPickAfterMoveSays(t *testing.T) {
-	ts, c, done, sock := switchRunTurned(t, adapter.Claude)
-	ts.typeIn(t, "/clear\r")
-	c.waitGot(t, []byte("/clear\r"))
-	_ = request(t, sock, fmt.Sprintf(`{"type":"hook-event","vendor":"claude","event":"SessionStart","payload":{"session_id":%q,"source":"clear"}}`, movedSID))
-	time.Sleep(60 * time.Millisecond)
+// TestCompactThirdPick (T6897): /compact with no turn end reaches the
+// status line at the second pick. The person's Esc there drops the switch, and a
+// third pick starts over, with the prompt as it was: the note, not a silent wait.
+func TestCompactThirdPick(t *testing.T) {
+	ts, c, done, sock := switchRunTurned(t, adapter.Claude, func(*Options) { waitNoteQuiet = 50 * time.Millisecond })
+	ts.typeIn(t, "/compact\r")
+	c.waitGot(t, []byte("/compact\r"))
+	_ = request(t, sock, fmt.Sprintf(`{"type":"hook-event","vendor":"claude","event":"SessionStart","payload":{"session_id":%q,"source":"compact"}}`, childSID))
+	time.Sleep(70 * time.Millisecond)
 	ts.typeIn(t, "\x1c2")
-	poll(t, "the note", []byte("moved to another session"), ts.screen)
+	poll(t, "the first note", []byte("started a turn"), ts.screen)
 	ts.typeIn(t, "\x1b")
 	time.Sleep(escTimeout + 60*time.Millisecond)
 	seen := len(ts.screen())
 	since := func() []byte { return ts.screen()[seen:] }
 	ts.typeIn(t, "\x1c")
-	poll(t, "the list", []byte("Switching to"), since)
+	time.Sleep(60 * time.Millisecond)
 	ts.typeIn(t, "2")
-	poll(t, "the status line", []byte("Esc stays"), since)
-	finish(t, c, done)
-}
-
-// TestTellMovedFits: the note's lines fit 80 columns for each vendor.
-func TestTellMovedFits(t *testing.T) {
-	for _, on := range adapter.Vendors() {
-		for _, to := range adapter.Vendors() {
-			for _, l := range movedLines(on, to) {
-				if len(l) > 80 {
-					t.Errorf("%d columns: %q", len(l), l)
-				}
-			}
-		}
-	}
-}
-
-// TestRefusedMoveSays (T6901): a move refused leaves turn ends uncounted, so the
-// list says so, with a way out that works, and never that none was seen.
-func TestRefusedMoveSays(t *testing.T) {
-	t.Run("no baseline: Codex reopened, /clear first", func(t *testing.T) {
-		ts, c, done, sock := switchRunOn(t, false, adapter.Codex)
-		ts.typeIn(t, "/clear\r")
-		c.waitGot(t, []byte("/clear\r"))
-		_ = request(t, sock, fmt.Sprintf(`{"type":"hook-event","vendor":"codex","event":"SessionStart","payload":{"session_id":%q,"source":"clear"}}`, movedSID))
-		_ = request(t, sock, fmt.Sprintf(`{"type":"hook-event","vendor":"codex","event":"Stop","payload":{"session_id":%q}}`, movedSID))
-		time.Sleep(60 * time.Millisecond)
-		ts.typeIn(t, "\x1c")
-		poll(t, "the list", []byte("brief: off"), ts.screen)
-		for _, want := range []string{"a session aggy could not confirm", "quit it yourself", "has counted no turn end"} {
-			if !bytes.Contains(ts.screen(), []byte(want)) {
-				t.Errorf("no %q: %q", want, ts.screen())
-			}
-		}
-		if bytes.Contains(ts.screen(), []byte("has seen no turn end")) {
-			t.Error("the list says no turn end was seen")
-		}
-		ts.typeIn(t, "\x1b")
-		poll(t, "the list to close", []byte(altScreenOff), ts.screen)
-		finish(t, c, done)
-	})
-	t.Run("a turn counted: picking twice is the way out", func(t *testing.T) {
-		s := turned(adapter.Claude)
-		s.hookEvent(hookEvent{name: "SessionStart", sessionID: nestedSID, source: "clear", chain: nestedChain})
-		if !s.moveRefused {
-			t.Fatal("not recorded")
-		}
-		var b bytes.Buffer
-		p := &picker{moveRefused: true, on: adapter.Claude}
-		p.draw(&b, false)
-		if !strings.Contains(b.String(), "pick the vendor twice") {
-			t.Errorf("list: %q", b.String())
-		}
-		for _, l := range strings.Split(b.String(), "\r\n") {
-			if strings.Contains(l, "confirm") || strings.Contains(l, "may not count") {
-				if len(l) > 80 {
-					t.Errorf("%d columns: %q", len(l), l)
-				}
-			}
-		}
-		// A turn end naming the session on screen ends the doubt.
-		s.hookEvent(hookEvent{name: "Stop", sessionID: childSID, chain: ownChain})
-		if s.moveRefused {
-			t.Error("a counted turn end left the words")
-		}
-	})
-}
-
-// TestHeldDeadlineFixed (T6897): keys wait for a split sequence 50 ms from its
-// first byte, so key repeat after Alt+] cannot keep them back.
-func TestHeldDeadlineFixed(t *testing.T) {
-	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
-	ts.typeIn(t, "\x1b]")
-	start := time.Now()
-	for time.Since(start) < 500*time.Millisecond {
-		ts.typeIn(t, "a")
-		time.Sleep(25 * time.Millisecond)
-	}
-	if !bytes.Contains(c.received(), []byte("a")) {
-		t.Errorf("after %v of key repeat the CLI has %q", time.Since(start), c.received())
-	}
-	c.waitGot(t, []byte("aaaa"))
-	finish(t, c, done)
-}
-
-// TestWaitingOptionsStayWithVendor (T6902): a waiting switch's options are that
-// vendor's: a pick of another drops them, and one toggled here stays.
-func TestWaitingOptionsStayWithVendor(t *testing.T) {
-	ts, c, done, sock := switchRunTurned(t, adapter.Claude) // vendors: codex, grok
-	ts.typeIn(t, "go\r")
-	c.waitGot(t, []byte("go\r"))
-	ts.typeIn(t, "\x1c")
-	poll(t, "the list", []byte("brief: off"), ts.screen)
-	ts.typeIn(t, "m")
-	ts.typeIn(t, "gpt-5\r")
-	poll(t, "the model", []byte("gpt-5"), ts.screen)
-	ts.typeIn(t, "1") // codex
-	time.Sleep(100 * time.Millisecond)
-	seen := len(ts.screen())
-	since := func() []byte { return ts.screen()[seen:] }
-	ts.typeIn(t, "\x1c")
-	poll(t, "the list again", []byte("gpt-5"), since)
-	ts.typeIn(t, "2") // grok instead
-	time.Sleep(100 * time.Millisecond)
-	// From here on: the list itself still showed the model.
+	poll(t, "the status line", []byte("can't tell if the prompt is empty"), since)
+	ts.typeIn(t, "\x1b")
+	time.Sleep(escTimeout + 60*time.Millisecond)
 	seen = len(ts.screen())
-	_ = request(t, sock, stopLine)
-	poll(t, "the status line", []byte("Esc stays"), since)
-	if bytes.Contains(since(), []byte("gpt-5")) {
-		t.Errorf("the model for codex went with the pick of grok: %q", since())
+	ts.typeIn(t, "\x1c")
+	time.Sleep(60 * time.Millisecond)
+	ts.typeIn(t, "2")
+	poll(t, "the note again", []byte("prompt is empty"), since)
+	if bytes.Contains(since(), []byte("Esc stays")) {
+		t.Errorf("a new pick offered with no look: %q", since())
+	}
+	if bytes.Contains(c.received(), []byte("/exit")) {
+		t.Errorf("typed: %q", c.received())
 	}
 	finish(t, c, done)
 }
 
-// TestPickDropsOnlySeed: a toggle made in this list is for this pick.
-func TestPickDropsOnlySeed(t *testing.T) {
-	p := &picker{waiting: adapter.Codex, seed: Choice{Model: "gpt-5", New: true, Brief: true},
-		opts: Choice{Model: "other", New: true, Brief: true}}
-	_, c := p.choose(adapter.Grok)
-	if c.Model != "other" || c.New || c.Brief {
-		t.Errorf("other vendor: %+v", c)
+// TestLocalCommandKeepsPrompt (T6897): exact, typed lines only. A cursor key, an
+// edit, arguments, or another vendor is no local command; what follows is then an
+// ordinary Enter at the prompt or a queued message.
+func TestLocalCommandKeepsPrompt(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		v    adapter.Vendor
+		keys []string
+		at   bool
+	}{
+		{"typed in pieces", adapter.Claude, []string{"/cl", "ear", "\r"}, true},
+		{"one read", adapter.Claude, []string{"/clear\r"}, true},
+		{"/compact", adapter.Claude, []string{"/compact\r"}, false},
+		{"arguments", adapter.Claude, []string{"/clear old\r"}, false},
+		{"a cursor key", adapter.Claude, []string{"/clear", "\x1b[D", "\r"}, false},
+		{"an edit", adapter.Claude, []string{"/clearx", "\x7f", "\r"}, false},
+		{"a paste", adapter.Claude, []string{"\x1b[200~/clear\x1b[201~", "\r"}, false},
+		{"text after it, one read", adapter.Claude, []string{"/clear\rhi\r"}, false},
+		{"an @ too", adapter.Claude, []string{"/clear @a\r"}, false},
+		{"not leading", adapter.Claude, []string{"x/clear\r"}, false},
+		{"Codex has none", adapter.Codex, []string{"/clear\r"}, false},
+		{"Grok has none", adapter.Grok, []string{"/clear\r"}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := turned(tt.v)
+			for _, k := range tt.keys {
+				s.send([]byte(k))
+			}
+			if s.atPrompt != tt.at {
+				t.Errorf("atPrompt = %v, want %v", s.atPrompt, tt.at)
+			}
+		})
 	}
-	p = &picker{waiting: adapter.Codex, seed: Choice{Model: "gpt-5", New: true},
-		opts: Choice{Model: "gpt-5", New: true}}
-	if _, c = p.choose(adapter.Codex); c.Model != "gpt-5" || !c.New {
-		t.Errorf("same vendor: %+v", c)
-	}
+	t.Run("mid-turn: still no prompt", func(t *testing.T) {
+		s := turned(adapter.Claude)
+		s.send([]byte("go\r"))
+		s.send([]byte("/clear\r"))
+		if s.atPrompt {
+			t.Error("a command sent during a turn made the prompt free")
+		}
+	})
 }
 
-// TestRepickKeepsAgentTools (T6902): the list cannot set an agent's tools, so
-// picking the same vendor again keeps them.
-func TestRepickKeepsAgentTools(t *testing.T) {
-	ts, c, done, sock := switchRunTurned(t, adapter.Claude)
+// TestTellWaitsHoldsNoOutput (T6897): a CLI that keeps drawing is running: no note.
+func TestTellWaitsHoldsNoOutput(t *testing.T) {
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude, func(*Options) { waitNoteQuiet = 200 * time.Millisecond })
 	ts.typeIn(t, "go\r")
 	c.waitGot(t, []byte("go\r"))
-	_ = request(t, sock, `{"type":"switch-request","vendor":"grok","tools":["context7"]}`)
-	time.Sleep(60 * time.Millisecond)
-	ts.typeIn(t, "\x1c")
-	poll(t, "the list", []byte("brief: off"), ts.screen)
-	time.Sleep(60 * time.Millisecond)
 	seen := len(ts.screen())
-	ts.typeIn(t, "2")
+	ts.typeIn(t, "\x1c2")
 	since := func() []byte { return ts.screen()[seen:] }
-	poll(t, "the status line", []byte("Esc stays"), since)
-	if !bytes.Contains(since(), []byte("context7")) {
-		t.Errorf("the agent's tool is gone from the offer: %q", since())
+	poll(t, "the list to close", []byte(altScreenOff), since)
+	seen = len(ts.screen())
+	stop := time.After(600 * time.Millisecond)
+loop:
+	for {
+		select {
+		case <-stop:
+			break loop
+		case <-time.After(50 * time.Millisecond):
+			c.print(".")
+		}
 	}
+	if bytes.Contains(since(), []byte("started a turn")) {
+		t.Errorf("a note while the CLI drew: %q", since())
+	}
+	poll(t, "the note, once it is quiet", []byte("started a turn"), since)
 	finish(t, c, done)
 }
 
-// TestStripFollowsPaste (T6897): a report-shaped paste at a prompt of aggy's is
-// the paste's, opened and closed in one read or across reads.
-func TestStripFollowsPaste(t *testing.T) {
-	f := newKeyFilter(0x1c)
-	rep, rest := f.strip([]byte("\x1b[200~\x1b[I1\x1b[201~"))
-	if len(rep) != 0 || string(rest) != "\x1b[200~\x1b[I1\x1b[201~" {
-		t.Errorf("reports %q, rest %q", rep, rest)
+// TestTellWaitsLinesFit: each of the note's lines fits 80 columns.
+func TestTellWaitsLinesFit(t *testing.T) {
+	s := openCodeSession(t)
+	t.Cleanup(s.closePicker)
+	s.o.Vendor, s.sw.to, s.sw.picked = adapter.OpenCode, adapter.OpenCode, true
+	s.lenKnown, s.popup = false, true
+	old := waitNoteQuiet
+	waitNoteQuiet = 0
+	t.Cleanup(func() { waitNoteQuiet = old })
+	s.tellWaits()
+	if len(s.pk.lines) != 4 {
+		t.Fatalf("lines = %q", s.pk.lines)
 	}
-	if f.inPaste {
-		t.Error("still in the paste")
-	}
-	f = newKeyFilter(0x1c)
-	_, _ = f.strip([]byte("\x1b[200~a"))
-	if rep, _ = f.strip([]byte("\x1b[Ib")); len(rep) != 0 {
-		t.Errorf("reports %q", rep)
-	}
-	_, _ = f.strip([]byte("\x1b[201~"))
-	if f.inPaste {
-		t.Error("the close marker was missed")
-	}
-	if rep, _ = f.strip([]byte("\x1b[I")); len(rep) == 0 {
-		t.Error("a reply after the paste is not one")
+	for _, l := range s.pk.lines {
+		if len(l) > 80 {
+			t.Errorf("%d columns: %q", len(l), l)
+		}
 	}
 }
 

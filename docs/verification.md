@@ -1570,6 +1570,9 @@ real CLI.
 - A paste that spans a prompt of aggy's: `strip` and the key filter each follow the
   markers, so the first read's bytes are seen twice; harmless so far.
 - The doubt note's words, and its second pick, have not been tried on a real CLI.
+- Claude's local commands (`adapter.LocalCommand`) come from `commands.md`, read
+  2026-11-07: rows not marked Skill, each describing a dialog or a display. That
+  none starts a turn, and that a user's skill cannot take a name, is not checked live.
   That Claude's `/compact` ends a turn (so no doubt follows) is unverified.
 
 Read from the Codex source at 6aaac694, not seen live: `SessionStart` hooks run
