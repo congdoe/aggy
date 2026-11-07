@@ -1567,3 +1567,7 @@ Live, grok 1.0.77, in a repo under `<HOME>`, by the maintainer: `read_file` and 
 ## Grok image `--edit` (T6923)
 
 Live, grok 1.0.77, by the maintainer, with `grok_file_tools` on: `aggy image --edit` of a Grok image failed in about a second on 0 tokens, since the resumed child starts in a new temp dir and the session's folder, kept under the first run's cwd, no longer resolves. Codex `--edit` worked. aggy now refuses before any child (`borrow.grok_edit`). Unverified, and not tried: `aggy resume` remakes the same temp path for an on-screen session, and a headless edit might work the same way; that would change what the borrow's temp dir promises, so it is not done.
+
+## A video that made no file (T6924)
+
+From the maintainer's live check (F21): on an account with zero data retention, `image_to_video` fails, and aggy reported outcome unknown and that the child left no file that passed the artifact gate; the reason was only in the child's text. aggy now shows the start of that text, scrubbed, in the short report and the inbox report. Fakes only: no live run has shown the new lines.
