@@ -31,6 +31,8 @@ var keep = map[adapter.Vendor][]string{
 		"permission_mode", "turn_id", "stop_hook_active"},
 	adapter.Grok: {"sessionId", "hookEventName", "cwd", "workspaceRoot", "timestamp", "permissionMode",
 		"stopHookActive", "error", "errorDetails", "reason", "notificationType"},
+	// What aggy's own plugin sends (internal/adapter/opencode/plugin/server.js).
+	adapter.OpenCode: {"sessionID", "requestID", "directory", "error", "reason"},
 }
 
 // maxField drops a kept value longer than this once encoded (an
@@ -64,6 +66,8 @@ type Event struct {
 	Error string
 	// Reason is Grok's StopCancelled cause, such as user_interrupt.
 	Reason string
+	// Request is the id of an OpenCode permission or question.
+	Request string
 }
 
 // Parse reads the fields aggy uses from a (projected) payload of v.
@@ -75,6 +79,16 @@ func Parse(v adapter.Vendor, payload []byte) Event {
 	switch v {
 	case adapter.Grok:
 		return Event{SessionID: s("sessionId"), Error: s("error"), Reason: s("reason")}
+	case adapter.OpenCode:
+		e := Event{SessionID: s("sessionID"), Reason: s("reason"), Request: s("requestID")}
+		// session.execution.failed's error type (core/src/session/to-session-error.ts
+		// at v2.2.5). xAI has no type of its own; no real limit has been seen on
+		// either plan (docs/verification.md).
+		switch s("error") {
+		case "provider.chatgpt-limit", "provider.rate-limit":
+			e.Error = "rate_limit"
+		}
+		return e
 	}
 	return Event{SessionID: s("session_id"), Source: s("source"), Error: s("error")}
 }
