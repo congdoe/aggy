@@ -617,8 +617,8 @@ const globMeta = "*?[]{}()!,\\\x00\n\r"
 //     gate (policy/path_match.rs:91-112, policy.rs:2221), so ~//.grok or
 //     ~/x/../.grok would pass a ~/.grok/** rule. These also cost a review
 //     its read tools in any repo under $HOME: on grok 1.0.77, read_file
-//     and list_dir there returned "Denied by permission policy: deny rule
-//     on read matching ~*/**" (live, verification.md T6922), so Grok's
+//     and list_dir there were refused under the ~*/** rule (2026-11-06
+//     agent audit, verification.md T6922), so Grok's
 //     gate also sees such a path in its ~ form. It fails closed, and the
 //     rules stay: without them ~//.grok reads Grok's auth file. RunNotes
 //     puts it in the report.
