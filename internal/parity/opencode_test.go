@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/congdoe/aggy/internal/permissions"
 )
 
 func renderDoc(t *testing.T, c OpenCodeConfig) openCodeDoc {
@@ -160,12 +162,78 @@ func TestOpenCodeRenderRest(t *testing.T) {
 
 // TestOpenCodeShellRules: the guard's rule check follows the rendered rules.
 func TestOpenCodeShellRules(t *testing.T) {
-	got, err := OpenCodeShellRules()
+	got, err := OpenCodeShellRules(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(got, OpenCodeStarter) {
 		t.Errorf("got %q, want %q", got, OpenCodeStarter)
+	}
+	got, err = OpenCodeShellRules([]string{"gh pr list", "git status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got, "gh pr list") || len(got) != len(OpenCodeStarter)+1 {
+		t.Errorf("an added rule must reach the guard: %q", got)
+	}
+}
+
+// TestOpenCodeShared: a rule that cannot be exact is named, never guessed at.
+func TestOpenCodeShared(t *testing.T) {
+	rule := func(k permissions.Kind, text string) permissions.Rule {
+		return permissions.Rule{Kind: k, Text: text, Origin: permissions.FromAggy}
+	}
+	s := permissions.Set{Rules: []permissions.Rule{
+		rule(permissions.Allow, "Bash(gh pr list)"),
+		rule(permissions.Allow, "Bash(git diff *)"),
+		rule(permissions.Allow, "Bash(git log:*)"),
+		rule(permissions.Allow, "Bash(ls ?)"),
+		rule(permissions.Allow, "Bash(echo {file:/etc/passwd})"),
+		rule(permissions.Allow, "Bash(cat x)"),
+		rule(permissions.Allow, "Bash(find .)"),
+		rule(permissions.Allow, "Bash(a && b)"),
+		rule(permissions.Allow, "Bash(FOO=1 git status)"),
+		rule(permissions.Allow, "Read(./x)"),
+		rule(permissions.Ask, "Bash(git push *)"),
+		rule(permissions.Ask, "Bash(x {file:y})"),
+		rule(permissions.Ask, "Edit"),
+		rule(permissions.Deny, "Bash(curl *)"),
+		rule(permissions.Deny, "Read(./.env)"),
+	}}
+	got, skipped := OpenCodeShared(s)
+	if !slices.Equal(got.Allow, []string{"gh pr list"}) || !slices.Equal(got.Ask, []string{"git push *"}) || !slices.Equal(got.Deny, []string{"shell:curl *"}) {
+		t.Errorf("%+v", got)
+	}
+	if len(skipped) != 12 {
+		t.Errorf("skipped %d: %+v", len(skipped), skipped)
+	}
+	for _, k := range skipped {
+		if k.Why == "" {
+			t.Errorf("%q is not named", k.Text)
+		}
+	}
+	b, err := OpenCodeConfig{Providers: []string{"xai"}, Plugin: "/p", Aggy: "/a", Root: "/r", Shared: got}.Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allows := OpenCodeRenderedAllows(b); !slices.Contains(allows, "gh pr list") {
+		t.Errorf("not rendered: %q", allows)
+	}
+	var doc openCodeDoc
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if last := doc.Permissions[len(doc.Permissions)-1]; last != (openCodeRule{"shell", "git push *", "ask"}) {
+		t.Errorf("an ask must come last, as a later rule wins: %+v", last)
+	}
+	if !slices.Contains(doc.Policies, openCodeRule{"tool.use", "shell:curl *", "deny"}) {
+		t.Errorf("deny missing: %+v", doc.Policies[len(doc.Policies)-1])
+	}
+	if b, err = (OpenCodeConfig{Providers: []string{"xai"}, Plugin: "/p", Aggy: "/a", Root: "/r", NoPolicy: true, Shared: got}).Render(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "shell:curl *") {
+		t.Error("--no-policy drops aggy's denies, not the person's")
 	}
 }
 

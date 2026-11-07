@@ -147,6 +147,13 @@ type SessionRef struct {
 	Cwd string // the directory the session ran in
 }
 
+// SharedRules are rules in Claude's syntax for one session.
+type SharedRules struct {
+	Allow, Ask, Deny []string
+	// Mode is a permission mode the person set in aggy, or "".
+	Mode string
+}
+
 // InteractiveRequest asks for an on-screen session in a pseudo-terminal.
 type InteractiveRequest struct {
 	Cwd string
@@ -176,6 +183,11 @@ type InteractiveRequest struct {
 	// permissions.deny in an inline --settings layer, Grok as --deny
 	// flags. Codex ignores them; its policy is a rules file.
 	Deny []string
+	// Rules are the person's shared rules for this session only
+	// (internal/permissions), on top of what the CLI reads itself. Claude
+	// takes them in the same inline --settings layer as Deny, Grok as --allow
+	// and --deny; Codex and OpenCode do not read this. A borrow never has any.
+	Rules SharedRules
 	// MCP are the stdio MCP servers of the managed tools that are on,
 	// added to the user's own servers for this session only. Codex takes
 	// them as -c mcp_servers.<name>.* overrides. Claude and Grok take a

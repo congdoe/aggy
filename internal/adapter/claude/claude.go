@@ -166,15 +166,15 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		}
 		args = append(args, "--append-system-prompt-file", req.MemoryFile)
 	}
-	if len(req.Deny) > 0 || len(req.Hooks) > 0 {
+	if perms := permissionsLayer(req); len(perms) > 0 || len(req.Hooks) > 0 {
 		// An inline settings layer: its permissions.deny list merges with
 		// every settings file's, and a deny wins over any allow
 		// (code.claude.com/docs settings.md, permissions.md). The tools'
 		// hooks ride in the same layer, for this session only, as the
 		// borrow guard's do (GuardSettings).
 		layer := map[string]any{}
-		if len(req.Deny) > 0 {
-			layer["permissions"] = map[string]any{"deny": req.Deny}
+		if len(perms) > 0 {
+			layer["permissions"] = perms
 		}
 		if len(req.Hooks) > 0 {
 			layer["hooks"] = req.Hooks
@@ -264,6 +264,28 @@ func checkAgents(val string) error { return adapter.CheckAgents(val, checkPermis
 // hooks and MCP servers do not load under either ("permissions work normally"
 // under --safe-mode). So aggy's deny rules should hold, and gating the flag
 // would cost them, but aggy's turn-end hooks and managed tools may not run.
+// permissionsLayer is the inline layer's permissions object: the safety
+// policy's denies, and the person's shared rules. Lists merge across settings
+// layers, and defaultMode may be set in a --settings layer (permission-modes.md
+// names --settings for permissions.defaultMode; not yet run live with aggy's
+// rules, TODO(T6895)).
+func permissionsLayer(req adapter.InteractiveRequest) map[string]any {
+	out := map[string]any{}
+	if deny := append(slices.Clone(req.Deny), req.Rules.Deny...); len(deny) > 0 {
+		out["deny"] = deny
+	}
+	if len(req.Rules.Allow) > 0 {
+		out["allow"] = req.Rules.Allow
+	}
+	if len(req.Rules.Ask) > 0 {
+		out["ask"] = req.Rules.Ask
+	}
+	if req.Rules.Mode != "" {
+		out["defaultMode"] = req.Rules.Mode
+	}
+	return out
+}
+
 // Unverified: that this covers hooks passed with --settings, which the docs do
 // not say. Confirm with a session under --safe-mode and aggy's settings file.
 const noHooksNote = "--safe-mode and --bare skip Claude's hooks and MCP servers (Claude's docs), so aggy's turn-end hooks and managed tools may not run here, and a switch may wait for a turn end it never sees; aggy's deny rules are permissions, which the docs say still apply"

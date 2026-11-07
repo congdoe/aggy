@@ -23,6 +23,7 @@ import (
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/limits"
+	"github.com/congdoe/aggy/internal/permissions"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -255,6 +256,14 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		}
 		warns = append(warns, pw...)
 	}
+	// The person's shared rules, read now, so an approval given in another
+	// CLI since the last launch or switch holds here. A borrow's child, even
+	// reopened on screen, gets none.
+	var rules permissions.Set
+	if pl.child.Kind == "" {
+		rules = loadPermissions(ctx, pl.child.Cwd, cfg)
+		warns = append(warns, addPermissions(v, caps, rules, &req)...)
+	}
 	// Memory comes from the child's own directory, never the current one:
 	// aggy resume <id> works from anywhere.
 	// A crashed launch's folder is left to sweepMemoryDirs above.
@@ -297,7 +306,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	}
 	if v == adapter.OpenCode {
 		oc, err := prepareOpenCode(openCodeInput{cfg: eff, caps: caps, cwd: pl.child.Cwd, dir: memDir,
-			model: pl.child.Model, memory: req.Memory, brief: briefText, noPolicy: t.NoPolicy})
+			model: pl.child.Model, memory: req.Memory, brief: briefText, noPolicy: t.NoPolicy, rules: rules})
 		if err != nil {
 			return fail(diag.CodePolicy, err)
 		}

@@ -262,7 +262,7 @@ func openCodeGuard(in io.Reader, getenv func(string) string, stderr io.Writer) i
 	if err != nil || len(b) > hook.MaxPayload {
 		b = nil // refused as unreadable
 	}
-	rules, err := parity.OpenCodeShellRules()
+	rules, err := parity.OpenCodeShellRules(guardRules(b, getenv))
 	if err != nil {
 		b = nil // refused as unreadable: the rules aggy ships do not render
 	}
