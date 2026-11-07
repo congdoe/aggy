@@ -27,6 +27,9 @@ func switchRun(t *testing.T, startsTurn bool) (*termSide, *fakeChild, <-chan Exi
 // other two, in claude, codex, grok order.
 func switchRunOn(t *testing.T, startsTurn bool, vendor adapter.Vendor, more ...func(*Options)) (*termSide, *fakeChild, <-chan Exit, string) {
 	t.Helper()
+	oldSettle := settleTurnGap
+	settleTurnGap = 30 * time.Millisecond // the harness's turns end at once; TestSettleNeedsAGap has the real gap
+	t.Cleanup(func() { settleTurnGap = oldSettle })
 	oldQ, oldW, oldG, oldE, oldQQ := switchQuiet, exitWait, confirmGuard, escTimeout, queuedQuiet
 	switchQuiet, exitWait, confirmGuard, escTimeout, queuedQuiet = 50*time.Millisecond, 300*time.Millisecond, 100*time.Millisecond, 20*time.Millisecond, 300*time.Millisecond
 	t.Cleanup(func() { switchQuiet, exitWait, confirmGuard, escTimeout, queuedQuiet = oldQ, oldW, oldG, oldE, oldQQ })
