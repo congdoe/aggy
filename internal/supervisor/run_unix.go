@@ -149,6 +149,7 @@ func Run(o Options) (Exit, error) {
 		srv.SetRoot(child.Pid())
 	}
 	s.child = child
+	s.startGuardWatch()
 	outDone := make(chan struct{})
 	s.goSafe(func() { s.copyOut(); close(outDone) })
 	input := inputOf(o.In)
@@ -464,6 +465,10 @@ type session struct {
 	toolsWaitTurn     bool
 	toolSeq, toolRead int
 	toolAt            time.Time
+	// guardSeen: OpenCode's guard has reported; asked holds the permissions
+	// and questions it has seen open (opencode_unix.go).
+	guardSeen bool
+	asked     map[string]bool
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -519,6 +524,7 @@ type pendingSwitch struct {
 type hookEvent struct {
 	name, sessionID string
 	shutdown        bool
+	request         string // an OpenCode permission or question's id
 }
 
 // grokShutdown reports whether a hook event is Grok's exit-time stop:
@@ -551,7 +557,7 @@ func (s *session) onHook(r Request) {
 	}
 	if r.FromSession && r.Vendor == string(s.o.Vendor) && r.Event != "SessionStart" {
 		p := hook.Parse(s.o.Vendor, r.Payload)
-		ev := hookEvent{name: r.Event, sessionID: p.SessionID, shutdown: grokShutdown(s.o.Vendor, r.Event, p.Reason)}
+		ev := hookEvent{name: r.Event, sessionID: p.SessionID, shutdown: grokShutdown(s.o.Vendor, r.Event, p.Reason), request: p.Request}
 		select {
 		case s.events <- ev:
 		case <-s.quit:
@@ -573,6 +579,9 @@ func (s *session) onHook(r Request) {
 // another one takes the turn-end paths below, so a forged one is still
 // a security rejection (#101).
 func (s *session) hookEvent(ev hookEvent) {
+	if s.openCodeEvent(ev) {
+		return
+	}
 	own := ""
 	if s.o.SessionID != nil {
 		own = s.o.SessionID()
@@ -730,16 +739,21 @@ func refusedMsg(v adapter.Vendor, err error) string {
 // Enter as CSI 13 u, which never clears it, so it cannot be switched
 // from by aggy. Upgrade if T6684 finds one.
 func (s *session) send(b []byte) {
+	typed := dropReports(b)
+	if len(typed) == 0 && len(b) > 0 {
+		s.toChild.push(b) // the terminal's own reports: no typing at all
+		return
+	}
 	s.lastIn = time.Now()
 	s.held = false
 	if len(b) == 0 {
 		return
 	}
 	s.sentAny = true
-	if bytes.IndexByte(b, '\r') >= 0 {
+	if bytes.IndexByte(typed, '\r') >= 0 {
 		s.atPrompt, s.toldDirty = false, false // an Enter may start a turn
 	}
-	for _, c := range b {
+	for _, c := range typed {
 		s.compose(c)
 	}
 	s.dirty = !s.lenKnown || s.compLen > 0 || s.popup || s.cleared
@@ -839,7 +853,7 @@ func (s *session) offerSwitch() {
 	if !s.turnRan && (s.sentAny || s.o.StartsTurn) {
 		return
 	}
-	if s.turnRan && !s.atPrompt {
+	if s.turnRan && !s.atPrompt || s.askOpen() {
 		return
 	}
 	if now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
@@ -1393,7 +1407,7 @@ func (s *session) typeExit() {
 	case s.dirty:
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeUnsentText, Cause: s.sw.rec, Msg: "the switch key was pressed, but text the user typed is not sent"})
 		return
-	case s.held:
+	case s.held, s.askOpen():
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "the switch key was pressed, but the CLI waits for the user"})
 		return
 	}
@@ -1515,6 +1529,9 @@ func (s *session) repaint() {
 }
 
 func (s *session) pickerInput(b []byte) {
+	if b = dropReports(b); len(b) == 0 {
+		return // the mouse moved: aggy's prompts take keys only
+	}
 	if s.pk.confirm != "" || s.pk.note {
 		s.promptInput(b)
 		return
