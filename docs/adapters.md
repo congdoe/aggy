@@ -408,7 +408,11 @@ file. A driver name `-c` cannot carry is refused. The `--path` files
 inside the repo are read through `safefs`. The material is capped at 256 KiB and says
 where it was cut. It sits under a "Material" heading in fences longer than
 any backtick run inside, marked as data to review, not instructions.
-Claude and Grok keep their read tools, at the work tree root. A review
+Claude keeps its read tools at the work tree root. Grok does too, but only
+outside `$HOME`: aggy's `~*/**` deny rule also refuses `read_file` and
+`list_dir` in a repo under `$HOME` (live, grok 1.0.77; `docs/verification.md`,
+T6922). The adapter's `RunNotes` puts that in the report, also when a session's
+history shows such a refusal elsewhere. A review
 refuses a directory outside a git work tree, `$HOME`, `/`, and a root
 that holds or is inside aggy's state dir.
 
@@ -603,7 +607,8 @@ the borrow passes Grok over, when the review root holds any of them
 `CLAUDE.md`, rules dirs) and skill dirs no longer refuse it (T6742):
 Grok's `read_file` is not limited to the cwd by itself, but the review
 runs under `--sandbox strict` and aggy's denies, which kept reads out of
-`$HOME` live whoever asked (verification.md S2, S4, S5), and what strict
+`$HOME` live whoever asked (verification.md S2, S4, S5; under `$HOME` that
+now includes the repo itself, T6922), and what strict
 leaves readable the diff under review could ask for in any repo
 (verification.md, "Grok project config and folder trust"). Every other
 Grok kind runs in an empty dir outside any git tree.

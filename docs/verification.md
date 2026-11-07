@@ -1559,3 +1559,7 @@ A maintainer's live check should settle, on the current CLIs:
 2. `claude --help` and `grok --help` list every flag in `LockdownCaps`.
 3. The self-test prompt under Claude's review flags: does it refuse `../canary.txt` and reply `NO ACCESS`? Until this is known, a new Claude version may be passed over on every update. Then again with a `Read` allow rule, or `permissions.additionalDirectories`, for that dir in a test config's `settings.json`: does the child read it?
 4. Under the same prompt on Codex and Grok: the reply, the item types in Codex's stream, and whether Grok's `chat_history.jsonl` is there with `tool_calls` as expected.
+
+## Grok reviews under `$HOME` (T6922)
+
+Live, grok 1.0.77, in a repo under `<HOME>`, by the maintainer: `read_file` and `list_dir` returned `Denied by permission policy: deny rule on read matching "~*/**"` under aggy's review argv. The review still came back, from the diff in its prompt, and its report did not mention the denial. It fails closed. `grep` was not seen; it has the same rule. aggy keeps the rules, since they stop `~` spellings of the Grok home (source: `policy/path_match.rs:91-112`, `policy.rs:2221`), and the report now says so. S4 shows Grok prints a rule on `<HOME>/Library/**` in its `~` form, which fits, but why a physical repo path matches `~*/**` was not traced in the source. No live run has shown the new report line.

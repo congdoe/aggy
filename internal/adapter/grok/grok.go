@@ -129,6 +129,7 @@ var (
 	// animates it with image_to_video. Unverified headless.
 	VideoTools = []string{"image_gen", "image_to_video"}
 	// ReadTools is review, which also runs with --permission-mode plan.
+	// Under $HOME, readDeny's ~ rules refuse them (RunNotes).
 	ReadTools = []string{"read_file", "grep", "list_dir"}
 	// EditTools is edit, in its own worktree. No shell: aggy check runs
 	// the tests.
@@ -577,9 +578,13 @@ const globMeta = "*?[]{}()!,\\\x00\n\r"
 //   - Every path that starts with ~ (~* and ~*/**). Grok's gate matches a
 //     ~ path literally, unnormalized, and the tool expands it after the
 //     gate (policy/path_match.rs:91-112, policy.rs:2221), so ~//.grok or
-//     ~/x/../.grok would pass a ~/.grok/** rule. Under strict nothing
-//     else in $HOME is readable, so a review or research child loses
-//     nothing by it.
+//     ~/x/../.grok would pass a ~/.grok/** rule. These also cost a review
+//     its read tools in any repo under $HOME: on grok 1.0.77, read_file
+//     and list_dir there returned "Denied by permission policy: deny rule
+//     on read matching ~*/**" (live, verification.md T6922), so Grok's
+//     gate also sees such a path in its ~ form. It fails closed, and the
+//     rules stay: without them ~//.grok reads Grok's auth file. RunNotes
+//     puts it in the report.
 //   - Every path with a component that starts with a quote or Unicode
 //     white space (leadChars). Grok's gate sees such a path as relative,
 //     joins it to the cwd, and the tool strips the quotes and white space

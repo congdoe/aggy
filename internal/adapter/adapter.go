@@ -322,6 +322,13 @@ type SelfTestWitness interface {
 	SelfTestEvidence(req HeadlessRequest, res HeadlessResult, out Output, token string) SelfTestEvidence
 }
 
+// RunNoter is implemented by an adapter that can say something about a
+// finished borrow its reply may not, such as tools its lockdown refused. The
+// notes are the adapter's own words, never the CLI's, and go in the report.
+type RunNoter interface {
+	RunNotes(req HeadlessRequest, res HeadlessResult) []string
+}
+
 // SelfTestSettings is implemented by an adapter whose self-test loads the
 // user's own settings, so the user can change its result.
 type SelfTestSettings interface {
