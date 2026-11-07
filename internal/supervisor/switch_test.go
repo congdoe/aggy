@@ -30,10 +30,6 @@ func switchRunOn(t *testing.T, startsTurn bool, vendor adapter.Vendor, more ...f
 	oldQ, oldW, oldG, oldE, oldQQ := switchQuiet, exitWait, confirmGuard, escTimeout, queuedQuiet
 	switchQuiet, exitWait, confirmGuard, escTimeout, queuedQuiet = 50*time.Millisecond, 300*time.Millisecond, 100*time.Millisecond, 20*time.Millisecond, 300*time.Millisecond
 	t.Cleanup(func() { switchQuiet, exitWait, confirmGuard, escTimeout, queuedQuiet = oldQ, oldW, oldG, oldE, oldQQ })
-	// tellWaits has its own tests: a silent fake CLI would bring it everywhere.
-	oldWN := waitNoteQuiet
-	waitNoteQuiet = time.Hour
-	t.Cleanup(func() { waitNoteQuiet = oldWN })
 	run := filepath.Join(shortDir(t), "run")
 	ts, c, done := startRunOpts(t, 20*time.Millisecond, nil, func(o *Options) {
 		o.RunDir, o.ParentID, o.StartsTurn = run, pid, startsTurn
