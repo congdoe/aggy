@@ -98,17 +98,33 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 func launch(name string, t target, stderr io.Writer) int {
 	q := dlog.Queue(diagQueue)
 	defer q.Close(diagFlush)
+	// before is the launch the CLI on screen was switched from, to go back to
+	// when that CLI never starts (T6899).
+	var before *reopen
 	for {
 		var next switchTo
 		code := launchOnce(name, &t, stderr, &next, q)
 		if next.vendor == "" {
-			return code
+			if next.unstarted == nil || before == nil {
+				return code
+			}
+			u := next.unstarted
+			q.Log(diag.Rec{Event: diag.EvSwitchReturned, Code: diag.CodeNeverStarted, Parent: before.next.parentID, Vendor: string(u.vendor),
+				Attrs: map[string]any{"from": string(u.vendor), "to": string(before.next.vendor), "exit": code}})
+			why := fmt.Sprintf("%s closed before it started (a dialog declined, or quit before your first message), so aggy goes back to %s. Quit %s to leave aggy.", u.vendor, before.next.vendor, before.next.vendor)
+			fmt.Fprintf(stderr, "%s: %s %s\n", name, why, dlog.Tag(diag.CodeNeverStarted))
+			t = sameChildAgain(before.t, before.next)
+			before = nil
+			continue
 		}
 		c := next.choice
 		if c.Resume {
 			t = sameChildAgain(t, next)
+			before = nil
 			continue
 		}
+		// next.from is the same session, for going back to it.
+		before = &reopen{t: t, next: switchTo{vendor: next.from, parentID: next.parentID, child: next.child}}
 		t = target{ParentID: next.parentID, Vendor: next.vendor, Child: c.Child, NewChild: c.New, Model: c.Model, Brief: c.Brief, Tools: c.Tools}
 	}
 }
@@ -124,12 +140,49 @@ func sameChildAgain(t target, next switchTo) target {
 }
 
 // switchTo is the vendor a CLI exited for, its parent, and the switch's
-// options.
+// options. unstarted, with no vendor, says the CLI never started (T6899).
 type switchTo struct {
-	vendor   adapter.Vendor
-	parentID string
-	choice   supervisor.Choice
-	child    string // the child that was on screen, for a resume (T6729)
+	vendor    adapter.Vendor
+	parentID  string
+	choice    supervisor.Choice
+	child     string         // the child that was on screen, for a resume (T6729)
+	from      adapter.Vendor // the vendor that was on screen
+	unstarted *unstarted
+}
+
+// reopen is a launch to go back to: its target, and that child as a switchTo.
+type reopen struct {
+	t    target
+	next switchTo
+}
+
+// unstarted is a CLI that closed before it started.
+type unstarted struct{ vendor adapter.Vendor }
+
+// childStarted says whether the CLI just run left any evidence that it got past
+// its launch dialogs: a counted turn end, its session file changed since the
+// launch, or, for a new Codex child with no id yet, a rollout new since then
+// (another Codex's counts too: the safe side, which just ends aggy as before).
+// A SessionStart hook is no evidence: whether a CLI sends it before its trust
+// dialog is unverified. Quitting before the first message looks the same, and
+// is treated the same: going back is one more quit, while a CLI gone with no way
+// back loses the session on screen.
+func childStarted(ex supervisor.Exit, child store.Child, id string, began time.Time, sawRollout func() bool, files *sessionFiles) bool {
+	if ex.TurnRan {
+		return true
+	}
+	v, err := adapter.ParseVendor(child.Vendor)
+	if err != nil {
+		return true
+	}
+	if id == "" {
+		return sawRollout != nil && sawRollout()
+	}
+	t, err := files.LastChanged(v, id, child.VendorHome, child.Cwd, child.CreatedAt)
+	if err != nil {
+		return false
+	}
+	return !t.Before(began.Truncate(time.Second)) // file times can be whole seconds
 }
 
 // diagQueue is how many records the supervisor's diagnostic queue holds;
@@ -453,7 +506,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		}
 		return code
 	}
-	onHook, stopIndex := startIndex(parentID, v, assigned, cids.set)
+	onHook, stopIndex, index := startIndex(parentID, v, assigned, cids.set)
 	defer stopIndex()
 	// A limit reaches the picker (T6667) without ever blocking the watch.
 	limitHit := make(chan supervisor.LimitHit, 1)
@@ -555,7 +608,24 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	}
 	exited(ex.Code, ex.SwitchTo)
 	if ex.SwitchTo != "" {
-		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next, child: pl.child.ID}
+		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next, child: pl.child.ID, from: v}
+		return ex.Code
+	}
+	// A signal to aggy or a signal that killed the CLI never leads to another
+	// launch; only launch knows whether there is a CLI to go back to.
+	if ex.Signalled || ex.Code >= 128 || !t.fromSwitch() ||
+		childStarted(ex, pl.child, cids.current(), began, index.sawRollout, &sessionFiles{}) {
+		return ex.Code
+	}
+	next.unstarted = &unstarted{vendor: v}
+	if pl.newChild {
+		// It has nothing behind it, and it must not stay the parent's latest.
+		cids.release(ctx)
+		if lease != nil {
+			_ = lease.Release(ctx)
+			lease = nil
+		}
+		_, _ = s.DeleteUnstartedChild(ctx, pl.child.ID)
 	}
 	return ex.Code
 }

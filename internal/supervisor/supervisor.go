@@ -181,6 +181,10 @@ type Exit struct {
 	// SwitchTo.
 	SwitchTo adapter.Vendor
 	Next     Choice
+	// TurnRan: a turn end of the on-screen child was counted. Signalled: aggy
+	// got a signal to pass on, so nothing may be launched after this. They say
+	// whether a CLI that was switched to ever started (T6899).
+	TurnRan, Signalled bool
 }
 
 // SocketEnv is env plus the variables that lead hooks and skills inside

@@ -12,6 +12,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/congdoe/aggy/internal/patch"
+	"github.com/congdoe/aggy/internal/safefs"
 )
 
 // FallbackKey is the Codex config key listing the instruction files Codex
@@ -368,4 +369,33 @@ func skipString(src []byte, i int) (int, error) {
 		}
 	}
 	return 0, errors.New("unclosed string")
+}
+
+// CodexTrustLevel is the trust level Codex's own config records for the folder
+// cwd or the repo root it is in (root may be ""), or "" when it records none.
+// Codex asks in a dialog at launch when none is set, and a level is in the
+// [projects."<path>"] table of config.toml (docs/adapters.md, thread_processor.rs
+// at rust-v0.164.0; source only, and that its TUI's dialog writes the same entry
+// is unverified). Only that table is read. A linked worktree's entry is under
+// its main checkout, which this does not look for, so a caller says "may".
+func CodexTrustLevel(cwd, root string) (string, error) {
+	path, err := CodexConfigPath()
+	if err != nil {
+		return "", err
+	}
+	doc, _, err := readTOML(path)
+	if err != nil {
+		return "", err
+	}
+	projects, _ := doc["projects"].(map[string]any)
+	for _, d := range []string{cwd, root} {
+		if d == "" {
+			continue
+		}
+		entry, _ := projects[safefs.WithoutDataVolume(filepath.Clean(d))].(map[string]any)
+		if level, _ := entry["trust_level"].(string); level != "" {
+			return level, nil
+		}
+	}
+	return "", nil
 }

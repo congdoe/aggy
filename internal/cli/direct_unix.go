@@ -14,7 +14,7 @@ import (
 // sits between the CLI and the terminal. The supervisor socket still
 // listens and the index is still kept through hooks, as under aggy run.
 func runDirect(c adapter.Command, runDir, parentID string, v adapter.Vendor, assigned string, onID func(string), log func(diag.Rec), started func(pid int)) (int, error) {
-	onHook, stopIndex := startIndex(parentID, v, assigned, onID)
+	onHook, stopIndex, _ := startIndex(parentID, v, assigned, onID)
 	defer stopIndex()
 	onHook, stopLimits := startLimits(parentID, v, onHook, nil)
 	defer stopLimits()

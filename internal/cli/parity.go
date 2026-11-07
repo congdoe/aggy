@@ -283,6 +283,17 @@ func parityFindings(cwd string, vendors []checkup.Vendor) []checkup.Finding {
 			for _, p := range others {
 				add(codePolicyFragile, checkup.LevelWarn, v, p, "Codex loads this rules file with aggy's, and a parse error in it makes Codex drop every rules file, aggy's safety policy included", nil)
 			}
+			if cwd != "" {
+				warnTrust := func(msg string, err error) { add(codeFolderTrust, checkup.LevelWarn, v, "", msg, err) }
+				switch level, err := parity.CodexTrustLevel(cwd, root); {
+				case err != nil:
+					warnTrust("cannot tell whether Codex trusts this folder", err)
+				case level == "":
+					warnTrust("Codex may ask whether to trust this folder when it opens: its config records no answer. If you decline during a switch, aggy goes back to the CLI before", nil)
+				case level != "trusted":
+					warnTrust("Codex records this folder as not trusted, so it loads less of the project's config", nil)
+				}
+			}
 		}
 		why, err := policyDelivery(v, vr.Capabilities)
 		switch why {
