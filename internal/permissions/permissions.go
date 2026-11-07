@@ -36,11 +36,13 @@ var Kinds = []Kind{Deny, Ask, Allow}
 type Origin string
 
 const (
-	FromClaudeUser  Origin = "claude-user"  // ~/.claude/settings.json
-	FromClaudeLocal Origin = "claude-local" // <repo>/.claude/settings.local.json
-	FromAggy        Origin = "aggy"         // permissions.json, every repo
-	FromAggyRepo    Origin = "aggy-repo"    // permissions.json, this repo
-	FromConfig      Origin = "aggy-config"  // config.toml's [permissions] mode
+	FromClaudeUser  Origin = "claude-user"    // ~/.claude/settings.json
+	FromClaudeLocal Origin = "claude-local"   // <repo>/.claude/settings.local.json
+	FromAggy        Origin = "aggy"           // permissions.json, every repo
+	FromAggyRepo    Origin = "aggy-repo"      // permissions.json, this repo
+	FromConfig      Origin = "aggy-config"    // config.toml's [permissions] mode
+	FromGrokGrant   Origin = "grok-approval"  // Grok's sessions/<scope>/permission.toml
+	FromCodexGrant  Origin = "codex-approval" // Codex's rules/default.rules
 )
 
 // Rule is one rule and its source.
@@ -93,6 +95,10 @@ type Input struct {
 	Tracked func(path string) (bool, error)
 	// Trusted says the person trusted this repo (aggy trust).
 	Trusted bool
+	// GrokHome and CodexHome hold those CLIs' approvals; empty skips them.
+	GrokHome, CodexHome string
+	// Worktree is this work tree's real path: Grok keeps grants per worktree.
+	Worktree string
 }
 
 // Object is Claude's permissions object.
@@ -143,6 +149,8 @@ func Load(in Input) Set {
 		s.loadLocal(in)
 	}
 	s.loadAggy(in)
+	s.loadGrok(in)
+	s.loadCodex(in)
 	return s
 }
 

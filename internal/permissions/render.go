@@ -18,14 +18,16 @@ type Rendered struct {
 	Skipped []Skip
 }
 
-// readsItself says the CLI loads rules from that origin on its own. Grok reads
+// ReadsItself says the CLI loads rules from that origin on its own. Grok reads
 // ~/.claude/settings.json and a project's settings.local.json
 // (user-guide/22-permissions-and-safety.md, grok-build 2bdd1d6a), so passing
 // them again changes nothing. aggy cannot filter what a CLI reads itself.
-func readsItself(v adapter.Vendor, o Origin) bool {
+func ReadsItself(v adapter.Vendor, o Origin) bool {
 	switch v {
-	case adapter.Claude, adapter.Grok:
+	case adapter.Claude:
 		return o == FromClaudeUser || o == FromClaudeLocal
+	case adapter.Grok:
+		return o == FromClaudeUser || o == FromClaudeLocal || o == FromGrokGrant
 	}
 	return false
 }
@@ -50,7 +52,7 @@ func (s Set) Render(v adapter.Vendor) Rendered {
 	}
 	var mine []Rule
 	for _, rule := range s.Rules {
-		if !readsItself(v, rule.Origin) {
+		if !ReadsItself(v, rule.Origin) {
 			mine = append(mine, rule)
 		}
 	}

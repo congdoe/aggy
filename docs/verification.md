@@ -1513,6 +1513,15 @@ Real OpenCode 2.2.5 against a loopback fake model in a temp `HOME`, with no cred
 
 Read on the owner's machine, by key and count only, from 39 session files of the last 30 days, at the installed Claude Code. Not a documented format. Shell calls appear as `tool_use` blocks named `Bash` with `input.command`; session lines carry `permissionMode` and `cwd`; `tool_result` blocks carry `tool_use_id` and `is_error` when a call failed. A full scan of 730 MB in Python took 2.7 seconds. `is_error` does not separate a denied command from a failed one.
 
+## Approvals across CLIs (T6914)
+
+Source only, read 2026-11-07. No real CLI was run for this task, and none of this has been checked live.
+
+- **Grok.** Grants are in `sessions/<encoded root>/permission.toml` under its home (`user-guide/22-permissions-and-safety.md`, "Persistence Is Per Project", grok-build `2bdd1d6a`). The folder is the repo root, or the launch folder outside a repo, and each worktree has its own (`permission_scope_root`, `xai-grok-workspace/src/permission/state.rs`). The name is the root URL-encoded by the `urlencoding` crate, or a blake3 form past 255 bytes (`encode_cwd_dirname`, `xai-grok-config/src/paths.rs`); aggy computes only the first and names a path too long. Fields, from `PermissionState` in `state.rs`: `allow_bash_execute`, `allowed_bash_commands` (literal prefixes), `disallowed_bash_commands`, `allowed_bash_globs`, `allowed_web_fetch_domains`, `disallowed_web_fetch_domains`, `allowed_mcp_tools`, `allowed_mcp_servers`, `disallowed_mcp_tools`. The guide says dangerous commands never honor a remembered prefix, and aggy does not hold that list, so an approved command carries as the exact command. How Grok's MCP names map to Claude's is unverified, so those are named and not carried. A `permission_<client>.toml` variant is not read. A live check should make one grant of each kind, read the file, and confirm the folder name and fields.
+- **Codex.** Approvals append to `rules/default.rules` (`DEFAULT_POLICY_FILE`, `core/src/exec_policy.rs` at `rust-v0.164.0`) as `prefix_rule(pattern=[...], decision="allow")`, its tokens JSON strings (`blocking_append_allow_prefix_rule`, `execpolicy/src/amend.rs`). aggy parses that one-line shape as text and never runs it; a rule written by hand in another shape is named. A live check should approve a command with "don't ask again" and read the line back.
+- **Claude.** "Yes, and don't ask again" saves to `.claude/settings.local.json` at the git repository root, "resolved through worktrees to the main checkout" (`permissions.md`, read 2026-11-07).
+- **OpenCode.** Always allow rows are in `opencode.db`, beside its sign-ins, which aggy never opens.
+
 ## Still open
 
 1. Codex limit event, captured live from an exhausted account: the

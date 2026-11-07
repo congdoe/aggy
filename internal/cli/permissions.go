@@ -64,9 +64,17 @@ func permissionInput(dir string) permissions.Input {
 	var in permissions.Input
 	in.ClaudeDir, _ = transcript.Home(adapter.Claude, os.Getenv)
 	in.AggyFile, _ = permissionsFile()
+	in.GrokHome, _ = transcript.Home(adapter.Grok, os.Getenv)
+	in.CodexHome, _ = transcript.Home(adapter.Codex, os.Getenv)
 	if repo, err := toolRepo(dir, false); err == nil && repo.main != "" {
 		in.Main, in.RepoKey = repo.main, repo.key
 		in.Trusted = repoTrusted(repo.key)
+		if real, err := safefs.RealPath(repo.root); err == nil {
+			in.Worktree = real
+		}
+	} else if real, err := safefs.RealPath(dir); err == nil {
+		// Outside a repo Grok scopes grants to the launch folder.
+		in.Worktree = real
 	}
 	return in
 }
@@ -116,7 +124,7 @@ func addPermissions(v adapter.Vendor, caps []string, s permissions.Set, req *ada
 	skipped := len(r.Skipped)
 	for _, k := range s.Skipped {
 		// What a CLI reads itself is not aggy's to pass on, so it is no note.
-		if k.Origin != permissions.FromClaudeUser && k.Origin != permissions.FromClaudeLocal {
+		if !permissions.ReadsItself(v, k.Origin) {
 			skipped++
 		}
 	}
