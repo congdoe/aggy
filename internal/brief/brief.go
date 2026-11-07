@@ -216,7 +216,7 @@ func build(in Input, turns []string, removed []int, dropped int) string {
 	// ran takes knowing that no session's id went unrecorded.
 	switch {
 	case in.Since.IsZero() && in.From == "" && len(in.Unread) > 0:
-		fmt.Fprintf(&b, "# Handoff brief\n\nThere may be earlier work here: a %s session ran in this session's place, and aggy cannot read it. ", in.Unread[0])
+		fmt.Fprintf(&b, "# Handoff brief\n\nThere may be earlier work here: a %s session may have run, and aggy cannot read it. ", in.Unread[0])
 	case in.Since.IsZero() && in.From == "":
 		b.WriteString("# Handoff brief\n\nYou are starting on this work; no other CLI has run in this session. ")
 	case in.Since.IsZero():

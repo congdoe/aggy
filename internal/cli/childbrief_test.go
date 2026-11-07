@@ -227,7 +227,7 @@ func TestChildBriefClaims(t *testing.T) {
 	}{
 		{"a Codex turn whose id was never recorded",
 			[]kid{{id: "c1", vendor: "codex"}},
-			[]string{"a codex session ran", "no record of the codex session's id"},
+			[]string{"a codex session may have run", "no record of the codex session's id"},
 			[]string{"no other CLI has run", "There is no earlier session"}},
 		{"a child that never started hides no turns",
 			[]kid{{id: "c1", vendor: "claude", session: claudeID, turns: true}, {id: "c2", vendor: "grok", session: grokID}},
