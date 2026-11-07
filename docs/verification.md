@@ -1215,7 +1215,9 @@ Not established:
 
 ## OpenCode 2.2.5 as an on-screen harness (2026-11-06, spike T6930)
 
-The owner approved these runs for this spike only, on macOS, with OpenCode 2.2.5 (MIT, source at tag `v2.2.5`, commit `9bbb8ce`; paths below are under `packages/`). Every command used `--standalone` or a test server of its own, and no vendor credential file was opened. In the first round none used `--auto` and 17 runs tried to reach a model on the owner's sign-ins, 3 of which reached none (a dead port and two bad model names). A second round, below, tested `--auto`.
+**Who ran these.** Agents ran every check here, not the owner. On 2026-11-06 the owner approved agents running OpenCode live for this spike only, which is an exception to the rule in `CLAUDE.md` that agents never run real vendor CLIs. It covers OpenCode alone: the real Claude, Codex, and Grok CLIs were not run.
+
+Runs were on macOS, with OpenCode 2.2.5 (MIT, source at tag `v2.2.5`, commit `9bbb8ce`; paths below are under `packages/`). Every command used `--standalone` or a test server of its own, and no vendor credential file was opened. In the first round none used `--auto` and 17 runs tried to reach a model on the owner's sign-ins, 3 of which reached none (a dead port and two bad model names). A second round, below, tested `--auto`. A third round, after review, used no real model.
 
 Each fact is marked by how it was established:
 
@@ -1223,7 +1225,11 @@ Each fact is marked by how it was established:
 - **Fake-model**: the real OpenCode against a loopback test server, in a temporary `HOME` with no credentials and no key. It shows what OpenCode does, not what a vendor does.
 - **Source**: read at the tag, not run.
 
-**Exception to the temp-folder rule.** Run 17 (`opencode mini`) was meant for a temporary folder, but mini takes its location from `$PWD`, which the test script had not updated, so it ran in an aggy checkout. The model ran one harmless `echo` with no prompt, and no file changed. It left a session row and a snapshot folder in OpenCode's data directory, kept for the owner to decide on.
+**Exception to the temp-folder rule.** Run 17 (`opencode mini`, xAI, project config on) was meant for a temporary folder, but mini takes its location from `$PWD`, which the test script had not updated, so it ran in an aggy checkout.
+
+- **Evidence that no file changed.** `git status --short` was empty straight after, and the session export shows one tool call, `echo -n "ready"`. That is all the evidence: `git status` does not cover ignored files, and no file listing was taken before the run.
+- **What was sent to the model.** The prompt "Reply with exactly the word ready", then the `echo` result. The request itself was not captured. By source and the fake-model checks below, it also held OpenCode's own instructions, the tool definitions, skill descriptions, and an environment block with the date, the checkout's full path, whether it is a git repo, and the platform (`core/src/instructions/builtins.ts`). The export shows no file read. The checkout has no `AGENTS.md`, and `CLAUDE.md` is not read.
+- **What it left.** A session row and a snapshot folder in OpenCode's data directory, kept for the owner to decide on. The folder's creation time matches the run; only its name and times were looked at. **It may hold checkout content:** snapshots capture the working tree into a git store there, with ignored files left out and untracked files up to 2 MiB (source, `core/src/snapshot.ts`).
 
 ### Repo config and safety
 
@@ -1234,10 +1240,14 @@ Each fact is marked by how it was established:
 | Repo local MCP server | Live (`debug agents`) | Its command ran with no prompt |
 | `{file:../outside}` and `{env:NAME}` in repo config | Live (`debug config`) | Both substituted |
 | Repo `providers.xai.settings.baseURL` | Live (signed-in xAI, a port with no listener) | `provider.transport`, exit 1: the request went to the repo's address. Whether the sign-in header goes with it was not checked |
-| `OPENCODE_DISABLE_PROJECT_CONFIG=1` | Live, fake-model | Repo config, plugin, MCP server, agents, base URL, and repo skills all have no effect; `AGENTS.md` is dropped too (fake-model) |
+| `OPENCODE_DISABLE_PROJECT_CONFIG=1` | Live, fake-model | Repo config, **server** plugin, MCP server, agents, base URL, and repo skills all have no effect; `AGENTS.md` is dropped too (fake-model). **A repo's `tui.js` is not covered:** it still runs on the full screen (third round, below) |
+| `OPENCODE_CONFIG_PROJECT_DISABLE` | Source (`cli/src/server-process.ts`), fake-model | Beats `OPENCODE_DISABLE_PROJECT_CONFIG`: a stale `=0` turned project config back on while the other was `1` |
 | Load order | Source (`core/src/config.ts`) | Managed policies, integrations, global, `OPENCODE_CONFIG`, repo files, `.opencode`, `OPENCODE_CONFIG_CONTENT`, managed settings |
 | `policies` in `OPENCODE_CONFIG` against a repo's allow | Live | The per-launch deny holds; a repo's agent with allow-all is still denied; the repo's plugin and MCP server did not run |
-| `policies` in `OPENCODE_CONFIG_CONTENT` against a repo's allow | Live (`models`) | The repo wins: policies take the earliest loaded. The user's global config outranks `OPENCODE_CONFIG` the same way (source) |
+| `policies` in `OPENCODE_CONFIG_CONTENT` against a repo's allow | Live (`models`) | The repo wins: policies take the earliest loaded |
+| Global config against `OPENCODE_CONFIG` | Source, fake-model | **The global layer beats aggy.** A global `policies` allow on `shell:*` cancelled aggy's `shell:rm *` deny and the file was removed. A global `plugins` folder loads, both server and TUI entries |
+| `policies` allow | Fake-model | **Policies only ever deny.** A `shell:*` allow with `permissions` ask-all was still rejected, so allows have to live in `permissions`; a policy allow can only cancel a later policy's deny |
+| Repo `permissions` allow-all, launch `permissions` ask-all | Fake-model | Once project config is on, as it would be after a user trusts a repo, **the repo's allow-all wins** and the command ran. With project config off it was rejected |
 | `permissions` in `OPENCODE_CONFIG_CONTENT` against a repo agent | Live (`debug agents`) | The repo agent keeps its allow-all rule |
 
 ### Permissions
@@ -1248,6 +1258,7 @@ Each fact is marked by how it was established:
 | `permissions` deny-all | Live (xAI) | No canary reached, exit 0. Tools are hidden from the model, and it made 170 failed `skill` calls in 127 s before answering |
 | `permissions` ask-all | Live (xAI) | Every call rejected, exit 0, one stderr line per request |
 | `tool.use` deny on `read`, `edit`, `shell`, `external_directory` | Live (xAI) | All blocked, error type `permission.rejected`, but `grep` still returned an inside file's lines; `glob` and `execute` also ran |
+| `execute` | Source (`core/src/tool.ts`, `core/src/codemode/tool.ts`), fake-model | **No permission assert of its own:** it ran under ask-all and under a `tool.use` `execute:*` policy deny. Only a `permissions` deny on `execute` removed it. Its inner calls do get `execute.before` (third round, below) |
 | Path deny on `read` and `external_directory` | Live (xAI) | The read tool was blocked; `cat`, `cd` then `cat`, and `python3` all read the file. OpenCode has no OS sandbox (source search) |
 | `--auto` | Source (`core/src/permission.ts`, `cli/src/run/noninteractive.ts`, `web/src/content/docs/permissions.mdx`) | Answers `ask` with once; denies still hold. `--yolo` and `--dangerously-skip-permissions` are hidden aliases. Run in the second round, below |
 | "Always allow" | Fake-model, source | Saved in the `permission` table of `opencode.db` per project, for example `shell` `echo *`; a later session used it. Configured denies are checked first (source). The docs page saying "current session" is out of date |
@@ -1258,6 +1269,7 @@ Each fact is marked by how it was established:
 |---|---|---|
 | First screen, no sign-in, new folder | Live | No dialog; first output under 0.5 s |
 | Alternate screen | Live | `opencode` uses it, with mouse reporting; `opencode mini` uses neither |
+| Changing model in `opencode mini` | Owner's try (2026-11-06), fake-model, source (`tui/src/mini/footer.command.tsx`) | The owner found no `/model` and set a model only at launch with `-m`. Rechecked: `/model` gives "No matching items". **But the Ctrl-P menu has "Switch model"**, and after choosing a second model the next turn reached the fake server on it. So mini lacks the slash command, not the ability |
 | `/exit` with nothing open | Live | Exit 0 |
 | `/exit` then Enter over a permission dialog | Fake-model | The letters were dropped and **Enter chose Allow once: the command ran** |
 | Ctrl-C over a permission dialog | Fake-model | Declined the call; the app stayed open |
@@ -1296,7 +1308,7 @@ Format, from source (`schema/src/mcp.ts`, `schema/src/config/mcp.ts`). The key i
 
 ### OpenAI sign-in methods
 
-Source only (`core/src/plugin/provider/chatgpt.ts`, `core/src/plugin/provider/openai.ts`). No method other than the owner's existing one was run, and the record does not say which that is.
+Source only (`core/src/plugin/provider/chatgpt.ts`, `core/src/plugin/provider/openai.ts`). No method other than the owner's existing one was run. Which one the owner used is a source inference, not a check: `openai/gpt-5.5` is listed on the owner's sign-in, and the legacy methods disable it, which implies Sign in with ChatGPT.
 
 | | Sign in with ChatGPT | Codex browser and Codex device code, both labelled legacy |
 |---|---|---|
@@ -1319,7 +1331,8 @@ Source only (`core/src/plugin/provider/chatgpt.ts`, `core/src/plugin/provider/op
 | Check | Evidence | Result |
 |---|---|---|
 | Turn end | Fake-model | `session.execution.succeeded`, with `sessionID`, on `/api/event` (401 without password) and to a plugin. `.failed` and `.interrupted` are in `schema/src/session-event.ts` (source) |
-| Plugin from per-launch config, project config off | Fake-model | Loaded; the repo's did not |
+| Plugin from per-launch config, project config off | Fake-model | Loaded; the repo's server plugin did not |
+| Plugin given as a file path | Fake-model | **Silently never loads**: exit 0, no error, with or without `file://`. Only the directory form, holding a `package.json`, worked |
 | Plugin slash command | Fake-model | Ran from the screen with no model request |
 | `opencode api` | Source (`cli/src/commands/handlers/api.ts`) | Buffers the response, so it cannot stream events |
 | Limit type | Fake-model, source (`core/src/session/to-session-error.ts`, `core/src/model-retry.ts`) | `provider.chatgpt-limit` from the ChatGPT code; `provider.rate-limit` from a plain 429, in `session.retry.scheduled`, up to 10 retries (about 84 s). No real limit was hit, and no xAI-specific type exists |
@@ -1355,7 +1368,7 @@ The owner lifted the `--auto` ban for this round only. It added 8 real runs, 25 
 | `OPENCODE_CONFIG_CONTENT` `model` with `OPENCODE_CONFIG` policies and `--auto` | Live (OpenAI), fake-model | Works together, headless and on screen |
 | That `model` on a provider the policy denies | Fake-model | **Falls to another allowed model, exit 0, with no error**, so `/switch` must check the model it got |
 
-**Text-matching denies on shell.** Fake-model, under `--auto`, 26 command shapes. The rule's text is matched against each simple command, not the whole line (source, `core/src/shell/parse.ts`), so a pipe is never part of what it sees.
+**Text-matching denies on shell.** All 26 command shapes are fake-model, under `--auto`; none ran on a vendor. The rule's text is matched against each simple command, not the whole line (source, `core/src/shell/parse.ts`), so a pipe is never part of what it sees.
 
 | Rule | Blocked | Ran |
 |---|---|---|
@@ -1365,11 +1378,11 @@ The owner lifted the `--auto` ban for this round only. It added 8 real runs, 25 
 
 Under all three rules, one `python3 -c` shape was refused by the shell scanner, before any rule, so it is not a deny: other `python3 -c` commands ran in the first round. A script that already exists under another name was not tried; the script-file case was only caught by `*curl*` because the command that wrote it held the word.
 
-**Shell read of a planted decoy database, by path.** Fake-model. Denies on `read`, `grep`, and `external_directory`, plus `shell:*decoy*` and `shell:*opencode.db*`.
+**Shell read of a planted decoy database, by path.** The list below is fake-model. Denies on `read`, `grep`, and `external_directory`, plus `shell:*decoy*` and `shell:*opencode.db*`.
 
 - Blocked: read tool, grep tool, `cat <path>`, `cd <path> && cat`, a command holding the literal path.
 - **Read the decoy:** `cat ../dec*/open*.db`, `(cd ../dec*; cat open*)`, a variable-built path, `find … -exec cat`, a script, and `cp` then `cat`.
-- Live on both plans, with only a `read:` deny, `cat` read it.
+- The one live case, on both plans (xAI, OpenAI): with only a `read:` deny, `cat` read it. The file was a planted decoy, not a real database.
 
 So a deny cannot protect a file from the shell. OpenCode has no OS sandbox.
 
@@ -1379,15 +1392,16 @@ So a deny cannot protect a file from the shell. OpenCode has no OS sandbox.
 |---|---|---|
 | Stand-in refuses | Live (xAI), fake-model | The tool did not run, under `--auto`; exit 0; the model saw the stand-in's text as the tool's error, and quoted it |
 | Stand-in crashes, hangs past its limit, or is missing | Fake-model | All refused: the plugin's throw fails closed (source: `plugin/src/promise/adapter.ts`) |
-| Other tools | Fake-model | `write` was refused the same way. `execute`'s inner calls and subagents were not tried |
+| Other tools | Fake-model | `write` was refused the same way. Subagents and `execute`'s inner calls: third round, below |
 | Repo plugin, or repo config removing the guard, with project config off | Fake-model | No effect; the guard ran and the repo's plugin did not |
 | The same with project config on | Fake-model | **The repo disabled the guard** and the command ran |
 | **Guard plugin has a syntax error, or its folder is missing** | Fake-model | **Fails open: no error, exit 0, and the command ran**, so aggy must confirm the guard loaded before trusting a session |
 
-**Tampering from the model's own shell.** Fake-model, own server. The model runs as the same user.
+**Tampering from the model's own shell.** All fake-model, own server. The model runs as the same user.
 
 - Overwriting the `OPENCODE_CONFIG` file **took effect in 3 s and removed a deny**: config reloads when the file changes.
-- Overwriting the plugin file did not change the running guard after 3 s. A later launch would load the new file (not run).
+- Overwriting the plugin file **reloads it and removes the guard**. One run still refused after 3 s, a later one no longer did at 3 s, and the review saw it within 6 s, so the timing varies and there is no safe window.
+- Removing the plugin from the `OPENCODE_CONFIG` file **unloaded the guard**, by 3 s.
 
 **Key file.** Fake-model, dummy values, `{file:}` in per-launch config, own server. The dummy key did reach the request header.
 
@@ -1406,10 +1420,83 @@ So the value is read at config load, per folder. Deleting the file after load wo
 |---|---|---|
 | Tool shell's environment, `ps eww`, and files under `HOME` | Fake-model | The key value was in none of them |
 | `/api/config`, `/api/provider`, `/api/model` | Fake-model | **All return the key to anyone with the server password** |
-| `OPENCODE_PASSWORD` in tool shells | Fake-model | **Set under `opencode serve`**, and the model's shell used it to fetch the key from `/api/config`. Absent under `--standalone` |
+| `OPENCODE_PASSWORD` in tool shells | Fake-model | **Set under `opencode serve`**, and the model's shell used it to fetch the key from `/api/config`. Absent from the tool's environment under `--standalone`, but see the next row |
+| `--standalone` child's password | Fake-model | **Visible to the same user**: `ps -E` on the child shows it (`ps -Eaxww` lists every process), and with `lsof` for the port, `/api/config` returned the dummy key. So `--standalone` does not keep the key from a same-user shell |
 | A plugin deleting it in `shell.create.before` | Fake-model | Removed from the tool shell, but `ps eww` still shows the password to the same user |
 
-Not established: a real plan limit on either plan; which sign-in method the owner used for OpenAI; whether a provider key from `{file:}` reaches a real vendor's request header (the fake model received it); SIGTERM and SIGHUP behaviour; the service path.
+### Follow-up after review (third round)
+
+No real model and no `--auto` in the checks below: a fake model, a temporary `HOME` and XDG dirs, no credentials, and a dummy key where one is named. Every launch first asserted that its working folder and `PWD` were inside the temporary folder.
+
+**1. A repo's `.opencode/plugins/<dir>/tui.js`, with project config off.** Fake-model. It was marked by a file written from the module's top level, so this shows import only: its `tui()` never fired, even in the baseline.
+
+| Launch | `tui.js` ran |
+|---|---|
+| `opencode --standalone`, repo as working folder | **Yes** |
+| Plus `OPENCODE_CLI_CONFIG_CONTENT` `plugins` `-demo.tui`, or `-*` | **Yes** |
+| Plus `OPENCODE_CONFIG_DIR` elsewhere | **Yes** |
+| Plus `plugin.use` deny and `-` ids in `OPENCODE_CONFIG` | **Yes** |
+| Working folder in a repo subfolder | **Yes** |
+| Empty working folder, repo as the directory argument (it changes directory first) | **Yes** |
+| `opencode mini --standalone`, with and without a turn | No |
+| Empty working folder, no session | No |
+| Empty working folder, `--session <id>` located at the repo | No, and the turn's shell ran in the repo |
+
+So no variable or config key stops it on the full screen (source: `tui/src/app.tsx`, `tui/src/plugin/discovery.ts` have no project-config check). Only the launch shape does. That shape has a cost: new sessions default to the launch folder (source, `tui/src/config/new-session-location.ts`), and `session.new_location: inherit` may fix that (not run).
+
+**2. `OPENCODE_CONFIG_DIR` pointed at an aggy folder.**
+
+| Check | Evidence | Result |
+|---|---|---|
+| Global policies and plugins | Fake-model | Removed: aggy's deny held, and neither the server nor the TUI plugin ran |
+| Sign-in | Fake-model (dummy credential) | Survives: `auth list` shows it, and `opencode.db` stays in the data directory |
+| What it does not remove | Source (`core/src/config/discovery.ts`) | The system directory, macOS managed preferences, `~/.claude`, `~/.agents` |
+| What it loses | Source | The user's global config and `cli.json` |
+| Read-only folder and files | Fake-model | OpenCode launches. A plain write from the model's shell fails, but **`chmod` then write succeeded**, including rewriting a deny out of the `OPENCODE_CONFIG` file |
+| `OPENCODE_DISABLE_FILEWATCHER=1` | Fake-model | The deny held after tampering in the same folder, but **a new folder on that server read the tampered file**. Aggy would have to rewrite the file at each launch |
+
+**3. Scrubbing `OPENCODE_*` at launch.** Fake-model for precedence. It closes the stale-variable hole only if `OPENCODE_CONFIG_PROJECT_DISABLE` ends up removed or `1`. A repo's `.env` was ignored (also source: `autoloadDotenv: false` in `cli/script/build.ts`).
+
+Variables that change config, plugins, permissions, or what runs (source): `OPENCODE_CONFIG`, `_CONFIG_CONTENT`, `_CONFIG_DIR`, `_CONFIG_PROJECT_DISABLE`, `_DISABLE_PROJECT_CONFIG`, `_DISABLE_CLAUDE_CODE`, `_DISABLE_CLAUDE_CODE_SKILLS`, `_CLI_CONFIG_CONTENT` (autoaccept, TUI plugins), `_TEST_HOME`, `_DB`, `_DISABLE_CHANNEL_DB`, `_FILEWATCHER_DISABLE`, `_DISABLE_FILEWATCHER`, `_MODELS_URL`, `_MODELS_PATH`, `_CLAUDE_PATH`, `_PTY_BIN`, `_NODE_PTY_PATH`, `_PARCEL_WATCHER_PATH`, `_PASSWORD`, `_SERVER_PASSWORD`; also `HOME` and `XDG_*`.
+
+**4. Exact rules in `permissions`.** Fake-model, no `--auto`, so a rejection means it would prompt. Source for matching: `core/src/util/wildcard.ts`.
+
+| Rule | Prompts | Runs |
+|---|---|---|
+| `git status`, `git diff`, `ls` (no `*`) | `git status -s`, `git  status`, `ls -la`, `ls > x`, `ls>x`, `ls 2> x`, `git status > x`, `git diff --output=x`, `git diff --no-index a b`, `git diff --ext-diff`, `FOO=1 git status`, `git status; touch x`, `git status \| tee x`, `$()`, backticks, `<()`, `"git" status`, `command git status` | The exact commands; `(git status)`, `{ git status; }`, `git status #c`, `git status &`; **`cd <anywhere> && git status`, including outside the project** |
+| `git diff *`, `ls *`, `git status *` | `ls>x` | `git diff --output=x` and `ls > x` **ran and wrote files**; `git status > x` too; `git diff --no-index a b` |
+
+Scripts named in a repo's `.git/config`, all under exact rules:
+
+| Setting | Command | Script ran | What stopped it |
+|---|---|---|---|
+| `core.fsmonitor` | `git status`, also after `cd` into a nested repo | **Yes** | `git -c core.fsmonitor=false status`, or launch env `GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0=core.fsmonitor`, `GIT_CONFIG_VALUE_0=false`; a model's `GIT_CONFIG_COUNT=0` prefix then prompts |
+| `diff.external` | `git diff` | **Yes** | Launch env `GIT_EXTERNAL_DIFF=true`, or `diff.external` emptied the same way; rule `git diff --no-ext-diff --no-textconv` |
+| `diff.<driver>.command` with `.gitattributes` | `git diff` | **Yes** | Rule `git diff --no-ext-diff --no-textconv` |
+| `filter.<name>.clean` with `.gitattributes` | `git diff` | **Yes** (`git status` did not, in this one test) | Not found; that rule was not tried against it |
+| `core.pager` | `git log`, no terminal | No | |
+| `post-index-change` hook | `git status` | No, in this one test | |
+
+**5. The `execute.before` guard.** Fake-model, allow-all rules, so only the guard decides. It sees the raw tool input only, so it can't reliably see redirects or flags. A guard that refuses text naming a protected path:
+
+- Caught: a literal `.git/config` in redirect, absolute path, or `tee`; the write tool, relative and absolute; a literal plugin-folder path, including with `cd`; a literal config file name; `git config core.fsmonitor`.
+- **Changed the target anyway:** `cd .git && echo x > config`, `sed -i` after `cd`, variable, quote, and glob splits, `base64 \| sh`, a script file, `git config core.$k`, and `cd` plus a glob on the config file.
+- `python3 -c` was refused by the shell scanner (`dynamic-execution`), not the guard.
+- **Subagents:** seen, both the `subagent` call and the shell call inside it.
+- **`execute`:** inner calls are seen with assembled input (`'GUARD'+'ME'` arrived joined) and a refusal holds. Shell, read, and write are not in the code-mode catalog, which here held `opencode` tools only, so `execute` could not reach them.
+
+**6. "Always allow".** Fake-model; no setting to turn off or limit saving was found in the config schema (source search).
+
+| Check | Result |
+|---|---|
+| Saved rows | `python3 x.py` saved `python3 *`, `echo hi > r.txt` saved `echo *`, `git push nowhere main` saved `git push *` |
+| Under an `ask` rule | Saved rows beat it: `python3 y.py` ran, and saved `echo *` let **`echo x >> .git/config` run with no prompt** |
+| Config deny, or policy deny, over a saved row | The deny held |
+| A plugin's `permission` `evaluate` hook setting allow back to ask | Held. It would fail open if the plugin breaks, as the guard does |
+| Other project | Not covered by the row |
+| Deleting the rows (temp database only) | Back to asking. `/api/permission/saved` also has a DELETE (source, not run) |
+
+Not established: a real plan limit on either plan; which sign-in method the owner used for OpenAI, beyond the source inference above; whether a provider key from `{file:}` reaches a real vendor's request header (the fake model received it); SIGTERM and SIGHUP behaviour; the service path.
 
 ## Claude Code session file fields (2026-11-06)
 
