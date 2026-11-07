@@ -313,6 +313,13 @@ type SelfTestEvidence struct {
 	// Tools names tools the record shows the child using that the self-test
 	// kind's lockdown should have left it without.
 	Tools []string
+	// Unreadable says a record exists but could not be read whole, such as
+	// one over its cap, so it shows nothing either way: not a pass.
+	Unreadable bool
+	// NoRecord says no record was found. Where the record's place is source
+	// only, that may mean only that the CLI moved it, so the reply decides;
+	// the diagnostic log says so.
+	NoRecord bool
 }
 
 // SelfTestWitness is implemented by an adapter whose CLI keeps a record of a

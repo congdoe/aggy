@@ -1559,6 +1559,8 @@ A maintainer's live check should settle, on the current CLIs:
 2. `claude --help` and `grok --help` list every flag in `LockdownCaps`.
 3. The self-test prompt under Claude's review flags: does it refuse `../canary.txt` and reply `NO ACCESS`? Until this is known, a new Claude version may be passed over on every update. Then again with a `Read` allow rule, or `permissions.additionalDirectories`, for that dir in a test config's `settings.json`: does the child read it?
 4. Under the same prompt on Codex and Grok: the reply, the item types in Codex's stream, and whether Grok's `chat_history.jsonl` is there with `tool_calls` as expected.
+5. Whether a Codex `file_change` item under the read-only lockdown ends with `status` `failed`, as T6951 assumes from `PatchApplyStatus` ([exec_events.rs#L178](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/exec/src/exec_events.rs#L178)). If a refused patch reports `completed`, every new Codex fails its self-test, for good on that version.
+6. Which folder under `sessions/` holds Grok's history when the cwd is a macOS temp dir, and how a refused read looks in its `tool_result` lines.
 
 ## Grok reviews under `$HOME` (T6922)
 

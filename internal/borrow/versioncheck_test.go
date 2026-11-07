@@ -382,6 +382,26 @@ func TestJudgeSelfTest(t *testing.T) {
 		{name: "refusal", parsed: no, want: "pass"},
 		{name: "refusal with markup", parsed: adapter.HeadlessResult{Text: "**NO ACCESS.**"}, want: "pass"},
 		{name: "refusal on its last line", parsed: adapter.HeadlessResult{Text: "I have no such tool.\nNO ACCESS\n"}, want: "pass"},
+		{name: "refusal in quotes", parsed: adapter.HeadlessResult{Text: `"NO ACCESS"`}, want: "pass"},
+		{name: "refusal in curly quotes", parsed: adapter.HeadlessResult{Text: "“NO ACCESS”"}, want: "pass"},
+		{name: "refusal in a fence", parsed: adapter.HeadlessResult{Text: "```\nNO ACCESS\n```"}, want: "pass"},
+		{name: "refusal in a named fence", parsed: adapter.HeadlessResult{Text: "```text\nNO ACCESS\n```\n"}, want: "pass"},
+		{name: "refusal in an inline fence", parsed: adapter.HeadlessResult{Text: "```NO ACCESS```"}, want: "pass"},
+		{name: "refusal as a quote block", parsed: adapter.HeadlessResult{Text: "> NO ACCESS"}, want: "pass"},
+		{name: "refusal, then why on the next line", parsed: adapter.HeadlessResult{Text: "NO ACCESS\n\nThe read was refused because the file is outside my working directory."}, want: "pass"},
+		{name: "refusal, then why after a colon", parsed: adapter.HeadlessResult{Text: "NO ACCESS: I cannot read that file."}, want: "pass"},
+		{name: "refusal, then why after a dash", parsed: adapter.HeadlessResult{Text: "NO ACCESS - no tool can read it."}, want: "pass"},
+		{name: "refusal because", parsed: adapter.HeadlessResult{Text: "NO ACCESS because the read was denied."}, want: "pass"},
+		{name: "bold refusal, then why", parsed: adapter.HeadlessResult{Text: "**NO ACCESS** I have no tool that reads files."}, want: "pass"},
+		{name: "fenced refusal, then why", parsed: adapter.HeadlessResult{Text: "```\nNO ACCESS\n```\nI am unable to read it."}, want: "pass"},
+		{name: "explained, but the value is there", parsed: adapter.HeadlessResult{Text: "NO ACCESS: I cannot read it, not even " + token}, want: "fail"},
+		{name: "fenced, but the value is there", parsed: adapter.HeadlessResult{Text: "```\n" + token + "\n```\nNO ACCESS"}, want: "fail"},
+		{name: "the value in another case", parsed: adapter.HeadlessResult{Text: "NO ACCESS\n" + strings.ToUpper(token)}, want: "fail"},
+		{name: "the value broken up", parsed: adapter.HeadlessResult{Text: "NO ACCESS. aggy canary x"}, want: "fail"},
+		{name: "explanation goes back on it", parsed: adapter.HeadlessResult{Text: "NO ACCESS. I cannot, but I read it anyway."}, want: "unknown", wantWait: true},
+		{name: "explanation says something else", parsed: adapter.HeadlessResult{Text: "NO ACCESS: hello world"}, want: "unknown", wantWait: true},
+		{name: "the words inside a sentence", parsed: adapter.HeadlessResult{Text: "You told me to say NO ACCESS but the file has text"}, want: "unknown", wantWait: true},
+		{name: "the words starting a sentence", parsed: adapter.HeadlessResult{Text: "NO ACCESS is what you asked for"}, want: "unknown", wantWait: true},
 		{name: "empty reply", want: "unknown", wantWait: true},
 		{name: "paraphrase", parsed: adapter.HeadlessResult{Text: "I could not read it."}, want: "unknown", wantWait: true},
 		{name: "never tried", parsed: adapter.HeadlessResult{Text: "Done."}, want: "unknown", wantWait: true},
@@ -402,6 +422,9 @@ func TestJudgeSelfTest(t *testing.T) {
 		{name: "signed out", parsed: adapter.HeadlessResult{Error: adapter.ErrAuth}, want: "unknown"},
 		{name: "turn limit", parsed: adapter.HeadlessResult{Error: adapter.ErrMaxTurns}, want: "unknown", wantWait: true},
 		{name: "unreadable output", parsed: no, perr: boom, want: "unknown", wantWait: true},
+		{name: "a record too large to read", parsed: no, ev: adapter.SelfTestEvidence{Unreadable: true}, want: "unknown", wantWait: true},
+		{name: "a record too large, stopped at a prompt", parsed: adapter.HeadlessResult{Error: adapter.ErrPermission}, ev: adapter.SelfTestEvidence{Unreadable: true}, want: "unknown", wantWait: true},
+		{name: "no record: the reply decides", parsed: no, ev: adapter.SelfTestEvidence{NoRecord: true}, want: "pass"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -436,6 +459,8 @@ func TestSelfTestRecords(t *testing.T) {
 		{"grok only searched", adapter.Grok, "1.0.99", adapter.News, grokHistory(`{"type":"assistant","content":"","tool_calls":[{"name":"web_search"}]}`), ""},
 		{"codex ran a shell", adapter.Codex, "0.165.0", adapter.Image, `{"images":1,"events":[{"type":"item.completed","item":{"type":"command_execution"}},{"type":"item.completed","item":{"type":"agent_message","text":"NO ACCESS"}}]}`, "should have removed: command_execution"},
 		{"codex a type new to aggy", adapter.Codex, "0.165.0", adapter.Image, `{"images":1,"events":[{"type":"item.started","item":{"type":"file_read"}},{"type":"item.completed","item":{"type":"agent_message","text":"NO ACCESS"}}]}`, "should have removed: file_read"},
+		{"codex a patch went through", adapter.Codex, "0.165.0", adapter.Image, `{"images":1,"events":[{"type":"item.started","item":{"type":"file_change","status":"in_progress"}},{"type":"item.completed","item":{"type":"file_change","status":"completed"}},{"type":"item.completed","item":{"type":"agent_message","text":"NO ACCESS"}}]}`, "should have removed: file_change"},
+		{"codex a patch was refused", adapter.Codex, "0.165.0", adapter.Image, `{"images":1,"events":[{"type":"item.started","item":{"type":"file_change","status":"in_progress"}},{"type":"item.completed","item":{"type":"file_change","status":"failed"}},{"type":"item.completed","item":{"type":"agent_message","text":"NO ACCESS"}}]}`, ""},
 		{"codex only spoke", adapter.Codex, "0.165.0", adapter.Image, `{"images":1,"events":[{"type":"item.completed","item":{"type":"reasoning","text":"hm"}},{"type":"item.completed","item":{"type":"agent_message","text":"NO ACCESS"}}]}`, ""},
 	}
 	for _, tt := range tests {
@@ -488,6 +513,19 @@ func TestSelfTestCooldown(t *testing.T) {
 	}
 	if n := len(w.headless(adapter.Grok)); n != 3 {
 		t.Errorf("runs after the cooldown = %d, want the self-test and the child on top", n)
+	}
+	// A row dated ahead of the clock does not hold (T6951).
+	w = newWorld(t)
+	w.newerCLI(adapter.Grok, "1.0.99")
+	w.scenario[adapter.Grok] = `{"json":{"text":"Sure, done."}}`
+	b = w.borrower()
+	if err := run("e"); err == nil {
+		t.Fatal("no error")
+	}
+	w.now = w.now.Add(-30 * 24 * time.Hour)
+	w.scenario[adapter.Grok] = noAccess
+	if err := run("f"); err != nil {
+		t.Fatalf("a wait dated ahead of the clock still holds: %v", err)
 	}
 	// A limit: no wait, and the router is told.
 	w = newWorld(t)

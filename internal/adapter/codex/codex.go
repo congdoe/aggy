@@ -482,8 +482,9 @@ type event struct {
 	Type     string `json:"type"`
 	ThreadID string `json:"thread_id"`
 	Item     struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type   string `json:"type"`
+		Text   string `json:"text"`
+		Status string `json:"status"`
 	} `json:"item"`
 	Usage struct {
 		Input  int64 `json:"input_tokens"`
