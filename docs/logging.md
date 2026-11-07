@@ -260,6 +260,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | Code | Security | Meaning | What to check next |
 | --- | --- | --- | --- |
 | `cli.usage` |  | Bad arguments or flags. | Run the command with --help. |
+| `cli.flag_needs_no_policy` |  | A flag for the vendor CLI loosens approvals, the sandbox, or hook trust, or aggy cannot tell that it does not. | Add --no-policy to start the session that way; aggy notes it at launch. |
 | `borrow.no_screen` |  | A research or news borrow's session does not go on screen: it has no file or MCP tools by rule, and its transcript may hold text from the web. | aggy inbox shows its report; aggy borrow asks a follow-up. |
 | `cli.flag_clash` |  | A flag for the vendor CLI clashes with what aggy passes it at launch. | Drop the flag; the message says what aggy does instead. Run the CLI itself if you need it. |
 | `cli.vendor_not_allowed` |  | This repo's allowed_vendors does not list that vendor. | The repo's .aggy/config.toml. |

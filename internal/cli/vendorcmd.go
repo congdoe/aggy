@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -33,6 +34,12 @@ Every other flag goes to the CLI. aggy refuses the ones that clash with what
 it passes at launch (--session-id, --settings, and so on; the message says
 why), a prompt, and a subcommand: type the prompt once the session starts,
 and run the CLI itself for its subcommands and its own --help.
+
+A flag that loosens approvals, the sandbox, or hook trust (--dangerously-*,
+--permission-mode bypassPermissions, --yolo, -a never, and on codex a -c aggy
+cannot tell is harmless) needs --no-policy, and aggy notes it at launch. A
+bare word is taken as a value only after a flag aggy knows takes one; for any
+other flag write --flag=value.
 `
 
 // passFlags is v's table of flags aggy takes over or refuses.
@@ -84,9 +91,16 @@ func runVendor(v adapter.Vendor, args []string, stderr io.Writer) int {
 	}
 	p, err := passFlags(v).Parse(rest, t.NoPolicy)
 	if err != nil {
-		return launchUsageErr(stderr, name, diag.CodeFlagClash, err.Error(), "")
+		code := diag.CodeFlagClash
+		switch {
+		case errors.Is(err, adapter.ErrNotFlag):
+			code = diag.CodeUsage
+		case errors.Is(err, adapter.ErrLoosens):
+			code = diag.CodeFlagLoosens
+		}
+		return launchUsageErr(stderr, name, code, err.Error(), "")
 	}
-	t.Model, t.Extra = p.Model, p.Extra
+	t.Model, t.Extra, t.SafeExtra, t.Loosens = p.Model, p.Extra, p.Safe, p.Loosens
 	switch {
 	case p.Continue && p.Resume:
 		return launchUsageErr(stderr, name, diag.CodeUsage, "use --continue or --resume, not both", vendorUsage)

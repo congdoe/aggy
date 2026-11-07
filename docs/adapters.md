@@ -621,7 +621,9 @@ Codex resume, so no flag can take the id as its value. Each adapter's
 `PassFlags` table says which flags aggy takes over (`--model`, `--continue`,
 `--resume`, so the index stays true) and which it refuses; the rest pass
 unchanged, so a new vendor flag needs no aggy change. `PassFlags.Parse` is
-generic: a new vendor supplies a table only.
+generic: a new vendor supplies a table only. A bare word is passed only after
+a flag the table's `Values` or `Checked` say takes a value; for another flag
+it is `--flag=value`.
 
 - Refused, because aggy passes the flag at launch: Claude `--session-id`,
   `--settings`, `--append-system-prompt-file` (and `--append-system-prompt`),
@@ -632,12 +634,14 @@ generic: a new vendor supplies a table only.
   `--fork-session`, `-p`, `--worktree`, `--bg`, `--cloud`, and the like;
   Codex `-C`, `--remote`, `--worktree`; Grok `--fork-session`, `-p`,
   `--prompt-file`.
-- Refused unless `--no-policy`: Codex `--yolo` and
-  `--dangerously-bypass-approvals-and-sandbox`, since whether they keep the
-  rules file that holds the policy is unverified. Claude's
-  `--permission-mode bypassPermissions` passes: "Deny rules block in every
-  mode, including `bypassPermissions`"
-  (code.claude.com/docs/en/permission-modes, read 2026-11-06).
+- Refused unless `--no-policy`, then noted at launch and logged
+  (`loosening_flags`): anything naming `dangerously`, on every vendor; Claude
+  `--permission-mode` outside `default`, `acceptEdits`, `plan`, `auto`, and
+  `dontAsk`; Codex `--yolo`, `--approve-for-me`, `--not-so-yolo`, `-a` but
+  `on-request`, `-s danger-full-access`, and `-c` of any key but a short list
+  that changes only display and reasoning. For Grok, unverified names gated
+  in case they exist: `--yolo`, `--always-approve`, and any `--permission-mode`
+  but `plan` or `--sandbox` but `strict`, the values recorded.
 
 Sources, read 2026-11-06: Claude code.claude.com/docs/en/cli-reference;
 Codex learn.chatgpt.com/docs/developer-commands?surface=cli. Grok has no full

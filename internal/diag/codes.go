@@ -144,6 +144,7 @@ var (
 	CodeUsage            = Code{"cli.usage"}
 	CodeConfig           = Code{"cli.config_invalid"}
 	CodeFlagClash        = Code{"cli.flag_clash"}
+	CodeFlagLoosens      = Code{"cli.flag_needs_no_policy"}
 	CodeBorrowNoScreen   = Code{"borrow.no_screen"}
 	CodeNotFound         = Code{"cli.not_found"}
 	CodeAmbiguousID      = Code{"cli.ambiguous_id"}
@@ -330,6 +331,7 @@ var events = []EventInfo{
 
 var codes = []CodeInfo{
 	{CodeUsage, false, "Bad arguments or flags.", "Run the command with --help."},
+	{CodeFlagLoosens, false, "A flag for the vendor CLI loosens approvals, the sandbox, or hook trust, or aggy cannot tell that it does not.", "Add --no-policy to start the session that way; aggy notes it at launch."},
 	{CodeBorrowNoScreen, false, "A research or news borrow's session does not go on screen: it has no file or MCP tools by rule, and its transcript may hold text from the web.", "aggy inbox shows its report; aggy borrow asks a follow-up."},
 	{CodeFlagClash, false, "A flag for the vendor CLI clashes with what aggy passes it at launch.", "Drop the flag; the message says what aggy does instead. Run the CLI itself if you need it."},
 	{CodeNotAllowed, false, "This repo's allowed_vendors does not list that vendor.", "The repo's .aggy/config.toml."},

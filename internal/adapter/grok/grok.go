@@ -269,12 +269,25 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 	return adapter.Command{Path: Bin, Args: args, Env: req.Env, Dir: req.Cwd, Stdin: adapter.StdinTerminal}, nil
 }
 
+// onlyValue gates every value of a flag but the one recorded.
+func onlyValue(flag, ok string) func(string) error {
+	return func(val string) error {
+		if val == ok {
+			return nil
+		}
+		return fmt.Errorf("%s %s: %w", flag, val, adapter.ErrLoosens)
+	}
+}
+
 // PassFlags is Grok's table for aggy grok, from the flags recorded in
 // docs/adapters.md ("Grok": --session-id, --resume, --fork-session,
 // --continue, --no-alt-screen, --rules, --deny, --agent, --prompt-file) and
 // docs/verification.md (-r, and -p as --single). No full flag list of grok
 // is recorded, so the table is unverified for any other flag: those pass,
-// and the CLI refuses what it does not take.
+// and the CLI refuses what it does not take. Unverified guesses, gated in
+// case they exist: --yolo and --always-approve, and any --permission-mode
+// but plan or --sandbox but strict, the values recorded. --dangerously-* is
+// gated by PassFlags.Parse. aggy never adds any of them on its own.
 func (Adapter) PassFlags() adapter.PassFlags {
 	return adapter.PassFlags{
 		Model:    []string{"--model"},
@@ -289,7 +302,13 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			{Names: []string{"--agent"}, Why: "aggy passes the managed tools' servers with it"},
 			{Names: []string{"--prompt-file", "--single", "-p"}, Why: "aggy runs an on-screen session; aggy borrow runs one task headless"},
 			{Names: []string{"--version"}, Why: "run grok --version"},
+			{Names: []string{"--yolo", "--always-approve"}, UnlessNoPolicy: true}, // unverified names
 		},
+		Checked: []adapter.CheckedFlag{
+			{Names: []string{"--permission-mode"}, Check: onlyValue("--permission-mode", "plan")}, // unverified beyond plan
+			{Names: []string{"--sandbox"}, Check: onlyValue("--sandbox", "strict")},               // unverified beyond strict
+		},
+		Values: []string{"--tools", "--disallowed-tools", "--max-turns", "--allow", "--output-format"},
 	}
 }
 

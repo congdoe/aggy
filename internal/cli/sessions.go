@@ -42,6 +42,17 @@ func runNew(args []string, _, stderr io.Writer) int {
 // with id, with that child on screen (aggy session lists child ids). Flags
 // may come before or after the id.
 func runResume(args []string, stdout, stderr io.Writer) int {
+	return resumeWith(args, false, stdout, stderr)
+}
+
+// runResumeFlag is `aggy --resume [id]`: aggy resume, except that with no id
+// it refuses when nothing here can be reopened, as aggy <vendor> --resume and
+// aggy --continue do, rather than start a session.
+func runResumeFlag(args []string, stdout, stderr io.Writer) int {
+	return resumeWith(args, true, stdout, stderr)
+}
+
+func resumeWith(args []string, mustExist bool, stdout, stderr io.Writer) int {
 	use := resumeUsage
 	var t target
 	var show bool
@@ -70,6 +81,8 @@ func runResume(args []string, stdout, stderr io.Writer) int {
 			return cmdUsage(stderr, "resume", msg, "")
 		}
 		t.ParentID = id
+	} else {
+		t.Continue = mustExist
 	}
 	if show {
 		return showBrief("aggy resume", t, stdout, stderr)

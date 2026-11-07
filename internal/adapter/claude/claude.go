@@ -187,9 +187,9 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 
 // PassFlags is Claude's table for aggy claude. The flags are Claude Code's
 // CLI reference (code.claude.com/docs/en/cli-reference, read 2026-11-06).
-// A permission flag such as --permission-mode bypassPermissions passes:
-// "Deny rules block in every mode, including bypassPermissions"
-// (code.claude.com/docs/en/permission-modes), so the policy stays on.
+// aggy never adds a loosening flag on its own, and one the person gives
+// needs --no-policy: every --dangerously-* (PassFlags.Parse) and --permission-mode
+// outside the modes that ask or deny.
 func (Adapter) PassFlags() adapter.PassFlags {
 	const elsewhere = "it starts no on-screen session in this directory for aggy to record"
 	return adapter.PassFlags{
@@ -206,7 +206,23 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			{Names: []string{"--bg", "--background", "--desktop", "--cloud", "--remote", "--teleport", "--exec", "--environment", "--from-pr", "--init-only", "--worktree", "-w", "--tmux"}, Why: elsewhere},
 			{Names: []string{"--version", "-v"}, Why: "run claude --version"},
 		},
+		Checked: []adapter.CheckedFlag{{Names: []string{"--permission-mode"}, Check: checkPermissionMode}},
+		Values: []string{"--add-dir", "--advisor", "--agent", "--agents", "--allowedTools", "--allowed-tools",
+			"--append-subagent-system-prompt", "--append-subagent-system-prompt-file", "--autocompact", "--betas", "--channels",
+			"--debug-file", "--disallowedTools", "--disallowed-tools", "--effort", "--fallback-model", "--name", "-n",
+			"--plugin-dir", "--plugin-url", "--remote-control-session-name-prefix", "--setting-sources", "--system-prompt",
+			"--system-prompt-file", "--system-prompt-snapshot", "--teammate-mode", "--tools"},
 	}
+}
+
+// checkPermissionMode lets through the modes that still ask or deny
+// (permission-modes.md), and gates bypassPermissions and any mode not listed.
+func checkPermissionMode(mode string) error {
+	switch mode {
+	case "default", "acceptEdits", "plan", "auto", "dontAsk":
+		return nil
+	}
+	return fmt.Errorf("--permission-mode %s: %w", mode, adapter.ErrLoosens)
 }
 
 // MCPConfigFile is the per-run MCP config, written in RunDir: it names
