@@ -177,12 +177,18 @@ func Run(o Options) (Exit, error) {
 	// pending is a first switch-key press waiting to see whether a second
 	// follows within double; it fires when none does.
 	var pending <-chan time.Time
+	var apply func([]keyEvent)
+	// heldBy gives up on an escape sequence the filter holds for the next read.
+	var heldBy <-chan time.Time
 	// input takes the user's keys while no picker is up, and the keys a
 	// prompt aggy opened hands back (S-11): through the one key filter,
 	// so its paste and split-sequence state stays right.
-	s.input = func(b []byte) {
-		for _, ev := range filter.feed(b) {
+	s.input = func(b []byte) { apply(filter.feed(b)) }
+	apply = func(evs []keyEvent) {
+		for _, ev := range evs {
 			switch {
+			case ev.report:
+				s.toChild.push(ev.data) // the terminal answering the CLI: it opens and closes nothing
 			case s.open:
 				s.pickerInput(ev.data)
 			case ev.press && pending != nil:
@@ -197,12 +203,20 @@ func Run(o Options) (Exit, error) {
 				pending = nil
 				s.openList()
 				s.pickerInput(ev.data)
+			case ev.mouse:
+				s.pointer(ev.data)
 			default:
 				s.send(ev.data)
 			}
 		}
 	}
 	for {
+		switch {
+		case !filter.holding():
+			heldBy = nil
+		case heldBy == nil:
+			heldBy = time.After(splitWait)
+		}
 		// check polls a switch that waits for the turn end.
 		// It also polls a near-limit warning due at a turn end.
 		var check <-chan time.Time
@@ -269,11 +283,27 @@ func Run(o Options) (Exit, error) {
 				_ = child.Signal(syscall.SIGHUP)
 				continue
 			}
+			heldBy = nil
 			if s.open {
-				s.pickerInput(b)
+				reports, rest := filter.strip(b)
+				if len(reports) > 0 {
+					s.toChild.push(reports)
+				}
+				if len(rest) > 0 {
+					s.pickerInput(rest)
+				}
 				continue
 			}
 			s.input(b)
+		case <-heldBy:
+			heldBy = nil
+			if evs := filter.flush(); s.open {
+				for _, ev := range evs {
+					s.pickerInput(ev.data)
+				}
+			} else {
+				apply(evs)
+			}
 		case <-pending:
 			pending = nil
 			// A prompt aggy opened since the press (an offer, a note)
@@ -769,12 +799,21 @@ func (s *session) send(b []byte) {
 		s.toChild.push(b) // the terminal answering the CLI, not the user
 		return
 	}
+	if mouseOnly(b) {
+		s.pointer(b)
+		return
+	}
+	// An Esc that long ago makes no Option+Enter with this Enter.
+	if s.lastByte == esc && time.Since(s.lastIn) > splitWait {
+		s.lastByte = 0
+	}
 	s.lastIn = time.Now()
 	s.held = false
 	if len(b) == 0 {
 		return
 	}
 	s.inputSinceTurn = true
+	tabSends := false
 	if bytes.IndexByte(b, '\r') >= 0 || csiEnter.Match(b) {
 		// An Enter with text, while a turn may be running, may queue a
 		// message. A bare one on an empty prompt queues nothing: it answers
@@ -790,13 +829,59 @@ func (s *session) send(b []byte) {
 		// It may do something else elsewhere; the quiet gap covers that.
 		s.queued++
 		s.queuedWait = false
+		tabSends = true
+	} else if s.atPrompt && tabKey.Match(b) && (s.dirty || string(tabKey.Find(b)) != string(b)) {
+		tabSends = true
 	}
+	before := s.compLen
 	for _, c := range b {
 		s.compose(c)
+	}
+	if isEsc(b) {
+		s.compLen = before // an Esc types nothing
+	}
+	if tabSends && s.tabSent(b) {
+		s.compLen, s.lenKnown, s.cleared, s.hadAt, s.moved = 0, true, false, false, false
+		s.atPrompt, s.toldDirty = false, false // it may start a turn, as an Enter
 	}
 	s.dirty = !s.lenKnown || s.compLen > 0 || s.popup || s.cleared
 	s.toChild.push(b)
 }
+
+// tabSent reports whether the Tab that ends b took the composer's text with it.
+// On Codex Tab submits, queueing during a turn, once no popup has it:
+// handle_key_event_without_popup calls handle_submission for its queue keys
+// (chat_composer.rs#L3531, the link in send). That Tab is the queue key by
+// default, and not rebound, is unverified. A popup may take it, so the text
+// stays in doubt, as after an Enter. On another CLI Tab may complete a word, so
+// the text stays.
+func (s *session) tabSent(b []byte) bool {
+	if s.o.Vendor != adapter.Codex || s.inPaste || s.popup || !s.lenKnown {
+		return false
+	}
+	locs := tabKey.FindAllIndex(b, -1)
+	return len(locs) > 0 && locs[len(locs)-1][1] == len(b) && !bytes.Contains(b, pasteEnd)
+}
+
+// pointer passes on a click or a drag. It may do something in the CLI, so it
+// counts as input (an approval answered with the mouse, a turn started), but it
+// types nothing. It may move the cursor, as a cursor key does.
+func (s *session) pointer(b []byte) {
+	s.lastIn = time.Now()
+	s.held = false
+	s.inputSinceTurn = true
+	s.moved = true
+	if s.hadAt {
+		s.popup = true // the cursor may be back in an @ token
+	}
+	s.dirty = !s.lenKnown || s.compLen > 0 || s.popup || s.cleared
+	s.toChild.push(b)
+}
+
+// splitWait is how long an escape sequence split across reads may wait for the
+// rest of it. Terminals write one reply at a time, so this only has to cover
+// the gap between two reads of one write. A variable for tests.
+var splitWait = 50 * time.Millisecond
 
 // csiEnter matches Enter in the kitty keyboard protocol (CSI 13 u, with any
 // modifiers or event type) and in xterm's modifyOtherKeys (CSI 27 ; m ; 13 ~).
@@ -829,28 +914,6 @@ func (s *session) releaseQueued() {
 	s.queued, s.queuedWait = 0, false
 	s.atPrompt, s.inputSinceTurn = !s.held, false
 }
-
-// terminalReport reports whether b is only replies a terminal sends a CLI that
-// asked: focus events, cursor and device reports, and whole OSC, DCS, and APC
-// strings, and the mouse wheel. None can submit anything, so none is input. A
-// click can, as far as aggy knows, so it stays input, as do bracketed pastes and
-// key sequences do not match, and a reply split across reads counts as input,
-// the safe side.
-func terminalReport(b []byte) bool {
-	if len(b) == 0 {
-		return false
-	}
-	for len(b) > 0 {
-		m := reportSeq.Find(b)
-		if m == nil {
-			return false
-		}
-		b = b[len(m):]
-	}
-	return true
-}
-
-var reportSeq = regexp.MustCompile(`^\x1b(\[[IO]|\[[0-9;?>]*[Rcnt]|\[[0-9;?]*\$y|\[\?[0-9]*u|\[<(6[4-9]|[78][0-9]|9[0-5]);[0-9]+;[0-9]+[Mm]|[\]P_][^\x00-\x1f]*(\x07|\x1b\\))`)
 
 // mayBeRunning reports whether a turn may be running, so a notice that can wait
 // must, since an open notice holds the CLI's output until a key. Only a launch

@@ -105,6 +105,18 @@ func TestTerminalReport(t *testing.T) {
 		{"\x1b[<0;10;10M", false},
 		{"\x1b[<32;10;10M", false},
 		{"\x1b[1u", false},
+		// T6897.
+		{"\x1b[?2004;1$y", true},
+		{"\x1b[>0;276;0c", true},
+		{"\x1bP>|xterm(388)\x1b\\", true},
+		{"\x1b[M`!!", true},
+		{"\x1b[Ma!!", true},
+		{"\x1b[M !!", false},
+		{"\x1b[M !", false},
+		{"\x1b[<35;1;1M", true},
+		{"\x1b[?1;2u", false},
+		{"\x1b[1;2$y", true},
+		{"\x1b[>1$y", false},
 	} {
 		if got := terminalReport([]byte(tt.in)); got != tt.want {
 			t.Errorf("terminalReport(%q) = %v, want %v", tt.in, got, tt.want)

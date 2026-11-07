@@ -82,6 +82,7 @@ A JSON object. Every field is optional, and unknown fields are an error.
 | `sleep_ms` | int | Delay before output, for timeout tests. |
 | `start_mcp` | bool | Claude: after the hooks, start each server of the first `--mcp-config` file (`command` and `args`) once, with the fake's own environment and working directory, and wait for it. With `fake-mcp` as the server, a test sees what the server got. |
 | `raw_echo` | bool | An interactive run that acts like a full-screen CLI: raw mode, then `stdout`, then every byte read echoed back; each resize prints `[winch <rows>x<cols>]`; Ctrl+Z (0x1a) stops it with SIGSTOP and prints `[continued]` on resume; Ctrl+D (0x04) exits. For the supervisor tests in `test/e2e`. |
+| `term_queries` | string | Written to the terminal first in an interactive run, as a CLI asks its terminal things at launch (`ESC [ c`, `ESC [ ? 1004 h`). A line-mode run drops the terminal's replies from the lines it reads, as a CLI does; a `raw_echo` run echoes them. |
 | `replies` | objects | `{"args": [...], "stdout": "...", "stderr": "...", "exit_code": N}`: the fixed answer to that exact argument list, given before any flag is parsed. For commands docs/adapters.md does not record, such as a sign-in status check a test supplies (no vendor's is verified). The run is recorded with mode `reply`. |
 
 Strings in `stdout`, `stderr`, `json`, `events`, `error_event`, hook payloads, `session_files`, and `version_output` expand `{session_id}`, `{cwd}`, `{home}`, `{vendor_home}`, and, on Grok, `{session_dir}`.
