@@ -195,6 +195,9 @@ type VendorConfig struct {
 	// Model is passed to the CLI unchanged. Empty passes no model flag, so
 	// the vendor uses its own default.
 	Model string `toml:"model"`
+	// Off turns this harness off: aggy neither opens it nor borrows from it,
+	// and a repo cannot turn it back on.
+	Off bool `toml:"off"`
 }
 
 // For returns the settings of vendor v.

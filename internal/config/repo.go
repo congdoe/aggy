@@ -277,6 +277,7 @@ func Merge(user Config, repo RepoConfig) Effective {
 			return !slices.Contains(repo.AllowedVendors, v)
 		})
 	}
+	allowed = slices.DeleteFunc(allowed, func(v adapter.Vendor) bool { return user.Vendors.For(v).Off })
 	keep := func(vs []adapter.Vendor) []adapter.Vendor {
 		out := []adapter.Vendor{}
 		for _, v := range vs {

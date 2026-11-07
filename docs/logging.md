@@ -206,6 +206,8 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `hook.guard.refused` | warn | hook | aggy's OpenCode guard refused a tool call: a variable declaration in a shell command, a real path outside the repo, a call from another folder, or opencode auth export. | The code's entry; the model saw the same reason. |
 | `hook.guard.missing` | warn | hook | aggy's OpenCode guard did not report in time, so its refusals may not be running; a plugin that fails to load gives no error. | The code's entry. |
 | `trust.request.refused` | error | trust | aggy trust refused; nothing was changed. | The code's entry. |
+| `permissions.request.refused` | error | permissions | aggy permissions refused; nothing was changed. | The code's entry. |
+| `config.request.refused` | error | config | aggy config set refused; nothing was changed. | The code's entry. |
 | `adapter.grok.sandbox_refused` | warn | adapter.grok | Grok was passed over: its sandbox is not available for this kind on this CLI or host. | sandbox.missing. |
 | `accept.request.refused` | error | accept | aggy accept refused or failed; nothing was applied. | The code's entry; aggy diag show &lt;borrow id&gt;. |
 | `accept.diff.applied` | info | accept | An edit's diff was applied to the main checkout. | git status in the main checkout. |
@@ -356,6 +358,12 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `guard.refused` |  | aggy's OpenCode guard refused a tool call. It reads the raw input, so it catches mistakes only. | Run the command another way, or at the terminal yourself. |
 | `guard.no_report` |  | aggy's OpenCode guard did not report from the launch's folder in time. OpenCode's rules from aggy's config still apply; the guard's own refusals may not. | Quit and start again; aggy doctor for the CLI's version. A same-user process can overwrite or unload the plugin. |
 | `trust.bad_dir` |  | aggy trust was given a path that is not a folder aggy can resolve. | The path; aggy resolves it to its repo root. |
+| `permissions.not_at_keyboard` |  | A change to permissions or settings came from somewhere that is not a person at a terminal: a borrow child, a session's own tool shell, or no terminal on stdin. | Run it yourself at a terminal outside the session. |
+| `permissions.bad_rule` |  | A rule is not one aggy can use: its form is wrong, or the filter never passes it on. | The rule; aggy permissions --help names the filter. |
+| `permissions.bad_file` |  | aggy could not read or change ~/.aggy/permissions.json. | aggy doctor, which reports a mistake by line. |
+| `permissions.not_found` |  | aggy's own file has no such rule at that scope, or the rule is in a CLI's own file, which aggy does not edit. | aggy permissions list, which names each rule's source. |
+| `permissions.no_repo` |  | A rule for this repo, or a suggestion for it, was asked for outside any git repo. | Name --everywhere, or --all for suggestions. |
+| `config.bad_value` |  | aggy config set was given a key or value it does not take. | aggy config --help. |
 | `trust.bad_file` |  | aggy could not read or change its list of trusted repos (trust.json or opencode-trust.json in aggy's state folder). | The file's contents, or aggy unwire. |
 | `hook.bad_payload` |  | aggy hook could not read the vendor's hook payload, or it was not a JSON object. | The vendor CLI's version; aggy doctor. |
 | `tool.name_clash` |  | A tool that is on was not wired: the CLI already loads an MCP server of that name from the user's or the repo's config, and aggy never replaces or merges into one. | Rename or remove that server in the CLI's config, or turn the tool off. |

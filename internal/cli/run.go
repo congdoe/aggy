@@ -332,6 +332,13 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	if err != nil {
 		return fail(diag.CodeLaunchFailed, err)
 	}
+	if pl.child.Kind == "" {
+		stopScan, note := suggestAtLaunch(ctx, s, pl.child.Cwd)
+		defer stopScan()
+		if note != "" {
+			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(note))
+		}
+	}
 	defer func() {
 		if lease != nil {
 			_ = lease.Release(ctx)
