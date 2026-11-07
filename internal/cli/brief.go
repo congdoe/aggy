@@ -155,14 +155,22 @@ func childBrief(ctx context.Context, s *store.Store, e borrowEnv, pl launchPlan)
 	}
 	in := brief.Input{To: to}
 	in.Task, in.TaskErr = brief.ReadTask(cwd)
-	var others []store.Child // most recently active first
+	// The other children that may hold turns, most recently active first. One
+	// that never started has none; one with no recorded id may, but they cannot
+	// be read, and the brief says so rather than that no CLI ran.
+	var others []store.Child
+	var unread []store.Child
 	if !pl.newParent {
-		cs, err := s.Children(ctx, pl.parent.ID)
+		cs, err := planRefresh(ctx, s, pl.parent.ID, &sessionFiles{})
 		if err != nil {
 			return "", err
 		}
 		for _, c := range cs {
-			if c.Kind == "" && c.ID != pl.child.ID && c.VendorSessionID != "" {
+			switch {
+			case c.Kind != "" || c.ID == pl.child.ID || neverStarted(c):
+			case c.VendorSessionID == "":
+				unread = append(unread, c)
+			default:
 				others = append(others, c)
 			}
 		}
@@ -181,11 +189,33 @@ func childBrief(ctx context.Context, s *store.Store, e borrowEnv, pl launchPlan)
 		tr, err := transcript.Tail(v, home, adapter.SessionRef{ID: c.VendorSessionID, Cwd: c.Cwd}, turns)
 		return v, tr, err
 	}
+	addUnread := func(after time.Time) {
+		for _, c := range unread {
+			if c.LastActive.After(after) {
+				if v, err := adapter.ParseVendor(c.Vendor); err == nil && !slices.Contains(in.Unread, v) {
+					in.Unread = append(in.Unread, v)
+				}
+			}
+		}
+	}
 	switch {
-	case pl.newChild && len(others) > 0:
-		in.From, in.Transcript, in.TranscriptErr = read(others[0], childBriefTurns)
-	case !pl.newChild:
+	case pl.newChild:
+		addUnread(time.Time{})
+		// The latest turns: past a session with none, or none saved, to the
+		// next. One that cannot be read says so; older turns are not passed
+		// off as the latest.
+		for i, c := range others {
+			v, tr, err := read(c, childBriefTurns)
+			if i == 0 || err != nil || len(tr.Turns) > 0 {
+				in.From, in.Transcript, in.TranscriptErr = v, tr, err
+			}
+			if err != nil || len(tr.Turns) > 0 {
+				break
+			}
+		}
+	default:
 		in.Since = pl.child.LastActive
+		addUnread(in.Since)
 		var since []brief.Other
 		for i := len(others) - 1; i >= 0; i-- {
 			if c := others[i]; c.LastActive.After(in.Since) {
@@ -213,6 +243,7 @@ func childBrief(ctx context.Context, s *store.Store, e borrowEnv, pl launchPlan)
 // brief and no launch to the index; like aggy session, it may raise
 // last-active times from the session files (refreshChildren).
 func showBrief(name string, t target, stdout, stderr io.Writer) int {
+	t.Preview = true
 	fail := func(err error) int {
 		return cmdErr(stderr, strings.TrimPrefix(name, "aggy "), launchCode(err, diag.CodeLaunchFailed), err)
 	}

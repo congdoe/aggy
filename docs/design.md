@@ -177,7 +177,7 @@ Lines matching secret patterns are removed. `--brief --show` previews it. The br
 
 Grok bills a whole prompt at the long-context rate once it reaches 200,000 tokens. aggy keeps a Grok brief well under that by dropping older turns (not summarizing them) and pointing to the transcript. There is no local Grok tokenizer, so the count is a conservative character estimate. A session can still grow past the threshold after launch, so the lasting guard is Grok's own compaction setting.
 
-When an adapter cannot read a transcript, for example after a format change, the brief degrades to the task file alone.
+When an adapter cannot read a transcript, for example after a format change, the brief degrades to the task file alone, and says it could not read them. A brief never claims what aggy does not know. A child that never started (section 5) holds no turns and is passed over, for the next session that has some. A session whose id aggy never recorded, such as a Codex child whose hook is not approved, may hold real turns, so the brief names it and says they could not be read, never that no CLI ran or that there is no earlier session. `--brief --show` launches nothing, so its notes say what a launch would do.
 
 Two common uses:
 

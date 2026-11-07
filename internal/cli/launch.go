@@ -65,6 +65,17 @@ type target struct {
 	// SameChild says Child is the child that was on screen, reopened for a
 	// tool change, so it may be a borrow's. A switch's Child never may.
 	SameChild bool
+	// Preview: nothing launches (--brief --show), so a note says what a launch
+	// would do.
+	Preview bool
+}
+
+// starting is what a note says a launch does.
+func (t target) starting() string {
+	if t.Preview {
+		return "a launch would start"
+	}
+	return "starting"
 }
 
 // fromSwitch reports whether t is a switch's launch, which has a CLI to go back
@@ -178,8 +189,8 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 		case replaced(par):
 			// A directory removed and made again (a re-clone) is another
 			// project: its old sessions are not resumed by default.
-			fmt.Fprintf(stderr, "aggy: this directory was replaced since session %s; starting a new session. aggy resume %s reopens the old one.\n",
-				shortID(par.ID), shortID(par.ID))
+			fmt.Fprintf(stderr, "aggy: this directory was replaced since session %s; %s a new session. aggy resume %s reopens the old one.\n",
+				shortID(par.ID), t.starting(), shortID(par.ID))
 			p.newParent = true
 		default:
 			if p.parent, err = latestStarted(ctx, s, key, cwd, par); err != nil {
@@ -260,14 +271,14 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 		if last.Status == stateClosed {
 			why = "its directory was removed"
 		}
-		fmt.Fprintf(stderr, "aggy: the last %s session of %s cannot be resumed (%s); starting a new %s session. The parent's other sessions are kept.\n",
-			last.Vendor, short, why, last.Vendor)
+		fmt.Fprintf(stderr, "aggy: the last %s session of %s cannot be resumed (%s); %s a new %s session. The parent's other sessions are kept.\n",
+			last.Vendor, short, why, t.starting(), last.Vendor)
 		return p, p.newChildOf(ctx, s, cfg, adapter.Vendor(last.Vendor), now)
 	case last.VendorSessionID == "":
 		// A Codex child whose id the session index never confirmed (its
 		// hooks not installed or not approved, or no turn saved).
-		fmt.Fprintf(stderr, "aggy: the last %s session of %s has no recorded session id; starting a new %s session.\n",
-			last.Vendor, short, last.Vendor)
+		fmt.Fprintf(stderr, "aggy: the last %s session of %s has no recorded session id; %s a new %s session.\n",
+			last.Vendor, short, t.starting(), last.Vendor)
 		return p, p.newChildOf(ctx, s, cfg, adapter.Vendor(last.Vendor), now)
 	}
 	v, err := adapter.ParseVendor(last.Vendor)
