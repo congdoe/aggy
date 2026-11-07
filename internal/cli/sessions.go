@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
@@ -23,15 +24,13 @@ import (
 func runNew(args []string, _, stderr io.Writer) int {
 	noPolicy, args := cutNoPolicy(args)
 	if len(args) > 1 || (len(args) == 1 && strings.HasPrefix(args[0], "-")) {
-		fmt.Fprint(stderr, "usage: aggy new [--no-policy] [claude|codex|grok]\n")
-		return 2
+		return cmdUsage(stderr, "new", "bad arguments", "usage: aggy new [--no-policy] [claude|codex|grok]\n")
 	}
 	var v adapter.Vendor
 	if len(args) == 1 {
 		var err error
 		if v, err = adapter.ParseVendor(args[0]); err != nil {
-			fmt.Fprintf(stderr, "aggy new: %v\n", err)
-			return 2
+			return cmdUsage(stderr, "new", err.Error(), "")
 		}
 	}
 	return launch("aggy new", target{New: true, Vendor: v, NoPolicy: noPolicy}, stderr)
@@ -56,22 +55,19 @@ func runResume(args []string, stdout, stderr io.Writer) int {
 		case a == "--show":
 			show = true
 		case strings.HasPrefix(a, "-"):
-			fmt.Fprint(stderr, use)
-			return 2
+			return cmdUsage(stderr, "resume", fmt.Sprintf("unknown flag %q", a), use)
 		default:
 			ids = append(ids, a)
 		}
 	}
 	args = ids
 	if len(args) > 1 || show && !t.Brief {
-		fmt.Fprint(stderr, use)
-		return 2
+		return cmdUsage(stderr, "resume", "bad arguments", use)
 	}
 	if len(args) == 1 {
 		id, msg := sessionArg(args[0])
 		if msg != "" {
-			fmt.Fprintf(stderr, "aggy resume: %s\n", msg)
-			return 2
+			return cmdUsage(stderr, "resume", msg, "")
 		}
 		t.ParentID = id
 	}
@@ -99,14 +95,12 @@ func openIndex(ctx context.Context) (*store.Store, error) {
 // printed.
 func runSessions(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 0 {
-		fmt.Fprint(stderr, "usage: aggy sessions\n")
-		return 2
+		return cmdUsage(stderr, "sessions", "takes no arguments", "usage: aggy sessions\n")
 	}
 	ctx := context.Background()
 	s, err := openIndex(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy sessions: %s\n", termsafe.Field(err.Error()))
-		return 1
+		return cmdErr(stderr, "sessions", diag.CodeStore, err)
 	}
 	if s == nil {
 		fmt.Fprintln(stdout, "No sessions yet. Run aggy to start one.")
@@ -128,8 +122,7 @@ func runSessions(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy sessions: %s\n", termsafe.Field(err.Error()))
-		return 1
+		return cmdErr(stderr, "sessions", diag.CodeStore, err)
 	}
 	if len(ps) == 0 {
 		fmt.Fprintln(stdout, "No sessions yet. Run aggy to start one.")
@@ -152,14 +145,12 @@ func runSessions(args []string, stdout, stderr io.Writer) int {
 // Borrows are children too.
 func runSession(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 0 {
-		fmt.Fprint(stderr, "usage: aggy session\n")
-		return 2
+		return cmdUsage(stderr, "session", "takes no arguments", "usage: aggy session\n")
 	}
 	ctx := context.Background()
 	s, err := openIndex(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy session: %s\n", termsafe.Field(err.Error()))
-		return 1
+		return cmdErr(stderr, "session", diag.CodeStore, err)
 	}
 	if s == nil {
 		fmt.Fprintln(stdout, "No session here. Run aggy to start one.")
@@ -172,13 +163,11 @@ func runSession(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy session: %s\n", termsafe.Field(err.Error()))
-		return 1
+		return cmdErr(stderr, "session", diag.CodeStore, err)
 	}
 	cs, err := refreshChildren(ctx, s, p.ID, &sessionFiles{})
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy session: %s\n", termsafe.Field(err.Error()))
-		return 1
+		return cmdErr(stderr, "session", diag.CodeStore, err)
 	}
 	fmt.Fprintf(stdout, "Session %s in %s\n", shortID(p.ID), termsafe.Line(tildePath(p.Dir)))
 	if len(cs) == 0 {

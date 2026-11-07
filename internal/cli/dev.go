@@ -11,6 +11,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/devfix"
+	"github.com/congdoe/aggy/internal/diag"
 )
 
 // devConfirmFlag must be given to aggy dev capture, which runs a real
@@ -53,8 +54,7 @@ func runDev(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, devUsage)
 		return 0
 	}
-	fmt.Fprintf(stderr, "aggy dev: unknown command %q\n\n%s", args[0], devUsage)
-	return 2
+	return cmdUsage(stderr, "dev", fmt.Sprintf("unknown command %q", args[0]), devUsage)
 }
 
 func runDevCapture(args []string, stdout, stderr io.Writer) int {
@@ -75,52 +75,43 @@ func runDevCapture(args []string, stdout, stderr io.Writer) int {
 	var env multi
 	fs.Var(&env, "env", "extra AGGY_* variable for the CLI, KEY=VALUE (repeatable)")
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintf(stderr, "aggy dev capture: name a vendor\n\n%s", devUsage)
-		return 2
+		return cmdUsage(stderr, "dev capture", "name a vendor", devUsage)
 	}
 	vendor, err := adapter.ParseVendor(args[0])
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy dev capture: %v\n", err)
-		return 2
+		return cmdUsage(stderr, "dev capture", err.Error(), "")
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "aggy dev capture: put the CLI's arguments after --\n")
-		return 2
+		return cmdUsage(stderr, "dev capture", "put the CLI's arguments after --", "")
 	}
 	if !*confirm {
-		fmt.Fprintf(stderr, "aggy dev capture runs the real %s CLI and may spend its quota.\nRerun with --%s to confirm.\n", vendor, devConfirmFlag)
-		return 2
+		return cmdUsage(stderr, "dev capture", fmt.Sprintf("this runs the real %s CLI and may spend its quota; rerun with --%s to confirm", vendor, devConfirmFlag), "")
 	}
 	dir := *out
 	switch {
 	case dir == "" && *name == "":
-		fmt.Fprintln(stderr, "aggy dev capture: give --name or --out")
-		return 2
+		return cmdUsage(stderr, "dev capture", "give --name or --out", "")
 	case dir == "" && (*name != filepath.Base(*name) || strings.HasPrefix(*name, ".")):
-		fmt.Fprintf(stderr, "aggy dev capture: bad fixture name %q\n", *name)
-		return 2
+		return cmdUsage(stderr, "dev capture", fmt.Sprintf("bad fixture name %q", *name), "")
 	}
 	root, err := devfix.RepoRoot(".")
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy dev capture: %v\n", err)
-		return 1
+		return cmdErr(stderr, "dev capture", diag.CodeCommandFailed, err)
 	}
 	if dir == "" {
 		dir = filepath.Join(devfix.FixturesDir(root), string(vendor), *name)
 	}
 	if dir, err = devfix.UnderFixtures(root, dir); err != nil {
-		fmt.Fprintf(stderr, "aggy dev capture: %v\n", err)
-		return 2
+		return cmdUsage(stderr, "dev capture", err.Error(), "")
 	}
 	meta, err := devfix.Capture(context.Background(), devfix.CaptureOptions{
 		Vendor: vendor, Bin: *bin, Args: cliArgs, Out: dir, Env: env, Timeout: *timeout,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy dev capture: %v\n", err)
-		return 1
+		return cmdErr(stderr, "dev capture", diag.CodeCommandFailed, err)
 	}
 	fmt.Fprintf(stdout, "captured %s: exit %d, %d files, %d skipped\nreview it, then run the fixture check: go test ./internal/devfix\n",
 		dir, meta.ExitCode, len(meta.Files), len(meta.Skipped))
@@ -133,13 +124,11 @@ func runDevScrub(args []string, stdout, stderr io.Writer) int {
 		args = args[1:]
 	}
 	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintf(stderr, "aggy dev scrub: give one fixture directory\n\n%s", devUsage)
-		return 2
+		return cmdUsage(stderr, "dev scrub", "give one fixture directory", devUsage)
 	}
 	dir, err := filepath.Abs(args[0])
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy dev scrub: %v\n", err)
-		return 1
+		return cmdErr(stderr, "dev scrub", diag.CodeCommandFailed, err)
 	}
 	if !anywhere {
 		root, err := devfix.RepoRoot(".")
@@ -147,28 +136,25 @@ func runDevScrub(args []string, stdout, stderr io.Writer) int {
 			dir, err = devfix.UnderFixtures(root, dir)
 		}
 		if err != nil {
-			fmt.Fprintf(stderr, "aggy dev scrub: %v (use --anywhere to scrub elsewhere)\n", err)
-			return 2
+			return cmdUsage(stderr, "dev scrub", err.Error()+" (use --anywhere to scrub elsewhere)", "")
 		}
 	}
 	changed, err := devfix.ScrubDir(dir, devfix.NewScrubber(devfix.CurrentIdentity()))
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy dev scrub: %v\n", err)
-		return 1
+		return cmdErr(stderr, "dev scrub", diag.CodeCommandFailed, err)
 	}
 	for _, c := range changed {
 		fmt.Fprintf(stdout, "scrubbed %s\n", c)
 	}
 	findings, err := devfix.Detect(dir, devfix.CurrentIdentity(), nil)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy dev scrub: %v\n", err)
-		return 1
+		return cmdErr(stderr, "dev scrub", diag.CodeCommandFailed, err)
 	}
 	for _, f := range findings {
 		fmt.Fprintf(stderr, "still present: %s\n", f)
 	}
 	if len(findings) > 0 {
-		return 1
+		return cmdFail(stderr, "dev scrub", diag.CodeCommandFailed, "secret-shaped text is still present")
 	}
 	return 0
 }

@@ -59,12 +59,12 @@ func hookWith(args []string, in io.Reader, getenv func(string) string, stdout, s
 		}
 	}
 	if len(args) != 3 || args[0] != "--vendor" {
-		fmt.Fprint(stderr, hookUsage)
+		cmdUsage(stderr, "hook", "bad arguments", hookUsage)
 		return 1
 	}
 	v, err := adapter.ParseVendor(args[1])
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy hook: %v\n", err)
+		cmdUsage(stderr, "hook", err.Error(), "")
 		return 1
 	}
 	event := args[2]
@@ -167,12 +167,12 @@ func drain(in io.Reader) {
 func preToolUse(in io.Reader, stderr io.Writer) int {
 	b, err := io.ReadAll(io.LimitReader(in, hook.MaxPayload+1))
 	if err != nil || len(b) > hook.MaxPayload {
-		fmt.Fprintln(stderr, "aggy guard: the PreToolUse payload could not be read, so the call is denied")
+		fmt.Fprintln(stderr, "aggy guard: the PreToolUse payload could not be read, so the call is denied", dlog.Tag(diag.CodeOneHop))
 		return 2
 	}
 	d := hook.PreToolUse(b)
 	if d.Deny {
-		fmt.Fprintln(stderr, d.Reason)
+		fmt.Fprintln(stderr, d.Reason, dlog.Tag(diag.CodeOneHop))
 		return 2
 	}
 	return 0

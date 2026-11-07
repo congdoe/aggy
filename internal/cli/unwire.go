@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/manifest"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -53,8 +54,7 @@ func runUnwire(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprint(stdout, unwireUsage)
 			return 0
 		}
-		fmt.Fprintf(stderr, "aggy unwire: %v\n\n%s", err, unwireUsage)
-		return 2
+		return cmdUsage(stderr, "unwire", err.Error(), unwireUsage)
 	}
 	sel := manifest.Selection{ChangeID: *change, RunID: *run, All: *all}
 	n := 0
@@ -65,49 +65,47 @@ func runUnwire(args []string, stdout, stderr io.Writer) int {
 	}
 	switch {
 	case fl.NArg() > 0:
-		fmt.Fprintf(stderr, "aggy unwire: unexpected arguments\n\n%s", unwireUsage)
-		return 2
+		return cmdUsage(stderr, "unwire", "unexpected arguments", unwireUsage)
 	case n != 1:
-		fmt.Fprintf(stderr, "aggy unwire: pick exactly one of --change, --run, or --all\n\n%s", unwireUsage)
-		return 2
+		return cmdUsage(stderr, "unwire", "pick exactly one of --change, --run, or --all", unwireUsage)
 	case *force && *change == "":
-		fmt.Fprintf(stderr, "aggy unwire: --force undoes one change at a time; use it with --change\n")
-		return 2
+		return cmdUsage(stderr, "unwire", "--force undoes one change at a time; use it with --change", "")
 	case *yes && !*force:
-		fmt.Fprintf(stderr, "aggy unwire: --yes only confirms --force\n")
-		return 2
+		return cmdUsage(stderr, "unwire", "--yes only confirms --force", "")
 	}
 	// --force without --yes is a dry run of the forced undo.
 	opt := manifest.UnwireOptions{DryRun: *dryRun || (*force && !*yes), Force: *force}
 
 	path, err := store.DefaultPath()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy unwire: %v\n", err)
-		return 1
+		return cmdErr(stderr, "unwire", diag.CodeStore, err)
 	}
 	if _, err := safefs.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		if *change != "" || *run != "" {
+			return cmdErrDry(stderr, "unwire", diag.CodeNotFound, errors.New("no such change: aggy has not changed any config"), opt.DryRun)
+		}
 		fmt.Fprintln(stdout, "Nothing to undo: aggy has not changed any config.")
 		return 0
 	} else if err != nil {
-		fmt.Fprintf(stderr, "aggy unwire: %v\n", err)
-		return 1
+		return cmdErr(stderr, "unwire", diag.CodeStore, err)
 	}
 	ctx := context.Background()
 	s, err := store.Open(ctx, path)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy unwire: %v\n", err)
-		return 1
+		return cmdErr(stderr, "unwire", diag.CodeStore, err)
 	}
 	defer func() { _ = s.Close() }()
 	m, err := manifest.Open(s)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy unwire: %v\n", err)
-		return 1
+		return cmdErr(stderr, "unwire", diag.CodeStore, err)
 	}
 	undos, err := m.Unwire(ctx, sel, opt, stdout)
 	if len(undos) == 0 && err != nil {
-		fmt.Fprintf(stderr, "aggy unwire: %s\n", termsafe.Line(err.Error()))
-		return 1
+		code := diag.CodeUnwireFailed
+		if errors.Is(err, store.ErrNotFound) {
+			code = diag.CodeNotFound
+		}
+		return cmdErrDry(stderr, "unwire", code, err, opt.DryRun)
 	}
 	return report(undos, opt, *force && !*yes, stdout, stderr)
 }
@@ -125,21 +123,27 @@ func report(undos []manifest.Undo, opt manifest.UnwireOptions, unconfirmed bool,
 	}
 	code := 0
 	done := 0
+	// A record for each refused or failed change, unless this is a dry run.
+	note := func(c diag.Code, line string) {
+		code = 1
+		tag := ""
+		if w := writerFor(opt.DryRun); w != nil {
+			w.Log(context.Background(), diag.Rec{Event: diag.EvCommandRefused, Code: c, Msg: fixedMsg(c)})
+			tag = " " + w.Tag(c)
+		}
+		fmt.Fprintln(stderr, line+tag)
+	}
 	for _, u := range undos {
 		file, id := termsafe.Field(u.Change.File), termsafe.Field(u.Change.ChangeID)
 		switch u.Outcome {
 		case manifest.Drifted:
-			code = 1
-			fmt.Fprintf(stderr, "refused %s (change %s): it changed after aggy changed it. Undo it by hand, or run aggy unwire --change %s --force to see what forcing would overwrite.\n", file, id, id)
+			note(diag.CodeUnwireRefused, fmt.Sprintf("refused %s (change %s): it changed after aggy changed it. Undo it by hand, or run aggy unwire --change %s --force to see what forcing would overwrite.", file, id, id))
 		case manifest.Blocked:
-			code = 1
-			fmt.Fprintf(stderr, "refused %s (change %s): %s\n", file, id, termsafe.Field(u.Err.Error()))
+			note(diag.CodeUnwireRefused, fmt.Sprintf("refused %s (change %s): %s", file, id, termsafe.Field(u.Err.Error())))
 		case manifest.Invalid:
-			code = 1
-			fmt.Fprintf(stderr, "refused change %s: %s\n", id, termsafe.Field(u.Err.Error()))
+			note(diag.CodeUnwireRefused, fmt.Sprintf("refused change %s: %s", id, termsafe.Field(u.Err.Error())))
 		case manifest.Failed:
-			code = 1
-			fmt.Fprintf(stderr, "failed %s (change %s): %s\n", file, id, termsafe.Field(u.Err.Error()))
+			note(diag.CodeUnwireFailed, fmt.Sprintf("failed %s (change %s): %s", file, id, termsafe.Field(u.Err.Error())))
 		case manifest.Superseded:
 			done++
 			fmt.Fprintf(stdout, "%sundone %s (change %s): a newer change wrote the file since, so the file is left as it is\n", would, file, id)

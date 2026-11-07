@@ -111,15 +111,21 @@ func diagWith(ctx context.Context, args []string, now func() time.Time, stdout, 
 		fmt.Fprint(stdout, diagUsage)
 		return 0
 	case errors.As(err, &ue):
-		// aggy diag only reads, so its own errors are not logged.
-		fmt.Fprintf(stderr, "aggy diag: %s\n\n%s", termsafe.Field(err.Error()), diagUsage)
+		// aggy diag only reads, so its own errors are tagged but not logged.
+		fmt.Fprintf(stderr, "aggy diag: %s %s\n\n%s", termsafe.Field(err.Error()), dlog.Tag(diag.CodeUsage), diagUsage)
 		return 2
+	case errors.Is(err, errNoRecord):
+		fmt.Fprintf(stderr, "aggy diag: %s %s\n", termsafe.Field(err.Error()), dlog.Tag(diag.CodeNotFound))
+		return 1
 	case err != nil:
-		fmt.Fprintf(stderr, "aggy diag: %s\n", termsafe.Field(err.Error()))
+		fmt.Fprintf(stderr, "aggy diag: %s %s\n", termsafe.Field(err.Error()), dlog.Tag(diag.CodeCommandFailed))
 		return 1
 	}
 	return 0
 }
+
+// errNoRecord matches an id nothing in the log has.
+var errNoRecord = errors.New("no run, trace, borrow, child, parent, or record has the id")
 
 // usageError is a bad command line.
 type usageError struct{ error }
@@ -532,7 +538,7 @@ func diagShow(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	if len(kinds) == 0 {
-		return fmt.Errorf("no run, trace, borrow, child, parent, or record has the id %q", id)
+		return fmt.Errorf("%w %q", errNoRecord, id)
 	}
 	if *asJSON {
 		return writeJSON(stdout, map[string]any{"id": id, "kinds": kinds, "timeline": entries})

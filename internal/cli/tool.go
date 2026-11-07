@@ -114,8 +114,7 @@ func parseToolArgs(args []string) (toolArgs, bool) {
 
 func toolWith(args []string, in io.Reader, tty bool, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprint(stderr, toolUsage)
-		return 2
+		return cmdUsage(stderr, "tool", "name a subcommand", toolUsage)
 	}
 	// Signals are caught only while a prebuild runs (prebuildIndex), so
 	// Ctrl-C at a prompt ends aggy tool as usual.
@@ -179,8 +178,7 @@ func toolWith(args []string, in io.Reader, tty bool, stdout, stderr io.Writer) i
 		}
 		return 0
 	}
-	fmt.Fprint(stderr, toolUsage)
-	return 2
+	return cmdUsage(stderr, "tool", fmt.Sprintf("unknown subcommand %q", args[0]), toolUsage)
 }
 
 // toolCode is the reason code of an aggy tool error.

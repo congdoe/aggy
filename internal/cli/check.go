@@ -84,8 +84,7 @@ func (e repoCheckEnv) check(ctx context.Context, args []string, stdout, stderr i
 			fmt.Fprint(stdout, checkUsage)
 			return 0
 		}
-		fmt.Fprint(stderr, checkUsage)
-		return 2
+		return cmdUsage(stderr, "check", "takes no arguments", checkUsage)
 	}
 	fail := func(code diag.Code, msg string, exit int) int {
 		refuse(ctx, stderr, "check", diag.EvCheckRefused, code, msg, diag.Rec{})

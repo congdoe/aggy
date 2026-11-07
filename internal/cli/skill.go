@@ -17,6 +17,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/manifest"
 	"github.com/congdoe/aggy/internal/patch"
@@ -166,42 +167,36 @@ func runSkill(args []string, stdout, stderr io.Writer) int {
 	vendor := fl.String("vendor", "", "")
 	dryRun := fl.Bool("dry-run", false, "")
 	if err := fl.Parse(args[1:]); err != nil || fl.NArg() > 0 {
-		fmt.Fprintf(stderr, "aggy skill: bad arguments\n\n%s", skillUsage)
-		return 2
+		return cmdUsage(stderr, "skill", "bad arguments", skillUsage)
 	}
 	vendors := skillVendors
 	if *vendor != "" {
 		if !slices.Contains(skillVendors, *vendor) {
-			fmt.Fprintf(stderr, "aggy skill: unknown vendor %q (claude, codex, or grok)\n", *vendor)
-			return 2
+			return cmdUsage(stderr, "skill", fmt.Sprintf("unknown vendor %q (claude, codex, or grok)", *vendor), "")
 		}
 		vendors = []string{*vendor}
 	}
 	l, err := layout()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy skill: %v\n", err)
-		return 1
+		return cmdErr(stderr, "skill", diag.CodeWireFailed, err)
 	}
 	switch op {
 	case "status":
 		if *vendor != "" || *dryRun {
-			fmt.Fprintf(stderr, "aggy skill status takes no flags\n")
-			return 2
+			return cmdUsage(stderr, "skill status", "takes no flags", "")
 		}
 		return skillStatus(l, stdout, stderr)
 	case "link", "unlink":
 	default:
-		fmt.Fprintf(stderr, "aggy skill: unknown subcommand %q\n\n%s", op, skillUsage)
-		return 2
+		return cmdUsage(stderr, "skill", fmt.Sprintf("unknown subcommand %q", op), skillUsage)
 	}
 	ps, err := l.plan(op == "link", vendors)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy skill %s: %s\n", op, termsafe.Line(err.Error()))
-		return 1
+		return cmdErrDry(stderr, "skill "+op, diag.CodeWireFailed, err, *dryRun)
 	}
 	if *dryRun {
 		if _, err := manifest.Preview(stdout, ps); err != nil {
-			return 1
+			return cmdErrDry(stderr, "skill "+op, diag.CodeWireFailed, err, true)
 		}
 		return 0
 	}
@@ -212,14 +207,12 @@ func runSkill(args []string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy skill: %v\n", err)
-		return 1
+		return cmdErr(stderr, "skill", diag.CodeWireFailed, err)
 	}
 	defer func() { _ = s.Close() }()
 	m, err := manifest.Open(s)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy skill: %v\n", err)
-		return 1
+		return cmdErr(stderr, "skill", diag.CodeWireFailed, err)
 	}
 	runID := manifest.NewRunID()
 	cs, err := m.Run(ctx, manifest.Write, runID, ps, io.Discard)
@@ -229,8 +222,7 @@ func runSkill(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy skill %s: %s\n", op, termsafe.Line(err.Error()))
-		return 1
+		return cmdErr(stderr, "skill "+op, diag.CodeWireFailed, err)
 	}
 	fmt.Fprintf(stdout, "Done (run %s). aggy unwire --run %s undoes it.\n", runID, runID)
 	return 0
@@ -579,13 +571,13 @@ func skillStatus(l skillLayout, stdout, stderr io.Writer) int {
 	for _, v := range skillVendors {
 		ok, err := l.linked(l.links[v])
 		if err != nil {
-			fmt.Fprintf(stderr, "%s: %s\n", v, termsafe.Line(err.Error()))
+			fmt.Fprintf(stderr, "%s: %s %s\n", v, termsafe.Line(err.Error()), dlog.Tag(diag.CodeWireFailed))
 			code = 1
 			continue
 		}
 		vis, err := l.visible(v)
 		if err != nil {
-			fmt.Fprintf(stderr, "%s: %s\n", v, termsafe.Line(err.Error()))
+			fmt.Fprintf(stderr, "%s: %s %s\n", v, termsafe.Line(err.Error()), dlog.Tag(diag.CodeWireFailed))
 			code = 1
 			continue
 		}

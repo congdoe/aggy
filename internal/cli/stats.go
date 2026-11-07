@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
@@ -40,52 +41,43 @@ func runStats(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprint(stdout, statsUsage)
 			return 0
 		}
-		fmt.Fprintf(stderr, "aggy stats: %v\n\n%s", err, statsUsage)
-		return 2
+		return cmdUsage(stderr, "stats", err.Error(), statsUsage)
 	}
 	if fl.NArg() > 0 {
-		fmt.Fprintf(stderr, "aggy stats: unexpected arguments\n\n%s", statsUsage)
-		return 2
+		return cmdUsage(stderr, "stats", "unexpected arguments", statsUsage)
 	}
 	path, err := store.DefaultPath()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy stats: %v\n", err)
-		return 1
+		return cmdErr(stderr, "stats", diag.CodeStore, err)
 	}
 	if _, err := safefs.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		fmt.Fprintln(stdout, "No borrows yet.")
 		return 0
 	} else if err != nil {
-		fmt.Fprintf(stderr, "aggy stats: %v\n", err)
-		return 1
+		return cmdErr(stderr, "stats", diag.CodeStore, err)
 	}
 	ctx := context.Background()
 	s, err := store.OpenReadOnly(ctx, path)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy stats: %v\n", err)
-		return 1
+		return cmdErr(stderr, "stats", diag.CodeStore, err)
 	}
 	defer func() { _ = s.Close() }()
 	known, err := store.KnownVersion()
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy stats: %v\n", err)
-		return 1
+		return cmdErr(stderr, "stats", diag.CodeStore, err)
 	}
 	if v, err := s.Version(ctx); err != nil {
-		fmt.Fprintf(stderr, "aggy stats: %v\n", err)
-		return 1
+		return cmdErr(stderr, "stats", diag.CodeStore, err)
 	} else if v < store.StatsSchema {
 		fmt.Fprintf(stdout, "The index is at schema version %d, older than aggy stats reads. Run another aggy command to upgrade it.\n", v)
 		return 0
 	} else if v > known {
 		// A newer aggy may have changed what the rows mean.
-		fmt.Fprintf(stderr, "aggy stats: the index is at schema version %d, newer than this aggy knows (%d); update aggy to read it\n", v, known)
-		return 1
+		return cmdFail(stderr, "stats", diag.CodeStore, fmt.Sprintf("the index is at schema version %d, newer than this aggy knows (%d); update aggy to read it", v, known))
 	}
 	stats, err := s.BorrowStats(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "aggy stats: %v\n", store.ReadError(err))
-		return 1
+		return cmdErr(stderr, "stats", diag.CodeStore, store.ReadError(err))
 	}
 	if len(stats) == 0 {
 		fmt.Fprintln(stdout, "No borrows yet.")
