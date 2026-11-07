@@ -39,9 +39,9 @@ func runNew(args []string, _, stderr io.Writer) int {
 
 // runResume is `aggy resume [id]`: the latest parent in the current
 // directory, or the one whose id starts with id, or, when no parent's id
-// does, the parent of the interactive child whose id starts with id, with
-// that child on screen (aggy session lists child ids). Flags may come
-// before or after the id.
+// does, the parent of the child, a borrow child included, whose id starts
+// with id, with that child on screen (aggy session lists child ids). Flags
+// may come before or after the id.
 func runResume(args []string, stdout, stderr io.Writer) int {
 	const use = "usage: aggy resume [--no-policy] [--brief [--show]] [id]\n"
 	var t target
