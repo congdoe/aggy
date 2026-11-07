@@ -7,6 +7,11 @@
 //     file-backed MCP OAuth store), or under $CODEX_HOME
 //   - Grok: ~/.grok/auth.json and ~/.grok/mcp_credentials.json, or under
 //     $GROK_HOME
+//   - OpenCode: under ~/.local/share/opencode or $XDG_DATA_HOME/opencode,
+//     opencode.db and opencode-<channel>.db (the logins and the sessions, so
+//     with their -wal and -shm), and the legacy auth.json; and the file
+//     $OPENCODE_DB names. Transcripts come only through `opencode session
+//     export`, which is the CLI reading its own database.
 //
 // Two checks run on every call:
 //
@@ -55,6 +60,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -123,6 +129,33 @@ var credDirs = []struct {
 	{"GROK_HOME", ".grok", []string{"auth.json", "mcp_credentials.json"}},
 }
 
+// openCodeFiles names the database OpenCode 2.2.5 keeps logins and sessions in,
+// and what sits beside it: packages/cli/src/database-path.ts, and the import
+// in packages/core/src/database/migration/*_import_legacy_credentials.ts.
+var openCodeFiles = []string{"opencode.db", "opencode.db-wal", "opencode.db-shm", "auth.json"}
+
+// isChannelDB reports a channel build's database, opencode-<channel>.db and
+// its companions. normPath has already folded a name where case is ignored.
+func isChannelDB(base string) bool {
+	return strings.HasPrefix(base, "opencode-") && (strings.HasSuffix(base, ".db") || strings.HasSuffix(base, ".db-wal") || strings.HasSuffix(base, ".db-shm"))
+}
+
+// openCodeDirs lists the folders OpenCode's data may be in: one for each
+// home, and $XDG_DATA_HOME's. A relative $XDG_DATA_HOME is taken as it is,
+// and the path check resolves it.
+func openCodeDirs(homes []string) []string {
+	var dirs []string
+	for _, h := range homes {
+		dirs = append(dirs, filepath.Join(h, ".local", "share", "opencode"))
+	}
+	if v := os.Getenv("XDG_DATA_HOME"); v != "" {
+		if abs, err := filepath.Abs(v); err == nil {
+			dirs = append(dirs, filepath.Join(abs, "opencode"))
+		}
+	}
+	return dirs
+}
+
 // homeDirs returns every home directory a vendor CLI might use: $HOME,
 // made absolute against the working directory when it is relative, and the
 // home in the user database when it differs. A child that changes HOME
@@ -158,6 +191,7 @@ func homeDirs() ([]string, error) {
 // environment can change.
 type guard struct {
 	paths []string      // credential paths, normalized by normPath
+	dbs   []string      // folders where a channel's database counts too, normalized
 	ids   []fs.FileInfo // identities of the credential files that exist
 }
 
@@ -185,6 +219,33 @@ func loadGuard() (*guard, error) {
 		}
 	}
 	g := &guard{}
+	for _, d := range openCodeDirs(homes) {
+		for _, f := range openCodeFiles {
+			creds = append(creds, filepath.Join(d, f))
+		}
+		g.dbs = append(g.dbs, normPath(d))
+		if r, err := resolveExisting(d); err == nil {
+			g.dbs = append(g.dbs, normPath(r))
+		}
+		// Names and metadata only, so a channel's file has an identity too.
+		if es, err := os.ReadDir(d); err == nil {
+			for _, e := range es {
+				if isChannelDB(normPath(e.Name())) {
+					creds = append(creds, filepath.Join(d, e.Name()))
+				}
+			}
+		}
+	}
+	if v := os.Getenv("OPENCODE_DB"); v != "" && v != ":memory:" {
+		// A relative name is taken from the data folder.
+		if filepath.IsAbs(v) {
+			creds = append(creds, filepath.Clean(v), filepath.Clean(v)+"-wal", filepath.Clean(v)+"-shm")
+		} else {
+			for _, d := range openCodeDirs(homes) {
+				creds = append(creds, filepath.Join(d, v), filepath.Join(d, v)+"-wal", filepath.Join(d, v)+"-shm")
+			}
+		}
+	}
 	for _, p := range creds {
 		g.paths = append(g.paths, normPath(p))
 		if d, err := resolveExisting(filepath.Dir(p)); err == nil {
@@ -213,6 +274,10 @@ func (g *guard) pathMatch(path string) bool {
 		if n == d || strings.HasPrefix(n, d+string(filepath.Separator)) {
 			return true
 		}
+	}
+	dir, base := filepath.Split(n)
+	if isChannelDB(base) && slices.Contains(g.dbs, strings.TrimSuffix(dir, string(filepath.Separator))) {
+		return true
 	}
 	return false
 }
