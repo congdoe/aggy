@@ -1597,3 +1597,12 @@ An agent ran these under the owner's approval for this work (at most 40 real Ope
 - Under `--auto`, `permission.asked` still fires and is answered at once with no key, so a dialog hold clears itself.
 
 **Not run live:** the guard's `opencode auth export` refusal (never run against a real sign-in; unit tests and a process test with the fake's environment), a tool call outside the launch's folder and `/open`, the guard failing to load (unit test only), a real question form, real plan limits, a real Kitty-protocol terminal: the driver's terminal does not answer the keyboard query, so Ctrl+\ and Ctrl+U as CSI-u are for the owner's terminal to check.
+
+### Review fixes (2026-11-07, T6932)
+
+**Runs: 5 more, on the same terms, for 40 of 40.** Four `opencode run` launches on a fake model in a temporary `HOME` with no sign-in (the first two failed with `provider.no-route` on a config key of the driver's: `providers`, not `provider`), and one on-screen launch on the owner's xAI sign-in.
+
+- **Live, fake model.** With an ask on `*` and an allow on exactly `git status`, a model's `for PATH in ./bin; do git status; done` ran the planted `./bin/git`, exit 0, with no prompt. With aggy's plugin added, the guard refused it, and the planted git did not run.
+- **Source, run directly.** `packages/core/src/shell/scan.ts` at `v2.2.5`, run under Node with its first line removed and no vendor CLI, gives these only `git status` as a resource: bare assignments anywhere, including in `$(...)`, `( )`, `{ }`, `if`, `case`, and a `while` or `until` condition; `PATH[0]=`, `FOO=(a b)`; a declaration word; a `for` or `select` variable; `for (( ))`; and `(( ))` in the bash and zsh dialects. `read`, `printf -v`, `getopts`, `FOO=1 export X=1`, `command export`, and `${X:=1}` are resources, so they ask. `alias` and `foreach` are opaque, so they ask.
+- **Real shells.** `TestGuardAgainstRealShells` runs each shape through bash, zsh, sh, and dash where present, with a planted git; any that runs it must be refused.
+- **Live, the owner's sign-in.** After these fixes, on the full screen in a trusted temporary repo: a real turn, the guard's report, and a switch with no brief: `/exit` and its later Enter came through the session's loop, no exit timeout, and the fake Claude started.
