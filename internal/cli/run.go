@@ -178,6 +178,13 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	}
 	v := adapter.Vendor(pl.child.Vendor)
 	ids = diag.Rec{Parent: pl.parent.ID, Child: pl.child.ID, Vendor: string(v)}
+	if pl.remakeCwd {
+		remove, err := remakeBorrowDir(pl.child.Cwd)
+		if err != nil {
+			return fail(diag.CodeLaunchFailed, err)
+		}
+		defer remove()
+	}
 	// The child's repo decides which vendors may see it, the one on
 	// screen and the ones the switch picker offers.
 	eff, err := allowedIn(cfg, pl.child.Cwd, v)
@@ -224,6 +231,9 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	// refused launch adds no parent, child, or lease. plan's refresh may
 	// already have raised last-active times from session files (D19-9).
 	var warns []string
+	if pl.child.Kind != "" {
+		warns = append(warns, "this "+pl.child.Kind+" borrow's session is on screen now: the CLI's own permission prompts apply, not the borrow's lockdown")
+	}
 	if t.NoPolicy {
 		warns = append(warns, "starting without the safety policy (--no-policy)")
 	} else {

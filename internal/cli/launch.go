@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -30,8 +31,8 @@ type target struct {
 	// when there is none (aggy --continue, aggy <vendor> --continue).
 	Continue bool
 	// ParentID reopens that parent (an id or a unique prefix), or, when
-	// no parent's id has that prefix, the parent of the one interactive
-	// child whose id does, with that child on screen. Empty, and not New,
+	// no parent's id has that prefix, the parent of the one child, a borrow
+	// child included, whose id does, with that child on screen. Empty, and not New,
 	// reopens the latest parent in the current directory, or starts one
 	// there. With Vendor set (a switch), the parent's latest child of
 	// that vendor goes on screen, or a new one.
@@ -75,6 +76,9 @@ type launchPlan struct {
 	// flag; empty for a new child, whose pre-assigned id (Claude and
 	// Grok; Codex takes none) is child.VendorSessionID.
 	resume string
+	// remakeCwd says the child's working dir is a finished borrow's empty
+	// temp dir, which launchOnce makes again for the session.
+	remakeCwd bool
 }
 
 // plan decides the parent and child a launch opens. It writes only what
@@ -168,6 +172,9 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 	if t.Vendor != "" && t.NewChild {
 		return p, p.newChildOf(ctx, s, cfg, t.Vendor, now)
 	}
+	// Only an id on the command line may name a borrow child: a switch
+	// picks among interactive children, and its id comes over the socket.
+	borrowOK := pick != "" && t.Child == ""
 	if t.Child != "" {
 		pick = t.Child
 	}
@@ -180,11 +187,14 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 	// or the one picked by id.
 	var last *store.Child
 	for i := range children {
-		if children[i].Kind == "" && (pick == "" || children[i].ID == pick) &&
+		if (children[i].Kind == "" || borrowOK && children[i].ID == pick) && (pick == "" || children[i].ID == pick) &&
 			(t.Vendor == "" || children[i].Vendor == string(t.Vendor)) {
 			last = &children[i]
 			break
 		}
+	}
+	if last != nil && last.Kind != "" {
+		return p, p.borrowChild(cfg, t, *last, files)
 	}
 	short := shortID(p.parent.ID)
 	switch {
@@ -227,6 +237,82 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 	p.child, p.resume = *last, last.VendorSessionID
 	p.child.Model = cfg.Vendors.For(v).Model
 	return p, nil
+}
+
+// borrowChild plans a finished borrow's child on screen (aggy resume <child
+// id>), or says why it cannot be: never a new child in its place. The child
+// resumes in its own directory, since Claude and Grok keep sessions per
+// directory: review's repo or edit's worktree, which must still be there,
+// or the empty temp dir of the other kinds, which ended with the borrow and
+// is made again, empty, for the session (remakeCwd). It is the person's
+// session now: the CLI's own permission prompts and aggy's safety policy
+// apply, not the borrow's lockdown flags, which were for no one watching.
+func (p *launchPlan) borrowChild(cfg config.Config, t target, c store.Child, files *sessionFiles) error {
+	what := c.Kind + " borrow " + shortID(c.ID)
+	if t.Brief {
+		return fmt.Errorf("%s takes no brief: it is its own session, and other CLIs' turns are not part of it", what)
+	}
+	if c.Status != stateClosed {
+		return fmt.Errorf("%s is still running; aggy inbox shows its report when it ends", what)
+	}
+	if c.VendorSessionID == "" {
+		return fmt.Errorf("%s has no recorded session id: its CLI reported none", what)
+	}
+	v, err := adapter.ParseVendor(c.Vendor)
+	if err != nil {
+		return err
+	}
+	if err := adapter.ValidSessionID(v, c.VendorSessionID); err != nil {
+		return fmt.Errorf("%s has an invalid id in the index: %w", what, err)
+	}
+	if fi, err := safefs.Stat(c.Cwd); errors.Is(err, fs.ErrNotExist) {
+		if !borrowTempDir(c) {
+			return fmt.Errorf("%s cannot be resumed: its directory, %s, was removed", what, termsafe.Line(c.Cwd))
+		}
+		p.remakeCwd = true
+	} else if err != nil {
+		return err
+	} else if !fi.IsDir() {
+		return fmt.Errorf("%s cannot be resumed: %s is not a directory", what, termsafe.Line(c.Cwd))
+	}
+	if _, err := files.LastChanged(v, c.VendorSessionID, c.VendorHome, c.Cwd, c.CreatedAt); errors.Is(err, errNoSessionFile) || errors.Is(err, errNotInScan) {
+		return fmt.Errorf("%s cannot be resumed: the vendor has no saved session for it", what)
+	}
+	p.child, p.resume = c, c.VendorSessionID
+	p.child.Model = cfg.Vendors.For(v).Model
+	return nil
+}
+
+// borrowTempDir reports whether c's working dir is the work/ of an
+// aggy-borrow-* temp dir, as internal/borrow makes for every kind but review
+// and edit.
+func borrowTempDir(c store.Child) bool {
+	switch adapter.Kind(c.Kind) {
+	case adapter.Image, adapter.Video, adapter.Research, adapter.News:
+	default:
+		return false
+	}
+	return filepath.IsAbs(c.Cwd) && filepath.Base(c.Cwd) == "work" && strings.HasPrefix(filepath.Base(filepath.Dir(c.Cwd)), "aggy-borrow-")
+}
+
+// remakeBorrowDir makes a finished borrow's temp dir again, for a session
+// that resumes in it, and returns what removes it. Each level must be new:
+// one already there may not be empty or the user's (a temp folder can be
+// shared), and a child must never start among files aggy did not vouch for.
+func remakeBorrowDir(cwd string) (func(), error) {
+	root := filepath.Dir(cwd)
+	if err := safefs.Mkdir(root, 0o700); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return nil, fmt.Errorf("%s is already there (another aggy has this borrow's session open, or one crashed); remove it to resume the session", termsafe.Line(root))
+		}
+		return nil, err
+	}
+	remove := func() { _ = safefs.RemoveAll(root) }
+	if err := safefs.Mkdir(cwd, 0o700); err != nil {
+		remove()
+		return nil, err
+	}
+	return remove, nil
 }
 
 // latestResumable finds the session --continue reopens: the interactive
@@ -512,8 +598,8 @@ func (c *childIDs) release(ctx context.Context) {
 // planRefresh is refreshChildren; a test swaps it to drop a child.
 var planRefresh = refreshChildren
 
-// childByPrefix returns the ids of the interactive children whose id
-// starts with prefix, and the parent of the last one.
+// childByPrefix returns the ids of the children, borrow children included,
+// whose id starts with prefix, and the parent of the last one.
 func childByPrefix(ctx context.Context, s *store.Store, prefix string) (store.Parent, []string, error) {
 	ps, err := s.Parents(ctx)
 	if err != nil {
@@ -527,7 +613,7 @@ func childByPrefix(ctx context.Context, s *store.Store, prefix string) (store.Pa
 			return store.Parent{}, nil, err
 		}
 		for _, c := range cs {
-			if c.Kind == "" && strings.HasPrefix(c.ID, prefix) {
+			if strings.HasPrefix(c.ID, prefix) {
 				par, found = p, append(found, c.ID)
 			}
 		}
