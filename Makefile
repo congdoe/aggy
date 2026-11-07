@@ -17,6 +17,8 @@ build:
 vet:
 	go vet ./...
 
+# 15m per package, an explicit margin: internal/cli is the slowest, about 8
+# minutes under -race. Keep it in step with .github/workflows/ci.yml.
 test: vet
 	go test -race -timeout 15m ./...
 

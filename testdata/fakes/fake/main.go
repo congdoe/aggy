@@ -1037,9 +1037,9 @@ func (f *fake) writeFiles() error {
 }
 
 // persistProjectTrust does what codex exec's thread/start does for a new
-// thread: with no trust decision for the cwd, in a git checkout, under a
-// sandbox that can write the cwd, it appends trust_level = "trusted" for the
-// main checkout to the user's config.toml, even under --ignore-user-config
+// thread: with no trust level for the cwd, in a git checkout, under a
+// sandbox that can write the cwd, it appends a project entry for the main
+// checkout to the user's config.toml, even under --ignore-user-config
 // (codex 6aaac69, app-server/src/request_processors/thread_processor.rs:1419,
 // git-utils/src/trust.rs). A decision can only come from a -c projects table
 // here: the fake reads no config.toml. The lookup tries the canonical cwd and

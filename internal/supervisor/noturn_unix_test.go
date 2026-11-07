@@ -39,7 +39,40 @@ func switchRunTurned(t *testing.T, vendor adapter.Vendor, more ...func(*Options)
 	return ts, c, done, sock
 }
 
-const noTurnNote = "will not type /exit into it"
+const (
+	noTurnNote = "will not type /exit into it"
+	noTurnLine = "quit claude yourself"
+	// switchQuietTest is switchRunOn's quiet gap.
+	switchQuietTest = 50 * time.Millisecond
+)
+
+// TestDrainSignals (T6938): a signal that arrives with the CLI's exit counts,
+// though the select may take the exit first; a resize or a suspend does not.
+func TestDrainSignals(t *testing.T) {
+	tests := []struct {
+		name string
+		sigs []os.Signal
+		want bool
+	}{
+		{"none", nil, false},
+		{"a resize and a suspend", []os.Signal{syscall.SIGWINCH, syscall.SIGTSTP}, false},
+		{"a terminate after a resize", []os.Signal{syscall.SIGWINCH, syscall.SIGTERM}, true},
+		{"a hangup", []os.Signal{syscall.SIGHUP}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ch := make(chan os.Signal, 4)
+			for _, sig := range tt.sigs {
+				ch <- sig
+			}
+			s := &session{}
+			s.drainSignals(ch)
+			if s.signalled != tt.want || len(ch) != 0 {
+				t.Errorf("signalled %v, %d left; want %v", s.signalled, len(ch), tt.want)
+			}
+		})
+	}
+}
 
 // TestSwitchNoTurnYet (T6893): until a turn end of the on-screen child is
 // counted, aggy never types the exit command, since a launch dialog may be
@@ -107,14 +140,61 @@ func TestSwitchNoTurnYet(t *testing.T) {
 		c.quit(0)
 		wantExit(t, done, Exit{SwitchTo: adapter.Codex, Next: Choice{Vendor: adapter.Codex}})
 	})
-	// Enter may only have answered a dialog: the first pick still shows the
-	// note, and quitting completes the switch. A second pick shows it again.
-	t.Run("Enter is no turn: the note shows, and again on a second pick", func(t *testing.T) {
+	// T6938: a turn may be running, so the output keeps coming and keys
+	// reach the CLI, with no key pressed first.
+	t.Run("a running first turn keeps its output", func(t *testing.T) {
+		ts, c, done, sock := switchRunOn(t, true, adapter.Claude)
+		ts.typeIn(t, "\x1c1")
+		// Past the quiet gap, when the notice shows, with no key pressed.
+		time.Sleep(5 * switchQuietTest)
+		c.print("STREAMED")
+		poll(t, "the CLI's output", []byte("STREAMED"), ts.screen)
+		poll(t, "the line", []byte(noTurnLine), ts.screen)
+		if strings.Contains(string(ts.screen()), noTurnNote) {
+			t.Error("the note opened during a turn")
+		}
+		ts.typeIn(t, "k")
+		c.waitGot(t, []byte("k"))
+		// The turn end still brings the offer.
+		ts.typeIn(t, "\x7f")
+		c.waitGot(t, []byte("k\x7f"))
+		_ = request(t, sock, stopLine)
+		poll(t, "the confirmation", []byte("-> codex. Ctrl+"), ts.screen)
+		confirm(t, ts)
+		c.waitGot(t, []byte("/exit\r"))
+		c.quit(0)
+		wantExit(t, done, Exit{SwitchTo: adapter.Codex, Next: Choice{Vendor: adapter.Codex}})
+	})
+	t.Run("the line draws with the cursor put back, and goes on a key", func(t *testing.T) {
+		ts, c, done, _ := switchRunOn(t, true, adapter.Claude)
+		ts.typeIn(t, "\x1c1")
+		poll(t, "the line", []byte(noTurnLine), ts.screen)
+		if !strings.Contains(string(ts.screen()), "\x1b7\x1b[24;1H") {
+			t.Errorf("no cursor save before the line: %q", ts.screen())
+		}
+		ts.clearScreen()
+		ts.typeIn(t, "k")
+		poll(t, "the erase", []byte("\x1b7\x1b[24;1H\x1b[2K\x1b8"), ts.screen)
+		c.waitGot(t, []byte("k"))
+		finish(t, c, done)
+	})
+	t.Run("told by the line, quitting completes the switch", func(t *testing.T) {
+		ts, c, done, _ := switchRunOn(t, true, adapter.Claude)
+		ts.typeIn(t, "\x1c1")
+		poll(t, "the line", []byte(noTurnLine), ts.screen)
+		noExit(t, c)
+		c.quit(0)
+		wantExit(t, done, Exit{SwitchTo: adapter.Codex, Next: Choice{Vendor: adapter.Codex}})
+	})
+	// Enter may only have answered a dialog, or started a turn: the first
+	// pick gets the line, and picking again, which says no turn is running,
+	// the note. Quitting completes the switch.
+	t.Run("Enter is no turn: the line shows, then the note on a second pick", func(t *testing.T) {
 		ts, c, done, _ := switchRunOn(t, false, adapter.Claude)
 		ts.typeIn(t, "\r")
 		c.waitGot(t, []byte("\r"))
 		ts.typeIn(t, "\x1c1")
-		note(t, ts)
+		poll(t, "the line", []byte(noTurnLine), ts.screen)
 		noExit(t, c)
 		ts.clearScreen()
 		ts.typeIn(t, "\x1c")
@@ -168,6 +248,7 @@ func TestSwitchNoTurnYet(t *testing.T) {
 		note(t, ts)
 		c.quit(137)
 		wantExit(t, done, Exit{Code: 137})
+		poll(t, "why", []byte("claude exited with code 137, so aggy did not switch to codex."), ts.screen)
 	})
 	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
 		t.Run("a forwarded "+sig.String()+" ends aggy, even at exit 0", func(t *testing.T) {
@@ -187,6 +268,7 @@ func TestSwitchNoTurnYet(t *testing.T) {
 			}
 			c.quit(0)
 			wantExit(t, done, Exit{})
+			poll(t, "why", []byte("claude was sent a signal through aggy, so aggy did not switch to codex."), ts.screen)
 		})
 	}
 	// A counted turn end ends the promise: the offer takes over the note, and
