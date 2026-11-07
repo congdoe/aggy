@@ -157,6 +157,19 @@ func (s *Store) SetChildActivity(ctx context.Context, childID string, active tim
 	return s.tx(ctx, func(tx *sql.Tx) error { return raise(ctx, tx, childID, active) })
 }
 
+// DeleteUnstartedChild removes an interactive child whose CLI never started: no
+// session file was ever seen for it and nothing holds a lease on it. It reports
+// whether it did. Only the index is touched.
+func (s *Store) DeleteUnstartedChild(ctx context.Context, childID string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM children WHERE id = ? AND kind = '' AND file_seen = 0 AND lease_nonce IS NULL`, childID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
 // SetChildFileSeen records that the child's session file was found.
 func (s *Store) SetChildFileSeen(ctx context.Context, childID string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE children SET file_seen = 1 WHERE id = ?`, childID)

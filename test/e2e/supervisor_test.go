@@ -133,6 +133,18 @@ func newWorld(t *testing.T) *world {
 	return w
 }
 
+// startedFiles are a CLI's session files, for a scenario whose next CLI, run
+// with the same scenario, really started, so a switch does not go back from it
+// (T6899): a session file under whichever vendor's home it runs with.
+func startedFiles() []map[string]any {
+	now := time.Now()
+	return []map[string]any{
+		{"path": "projects/p/{session_id}.jsonl", "content": "{}\n"},
+		{"path": "sessions/p/{session_id}/chat_history.jsonl", "content": "{}\n"},
+		{"path": "sessions/" + now.Format("2006/01/02") + "/rollout-x-{session_id}.jsonl", "content": "{}\n"},
+	}
+}
+
 // session is aggy running on the slave side of a test pseudo-terminal;
 // the test is the user's terminal on the master side.
 type session struct {

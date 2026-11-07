@@ -67,6 +67,10 @@ type target struct {
 	SameChild bool
 }
 
+// fromSwitch reports whether t is a switch's launch, which has a CLI to go back
+// to: a vendor in a parent, and not the same child again.
+func (t target) fromSwitch() bool { return t.ParentID != "" && t.Vendor != "" && !t.SameChild }
+
 // Errors launchCode gives their own reason code.
 var (
 	// errNoSession: no session has the id, or none here can be reopened.
@@ -178,7 +182,9 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 				shortID(par.ID), shortID(par.ID))
 			p.newParent = true
 		default:
-			p.parent = par
+			if p.parent, err = latestStarted(ctx, s, key, cwd, par); err != nil {
+				return p, err
+			}
 		}
 	}
 	if !p.newParent && replaced(p.parent) {
@@ -211,15 +217,25 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 	if err != nil {
 		return p, err
 	}
-	// The interactive child last on screen: the most recently active one,
-	// or the one picked by id.
-	var last *store.Child
+	// The interactive child last on screen: the most recently active one
+	// that ever started, or the one picked by id. One that never started
+	// counts only when no other does (T6899).
+	var last, unstarted *store.Child
 	for i := range children {
 		if (children[i].Kind == "" || borrowOK && children[i].ID == pick) && (pick == "" || children[i].ID == pick) &&
 			(t.Vendor == "" || children[i].Vendor == string(t.Vendor)) {
+			if pick == "" && neverStarted(children[i]) {
+				if unstarted == nil {
+					unstarted = &children[i]
+				}
+				continue
+			}
 			last = &children[i]
 			break
 		}
+	}
+	if last == nil {
+		last = unstarted
 	}
 	if last != nil && last.Kind != "" {
 		return p, p.borrowChild(cfg, t, *last, files)
@@ -265,6 +281,38 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 	p.child, p.resume = *last, last.VendorSessionID
 	p.child.Model = cfg.Vendors.For(v).Model
 	return p, nil
+}
+
+// neverStarted reports whether c, as refreshChildren left it, is an interactive
+// child with no session file now and none ever seen: its CLI closed at a launch
+// dialog, or before the first message. There is nothing to reopen.
+func neverStarted(c store.Child) bool {
+	return c.Kind == "" && c.Status == stateGone && !c.FileSeen
+}
+
+// latestStarted is the parent aggy resume reopens in dir: the most recently
+// active one with a child that ever started, else latest. A parent left only
+// with a child that never started must not hide the session before it (T6899).
+func latestStarted(ctx context.Context, s *store.Store, key, dir string, latest store.Parent) (store.Parent, error) {
+	ps, err := s.ParentsInDir(ctx, key, dir)
+	if err != nil {
+		return latest, err
+	}
+	for _, par := range ps {
+		if replaced(par) {
+			continue
+		}
+		children, err := planRefresh(ctx, s, par.ID, &sessionFiles{})
+		if err != nil {
+			return latest, err
+		}
+		for _, c := range children {
+			if c.Kind == "" && !neverStarted(c) {
+				return par, nil
+			}
+		}
+	}
+	return latest, nil
 }
 
 // borrowChild plans a finished borrow's child on screen (aggy resume <child

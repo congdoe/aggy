@@ -218,3 +218,41 @@ func TestSetChildSessionIDLeased(t *testing.T) {
 		}
 	}
 }
+
+// TestDeleteUnstartedChild (T6899): only a child with no file seen and no lease
+// goes; it is a no-op for one that has either.
+func TestDeleteUnstartedChild(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	t0 := time.UnixMilli(1_000_000).UTC()
+	if err := s.InsertParent(ctx, Parent{ID: "p1", Dir: "/a", CreatedAt: t0, LastActive: t0}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []Child{
+		{ID: "fresh", VendorSessionID: "sf"},
+		{ID: "seen", VendorSessionID: "ss"},
+		{ID: "leased", VendorSessionID: "sl"},
+	} {
+		c.ParentID, c.Vendor, c.Cwd, c.CreatedAt, c.LastActive = "p1", "grok", "/a", t0, t0
+		if err := s.InsertChild(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetChildFileSeen(ctx, "seen"); err != nil {
+		t.Fatal(err)
+	}
+	l, err := s.AcquireLease(ctx, "grok", "sl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Release(ctx) }()
+	for id, want := range map[string]bool{"fresh": true, "seen": false, "leased": false, "missing": false} {
+		if got, err := s.DeleteUnstartedChild(ctx, id); err != nil || got != want {
+			t.Errorf("%s: deleted %v, %v; want %v", id, got, err, want)
+		}
+	}
+	cs, err := s.Children(ctx, "p1")
+	if err != nil || len(cs) != 2 {
+		t.Errorf("children = %+v, %v", cs, err)
+	}
+}

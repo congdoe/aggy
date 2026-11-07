@@ -61,6 +61,12 @@ type sessionIndex struct {
 	rejected map[string]bool   // Codex: claims whose rollout is not the TUI's
 	seen     map[string]string // Codex: new rollouts the watch has seen, id to path
 	known    chan struct{}     // closed once an id is recorded
+
+	// watched is set while the sessions folder is watched: the folder, when
+	// the watch started, and the rollouts already there.
+	watchDir    string
+	watchStart  time.Time
+	watchBefore map[string]string
 }
 
 // maxClaims bounds the claims kept; a session sees one, plus one per
@@ -101,6 +107,26 @@ func (x *sessionIndex) hook(r supervisor.Request) {
 	}
 	x.mu.Unlock()
 	x.check()
+}
+
+// sawRollout reports whether a rollout that was not there at launch has shown
+// up, this CLI's or not. It looks once more itself, since a CLI can exit
+// between two polls.
+func (x *sessionIndex) sawRollout() bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if len(x.seen) > 0 {
+		return true
+	}
+	if x.watchDir == "" {
+		return false
+	}
+	for id := range codexRollouts(x.watchDir, x.watchStart, time.Now()) {
+		if _, old := x.watchBefore[id]; !old {
+			return true
+		}
+	}
+	return false
 }
 
 // saw records rollouts the watch found new (id to path), and checks the
@@ -218,9 +244,10 @@ func (x *sessionIndex) set(id, source, via string) {
 // known at launch (Claude's and Grok's pre-assigned or resumed one, a
 // resumed Codex thread) is recorded at once; otherwise, for Codex, it
 // starts the sessions folder watch. onID (may be nil) gets the recorded
-// id. stop ends the watch once the CLI has exited.
-func startIndex(parentID string, v adapter.Vendor, assigned string, onID func(string)) (onHook func(supervisor.Request), stop func()) {
-	x := newSessionIndex(parentID, v)
+// id. stop ends the watch once the CLI has exited. x is the index, to ask
+// what it saw.
+func startIndex(parentID string, v adapter.Vendor, assigned string, onID func(string)) (onHook func(supervisor.Request), stop func(), x *sessionIndex) {
+	x = newSessionIndex(parentID, v)
 	x.onID = onID
 	done := make(chan struct{})
 	if assigned != "" {
@@ -230,10 +257,11 @@ func startIndex(parentID string, v adapter.Vendor, assigned string, onID func(st
 		if dir, err := codexSessionsDir(); err == nil {
 			start := time.Now()
 			before := codexRollouts(dir, start, start)
+			x.watchDir, x.watchStart, x.watchBefore = dir, start, before
 			go x.watchCodex(dir, start, before, done)
 		}
 	}
-	return x.hook, func() { close(done) }
+	return x.hook, func() { close(done) }, x
 }
 
 // codexSessionsDir is the Codex home's sessions folder.

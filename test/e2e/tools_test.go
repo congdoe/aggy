@@ -149,6 +149,7 @@ func TestToolSessionSwitch(t *testing.T) {
 		"hook_command": askThenStop(t, adapter.Grok, ""),
 		"hooks": []map[string]any{{"event": "claude", "payload": map[string]any{}},
 			{"event": "Stop", "payload": map[string]any{"sessionId": "{session_id}"}}},
+		"session_files": startedFiles(),
 	}
 	s := w.start(t, sc, "run", "--tool", "context7", "grok")
 	s.waitWithin([]byte("-> claude. Ctrl+"), offerTimeout)
