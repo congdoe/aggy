@@ -114,6 +114,46 @@ func TestNoticesHoldNoOutput(t *testing.T) {
 		poll(t, "the note at the second turn's end", []byte("hit its limit"), func() []byte { return ts.screen()[mark:] })
 		finish(t, c, done)
 	})
+	t.Run("a message queued with Tab", func(t *testing.T) {
+		ch := make(chan LimitHit, 1)
+		ts, c, done, sock := switchRunTurned(t, adapter.Codex, limitOpts(ch, adapter.Grok), func(*Options) { queuedQuiet = time.Hour })
+		ts.typeIn(t, "first\r")
+		c.waitGot(t, []byte("first\r"))
+		ts.typeIn(t, "second\t")
+		c.waitGot(t, []byte("second\t"))
+		_ = request(t, sock, codexStop)
+		ch <- LimitHit{Vendor: adapter.Codex}
+		streams(t, ts, c, "hit its limit")
+		_ = request(t, sock, codexStop)
+		poll(t, "the note at the second turn's end", []byte("hit its limit"), ts.screen)
+		finish(t, c, done)
+	})
+	t.Run("a bare Tab during a turn queues nothing", func(t *testing.T) {
+		ch := make(chan LimitHit, 1)
+		ts, c, done, sock := switchRunTurned(t, adapter.Codex, limitOpts(ch, adapter.Grok), func(*Options) { queuedQuiet = time.Hour })
+		ts.typeIn(t, "first\r")
+		c.waitGot(t, []byte("first\r"))
+		ts.typeIn(t, "\t")
+		c.waitGot(t, []byte("\t"))
+		_ = request(t, sock, codexStop)
+		ch <- LimitHit{Vendor: adapter.Codex}
+		poll(t, "the note", []byte("hit its limit"), ts.screen)
+		finish(t, c, done)
+	})
+	t.Run("a bare Enter inside the wait: the quiet gap still releases", func(t *testing.T) {
+		ch := make(chan LimitHit, 1)
+		ts, c, done, sock := switchRunTurned(t, adapter.Claude, limitOpts(ch))
+		ts.typeIn(t, "first\r")
+		c.waitGot(t, []byte("first\r"))
+		ts.typeIn(t, "second\r")
+		c.waitGot(t, []byte("second\r"))
+		_ = request(t, sock, stopLine)
+		ts.typeIn(t, "\r")
+		time.Sleep(10 * time.Millisecond)
+		ch <- LimitHit{Vendor: adapter.Claude}
+		poll(t, "the note after the gap", []byte("hit its limit"), ts.screen)
+		finish(t, c, done)
+	})
 	t.Run("a queued message that started nothing: the quiet gap releases", func(t *testing.T) {
 		ch := make(chan LimitHit, 1)
 		ts, c, done, sock := switchRunTurned(t, adapter.Claude, limitOpts(ch))
@@ -192,7 +232,8 @@ func TestNoTurnNoteFits(t *testing.T) {
 }
 
 // TestSignalStopsConfirmedSwitch (T6941): a signal to aggy never leads to the
-// next CLI, in either order against the key that confirms the switch.
+// next CLI, and once it has one nothing is typed: a note says why and the CLI,
+// which survived, stays. Each row is a point the signal can land at.
 func TestSignalStopsConfirmedSwitch(t *testing.T) {
 	signal := func(t *testing.T, c *fakeChild) {
 		t.Helper()
@@ -205,16 +246,10 @@ func TestSignalStopsConfirmedSwitch(t *testing.T) {
 			t.Fatal("the signal was not passed on")
 		}
 	}
-	for _, tt := range []struct {
-		name          string
-		beforeConfirm bool
-	}{
-		{"taken before the confirmation", true},
-		{"taken while the picked session is checked", false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, at := range []string{"before the offer", "with the offer up", "while the picked session is checked"} {
+		t.Run(at, func(t *testing.T) {
 			entered, release := make(chan struct{}, 1), make(chan struct{})
-			ts, c, done, _ := switchRunTurned(t, adapter.Claude, func(o *Options) {
+			ts, c, done, sock := switchRunTurned(t, adapter.Claude, func(o *Options) {
 				o.Children = func(v adapter.Vendor) []ChildChoice {
 					if v == adapter.Grok {
 						return []ChildChoice{{"g2", "latest"}, {"g1", "older"}}
@@ -222,35 +257,43 @@ func TestSignalStopsConfirmedSwitch(t *testing.T) {
 					return nil
 				}
 				o.HasChild = func(adapter.Vendor, string) bool {
-					select {
-					case entered <- struct{}{}:
-					default:
-					}
+					entered <- struct{}{}
 					<-release
 					return true
 				}
 			})
+			defer close(release)
+			if at == "before the offer" {
+				ts.typeIn(t, "go\r")
+				c.waitGot(t, []byte("go\r"))
+			}
 			ts.typeIn(t, "\x1c2")
 			poll(t, "the child list", []byte("which session?"), ts.screen)
 			ts.typeIn(t, "2")
-			poll(t, "the confirmation", []byte("-> grok"), ts.screen)
-			if tt.beforeConfirm {
+			switch at {
+			case "before the offer":
+				poll(t, "the list to close", []byte(altScreenOff), ts.screen)
 				signal(t, c)
-			}
-			confirm(t, ts)
-			select {
-			case <-entered:
-			case <-time.After(waitLimit):
-				t.Fatal("the confirmation was not taken")
-			}
-			if !tt.beforeConfirm {
+				_ = request(t, sock, stopLine)
+			case "with the offer up":
+				poll(t, "the confirmation", []byte("-> grok"), ts.screen)
 				signal(t, c)
+				confirm(t, ts)
+			default:
+				poll(t, "the confirmation", []byte("-> grok"), ts.screen)
+				confirm(t, ts)
+				select {
+				case <-entered:
+				case <-time.After(waitLimit):
+					t.Fatal("the confirmation was not taken")
+				}
+				signal(t, c)
+				release <- struct{}{}
 			}
-			close(release)
-			c.waitGot(t, []byte("/exit\r"))
+			poll(t, "why", []byte("aggy was sent a signal, so it will not switch to grok."), ts.screen)
+			never(t, "the exit command", []byte("/exit"), c.received, 100*time.Millisecond)
 			c.quit(0)
 			wantExit(t, done, Exit{})
-			poll(t, "why", []byte("aggy was sent a signal, so aggy did not switch to grok."), ts.screen)
 		})
 	}
 }

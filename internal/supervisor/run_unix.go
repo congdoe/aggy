@@ -781,9 +781,15 @@ func (s *session) send(b []byte) {
 		// an approval or a menu, which most turns have.
 		if !s.atPrompt && (s.dirty || !bareEnter(b)) {
 			s.queued++
+			s.queuedWait = false
 		}
-		s.queuedWait = false
 		s.atPrompt, s.toldDirty = false, false // an Enter may start a turn
+	} else if !s.atPrompt && tabKey.Match(b) && (s.dirty || string(tabKey.Find(b)) != string(b)) {
+		// Tab with text queues a message on Codex during a turn:
+		// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/chat_composer.rs#L3531
+		// It may do something else elsewhere; the quiet gap covers that.
+		s.queued++
+		s.queuedWait = false
 	}
 	for _, c := range b {
 		s.compose(c)
@@ -796,6 +802,9 @@ func (s *session) send(b []byte) {
 // modifiers or event type) and in xterm's modifyOtherKeys (CSI 27 ; m ; 13 ~).
 // Which encoding Claude's and Grok's terminals are put in is unverified.
 var csiEnter = regexp.MustCompile(`\x1b\[((13|57414)(:[0-9]*)*(;[0-9:]*)*u|27;[0-9]+;13~)`)
+
+// tabKey matches Tab, plain or in the kitty keyboard protocol.
+var tabKey = regexp.MustCompile(`\t|\x1b\[9(;[0-9:]*)?u`)
 
 // bareEnter reports whether b is one Enter and nothing else.
 func bareEnter(b []byte) bool {
@@ -818,7 +827,7 @@ func (s *session) releaseQueued() {
 		return
 	}
 	s.queued, s.queuedWait = 0, false
-	s.atPrompt = !s.held
+	s.atPrompt, s.inputSinceTurn = !s.held, false
 }
 
 // terminalReport reports whether b is only replies a terminal sends a CLI that
@@ -944,6 +953,9 @@ func (s *session) offerSwitch() {
 		return
 	}
 	if s.turnRan && !s.atPrompt {
+		return
+	}
+	if s.refuseSignalled() {
 		return
 	}
 	if now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
@@ -1175,6 +1187,23 @@ func (s *session) exitSwitches(code int) bool {
 	case <-time.After(childCheckWait):
 		return true // the launch's plan checks it again
 	}
+}
+
+// refuseSignalled drops a waiting switch once aggy has got a signal, before
+// anything is typed, and says why. The CLI, which survived the signal, stays.
+func (s *session) refuseSignalled() bool {
+	if !s.signalled {
+		return false
+	}
+	what := "switch to " + string(s.sw.to)
+	if s.sw.resume {
+		what = "resume " + string(s.sw.to)
+	}
+	s.log(diag.Rec{Event: diag.EvSwitchCancelled, Cause: s.sw.rec, Attrs: map[string]any{"how": "signalled", "to": string(s.sw.to)}})
+	s.setSwitch(pendingSwitch{})
+	s.pk.tell(fmt.Sprintf("aggy was sent a signal, so it will not %s.", what), "Open aggy again to switch.")
+	s.openPicker()
+	return true
 }
 
 // signalStops records and says that a signal stopped the waiting switch, and
@@ -1501,6 +1530,9 @@ type childCheck struct {
 // recorded (T6770): the picker's list may be stale, and launching a
 // session that is gone would fail after the CLI on screen has exited.
 func (s *session) confirmSwitch() {
+	if s.refuseSignalled() {
+		return
+	}
 	id, v := s.sw.choice.Child, s.sw.to
 	if id == "" || s.o.HasChild == nil {
 		s.typeExit()
@@ -1552,6 +1584,9 @@ func (s *session) childChecked(r childCheck) {
 // first item is "Switch to <model>" (unverified live), and turnRan does not
 // guard that: the Enter after the exit command could land on it.
 func (s *session) typeExit() {
+	if s.refuseSignalled() {
+		return
+	}
 	switch {
 	case !s.turnRan:
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeNoTurnYet, Cause: s.sw.rec, Msg: "the switch key was pressed, but no turn has ended since the CLI launched"})
