@@ -132,13 +132,16 @@ var credDirs = []struct {
 // openCodeFiles names the database OpenCode 2.2.5 keeps logins and sessions in,
 // and what sits beside it: packages/cli/src/database-path.ts, and the import
 // in packages/core/src/database/migration/*_import_legacy_credentials.ts.
-var openCodeFiles = []string{"opencode.db", "opencode.db-wal", "opencode.db-shm", "auth.json"}
+var openCodeFiles = []string{"opencode.db", "opencode.db-wal", "opencode.db-shm", "opencode.db-journal", "auth.json"}
 
 // isChannelDB reports a channel build's database, opencode-<channel>.db and
 // its companions. normPath has already folded a name where case is ignored.
 func isChannelDB(base string) bool {
-	return strings.HasPrefix(base, "opencode-") && (strings.HasSuffix(base, ".db") || strings.HasSuffix(base, ".db-wal") || strings.HasSuffix(base, ".db-shm"))
+	return strings.HasPrefix(base, "opencode-") && (strings.HasSuffix(base, ".db") || strings.HasSuffix(base, ".db-wal") || strings.HasSuffix(base, ".db-shm") || strings.HasSuffix(base, ".db-journal"))
 }
+
+// listDir lists a folder, for idMatch. A test counts its calls.
+var listDir = os.ReadDir
 
 // openCodeDirs lists the folders OpenCode's data may be in: one for each
 // home, and $XDG_DATA_HOME's. A relative $XDG_DATA_HOME is taken as it is,
@@ -190,9 +193,10 @@ func homeDirs() ([]string, error) {
 // guard is the deny list for one call. It is rebuilt each call because the
 // environment can change.
 type guard struct {
-	paths []string      // credential paths, normalized by normPath
-	dbs   []string      // folders where a channel's database counts too, normalized
-	ids   []fs.FileInfo // identities of the credential files that exist
+	paths  []string      // credential paths, normalized by normPath
+	dbs    []string      // folders where a channel's database counts too, normalized
+	dbDirs []string      // the same, as they are, to list for idMatch
+	ids    []fs.FileInfo // identities of the credential files that exist
 }
 
 func loadGuard() (*guard, error) {
@@ -200,66 +204,72 @@ func loadGuard() (*guard, error) {
 	if err != nil {
 		return nil, err
 	}
-	var creds []string
+	var folders []credFolder
 	for _, c := range credDirs {
-		var dirs []string
 		for _, h := range homes {
-			dirs = append(dirs, filepath.Join(h, c.dir))
+			folders = append(folders, credFolder{filepath.Join(h, c.dir), c.files})
 		}
 		if v := os.Getenv(c.env); v != "" {
 			if !filepath.IsAbs(v) {
 				return nil, fmt.Errorf("%w: %s=%q is not an absolute path", ErrLocate, c.env, v)
 			}
-			dirs = append(dirs, filepath.Clean(v))
-		}
-		for _, d := range dirs {
-			for _, f := range c.files {
-				creds = append(creds, filepath.Join(d, f))
-			}
+			folders = append(folders, credFolder{filepath.Clean(v), c.files})
 		}
 	}
 	g := &guard{}
 	for _, d := range openCodeDirs(homes) {
-		for _, f := range openCodeFiles {
-			creds = append(creds, filepath.Join(d, f))
-		}
+		folders = append(folders, credFolder{d, openCodeFiles})
 		g.dbs = append(g.dbs, normPath(d))
-		if r, err := resolveExisting(d); err == nil {
-			g.dbs = append(g.dbs, normPath(r))
-		}
-		// Names and metadata only, so a channel's file has an identity too.
-		if es, err := os.ReadDir(d); err == nil {
-			for _, e := range es {
-				if isChannelDB(normPath(e.Name())) {
-					creds = append(creds, filepath.Join(d, e.Name()))
-				}
-			}
-		}
+		g.dbDirs = append(g.dbDirs, d)
 	}
 	if v := os.Getenv("OPENCODE_DB"); v != "" && v != ":memory:" {
 		// A relative name is taken from the data folder.
+		names := func(base string) []string { return []string{base, base + "-wal", base + "-shm"} }
 		if filepath.IsAbs(v) {
-			creds = append(creds, filepath.Clean(v), filepath.Clean(v)+"-wal", filepath.Clean(v)+"-shm")
+			v = filepath.Clean(v)
+			folders = append(folders, credFolder{filepath.Dir(v), names(filepath.Base(v))})
 		} else {
 			for _, d := range openCodeDirs(homes) {
-				creds = append(creds, filepath.Join(d, v), filepath.Join(d, v)+"-wal", filepath.Join(d, v)+"-shm")
+				full := filepath.Join(d, v)
+				folders = append(folders, credFolder{filepath.Dir(full), names(filepath.Base(full))})
 			}
 		}
 	}
-	for _, p := range creds {
-		g.paths = append(g.paths, normPath(p))
-		if d, err := resolveExisting(filepath.Dir(p)); err == nil {
-			g.paths = append(g.paths, normPath(filepath.Join(d, filepath.Base(p))))
+	for _, f := range folders {
+		real, realErr := resolveExisting(f.dir)
+		if realErr == nil && real != f.dir {
+			// A channel's database counts in the folder by either name.
+			if slices.Contains(g.dbDirs, f.dir) {
+				g.dbs = append(g.dbs, normPath(real))
+			}
 		}
-		// Metadata only: these calls never read the file's contents.
-		if fi, err := os.Lstat(p); err == nil {
-			g.ids = append(g.ids, fi)
-		}
-		if fi, err := os.Stat(p); err == nil {
-			g.ids = append(g.ids, fi)
+		// A folder that is not there holds no file with an identity to
+		// keep. Metadata only: these calls never read a file's contents.
+		_, dirErr := os.Stat(f.dir)
+		for _, name := range f.files {
+			p := filepath.Join(f.dir, name)
+			g.paths = append(g.paths, normPath(p))
+			if realErr == nil {
+				g.paths = append(g.paths, normPath(filepath.Join(real, name)))
+			}
+			if dirErr != nil {
+				continue
+			}
+			if fi, err := os.Lstat(p); err == nil {
+				g.ids = append(g.ids, fi)
+			}
+			if fi, err := os.Stat(p); err == nil {
+				g.ids = append(g.ids, fi)
+			}
 		}
 	}
 	return g, nil
+}
+
+// credFolder is a folder and the credential files in it.
+type credFolder struct {
+	dir   string
+	files []string
 }
 
 // pathMatch reports whether path names a credential file, or a path
@@ -403,6 +413,27 @@ func (g *guard) idMatch(fi fs.FileInfo) bool {
 	for _, id := range g.ids {
 		if os.SameFile(id, fi) {
 			return true
+		}
+	}
+	// A file reached by its own name in a channel's folder is caught by
+	// pathMatch. The folder is listed only for a file with a second name,
+	// which is rare, since a channel's name cannot be known in advance: a
+	// listing on every call doubled the cost of every safefs call.
+	if linkCount(fi) <= 1 {
+		return false
+	}
+	for _, d := range g.dbDirs {
+		es, err := listDir(d)
+		if err != nil {
+			continue
+		}
+		for _, e := range es {
+			if !isChannelDB(normPath(e.Name())) {
+				continue
+			}
+			if id, err := os.Lstat(filepath.Join(d, e.Name())); err == nil && os.SameFile(id, fi) {
+				return true
+			}
 		}
 	}
 	return false
