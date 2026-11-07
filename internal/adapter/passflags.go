@@ -255,16 +255,23 @@ func (p PassFlags) checkPassed(args []string, i *int, name, val string, hasVal, 
 	return loosens, nil
 }
 
-// AnyValue is the Check of a flag that takes any value, listed in Checked so
-// its value is read here, also when stuck to a short flag.
-func AnyValue(string) error { return nil }
+// AnyValue is the Check of a flag that takes any value but another flag: listed
+// in Checked, its next word is its value, so --enable --yolo must not hide a flag
+// from the checks. A real value that starts with - is refused with it, and the
+// message says so.
+func AnyValue(val string) error {
+	if strings.HasPrefix(val, "-") {
+		return fmt.Errorf("%q looks like a flag where aggy wants this flag's value", val)
+	}
+	return nil
+}
 
 // CheckAgents reads an --agents value, which defines subagents inline, through
-// the JSON decoder, so an escape cannot hide a word. Every value of a key that
-// normalizes to permissionMode goes through checkMode, and bypassPermissions as
-// any other string counts too. All of a repeated key is seen, since CLIs differ
-// on which wins. A value that is not a JSON object, such as a file's path, cannot
-// be inspected, so it loosens as far as aggy can tell.
+// the JSON decoder, so an escape cannot hide a word. The value of every key that
+// normalizes to permissionMode, at any depth, goes through checkMode, and
+// bypassPermissions as any string counts too. All of a repeated key is seen, since
+// CLIs differ on which wins. A value that is not a JSON object, such as a file's
+// path, cannot be inspected, so it loosens as far as aggy can tell.
 func CheckAgents(val string, checkMode func(string) error) error {
 	gated := fmt.Errorf("--agents: %w", ErrLoosens)
 	// The decoder's Token takes text cut short for a clean end.
@@ -276,6 +283,15 @@ func CheckAgents(val string, checkMode func(string) error) error {
 	if d, ok := first.(json.Delim); err != nil || !ok || d != '{' {
 		return gated
 	}
+	// One frame per open container, so a word is a key only where a key goes:
+	// a value that says permissionMode is a value.
+	type frame struct{ object, wantKey bool }
+	stack := []frame{{object: true, wantKey: true}}
+	valueDone := func() {
+		if n := len(stack); n > 0 && stack[n-1].object {
+			stack[n-1].wantKey = true
+		}
+	}
 	afterMode := false
 	for {
 		tok, err := dec.Token()
@@ -285,17 +301,29 @@ func CheckAgents(val string, checkMode func(string) error) error {
 		if err != nil {
 			return gated
 		}
+		d, isDelim := tok.(json.Delim)
+		if isDelim && (d == '}' || d == ']') {
+			stack = stack[:len(stack)-1]
+			valueDone()
+			continue
+		}
 		s, isString := tok.(string)
 		if isString && strings.EqualFold(s, "bypassPermissions") {
 			return gated
 		}
-		if afterMode {
-			if !isString || checkMode(s) != nil {
-				return gated
-			}
-			afterMode = false
+		if top := &stack[len(stack)-1]; top.object && top.wantKey {
+			top.wantKey = false
+			afterMode = strings.EqualFold(strings.NewReplacer("-", "", "_", "").Replace(s), "permissionMode")
 			continue
 		}
-		afterMode = isString && strings.EqualFold(strings.NewReplacer("-", "", "_", "").Replace(s), "permissionMode")
+		if afterMode && (!isString || checkMode(s) != nil) {
+			return gated
+		}
+		afterMode = false
+		if isDelim {
+			stack = append(stack, frame{object: d == '{', wantKey: d == '{'})
+			continue
+		}
+		valueDone()
 	}
 }

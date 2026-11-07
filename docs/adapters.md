@@ -654,8 +654,8 @@ it is `--flag=value`.
   `code_mode_only`), and `-c` of any key but a short list that changes only display
   and reasoning, or `features.<name>=false` that `--disable` would pass; Grok
   `--always-approve`, `--trust` and `--trust-folder` (they persist hook trust), any
-  flag naming `approve`, `approval`, `yolo`, `bypass`, `no-sandbox`, or
-  `skip-permission`, any `--permission-mode` but `plan` or `default`, and any
+  flag naming `approve`, `approval`, `yolo`, `bypass`, `no-sandbox`,
+  `skip-permission`, `trust`, `unsafe`, or `insecure`, any `--permission-mode` but `plan` or `default`, and any
   `--sandbox` but `strict`.
 - `--agents` on Claude and Grok is decoded as JSON: refused unless `--no-policy`
   when any `permissionMode` is one that vendor's `--permission-mode` table gates
@@ -665,9 +665,12 @@ it is `--flag=value`.
 - `--add-dir` on Codex and Grok is judged at launch, in `internal/cli`, since an
   adapter touches no disk: resolved against the directory the CLI starts in (the
   child's on a resume), and refused unless `--no-policy` when it is, holds, or is
-  inside a home's key folders or a vendor's config folder
+  inside a home's key folders (`.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`,
+  `.config/gh`, `.config/gcloud`), a vendor's config folder, or aggy's own state,
+  except a borrow's worktree in it
   (`safefs.HoldsSecrets`, which compares paths the way safefs does: symlinks, case,
-  the macOS firmlink). A value aggy cannot make a path of counts.
+  the macOS firmlink). A value aggy cannot make a path of or resolve counts, and
+  the message says so.
 - Passed, with a line at launch: Codex `--profile` and `--enable`, since forcing
   `--no-policy` to keep a daily profile drops the whole safety policy, which is less
   safe than a noted pass (whether aggy's rules file applies under a profile is
