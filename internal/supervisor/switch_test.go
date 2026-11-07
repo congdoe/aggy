@@ -215,7 +215,7 @@ func TestSwitchHolds(t *testing.T) {
 // TestSwitchConfirmEscStays: Esc at the confirmation types nothing and
 // drops the switch.
 func TestSwitchConfirmEscStays(t *testing.T) {
-	ts, c, done, _ := switchRun(t, false) // at the prompt from launch
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude) // at the prompt from launch
 	ts.typeIn(t, "\x1c2")
 	poll(t, "the confirmation", []byte("-> grok. Ctrl+"), ts.screen)
 	ts.typeIn(t, "\x1b")
@@ -232,7 +232,7 @@ func TestSwitchConfirmEscStays(t *testing.T) {
 // Enter, aggy never offers the confirmation; neither Enter nor the switch
 // key types /exit, and keys typed at the note reach the CLI.
 func TestSwitchBlockedByUnsentText(t *testing.T) {
-	ts, c, done, _ := switchRun(t, false)
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
 	ts.typeIn(t, "half a prompt")
 	c.waitGot(t, []byte("half a prompt"))
 	ts.typeIn(t, "\x1c2")
@@ -250,7 +250,7 @@ func TestSwitchBlockedByUnsentText(t *testing.T) {
 // user pauses typing takes neither their keys nor their Enter: the keys
 // reach the CLI as typed, and the switch key within the guard is ignored.
 func TestSwitchPromptReturnsKeys(t *testing.T) {
-	ts, c, done, _ := switchRun(t, false)
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
 	old := confirmGuard
 	confirmGuard = time.Hour
 	t.Cleanup(func() { confirmGuard = old })
@@ -271,7 +271,7 @@ func TestSwitchPromptReturnsKeys(t *testing.T) {
 // TestSwitchLateExit (S-4): a CLI that exits after exitWait is still
 // switched from, and the user was told it had not exited yet.
 func TestSwitchLateExit(t *testing.T) {
-	ts, c, done, _ := switchRun(t, false)
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
 	ts.typeIn(t, "\x1c1")
 	poll(t, "the confirmation", []byte("-> codex. Ctrl+"), ts.screen)
 	confirm(t, ts)
@@ -287,7 +287,7 @@ func TestSwitchLateExit(t *testing.T) {
 // TestSwitchCancelAfterExitTyped (S-4): Esc in the picker after /exit was
 // typed cancels the switch, so the CLI's exit ends aggy.
 func TestSwitchCancelAfterExitTyped(t *testing.T) {
-	ts, c, done, _ := switchRun(t, false)
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
 	ts.typeIn(t, "\x1c1")
 	poll(t, "the confirmation", []byte("-> codex. Ctrl+"), ts.screen)
 	confirm(t, ts)
@@ -330,7 +330,7 @@ func TestSwitchRequest(t *testing.T) {
 // TestSwitchRepickKeepsUnsentText (S-8): picking the waiting vendor again
 // does not clear unsent text, so the switch key never sends draft+/exit.
 func TestSwitchRepickKeepsUnsentText(t *testing.T) {
-	ts, c, done, _ := switchRun(t, false)
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
 	ts.typeIn(t, "half a draft")
 	c.waitGot(t, []byte("half a draft"))
 	ts.typeIn(t, "\x1c2")
@@ -370,7 +370,7 @@ func TestSwitchNeedsChildStop(t *testing.T) {
 // key opens the list, as the note says, and neither it nor the Esc that
 // cancels reaches the CLI.
 func TestSwitchKeyAtNoteOpensList(t *testing.T) {
-	ts, c, done, _ := switchRun(t, false)
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
 	ts.typeIn(t, "\x1c1")
 	poll(t, "the confirmation", []byte("-> codex. Ctrl+"), ts.screen)
 	confirm(t, ts)
@@ -389,7 +389,7 @@ func TestSwitchKeyAtNoteOpensList(t *testing.T) {
 // TestSwitchSplitEscHandedBack (S-11): an Esc that starts a longer key
 // at a confirmation is handed to the CLI whole and does not cancel.
 func TestSwitchSplitEscHandedBack(t *testing.T) {
-	ts, c, done, _ := switchRun(t, false)
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
 	old := escTimeout
 	escTimeout = time.Second
 	t.Cleanup(func() { escTimeout = old })
@@ -410,7 +410,7 @@ func TestSwitchSplitEscHandedBack(t *testing.T) {
 // switches screens or clears the CLI's, so a pending approval stays in
 // view.
 func TestSwitchConfirmKeepsScreen(t *testing.T) {
-	ts, c, done, _ := switchRun(t, false)
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
 	c.print("APPROVE? 1. Yes 2. No")
 	poll(t, "the CLI", []byte("APPROVE?"), ts.screen)
 	ts.typeIn(t, "\x1c2")
@@ -537,7 +537,7 @@ func TestSendDirty(t *testing.T) {
 // re-pick and the switch key, never types /exit.
 func TestSwitchMultilineDraft(t *testing.T) {
 	for _, nl := range [][]string{{"\x1b\r"}, {"\\\r"}, {"\\", "\r"}} {
-		ts, c, done, _ := switchRun(t, false)
+		ts, c, done, _ := switchRunTurned(t, adapter.Claude)
 		ts.typeIn(t, "line one")
 		c.waitGot(t, []byte("line one"))
 		for _, k := range nl {
@@ -566,7 +566,7 @@ func TestSwitchMultilineDraft(t *testing.T) {
 // switch-request's brief reach the caller with the switch; an agent's
 // new session or model is refused, as the user's choice.
 func TestSwitchOptionsCarried(t *testing.T) {
-	ts, c, done, _ := switchRun(t, false)
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
 	ts.typeIn(t, "\x1c")
 	poll(t, "the list", []byte("aggy: switch vendor"), ts.screen)
 	for _, k := range []string{"b", "m", "gpt-x", "\r"} {
@@ -581,7 +581,7 @@ func TestSwitchOptionsCarried(t *testing.T) {
 	c.quit(0)
 	wantExit(t, done, Exit{SwitchTo: adapter.Codex, Next: Choice{Vendor: adapter.Codex, Model: "gpt-x", Brief: true}})
 
-	ts, c, done, sock := switchRun(t, false)
+	ts, c, done, sock := switchRunTurned(t, adapter.Claude)
 	for _, bad := range []string{
 		`{"type":"switch-request","vendor":"grok","new":true,"model":"g-1","brief":true}`,
 		`{"type":"switch-request","vendor":"grok","new":true}`,
@@ -607,7 +607,7 @@ func TestSwitchOptionsCarried(t *testing.T) {
 
 	// An agent's tools are shown in the confirmation the user answers,
 	// and reach the next launch only.
-	ts, c, done, sock = switchRun(t, false)
+	ts, c, done, sock = switchRunTurned(t, adapter.Claude)
 	if r := request(t, sock, `{"type":"switch-request","vendor":"grok","tools":["context7","codegraph"]}`); !strings.Contains(r, `"ok":true`) {
 		t.Fatalf("reply %q", r)
 	}

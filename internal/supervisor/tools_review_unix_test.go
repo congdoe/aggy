@@ -45,7 +45,7 @@ func pastDouble(d time.Duration) { time.Sleep(d + 200*time.Millisecond) }
 func TestReviewPendingPressOverOffer(t *testing.T) {
 	const double = 300 * time.Millisecond
 	ft := &fakeTools{}
-	ts, c, done, sock := switchRunOn(t, false, adapter.Claude, func(o *Options) {
+	ts, c, done, sock := switchRunTurned(t, adapter.Claude, func(o *Options) {
 		o.Tools, o.ToolsAtLaunch = ft.get, ToolSet{}
 		o.DoublePress = double
 	})
@@ -66,7 +66,7 @@ func TestReviewPendingPressOverOffer(t *testing.T) {
 // switch-request, the path that predates T6729.
 func TestReviewPendingPressOverAgentAsk(t *testing.T) {
 	const double = 300 * time.Millisecond
-	ts, c, done, sock := switchRunOn(t, false, adapter.Claude, func(o *Options) { o.DoublePress = double })
+	ts, c, done, sock := switchRunTurned(t, adapter.Claude, func(o *Options) { o.DoublePress = double })
 	ts.typeIn(t, "\x1c")
 	_ = request(t, sock, `{"type":"switch-request","vendor":"grok"}`)
 	poll(t, "the offer", []byte("-> grok"), ts.screen)
@@ -83,7 +83,7 @@ func TestReviewPendingPressOverAgentAsk(t *testing.T) {
 func TestReviewCodexNoteDoublePress(t *testing.T) {
 	const double = 300 * time.Millisecond
 	ft := &fakeTools{}
-	ts, c, done, sock := switchRunOn(t, false, adapter.Codex, func(o *Options) {
+	ts, c, done, sock := switchRunTurned(t, adapter.Codex, func(o *Options) {
 		o.Tools, o.ToolsAtLaunch = ft.get, ToolSet{}
 		o.DoublePress = double
 	})
@@ -106,7 +106,7 @@ func TestReviewCodexNoteDoublePress(t *testing.T) {
 func TestReviewNoteKeyGuard(t *testing.T) {
 	old := confirmGuard
 	ft := &fakeTools{}
-	ts, c, done, sock := switchRunOn(t, false, adapter.Codex, func(o *Options) {
+	ts, c, done, sock := switchRunTurned(t, adapter.Codex, func(o *Options) {
 		o.Tools, o.ToolsAtLaunch = ft.get, ToolSet{}
 	})
 	confirmGuard = time.Hour // set after switchRunOn, restored by its cleanup
@@ -124,7 +124,7 @@ func TestReviewNoteKeyGuard(t *testing.T) {
 func TestReviewLimitBeatsResume(t *testing.T) {
 	ch := make(chan LimitHit, 1)
 	ft := &fakeTools{}
-	ts, c, done, sock := switchRunOn(t, false, adapter.Claude, limitOpts(ch, adapter.Grok), func(o *Options) {
+	ts, c, done, sock := switchRunTurned(t, adapter.Claude, limitOpts(ch, adapter.Grok), func(o *Options) {
 		o.Tools, o.ToolsAtLaunch = ft.get, ToolSet{}
 	})
 	widen(t, ts)
@@ -202,7 +202,7 @@ func TestReviewRevertClosesNote(t *testing.T) {
 func TestReviewOneOfferPerTurnEnd(t *testing.T) {
 	ft := &fakeTools{}
 	slow := func() (ToolSet, error) { time.Sleep(50 * time.Millisecond); return ft.get() }
-	ts, c, done, sock := switchRunOn(t, false, adapter.Claude, func(o *Options) { o.Tools, o.ToolsAtLaunch = slow, ToolSet{} })
+	ts, c, done, sock := switchRunTurned(t, adapter.Claude, func(o *Options) { o.Tools, o.ToolsAtLaunch = slow, ToolSet{} })
 	ft.put(ToolSet{"context7": "mcp"})
 	_ = request(t, sock, toolsLine)
 	poll(t, "the offer", []byte("same session -> claude"), ts.screen)
@@ -257,7 +257,7 @@ func TestReviewStaleToolRead(t *testing.T) {
 		}
 		return ToolSet{"context7": "mcp"}, nil
 	}
-	ts, c, done, sock := switchRunOn(t, false, adapter.Claude, func(o *Options) {
+	ts, c, done, sock := switchRunTurned(t, adapter.Claude, func(o *Options) {
 		o.Tools, o.ToolsAtLaunch = tools, ToolSet{}
 	})
 	_ = request(t, sock, toolsLine) // stuck
