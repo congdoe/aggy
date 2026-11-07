@@ -331,7 +331,7 @@ func TestTrustPatch(t *testing.T) {
 func TestTrustUsage(t *testing.T) {
 	repo, _ := openCodeWorld(t)
 	var out, errb bytes.Buffer
-	for _, args := range [][]string{{}, {repo}, {"--opencode"}, {"--opencode", repo, "extra"}, {"--bogus", repo}} {
+	for _, args := range [][]string{{}, {"--opencode"}, {"--opencode", repo, "extra"}, {"--bogus", repo}} {
 		if code := runTrust(args, &out, &errb); code != 2 {
 			t.Errorf("%q: code %d", args, code)
 		}

@@ -437,7 +437,7 @@ var codes = []CodeInfo{
 	{CodeGuardRefused, false, "aggy's OpenCode guard refused a tool call. It reads the raw input, so it catches mistakes only.", "Run the command another way, or at the terminal yourself."},
 	{CodeGuardMissing, false, "aggy's OpenCode guard did not report from the launch's folder in time. OpenCode's rules from aggy's config still apply; the guard's own refusals may not.", "Quit and start again; aggy doctor for the CLI's version. A same-user process can overwrite or unload the plugin."},
 	{CodeTrustBadDir, false, "aggy trust was given a path that is not a folder aggy can resolve.", "The path; aggy resolves it to its repo root."},
-	{CodeTrustBadFile, false, "aggy could not read or change its list of repos trusted for OpenCode (opencode-trust.json in aggy's state folder).", "The file's contents, or aggy unwire."},
+	{CodeTrustBadFile, false, "aggy could not read or change its list of trusted repos (trust.json or opencode-trust.json in aggy's state folder).", "The file's contents, or aggy unwire."},
 	{CodeBadPayload, false, "aggy hook could not read the vendor's hook payload, or it was not a JSON object.", "The vendor CLI's version; aggy doctor."},
 	{CodeToolNameClash, false, "A tool that is on was not wired: the CLI already loads an MCP server of that name from the user's or the repo's config, and aggy never replaces or merges into one.", "Rename or remove that server in the CLI's config, or turn the tool off."},
 	{CodeToolRepoPath, false, "A tool that is on was not wired: its arguments hold {repo}, and the session is not in a repo, or the repo's path holds a character other than letters, digits, and / . _ + @ -.", "Run the session in a repo whose path has only those characters."},

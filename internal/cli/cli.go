@@ -87,7 +87,7 @@ Commands:
   hooks     Install the vendor hooks aggy listens to, or show them
   memory    Import Claude's memory into the shared .aggy/memory.md
   policy    Wire aggy's safety policy into Codex (Claude and Grok get it per launch)
-  trust     Trust a repo for OpenCode's full screen (aggy trust --opencode <dir>)
+  trust     Trust a repo: aggy trust <dir>, or --opencode for OpenCode's full screen
   mcp       Copy Claude's public MCP servers into Codex and Grok
   attribution
             Install the commit hook that adds Aggy-Vendor and Aggy-Model
