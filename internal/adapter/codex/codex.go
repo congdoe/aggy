@@ -570,9 +570,9 @@ type event struct {
 	Type     string `json:"type"`
 	ThreadID string `json:"thread_id"`
 	Item     struct {
-		Type   string `json:"type"`
-		Text   string `json:"text"`
-		Status string `json:"status"`
+		Type   string      `json:"type"`
+		Text   string      `json:"text"`
+		Status statusField `json:"status"`
 	} `json:"item"`
 	Usage struct {
 		Input  int64 `json:"input_tokens"`
@@ -581,6 +581,20 @@ type event struct {
 	Message string          `json:"message"`
 	Code    string          `json:"code"`
 	Error   json.RawMessage `json:"error"`
+}
+
+// statusField is an item's status, or "" when it is not a string: the item's
+// shape is unconfirmed, and an odd status must not make the whole line
+// unreadable, which would hide the tool the line names.
+type statusField string
+
+// UnmarshalJSON never fails.
+func (s *statusField) UnmarshalJSON(b []byte) error {
+	var v string
+	if json.Unmarshal(b, &v) == nil {
+		*s = statusField(v)
+	}
+	return nil
 }
 
 // fields returns the event's error code and message, from the top level
