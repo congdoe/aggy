@@ -121,6 +121,38 @@ func TestRefusesAuthPaths(t *testing.T) {
 	}
 }
 
+// TestChannelDBListedOnlyForASecondName (M2): the guard does not list
+// OpenCode's folder on every call, which doubled the cost of each one for every
+// vendor, and a hard link to a channel's database is still refused.
+func TestChannelDBListedOnlyForASecondName(t *testing.T) {
+	home := fakeHome(t)
+	db := filepath.Join(home, ".local", "share", "opencode", "opencode-beta.db")
+	writeFake(t, db)
+	plain := filepath.Join(home, "plain")
+	writeFake(t, plain)
+	calls := 0
+	old := listDir
+	t.Cleanup(func() { listDir = old })
+	listDir = func(d string) ([]os.DirEntry, error) {
+		calls++
+		return old(d)
+	}
+	if _, err := ReadFile(plain); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Errorf("listed %d times for an ordinary file", calls)
+	}
+	link := filepath.Join(home, "hard")
+	if err := os.Link(db, link); err != nil {
+		t.Fatal(err)
+	}
+	assertRefused(t, link)
+	if calls == 0 {
+		t.Error("a hard link to a channel's database was not looked for")
+	}
+}
+
 // TestOpenCodeBesideDB: what the path check refuses stops at the database,
 // so a repo's own file of that name and a saved tool output are not caught.
 func TestOpenCodeNamedDB(t *testing.T) {
