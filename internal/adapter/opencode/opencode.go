@@ -35,6 +35,14 @@ func (Adapter) Vendor() adapter.Vendor { return adapter.OpenCode }
 // verified with.
 var Tested = adapter.VersionRange{Min: "2.2.5", Max: "2.2.5"}
 
+// LockdownCaps returns nil: OpenCode takes no borrows (Headless refuses), so
+// no flag of it stands behind a borrow's lockdown.
+func (Adapter) LockdownCaps(adapter.Kind) []string { return nil }
+
+// SelfTestKind returns research, for the interface: with no borrows, the
+// new-version self-test never runs on OpenCode.
+func (Adapter) SelfTestKind() adapter.Kind { return adapter.Research }
+
 // TestedVersions returns Tested.
 func (Adapter) TestedVersions() adapter.VersionRange { return Tested }
 

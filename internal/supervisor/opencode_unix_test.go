@@ -187,8 +187,8 @@ func TestMouseIsNotTyping(t *testing.T) {
 	s := openCodeSession(t)
 	before := s.lastIn
 	s.send([]byte("\x1b[<35;10;5M"))
-	if s.dirty || s.sentAny || s.lastIn != before {
-		t.Fatalf("dirty %v, sentAny %v, lastIn moved %v", s.dirty, s.sentAny, s.lastIn != before)
+	if s.dirty || s.inputSinceTurn || s.lastIn != before {
+		t.Fatalf("dirty %v, input %v, lastIn moved %v", s.dirty, s.inputSinceTurn, s.lastIn != before)
 	}
 	if got := sentTo(s); got != "\x1b[<35;10;5M" {
 		t.Fatalf("the CLI should still get the report, got %q", got)
