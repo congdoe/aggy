@@ -39,6 +39,7 @@ type Origin string
 const (
 	FromClaudeUser  Origin = "claude-user"    // ~/.claude/settings.json
 	FromClaudeLocal Origin = "claude-local"   // <repo>/.claude/settings.local.json
+	FromRepoLocal   Origin = "claude-tracked" // the same file, tracked: a deny or ask only
 	FromAggy        Origin = "aggy"           // permissions.json, every repo
 	FromAggyRepo    Origin = "aggy-repo"      // permissions.json, this repo
 	FromConfig      Origin = "aggy-config"    // config.toml's [permissions] mode
@@ -65,10 +66,10 @@ type Skip struct {
 type Problem struct {
 	Path string
 	Why  string
-	// Repo says a clone could have brought it: the file is tracked, git cannot say,
-	// or it or .claude is a link. It costs only that file's allows, or a repo could
-	// turn off the person's. Any other problem is the person's own, where a deny
-	// may be missing, so it withholds this layer's allows.
+	// Repo says the path is the repo's, or holds no one's denies: git tracks it or
+	// cannot say, or it is not a regular file or link. It costs only that file's
+	// rules, or a repo could turn off the person's allows. Any other problem is the
+	// person's own, where a deny may be missing, so it withholds this layer's allows.
 	Repo bool
 }
 
@@ -274,6 +275,11 @@ func (s *Set) loadClaude(path string, o Origin, trusted bool) {
 		}
 		from = real
 	}
+	s.loadClaudeFrom(from, path, o, trusted)
+}
+
+// loadClaudeFrom reads from, and names path as the rules' source.
+func (s *Set) loadClaudeFrom(from, path string, o Origin, trusted bool) {
 	b := s.read(from)
 	if b == nil {
 		return
@@ -291,44 +297,86 @@ func (s *Set) loadClaude(path string, o Origin, trusted bool) {
 	}
 }
 
-// loadLocal reads <main>/.claude/settings.local.json unless git tracks it. A clone
-// can bring only a tracked file or a tracked link, so only those count as the
-// repo's: their allows are named as skipped, and a problem with one is Repo. An
-// untracked regular file is the person's, with every valid deny and ask kept.
+// loadLocal reads <main>/.claude/settings.local.json, asking git first:
+//
+//  1. Tracked, or git cannot say: it is the repo's, and gives no allows
+//     (loadTrackedLocal).
+//  2. Not tracked, and a link, in the file or .claude: it is the person's, such as
+//     a dotfile manager's, so it is followed. A failure withholds.
+//  3. Not tracked, and neither a regular file nor a link (.claude is a file, the
+//     path a folder or FIFO, or Lstat fails): no one's denies can be in it.
+//  4. Not tracked, and a regular file: it is the person's. Valid denies and asks
+//     stay, and a mistake withholds.
 func (s *Set) loadLocal(in Input) {
 	path := filepath.Join(in.Main, ".claude", "settings.local.json")
-	repos := func(why string) {
-		s.Problems = append(s.Problems, Problem{Path: path, Why: why, Repo: true})
+	file, ferr := safefs.Lstat(path)
+	dirLink := false
+	if dir, err := safefs.Lstat(filepath.Dir(path)); err == nil {
+		dirLink = dir.Mode()&fs.ModeSymlink != 0
 	}
-	dir, err := safefs.Lstat(filepath.Dir(path))
-	if errors.Is(err, fs.ErrNotExist) {
+	// Not there is nothing to ask about, except through a link to nowhere.
+	if errors.Is(ferr, fs.ErrNotExist) && (!dirLink || !danglingLink(filepath.Dir(path))) {
 		return
 	}
-	file, ferr := safefs.Lstat(path)
-	if errors.Is(ferr, fs.ErrNotExist) {
+	link := dirLink || (ferr == nil && file.Mode()&fs.ModeSymlink != 0) || errors.Is(ferr, safefs.ErrAuthPath)
+	if why := trackedWhy(in, path); why != "" {
+		regular := ferr == nil && file.Mode().IsRegular()
+		s.loadTrackedLocal(path, regular && !link, why)
 		return
 	}
 	switch {
-	case (err == nil && dir.Mode()&fs.ModeSymlink != 0) || (ferr == nil && file.Mode()&fs.ModeSymlink != 0) || errors.Is(ferr, safefs.ErrAuthPath):
-		repos("this file or its folder is a link, which a clone could bring")
-		return
-	case err != nil:
-		s.Problems = append(s.Problems, Problem{Path: path, Why: err.Error()})
-		return
-	case ferr != nil:
-		s.Problems = append(s.Problems, Problem{Path: path, Why: ferr.Error()})
-		return
-	}
-	why := ""
-	if in.Tracked == nil {
-		why = "aggy cannot tell whether git tracks this file, so it counts as committed"
-	} else if tracked, err := in.Tracked(path); err != nil {
-		why = "aggy cannot tell whether git tracks this file, so it counts as committed"
-	} else if tracked {
-		why = "git tracks this file, so a clone would bring it: committed rules never become allows"
-	}
-	if why == "" {
+	case link:
+		real, err := safefs.RealPath(path)
+		if err == nil {
+			_, err = safefs.Lstat(real)
+		}
+		if err != nil {
+			s.Problems = append(s.Problems, Problem{Path: path, Why: err.Error()})
+			return
+		}
+		s.loadClaudeFrom(real, path, FromClaudeLocal, in.Trusted)
+	case ferr != nil || !file.Mode().IsRegular():
+		s.Problems = append(s.Problems, Problem{Path: path, Why: "this path is not a regular file, so it was not read", Repo: true})
+	default:
 		s.loadClaude(path, FromClaudeLocal, in.Trusted)
+	}
+}
+
+// danglingLink reports a link whose target is not there.
+func danglingLink(path string) bool {
+	real, err := safefs.RealPath(path)
+	if err != nil {
+		return true
+	}
+	_, err = safefs.Lstat(real)
+	return err != nil
+}
+
+// trackedWhy says why the file counts as committed, or "" when it does not.
+func trackedWhy(in Input, path string) string {
+	const unsure = "aggy cannot tell whether git tracks this file, so it counts as committed"
+	if in.Tracked == nil {
+		return unsure
+	}
+	switch tracked, err := in.Tracked(path); {
+	case err != nil:
+		return unsure
+	case tracked:
+		return "git tracks this file, so a clone would bring it: committed rules never become allows"
+	}
+	return ""
+}
+
+// loadTrackedLocal is a file git tracks or cannot answer for. Its allows are named
+// as skipped. A regular file's valid denies and asks are kept, since they only
+// narrow, and a mistake in it costs nothing else. A link is not read, as a repo
+// chose where it points.
+func (s *Set) loadTrackedLocal(path string, regular bool, why string) {
+	repos := func(why string) {
+		s.Problems = append(s.Problems, Problem{Path: path, Why: why, Repo: true})
+	}
+	if !regular {
+		repos("this path is committed, and is not a regular file, so it was not read")
 		return
 	}
 	b, err := safefs.ReadConfig(path, MaxFile)
@@ -340,6 +388,12 @@ func (s *Set) loadLocal(in Input) {
 	if err := json.Unmarshal(b, &f); err != nil {
 		repos(err.Error())
 		return
+	}
+	n := len(s.Problems)
+	s.addNarrowing(Deny, f.Permissions.Deny, FromRepoLocal, path)
+	s.addNarrowing(Ask, f.Permissions.Ask, FromRepoLocal, path)
+	for i := n; i < len(s.Problems); i++ {
+		s.Problems[i].Repo = true
 	}
 	for _, r := range f.Permissions.Allow {
 		s.Skipped = append(s.Skipped, Skip{Rule{Allow, r, FromClaudeLocal, path}, why})

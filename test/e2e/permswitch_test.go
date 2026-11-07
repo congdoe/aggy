@@ -42,6 +42,16 @@ func TestSwitchWithBrokenRulesStays(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{"the harness turned off", func(t *testing.T, w *world) {
+			if err := os.WriteFile(filepath.Join(w.home, ".aggy", "config.toml"), []byte("[vendors.grok]\noff = true\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"the folder gone", func(t *testing.T, w *world) {
+			if err := os.RemoveAll(w.cwd); err != nil {
+				t.Fatal(err)
+			}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) { switchStays(t, tc.breakIt) })
 	}
@@ -70,7 +80,6 @@ func switchStays(t *testing.T, breakIt func(t *testing.T, w *world)) {
 	s.waitFor([]byte("READY>"))
 	s.send([]byte("work\r"))
 	s.waitFor([]byte("work"))
-	breakIt(t, w)
 	s.send([]byte{0x1c})
 	s.waitFor([]byte("aggy: switch vendor"))
 	s.mu.Lock()
@@ -81,6 +90,7 @@ func switchStays(t *testing.T, breakIt func(t *testing.T, w *world)) {
 	s.mu.Unlock()
 	s.send(append([]byte("b"), key...))
 	s.waitWithin([]byte("brief -> grok. Ctrl+"), offerTimeout)
+	breakIt(t, w) // after the pick, so the picker offered the vendor
 	s.confirmPastGuard(time.Now())
 	s.waitWithin([]byte("aggy did not switch"), offerTimeout)
 	if runs := interactiveRuns(t, w); len(runs) != 1 || runs[0].Vendor != "claude" {

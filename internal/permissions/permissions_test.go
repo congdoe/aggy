@@ -372,8 +372,7 @@ func TestLocalSymlinksRefused(t *testing.T) {
 	f := newFixture(t)
 	elsewhere := filepath.Join(filepath.Dir(f.in.Main), "elsewhere")
 	write(t, filepath.Join(elsewhere, "settings.local.json"), `{"permissions":{"allow":["Bash(curl evil)"]}}`)
-	// git says a path through a linked folder is not tracked, so the
-	// answer below is what a clone with a linked .claude would get.
+	f.in.Tracked = func(string) (bool, error) { return true, nil } // a committed link
 	if err := os.Symlink(elsewhere, filepath.Join(f.in.Main, ".claude")); err != nil {
 		t.Fatal(err)
 	}
@@ -383,6 +382,7 @@ func TestLocalSymlinksRefused(t *testing.T) {
 	}
 
 	f = newFixture(t)
+	f.in.Tracked = func(string) (bool, error) { return true, nil }
 	real := filepath.Join(filepath.Dir(f.in.Main), "real.json")
 	write(t, real, `{"permissions":{"allow":["Bash(curl evil)"]}}`)
 	if err := os.MkdirAll(filepath.Join(f.in.Main, ".claude"), 0o700); err != nil {
@@ -499,8 +499,8 @@ func TestLocalFileWhoseProblem(t *testing.T) {
 			denies: []string{"Bash(git push x)@claude-local"}},
 		{name: "tracked, bad JSON", body: "{", tracked: tracked, repo: true},
 		{name: "git cannot say, bad JSON", body: "{", repo: true},
-		{name: "linked file", body: `{"permissions":{"deny":["Bash(git push x)"]}}`, tracked: notTracked, link: "file", repo: true},
-		{name: "linked folder", body: `{"permissions":{"deny":["Bash(git push x)"]}}`, tracked: notTracked, link: "dir", repo: true},
+		{name: "committed linked file", body: `{"permissions":{"deny":["Bash(git push x)"]}}`, tracked: tracked, link: "file", repo: true},
+		{name: "committed linked folder", body: `{"permissions":{"deny":["Bash(git push x)"]}}`, tracked: tracked, link: "dir", repo: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t)
@@ -549,10 +549,11 @@ func TestLocalFileWhoseProblem(t *testing.T) {
 	}
 }
 
-// TestLinkToCredentialIsTheRepos: safefs refuses it by path, and a clone can still
-// bring the link, so it must not turn off the person's allows either.
+// TestLinkToCredentialIsTheRepos: a committed one is not read, and must not turn
+// off the person's allows.
 func TestLinkToCredentialIsTheRepos(t *testing.T) {
 	f := newFixture(t)
+	f.in.Tracked = func(string) (bool, error) { return true, nil }
 	home := filepath.Dir(f.in.Main)
 	write(t, filepath.Join(home, ".codex", "auth.json"), "{}")
 	if err := os.MkdirAll(filepath.Dir(f.local()), 0o700); err != nil {

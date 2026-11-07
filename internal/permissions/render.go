@@ -27,9 +27,9 @@ type Rendered struct {
 func ReadsItself(v adapter.Vendor, o Origin) bool {
 	switch v {
 	case adapter.Claude:
-		return o == FromClaudeUser || o == FromClaudeLocal
+		return o == FromClaudeUser || o == FromClaudeLocal || o == FromRepoLocal
 	case adapter.Grok:
-		return o == FromClaudeUser || o == FromClaudeLocal || o == FromGrokGrant
+		return o == FromClaudeUser || o == FromClaudeLocal || o == FromRepoLocal || o == FromGrokGrant
 	}
 	return false
 }

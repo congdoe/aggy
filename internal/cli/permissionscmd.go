@@ -88,6 +88,8 @@ func originName(o permissions.Origin) string {
 		return "Claude, your settings"
 	case permissions.FromClaudeLocal:
 		return "Claude, this repo's local settings"
+	case permissions.FromRepoLocal:
+		return "Claude, this repo's committed local settings"
 	case permissions.FromAggy:
 		return "aggy, everywhere"
 	case permissions.FromAggyRepo:
@@ -106,7 +108,7 @@ func originName(o permissions.Origin) string {
 // whatever aggy does with it.
 func appliedBy(o permissions.Origin) string {
 	switch o {
-	case permissions.FromClaudeUser, permissions.FromClaudeLocal:
+	case permissions.FromClaudeUser, permissions.FromClaudeLocal, permissions.FromRepoLocal:
 		return " Claude applies this itself"
 	case permissions.FromGrokGrant:
 		return " Grok applies this itself"
