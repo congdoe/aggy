@@ -99,17 +99,17 @@ required = false   # start with a warning instead of refusing
 
 ## One set of permissions
 
-Rules use Claude Code's format, so an approval given once holds on Claude Code, Grok, and OpenCode. aggy reads them from `~/.claude/settings.json`, your repo's untracked `.claude/settings.local.json`, and its own `~/.aggy/permissions.json`, and it picks up what you approved in Grok and Codex at each launch and switch. It adds only the allows you list yourself: a repo's committed rules never become allows, and each allow passes the filter Claude applies on entering auto mode (no blanket shell access, no wildcarded interpreters, no package-manager run commands). An allow that runs a repo's own code applies only in a repo you trusted. Deny always wins, and nothing is written to a vendor's config for a session.
+Rules use Claude Code's format, so an approval given once holds on Claude Code, Grok, and OpenCode. aggy reads them from `~/.claude/settings.json`, your repo's untracked `.claude/settings.local.json`, and its own `~/.aggy/permissions.json`, and it picks up what you approved in Grok and Codex at each launch and switch. It adds only the allows you list yourself: a repo's committed rules never become allows. Each allow aggy passes on goes through a filter modelled on the one Claude applies entering auto mode (no blanket shell access, no wildcarded interpreters, no wildcarded run commands). In a repo you have not trusted, only known read-only forms apply, such as `git status` and `ls`, and anything else, a repo's `settings.local.json` included, is held and named. The filter covers what aggy passes on: a rule in a CLI's own file is applied by that CLI, so `Bash(*)` in `~/.claude/settings.json` still holds on Claude, and `aggy permissions` says so beside it. Deny always wins, and nothing is written to a vendor's config for a session. A mistake in `~/.aggy/permissions.json` refuses the launch, by line, as a deny there must not be lost.
 
 ```sh
 aggy permissions show                              # the rules in force, where each came from, what was skipped and why
-aggy permissions add allow 'Bash(gh pr list)'      # for this repo; --everywhere for all of them
+aggy permissions add allow 'Bash(gh pr list)'      # for this repo; --everywhere for all of them (needs aggy trust)
 aggy permissions suggest                           # propose commands you ran in Claude Code; you confirm each
-aggy trust .                                       # let allows that run this repo's own code apply here
+aggy trust .                                       # let allows beyond the read-only ones apply here
 aggy config                                        # default harness and model, permission mode, harness on or off
 ```
 
-Changes are for you at a terminal, apply at the next launch or switch, and `aggy unwire` undoes them. Codex gets none of these rules yet; it keeps asking in its own way. OpenCode takes exact commands only, so a rule with a wildcard is named and skipped.
+Changes are for you at a terminal, apply at the next launch or switch, and `aggy unwire` undoes them. "At a terminal" holds against mistakes, not a model that tries: a model's shell can give itself a terminal with `script` and pipe `y`. Codex gets none of these rules yet; it keeps asking in its own way. OpenCode takes exact commands only, so a rule with a wildcard is named and skipped.
 
 ## Known limits
 

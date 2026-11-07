@@ -62,7 +62,7 @@ func (s *Set) loadGrok(in Input) {
 	}
 	dir, ok := grokScopeDir(in.Worktree)
 	if !ok {
-		s.Problems = append(s.Problems, Problem{in.Worktree, "this folder's path is too long for aggy to find Grok's approvals"})
+		s.Notes = append(s.Notes, "this folder's path is too long for aggy to find Grok's approvals, so they do not carry over")
 		return
 	}
 	path := filepath.Join(in.GrokHome, "sessions", dir, "permission.toml")
@@ -87,17 +87,23 @@ func (s *Set) addGrok(g grokGrants, path string, trusted bool) {
 	// An approved command is a prefix there, but never for a command on Grok's
 	// dangerous list, and that list is not read here. So it carries as the exact
 	// command: narrower than Grok's, never wider.
+	// Grok's is a literal prefix, so a * in one is a plain character there and
+	// would be a live wildcard in Claude's rules: it is named, not carried.
 	for _, c := range sortedClean(g.AllowedCommands) {
-		if why := badCommand(c); why != "" {
+		switch why := badCommand(c); {
+		case why != "":
 			name(Allow, c, why)
-			continue
+		case strings.ContainsAny(c, "*?["):
+			name(Allow, c, "a * here is literal to Grok but would be a wildcard in Claude's rules")
+		default:
+			s.AddAllow(rule(Allow, "Bash("+c+")"), trusted)
 		}
-		s.AddAllow(rule(Allow, "Bash("+c+")"), trusted)
 	}
 	// A denied one is a prefix, and wider is the safe way for a deny.
 	for _, c := range sortedClean(g.DeniedCommands) {
 		if why := badCommand(c); why != "" {
 			name(Deny, c, why)
+			s.Problems = append(s.Problems, Problem{path, "a deny there cannot be carried"})
 			continue
 		}
 		s.add(rule(Deny, "Bash("+c+" *)"))

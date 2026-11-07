@@ -1,6 +1,8 @@
 package permissions
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -67,5 +69,38 @@ func TestCheckFileLines(t *testing.T) {
 		if len(got) != 1 || got[0].Line != tc.line {
 			t.Errorf("%s: %+v", tc.name, got)
 		}
+	}
+}
+
+func TestEditKeepsKeysAndSpelling(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	key := canonical(dir)
+	src := []byte(`{"$schema":"https://x","repos":{"` + link + `":{"allow":["Bash(ls)"]}}}`)
+	if has, err := Has(src, Allow, "Bash(ls)", key); err != nil || !has {
+		t.Fatalf("has: %v %v", has, err)
+	}
+	out, err := Edit{Kind: Deny, Rule: "Bash(x y)", RepoKey: key}.Apply(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "$schema") || strings.Count(string(out), `"Bash(ls)"`) != 1 {
+		t.Errorf("%s", out)
+	}
+	if has, _ := Has(out, Deny, "Bash(x y)", key); !has {
+		t.Errorf("not added: %s", out)
+	}
+	out, err = Edit{Kind: Allow, Rule: "Bash(ls)", RepoKey: key, Remove: true}.Apply(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "Bash(ls)") {
+		t.Errorf("not removed: %s", out)
 	}
 }

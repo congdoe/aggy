@@ -23,7 +23,8 @@ import (
 
 const configUsage = `Usage: aggy config <command>
 
-aggy's own settings. A change applies at the next launch or switch.
+aggy's own settings. A change applies at the next launch or switch. One that
+loosens things (a permission mode, a harness turning on) asks y/N first.
 
   list              Show the settings below and their values
   set KEY VALUE     Change one, for you at a terminal
@@ -41,7 +42,8 @@ aggy's own settings. A change applies at the next launch or switch.
 
 Settings live in ~/.aggy/config.toml, which you can also edit by hand; aggy doctor
 reports a mistake by line. aggy unwire undoes a change made here. A session's
-tool shell is refused.
+tool shell is refused. That holds against mistakes, not a model that tries: it can
+give itself a terminal with script, and pipe y.
 `
 
 // configKey is what a key of aggy config set edits.
@@ -166,6 +168,11 @@ func configList(stdout, stderr io.Writer) int {
 	return 0
 }
 
+// loosens says a setting can let more run: any permission mode, or a harness on.
+func loosens(key, val string) bool {
+	return (key == "permission-mode" && val != "none") || (strings.HasPrefix(key, "harness.") && val == "on")
+}
+
 func configSet(args []string, stdout, stderr io.Writer) int {
 	const name = "config set"
 	fl := flag.NewFlagSet(name, flag.ContinueOnError)
@@ -239,6 +246,10 @@ func configSet(args []string, stdout, stderr io.Writer) int {
 	}
 	if err := personGate(os.Getenv); err != nil {
 		return fail(diag.CodeNotAtKeyboard, err.Error())
+	}
+	if loosens(pos[0], pos[1]) && !confirmed(stdout, fmt.Sprintf("Set %s to %s?", pos[0], termsafe.Field(pos[1]))) {
+		fmt.Fprintln(stdout, "Nothing changed.")
+		return 1
 	}
 	runID, err := applyPatches(context.Background(), ps)
 	if err != nil {

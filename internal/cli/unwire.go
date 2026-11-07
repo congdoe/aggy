@@ -7,13 +7,19 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/manifest"
+	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
 )
+
+// unwireGate is personGate; the package's other tests undo things without a
+// terminal, and TestUnwireIsForThePerson puts the real one back.
+var unwireGate = personGate
 
 const unwireUsage = `Usage: aggy unwire (--change ID | --run ID | --all) [--dry-run]
        aggy unwire --change ID --force [--yes]
@@ -36,6 +42,11 @@ A file edited after aggy changed it is not undone without --force; unwire
 reports it and goes on with the rest. A change cannot be undone with
 --change while a newer change to the same file is in place: undo that
 one first, or use --all.
+
+Undoing can bring an allow back or take a deny away, so it is for you, at a
+terminal; a session's tool shell is refused, and --dry-run stays open. That
+holds against mistakes, not a model that tries: it can give itself a terminal
+with script, and pipe y.
 `
 
 // runUnwire is aggy unwire. It never creates the store: with no index
@@ -75,6 +86,13 @@ func runUnwire(args []string, stdout, stderr io.Writer) int {
 	}
 	// --force without --yes is a dry run of the forced undo.
 	opt := manifest.UnwireOptions{DryRun: *dryRun || (*force && !*yes), Force: *force}
+	// Undoing can bring an allow back, or take a deny or a trust away, so it is
+	// for the person, like making the change. A preview stays open.
+	if !opt.DryRun {
+		if err := unwireGate(os.Getenv); err != nil {
+			return cmdErr(stderr, "unwire", diag.CodeNotAtKeyboard, err)
+		}
+	}
 
 	path, err := store.DefaultPath()
 	if err != nil {
@@ -159,12 +177,43 @@ func report(undos []manifest.Undo, opt manifest.UnwireOptions, unconfirmed bool,
 			}
 		}
 	}
+	if line := trustHalfUndone(undos); line != "" {
+		fmt.Fprintln(stdout, line)
+	}
 	if unconfirmed && !onlyBlocked(undos) {
 		fmt.Fprintln(stderr, "Nothing changed. Run again with --force --yes to overwrite the edits shown above.")
 		return 1
 	}
 	fmt.Fprintf(stdout, "%d of %d %s %sundone.\n", done, len(undos), plural(len(undos), "change", "changes"), would)
 	return code
+}
+
+// trustHalfUndone speaks up when aggy trust's record went but Codex's half stayed,
+// since Codex's config changed after: aggy now says untrusted and Codex does not.
+func trustHalfUndone(undos []manifest.Undo) string {
+	path, err := parity.CodexConfigPath()
+	if err != nil {
+		return ""
+	}
+	trust, err := trustFile()
+	if err != nil {
+		return ""
+	}
+	var codex *manifest.Undo
+	undone := false
+	for i, u := range undos {
+		switch {
+		case u.Change.File == path && (u.Outcome == manifest.Drifted || u.Outcome == manifest.Blocked):
+			codex = &undos[i]
+		case u.Change.File == trust && u.Outcome != manifest.Drifted && u.Outcome != manifest.Blocked && u.Outcome != manifest.Invalid && u.Outcome != manifest.Failed:
+			undone = true
+		}
+	}
+	if codex == nil || !undone {
+		return ""
+	}
+	id := termsafe.Field(codex.Change.ChangeID)
+	return fmt.Sprintf("aggy no longer trusts this repo, but Codex still may: its config changed after aggy trust, so aggy left it. Remove trust_level under the repo's [projects] entry in %s by hand, or run aggy unwire --change %s --force to see what forcing would overwrite.", termsafe.Field(path), id)
 }
 
 // onlyBlocked reports whether every result is Blocked or Invalid, which

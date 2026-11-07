@@ -118,6 +118,7 @@ func RewriteDeny(prefix string) []string {
 
 // PrefixedDeny is RewriteDeny for the person's own Bash denies: Claude matches
 // a rewritten command, so each needs a copy with the prefix in front.
+// TODO(T6955): ask rules need the same copies.
 func PrefixedDeny(prefix string, rules []string) []string {
 	var out []string
 	for _, r := range rules {

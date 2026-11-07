@@ -262,9 +262,13 @@ func openCodeGuard(in io.Reader, getenv func(string) string, stderr io.Writer) i
 	if err != nil || len(b) > hook.MaxPayload {
 		b = nil // refused as unreadable
 	}
-	rules, err := parity.OpenCodeShellRules(guardRules(b, getenv))
+	extra, scanAlways := guardRules(b, getenv)
+	rules, err := parity.OpenCodeShellRules(extra)
 	if err != nil {
 		b = nil // refused as unreadable: the rules aggy ships do not render
+	}
+	if scanAlways {
+		rules = nil // no rules: hook.OpenCodeEnv.ShellRules scans every command
 	}
 	d := hook.OpenCodeGuard(b, hook.OpenCodeEnv{Getenv: getenv, DeniedNames: parity.OpenCodeDeniedNames(), ShellRules: rules, AlwaysSeen: openCodeAlwaysSeen})
 	if !d.Deny {

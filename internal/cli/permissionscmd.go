@@ -43,12 +43,16 @@ WebFetch(domain:example.com). Rules aggy owns live in ~/.aggy/permissions.json,
 which you can also edit by hand; aggy doctor reports a mistake by line. A rule
 from Claude's own files stays there: change it with /permissions in Claude.
 
-Allows are filtered as Claude filters them entering auto mode: no blanket shell
-access, no wildcarded interpreters, no package-manager run commands. An allow
-that runs a repo's own code applies only in a repo you trusted (aggy trust).
-A repo's committed rules and .aggy/config.toml never become allows.
+Allows aggy passes on are filtered much as Claude filters them entering auto mode:
+no blanket shell access, no wildcarded interpreters, no wildcarded run commands.
+In a repo you have not trusted (aggy trust), only known read-only forms apply, such
+as git status and ls, and anything else is held and named. A repo's committed rules
+and .aggy/config.toml never become allows. Claude and Grok still apply what they
+read from their own files themselves, whatever aggy's filter says.
 
-Changing rules is for you, at a terminal: a session's tool shell is refused.
+Changing rules is for you, at a terminal: a session's tool shell and aggy unwire
+from one are refused. That holds against mistakes, not a model that tries: it can
+give itself a terminal with script, and pipe y.
 `
 
 // permFail records a refusal of aggy permissions and exits 1.
@@ -98,6 +102,20 @@ func originName(o permissions.Origin) string {
 	return string(o)
 }
 
+// appliedBy says a rule comes from a CLI's own file, so that CLI applies it
+// whatever aggy does with it.
+func appliedBy(o permissions.Origin) string {
+	switch o {
+	case permissions.FromClaudeUser, permissions.FromClaudeLocal:
+		return " Claude applies this itself"
+	case permissions.FromGrokGrant:
+		return " Grok applies this itself"
+	case permissions.FromCodexGrant:
+		return " Codex applies this itself"
+	}
+	return ""
+}
+
 // permissionsHere reads the rules for the current folder.
 func permissionsHere(ctx context.Context) (permissions.Set, permissions.Input, config.Config, error) {
 	cwd, err := os.Getwd()
@@ -125,10 +143,24 @@ func permissionsList(args []string, stdout, stderr io.Writer) int {
 	if n := len(s.Skipped); n > 0 {
 		fmt.Fprintf(stdout, "\n%d rules do not apply. aggy permissions show says why.\n", n)
 	}
-	for _, p := range s.Problems {
-		fmt.Fprintf(stdout, "\nNot read: %s: %s\n", termsafe.Field(p.Path), termsafe.Line(p.Why))
-	}
+	printPermissionsTroubles(stdout, s)
 	return 0
+}
+
+// printPermissionsTroubles says what a launch would say or refuse on.
+func printPermissionsTroubles(w io.Writer, s permissions.Set) {
+	if s.FileErr != nil {
+		fmt.Fprintf(w, "\nA launch refuses to start until this is fixed: %s\n", termsafe.Line(s.FileErr.Error()))
+	}
+	for _, p := range s.Problems {
+		fmt.Fprintf(w, "\nNot read: %s: %s\n", termsafe.Field(p.Path), termsafe.Line(p.Why))
+	}
+	if s.Withhold != "" {
+		fmt.Fprintf(w, "\n%s\n", termsafe.Line(s.Withhold))
+	}
+	for _, n := range s.Notes {
+		fmt.Fprintf(w, "\n%s\n", termsafe.Line(n))
+	}
 }
 
 func printPermissionsHeader(w io.Writer, s permissions.Set, in permissions.Input) {
@@ -154,7 +186,7 @@ func printRules(w io.Writer, s permissions.Set) {
 		n := 0
 		for _, r := range s.Rules {
 			if r.Kind == k {
-				fmt.Fprintf(w, "  %s  [%s]\n", termsafe.Field(r.Text), originName(r.Origin))
+				fmt.Fprintf(w, "  %s  [%s]%s\n", termsafe.Field(r.Text), originName(r.Origin), appliedBy(r.Origin))
 				n++
 			}
 		}

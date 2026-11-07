@@ -144,3 +144,21 @@ func TestOpenCodeGuardFailsClosed(t *testing.T) {
 		t.Errorf("a root that does not resolve: %+v", d)
 	}
 }
+
+// TestHoldsRuleCollapsesBoth: two spaces in a rule must not hide it from the gate.
+func TestHoldsRuleCollapsesBoth(t *testing.T) {
+	for _, tc := range []struct {
+		text, rule string
+		want       bool
+	}{
+		{"PATH=./bin; mytool  x", "mytool  x", true},
+		{"PATH=./bin; mytool x", "mytool  x", true},
+		{"PATH=./bin; mytool  x", "mytool x", true},
+		{"PATH=./bin; other", "mytool  x", false},
+		{"anything", "   ", false},
+	} {
+		if got := holdsRule(tc.text, []string{tc.rule}); got != tc.want {
+			t.Errorf("%q, %q: %v", tc.text, tc.rule, got)
+		}
+	}
+}

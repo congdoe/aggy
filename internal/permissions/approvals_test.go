@@ -50,8 +50,9 @@ disallowed_mcp_tools = ["srv__bad"]
 some_future_field = 3
 `)
 	write(t, f.grokFile("/another/repo"), `allowed_bash_commands = ["whoami"]`)
+	f.in.Trusted = true
 	s := Load(f.in)
-	want := []string{"Bash(gh pr list)@grok-approval", "Bash(gh api repos/owner/*)@grok-approval", "WebFetch(domain:docs.example.com)@grok-approval"}
+	want := []string{"Bash(gh pr list)@grok-approval", "Bash(python3 x)@grok-approval", "Bash(gh api repos/owner/*)@grok-approval", "WebFetch(domain:docs.example.com)@grok-approval"}
 	if got := texts(s.Rules, Allow); !slices.Equal(got, want) {
 		t.Errorf("allow: %q", got)
 	}
@@ -59,7 +60,7 @@ some_future_field = 3
 	if got := texts(s.Rules, Deny); !slices.Equal(got, wantDeny) {
 		t.Errorf("deny: %q", got)
 	}
-	for _, named := range []string{"allow_bash_execute", "Bash(python3 x)", "ls ?", "srv__tool", "srv", "srv__bad"} {
+	for _, named := range []string{"allow_bash_execute", "ls ?", "srv__tool", "srv", "srv__bad"} {
 		if !hasSkip(s, named) {
 			t.Errorf("%q not named: %+v", named, s.Skipped)
 		}
@@ -77,6 +78,23 @@ some_future_field = 3
 	}
 	if r := s.Render(adapter.Claude); !slices.Contains(r.Allow, "Bash(gh pr list)") {
 		t.Errorf("not sent to Claude: %q", r.Allow)
+	}
+}
+
+// TestGrokGrantWildcards: Grok holds a command as a literal prefix, so a * in one
+// must not turn into a live wildcard on Claude.
+func TestGrokGrantWildcards(t *testing.T) {
+	f := withApprovals(t)
+	f.in.Trusted = true
+	write(t, f.grokFile(f.in.Main), `allowed_bash_commands = ["echo *", "git log --format=*", "foo:*", "make ?", "make build"]`)
+	s := Load(f.in)
+	if got := texts(s.Rules, Allow); !slices.Equal(got, []string{"Bash(make build)@grok-approval"}) {
+		t.Errorf("%q", got)
+	}
+	for _, c := range []string{"echo *", "git log --format=*", "foo:*", "make ?"} {
+		if !hasSkip(s, c) {
+			t.Errorf("%q not named: %+v", c, s.Skipped)
+		}
 	}
 }
 
@@ -130,10 +148,12 @@ func TestCodexApprovals(t *testing.T) {
 	if !hasSkip(s, "Bash(python3 *)") {
 		t.Errorf("the filter comes first: %+v", s.Skipped)
 	}
-	for _, v := range []adapter.Vendor{adapter.Claude, adapter.Grok} {
-		if r := s.Render(v); !slices.Contains(r.Allow, "Bash(gh pr list *)") {
-			t.Errorf("%s: %q", v, r.Allow)
-		}
+	if r := s.Render(adapter.Claude); !slices.Contains(r.Allow, "Bash(gh pr list *)") {
+		t.Errorf("claude: %q", r.Allow)
+	}
+	// The prompt rule for git push has no way to Grok, so no allow goes there.
+	if r := s.Render(adapter.Grok); len(r.Allow) != 0 || !slices.Contains(r.Deny, "Bash(curl *)") {
+		t.Errorf("grok: %+v", r)
 	}
 }
 
@@ -141,6 +161,7 @@ func TestCodexApprovals(t *testing.T) {
 // approval given since the last launch counts, and one removed stops counting.
 func TestApprovalReachesNextLaunch(t *testing.T) {
 	f := withApprovals(t)
+	f.in.Trusted = true
 	if s := Load(f.in); len(s.Rules) != 0 {
 		t.Fatalf("%+v", s.Rules)
 	}

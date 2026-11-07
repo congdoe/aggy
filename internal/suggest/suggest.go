@@ -20,9 +20,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/congdoe/aggy/internal/permissions"
 	"github.com/congdoe/aggy/internal/redact"
@@ -203,7 +205,7 @@ func Plain(cmd string) bool {
 	if cmd == "" || len(cmd) > MaxCommand || strings.TrimSpace(cmd) != cmd {
 		return false
 	}
-	if strings.ContainsAny(cmd, "\n\r\x00;|&<>`$()*?{}\\'\"") {
+	if strings.ContainsAny(cmd, ";|&<>`$()*?{}\\'\"") || strings.ContainsFunc(cmd, unicode.IsControl) {
 		return false
 	}
 	first, _, _ := strings.Cut(cmd, " ")
@@ -213,7 +215,34 @@ func Plain(cmd string) bool {
 	if class, _ := permissions.CheckAllow("Bash(" + cmd + ")"); class == permissions.Drop {
 		return false
 	}
-	return !redact.Secret(cmd)
+	return !secretShaped(cmd) && !destructive(cmd)
+}
+
+// secretWords mark a command that may carry a secret. Better to miss a
+// suggestion than to store one.
+var secretWords = []string{"secret", "token", "password", "passwd", "credential", "apikey", "api_key", "api-key", "auth", "pass", "private", "bearer", "login"}
+
+var (
+	// urlUserinfo is user:secret@ or token@ in a URL.
+	urlUserinfo = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s]*@`)
+	// inlineSecret is curl -u a:b, mysql -pX, and redis-cli -a X.
+	inlineSecret = regexp.MustCompile(`(^|\s)-u\s+\S+:\S+|^(mysql|mariadb|mysqldump)\s(.*\s)?-p\S+|^redis-cli\s(.*\s)?-a\s`)
+)
+
+func secretShaped(cmd string) bool {
+	low := strings.ToLower(cmd)
+	return redact.Secret(cmd) || urlUserinfo.MatchString(cmd) || inlineSecret.MatchString(cmd) ||
+		slices.ContainsFunc(secretWords, func(w string) bool { return strings.Contains(low, w) })
+}
+
+// destructive commands are never worth proposing, whatever a count says.
+func destructive(cmd string) bool {
+	for _, p := range []string{"rm ", "git push", "git reset", "git clean", "dd ", "mkfs"} {
+		if strings.HasPrefix(cmd, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // ProjectFile says whether a name in a session folder is a session file.

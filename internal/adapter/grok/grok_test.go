@@ -873,3 +873,13 @@ func TestHeadlessPermissionPrompt(t *testing.T) {
 		t.Errorf("a partial line failed the run: %+v, %v", res, err)
 	}
 }
+
+// TestRuleIsNeverAFlag: --deny --x would be read as a flag of Grok's (cli.rs:154
+// has allow_hyphen_values, and what that makes of one is not worth finding out).
+func TestRuleIsNeverAFlag(t *testing.T) {
+	for _, rules := range []adapter.SharedRules{{Deny: []string{"--always-approve"}}, {Allow: []string{"--always-approve"}}, {Deny: []string{"-x"}}} {
+		if _, err := (Adapter{}).Interactive(adapter.InteractiveRequest{Rules: rules}); err == nil {
+			t.Errorf("%+v: no error", rules)
+		}
+	}
+}

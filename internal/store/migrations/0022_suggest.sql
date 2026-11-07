@@ -4,8 +4,8 @@
 -- cannot count a line twice. suggest_commands holds counts of plain commands,
 -- by the main checkout's canonical path. A row here is a candidate and never an
 -- allow: only a person at the keyboard adds one. A command with anything
--- secret-shaped in it is dropped whole before it gets here. suggest_status
--- holds what the last scans saw, for aggy doctor.
+-- secret-shaped in it is dropped whole before it gets here. suggest_files also
+-- counts what the scans saw, for aggy doctor.
 CREATE TABLE suggest_files (
 	path       TEXT PRIMARY KEY,
 	offset     INTEGER NOT NULL,

@@ -262,6 +262,9 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	var rules permissions.Set
 	if pl.child.Kind == "" {
 		rules = loadPermissions(ctx, pl.child.Cwd, cfg)
+		if rules.FileErr != nil {
+			return fail(diag.CodePermBadFile, rules.FileErr)
+		}
 		warns = append(warns, addPermissions(v, caps, rules, &req)...)
 	}
 	// Memory comes from the child's own directory, never the current one:
