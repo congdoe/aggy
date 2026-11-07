@@ -657,6 +657,35 @@ images/` folder; several are an error. Claude has none.
 brief reads session files through `internal/transcript` (below). `ConfigPatches` returns nothing yet; the Codex
 `CLAUDE.md` fallback is built in `internal/parity`.
 
+### OpenCode
+
+On screen only (T6932): `adapter.Vendors()` stays Claude, Codex, and Grok, the
+vendors with hooks, tools, and borrows, and `adapter.Known()` adds OpenCode.
+A route to it is refused, and `Headless` returns `ErrUnsupported`. Facts are in
+[verification.md](verification.md), each marked live, fake-model, or source.
+
+- Launch: `opencode --standalone --session <ses_...> [--auto]`, or `opencode mini
+  --standalone --session <ses_...> [-m <model>]`. The full screen has no model flag,
+  so aggy writes `model` in the launch's config.
+- Environment: `OPENCODE_DISABLE_PROJECT_CONFIG=1`, `OPENCODE_CONFIG`,
+  `OPENCODE_CONFIG_DIR`, `OPENCODE_DISABLE_AUTOUPDATE=1`, `PWD`, and
+  `core.fsmonitor=false` through `GIT_CONFIG_*`. `execrun.PTYEnv` removes the
+  inherited `OPENCODE_*`, `GIT_CONFIG_*`, and API-key variables first.
+- Rules: `permissions` is an ask on `*` plus exact rules, and `policies` holds the
+  denies and the provider list (`internal/parity/opencode.go`).
+- Plugin (`internal/adapter/opencode/plugin`): `execute.before` runs `aggy hook
+  opencode-guard` and a non-zero exit or a timeout throws, refusing the call. It
+  sends `Stop`, `StopFailure`, `StopCancelled`, `GuardLoaded`, and the permission
+  and question events with `aggy hook --vendor opencode <event>`, from
+  `session.execution.succeeded`, `failed`, and `interrupted`, `permission.asked` and
+  `replied`, and `form.created`, `replied`, and `cancelled`.
+- Transcripts: `opencode session export <id> --standalone`, an `experimental` API,
+  through `execrun.OpenCodeRunner`, parsed by `opencode.ParseExport`.
+- Credentials: `safefs` refuses `opencode.db*`, `opencode-<channel>.db*`, the legacy
+  `auth.json`, and `$OPENCODE_DB`.
+- System and managed config (`packages/core/src/config/discovery.ts`) outrank every
+  launch setting, so `aggy doctor` warns when any exists.
+
 ### Transcript formats
 
 `internal/transcript` reads the tail of a session file for a brief. It
@@ -748,8 +777,8 @@ passes any of these variables to a CLI (`execrun.Env`).
 ### Tested versions
 
 Each adapter declares the CLI versions it was tested on, from the verified
-versions above: claude 2.1.311 to 2.1.312, codex-cli 0.164.0, and grok
-1.0.70.
+versions above: claude 2.1.311 to 2.1.312, codex-cli 0.164.0, grok
+1.0.70, and opencode 2.2.5.
 Each declares it as `Tested` and through `TestedVersions()`.
 `adapter.VersionWarning(a, version, line)` returns a warning when a probed
 version falls outside that range or cannot be parsed (then it quotes
