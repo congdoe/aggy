@@ -12,8 +12,8 @@ import (
 )
 
 // PolicyDenied starts a tool's result when Grok's permission gate refused it.
-// Live, grok 1.0.70 (verification.md S4) and 1.0.77 (T6922): "Denied by
-// permission policy: deny rule on read matching ...".
+// Live, grok 1.0.70 (verification.md S4) and, in the 2026-11-06 agent audit,
+// 1.0.77 (T6922): "Denied by permission policy: deny rule on read matching ...".
 const PolicyDenied = "Denied by permission policy"
 
 // RunNotes says when a review's read tools were refused, which the reply does
