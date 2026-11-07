@@ -203,6 +203,9 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `adapter.claude.lockdown_rejected` | error | adapter.claude | Claude Code rejected a lockdown flag; the run was discarded. | aggy doctor for the version; attach aggy diag bundle to an issue. |
 | `adapter.codex.lockdown_rejected` | error | adapter.codex | Codex rejected a lockdown flag; the run was discarded. | aggy doctor for the version; attach aggy diag bundle to an issue. |
 | `adapter.grok.lockdown_rejected` | error | adapter.grok | Grok rejected a lockdown flag, reported an unknown tool, or ran without its sandbox; the run was discarded. | aggy doctor for the version; attach aggy diag bundle to an issue. |
+| `hook.guard.refused` | warn | hook | aggy's OpenCode guard refused a tool call: a variable declaration in a shell command, a real path outside the repo, a call from another folder, or opencode auth export. | The code's entry; the model saw the same reason. |
+| `hook.guard.missing` | warn | hook | aggy's OpenCode guard did not report in time, so its refusals may not be running; a plugin that fails to load gives no error. | The code's entry. |
+| `trust.request.refused` | error | trust | aggy trust refused; nothing was changed. | The code's entry. |
 | `adapter.grok.sandbox_refused` | warn | adapter.grok | Grok was passed over: its sandbox is not available for this kind on this CLI or host. | sandbox.missing. |
 | `accept.request.refused` | error | accept | aggy accept refused or failed; nothing was applied. | The code's entry; aggy diag show &lt;borrow id&gt;. |
 | `accept.diff.applied` | info | accept | An edit's diff was applied to the main checkout. | git status in the main checkout. |
@@ -349,6 +352,10 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `hook.no_session` | yes | A turn end from the CLI's tree named no session, which the vendor's own hook always does, so it looks forged and was not acted on. Recorded once a minute, and when the session ends (attrs.repeats: how many more came since the last record; attrs.tail: the record holds only those). | Which process in the session sends hook events: aggy hook forwards what the vendor gives it. |
 | `peer.cred_failed` |  | aggy could not tell which user or process opened a connection to the supervisor's socket, so it was closed unanswered. | Usually a process that connected and exited at once; nothing, unless hooks stop arriving. |
 | `hook.wrong_vendor` | yes | A hook event from the CLI's tree came from another vendor's hook than the one on screen, so it did not gate a switch. | A nested CLI of another vendor in the session; nothing else. |
+| `guard.refused` |  | aggy's OpenCode guard refused a tool call. It reads the raw input, so it catches mistakes only. | Run the command another way, or at the terminal yourself. |
+| `guard.no_report` |  | aggy's OpenCode guard did not report from the launch's folder in time. OpenCode's rules from aggy's config still apply; the guard's own refusals may not. | Quit and start again; aggy doctor for the CLI's version. A same-user process can overwrite or unload the plugin. |
+| `trust.bad_dir` |  | aggy trust was given a path that is not a folder aggy can resolve. | The path; aggy resolves it to its repo root. |
+| `trust.bad_file` |  | aggy could not read or change its list of repos trusted for OpenCode (opencode-trust.json in aggy's state folder). | The file's contents, or aggy unwire. |
 | `hook.bad_payload` |  | aggy hook could not read the vendor's hook payload, or it was not a JSON object. | The vendor CLI's version; aggy doctor. |
 | `tool.name_clash` |  | A tool that is on was not wired: the CLI already loads an MCP server of that name from the user's or the repo's config, and aggy never replaces or merges into one. | Rename or remove that server in the CLI's config, or turn the tool off. |
 | `tool.repo_path` |  | A tool that is on was not wired: its arguments hold {repo}, and the session is not in a repo, or the repo's path holds a character other than letters, digits, and / . _ + @ -. | Run the session in a repo whose path has only those characters. |
