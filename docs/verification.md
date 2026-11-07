@@ -1178,7 +1178,7 @@ Live, in an empty temporary git folder, with `--standalone` and without `--auto`
 
 Not established:
 
-- **Whether the turn drew on the plan.** The turn's `step_finish` event reported a non-zero `cost`, and nothing in the output says whether that is a price estimate or a charge. OpenCode's providers page says ChatGPT plan models show no cost, so this needs checking against the xAI account.
+- **What the reported cost means.** The turn's `step_finish` event reported a non-zero `cost`. The owner signed in with the SuperGrok option, and their account showed usage and no charge, so this is taken as a price estimate from one turn, not proven. No API-key variable was set in the shell that ran it.
 - **Whether the deny rule is enforced.** The config loaded, but the turn called no tool.
 - **Limits, longer sessions, and tiers other than the owner's.** xAI's page doesn't say how use counts against a plan's limits, and Hermes's docs report that xAI can return 403 on some tiers.
 
