@@ -299,3 +299,58 @@ func TestHookStates(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenCodeCannotTell (T6899, with T6932): OpenCode's sessions are in
+// opencode.db with its sign-ins, never opened, so a child's file says nothing:
+// never "never started", and so its row stays, and a settle takes no id.
+func TestOpenCodeCannotTell(t *testing.T) {
+	const id = "ses_abc123"
+	s := sessionStore(t)
+	ctx := context.Background()
+	dir := mustCanon(t, t.TempDir())
+	now := time.Now()
+	if err := s.InsertParent(ctx, store.Parent{ID: "aa11", Dir: dir, CreatedAt: now, LastActive: now}); err != nil {
+		t.Fatal(err)
+	}
+	c := store.Child{ID: "c1", ParentID: "aa11", Vendor: "opencode", VendorSessionID: id, Cwd: dir, Status: "open", CreatedAt: now, LastActive: now}
+	if err := s.InsertChild(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	for _, newChild := range []bool{true, false} {
+		if got := childStarted(supervisor.RunFacts{}, c, id, newChild, now, nil, &sessionFiles{}); got != startUnknown {
+			t.Errorf("new %v: %v", newChild, got)
+		}
+	}
+	noID := store.Child{Vendor: "opencode", Cwd: dir}
+	x := newSessionIndex("p", adapter.OpenCode)
+	if got := childStarted(supervisor.RunFacts{}, noID, "", true, now, x.sawRollout, &sessionFiles{}); got != startUnknown {
+		t.Errorf("no id: %v", got)
+	}
+	ids := &childIDs{s: s, child: c}
+	ids.follow("ses_other", "forged")
+	ids.settle(ctx, nil, &sessionFiles{})
+	cs, err := refreshChildren(ctx, s, "aa11", &sessionFiles{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs) != 1 || cs[0].VendorSessionID != id || cs[0].Status == stateGone {
+		t.Errorf("row: %+v", cs)
+	}
+}
+
+// TestOpenCodeHooksNotMissing (T6848, with T6932): OpenCode has its plugin and no
+// hook files, so aggy never says its hooks are missing.
+func TestOpenCodeHooksNotMissing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if st, _ := hookStatus(adapter.OpenCode, "/opt/homebrew/bin/aggy"); st != hookInstalled {
+		t.Errorf("state = %q", st)
+	}
+	oldBin, oldPath, oldCheck := hookBin, pathAggy, checkTrusted
+	hookBin = func() (string, error) { return "/opt/homebrew/bin/aggy", nil }
+	pathAggy = func() (string, error) { return "/opt/homebrew/bin/aggy", nil }
+	checkTrusted = func(string) error { return nil }
+	t.Cleanup(func() { hookBin, pathAggy, checkTrusted = oldBin, oldPath, oldCheck })
+	if hooksMissing(adapter.OpenCode) || hookWarning(adapter.OpenCode) != "" {
+		t.Errorf("missing %v, warning %q", hooksMissing(adapter.OpenCode), hookWarning(adapter.OpenCode))
+	}
+}
