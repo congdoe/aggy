@@ -20,6 +20,7 @@ import (
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/parity"
+	"github.com/congdoe/aggy/internal/permissions"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -45,6 +46,7 @@ type openCodeInput struct {
 	memory   string // framed shared memory, or ""
 	brief    string // the brief's text, or ""
 	noPolicy bool
+	rules    permissions.Set // the person's shared rules, for this repo
 }
 
 // prepareOpenCode builds the launch's folder (docs/design.md, section 15):
@@ -121,9 +123,14 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 	if err != nil {
 		return out, err
 	}
+	shared, skipped := parity.OpenCodeShared(in.rules)
+	if n := len(skipped); n > 0 {
+		out.warns = append(out.warns, skippedNote(n, "OpenCode"))
+	}
 	data, err := parity.OpenCodeConfig{
 		Trusted: trusted, Providers: providers, Model: in.model, Instructions: notes,
 		Plugin: pluginDir, Aggy: bin, Root: root, NoPolicy: in.noPolicy, Auto: out.launch.Auto,
+		Shared: shared,
 	}.Render()
 	if err != nil {
 		return out, err

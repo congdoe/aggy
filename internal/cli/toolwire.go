@@ -442,7 +442,7 @@ func addHooks(v adapter.Vendor, caps []string, on []switchboard.State, req *adap
 		warns = append(warns, refuse(r.Tool, r.Code, r.Code.String(), r.Why))
 	}
 	req.Hooks = hooks
-	if len(hooks) > 0 && len(req.Deny) > 0 {
+	if len(hooks) > 0 && (len(req.Deny) > 0 || len(req.Rules.Deny) > 0) {
 		var prefixes []string
 		for _, st := range on {
 			for _, h := range st.Parts.Hooks {
@@ -453,6 +453,7 @@ func addHooks(v adapter.Vendor, caps []string, on []switchboard.State, req *adap
 		}
 		for _, p := range prefixes {
 			req.Deny = append(slices.Clip(req.Deny), parity.RewriteDeny(p)...)
+			req.Rules.Deny = append(slices.Clip(req.Rules.Deny), parity.PrefixedDeny(p, req.Rules.Deny)...)
 		}
 	}
 	return warns

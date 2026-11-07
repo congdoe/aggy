@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"path/filepath"
 	"slices"
 
@@ -39,6 +40,7 @@ const (
 	FromClaudeLocal Origin = "claude-local" // <repo>/.claude/settings.local.json
 	FromAggy        Origin = "aggy"         // permissions.json, every repo
 	FromAggyRepo    Origin = "aggy-repo"    // permissions.json, this repo
+	FromConfig      Origin = "aggy-config"  // config.toml's [permissions] mode
 )
 
 // Rule is one rule and its source.
@@ -232,9 +234,25 @@ func (s *Set) loadAggy(in Input) {
 			s.Mode, s.ModeFrom = mode, FromAggy
 		}
 	}
-	if r, ok := f.Repos[in.RepoKey]; ok && in.RepoKey != "" {
-		s.addObject(Object{Allow: r.Allow, Ask: r.Ask, Deny: r.Deny}, FromAggyRepo, in.AggyFile, in.Trusted)
+	if in.RepoKey == "" {
+		return
 	}
+	// The file is edited by hand, so a key may be spelled another way than
+	// the canonical path, such as with capitals on a file system that folds case.
+	for _, key := range slices.Sorted(maps.Keys(f.Repos)) {
+		if key == in.RepoKey || canonical(key) == in.RepoKey {
+			r := f.Repos[key]
+			s.addObject(Object{Allow: r.Allow, Ask: r.Ask, Deny: r.Deny}, FromAggyRepo, in.AggyFile, in.Trusted)
+		}
+	}
+}
+
+func canonical(p string) string {
+	c, err := safefs.CanonicalPath(p)
+	if err != nil {
+		return ""
+	}
+	return c
 }
 
 // addObject adds a file's rules: denies and asks as they are, since they only
