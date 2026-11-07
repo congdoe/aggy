@@ -29,6 +29,10 @@ const (
 // cancels. The same overlay asks to confirm a switch at a turn end
 // (confirm set) and shows a note (note set) that any key closes.
 type picker struct {
+	// noTurn: no turn end of on has been counted since it launched, so the
+	// list says aggy will not type its exit command (T6893).
+	noTurn  bool
+	on      adapter.Vendor
 	vendors []adapter.Vendor
 	key     byte
 	// children lists a vendor's children in the open parent (T6665).
@@ -131,8 +135,17 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 		switch {
 		case p.waiting != "" && p.resume:
 			lines = append(lines, "", fmt.Sprintf("Resuming %s on the same session, for the changed tools, when this turn ends; Esc cancels it.", p.waiting))
+		case p.waiting != "" && p.noTurn:
+			lines = append(lines, "", fmt.Sprintf("Switching to %s; Esc cancels it.", p.waiting))
 		case p.waiting != "":
 			lines = append(lines, "", fmt.Sprintf("Switching to %s when this turn ends; Esc cancels it, picking it again says no turn is running.", p.waiting))
+		}
+		if p.noTurn {
+			cmd, _ := adapter.ExitCommand(p.on)
+			lines = append(lines, "",
+				fmt.Sprintf("aggy has seen no turn end from %s since it opened, and it may be showing a dialog,", p.on),
+				fmt.Sprintf("so aggy will not type %s. To switch, quit %s yourself; it must exit cleanly.", cmd, p.on),
+				"After a message, aggy asks at that turn's end if it sees one; some CLIs report none until their hook is approved.")
 		}
 		if p.waiting != "" {
 			if p.checking {

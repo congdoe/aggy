@@ -8,7 +8,7 @@ CI runs them on Linux and macOS only in their own job, with `go test -race -p 1 
 | --- | --- |
 | Switch key: picker, brief toggle, next CLI with the brief | `TestSwitchAtTurnEnd` |
 | Turn end: the Stop hook, `/exit` typed, the next child | `TestSwitchAtTurnEnd`, `TestSkillRequestedSwitch` |
-| A launch that ended no turn: no `/exit` typed, the note, quitting by hand completes the switch, Esc cancels; a resumed session too | `TestSwitchNoTurnYet` |
+| A launch that ended no turn: no `/exit` typed, the list says to quit, the note if nothing was sent, quitting by hand completes the switch, Esc cancels; a resumed session too | `TestSwitchNoTurnYet` |
 | Plan limit to a switch | `TestLimitSwitchWithBrief` |
 | Brief file: written, handed over, content and redaction | `TestLimitSwitchWithBrief` |
 | Borrow from the on-screen agent, answer back | `TestBorrowRoundTrip` |

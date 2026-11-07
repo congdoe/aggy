@@ -3,9 +3,11 @@
 package supervisor
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -41,7 +43,7 @@ func switchRunTurned(t *testing.T, vendor adapter.Vendor, more ...func(*Options)
 
 const (
 	noTurnNote = "will not type /exit into it"
-	noTurnLine = "quit claude yourself"
+	noTurnList = "To switch, quit claude yourself"
 	// switchQuietTest is switchRunOn's quiet gap.
 	switchQuietTest = 50 * time.Millisecond
 )
@@ -140,70 +142,113 @@ func TestSwitchNoTurnYet(t *testing.T) {
 		c.quit(0)
 		wantExit(t, done, Exit{SwitchTo: adapter.Codex, Next: Choice{Vendor: adapter.Codex}})
 	})
-	// T6938: a turn may be running, so the output keeps coming and keys
-	// reach the CLI, with no key pressed first.
-	t.Run("a running first turn keeps its output", func(t *testing.T) {
-		ts, c, done, sock := switchRunOn(t, true, adapter.Claude)
-		ts.typeIn(t, "\x1c1")
-		// Past the quiet gap, when the notice shows, with no key pressed.
-		time.Sleep(5 * switchQuietTest)
-		c.print("STREAMED")
-		poll(t, "the CLI's output", []byte("STREAMED"), ts.screen)
-		poll(t, "the line", []byte(noTurnLine), ts.screen)
-		if strings.Contains(string(ts.screen()), noTurnNote) {
-			t.Error("the note opened during a turn")
-		}
-		ts.typeIn(t, "k")
-		c.waitGot(t, []byte("k"))
-		// The turn end still brings the offer.
-		ts.typeIn(t, "\x7f")
-		c.waitGot(t, []byte("k\x7f"))
-		_ = request(t, sock, stopLine)
-		poll(t, "the confirmation", []byte("-> codex. Ctrl+"), ts.screen)
-		confirm(t, ts)
-		c.waitGot(t, []byte("/exit\r"))
-		c.quit(0)
-		wantExit(t, done, Exit{SwitchTo: adapter.Codex, Next: Choice{Vendor: adapter.Codex}})
-	})
-	t.Run("the line draws with the cursor put back, and goes on a key", func(t *testing.T) {
-		ts, c, done, _ := switchRunOn(t, true, adapter.Claude)
-		ts.typeIn(t, "\x1c1")
-		poll(t, "the line", []byte(noTurnLine), ts.screen)
-		if !strings.Contains(string(ts.screen()), "\x1b7\x1b[24;1H") {
-			t.Errorf("no cursor save before the line: %q", ts.screen())
-		}
-		ts.clearScreen()
-		ts.typeIn(t, "k")
-		poll(t, "the erase", []byte("\x1b7\x1b[24;1H\x1b[2K\x1b8"), ts.screen)
-		c.waitGot(t, []byte("k"))
-		finish(t, c, done)
-	})
-	t.Run("told by the line, quitting completes the switch", func(t *testing.T) {
-		ts, c, done, _ := switchRunOn(t, true, adapter.Claude)
-		ts.typeIn(t, "\x1c1")
-		poll(t, "the line", []byte(noTurnLine), ts.screen)
-		noExit(t, c)
-		c.quit(0)
-		wantExit(t, done, Exit{SwitchTo: adapter.Codex, Next: Choice{Vendor: adapter.Codex}})
-	})
-	// Enter may only have answered a dialog, or started a turn: the first
-	// pick gets the line, and picking again, which says no turn is running,
-	// the note. Quitting completes the switch.
-	t.Run("Enter is no turn: the line shows, then the note on a second pick", func(t *testing.T) {
-		ts, c, done, _ := switchRunOn(t, false, adapter.Claude)
+	// T6938: a notice must never hold output while a turn may be running.
+	// Each of these has, or may have, one, past the quiet gap, no key pressed.
+	for _, tt := range []struct {
+		name       string
+		startsTurn bool
+		before     string
+		picks      int
+	}{
+		{"a launch with a brief", true, "", 1},
+		{"after Enter", false, "\r", 1},
+		{"after Enter as CSI 13 u", false, "hi\x1b[13u", 1},
+		{"any input at all", false, "x", 1},
+		{"a second pick after Enter says nothing of a turn", false, "\r", 2},
+	} {
+		t.Run("the output keeps coming: "+tt.name, func(t *testing.T) {
+			ts, c, done, sock := switchRunOn(t, tt.startsTurn, adapter.Claude)
+			if tt.before != "" {
+				ts.typeIn(t, tt.before)
+				c.waitGot(t, []byte(tt.before))
+			}
+			ts.typeIn(t, "\x1c1")
+			poll(t, "the list's text", []byte(noTurnList), ts.screen)
+			poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+			if tt.picks == 2 {
+				ts.clearScreen()
+				ts.typeIn(t, "\x1c")
+				poll(t, "the list", []byte("Switching to codex"), ts.screen)
+				ts.typeIn(t, "1")
+				poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+			}
+			time.Sleep(5 * switchQuietTest)
+			c.print("STREAMED")
+			poll(t, "the CLI's output", []byte("STREAMED"), ts.screen)
+			if strings.Contains(string(ts.screen()), noTurnNote) {
+				t.Error("the note opened")
+			}
+			noExit(t, c)
+			// The turn end still brings the offer.
+			if tt.before == "" || strings.HasSuffix(tt.before, "\r") {
+				_ = request(t, sock, stopLine)
+				poll(t, "the confirmation", []byte("-> codex. Ctrl+"), ts.screen)
+				confirm(t, ts)
+				c.waitGot(t, []byte("/exit\r"))
+			}
+			c.quit(0)
+			wantExit(t, done, Exit{SwitchTo: adapter.Codex, Next: Choice{Vendor: adapter.Codex}})
+		})
+	}
+	// The list said to quit, so a clean quit completes the switch, however
+	// busy the output, and before any notice could show.
+	t.Run("a quit right after the pick completes it", func(t *testing.T) {
+		ts, c, done, _ := switchRunOn(t, false, adapter.Claude, func(*Options) { switchQuiet = time.Hour })
 		ts.typeIn(t, "\r")
 		c.waitGot(t, []byte("\r"))
 		ts.typeIn(t, "\x1c1")
-		poll(t, "the line", []byte(noTurnLine), ts.screen)
-		noExit(t, c)
-		ts.clearScreen()
-		ts.typeIn(t, "\x1c")
-		poll(t, "the list", []byte("Switching to codex"), ts.screen)
-		ts.typeIn(t, "1")
-		note(t, ts)
-		noExit(t, c)
+		poll(t, "the list to close", []byte(altScreenOff), ts.screen)
 		c.quit(0)
 		wantExit(t, done, Exit{SwitchTo: adapter.Codex, Next: Choice{Vendor: adapter.Codex}})
+	})
+	t.Run("a vendor no longer allowed at the quit: no switch, and it says so", func(t *testing.T) {
+		var refuse atomic.Bool
+		ts, c, done, _ := switchRunOn(t, false, adapter.Claude, func(o *Options) {
+			o.CanSwitch = func(adapter.Vendor) error {
+				if refuse.Load() {
+					return errors.New("not allowed now")
+				}
+				return nil
+			}
+		})
+		ts.typeIn(t, "x")
+		c.waitGot(t, []byte("x"))
+		ts.typeIn(t, "\x1c1")
+		poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+		refuse.Store(true)
+		c.quit(0)
+		wantExit(t, done, Exit{})
+		poll(t, "why", []byte("cannot switch to codex: not allowed now"), ts.screen)
+	})
+	// After a turn end the list's promise is over: the exit ends aggy, saying so.
+	t.Run("a pick after a turn end, then a quit, says it did not switch", func(t *testing.T) {
+		ts, c, done, _ := switchRunTurned(t, adapter.Claude)
+		ts.typeIn(t, "go\r")
+		c.waitGot(t, []byte("go\r"))
+		ts.typeIn(t, "\x1c1")
+		poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+		c.quit(0)
+		wantExit(t, done, Exit{})
+		poll(t, "why", []byte("claude exited before aggy offered to switch to codex, so it did not."), ts.screen)
+	})
+	// A signal since the exit command was typed stops the switch too.
+	t.Run("a signal after /exit was typed: no next CLI", func(t *testing.T) {
+		ts, c, done, _ := switchRunTurned(t, adapter.Claude)
+		ts.typeIn(t, "\x1c1")
+		poll(t, "the confirmation", []byte("-> codex. Ctrl+"), ts.screen)
+		confirm(t, ts)
+		c.waitGot(t, []byte("/exit\r"))
+		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-c.sigs:
+		case <-time.After(waitLimit):
+			t.Fatal("the signal was not passed on")
+		}
+		c.quit(0)
+		wantExit(t, done, Exit{})
+		poll(t, "why", []byte("aggy was sent a signal, so aggy did not switch to codex."), ts.screen)
 	})
 	t.Run("another session's turn end does not count", func(t *testing.T) {
 		ts, c, done, sock := switchRunOn(t, false, adapter.Claude)
@@ -214,20 +259,14 @@ func TestSwitchNoTurnYet(t *testing.T) {
 		c.quit(0)
 		wantExit(t, done, Exit{SwitchTo: adapter.Codex, Next: Choice{Vendor: adapter.Codex}})
 	})
-	t.Run("unsent text: the note still comes first", func(t *testing.T) {
+	t.Run("unsent text: a quit after the pick completes it", func(t *testing.T) {
 		ts, c, done, _ := switchRunOn(t, false, adapter.Claude)
 		ts.typeIn(t, "half")
 		c.waitGot(t, []byte("half"))
 		ts.typeIn(t, "\x1c1")
-		note(t, ts)
+		poll(t, "the list to close", []byte(altScreenOff), ts.screen)
 		c.quit(0)
 		wantExit(t, done, Exit{SwitchTo: adapter.Codex, Next: Choice{Vendor: adapter.Codex}})
-	})
-	t.Run("an exit before the note ends aggy", func(t *testing.T) {
-		ts, c, done, _ := switchRunOn(t, false, adapter.Claude, func(*Options) { switchQuiet = time.Hour })
-		ts.typeIn(t, "\x1c1")
-		poll(t, "the picker to close", []byte(altScreenOff), ts.screen)
-		finish(t, c, done)
 	})
 	t.Run("a limit alone waits for its turn end", func(t *testing.T) {
 		ch := make(chan LimitHit, 1)
@@ -268,7 +307,7 @@ func TestSwitchNoTurnYet(t *testing.T) {
 			}
 			c.quit(0)
 			wantExit(t, done, Exit{})
-			poll(t, "why", []byte("claude was sent a signal through aggy, so aggy did not switch to codex."), ts.screen)
+			poll(t, "why", []byte("aggy was sent a signal, so aggy did not switch to codex."), ts.screen)
 		})
 	}
 	// A counted turn end ends the promise: the offer takes over the note, and
@@ -326,6 +365,25 @@ func TestSwitchNoTurnYet(t *testing.T) {
 		noExit(t, c)
 		c.quit(0)
 		wantExit(t, done, Exit{SwitchTo: adapter.Grok, Next: Choice{Vendor: adapter.Grok, Brief: true}})
+	})
+	t.Run("a signal with only an agent's ask waiting: no line", func(t *testing.T) {
+		ts, c, done, sock := switchRunOn(t, false, adapter.Claude)
+		if r := request(t, sock, `{"type":"switch-request","vendor":"codex"}`); !strings.Contains(r, `"ok":true`) {
+			t.Fatalf("reply %q", r)
+		}
+		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-c.sigs:
+		case <-time.After(waitLimit):
+			t.Fatal("the signal was not passed on")
+		}
+		c.quit(0)
+		wantExit(t, done, Exit{})
+		if strings.Contains(string(ts.screen()), "did not switch") {
+			t.Errorf("a line for a switch nobody picked: %q", ts.screen())
+		}
 	})
 	t.Run("an agent's ask waits for a turn end, with no note", func(t *testing.T) {
 		ts, c, done, sock := switchRunOn(t, false, adapter.Claude)

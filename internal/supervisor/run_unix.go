@@ -300,14 +300,13 @@ func Run(o Options) (Exit, error) {
 				case <-outDone:
 				case <-time.After(drainWait):
 				}
-				s.clearNoTurnLine()
 				s.drainSignals(sigs)
 				// Only an exit after aggy typed the exit command, or a
 				// clean one after it told the user to quit for the switch
 				// they picked, is a switch; any other CLI that exited ends
-				// aggy.
+				// aggy, saying so if the user picked one.
 				ex := Exit{Code: w.code}
-				if s.sw.typed || s.handExitSwitches(w.code) {
+				if s.exitSwitches(w.code) {
 					ex.SwitchTo, ex.Next = s.sw.to, s.sw.choice
 					ex.Next.Vendor = s.sw.to
 					s.log(diag.Rec{Event: diag.EvSwitchCompleted, Cause: s.sw.rec, Exit: diag.Int(w.code), Attrs: switchAttrs(ex.Next, map[string]any{"to": string(s.sw.to), "by_hand": !s.sw.typed})})
@@ -366,10 +365,10 @@ type session struct {
 	// signalled: aggy passed a signal on to the CLI, so its exit is no
 	// choice of the user's. noTurnOpen: the open note is tellNoTurn's.
 	signalled, noTurnOpen bool
-	// noTurnRow is the bottom row drawNoTurnLine wrote (0: none), and
-	// noTurnOut the CLI's lastOut then: later output may have drawn there.
-	noTurnRow int
-	noTurnOut int64
+	// sentAny: some input has gone to the CLI since it launched. Any of it
+	// may have started a turn, in whatever encoding the terminal sends Enter
+	// (CR, CSI 13 u, a paste), so aggy does not try to tell which.
+	sentAny bool
 	// held: a hook other than a turn end (a Notification: maybe a
 	// permission prompt) came from the session, and the user has not
 	// typed to the CLI since. A turn end does not clear it: a nested
@@ -494,11 +493,11 @@ type pendingSwitch struct {
 	typed      bool // the exit command has been typed
 	// picked: the user chose this switch, in the picker or a note.
 	picked bool
-	// toldNoTurn: the user was told to quit the CLI themselves, so its
+	// toldNoTurn: the list this was picked from said to quit the CLI, so its
 	// clean exit now completes the switch, unless they cancel it or a turn
-	// end brings the normal offer (T6893). noteAgain: picked again, so the
-	// note shows again.
-	toldNoTurn, noteAgain bool
+	// end brings the normal offer (T6893). noteShown: tellNoTurn's note came
+	// up for this pick.
+	toldNoTurn, noteShown bool
 	// resume: a restart of the vendor on screen on the same session, for
 	// the tool changes named in tools (T6729).
 	resume bool
@@ -597,8 +596,7 @@ func (s *session) hookEvent(ev hookEvent) {
 		}
 		if ev.sessionID != "" && ev.sessionID == own {
 			s.turnRan = true
-			s.sw.toldNoTurn, s.sw.noteAgain = false, false
-			s.clearNoTurnLine()
+			s.sw.toldNoTurn = false
 			if s.noTurnOpen {
 				s.closePicker() // the offer takes over
 			}
@@ -732,12 +730,12 @@ func refusedMsg(v adapter.Vendor, err error) string {
 // Enter as CSI 13 u, which never clears it, so it cannot be switched
 // from by aggy. Upgrade if T6684 finds one.
 func (s *session) send(b []byte) {
-	s.clearNoTurnLine()
 	s.lastIn = time.Now()
 	s.held = false
 	if len(b) == 0 {
 		return
 	}
+	s.sentAny = true
 	if bytes.IndexByte(b, '\r') >= 0 {
 		s.atPrompt, s.toldDirty = false, false // an Enter may start a turn
 	}
@@ -835,8 +833,12 @@ func (s *session) offerSwitch() {
 	if !s.turnRan && !s.sw.picked {
 		return // an agent's, a limit's, or a tool change's: only a turn end offers it
 	}
-	// With no turn ended, atPrompt says nothing: an Enter that clears it may
-	// only have answered a dialog, and the note below types nothing.
+	// A notice must never hold output while a turn may be running, and
+	// without a turn end only a launch given no input and no brief has none.
+	// The list this was picked from has already told the user (markNoTurn).
+	if !s.turnRan && (s.sentAny || s.o.StartsTurn) {
+		return
+	}
 	if s.turnRan && !s.atPrompt {
 		return
 	}
@@ -961,28 +963,17 @@ func (s *session) offerSwitch() {
 	s.openPicker()
 }
 
-// tellNoTurn says, once per switch, that aggy will not type the exit
-// command because no turn has ended since this CLI launched (T6893), and
-// what to do instead. what is the switch, as a verb phrase.
-//
-// Whether a turn may be running decides the form. An Enter since the launch,
-// or a launch with a brief, may have started one, and a note would hold the
-// CLI's output until a key, so those get one status line that holds nothing
-// and takes no key (T6938). Otherwise nothing can be running, or the user
-// picked the vendor again to say so, and the note has room to explain.
+// tellNoTurn repeats, once per pick, what the list said, with room to explain,
+// for someone who picked without reading it. offerSwitch comes here only when
+// nothing can be running, so this note holds no turn's output. what is the
+// switch, as a verb phrase.
 func (s *session) tellNoTurn(what string) {
-	if s.sw.toldNoTurn && !s.sw.noteAgain {
+	if s.sw.noteShown {
 		return
 	}
-	s.sw.toldNoTurn, s.sw.noteAgain = true, false
+	s.sw.noteShown, s.sw.toldNoTurn = true, true
 	on := s.o.Vendor
 	cmd, _ := adapter.ExitCommand(on)
-	s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeNoTurnYet, Cause: s.sw.rec,
-		Msg: "no turn has ended since the CLI launched, so aggy does not type its exit command", Attrs: map[string]any{"to": string(s.sw.to)}})
-	if rows, cols := s.t.size(); !s.atPrompt && rows > 1 {
-		s.drawNoTurnLine(rows, cols, what)
-		return
-	}
 	s.pk.tell(fmt.Sprintf("aggy is ready to %s, but it has seen no turn end from %s since it opened.", what, on),
 		fmt.Sprintf("It may be showing a dialog (an update or trust prompt), so aggy will not type %s into it.", cmd),
 		fmt.Sprintf("Quit %s yourself and aggy will %s, if it exits cleanly.", on, what),
@@ -992,25 +983,61 @@ func (s *session) tellNoTurn(what string) {
 	s.noTurnOpen = true
 }
 
-// handExitSwitches says whether the CLI's exit with code completes a switch
-// that tellNoTurn told the user to quit for: only a clean exit with no signal
-// passed on, since a crash or a signal is no answer to the note, and only
-// while the session picked is still recorded, as confirmSwitch checks. It
-// says why not, in the record and, for a session gone, on the terminal.
-func (s *session) handExitSwitches(code int) bool {
-	if !s.sw.toldNoTurn {
+// markNoTurn notes a pick from a list that said to quit the CLI (openList):
+// with no turn ended, its clean exit now completes the switch.
+func (s *session) markNoTurn() {
+	if s.turnRan {
+		return
+	}
+	s.sw.toldNoTurn = true
+	s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeNoTurnYet, Cause: s.sw.rec,
+		Msg: "no turn has ended since the CLI launched, so aggy does not type its exit command", Attrs: map[string]any{"to": string(s.sw.to)}})
+}
+
+// exitSwitches says whether the CLI's exit with code completes the waiting
+// switch, and tells the user why not when they picked one. A typed exit
+// command completes it unless aggy got a signal since. So does a clean exit
+// the list said to make, with no signal, a session picked still recorded (as
+// confirmSwitch checks), and the vendor still allowed (as offerSwitch checks).
+func (s *session) exitSwitches(code int) bool {
+	v, on := s.sw.to, s.o.Vendor
+	if v == "" {
 		return false
 	}
-	if code != 0 || s.signalled {
-		s.log(diag.Rec{Event: diag.EvSwitchCancelled, Cause: s.sw.rec, Exit: diag.Int(code), Attrs: map[string]any{"how": "unclean_exit", "to": string(s.sw.to), "signalled": s.signalled}})
-		why := fmt.Sprintf("exited with code %d", code)
-		if s.signalled {
-			why = "was sent a signal through aggy"
+	what := "switch to " + string(v)
+	if s.sw.resume {
+		what = "resume " + string(v)
+	}
+	unclean := func(why string) bool {
+		s.log(diag.Rec{Event: diag.EvSwitchCancelled, Cause: s.sw.rec, Exit: diag.Int(code), Attrs: map[string]any{"how": "unclean_exit", "to": string(v), "signalled": s.signalled}})
+		s.exitLine(fmt.Sprintf("%s, so aggy did not %s.", why, what))
+		return false
+	}
+	if s.sw.typed && !s.signalled {
+		return true
+	}
+	if !s.sw.typed && !s.sw.toldNoTurn {
+		if s.sw.picked {
+			s.exitLine(fmt.Sprintf("%s exited before aggy offered to %s, so it did not.", on, what))
 		}
-		s.exitLine(fmt.Sprintf("%s %s, so aggy did not switch to %s.", s.o.Vendor, why, s.sw.to))
 		return false
 	}
-	id, v := s.sw.choice.Child, s.sw.to
+	if s.signalled {
+		return unclean("aggy was sent a signal")
+	}
+	if code != 0 {
+		return unclean(fmt.Sprintf("%s exited with code %d", on, code))
+	}
+	check := s.offered
+	if s.sw.resume {
+		check = s.resumable
+	}
+	if err := check(v); err != nil && !errors.Is(err, ErrChecking) {
+		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchVendor, Cause: s.sw.rec, Msg: refusedMsg(v, err), Attrs: map[string]any{"to": string(v)}})
+		s.exitLine(fmt.Sprintf("cannot %s: %v", what, err))
+		return false
+	}
+	id := s.sw.choice.Child
 	if id == "" || s.o.HasChild == nil {
 		return true
 	}
@@ -1035,7 +1062,7 @@ func (s *session) exitLine(msg string) {
 }
 
 // drainSignals takes the signals that arrived with the CLI's exit: a select
-// with both ready picks either, and a signal passed on is no clean exit
+// with both ready picks either, and a signal aggy got is no clean exit
 // (T6938). The CLI has gone, so there is nothing to pass them to.
 func (s *session) drainSignals(sigs <-chan os.Signal) {
 	for {
@@ -1047,51 +1074,6 @@ func (s *session) drainSignals(sigs <-chan os.Signal) {
 		default:
 			return
 		}
-	}
-}
-
-// drawNoTurnLine writes tellNoTurn's one status line on the bottom row, with
-// the cursor saved and put back, even on the CLI's alternate screen, since
-// the CLI keeps drawing. outMu is held only for the write, between the CLI's
-// sequences as openPicker waits for, so the pass-through keeps flowing and
-// every key still goes to the CLI. The CLI may draw over it.
-func (s *session) drawNoTurnLine(rows, cols int, what string) {
-	on, key := s.o.Vendor, keyName(s.pk.key)
-	line := fmt.Sprintf("aggy: %s may be showing a dialog, so aggy types nothing. To %s, quit %s yourself. %s then Esc cancels.", on, what, on, key)
-	if cols > 1 && len(line) > cols-1 {
-		line = fmt.Sprintf("aggy: to %s, quit %s yourself. %s then Esc cancels.", what, on, key)
-	}
-	if cols > 1 && len(line) > cols-1 {
-		line = line[:cols-1] // ASCII only; never writes the last column
-	}
-	deadline := time.Now().Add(altSettle)
-	s.outMu.Lock()
-	for !s.alt.idle() && time.Now().Before(deadline) {
-		s.outMu.Unlock()
-		time.Sleep(2 * time.Millisecond)
-		s.outMu.Lock()
-	}
-	defer s.outMu.Unlock()
-	s.noTurnRow, s.noTurnOut = rows, s.lastOut.Load()
-	fmt.Fprintf(s.o.Out, "\x1b7\x1b[%d;1H\x1b[2K\x1b[7m%s\x1b[0m\x1b8", rows, line)
-}
-
-// clearNoTurnLine takes drawNoTurnLine's line away, unless the CLI has drawn
-// since: that row may be the CLI's now.
-func (s *session) clearNoTurnLine() {
-	if s.noTurnRow == 0 {
-		return
-	}
-	row := s.noTurnRow
-	s.noTurnRow = 0
-	s.outMu.Lock()
-	onAlt := s.alt.on
-	if s.lastOut.Load() == s.noTurnOut {
-		fmt.Fprintf(s.o.Out, "\x1b7\x1b[%d;1H\x1b[2K\x1b8", row)
-	}
-	s.outMu.Unlock()
-	if onAlt {
-		s.repaint()
 	}
 }
 
@@ -1418,6 +1400,7 @@ func (s *session) typeExit() {
 	cmd, _ := adapter.ExitCommand(s.o.Vendor)
 	s.toChild.push([]byte(cmd + "\r"))
 	s.sw.typed = true
+	s.signalled = false // only one from here on stops this switch
 	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchConfirmed, Cause: s.sw.rec, Attrs: map[string]any{"to": string(s.sw.to)}})
 	s.exitBy = time.After(exitWait)
 }
@@ -1433,6 +1416,7 @@ const altSettle = 50 * time.Millisecond
 func (s *session) openList() {
 	s.pk.list()
 	s.pk.waiting, s.pk.checking, s.pk.resume = s.sw.to, false, s.sw.resume
+	s.pk.noTurn, s.pk.on = !s.turnRan, s.o.Vendor
 	// After a limit, Enter takes the suggested vendor, with a brief.
 	s.pk.opts.Brief = s.pk.preselect != ""
 	// Starts the checks that take time (the policy probe) for every
@@ -1453,7 +1437,6 @@ func (s *session) openList() {
 // get back between sequences (B13-12): mid ESC [ ? 1049 h, its on is
 // about to change.
 func (s *session) openPicker() {
-	s.clearNoTurnLine()
 	if s.open {
 		// outMu is held while the picker is up: never lock it twice.
 		s.closePicker()
@@ -1572,9 +1555,12 @@ func (s *session) pickerInput(b []byte) {
 			s.openPicker()
 			return
 		}
-		s.atPrompt, s.toldDirty = true, false
-		s.sw.choice, s.sw.asked, s.sw.picked, s.sw.noteAgain = c, false, true, true
+		// Without a turn end, no pick can say no turn is running: a turn
+		// may be, and atPrompt would let a notice hold it.
+		s.atPrompt, s.toldDirty = s.atPrompt || s.turnRan, false
+		s.sw.choice, s.sw.asked, s.sw.picked, s.sw.noteShown = c, false, true, false
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Cause: s.sw.rec, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked), "again": true})})
+		s.markNoTurn()
 	case picked != "":
 		if err := s.offered(picked); err != nil && !errors.Is(err, ErrChecking) {
 			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchVendor, Msg: refusedMsg(picked, err), Attrs: map[string]any{"to": string(picked)}})
@@ -1584,6 +1570,7 @@ func (s *session) pickerInput(b []byte) {
 		}
 		s.setSwitch(pendingSwitch{to: picked, choice: c, picked: true})
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked)})})
+		s.markNoTurn()
 	default: // Esc on the list cancels a waiting switch
 		s.toolsWaitTurn = s.toolsWaitTurn || s.sw.resume
 		s.setSwitch(pendingSwitch{})

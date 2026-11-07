@@ -701,3 +701,34 @@ func TestHooksDir(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// TestBorrowEditLinkedHome (T6938): with AGGY_HOME spelled through a symlink,
+// the edit child's -C and trust key are the physical path, which Codex's
+// Seatbelt needs of a writable root.
+func TestBorrowEditLinkedHome(t *testing.T) {
+	f := newBorrowFixture(t, adapter.Codex, adapter.Grok, adapter.Claude)
+	editRepo(t, f.repo)
+	f.env.gitPath, f.env.gitRun = gitEnv().gitPath, gitEnv().gitRun
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(f.state, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGGY_HOME", link)
+	f.scenario["codex"] = `{"events":[{"type":"item.completed","item":{"type":"agent_message","text":"done"}}]}`
+	code, out, errOut := f.run(t, "edit", "add a helper", "--path", "a.go", "--vendor", "codex")
+	if code != 0 {
+		t.Fatalf("code %d: %s %s", code, out, errOut)
+	}
+	real := resolvePath(f.state)
+	for _, r := range fakecli.Records(t, f.record) {
+		if r.Mode != "headless" {
+			continue
+		}
+		args := strings.Join(r.Args, " ")
+		if !strings.Contains(args, "-C "+real+string(filepath.Separator)) || strings.Contains(args, link) {
+			t.Errorf("args:\n%s", args)
+		}
+		return
+	}
+	t.Error("no child ran")
+}

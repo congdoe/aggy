@@ -533,8 +533,16 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 	if err := safefs.WriteFile(promptFile, []byte(prompt.Text()), 0o600); err != nil {
 		return Result{}, err
 	}
+	childCwd := dirs.cwd
+	if req.Kind == adapter.Edit {
+		// A sandbox refuses a writable root with a symlink in it, and a
+		// refused child can still report success (docs/adapters.md).
+		if childCwd, err = safefs.RealPath(dirs.cwd); err != nil {
+			return Result{}, fmt.Errorf("edit: resolving the worktree's path: %w", err)
+		}
+	}
 	hreq := adapter.HeadlessRequest{
-		Kind: req.Kind, PromptFile: promptFile, Model: model, Cwd: dirs.cwd,
+		Kind: req.Kind, PromptFile: promptFile, Model: model, Cwd: childCwd,
 		IsolatedCwd: dirs.isolated, WebSearch: req.Kind == adapter.Research || req.Kind == adapter.News,
 		RunDir: dirs.run, GitRepo: dirs.gitRepo,
 		// The turn limit, where the CLI takes one (Grok's --max-turns;
