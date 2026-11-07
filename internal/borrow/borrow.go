@@ -699,6 +699,9 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 		res.Status, res.Outcome = "done", "ok"
 	}
 	end.Status, end.Outcome = res.Status, res.Outcome
+	if n, ok := a.(adapter.RunNoter); ok && res.Status == "done" {
+		res.Warnings = append(res.Warnings, n.RunNotes(hreq, parsed)...)
+	}
 	if res.Status == "done" && (req.Kind == adapter.Image || req.Kind == adapter.Video) {
 		// Paths in the vendor's own store, each through the artifact
 		// gate; nothing is copied here.

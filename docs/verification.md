@@ -1627,3 +1627,6 @@ An agent ran these under the owner's approval for this work (at most 40 real Ope
 - **Source.** On `opencode mini`, `-m` sets the model of a resumed session too (`cli/src/mini.ts`), so `aggy opencode --continue --model` does what `aggy claude --continue --model` does there. Not run.
 - **Reviewer's check.** `export DEVELOPER_DIR=./dev; git status` ran a planted `dev/usr/bin/xcrun` through stock macOS `/usr/bin/git`, in bash and zsh. `BASH_CMDS[git]=` follows the bash manual for bash 4 and later; macOS's 3.2 cannot confirm it. Neither needs the real OpenCode.
 
+## Grok reviews under `$HOME` (T6922)
+
+Live, grok 1.0.77, in a repo under `<HOME>`, by the maintainer: `read_file` and `list_dir` returned `Denied by permission policy: deny rule on read matching "~*/**"` under aggy's review argv. The review still came back, from the diff in its prompt, and its report did not mention the denial. It fails closed. `grep` was not seen; it has the same rule. aggy keeps the rules, since they stop `~` spellings of the Grok home (source: `policy/path_match.rs:91-112`, `policy.rs:2221`), and the report now says so. S4 shows Grok prints a rule on `<HOME>/Library/**` in its `~` form, which fits, but why a physical repo path matches `~*/**` was not traced in the source. No live run has shown the new report line.
