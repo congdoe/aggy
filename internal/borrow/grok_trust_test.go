@@ -320,3 +320,29 @@ func TestGrokProjectSourcesChain(t *testing.T) {
 		t.Errorf("sources = %q", got)
 	}
 }
+
+// TestGrokReviewReportSaysDenied (T6922): a Grok review of a repo under $HOME
+// reports that its read tools were denied, in the report and the result; one
+// outside $HOME does not.
+func TestGrokReviewReportSaysDenied(t *testing.T) {
+	for _, underHome := range []bool{true, false} {
+		w := newWorld(t)
+		w.cfg.Routing.Review.Vendors = []adapter.Vendor{adapter.Grok, adapter.Claude}
+		w.scenario[adapter.Grok] = `{"json":{"text":"looks fine"}}`
+		if underHome {
+			t.Setenv("HOME", filepath.Dir(w.repo))
+		}
+		res, err := w.borrower().Run(context.Background(), w.req(adapter.Review, "review it"))
+		if err != nil || res[0].Status != "done" || res[0].Vendor != adapter.Grok {
+			t.Fatalf("res %+v err %v", res, err)
+		}
+		report, err := os.ReadFile(res[0].ReportPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		said := strings.Contains(string(report), "- Warning: this repo is under your home folder")
+		if said != underHome || (len(res[0].Warnings) == 1) != underHome {
+			t.Errorf("under home %v: warnings %q, report:\n%s", underHome, res[0].Warnings, report)
+		}
+	}
+}
