@@ -26,7 +26,7 @@ func TestChildCheckedWithTools(t *testing.T) {
 			t.Fatal(err)
 		}
 		s := &session{o: Options{Vendor: adapter.Claude, Out: out}, pk: &picker{key: 0x1c},
-			toChild: newByteQueue(maxQueued), atPrompt: true, lenKnown: true}
+			toChild: newByteQueue(maxQueued), atPrompt: true, turnRan: true, lenKnown: true}
 		c := Choice{Vendor: adapter.Grok, Child: "g1", Tools: []string{"web-search"}}
 		s.setSwitch(pendingSwitch{to: adapter.Grok, choice: c, checkSeq: 1, checkAt: time.Now()})
 		s.childChecked(childCheck{seq: 1, ok: recorded})
@@ -59,7 +59,7 @@ func TestSwitchLateChildCheck(t *testing.T) {
 	release := func() { once.Do(func() { close(gate) }) }
 	t.Cleanup(release)
 	var asked atomic.Bool
-	ts, c, done, _ := switchRunOn(t, false, adapter.Claude, func(o *Options) {
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude, func(o *Options) {
 		childCheckWait = 100 * time.Millisecond // before Run starts
 		o.Children = func(v adapter.Vendor) []ChildChoice {
 			if v == adapter.Grok {
@@ -104,7 +104,7 @@ func TestSwitchLateChildCheck(t *testing.T) {
 func TestSwitchPickedChildGone(t *testing.T) {
 	for _, recorded := range []bool{false, true} {
 		var asked atomic.Value
-		ts, c, done, _ := switchRunOn(t, false, adapter.Claude, func(o *Options) {
+		ts, c, done, _ := switchRunTurned(t, adapter.Claude, func(o *Options) {
 			o.Children = func(v adapter.Vendor) []ChildChoice {
 				if v == adapter.Grok {
 					return []ChildChoice{{"g2", "latest"}, {"g1", "older"}}
@@ -145,7 +145,7 @@ func TestSwitchPickedChildGone(t *testing.T) {
 // columns.
 func TestSwitchLongModelKeepsKeys(t *testing.T) {
 	model := strings.Repeat("m", maxModel)
-	ts, c, done, _ := switchRun(t, false)
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
 	ts.typeIn(t, "\x1c")
 	poll(t, "the list", []byte("aggy: switch vendor"), ts.screen)
 	steps := []struct{ key, shows string }{

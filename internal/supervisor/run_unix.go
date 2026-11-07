@@ -298,13 +298,15 @@ func Run(o Options) (Exit, error) {
 				case <-outDone:
 				case <-time.After(drainWait):
 				}
-				// Only an exit after aggy typed the exit command is a
-				// switch; a CLI the user quit ends aggy.
+				// Only an exit after aggy typed the exit command, or
+				// after it told the user to quit for the switch they
+				// picked, is a switch; any other CLI the user quit ends
+				// aggy.
 				ex := Exit{Code: w.code}
-				if s.sw.typed {
+				if s.sw.typed || s.sw.toldNoTurn {
 					ex.SwitchTo, ex.Next = s.sw.to, s.sw.choice
 					ex.Next.Vendor = s.sw.to
-					s.log(diag.Rec{Event: diag.EvSwitchCompleted, Cause: s.sw.rec, Exit: diag.Int(w.code), Attrs: switchAttrs(ex.Next, map[string]any{"to": string(s.sw.to)})})
+					s.log(diag.Rec{Event: diag.EvSwitchCompleted, Cause: s.sw.rec, Exit: diag.Int(w.code), Attrs: switchAttrs(ex.Next, map[string]any{"to": string(s.sw.to), "by_hand": !s.sw.typed})})
 				}
 				return ex, nil
 			}
@@ -351,6 +353,12 @@ type session struct {
 	// user typed (or none was typed since a launch that started no turn),
 	// and no hold since.
 	atPrompt bool
+	// turnRan: a turn end of the on-screen child has been counted since
+	// this CLI launched. Until then the CLI may be showing a launch dialog
+	// (an update or trust prompt) that aggy cannot tell from a prompt, and
+	// the exit command's Enter could accept it, so aggy never types it
+	// (T6893). A user's Enter is no evidence: it may only answer a dialog.
+	turnRan bool
 	// held: a hook other than a turn end (a Notification: maybe a
 	// permission prompt) came from the session, and the user has not
 	// typed to the CLI since. A turn end does not clear it: a nested
@@ -473,6 +481,11 @@ type pendingSwitch struct {
 	// CLI's tree can send (O56-2), so it is labeled like an agent's ask.
 	unverified bool
 	typed      bool // the exit command has been typed
+	// picked: the user chose this switch, in the picker or a note.
+	picked bool
+	// toldNoTurn: the user was told to quit the CLI themselves, so its exit
+	// now completes the switch, unless they cancel it (T6893).
+	toldNoTurn bool
 	// resume: a restart of the vendor on screen on the same session, for
 	// the tool changes named in tools (T6729).
 	resume bool
@@ -570,6 +583,7 @@ func (s *session) hookEvent(ev hookEvent) {
 			s.lastTurnEnd = s.log(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(ev.name), "counted": true, "held": s.held}})
 		}
 		if ev.sessionID != "" && ev.sessionID == own {
+			s.turnRan = true
 			s.atPrompt = !s.held
 			s.toolsWaitTurn = false
 			s.warnDue = true
@@ -818,7 +832,10 @@ func (s *session) offerSwitch() {
 	if s.sw.resume {
 		what = fmt.Sprintf("resume %s with the changed tools", v)
 	}
-	if s.dirty {
+	if !s.turnRan && !s.sw.picked {
+		return // an agent's, a limit's, or a tool change's: only a turn end offers it
+	}
+	if s.dirty && s.turnRan {
 		// S-1: the exit command would go after the unsent text and send
 		// both, so the switch waits; the user is told once.
 		if !s.toldDirty {
@@ -847,6 +864,10 @@ func (s *session) offerSwitch() {
 		s.setSwitch(pendingSwitch{})
 		s.pk.tell(fmt.Sprintf("Cannot %s: %v", what, err))
 		s.openPicker()
+		return
+	}
+	if !s.turnRan {
+		s.tellNoTurn(what)
 		return
 	}
 	// One status line (S-12, O56-1): who or what asked and the switch's
@@ -913,6 +934,25 @@ func (s *session) offerSwitch() {
 			return "aggy: " + confirmLine(m[:keep]+"...", tools)
 		}
 	}
+	s.openPicker()
+}
+
+// tellNoTurn says, once per switch, that aggy will not type the exit
+// command because no turn has ended since this CLI launched (T6893), and
+// what to do instead. what is the switch, as a verb phrase.
+func (s *session) tellNoTurn(what string) {
+	if s.sw.toldNoTurn {
+		return
+	}
+	s.sw.toldNoTurn = true
+	on := s.o.Vendor
+	cmd, _ := adapter.ExitCommand(on)
+	s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeNoTurnYet, Cause: s.sw.rec,
+		Msg: "no turn has ended since the CLI launched, so aggy does not type its exit command", Attrs: map[string]any{"to": string(s.sw.to)}})
+	s.pk.tell(fmt.Sprintf("aggy is ready to %s, but %s has not ended a turn since it opened.", what, on),
+		fmt.Sprintf("It may be showing a dialog (an update or trust prompt), so aggy will not type %s into it.", cmd),
+		fmt.Sprintf("Quit %s yourself and aggy will %s, or send a message and aggy asks when that turn ends.", on, what),
+		fmt.Sprintf("To cancel, press %s, then Esc in the list.", keyName(s.pk.key)))
 	s.openPicker()
 }
 
@@ -1222,6 +1262,9 @@ func (s *session) childChecked(r childCheck) {
 // prompt and approval menus is not in docs/verification.md (S-3).
 func (s *session) typeExit() {
 	switch {
+	case !s.turnRan:
+		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeNoTurnYet, Cause: s.sw.rec, Msg: "the switch key was pressed, but no turn has ended since the CLI launched"})
+		return
 	case s.dirty:
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeUnsentText, Cause: s.sw.rec, Msg: "the switch key was pressed, but text the user typed is not sent"})
 		return
@@ -1385,7 +1428,7 @@ func (s *session) pickerInput(b []byte) {
 			return
 		}
 		s.atPrompt, s.toldDirty = true, false
-		s.sw.choice, s.sw.asked = c, false
+		s.sw.choice, s.sw.asked, s.sw.picked, s.sw.toldNoTurn = c, false, true, false
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Cause: s.sw.rec, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked), "again": true})})
 	case picked != "":
 		if err := s.offered(picked); err != nil && !errors.Is(err, ErrChecking) {
@@ -1394,7 +1437,7 @@ func (s *session) pickerInput(b []byte) {
 			s.openPicker()
 			return
 		}
-		s.setSwitch(pendingSwitch{to: picked, choice: c})
+		s.setSwitch(pendingSwitch{to: picked, choice: c, picked: true})
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked)})})
 	default: // Esc on the list cancels a waiting switch
 		s.toolsWaitTurn = s.toolsWaitTurn || s.sw.resume

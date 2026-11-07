@@ -42,9 +42,12 @@ func (f *fakeTools) get() (ToolSet, error) {
 func toolsRun(t *testing.T, startsTurn bool, v adapter.Vendor) (*termSide, *fakeChild, <-chan Exit, string, *fakeTools) {
 	t.Helper()
 	ft := &fakeTools{}
-	ts, c, done, sock := switchRunOn(t, startsTurn, v, func(o *Options) {
-		o.Tools, o.ToolsAtLaunch = ft.get, ToolSet{}
-	})
+	opts := func(o *Options) { o.Tools, o.ToolsAtLaunch = ft.get, ToolSet{} }
+	if startsTurn {
+		ts, c, done, sock := switchRunOn(t, true, v, opts)
+		return ts, c, done, sock, ft
+	}
+	ts, c, done, sock := switchRunTurned(t, v, opts)
 	return ts, c, done, sock, ft
 }
 
@@ -83,7 +86,7 @@ func TestToolsChangedOffersResume(t *testing.T) {
 func TestToolsNudge(t *testing.T) {
 	ft := &fakeTools{set: ToolSet{"headroom": "mcp+proxy"}}
 	nudge := make(chan struct{}, 1)
-	ts, c, done, sock := switchRunOn(t, false, adapter.Claude, func(o *Options) {
+	ts, c, done, sock := switchRunTurned(t, adapter.Claude, func(o *Options) {
 		o.Tools, o.ToolsAtLaunch, o.ToolsNudge = ft.get, ToolSet{"headroom": "mcp+proxy"}, nudge
 	})
 	ft.put(ToolSet{"headroom": "mcp"})

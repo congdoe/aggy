@@ -157,7 +157,7 @@ func (s *session) toolsRead(r toolReading) {
 // changes diff; user is set when the user asked for it at a note.
 func (s *session) queueResume(diff []string, user bool) {
 	v := s.o.Vendor
-	s.setSwitch(pendingSwitch{to: v, resume: true, tools: diff, choice: Choice{Vendor: v, Resume: true}})
+	s.setSwitch(pendingSwitch{to: v, resume: true, tools: diff, choice: Choice{Vendor: v, Resume: true}, picked: user})
 	origin := "tools"
 	if user {
 		origin = "user"

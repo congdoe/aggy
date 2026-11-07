@@ -146,8 +146,9 @@ func TestToolSessionSwitch(t *testing.T) {
 	_ = os.Remove(w.record)
 	sc := map[string]any{
 		"stdout":       "READY>",
-		"hook_command": []string{"/bin/sh", "-c", aggySh(t) + " switch \"$1\" >/dev/null 2>&1 || true", "sh"},
-		"hooks":        []map[string]any{{"event": "claude", "payload": map[string]any{}}},
+		"hook_command": askThenStop(t, adapter.Grok, ""),
+		"hooks": []map[string]any{{"event": "claude", "payload": map[string]any{}},
+			{"event": "Stop", "payload": map[string]any{"sessionId": "{session_id}"}}},
 	}
 	s := w.start(t, sc, "run", "--tool", "context7", "grok")
 	s.waitWithin([]byte("-> claude. Ctrl+"), offerTimeout)
@@ -289,9 +290,10 @@ func TestToolShimSwitchResume(t *testing.T) {
 	// Grok asks for a switch to Claude, which starts with a brief.
 	_ = os.Remove(w.record)
 	sc := map[string]any{
-		"stdout":        "READY>",
-		"hook_command":  []string{"/bin/sh", "-c", aggySh(t) + " switch --brief \"$1\" >/dev/null 2>&1 || true", "sh"},
-		"hooks":         []map[string]any{{"event": "claude", "payload": map[string]any{}}},
+		"stdout":       "READY>",
+		"hook_command": askThenStop(t, adapter.Grok, "--brief"),
+		"hooks": []map[string]any{{"event": "claude", "payload": map[string]any{}},
+			{"event": "Stop", "payload": map[string]any{"sessionId": "{session_id}"}}},
 		"start_mcp":     true,
 		"session_files": []map[string]any{{"path": "projects/p/{session_id}.jsonl", "content": "{}"}},
 	}

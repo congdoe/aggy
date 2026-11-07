@@ -196,6 +196,7 @@ var (
 	CodeUnreachable      = Code{"supervisor.unreachable"}
 	CodePolicy           = Code{"policy.unreachable"}
 	CodeUnsentText       = Code{"switch.unsent_text"}
+	CodeNoTurnYet        = Code{"switch.no_turn_yet"}
 	CodeAgentNoHold      = Code{"switch.agent_no_hold"}
 	CodeAgentOptions     = Code{"switch.agent_options"}
 	CodeSwitchVendor     = Code{"switch.vendor_unavailable"}
@@ -372,6 +373,7 @@ var codes = []CodeInfo{
 	{CodeUnreachable, false, "The supervisor's socket did not answer: the session has ended, or the socket path is not aggy's.", "Is aggy still running the session? AGGY_SOCKET must be in ~/.aggy/run."},
 	{CodePolicy, false, "The safety policy cannot be applied to the vendor's CLI, so aggy did not start it.", "aggy doctor; --no-policy or [policy] required = false start it anyway."},
 	{CodeUnsentText, false, "Text the user typed and did not send is at the CLI's prompt: the exit command would send it, so the switch waits.", "Send or clear the text, then press Enter on the empty prompt."},
+	{CodeNoTurnYet, false, "No turn has ended since the CLI launched, so it may be showing a dialog: aggy does not type the exit command into it.", "Quit the CLI yourself and the switch completes, or send a message and aggy asks when that turn ends."},
 	{CodeAgentNoHold, false, "The agent asked for a switch away from a vendor with no hold signal (Codex), which only the user may start.", "Press aggy's switch key."},
 	{CodeAgentOptions, false, "The agent asked for a new session or a model, which are the user's choice in the picker.", "Press aggy's switch key and choose them there."},
 	{CodeSwitchVendor, false, "The vendor cannot be switched to now: on screen already, not offered, not allowed by the repo, not on PATH, or the safety policy cannot reach it.", "The record's msg; aggy setup; the repo's allowed_vendors."},
