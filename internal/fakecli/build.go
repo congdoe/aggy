@@ -146,6 +146,9 @@ type Record struct {
 	Positional    []string            `json:"positional"`
 	MCPConfig     json.RawMessage     `json:"mcp_config"` // the first --mcp-config file's content
 	PID           int                 `json:"pid"`
+	// OpenCode only: the launch's config and the text of each instruction.
+	OpenCodeConfig       json.RawMessage `json:"opencode_config,omitempty"`
+	OpenCodeInstructions []string        `json:"opencode_instructions,omitempty"`
 }
 
 // Records reads the runs recorded at path, oldest first. A missing file

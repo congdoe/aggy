@@ -216,7 +216,7 @@ func (f *fake) validate(headless bool) error {
 	if f.sub == "exec resume" && len(f.positional) == 0 {
 		return errors.New("exec resume needs a session id")
 	}
-	if !headless && !f.terminal && !f.sc.InteractiveWithoutTTY {
+	if !headless && !f.terminal && !f.sc.InteractiveWithoutTTY && f.sub != "session export" {
 		return errors.New("an interactive session needs a terminal")
 	}
 	return nil

@@ -143,7 +143,10 @@ func doctor(ctx context.Context, env checkEnv) doctorResult {
 		}
 		fs := checkup.VendorFindings(vr, name, a.SignIn().Steps)
 		fs = append(fs, checkup.ForVendor(envFindings, v)...)
-		if vr.Installed {
+		switch {
+		case vr.Installed && v == adapter.OpenCode:
+			fs = append(fs, openCodeManagedFindings()...)
+		case vr.Installed:
 			fs = append(fs, hookFinding(v, name))
 		}
 		res.sections = append(res.sections, doctorSection{title: name, findings: fs})
