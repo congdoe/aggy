@@ -170,7 +170,7 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 		}
 	}
 	fmt.Fprintln(stdout, "\nRun aggy hooks install so aggy hears when a session starts, a turn ends, or a CLI hits a limit; aggy hooks status shows what is installed.")
-	fmt.Fprintln(stdout, "\nKeeping instructions, memory, and safety rules in step across the CLIs comes in a later release.")
+	fmt.Fprintln(stdout, "\nRun aggy policy wire and aggy memory import --from claude to keep safety rules and memory in step across the CLIs.")
 	return code
 }
 

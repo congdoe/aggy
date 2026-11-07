@@ -746,7 +746,7 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 	}
 	if reverse := reversers[c.Reverse]; reverse != nil && c.Status == store.ChangeApplied &&
 		curHash != r.AfterHash && curHash != r.BeforeHash {
-		return m.strip(c, r, cur, curHash, reverse, run, u, done, fail)
+		return m.strip(c, r, cur, curHash, reverse, run, &u, done, fail)
 	}
 	byHand := false
 	switch {
@@ -813,7 +813,7 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 // restoring old bytes over the person's or the CLI's later edits. A
 // file gone, or already without aggy's entries, is left as it is.
 func (m *Manifest) strip(c store.Change, r patch.Record, cur []byte, curHash string,
-	reverse func([]byte) ([]byte, error), run *unwireRun, u Undo, done func() Undo, fail func(error) Undo) Undo {
+	reverse func([]byte) ([]byte, error), run *unwireRun, u *Undo, done func() Undo, fail func(error) Undo) Undo {
 	w := run.opt.DryRun
 	u.Outcome = Stripped
 	if curHash == patch.NoFile || patch.IsLinkHash(curHash) {

@@ -219,13 +219,19 @@ func runSkill(args []string, stdout, stderr io.Writer) int {
 	}
 	runID := manifest.NewRunID()
 	cs, err := m.Run(ctx, manifest.Write, runID, ps, io.Discard)
+	changed := 0
 	for _, c := range cs {
 		if c.Status == store.ChangeApplied {
+			changed++
 			fmt.Fprintf(stdout, "changed %s\n", termsafe.Field(c.File))
 		}
 	}
 	if err != nil {
 		return cmdErr(stderr, "skill "+op, diag.CodeWireFailed, err)
+	}
+	if changed == 0 {
+		fmt.Fprintln(stdout, "Nothing to change.")
+		return 0
 	}
 	fmt.Fprintf(stdout, "Done (run %s). aggy unwire --run %s undoes it.\n", runID, runID)
 	return 0
@@ -567,7 +573,12 @@ func (l skillLayout) visible(v string) ([]string, error) {
 }
 
 func skillStatus(l skillLayout, stdout, stderr io.Writer) int {
-	fmt.Fprintf(stdout, "installed: %s\n", termsafe.Field(l.store))
+	if _, err := safefs.Stat(filepath.Join(l.store, "SKILL.md")); err == nil {
+		fmt.Fprintf(stdout, "installed: %s\n", termsafe.Field(l.store))
+	} else {
+		fmt.Fprintln(stdout, "installed: no; aggy skill link installs it")
+	}
+	// An estimate for a CLI that loads it, so it says what linking would cost.
 	always, body := skills.Estimate(skills.Aggy)
 	fmt.Fprintf(stdout, "cost: about %d tokens every turn in a CLI that loads it, %d more when invoked (bytes/4 estimate)\n", always, body)
 	code := 0
