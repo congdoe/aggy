@@ -55,44 +55,62 @@ func TestSendNotTyped(t *testing.T) {
 	}
 }
 
-// TestEscThenEnter (T6897): an Esc long before an Enter is no Option+Enter, so
-// interrupting a turn and later pressing Enter leaves nothing unsent.
+// TestEscThenEnter (T6897): an Enter after an Esc on an empty composer may bring
+// text back (Codex's backtrack, with cursor keys allowed between), however long
+// ago the Esc came, so the prompt stays in doubt; text typed since is what the
+// Enter sends, and Ctrl+U and an Enter are the way out. On a draft, Option+Enter
+// split across reads is still a newline.
 func TestEscThenEnter(t *testing.T) {
-	old := splitWait
-	splitWait = time.Millisecond
-	t.Cleanup(func() { splitWait = old })
-	s := &session{toChild: newByteQueue(maxQueued), lenKnown: true}
-	s.send([]byte("\x1b"))
-	time.Sleep(5 * time.Millisecond)
-	s.send([]byte("\r"))
-	if s.dirty {
-		t.Error("the Enter counted as a newline in the composer")
+	for _, tt := range []struct {
+		name   string
+		vendor adapter.Vendor
+		keys   []string
+		dirty  bool
+	}{
+		{"esc, enter", adapter.Claude, []string{"\x1b", "\r"}, true},
+		{"esc, enter, codex", adapter.Codex, []string{"\x1b", "\r"}, true},
+		{"esc, esc, enter", adapter.Codex, []string{"\x1b", "\x1b", "\r"}, true},
+		{"esc esc in one read", adapter.Codex, []string{"\x1b\x1b", "\r"}, true},
+		{"esc, esc, left, enter", adapter.Codex, []string{"\x1b", "\x1b", "\x1b[D", "\r"}, true},
+		{"esc, a message, enter", adapter.Claude, []string{"\x1b", "hello", "\r"}, false},
+		{"esc, a message and enter", adapter.Claude, []string{"\x1b", "hello\r"}, false},
+		{"esc, ctrl+u, enter", adapter.Codex, []string{"\x1b", "\x1b", "\r", "\x15", "\r"}, false},
+		{"a draft, split option+enter", adapter.Claude, []string{"hello", "\x1b", "\r"}, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &session{o: Options{Vendor: tt.vendor}, toChild: newByteQueue(maxQueued), lenKnown: true}
+			for _, k := range tt.keys {
+				s.send([]byte(k))
+			}
+			if s.dirty != tt.dirty {
+				t.Errorf("dirty = %v, want %v", s.dirty, tt.dirty)
+			}
+		})
 	}
 }
 
-// TestTabQueues (T6897): Tab with text on Codex takes the text with it, so
-// nothing is left unsent; a popup may have taken it, and another CLI may have
-// used it to complete a word, so there the text stays in doubt.
+// TestTabQueues (T6897): Tab with text may queue a message, on Codex and maybe
+// elsewhere, and leaves the text in doubt whatever it did (TestTabKeepsDraft).
 func TestTabQueues(t *testing.T) {
 	tests := []struct {
 		name     string
 		vendor   adapter.Vendor
 		atPrompt bool
 		chunks   []string
-		dirty    bool
 		queued   int
+		atAfter  bool
 	}{
-		{"codex, during a turn, one read", adapter.Codex, false, []string{"more\t"}, false, 1},
-		{"codex, during a turn, two reads", adapter.Codex, false, []string{"more", "\t"}, false, 1},
-		{"codex, kitty tab", adapter.Codex, false, []string{"more", "\x1b[9u"}, false, 1},
-		{"codex, idle: it submits", adapter.Codex, true, []string{"more", "\t"}, false, 0},
-		{"codex, a popup may take it", adapter.Codex, false, []string{"read @sr", "\t"}, true, 1},
-		{"codex, a / popup may take it", adapter.Codex, true, []string{"/mo", "\t"}, true, 0},
-		{"codex, more text after it", adapter.Codex, false, []string{"more\tagain"}, true, 1},
-		{"codex, text after a Tab", adapter.Codex, false, []string{"more\t", "again"}, true, 1},
-		{"codex, Tab in a paste", adapter.Codex, false, []string{"\x1b[200~a\tb"}, true, 1},
-		{"claude, it may complete a word", adapter.Claude, false, []string{"more", "\t"}, true, 1},
-		{"grok, it may complete a word", adapter.Grok, false, []string{"more", "\t"}, true, 1},
+		{"codex, during a turn, one read", adapter.Codex, false, []string{"more\t"}, 1, false},
+		{"codex, during a turn, two reads", adapter.Codex, false, []string{"more", "\t"}, 1, false},
+		{"codex, kitty tab", adapter.Codex, false, []string{"more", "\x1b[9u"}, 1, false},
+		{"codex, idle: it may start a turn", adapter.Codex, true, []string{"more", "\t"}, 0, false},
+		{"codex, a popup may take it", adapter.Codex, false, []string{"read @sr", "\t"}, 1, false},
+		{"codex, idle, a / popup takes it", adapter.Codex, true, []string{"/mo", "\t"}, 0, true},
+		{"codex, more text after it", adapter.Codex, false, []string{"more\tagain"}, 1, false},
+		{"codex, Tab in a paste", adapter.Codex, false, []string{"\x1b[200~a\tb"}, 1, false},
+		{"claude, it may complete a word", adapter.Claude, false, []string{"more", "\t"}, 1, false},
+		{"claude, idle", adapter.Claude, true, []string{"more", "\t"}, 0, true},
+		{"grok, it may complete a word", adapter.Grok, false, []string{"more", "\t"}, 1, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -100,11 +118,14 @@ func TestTabQueues(t *testing.T) {
 			for _, c := range tt.chunks {
 				s.send([]byte(c))
 			}
-			if s.dirty != tt.dirty {
-				t.Errorf("dirty = %v, want %v", s.dirty, tt.dirty)
+			if !s.dirty {
+				t.Error("the text is not in doubt")
 			}
 			if s.queued != tt.queued {
 				t.Errorf("queued = %d, want %d", s.queued, tt.queued)
+			}
+			if s.atPrompt != tt.atAfter {
+				t.Errorf("atPrompt = %v", s.atPrompt)
 			}
 		})
 	}

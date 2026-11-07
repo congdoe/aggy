@@ -113,7 +113,7 @@ func TestFollowClearsDoubt(t *testing.T) {
 
 	s := start()
 	s.hookEvent(clear)
-	if s.dirty || !s.atPrompt || s.inputSinceTurn {
+	if s.dirty || s.atPrompt || !s.inputSinceTurn {
 		t.Errorf("after the move: dirty %v, atPrompt %v, inputSinceTurn %v", s.dirty, s.atPrompt, s.inputSinceTurn)
 	}
 	s.send([]byte("x"))
@@ -134,7 +134,7 @@ func TestFollowClearsDoubt(t *testing.T) {
 		t.Errorf("a refused move changed the tracker: dirty %v, atPrompt %v", s.dirty, s.atPrompt)
 	}
 
-	// A hold stands: a move says no turn runs, not that a prompt was answered.
+	// A hold stands: a move says nothing of a prompt.
 	s = start()
 	s.hookEvent(hookEvent{name: "Notification", sessionID: movedSID})
 	s.hookEvent(clear)

@@ -123,10 +123,13 @@ type launchPlan struct {
 	// remakeCwd says the child's working dir is a finished borrow's empty
 	// temp dir, which launchOnce makes again for the session.
 	remakeCwd bool
+	// preview: nothing launches (target.Preview), so nothing is written.
+	preview bool
 }
 
 // plan decides the parent and child a launch opens. It writes only what
-// refreshChildren finds on disk; the launch itself is recorded by commit.
+// refreshChildren finds on disk, and for a preview nothing; the launch itself is
+// recorded by commit.
 // Notes for the user (a session the vendor no longer has, an id never
 // recorded) go to stderr. A switch's one-launch model (T6665) is set on
 // the child here, so a new child's index row records it (O56-7); it is
@@ -140,6 +143,7 @@ func plan(ctx context.Context, s *store.Store, cfg config.Config, cwd string, t 
 	if err == nil && t.Model != "" {
 		p.child.Model = t.Model
 	}
+	p.preview = t.Preview
 	return p, err
 }
 
@@ -171,7 +175,7 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 			p.parent, pick = par, kids[0]
 		}
 	case t.Continue:
-		par, id, err := latestResumable(ctx, s, cwd, t.Vendor)
+		par, id, err := latestResumable(ctx, s, cwd, t.Vendor, t.Preview)
 		if err != nil {
 			return p, err
 		}
@@ -194,7 +198,7 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 				shortID(par.ID), t.starting(), shortID(par.ID))
 			p.newParent = true
 		default:
-			if p.parent, err = latestStarted(ctx, s, key, cwd, par); err != nil {
+			if p.parent, err = latestStarted(ctx, s, key, cwd, par, t.Preview); err != nil {
 				return p, err
 			}
 		}
@@ -224,19 +228,19 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 	if t.Child != "" {
 		pick = t.Child
 	}
-	files := &sessionFiles{}
+	files := &sessionFiles{readOnly: t.Preview}
 	children, err := planRefresh(ctx, s, p.parent.ID, files)
 	if err != nil {
 		return p, err
 	}
-	// The interactive child last on screen: the most recently active one
-	// that ever started, or the one picked by id. One that never started
-	// counts only when no other does (T6899).
+	// The interactive child last on screen: the most recently active one that
+	// can be reopened, or the one picked by id. Any other counts only when no
+	// other does (T6899).
 	var last, unstarted *store.Child
 	for i := range children {
 		if (children[i].Kind == "" || borrowOK && children[i].ID == pick) && (pick == "" || children[i].ID == pick) &&
 			(t.Vendor == "" || children[i].Vendor == string(t.Vendor)) {
-			if pick == "" && neverStarted(children[i]) {
+			if pick == "" && !reopenable(children[i]) {
 				if unstarted == nil {
 					unstarted = &children[i]
 				}
@@ -302,10 +306,18 @@ func neverStarted(c store.Child) bool {
 	return c.Kind == "" && c.Status == stateGone && !c.FileSeen
 }
 
+// reopenable reports whether a resume could put c back on screen. A child with
+// no session id cannot: its turns, if it had any, are out of aggy's reach, which
+// is why brief's reading of neverStarted stays apart from this.
+func reopenable(c store.Child) bool {
+	return !neverStarted(c) && (c.Kind != "" || c.VendorSessionID != "")
+}
+
 // latestStarted is the parent aggy resume reopens in dir: the most recently
-// active one with a child that ever started, else latest. A parent left only
-// with a child that never started must not hide the session before it (T6899).
-func latestStarted(ctx context.Context, s *store.Store, key, dir string, latest store.Parent) (store.Parent, error) {
+// active one with a child that can be reopened, else latest. A parent left only
+// with a child that never started, or with no id, must not hide the session
+// before it (T6899).
+func latestStarted(ctx context.Context, s *store.Store, key, dir string, latest store.Parent, readOnly bool) (store.Parent, error) {
 	ps, err := s.ParentsInDir(ctx, key, dir)
 	if err != nil {
 		return latest, err
@@ -314,12 +326,12 @@ func latestStarted(ctx context.Context, s *store.Store, key, dir string, latest 
 		if replaced(par) {
 			continue
 		}
-		children, err := planRefresh(ctx, s, par.ID, &sessionFiles{})
+		children, err := planRefresh(ctx, s, par.ID, &sessionFiles{readOnly: readOnly})
 		if err != nil {
 			return latest, err
 		}
 		for _, c := range children {
-			if c.Kind == "" && !neverStarted(c) {
+			if c.Kind == "" && reopenable(c) {
 				return par, nil
 			}
 		}
@@ -425,7 +437,7 @@ func remakeBorrowDir(cwd string) (func(), error) {
 // child last active in dir (of v, when set) that can still be reopened, in
 // whichever of dir's parents holds it, since every bare aggy starts a
 // parent of its own and one quit before its first message saves nothing.
-func latestResumable(ctx context.Context, s *store.Store, dir string, v adapter.Vendor) (store.Parent, string, error) {
+func latestResumable(ctx context.Context, s *store.Store, dir string, v adapter.Vendor, readOnly bool) (store.Parent, string, error) {
 	key, err := safefs.CanonicalPath(dir)
 	if err != nil {
 		return store.Parent{}, "", err
@@ -438,7 +450,7 @@ func latestResumable(ctx context.Context, s *store.Store, dir string, v adapter.
 		if replaced(par) {
 			continue
 		}
-		children, err := planRefresh(ctx, s, par.ID, &sessionFiles{})
+		children, err := planRefresh(ctx, s, par.ID, &sessionFiles{readOnly: readOnly})
 		if err != nil {
 			return store.Parent{}, "", err
 		}
@@ -655,12 +667,13 @@ func shortID(id string) string {
 // CLI moves to another session (/clear, /resume; the supervisor follows it on
 // a hook from where the CLI's own hooks run, session.followSession), follow
 // makes that the id, and settle records it on the row as the CLI exits, once a
-// session file backs it: a resume starts a CLI on that id, so it takes more
-// than a hook's word, which a tool in the CLI's tree can forge. A file to back
-// it also takes writing to the vendor's folder, which is no more than rewriting
-// the session file aggy would resume anyway. No file (a /clear and no message
-// after it) leaves the row on the session that has turns, as claude --continue
-// does.
+// session file of this child's directory backs it: a resume starts a CLI on that
+// id, so it takes more than a hook's word, which a tool in the CLI's tree can
+// forge, and a session of another repo must not become this child's. That
+// guards against a mistake, not against a tool that can write to the vendor's
+// folder: it can as well rewrite the session aggy would resume. No file (a /clear
+// and no message after it) leaves the row on the session that has turns, as
+// claude --continue does.
 type childIDs struct {
 	s     *store.Store
 	child store.Child
@@ -703,9 +716,10 @@ func (c *childIDs) didMove() bool {
 }
 
 // settle records the session the CLI moved to on the child's row, if its session
-// file backs it: found on disk, and for Codex the interactive TUI's own rollout
-// (verifyRollout), so a nested codex exec's never is. An id another child holds
-// stays off this one. Errors are dropped: the row stays as it was.
+// file backs it: found where this child's directory keeps its sessions, and for
+// Codex the interactive TUI's own rollout, of this directory (rolloutInDir), so a
+// nested codex exec's never is. An id another child holds stays off this one.
+// Errors are dropped: the row stays as it was.
 func (c *childIDs) settle(ctx context.Context, record func(store.Event) error, files *sessionFiles) {
 	c.mu.Lock()
 	from, to, via := c.child.VendorSessionID, c.moved, c.via
@@ -717,14 +731,8 @@ func (c *childIDs) settle(ctx context.Context, record func(store.Event) error, f
 	if to == "" || from == "" || err != nil {
 		return
 	}
-	if _, err := files.LastChanged(v, to, c.child.VendorHome, c.child.Cwd, c.child.CreatedAt); err != nil {
+	if !files.inDir(v, to, c.child.VendorHome, c.child.Cwd, c.child.CreatedAt) {
 		return
-	}
-	if v == adapter.Codex {
-		path, ok := files.rolloutPath(v, to, c.child.VendorHome)
-		if !ok || verifyRollout(path, to) != rolloutTUI {
-			return
-		}
 	}
 	if moved, err := c.s.MoveChildSession(ctx, c.child.ID, from, to); err != nil || !moved {
 		return

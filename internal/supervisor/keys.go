@@ -45,7 +45,10 @@ type keyFilter struct {
 	held []byte
 }
 
-// maxHeld bounds a held sequence: one longer goes on as keys.
+// maxHeld bounds a held sequence: one longer goes on as keys, even a whole reply
+// at the head of a burst that long, which then counts as typed: the safe side.
+// TODO(T6895): replies scanReport does not know (XTQMODKEYS's, XTSMGRAPHICS's)
+// count as typed too, also on the safe side, until a CLI is seen asking for them.
 const maxHeld = 4 << 10
 
 // flush gives up on the held sequence: it is input after all.
