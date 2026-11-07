@@ -299,7 +299,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `borrow.child_failed` |  | The child failed for another reason: unparsed output, an unknown error class, or a runner error. | aggy inbox &lt;borrow id&gt; for the report. |
 | `accept.target_invalid` |  | No such edit borrow, or it is running, already accepted or rejected, or its worktree was removed. | aggy inbox; aggy diag show &lt;borrow id&gt;. |
 | `accept.protected_path` | yes | The diff touches .git, a symlink or submodule, the hooks path, or a file that holds hooks, CI, config, or instructions. | Review the worktree by hand; never accept such a diff blind. |
-| `accept.worktree_changed` | yes | The worktree changed after the borrow ended (a process the child left behind?). | Review the worktree by hand. |
+| `accept.worktree_changed` | yes | The worktree changed after the borrow ended (edits in an on-screen session of this child, or a process it left behind?). | Review the worktree by hand. |
 | `accept.checkout_dirty` |  | The main checkout has changes in the paths the diff touches. | Commit or stash them, then accept again. |
 | `accept.failed` |  | Another accept error: git failed, or the diff no longer applies. | The record's msg; git status. |
 | `accept.state_temp_dir` | yes | aggy's state dir, where accept writes the patch, is under a temp dir an edit child's sandbox may write. | Set AGGY_HOME to a dir outside temp dirs. |

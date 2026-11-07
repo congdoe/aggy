@@ -635,25 +635,44 @@ it is `--flag=value`.
 - Refused, because aggy passes the flag at launch: Claude `--session-id`,
   `--settings`, `--append-system-prompt-file` (and `--append-system-prompt`),
   `--mcp-config`; Codex `--no-alt-screen`, and `-c` on
-  `developer_instructions`, `model`, or `mcp_servers.*`; Grok `--session-id`,
-  `--no-alt-screen`, `--rules`, `--deny`, `--agent`.
+  `developer_instructions`, `model`, or `mcp_servers.*`; Grok `--session-id`
+  (`-s`), `--no-alt-screen`, `--rules`, `--deny` (and its alias
+  `--disallowedTools`), `--agent`.
 - Refused, because the session would not be the one aggy recorded: Claude
   `--fork-session`, `-p`, `--worktree`, `--bg`, `--cloud`, and the like;
   Codex `-C`, `--remote`, `--worktree`; Grok `--fork-session`, `-p`,
-  `--prompt-file`.
+  `--prompt-file`, `--prompt-json`, `--cwd`, `--worktree` (`-w`), `--worktree-ref`.
 - Refused unless `--no-policy`, then noted at launch and logged
   (`loosening_flags`): anything naming `dangerously`, on every vendor; Claude
-  `--permission-mode` outside `default`, `acceptEdits`, `plan`, `auto`, and
-  `dontAsk`; Codex `--yolo`, `--approve-for-me`, `--not-so-yolo`, `-a` but
-  `on-request`, `-s danger-full-access`, and `-c` of any key but a short list
-  that changes only display and reasoning. For Grok, unverified names gated
-  in case they exist: `--yolo`, `--always-approve`, and any `--permission-mode`
-  but `plan` or `--sandbox` but `strict`, the values recorded.
+  `--permission-mode` outside `default` (`manual`), `acceptEdits`, `plan`, `auto`,
+  and `dontAsk`, and `--agents` naming `bypassPermissions`; Codex `--yolo`,
+  `--approve-for-me`, `--not-so-yolo`, `-a` but `on-request` or `untrusted`, `-s
+  danger-full-access`, `--profile`, every `--enable`, `--disable` of a feature
+  whose name says it is a safety layer (`hooks`, `codex_hooks`, sandbox, approval,
+  guardian, permission features), `--add-dir` of `/`, `$HOME`, or a folder holding
+  it, and `-c` of any key but a short list that changes only display and
+  reasoning, or `features.<name>=false` that `--disable` would pass; Grok
+  `--always-approve`, any flag naming `approve`, `yolo`, or `bypass`, any
+  `--permission-mode` but `plan` or `default`, any `--sandbox` but `strict`, and
+  `--agents` naming `bypassPermissions`.
+- Passed, with a line at launch: Codex `--add-dir` (more writable roots; whether
+  the rules file applies there is unverified); Claude `--safe-mode` and `--bare`
+  (hooks and MCP servers do not load, per the reference; whether that covers
+  aggy's `--settings` hooks is unverified). Gating them would cost the deny rules,
+  which still apply.
+- Passed, on purpose: Claude `--allowedTools`, `--agents` without
+  `bypassPermissions`, and `--permission-mode auto` ask less, and Claude documents
+  that deny rules block in every mode and that an allow rule cannot carve an
+  exception out of one (permission-modes.md, permissions.md). Codex's
+  `--approve-for-me` stays gated because the same is unverified for its rules file.
+  Unverified too: whether aggy's rules file still applies under `--profile`.
 
-Sources, read 2026-11-06: Claude code.claude.com/docs/en/cli-reference;
-Codex learn.chatgpt.com/docs/developer-commands?surface=cli. Grok has no full
-flag list recorded, so its table holds only flags recorded in this file and
-in `docs/verification.md`; any other Grok flag passes, unverified, and the CLI
+Sources: Claude code.claude.com/docs/en/cli-reference, permission-modes,
+permissions (read 2026-11-07); Codex
+learn.chatgpt.com/docs/developer-commands?surface=cli (read 2026-11-07), and at
+`6aaac69` `features/src/lib.rs`, `features/src/legacy.rs`, and
+`utils/cli/src/approval_mode_cli_arg.rs`; Grok `grok --help` at 1.0.77
+(`docs/verification.md`, T6952). A flag a table does not list passes, and the CLI
 refuses what it does not take. Whether Codex takes every top-level flag after
 `resume <id>` is unverified (the reference lists model and sandbox overrides
 there).

@@ -35,11 +35,13 @@ it passes at launch (--session-id, --settings, and so on; the message says
 why), a prompt, and a subcommand: type the prompt once the session starts,
 and run the CLI itself for its subcommands and its own --help.
 
-A flag that loosens approvals, the sandbox, or hook trust (--dangerously-*,
---permission-mode bypassPermissions, --yolo, -a never, and on codex a -c aggy
-cannot tell is harmless) needs --no-policy, and aggy notes it at launch. A
-bare word is taken as a value only after a flag aggy knows takes one; for any
-other flag write --flag=value.
+A flag that could get past aggy's safety policy or hooks (--dangerously-*,
+--permission-mode bypassPermissions, --yolo, -a never, and on codex --profile,
+--enable, --disable hooks, --add-dir of your home, and a -c aggy cannot tell is
+harmless) needs --no-policy, and aggy notes it at launch. A flag that only asks
+you less passes where your deny rules still hold, as on claude --allowedTools
+and --permission-mode auto. A bare word is taken as a value only after a flag
+aggy knows takes one; for any other flag write --flag=value.
 `
 
 // passFlags is v's table of flags aggy takes over or refuses.
@@ -100,7 +102,7 @@ func runVendor(v adapter.Vendor, args []string, stderr io.Writer) int {
 		}
 		return launchUsageErr(stderr, name, code, err.Error(), "")
 	}
-	t.Model, t.Extra, t.SafeExtra, t.Loosens = p.Model, p.Extra, p.Safe, p.Loosens
+	t.Model, t.Extra, t.SafeExtra, t.Loosens, t.FlagNotes = p.Model, p.Extra, p.Safe, p.Loosens, p.Notes
 	switch {
 	case p.Continue && p.Resume:
 		return launchUsageErr(stderr, name, diag.CodeUsage, "use --continue or --resume, not both", vendorUsage)

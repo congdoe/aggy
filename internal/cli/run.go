@@ -118,7 +118,7 @@ func launch(name string, t target, stderr io.Writer) int {
 // it gets no brief.
 func sameChildAgain(t target, next switchTo) target {
 	return target{ParentID: next.parentID, Vendor: next.vendor, Child: next.child, SameChild: true,
-		Model: t.Model, Tools: t.Tools, Extra: t.SafeExtra, SafeExtra: t.SafeExtra}
+		Model: t.Model, Tools: t.Tools, Extra: t.SafeExtra, SafeExtra: t.SafeExtra, FlagNotes: t.FlagNotes}
 }
 
 // switchTo is the vendor a CLI exited for, its parent, and the switch's
@@ -235,6 +235,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	if len(t.Loosens) > 0 {
 		warns = append(warns, "your flags "+strings.Join(t.Loosens, ", ")+" loosen approvals, the sandbox, or hook trust for this launch; --no-policy lets them through")
 	}
+	warns = append(warns, t.FlagNotes...)
 	if t.NoPolicy {
 		warns = append(warns, "starting without the safety policy (--no-policy)")
 	} else {

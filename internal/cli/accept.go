@@ -72,13 +72,25 @@ func editTarget(ctx context.Context, s *store.Store, g *gitWorktrees, id string)
 		err = fmt.Errorf("borrow %s: its worktree was removed (aggy gc)", b.ID)
 	default:
 		err = g.owned(wt)
-		// A session of this child on screen (aggy resume) is using the
-		// worktree, as aggy gc also respects.
-		if cur, gerr := s.GCWorktree(ctx, b.ID); err == nil && gerr == nil && cur.Held {
-			err = fmt.Errorf("borrow %s: its session is open in another aggy; close it first", b.ID)
+		if err == nil {
+			cur, gerr := s.GCWorktree(ctx, b.ID)
+			err = sessionOpenErr(b.ID, cur, gerr)
 		}
 	}
 	return b, wt, withCode(diag.CodeAcceptTarget, err)
+}
+
+// sessionOpenErr refuses a worktree a session of this child on screen (aggy
+// resume) is using, as aggy gc also respects, and one aggy cannot tell about:
+// an accept must not act on a lease it could not read.
+func sessionOpenErr(id string, cur store.GCWorktree, err error) error {
+	switch {
+	case err != nil:
+		return fmt.Errorf("borrow %s: aggy cannot tell whether its session is open: %w", id, err)
+	case cur.Held:
+		return fmt.Errorf("borrow %s: its session is open in another aggy; close it first", id)
+	}
+	return nil
 }
 
 // editRec is the diagnostic log's ids for edit borrow b.
@@ -476,7 +488,7 @@ func (g *gitWorktrees) editDiff(ctx context.Context, wt store.Worktree) (stat, p
 		return "", "", err
 	}
 	if now != wt.Tree {
-		return "", "", withCode(diag.CodeTreeChanged, fmt.Errorf("refusing: the worktree changed after the borrow ended (a process the child left behind?); review %s by hand", wt.Path))
+		return "", "", withCode(diag.CodeTreeChanged, fmt.Errorf("refusing: the worktree changed after the borrow ended (edits in an on-screen session of this child, or a process it left behind?); review %s by hand", wt.Path))
 	}
 	run, err := g.wtRun(ctx, wt)
 	if err != nil {

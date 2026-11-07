@@ -16,6 +16,7 @@ import (
 // trust is refused without --no-policy, however it is spelled, and with it
 // goes through, named, and left out of Safe.
 func TestPassFlagsLoosening(t *testing.T) {
+	t.Setenv("HOME", "/home/someone")
 	cl, cx, gk := claude.Adapter{}.PassFlags(), codex.Adapter{}.PassFlags(), grok.New().PassFlags()
 	tests := []struct {
 		name string
@@ -41,7 +42,34 @@ func TestPassFlagsLoosening(t *testing.T) {
 		{"codex -c quoted", cx, []string{"--config", `"sandbox_mode"="danger-full-access"`}},
 		{"codex -c a hook", cx, []string{"-chooks.x=y"}},
 		{"codex -c anything else", cx, []string{"-c", "foo=bar"}},
+		{"codex --disable hooks", cx, []string{"--disable", "hooks"}},
+		{"codex --disable=hooks", cx, []string{"--disable=hooks"}},
+		{"codex --disable the old hooks name", cx, []string{"--disable", "codex_hooks"}},
+		{"codex --disable a sandbox backend", cx, []string{"--disable", "use_linux_sandbox_bwrap"}},
+		{"codex -c features.hooks=false", cx, []string{"-c", "features.hooks=false"}},
+		{"codex -c features.hooks with spaces", cx, []string{"-c", "features.hooks = false"}},
+		{"codex -c quoted features.hooks", cx, []string{"-c", `features."hooks"=false`}},
+		{"codex -c features as a table", cx, []string{"-c", "features={hooks=false}"}},
+		{"codex --enable", cx, []string{"--enable", "anything"}},
+		{"codex -c features on", cx, []string{"-c", "features.anything=true"}},
+		{"codex --profile", cx, []string{"--profile", "x"}},
+		{"codex --profile=", cx, []string{"--profile=x"}},
+		{"codex -p", cx, []string{"-p", "x"}},
+		{"codex -px", cx, []string{"-px"}},
+		{"codex --add-dir /", cx, []string{"--add-dir", "/"}},
+		{"codex --add-dir=/", cx, []string{"--add-dir=/"}},
+		{"codex --add-dir ~", cx, []string{"--add-dir", "~"}},
+		{"codex --add-dir ~/", cx, []string{"--add-dir", "~/"}},
+		{"codex --add-dir of $HOME", cx, []string{"--add-dir", "/home/someone"}},
+		{"codex --add-dir above $HOME", cx, []string{"--add-dir", "/home"}},
+		{"codex -a on-failure", cx, []string{"-a", "on-failure"}},
+		{"claude --agents with a bypass", cl, []string{"--agents", `{"a":{"permissionMode":"bypassPermissions"}}`}},
 		{"grok dangerously", gk, []string{"--dangerously-anything"}},
+		{"grok --always-approve", gk, []string{"--always-approve"}},
+		{"grok --auto-approve, not in its help", gk, []string{"--auto-approve"}},
+		{"grok a later bypass name", gk, []string{"--bypass-all"}},
+		{"grok --agents with a bypass", gk, []string{"--agents", `{"a":{"permissionMode":"bypassPermissions"}}`}},
+		{"grok --permission-mode auto", gk, []string{"--permission-mode", "auto"}},
 		{"grok --yolo (unverified)", gk, []string{"--yolo"}},
 		{"grok a bypass mode (unverified)", gk, []string{"--permission-mode", "bypassPermissions"}},
 		{"grok a sandbox off (unverified)", gk, []string{"--sandbox", "off"}},
@@ -117,6 +145,34 @@ func TestPassFlags(t *testing.T) {
 		{name: "codex -c quoted key", p: cx, args: []string{"-c", `"model"="x"`}, refused: "use --model"},
 		{name: "codex -c a server", p: cx, args: []string{"-c", "mcp_servers.x.command=y"}, refused: "managed tools"},
 		{name: "codex -c with no value", p: cx, args: []string{"-c"}, refused: "needs a value"},
+		{name: "codex --disable of a tool passes", p: cx, args: []string{"--disable", "web_search"},
+			want: adapter.ParsedFlags{Extra: []string{"--disable", "web_search"}, Safe: []string{"--disable", "web_search"}}},
+		{name: "codex -c features off, of a tool, passes", p: cx, args: []string{"-c", "features.web_search=false"},
+			want: adapter.ParsedFlags{Extra: []string{"-c", "features.web_search=false"}, Safe: []string{"-c", "features.web_search=false"}}},
+		{name: "codex -a untrusted tightens", p: cx, args: []string{"-a", "untrusted"},
+			want: adapter.ParsedFlags{Extra: []string{"-a", "untrusted"}, Safe: []string{"-a", "untrusted"}}},
+		{name: "codex --add-dir of a project", p: cx, args: []string{"--add-dir", "/srv/other"},
+			want: adapter.ParsedFlags{Extra: []string{"--add-dir", "/srv/other"}, Safe: []string{"--add-dir", "/srv/other"}}},
+		{name: "codex --profile takes its word only", p: cx, args: []string{"--profile", "x", "fix"}, noPolicy: true, refused: "not a flag"},
+		{name: "claude manual tightens", p: cl, args: []string{"--permission-mode", "manual"},
+			want: adapter.ParsedFlags{Extra: []string{"--permission-mode", "manual"}, Safe: []string{"--permission-mode", "manual"}}},
+		{name: "claude --allowedTools passes", p: cl, args: []string{"--allowedTools", "Bash"},
+			want: adapter.ParsedFlags{Extra: []string{"--allowedTools", "Bash"}, Safe: []string{"--allowedTools", "Bash"}}},
+		{name: "claude --permission-mode auto passes", p: cl, args: []string{"--permission-mode", "auto"},
+			want: adapter.ParsedFlags{Extra: []string{"--permission-mode", "auto"}, Safe: []string{"--permission-mode", "auto"}}},
+		{name: "claude --agents takes its word", p: cl, args: []string{"--agents", "{}"},
+			want: adapter.ParsedFlags{Extra: []string{"--agents", "{}"}, Safe: []string{"--agents", "{}"}}},
+		{name: "grok -c is aggy's continue", p: gk, args: []string{"-c"}, want: adapter.ParsedFlags{Continue: true}},
+		{name: "grok -m is aggy's model", p: gk, args: []string{"-m", "grok-x"}, want: adapter.ParsedFlags{Model: "grok-x"}},
+		{name: "grok -s", p: gk, args: []string{"-s", "x"}, refused: "-s clashes"},
+		{name: "grok --cwd", p: gk, args: []string{"--cwd", "/x"}, refused: "--cwd clashes"},
+		{name: "grok -w", p: gk, args: []string{"-w"}, refused: "-w clashes"},
+		{name: "grok --prompt-json", p: gk, args: []string{"--prompt-json", "[]"}, refused: "--prompt-json clashes"},
+		{name: "grok --disallowedTools is --deny", p: gk, args: []string{"--disallowedTools", "x"}, refused: "--disallowedTools clashes"},
+		{name: "grok --permission-mode default", p: gk, args: []string{"--permission-mode", "default"},
+			want: adapter.ParsedFlags{Extra: []string{"--permission-mode", "default"}, Safe: []string{"--permission-mode", "default"}}},
+		{name: "grok a value flag from its help", p: gk, args: []string{"--add-dir", "/x", "--effort", "high"},
+			want: adapter.ParsedFlags{Extra: []string{"--add-dir", "/x", "--effort", "high"}, Safe: []string{"--add-dir", "/x", "--effort", "high"}}},
 		{name: "codex --continue", p: cx, args: []string{"--continue"}, want: adapter.ParsedFlags{Continue: true}},
 
 		{name: "a -c needs a value to classify", p: cx, args: []string{"-c", "model_verbosity"}, loosens: true},
@@ -160,6 +216,40 @@ func TestPassFlags(t *testing.T) {
 			if got.Model != tt.want.Model || got.Continue != tt.want.Continue || got.Resume != tt.want.Resume ||
 				got.ResumeID != tt.want.ResumeID || !slices.Equal(got.Extra, tt.want.Extra) || !slices.Equal(got.Safe, tt.want.Safe) {
 				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPassFlagsNotes (T6952): a flag worth a line at launch passes and asks for
+// it, once.
+func TestPassFlagsNotes(t *testing.T) {
+	cl, cx := claude.Adapter{}.PassFlags(), codex.Adapter{}.PassFlags()
+	tests := []struct {
+		name string
+		p    adapter.PassFlags
+		args []string
+		want string
+	}{
+		{"codex --add-dir", cx, []string{"--add-dir", "/srv/a", "--add-dir=/srv/b"}, "more folders"},
+		{"claude --safe-mode", cl, []string{"--safe-mode"}, "hooks"},
+		{"claude --bare", cl, []string{"--bare"}, "hooks"},
+		{"nothing to say", cl, []string{"--verbose"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.p.Parse(tt.args, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.want == "" {
+				if len(got.Notes) != 0 {
+					t.Errorf("notes = %q", got.Notes)
+				}
+				return
+			}
+			if len(got.Notes) != 1 || !strings.Contains(got.Notes[0], tt.want) || !slices.Equal(got.Extra, tt.args) {
+				t.Errorf("got %+v, want one note with %q", got, tt.want)
 			}
 		})
 	}

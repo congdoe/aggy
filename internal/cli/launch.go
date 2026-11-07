@@ -62,6 +62,8 @@ type target struct {
 	// a resume of the same session keeps SafeExtra, since it drops
 	// --no-policy (S-6), and a switch keeps neither.
 	Extra, SafeExtra, Loosens []string
+	// FlagNotes are the launch lines of the flags given (PassFlags.Noted).
+	FlagNotes []string
 	// SameChild says Child is the child that was on screen, reopened for a
 	// tool change, so it may be a borrow's. A switch's Child never may.
 	SameChild bool
@@ -329,7 +331,7 @@ func borrowNote(pl launchPlan) string {
 		note += "; its temp directory is made new, and files in it are removed when the session ends"
 	}
 	if adapter.Kind(pl.child.Kind) == adapter.Edit {
-		note += "; aggy accept refuses a worktree changed since the borrow ended, so review and commit such changes by hand, or aggy reject them; .aggy/memory.md is not loaded from an unreviewed worktree"
+		note += "; aggy accept refuses a worktree changed since the borrow ended, so review and commit such changes by hand, or aggy reject them; .aggy/memory.md is not loaded from an unreviewed worktree, but the CLI still loads its own project files, which the child may have written: read CLAUDE.md, AGENTS.md, and .claude/settings.json there (its hooks run code) before you go on; which of them load for this CLI in a worktree is unverified"
 	}
 	return note
 }

@@ -204,8 +204,14 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 // PassFlags is Claude's table for aggy claude. The flags are Claude Code's
 // CLI reference (code.claude.com/docs/en/cli-reference, read 2026-11-06).
 // aggy never adds a loosening flag on its own, and one the person gives
-// needs --no-policy: every --dangerously-* (PassFlags.Parse) and --permission-mode
-// outside the modes that ask or deny.
+// needs --no-policy: every --dangerously-* (PassFlags.Parse), --permission-mode
+// outside the modes that ask or deny, and --agents naming bypassPermissions.
+//
+// --allowedTools, a subagent's other permission modes, and --permission-mode
+// auto do ask less, and pass: "Deny rules block in every mode" and "An allow
+// rule can't carve an exception out of a deny rule" (permission-modes.md and
+// permissions.md, read 2026-11-07), and deny rules are aggy's policy here.
+// Gating them would cost that policy for what it does not protect.
 func (Adapter) PassFlags() adapter.PassFlags {
 	const elsewhere = "it starts no on-screen session in this directory for aggy to record"
 	return adapter.PassFlags{
@@ -222,8 +228,12 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			{Names: []string{"--bg", "--background", "--desktop", "--cloud", "--remote", "--teleport", "--exec", "--environment", "--from-pr", "--init-only", "--worktree", "-w", "--tmux"}, Why: elsewhere},
 			{Names: []string{"--version", "-v"}, Why: "run claude --version"},
 		},
-		Checked: []adapter.CheckedFlag{{Names: []string{"--permission-mode"}, Check: checkPermissionMode}},
-		Values: []string{"--add-dir", "--advisor", "--agent", "--agents", "--allowedTools", "--allowed-tools",
+		Checked: []adapter.CheckedFlag{
+			{Names: []string{"--permission-mode"}, Check: checkPermissionMode},
+			{Names: []string{"--agents"}, Check: checkAgents},
+		},
+		Noted: []adapter.NotedFlag{{Names: []string{"--safe-mode", "--bare"}, Note: noHooksNote}},
+		Values: []string{"--add-dir", "--advisor", "--agent", "--allowedTools", "--allowed-tools",
 			"--append-subagent-system-prompt", "--append-subagent-system-prompt-file", "--autocompact", "--betas", "--channels",
 			"--debug-file", "--disallowedTools", "--disallowed-tools", "--effort", "--fallback-model", "--name", "-n",
 			"--plugin-dir", "--plugin-url", "--remote-control-session-name-prefix", "--setting-sources", "--system-prompt",
@@ -232,14 +242,32 @@ func (Adapter) PassFlags() adapter.PassFlags {
 }
 
 // checkPermissionMode lets through the modes that still ask or deny
-// (permission-modes.md), and gates bypassPermissions and any mode not listed.
+// (permission-modes.md; manual is an alias of default, the mode that asks
+// most), and gates bypassPermissions and any mode not listed.
 func checkPermissionMode(mode string) error {
 	switch mode {
-	case "default", "acceptEdits", "plan", "auto", "dontAsk":
+	case "default", "manual", "acceptEdits", "plan", "auto", "dontAsk":
 		return nil
 	}
 	return fmt.Errorf("--permission-mode %s: %w", mode, adapter.ErrLoosens)
 }
+
+// checkAgents gates inline subagents that name bypassPermissions, which says
+// what the gated --permission-mode says.
+func checkAgents(val string) error {
+	if strings.Contains(val, "bypassPermissions") {
+		return fmt.Errorf("--agents with bypassPermissions: %w", adapter.ErrLoosens)
+	}
+	return nil
+}
+
+// noHooksNote is the launch line of --safe-mode and --bare. The reference says
+// hooks and MCP servers do not load under either ("permissions work normally"
+// under --safe-mode). So aggy's deny rules should hold, and gating the flag
+// would cost them, but aggy's turn-end hooks and managed tools may not run.
+// Unverified: that this covers hooks passed with --settings, which the docs do
+// not say. Confirm with a session under --safe-mode and aggy's settings file.
+const noHooksNote = "--safe-mode and --bare skip Claude's hooks and MCP servers (Claude's docs), so aggy's turn-end hooks and managed tools may not run here, and a switch may wait for a turn end it never sees; aggy's deny rules are permissions, which the docs say still apply"
 
 // MCPConfigFile is the per-run MCP config, written in RunDir: it names
 // no server, and with --strict-mcp-config it is the only MCP config the
