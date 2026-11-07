@@ -666,26 +666,26 @@ func TestChildStarted(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if childStarted(supervisor.Exit{}, child, id, now, nil, &sessionFiles{}) {
+	if childStarted(supervisor.RunFacts{}, child, id, now, nil, &sessionFiles{}) {
 		t.Error("no file and no turn counted as started")
 	}
-	if !childStarted(supervisor.Exit{TurnRan: true}, child, id, now, nil, &sessionFiles{}) {
+	if !childStarted(supervisor.RunFacts{TurnRan: true}, child, id, now, nil, &sessionFiles{}) {
 		t.Error("a counted turn did not count")
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if !childStarted(supervisor.Exit{}, child, id, now, nil, &sessionFiles{}) {
+	if !childStarted(supervisor.RunFacts{}, child, id, now, nil, &sessionFiles{}) {
 		t.Error("a session file written since the launch did not count")
 	}
-	if childStarted(supervisor.Exit{}, child, id, now.Add(time.Hour), nil, &sessionFiles{}) {
+	if childStarted(supervisor.RunFacts{}, child, id, now.Add(time.Hour), nil, &sessionFiles{}) {
 		t.Error("a resumed session's old file counted")
 	}
 	codex := store.Child{Vendor: "codex", Cwd: cwd}
-	if childStarted(supervisor.Exit{}, codex, "", now, func() bool { return false }, &sessionFiles{}) {
+	if childStarted(supervisor.RunFacts{}, codex, "", now, func() bool { return false }, &sessionFiles{}) {
 		t.Error("a Codex child with no rollout counted")
 	}
-	if !childStarted(supervisor.Exit{}, codex, "", now, func() bool { return true }, &sessionFiles{}) {
+	if !childStarted(supervisor.RunFacts{}, codex, "", now, func() bool { return true }, &sessionFiles{}) {
 		t.Error("a Codex child with a new rollout did not count")
 	}
 }
@@ -718,6 +718,114 @@ func TestSawRolloutLooksAgain(t *testing.T) {
 	write(fresh)
 	if !x.sawRollout() {
 		t.Error("a new rollout did not count")
+	}
+}
+
+// TestChildIDsSettle (T6901): the moved id reaches the row only with a session
+// file behind it, keeps the row's lease, and for Codex only as the TUI's rollout.
+func TestChildIDsSettle(t *testing.T) {
+	const oldID, newID = "11111111-2222-4333-8444-555555555555", "99999999-2222-4333-8444-555555555555"
+	const codexOld, codexNew = "019a0000-0000-7000-8000-000000000001", "019a0000-0000-7000-8000-000000000002"
+	setup := func(t *testing.T, vendor, id string) (*store.Store, store.Child, string) {
+		t.Helper()
+		s := sessionStore(t)
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		if err := s.InsertParent(context.Background(), store.Parent{ID: "aa11", Dir: dir, CreatedAt: now, LastActive: now}); err != nil {
+			t.Fatal(err)
+		}
+		c := store.Child{ID: "c1", ParentID: "aa11", Vendor: vendor, VendorSessionID: id, Cwd: dir, Status: "open", CreatedAt: now, LastActive: now}
+		if err := s.InsertChild(context.Background(), c); err != nil {
+			t.Fatal(err)
+		}
+		return s, c, os.Getenv("HOME")
+	}
+	idOf := func(t *testing.T, s *store.Store) string {
+		t.Helper()
+		cs, err := s.Children(context.Background(), "aa11")
+		if err != nil || len(cs) != 1 {
+			t.Fatalf("children: %+v, %v", cs, err)
+		}
+		return cs[0].VendorSessionID
+	}
+	ctx := context.Background()
+
+	t.Run("no file leaves the row", func(t *testing.T) {
+		s, c, home := setup(t, "claude", oldID)
+		if err := os.MkdirAll(filepath.Join(home, ".claude", "projects"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		ids := &childIDs{s: s, child: c}
+		ids.follow(newID, "clear")
+		if ids.current() != newID {
+			t.Errorf("current = %q", ids.current())
+		}
+		ids.settle(ctx, nil, &sessionFiles{})
+		if got := idOf(t, s); got != oldID {
+			t.Errorf("row = %q, want the old id", got)
+		}
+	})
+	t.Run("a file moves the row and its lease", func(t *testing.T) {
+		s, c, home := setup(t, "claude", oldID)
+		proj := filepath.Join(home, ".claude", "projects", claudeProjectDir(c.Cwd))
+		if err := os.MkdirAll(proj, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(proj, newID+".jsonl"), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		l, err := s.AcquireLease(ctx, "claude", oldID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = l.Release(ctx) }()
+		var events []store.Event
+		ids := &childIDs{s: s, child: c}
+		ids.follow(newID, "clear")
+		ids.settle(ctx, func(e store.Event) error { events = append(events, e); return nil }, &sessionFiles{})
+		if got := idOf(t, s); got != newID {
+			t.Errorf("row = %q, want the new id", got)
+		}
+		if _, alive, _ := s.LeaseHolder(ctx, "claude", newID); !alive {
+			t.Error("the lease did not move")
+		}
+		if len(events) != 1 {
+			t.Errorf("events = %+v", events)
+		}
+	})
+	t.Run("never moves without a follow", func(t *testing.T) {
+		s, c, _ := setup(t, "claude", oldID)
+		(&childIDs{s: s, child: c}).settle(ctx, nil, &sessionFiles{})
+		if got := idOf(t, s); got != oldID {
+			t.Errorf("row = %q", got)
+		}
+	})
+	for _, tt := range []struct {
+		name, meta, want string
+	}{
+		{"the TUI's rollout moves it", `{"type":"session_meta","payload":{"id":"` + codexNew + `","source":"cli"}}`, codexNew},
+		{"a nested codex exec's never does", `{"type":"session_meta","payload":{"id":"` + codexNew + `","source":"exec"}}`, codexOld},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, c, home := setup(t, "codex", codexOld)
+			now := time.Now().UTC()
+			day := filepath.Join(home, ".codex", "sessions", now.Format("2006"), now.Format("01"), now.Format("02"))
+			if err := os.MkdirAll(day, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(day, "rollout-2026-01-01T00-00-00-"+codexNew+".jsonl"), []byte(tt.meta+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ids := &childIDs{s: s, child: c}
+			ids.follow(codexNew, "clear")
+			ids.settle(ctx, nil, &sessionFiles{})
+			if got := idOf(t, s); got != tt.want {
+				t.Errorf("row = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

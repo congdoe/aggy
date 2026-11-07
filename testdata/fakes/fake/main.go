@@ -97,6 +97,9 @@ type Scenario struct {
 	// what it reads, as a CLI does; a raw_echo run echoes them, so a test sees
 	// what reached it.
 	TermQueries string `json:"term_queries"`
+	// ClearHooks make a line /clear in an interactive run move it to a new
+	// session id, write session_files again, and call these hooks.
+	ClearHooks []Hook `json:"clear_hooks"`
 }
 
 // Reply is the fixed answer to one exact argument list.
@@ -1173,6 +1176,11 @@ func (f *fake) runHooks() error {
 	if len(hooks) == 0 && f.sc.Error == "rate_limit" && f.vendor != "codex" {
 		hooks = []Hook{{Event: "StopFailure", Payload: json.RawMessage(`{"error":"rate_limit"}`)}}
 	}
+	return f.callHooks(hooks)
+}
+
+// callHooks runs hooks through the scenario's hook_command.
+func (f *fake) callHooks(hooks []Hook) error {
 	if len(hooks) == 0 {
 		return nil
 	}
@@ -1268,6 +1276,21 @@ func (f *fake) waitForExit() {
 		case "/exit":
 			return
 		case "":
+		case "/clear":
+			if len(f.sc.ClearHooks) == 0 {
+				if err := f.runHooks(); err != nil {
+					fmt.Fprintf(os.Stderr, "hook: %v\n", err)
+				}
+				continue
+			}
+			// A new session, as the real /clear starts, with its own files.
+			f.id = newUUID()
+			if err := f.writeFiles(); err != nil {
+				fmt.Fprintf(os.Stderr, "session files: %v\n", err)
+			}
+			if err := f.callHooks(f.sc.ClearHooks); err != nil {
+				fmt.Fprintf(os.Stderr, "hook: %v\n", err)
+			}
 		default:
 			if err := f.runHooks(); err != nil {
 				fmt.Fprintf(os.Stderr, "hook: %v\n", err)

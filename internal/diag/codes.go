@@ -110,6 +110,7 @@ var (
 	EvLaunched             = Event{"supervisor.child.launched"}
 	EvSessionExited        = Event{"supervisor.child.exited"}
 	EvSwitchReturned       = Event{"supervisor.switch.returned"}
+	EvSessionFollowed      = Event{"supervisor.session.followed"}
 	EvSwitchQueued         = Event{"switch.request.queued"}
 	EvSwitchOffered        = Event{"switch.request.offered"}
 	EvSwitchConfirmed      = Event{"switch.request.confirmed"}
@@ -213,6 +214,8 @@ var (
 	CodeUnsentText       = Code{"switch.unsent_text"}
 	CodeNoTurnYet        = Code{"switch.no_turn_yet"}
 	CodeNeverStarted     = Code{"switch.never_started"}
+	CodeHooksMissing     = Code{"switch.hooks_missing"}
+	CodeFollowRefused    = Code{"hook.follow_refused"}
 	CodeAgentNoHold      = Code{"switch.agent_no_hold"}
 	CodeAgentOptions     = Code{"switch.agent_options"}
 	CodeSwitchVendor     = Code{"switch.vendor_unavailable"}
@@ -302,6 +305,7 @@ var events = []EventInfo{
 	{EvCommandRefused, LevelError, "cli", "A command refused its arguments or failed; the code says why.", "The code's entry; " + showRun + "."},
 	{EvLaunchRefused, LevelError, "supervisor", "aggy run, new, or resume did not put the CLI on screen, or the supervisor failed while it ran.", "The code's entry; " + showRun + "."},
 	{EvLaunched, LevelInfo, "supervisor", "A CLI went on screen (attrs: new_child, brief, model_set, direct). Its trace is the one its hooks, switches, and borrows carry.", "aggy diag show <trace id> for the whole session."},
+	{EvSessionFollowed, LevelInfo, "supervisor", "The on-screen CLI moved to another session (/clear, /resume), so turn ends of that one count now (attrs.via: the evidence).", "If aggy resume does not reopen it, its session file was not found: aggy keeps the id it had."},
 	{EvSwitchReturned, LevelWarn, "supervisor", "A CLI switched to closed before it started, so aggy reopened the CLI before it (attrs.from, attrs.to, attrs.exit).", "Its code's fix; the child that never started is not kept."},
 	{EvSessionExited, LevelInfo, "supervisor", "The on-screen CLI exited; exit_code and duration_ms say how, attrs.switch_to the vendor launched next, if any.", "A switch_to with no supervisor.child.launched after it: the next launch's supervisor.launch.refused."},
 	{EvSwitchQueued, LevelInfo, "switch", "A switch waits for the turn end (attrs.origin: user, agent, or limit; brief, new, model_set).", "No switch.request.offered after it: the session never reached a quiet turn end; look for hook.event.accepted (Stop) and switch.request.refused."},
@@ -404,6 +408,8 @@ var codes = []CodeInfo{
 	{CodeUnreachable, false, "The supervisor's socket did not answer: the session has ended, or the socket path is not aggy's.", "Is aggy still running the session? AGGY_SOCKET must be in ~/.aggy/run."},
 	{CodePolicy, false, "The safety policy cannot be applied to the vendor's CLI, so aggy did not start it.", "aggy doctor; --no-policy or [policy] required = false start it anyway."},
 	{CodeUnsentText, false, "Text the user typed and did not send is at the CLI's prompt: the exit command would send it, so the switch waits.", "Send or clear the text, then press Enter on the empty prompt."},
+	{CodeHooksMissing, false, "aggy's hooks are not installed for the CLI on screen, so aggy can see no turn end to switch at.", "aggy hooks install, then a new session. Until then, quit the CLI yourself after picking a vendor."},
+	{CodeFollowRefused, false, "A hook said the CLI moved to another session, from outside where the CLI's own hooks run (a nested CLI, say), so aggy kept following the one it had.", "Nothing, unless the on-screen CLI's own /clear or /resume is refused: then a switch waits; pick the vendor again to say the turn is over."},
 	{CodeNeverStarted, false, "The CLI switched to closed with no turn ended and no session saved (a dialog declined, or quit before the first message), so aggy went back to the CLI before it.", "Accept the CLI's dialog in that folder, or send it a message before quitting it."},
 	{CodeNoTurnYet, false, "No turn has ended since the CLI launched, so it may be showing a dialog: aggy does not type the exit command into it.", "Quit the CLI yourself and the switch completes if it exits cleanly; after a message, aggy asks at that turn's end if it sees one."},
 	{CodeAgentNoHold, false, "The agent asked for a switch away from a vendor with no hold signal (Codex), which only the user may start.", "Press aggy's switch key."},
