@@ -354,3 +354,98 @@ func TestOpenCodeHooksNotMissing(t *testing.T) {
 		t.Errorf("missing %v, warning %q", hooksMissing(adapter.OpenCode), hookWarning(adapter.OpenCode))
 	}
 }
+
+// TestLayoutMissIsUnknown (T6899): Claude's project layout is unverified, so a
+// session in no folder aggy looks in may still be there, and its row must stay.
+func TestLayoutMissIsUnknown(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	proj := filepath.Join(home, ".claude", "projects", "-some-repo", "sessions")
+	if err := os.MkdirAll(proj, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, reviewID+".jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := childStarted(supervisor.RunFacts{}, store.Child{Vendor: "claude", Cwd: "/some/repo"}, reviewID, true, time.Now(), nil, &sessionFiles{})
+	if got != startUnknown {
+		t.Errorf("= %v", got)
+	}
+}
+
+// TestResumeSaysWhatItHid (T6899): the person's last CLI here was a Codex with no
+// id; aggy resume opens the older session and says so, in one parent or across two.
+func TestResumeSaysWhatItHid(t *testing.T) {
+	t.Run("in one parent", func(t *testing.T) {
+		ctx, s, dir, claudeID := unstartedWorld(t)
+		at := time.Now().Add(time.Hour)
+		if err := s.InsertChild(ctx, store.Child{ID: "c-cdx", ParentID: "aa11", Vendor: "codex", Cwd: dir, Status: "open", CreatedAt: at, LastActive: at}); err != nil {
+			t.Fatal(err)
+		}
+		var note strings.Builder
+		got, err := plan(ctx, s, config.Config{}, dir, target{}, time.Now(), &note)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.resume != claudeID || !strings.Contains(note.String(), "newer codex session here cannot be reopened") {
+			t.Errorf("resume %s, note %q", got.resume, note.String())
+		}
+	})
+	t.Run("across parents", func(t *testing.T) {
+		ctx, s, dir, claudeID := unstartedWorld(t)
+		later := time.Now().Add(time.Hour)
+		if err := s.InsertParent(ctx, store.Parent{ID: "bb22", Dir: dir, DirKey: mustCanon(t, dir), CreatedAt: later, LastActive: later}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.InsertChild(ctx, store.Child{ID: "c-later", ParentID: "bb22", Vendor: "codex", Cwd: dir, Status: "open", CreatedAt: later, LastActive: later}); err != nil {
+			t.Fatal(err)
+		}
+		var note strings.Builder
+		got, err := plan(ctx, s, config.Config{}, dir, target{}, time.Now(), &note)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.resume != claudeID || strings.Count(note.String(), "cannot be reopened") != 1 {
+			t.Errorf("resume %s, note %q", got.resume, note.String())
+		}
+	})
+}
+
+// TestPreviewSameChildAsLaunch (T6899): --show plans the child a launch would, so
+// the read-only refresh sorts as Children does after a write.
+func TestPreviewSameChildAsLaunch(t *testing.T) {
+	ctx, s, dir, _ := unstartedWorld(t)
+	home := os.Getenv("HOME")
+	const a, b = "33333333-2222-4333-8444-555555555555", "44444444-2222-4333-8444-555555555555"
+	old, mid := time.Now().Add(-48*time.Hour), time.Now().Add(-24*time.Hour)
+	if err := s.InsertParent(ctx, store.Parent{ID: "dd44", Dir: dir, DirKey: mustCanon(t, dir), CreatedAt: time.Now().Add(time.Hour), LastActive: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []store.Child{{ID: "c-a", VendorSessionID: a, LastActive: old}, {ID: "c-b", VendorSessionID: b, LastActive: mid}} {
+		c.ParentID, c.Vendor, c.Cwd, c.Status, c.CreatedAt = "dd44", "claude", dir, "open", old
+		if err := s.InsertChild(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	proj := filepath.Join(home, ".claude", "projects", claudeProjectDir(dir))
+	for _, id := range []string{a, b} {
+		if err := os.WriteFile(filepath.Join(proj, id+".jsonl"), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chtimes(filepath.Join(proj, b+".jsonl"), mid, mid); err != nil {
+		t.Fatal(err)
+	}
+	show, err := plan(ctx, s, config.Config{}, dir, target{Preview: true, ParentID: "dd44"}, time.Now(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch, err := plan(ctx, s, config.Config{}, dir, target{ParentID: "dd44"}, time.Now(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if show.resume != a || launch.resume != a {
+		t.Errorf("--show %s, launch %s, want %s", show.resume, launch.resume, a)
+	}
+}

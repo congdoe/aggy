@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -429,7 +430,7 @@ func refreshChildren(ctx context.Context, s *store.Store, parentID string, files
 	if err != nil {
 		return nil, err
 	}
-	raised := false
+	raised, moved := false, false
 	for i := range cs {
 		c := &cs[i]
 		if c.Kind != "" || c.Status != "open" {
@@ -456,7 +457,7 @@ func refreshChildren(ctx context.Context, s *store.Store, parentID string, files
 			if files.readOnly {
 				c.FileSeen = true
 				if t.After(c.LastActive) {
-					c.LastActive = t
+					c.LastActive, moved = t, true
 				}
 				continue
 			}
@@ -483,6 +484,25 @@ func refreshChildren(ctx context.Context, s *store.Store, parentID string, files
 		default:
 			c.Status = stateUnknown
 		}
+	}
+	if moved {
+		// As Children sorts, so a preview plans the child a launch would.
+		limit := time.Now()
+		active := func(c store.Child) time.Time {
+			if c.LastActive.After(limit) {
+				return limit
+			}
+			return c.LastActive
+		}
+		slices.SortStableFunc(cs, func(a, b store.Child) int {
+			if n := active(b).Compare(active(a)); n != 0 {
+				return n
+			}
+			if n := b.CreatedAt.Compare(a.CreatedAt); n != 0 {
+				return n
+			}
+			return strings.Compare(a.ID, b.ID)
+		})
 	}
 	if !raised {
 		return cs, nil

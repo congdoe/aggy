@@ -215,6 +215,7 @@ var (
 	CodeUnreachable      = Code{"supervisor.unreachable"}
 	CodePolicy           = Code{"policy.unreachable"}
 	CodeUnsentText       = Code{"switch.unsent_text"}
+	CodePromptDoubt      = Code{"switch.prompt_in_doubt"}
 	CodeNoTurnYet        = Code{"switch.no_turn_yet"}
 	CodeNeverStarted     = Code{"switch.never_started"}
 	CodeHooksMissing     = Code{"switch.hooks_missing"}
@@ -417,6 +418,7 @@ var codes = []CodeInfo{
 	{CodeLaunchFailed, false, "Another launch error: the parent or child could not be planned or recorded, the CLI could not start, or the supervisor failed.", "The record's msg; aggy doctor."},
 	{CodeUnreachable, false, "The supervisor's socket did not answer: the session has ended, or the socket path is not aggy's.", "Is aggy still running the session? AGGY_SOCKET must be in ~/.aggy/run."},
 	{CodePolicy, false, "The safety policy cannot be applied to the vendor's CLI, so aggy did not start it.", "aggy doctor; --no-policy or [policy] required = false start it anyway."},
+	{CodePromptDoubt, false, "aggy cannot tell if the CLI's prompt is empty: a command, a popup, or Esc may have left text it did not count. The switch waits until the person has looked.", "Look at the prompt, and pick the vendor again to confirm."},
 	{CodeUnsentText, false, "Text the user typed and did not send is at the CLI's prompt: the exit command would send it, so the switch waits.", "Send or clear the text, then press Enter on the empty prompt."},
 	{CodeHooksMissing, false, "aggy's hooks are not installed for the CLI on screen, so aggy can see no turn end to switch at.", "aggy hooks install, then a new session. Until then, quit the CLI yourself after picking a vendor."},
 	{CodeFollowRefused, false, "A hook said the CLI moved to another session, from outside where the CLI's own hooks run (a nested CLI, say), so aggy kept following the one it had.", "Nothing, unless the on-screen CLI's own /clear or /resume is refused: then a switch waits; pick the vendor again to say the turn is over."},

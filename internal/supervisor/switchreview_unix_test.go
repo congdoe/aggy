@@ -77,7 +77,6 @@ func TestExitNotTypedOnDraft(t *testing.T) {
 		keys []string
 	}{
 		{"a ! command and Tab", []string{"!ls", "\t"}},
-		{"Esc, Esc, Enter on an empty composer", []string{"\x1b", "\x1b", "\r"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ts, c, done, _ := switchRunTurned(t, adapter.Codex)
@@ -87,6 +86,248 @@ func TestExitNotTypedOnDraft(t *testing.T) {
 				time.Sleep(70 * time.Millisecond) // past splitWait, as a person types
 			}
 			waitDirtyNote(t, ts, c)
+			finish(t, c, done)
+		})
+	}
+}
+
+// TestBacktrackAsksFirst (T6897): Esc, Esc, Enter may restore a prompt on Codex,
+// with h, k, or Ctrl+T in between going to its preview. aggy cannot see that, so
+// it says so at the first pick, and at the second the status line says so too;
+// nothing is typed until the person confirms.
+func TestBacktrackAsksFirst(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		keys []string
+	}{
+		{"Esc, Esc, Enter", []string{"\x1b", "\x1b", "\r"}},
+		{"Esc, Esc, h, Enter", []string{"\x1b", "\x1b", "h", "\r"}},
+		{"Esc, Esc, k, Enter", []string{"\x1b", "\x1b", "k", "\r"}},
+		{"Esc, Esc, Ctrl+T, Enter", []string{"\x1b", "\x1b", "\x14", "\r"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ts, c, done, _ := switchRunTurned(t, adapter.Codex)
+			for _, k := range tt.keys {
+				ts.typeIn(t, k)
+				c.waitGot(t, []byte(k))
+				time.Sleep(70 * time.Millisecond)
+			}
+			// The Enter may have started a turn, so the first pick waits for its
+			// end, as the list says; the second says none runs.
+			ts.typeIn(t, "\x1c1")
+			poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+			time.Sleep(60 * time.Millisecond)
+			ts.typeIn(t, "\x1c")
+			time.Sleep(60 * time.Millisecond)
+			ts.typeIn(t, "1")
+			poll(t, "the note", []byte("cannot tell if codex's prompt is empty"), ts.screen)
+			ts.typeIn(t, "\x1b")
+			time.Sleep(escTimeout + 60*time.Millisecond)
+			if bytes.Contains(c.received(), []byte("/exit")) {
+				t.Fatalf("typed before any confirm: %q", c.received())
+			}
+			seen := len(ts.screen())
+			ts.typeIn(t, "\x1c")
+			time.Sleep(60 * time.Millisecond)
+			ts.typeIn(t, "1")
+			since := func() []byte { return ts.screen()[seen:] }
+			poll(t, "the status line", []byte("can't tell if the prompt is empty"), since)
+			if bytes.Contains(c.received(), []byte("/exit")) {
+				t.Fatalf("typed before the confirm: %q", c.received())
+			}
+			finish(t, c, done)
+		})
+	}
+}
+
+// TestEscThenTextOnce: a single Esc, then a message, is the everyday interrupt
+// and stays clean; two Escs do not, until a turn from it ends.
+func TestEscThenText(t *testing.T) {
+	s := turned(adapter.Codex)
+	for _, k := range []string{"\x1b", "hello", "\r"} {
+		s.send([]byte(k))
+	}
+	if s.dirty || s.doubt() {
+		t.Errorf("one Esc: dirty %v, doubt %v", s.dirty, s.doubt())
+	}
+	s = turned(adapter.Codex)
+	for _, k := range []string{"\x1b", "\x1b", "hello", "\r"} {
+		s.send([]byte(k))
+	}
+	if !s.doubt() {
+		t.Error("two Escs: no doubt")
+	}
+	s.hookEvent(hookEvent{name: "Stop", sessionID: childSID, chain: ownChain})
+	if s.doubt() || s.dirty {
+		t.Errorf("after the turn: dirty %v, doubt %v", s.dirty, s.doubt())
+	}
+}
+
+// TestTurnEndEvidence (T6897): when a counted turn end clears doubt.
+func TestTurnEndEvidence(t *testing.T) {
+	stop := hookEvent{name: "Stop", sessionID: childSID, chain: ownChain}
+	foreign := hookEvent{name: "Stop", sessionID: nestedSID, chain: nestedChain}
+	for _, tt := range []struct {
+		name  string
+		keys  []string
+		ends  []hookEvent
+		doubt bool
+		known bool
+	}{
+		{"@file in a message: a turn ran from the Enter", []string{"fix @a.go please\r"}, []hookEvent{stop}, false, false},
+		{"a command that ran a turn", []string{"/compact\r"}, []hookEvent{stop}, false, false},
+		{"@ and Enter with no turn end", []string{"@fi\r"}, nil, true, false},
+		{"a foreign turn end is no evidence", []string{"fix @a.go\r"}, []hookEvent{foreign}, true, false},
+		{"input since the Enter", []string{"@fi\r", "x"}, []hookEvent{stop}, true, false},
+		{"a key since the Enter", []string{"@fi\r", "\x1b[A"}, []hookEvent{stop}, true, false},
+		{"text typed after a clean turn stays known", []string{"go\r", "draft"}, []hookEvent{stop}, false, true},
+		{"an @ Enter during a turn: no evidence", []string{"go\r", "@fi\r"}, []hookEvent{stop}, true, false},
+		{"Esc mid-turn, then an approval's Enter", []string{"go\r", "\x1b", "\r"}, []hookEvent{stop}, false, false},
+		{"Esc mid-turn, Up, Enter", []string{"go\r", "\x1b", "\x1b[A", "\r"}, []hookEvent{stop}, false, false},
+		{"Esc with no Enter since stays", []string{"go\r", "\x1b"}, []hookEvent{stop}, true, false},
+		// What can go wrong: a turn a background task starts ends just after a
+		// popup took the Enter. This documents the limit (docs/design.md).
+		{"limit: a background turn after a popup's Enter", []string{"@fi\r"}, []hookEvent{stop}, false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := turned(adapter.Claude)
+			for _, k := range tt.keys {
+				s.send([]byte(k))
+			}
+			for _, e := range tt.ends {
+				s.hookEvent(e)
+			}
+			if s.doubt() != tt.doubt || s.knownText() != tt.known {
+				t.Errorf("doubt %v, known %v; want %v, %v (compLen %d, lenKnown %v, popup %v, esc %v %v)",
+					s.doubt(), s.knownText(), tt.doubt, tt.known, s.compLen, s.lenKnown, s.popup, s.escEmpty, s.escDoubt)
+			}
+		})
+	}
+}
+
+// TestDoubtLinesFit: the note's lines fit 80 columns.
+func TestDoubtLinesFit(t *testing.T) {
+	for _, on := range adapter.Vendors() {
+		for _, to := range adapter.Vendors() {
+			for _, l := range doubtLines("switch to "+string(to), on, to) {
+				if len(l) > 80 {
+					t.Errorf("%d columns: %q", len(l), l)
+				}
+			}
+		}
+	}
+}
+
+// TestKeyAfterConfirmAsksAgain: the confirm is for the prompt the person saw. A
+// key after it needs a new look, and text is known again.
+func TestKeyAfterConfirmAsksAgain(t *testing.T) {
+	s := turned(adapter.Claude)
+	s.send([]byte("@fi\r"))
+	s.sw.toldDoubt, s.sw.doubtOK = true, true
+	s.send([]byte("\x1b[A"))
+	if s.sw.toldDoubt || s.sw.doubtOK {
+		t.Errorf("told %v, ok %v", s.sw.toldDoubt, s.sw.doubtOK)
+	}
+}
+
+// TestDailyClaude (T6897): one ordinary Claude session per row, and what the
+// first pick of grok brings. An ordinary session must not be refused for text
+// that is not there. "first" and "second" are what shows after the first pick,
+// and after Esc and a second one; "" means no second pick is needed. This pins
+// the whole table, so a change to it is a decision.
+func TestDailyClaude(t *testing.T) {
+	const (
+		line   = "status line"
+		doubt  = "note: cannot tell"
+		moved  = "note: moved"
+		silent = "waits"
+	)
+	type step struct{ kind, keys string }
+	k := func(s string) step { return step{"k", s} }
+	S, M, Sm, C := step{kind: "S"}, step{kind: "M"}, step{kind: "m"}, step{kind: "C"}
+	for _, tt := range []struct {
+		name          string
+		steps         []step
+		first, second string
+	}{
+		{"message, turn end", []step{k("hello\r"), S}, line, ""},
+		{"/clear, no message", []step{k("/clear\r"), M}, moved, line},
+		{"/clear, message, turn end", []step{k("/clear\r"), M, k("hello\r"), Sm}, line, ""},
+		{"/compact, compact hook, no turn end", []step{k("/compact\r"), C}, silent, doubt},
+		{"/compact, its turn end", []step{k("/compact\r"), C, S}, line, ""},
+		{"/compact, a message, turn end", []step{k("/compact\r"), C, k("hello\r"), S}, doubt, line},
+		{"/model closed with Esc, a message", []step{k("/model\r"), k("\x1b"), k("hello\r"), S}, doubt, line},
+		{"/cost, 2 messages", []step{k("/cost\r"), k("one\r"), S, k("two\r"), S}, doubt, line},
+		{"@file in a message", []step{k("fix @a.go please\r"), S}, line, ""},
+		{"Esc interrupts, a message", []step{k("go\r"), k("\x1b"), k("hello\r"), S}, line, ""},
+		{"Esc on an empty prompt", []step{k("\x1b")}, doubt, line},
+		{"Esc interrupts, Up, Enter", []step{k("go\r"), k("\x1b"), k("\x1b[A"), k("\r"), S}, line, ""},
+		{"approval with Enter", []step{k("go\r"), k("\r"), S}, line, ""},
+		{"approval: Down, Enter", []step{k("go\r"), k("\x1b[B"), k("\r"), S}, line, ""},
+		{"Esc mid-turn, approval with Enter", []step{k("go\r"), k("\x1b"), k("\r"), S}, line, ""},
+		{"a click", []step{k("hello\r"), S, k("\x1b[<0;10;5M"), k("\x1b[<0;10;5m")}, line, ""},
+		{"focus out and in", []step{k("hello\r"), S, k("\x1b[O"), k("\x1b[I")}, line, ""},
+		{"wheel", []step{k("hello\r"), S, k("\x1b[<64;10;5M")}, line, ""},
+		{"text, Ctrl+U, Enter", []step{k("abc"), k("\x15"), k("\r")}, silent, line},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ts, c, done, sock := switchRunTurned(t, adapter.Claude)
+			for _, st := range tt.steps {
+				switch st.kind {
+				case "k":
+					ts.typeIn(t, st.keys)
+					c.waitGot(t, []byte(st.keys))
+				case "S":
+					_ = request(t, sock, stopLine)
+				case "m":
+					_ = request(t, sock, fmt.Sprintf(`{"type":"hook-event","vendor":"claude","event":"Stop","payload":{"session_id":%q}}`, movedSID))
+				case "M":
+					_ = request(t, sock, fmt.Sprintf(`{"type":"hook-event","vendor":"claude","event":"SessionStart","payload":{"session_id":%q,"source":"clear"}}`, movedSID))
+				case "C":
+					_ = request(t, sock, fmt.Sprintf(`{"type":"hook-event","vendor":"claude","event":"SessionStart","payload":{"session_id":%q,"source":"compact"}}`, childSID))
+				}
+				time.Sleep(70 * time.Millisecond)
+			}
+			shown := func(seen int) string {
+				out := ts.screen()[seen:]
+				switch {
+				case bytes.Contains(out, []byte("Esc stays")):
+					return line
+				case bytes.Contains(out, []byte("have not sent")):
+					return "note: unsent"
+				case bytes.Contains(out, []byte("prompt is empty")):
+					return doubt
+				case bytes.Contains(out, []byte("moved to another session")):
+					return moved
+				case bytes.Contains(out, []byte("waiting for you")):
+					return "note: held"
+				}
+				return silent
+			}
+			seen := len(ts.screen())
+			ts.typeIn(t, "\x1c2")
+			time.Sleep(400 * time.Millisecond)
+			got := shown(seen)
+			t.Logf("DAILY | %-36s | first: %s", tt.name, got)
+			if got != tt.first {
+				t.Errorf("first pick: %q, want %q", got, tt.first)
+			}
+			if tt.second != "" {
+				if got != silent { // with no note up, an Esc would reach the CLI
+					ts.typeIn(t, "\x1b")
+					time.Sleep(escTimeout + 60*time.Millisecond)
+				}
+				seen = len(ts.screen())
+				ts.typeIn(t, "\x1c")
+				time.Sleep(60 * time.Millisecond)
+				ts.typeIn(t, "2")
+				time.Sleep(400 * time.Millisecond)
+				got = shown(seen)
+				t.Logf("DAILY | %-36s | second: %s", tt.name, got)
+				if got != tt.second {
+					t.Errorf("second pick: %q, want %q", got, tt.second)
+				}
+			}
 			finish(t, c, done)
 		})
 	}

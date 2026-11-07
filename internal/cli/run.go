@@ -188,9 +188,12 @@ const (
 // whether a CLI sends it before its trust dialog is unverified. Quitting before
 // the first message looks the same as a declined dialog, and is treated the same.
 //
-// startNever takes a folder aggy can read that lacks the file. One that is not
-// there at all (an unmounted disk, a vendor whose layout aggy cannot read) says
-// nothing, and going back from it could delete a row with a session behind it.
+// startNever takes a folder aggy can read, of a recorded layout, that lacks the
+// file. One that is not there at all (an unmounted disk, a vendor whose layout
+// aggy cannot read) says nothing, and going back from it could delete a row with
+// a session behind it. So does a miss in Claude's project folders, whose layout
+// is unverified (errNotInScan): a file somewhere aggy does not look is possible.
+// TODO(T6895): a live check of that layout can move Claude to startNever.
 func childStarted(facts supervisor.RunFacts, child store.Child, id string, newChild bool, began time.Time, sawRollout func() (seen, known bool), files *sessionFiles) startEvidence {
 	if facts.TurnRan {
 		return startYes
@@ -213,7 +216,7 @@ func childStarted(facts supervisor.RunFacts, child store.Child, id string, newCh
 	}
 	t, err := files.LastChanged(v, id, child.VendorHome, child.Cwd, child.CreatedAt)
 	switch {
-	case errors.Is(err, errNoSessionFile) || errors.Is(err, errNotInScan):
+	case errors.Is(err, errNoSessionFile):
 		return startNever
 	case err != nil:
 		return startUnknown
