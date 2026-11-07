@@ -501,3 +501,35 @@ func TestListedNameSkillLimit(t *testing.T) {
 	poll(t, "the output, after the key", []byte("TURNOUTPUT"), ts.screen)
 	finish(t, c, done)
 }
+
+// TestDraftDuringSwitchCheck (T6897): SwitchBlocked runs after the confirm and
+// before the exit command. A draft typed while it runs is refused there, as text.
+func TestDraftDuringSwitchCheck(t *testing.T) {
+	release := make(chan struct{})
+	called := make(chan struct{}, 1)
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude, func(o *Options) {
+		o.SwitchBlocked = func(adapter.Vendor, string) string {
+			called <- struct{}{}
+			<-release
+			return ""
+		}
+	})
+	ts.typeIn(t, "\x1c2")
+	poll(t, "the status line", []byte("Esc stays"), ts.screen)
+	time.Sleep(confirmGuard + 50*time.Millisecond)
+	ts.typeIn(t, "\x1c")
+	select {
+	case <-called:
+	case <-time.After(waitLimit):
+		t.Fatal("SwitchBlocked did not run after the confirm")
+	}
+	ts.typeIn(t, "draft")
+	c.waitGot(t, []byte("draft"))
+	time.Sleep(70 * time.Millisecond)
+	close(release)
+	time.Sleep(200 * time.Millisecond)
+	if bytes.Contains(c.received(), []byte("/exit")) {
+		t.Errorf("the exit command reached the draft: %q", c.received())
+	}
+	finish(t, c, done)
+}
