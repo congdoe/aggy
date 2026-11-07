@@ -146,6 +146,9 @@ func TestOpenCodeRenderRest(t *testing.T) {
 		func(c *OpenCodeConfig) { c.Plugin = "" },
 		func(c *OpenCodeConfig) { c.Aggy = "" },
 		func(c *OpenCodeConfig) { c.Root = "" },
+		func(c *OpenCodeConfig) { c.Root = "/tmp/{env:NOPE}" },
+		func(c *OpenCodeConfig) { c.Root = "/tmp/{file:~/.ssh/id_rsa}" },
+		func(c *OpenCodeConfig) { c.Instructions = []string{"/tmp/{env:X}/a.md"} },
 	} {
 		c := baseConfig()
 		bad(&c)

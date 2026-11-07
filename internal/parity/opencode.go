@@ -201,6 +201,14 @@ func openCodePolicies(c OpenCodeConfig) ([]openCodeRule, error) {
 
 // Render returns the config's JSON.
 func (c OpenCodeConfig) Render() ([]byte, error) {
+	// OpenCode expands these anywhere in a config file, with no escape
+	// (core/src/config/variable.ts at v2.2.5), so a repo folder with one in
+	// its name would read an environment value or a file into the config.
+	for _, v := range append([]string{c.Root, c.Plugin, c.Aggy, c.Model}, c.Instructions...) {
+		if strings.Contains(v, "{env:") || strings.Contains(v, "{file:") {
+			return nil, fmt.Errorf("parity: OpenCode would expand %q in its config, so this folder cannot be used with it", v)
+		}
+	}
 	perms, err := openCodePermissions(c.Trusted)
 	if err != nil {
 		return nil, err

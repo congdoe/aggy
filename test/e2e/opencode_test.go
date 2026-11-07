@@ -39,6 +39,11 @@ func openCodeWorldE2E(t *testing.T) *world {
 	if out, err := setup.CombinedOutput(); err != nil {
 		t.Fatalf("aggy setup: %v\n%s", err, out)
 	}
+	// The person adds it to the picker: it is not there by default.
+	cfg := "[switch]\norder = [\"claude\", \"codex\", \"grok\", \"opencode\"]\n"
+	if err := os.WriteFile(filepath.Join(w.home, ".aggy", "config.toml"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return w
 }
 
@@ -127,7 +132,7 @@ func TestOpenCodeLaunchTrusted(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(state, "opencode-trust.json"), body, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(state, "config.toml"), []byte("[opencode]\nauto = true\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(state, "config.toml"), []byte("[opencode]\nauto = true\n[switch]\norder = [\"claude\", \"opencode\"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	s := w.start(t, openCodeScenario(t, "opencode"), "run", "opencode")
@@ -255,6 +260,32 @@ func TestOpenCodeNoExitOverDialog(t *testing.T) {
 	}
 	if runs := interactiveRuns(t, w); len(runs) != 1 {
 		t.Fatalf("runs = %+v: no switch should have gone through", runs)
+	}
+}
+
+// TestOpenCodeLostReply (M3): a permission whose reply never comes tells the
+// person, and picking the vendor again goes on. No turn end is required.
+func TestOpenCodeLostReply(t *testing.T) {
+	w := openCodeWorldE2E(t)
+	sc := openCodeScenario(t, "opencode",
+		map[string]any{"event": "PermissionAsked", "payload": map[string]any{"sessionID": "{session_id}", "requestID": "per_1"}}, ocStop())
+	s := w.start(t, sc, "run", "opencode")
+	s.waitWithin([]byte("READY>"), offerTimeout)
+	s.send([]byte{0x1c})
+	s.waitWithin([]byte("aggy: switch vendor"), offerTimeout)
+	pickVendor(t, s, "claude", false)
+	s.waitWithin([]byte("pick claude again to go on"), offerTimeout)
+	s.send([]byte{0x1b})
+	time.Sleep(300 * time.Millisecond)
+	s.send([]byte{0x1c})
+	s.waitWithin([]byte("aggy: switch vendor"), offerTimeout)
+	pickVendor(t, s, "claude", false)
+	s.waitWithin([]byte("-> claude. Ctrl+"), offerTimeout)
+	s.send([]byte{0x1b})
+	time.Sleep(300 * time.Millisecond) // an Esc read with what follows starts a sequence
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
 	}
 }
 

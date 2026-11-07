@@ -6,6 +6,7 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -106,5 +107,27 @@ func TestOpenCodeRunner(t *testing.T) {
 		if _, err := run(context.Background(), adapter.Command{Path: "/usr/bin/env", Dir: dir, Env: []string{bad}}); err == nil {
 			t.Errorf("%s was passed", bad)
 		}
+	}
+}
+
+// TestDirectKillsOpenCode (M7): with --direct too, a signal OpenCode ignores
+// does not leave it running; another CLI still decides for itself.
+func TestDirectKillsOpenCode(t *testing.T) {
+	old := directKillWait
+	t.Cleanup(func() { directKillWait = old })
+	directKillWait = 50 * time.Millisecond
+	ignores := []string{"-c", `trap "" TERM HUP; while :; do sleep 0.05; done`}
+	done := make(chan int, 1)
+	go func() {
+		code, _ := RunDirectStarted(adapter.Command{Path: "/bin/sh", Args: ignores, Dir: t.TempDir(), Env: []string{"AGGY_VENDOR=opencode"}}, func(int) {
+			time.Sleep(50 * time.Millisecond) // for its trap to be set
+			_ = syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+		})
+		done <- code
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("it ran on")
 	}
 }

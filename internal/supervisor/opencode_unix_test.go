@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -47,7 +48,7 @@ func openCodeSession(t *testing.T) *session {
 	}
 	t.Cleanup(func() { _ = out.Close() })
 	return &session{o: Options{Vendor: adapter.OpenCode, Out: out, SessionID: func() string { return "ses_a" }},
-		t: &tty{fd: -1}, pk: &picker{key: 0x1c}, toChild: newByteQueue(maxQueued), atPrompt: true, turnRan: true, lenKnown: true, quit: make(chan struct{})}
+		t: &tty{fd: -1}, pk: &picker{key: 0x1c}, toChild: newByteQueue(maxQueued), atPrompt: true, turnRan: true, lenKnown: true, quit: make(chan struct{}), events: make(chan hookEvent, 4)}
 }
 
 // popAll is b and whatever else is queued now, up to the exit command.
@@ -125,25 +126,191 @@ func TestOpenCodeExitWaitsForAReply(t *testing.T) {
 			if b, ok := s.toChild.pop(); !ok || !bytes.HasSuffix(popAll(s, b), []byte("/exit")) {
 				t.Fatal("no exit command was typed")
 			}
+			if !s.exitGap {
+				t.Fatal("the Enter should wait for the gap")
+			}
 		})
 	}
+}
+
+// gapSession has typed the exit command and is in the gap.
+func gapSession(t *testing.T) *session {
+	t.Helper()
+	old := exitEnterGap
+	t.Cleanup(func() { exitEnterGap = old })
+	exitEnterGap = time.Millisecond
+	s := openCodeSession(t)
+	s.setSwitch(pendingSwitch{to: adapter.Claude})
+	t.Cleanup(s.closePicker)
+	s.typeExit()
+	if !s.sw.typed {
+		t.Fatal("exit not typed")
+	}
+	if b, ok := s.toChild.pop(); !ok || string(b) != "/exit" {
+		t.Fatalf("first = %q", b)
+	}
+	if ev := <-s.events; ev.name != exitEnterCheck {
+		t.Fatalf("event = %+v", ev)
+	}
+	return s
 }
 
 // TestExitEnterGap: on the full screen an Enter in the same burst as the
 // letters was lost (live), so it comes on its own, later.
 func TestExitEnterGap(t *testing.T) {
-	old := exitEnterGap
-	t.Cleanup(func() { exitEnterGap = old })
-	exitEnterGap = 30 * time.Millisecond
-	s := openCodeSession(t)
-	s.typeExitCommand()
-	first, ok := s.toChild.pop()
-	if !ok || string(first) != "/exit" {
-		t.Fatalf("first = %q", first)
+	s := gapSession(t)
+	s.hookEvent(hookEvent{name: exitEnterCheck})
+	if got := sentTo(s); got != "\r" {
+		t.Fatalf("sent %q", got)
 	}
-	second, ok := s.toChild.pop() // waits for the gap
-	if !ok || string(second) != "\r" {
-		t.Fatalf("second = %q", second)
+}
+
+// TestDialogInGap (H4): a dialog reported in the gap gets no Enter, which
+// would choose Allow once, and the person is told about the text left behind.
+func TestDialogInGap(t *testing.T) {
+	s := gapSession(t)
+	s.hookEvent(hookEvent{name: hook.EventPermissionAsked, sessionID: "ses_a", request: "r1"})
+	s.send([]byte("x"))
+	s.hookEvent(hookEvent{name: exitEnterCheck})
+	if s.sw.to != "" || s.sw.typed || s.exitBy != nil {
+		t.Errorf("the switch stands: %+v", s.sw)
+	}
+	if !s.dirty {
+		t.Error("the letters must count as unsent text")
+	}
+	if !s.open || !strings.Contains(strings.Join(s.pk.lines, " "), "/exit may be in its prompt") {
+		t.Errorf("not told: open %v, %q", s.open, s.pk.lines)
+	}
+	if got := sentTo(s); got != "x" {
+		t.Errorf("sent %q, want only the key, which goes to the dialog", got)
+	}
+}
+
+// TestTypingInGap (M5): keys in the gap never land between /exit and its
+// Enter. The command is taken back, and they reach the prompt, unsent.
+func TestTypingInGap(t *testing.T) {
+	s := gapSession(t)
+	s.send([]byte("hello"))
+	if s.compLen != 0 || s.dirty {
+		t.Errorf("held keys counted early: %d, %v", s.compLen, s.dirty)
+	}
+	s.hookEvent(hookEvent{name: exitEnterCheck})
+	if s.sw.to != "" || s.exitBy != nil {
+		t.Errorf("the switch stands: %+v", s.sw)
+	}
+	if !s.dirty || s.compLen != len("hello") {
+		t.Errorf("dirty %v, compLen %d", s.dirty, s.compLen)
+	}
+	if got := sentTo(s); got != "\x7f\x7f\x7f\x7f\x7fhello" {
+		t.Errorf("sent %q", got)
+	}
+}
+
+// TestMouseInGapIsNoTyping: a moved mouse does not call the switch off.
+func TestMouseInGapIsNoTyping(t *testing.T) {
+	s := gapSession(t)
+	s.send([]byte("\x1b[<35;1;1M"))
+	s.hookEvent(hookEvent{name: exitEnterCheck})
+	if s.sw.to == "" {
+		t.Error("the switch was cancelled")
+	}
+	if got := sentTo(s); got != "\x1b[<35;1;1M\r" {
+		t.Errorf("sent %q", got)
+	}
+}
+
+// TestLostReply (M3): an ask whose reply never comes must not block switching
+// in silence: a turn end tells the person, and picking again goes on.
+func TestLostReply(t *testing.T) {
+	s := openCodeSession(t)
+	t.Cleanup(s.closePicker)
+	s.setSwitch(pendingSwitch{to: adapter.Claude, picked: true})
+	s.hookEvent(hookEvent{name: hook.EventPermissionAsked, sessionID: "ses_a", request: "r1"})
+	s.offerSwitch()
+	if s.open {
+		t.Fatal("told while the dialog may well be up, with no turn end")
+	}
+	s.hookEvent(hookEvent{name: "StopCancelled", sessionID: "ses_a"})
+	s.send([]byte("\r")) // clears held, as typing does
+	s.hookEvent(hookEvent{name: "Stop", sessionID: "ses_a"})
+	s.lastIn = time.Time{}
+	s.lastOut.Store(0)
+	s.offerSwitch()
+	if !s.open || !strings.Contains(strings.Join(s.pk.lines, " "), "pick claude again") {
+		t.Fatalf("not told: open %v, %q", s.open, s.pk.lines)
+	}
+	if s.sw.typed || !s.askOpen() {
+		t.Fatal("an ask must not be dropped until the person says so")
+	}
+	s.closePicker()
+	s.releaseAsks()
+	s.offerSwitch()
+	if s.askOpen() || s.held || !s.atPrompt {
+		t.Fatalf("not released: asked %v, held %v, atPrompt %v", s.asked, s.held, s.atPrompt)
+	}
+}
+
+// TestNewAskIsNotStale: an ask after a turn end starts over.
+func TestNewAskIsNotStale(t *testing.T) {
+	s := openCodeSession(t)
+	s.askStale, s.askTold = true, true
+	s.hookEvent(hookEvent{name: hook.EventPermissionAsked, sessionID: "ses_a", request: "r2"})
+	if s.askStale || s.askTold {
+		t.Fatalf("stale %v, told %v", s.askStale, s.askTold)
+	}
+}
+
+// TestSlashCommandLeavesNoText (L6): /models and Enter left the session dirty
+// for good on OpenCode, so a switch waited on text that was not there. A popup
+// that fills in a name, as on the other vendors, stays unknown.
+func TestSlashCommandLeavesNoText(t *testing.T) {
+	cases := []struct {
+		name  string
+		v     adapter.Vendor
+		typed string
+		dirty bool
+	}{
+		{"a command on OpenCode", adapter.OpenCode, "/models\r", false},
+		{"a file token on OpenCode", adapter.OpenCode, "@foo\r", true},
+		{"a command on Claude", adapter.Claude, "/models\r", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := openCodeSession(t)
+			s.o.Vendor = c.v
+			s.send([]byte(c.typed))
+			if s.dirty != c.dirty {
+				t.Fatalf("dirty = %v", s.dirty)
+			}
+		})
+	}
+}
+
+// TestSignalArmsTheKill (M7): a SIGTERM to aggy, like a closed terminal, must
+// not leave a session OpenCode ignores it in.
+func TestSignalArmsTheKill(t *testing.T) {
+	old := hangupWait
+	t.Cleanup(func() { hangupWait = old })
+	hangupWait = time.Millisecond
+	for _, c := range []struct {
+		v    adapter.Vendor
+		want bool
+	}{{adapter.OpenCode, true}, {adapter.Claude, false}} {
+		s := openCodeSession(t)
+		s.o.Vendor = c.v
+		got := make(chan syscall.Signal, 1)
+		s.killAfterHangup(childSignals(func(sig syscall.Signal) error { got <- sig; return nil }))
+		select {
+		case sig := <-got:
+			if !c.want || sig != syscall.SIGKILL {
+				t.Errorf("%s: got %v", c.v, sig)
+			}
+		case <-time.After(100 * time.Millisecond):
+			if c.want {
+				t.Errorf("%s: no kill", c.v)
+			}
+		}
+		s.stopHangupKill()
 	}
 }
 
@@ -262,3 +429,8 @@ func TestOpenCodeEventsOnlyOnOpenCode(t *testing.T) {
 		t.Fatalf("seen %v, held %v", s.guardSeen, s.held)
 	}
 }
+
+// childSignals is a Child that only takes signals.
+type childSignals func(syscall.Signal) error
+
+func (f childSignals) Signal(sig syscall.Signal) error { return f(sig) }

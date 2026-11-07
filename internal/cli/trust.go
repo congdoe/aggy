@@ -44,12 +44,17 @@ const trustWarning = `Trust %s for OpenCode?
 - The repo's screen plugins (.opencode/plugins/*/tui.js) WILL run, as you, before
   any guard, each time the full screen opens. No setting stops them.
 - Reads in this repo run with no prompt, so a link in the repo can reach a file
-  outside it; aggy's guard refuses what it can see, and only that.
+  outside it; aggy's guard refuses what it can see, and only that. grep's search
+  text is not covered: a deny by file name applies to the path it searches.
 - aggy gives guardrails against mistakes, not protection from a hostile repo or a
   tricked model. A model's shell runs as you with no OS sandbox.
 
 The repo's own OpenCode config stays off.
 `
+
+// trustDone reports a trust. Trusts share one file, so a later one has to be
+// undone before this one: aggy unwire refuses, and says which is in its way.
+const trustDone = "Trusted %s for OpenCode.\nDone (run %s). aggy unwire --run %s undoes it, once any trust made after it is undone.\n"
 
 // runTrust is aggy trust.
 func runTrust(args []string, stdout, stderr io.Writer) int {
@@ -150,7 +155,7 @@ func runTrust(args []string, stdout, stderr io.Writer) int {
 	if _, err := m.Run(ctx, manifest.Write, runID, ps, io.Discard); err != nil {
 		return fail(diag.CodeTrustBadFile, err)
 	}
-	fmt.Fprintf(stdout, "Trusted %s for OpenCode.\nDone (run %s). aggy unwire --run %s undoes it.\n", termsafe.Field(root), runID, runID)
+	fmt.Fprintf(stdout, trustDone, termsafe.Field(root), runID, runID)
 	return 0
 }
 

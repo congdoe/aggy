@@ -305,7 +305,7 @@ func printReport(w io.Writer, res doctorResult, id devfix.Identity) {
 	fmt.Fprintln(&b, "aggy doctor report")
 	fmt.Fprintf(&b, "aggy: %s\n", clean(version()))
 	fmt.Fprintf(&b, "os: %s/%s\n", runtime.GOOS, runtime.GOARCH)
-	for _, v := range adapter.Vendors() {
+	for _, v := range adapter.Known() {
 		ver, ok := res.versions[v]
 		switch {
 		case !ok:

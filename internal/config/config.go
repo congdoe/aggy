@@ -410,7 +410,7 @@ func vendors(vs ...adapter.Vendor) Route { return Route{Vendors: vs} }
 func Default() Config {
 	return Config{
 		OpenCode: OpenCode{Providers: []string{"openai", "xai"}},
-		Switch:   Switch{Order: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok, adapter.OpenCode}, Key: DefaultSwitchKey, WarnAt: DefaultWarnAt},
+		Switch:   Switch{Order: []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok}, Key: DefaultSwitchKey, WarnAt: DefaultWarnAt},
 		Policy:   Policy{Required: true},
 		Versions: Versions{SelfTest: true},
 		GC:       GC{PendingWorktreeDays: 30, AcceptedWorktreeDays: 30, ClosedChildDays: 30, InboxDays: 30},

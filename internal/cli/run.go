@@ -297,6 +297,11 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 		for _, w := range oc.warns {
 			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
 		}
+		if probed, err := (opencode.Adapter{Path: path}).Probe(ctx, execrun.ExecRunner(probeTimeout)); err == nil {
+			if w := openCodeNewVersionNote(ctx, s, probed.Version); w != "" {
+				fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
+			}
+		}
 		if oc.launch.Mini {
 			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(openCodeUntrustedNote(pl.child.Cwd)))
 		}
