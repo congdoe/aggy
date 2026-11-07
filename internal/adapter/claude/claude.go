@@ -169,6 +169,7 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		}
 		args = append(args, "--settings", string(js))
 	}
+	args = append(args, req.Extra...)
 	if req.BriefFile != "" {
 		if err := adapter.CheckAbs("brief file", req.BriefFile); err != nil {
 			return adapter.Command{}, err
@@ -182,6 +183,30 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		args = append(args, adapter.BriefPrompt(req.BriefFile))
 	}
 	return adapter.Command{Path: Bin, Args: args, Env: req.Env, Dir: req.Cwd, Stdin: adapter.StdinTerminal}, nil
+}
+
+// PassFlags is Claude's table for aggy claude. The flags are Claude Code's
+// CLI reference (code.claude.com/docs/en/cli-reference, read 2026-11-06).
+// A permission flag such as --permission-mode bypassPermissions passes:
+// "Deny rules block in every mode, including bypassPermissions"
+// (code.claude.com/docs/en/permission-modes), so the policy stays on.
+func (Adapter) PassFlags() adapter.PassFlags {
+	const elsewhere = "it starts no on-screen session in this directory for aggy to record"
+	return adapter.PassFlags{
+		Model:    []string{"--model"},
+		Continue: []string{"--continue", "-c"},
+		Resume:   []string{"--resume", "-r"},
+		Refused: []adapter.RefusedFlag{
+			{Names: []string{"--session-id"}, Why: "aggy gives each new session its id"},
+			{Names: []string{"--fork-session"}, Why: "aggy keeps one vendor session per child"},
+			{Names: []string{"--settings"}, Why: "aggy's safety policy and tool hooks use it"},
+			{Names: []string{"--append-system-prompt-file", "--append-system-prompt"}, Why: "aggy passes the shared memory this way"},
+			{Names: []string{"--mcp-config"}, Why: "aggy passes the managed tools' servers with it; add yours with claude mcp"},
+			{Names: []string{"--print", "-p"}, Why: "aggy runs an on-screen session; aggy borrow runs one task headless"},
+			{Names: []string{"--bg", "--background", "--desktop", "--cloud", "--remote", "--teleport", "--exec", "--environment", "--from-pr", "--init-only", "--worktree", "-w", "--tmux"}, Why: elsewhere},
+			{Names: []string{"--version", "-v"}, Why: "run claude --version"},
+		},
+	}
 }
 
 // MCPConfigFile is the per-run MCP config, written in RunDir: it names

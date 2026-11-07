@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"runtime/debug"
+
+	"github.com/congdoe/aggy/internal/adapter"
 )
 
 // Version is set at build time:
@@ -35,7 +37,16 @@ func pickVersion(set, module string) string {
 const usage = `aggy runs the official Claude Code, Codex, and Grok Build CLIs.
 
 Usage:
-  aggy              Resume the latest session in this directory, or start one
+  aggy              Start a new session here on the default vendor (default_vendor,
+                    else the first one connected), as claude starts one
+  aggy -c, --continue
+                    Reopen the session last active in this directory
+  aggy -r, --resume [id]
+                    Reopen the session with this id, or the latest here
+  aggy <vendor> [flags]
+                    Start claude, codex, or grok with the CLI's own flags
+                    (aggy claude --model x); flags that clash with aggy's are
+                    refused
   aggy <command>
 
 Commands:
@@ -91,7 +102,7 @@ aggy is pre-alpha. Nothing else is implemented yet.
 // the process exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		return launch("aggy", target{}, stderr)
+		return launch("aggy", target{New: true}, stderr)
 	}
 	switch args[0] {
 	case "version", "--version", "-v":
@@ -123,9 +134,21 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runRun(args, stdout, stderr)
 	case "--no-policy":
 		if len(args) == 1 {
-			return launch("aggy", target{NoPolicy: true}, stderr)
+			return launch("aggy", target{New: true, NoPolicy: true}, stderr)
+		}
+		switch args[1] {
+		case "--continue", "-c":
+			return runContinue(args, stderr)
+		case "--resume", "-r":
+			return runResume(append([]string{"--no-policy"}, args[2:]...), stdout, stderr)
 		}
 		return runRun(args, stdout, stderr)
+	case "--continue", "-c":
+		return runContinue(args[1:], stderr)
+	case "--resume", "-r":
+		return runResume(args[1:], stdout, stderr)
+	case "claude", "codex", "grok":
+		return runVendor(adapter.Vendor(args[0]), args[1:], stdout, stderr)
 	case "new":
 		return runNew(args[1:], stdout, stderr)
 	case "resume":

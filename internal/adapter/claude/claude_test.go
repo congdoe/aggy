@@ -137,6 +137,11 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 		// W71-1: the variadic --mcp-config never takes the brief prompt.
 		{"tools with a brief", adapter.InteractiveRequest{SessionID: sid, MCPConfigFile: brief + ".mcp.json", BriefFile: brief},
 			[]string{"--mcp-config", brief + ".mcp.json", "--session-id", sid, "--", adapter.BriefPrompt(brief)}},
+		// T6903: the user's flags come after aggy's and before a brief.
+		{"the CLI's own flags", adapter.InteractiveRequest{SessionID: sid, Deny: []string{"Read(x)"}, Extra: []string{"--permission-mode", "plan"}},
+			[]string{"--session-id", sid, "--settings", `{"permissions":{"deny":["Read(x)"]}}`, "--permission-mode", "plan"}},
+		{"the CLI's own flags on a resume with a brief", adapter.InteractiveRequest{Resume: rid, BriefFile: brief, Extra: []string{"--permission-mode", "plan"}},
+			[]string{"--resume", rid, "--permission-mode", "plan", adapter.BriefPrompt(brief)}},
 		{"tools with a brief, no other flag", adapter.InteractiveRequest{MCPConfigFile: brief + ".mcp.json", BriefFile: brief},
 			[]string{"--mcp-config", brief + ".mcp.json", "--", adapter.BriefPrompt(brief)}},
 	}

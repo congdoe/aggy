@@ -71,7 +71,7 @@ Every record carries them, so any problem can be followed end to end with one qu
 - **`trace_id`**: one per user-visible flow, inherited by everything the flow starts.
   - A run started by a person begins a new trace: its trace id is its run id.
   - aggy passes the trace to the children it starts in `AGGY_TRACE`, and an aggy that starts with a valid `AGGY_TRACE` (a ULID) joins that trace. `AGGY_TRACE` is on `internal/execrun`'s allowlist for headless children (borrows), so the guard hook or a refused `aggy borrow` inside a child records under the borrow's flow, and on its list for on-screen CLIs (`PTYEnv`), so a session's hooks and the borrows run from it carry the trace of the aggy that launched it. It is an id aggy made; aggy's own `AGGY_TRACE` is never passed on as is, only the writer's validated trace.
-  - A supervised session (`aggy`, `aggy run`, `new`, `resume`) is one trace from its first launch to its last: every vendor it switches to is launched in the same process, and each CLI gets the trace in `AGGY_TRACE`. So the CLI's `aggy hook` calls (the hook handler adopts the trace of the supervisor it reports to), an `aggy switch` the agent runs, and the borrows run from the session all carry it, and the supervisor's own records (switches, the picker, the socket) do too. An `aggy run` started inside such a session (from the CLI's shell) inherits its `AGGY_TRACE` and so joins the outer trace; its own run id tells its records apart.
+  - A supervised session (`aggy`, `aggy <vendor>`, `aggy run`, `new`, `resume`) is one trace from its first launch to its last: every vendor it switches to is launched in the same process, and each CLI gets the trace in `AGGY_TRACE`. So the CLI's `aggy hook` calls (the hook handler adopts the trace of the supervisor it reports to), an `aggy switch` the agent runs, and the borrows run from the session all carry it, and the supervisor's own records (switches, the picker, the socket) do too. An `aggy run` started inside such a session (from the CLI's shell) inherits its `AGGY_TRACE` and so joins the outer trace; its own run id tells its records apart.
   - The trace is also written on the index's `borrows` and `children` rows when they are made (`trace_id`, index migration 0015; NULL on rows from before it, and on rows made with no trace).
   - A record about a borrow (`borrow_id` set) takes its trace from the borrow's row, which `aggy accept`, `aggy check <id>`, and `aggy gc` read, so they join the flow that started it whenever they run; when the row has none (a borrow from before 0015), from that borrow's first record in diag.db.
 - **`cause_id`**: the record that led to this one: a child's exit points at its start, a failure at the exit, the end at the failure.
@@ -96,7 +96,7 @@ The message is the one aggy printed before; the code and run id are added. Usage
 | 0 | Done. |
 | 1 | An error or a refusal; a borrow that ran and failed; a check that failed or was not run (`check.failed`, `check.no_checks`, and every `aggy check <id>` refusal); an accept, gc, or setup that did not finish. |
 | 2 | A usage error. `aggy check` (no id) also exits 2 when it is not in a git work tree (`check.not_git`), when the state dir cannot be found (`store.unavailable`), when run in an edit worktree (`check.edit_worktree`), and on a repo config error (`cli.config_invalid`). |
-| other | `aggy`, `aggy run`, `new`, and `resume` exit with the vendor CLI's own status. |
+| other | `aggy`, `aggy <vendor>`, `aggy run`, `new`, and `resume` exit with the vendor CLI's own status. |
 
 ## Privacy
 
@@ -253,6 +253,8 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | Code | Security | Meaning | What to check next |
 | --- | --- | --- | --- |
 | `cli.usage` |  | Bad arguments or flags. | Run the command with --help. |
+| `cli.flag_clash` |  | A flag for the vendor CLI clashes with what aggy passes it at launch. | Drop the flag; the message says what aggy does instead. Run the CLI itself if you need it. |
+| `cli.not_found` |  | No session, borrow, change, or file has that id or name. | List them: aggy sessions, aggy session, aggy inbox, or aggy log. |
 | `cli.config_invalid` |  | A config file could not be read or is invalid. | The message names the file and key; fix it. |
 | `store.unavailable` |  | The index (~/.aggy/aggy.db) could not be opened, read, or written. | aggy doctor; the state dir's permissions and free space. |
 | `borrow.one_hop` | yes | aggy borrow or aggy gc ran inside a borrow child (AGGY_DELEGATED is set): borrows are one hop. | Run it from your own shell. A child that tries this was steered to; read its task. |

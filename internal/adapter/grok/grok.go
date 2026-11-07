@@ -259,6 +259,7 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		}
 		args = append(args, "--agent", req.AgentFile)
 	}
+	args = append(args, req.Extra...)
 	if req.BriefFile != "" {
 		if err := adapter.CheckAbs("brief file", req.BriefFile); err != nil {
 			return adapter.Command{}, err
@@ -266,6 +267,30 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		args = append(args, adapter.BriefPrompt(req.BriefFile))
 	}
 	return adapter.Command{Path: Bin, Args: args, Env: req.Env, Dir: req.Cwd, Stdin: adapter.StdinTerminal}, nil
+}
+
+// PassFlags is Grok's table for aggy grok, from the flags recorded in
+// docs/adapters.md ("Grok": --session-id, --resume, --fork-session,
+// --continue, --no-alt-screen, --rules, --deny, --agent, --prompt-file) and
+// docs/verification.md (-r, and -p as --single). No full flag list of grok
+// is recorded, so the table is unverified for any other flag: those pass,
+// and the CLI refuses what it does not take.
+func (Adapter) PassFlags() adapter.PassFlags {
+	return adapter.PassFlags{
+		Model:    []string{"--model"},
+		Continue: []string{"--continue"},
+		Resume:   []string{"--resume", "-r"},
+		Refused: []adapter.RefusedFlag{
+			{Names: []string{"--session-id"}, Why: "aggy gives each new session its id"},
+			{Names: []string{"--fork-session"}, Why: "aggy keeps one vendor session per child"},
+			{Names: []string{"--no-alt-screen"}, Why: "aggy always passes it"},
+			{Names: []string{"--rules"}, Why: "aggy passes the shared memory with it"},
+			{Names: []string{"--deny"}, Why: "aggy's safety policy uses it; add yours in Grok's config"},
+			{Names: []string{"--agent"}, Why: "aggy passes the managed tools' servers with it"},
+			{Names: []string{"--prompt-file", "--single", "-p"}, Why: "aggy runs an on-screen session; aggy borrow runs one task headless"},
+			{Names: []string{"--version"}, Why: "run grok --version"},
+		},
+	}
 }
 
 // Headless builds

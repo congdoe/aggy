@@ -75,6 +75,13 @@ func (s *Store) LatestParentInDir(ctx context.Context, key, dir string) (Parent,
 	return ps[0], nil
 }
 
+// ParentsInDir returns the parents LatestParentInDir looks through, most
+// recently active first.
+func (s *Store) ParentsInDir(ctx context.Context, key, dir string) ([]Parent, error) {
+	return s.queryParents(ctx, `WHERE dir_key = ? OR (dir_key = '' AND dir = ?)
+		ORDER BY active DESC, created_at DESC, id`, key, dir)
+}
+
 // ParentsByPrefix returns the parents whose id starts with prefix, which
 // must hold only hex digits and dashes.
 func (s *Store) ParentsByPrefix(ctx context.Context, prefix string) ([]Parent, error) {

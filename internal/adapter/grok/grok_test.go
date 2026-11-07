@@ -339,6 +339,9 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 			[]string{"--no-alt-screen", "--rules", "notes, with a comma", adapter.BriefPrompt(brief)}},
 		{"policy", adapter.InteractiveRequest{Deny: []string{"Read(**/.env)", "Bash(rm -rf *)"}},
 			[]string{"--no-alt-screen", "--deny", "Read(**/.env)", "--deny", "Bash(rm -rf *)"}},
+		// T6903: the user's flags come after aggy's and before a brief.
+		{"the CLI's own flags", adapter.InteractiveRequest{SessionID: sid, Deny: []string{"Read(x)"}, BriefFile: brief, Extra: []string{"--sandbox", "strict"}},
+			[]string{"--no-alt-screen", "--session-id", sid, "--deny", "Read(x)", "--sandbox", "strict", adapter.BriefPrompt(brief)}},
 		// T6708: the tools' MCP servers through an agent file.
 		{"tools on resume", adapter.InteractiveRequest{Resume: sid, AgentFile: brief + ".agent.md"},
 			[]string{"--no-alt-screen", "--resume", sid, "--agent", brief + ".agent.md"}},
