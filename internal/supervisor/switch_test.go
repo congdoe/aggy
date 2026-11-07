@@ -803,3 +803,73 @@ func TestSwitchOnLimitNoQuota(t *testing.T) {
 	never(t, "no switch", []byte("switches, Esc stays"), ts.screen, 300*time.Millisecond)
 	finish(t, c, done)
 }
+
+// TestPickerOneAltScreen (T6902, F17): a toggle redraws the list without going to
+// the alternate screen again: 1049h saves the cursor each time, and the CLI's
+// would be lost. An open and an Esc make exactly one each.
+func TestPickerOneAltScreen(t *testing.T) {
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list", []byte("brief: off"), ts.screen)
+	ts.typeIn(t, "b")
+	poll(t, "the toggle", []byte("brief: on"), ts.screen)
+	ts.typeIn(t, "n")
+	poll(t, "the other toggle", []byte("new session: on"), ts.screen)
+	ts.typeIn(t, "\x1b")
+	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+	if on, off := bytes.Count(ts.screen(), []byte("\x1b[?1049h")), bytes.Count(ts.screen(), []byte(altScreenOff)); on != 1 || off != 1 {
+		t.Errorf("1049h %d times, 1049l %d times: %q", on, off, ts.screen())
+	}
+	// The next open goes there again.
+	seen := len(ts.screen())
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list again", []byte("\x1b[?1049h"), func() []byte { return ts.screen()[seen:] })
+	ts.typeIn(t, "\x1b")
+	finish(t, c, done)
+}
+
+// TestRepickKeepsBriefOnStatusLine (T6902, F18): the repro, past a turn end: pick
+// with b, it waits for the next turn; pick it again; the status line has the brief.
+func TestRepickKeepsBriefOnStatusLine(t *testing.T) {
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
+	ts.typeIn(t, "go\r")
+	c.waitGot(t, []byte("go\r"))
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list", []byte("brief: off"), ts.screen)
+	ts.typeIn(t, "b")
+	poll(t, "the toggle", []byte("brief: on"), ts.screen)
+	ts.typeIn(t, "2")
+	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+	never(t, "an offer mid-turn", []byte("-> grok. Ctrl+"), ts.screen, 100*time.Millisecond)
+	ts.typeIn(t, "\x1c")
+	time.Sleep(50 * time.Millisecond)
+	ts.typeIn(t, "2")
+	poll(t, "the status line", []byte("brief -> grok. Ctrl+"), ts.screen)
+	finish(t, c, done)
+}
+
+// TestWaitingOptionsTurnedOff (T6902, F18): turning the brief off at the list
+// reaches the status line.
+func TestWaitingOptionsTurnedOff(t *testing.T) {
+	ts, c, done, _ := switchRunTurned(t, adapter.Claude)
+	ts.typeIn(t, "go\r")
+	c.waitGot(t, []byte("go\r"))
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list", []byte("brief: off"), ts.screen)
+	ts.typeIn(t, "b")
+	poll(t, "the toggle", []byte("brief: on"), ts.screen)
+	ts.typeIn(t, "2")
+	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
+	seen := len(ts.screen())
+	since := func() []byte { return ts.screen()[seen:] }
+	ts.typeIn(t, "\x1c")
+	poll(t, "the list says brief on", []byte("brief: on"), since)
+	ts.typeIn(t, "b")
+	poll(t, "the toggle off", []byte("brief: off"), since)
+	ts.typeIn(t, "2")
+	poll(t, "the status line", []byte("-> grok. Ctrl+"), since)
+	if bytes.Contains(since(), []byte("brief -> grok")) {
+		t.Errorf("the brief stayed on: %q", since())
+	}
+	finish(t, c, done)
+}

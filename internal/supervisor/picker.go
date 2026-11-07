@@ -20,8 +20,9 @@ import (
 // saved with DECSC: that slot is the CLI's own, and a full-screen CLI or
 // pager may hold a position there (B13-13).
 const (
-	altScreenOn  = "\x1b[?1049h\x1b[H\x1b[2J"
-	altScreenOff = "\x1b[?1049l"
+	altScreenOn    = "\x1b[?1049h" + altScreenClear
+	altScreenClear = "\x1b[H\x1b[2J"
+	altScreenOff   = "\x1b[?1049l"
 )
 
 // picker is the minimal switch menu: the connected vendors in switch.order
@@ -81,6 +82,10 @@ type picker struct {
 	// queues a resume of the vendor on screen; in the list, the switch
 	// waiting is that resume.
 	resume bool
+	// onAlt: draw took the terminal to the alternate screen and erase has not
+	// brought it back. 1049h saves the cursor each time, so a second one would
+	// save the alternate screen's over the CLI's (xterm's ctlseqs).
+	onAlt bool
 }
 
 // list sets the picker to the vendor list, its toggles cleared.
@@ -208,7 +213,12 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 			fmt.Fprintf(&b, "\x1b[%d;1H\x1b[2K%s", i+1, l)
 		}
 	} else {
-		b.WriteString(altScreenOn)
+		if p.onAlt {
+			b.WriteString(altScreenClear)
+		} else {
+			b.WriteString(altScreenOn)
+		}
+		p.onAlt = true
 		for _, l := range lines {
 			b.WriteString(l + "\r\n")
 		}
@@ -268,6 +278,7 @@ func (p *picker) erase(w io.Writer, overCLI bool) {
 	if overCLI {
 		return
 	}
+	p.onAlt = false
 	_, _ = io.WriteString(w, altScreenOff)
 }
 
