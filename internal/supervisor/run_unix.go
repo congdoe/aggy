@@ -1594,7 +1594,7 @@ func (s *session) confirmSwitch() {
 	s.goSafe(func() {
 		blocked := ""
 		if s.o.SwitchBlocked != nil {
-			blocked = s.o.SwitchBlocked()
+			blocked = s.o.SwitchBlocked(v, id)
 		}
 		ok := blocked == "" && (id == "" || s.o.HasChild == nil || s.o.HasChild(v, id))
 		select {
@@ -1622,7 +1622,7 @@ func (s *session) childChecked(r childCheck) {
 	}
 	v := s.sw.to
 	if r.blocked != "" {
-		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodePermBadFile, Cause: s.sw.rec, Msg: "the next launch would refuse, so the CLI on screen stays", Attrs: map[string]any{"to": string(v)}})
+		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchBlocked, Cause: s.sw.rec, Msg: "the next launch would refuse, so the CLI on screen stays", Attrs: map[string]any{"to": string(v)}})
 		s.setSwitch(pendingSwitch{})
 		s.pk.tell("aggy did not switch: "+r.blocked, fmt.Sprintf("Fix it, then press %s to pick again.", keyName(s.pk.key)))
 		s.openPicker()

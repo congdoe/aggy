@@ -84,7 +84,7 @@ type Options struct {
 	HasChild func(v adapter.Vendor, id string) bool
 	// SwitchBlocked says why a confirmed switch must not close the CLI on screen,
 	// as the next launch would refuse. Off the main loop; nil or "" goes on.
-	SwitchBlocked func() string
+	SwitchBlocked func(v adapter.Vendor, id string) string
 	// Limits gets the vendor on screen each time it reports its plan
 	// limit (T6667); HasQuota says whether a vendor has none recorded. On
 	// a limit, the first vendor of Vendors with quota is preselected and,

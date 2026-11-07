@@ -346,6 +346,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `switch.limit_no_hold` |  | After a limit on a vendor with no hold signal (Codex), aggy only suggests the switch; the user picks it. | Press the switch key, then Enter. |
 | `switch.near_limit_no_quota` |  | The near-limit warning found no vendor with quota to hand off to. | aggy usage. |
 | `switch.tools_no_hold` |  | The tools changed on a vendor with no hold signal (Codex), so aggy only shows a note; the user starts the resume with the switch key. | Press the switch key at the note, then confirm at the turn end. |
+| `switch.blocked` |  | The next launch would refuse, as a config or rules file has a mistake, so the CLI on screen was not told to exit. | aggy doctor; fix the file, then pick again. |
 | `switch.child_gone` |  | The session picked in the switch list was no longer recorded when the switch was confirmed, so the CLI on screen was not told to exit. | aggy sessions; pick again. |
 | `peer.lineage_failed` | yes | A message on the supervisor's socket came from a process outside the on-screen CLI's process tree, so it was not acted on. | Which process of yours writes to ~/.aggy/run; a CLI's tool that outlived it is reparented and falls out. |
 | `peer.uid_mismatch` | yes | A process of another user reached the supervisor's socket; it got no answer. | The run directory's owner and mode (0700). |

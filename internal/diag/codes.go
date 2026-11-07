@@ -228,6 +228,7 @@ var (
 	CodeLimitNoHold      = Code{"switch.limit_no_hold"}
 	CodeNearNoQuota      = Code{"switch.near_limit_no_quota"}
 	CodeChildGone        = Code{"switch.child_gone"}
+	CodeSwitchBlocked    = Code{"switch.blocked"}
 	CodeToolsNoHold      = Code{"switch.tools_no_hold"}
 	CodeLineage          = Code{"peer.lineage_failed"}
 	CodePeerUID          = Code{"peer.uid_mismatch"}
@@ -435,6 +436,7 @@ var codes = []CodeInfo{
 	{CodeLimitNoHold, false, "After a limit on a vendor with no hold signal (Codex), aggy only suggests the switch; the user picks it.", "Press the switch key, then Enter."},
 	{CodeNearNoQuota, false, "The near-limit warning found no vendor with quota to hand off to.", "aggy usage."},
 	{CodeToolsNoHold, false, "The tools changed on a vendor with no hold signal (Codex), so aggy only shows a note; the user starts the resume with the switch key.", "Press the switch key at the note, then confirm at the turn end."},
+	{CodeSwitchBlocked, false, "The next launch would refuse, as a config or rules file has a mistake, so the CLI on screen was not told to exit.", "aggy doctor; fix the file, then pick again."},
 	{CodeChildGone, false, "The session picked in the switch list was no longer recorded when the switch was confirmed, so the CLI on screen was not told to exit.", "aggy sessions; pick again."},
 	{CodeLineage, true, "A message on the supervisor's socket came from a process outside the on-screen CLI's process tree, so it was not acted on.", "Which process of yours writes to ~/.aggy/run; a CLI's tool that outlived it is reparented and falls out."},
 	{CodePeerUID, true, "A process of another user reached the supervisor's socket; it got no answer.", "The run directory's owner and mode (0700)."},

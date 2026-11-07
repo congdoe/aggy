@@ -13,6 +13,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/execrun"
+	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/permissions"
 	"github.com/congdoe/aggy/internal/probe"
 )
@@ -426,10 +427,11 @@ func TestGitTracksLargeRepo(t *testing.T) {
 	}
 	blob := gitIn("", "hash-object", "-w", "--stdin")
 	var list strings.Builder
+	// Sized by what git ls-files -z prints, a path and a NUL, not by these lines.
 	for i, size := 0, 0; size <= execrun.MaxOutput+1; i++ {
-		line := fmt.Sprintf("100644 %s\t%s/%d\n", blob, strings.Repeat("d", 200), i)
-		list.WriteString(line)
-		size += len(line)
+		path := fmt.Sprintf("%s/%d", strings.Repeat("d", 200), i)
+		fmt.Fprintf(&list, "100644 %s\t%s\n", blob, path)
+		size += len(path) + 1
 	}
 	gitIn(list.String(), "update-index", "--add", "--index-info")
 	file := filepath.Join(repo, ".claude", "settings.local.json")
@@ -489,5 +491,76 @@ func TestOpenCodeTrustPromptNamesAllows(t *testing.T) {
 		if !strings.Contains(trustWarning, w) {
 			t.Errorf("no %q", w)
 		}
+	}
+}
+
+// TestLocalTypoKeepsDeniesOnOpenCode: a typo in the person's own file must not lose
+// its valid denies and asks, where an allow would then run with no prompt.
+func TestLocalTypoKeepsDeniesOnOpenCode(t *testing.T) {
+	for _, tc := range []struct {
+		name, local string
+		kept        bool
+	}{
+		{"typo in one deny", `{"permissions":{"deny":["Bash(git push origin main)","Bash("],"ask":["Bash(npm publish)"]}}`, true},
+		{"trailing comma", `{"permissions":{"deny":["Bash(git push origin main)"],"ask":["Bash(npm publish)"],}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolate(t)
+			repo := realGitRepo(t)
+			writePermissions(t, `{"permissions":{"allow":["Bash(git push origin main)","Bash(npm publish)"]}}`)
+			file := filepath.Join(repo, ".claude", "settings.local.json")
+			if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(file, []byte(tc.local), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			pi := permissionInput(repo)
+			pi.Trusted = true
+			pi.Tracked = gitTracks(context.Background(), repo)
+			s := permissions.Load(pi)
+			shared, _ := parity.OpenCodeShared(s)
+			if len(shared.Allow) != 0 {
+				t.Errorf("allows went out with a deny maybe missing: %q", shared.Allow)
+			}
+			if tc.kept && (!slices.Contains(shared.Deny, "shell:git push origin main") || !slices.Contains(shared.Ask, "npm publish")) {
+				t.Errorf("%+v", shared)
+			}
+			var req adapter.InteractiveRequest
+			notes := strings.Join(addPermissions(adapter.OpenCode, nil, s, &req), "\n")
+			if !strings.Contains(notes, "a deny may be missing") || !strings.Contains(notes, file) {
+				t.Errorf("%q", notes)
+			}
+			none := func(string) string { return "" }
+			if code := openCodeGuardFor(t, repo, "PATH=./bin:$PATH; echo hi", none); code != 2 {
+				t.Errorf("scan always: exit %d", code)
+			}
+		})
+	}
+}
+
+func TestSwitchBlockedNamesEachFile(t *testing.T) {
+	isolate(t)
+	repo := tempRepo(t)
+	if got := switchBlocked(repo); got != "" {
+		t.Fatalf("nothing wrong: %q", got)
+	}
+	key := permissionInput(repo).RepoKey
+	writePermissions(t, `{"repos":{"`+key+`":{"deny":["Bash("]}}}`)
+	if got := switchBlocked(repo); !strings.Contains(got, "permissions.json") {
+		t.Errorf("this repo's section: %q", got)
+	}
+	if got := switchBlocked(tempRepo(t)); got != "" {
+		t.Errorf("another repo's section: %q", got)
+	}
+	writePermissions(t, `{}`)
+	if err := os.Mkdir(filepath.Join(repo, ".aggy"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".aggy", "config.toml"), []byte("[switch\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := switchBlocked(repo); !strings.Contains(got, "config") {
+		t.Errorf("the repo's config: %q", got)
 	}
 }

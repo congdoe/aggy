@@ -153,7 +153,7 @@ func printPermissionsTroubles(w io.Writer, s permissions.Set) {
 		fmt.Fprintf(w, "\nA launch refuses to start until this is fixed: %s\n", termsafe.Line(s.FileErr.Error()))
 	}
 	for _, p := range s.Problems {
-		fmt.Fprintf(w, "\nNot read: %s: %s\n", termsafe.Field(p.Path), termsafe.Line(p.Why))
+		fmt.Fprintf(w, "\nA problem with %s: %s\n", termsafe.Field(p.Path), termsafe.Line(p.Why))
 	}
 	if s.Withhold != "" {
 		fmt.Fprintf(w, "\n%s\n", termsafe.Line(s.Withhold))
