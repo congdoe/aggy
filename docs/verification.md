@@ -1442,7 +1442,7 @@ Scripts named in a repo's `.git/config`, all under exact rules:
 | `core.fsmonitor` | `git status`, also after `cd` into a nested repo | **Yes** | `git -c core.fsmonitor=false status`, or launch env `GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0=core.fsmonitor`, `GIT_CONFIG_VALUE_0=false`; a model's `GIT_CONFIG_COUNT=0` prefix then prompts, but `export GIT_CONFIG_VALUE_0=<command>; git status` or `PATH=<dir>:$PATH; git status` ran with no prompt, since declarations aren't checked (`core/src/shell/parse.ts`) |
 | `diff.external` | `git diff` | **Yes** | Launch env `GIT_EXTERNAL_DIFF=true`, or `diff.external` emptied the same way; rule `git diff --no-ext-diff --no-textconv` |
 | `diff.<driver>.command` with `.gitattributes` | `git diff` | **Yes** | Rule `git diff --no-ext-diff --no-textconv` |
-| `filter.<name>.clean` with `.gitattributes` | `git diff` | **Yes** (`git status` did not, in this one test) | Not found; that rule was not tried against it |
+| `filter.<name>.clean` with `.gitattributes` | `git diff` | **Yes**. `git status` did not in this one test, but did in the later test below once a tracked file's time changed | Not found; that rule was not tried against it |
 | `core.pager` | `git log`, no terminal | No | |
 | `post-index-change` hook | `git status` | Yes, once a tracked file's time changed; no in the first test, which changed none | |
 
@@ -1475,6 +1475,7 @@ Real OpenCode 2.2.5 against a loopback fake model in a temp `HOME`, with no cred
 - `*` and `?` in a rule keep their wildcard meaning, and `{file:}` in a rule is expanded: `rm -f *.tmp` allowed `rm -f keep a.tmp`.
 - `/open` on the full screen moved a `--auto` session to another known project, where a command ran with no prompt. That project's screen plugin should not load (source only).
 - A plugin or a policy planted in the `OPENCODE_CONFIG_DIR` folder took effect in a later launch in another repo.
+- With a `read` allow on `*`, a read through a repo symlink sent a canary to the model with no prompt, past a deny on the target's name. The direct outside path prompted.
 - `run -m` with a denied provider, a resume after its provider was denied, and no allowed provider each exited 1 with no request. `mini -m` is untested.
 
 ## Claude Code session file fields (2026-11-06)
