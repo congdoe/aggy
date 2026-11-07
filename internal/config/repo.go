@@ -120,7 +120,13 @@ func (rc RepoConfig) Validate() error {
 	seen := map[adapter.Vendor]bool{}
 	for _, v := range rc.AllowedVendors {
 		if _, err := adapter.ParseVendor(string(v)); err != nil {
-			return fmt.Errorf("allowed_vendors: %w", err)
+			// With opencode listed, any other name is an OpenCode provider
+			// (Effective.OpenCodeProviders), since OpenCode is one vendor with
+			// many destinations. Without it, a name aggy does not know is
+			// still a mistake.
+			if !slices.Contains(rc.AllowedVendors, adapter.OpenCode) || !providerRE.MatchString(string(v)) {
+				return fmt.Errorf("allowed_vendors: %w", err)
+			}
 		}
 		if seen[v] {
 			return fmt.Errorf("allowed_vendors: vendor %q listed twice", v)
@@ -225,8 +231,29 @@ type Effective struct {
 	Config
 	Repo RepoConfig
 	// Allowed lists the vendors this repo may be sent to, in claude,
-	// codex, grok order.
+	// codex, grok, opencode order.
 	Allowed []adapter.Vendor
+}
+
+// OpenCodeProviders are the providers an OpenCode session may use in this
+// repo: the user's list, narrowed by allowed_vendors, where xai counts as
+// grok and openai as codex, and any other provider needs its own name.
+func (e Effective) OpenCodeProviders() []string {
+	if e.Repo.AllowedVendors == nil {
+		return e.OpenCode.Providers
+	}
+	counts := map[string]adapter.Vendor{"xai": adapter.Grok, "openai": adapter.Codex}
+	out := []string{}
+	for _, p := range e.OpenCode.Providers {
+		v, ok := counts[p]
+		if !ok {
+			v = adapter.Vendor(p)
+		}
+		if slices.Contains(e.Repo.AllowedVendors, v) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // Allows reports whether vendor v may see this repo.
@@ -244,9 +271,9 @@ func (e Effective) Allows(v adapter.Vendor) bool { return slices.Contains(e.Allo
 // The result's switch order or a route may be empty, which means no
 // vendor is available for it in this repo.
 func Merge(user Config, repo RepoConfig) Effective {
-	allowed := adapter.Vendors()
+	allowed := adapter.Known()
 	if repo.AllowedVendors != nil {
-		allowed = slices.DeleteFunc(adapter.Vendors(), func(v adapter.Vendor) bool {
+		allowed = slices.DeleteFunc(adapter.Known(), func(v adapter.Vendor) bool {
 			return !slices.Contains(repo.AllowedVendors, v)
 		})
 	}

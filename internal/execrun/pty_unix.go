@@ -36,7 +36,8 @@ type PTY struct {
 //
 // The CLI is the user's own on-screen session, so unlike a probe it gets
 // aggy's whole environment (see PTYEnv), plus c.Env, which may hold only
-// the variables in ptyExtraNames.
+// the variables in ptyExtraNames, and for OpenCode those in
+// openCodeExtraNames.
 func StartPTY(c adapter.Command, rows, cols int) (*PTY, error) {
 	if !filepath.IsAbs(c.Path) || filepath.Clean(c.Path) != c.Path {
 		return nil, fmt.Errorf("execrun: %q is not a clean absolute path", c.Path)
@@ -73,6 +74,24 @@ func StartPTY(c adapter.Command, rows, cols int) (*PTY, error) {
 // inherited one.
 var ptyExtraNames = []string{"AGGY_VENDOR", "AGGY_MODEL", "AGGY_SOCKET", "AGGY_PARENT", "AGGY_TRACE"}
 
+// openCodeExtraNames are what an OpenCode launch sets besides those
+// (docs/design.md, section 15), and only when AGGY_VENDOR names it. None is
+// a key or a base URL. The config variables point into aggy's own folder.
+var openCodeExtraNames = []string{"OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR",
+	"OPENCODE_DISABLE_AUTOUPDATE", "PWD", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"}
+
+// openCodeDrops reports an inherited variable an OpenCode launch removes:
+// every OPENCODE_* (a stale OPENCODE_CONFIG_PROJECT_DISABLE=0 beats aggy's
+// own, docs/verification.md), an inherited git config, which the launch's
+// sets, and API-key variables, which would add providers (ANTHROPIC_API_KEY
+// adds 20 anthropic/* models, fake model). OPENCODE_* removal also takes
+// the password and the database path. The tools the session runs lose
+// those keys too: this is the on-screen launch's own choice.
+func openCodeDrops(k string) bool {
+	return strings.HasPrefix(k, "OPENCODE_") || strings.HasPrefix(k, "GIT_CONFIG_") ||
+		strings.HasSuffix(k, "_API_KEY") || strings.HasSuffix(k, "_API_TOKEN") || strings.HasSuffix(k, "_AUTH_TOKEN")
+}
+
 // PTYEnv is base, without any variable extra sets and without
 // AGGY_VENDOR and AGGY_MODEL (a child's own, never inherited: a stale
 // one would land in its commits' trailers), followed by extra. An extra
@@ -98,6 +117,10 @@ func PTYEnv(base, extra []string) ([]string, error) {
 		if !ok || k == "" {
 			return nil, fmt.Errorf("execrun: bad environment entry %q", kv)
 		}
+		if vendor == adapter.OpenCode && contains(openCodeExtraNames, k) {
+			set[k] = true
+			continue
+		}
 		if !contains(ptyExtraNames, k) {
 			if set[k] || !proxyGrant(k, v, vendor) {
 				return nil, fmt.Errorf("execrun: refusing to pass %s to an interactive CLI (only %s may be added, and a running tool proxy's own variable)", k, strings.Join(ptyExtraNames, ", "))
@@ -110,7 +133,11 @@ func PTYEnv(base, extra []string) ([]string, error) {
 		return strings.HasPrefix(kv, "AGGY_SOCKET=") || strings.HasPrefix(kv, "AGGY_PARENT=")
 	})
 	for _, kv := range base {
-		if k, v, _ := strings.Cut(kv, "="); !set[k] && (!nested || !staleProxyURL(k, v)) {
+		k, v, _ := strings.Cut(kv, "=")
+		if vendor == adapter.OpenCode && openCodeDrops(k) {
+			continue
+		}
+		if !set[k] && (!nested || !staleProxyURL(k, v)) {
 			env = append(env, kv)
 		}
 	}
