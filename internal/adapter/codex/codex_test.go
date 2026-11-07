@@ -48,6 +48,14 @@ func TestEditLeavesUserConfig(t *testing.T) {
 	if err := os.Symlink(wt, link); err != nil {
 		t.Fatal(err)
 	}
+	// A directory whose stored name is NFD, so getcwd gives NFD.
+	nfd := filepath.Join(h.Cwd, "state.d", "cafe\u0301")
+	if err := os.MkdirAll(nfd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := safefs.WriteFile(filepath.Join(nfd, ".git"), []byte("gitdir: "+admin+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cfg := filepath.Join(h.Home, ".codex", "config.toml")
 	const before = "model = \"mine\"\n"
 	write := func() {
@@ -67,10 +75,19 @@ func TestEditLeavesUserConfig(t *testing.T) {
 	}{
 		{"resolved cwd", wt, false, before},
 		{"symlinked cwd", link, false, before},
+		// Spellings of one directory that are not getcwd's: each names no
+		// entry unless Codex is told the spelling too. Skipped below where
+		// the file system does not take the spelling.
+		{"another case", filepath.Join(h.Cwd, "state.d", "WT"), false, before},
+		{"the firmlink form", "/System/Volumes/Data" + wt, false, before},
+		{"NFC for an NFD directory", filepath.Join(h.Cwd, "state.d", "caf\u00e9"), false, before},
 		{"control: no override", wt, true, before + "\n[projects.\"" + main + "\"]\ntrust_level = \"trusted\"\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if fi, err := os.Stat(tt.cwd); err != nil || !fi.IsDir() {
+				t.Skipf("this file system does not take the spelling: %v", err)
+			}
 			write()
 			c, err := New().Headless(adapter.HeadlessRequest{Kind: adapter.Edit, GitRepo: true, PromptFile: h.Prompt, Cwd: tt.cwd})
 			if err != nil {
@@ -97,29 +114,29 @@ func TestEditLeavesUserConfig(t *testing.T) {
 // TestProjectOverride (T6892): the value is one TOML table whose keys hold
 // any path; a dotted key would split at a '.' in the state dir's path.
 func TestProjectOverride(t *testing.T) {
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(dir, "link")
-	if err := os.Symlink(dir, link); err != nil {
-		t.Fatal(err)
-	}
 	const entry = `={trust_level="untrusted"}`
 	tests := []struct {
 		name, cwd, want string
 	}{
 		{"a dot in the path", "/home/u/.aggy/worktrees/x", `projects={"/home/u/.aggy/worktrees/x"` + entry + `}`},
 		{"quote and backslash", `/a"b\c`, `projects={"/a\"b\\c"` + entry + `}`},
-		{"a symlink: the real path first", link, `projects={"` + dir + `"` + entry + `,"` + link + `"` + entry + `}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := projectOverride(tt.cwd)
-			if len(got) != 2 || got[0] != "-c" || got[1] != tt.want {
-				t.Errorf("got %q, want -c %q", got, tt.want)
+			got, err := projectOverride(tt.cwd)
+			if err != nil || !slices.Equal(got, []string{"-C", tt.cwd, "-c", tt.want}) {
+				t.Errorf("got %q, %v; want -C %s -c %s", got, err, tt.cwd, tt.want)
 			}
 		})
+	}
+}
+
+// TestEditRefusesNonUTF8Cwd (T6892): Codex reads the path lossily, so no key
+// could match it. The refusal is ErrUnsupported, which has a reason code.
+func TestEditRefusesNonUTF8Cwd(t *testing.T) {
+	_, err := New().Headless(adapter.HeadlessRequest{Kind: adapter.Edit, GitRepo: true, PromptFile: "/p", Cwd: "/w/\xff"})
+	if !errors.Is(err, adapter.ErrUnsupported) {
+		t.Fatalf("err = %v, want ErrUnsupported", err)
 	}
 }
 
@@ -162,7 +179,7 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 			"--strict-config", "--ignore-user-config", "--sandbox", "workspace-write",
 			"-c", "sandbox_workspace_write.exclude_slash_tmp=true", "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
 			"--disable", "view_image", "--disable", "apps", "--disable", "plugins", "--disable", "goals",
-			"--disable", "image_generation", "--disable", "sleep_tool", "-c", trust, "--", "-"}, ""},
+			"--disable", "image_generation", "--disable", "sleep_tool", "-C", h.Cwd, "-c", trust, "--", "-"}, ""},
 		// T6709: an edit child's tools, each approved on its own
 		// (docs/verification.md, "Launch-time MCP").
 		{"edit with a tool", adapter.HeadlessRequest{Kind: adapter.Edit, GitRepo: true, Resume: tid,
@@ -171,7 +188,7 @@ func TestHeadlessGoldenArgv(t *testing.T) {
 				"--strict-config", "--ignore-user-config", "--sandbox", "workspace-write",
 				"-c", "sandbox_workspace_write.exclude_slash_tmp=true", "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
 				"--disable", "view_image", "--disable", "apps", "--disable", "plugins", "--disable", "goals",
-				"--disable", "image_generation", "--disable", "sleep_tool", "-c", trust,
+				"--disable", "image_generation", "--disable", "sleep_tool", "-C", h.Cwd, "-c", trust,
 				"-c", `mcp_servers.context7.command="/bin/aggy"`, "-c", `mcp_servers.context7.args=["tool", "exec"]`,
 				"-c", `mcp_servers.context7.cwd="/run/l"`, "-c", `mcp_servers.context7.default_tools_approval_mode="approve"`,
 				"resume", tid, "--", "-"}, ""},

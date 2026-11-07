@@ -322,7 +322,7 @@ var specs = map[string]flagSpec{
 	// --ignore-user-config and --skip-git-repo-check: the borrow
 	// lockdown, live-verified on codex-cli 0.164.0 (2026-10-28).
 	"codex exec": {
-		values:   []string{"-c", "--disable", "--sandbox"},
+		values:   []string{"-c", "--disable", "--sandbox", "-C"},
 		switches: []string{"--json", "--ignore-user-config", "--skip-git-repo-check", "--strict-config"},
 		multi:    []string{"-i"},
 	},
@@ -1042,22 +1042,27 @@ func (f *fake) writeFiles() error {
 // main checkout to the user's config.toml, even under --ignore-user-config
 // (codex 6aaac69, app-server/src/request_processors/thread_processor.rs:1419,
 // git-utils/src/trust.rs). A decision can only come from a -c projects table
-// here: the fake reads no config.toml.
+// here: the fake reads no config.toml. The lookup tries the canonical cwd and
+// then its spelling: getcwd's physical path, not os.Getwd's, which takes $PWD
+// when it names the same directory, and -C's argument as given
+// (config/src/project_trust.rs:62, core/src/config/mod.rs:3568).
 func (f *fake) persistProjectTrust() error {
 	if f.vendor != "codex" || f.sub != "exec" || f.value("--sandbox") != "workspace-write" {
 		return nil
 	}
-	wd, err := os.Getwd()
+	cwd, err := syscall.Getwd()
 	if err != nil {
 		return err
 	}
-	cwd, err := filepath.EvalSymlinks(wd)
-	if err != nil {
-		return err
+	keys := []string{cwd}
+	if f.has("-C") {
+		keys = append(keys, f.value("-C"))
 	}
 	for _, v := range f.flags["-c"] {
-		if strings.HasPrefix(v, "projects={") && strings.Contains(v, strconv.Quote(cwd)+"={trust_level=") {
-			return nil
+		for _, k := range keys {
+			if strings.HasPrefix(v, "projects={") && strings.Contains(v, strconv.Quote(k)+"={trust_level=") {
+				return nil
+			}
 		}
 	}
 	root := mainCheckout(cwd)

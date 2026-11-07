@@ -688,6 +688,9 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 		return res, err
 	}
 	if req.Kind == adapter.Edit {
+		// TODO(T6929): nothing compares Codex's config.toml before and after
+		// an edit borrow, so a later Codex that writes to it some other way
+		// would go unnoticed (codex.projectOverride).
 		// Whatever the outcome: the worktree stays for accept or reject.
 		tree, err := b.Worktrees.Tree(ctx, res.Worktree)
 		if err == nil {
