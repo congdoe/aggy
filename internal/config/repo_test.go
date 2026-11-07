@@ -146,7 +146,7 @@ func TestMergeNarrowsNeverWidens(t *testing.T) {
 		check   func(t *testing.T, e Effective)
 	}{
 		{"unset allows all", nil, func(t *testing.T, e Effective) {
-			if !reflect.DeepEqual(e.Config, user) || len(e.Allowed) != 3 {
+			if !reflect.DeepEqual(e.Config, user) || len(e.Allowed) != len(adapter.Known()) {
 				t.Errorf("unset narrowed something: %+v", e)
 			}
 		}},

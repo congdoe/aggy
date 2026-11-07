@@ -218,6 +218,53 @@ func ToolRunner(timeout time.Duration, names, set []string) adapter.Runner {
 	}
 }
 
+// openCodeExportEnv are what `opencode session export` may be given
+// (adapter/opencode.ExportCommand), and openCodeDataEnv what it inherits, so
+// it finds the sessions the on-screen CLI wrote: OpenCode keeps them under
+// XDG_DATA_HOME. No OPENCODE_* comes from aggy's environment.
+var (
+	openCodeExportEnv = []string{"OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_DISABLE_AUTOUPDATE", "PWD"}
+	openCodeDataEnv   = []string{"XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"}
+)
+
+// maxOpenCodeExport caps an export: it holds whole sessions, reasoning
+// included, and one cut short cannot be parsed.
+const maxOpenCodeExport = 64 << 20
+
+// OpenCodeRunner returns a Runner for `opencode session export`: ExecRunner,
+// except for the few variables above and the larger cap.
+func OpenCodeRunner(timeout time.Duration) adapter.Runner {
+	return func(ctx context.Context, c adapter.Command) (adapter.Output, error) {
+		if c.Stdin != adapter.StdinNull {
+			return adapter.Output{}, errors.New("execrun: the runner gives commands no stdin")
+		}
+		env, err := Env(os.Environ(), nil)
+		if err != nil {
+			return adapter.Output{}, err
+		}
+		for _, k := range openCodeDataEnv {
+			if v, ok := os.LookupEnv(k); ok {
+				env = append(env, k+"="+v)
+			}
+		}
+		// The fakes' variables, inherited, since nothing else starts this
+		// command with a scenario. The real CLI ignores them.
+		for _, kv := range os.Environ() {
+			if strings.HasPrefix(kv, extraPrefix) {
+				env = append(env, kv)
+			}
+		}
+		for _, kv := range c.Env {
+			k, _, ok := strings.Cut(kv, "=")
+			if !ok || !contains(openCodeExportEnv, k) {
+				return adapter.Output{}, fmt.Errorf("execrun: refusing to pass %s to opencode session export", k)
+			}
+			env = append(env, kv)
+		}
+		return runEnvCap(ctx, c, timeout, false, env, maxOpenCodeExport)
+	}
+}
+
 // notifyEnv are the variables a desktop notifier also inherits from
 // aggy: notify-send reaches the notification server over the session
 // bus, on the display.
@@ -266,6 +313,11 @@ func run(ctx context.Context, c adapter.Command, timeout time.Duration, tail boo
 
 // runEnv is run with env as the command's whole environment.
 func runEnv(ctx context.Context, c adapter.Command, timeout time.Duration, tail bool, env []string) (adapter.Output, error) {
+	return runEnvCap(ctx, c, timeout, tail, env, MaxOutput)
+}
+
+// runEnvCap is runEnv keeping at most max bytes of each stream.
+func runEnvCap(ctx context.Context, c adapter.Command, timeout time.Duration, tail bool, env []string, max int) (adapter.Output, error) {
 	if !filepath.IsAbs(c.Path) || filepath.Clean(c.Path) != c.Path {
 		return adapter.Output{}, fmt.Errorf("execrun: %q is not a clean absolute path", c.Path)
 	}
@@ -304,8 +356,8 @@ func runEnv(ctx context.Context, c adapter.Command, timeout time.Duration, tail 
 	} else {
 		cmd.Stdin = nil // /dev/null
 	}
-	stdout := &capped{max: MaxOutput, tail: tail}
-	stderr := &capped{max: MaxOutput, tail: tail}
+	stdout := &capped{max: max, tail: tail}
+	stderr := &capped{max: max, tail: tail}
 	// The child writes into pipes aggy owns, so Wait returns when the
 	// leader exits, not when the last holder of the pipe does; the group
 	// is killed then, and the copies end.
