@@ -75,7 +75,7 @@ func TestOpenCodeLaunchUntrusted(t *testing.T) {
 	w := openCodeWorldE2E(t)
 	w.env = append(w.env, "OPENCODE_CONFIG_PROJECT_DISABLE=0", "OPENCODE_CONFIG=/evil", "XAI_API_KEY=dummy", "ANTHROPIC_API_KEY=dummy", "GIT_CONFIG_COUNT=9")
 	s := w.start(t, openCodeScenario(t, "opencode"), "run", "opencode")
-	s.waitFor([]byte("READY>"))
+	s.waitWithin([]byte("READY>"), offerTimeout)
 	s.mu.Lock()
 	shown := s.out.String()
 	s.mu.Unlock()
@@ -131,7 +131,7 @@ func TestOpenCodeLaunchTrusted(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := w.start(t, openCodeScenario(t, "opencode"), "run", "opencode")
-	s.waitFor([]byte("READY>"))
+	s.waitWithin([]byte("READY>"), offerTimeout)
 	s.send([]byte("/exit\r"))
 	if code := s.exit(); code != 0 {
 		t.Fatalf("aggy exit = %d", code)
@@ -150,11 +150,11 @@ func TestOpenCodeSwitchAway(t *testing.T) {
 	sc["opencode_export"] = `{"info":{},"messages":[{"type":"user","text":"EXPORTED-USER-WORD","time":{"created":1794015495255}},
 		{"type":"assistant","time":{"created":1794015495266},"content":[{"type":"text","text":"EXPORTED-ASSISTANT-WORD"}]}]}`
 	s := w.start(t, sc, "run", "opencode")
-	s.waitFor([]byte("READY>"))
+	s.waitWithin([]byte("READY>"), offerTimeout)
 	s.send([]byte("work\r"))
-	s.waitFor([]byte("work"))
+	s.waitWithin([]byte("work"), offerTimeout)
 	s.send([]byte{0x1c})
-	s.waitFor([]byte("aggy: switch vendor"))
+	s.waitWithin([]byte("aggy: switch vendor"), offerTimeout)
 	pickVendor(t, s, "claude", true)
 	s.waitWithin([]byte("brief -> claude. Ctrl+"), offerTimeout)
 	s.confirmPastGuard(time.Now())
@@ -207,11 +207,11 @@ func TestOpenCodeSwitchTo(t *testing.T) {
 	sc := map[string]any{"stdout": "READY>", "hook_command": []string{buildAggy(t), "hook", "--vendor", "claude"},
 		"hooks": []map[string]any{{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}}}
 	s := w.start(t, sc, "run", "claude")
-	s.waitFor([]byte("READY>"))
+	s.waitWithin([]byte("READY>"), offerTimeout)
 	s.send([]byte("work\r"))
-	s.waitFor([]byte("work"))
+	s.waitWithin([]byte("work"), offerTimeout)
 	s.send([]byte{0x1c})
-	s.waitFor([]byte("aggy: switch vendor"))
+	s.waitWithin([]byte("aggy: switch vendor"), offerTimeout)
 	pickVendor(t, s, "opencode", true)
 	s.waitWithin([]byte("brief -> opencode. Ctrl+"), offerTimeout)
 	s.confirmPastGuard(time.Now())
@@ -241,9 +241,9 @@ func TestOpenCodeNoExitOverDialog(t *testing.T) {
 	sc := openCodeScenario(t, "opencode",
 		map[string]any{"event": "PermissionAsked", "payload": map[string]any{"sessionID": "{session_id}", "requestID": "per_1"}}, ocStop())
 	s := w.start(t, sc, "run", "opencode")
-	s.waitFor([]byte("READY>"))
+	s.waitWithin([]byte("READY>"), offerTimeout)
 	s.send([]byte{0x1c})
-	s.waitFor([]byte("aggy: switch vendor"))
+	s.waitWithin([]byte("aggy: switch vendor"), offerTimeout)
 	pickVendor(t, s, "claude", false)
 	time.Sleep(2 * switchQuietE2E)
 	if s.screen(); strings.Contains(s.screen(), "-> claude. Ctrl+") {
@@ -264,7 +264,7 @@ const switchQuietE2E = 1500 * time.Millisecond
 // pickVendor presses the picker's digit for v, after b for a brief.
 func pickVendor(t *testing.T, s *session, v string, brief bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(offerTimeout)
 	for time.Now().Before(deadline) {
 		screen := s.screen()
 		for _, n := range []string{"1", "2", "3", "4"} {
