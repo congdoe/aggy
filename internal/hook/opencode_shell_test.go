@@ -86,6 +86,11 @@ var plantsGit = []string{
 	"X=PA; export \"${X}TH=./bin\"; git status",
 	"Y=./bin; X=PA$'\\x54'H; declare -x \"$X=$Y\"; git status",
 	": ${PATH:=./bin}; unset x; git status",
+	"export P\"A\"TH=./bin; git status",
+	"export PA\\TH=./bin; git status",
+	"export 'PA'TH=./bin; git status",
+	"export PA\\\n\"T\"H=./bin; git status",
+	"eval \"PA\"\"TH=./bin\"; git status",
 }
 
 // settingDirectives are other shapes the scan must refuse. They do not plant a
@@ -110,7 +115,6 @@ var settingDirectives = []string{
 	"ZDOTDIR=./x; git status",
 	"HOME=./x; git status",
 	"XDG_CONFIG_HOME=./x; git status",
-	"IFS=x; git status",
 	"CDPATH=./x; git status",
 	"SHELL=./x; git status",
 	"PAGER=./x; git log --oneline -20",
@@ -205,15 +209,29 @@ func TestGuardFunctionNamesComeFromTheRules(t *testing.T) {
 	}
 }
 
+// TestGuardQuoteRemovalCosts pins the false refusals docs/design.md says that
+// form brings: the raw text alone passes these.
+func TestGuardQuoteRemovalCosts(t *testing.T) {
+	for _, c := range []string{
+		"rg 'git\\(\\)' src",
+		"echo \"export \\$FOO=1\"",
+	} {
+		if scanText(c, guardRuleWords) != "" {
+			t.Errorf("%q: the raw text should pass", c)
+		}
+		if shellScan(c, guardRuleWords) == "" {
+			t.Errorf("%q: passed; correct docs/design.md", c)
+		}
+	}
+}
+
 // TestGuardDocumentedGaps pins what docs/design.md says the scan does not
 // catch, so a change to either side shows.
 func TestGuardDocumentedGaps(t *testing.T) {
 	for _, c := range []string{
-		"FOO=1; export FOO; git status", // a variable that is not on the list
-		"export P\"A\"TH=./bin; git status",
-		"export PA\\TH=./bin; git status",
-		"eval \"PA\"\"TH=./bin\"; git status",
-		"git foo() ./bin/git; git status", // zsh; OpenCode's own scanner fails this call
+		"FOO=1; export FOO; git status",     // a variable that is not on the list
+		"eval \"${X}TH=./bin\"; git status", // built at run time, and eval asks
+		"git foo() ./bin/git; git status",   // zsh; OpenCode's own scanner fails this call
 	} {
 		if why := shellScan(c, guardRuleWords); why != "" {
 			t.Errorf("%q: refused (%q); correct docs/design.md", c, why)
@@ -278,7 +296,8 @@ func TestGuardAgainstRealShells(t *testing.T) {
 	ranSomewhere := 0
 	// What the guard allows must not run the planted git, in any shell. This
 	// is everything from the reviews that passes by design, and the plain forms.
-	allowed := append([]string{"git status", "git commit -m \"see ./bin\"", "for f in ./bin; do git status; done", "cat <<'EOF'\ntext\nEOF\ngit status", "FOO=./bin; git status"}, reviewDesignPasses...)
+	// `IFS=_; git_status` would run it if a shell split literal text.
+	allowed := append([]string{"git status", "git commit -m \"see ./bin\"", "for f in ./bin; do git status; done", "cat <<'EOF'\ntext\nEOF\ngit status", "FOO=./bin; git status", "IFS=_; git_status", "IFS=t; git status"}, reviewDesignPasses...)
 	shapes := slices.Concat(plantsGit, reviewBypasses, allowed)
 	for _, cmd := range shapes {
 		for _, sh := range shells {
