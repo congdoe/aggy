@@ -1559,3 +1559,41 @@ A maintainer's live check should settle, on the current CLIs:
 2. `claude --help` and `grok --help` list every flag in `LockdownCaps`.
 3. The self-test prompt under Claude's review flags: does it refuse `../canary.txt` and reply `NO ACCESS`? Until this is known, a new Claude version may be passed over on every update. Then again with a `Read` allow rule, or `permissions.additionalDirectories`, for that dir in a test config's `settings.json`: does the child read it?
 4. Under the same prompt on Codex and Grok: the reply, the item types in Codex's stream, and whether Grok's `chat_history.jsonl` is there with `tool_calls` as expected.
+
+## OpenCode under aggy (2026-11-07, T6932)
+
+An agent ran these under the owner's approval for this work (at most 40 real OpenCode runs across T6930 and T6932; 25 were used before it). The real OpenCode 2.2.5 ran on the owner's xAI sign-in, model `xai/grok-build-0.1`, in temporary git repos, with aggy's state in a temporary folder. The driver checked before each launch that the cwd and `PWD` were inside the temporary folder, and read aggy's and its child's real cwd with `lsof` during each session. Real Claude, Codex, and Grok CLIs were not on `PATH`: the other side of each switch is the fake Claude.
+
+**Runs: 10 of the 15 allowed here.** Counted: one `aggy setup`, six on-screen launches, three `session export`. Not counted separately: the `--version` and `--help` probes `aggy setup` and a launch make. `--auto` was used in one launch only, with harmless commands.
+
+| Check | Result |
+| --- | --- |
+| `aggy setup` reads the real `--version` and `--help` | 2.2.5 recorded; every launch after it passed the capability check |
+| Untrusted repo | `opencode mini`, and the note pointing to Claude Code |
+| A real turn | The answer came from `AGENTS.md`, passed as a copy in `instructions` with project config off |
+| Guard report | Reached the socket from the plugin through `aggy hook`, in each launch, in `mini` and on the full screen |
+| Turn end | `session.execution.succeeded` reached the supervisor as a turn end naming the session |
+| Switch away (mini) | `/exit` typed by aggy, exit 0, a brief holding both turns from `session export`, the fake Claude started |
+| Switch to OpenCode | From the fake Claude; the session answered from the brief's task file with no tool |
+| Guard refusal | `FOO=1; git status` refused (`hook.guard.refused`), in `mini` and under `--auto` |
+| Policy deny | A read of `.env` was denied, and the decoy's text never reached the screen, in `mini` and under `--auto` |
+| Permission | `touch` off the list asked; nothing ran; Reject left no file |
+| Switch over a dialog | With a permission open, a chosen switch offered nothing for 10 s; after the Reject it was offered and went through |
+| Trusted repo | `aggy trust --opencode` asked, recorded through the manifest; the alternate screen and mouse were on; a real turn |
+| Switch away (full screen) | Picker over the alternate screen, `/exit`, a brief, the fake Claude |
+| Full auto | `touch` ran with no key pressed |
+| Closed terminal | aggy killed the session after the hang-up |
+
+**Found live, and fixed in T6932:**
+
+- On the full screen, `/exit` and Enter in one write leaves `/exit` in the composer with the slash menu open, and the switch times out. Sent 0.5 s apart it runs. `mini` takes either. aggy now pauses on OpenCode.
+- An Esc or arrow key answering a dialog counted as composer text, so a switch then waited on "text you have not sent". Keys sent while a dialog is open now do not count.
+- On the full screen, SIGTERM and SIGHUP did not end OpenCode within 10 s, and it ran on with no terminal after the driver's terminal closed, for over 6 minutes before it was killed by hand. aggy now sends SIGKILL to the group 10 s after a hang-up, on OpenCode only. A SIGTERM to aggy is still only forwarded.
+
+**Other live facts:**
+
+- A rejected permission ends the turn with `session.execution.interrupted`.
+- In `mini`, Esc on a dialog opens "Tell OpenCode what to do differently", and the dialog stays open until that is answered: typed text goes there, even `/exit`. On the full screen the same Esc rejected at once.
+- Under `--auto`, `permission.asked` still fires and is answered at once with no key, so a dialog hold clears itself.
+
+**Not run live:** the guard's `opencode auth export` refusal (never run against a real sign-in; unit tests and a process test with the fake's environment), a tool call outside the launch's folder and `/open`, the guard failing to load (unit test only), a real question form, real plan limits, a real Kitty-protocol terminal: the driver's terminal does not answer the keyboard query, so Ctrl+\ and Ctrl+U as CSI-u are for the owner's terminal to check.

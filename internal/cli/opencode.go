@@ -77,6 +77,8 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 	if len(providers) == 0 {
 		return out, errors.New("no OpenCode provider is left for this repo: its allowed_vendors and [opencode] providers have none in common")
 	}
+	// TODO(T6932): the picker's model list groups by vendor, so /switch names
+	// an OpenCode model as provider/model by hand; group it by provider.
 	if in.model != "" {
 		p, _, ok := strings.Cut(in.model, "/")
 		if !ok || !slices.Contains(providers, p) {
