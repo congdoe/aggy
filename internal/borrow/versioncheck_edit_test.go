@@ -59,3 +59,29 @@ func TestEditWarnsOnConfigChange(t *testing.T) {
 		}
 	}
 }
+
+// TestEditWarnsWhenConfigUnreadable: a config aggy cannot read before and after
+// is no proof that nothing changed, so the edit says it could not compare.
+func TestEditWarnsWhenConfigUnreadable(t *testing.T) {
+	w := newWorld(t)
+	// A directory where the file should be cannot be read as one.
+	if err := os.MkdirAll(filepath.Join(w.home, ".codex", "config.toml"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	w.scenario[adapter.Codex] = `{"extra_values":{"--sandbox":["workspace-write"]},"events":[{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}]}`
+	b := w.borrower()
+	real, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Worktrees = linkedWorktrees{link: real}
+	req := w.req(adapter.Edit, "x")
+	req.Vendor = "codex"
+	res, err := b.Run(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res[0].Warnings) != 1 || !strings.Contains(res[0].Warnings[0], "could not read") {
+		t.Errorf("warnings %q", res[0].Warnings)
+	}
+}

@@ -63,6 +63,11 @@ type Scenario struct {
 	// ReadFile makes a headless run print this file, relative to its working
 	// dir, on stdout: a child whose lockdown let it read outside that dir.
 	ReadFile string `json:"read_file"`
+	// ReadFileQuiet puts that file in Grok's chat_history.jsonl instead: a
+	// child that read it and said otherwise.
+	ReadFileQuiet bool `json:"read_file_quiet"`
+	// ChatHistory is Grok's chat_history.jsonl for this run.
+	ChatHistory string `json:"chat_history"`
 	// StartMCP makes claude start each server of its --mcp-config file
 	// once and wait for it, after the hooks.
 	StartMCP bool `json:"start_mcp"`
@@ -735,9 +740,22 @@ func (f *fake) main(args []string) int {
 			return fail(3, "%v", err)
 		}
 		f.headlessOutput()
+		if f.sc.ChatHistory != "" {
+			p := filepath.Join(f.expand("{session_dir}"), "chat_history.jsonl")
+			if os.MkdirAll(filepath.Dir(p), 0o700) == nil {
+				_ = os.WriteFile(p, []byte(f.sc.ChatHistory), 0o600)
+			}
+		}
 		if f.sc.ReadFile != "" {
 			if b, err := os.ReadFile(f.sc.ReadFile); err == nil {
-				os.Stdout.Write(b)
+				if f.sc.ReadFileQuiet {
+					p := filepath.Join(f.expand("{session_dir}"), "chat_history.jsonl")
+					if os.MkdirAll(filepath.Dir(p), 0o700) == nil {
+						_ = os.WriteFile(p, b, 0o600)
+					}
+				} else {
+					os.Stdout.Write(b)
+				}
 			}
 		}
 	} else if !f.sc.RawEcho {

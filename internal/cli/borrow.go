@@ -356,7 +356,10 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 		Worktrees: &gitWorktrees{env: env, stateDir: stateDir, out: stderr, allow: cfg.Worktree, cfgPath: filepath.Join(stateDir, config.FileName)},
 		Tools:     borrowTools(stateDir, cfg.Routing.EditNetworkTools),
 		Diag:      dlog,
-		Notice:    func(s string) { fmt.Fprintf(stderr, "aggy borrow: %s\n", termsafe.Field(s)) },
+		OnLimit: func(ctx context.Context, v adapter.Vendor) {
+			recordBorrowLimits(ctx, s, []borrow.Result{{Vendor: v, Outcome: string(adapter.ErrRateLimit)}}, env.now(), newNotifier(cfg))
+		},
+		Notice: func(s string) { fmt.Fprintf(stderr, "aggy borrow: %s\n", termsafe.Field(s)) },
 	})
 	req := borrow.Request{
 		Kind: kind, Task: ba.task, Paths: paths, Constraints: ba.constraints,
