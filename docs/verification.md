@@ -1160,6 +1160,28 @@ switched on or off for a running session takes a resume of that session
 A live check would start each CLI, link a skill or change its MCP config,
 and ask the agent for the new skill or tool in the next turn.
 
+## OpenCode with a SuperGrok plan (2026-11-06)
+
+The owner asked for this check, installed OpenCode, and signed in themselves. It is one turn, for the planned open-harness work (M8). OpenCode 2.2.5, on macOS.
+
+Docs: xAI's [Use Grok in OpenCode](https://x.ai/news/grok-opencode) (May 21, 2026, read 2026-11-06) says to use a SuperGrok or X Premium subscription inside OpenCode through `/connect`, with a browser and a headless sign-in. It lists no terms specific to this. OpenCode's own [providers page](https://opencode.ai/docs/providers/) has no xAI sign-in section.
+
+Live, in an empty temporary git folder, with `--standalone` and without `--auto`:
+
+| Check | Result |
+|---|---|
+| `opencode auth list` | Lists xAI as `stored`; the credential file was not opened |
+| `opencode models` | Lists `xai/grok-build-0.1` and other `xai/grok-*` models |
+| `opencode debug config` | Shows the folder's `opencode.json`, which denied every action |
+| `opencode run --format json -m xai/grok-build-0.1 '<reply with one word>'` | Exit 0, the expected reply, no tool call, no 403 |
+| `grok --version` afterwards | Still runs; no Grok turn was run, so its login was not exercised |
+
+Not established:
+
+- **Whether the turn drew on the plan.** The turn's `step_finish` event reported a non-zero `cost`, and nothing in the output says whether that is a price estimate or a charge. OpenCode's providers page says ChatGPT plan models show no cost, so this needs checking against the xAI account.
+- **Whether the deny rule is enforced.** The config loaded, but the turn called no tool.
+- **Limits, longer sessions, and tiers other than the owner's.** xAI's page doesn't say how use counts against a plan's limits, and Hermes's docs report that xAI can return 403 on some tiers.
+
 ## Still open
 
 1. Codex limit event, captured live from an exhausted account: the
