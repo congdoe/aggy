@@ -72,7 +72,7 @@ func (s *Set) loadGrok(in Input) {
 	}
 	var g grokGrants
 	if err := toml.Unmarshal(b, &g); err != nil {
-		s.Problems = append(s.Problems, Problem{path, err.Error()})
+		s.Problems = append(s.Problems, Problem{Path: path, Why: err.Error()})
 		return
 	}
 	s.addGrok(g, path, in.Trusted)
@@ -103,7 +103,7 @@ func (s *Set) addGrok(g grokGrants, path string, trusted bool) {
 	for _, c := range sortedClean(g.DeniedCommands) {
 		if why := badCommand(c); why != "" {
 			name(Deny, c, why)
-			s.Problems = append(s.Problems, Problem{path, "a deny there cannot be carried"})
+			s.Problems = append(s.Problems, Problem{Path: path, Why: "a deny there cannot be carried"})
 			continue
 		}
 		s.add(rule(Deny, "Bash("+c+" *)"))

@@ -12,7 +12,7 @@ import (
 func TestPermissionsShow(t *testing.T) {
 	h := isolate(t)
 	repo := inRepo(t)
-	writePermissions(t, `{"permissions":{"defaultMode":"plan","allow":["Bash(git log -5)","Bash(*)","Bash(git status *)","Bash(gh pr list)"],"ask":["Bash(git push *)"],"deny":["Bash(curl *)","Read(./.env)"]}}`)
+	writePermissions(t, `{"permissions":{"defaultMode":"plan","allow":["Bash(git log --oneline -20)","Bash(*)","Bash(cat *)","Bash(gh pr list)"],"ask":["Bash(git push *)"],"deny":["Bash(curl *)","Read(./.env)"]}}`)
 	settings := filepath.Join(h, ".claude", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(settings), 0o700); err != nil {
 		t.Fatal(err)
@@ -40,7 +40,7 @@ func TestPermissionsShow(t *testing.T) {
 		"not trusted",
 		"Mode: plan (aggy, everywhere)",
 		"Safety policy: on",
-		"Bash(git log -5)  [aggy, everywhere]",
+		"Bash(git log --oneline -20)  [aggy, everywhere]",
 		"allow Bash(gh pr list)  [aggy, everywhere]",
 		"waits for trust",
 		"Bash(git status)  [Claude, your settings] Claude applies this itself",
@@ -50,7 +50,7 @@ func TestPermissionsShow(t *testing.T) {
 		"Codex: takes none of these yet",
 		"allow Bash(*)  [aggy, everywhere]",
 		"blanket shell access",
-		"allow Bash(git status *)  [aggy, everywhere] on OpenCode",
+		"allow Bash(cat *)  [aggy, everywhere] on OpenCode",
 		"a rule here matches exactly",
 		"ask Bash(git push *)  [aggy, everywhere] on Grok",
 		"Grok has no flag",

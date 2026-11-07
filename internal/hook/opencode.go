@@ -63,6 +63,10 @@ type OpenCodeEnv struct {
 	// ShellRules are the rendered shell allow rules (parity.OpenCodeShellRules).
 	// None means the scan always runs.
 	ShellRules []string
+	// ScanAlways runs the scan whatever a command holds: the person's rules are
+	// unknown, as a file could not be read. ShellRules still names the functions
+	// to look for, so it must keep at least the rules aggy ships.
+	ScanAlways bool
 	// AlwaysSeen says this repo has had a permission answered with Always allow
 	// under aggy, in any session. Nil means no.
 	AlwaysSeen func(root string) bool
@@ -143,7 +147,7 @@ func OpenCodeGuard(payload []byte, env OpenCodeEnv) Decision {
 		// Full auto runs any command with no prompt, so what the scan protects
 		// is not there to protect (docs/design.md).
 		if !in.Auto {
-			always := in.Always || (env.AlwaysSeen != nil && env.AlwaysSeen(root))
+			always := in.Always || env.ScanAlways || (env.AlwaysSeen != nil && env.AlwaysSeen(root))
 			if why := shellScan(in.Command, env.ShellRules, always); why != "" {
 				return Decision{Deny: true, Reason: why}
 			}

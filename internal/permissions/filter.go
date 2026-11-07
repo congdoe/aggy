@@ -3,9 +3,12 @@ package permissions
 import (
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/congdoe/aggy/internal/safefs"
 )
 
 // Class says what the filter makes of an allow rule. The filter is an
@@ -93,7 +96,7 @@ var wholeTools = []string{"agent", "task", "monitor"}
 
 // interpreters and shells run whatever text they are given, or a script.
 var interpreters = []string{
-	"python", "py", "pypy", "node", "nodejs", "deno", "bun", "ts-node", "tsx", "ruby", "irb", "perl", "php", "lua", "luajit",
+	"python", "py", "ipython", "bpython", "pypy", "jshell", "ghci", "node", "nodejs", "deno", "bun", "ts-node", "tsx", "ruby", "irb", "perl", "php", "lua", "luajit",
 	"julia", "rscript", "r", "elixir", "erl", "clojure", "scala", "kotlin", "groovy", "guile", "racket", "tclsh", "expect",
 	"bash", "sh", "zsh", "fish", "dash", "ash", "ksh", "csh", "tcsh", "pwsh", "powershell", "cmd", "busybox", "toybox",
 	"osascript", "awk", "gawk", "mawk", "sed", "gdb", "vim", "vi", "nvim", "emacs", "ex", "ed",
@@ -105,7 +108,7 @@ var interpreters = []string{
 var runners = []string{
 	"env", "sudo", "doas", "su", "xargs", "eval", "exec", "command", "builtin", "nohup", "time", "timeout", "nice", "ionice",
 	"stdbuf", "watch", "parallel", "ssh", "script", "setsid", "flock", "find", "caffeinate", "chroot", "tmux", "screen",
-	"nix-shell", "unshare", "strace", "ltrace", "dtruss", "fd",
+	"nix-shell", "unshare", "strace", "ltrace", "dtruss", "fd", "noglob", "nocorrect",
 }
 
 // runForms are commands for running something by name, in package managers and
@@ -136,12 +139,21 @@ var runPrograms = []string{
 var readTools = []string{"Read", "Grep", "Glob", "WebFetch", "WebSearch"}
 
 // readOnlyAny are read-only with any arguments, so a wildcard is fine.
-var readOnlyAny = []string{"git status", "ls", "pwd", "cat", "grep", "head", "tail", "wc", "stat", "du", "df", "whoami", "uname", "which"}
+var readOnlyAny = []string{"ls", "pwd", "cat", "grep", "head", "tail", "wc", "stat", "du", "df", "whoami", "uname", "which"}
 
-// readOnlyExact are read-only only with the arguments written out: git diff
-// --output=x and git log --output=x write a file, rg --pre runs a program, and
-// file -C and date with a time change things too.
-var readOnlyExact = []string{"git diff", "git log", "git show", "git blame", "git branch --show-current", "rg", "file", "date"}
+// readOnlyGit are the only git commands that apply everywhere, whole and exact:
+// the forms OpenCode's starter pins. Any other can run a repo's external diff or
+// filters, or write a file with --output.
+var readOnlyGit = []string{
+	"git status", "git status --short",
+	"git diff --no-ext-diff --no-textconv", "git diff --no-ext-diff --no-textconv --stat",
+	"git log --oneline -20", "git branch --show-current",
+}
+
+// readOnlyPlain are read-only with no flag at all: rg --pre and --hostname-bin
+// run a program (rg --help, 15.2.0), and -z starts decompressors; file -C writes
+// and -f reads a list. date takes only +format, as date 0101 or -s sets the clock.
+var readOnlyPlain = []string{"rg", "file", "date"}
 
 // riskyFlags make a read-only form write a file or run something.
 var riskyFlags = []string{"--output", "--pre", "--ext-diff", "--textconv", "--exec", "--open-files-in-pager"}
@@ -156,8 +168,7 @@ var versionSuffix = regexp.MustCompile(`^([a-z][a-z_+-]*?)-?[0-9][0-9.]*t?$`)
 // NormalProgram is the program a word names, however it is spelled: \python,
 // "python", /usr/bin/python3.12, PYTHON, and python.exe are all python.
 func NormalProgram(word string) string {
-	word = strings.TrimLeft(word, `\"'`)
-	word = strings.TrimRight(word, `"'`)
+	word = strings.NewReplacer(`\`, "", `"`, "", "'", "").Replace(word)
 	if i := strings.LastIndexByte(word, '/'); i >= 0 {
 		word = word[i+1:]
 	}
@@ -196,6 +207,9 @@ func CheckAllow(rule string) (Class, string) {
 		return Drop, err.Error()
 	}
 	low := strings.ToLower(tool)
+	if has && (low == "bash" || low == "powershell" || slices.Contains(pathTools, low)) && reachesSecret(spec) {
+		return Drop, "it reaches your home or a folder of keys"
+	}
 	switch {
 	case slices.Contains(wholeTools, low):
 		return Drop, tool + " rules can run anything, and Claude drops them in auto mode"
@@ -206,7 +220,7 @@ func CheckAllow(rule string) (Class, string) {
 		return checkShell(spec, has, false)
 	case strings.Contains(tool, "*") && (!strings.HasPrefix(low, "mcp__") || strings.Trim(low[5:], "*_") == ""):
 		return Drop, "a wildcard in a tool's name can match any tool"
-	case slices.Contains(readTools, tool) && has && strings.Trim(strings.TrimPrefix(spec, "domain:"), "*/. ") != "":
+	case slices.Contains(readTools, tool) && has && narrowRead(tool, spec):
 		return Keep, ""
 	}
 	return RepoCode, "it is not a known read-only form, so it waits for trust"
@@ -329,14 +343,79 @@ func isReadOnly(cmd string, wild bool) bool {
 			return false
 		}
 	}
-	has := func(form string) bool {
-		fw := strings.Fields(form)
-		return len(words) >= len(fw) && slices.Equal(words[:len(fw)], fw)
+	if len(words) == 0 {
+		return false
 	}
-	if slices.ContainsFunc(readOnlyAny, has) {
+	switch first := words[0]; {
+	case first == "git":
+		return !wild && slices.Contains(readOnlyGit, cmd)
+	case first == "date":
+		return !wild && !slices.ContainsFunc(words[1:], func(w string) bool { return !strings.HasPrefix(w, "+") })
+	case slices.Contains(readOnlyPlain, first):
+		return !wild && !slices.ContainsFunc(words[1:], func(w string) bool { return strings.HasPrefix(w, "-") })
+	}
+	return slices.Contains(readOnlyAny, words[0])
+}
+
+// StaysReadOnlyAsPrefix says an exact rule is still read-only on a CLI that takes
+// it as a prefix (see PrefixForm). git status has no flag that writes or runs.
+func StaysReadOnlyAsPrefix(rule string) bool {
+	if cmd, _, ok := BashCommand(rule); ok && cmd == "git status" {
 		return true
 	}
-	return !wild && slices.ContainsFunc(readOnlyExact, has)
+	class, _ := CheckAllow(PrefixForm(rule))
+	return class == Keep
+}
+
+// pathTools take a path as their specifier.
+var pathTools = []string{"read", "edit", "write", "multiedit", "notebookedit", "grep", "glob"}
+
+// reachesSecret reports a specifier or command with a word that reaches the home
+// or a folder safefs guards, by name or by what it resolves to. It reads no file.
+func reachesSecret(spec string) bool {
+	home, _ := os.UserHomeDir()
+	for _, word := range strings.Fields(spec) {
+		word = strings.Trim(word, `"'`)
+		if i := strings.IndexAny(word, "*?["); i >= 0 {
+			word = word[:i]
+		}
+		for _, prefix := range []string{"~", "$HOME", "${HOME}"} {
+			if rest, ok := strings.CutPrefix(word, prefix); ok && home != "" && (rest == "" || rest[0] == '/') {
+				word = home + rest
+			}
+		}
+		if slices.ContainsFunc(safefs.SecretHomeDirs(), func(d string) bool { return strings.Contains(word, d) }) {
+			return true
+		}
+		if strings.HasPrefix(word, "~") || strings.HasPrefix(word, "$HOME") || strings.HasPrefix(word, "${HOME}") {
+			return true // no home to resolve it by
+		}
+		if strings.HasPrefix(word, "//") {
+			word = word[1:]
+		}
+		if strings.HasPrefix(word, "/") {
+			if holds, err := safefs.HoldsSecrets(word); err == nil && holds {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// narrowRead says a read tool's specifier names something in particular: a path
+// under the repo, starting with a real folder or file, or one site by name.
+func narrowRead(tool, spec string) bool {
+	switch tool {
+	case "WebFetch":
+		host, ok := strings.CutPrefix(spec, "domain:")
+		return ok && strings.Contains(host, ".") && !strings.ContainsAny(host, "*?[/ ")
+	case "WebSearch":
+		return strings.Trim(spec, "* ") != "" && !strings.Contains(spec, "*")
+	}
+	spec = strings.TrimPrefix(spec, "./")
+	first, _, _ := strings.Cut(spec, "/")
+	return first != "" && first != ".." && !strings.Contains(spec, "/../") &&
+		!strings.ContainsAny(first, "*?[~$") && !strings.HasPrefix(spec, "/")
 }
 
 // Modes aggy passes on. bypassPermissions is left out: aggy never adds a

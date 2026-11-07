@@ -127,9 +127,6 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 	if n := len(skipped); n > 0 {
 		out.warns = append(out.warns, skippedNote(n, "OpenCode"))
 	}
-	if n := in.rules.HeldLocal; n > 0 {
-		out.warns = append(out.warns, fmt.Sprintf("this repo's .claude/settings.local.json has %d allow rules aggy holds until you trust the repo: aggy trust <dir>", n))
-	}
 	data, err := parity.OpenCodeConfig{
 		Trusted: trusted, Providers: providers, Model: in.model, Instructions: notes,
 		Plugin: pluginDir, Aggy: bin, Root: root, NoPolicy: in.noPolicy, Auto: out.launch.Auto,
@@ -208,8 +205,15 @@ func readInstruction(path string) (string, error) {
 
 // openCodeUntrustedNote says what an untrusted repo gets. root is the real
 // one, as trust records it: a link to a repo must name the repo it leads to.
-func openCodeUntrustedNote(root string) string {
-	return fmt.Sprintf("this repo is not trusted for OpenCode, so it gets opencode mini, the whitelist, and a model chosen at launch. For anything more, use Claude Code here, or aggy trust --opencode %s", root)
+func openCodeUntrustedNote(root string, held int) string {
+	note := "this repo is not trusted for OpenCode, so it gets opencode mini, the whitelist, and a model chosen at launch. For anything more, use Claude Code here, or aggy trust --opencode " + root
+	switch held {
+	case 0:
+		return note
+	case 1:
+		return note + ". Its .claude/settings.local.json has 1 allow rule aggy holds until then; aggy trust " + root + " or aggy trust --opencode " + root + " applies it"
+	}
+	return fmt.Sprintf("%s. Its .claude/settings.local.json has %d allow rules aggy holds until then; aggy trust %s or aggy trust --opencode %s applies them", note, held, root, root)
 }
 
 // openCodeTranscript reads a session's turns with `session export`, the only

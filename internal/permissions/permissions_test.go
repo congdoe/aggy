@@ -67,7 +67,47 @@ func TestCheckAllow(t *testing.T) {
 		{"Bash(bin/aggy *)", RepoCode},
 		{"Bash(git status)", Keep},
 		{"Bash(git diff *)", RepoCode},
-		{"Bash(git diff --stat)", Keep},
+		{"Bash(git diff --stat)", RepoCode},
+		{"Bash(git diff)", RepoCode},
+		{"Bash(git show)", RepoCode},
+		{"Bash(git blame x)", RepoCode},
+		{"Bash(git log)", RepoCode},
+		{"Bash(git status *)", RepoCode},
+		{"Bash(git status --short)", Keep},
+		{"Bash(git diff --no-ext-diff --no-textconv)", Keep},
+		{"Bash(git diff --no-ext-diff --no-textconv --stat)", Keep},
+		{"Bash(git log --oneline -20)", Keep},
+		{"Bash(git branch --show-current)", Keep},
+		{"Bash(file x)", Keep},
+		{"Bash(file -C -m x)", RepoCode},
+		{"Bash(file -f x)", RepoCode},
+		{"Bash(date)", Keep},
+		{"Bash(date +%s)", Keep},
+		{"Bash(date -s 12:00)", RepoCode},
+		{"Bash(date 0101)", RepoCode},
+		{"Bash(rg --hostname-bin=./evil x)", RepoCode},
+		{"Bash(rg -z x)", RepoCode},
+		{"Bash(noglob python *)", Drop},
+		{"Bash(noglob python)", Drop},
+		{"Bash(py\\thon *)", Drop},
+		{"Bash(ipython *)", Drop},
+		{"Read(~/**)", Drop},
+		{"Read(~/.ssh/*)", Drop},
+		{"Read(.ssh/id_rsa)", Drop},
+		{"Edit(~/.aws/config)", Drop},
+		{"Bash(cat ~/.ssh/id_rsa)", Drop},
+		{"Bash(cat $HOME/.gnupg/x)", Drop},
+		{"Read(*)", RepoCode},
+		{"Read(**)", RepoCode},
+		{"Read(**/*)", RepoCode},
+		{"Read(*.md)", RepoCode},
+		{"Read(../x)", RepoCode},
+		{"Grep(*)", RepoCode},
+		{"Glob(**)", RepoCode},
+		{"WebFetch(https://*)", RepoCode},
+		{"WebFetch(domain:*)", RepoCode},
+		{"WebFetch(domain:*.com)", RepoCode},
+		{"Read(docs/x.md)", Keep},
 		{"Bash(git diff --output=x)", RepoCode},
 		{"Bash(rg x)", Keep},
 		{"Bash(rg *)", RepoCode},
@@ -351,7 +391,7 @@ func TestLocalSymlinksRefused(t *testing.T) {
 	if err := os.Symlink(real, f.local()); err != nil {
 		t.Fatal(err)
 	}
-	if s := Load(f.in); len(s.Rules) != 0 || len(s.Problems) != 1 || s.Withhold == "" {
+	if s := Load(f.in); len(s.Rules) != 0 || len(s.Problems) != 1 || !s.Problems[0].Repo || s.Withhold != "" {
 		t.Errorf("linked file: %+v", s)
 	}
 }
@@ -434,5 +474,61 @@ func TestLocalAllowsWaitForTrust(t *testing.T) {
 	s = Load(f.in)
 	if got := texts(s.Rules, Allow); len(got) != 2 || s.HeldLocal != 0 {
 		t.Errorf("trusted: %q, held %d", got, s.HeldLocal)
+	}
+}
+
+// TestRepoFileCostsOnlyItself: a repo cannot turn off the person's allows by
+// bringing a bad file; the person's own bad file still withholds them.
+func TestRepoFileCostsOnlyItself(t *testing.T) {
+	for _, body := range []string{"{", `{"permissions":{"allow":["Bash(ls)"],"deny":["not a rule"]}}`} {
+		f := newFixture(t)
+		f.in.Trusted = true
+		write(t, f.local(), body)
+		write(t, f.in.AggyFile, `{"permissions":{"allow":["Bash(make x)"]}}`)
+		s := Load(f.in)
+		if s.Withhold != "" || len(s.Problems) != 1 {
+			t.Fatalf("%s: %+v", body, s)
+		}
+		if got := texts(s.Rules, Allow); !slices.Equal(got, []string{"Bash(make x)@aggy"}) {
+			t.Errorf("%s: %q", body, got)
+		}
+	}
+}
+
+// TestLinkedClaudeSettings: stow and chezmoi link the file, or the folder.
+func TestLinkedClaudeSettings(t *testing.T) {
+	f := newFixture(t)
+	dot := filepath.Join(filepath.Dir(f.in.Main), "dotfiles", "settings.json")
+	write(t, dot, `{"permissions":{"allow":["Bash(ls)"],"deny":["Bash(x y)"]}}`)
+	if err := os.MkdirAll(f.in.ClaudeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(dot, filepath.Join(f.in.ClaudeDir, "settings.json")); err != nil {
+		t.Fatal(err)
+	}
+	s := Load(f.in)
+	if len(s.Problems) != 0 || s.Withhold != "" || len(texts(s.Rules, Deny)) != 1 {
+		t.Errorf("linked file: %+v", s)
+	}
+
+	f = newFixture(t)
+	dir := filepath.Join(filepath.Dir(f.in.Main), "dotclaude")
+	write(t, filepath.Join(dir, "settings.json"), `{"permissions":{"deny":["Bash(x y)"]}}`)
+	if err := os.Symlink(dir, f.in.ClaudeDir); err != nil {
+		t.Fatal(err)
+	}
+	if s := Load(f.in); len(s.Problems) != 0 || len(texts(s.Rules, Deny)) != 1 {
+		t.Errorf("linked folder: %+v", s)
+	}
+
+	// A link to a credential file is refused, and counts as unreadable.
+	f = newFixture(t)
+	home := filepath.Dir(f.in.Main)
+	write(t, filepath.Join(home, ".claude", ".credentials.json"), `{}`)
+	if err := os.Symlink(filepath.Join(home, ".claude", ".credentials.json"), filepath.Join(home, ".claude", "settings.json")); err != nil {
+		t.Fatal(err)
+	}
+	if s := Load(f.in); len(s.Problems) != 1 || s.Withhold == "" {
+		t.Errorf("credential link: %+v", s)
 	}
 }

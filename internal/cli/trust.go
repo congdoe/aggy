@@ -81,6 +81,9 @@ const trustWarning = `Trust %s for OpenCode?
 - Reads in this repo run with no prompt, so a link in the repo can reach a file
   outside it; aggy's guard refuses what it can see, and only that. grep's search
   text is not covered: a deny by file name applies to the path it searches.
+- Your allow rules beyond the known read-only ones apply here on every CLI aggy
+  passes them to, those in this repo's .claude/settings.local.json and your
+  approvals from Codex among them.
 - aggy gives guardrails against mistakes, not protection from a hostile repo or a
   tricked model. A model's shell runs as you with no OS sandbox.
 

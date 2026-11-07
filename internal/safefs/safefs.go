@@ -404,6 +404,9 @@ func RealPath(name string) (string, error) {
 // the vendor CLIs.
 var secretHomeDirs = []string{".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config/gh", ".config/gcloud"}
 
+// SecretHomeDirs are the key folders under a home, relative and slash-separated.
+func SecretHomeDirs() []string { return slices.Clone(secretHomeDirs) }
+
 // aggyDir is aggy's own state under a home ($AGGY_HOME moves it): its config and
 // tools, which a child with write access could use to loosen later launches.
 // What lies below aggyWorktrees is a borrow's own edit worktree.

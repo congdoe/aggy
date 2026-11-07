@@ -1570,8 +1570,9 @@ var childCheckWait = 5 * time.Second
 
 // childCheck is one answer of Options.HasChild.
 type childCheck struct {
-	seq int
-	ok  bool
+	seq     int
+	ok      bool
+	blocked string
 }
 
 // confirmSwitch types the exit command for the confirmed switch, once
@@ -1583,7 +1584,7 @@ func (s *session) confirmSwitch() {
 		return
 	}
 	id, v := s.sw.choice.Child, s.sw.to
-	if id == "" || s.o.HasChild == nil {
+	if (id == "" || s.o.HasChild == nil) && s.o.SwitchBlocked == nil {
 		s.typeExit()
 		return
 	}
@@ -1591,9 +1592,13 @@ func (s *session) confirmSwitch() {
 	seq := s.childSeq
 	s.sw.checkSeq, s.sw.checkAt = seq, time.Now()
 	s.goSafe(func() {
-		ok := s.o.HasChild(v, id)
+		blocked := ""
+		if s.o.SwitchBlocked != nil {
+			blocked = s.o.SwitchBlocked()
+		}
+		ok := blocked == "" && (id == "" || s.o.HasChild == nil || s.o.HasChild(v, id))
 		select {
-		case s.childChecks <- childCheck{seq: seq, ok: ok}:
+		case s.childChecks <- childCheck{seq: seq, ok: ok, blocked: blocked}:
 		case <-s.quit:
 		}
 	})
@@ -1616,6 +1621,13 @@ func (s *session) childChecked(r childCheck) {
 		return
 	}
 	v := s.sw.to
+	if r.blocked != "" {
+		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodePermBadFile, Cause: s.sw.rec, Msg: "the next launch would refuse, so the CLI on screen stays", Attrs: map[string]any{"to": string(v)}})
+		s.setSwitch(pendingSwitch{})
+		s.pk.tell("aggy did not switch: "+r.blocked, fmt.Sprintf("Fix it, then press %s to pick again.", keyName(s.pk.key)))
+		s.openPicker()
+		return
+	}
 	s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeChildGone, Cause: s.sw.rec, Msg: "the session picked is no longer recorded", Attrs: map[string]any{"to": string(v)}})
 	s.setSwitch(pendingSwitch{})
 	s.pk.tell(fmt.Sprintf("The %s session you picked is no longer recorded, so aggy did not switch.", v),
