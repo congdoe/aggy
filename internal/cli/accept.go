@@ -72,6 +72,11 @@ func editTarget(ctx context.Context, s *store.Store, g *gitWorktrees, id string)
 		err = fmt.Errorf("borrow %s: its worktree was removed (aggy gc)", b.ID)
 	default:
 		err = g.owned(wt)
+		// A session of this child on screen (aggy resume) is using the
+		// worktree, as aggy gc also respects.
+		if cur, gerr := s.GCWorktree(ctx, b.ID); err == nil && gerr == nil && cur.Held {
+			err = fmt.Errorf("borrow %s: its session is open in another aggy; close it first", b.ID)
+		}
 	}
 	return b, wt, withCode(diag.CodeAcceptTarget, err)
 }

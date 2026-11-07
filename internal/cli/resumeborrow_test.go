@@ -49,11 +49,37 @@ func TestPlanBorrowChild(t *testing.T) {
 			saved: true,
 		},
 		{
-			name: "a research borrow's temp dir is made again",
+			name: "an image borrow's temp dir is made new",
 			child: func(string) store.Child {
-				return store.Child{Kind: "research", Vendor: "claude", Status: "closed", Cwd: gone}
+				return store.Child{Kind: "image", Vendor: "claude", Status: "closed", Cwd: gone}
 			},
 			saved: true, remake: true,
+		},
+		{
+			// What is there may have been planted, so it is never used as is.
+			name: "an image borrow's temp dir already there is still made new",
+			child: func(string) store.Child {
+				cwd := filepath.Join(t.TempDir(), "aggy-borrow-2", "work")
+				if err := os.MkdirAll(cwd, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				return store.Child{Kind: "image", Vendor: "claude", Status: "closed", Cwd: cwd}
+			},
+			saved: true, remake: true,
+		},
+		{
+			name: "a research borrow never goes on screen",
+			child: func(dir string) store.Child {
+				return store.Child{Kind: "research", Vendor: "claude", Status: "closed", Cwd: dir}
+			},
+			saved: true, want: "aggy inbox shows its report",
+		},
+		{
+			name: "a news borrow never goes on screen",
+			child: func(string) store.Child {
+				return store.Child{Kind: "news", Vendor: "claude", Status: "closed", Cwd: gone}
+			},
+			saved: true, want: "aggy inbox shows its report",
 		},
 		{
 			name: "a removed worktree is refused",
@@ -63,16 +89,16 @@ func TestPlanBorrowChild(t *testing.T) {
 			saved: true, want: "was removed",
 		},
 		{
-			name: "a research dir that is not aggy's temp dir is refused",
+			name: "an image dir that is not aggy's temp dir is refused",
 			child: func(string) store.Child {
-				return store.Child{Kind: "research", Vendor: "claude", Status: "closed", Cwd: "/nonexistent/home/work"}
+				return store.Child{Kind: "image", Vendor: "claude", Status: "closed", Cwd: "/nonexistent/home/work"}
 			},
-			saved: true, want: "was removed",
+			saved: true, want: "not a borrow's temp dir",
 		},
 		{
 			name: "a running borrow is refused",
 			child: func(dir string) store.Child {
-				return store.Child{Kind: "research", Vendor: "claude", Status: "open", Cwd: dir}
+				return store.Child{Kind: "review", Vendor: "claude", Status: "open", Cwd: dir}
 			},
 			saved: true, want: "still running",
 		},
@@ -134,6 +160,50 @@ func TestPlanBorrowChild(t *testing.T) {
 				t.Errorf("plan = %+v", p)
 			}
 		})
+	}
+}
+
+// TestSameChildAgainBorrow (T6904): a tool-change resume comes after /exit, so
+// it must reopen a borrow's child, as the first launch did.
+func TestSameChildAgainBorrow(t *testing.T) {
+	isolate(t)
+	s := sessionStore(t)
+	dir := t.TempDir()
+	const parent = "c0000000-0000-4000-8000-000000000000"
+	seedParent(t, s, parent, dir, store.Child{ID: "b1", Vendor: "claude", Kind: "review", Status: "closed", VendorSessionID: sidA, Cwd: dir})
+	claudeSession(t, sidA, time.Now())
+	tgt := sameChildAgain(target{}, switchTo{vendor: adapter.Claude, parentID: parent, child: "b1"})
+	p, err := plan(context.Background(), s, config.Default(), dir, tgt, time.Now(), &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.child.ID != "b1" || p.resume != sidA || p.newChild {
+		t.Errorf("plan = %+v", p)
+	}
+}
+
+// TestBorrowNote: what the launch says is true whatever flags were given, and
+// names what each kind must know.
+func TestBorrowNote(t *testing.T) {
+	tests := []struct {
+		pl      launchPlan
+		want    []string
+		notWant string
+	}{
+		{launchPlan{child: store.Child{Kind: "review"}}, []string{"lockdown no longer applies"}, "permission prompts apply"},
+		{launchPlan{child: store.Child{Kind: "image"}, remakeCwd: true}, []string{"removed when the session ends"}, "permission prompts apply"},
+		{launchPlan{child: store.Child{Kind: "edit"}}, []string{"aggy accept refuses", "memory.md is not loaded"}, "permission prompts apply"},
+	}
+	for _, tt := range tests {
+		got := borrowNote(tt.pl)
+		for _, w := range tt.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("%s note %q, want %q", tt.pl.child.Kind, got, w)
+			}
+		}
+		if strings.Contains(got, tt.notWant) {
+			t.Errorf("%s note %q", tt.pl.child.Kind, got)
+		}
 	}
 }
 
