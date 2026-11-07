@@ -72,3 +72,28 @@ func TestExcerpt(t *testing.T) {
 		t.Errorf("Excerpt = %q", got)
 	}
 }
+
+// TestChildReason (T6924): a secret stays out, on any line ending, and control
+// characters are escaped.
+func TestChildReason(t *testing.T) {
+	const value = "s3cr3t-value-that-must-not-show"
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{"a key above its value, CRLF", "API_KEY:\r\n" + value + "\r\nvideo failed", "video failed"},
+		{"a key above its value, LF", "API_KEY:\n" + value + "\nvideo failed", "video failed"},
+		{"a key above its value, CR", "API_KEY:\r" + value + "\rvideo failed", "video failed"},
+		{"a key and value on one line", "API_KEY=" + value + "\r\nvideo failed", "video failed"},
+		{"an escape", "video \x1b[31mfailed", `video \x1b[31mfailed`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := childReason(tt.text)
+			if strings.Contains(got, value) || !strings.Contains(got, tt.want) || strings.Contains(got, "\x1b") {
+				t.Errorf("childReason = %q", got)
+			}
+		})
+	}
+}
