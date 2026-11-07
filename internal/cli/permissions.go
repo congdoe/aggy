@@ -94,10 +94,11 @@ func permissionInput(dir string) permissions.Input {
 	return in
 }
 
-// settingsPathspec finds a tracked settings.local.json whatever its case, so the
-// answer stays small in a large repo. git's icase folds ASCII only, and a file
-// system can also fold the long s to s, hence the glob and trackedFold after it.
-const settingsPathspec = ":(icase,glob).claude/*ettings.local.json"
+// settingsPathspec lists what git tracks directly in .claude, whatever the
+// folder's case, so the answer stays small in a large repo; in a glob, * stays
+// within the folder. git's icase folds ASCII only, and a file system can also fold
+// a long s to s in any position of the name, so trackedFold decides from this list.
+const settingsPathspec = ":(icase,glob).claude/*"
 
 // gitTracks asks git whether it tracks path, under main, without case, since a
 // file system that folds case opens .CLAUDE/settings.local.json by the lowercase
