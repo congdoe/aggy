@@ -144,10 +144,13 @@ func TestPlanContinue(t *testing.T) {
 // the flags only it let through stay behind; the rest are the same session's.
 func TestSameChildAgain(t *testing.T) {
 	first := target{New: true, Vendor: adapter.Codex, NoPolicy: true, Model: "m", Tools: []string{"x"},
-		Extra: []string{"--search", "--yolo"}, SafeExtra: []string{"--search"}, Loosens: []string{"--yolo"}}
+		Extra: []string{"--search", "--yolo"}, SafeExtra: []string{"--search"}, Loosens: []string{"--yolo"}, FlagNotes: []string{"a note"}}
 	again := sameChildAgain(first, switchTo{vendor: adapter.Codex, parentID: "p", child: "c"})
 	if again.NoPolicy || len(again.Loosens) != 0 || !slices.Equal(again.Extra, []string{"--search"}) {
 		t.Errorf("target = %+v, want --yolo gone with --no-policy", again)
+	}
+	if len(again.FlagNotes) != 0 {
+		t.Errorf("notes = %q, want them shown once, at the first launch", again.FlagNotes)
 	}
 	if again.Model != "m" || !slices.Equal(again.Tools, []string{"x"}) || again.Child != "c" || !again.SameChild {
 		t.Errorf("target = %+v, want the same session", again)
@@ -275,6 +278,41 @@ func TestGateDirFlags(t *testing.T) {
 			}
 			if !slices.Equal(tg.SafeExtra, wantSafe) || !slices.Equal(tg.Loosens, wantLoosens) {
 				t.Errorf("with --no-policy: safe %q, loosens %q", tg.SafeExtra, tg.Loosens)
+			}
+		})
+	}
+}
+
+// TestGateDirFlagsWording (T6952): a path aggy cannot resolve is gated, and the
+// message does not claim it found keys there.
+func TestGateDirFlagsWording(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	for _, v := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME"} {
+		t.Setenv(v, "")
+	}
+	loop := filepath.Join(root, "loop")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct{ name, dir, want, not string }{
+		{"a symlink loop", loop, "could not be resolved", "keys"},
+		{"another's home", "~root", "another user's home", "keys"},
+		{"keys", filepath.Join(home, ".ssh"), "your home's keys", "resolved"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tg := target{Dirs: []adapter.DirFlag{{Name: "--add-dir", Value: tt.dir}}}
+			err := gateDirFlags(&tg, root)
+			if !errors.Is(err, adapter.ErrLoosens) || !strings.Contains(err.Error(), tt.want) || strings.Contains(err.Error(), tt.not) {
+				t.Errorf("err = %v, want %q and not %q", err, tt.want, tt.not)
 			}
 		})
 	}

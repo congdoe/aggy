@@ -354,7 +354,7 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			"--compaction-detail", "--compaction-mode", "--debug-file", "--disallowed-tools", "--effort", "--hunk-tracker-mode",
 			"--json-schema", "--leader-socket", "--max-turns", "--output-format", "--reasoning-effort", "--storage-mode",
 			"--system-prompt", "--system-prompt-override", "--tools"},
-		LoosensIf: []string{"approve", "approval", "yolo", "bypass", "no-sandbox", "skip-permission"},
+		LoosensIf: []string{"approve", "approval", "yolo", "bypass", "no-sandbox", "skip-permission", "trust", "unsafe", "insecure"},
 		DirFlags:  []string{"--add-dir"},
 		Noted:     []adapter.NotedFlag{{Names: []string{"--add-dir"}, Note: "--add-dir lets Grok work in more folders; that aggy's deny rules cover them is unverified"}},
 	}

@@ -170,12 +170,13 @@ func sessionArg(arg string) (string, string) {
 func gateDirFlags(t *target, cwd string) error {
 	kept := t.Dirs[:0:0]
 	for _, d := range t.Dirs {
-		if !dirHoldsSecrets(d.Value, cwd) {
+		why := dirGate(d.Value, cwd)
+		if why == "" {
 			kept = append(kept, d)
 			continue
 		}
 		if !t.NoPolicy {
-			return fmt.Errorf("%s %s is, holds, or is inside your home's keys or a vendor's config: %w", d.Name, d.Value, adapter.ErrLoosens)
+			return fmt.Errorf("%s %s %s: %w", d.Name, d.Value, why, adapter.ErrLoosens)
 		}
 		t.Loosens = append(t.Loosens, d.Name)
 		t.SafeExtra = withoutFlag(t.SafeExtra, d)
@@ -184,28 +185,34 @@ func gateDirFlags(t *target, cwd string) error {
 	return nil
 }
 
-// dirHoldsSecrets reports whether a folder flag's value, read against cwd, holds
-// secrets. A value it cannot make a path of counts: a ~user, or an error.
-func dirHoldsSecrets(dir, cwd string) bool {
+// dirGate says why a folder flag's value, read against cwd, is gated, or "". A
+// value it cannot make a path of, or resolve, is gated too, in its own words.
+func dirGate(dir, cwd string) string {
 	switch {
 	case dir == "~" || strings.HasPrefix(dir, "~/"):
 		// The CLI may or may not expand it: both readings are checked.
 		home := os.Getenv("HOME")
 		if home == "" {
-			return true
+			return "names your home, and HOME is not set, so aggy cannot tell what it reaches"
 		}
-		if dirHoldsSecrets(home+strings.TrimPrefix(dir, "~"), cwd) {
-			return true
+		if why := dirGate(home+strings.TrimPrefix(dir, "~"), cwd); why != "" {
+			return why
 		}
 	case strings.HasPrefix(dir, "~"):
-		return true
+		return "names another user's home, which aggy does not expand, so it cannot tell what it reaches"
 	}
 	if !filepath.IsAbs(dir) {
 		// Not Join: a ".." keeps its physical meaning through a symlink.
 		dir = cwd + string(filepath.Separator) + dir
 	}
 	held, err := safefs.HoldsSecrets(dir)
-	return err != nil || held
+	switch {
+	case err != nil:
+		return "could not be resolved (a symlink loop, or a path aggy may not read), so aggy cannot tell what it reaches"
+	case held:
+		return "is, holds, or is inside your home's keys or a vendor's or aggy's config"
+	}
+	return ""
 }
 
 // withoutFlag is words without d, written as two words or with an =.

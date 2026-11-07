@@ -402,11 +402,20 @@ func RealPath(name string) (string, error) {
 
 // secretHomeDirs are folders under a home that hold keys of tools other than
 // the vendor CLIs.
-var secretHomeDirs = []string{".ssh", ".gnupg", ".aws"}
+var secretHomeDirs = []string{".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config/gh", ".config/gcloud"}
+
+// aggyDir is aggy's own state under a home ($AGGY_HOME moves it): its config and
+// tools, which a child with write access could use to loosen later launches.
+// What lies below aggyWorktrees is a borrow's own edit worktree.
+const (
+	aggyDir       = ".aggy"
+	aggyWorktrees = "worktrees"
+)
 
 // HoldsSecrets reports whether giving a program the folder name would give it
-// a home, a vendor's config folder, or a home's key folders: name is one of
-// them, holds one, or is inside a config or key folder. It resolves name as the
+// a home, a vendor's or aggy's config folder, or a home's key folders: name is
+// one of them, holds one, or is inside a config or key folder, except a borrow's
+// worktree inside aggy's. It resolves name as the
 // kernel would and compares paths the way safefs does (NFC, the macOS firmlink,
 // case-folded where the file system ignores case), so a symlink or another
 // spelling does not get past it. A credential path counts. It reads no file.
@@ -430,7 +439,7 @@ func HoldsSecrets(name string) (bool, error) {
 		}
 		return out
 	}
-	var inner []string
+	var inner, state []string
 	for _, h := range homes {
 		for _, n := range both(h) {
 			if under(n, np) {
@@ -438,8 +447,19 @@ func HoldsSecrets(name string) (bool, error) {
 			}
 		}
 		for _, d := range secretHomeDirs {
-			inner = append(inner, both(filepath.Join(h, d))...)
+			inner = append(inner, both(filepath.Join(h, filepath.FromSlash(d)))...)
 		}
+		state = append(state, filepath.Join(h, aggyDir))
+	}
+	if d := os.Getenv("AGGY_HOME"); filepath.IsAbs(d) {
+		state = append(state, filepath.Clean(d))
+	}
+	for _, d := range state {
+		worktrees := both(filepath.Join(d, aggyWorktrees))
+		if slices.ContainsFunc(worktrees, func(w string) bool { return np != w && under(np, w) }) {
+			continue
+		}
+		inner = append(inner, both(d)...)
 	}
 	for _, p := range t.g.paths {
 		inner = append(inner, filepath.Dir(p))

@@ -99,7 +99,7 @@ func launch(name string, t target, stderr io.Writer) int {
 	defer q.Close(diagFlush)
 	for {
 		var next switchTo
-		code := launchOnce(name, t, stderr, &next, q)
+		code := launchOnce(name, &t, stderr, &next, q)
 		if next.vendor == "" {
 			return code
 		}
@@ -119,7 +119,7 @@ func launch(name string, t target, stderr io.Writer) int {
 // it gets no brief.
 func sameChildAgain(t target, next switchTo) target {
 	return target{ParentID: next.parentID, Vendor: next.vendor, Child: next.child, SameChild: true,
-		Model: t.Model, Tools: t.Tools, Extra: t.SafeExtra, SafeExtra: t.SafeExtra, FlagNotes: t.FlagNotes, Dirs: t.Dirs}
+		Model: t.Model, Tools: t.Tools, Extra: t.SafeExtra, SafeExtra: t.SafeExtra, Dirs: t.Dirs}
 }
 
 // switchTo is the vendor a CLI exited for, its parent, and the switch's
@@ -139,8 +139,11 @@ const (
 )
 
 // launchOnce is one launch. It returns the CLI's exit code, and sets next
-// when the CLI exited for a switch. q takes the supervisor's records.
-func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag.Queue) int {
+// when the CLI exited for a switch. q takes the supervisor's records. It
+// changes *tp only through gateDirFlags, so a later launch of the session does
+// not carry a flag only --no-policy let through.
+func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *diag.Queue) int {
+	t := *tp
 	// ids are the entity ids known so far, for the records.
 	var ids diag.Rec
 	// The record's message is the code's registry text: the error can
@@ -177,9 +180,10 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	}
 	v := adapter.Vendor(pl.child.Vendor)
 	ids = diag.Rec{Parent: pl.parent.ID, Child: pl.child.ID, Vendor: string(v)}
-	if err := gateDirFlags(&t, pl.child.Cwd); err != nil {
+	if err := gateDirFlags(tp, pl.child.Cwd); err != nil {
 		return fail(diag.CodeFlagLoosens, err)
 	}
+	t = *tp
 	if pl.remakeCwd {
 		remove, err := remakeBorrowDir(pl.child.Cwd)
 		if err != nil {

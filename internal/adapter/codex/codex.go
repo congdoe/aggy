@@ -377,6 +377,9 @@ var safetyFeatureWords = []string{"hook", "sandbox", "landlock", "approval", "gu
 // off hooks also stops aggy's own Codex hooks. Any other feature passes: it
 // takes a tool away.
 func checkDisable(name string) error {
+	if err := adapter.AnyValue(name); err != nil {
+		return err
+	}
 	low := strings.ToLower(name)
 	for _, w := range safetyFeatureWords {
 		if strings.Contains(low, w) {

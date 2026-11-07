@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/congdoe/aggy/internal/fakecli"
 )
@@ -94,5 +95,55 @@ func TestAddDirHomeRefused(t *testing.T) {
 	}
 	if n := len(fakecli.Records(t, w.record)); n != 0 {
 		t.Errorf("the CLI started %d times", n)
+	}
+}
+
+// TestAddDirDroppedOnReopen (T6952): --add-dir of $HOME with --no-policy holds for
+// that launch, and a tool change reopens the session without it instead of
+// refusing and dropping to the shell.
+func TestAddDirDroppedOnReopen(t *testing.T) {
+	w := newWorld(t)
+	w.aggyIn(t, "setup", "--yes") // the rules file, which the reopen needs without --no-policy
+	sc := map[string]any{
+		"stdout":       "READY>",
+		"extra_flags":  []string{"--add-dir"},
+		"hook_command": []string{buildAggy(t), "hook", "--vendor", "codex"},
+		"hooks": []map[string]any{{"event": "SessionStart", "payload": map[string]any{"session_id": "{session_id}", "source": "startup"}},
+			{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}},
+		"session_files": []map[string]any{{"path": "sessions/" + time.Now().Format("2006/01/02") + "/rollout-x-{session_id}.jsonl", "content": `{"type":"session_meta","payload":{"id":"{session_id}","source":"cli"}}` + "\n"}},
+	}
+	s := w.start(t, sc, "codex", "--no-policy", "--add-dir", w.home)
+	s.waitFor([]byte("loosen approvals"))
+	s.waitFor([]byte("READY>"))
+	s.send([]byte("work\r"))
+	s.waitFor([]byte("work"))
+	// A turn end counts only once aggy has recorded the thread's id from the
+	// first hooks, so a later turn ends the one the note waits for.
+	time.Sleep(time.Second)
+	s.send([]byte("again\r"))
+	s.waitFor([]byte("again"))
+	code, out := w.aggyCode(t, "tool", "on", "context7", "--vendor", "codex")
+	if code != 0 || !strings.Contains(out, "Told 1 running aggy session") {
+		t.Fatalf("aggy tool on: %d\n%s", code, out)
+	}
+	// Codex has no hold signal: aggy says so, and the person asks for the resume.
+	s.waitWithin([]byte("Tools changed for codex"), offerTimeout)
+	s.confirmPastGuard(time.Now())
+	s.waitWithin([]byte("same session -> codex. Ctrl+"), offerTimeout)
+	s.confirmPastGuard(time.Now())
+	deadline := time.Now().Add(timeout)
+	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d\nterminal: %q", code, s.screen())
+	}
+	runs := interactiveRuns(t, w)
+	if len(runs) != 2 {
+		t.Fatalf("runs = %+v\nterminal: %q", runs, s.screen())
+	}
+	if !slices.Contains(runs[0].Args, "--add-dir") || slices.Contains(runs[1].Args, "--add-dir") {
+		t.Errorf("--add-dir: %q, then %q", runs[0].Args, runs[1].Args)
 	}
 }
