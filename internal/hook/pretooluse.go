@@ -180,7 +180,7 @@ func skipFlags(ws []string, i int, vals []string) int {
 }
 
 // Nested returns what cmd would start that a delegated child may not
-// ("claude -p", "codex exec", "grok -p", "aggy borrow"), or "". Only a
+// ("claude -p", "codex exec", "grok -p", "opencode run", "aggy borrow"), or "". Only a
 // word at command position counts: the first word of a simple command,
 // after VAR=value words, after a wrapper such as env, sudo, timeout,
 // xargs, or npx and its flags, after npm, pnpm, or yarn exec/dlx/x, or
@@ -295,6 +295,15 @@ func nestedIn(ws []string) string {
 		case "codex":
 			if k := skipFlags(rest, 0, codexValueFlags); k < len(rest) && (rest[k] == "exec" || rest[k] == "e") {
 				return "codex exec"
+			}
+		case "opencode":
+			// `opencode run` is its headless form, and --prompt starts a turn on
+			// either screen (cli/src/commands/commands.ts at v2.2.5).
+			if k := skipFlags(rest, 0, nil); k < len(rest) && rest[k] == "run" {
+				return "opencode run"
+			}
+			if hasFlag(rest, "--prompt") {
+				return "opencode --prompt"
 			}
 		case "aggy":
 			if k := skipFlags(rest, 0, nil); k < len(rest) && slices.Contains([]string{"borrow", "image", "video"}, rest[k]) {

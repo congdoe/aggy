@@ -40,7 +40,7 @@ func TestOpenCodeGuard(t *testing.T) {
 	if err := os.WriteFile(saved, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	env := OpenCodeEnv{DeniedNames: []string{".env", "*.pem"}, RuleWords: []string{"git"}, Getenv: func(k string) string {
+	env := OpenCodeEnv{DeniedNames: []string{".env", "*.pem"}, ShellRules: []string{"git status", "ls"}, Getenv: func(k string) string {
 		if k == "XDG_DATA_HOME" {
 			return data
 		}
@@ -66,7 +66,7 @@ func TestOpenCodeGuard(t *testing.T) {
 		{"a shell workdir in", OpenCodeInput{Tool: "shell", Command: "ls", Workdir: "sub"}, ""},
 		{"an ordinary command", OpenCodeInput{Tool: "shell", Command: "go test ./..."}, ""},
 		{"a declaration", OpenCodeInput{Tool: "shell", Command: "PATH=/x:$PATH; git status"}, whyVariable("PATH")},
-		{"a function by a rule's name", OpenCodeInput{Tool: "shell", Command: "git() { :; }; git status"}, shellScan("git() { :; }", []string{"git"})},
+		{"a function by a rule's name", OpenCodeInput{Tool: "shell", Command: "git() { :; }; git status"}, shellScan("git() { :; }; git status", []string{"git status", "ls"}, false)},
 		// Full auto: a declaration hides nothing there, and the rest still holds.
 		{"full auto skips the scan", OpenCodeInput{Tool: "shell", Auto: true, Command: "PATH=/x:$PATH; git status"}, ""},
 		{"full auto skips the function check", OpenCodeInput{Tool: "shell", Auto: true, Command: "git() { :; }; git status"}, ""},

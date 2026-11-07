@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/opencode"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/devfix"
+	"github.com/congdoe/aggy/internal/hook"
 	"github.com/congdoe/aggy/internal/patch"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
@@ -534,5 +536,52 @@ func TestProbeCapsGivesTheVersion(t *testing.T) {
 	}
 	if version != "2.2.5" {
 		t.Errorf("version = %q", version)
+	}
+}
+
+// TestOpenCodeAlwaysMark: an Always allow in one session makes the guard scan
+// everything in that repo, in later sessions too, and in no other repo. A mark
+// aggy cannot read counts as seen.
+func TestOpenCodeAlwaysMark(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGGY_HOME", state)
+	repo, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := func(root string) int {
+		t.Helper()
+		b, err := json.Marshal(hook.OpenCodeInput{Tool: "shell", Directory: root, Root: root, Command: "PATH=./bin; npm test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out, errb bytes.Buffer
+		return hookWith([]string{"opencode-guard"}, bytes.NewReader(b), func(string) string { return "" }, &out, &errb)
+	}
+	if code := guard(repo); code != 0 {
+		t.Fatalf("no rule, no mark: exit %d", code)
+	}
+	var out, errb bytes.Buffer
+	if code := hookWith([]string{"opencode-always"}, strings.NewReader(fmt.Sprintf("{\"root\":%q}", repo)), func(string) string { return "" }, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	if code := guard(repo); code != 2 {
+		t.Errorf("marked: exit %d", code)
+	}
+	if code := guard(other); code != 0 {
+		t.Errorf("another repo: exit %d", code)
+	}
+	errb.Reset()
+	if code := hookWith([]string{"opencode-always"}, strings.NewReader("not json"), func(string) string { return "" }, &out, &errb); code != 1 || !strings.Contains(errb.String(), "run ") {
+		t.Errorf("bad payload: exit %d, %q", code, errb.String())
+	}
+	t.Setenv("AGGY_HOME", "not absolute")
+	if !openCodeAlwaysSeen(repo) {
+		t.Error("no state to read must count as seen")
 	}
 }

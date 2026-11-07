@@ -2,8 +2,13 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -13,12 +18,14 @@ import (
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/hook"
 	"github.com/congdoe/aggy/internal/parity"
+	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/supervisor"
 	"github.com/congdoe/aggy/internal/termsafe"
 )
 
 const hookUsage = `Usage: aggy hook pretooluse
        aggy hook opencode-guard
+       aggy hook opencode-always
        aggy hook --vendor V <event>
 
 Called by a vendor CLI's hook, with the JSON payload on stdin. aggy hooks
@@ -29,10 +36,13 @@ install writes these calls into each CLI's hook config.
                accident guard, not a security boundary.
   opencode-guard
                the check aggy's OpenCode plugin runs before each tool call:
-               refuses a command that names a variable an allowed command
-               reads or defines a function by an allowed command's name, a
-               real path outside the repo, and opencode auth export. Mistakes
-               only, not a security boundary.
+               refuses, beside an allowed command, one that names a variable
+               that command reads or defines a function by its name; a real
+               path outside the repo; and opencode auth export. Mistakes only,
+               not a security boundary.
+  opencode-always
+               what the plugin runs when a permission is answered with Always
+               allow: from then on the guard scans every command in this repo.
   <event>      a Claude, Codex, or Grok hook event (Stop, StopFailure,
                StopCancelled, SessionStart, Notification). The
                payload is parsed as JSON and forwarded to the aggy
@@ -66,6 +76,8 @@ func hookWith(args []string, in io.Reader, getenv func(string) string, stdout, s
 			return preToolUse(in, stderr)
 		case "opencode-guard":
 			return openCodeGuard(in, getenv, stderr)
+		case "opencode-always":
+			return openCodeAlways(in, stderr)
 		}
 	}
 	if len(args) != 3 || args[0] != "--vendor" {
@@ -188,6 +200,60 @@ func preToolUse(in io.Reader, stderr io.Writer) int {
 	return 0
 }
 
+// openCodeAlwaysMark is the file that says repo root has had a permission
+// answered with Always allow under aggy. OpenCode saves that rule per project
+// in opencode.db, which aggy never opens, and it outlives the session, so this
+// outlives it too.
+func openCodeAlwaysMark(root string) (string, error) {
+	dir, err := home.Dir()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(root))
+	return filepath.Join(dir, "opencode-always", hex.EncodeToString(sum[:])), nil
+}
+
+// openCodeAlwaysSeen reads the mark. Anything but a clean "not there" counts as
+// seen, as that only makes the guard scan more.
+func openCodeAlwaysSeen(root string) bool {
+	mark, err := openCodeAlwaysMark(root)
+	if err != nil {
+		return true
+	}
+	_, err = safefs.Lstat(mark)
+	return !errors.Is(err, fs.ErrNotExist)
+}
+
+// openCodeAlways records the mark for the plugin. The plugin also holds this
+// for its session, so a failure here is not the only copy.
+func openCodeAlways(in io.Reader, stderr io.Writer) int {
+	var p struct {
+		Root string `json:"root"`
+	}
+	b, err := io.ReadAll(io.LimitReader(in, hook.MaxPayload))
+	if err == nil {
+		err = json.Unmarshal(b, &p)
+	}
+	var root, mark string
+	if err == nil {
+		root, err = safefs.RealPath(p.Root)
+	}
+	if err == nil {
+		mark, err = openCodeAlwaysMark(root)
+	}
+	if err == nil {
+		err = safefs.MkdirAll(filepath.Dir(mark), 0o700)
+	}
+	if err == nil {
+		err = safefs.WriteFile(mark, nil, 0o600)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "aggy hook opencode-always: %s %s\n", termsafe.Line(err.Error()), dlog.Tag(diag.CodeUsage))
+		return 1
+	}
+	return 0
+}
+
 // openCodeGuard runs the check behind the plugin's execute.before. Its exit
 // code decides, so a crash or a hang refuses too; the plugin passes stderr
 // to the model as the tool's error, ending with the reason code and run id.
@@ -196,11 +262,11 @@ func openCodeGuard(in io.Reader, getenv func(string) string, stderr io.Writer) i
 	if err != nil || len(b) > hook.MaxPayload {
 		b = nil // refused as unreadable
 	}
-	words, err := parity.OpenCodeRuleWords()
+	rules, err := parity.OpenCodeShellRules()
 	if err != nil {
 		b = nil // refused as unreadable: the rules aggy ships do not render
 	}
-	d := hook.OpenCodeGuard(b, hook.OpenCodeEnv{Getenv: getenv, DeniedNames: parity.OpenCodeDeniedNames(), RuleWords: words})
+	d := hook.OpenCodeGuard(b, hook.OpenCodeEnv{Getenv: getenv, DeniedNames: parity.OpenCodeDeniedNames(), ShellRules: rules, AlwaysSeen: openCodeAlwaysSeen})
 	if !d.Deny {
 		return 0
 	}

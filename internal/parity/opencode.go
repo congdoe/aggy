@@ -97,21 +97,17 @@ type openCodeRule struct {
 	Effect   string `json:"effect"`
 }
 
-// OpenCodeRuleWords are the first words of the shell rules a launch renders,
-// once each. A function by one of these names would run in place of an allowed
-// command, so the guard refuses defining one.
-func OpenCodeRuleWords() ([]string, error) {
+// OpenCodeShellRules are the shell allow rules a launch renders. The guard scans
+// a command's text only if it holds one, as only then can nothing prompt.
+func OpenCodeShellRules() ([]string, error) {
 	rules, err := openCodePermissions(false)
 	if err != nil {
 		return nil, err
 	}
 	var out []string
 	for _, r := range rules {
-		if r.Action != "shell" {
-			continue
-		}
-		if w, _, _ := strings.Cut(r.Resource, " "); !slices.Contains(out, w) {
-			out = append(out, w)
+		if r.Action == "shell" {
+			out = append(out, r.Resource)
 		}
 	}
 	return out, nil

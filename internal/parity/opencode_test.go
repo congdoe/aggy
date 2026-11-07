@@ -158,14 +158,14 @@ func TestOpenCodeRenderRest(t *testing.T) {
 	}
 }
 
-// TestOpenCodeRuleWords: the guard's function check follows the rendered rules.
-func TestOpenCodeRuleWords(t *testing.T) {
-	got, err := OpenCodeRuleWords()
+// TestOpenCodeShellRules: the guard's rule check follows the rendered rules.
+func TestOpenCodeShellRules(t *testing.T) {
+	got, err := OpenCodeShellRules()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"git", "ls", "pwd"}; !slices.Equal(got, want) {
-		t.Errorf("got %q, want %q", got, want)
+	if !slices.Equal(got, OpenCodeStarter) {
+		t.Errorf("got %q, want %q", got, OpenCodeStarter)
 	}
 }
 

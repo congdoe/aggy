@@ -1617,3 +1617,13 @@ An agent ran these under the owner's approval for this work (at most 40 real Ope
 - **Unverified, for the owner's terminal.** The backspaces that take `/exit` back when keys are typed or Esc is pressed in the 0.5 s gap have never run on the real screen, only against the fake. On a real session: start a switch, type a letter in the gap, and check that the prompt holds only that letter; then again with Esc on the list.
 - **`--direct` cannot signal the group.** The CLI shares aggy's process group there, for the terminal's job control, so the kill 10 s after a signal reaches the CLI alone, and its tool shells may run on. The pass-through's kill reaches the group.
 
+### The scan runs only beside an allow rule (2026-11-07, T6932)
+
+**Runs: none.** Unit tests, real shells, and source at `v2.2.5` only.
+
+- **Source.** A resource is a raw slice of the command (`core/src/shell/scan.ts`), matched by `Wildcard.match` with no whitespace rule (`core/src/util/wildcard.ts`), which only turns `\` into `/`. So only a command spelled exactly as a rule matches it.
+- **Source.** Always allow saves the request's `save` patterns per project (`core/src/permission.ts`, in `opencode.db`), and they apply to later sessions. `permission.replied` carries `reply` (`schema/src/permission.ts`).
+- **Unverified.** That `permission.replied` reaches the plugin with `reply: "always"`, and that the plugin's `always` state reaches the guard on a real session. The mark and the guard reading it are tested through `aggy hook`; `server.js` has not run since this change. A next command in the moment after the click may run before the plugin hears of it.
+- **Source.** On `opencode mini`, `-m` sets the model of a resumed session too (`cli/src/mini.ts`), so `aggy opencode --continue --model` does what `aggy claude --continue --model` does there. Not run.
+- **Reviewer's check.** `export DEVELOPER_DIR=./dev; git status` ran a planted `dev/usr/bin/xcrun` through stock macOS `/usr/bin/git`, in bash and zsh. `BASH_CMDS[git]=` follows the bash manual for bash 4 and later; macOS's 3.2 cannot confirm it. Neither needs the real OpenCode.
+

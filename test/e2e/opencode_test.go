@@ -347,6 +347,9 @@ func TestOpenCodeGuardProcess(t *testing.T) {
 	if code, out := run(with("command", "PATH=/x:$PATH; git status")); code != 2 || !strings.Contains(out, "[guard.refused · run ") {
 		t.Errorf("a declaration: %d %q", code, out)
 	}
+	if code, out := run(with("command", "PATH=/x:$PATH; npm test")); code != 0 || out != "" {
+		t.Errorf("no rule, so it asks: %d %q", code, out)
+	}
 	if code, out := run(with("command", "opencode auth export")); code != 2 || !strings.Contains(out, "sign-in") {
 		t.Errorf("auth export: %d %q", code, out)
 	}

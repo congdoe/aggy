@@ -43,7 +43,8 @@ bare word is taken as a value only after a flag aggy knows takes one; for any
 other flag write --flag=value.
 
 aggy opencode takes only the flags above, none of OpenCode's own. Its model
-is provider/model, and a resumed session keeps its own. Full auto is the
+is provider/model. As on the other CLIs, --model on a resume applies in opencode
+mini; on the full screen a resumed session keeps its own. Full auto is the
 [opencode] auto setting, in a repo you ran aggy trust --opencode on.
 `
 
