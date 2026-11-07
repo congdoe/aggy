@@ -532,7 +532,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		Children:   children,
 		HasChild:   hasChild,
 		SwitchBlocked: func(o adapter.Vendor, id string) string {
-			return switchBlocked(childCwd(ro.get(), parent, o, id, pl.child.Cwd))
+			return switchBlocked(childCwd(ro.get(), parent, o, id, pl.child.Cwd), o)
 		},
 		Limits:   limitHit,
 		HasQuota: quota,

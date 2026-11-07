@@ -46,6 +46,9 @@ func TestTrackedFold(t *testing.T) {
 		{".claude/settingſ.local.json\x00", true},
 		{".claude/settings.local.jſon\x00", true},
 		{".claude/settings.local.json.bak\x00", false},
+		{".claude\x00", true}, // a committed link, file, or gitlink
+		{".CLAUDE\x00", true},
+		{".claude/other\x00", false},
 	} {
 		if got := trackedFold(tc.list, rel); got != tc.want {
 			t.Errorf("%q: %v", tc.list, got)
@@ -66,6 +69,7 @@ func TestGitTracksLongS(t *testing.T) {
 		{".CLAUDE/settingſ.local.json", true},
 		{".claude/other.json", false},
 		{".claude/sub/settings.local.json", false},
+		{".claude", true},
 	} {
 		repo := realGitRepo(t)
 		cmd := exec.Command("git", "-C", repo, "update-index", "--index-info")
@@ -542,15 +546,15 @@ func TestLocalTypoKeepsDeniesOnOpenCode(t *testing.T) {
 func TestSwitchBlockedNamesEachFile(t *testing.T) {
 	isolate(t)
 	repo := tempRepo(t)
-	if got := switchBlocked(repo); got != "" {
+	if got := switchBlocked(repo, adapter.Grok); got != "" {
 		t.Fatalf("nothing wrong: %q", got)
 	}
 	key := permissionInput(repo).RepoKey
 	writePermissions(t, `{"repos":{"`+key+`":{"deny":["Bash("]}}}`)
-	if got := switchBlocked(repo); !strings.Contains(got, "permissions.json") {
+	if got := switchBlocked(repo, adapter.Grok); !strings.Contains(got, "permissions.json") {
 		t.Errorf("this repo's section: %q", got)
 	}
-	if got := switchBlocked(tempRepo(t)); got != "" {
+	if got := switchBlocked(tempRepo(t), adapter.Grok); got != "" {
 		t.Errorf("another repo's section: %q", got)
 	}
 	writePermissions(t, `{}`)
@@ -560,7 +564,176 @@ func TestSwitchBlockedNamesEachFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, ".aggy", "config.toml"), []byte("[switch\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := switchBlocked(repo); !strings.Contains(got, "config") {
+	if got := switchBlocked(repo, adapter.Grok); !strings.Contains(got, "config") {
 		t.Errorf("the repo's config: %q", got)
+	}
+}
+
+// TestSettingsLocalRule covers each row of the rule in loadLocal, against real git.
+func TestSettingsLocalRule(t *testing.T) {
+	const body = `{"permissions":{"allow":["Bash(make pwn)"],"deny":["Bash(git nope)"],"ask":["Bash(npm publish)"]}}`
+	const typo = `{"permissions":{"allow":["Bash(make pwn)"],"deny":["Bash(git nope)","Bash("],"ask":["Bash(npm publish)"]}}`
+	const person, repoOwned, nothing = "person", "repo", ""
+	git := func(t *testing.T, dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.email=a@b", "-c", "user.name=a", "-c", "protocol.file.allow=always"}, args...)...)
+		cmd.Env = append(os.Environ(), "PATH=/usr/bin:/bin")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %q: %v %s", args, err, out)
+		}
+	}
+	wf := func(t *testing.T, p, text string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := func(t *testing.T, target, at string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(at), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := func(t *testing.T, r string) {
+		t.Helper()
+		git(t, r, "add", "-f", ".")
+		git(t, r, "commit", "-qm", "x")
+	}
+	loc := func(r string) string { return filepath.Join(r, ".claude", "settings.local.json") }
+	for _, tc := range []struct {
+		name                       string
+		do                         func(t *testing.T, h, r string)
+		allow, deny, ask, withhold bool
+		problem                    string
+	}{
+		{name: "clean", do: func(t *testing.T, _, r string) { wf(t, loc(r), body) }, allow: true, deny: true, ask: true},
+		{name: "untracked regular with a typo", do: func(t *testing.T, _, r string) { wf(t, loc(r), typo) }, allow: true, deny: true, ask: true, withhold: true, problem: person},
+		{name: "untracked regular, bad JSON", do: func(t *testing.T, _, r string) { wf(t, loc(r), "{") }, withhold: true, problem: person},
+		{name: "tracked file", do: func(t *testing.T, _, r string) { wf(t, loc(r), body); commit(t, r) }, deny: true, ask: true},
+		{name: "tracked file with a typo", do: func(t *testing.T, _, r string) { wf(t, loc(r), typo); commit(t, r) }, deny: true, ask: true, problem: repoOwned},
+		{name: "tracked file, bad JSON", do: func(t *testing.T, _, r string) { wf(t, loc(r), "{"); commit(t, r) }, problem: repoOwned},
+		{name: "tracked link", do: func(t *testing.T, _, r string) {
+			wf(t, filepath.Join(r, "x.json"), body)
+			link(t, "../x.json", loc(r))
+			commit(t, r)
+		}, problem: repoOwned},
+		{name: "tracked .claude link", do: func(t *testing.T, _, r string) {
+			wf(t, filepath.Join(r, "d", "settings.local.json"), body)
+			link(t, "d", filepath.Join(r, ".claude"))
+			commit(t, r)
+		}, problem: repoOwned},
+		{name: "tracked link to a credential", do: func(t *testing.T, h, r string) {
+			wf(t, filepath.Join(h, ".claude", ".credentials.json"), `{"t":"SECRET"}`)
+			link(t, filepath.Join(h, ".claude", ".credentials.json"), loc(r))
+			commit(t, r)
+		}, problem: repoOwned},
+		{name: "gitlink", do: func(t *testing.T, h, r string) {
+			sub := filepath.Join(h, "subsrc")
+			if err := os.MkdirAll(sub, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			git(t, sub, "init", "-q", ".")
+			wf(t, filepath.Join(sub, "settings.local.json"), body)
+			commit(t, sub)
+			git(t, r, "submodule", "add", "-q", sub, ".claude")
+			git(t, r, "commit", "-qm", "x")
+		}, deny: true, ask: true},
+		{name: "committed .claude file", do: func(t *testing.T, _, r string) { wf(t, filepath.Join(r, ".claude"), "x"); commit(t, r) }, problem: repoOwned},
+		{name: "committed directory at the file's path", do: func(t *testing.T, _, r string) { wf(t, filepath.Join(loc(r), "x"), "x"); commit(t, r) }, problem: repoOwned},
+		{name: "git can't say", do: func(t *testing.T, _, r string) {
+			wf(t, loc(r), body)
+			wf(t, filepath.Join(r, ".git", "index"), "garbage")
+		}, deny: true, ask: true},
+		{name: "untracked link", do: func(t *testing.T, h, r string) {
+			wf(t, filepath.Join(h, "dot", "local.json"), body)
+			link(t, filepath.Join(h, "dot", "local.json"), loc(r))
+		}, allow: true, deny: true, ask: true},
+		{name: "untracked .claude link", do: func(t *testing.T, h, r string) {
+			wf(t, filepath.Join(h, "dot", "settings.local.json"), body)
+			link(t, filepath.Join(h, "dot"), filepath.Join(r, ".claude"))
+		}, allow: true, deny: true, ask: true},
+		{name: "untracked .claude link, no file there", do: func(t *testing.T, h, r string) {
+			if err := os.MkdirAll(filepath.Join(h, "dot"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			link(t, filepath.Join(h, "dot"), filepath.Join(r, ".claude"))
+		}},
+		{name: "untracked link with a typo", do: func(t *testing.T, h, r string) {
+			wf(t, filepath.Join(h, "dot", "local.json"), typo)
+			link(t, filepath.Join(h, "dot", "local.json"), loc(r))
+		}, allow: true, deny: true, ask: true, withhold: true, problem: person},
+		{name: "untracked link to a credential", do: func(t *testing.T, h, r string) {
+			wf(t, filepath.Join(h, ".claude", ".credentials.json"), `{"t":"SECRET"}`)
+			link(t, filepath.Join(h, ".claude", ".credentials.json"), loc(r))
+		}, withhold: true, problem: person},
+		{name: "untracked link to nowhere", do: func(t *testing.T, h, r string) { link(t, filepath.Join(h, "nope"), loc(r)) }, withhold: true, problem: person},
+		{name: "untracked .claude link to nowhere", do: func(t *testing.T, h, r string) { link(t, filepath.Join(h, "nope"), filepath.Join(r, ".claude")) }, withhold: true, problem: person},
+		{name: "untracked .claude file", do: func(t *testing.T, _, r string) { wf(t, filepath.Join(r, ".claude"), "x") }, problem: repoOwned},
+		{name: "untracked directory at the file's path", do: func(t *testing.T, _, r string) { wf(t, filepath.Join(loc(r), "x"), "x") }, problem: repoOwned},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := isolate(t)
+			r := realGitRepo(t)
+			git(t, r, "commit", "-q", "--allow-empty", "-m", "i")
+			writePermissions(t, `{"permissions":{"allow":["Bash(make x)"]}}`)
+			tc.do(t, h, r)
+			pi := permissionInput(r)
+			pi.Trusted = true
+			pi.Tracked = gitTracks(context.Background(), r)
+			s := permissions.Load(pi)
+			has := func(k permissions.Kind, text string) bool {
+				return slices.ContainsFunc(s.Rules, func(x permissions.Rule) bool { return x.Kind == k && x.Text == text })
+			}
+			if got := has(permissions.Allow, "Bash(make pwn)"); got != tc.allow {
+				t.Errorf("allow: %v", got)
+			}
+			if got := has(permissions.Deny, "Bash(git nope)"); got != tc.deny {
+				t.Errorf("deny: %v", got)
+			}
+			if got := has(permissions.Ask, "Bash(npm publish)"); got != tc.ask {
+				t.Errorf("ask: %v", got)
+			}
+			if got := s.Withhold != ""; got != tc.withhold {
+				t.Errorf("withhold: %q", s.Withhold)
+			}
+			if !has(permissions.Allow, "Bash(make x)") {
+				t.Errorf("the person's own allow is gone: %+v", s.Rules)
+			}
+			got := nothing
+			if len(s.Problems) > 1 {
+				t.Fatalf("problems: %+v", s.Problems)
+			}
+			for _, p := range s.Problems {
+				got = person
+				if p.Repo {
+					got = repoOwned
+				}
+			}
+			if got != tc.problem {
+				t.Errorf("problem: %q: %+v", got, s.Problems)
+			}
+			if strings.Contains(fmt.Sprintf("%+v", s), "SECRET") {
+				t.Error("read a credential")
+			}
+		})
+	}
+}
+
+// TestRepoAskCannotWithholdOnOpenCode: a tracked file's unrenderable rule must not
+// turn off the person's shared allows.
+func TestRepoAskCannotWithholdOnOpenCode(t *testing.T) {
+	s := permissions.Set{Rules: []permissions.Rule{
+		{Kind: permissions.Allow, Text: "Bash(make x)", Origin: permissions.FromAggy},
+		{Kind: permissions.Ask, Text: "Bash(x ?)", Origin: permissions.FromRepoLocal},
+		{Kind: permissions.Deny, Text: "Bash(y ?)", Origin: permissions.FromRepoLocal},
+	}}
+	if got, _ := parity.OpenCodeShared(s); !slices.Equal(got.Allow, []string{"make x"}) {
+		t.Errorf("%+v", got)
 	}
 }

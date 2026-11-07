@@ -199,7 +199,9 @@ func OpenCodeShared(s permissions.Set) (OpenCodeSharedRules, []permissions.Skip)
 				why = "OpenCode takes only shell rules from aggy so far"
 			case strings.ContainsAny(cmd, "?{\n\r"):
 				why = "OpenCode would read ? or { in this rule differently"
-				withhold = "the rule " + r.Text + " cannot reach OpenCode, and it might have stopped this one"
+				if r.Origin != permissions.FromRepoLocal { // or a repo could turn off the person's allows
+					withhold = "the rule " + r.Text + " cannot reach OpenCode, and it might have stopped this one"
+				}
 			default:
 				out.Ask = append(out.Ask, cmd)
 			}
@@ -210,7 +212,9 @@ func OpenCodeShared(s permissions.Set) (OpenCodeSharedRules, []permissions.Skip)
 				why = "OpenCode takes only shell rules from aggy so far"
 			case strings.ContainsAny(cmd, "?{\n\r"):
 				why = "OpenCode would read ? or { in this rule differently"
-				withhold = "the rule " + r.Text + " cannot reach OpenCode, and it might have stopped this one"
+				if r.Origin != permissions.FromRepoLocal { // or a repo could turn off the person's allows
+					withhold = "the rule " + r.Text + " cannot reach OpenCode, and it might have stopped this one"
+				}
 			default:
 				out.Deny = append(out.Deny, "shell:"+cmd)
 			}

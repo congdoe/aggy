@@ -94,11 +94,10 @@ func permissionInput(dir string) permissions.Input {
 	return in
 }
 
-// settingsPathspec lists what git tracks directly in .claude, whatever the
-// folder's case, so the answer stays small in a large repo; in a glob, * stays
-// within the folder. git's icase folds ASCII only, and a file system can also fold
-// a long s to s in any position of the name, so trackedFold decides from this list.
-const settingsPathspec = ":(icase,glob).claude/*"
+// settingsPathspec lists what git tracks at or under .claude, whatever the folder's
+// case, so the answer stays small in a large repo. git's icase folds ASCII only, and
+// a file system can also fold a long s to s, so trackedFold decides from this list.
+const settingsPathspec = ":(icase).claude"
 
 // gitTracks asks git whether it tracks path, under main, without case, since a
 // file system that folds case opens .CLAUDE/settings.local.json by the lowercase
@@ -121,10 +120,13 @@ func gitTracks(ctx context.Context, main string) func(string) (bool, error) {
 	}
 }
 
-// trackedFold reports rel in git's -z list, whatever its case.
+// trackedFold reports rel in git's -z list, or its folder as an entry of its own (a
+// committed link, file, or submodule's gitlink), whatever the case.
 func trackedFold(list, rel string) bool {
+	dir := filepath.ToSlash(filepath.Dir(rel))
+	rel = filepath.ToSlash(rel)
 	for _, p := range strings.Split(list, "\x00") {
-		if strings.EqualFold(p, rel) {
+		if strings.EqualFold(p, rel) || strings.EqualFold(p, dir) {
 			return true
 		}
 	}
@@ -145,14 +147,17 @@ func loadPermissions(ctx context.Context, dir string, cfg config.Config) permiss
 	return s
 }
 
-// switchBlocked says why the next launch in dir would refuse, so a switch must not
-// close the CLI on screen.
-func switchBlocked(dir string) string {
+// switchBlocked says why the next launch of v in dir would refuse, so a switch must
+// not close the CLI on screen. TODO(T6955): a pruned session file, and a busy lease.
+func switchBlocked(dir string, v adapter.Vendor) string {
 	cfg, err := config.LoadDefault()
 	if err != nil {
 		return termsafe.Line(err.Error())
 	}
-	if _, err := repoEffective(cfg, dir); err != nil {
+	if fi, err := safefs.Stat(dir); err != nil || !fi.IsDir() {
+		return termsafe.Line("the folder " + dir + " is gone")
+	}
+	if _, err := allowedIn(cfg, dir, v); err != nil {
 		return termsafe.Line(err.Error())
 	}
 	path, err := permissionsFile()
