@@ -72,7 +72,7 @@ var (
 	// errNoSession: no session has the id, or none here can be reopened.
 	errNoSession = errors.New("no session")
 	// errAmbiguousID: more than one session has the prefix.
-	errAmbiguousID = errors.New("sessions start with that id; give more of it")
+	errAmbiguousID = errors.New("give more of the id")
 	// errNotAllowed: the repo's allowed_vendors leaves the vendor out.
 	errNotAllowed = errors.New("this repo's allowed_vendors does not list")
 	// errBorrowNoScreen: research and news children never go on screen.
@@ -148,7 +148,7 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 		case n == 0:
 			return p, fmt.Errorf("%w %s (aggy sessions and aggy session list them)", errNoSession, t.ParentID)
 		case n > 1:
-			return p, fmt.Errorf("%d %w (%s)", n, errAmbiguousID, t.ParentID)
+			return p, fmt.Errorf("%d sessions start with %s; %w", n, t.ParentID, errAmbiguousID)
 		case len(ps) == 1:
 			p.parent = ps[0]
 		default:
