@@ -146,13 +146,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		case "--continue", "-c":
 			return runContinue(args, stderr)
 		case "--resume", "-r":
-			return runResume(append([]string{"--no-policy"}, args[2:]...), stdout, stderr)
+			return runResumeFlag(append([]string{"--no-policy"}, args[2:]...), stdout, stderr)
 		}
 		return runRun(args, stdout, stderr)
 	case "--continue", "-c":
 		return runContinue(args[1:], stderr)
 	case "--resume", "-r":
-		return runResume(args[1:], stdout, stderr)
+		return runResumeFlag(args[1:], stdout, stderr)
 	case "claude", "codex", "grok":
 		return runVendor(adapter.Vendor(args[0]), args[1:], stderr)
 	case "new":
