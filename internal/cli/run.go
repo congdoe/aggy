@@ -36,7 +36,7 @@ import (
 // terminal (runDirect). --no-policy starts it without the safety policy
 // (launch). --tool turns a tool on for this session only (target.Tools).
 func runRun(args []string, stdout, stderr io.Writer) int {
-	const usage = "usage: aggy run [--direct] [--no-policy] [--tool NAME]... <claude|codex|grok>\n"
+	usage := runHelpText
 	var direct, noPolicy bool
 	var tools []string
 	for len(args) > 0 && strings.HasPrefix(args[0], "--") {

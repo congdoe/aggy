@@ -54,7 +54,7 @@ func launchUsageErr(stderr io.Writer, cmd string, code diag.Code, msg, usage str
 // --continue or --resume an old one, with the CLI's own flags for it. Ids
 // never come from these flags: --resume takes an aggy id, checked as aggy
 // resume checks it, and the adapter passes only the id the index holds.
-func runVendor(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
+func runVendor(v adapter.Vendor, args []string, stderr io.Writer) int {
 	name := string(v)
 	t := target{Vendor: v}
 	var rest []string
@@ -62,9 +62,6 @@ func runVendor(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 		a := args[i]
 		flag, val, hasVal := strings.Cut(a, "=")
 		switch {
-		case a == "--help" || a == "-h":
-			fmt.Fprint(stdout, vendorUsage)
-			return 0
 		case a == "--direct":
 			t.Direct = true
 		case a == "--no-policy":
@@ -119,7 +116,7 @@ func runContinue(args []string, stderr io.Writer) int {
 			t.NoPolicy = true
 		case "--continue", "-c":
 		default:
-			return cmdUsage(stderr, "", "aggy --continue takes only --no-policy", "usage: aggy --continue [--no-policy]\n")
+			return cmdUsage(stderr, "", "aggy --continue takes only --no-policy", continueUsage)
 		}
 	}
 	return launch("aggy", t, stderr)

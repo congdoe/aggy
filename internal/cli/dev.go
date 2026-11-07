@@ -42,8 +42,7 @@ func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
 
 func runDev(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprint(stdout, devUsage)
-		return 0
+		return cmdUsage(stderr, "dev", "name a subcommand", devUsage)
 	}
 	switch args[0] {
 	case "capture":
