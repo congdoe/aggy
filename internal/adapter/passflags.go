@@ -19,20 +19,25 @@ type PassFlags struct {
 	// Refused are the flags that clash with what aggy passes at launch or
 	// keep the session from being the one aggy recorded.
 	Refused []RefusedFlag
-	// Checked are flags with a value that clashes only for some values.
+	// Checked are flags with a value, which Check refuses or allows.
 	Checked []CheckedFlag
+	// Values are the other flags known to take a value as the next word.
+	// A bare word after any other flag is refused: it could be a prompt or
+	// a subcommand. --flag=value needs no entry.
+	Values []string
 }
 
 // RefusedFlag is a group of spellings refused for one reason.
 type RefusedFlag struct {
 	Names []string
 	Why   string
-	// UnlessNoPolicy allows the flag with --no-policy: it could take the
-	// safety policy away, and that is what --no-policy asks for.
+	// UnlessNoPolicy allows the flag with --no-policy: it loosens
+	// approvals, the sandbox, or hook trust (ErrLoosens).
 	UnlessNoPolicy bool
 }
 
-// CheckedFlag is a flag whose value Check refuses or allows.
+// CheckedFlag is a flag whose value Check refuses or allows. Check wraps
+// ErrLoosens for a value that --no-policy lets through.
 type CheckedFlag struct {
 	Names []string
 	Check func(value string) error
@@ -45,31 +50,45 @@ type ParsedFlags struct {
 	Resume   bool
 	ResumeID string // empty for a --resume with no id
 	Extra    []string
+	// Safe is Extra without the flags in Loosens, for a later launch of the
+	// session that does not have --no-policy.
+	Safe []string
+	// Loosens names the flags --no-policy let through.
+	Loosens []string
 }
 
+// ErrLoosens matches a flag that loosens approvals, the sandbox, or hook
+// trust, which aggy passes only with --no-policy.
+var ErrLoosens = errors.New("it loosens approvals, the sandbox, or hook trust, or aggy cannot tell that it does not; add --no-policy to start the session that way")
+
+// ErrNotFlag matches a word on the command line that is not a flag or the
+// value of one.
+var ErrNotFlag = errors.New("aggy passes the CLI's flags, not a prompt or a subcommand; type the prompt once the session starts, or run the CLI itself for a subcommand")
+
 // Parse sorts args, the CLI's flags without aggy's own. A bare word is
-// passed only directly after a flag, as that flag's value: aggy cannot tell
-// a value from a prompt or a subcommand, so anywhere else it is refused.
-// "--" is refused too, since all that follows it is prompt text. A value
-// that looks like a refused flag is refused with it: the safe side, when
-// aggy does not know which flags take values.
+// passed only directly after a flag known to take a value (Values, Checked);
+// anywhere else it could be a prompt or a subcommand. "--" is refused too,
+// since all that follows it is prompt text. A flag naming "dangerously" is
+// taken to loosen something on every vendor, so a new one needs no table
+// entry. A value that looks like a refused flag is refused with it: the safe
+// side, when aggy does not know every flag.
 func (p PassFlags) Parse(args []string, noPolicy bool) (ParsedFlags, error) {
 	var out ParsedFlags
-	afterFlag := false
+	afterValueFlag := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
-			return out, errors.New(`"--" starts a prompt; type the prompt once the session starts`)
+			return out, fmt.Errorf(`"--" starts a prompt: %w`, ErrNotFlag)
 		}
 		if a == "-" || !strings.HasPrefix(a, "-") {
-			if !afterFlag {
-				return out, fmt.Errorf("%q is not a flag: aggy passes the CLI's flags (one value after each), not a prompt or a subcommand; type the prompt once the session starts, or run the CLI itself for a subcommand", a)
+			if !afterValueFlag {
+				return out, fmt.Errorf("%q is not a flag or a value aggy knows the flag before it takes (for a value, write --flag=value): %w", a, ErrNotFlag)
 			}
-			out.Extra = append(out.Extra, a)
-			afterFlag = false
+			out.Extra, out.Safe = append(out.Extra, a), append(out.Safe, a)
+			afterValueFlag = false
 			continue
 		}
-		afterFlag = false
+		afterValueFlag = false
 		name, val, hasVal := p.split(a)
 		switch {
 		case slices.Contains(p.Model, name):
@@ -95,15 +114,18 @@ func (p PassFlags) Parse(args []string, noPolicy bool) (ParsedFlags, error) {
 			out.ResumeID = val
 		default:
 			before := i
-			if err := p.checkPassed(args, &i, name, val, hasVal, noPolicy); err != nil {
+			loosens, err := p.checkPassed(args, &i, name, val, hasVal, noPolicy)
+			if err != nil {
 				return out, err
 			}
-			out.Extra = append(out.Extra, a)
-			if i != before { // a checked flag's value, in the next argument
-				out.Extra = append(out.Extra, args[i])
-			} else if _, checked := p.checked(name); !checked {
-				afterFlag = !hasVal
+			words := args[before : i+1]
+			out.Extra = append(out.Extra, words...)
+			if loosens {
+				out.Loosens = append(out.Loosens, name)
+			} else {
+				out.Safe = append(out.Safe, words...)
 			}
+			afterValueFlag = !hasVal && slices.Contains(p.Values, name)
 		}
 	}
 	return out, nil
@@ -136,18 +158,28 @@ func (p PassFlags) checked(name string) (CheckedFlag, bool) {
 	return CheckedFlag{}, false
 }
 
-// checkPassed refuses a flag that may not go to the CLI. A CheckedFlag with
-// its value in the next argument moves *i to that value.
-func (p PassFlags) checkPassed(args []string, i *int, name, val string, hasVal, noPolicy bool) error {
+// checkPassed refuses a flag that may not go to the CLI, and reports one
+// that --no-policy lets through. A CheckedFlag with its value in the next
+// argument moves *i to that value.
+func (p PassFlags) checkPassed(args []string, i *int, name, val string, hasVal, noPolicy bool) (bool, error) {
+	gate := func(err error) (bool, error) {
+		if errors.Is(err, ErrLoosens) && noPolicy {
+			return true, nil
+		}
+		return false, err
+	}
 	if c, ok := p.checked(name); ok {
 		if !hasVal {
 			if *i+1 == len(args) {
-				return fmt.Errorf("%s needs a value", name)
+				return false, fmt.Errorf("%s needs a value", name)
 			}
 			*i++
 			val = args[*i]
 		}
-		return c.Check(val)
+		return gate(c.Check(val))
+	}
+	if strings.Contains(name, "dangerously") {
+		return gate(fmt.Errorf("%s: %w", name, ErrLoosens))
 	}
 	names := []string{name}
 	if !strings.HasPrefix(name, "--") && len(name) > 2 {
@@ -157,15 +189,24 @@ func (p PassFlags) checkPassed(args []string, i *int, name, val string, hasVal, 
 			names = append(names, "-"+string(r))
 		}
 	}
+	loosens := false
 	for _, n := range names {
 		if slices.Contains(p.Model, n) || slices.Contains(p.Continue, n) || slices.Contains(p.Resume, n) {
-			return fmt.Errorf("write %s on its own, not as part of %s", n, name)
+			return false, fmt.Errorf("write %s on its own, not as part of %s", n, name)
 		}
 		for _, r := range p.Refused {
-			if slices.Contains(r.Names, n) && (!r.UnlessNoPolicy || !noPolicy) {
-				return fmt.Errorf("%s clashes with aggy: %s", n, r.Why)
+			if !slices.Contains(r.Names, n) {
+				continue
+			}
+			if !r.UnlessNoPolicy {
+				return false, fmt.Errorf("%s clashes with aggy: %s", n, r.Why)
+			}
+			if l, err := gate(fmt.Errorf("%s: %w", n, ErrLoosens)); err != nil {
+				return false, err
+			} else if l {
+				loosens = true
 			}
 		}
 	}
-	return nil
+	return loosens, nil
 }

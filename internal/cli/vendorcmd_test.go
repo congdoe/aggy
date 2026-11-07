@@ -6,12 +6,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/store"
 )
 
@@ -28,8 +30,12 @@ func TestVendorCommandRefuses(t *testing.T) {
 		{"settings", []string{"claude", "--settings", "{}"}, "--settings clashes", "cli.flag_clash"},
 		{"codex memory", []string{"codex", "-c", "developer_instructions=x"}, "shared memory", "cli.flag_clash"},
 		{"grok deny", []string{"grok", "--deny", "x"}, "--deny clashes", "cli.flag_clash"},
-		{"a prompt", []string{"claude", "fix it"}, "not a flag", "cli.flag_clash"},
-		{"a subcommand", []string{"codex", "exec"}, "not a flag", "cli.flag_clash"},
+		{"a prompt", []string{"claude", "fix it"}, "not a flag", "cli.usage"},
+		{"a prompt after a switch", []string{"claude", "--verbose", "fix it"}, "not a flag", "cli.usage"},
+		{"a subcommand", []string{"codex", "exec"}, "not a flag", "cli.usage"},
+		{"--", []string{"claude", "--", "fix"}, "starts a prompt", "cli.usage"},
+		{"a loosening flag", []string{"claude", "--dangerously-skip-permissions"}, "--no-policy", "cli.flag_needs_no_policy"},
+		{"a loosening -c", []string{"codex", "-c", `sandbox_mode="danger-full-access"`}, "--no-policy", "cli.flag_needs_no_policy"},
 		{"both", []string{"claude", "-c", "-r"}, "not both", "cli.usage"},
 		{"a resume id that could be a path", []string{"claude", "-r", "../x"}, "not a session id", "cli.usage"},
 		{"a tool with no name", []string{"claude", "--tool"}, "needs a name", "cli.usage"},
@@ -132,6 +138,60 @@ func TestPlanContinue(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSameChildAgain (T6903): a tool-change resume drops --no-policy (S-6), so
+// the flags only it let through stay behind; the rest are the same session's.
+func TestSameChildAgain(t *testing.T) {
+	first := target{New: true, Vendor: adapter.Codex, NoPolicy: true, Model: "m", Tools: []string{"x"},
+		Extra: []string{"--search", "--yolo"}, SafeExtra: []string{"--search"}, Loosens: []string{"--yolo"}}
+	again := sameChildAgain(first, switchTo{vendor: adapter.Codex, parentID: "p", child: "c"})
+	if again.NoPolicy || len(again.Loosens) != 0 || !slices.Equal(again.Extra, []string{"--search"}) {
+		t.Errorf("target = %+v, want --yolo gone with --no-policy", again)
+	}
+	if again.Model != "m" || !slices.Equal(again.Tools, []string{"x"}) || again.Child != "c" || !again.SameChild {
+		t.Errorf("target = %+v, want the same session", again)
+	}
+}
+
+// TestLaunchCode: each kind of launch refusal has its own code.
+func TestLaunchCode(t *testing.T) {
+	tests := []struct {
+		name string
+		seed func(t *testing.T, s *store.Store, dir string)
+		tgt  target
+		want diag.Code
+	}{
+		{name: "no session", seed: func(*testing.T, *store.Store, string) {}, tgt: target{ParentID: "abcd"}, want: diag.CodeNotFound},
+		{
+			name: "ambiguous",
+			seed: func(t *testing.T, s *store.Store, dir string) {
+				seedParent(t, s, "abcd0000-0000-4000-8000-000000000000", dir)
+				seedParent(t, s, "abcd1111-0000-4000-8000-000000000000", dir)
+			},
+			tgt: target{ParentID: "abcd"}, want: diag.CodeAmbiguousID,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := sessionStore(t)
+			dir := t.TempDir()
+			tt.seed(t, s, dir)
+			_, err := plan(context.Background(), s, config.Default(), dir, tt.tgt, time.Now(), &bytes.Buffer{})
+			if got := launchCode(err, diag.CodeLaunchFailed); got != tt.want {
+				t.Errorf("code = %s, want %s (err %v)", got, tt.want, err)
+			}
+		})
+	}
+	t.Run("allowed_vendors", func(t *testing.T) {
+		isolate(t)
+		dir := t.TempDir()
+		mustWrite(t, filepath.Join(dir, ".aggy", "config.toml"), "allowed_vendors = [\"grok\"]\n", 0o600)
+		_, err := allowedIn(config.Default(), dir, adapter.Claude)
+		if got := launchCode(err, diag.CodeConfig); got != diag.CodeNotAllowed {
+			t.Errorf("code = %s (err %v)", got, err)
+		}
+	})
 }
 
 // TestPlanBareIsFresh: the target bare aggy asks for starts a new parent even with
