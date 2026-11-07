@@ -150,7 +150,7 @@ func TestNoUntaggedFailurePrint(t *testing.T) {
 	// on), and the two prints a tag is built by.
 	allowed := []string{
 		"warning", "skipped ", "stopped at", "starting ", "this directory was replaced", "cannot be resumed (", "has no recorded session id;",
-		"has no recorded session id; starting", "is on for this", "your own ", "probing ", "still present",
+		"has no recorded session id; starting", "the newer %s session here", "is on for this", "your own ", "probing ", "still present",
 		`"%s: %s\n", name, termsafe.Line(`, `"aggy %s: %s\n", cmd, msg`, `"aggy: %s\n", msg`, `"\n%s"`,
 		"Nothing changed.", "switchUsage", "near limit uses", "proxy not used", `Fprintln(stderr, n)`, `Fprintln(stderr, line+tag)`, `"aggy hook: %s%s\n"`, `did not answer in time`,
 		`Notice: func(s string)`, // a note from the borrow, which goes on
