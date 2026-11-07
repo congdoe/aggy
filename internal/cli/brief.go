@@ -214,11 +214,7 @@ func childBrief(ctx context.Context, s *store.Store, e borrowEnv, pl launchPlan)
 // last-active times from the session files (refreshChildren).
 func showBrief(name string, t target, stdout, stderr io.Writer) int {
 	fail := func(err error) int {
-		code := diag.CodeLaunchFailed
-		if errors.Is(err, errNoSession) {
-			code = diag.CodeNotFound
-		}
-		return cmdErr(stderr, strings.TrimPrefix(name, "aggy "), code, err)
+		return cmdErr(stderr, strings.TrimPrefix(name, "aggy "), launchCode(err, diag.CodeLaunchFailed), err)
 	}
 	ctx := context.Background()
 	s, err := openIndex(ctx)

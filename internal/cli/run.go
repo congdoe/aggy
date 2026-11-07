@@ -104,15 +104,21 @@ func launch(name string, t target, stderr io.Writer) int {
 		}
 		c := next.choice
 		if c.Resume {
-			// T6729: the same child again, so it is wired with the tools
-			// as now set. It is the same session, so its --tool names,
-			// one-launch model, and CLI flags carry over, unlike a switch;
-			// --no-policy does not (S-6), and it gets no brief.
-			t = target{ParentID: next.parentID, Vendor: next.vendor, Child: next.child, Model: t.Model, Tools: t.Tools, Extra: t.Extra}
+			t = sameChildAgain(t, next)
 			continue
 		}
 		t = target{ParentID: next.parentID, Vendor: next.vendor, Child: c.Child, NewChild: c.New, Model: c.Model, Brief: c.Brief, Tools: c.Tools}
 	}
+}
+
+// sameChildAgain is the target of T6729's resume: the same child again, so it
+// is wired with the tools as now set. It is the same session, so its --tool
+// names, one-launch model, and CLI flags carry over, unlike a switch;
+// --no-policy does not (S-6), so neither do the flags only it let through, and
+// it gets no brief.
+func sameChildAgain(t target, next switchTo) target {
+	return target{ParentID: next.parentID, Vendor: next.vendor, Child: next.child, SameChild: true,
+		Model: t.Model, Tools: t.Tools, Extra: t.SafeExtra, SafeExtra: t.SafeExtra}
 }
 
 // switchTo is the vendor a CLI exited for, its parent, and the switch's
@@ -165,11 +171,8 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	}
 	defer func() { _ = s.Close() }()
 	pl, err := plan(ctx, s, cfg, cwd, t, time.Now(), stderr)
-	if errors.Is(err, errNoSession) {
-		return fail(diag.CodeNotFound, err)
-	}
 	if err != nil {
-		return fail(diag.CodeLaunchFailed, err)
+		return fail(launchCode(err, diag.CodeLaunchFailed), err)
 	}
 	v := adapter.Vendor(pl.child.Vendor)
 	ids = diag.Rec{Parent: pl.parent.ID, Child: pl.child.ID, Vendor: string(v)}
@@ -184,7 +187,7 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	// screen and the ones the switch picker offers.
 	eff, err := allowedIn(cfg, pl.child.Cwd, v)
 	if err != nil {
-		return fail(diag.CodeConfig, err)
+		return fail(launchCode(err, diag.CodeConfig), err)
 	}
 	path, err := probe.LookPath(vendorBin(v))
 	if err != nil {
@@ -227,7 +230,10 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	// already have raised last-active times from session files (D19-9).
 	var warns []string
 	if pl.child.Kind != "" {
-		warns = append(warns, "this "+pl.child.Kind+" borrow's session is on screen now: the CLI's own permission prompts apply, not the borrow's lockdown")
+		warns = append(warns, borrowNote(pl))
+	}
+	if len(t.Loosens) > 0 {
+		warns = append(warns, "your flags "+strings.Join(t.Loosens, ", ")+" loosen approvals, the sandbox, or hook trust for this launch; --no-policy lets them through")
 	}
 	if t.NoPolicy {
 		warns = append(warns, "starting without the safety policy (--no-policy)")
@@ -245,7 +251,12 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	if err != nil {
 		return fail(diag.CodeLaunchFailed, err)
 	}
-	cleanup, mw := addMemory(v, caps, pl.child.Cwd, memDir, &req)
+	// An edit borrow's child could write its worktree's memory file, and no
+	// one has reviewed that worktree yet, so it is not taken as instructions.
+	cleanup, mw := func() {}, []string(nil)
+	if adapter.Kind(pl.child.Kind) != adapter.Edit {
+		cleanup, mw = addMemory(v, caps, pl.child.Cwd, memDir, &req)
+	}
 	defer cleanup()
 	// The tools that are on, for this child's own vendor and repo: a
 	// switch or resume is wired again for the CLI it starts. Their files
@@ -348,6 +359,9 @@ func launchOnce(name string, t target, stderr io.Writer, next *switchTo, q *diag
 	launched.Event, launched.VendorSession = diag.EvLaunched, assigned
 	launched.Attrs = map[string]any{"new_child": pl.newChild, "new_parent": pl.newParent, "resumed": pl.resume != "",
 		"brief": t.Brief, "model_set": t.Model != "", "direct": t.Direct, "cli_flags": len(t.Extra)}
+	if len(t.Loosens) > 0 {
+		launched.Attrs["loosening_flags"] = strings.Join(t.Loosens, ",")
+	}
 	// Queued, like the rest of the session's records, so the launch
 	// never waits on the disk (G67-6).
 	cause := q.Log(launched)

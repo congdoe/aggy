@@ -57,14 +57,42 @@ type target struct {
 	// this session does not carry them; a switch gets its own, from aggy
 	// switch --tool, which the user confirmed with the switch.
 	Tools []string
-	// Extra are the CLI's own flags from aggy <vendor>, for this session
-	// only: a resume of the same session keeps them, a switch does not.
-	Extra []string
+	// Extra are the CLI's own flags from aggy <vendor>, for this launch.
+	// SafeExtra is Extra without Loosens, the flags --no-policy let through:
+	// a resume of the same session keeps SafeExtra, since it drops
+	// --no-policy (S-6), and a switch keeps neither.
+	Extra, SafeExtra, Loosens []string
+	// SameChild says Child is the child that was on screen, reopened for a
+	// tool change, so it may be a borrow's. A switch's Child never may.
+	SameChild bool
 }
 
-// errNoSession matches a plan that found no session the id or the
-// directory names.
-var errNoSession = errors.New("no session")
+// Errors launchCode gives their own reason code.
+var (
+	// errNoSession: no session has the id, or none here can be reopened.
+	errNoSession = errors.New("no session")
+	// errAmbiguousID: more than one session has the prefix.
+	errAmbiguousID = errors.New("sessions start with that id; give more of it")
+	// errNotAllowed: the repo's allowed_vendors leaves the vendor out.
+	errNotAllowed = errors.New("this repo's allowed_vendors does not list")
+	// errBorrowNoScreen: research and news children never go on screen.
+	errBorrowNoScreen = errors.New("does not go on screen: by rule it never gets file-reading or MCP tools, an on-screen session has them, and its transcript may hold text from the web; aggy inbox shows its report")
+)
+
+// launchCode is err's reason code, def unless it is one of those above.
+func launchCode(err error, def diag.Code) diag.Code {
+	switch {
+	case errors.Is(err, errNoSession):
+		return diag.CodeNotFound
+	case errors.Is(err, errAmbiguousID):
+		return diag.CodeAmbiguousID
+	case errors.Is(err, errNotAllowed):
+		return diag.CodeNotAllowed
+	case errors.Is(err, errBorrowNoScreen):
+		return diag.CodeBorrowNoScreen
+	}
+	return def
+}
 
 // launchPlan is what a launch puts on screen.
 type launchPlan struct {
@@ -120,7 +148,7 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 		case n == 0:
 			return p, fmt.Errorf("%w %s (aggy sessions and aggy session list them)", errNoSession, t.ParentID)
 		case n > 1:
-			return p, fmt.Errorf("%d sessions start with %s; give more of the id", n, t.ParentID)
+			return p, fmt.Errorf("%d %w (%s)", n, errAmbiguousID, t.ParentID)
 		case len(ps) == 1:
 			p.parent = ps[0]
 		default:
@@ -174,7 +202,7 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 	}
 	// Only an id on the command line may name a borrow child: a switch
 	// picks among interactive children, and its id comes over the socket.
-	borrowOK := pick != "" && t.Child == ""
+	borrowOK := pick != "" && t.Child == "" || t.SameChild
 	if t.Child != "" {
 		pick = t.Child
 	}
@@ -240,15 +268,19 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 }
 
 // borrowChild plans a finished borrow's child on screen (aggy resume <child
-// id>), or says why it cannot be: never a new child in its place. The child
-// resumes in its own directory, since Claude and Grok keep sessions per
-// directory: review's repo or edit's worktree, which must still be there,
-// or the empty temp dir of the other kinds, which ended with the borrow and
-// is made again, empty, for the session (remakeCwd). It is the person's
-// session now: the CLI's own permission prompts and aggy's safety policy
-// apply, not the borrow's lockdown flags, which were for no one watching.
+// id>), or says why it cannot be: never a new child in its place. Research
+// and news are refused (errBorrowNoScreen). The rest resume in their own
+// directory, since Claude and Grok keep sessions per directory: review's repo
+// or edit's worktree, which must still be there, or the empty temp dir of
+// image and video, which ended with the borrow and is made new for the session
+// (remakeCwd), so a dir already there is refused, never used. It is the
+// person's session now: the borrow's lockdown flags do not apply, and launchOnce
+// says so.
 func (p *launchPlan) borrowChild(cfg config.Config, t target, c store.Child, files *sessionFiles) error {
 	what := c.Kind + " borrow " + shortID(c.ID)
+	if k := adapter.Kind(c.Kind); k == adapter.Research || k == adapter.News {
+		return fmt.Errorf("%s %w", what, errBorrowNoScreen)
+	}
 	if t.Brief {
 		return fmt.Errorf("%s takes no brief: it is its own session, and other CLIs' turns are not part of it", what)
 	}
@@ -265,15 +297,22 @@ func (p *launchPlan) borrowChild(cfg config.Config, t target, c store.Child, fil
 	if err := adapter.ValidSessionID(v, c.VendorSessionID); err != nil {
 		return fmt.Errorf("%s has an invalid id in the index: %w", what, err)
 	}
-	if fi, err := safefs.Stat(c.Cwd); errors.Is(err, fs.ErrNotExist) {
+	switch k := adapter.Kind(c.Kind); {
+	case k == adapter.Image || k == adapter.Video:
 		if !borrowTempDir(c) {
-			return fmt.Errorf("%s cannot be resumed: its directory, %s, was removed", what, termsafe.Line(c.Cwd))
+			return fmt.Errorf("%s cannot be resumed: %s is not a borrow's temp dir", what, termsafe.Line(c.Cwd))
 		}
 		p.remakeCwd = true
-	} else if err != nil {
-		return err
-	} else if !fi.IsDir() {
-		return fmt.Errorf("%s cannot be resumed: %s is not a directory", what, termsafe.Line(c.Cwd))
+	default:
+		fi, err := safefs.Stat(c.Cwd)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return fmt.Errorf("%s cannot be resumed: its directory, %s, was removed", what, termsafe.Line(c.Cwd))
+		case err != nil:
+			return err
+		case !fi.IsDir():
+			return fmt.Errorf("%s cannot be resumed: %s is not a directory", what, termsafe.Line(c.Cwd))
+		}
 	}
 	if _, err := files.LastChanged(v, c.VendorSessionID, c.VendorHome, c.Cwd, c.CreatedAt); errors.Is(err, errNoSessionFile) || errors.Is(err, errNotInScan) {
 		return fmt.Errorf("%s cannot be resumed: the vendor has no saved session for it", what)
@@ -283,15 +322,22 @@ func (p *launchPlan) borrowChild(cfg config.Config, t target, c store.Child, fil
 	return nil
 }
 
+// borrowNote says at launch what a borrow's child on screen has become.
+func borrowNote(pl launchPlan) string {
+	note := "this " + pl.child.Kind + " borrow's session is on screen now: the borrow's lockdown no longer applies, and what it may do is up to the CLI's own permission settings"
+	if pl.remakeCwd {
+		note += "; its temp directory is made new, and files in it are removed when the session ends"
+	}
+	if adapter.Kind(pl.child.Kind) == adapter.Edit {
+		note += "; aggy accept refuses a worktree changed since the borrow ended, so review and commit such changes by hand, or aggy reject them; .aggy/memory.md is not loaded from an unreviewed worktree"
+	}
+	return note
+}
+
 // borrowTempDir reports whether c's working dir is the work/ of an
 // aggy-borrow-* temp dir, as internal/borrow makes for every kind but review
 // and edit.
 func borrowTempDir(c store.Child) bool {
-	switch adapter.Kind(c.Kind) {
-	case adapter.Image, adapter.Video, adapter.Research, adapter.News:
-	default:
-		return false
-	}
 	return filepath.IsAbs(c.Cwd) && filepath.Base(c.Cwd) == "work" && strings.HasPrefix(filepath.Base(filepath.Dir(c.Cwd)), "aggy-borrow-")
 }
 
@@ -425,7 +471,7 @@ func allowedIn(cfg config.Config, dir string, v adapter.Vendor) (config.Effectiv
 		return eff, err
 	}
 	if !eff.Allows(v) {
-		return eff, fmt.Errorf("this repo's allowed_vendors does not list %s", v)
+		return eff, fmt.Errorf("%w %s", errNotAllowed, v)
 	}
 	return eff, nil
 }
