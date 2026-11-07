@@ -445,14 +445,20 @@ type session struct {
 	// clean send, while lenKnown (an Enter a popup may have taken leaves
 	// it unknown); popup is set once an @ or a leading / was typed since
 	// then; cleared is set when the user emptied the line, until the
-	// Enter that confirms it (T6754, O56-3). draftLen counts the bytes
-	// typed since the last Enter of any kind, popup or not (knownText).
-	pasteTail []byte
-	compLen   int
-	draftLen  int
-	lenKnown  bool
-	popup     bool
-	cleared   bool
+	// Enter that confirms it (T6754, O56-3). draftLen counts the characters
+	// typed since the last Enter of any kind, popup or not (knownText, followDraft).
+	// draftBlind: a newline, a cursor key, or another key aggy cannot judge came
+	// since then, so a Ctrl+U or a Backspace may not remove what aggy counted.
+	// draftPaste: inside a paste; draftHigh: the last byte was not ASCII;
+	// draftTail: the start of a paste marker a read ended on.
+	pasteTail                         []byte
+	compLen                           int
+	draftLen                          int
+	draftBlind, draftPaste, draftHigh bool
+	draftTail                         []byte
+	lenKnown                          bool
+	popup                             bool
+	cleared                           bool
 	// hadAt: a popup trigger was typed since the last clean send; moved:
 	// a cursor key or newline came since the latest trigger or Ctrl+U;
 	// pastePop: the open paste's latest @ has no whitespace after it yet.
@@ -740,6 +746,8 @@ func (s *session) hookEvent(ev hookEvent) {
 		case ev.sessionID != own:
 			s.ignoredTurnEnd(ev)
 		default:
+			// TODO(T6895): a nested CLI's Stop naming the on-screen id counts too,
+			// whatever its chain, so it can end a turn for aggy and settle doubt.
 			s.lastTurnEnd = s.log(diag.Rec{Event: diag.EvHookAccepted, Attrs: map[string]any{"event": hookName(ev.name), "counted": true, "held": s.held}})
 		}
 		if ev.sessionID != "" && ev.sessionID == own {
@@ -1009,9 +1017,8 @@ func refusedMsg(v adapter.Vendor, err error) string {
 // TODO(O56-3): aggy installs no UserPromptSubmit hook yet; a turn-start
 // hook could confirm a send, but any process in the CLI's tree can send
 // one, so it would need care before clearing this.
-// shortcut: a CLI that turns on kitty's all-keys-as-escapes mode gets
-// Enter as CSI 13 u, which never clears it, so it cannot be switched
-// from by aggy. Upgrade if T6684 finds one.
+// A CLI that turns on kitty's all-keys-as-escapes mode gets keys as CSI u, which
+// legacyKeys turns into the bytes followed here.
 func (s *session) send(b []byte) {
 	if terminalReport(b) {
 		s.toChild.push(b) // the terminal answering the CLI, not the user
@@ -1021,9 +1028,9 @@ func (s *session) send(b []byte) {
 		s.pointer(b)
 		return
 	}
-	typed := s.typedOf(b)
+	typed := legacyKeys(s.typedOf(b), s.draftPaste)
 	if len(typed) == 0 && len(b) > 0 {
-		s.toChild.push(b) // the terminal's own reports: no typing at all
+		s.toChild.push(b) // the terminal's own reports, or a key's release: no typing at all
 		return
 	}
 	if s.exitGap {
@@ -1105,12 +1112,13 @@ func (s *session) followKeys(typed []byte) {
 		// so they end nothing there.
 		s.escEmpty = false
 	}
-	before, beforeDraft := s.compLen, s.draftLen
+	inert := s.followDraft(typed)
+	before := s.compLen
 	for _, c := range typed {
 		s.compose(c)
 	}
-	if onlyEsc {
-		s.compLen, s.draftLen = before, beforeDraft // an Esc types nothing
+	if onlyEsc || inert {
+		s.compLen = before // an Esc types nothing, nor does a key that edits nothing
 	}
 	if typed[0] != esc && enter && bytes.IndexByte(typed, '\r') < len(typed)-1 {
 		s.slashOnly, s.localEnter = false, false // more came after the Enter, in this read
@@ -1132,13 +1140,145 @@ func (s *session) followKeys(typed []byte) {
 	s.updateDirty()
 }
 
-// knownText reports characters aggy counted and has not seen sent: any since the
-// last Enter, popup or not, so `hi @bob` and a line typed after /cost are known.
-// The exit command would send them, so they block a switch until sent or cleared.
-// Keys typed into a dialog aggy cannot see (a /model picker's arrows) count too,
-// and block falsely: the safe side, with Ctrl+U and an Enter as the way out.
-func (s *session) knownText() bool {
-	return s.draftLen > 0 || s.lenKnown && s.compLen > 0 && !s.popup
+// knownText reports text aggy counted and has not seen sent: any since the last
+// Enter, popup or not, so `hi @bob` and a line typed after /cost are known. The exit
+// command would send it, so it blocks a switch until sent or cleared. Text only:
+// followDraft says what counts.
+func (s *session) knownText() bool { return s.draftLen > 0 }
+
+// inertCtrl reports a control key that neither adds text nor moves the cursor:
+// Ctrl+C, D, K, L, O, T. Whatever they do to a draft, it stays counted.
+func inertCtrl(c byte) bool {
+	switch c {
+	case 0x03, 0x04, 0x0b, 0x0c, 0x0f, 0x14:
+		return true
+	}
+	return false
+}
+
+// inertSeq reports an escape sequence that leaves the composer as it was: Shift+Tab
+// (Claude's mode cycle), Page Up, Page Down, and Esc as CSI u. That no vendor's
+// Shift+Tab or page keys edit the composer is unverified; the status line still
+// shows the prompt, and asks.
+func inertSeq(seq []byte) bool {
+	switch string(seq) {
+	case "\x1b[Z", "\x1b[5~", "\x1b[6~":
+		return true
+	}
+	return isEsc(seq)
+}
+
+// seqLen is the length of the escape sequence at the start of b: CSI to its final
+// byte, SS3 and any other two bytes whole, and a lone ESC as 1.
+func seqLen(b []byte) int {
+	if len(b) < 2 {
+		return 1
+	}
+	switch b[1] {
+	case '[':
+		for i := 2; i < len(b); i++ {
+			if b[i] >= 0x40 && b[i] <= 0x7e {
+				return i + 1
+			}
+		}
+		return len(b)
+	case 'O':
+		return min(3, len(b))
+	case esc, '\r':
+		return 1 // Esc, then its own key: compose and followDraft take the Enter
+	}
+	return 2
+}
+
+// markerStart reports that b is the start of the paste marker that comes next, so
+// its end is in the next read. A lone ESC only counts inside a paste: elsewhere it
+// is the Esc key, which must act at once.
+func (s *session) markerStart(b []byte) bool {
+	m := pasteStart
+	if s.draftPaste {
+		m = pasteEnd
+	}
+	return len(b) < len(m) && bytes.HasPrefix(m, b) && (len(b) > 1 || s.draftPaste)
+}
+
+// followDraft updates draftLen from what a read typed, and reports whether the read
+// was only keys that change nothing. Printable bytes, UTF-8 characters, and pastes
+// are text, and yank and undo may bring text back. Control bytes and function keys
+// are not, but a newline, a cursor key (Up may recall a whole line), Ctrl+W, Tab,
+// and any key not known to be inert set draftBlind: from then until an Enter aggy
+// cannot say what a Ctrl+U or a Backspace removes, so the draft stays known, and
+// with none counted the prompt is in doubt (doubt). A Backspace there means there
+// was something to delete, so it counts as text. The way out is Ctrl+U and an Enter:
+// if that Enter sends what was left, the person sees it, and it is theirs.
+func (s *session) followDraft(b []byte) (inert bool) {
+	inert = true
+	prev := s.lastByte
+	if len(s.draftTail) > 0 {
+		b = append(s.draftTail, b...)
+		s.draftTail = nil
+	}
+	for i := 0; i < len(b); {
+		rest := b[i:]
+		if s.markerStart(rest) {
+			s.draftTail = append([]byte(nil), rest...)
+			return false
+		}
+		c, n := rest[0], 1
+		high := false
+		switch {
+		case bytes.HasPrefix(rest, pasteStart):
+			s.draftPaste, n, inert = true, len(pasteStart), false
+		case bytes.HasPrefix(rest, pasteEnd):
+			s.draftPaste, n, inert = false, len(pasteEnd), false
+		case s.draftPaste && (c == '\r' || c == '\n'):
+			s.draftLen++
+			s.draftBlind = true
+		case s.draftPaste:
+			if c < 0x80 || c >= 0xc0 || !s.draftHigh {
+				s.draftLen++
+			}
+			high = c >= 0x80
+		case c == esc:
+			n = seqLen(rest)
+			if !inertSeq(rest[:n]) {
+				s.draftBlind, inert = true, false
+			}
+		case c == '\r' && (prev == '\\' || prev == esc && s.draftLen > 0), c == '\n':
+			s.draftLen++
+			s.draftBlind, inert = true, false
+		case c == '\r':
+			s.draftLen, s.draftBlind, inert = 0, false, false
+		case c == ctrlU:
+			inert = false
+			if !s.draftBlind {
+				s.draftLen = 0
+			}
+		case c == 0x7f || c == 0x08:
+			inert = false
+			switch {
+			case !s.draftBlind:
+				s.draftLen = max(s.draftLen-1, 0)
+			case s.draftLen == 0:
+				s.draftLen = 1
+			}
+		case c == 0x19 || c == 0x1f:
+			s.draftLen++
+			inert = false
+		case c < 0x20:
+			if !inertCtrl(c) {
+				s.draftBlind, inert = true, false
+			}
+		default:
+			if c < 0x80 || c >= 0xc0 || !s.draftHigh {
+				s.draftLen++
+			}
+			high, inert = c >= 0x80, false
+		}
+		s.draftHigh = high
+		prev = rest[n-1]
+		i += n
+	}
+	return inert
 }
 
 // doubt reports that the composer may hold text aggy did not count, or that it
@@ -1147,11 +1287,11 @@ func (s *session) knownText() bool {
 // person can see the screen and aggy cannot, so this does not block: they are
 // told, and confirm (offerSwitch).
 func (s *session) doubt() bool {
-	return !s.knownText() && (!s.lenKnown || s.popup || s.cleared || s.escEmpty || s.escDoubt)
+	return !s.knownText() && (!s.lenKnown || s.popup || s.cleared || s.escEmpty || s.escDoubt || s.draftBlind)
 }
 
 func (s *session) updateDirty() {
-	s.dirty = !s.lenKnown || s.compLen > 0 || s.popup || s.cleared || s.escDoubt
+	s.dirty = !s.lenKnown || s.draftLen > 0 || s.draftBlind || s.popup || s.cleared || s.escDoubt
 }
 
 // settleTurnGap is how long after the last Enter a turn end must come to say
@@ -1209,6 +1349,9 @@ func (s *session) pointer(b []byte) {
 	if s.hadAt {
 		s.popup = true // the cursor may be back in an @ token
 	}
+	if s.draftLen > 0 {
+		s.draftBlind = true // the cursor may have left the draft's end
+	}
 	// TODO(T6895): a click may start a turn or fill the composer; only
 	// inputSinceTurn says so, and an open switch can still fire on it.
 	s.updateDirty()
@@ -1246,6 +1389,7 @@ func bareEnter(b []byte) bool {
 // drawing, so that this silence means none runs, is unverified on all three
 // CLIs; if one runs silent this long a notice can hold its output. A variable
 // for tests.
+// TODO(T6895): a live check of a queued turn silent past this.
 var queuedQuiet = 10 * time.Second
 
 // releaseQueued ends a wait for a queued turn that shows no sign of running.
@@ -1317,23 +1461,22 @@ func (s *session) compose(c byte) {
 		// reads: it may bring text back, or answer an approval. Doubt, which a
 		// turn end can settle, and no counted text.
 		s.escDoubt, s.moved, s.pastePop, s.slashOnly = true, true, false, false
-		s.draftLen, s.afterEnter = 0, 0
+		s.afterEnter = 0
 		s.cmdLine, s.cmdBad = s.cmdLine[:0], false
 	case c == '\r' && (prev == esc || prev == '\\' || s.inPaste) || c == '\n':
 		// A newline in the composer. An Esc just before counts however long ago
 		// it came, as Option+Enter split across reads looks the same.
 		s.compLen++
-		s.draftLen++
 		s.moved, s.pastePop, s.slashOnly = true, false, false
 	case c == '\r' && s.popup && s.slashLine && s.o.Vendor == adapter.OpenCode:
 		// A command runs and leaves no text (/models opens a dialog, live).
 		s.compLen, s.lenKnown, s.cleared, s.hadAt, s.moved, s.popup, s.slashLine = 0, true, false, false, false, false, false
-		s.draftLen, s.afterEnter = 0, 0
+		s.afterEnter = 0
 		s.slashOnly, s.slashEntered, s.escDoubt = false, false, false
 	case c == '\r' && s.popup:
 		s.lenKnown = false // the popup may have taken it and added text
 		s.popupEnter = s.popupEnter || s.enterAtPrompt
-		s.draftLen, s.afterEnter = 0, 0
+		s.afterEnter = 0
 		s.slashEntered = s.slashOnly
 		s.localEnter = s.slashOnly && !s.moved && !s.cmdBad && adapter.LocalCommand(s.o.Vendor, string(s.cmdLine))
 		s.cmdLine, s.cmdBad = s.cmdLine[:0], false
@@ -1341,7 +1484,7 @@ func (s *session) compose(c byte) {
 		// TODO(T6895): an Enter that answers an approval leaves a draft under it in
 		// the composer, and aggy counts it as sent. Only "See its prompt?" is left.
 		s.compLen, s.lenKnown, s.cleared, s.hadAt, s.moved = 0, true, false, false, false // sent
-		s.draftLen, s.popupEnter, s.afterEnter = 0, false, 0
+		s.popupEnter, s.afterEnter = false, 0
 		s.slashOnly, s.slashEntered, s.escDoubt = false, false, false
 		s.cmdLine, s.cmdBad = s.cmdLine[:0], false
 	case c == ctrlU:
@@ -1357,11 +1500,7 @@ func (s *session) compose(c byte) {
 			s.popup = false
 		}
 		s.compLen, s.lenKnown, s.cleared, s.moved = 0, true, true, false
-		s.draftLen = 0
 	case c == 0x7f || c == 0x08:
-		if s.draftLen > 0 {
-			s.draftLen--
-		}
 		if s.compLen > 0 {
 			s.compLen--
 			if s.compLen == 0 && s.lenKnown && s.popup && !s.moved {
@@ -1383,7 +1522,6 @@ func (s *session) compose(c byte) {
 			s.pastePop = false
 		}
 		s.compLen++
-		s.draftLen++
 	}
 	if s.afterEnter == 0 {
 		s.enterAt = time.Now()
@@ -2334,6 +2472,7 @@ func (s *session) pickerInput(b []byte) {
 			return
 		}
 		s.setSwitch(pendingSwitch{to: picked, choice: c, picked: true, toldDoubt: s.pk.doubtSaid})
+		s.toldDirty = false // a first pick is told again, or nothing would say why it waits
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked)})})
 		s.markNoTurn()
 		switch {

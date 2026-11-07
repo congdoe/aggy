@@ -171,7 +171,7 @@ func (s *session) finishExit() {
 		cancel("dialog_in_gap")
 		// The letters may be in the prompt, or a dialog may have dropped
 		// them, so they count as unsent text until the user clears them.
-		s.compLen, s.lenKnown, s.dirty = len(cmd), true, true
+		s.compLen, s.draftLen, s.lenKnown, s.dirty = len(cmd), len(cmd), true, true
 		lines := []string{fmt.Sprintf("%s asked you something as aggy was about to exit it, so aggy did not press Enter and nothing was answered.", s.o.Vendor),
 			fmt.Sprintf("%s may be in its prompt: answer the question, clear that text, and pick %s again.", cmd, to)}
 		// They were typed before anyone could see the dialog, and an Enter among
@@ -201,7 +201,7 @@ func (s *session) finishExit() {
 // the letters count as unsent text and the keys are not sent.
 func (s *session) takeBackExit(cmd string, keys []byte) {
 	if s.askOpen() {
-		s.compLen, s.lenKnown, s.dirty = len(cmd), true, true
+		s.compLen, s.draftLen, s.lenKnown, s.dirty = len(cmd), len(cmd), true, true
 		lines := []string{fmt.Sprintf("%s asked you something as the switch was called off, so %s may be in its prompt.", s.o.Vendor, cmd)}
 		if len(keys) > 0 {
 			lines = append(lines, "What you typed in that moment was not sent.")
