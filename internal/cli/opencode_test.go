@@ -485,6 +485,14 @@ func TestOpenCodeCommand(t *testing.T) {
 		{[]string{"say hi"}, "not a flag"},
 		{[]string{"--continue", "--resume"}, "not both"},
 		{[]string{"--tool"}, "--tool needs a name"},
+		// Flags other CLIs gate, note, or read a folder from are not OpenCode's
+		// here, with or without --no-policy.
+		{[]string{"--add-dir=/"}, "none of OpenCode's own flags"},
+		{[]string{"--no-policy", "--add-dir=/"}, "none of OpenCode's own flags"},
+		{[]string{`--agents={"a":{"permissionMode":"bypassPermissions"}}`}, "none of OpenCode's own flags"},
+		{[]string{"--no-policy", "--dangerously-skip-permissions"}, "none of OpenCode's own flags"},
+		{[]string{"--no-policy", "--trust-all"}, "none of OpenCode's own flags"},
+		{[]string{"--profile=x"}, "none of OpenCode's own flags"},
 	}
 	for _, c := range cases {
 		t.Run(strings.Join(c.args, " "), func(t *testing.T) {
