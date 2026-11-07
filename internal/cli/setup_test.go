@@ -143,7 +143,7 @@ func TestSetup(t *testing.T) {
 		{
 			name:   "no terminal: probe and record all, no prompts",
 			want:   map[string]row{"claude": {"unknown", "2.1.311"}, "codex": {"unknown", "0.164.0"}, "grok": {"unknown", "1.0.70"}},
-			out:    []string{"no verified way to ask Codex", "run `codex login`", "later release"},
+			out:    []string{"no verified way to ask Codex", "run `codex login`", "aggy policy wire"},
 			notOut: []string{"[Y/n]", "Press Enter"},
 		},
 		{
