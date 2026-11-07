@@ -40,8 +40,9 @@ aggy inbox            # unread borrow reports; aggy inbox <id> shows one
   5. target path, such as `public/hero.png`.
   Run `aggy image "<brief>" --out <path>`; aggy copies the result there.
   Look at it, and run `aggy image --edit <path> "<change>"` if it is
-  wrong. `aggy video` and Grok edits are off unless the user sets
-  `grok_file_tools`: those tools can upload local images. Ask first.
+  wrong. `--edit` works on images Codex made; an image Grok made is refused,
+  so write a new brief instead. `aggy video` is off unless the user sets
+  `grok_file_tools`: its tools can upload local images. Ask first.
 
 ## Switching vendors
 

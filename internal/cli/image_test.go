@@ -86,6 +86,32 @@ func TestImageCommandRefusals(t *testing.T) {
 	}
 }
 
+// TestImageEditGrokRefused (T6923): aggy image --edit of an image Grok made
+// starts no child, says what works, and ends with its own code.
+func TestImageEditGrokRefused(t *testing.T) {
+	f := newBorrowFixture(t, adapter.Grok)
+	sidecar := filepath.Join(f.repo, ".aggy", "assets", "cat.jpg.json")
+	if err := os.MkdirAll(filepath.Dir(sidecar), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"kind":"image","vendor":"grok","session_id":"5f0c6a2e-9b1d-4e7a-8c3f-2d4b6a8e0c1f"}`
+	if err := os.WriteFile(sidecar, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errOut := f.media(t, adapter.Image, "--edit", "cat.jpg", "darker")
+	if code != 1 {
+		t.Fatalf("code %d stderr %q", code, errOut)
+	}
+	for _, want := range []string{"cannot change an image Grok made", "--vendor codex", "borrow.grok_edit"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("stderr %q lacks %q", errOut, want)
+		}
+	}
+	if recs := fakecli.Records(t, f.record); slices.ContainsFunc(recs, func(r fakecli.Record) bool { return r.Mode == "headless" }) {
+		t.Error("a refused edit ran a child")
+	}
+}
+
 // TestImageCommand (T6634): aggy image copies the image into the repo
 // and prints where it went.
 func TestImageCommand(t *testing.T) {

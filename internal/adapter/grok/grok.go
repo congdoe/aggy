@@ -396,7 +396,8 @@ func (a Adapter) Headless(req adapter.HeadlessRequest) (adapter.Command, error) 
 	case adapter.Image:
 		tools = slices.Clone(ImageTools)
 		if req.Resume != "" {
-			// An edit needs image_edit, which reads any local path.
+			// An edit needs image_edit, which reads any local path. A borrow
+			// never gets here (borrow.ErrGrokEdit): the run dir is gone.
 			if !req.FileTools {
 				return adapter.Command{}, fmt.Errorf("grok: an image edit (image_edit) %w", adapter.ErrFileTools)
 			}
