@@ -4,7 +4,7 @@ One command for the coding agents you already use: Claude Code, Codex, and Grok 
 
 aggy runs the official CLIs, signed in with your own accounts, and lets them work together. From any of them you can hand one bounded task to another (an image, a short video, a web research question, a news check, or a code review) and get a short report back. Each task runs headless in the other vendor's CLI, locked down to the tools that task needs.
 
-> **Status: pre-release, heading for v0.1.0.** Read-only borrows work today. Switching a session between vendors, with a handoff brief and a parent session over the vendor sessions, is **in progress** (milestone M2) and not shipped. Its first pieces are merged: `aggy hooks install` (hooks that tell aggy when a session starts, ends a turn, or hits a limit; `aggy unwire` takes them out) and `aggy brief --show` (a preview of the brief, built without a model; writing one comes with switching). Edit borrows come in M3.
+> **Status: pre-release, heading for v0.1.0.** Read-only borrows, switching a session between vendors at the turn end (`Ctrl+\`, with an optional handoff brief, under one aggy session over the vendor sessions), edit borrows on Codex, shared permissions, and OpenCode on screen work today. Commands typed inside a session, such as `/switch`, and the `/aggy` helper are planned, not shipped: for now you switch with `Ctrl+\`, or the agent asks with `aggy switch`. See [docs/design.md](docs/design.md), section 18.
 
 ## What aggy never does
 
@@ -54,13 +54,16 @@ aggy image "Hero image, 1200x630, the text 'aggy'" --out docs/hero.png
 aggy inbox             # unread borrow reports
 
 aggy                   # start a new session here on your default vendor, as claude does
+                       # inside it, Ctrl+\ switches to another vendor at the turn end
+aggy borrow edit "Rename Foo to Bar in pkg/x"   # Codex edits in its own git worktree
+aggy accept <borrow-id>                         # see its diff stat, run the checks, apply it
 aggy -c                # reopen the latest session here (aggy -r <id> for another)
 aggy claude --model opus --permission-mode plan   # a vendor CLI with its own flags
 aggy opencode --model xai/grok-4                  # OpenCode, on the plans and keys you set up
 aggy skill link        # let each CLI call aggy itself
 aggy policy wire       # write aggy's safety policy into Codex (Claude and Grok get it per launch)
 aggy memory import --from claude   # copy Claude's memory into .aggy/memory.md, after a diff
-aggy log               # borrows, vendors, models, files changed
+aggy log               # what was on screen, switches, borrows, files an accept changed
 aggy stats             # borrows per kind and vendor: runs, tokens, time, redo rate
 aggy usage             # what Codex says is left; what aggy's borrows used
 aggy diag show <id>    # what happened: the run id every error ends with, or a borrow id
@@ -77,12 +80,12 @@ These CLIs update constantly, so a newer version in the same major version is no
 
 | Kind | Claude Code | Codex | Grok Build |
 | --- | --- | --- | --- |
-| research, news | Not offered. | **Unsupported** for now (T6638): even fully locked down, Codex's `apply_patch` tool can confirm guesses of a local file's contents. Live. | Supported, with web search as the only tool. The tool list was checked live as the model reported it; the exact flag set aggy passes has not yet been run live. |
-| image | Not offered. | Supported. Lockdown flags checked live; the end-to-end borrow is not yet verified live. | Supported with `image_gen` only, which takes no local path (source). Not yet verified live. |
+| research, news | Not offered. | **Unsupported** for now (T6638): even fully locked down, Codex's `apply_patch` tool can confirm guesses of a local file's contents. Live. | Supported, with web search as the only tool. Research is live: a borrow with aggy's flags under `--sandbox strict` came back, and a planted file was never read. News takes the same flags and has not been run live. |
+| image | Not offered. | Supported. Live: an image borrow landed at `--out`. | Supported with `image_gen` only, which takes no local path (source), under `--sandbox strict` with `--allow image_gen`. Live. |
 | image `--edit` | Not offered. | Supported (resumes the same thread). Not yet verified live. | **Refused**, before any child starts: a Grok session lives under its working directory, and the borrow's temp dir is gone by then, so it could only fail. Make a new image, or make it on Codex, whose images `--edit` can change. |
 | video | Not offered. | Not offered. | **Off by default**, behind the same `grok_file_tools` opt-in and with the same upload risk (`image_to_video`). Unverified headless. |
-| review | Supported when the CLI has `--setting-sources` (probed), read-only in plan mode. Its tool names are unverified. | Supported, with the Codex lockdown flags, which leave no tool that reads a file, so the diff and files go in the prompt. That lockdown is not leak-proof: `apply_patch`, which no flag removes, can confirm a guessed line of a file at a known path (Live; the same reason research is off on Codex). | Supported, read-only in plan mode; the tool list was checked live as the model reported it. In a repo under your home folder its read tools are denied, so it works from the diff and files aggy gives it, and the report says so. Refused in a repo holding config Grok may load and run (such as project hooks), because aggy does not rely on Grok's folder trust. |
-| edit | M3, not shipped. | M3, not shipped. | M3, not shipped. |
+| review | Supported when the CLI has `--setting-sources` (probed), read-only in plan mode. Its tool names are unverified. | Supported, with the Codex lockdown flags, which leave no tool that reads a file, so the diff and files go in the prompt. That lockdown is not leak-proof: `apply_patch`, which no flag removes, can confirm a guessed line of a file at a known path (Live; the same reason research is off on Codex). | Supported, read-only in plan mode, under `--sandbox strict`: plan mode alone does not confine its reads, which Grok allows in every mode (live). The tool list was checked live as the model reported it. In a repo under your home folder its read tools are denied, so it works from the diff and files aggy gives it, and the report says so. Refused in a repo holding config Grok may load and run (such as project hooks), because aggy does not rely on Grok's folder trust. |
+| edit | **Refused**: its write mode and sandbox under aggy are unverified. | Supported, in its own git worktree with the Codex edit lockdown (flags checked live); `aggy check` runs your repo's checks and `aggy accept` applies the diff after you see it. The end-to-end borrow is not yet verified live. | **Refused**: its write mode and sandbox under aggy are unverified. |
 
 ## Shared memory and safety policy
 
