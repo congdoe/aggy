@@ -39,24 +39,13 @@ func WriteFile(dir, childID, text string) (path, warn string, err error) {
 	if _, err := Path(dir, childID); err != nil {
 		return "", "", err
 	}
-	d, di, err := aggydir.MkdirAll(dir, 0o700, BriefsDir)
+	// The briefs folder's .gitignore of "*" (aggydir.MkdirIgnored).
+	d, di, warn, err := aggydir.MkdirIgnored(dir, 0o700, BriefsDir)
 	if err != nil {
 		return "", "", err
 	}
-	ignore := filepath.Join(d, ".gitignore")
-	switch fi, err := safefs.Lstat(ignore); {
-	case errors.Is(err, fs.ErrNotExist):
-		if err := safefs.WriteFileNoFollowIn(di, ignore, []byte("*\n"), 0o600, nil); err != nil && !errors.Is(err, fs.ErrExist) {
-			return "", "", err
-		}
-	case err != nil:
-		return "", "", err
-	case !fi.Mode().IsRegular():
-		return "", "", fmt.Errorf("%s: %w; aggy will not write through it", ignore, aggydir.ErrLink)
-	default:
-		if b, err := safefs.ReadFileLimit(ignore, 64); err != nil || strings.TrimSpace(string(b)) != "*" {
-			warn = ignore + " is not \"*\", so git may pick up the briefs, which hold transcripts; set it to \"*\""
-		}
+	if warn != "" {
+		warn += " (the briefs hold transcripts)"
 	}
 	name := filepath.Join(d, childID+".md")
 	var want fs.FileInfo

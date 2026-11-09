@@ -728,7 +728,12 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 		if req.Media != nil {
 			// aggy image and aggy video: the copies are the result.
 			var derr error
-			if res.Artifacts, derr = deliver(req, res, passed, parsed.SessionID, now); derr != nil {
+			var dwarn string
+			res.Artifacts, dwarn, derr = deliver(req, res, passed, parsed.SessionID, now)
+			if dwarn != "" {
+				res.Warnings = append(res.Warnings, dwarn)
+			}
+			if derr != nil {
 				res.Status, res.Outcome, res.Detail = "failed", string(adapter.ErrUnknown), strings.TrimSpace(res.Detail+"\n"+derr.Error())
 				end.Status, end.Outcome = res.Status, res.Outcome
 				if len(passed) == 0 {
@@ -742,7 +747,11 @@ func (b *Borrower) runOne(ctx context.Context, req Request, v adapter.Vendor, gr
 	}
 	var serr error
 	if res.Status == "done" && web(req.Kind) {
-		res.ResearchPath, serr = b.saveResearch(req, res, now)
+		var swarn string
+		res.ResearchPath, swarn, serr = b.saveResearch(req, res, now)
+		if swarn != "" {
+			res.Warnings = append(res.Warnings, swarn)
+		}
 	}
 	path, rerr := b.writeReport(res, req, parsed.SessionID, now)
 	if rerr == nil {
