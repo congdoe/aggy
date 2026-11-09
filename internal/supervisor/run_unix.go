@@ -107,7 +107,7 @@ func Run(o Options) (Exit, error) {
 	}
 	t := &tty{fd: fd}
 	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, lenKnown: true, events: make(chan hookEvent, 16), asks: make(chan Choice, 1), quit: make(chan struct{}), shares: make(chan shareReading), childChecks: make(chan childCheck),
-		toolNotes: make(chan struct{}, 1), toolReads: make(chan toolReading)}
+		toolNotes: make(chan struct{}, 1), toolReads: make(chan toolReading), cmdResults: make(chan cmdResult)}
 	defer close(s.quit)
 	// The last minute's repeats, queued before the caller closes the
 	// diagnostic queue (G67-R3); deferred first, so it runs after the
@@ -256,6 +256,8 @@ func Run(o Options) (Exit, error) {
 			s.onLimit(h)
 		case r := <-s.childChecks:
 			s.childChecked(r)
+		case r := <-s.cmdResults:
+			s.cmdDone(r)
 		case r := <-s.shares:
 			if r.seq != s.shareRead {
 				break // a read given up on as stuck (T6811)
@@ -590,6 +592,12 @@ type session struct {
 	// enterRelease: catchCommand held back a CSI u Enter, whose release, if the
 	// terminal reports one next, is dropped too.
 	lineInput, enterRelease bool
+	// cmdResults brings what a command run off the main loop printed, or the
+	// options it read; cmdSeq numbers the runs. viewPaste drops pastes from
+	// input to a menu or a page (T6909).
+	cmdResults chan cmdResult
+	cmdSeq     int
+	viewPaste  pasteFilter
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -805,7 +813,7 @@ func (s *session) hookEvent(ev hookEvent) {
 					s.pk.padRows++
 				}
 				s.pk.noTurn, s.pk.moveRefused, s.pk.mayRun, s.pk.doubtSaid = false, false, false, false
-				if s.pk.confirm == "" && !s.pk.note && s.pk.stage == "" {
+				if s.pk.confirm == "" && !s.pk.note && s.pk.stage == "" && s.pk.menu == nil && s.pk.page == nil {
 					s.pk.draw(s.o.Out, s.pickerOverCLI)
 				}
 				s.pk.padRows = 0
@@ -2396,6 +2404,11 @@ func (s *session) openPicker() {
 			return
 		}
 	}
+	if s.pk.menu != nil || s.pk.page != nil {
+		rows, cols := s.t.size()
+		s.pk.drawView(s.o.Out, s.pickerOverCLI, rows, cols)
+		return
+	}
 	s.pk.draw(s.o.Out, s.pickerOverCLI)
 }
 
@@ -2458,6 +2471,10 @@ func (s *session) pickerInput(b []byte) {
 	}
 	if b = s.typedOf(b); len(b) == 0 {
 		return // the mouse moved: aggy's prompts take keys only
+	}
+	if s.pk.menu != nil || s.pk.page != nil {
+		s.viewInput(b)
+		return
 	}
 	if s.pk.confirm != "" || s.pk.note {
 		s.promptInput(b)
