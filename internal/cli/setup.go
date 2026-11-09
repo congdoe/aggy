@@ -7,7 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,6 +25,7 @@ import (
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
+	"github.com/congdoe/aggy/skills"
 )
 
 const setupUsage = `Usage: aggy setup [--yes] [--only VENDORS]
@@ -33,6 +36,11 @@ signed in. You can skip any vendor and run setup again later. It
 records only, per vendor, whether the CLI is signed in, its version, and
 when it was checked. aggy never signs in for you and never reads, copies,
 or stores a login; each CLI signs in with its own flow.
+
+Last, it updates aggy's linked skills to this version, and at a terminal
+offers to link them (/aggy, /switch, /borrow, and /inbox in each CLI's
+menu; aggy skill link); with --yes, or without a terminal, it only says
+how.
 
   --yes          check without asking (also when stdin is not a terminal)
   --only LIST    check only these vendors, e.g. --only claude,codex
@@ -171,6 +179,7 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 			code = c
 		}
 	}
+	st.skills(ctx, selected)
 	fmt.Fprintln(stdout, "\nRun aggy hooks install so aggy hears when a session starts, a turn ends, or a CLI hits a limit; aggy hooks status shows what is installed.")
 	fmt.Fprintln(stdout, "\nRun aggy policy wire and aggy memory import --from claude to keep safety rules and memory in step across the CLIs.")
 	return code
@@ -331,4 +340,48 @@ func recordText(v store.VendorStatus) string {
 		version = "no version"
 	}
 	return strings.ReplaceAll(v.Connected, "_", " ") + ", " + termsafe.Field(version)
+}
+
+// skills refreshes aggy's linked skills (T6911) and offers to link them into
+// the selected CLIs that take skills (Claude Code, Codex, Grok Build) that do
+// not have them all yet. It asks first, default no, since a linked skill costs
+// context every turn; without asking it only says how. A failure is a warning:
+// setup's records stand.
+func (r *setupRun) skills(ctx context.Context, selected []adapter.Adapter) {
+	refreshSkills(ctx, r.out)
+	var vendors []string
+	for _, a := range selected {
+		if v := string(a.Vendor()); slices.Contains(skillVendors, v) {
+			vendors = append(vendors, v)
+		}
+	}
+	ls, err := ownLayouts()
+	if err != nil || len(vendors) == 0 {
+		return
+	}
+	want := map[string]bool{}
+	for _, v := range vendors {
+		for _, l := range ls {
+			if ok, err := l.linked(l.links[v]); err != nil || !ok {
+				want[v] = true
+			}
+		}
+	}
+	if len(want) == 0 {
+		return
+	}
+	always, _ := skills.Estimate(skills.Aggy)
+	fmt.Fprintf(r.out, "\naggy's skills put /aggy (help), /switch, /borrow, and /inbox in each CLI's menu ($aggy and so on in Codex); not linked yet for %s.\n", strings.Join(slices.Sorted(maps.Keys(want)), ", "))
+	if !r.ask {
+		fmt.Fprintf(r.out, "Run aggy skill link to link them (the aggy skill costs about %d tokens every turn in a CLI that loads it; aggy skill status shows each).\n", always)
+		return
+	}
+	ans, ok := r.answer(fmt.Sprintf("  Link them now? About %d tokens every turn for the aggy skill. [y/N] ", always))
+	if !ok || ans != "y" && ans != "yes" {
+		fmt.Fprintln(r.out, "  not linked; aggy skill link does it later")
+		return
+	}
+	if err := linkSkills(ctx, ls, want, r.out); err != nil {
+		fmt.Fprintf(r.out, "  warning: the skills were not linked: %s\n", termsafe.Line(err.Error()))
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -480,5 +481,74 @@ func TestReadAnswerLimit(t *testing.T) {
 		if (err == nil) != tt.ok || (tt.ok && len(line) != tt.n) {
 			t.Errorf("%d bytes: %d, %v", tt.n, len(line), err)
 		}
+	}
+}
+
+// TestSetupOffersSkills (T6911): setup links aggy's skills only on a y at a
+// terminal, for the selected CLIs that take skills, and otherwise says how.
+func TestSetupOffersSkills(t *testing.T) {
+	fakes := fakecli.Build(t)
+	tests := []struct {
+		name   string
+		args   []string
+		input  string
+		tty    bool
+		linked []string // vendors linked after
+		out    []string
+		notOut []string
+	}{
+		{name: "yes links all three", input: "y\ny\ny\ny\n", tty: true, linked: []string{"claude", "codex", "grok"},
+			out: []string{"Link them now?", "[y/N]", "linked (run"}},
+		{name: "no links nothing", input: "y\ny\ny\nn\n", tty: true,
+			out: []string{"Link them now?", "not linked; aggy skill link does it later"}},
+		{name: "input ends: nothing", input: "y\ny\ny\n", tty: true, notOut: []string{"linked (run"}},
+		{name: "no terminal only says how", out: []string{"Run aggy skill link to link them"}, notOut: []string{"Link them now?"}},
+		{name: "--yes only says how", args: []string{"--yes"}, tty: true, out: []string{"Run aggy skill link"}, notOut: []string{"Link them now?"}},
+		{name: "--only codex links codex", args: []string{"--only", "codex"}, input: "y\ny\n", tty: true, linked: []string{"codex"},
+			out: []string{"not linked yet for codex."}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := isolate(t)
+			w := newFakeWorld(t, fakes)
+			var stdout, stderr bytes.Buffer
+			if code := setupWith(tt.args, w.env(home, tt.input, tt.tty), &stdout, &stderr); code != 0 {
+				t.Fatalf("exit %d\n%s\n%s", code, stdout.String(), stderr.String())
+			}
+			out := stdout.String()
+			for _, s := range tt.out {
+				if !strings.Contains(out, s) {
+					t.Errorf("output lacks %q:\n%s", s, out)
+				}
+			}
+			for _, s := range tt.notOut {
+				if strings.Contains(out, s) {
+					t.Errorf("output has %q:\n%s", s, out)
+				}
+			}
+			ls, err := ownLayouts()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, l := range ls {
+				for _, v := range skillVendors {
+					ok, _ := l.linked(l.links[v])
+					if want := slices.Contains(tt.linked, v); ok != want {
+						t.Errorf("%s for %s linked = %v, want %v", filepath.Base(l.store), v, ok, want)
+					}
+				}
+			}
+			if len(tt.linked) == 0 {
+				return
+			}
+			// Linked everywhere it was offered, a second setup asks nothing.
+			var again bytes.Buffer
+			if code := setupWith(tt.args, w.env(home, tt.input, tt.tty), &again, &again); code != 0 {
+				t.Fatal(again.String())
+			}
+			if strings.Contains(again.String(), "Link them now?") {
+				t.Errorf("setup asked again:\n%s", again.String())
+			}
+		})
 	}
 }
