@@ -353,6 +353,9 @@ func Run(o Options) (Exit, error) {
 				}
 				if o.Facts != nil {
 					*o.Facts = RunFacts{TurnRan: s.turnRan, Signalled: s.signalled}
+					if switches && !s.sw.resume {
+						o.Facts.SwitchOrigin = s.sw.origin()
+					}
 				}
 				if switches {
 					ex.SwitchTo, ex.Next = s.sw.to, s.sw.choice
@@ -598,6 +601,17 @@ func (s *session) turnCause() string {
 func (s *session) setSwitch(p pendingSwitch) {
 	s.sw = p
 	s.waiting.Store(p.to != "")
+}
+
+// origin is who asked for the switch, for RunFacts.SwitchOrigin.
+func (p pendingSwitch) origin() string {
+	switch {
+	case p.asked:
+		return "agent"
+	case p.limit:
+		return "limit"
+	}
+	return "user"
 }
 
 // pendingSwitch is a switch waiting for the turn end.

@@ -196,8 +196,14 @@ type Exit struct {
 // RunFacts is what a session saw, for the caller to tell whether a CLI that was
 // switched to ever started (T6899). TurnRan: a turn end of the on-screen child
 // was counted. Signalled: aggy got a signal to pass on, so nothing may be
-// launched after this.
-type RunFacts struct{ TurnRan, Signalled bool }
+// launched after this. SwitchOrigin, for the switch the CLI exited for (not a
+// resume), says who asked for it: "user" (the picker or a note), "agent" (aggy
+// switch from the CLI's tree), or "limit" (aggy, on a plan limit of the vendor
+// on screen); "" otherwise. aggy log shows it (T6925).
+type RunFacts struct {
+	TurnRan, Signalled bool
+	SwitchOrigin       string
+}
 
 // SocketEnv is env plus the variables that lead hooks and skills inside
 // the CLI to the socket: AGGY_SOCKET and AGGY_PARENT.

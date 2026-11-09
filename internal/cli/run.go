@@ -114,6 +114,7 @@ func launch(name string, t target, stderr io.Writer) int {
 				Attrs: map[string]any{"from": string(u.vendor), "to": string(before.next.vendor), "exit": code}})
 			fmt.Fprintf(stderr, "%s: %s %s\n", name, goBackLine(u.vendor, before.next), dlog.Tag(diag.CodeNeverStarted))
 			t = sameChildAgain(before.t, before.next)
+			t.SwitchFrom, t.SwitchReason = u.vendor, "back: it never started"
 			before = nil
 			continue
 		}
@@ -125,8 +126,28 @@ func launch(name string, t target, stderr io.Writer) int {
 		}
 		// next.from is the same session, for going back to it.
 		before = &reopen{t: t, next: switchTo{vendor: next.from, parentID: next.parentID, child: next.child, fromID: next.fromID}}
-		t = target{ParentID: next.parentID, Vendor: next.vendor, Child: c.Child, NewChild: c.New, Model: c.Model, Brief: c.Brief, Tools: c.Tools}
+		t = target{ParentID: next.parentID, Vendor: next.vendor, Child: c.Child, NewChild: c.New, Model: c.Model, Brief: c.Brief, Tools: c.Tools,
+			SwitchFrom: next.from, SwitchReason: next.origin}
 	}
+}
+
+// screenEvent is the events row for a launch of child under t: a switch
+// row (from, to, model, reason) for a switch's launch, else a screen row
+// (vendor, model). A restart of the same child for a tool change (T6729)
+// is neither (ok false): the same CLI is back on screen.
+func screenEvent(t target, parentID string, child store.Child, at time.Time) (e store.Event, ok bool) {
+	e = store.Event{At: at, ParentID: parentID, ChildID: child.ID}
+	switch {
+	case t.SwitchFrom != "":
+		e.Type = store.EventSwitch
+		e.Detail = map[string]any{"from": string(t.SwitchFrom), "to": child.Vendor, "model": child.Model, "reason": t.SwitchReason}
+	case t.SameChild:
+		return store.Event{}, false
+	default:
+		e.Type = store.EventScreen
+		e.Detail = map[string]any{"vendor": child.Vendor, "model": child.Model}
+	}
+	return e, true
 }
 
 // goBackLine says what follows a CLI of vendor from that never started. A child
@@ -159,6 +180,7 @@ type switchTo struct {
 	child     string         // the child that was on screen, for a resume (T6729)
 	from      adapter.Vendor // the vendor that was on screen
 	fromID    string         // its session id, "" if aggy never learned it
+	origin    string         // who asked for the switch (supervisor.RunFacts.SwitchOrigin)
 	unstarted *unstarted
 }
 
@@ -433,6 +455,12 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	if err != nil {
 		return fail(diag.CodeLaunchFailed, err)
 	}
+	// The launch is recorded: aggy log shows which CLI came on screen, or the
+	// switch that put it there (T6925). The log is a record, so a failed
+	// write never stops the launch.
+	if e, ok := screenEvent(t, pl.parent.ID, pl.child, time.Now()); ok {
+		_ = s.AppendEvent(ctx, e)
+	}
 	if pl.child.Kind == "" {
 		stopScan, note := suggestAtLaunch(ctx, s, pl.child.Cwd)
 		defer stopScan()
@@ -661,7 +689,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	}
 	exited(ex.Code, ex.SwitchTo)
 	if ex.SwitchTo != "" {
-		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next, child: pl.child.ID, from: v, fromID: cids.current()}
+		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next, child: pl.child.ID, from: v, fromID: cids.current(), origin: facts.SwitchOrigin}
 		return ex.Code
 	}
 	// A signal to aggy or a signal that killed the CLI never leads to another

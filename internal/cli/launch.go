@@ -73,6 +73,11 @@ type target struct {
 	// Preview: nothing launches (--brief --show), so a note says what a launch
 	// would do.
 	Preview bool
+	// SwitchFrom is the vendor this launch was switched from, and
+	// SwitchReason why, for the switch row of aggy log (T6925); "" for a
+	// launch that is not a switch's, which writes a screen row instead.
+	SwitchFrom   adapter.Vendor
+	SwitchReason string
 }
 
 // starting is what a note says a launch does.

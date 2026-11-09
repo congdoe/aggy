@@ -186,21 +186,21 @@ func asker(in io.Reader, stdout io.Writer) func(q string) bool {
 }
 
 // showEdit checks the edit's diff (editDiff) and prints its stat and the
-// check gate's result so far. It returns the patch.
-func showEdit(ctx context.Context, g *gitWorktrees, b store.Borrow, wt store.Worktree, stdout io.Writer) (string, error) {
+// check gate's result so far. It returns the patch and the paths it touches.
+func showEdit(ctx context.Context, g *gitWorktrees, b store.Borrow, wt store.Worktree, stdout io.Writer) (string, []string, error) {
 	if _, err := safefs.Lstat(wt.Path); err != nil {
-		return "", fmt.Errorf("the worktree is gone: %w", err)
+		return "", nil, fmt.Errorf("the worktree is gone: %w", err)
 	}
-	stat, patch, err := g.editDiff(ctx, wt)
+	stat, patch, paths, err := g.editDiff(ctx, wt)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	fmt.Fprintf(stdout, "borrow %s: diff against %.12s\n", b.ID, wt.Base)
 	for _, l := range strings.Split(strings.TrimRight(stat, "\n"), "\n") {
 		fmt.Fprintf(stdout, "  %s\n", termsafe.Line(l))
 	}
 	fmt.Fprintf(stdout, "checks: %s\n", gateText(wt.Check))
-	return patch, nil
+	return patch, paths, nil
 }
 
 func gateText(r string) string {
@@ -295,7 +295,7 @@ func checkEditWith(ctx context.Context, args []string, env borrowEnv, ce repoChe
 	g := &gitWorktrees{env: env, stateDir: stateDir, out: stderr}
 	b, wt, err := editTarget(ctx, s, g, id)
 	if err == nil {
-		_, err = showEdit(ctx, g, b, wt, stdout)
+		_, _, err = showEdit(ctx, g, b, wt, stdout)
 	}
 	var ask func(string) bool
 	if tty {
@@ -374,7 +374,7 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 	if err != nil {
 		return fail(err)
 	}
-	patch, err := showEdit(ctx, g, b, wt, stdout)
+	patch, paths, err := showEdit(ctx, g, b, wt, stdout)
 	if err != nil {
 		return fail(err)
 	}
@@ -390,7 +390,7 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 		// the worktree must still match its recorded tree and the main
 		// checkout must still be clean in the touched paths.
 		if wt.Check == store.CheckPass || wt.Check == store.CheckFail {
-			if _, patch, err = g.editDiff(ctx, wt); err != nil {
+			if _, patch, paths, err = g.editDiff(ctx, wt); err != nil {
 				return fail(err)
 			}
 		}
@@ -430,9 +430,23 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 	applied := rec
 	applied.Event, applied.Attrs = diag.EvAcceptApplied, map[string]any{"check": gateText(wt.Check)}
 	dlog.Log(ctx, applied)
+	// aggy log shows the files the accept changed (T6925). The diff is
+	// applied, so a failed write only goes unlogged.
+	_ = recordFiles(context.WithoutCancel(ctx), s, b, paths, time.Now())
 	fmt.Fprintf(stdout, "Applied to %s (not staged or committed). The worktree and branch %s stay until aggy gc.\n",
 		termsafe.Field(wt.Repo), termsafe.Field(wt.Branch))
 	return 0
+}
+
+// recordFiles appends the files row of an accepted edit borrow b, which
+// changed paths in the main checkout, under its child's parent.
+func recordFiles(ctx context.Context, s *store.Store, b store.Borrow, paths []string, at time.Time) error {
+	parent, err := s.ChildParent(ctx, b.ChildID)
+	if err != nil {
+		return err
+	}
+	return s.AppendEvent(ctx, store.Event{At: at, ParentID: parent, ChildID: b.ChildID, Type: store.EventFiles,
+		Detail: map[string]any{"files": paths, "borrow": b.ID, "via": "accept"}})
 }
 
 // wtGit is the git options that name wt's admin dir and work tree, so
@@ -478,56 +492,57 @@ func (g *gitWorktrees) Tree(ctx context.Context, wt store.Worktree) (string, err
 // worktree that no longer matches that tree (a process the child left
 // may have changed it since), a diff that is empty, too large to hold
 // whole, or touches what an accept must never write (checkTouched), and
-// a main checkout with changes in the touched paths.
-func (g *gitWorktrees) editDiff(ctx context.Context, wt store.Worktree) (stat, patch string, err error) {
+// a main checkout with changes in the touched paths. paths are the
+// paths the diff touches, in git's order.
+func (g *gitWorktrees) editDiff(ctx context.Context, wt store.Worktree) (stat, patch string, paths []string, err error) {
 	if wt.Tree == "" {
-		return "", "", errors.New("no state of the worktree was recorded when the borrow ended; review it by hand, then aggy reject it")
+		return "", "", nil, errors.New("no state of the worktree was recorded when the borrow ended; review it by hand, then aggy reject it")
 	}
 	now, err := g.Tree(ctx, wt)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	if now != wt.Tree {
-		return "", "", withCode(diag.CodeTreeChanged, fmt.Errorf("refusing: the worktree changed after the borrow ended (edits in an on-screen session of this child, or a process it left behind?); review %s by hand", wt.Path))
+		return "", "", nil, withCode(diag.CodeTreeChanged, fmt.Errorf("refusing: the worktree changed after the borrow ended (edits in an on-screen session of this child, or a process it left behind?); review %s by hand", wt.Path))
 	}
 	run, err := g.wtRun(ctx, wt)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	diff := []string{"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames"}
 	raw, cut, err := run(append(diff, "--raw", "-z", wt.Base, wt.Tree, "--")...)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	if cut {
-		return "", "", errors.New("the diff touches too many files to check")
+		return "", "", nil, errors.New("the diff touches too many files to check")
 	}
 	hooks, err := g.hooksDir(ctx, wt.Repo)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
-	paths, err := checkTouched(raw, hooks)
+	paths, err = checkTouched(raw, hooks)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	if len(paths) == 0 {
-		return "", "", errors.New("the edit changed nothing")
+		return "", "", nil, errors.New("the edit changed nothing")
 	}
 	if err := g.cleanIn(ctx, wt.Repo, paths); err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	if stat, _, err = run(append(diff, "--stat", wt.Base, wt.Tree, "--")...); err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	// shortcut: the patch is held in memory, capped at execrun.MaxOutput;
 	// a larger edit is refused until a streamed apply exists.
 	if patch, cut, err = run(append(diff, "--binary", "--full-index", wt.Base, wt.Tree, "--")...); err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	if cut {
-		return "", "", fmt.Errorf("the diff is over %d bytes, too large to apply here; review it in %s", execrun.MaxOutput, wt.Path)
+		return "", "", nil, fmt.Errorf("the diff is over %d bytes, too large to apply here; review it in %s", execrun.MaxOutput, wt.Path)
 	}
-	return stat, patch, nil
+	return stat, patch, paths, nil
 }
 
 // hooksDir returns the repo's own core.hooksPath (the last value from
