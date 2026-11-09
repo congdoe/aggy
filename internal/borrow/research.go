@@ -27,12 +27,15 @@ func web(k adapter.Kind) bool { return k == adapter.Research || k == adapter.New
 // returns it with its identity: <repo>/.aggy/research under aggy's .aggy
 // rule (internal/aggydir) when the borrow ran in a git work tree, else
 // research in the state dir. No level below the repo or the state dir may
-// be a symlink.
-func (b *Borrower) researchDir(req Request) (string, fs.FileInfo, error) {
+// be a symlink. In a repo the folder keeps a .gitignore of "*", so model
+// output stays out of git (aggydir.MkdirIgnored, T6926); warn says when a
+// .gitignore there is not "*".
+func (b *Borrower) researchDir(req Request) (dir string, id fs.FileInfo, warn string, err error) {
 	if inGitRepo(req.Repo) {
-		return aggydir.MkdirAll(req.Repo, 0o700, ResearchDir)
+		return aggydir.MkdirIgnored(req.Repo, 0o700, ResearchDir)
 	}
-	return b.stateSubdir(ResearchDir)
+	dir, id, err = b.stateSubdir(ResearchDir)
+	return dir, id, "", err
 }
 
 // stateSubdir makes the state dir and elems... below it, none of them a
@@ -162,24 +165,27 @@ func placeReport(dir string, dirID fs.FileInfo, base, alt string, data []byte) (
 }
 
 // saveResearch writes the report of a finished research or news borrow
-// to the research dir, records it in the cache, and returns its path.
-func (b *Borrower) saveResearch(req Request, res Result, asOf time.Time) (string, error) {
+// to the research dir, records it in the cache, and returns its path and
+// any warning about its folder.
+func (b *Borrower) saveResearch(req Request, res Result, asOf time.Time) (string, string, error) {
 	r := researchReport{
 		Key: cacheKey(req), BorrowID: res.ID, Kind: string(req.Kind), Vendor: string(res.Vendor), Model: res.Model,
 		Question: strings.TrimSpace(req.Task), Constraints: req.Constraints, AsOf: asOf.UTC(), Text: res.Text,
 	}
 	if err := b.cacheStore(r); err != nil {
-		return "", err
+		return "", "", err
 	}
 	return b.placeResearch(req, r)
 }
 
-// placeResearch writes r's Markdown into req's research dir.
-func (b *Borrower) placeResearch(req Request, r researchReport) (string, error) {
-	dir, id, err := b.researchDir(req)
+// placeResearch writes r's Markdown into req's research dir, and returns
+// its path and any warning about the folder (researchDir).
+func (b *Borrower) placeResearch(req Request, r researchReport) (string, string, error) {
+	dir, id, warn, err := b.researchDir(req)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	base, alt := r.fileName()
-	return placeReport(dir, id, base, alt, []byte(r.markdown()))
+	p, err := placeReport(dir, id, base, alt, []byte(r.markdown()))
+	return p, warn, err
 }

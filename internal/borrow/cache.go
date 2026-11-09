@@ -98,13 +98,16 @@ func (b *Borrower) cached(ctx context.Context, req Request) (Result, bool, error
 	if vs, _, err := b.Router.Choose(ctx, rr); err != nil || len(vs) == 0 || vs[0] != v || b.Config.Vendors.For(v).Model != r.Model {
 		return Result{}, false, nil
 	}
-	p, err := b.placeResearch(req, r)
+	p, warn, err := b.placeResearch(req, r)
 	if err != nil {
 		return Result{}, false, fmt.Errorf("writing the cached %s report: %w", req.Kind, err)
 	}
 	res := Result{
 		ID: r.BorrowID, Kind: req.Kind, Vendor: v, Model: r.Model, Status: "done", Outcome: "ok",
 		Text: r.Text, ResearchPath: p, CachedAt: r.AsOf,
+	}
+	if warn != "" {
+		res.Warnings = append(res.Warnings, warn)
 	}
 	if inbox := ReportPath(b.StateDir, r.BorrowID); statOK(inbox) {
 		res.ReportPath = inbox

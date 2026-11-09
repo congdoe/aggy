@@ -246,26 +246,26 @@ const maxNames = 100
 // itself, as the caller named it, may replace a file (a regular one,
 // never through a symlink); every other name (a variant, or --out with
 // its extension changed) is created exclusively, moving to the next free
-// name when one exists. It returns the paths written.
-func deliver(req Request, res Result, kept []media, sessionID string, created time.Time) ([]adapter.Artifact, error) {
+// name when one exists. It returns the paths written, and any warning
+// about the sidecars' folder (writeIn).
+func deliver(req Request, res Result, kept []media, sessionID string, created time.Time) (out []adapter.Artifact, warn string, err error) {
 	if len(kept) == 0 {
-		return nil, errors.New("the child left no file that passed the artifact gate")
+		return nil, "", errors.New("the child left no file that passed the artifact gate")
 	}
-	var out []adapter.Artifact
 	k := 0
 	for _, m := range kept {
 		var p string
 		for ; ; k++ {
 			if k == maxNames {
-				return out, fmt.Errorf("no free name for %s after %d tries", req.Media.Out, maxNames)
+				return out, warn, fmt.Errorf("no free name for %s after %d tries", req.Media.Out, maxNames)
 			}
 			p = outPath(req.Media.Out, k, m)
-			err := writeIn(req.Repo, p, m.Data, 0o755, 0o644, false, p == filepath.Clean(req.Media.Out))
+			_, err := writeIn(req.Repo, p, m.Data, 0o755, 0o644, false, p == filepath.Clean(req.Media.Out))
 			if errors.Is(err, fs.ErrExist) {
 				continue
 			}
 			if err != nil {
-				return out, err
+				return out, warn, err
 			}
 			k++
 			break
@@ -273,7 +273,7 @@ func deliver(req Request, res Result, kept []media, sessionID string, created ti
 		out = append(out, adapter.Artifact{Path: p, Kind: m.Kind})
 		sc, err := SidecarPath(req.Repo, p)
 		if err != nil {
-			return out, err
+			return out, warn, err
 		}
 		// The sidecar sits in the repo: the prompt goes in redacted.
 		prompt, _ := redact.Lines(req.Task)
@@ -282,13 +282,17 @@ func deliver(req Request, res Result, kept []media, sessionID string, created ti
 			SessionID: sessionID, Borrow: res.ID, Created: created.UTC(),
 		}, "", "  ")
 		if err != nil {
-			return out, err
+			return out, warn, err
 		}
-		if err := writeIn(req.Repo, sc, append(data, '\n'), 0o700, 0o600, true, true); err != nil {
-			return out, err
+		w, err := writeIn(req.Repo, sc, append(data, '\n'), 0o700, 0o600, true, true)
+		if w != "" {
+			warn = w
+		}
+		if err != nil {
+			return out, warn, err
 		}
 	}
-	return out, nil
+	return out, warn, nil
 }
 
 // reserved reports whether rel, a path relative to the repo, is inside
@@ -306,7 +310,10 @@ func reserved(rel string) string {
 // writes through a symlink or out of the repo:
 //
 //   - a sidecar (aggyDir) goes under aggy's .aggy rule
-//     (internal/aggydir): no symlink anywhere from .aggy down;
+//     (internal/aggydir): no symlink anywhere from .aggy down, and the
+//     folder below .aggy keeps a .gitignore of "*" (aggydir.MkdirIgnored,
+//     T6926), so sidecars stay out of git; warn says when one there is
+//     not "*";
 //   - for any other file it finds p's deepest existing ancestor dir,
 //     resolves it, and checks that it is inside the resolved repo and
 //     outside its .git and .aggy;
@@ -317,24 +324,19 @@ func reserved(rel string) string {
 //   - with replace, an existing regular file at p is replaced (the name,
 //     never through a link); anything else there is refused. Without
 //     replace, p must not exist: the error then matches fs.ErrExist.
-func writeIn(repo, p string, data []byte, dirPerm, perm fs.FileMode, aggyDir, replace bool) error {
+func writeIn(repo, p string, data []byte, dirPerm, perm fs.FileMode, aggyDir, replace bool) (warn string, err error) {
 	var real string
 	var dir fs.FileInfo
-	var err error
 	if aggyDir {
 		rel, err := filepath.Rel(filepath.Join(repo, aggydir.Name), filepath.Dir(p))
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("%s is not under %s", p, filepath.Join(repo, aggydir.Name))
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("%s is not in a folder under %s", p, filepath.Join(repo, aggydir.Name))
 		}
-		var elems []string
-		if rel != "." {
-			elems = strings.Split(rel, string(filepath.Separator))
-		}
-		if real, dir, err = aggydir.MkdirAll(repo, dirPerm, elems...); err != nil {
-			return err
+		if real, dir, warn, err = aggydir.MkdirIgnored(repo, dirPerm, strings.Split(rel, string(filepath.Separator))...); err != nil {
+			return "", err
 		}
 	} else if real, dir, err = mkdirInRepo(repo, filepath.Dir(p), dirPerm); err != nil {
-		return err
+		return "", err
 	}
 	name := filepath.Join(real, filepath.Base(p))
 	var want fs.FileInfo
@@ -342,14 +344,14 @@ func writeIn(repo, p string, data []byte, dirPerm, perm fs.FileMode, aggyDir, re
 		fi, err := safefs.Lstat(name)
 		switch {
 		case err == nil && !fi.Mode().IsRegular():
-			return fmt.Errorf("%s is not a regular file (a symlink?); aggy will not write through it", p)
+			return warn, fmt.Errorf("%s is not a regular file (a symlink?); aggy will not write through it", p)
 		case err == nil:
 			want = fi
 		case !errors.Is(err, fs.ErrNotExist):
-			return err
+			return warn, err
 		}
 	}
-	return safefs.WriteFileNoFollowIn(dir, name, data, perm, want)
+	return warn, safefs.WriteFileNoFollowIn(dir, name, data, perm, want)
 }
 
 // mkdirInRepo makes d, a dir inside repo, and returns its resolved path
