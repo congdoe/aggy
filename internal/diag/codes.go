@@ -112,6 +112,7 @@ var (
 	EvSwitchReturned       = Event{"supervisor.switch.returned"}
 	EvSessionFollowed      = Event{"supervisor.session.followed"}
 	EvCommandCaught        = Event{"supervisor.command.caught"}
+	EvPromptRefused        = Event{"supervisor.command.refused"}
 	EvSwitchQueued         = Event{"switch.request.queued"}
 	EvSwitchOffered        = Event{"switch.request.offered"}
 	EvSwitchConfirmed      = Event{"switch.request.confirmed"}
@@ -229,6 +230,8 @@ var (
 	CodeSwitchVendor     = Code{"switch.vendor_unavailable"}
 	CodeSwitchBusy       = Code{"switch.already_waiting"}
 	CodeSwitchHeld       = Code{"switch.held"}
+	CodeCommandNotTaken  = Code{"command.not_taken"}
+	CodeCommandKeyboard  = Code{"command.keyboard_only"}
 	CodeNotSupervised    = Code{"switch.not_supervised"}
 	CodeExitTimeout      = Code{"switch.exit_timeout"}
 	CodeNoQuota          = Code{"switch.no_quota"}
@@ -333,6 +336,7 @@ var events = []EventInfo{
 	{EvSwitchReturned, LevelWarn, "supervisor", "A CLI switched to closed before it started, so aggy reopened the CLI before it (attrs.from, attrs.to, attrs.exit).", "Its code's fix; the child that never started is not kept."},
 	{EvSessionExited, LevelInfo, "supervisor", "The on-screen CLI exited; exit_code and duration_ms say how, attrs.switch_to the vendor launched next, if any.", "A switch_to with no supervisor.child.launched after it: the next launch's supervisor.launch.refused."},
 	{EvCommandCaught, LevelInfo, "supervisor", "A command inside the session (/switch, /inbox, /aggy ...) was taken before it reached the CLI, so it started no model turn (attrs.command: its fixed name, never its arguments; attrs.via: keys, typed in full at the prompt, list, picked from one of aggy's lists, or hook, a CLI's prompt hook; attrs.confirmed: the person pressed y to run what the page showed).", "Nothing. A command that went to the CLI instead was not typed in full: see docs/design.md, section 5."},
+	{EvPromptRefused, LevelWarn, "supervisor", "A command a CLI's prompt hook reported was not taken, so aggy hook let the prompt through to the CLI, whose skill tells the model to change nothing; the code says why.", "The code's entry. Typed in full at the prompt, the command is caught from the keys instead."},
 	{EvSwitchQueued, LevelInfo, "switch", "A switch waits for the turn end (attrs.origin: user, agent, or limit; brief, new, model_set).", "No switch.request.offered after it: the session never reached a quiet turn end; look for hook.event.accepted (Stop) and switch.request.refused."},
 	{EvSwitchOffered, LevelInfo, "switch", "The turn ended and aggy asked the user to confirm the switch.", "switch.request.confirmed or switch.request.cancelled follows."},
 	{EvSwitchConfirmed, LevelInfo, "switch", "The user pressed the switch key at the confirmation; aggy typed the CLI's exit command.", "switch.request.completed, or switch.exit.timed_out if the CLI did not exit."},
@@ -443,6 +447,8 @@ var codes = []CodeInfo{
 	{CodeAgentOptions, false, "The agent asked for a new session or a model, which are the user's choice in the picker.", "Press aggy's switch key and choose them there."},
 	{CodeSwitchVendor, false, "The vendor cannot be switched to now: on screen already, not offered, not allowed by the repo, not on PATH, or the safety policy cannot reach it.", "The record's msg; aggy setup; the repo's allowed_vendors."},
 	{CodeSwitchBusy, false, "Another switch is already waiting.", "Wait for it, or cancel it in the picker."},
+	{CodeCommandNotTaken, false, "A CLI's prompt hook reported a line that is not a command this session takes from a hook: not one at all, one with a model turn, another vendor's, or one from a CLI that has no such hook under aggy (Codex, OpenCode).", "Nothing; it went to the CLI as typed. Type the command in full at the prompt for aggy to catch it from the keys."},
+	{CodeCommandKeyboard, false, "A command that changes something (accept, check, reject, tool, permissions, trust) came from a prompt hook, which any process in the CLI's tree can send, so aggy did not take it.", "Type it in full at the prompt: from the keys aggy takes it, and shows what it does before it runs."},
 	{CodeSwitchHeld, false, "The CLI said it waits for the user (a permission prompt or a notice), so the switch waits.", "Answer the CLI, and the switch goes on at that turn's end. If nothing is waiting on screen, press Enter on the empty prompt and pick the vendor again, which spends no turn."},
 	{CodeNotSupervised, false, "aggy switch ran outside a session aggy supervises, or in one started with --direct.", "Press aggy's switch key in a session started with aggy run."},
 	{CodeExitTimeout, false, "The CLI did not exit within the wait after aggy typed its exit command.", "The CLI's screen; cancel with the switch key, then Esc."},

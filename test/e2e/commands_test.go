@@ -134,6 +134,56 @@ func TestTypedCommandNotCaught(t *testing.T) {
 	}
 }
 
+// TestHookBlockedSwitch (T6910): a /switch the CLI's UserPromptSubmit hook
+// reports (a pick from its menu, which the keys do not spell) was blocked
+// before the model, so it ends no turn: the switch must not wait for one. It
+// asks on the status line, since a hook can be forged, and the switch key
+// confirms it. The scenario's turn after the launch sends no Stop, as a
+// blocked prompt does not.
+func TestHookBlockedSwitch(t *testing.T) {
+	w := newWorld(t)
+	setup := exec.Command(buildAggy(t), "setup", "--yes")
+	setup.Dir = w.cwd
+	setup.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
+	if out, err := setup.CombinedOutput(); err != nil {
+		t.Fatalf("aggy setup: %v\n%s", err, out)
+	}
+	mark := filepath.Join(w.home, "launched")
+	script := `[ "$AGGY_VENDOR" = claude ] || exit 0; case "$1" in ` +
+		`Stop) [ -f '` + mark + `' ] && exit 0; exec ` + aggySh(t) + ` hook --vendor claude Stop ;; ` +
+		`UserPromptSubmit) [ -f '` + mark + `' ] || { touch '` + mark + `'; exit 0; }; exec ` + aggySh(t) + ` hook --vendor claude UserPromptSubmit ;; esac`
+	sc := map[string]any{
+		"stdout":       "READY>",
+		"hook_command": []string{"/bin/sh", "-c", script, "sh"},
+		"hooks": []map[string]any{
+			{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}},
+			{"event": "UserPromptSubmit", "payload": map[string]any{"session_id": "{session_id}", "prompt": "/switch grok"}},
+		},
+		"session_files": startedFiles(),
+	}
+	s := w.start(t, sc, "run", "claude")
+	s.waitFor([]byte("READY>"))
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(mark); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(1500 * time.Millisecond) // past the launch's quiet gap
+	s.send([]byte("/switch grok\r"))    // one read: the keys do not catch it
+	s.waitWithin([]byte("switch via hook -> grok. Ctrl+"), offerTimeout)
+	s.confirmPastGuard(time.Now())
+	w.waitRuns(t, s, 2)
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	if runs := interactiveRuns(t, w); len(runs) != 2 || runs[1].Vendor != "grok" {
+		t.Fatalf("interactive runs = %+v, want claude then grok", runs)
+	}
+}
+
 // TestTypedInboxPage (T6909): /inbox shows aggy inbox's output on the
 // alternate screen, no turn spent, and Esc gives the CLI its screen back.
 func TestTypedInboxPage(t *testing.T) {

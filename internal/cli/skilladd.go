@@ -103,8 +103,8 @@ func (st skillTarget) defFile() bool { return st.defFI != nil }
 func (st skillTarget) stored() bool  { return st.storeFI != nil }
 
 func lookupSkillTarget(ctx context.Context, name string) (skillTarget, error) {
-	if !tooldef.ValidName(name) || name == skillName {
-		return skillTarget{}, withCode(diag.CodeUsage, fmt.Errorf("%q cannot name a skill: want 1 to 32 of a-z, 0-9, and -, starting with a letter, and not %s", name, skillName))
+	if !tooldef.ValidName(name) || ownSkill(name) {
+		return skillTarget{}, withCode(diag.CodeUsage, fmt.Errorf("%q cannot name a skill: want 1 to 32 of a-z, 0-9, and -, starting with a letter, and not one of aggy's own (aggy, switch, borrow, inbox)", name))
 	}
 	state, err := home.Dir()
 	if err != nil {
@@ -288,7 +288,7 @@ func frontWarnings(name, frontName string) []string {
 	case frontName != name:
 		out = append(out, "its frontmatter names it "+termsafe.Field(frontName)+", not "+name+": a CLI lists it by that name")
 	}
-	if frontName == skillName {
+	if ownSkill(frontName) {
 		out = append(out, "that is aggy's own skill's name")
 	} else if r, err := tooldef.Builtins(); err == nil && frontName != name {
 		if _, ok := r.Get(frontName); ok {

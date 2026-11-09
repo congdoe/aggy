@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -33,13 +34,15 @@ const skillUsage = `Usage: aggy skill link [--vendor V] [--dry-run]
        aggy skill add <dir> [--name N] [--yes] [--replace]
        aggy skill remove <name>
 
-Installs aggy's skill once, in ~/.aggy/skills/aggy, and links it into
-each vendor CLI's user skill folder, where it is /aggy in Claude Code and
-Grok Build and $aggy in Codex:
+Installs aggy's skills once, in ~/.aggy/skills/<name>, and links them
+into each vendor CLI's user skill folder: aggy (/aggy in Claude Code and
+Grok Build, $aggy in Codex), and the command skills switch, borrow, and
+inbox, which put those commands in each CLI's menu (aggy catches them
+before the model sees them, inside a session started with aggy):
 
-  claude   ~/.claude/skills/aggy
-  codex    ~/.agents/skills/aggy
-  grok     ~/.grok/skills/aggy ($GROK_HOME/skills/aggy)
+  claude   ~/.claude/skills/<name>
+  codex    ~/.agents/skills/<name>
+  grok     ~/.grok/skills/<name> ($GROK_HOME/skills/<name>)
 
 Grok also scans ~/.claude/skills and ~/.agents/skills. All links point at
 the one installed copy, and Grok drops a skill it reaches twice by the
@@ -66,6 +69,13 @@ folder and the definition; refused while the tool is on.
 
 // skillName is the skill's folder name and its invocation name.
 const skillName = "aggy"
+
+// ownSkill reports whether name is one of aggy's own skills (skills.Own):
+// no tool or skill of the person's may take it, since it would share their
+// links.
+func ownSkill(name string) bool {
+	return slices.ContainsFunc(skills.Own(), func(s skills.Skill) bool { return s.Name == name })
+}
 
 var skillVendors = []string{"claude", "codex", "grok"}
 
@@ -101,6 +111,21 @@ func layout() (skillLayout, error) {
 	l, err := layoutFor(skillName)
 	l.content = skills.Aggy
 	return l, err
+}
+
+// ownLayouts are the layouts of aggy's own skills (skills.Own): the aggy
+// skill first, then the command skills (T6910), each in its own folder.
+func ownLayouts() ([]skillLayout, error) {
+	var ls []skillLayout
+	for _, sk := range skills.Own() {
+		l, err := layoutFor(sk.Name)
+		if err != nil {
+			return nil, err
+		}
+		l.content = sk.Content
+		ls = append(ls, l)
+	}
+	return ls, nil
 }
 
 // layoutFor is layout for the skill named name, stored in
@@ -179,7 +204,7 @@ func runSkill(args []string, stdout, stderr io.Writer) int {
 		}
 		vendors = []string{*vendor}
 	}
-	l, err := layout()
+	ls, err := ownLayouts()
 	if err != nil {
 		return cmdErr(stderr, "skill", diag.CodeWireFailed, err)
 	}
@@ -188,12 +213,16 @@ func runSkill(args []string, stdout, stderr io.Writer) int {
 		if *vendor != "" || *dryRun {
 			return cmdUsage(stderr, "skill status", "takes no flags", "")
 		}
-		return skillStatus(l, stdout, stderr)
+		return skillStatus(ls, stdout, stderr)
 	case "link", "unlink":
 	default:
 		return cmdUsage(stderr, "skill", fmt.Sprintf("unknown subcommand %q", op), skillUsage)
 	}
-	ps, err := l.plan(op == "link", vendors)
+	want := map[string]bool{}
+	for _, v := range vendors {
+		want[v] = op == "link"
+	}
+	ps, err := planSkills(ls, want)
 	if err != nil {
 		return cmdErrDry(stderr, "skill "+op, diag.CodeWireFailed, err, *dryRun)
 	}
@@ -237,27 +266,65 @@ func runSkill(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// plan returns the patches that link (or unlink) the skill for vendors,
-// and set Grok's ignore entry to match the result: present exactly when
-// Grok is not linked but another vendor's link is in a folder it scans.
-// It writes nothing.
-func (l skillLayout) plan(link bool, vendors []string) ([]patch.Patch, error) {
-	want := map[string]bool{}
-	for _, v := range vendors {
-		want[v] = link
-	}
-	return l.planSet(want)
-}
-
-// planSet is plan with each vendor of want linked (true) or unlinked
+// planSet returns the patches with each vendor of want linked (true) or unlinked
 // (false) in one plan, so Grok's ignore entry matches the end state.
 func (l skillLayout) planSet(want map[string]bool) ([]patch.Patch, error) {
-	var ps []patch.Patch
+	return planSkills([]skillLayout{l}, want)
+}
+
+// planSkills is planSet for several skills at once (aggy's own, T6910), so
+// Grok's config gets one patch holding every ignore entry that changes:
+// patches planned apart would each expect the file as it was. The order is
+// each SKILL.md, then, when anything is linked, Grok's ignore before any
+// link, so Grok never loads a skill it should not; when nothing is, the
+// links go first.
+func planSkills(ls []skillLayout, want map[string]bool) ([]patch.Patch, error) {
+	var contents, links []patch.Patch
+	var add, remove []string
+	for _, l := range ls {
+		c, lk, ignore, err := l.linkPatches(want)
+		if err != nil {
+			return nil, err
+		}
+		contents, links = append(contents, c...), append(links, lk...)
+		switch have, err := l.grokIgnored(); {
+		case err != nil:
+			return nil, err
+		case ignore && !have:
+			add = append(add, l.store)
+		case !ignore && have:
+			remove = append(remove, l.store)
+		}
+	}
+	p, err := ls[0].grokIgnoresPatch(add, remove)
+	if err != nil {
+		return nil, err
+	}
+	ps := contents
+	if slices.Contains(slices.Collect(maps.Values(want)), true) {
+		if p != nil {
+			ps = append(ps, *p)
+		}
+		return append(ps, links...), nil
+	}
+	ps = append(ps, links...)
+	if p != nil {
+		ps = append(ps, *p)
+	}
+	return ps, nil
+}
+
+// linkPatches returns the patches that write the skill's SKILL.md (when
+// anything is linked and aggy writes it) and link or unlink it for each
+// vendor of want, and whether Grok's ignore should then hold the skill:
+// exactly when Grok is not linked but another vendor's link is in a folder
+// it scans.
+func (l skillLayout) linkPatches(want map[string]bool) (contents, links []patch.Patch, ignore bool, err error) {
 	after := map[string]bool{}
 	for _, v := range skillVendors {
 		ok, err := l.linked(l.links[v])
 		if err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 		after[v] = ok
 	}
@@ -266,10 +333,10 @@ func (l skillLayout) planSet(want map[string]bool) ([]patch.Patch, error) {
 		file := filepath.Join(l.store, "SKILL.md")
 		h, err := patch.HashFile(file)
 		if err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 		content := l.content
-		ps = append(ps, patch.Patch{File: file, ExpectedHash: h, Mode: 0o644,
+		contents = append(contents, patch.Patch{File: file, ExpectedHash: h, Mode: 0o644,
 			Transform: func([]byte) ([]byte, error) { return content, nil }})
 	}
 	for _, v := range skillVendors {
@@ -280,67 +347,78 @@ func (l skillLayout) planSet(want map[string]bool) ([]patch.Patch, error) {
 		path := l.links[v]
 		st, err := entryState(path)
 		if err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 		ours := st.Hash == patch.LinkHash(l.store)
 		switch {
 		case link && !ours && st.Hash != patch.NoFile:
-			return nil, fmt.Errorf("%s exists and is not aggy's link; move it away and run this again", path)
+			return nil, nil, false, fmt.Errorf("%s exists and is not aggy's link; move it away and run this again", path)
 		case link && !ours:
-			ps = append(ps, patch.Patch{File: path, ExpectedHash: patch.NoFile, Link: l.store})
+			links = append(links, patch.Patch{File: path, ExpectedHash: patch.NoFile, Link: l.store})
 		case !link && ours:
-			ps = append(ps, patch.Patch{File: path, ExpectedHash: st.Hash, Remove: true})
+			links = append(links, patch.Patch{File: path, ExpectedHash: st.Hash, Remove: true})
 		}
 		after[v] = link && (ours || st.Hash == patch.NoFile)
 	}
-	p, err := l.grokIgnorePatch(!after["grok"] && (after["claude"] || after["codex"]))
-	if err != nil {
-		return nil, err
-	}
-	if p != nil {
-		if anyLink {
-			i := 0
-			if l.content != nil {
-				i = 1 // after SKILL.md
-			}
-			ps = slices.Insert(ps, i, *p) // before any link
-		} else {
-			ps = append(ps, *p)
-		}
-	}
-	return ps, nil
+	return contents, links, !after["grok"] && (after["claude"] || after["codex"]), nil
 }
 
-// grokIgnorePatch returns the patch that adds (want) or removes the
-// installed skill in Grok's [skills] ignore, or nil when it is already
-// so. Grok matches ignore entries by real path, so the one entry hides
-// the skill through every link. Without a Grok home there is no Grok to
+// grokIgnored reports whether Grok's [skills] ignore holds the installed
+// skill now. Without a Grok home it holds nothing.
+func (l skillLayout) grokIgnored() (bool, error) {
+	if _, err := safefs.Lstat(l.grokHome); errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	b, _, err := readMaybe(l.grokConfig)
+	if err != nil {
+		return false, err
+	}
+	return grokIgnores(b, l.store)
+}
+
+// grokIgnoresPatch returns the one patch that adds the add entries to Grok's
+// [skills] ignore and takes the remove entries out, or nil when there is
+// nothing to do. Grok matches ignore entries by real path, so one entry hides
+// a skill through every link. Without a Grok home there is no Grok to
 // configure and nothing is written; aggy skill status reports it if one
-// appears later.
-func (l skillLayout) grokIgnorePatch(want bool) (*patch.Patch, error) {
+// appears later. A removal takes out only what aggy added: the file stays,
+// even empty, rather than being deleted and brought back by aggy unwire
+// (B14-4).
+func (l skillLayout) grokIgnoresPatch(add, remove []string) (*patch.Patch, error) {
+	if len(add) == 0 && len(remove) == 0 {
+		return nil, nil
+	}
 	if _, err := safefs.Lstat(l.grokHome); errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	} else if err != nil {
 		return nil, err
 	}
-	b, h, err := readMaybe(l.grokConfig)
+	_, h, err := readMaybe(l.grokConfig)
 	if err != nil {
 		return nil, err
 	}
-	have, err := grokIgnores(b, l.store)
-	if err != nil {
-		return nil, err
+	steps := make([]func([]byte) ([]byte, error), 0, len(add)+len(remove))
+	for _, e := range add {
+		steps = append(steps, addGrokIgnore(e))
 	}
-	switch {
-	case want == have:
-		return nil, nil
-	case want:
-		return &patch.Patch{File: l.grokConfig, ExpectedHash: h, Transform: addGrokIgnore(l.store), Mode: 0o600}, nil
+	for _, e := range remove {
+		steps = append(steps, removeGrokIgnore(e))
 	}
-	// Only the block is taken out, even when it is all the file holds:
-	// the file stays, empty, rather than being deleted and brought back
-	// by aggy unwire (B14-4).
-	return &patch.Patch{File: l.grokConfig, ExpectedHash: h, Transform: removeGrokIgnore(l.store)}, nil
+	p := patch.Patch{File: l.grokConfig, ExpectedHash: h, Transform: func(src []byte) ([]byte, error) {
+		for _, f := range steps {
+			var err error
+			if src, err = f(src); err != nil {
+				return nil, err
+			}
+		}
+		return src, nil
+	}}
+	if len(add) > 0 {
+		p.Mode = 0o600
+	}
+	return &p, nil
 }
 
 func readMaybe(path string) ([]byte, string, error) {
@@ -384,6 +462,7 @@ func grokSkills(src []byte) (doc map[string]any, ignore []string, hasSkills bool
 	if !ok {
 		return nil, nil, false, errors.New("[skills] ignore in Grok's config.toml is not a list")
 	}
+	ignore = []string{} // present, even empty
 	for _, v := range list {
 		s, ok := v.(string)
 		if !ok {
@@ -453,7 +532,25 @@ func addGrokIgnore(entry string) func([]byte) ([]byte, error) {
 		out := append([]byte{}, src...)
 		switch {
 		case ignore != nil:
-			return nil, fmt.Errorf("the Grok config.toml already has a [skills] ignore list; add '%s' to it by hand", entry)
+			// A list already (the person's, or aggy's for another skill): the
+			// entry goes at its end, when the list is on one line.
+			from, to := ignoreListLine(src)
+			if from < 0 {
+				return nil, fmt.Errorf("the Grok config.toml has a [skills] ignore list aggy cannot extend; add '%s' to it by hand", entry)
+			}
+			lit, _ := ignoreLine(entry)
+			lit = strings.TrimSuffix(strings.TrimPrefix(lit, "ignore = ["), "]")
+			ln := string(src[from:to])
+			cut := strings.LastIndex(ln, "]")
+			head := strings.TrimRight(ln[:cut], " ")
+			sep := ", "
+			if strings.HasSuffix(head, "[") {
+				sep = ""
+			}
+			out = append(append(append([]byte{}, src[:from]...), head+sep+lit+ln[cut:]...), src[to:]...)
+			sk := doc["skills"].(map[string]any)
+			sk["ignore"] = append(slices.Clone(sk["ignore"].([]any)), entry)
+			return checked(out, doc)
 		case !hasSkills:
 			// One line ending, then the table: a blank line after a file
 			// that ends in one, a line break after one that does not.
@@ -500,6 +597,30 @@ func removeGrokIgnore(entry string) func([]byte) ([]byte, error) {
 		}
 		block, _ := ignoreBlock(entry, nl)
 		sk := doc["skills"].(map[string]any)
+		if len(ignore) > 1 {
+			// One of several: only its literal goes, from the one-line list.
+			from, to := ignoreListLine(src)
+			lit, _ := ignoreLine(entry)
+			lit = strings.TrimSuffix(strings.TrimPrefix(lit, "ignore = ["), "]")
+			ln := ""
+			if from >= 0 {
+				ln = string(src[from:to])
+			}
+			switch {
+			case from < 0:
+			case strings.Contains(ln, ", "+lit):
+				ln = strings.Replace(ln, ", "+lit, "", 1)
+			case strings.Contains(ln, lit+", "):
+				ln = strings.Replace(ln, lit+", ", "", 1)
+			default:
+				from = -1
+			}
+			if from < 0 {
+				return nil, fmt.Errorf("the [skills] ignore list in Grok's config.toml was edited; remove '%s' from it by hand", entry)
+			}
+			sk["ignore"] = slices.DeleteFunc(slices.Clone(sk["ignore"].([]any)), func(v any) bool { return v == entry })
+			return checked(append(append(append([]byte{}, src[:from]...), ln...), src[to:]...), doc)
+		}
 		delete(sk, "ignore")
 		var out []byte
 		switch i := skillsHeader(src); {
@@ -517,6 +638,30 @@ func removeGrokIgnore(entry string) func([]byte) ([]byte, error) {
 		return checked(out, doc)
 	}
 }
+
+// ignoreListLine finds the ignore list in the [skills] table when it is on one
+// line: where the line starts and ends, its line ending left out, or -1, -1.
+func ignoreListLine(src []byte) (from, to int) {
+	i := skillsHeader(src)
+	if i < 0 {
+		return -1, -1
+	}
+	off := i
+	for _, ln := range bytes.SplitAfter(src[i:], []byte("\n")) {
+		t := bytes.TrimSpace(ln)
+		if len(t) > 0 && t[0] == '[' {
+			break // the next table
+		}
+		if ignoreListRE.Match(t) && bytes.HasPrefix(ln, t) {
+			return off, off + len(bytes.TrimRight(ln, "\r\n"))
+		}
+		off += len(ln)
+	}
+	return -1, -1
+}
+
+// ignoreListRE is an ignore list on one line.
+var ignoreListRE = regexp.MustCompile(`^ignore\s*=\s*\[[^\[\]#]*\]$`)
 
 // checked returns out when it decodes to want.
 func checked(out []byte, want map[string]any) ([]byte, error) {
@@ -572,7 +717,31 @@ func (l skillLayout) visible(v string) ([]string, error) {
 	return out, nil
 }
 
-func skillStatus(l skillLayout, stdout, stderr io.Writer) int {
+func skillStatus(ls []skillLayout, stdout, stderr io.Writer) int {
+	code := aggySkillStatus(ls[0], stdout, stderr)
+	for _, l := range ls[1:] {
+		name := filepath.Base(l.store)
+		var parts []string
+		for _, v := range skillVendors {
+			ok, err := l.linked(l.links[v])
+			if err != nil {
+				fmt.Fprintf(stderr, "%s, %s: %s %s\n", name, v, termsafe.Line(err.Error()), dlog.Tag(diag.CodeWireFailed))
+				code = 1
+				continue
+			}
+			state := "not linked"
+			if ok {
+				state = "linked"
+			}
+			parts = append(parts, v+" "+state)
+		}
+		fmt.Fprintf(stdout, "command %s (/%s, $%s on Codex): %s\n", name, name, name, strings.Join(parts, ", "))
+	}
+	return code
+}
+
+// aggySkillStatus is the aggy skill's part of skillStatus.
+func aggySkillStatus(l skillLayout, stdout, stderr io.Writer) int {
 	if _, err := safefs.Stat(filepath.Join(l.store, "SKILL.md")); err == nil {
 		fmt.Fprintf(stdout, "installed: %s\n", termsafe.Field(l.store))
 	} else {

@@ -183,7 +183,9 @@ func TestGrokIgnoreTransforms(t *testing.T) {
 		{"no trailing newline, CRLF", "a = 1\r\n[x]\r\nb = 2", "a = 1\r\n[x]\r\nb = 2\r\n[skills]\r\nignore = ['/s/aggy']\r\n", false},
 		{"no trailing newline", "x = 1", "x = 1\n[skills]\nignore = ['/s/aggy']\n", false},
 		{"skills table without ignore", "[skills]\npaths = [\"~/t\"]\n[y]\n", "[skills]\nignore = ['/s/aggy']\npaths = [\"~/t\"]\n[y]\n", false},
-		{"ignore list already", "[skills]\nignore = [\"~/wip\"]\n", "", true},
+		// T6910: aggy's skills share Grok's one list, so a one-line list grows.
+		{"ignore list already", "[skills]\nignore = [\"~/wip\"]\n", "[skills]\nignore = [\"~/wip\", '/s/aggy']\n", false},
+		{"ignore list on several lines", "[skills]\nignore = [\n  \"~/wip\",\n]\n", "", true},
 		{"dotted keys", "skills.paths = [\"~/t\"]\n", "", true},
 		{"not TOML", "a = \n", "", true},
 	}
@@ -220,8 +222,71 @@ func TestGrokIgnoreTransforms(t *testing.T) {
 			}
 		})
 	}
-	if _, err := removeGrokIgnore(entry)([]byte("[skills]\nignore = ['/s/aggy', 'x']\n")); err == nil {
-		t.Error("removing from an edited list succeeded")
+	// T6910: one entry of several comes out alone; a list aggy cannot read
+	// as one line is still refused.
+	for _, c := range []struct{ src, want string }{
+		{"[skills]\nignore = ['/s/aggy', 'x']\n", "[skills]\nignore = ['x']\n"},
+		{"[skills]\nignore = ['x', '/s/aggy', 'y']\n", "[skills]\nignore = ['x', 'y']\n"},
+		{"[skills]\nignore = [\n'/s/aggy',\n'x']\n", ""},
+	} {
+		got, err := removeGrokIgnore(entry)([]byte(c.src))
+		if c.want == "" {
+			if err == nil {
+				t.Errorf("removing from %q succeeded: %q", c.src, got)
+			}
+			continue
+		}
+		if err != nil || string(got) != c.want {
+			t.Errorf("remove from %q = %q, %v, want %q", c.src, got, err, c.want)
+		}
+	}
+}
+
+// TestOwnSkillsLinkTogether (T6910): aggy skill link links the command skills
+// with the aggy skill, unlinking Grok alone puts every one in its ignore list in
+// one patch, and aggy unwire takes it all back.
+func TestOwnSkillsLinkTogether(t *testing.T) {
+	h, _ := skillHome(t)
+	orig, _ := os.ReadFile(filepath.Join(h, ".grok", "config.toml"))
+	before := snapshot(t, h)
+	mustRun(t, "skill", "link")
+	ls, err := ownLayouts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range ls {
+		for _, v := range skillVendors {
+			if ok, _ := l.linked(l.links[v]); !ok {
+				t.Errorf("%s is not linked for %s", l.store, v)
+			}
+		}
+		name := filepath.Base(l.store)
+		if b, _ := os.ReadFile(filepath.Join(l.store, "SKILL.md")); !strings.Contains(string(b), "name: "+name) {
+			t.Errorf("%s holds %q", l.store, b)
+		}
+	}
+	mustRun(t, "skill", "unlink", "--vendor", "grok")
+	b, _ := os.ReadFile(filepath.Join(h, ".grok", "config.toml"))
+	for _, l := range ls {
+		if !strings.Contains(string(b), "'"+l.store+"'") {
+			t.Errorf("grok's ignore lacks %s:\n%s", l.store, b)
+		}
+		if vis, _ := l.visible("grok"); len(vis) > 0 {
+			t.Errorf("grok still loads %s through %v", l.store, vis)
+		}
+	}
+	mustRun(t, "skill", "link", "--vendor", "grok")
+	if b, _ := os.ReadFile(filepath.Join(h, ".grok", "config.toml")); string(b) != string(orig) {
+		t.Errorf("grok config = %q, want %q", b, orig)
+	}
+	if out := mustRun(t, "skill", "status"); !strings.Contains(out, "command switch (/switch, $switch on Codex): claude linked, codex linked, grok linked") {
+		t.Errorf("status = %q", out)
+	}
+	if code, out, errOut := run("unwire", "--all"); code != 0 {
+		t.Fatalf("unwire: %d\n%s\n%s", code, out, errOut)
+	}
+	if d := diffSnapshots(before, snapshot(t, h)); len(d) > 0 {
+		t.Errorf("unwire did not restore HOME:\n%s", strings.Join(d, "\n"))
 	}
 }
 
