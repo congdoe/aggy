@@ -779,3 +779,108 @@ func aggySkillStatus(l skillLayout, stdout, stderr io.Writer) int {
 	}
 	return code
 }
+
+// refreshPatches returns, for each of aggy's own skills linked into any CLI,
+// a patch that rewrites its installed SKILL.md when that differs from the one
+// this aggy carries (T6911): after an upgrade, a linked skill would otherwise
+// keep the old text. An unlinked skill is left alone, and a skill never linked
+// is never installed by it.
+func refreshPatches(ls []skillLayout) ([]patch.Patch, error) {
+	var ps []patch.Patch
+	for _, l := range ls {
+		if l.content == nil {
+			continue
+		}
+		linked := false
+		for _, v := range skillVendors {
+			ok, err := l.linked(l.links[v])
+			if err != nil {
+				return nil, err
+			}
+			linked = linked || ok
+		}
+		if !linked {
+			continue
+		}
+		file := filepath.Join(l.store, "SKILL.md")
+		h, err := patch.HashFile(file)
+		if err != nil {
+			return nil, err
+		}
+		if h == patch.Hash(l.content) {
+			continue
+		}
+		content := l.content
+		ps = append(ps, patch.Patch{File: file, ExpectedHash: h, Mode: 0o644,
+			Transform: func([]byte) ([]byte, error) { return content, nil }})
+	}
+	return ps, nil
+}
+
+// refreshSkills applies refreshPatches through the manifest, so aggy unwire
+// undoes it, and says on w what it changed. It runs at each launch and in
+// aggy setup; a failure is a warning, and it changes nothing at all when no
+// installed copy is out of date.
+func refreshSkills(ctx context.Context, w io.Writer) {
+	err := func() error {
+		ls, err := ownLayouts()
+		if err != nil {
+			return err
+		}
+		ps, err := refreshPatches(ls)
+		if err != nil || len(ps) == 0 {
+			return err
+		}
+		s, err := store.OpenDefault(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = s.Close() }()
+		m, err := manifest.Open(s)
+		if err != nil {
+			return err
+		}
+		runID := manifest.NewRunID()
+		cs, err := m.Run(ctx, manifest.Write, runID, ps, io.Discard)
+		for _, c := range cs {
+			if c.Status == store.ChangeApplied {
+				fmt.Fprintf(w, "aggy: updated its skill at %s to this version (aggy unwire --run %s undoes it).\n", termsafe.Field(c.File), runID)
+			}
+		}
+		return err
+	}()
+	if err != nil {
+		fmt.Fprintf(w, "aggy: warning: its installed skills were not updated: %s\n", termsafe.Line(err.Error()))
+	}
+}
+
+// linkSkills links aggy's own skills for each vendor of want through the
+// manifest, as aggy skill link does, and says on w what changed.
+func linkSkills(ctx context.Context, ls []skillLayout, want map[string]bool, w io.Writer) error {
+	ps, err := planSkills(ls, want)
+	if err != nil || len(ps) == 0 {
+		return err
+	}
+	s, err := store.OpenDefault(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = s.Close() }()
+	m, err := manifest.Open(s)
+	if err != nil {
+		return err
+	}
+	runID := manifest.NewRunID()
+	cs, err := m.Run(ctx, manifest.Write, runID, ps, io.Discard)
+	changed := 0
+	for _, c := range cs {
+		if c.Status == store.ChangeApplied {
+			changed++
+			fmt.Fprintf(w, "  changed %s\n", termsafe.Field(c.File))
+		}
+	}
+	if changed > 0 {
+		fmt.Fprintf(w, "  linked (run %s). aggy unwire --run %s undoes it.\n", runID, runID)
+	}
+	return err
+}

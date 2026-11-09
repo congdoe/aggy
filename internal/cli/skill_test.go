@@ -316,3 +316,62 @@ func TestSkillGrokIgnoreNoTrailingNewline(t *testing.T) {
 		t.Errorf("grok config = %q, want %q", b, "x = 1")
 	}
 }
+
+// TestRefreshSkills (T6911): an upgraded aggy rewrites a linked skill's
+// installed SKILL.md through the manifest, so aggy unwire --run puts the old
+// text back; a current copy, or one no CLI links, is left alone.
+func TestRefreshSkills(t *testing.T) {
+	const old = "---\nname: aggy\ndescription: an older aggy's skill\n---\nold\n"
+	tests := []struct {
+		name    string
+		setup   [][]string // aggy commands run first
+		stale   bool       // the installed aggy SKILL.md is old
+		rewrite bool
+	}{
+		{name: "linked and stale", setup: [][]string{{"skill", "link", "--vendor", "claude"}}, stale: true, rewrite: true},
+		{name: "linked and current", setup: [][]string{{"skill", "link", "--vendor", "codex"}}},
+		{name: "unlinked and stale", setup: [][]string{{"skill", "link", "--vendor", "claude"}, {"skill", "unlink", "--vendor", "claude"}}, stale: true},
+		{name: "never linked"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, l := skillHome(t)
+			for _, args := range tt.setup {
+				mustRun(t, args...)
+			}
+			file := filepath.Join(l.store, "SKILL.md")
+			if tt.stale {
+				if err := os.WriteFile(file, []byte(old), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, _ := os.ReadFile(file)
+			var out strings.Builder
+			refreshSkills(t.Context(), &out)
+			after, _ := os.ReadFile(file)
+			if !tt.rewrite {
+				if out.Len() > 0 || string(after) != string(before) {
+					t.Fatalf("refresh changed something: %q\n%q -> %q", out.String(), before, after)
+				}
+				return
+			}
+			if string(after) != string(skills.Aggy) {
+				t.Fatalf("SKILL.md = %q, want this aggy's", after)
+			}
+			_, rest, ok := strings.Cut(out.String(), "aggy unwire --run ")
+			if !ok || !strings.Contains(out.String(), "updated its skill at") {
+				t.Fatalf("output = %q", out.String())
+			}
+			runID := strings.Fields(rest)[0]
+			var again strings.Builder
+			refreshSkills(t.Context(), &again)
+			if again.Len() > 0 {
+				t.Errorf("a second refresh said %q", again.String())
+			}
+			mustRun(t, "unwire", "--run", runID)
+			if b, _ := os.ReadFile(file); string(b) != old {
+				t.Errorf("after unwire SKILL.md = %q, want the old text", b)
+			}
+		})
+	}
+}

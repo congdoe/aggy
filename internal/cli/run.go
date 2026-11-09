@@ -96,9 +96,14 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 // it in AGGY_TRACE, so its hooks and borrows join it. The supervisor's
 // records go through a queue (diagQueue), so the terminal never waits
 // on the disk.
+//
+// Before the first launch it refreshes aggy's linked skills (refreshSkills).
 func launch(name string, t target, stderr io.Writer) int {
 	q := dlog.Queue(diagQueue)
 	defer q.Close(diagFlush)
+	// An upgraded aggy refreshes its linked skills before any CLI loads them
+	// (T6911); with nothing out of date this only looks.
+	refreshSkills(context.Background(), stderr)
 	// before is the launch the CLI on screen was switched from, to go back to
 	// when that CLI never starts (T6899).
 	var before *reopen

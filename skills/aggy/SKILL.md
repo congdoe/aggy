@@ -1,9 +1,9 @@
 ---
 name: aggy
-description: Borrow a bounded task to a vendor's CLI with aggy (image, video, research, news, review). Use for anything that may have changed since training, for images or video, or for a fresh-context code review.
+description: Borrow a bounded task to a vendor's CLI with aggy (image, video, research, news, review), and answer questions about aggy. Use for anything that may have changed since training, for images or video, for a fresh-context code review, or when asked how aggy works.
 ---
 
-# aggy: borrow a task
+# aggy: borrow a task, or answer about aggy
 
 `aggy borrow` runs one bounded task headless in a vendor's CLI (Claude
 Code, Codex, or Grok Build; for review, possibly the one on screen, in a
@@ -46,12 +46,35 @@ aggy inbox            # unread borrow reports; aggy inbox <id> shows one
 
 ## Switching vendors
 
-`aggy switch [--brief] <claude|codex|grok>` asks aggy to hand this session to
-another vendor's CLI when your turn ends. Run it only when the user asks
-for that vendor, then end your turn: aggy asks the user, who decides.
-A new session or another model is the user's choice in aggy's picker;
-`--new` and `--model` are refused.
-Codex cannot ask; there the user presses aggy's switch key.
+The user switches with `/switch` (`$switch` in Codex) typed at the prompt:
+bare it opens aggy's picker, `/switch <vendor>` switches at the turn end,
+and aggy catches it before you see it. Ctrl+\ opens the picker too.
+`/inbox` shows borrow reports the same way. If a `/switch` or `/inbox`
+reaches you, aggy missed it: change nothing and tell the user to type it
+at the prompt.
+
+`aggy switch [--brief] <claude|codex|grok>` is your way to ask: run it
+only when the user asks for that vendor, then end your turn; aggy asks the
+user, who decides. `--new` and `--model` are refused; those are the
+user's choice in the picker. In Codex it cannot ask; the user types
+`$switch` or presses Ctrl+\.
+
+## Questions about aggy
+
+`/aggy` alone, and `/aggy sessions`, `usage`, `log`, `diag <id>` and the
+like, are aggy's own list and pages; aggy catches them and you never see
+them. When `/aggy <question>` reaches you ("why didn't my switch go?"),
+answer it:
+
+- Read, do not guess: `aggy help`, `aggy <command> --help`, and for what
+  happened, `aggy diag -n 50`, `aggy diag show <id>`, `aggy diag codes
+  <code>`, and `aggy log`. Quote the commands the user can run.
+- Change nothing unless the user asks for that change. Never run `aggy
+  unwire`, and never turn on a tool's proxy (Rules below); tell the user
+  the command instead.
+- Commands that change things are the user's to run: `setup`, `hooks`,
+  `policy`, and `skill` in a terminal; `tool on|off`, `trust`, `accept`,
+  and `reject` there or typed as `/aggy <command>` at the prompt.
 
 ## Rules
 
