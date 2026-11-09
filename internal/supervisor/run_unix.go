@@ -22,6 +22,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/hook"
+	"github.com/congdoe/aggy/internal/sessioncmd"
 	"github.com/congdoe/aggy/internal/tooldef"
 )
 
@@ -107,7 +108,8 @@ func Run(o Options) (Exit, error) {
 	}
 	t := &tty{fd: fd}
 	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, lenKnown: true, events: make(chan hookEvent, 16), asks: make(chan Choice, 1), quit: make(chan struct{}), shares: make(chan shareReading), childChecks: make(chan childCheck),
-		toolNotes: make(chan struct{}, 1), toolReads: make(chan toolReading), cmdResults: make(chan cmdResult)}
+		toolNotes: make(chan struct{}, 1), toolReads: make(chan toolReading), cmdResults: make(chan cmdResult),
+		prompts: make(chan sessioncmd.Command, 1)}
 	defer close(s.quit)
 	// The last minute's repeats, queued before the caller closes the
 	// diagnostic queue (G67-R3); deferred first, so it runs after the
@@ -258,6 +260,8 @@ func Run(o Options) (Exit, error) {
 			s.childChecked(r)
 		case r := <-s.cmdResults:
 			s.cmdDone(r)
+		case c := <-s.prompts:
+			s.hookCommand(c)
 		case r := <-s.shares:
 			if r.seq != s.shareRead {
 				break // a read given up on as stuck (T6811)
@@ -598,6 +602,11 @@ type session struct {
 	cmdResults chan cmdResult
 	cmdSeq     int
 	viewPaste  pasteFilter
+	// prompts brings the commands a CLI's prompt hook reported (T6910);
+	// hookedName and hookedAt are the last one taken (hookCommand).
+	hookedName string
+	hookedAt   time.Time
+	prompts    chan sessioncmd.Command
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -950,6 +959,9 @@ const maxSwitchTools = 8
 // allows. It queues it for the main loop, which asks the user at the
 // turn end. It runs on a connection's goroutine.
 func (s *session) onSwitch(r Request) error {
+	if r.Type == ReqPromptCommand {
+		return s.onPromptCommand(r)
+	}
 	v := adapter.Vendor(r.Vendor)
 	if !holdSignal(s.o.Vendor) {
 		return coded(diag.CodeAgentNoHold, fmt.Errorf("an agent cannot ask for a switch away from %s: aggy cannot tell when %s waits for an approval, so only the user may start one, with aggy's switch key",
@@ -1699,6 +1711,8 @@ func (s *session) offerSwitch() {
 		switch {
 		case s.sw.resume:
 			why = append(why, tools)
+		case s.sw.hooked:
+			why = append(why, sessioncmd.Prefix(on)+"switch via hook")
 		case s.sw.asked:
 			why = append(why, "the agent asks")
 		case s.sw.limit:

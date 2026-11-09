@@ -95,7 +95,7 @@ func hookFiles(v adapter.Vendor) ([]hookFile, error) {
 	switch v {
 	case adapter.Claude:
 		return []hookFile{{filepath.Join(h, ".claude", "settings.json"),
-			entries(v, "Stop", "StopFailure", "SessionStart", "Notification")}}, nil
+			entries(v, "Stop", "StopFailure", "SessionStart", "Notification", "UserPromptSubmit", "UserPromptExpansion")}}, nil
 	case adapter.Codex:
 		ch, err := codexHome(h)
 		if err != nil {
@@ -115,7 +115,7 @@ func hookFiles(v adapter.Vendor) ([]hookFile, error) {
 		// with [compat.claude] hooks = false; hook.Forward drops the
 		// Claude ones Grok also runs.
 		return []hookFile{{filepath.Join(gh, "hooks", "aggy.json"),
-			entries(v, "Stop", "StopFailure", "StopCancelled", "SessionStart", "Notification")}}, nil
+			entries(v, "Stop", "StopFailure", "StopCancelled", "SessionStart", "Notification", "UserPromptSubmit")}}, nil
 	}
 	return nil, nil
 }

@@ -44,11 +44,14 @@ install writes these calls into each CLI's hook config.
                what the plugin runs when a permission is answered with Always
                allow: from then on the guard scans every command in this repo.
   <event>      a Claude, Codex, or Grok hook event (Stop, StopFailure,
-               StopCancelled, SessionStart, Notification). The
+               StopCancelled, SessionStart, Notification, and on Claude
+               and Grok UserPromptSubmit, which blocks a command typed
+               inside the session before the model sees it). The
                payload is parsed as JSON and forwarded to the aggy
                supervisor running the CLI ($AGGY_SOCKET). Outside aggy,
                or on any failure, it exits 0 and prints nothing to
-               stdout, so the vendor CLI is never disturbed.
+               stdout, so the vendor CLI is never disturbed; for a command
+               aggy takes, UserPromptSubmit prints only its block decision.
 `
 
 // hookTimeout bounds a forwarded hook from start to reply. The vendor
@@ -90,6 +93,9 @@ func hookWith(args []string, in io.Reader, getenv func(string) string, stdout, s
 		return 1
 	}
 	event := args[2]
+	if event == "UserPromptSubmit" || event == "UserPromptExpansion" && v == adapter.Claude {
+		return promptSubmit(v, in, getenv, stdout, stderr)
+	}
 	if !hook.Forward(v, getenv) {
 		// Not under aggy, or another vendor's hook (see hook.Forward).
 		// Read the payload anyway, so the CLI's write to the hook's

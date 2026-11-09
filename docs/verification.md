@@ -816,6 +816,48 @@ the fields named here.
   `SessionStart` payload has a source field is not stated: unverified,
   and aggy does not read one.
 
+## Commands inside a session (T6908 to T6911)
+
+Docs and source only, not run live (read 2026-11-09). What aggy relies on:
+
+- **Claude `UserPromptSubmit`** (`code.claude.com/docs/en/hooks.md`): its input
+  adds `prompt`, "the submitted text"; output `decision: "block"` "stops the
+  prompt before it reaches Claude", `reason` is "Shown to the user ... Not added
+  to context", and `suppressOriginalPrompt: true` leaves the text out of the
+  block message. Exit 2 blocks too, but aggy's hook command ends in `|| true`.
+  `UserPromptExpansion` fires "When a user-typed command expands into a prompt",
+  with `command_name`, `command_args`, and the original `prompt`, and blocks the
+  same way. The docs do not say outright whether a blocked prompt's text goes
+  back to the input, nor which of the two hooks a skill picked from the `/` menu
+  sends: unverified.
+- **Claude `disable-model-invocation: true`** (`code.claude.com/docs/en/skills.md`):
+  "Description not in context, full skill loads when invoked"; `argument-hint`
+  is the autocomplete hint.
+- **Grok** (grok-build `2bdd1d6a`, `crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md`):
+  `UserPromptSubmit` ("You submit a prompt") can block; `{"decision": "block",
+  "reason": "..."}` on stdout blocks on any exit code, the reason is shown to the
+  person and not added to the model's context; only prompts the person types can
+  be blocked; its default timeout is 30 seconds, and "a timed-out or crashed hook
+  fails open and the prompt proceeds". The payload's field for the text is not
+  named there: aggy reads `prompt`, unverified.
+- **Grok skills** (`user-guide/08-skills.md` at `2bdd1d6a`): the frontmatter takes
+  `disable-model-invocation` ("When `true`, only your slash command runs the skill
+  -- the model cannot invoke it automatically") and `argument-hint`.
+- **Codex**: no frontmatter key that keeps a skill out of the model's context is
+  recorded, nor whether it ignores unknown keys such as
+  `disable-model-invocation`: unverified. No hook path (design.md, section 5).
+- **OpenCode**: only that it loads `~/.claude/skills` and `~/.agents/skills`
+  (fake-model, below); whether the command skills show in its menu, and any
+  prompt hook, are unverified, so aggy uses the keystroke catch alone there.
+- **Every CLI, unverified**: that Ctrl+U (or its CSI u form) clears the composer
+  line, which the keystroke catch types in place of the held Enter.
+
+To confirm (owner's live check): under aggy on each CLI, type `/switch` and
+press Enter (the picker, and no turn in the transcript); type `/inbox`; pick
+`/switch` from the CLI's own menu with a vendor (Claude and Grok: the prompt is
+blocked and the status line asks); and check `aggy log` and `aggy diag` for
+`supervisor.command.caught`.
+
 ## Skill folders
 
 Source and docs only, not run live (2026-10-28). `aggy skill link`

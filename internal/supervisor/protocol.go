@@ -21,6 +21,11 @@ const (
 	// It carries nothing: the supervisor works out itself whether its own
 	// session's tools changed, and only offers a resume.
 	ReqToolsChanged = "tools-changed"
+	// ReqPromptCommand is a command a CLI's UserPromptSubmit hook saw
+	// submitted (T6910): aggy hook blocks the prompt when the supervisor
+	// takes it. It must come from the session, and the supervisor parses
+	// the line again and never takes a keyboard-only command from it.
+	ReqPromptCommand = "prompt-command"
 )
 
 // Request is one message to the supervisor.
@@ -51,6 +56,8 @@ type Request struct {
 	// launch only (aggy switch --tool, T6708). The user sees them in the
 	// switch's confirmation and confirms or cancels the whole switch.
 	Tools []string `json:"tools,omitempty"`
+	// Command is a prompt-command's line, as submitted.
+	Command string `json:"command,omitempty"`
 }
 
 // Response answers one Request.

@@ -258,7 +258,7 @@ func TestHookStates(t *testing.T) {
 		}
 		return s + `}}`
 	}
-	all := []string{"Stop", "StopFailure", "SessionStart", "Notification"}
+	all := []string{"Stop", "StopFailure", "SessionStart", "Notification", "UserPromptSubmit", "UserPromptExpansion"} // T6910 added the last two
 	for _, tt := range []struct {
 		name, content, state string
 		missing              bool

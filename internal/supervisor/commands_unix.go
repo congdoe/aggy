@@ -3,6 +3,7 @@
 package supervisor
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -141,6 +142,75 @@ func (s *session) runCommand(c sessioncmd.Command, keyed bool) {
 		s.startRun(c, nil)
 	case sessioncmd.Run:
 		s.startRun(c, s.cmdArgs(c))
+	}
+}
+
+// promptBlockWait bounds how long after the Enter a prompt hook's command
+// may say that Enter started no turn. The hook runs before the model
+// (Claude hooks.md, UserPromptSubmit), within aggy hook's few seconds.
+const promptBlockWait = 10 * time.Second
+
+// promptRepeat is how soon the same command from a prompt hook counts as the
+// same prompt reported again.
+const promptRepeat = 2 * time.Second
+
+// onPromptCommand takes a command a CLI's UserPromptSubmit hook reported
+// (T6910), on a connection's goroutine: the line is parsed again here, only
+// from the vendor on screen, only where aggy installs that hook (Claude and
+// Grok), and never a keyboard-only one, since any process in the CLI's tree
+// can send it. A nil answer makes aggy hook block the prompt.
+func (s *session) onPromptCommand(r Request) error {
+	on := s.o.Vendor
+	if r.Vendor != string(on) {
+		return coded(diag.CodeWrongVendor, fmt.Errorf("a command from %s's hook, but %s is on screen", r.Vendor, on))
+	}
+	if on != adapter.Claude && on != adapter.Grok {
+		return coded(diag.CodeCommandNotTaken, fmt.Errorf("aggy installs no prompt hook for %s", on))
+	}
+	c, ok := sessioncmd.Parse(on, r.Command)
+	switch {
+	case !ok || !s.takes(c):
+		return coded(diag.CodeCommandNotTaken, errors.New("not a command aggy takes from a hook"))
+	case c.KeyboardOnly:
+		return coded(diag.CodeCommandKeyboard, fmt.Errorf("%s changes something, so aggy takes it only typed in full at the prompt", c.Name))
+	}
+	select {
+	case s.prompts <- c:
+		return nil
+	default:
+		return coded(diag.CodeCommandNotTaken, errors.New("another command from a hook is still waiting"))
+	}
+}
+
+// hookCommand acts on a command a prompt hook reported. The hook blocked the
+// prompt, so the Enter that sent it started no turn: when it went at the
+// prompt, just now, with nothing typed since, the prompt is where it was. A
+// switch caught this way always asks on the status line: a hook can be forged.
+func (s *session) hookCommand(c sessioncmd.Command) {
+	// Claude may report one prompt twice, as submitted and as a command's
+	// expansion (UserPromptSubmit and UserPromptExpansion, hooks.md; which of
+	// them a menu pick sends is unverified). The second does nothing.
+	if c.Name == s.hookedName && time.Since(s.hookedAt) < promptRepeat {
+		return
+	}
+	s.hookedName, s.hookedAt = c.Name, time.Now()
+	if s.enterAtPrompt && s.afterEnter == 0 && time.Since(s.enterAt) < promptBlockWait {
+		s.atPrompt = !s.held
+	}
+	s.log(diag.Rec{Event: diag.EvCommandCaught, Attrs: map[string]any{"command": c.Name, "via": "hook"}})
+	if c.Kind == sessioncmd.Switch && !s.turnRan {
+		// Before a turn end only quitting the CLI completes a switch, and a
+		// forged hook must not set that up: the list says it, and a pick there
+		// is the person's.
+		c = sessioncmd.Command{Kind: sessioncmd.Picker, Name: c.Name}
+	}
+	s.runCommand(c, false)
+	if c.Kind == sessioncmd.Switch && s.sw.to == c.Vendor && !s.sw.typed {
+		// The line went through the CLI's own menu, whose Enter leaves the
+		// composer in doubt; whether a blocked prompt's text comes back to it
+		// is unverified. The status line asks anyway, so it says that too,
+		// rather than a note first that only asks for a second pick.
+		s.sw.hooked, s.sw.keyed, s.sw.doubtOK = true, false, true
 	}
 }
 

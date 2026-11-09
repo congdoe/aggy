@@ -13,6 +13,31 @@ import (
 //go:embed aggy/SKILL.md
 var Aggy []byte
 
+// The command skills (T6910): each puts one command inside a session in the
+// CLI's menu, /switch, /borrow, and /inbox on Claude and Grok, $switch and so
+// on on Codex. aggy catches the command before the model sees it, so a body is
+// only what the model reads when that catch missed.
+var (
+	//go:embed switch/SKILL.md
+	Switch []byte
+	//go:embed borrow/SKILL.md
+	Borrow []byte
+	//go:embed inbox/SKILL.md
+	Inbox []byte
+)
+
+// Skill is one skill aggy links: its folder and invocation name, and its
+// SKILL.md.
+type Skill struct {
+	Name    string
+	Content []byte
+}
+
+// Own lists aggy's own skills, the aggy skill first.
+func Own() []Skill {
+	return []Skill{{"aggy", Aggy}, {"switch", Switch}, {"borrow", Borrow}, {"inbox", Inbox}}
+}
+
 // Estimate returns a skill's estimated token cost, offline, as bytes / 4
 // rounded up (a common rule of thumb for English text; no tokenizer, no
 // model call): always is the frontmatter, which a CLI loads every turn

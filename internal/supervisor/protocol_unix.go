@@ -18,6 +18,9 @@ import (
 // in the picker.
 const maxModel = 128
 
+// maxCommand caps a prompt-command's line: sessioncmd takes none longer.
+const maxCommand = 256
+
 var eventRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,63}$`)
 
 // decodeRequest parses and checks one request line.
@@ -33,6 +36,9 @@ func decodeRequest(line []byte) (Request, error) {
 	}
 	if r.Type != ReqSwitchRequest && (r.New || r.Model != "" || r.Brief || r.Tools != nil) {
 		return r, errors.New("bad request: new, model, and brief are for switch-request")
+	}
+	if r.Type != ReqPromptCommand && r.Command != "" {
+		return r, errors.New("bad request: command is for prompt-command")
 	}
 	switch r.Type {
 	case ReqPing, ReqToolsChanged:
@@ -61,6 +67,13 @@ func decodeRequest(line []byte) (Request, error) {
 		}
 		if err := adapter.ValidModel(r.Model); err != nil {
 			return r, err
+		}
+	case ReqPromptCommand:
+		if _, err := adapter.ParseVendor(r.Vendor); err != nil {
+			return r, err
+		}
+		if r.Event != "" || r.Payload != nil || r.Command == "" || len(r.Command) > maxCommand {
+			return r, fmt.Errorf("bad request: prompt-command takes a vendor and a command of at most %d bytes", maxCommand)
 		}
 	default:
 		return r, fmt.Errorf("bad request: unknown type %q", r.Type)
@@ -112,6 +125,19 @@ func answer(line []byte, fromSession bool, onHook func(Request), onSwitch func(R
 		}
 		if onHook != nil {
 			onHook(r)
+		}
+		return Response{OK: true}
+	case ReqPromptCommand:
+		// The session's requests go to onSwitch, which sorts them by type.
+		attrs := map[string]any{"from": r.Vendor}
+		if !fromSession {
+			return refuse(diag.EvPromptRefused, diag.CodeLineage, errors.New("prompt-command from outside this session"), attrs)
+		}
+		if onSwitch == nil {
+			return refuse(diag.EvPromptRefused, diag.CodeNotSupervised, errors.New("this session takes no commands (aggy --direct)"), attrs)
+		}
+		if err := onSwitch(r); err != nil {
+			return refuse(diag.EvPromptRefused, codeOf(err, diag.CodeCommandNotTaken), err, attrs)
 		}
 		return Response{OK: true}
 	default: // ReqSwitchRequest

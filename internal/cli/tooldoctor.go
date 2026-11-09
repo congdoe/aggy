@@ -20,6 +20,7 @@ import (
 	"github.com/congdoe/aggy/internal/switchboard"
 	"github.com/congdoe/aggy/internal/tooldef"
 	"github.com/congdoe/aggy/internal/toolwire"
+	"github.com/congdoe/aggy/skills"
 )
 
 // Doctor codes for tool findings no reason code names; every other tool
@@ -345,7 +346,10 @@ func skillFindings(ctx context.Context, b switchboard.Board, s *store.Store, ver
 	warn := func(t tooldef.Tool, v adapter.Vendor, code, msg, detail, fix string) {
 		out = append(out, toolProblem(t, v, code, checkup.LevelWarn, msg, detail, fix))
 	}
-	withSkill := []string{skillName}
+	var withSkill []string
+	for _, sk := range skills.Own() {
+		withSkill = append(withSkill, sk.Name)
+	}
 	for _, t := range b.Tools {
 		if !hasSkill(t) {
 			continue
