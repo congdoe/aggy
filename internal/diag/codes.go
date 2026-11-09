@@ -111,6 +111,7 @@ var (
 	EvSessionExited        = Event{"supervisor.child.exited"}
 	EvSwitchReturned       = Event{"supervisor.switch.returned"}
 	EvSessionFollowed      = Event{"supervisor.session.followed"}
+	EvCommandCaught        = Event{"supervisor.command.caught"}
 	EvSwitchQueued         = Event{"switch.request.queued"}
 	EvSwitchOffered        = Event{"switch.request.offered"}
 	EvSwitchConfirmed      = Event{"switch.request.confirmed"}
@@ -331,6 +332,7 @@ var events = []EventInfo{
 	{EvSessionFollowed, LevelInfo, "supervisor", "The on-screen CLI moved to another session (/clear, /resume), so turn ends of that one count now (attrs.via: the evidence).", "If aggy resume does not reopen it, its session file was not found: aggy keeps the id it had."},
 	{EvSwitchReturned, LevelWarn, "supervisor", "A CLI switched to closed before it started, so aggy reopened the CLI before it (attrs.from, attrs.to, attrs.exit).", "Its code's fix; the child that never started is not kept."},
 	{EvSessionExited, LevelInfo, "supervisor", "The on-screen CLI exited; exit_code and duration_ms say how, attrs.switch_to the vendor launched next, if any.", "A switch_to with no supervisor.child.launched after it: the next launch's supervisor.launch.refused."},
+	{EvCommandCaught, LevelInfo, "supervisor", "A command inside the session (/switch, /inbox, /aggy ...) was taken before it reached the CLI, so it started no model turn (attrs.command: its fixed name, never its arguments; attrs.via: keys, typed in full at the prompt, or hook, a CLI's prompt hook).", "Nothing. A command that went to the CLI instead was not typed in full: see docs/design.md, section 5."},
 	{EvSwitchQueued, LevelInfo, "switch", "A switch waits for the turn end (attrs.origin: user, agent, or limit; brief, new, model_set).", "No switch.request.offered after it: the session never reached a quiet turn end; look for hook.event.accepted (Stop) and switch.request.refused."},
 	{EvSwitchOffered, LevelInfo, "switch", "The turn ended and aggy asked the user to confirm the switch.", "switch.request.confirmed or switch.request.cancelled follows."},
 	{EvSwitchConfirmed, LevelInfo, "switch", "The user pressed the switch key at the confirmation; aggy typed the CLI's exit command.", "switch.request.completed, or switch.exit.timed_out if the CLI did not exit."},
