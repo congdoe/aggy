@@ -114,7 +114,8 @@ var (
 	ImageTools = []string{"image_gen"}
 	// That image_gen alone, with these denied, leaves the child no tool
 	// that reads a local path is checked live by test/smoke/smoke.sh
-	// (grok-image-tool-list); not yet recorded in docs/verification.md.
+	// (grok-image-tool-list), which passed on 7c86f6c and b972adf
+	// (docs/verification.md, "Grok headless prompt, version, and sandbox").
 	//
 	// FileTools read a local file at any absolute path the model names
 	// (tokio::fs::read, no cwd check) and upload it to xAI: image_edit
@@ -129,7 +130,11 @@ var (
 	// animates it with image_to_video. Unverified headless.
 	VideoTools = []string{"image_gen", "image_to_video"}
 	// ReadTools is review, which also runs with --permission-mode plan.
-	// Under $HOME, readDeny's ~ rules refuse them (RunNotes).
+	// Plan mode does not confine them: Grok auto-allows reads in every
+	// permission mode, and only --sandbox strict kept read_file out of
+	// $HOME (docs/verification.md, "Grok read confinement", T6740), so a
+	// review runs under strict (Headless). Under $HOME, readDeny's ~ rules
+	// refuse them too (RunNotes; verification.md T6922).
 	ReadTools = []string{"read_file", "grep", "list_dir"}
 	// EditTools is edit, in its own worktree. No shell: aggy check runs
 	// the tests.
