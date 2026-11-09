@@ -122,6 +122,17 @@ func (s *Store) Children(ctx context.Context, parentID string) ([]Child, error) 
 	return out, rows.Err()
 }
 
+// ChildParent returns the id of the child's parent, ErrNotFound when
+// there is no such child.
+func (s *Store) ChildParent(ctx context.Context, childID string) (string, error) {
+	var p string
+	err := s.db.QueryRowContext(ctx, `SELECT parent_id FROM children WHERE id = ?`, childID).Scan(&p)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return p, err
+}
+
 // raise sets the child's last active, and its parent's, to at when that
 // is later; at is capped, and a stored time past the cap does not count.
 func raise(ctx context.Context, tx *sql.Tx, childID string, at time.Time) error {

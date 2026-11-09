@@ -155,7 +155,11 @@ func describe(e store.Event) string {
 			for i, f := range fs {
 				names[i] = fmt.Sprint(f)
 			}
-			return strings.Join(names, ", ")
+			s := strings.Join(names, ", ")
+			if b := str(d, "borrow"); b != "" {
+				s += " (accepted from borrow " + b + ")"
+			}
+			return s
 		}
 	}
 	// Unknown types show their detail as sorted key=value pairs.

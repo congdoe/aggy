@@ -75,6 +75,9 @@ func TestSwitchAtTurnEnd(t *testing.T) {
 		t.Errorf("grok args %q: want the prompt to read the brief in %q", runs[1].Args, briefs)
 	}
 	s.restored("after the switch")
+	// T6925: aggy log shows the first CLI and the switch.
+	wantLogged(t, w, "screen", "claude on screen")
+	wantLogged(t, w, "switch", "claude -> grok [user]")
 }
 
 // TestSkillRequestedSwitch (T6668): aggy switch, run from inside the
@@ -111,6 +114,7 @@ func TestSkillRequestedSwitch(t *testing.T) {
 	if runs := interactiveRuns(t, w); len(runs) != 2 || runs[1].Vendor != "grok" {
 		t.Fatalf("interactive runs = %+v, want claude then grok", runs)
 	}
+	wantLogged(t, w, "switch", "claude -> grok [agent]")
 }
 
 // TestSwitchNoTurnYet (T6893): aggy types no exit command into a CLI that
