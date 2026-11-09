@@ -585,6 +585,11 @@ type session struct {
 	// Enter runs it and leaves no text, unlike a popup that fills in a name.
 	slashLine bool
 	asked     map[string]bool
+	// lineInput is inputSinceTurn as it was when the line in cmdLine began, so
+	// a command caught from it, with its Ctrl+U, leaves it as before (T6908).
+	// enterRelease: catchCommand held back a CSI u Enter, whose release, if the
+	// terminal reports one next, is dropped too.
+	lineInput, enterRelease bool
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -651,6 +656,12 @@ type pendingSwitch struct {
 	// confirmed switch (0: none), started at checkAt (T6770).
 	checkSeq int
 	checkAt  time.Time
+	// keyed: the person typed the switch as a command, at the prompt, on a CLI
+	// that signals an open approval prompt (holdSignal), so the command is the
+	// confirmation and no status line asks (T6908). hooked: a CLI's prompt hook
+	// reported the command, which any process in its tree can forge, so the
+	// status line always asks (T6910).
+	keyed, hooked bool
 	// choice is what was picked or asked for with the vendor (T6665).
 	choice Choice
 	// rec is the id of the switch's latest diagnostic record, the cause
@@ -1051,12 +1062,23 @@ func (s *session) send(b []byte) {
 	}
 	typed := legacyKeys(s.typedOf(b), s.draftPaste)
 	if len(typed) == 0 && len(b) > 0 {
+		if s.enterRelease && enterReleaseOnly(b) {
+			s.enterRelease = false // the release of an Enter catchCommand held back
+			return
+		}
 		s.toChild.push(b) // the terminal's own reports, or a key's release: no typing at all
 		return
 	}
+	s.enterRelease = false
 	if s.exitGap {
 		s.gapKeys = append(s.gapKeys, b...) // finishExit decides where they go
 		return
+	}
+	if s.catchCommand(b, typed) {
+		return
+	}
+	if len(s.cmdLine) == 0 && !s.cmdBad {
+		s.lineInput = s.inputSinceTurn // as it was before this line began
 	}
 	s.lastIn = time.Now()
 	s.held = false
@@ -1641,6 +1663,16 @@ func (s *session) offerSwitch() {
 	}
 	if !s.turnRan {
 		s.tellNoTurn(what)
+		return
+	}
+	if s.sw.keyed && !s.sw.hooked && !s.sw.resume && holdSignal(on) && !s.doubt() {
+		// T6908: the person typed the switch at this prompt, and the CLI says
+		// when it waits for them, so the command was the confirmation. All the
+		// checks above still held: a turn ended, nothing holds it, the prompt
+		// is empty and quiet. In doubt the status line asks, as for a pick.
+		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: s.turnCause(), Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "keyed": true})})
+		s.pk.preselect = ""
+		s.confirmSwitch()
 		return
 	}
 	// One status line (S-12, O56-1): who or what asked and the switch's
@@ -2447,14 +2479,33 @@ func (s *session) pickerInput(b []byte) {
 	} else {
 		s.log(diag.Rec{Event: diag.EvPickerChosen, Attrs: switchAttrs(c, map[string]any{"to": string(picked), "again": picked == s.sw.to})})
 	}
-	switch {
-	case s.sw.typed:
-		// The exit command is typed: Esc cancels the switch, so a late
-		// exit ends aggy; a pick changes nothing.
-		if picked == "" {
+	if picked == "" {
+		switch {
+		case s.sw.typed:
+			// The exit command is typed: Esc cancels the switch, so a late
+			// exit ends aggy.
+			s.setSwitch(pendingSwitch{})
+		default: // Esc on the list cancels a waiting switch
+			s.toolsWaitTurn = s.toolsWaitTurn || s.sw.resume
 			s.setSwitch(pendingSwitch{})
 		}
-	case picked != "" && picked == s.sw.to:
+		return
+	}
+	s.pickSwitch(c, false)
+}
+
+// pickSwitch takes a switch the person chose: in the list, or typed as a
+// command (keyed, T6908). Picked again while it waits, it says no turn is
+// running; otherwise it queues it for the turn end.
+func (s *session) pickSwitch(c Choice, keyed bool) {
+	picked := c.Vendor
+	// A typed switch needs no status line only where the CLI says when it
+	// waits for the person (design.md section 5); Codex still asks.
+	keyed = keyed && holdSignal(s.o.Vendor)
+	switch {
+	case s.sw.typed:
+		// The exit command is typed: a pick changes nothing.
+	case picked == s.sw.to:
 		// Picked again while it waits: the user says no turn is running
 		// (an Enter that started none leaves no turn end to wait for).
 		// Not past a hold (S-3), and not past unsent text (S-8): that
@@ -2482,19 +2533,21 @@ func (s *session) pickerInput(b []byte) {
 		}
 		c.Tools = s.sw.choice.Tools // the list cannot set them, so an agent's stay
 		s.sw.choice, s.sw.asked, s.sw.picked, s.sw.noteShown = c, false, true, false
+		s.sw.keyed, s.sw.hooked = keyed, false
 		s.sw.doubtOK = s.sw.toldDoubt || s.pk.doubtSaid // told, and picked again: the person has looked
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Cause: s.sw.rec, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked), "again": true})})
 		s.markNoTurn()
-	case picked != "":
+	default:
 		if err := s.offered(picked); err != nil && !errors.Is(err, ErrChecking) {
 			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchVendor, Msg: refusedMsg(picked, err), Attrs: map[string]any{"to": string(picked)}})
 			s.pk.tell(fmt.Sprintf("Cannot switch to %s: %v", picked, err))
 			s.openPicker()
 			return
 		}
-		s.setSwitch(pendingSwitch{to: picked, choice: c, picked: true, toldDoubt: s.pk.doubtSaid})
+		// A typed one was not picked from the list, whose words it never saw.
+		s.setSwitch(pendingSwitch{to: picked, choice: c, picked: true, toldDoubt: s.pk.doubtSaid && !keyed, keyed: keyed})
 		s.toldDirty = false // a first pick is told again, or nothing would say why it waits
-		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked)})})
+		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked), "keyed": keyed})})
 		s.markNoTurn()
 		switch {
 		case s.askOpen():
@@ -2504,9 +2557,6 @@ func (s *session) pickerInput(b []byte) {
 			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "picked, but the CLI waits for the user"})
 			s.tellHeld(picked)
 		}
-	default: // Esc on the list cancels a waiting switch
-		s.toolsWaitTurn = s.toolsWaitTurn || s.sw.resume
-		s.setSwitch(pendingSwitch{})
 	}
 }
 
