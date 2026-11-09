@@ -142,11 +142,16 @@ func plainWord(w string) bool {
 		return false
 	}
 	for _, r := range w {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("._:/+=-", r)) {
+		if !wordRune(r, "._:/+=-") {
 			return false
 		}
 	}
 	return true
+}
+
+// wordRune reports whether r is an ASCII letter or digit, or one of extra.
+func wordRune(r rune, extra string) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(extra, r)
 }
 
 // idWord reports whether w can be an id or an id's prefix.
@@ -155,7 +160,7 @@ func idWord(w string) bool {
 		return false
 	}
 	for _, r := range w {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+		if !wordRune(r, "-_") {
 			return false
 		}
 	}

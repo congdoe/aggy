@@ -128,6 +128,16 @@ type Options struct {
 	// launch sends on it when the session's tool proxy died (T6780), so
 	// the change is offered as a resume. It may be nil.
 	ToolsNudge <-chan struct{}
+	// Aggy runs one of aggy's own commands for a command typed in the session
+	// (T6909) and returns what it printed, its output and errors together. It
+	// never reads the terminal: answer is the reply to the command's own
+	// question, y when set, else no. It is called off the main loop. Nil takes
+	// no command but /switch.
+	Aggy func(args []string, answer bool) string
+	// ToolNames lists the managed tools for /aggy tool, which shows each as on
+	// when Tools says this session would get it now. Off the main loop; nil
+	// lists none.
+	ToolNames func() []string
 }
 
 // ToolSet maps a managed tool's name to what a session gets of it (such

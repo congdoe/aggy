@@ -644,6 +644,9 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		WarnAt:   eff.Switch.WarnAt,
 		Diag:     q,
 		ChildID:  pl.child.ID,
+		// T6909: commands typed in the session run in this process.
+		Aggy:      sessionAggy,
+		ToolNames: sessionToolNames,
 	})
 	px.guard(0, false) // the CLI was reaped: never signal its pid again
 	dlog.Release()

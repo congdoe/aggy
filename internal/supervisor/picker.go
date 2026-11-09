@@ -90,6 +90,10 @@ type picker struct {
 	// queues a resume of the vendor on screen; in the list, the switch
 	// waiting is that resume.
 	resume bool
+	// menu and page, when set, are an option list or a result (T6909, view.go),
+	// which take the whole screen.
+	menu *menu
+	page *page
 	// onAlt: draw took the terminal to the alternate screen and erase has not
 	// brought it back. 1049h saves the cursor each time, so a second one would
 	// save the alternate screen's over the CLI's (xterm's ctlseqs).
@@ -98,6 +102,7 @@ type picker struct {
 
 // list sets the picker to the vendor list, its toggles cleared.
 func (p *picker) list() {
+	p.menu, p.page = nil, nil
 	p.confirm, p.note, p.lines, p.resume = "", false, nil, false
 	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
 	p.opts, p.editing, p.edit, p.editErr, p.stage, p.kids = Choice{}, false, nil, "", "", nil
@@ -106,12 +111,14 @@ func (p *picker) list() {
 
 // ask sets the picker to confirm a switch to v, explained by lines.
 func (p *picker) ask(v adapter.Vendor, lines ...string) {
+	p.menu, p.page = nil, nil
 	p.confirm, p.note, p.lines, p.resume = v, false, lines, false
 	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
 }
 
 // tell sets the picker to show a note.
 func (p *picker) tell(lines ...string) {
+	p.menu, p.page = nil, nil
 	p.confirm, p.note, p.lines, p.resume = "", true, lines, false
 	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
 }

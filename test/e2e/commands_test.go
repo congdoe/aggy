@@ -134,6 +134,28 @@ func TestTypedCommandNotCaught(t *testing.T) {
 	}
 }
 
+// TestTypedInboxPage (T6909): /inbox shows aggy inbox's output on the
+// alternate screen, no turn spent, and Esc gives the CLI its screen back.
+func TestTypedInboxPage(t *testing.T) {
+	w, sc, log := commandWorld(t)
+	s := w.start(t, sc, "run", "claude")
+	s.waitFor([]byte("READY>"))
+	waitStops(t, log, 1)
+	s.typeSlowly("/inbox")
+	s.send([]byte("\r"))
+	s.waitFor([]byte("No unread reports."))
+	s.send([]byte("\x1b"))
+	time.Sleep(300 * time.Millisecond)
+	if got := stops(t, log); got != 1 {
+		t.Errorf("Stop hooks = %d, want 1: /inbox reached Claude", got)
+	}
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	s.restored("after the page")
+}
+
 // TestTypedPickerOpens (T6908): /switch alone opens the picker, as the switch
 // key does, and Esc there leaves nothing waiting: the CLI exits on its own.
 func TestTypedPickerOpens(t *testing.T) {

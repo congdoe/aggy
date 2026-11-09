@@ -3,6 +3,8 @@
 package supervisor
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -108,6 +110,8 @@ func (s *session) takes(c sessioncmd.Command) bool {
 	switch c.Kind {
 	case sessioncmd.Picker, sessioncmd.Switch:
 		return true
+	case sessioncmd.Run, sessioncmd.AggyList, sessioncmd.BorrowList, sessioncmd.ToolList:
+		return s.o.Aggy != nil
 	}
 	return false
 }
@@ -125,5 +129,280 @@ func (s *session) runCommand(c sessioncmd.Command, keyed bool) {
 			s.closePicker()
 		}
 		s.pickSwitch(Choice{Vendor: c.Vendor, Brief: c.Brief, New: c.New, Model: c.Model}, keyed)
+	case sessioncmd.AggyList:
+		s.showMenu(&menu{title: "commands", items: s.aggyItems()})
+	case sessioncmd.BorrowList:
+		var items []menuItem
+		for _, k := range adapter.Kinds() {
+			items = append(items, menuItem{label: string(k), line: sessioncmd.Prefix(s.o.Vendor) + "borrow " + string(k) + " ", fill: true})
+		}
+		s.showMenu(&menu{title: "borrow which kind? Picking one starts the line; write the task and press Enter", items: items})
+	case sessioncmd.ToolList:
+		s.startRun(c, nil)
+	case sessioncmd.Run:
+		s.startRun(c, s.cmdArgs(c))
 	}
+}
+
+// aggyItems are /aggy's list: every command, in the CLI's own form.
+func (s *session) aggyItems() []menuItem {
+	pre := sessioncmd.Prefix(s.o.Vendor)
+	items := []menuItem{
+		{label: fmt.Sprintf("%-14s %s", pre+"switch", "switch to another CLI"), line: pre + "switch"},
+		{label: fmt.Sprintf("%-14s %s", pre+"borrow", "borrow a task to another CLI (a model turn)"), line: pre + "borrow"},
+		{label: fmt.Sprintf("%-14s %s", pre+"inbox", "borrow reports you have not read"), line: pre + "inbox"},
+	}
+	for _, sub := range sessioncmd.Subcommands {
+		line := pre + "aggy " + sub.Name
+		fill := sub.Name == "check" || sub.Name == "accept" || sub.Name == "reject"
+		if fill {
+			line += " "
+		}
+		items = append(items, menuItem{label: fmt.Sprintf("%-14s %s", "aggy "+sub.Name, sub.What), line: line, fill: fill})
+	}
+	return append(items, menuItem{label: fmt.Sprintf("%-14s %s", pre+"aggy ...", "ask aggy's helper a question (a model turn)"), line: pre + "aggy ", fill: true})
+}
+
+// cmdArgs are a Run command's arguments, with the session's own ids where
+// the command takes them; nil when one is not known.
+func (s *session) cmdArgs(c sessioncmd.Command) []string {
+	switch c.Sub {
+	case "brief":
+		id := s.followed
+		if id == "" && s.o.SessionID != nil {
+			id = s.o.SessionID()
+		}
+		if id == "" {
+			return nil
+		}
+		return []string{"brief", "--show", "--from", string(s.o.Vendor), "--session", id}
+	case "log":
+		if s.o.ParentID != "" {
+			return []string{"log", "-n", "200", "--parent", s.o.ParentID}
+		}
+		return []string{"log", "-n", "200"}
+	}
+	return c.Args
+}
+
+// showMenu puts a menu on screen.
+func (s *session) showMenu(m *menu) {
+	if s.open {
+		s.closePicker()
+	}
+	s.pk.list()
+	s.pk.menu = m
+	s.viewPaste = pasteFilter{}
+	s.openPicker()
+}
+
+// startRun puts a page on screen and runs args off the main loop; their output
+// replaces the page's text. A ToolList command reads the tools instead and
+// becomes their menu. A command with Text shows it and runs nothing until y.
+func (s *session) startRun(c sessioncmd.Command, args []string) {
+	if s.open {
+		s.closePicker()
+	}
+	s.cmdSeq++
+	pg := &page{title: c.Name, seq: s.cmdSeq, confirm: c.Confirm, confirmLabel: c.ConfirmLabel, answer: c.Answer}
+	switch {
+	case c.Text != "":
+		pg.lines = []string{c.Text}
+	case c.Kind == sessioncmd.ToolList:
+		pg.lines, pg.busy = []string{"Reading the tools..."}, true
+		s.goTools(pg.seq)
+	case len(args) == 0:
+		pg.lines = []string{"aggy does not know this session's id yet, so it cannot show that."}
+	default:
+		pg.lines, pg.busy = []string{"Running aggy " + strings.Join(args, " ") + "..."}, true
+		s.goRun(pg.seq, args, false)
+	}
+	s.pk.list()
+	s.pk.page = pg
+	s.viewPaste = pasteFilter{}
+	s.openPicker()
+}
+
+// cmdResult is what a run printed, or the tools read, for run seq.
+type cmdResult struct {
+	seq   int
+	out   string
+	tools bool
+	items []menuItem
+}
+
+func (s *session) goRun(seq int, args []string, answer bool) {
+	run := s.o.Aggy
+	s.goSafe(func() {
+		out := run(args, answer)
+		select {
+		case s.cmdResults <- cmdResult{seq: seq, out: out}:
+		case <-s.quit:
+		}
+	})
+}
+
+func (s *session) goTools(seq int) {
+	names, now, pre := s.o.ToolNames, s.o.Tools, sessioncmd.Prefix(s.o.Vendor)
+	s.goSafe(func() {
+		var items []menuItem
+		var on ToolSet
+		if now != nil {
+			on, _ = now()
+		}
+		if names != nil {
+			for _, n := range names() {
+				op, what := "on", "off here; picking turns it on"
+				if on[n] != "" {
+					op, what = "off", "on here; picking turns it off"
+				}
+				items = append(items, menuItem{label: fmt.Sprintf("%-16s %s", n, what), line: pre + "aggy tool " + op + " " + n})
+			}
+		}
+		select {
+		case s.cmdResults <- cmdResult{seq: seq, tools: true, items: items}:
+		case <-s.quit:
+		}
+	})
+}
+
+// cmdDone takes a run's result: it goes on the page it was for, if that page
+// is still up.
+func (s *session) cmdDone(r cmdResult) {
+	g := s.pk.page
+	if !s.open || g == nil || g.seq != r.seq {
+		return
+	}
+	g.busy = false
+	switch {
+	case r.tools && len(r.items) == 0:
+		g.lines = []string{"No managed tools are defined. aggy tool list shows them."}
+	case r.tools:
+		s.pk.page = nil
+		s.pk.menu = &menu{title: "turn a tool on or off (a resume of this CLI picks it up)", items: r.items}
+	default:
+		g.lines, g.top = plainText(r.out), 0
+	}
+	s.redrawView()
+}
+
+func (s *session) redrawView() {
+	rows, cols := s.t.size()
+	s.pk.drawView(s.o.Out, s.pickerOverCLI, rows, cols)
+}
+
+// closeView takes the menu or page off the screen, back to the CLI.
+func (s *session) closeView() {
+	s.pk.menu, s.pk.page = nil, nil
+	s.closePicker()
+}
+
+// viewInput takes keys at a menu or a page. A paste is dropped: it never picks.
+func (s *session) viewInput(b []byte) {
+	keys, runes := viewKeys(s.viewPaste.drop(b), s.pk.key)
+	for i, k := range keys {
+		var done bool
+		switch {
+		case s.pk.menu != nil:
+			done = s.menuKey(k, runes[i])
+		case s.pk.page != nil:
+			done = s.pageKey(k, runes[i])
+		default:
+			return
+		}
+		if done {
+			return
+		}
+	}
+	if s.open && (s.pk.menu != nil || s.pk.page != nil) {
+		s.redrawView()
+	}
+}
+
+// menuKey takes one key at a menu, and reports whether the menu is gone.
+func (s *session) menuKey(k viewKey, r rune) bool {
+	m := s.pk.menu
+	switch {
+	case k == keyClose || r == 'q':
+		s.closeView()
+		return true
+	case k == keyUp || r == 'k':
+		m.at = max(m.at-1, 0)
+	case k == keyDown || r == 'j':
+		m.at = max(min(m.at+1, len(m.items)-1), 0)
+	case k == keyEnter && len(m.items) > 0:
+		s.choose(m.items[m.at])
+		return true
+	case r >= '1' && r <= '9' && int(r-'1') < len(m.items):
+		s.choose(m.items[r-'1'])
+		return true
+	}
+	return false
+}
+
+// pageKey takes one key at a page, and reports whether the page is gone.
+func (s *session) pageKey(k viewKey, r rune) bool {
+	g := s.pk.page
+	rows, _ := s.t.size()
+	if rows < 3 {
+		rows = screenRows
+	}
+	room := max(rows-4, 1)
+	switch {
+	case k == keyClose || r == 'q':
+		s.closeView()
+		return true
+	case k == keyUp || r == 'k':
+		g.top = max(g.top-1, 0)
+	case k == keyDown || r == 'j':
+		g.top++
+	case k == keyPageDown || r == ' ':
+		g.top += room
+	case k == keyPageUp || r == 'b':
+		g.top = max(g.top-room, 0)
+	case r == 'g':
+		g.top = 0
+	case r == 'G':
+		g.top = len(g.lines)
+	case r == 'y' && len(g.confirm) > 0 && !g.busy:
+		args := g.confirm
+		s.cmdSeq++
+		g.seq, g.busy, g.confirm, g.top = s.cmdSeq, true, nil, 0
+		g.lines = []string{"Running aggy " + strings.Join(args, " ") + "..."}
+		s.log(diag.Rec{Event: diag.EvCommandCaught, Attrs: map[string]any{"command": g.title, "via": "keys", "confirmed": true}})
+		s.goRun(g.seq, args, g.answer)
+	}
+	return false
+}
+
+// choose acts on a menu's item: a command runs, the start of one is typed
+// into the composer for the person to finish.
+func (s *session) choose(it menuItem) {
+	s.closeView()
+	if it.fill {
+		s.fillComposer(it.line)
+		return
+	}
+	c, ok := sessioncmd.Parse(s.o.Vendor, it.line)
+	if !ok || !s.takes(c) {
+		return
+	}
+	s.log(diag.Rec{Event: diag.EvCommandCaught, Attrs: map[string]any{"command": c.Name, "via": "list"}})
+	s.runCommand(c, true)
+}
+
+// fillComposer types line into the composer, as the person's own keys, when
+// aggy knows it is empty; otherwise it says what to type.
+func (s *session) fillComposer(line string) {
+	empty := s.lenKnown && s.compLen == 0 && s.draftLen == 0 && !s.draftBlind && !s.doubt() && !s.askOpen() && !s.exitGap
+	if !empty {
+		s.cmdSeq++
+		s.pk.list()
+		s.pk.page = &page{title: "aggy", seq: s.cmdSeq, lines: []string{
+			"aggy cannot tell that the prompt is empty, so it typed nothing.",
+			"Clear the prompt and type: " + strings.TrimSpace(line)}}
+		s.openPicker()
+		return
+	}
+	s.send([]byte(line))
 }
