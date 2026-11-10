@@ -319,6 +319,9 @@ func TestDeclinedDialogGoesBack(t *testing.T) {
 		t.Fatalf("interactive runs = %+v, want claude, grok, claude", runs)
 	}
 	s.restored("after going back")
+	// T6925: the switch and the way back are both logged.
+	wantLogged(t, w, "switch", "claude -> grok [user]")
+	wantLogged(t, w, "switch", "grok -> claude [back: it never started]")
 }
 
 // TestCannotTellEndsAggy (T6899): the same, on a vendor with no sessions folder:

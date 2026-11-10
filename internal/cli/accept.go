@@ -432,21 +432,30 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 	dlog.Log(ctx, applied)
 	// aggy log shows the files the accept changed (T6925). The diff is
 	// applied, so a failed write only goes unlogged.
+	// TODO(T6955): the write waits up to the store's busy timeout on a
+	// locked index, as the accept's state change above can.
 	_ = recordFiles(context.WithoutCancel(ctx), s, b, paths, time.Now())
 	fmt.Fprintf(stdout, "Applied to %s (not staged or committed). The worktree and branch %s stay until aggy gc.\n",
 		termsafe.Field(wt.Repo), termsafe.Field(wt.Branch))
 	return 0
 }
 
+// maxLoggedFiles caps the names a files row keeps; the rest are counted.
+const maxLoggedFiles = 50
+
 // recordFiles appends the files row of an accepted edit borrow b, which
-// changed paths in the main checkout, under its child's parent.
+// changed paths in the main checkout, under its child's parent: the first
+// maxLoggedFiles names, and how many more there were.
 func recordFiles(ctx context.Context, s *store.Store, b store.Borrow, paths []string, at time.Time) error {
 	parent, err := s.ChildParent(ctx, b.ChildID)
 	if err != nil {
 		return err
 	}
-	return s.AppendEvent(ctx, store.Event{At: at, ParentID: parent, ChildID: b.ChildID, Type: store.EventFiles,
-		Detail: map[string]any{"files": paths, "borrow": b.ID, "via": "accept"}})
+	d := map[string]any{"files": paths, "borrow": b.ID, "via": "accept"}
+	if len(paths) > maxLoggedFiles {
+		d["files"], d["more"] = paths[:maxLoggedFiles], len(paths)-maxLoggedFiles
+	}
+	return s.AppendEvent(ctx, store.Event{At: at, ParentID: parent, ChildID: b.ChildID, Type: store.EventFiles, Detail: d})
 }
 
 // wtGit is the git options that name wt's admin dir and work tree, so

@@ -453,4 +453,9 @@ func TestToolOnResumes(t *testing.T) {
 	if runs[1].Env["AGGY_PARENT"] != runs[0].Env["AGGY_PARENT"] {
 		t.Errorf("another parent: %v", runs[1].Env)
 	}
+	// T6925: the restart for a tool change is the same CLI back on screen,
+	// so aggy log keeps only the first launch's row.
+	if sc, sw := loggedRows(t, w, "screen"), loggedRows(t, w, "switch"); sc != 1 || sw != 0 {
+		t.Errorf("aggy log: %d screen and %d switch rows, want 1 and 0", sc, sw)
+	}
 }
