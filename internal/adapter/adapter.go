@@ -83,6 +83,25 @@ var localCommands = map[Vendor][]string{
 	},
 }
 
+// clearLineChecked lists the CLIs whose composer a live check recorded in
+// docs/verification.md shows emptied by Ctrl+U (the byte 0x15, and its CSI u
+// form for a terminal that reports keys so), which aggy types in place of a
+// typed command's Enter (docs/design.md section 5). None is recorded yet: on
+// each, that Ctrl+U clears the whole composer is unverified, so a switch typed
+// there still asks on the status line before the exit command is typed after
+// what may be leftover text. A live check flips its entry.
+// TODO(T6895): the live check for each CLI.
+var clearLineChecked = map[Vendor]bool{
+	Claude:   false,
+	Codex:    false,
+	Grok:     false,
+	OpenCode: false,
+}
+
+// ClearLineChecked reports whether a live check shows Ctrl+U emptying v's
+// composer (clearLineChecked).
+func ClearLineChecked(v Vendor) bool { return clearLineChecked[v] }
+
 // LocalCommand reports whether line, whole, is a command of v's that starts no
 // model turn.
 func LocalCommand(v Vendor, line string) bool {

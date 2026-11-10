@@ -853,7 +853,10 @@ Docs and source only, not run live (read 2026-11-09). What aggy relies on:
   line, which the keystroke catch types in place of the held Enter.
 
 To confirm (owner's live check): under aggy on each CLI, type `/switch` and
-press Enter (the picker, and no turn in the transcript); type `/inbox`; pick
+press Enter (the picker, and no turn in the transcript); type some text, then
+Ctrl+U, then Enter, and see no message sent: with that recorded here for a CLI,
+`clearLineChecked` in `internal/adapter` flips to true for it, and a typed
+`/switch <vendor>` there skips the status line (R121); type `/inbox`; pick
 `/switch` from the CLI's own menu with a vendor (Claude and Grok: the prompt is
 blocked and the status line asks); and check `aggy log` and `aggy diag` for
 `supervisor.command.caught`.

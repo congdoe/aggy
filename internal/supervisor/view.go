@@ -133,6 +133,8 @@ func (p *picker) drawView(w io.Writer, overCLI bool, rows, cols int) {
 }
 
 // cut shortens s to n runes; it never writes the last column.
+// TODO(T6954): cut counts runes, so a wide character (two columns) misdraws; a list or
+// page is not redrawn when the terminal is resized (SIGWINCH).
 func cut(s string, n int) string {
 	if utf8.RuneCountInString(s) <= n {
 		return s

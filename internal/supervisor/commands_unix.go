@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -26,6 +27,11 @@ import (
 // that ends in an Enter included, goes to the CLI as typed, where a miss is
 // harmless: the CLI refuses an unknown command, or a skill tells the model to
 // change nothing.
+
+// clearsLine reports whether a live check shows Ctrl+U emptying the composer of
+// v (adapter.ClearLineChecked): only then does a switch typed in full skip the
+// status line (offerSwitch). A variable for tests.
+var clearsLine = adapter.ClearLineChecked
 
 // catchCommand takes a read that is one plain Enter (raw, as it came, and
 // typed, as legacyKeys gave it) ending a command the tracker knows whole. It
@@ -52,6 +58,8 @@ func (s *session) catchCommand(raw, typed []byte) bool {
 	if raw[0] == esc {
 		// The terminal reports keys as CSI u: Ctrl+U the same way (unverified
 		// that each CLI takes it so; its legacy byte may also do).
+		// TODO(T6954): a modifyOtherKeys Enter (CSI 27;1;13~) gets the CSI u
+		// form too, which a terminal in that mode would not send itself.
 		clear = []byte("\x1b[117;5u")
 		s.enterRelease = true // the release that follows is the held Enter's
 	}
@@ -69,7 +77,7 @@ func (s *session) catchCommand(raw, typed []byte) bool {
 // Enter that sent what was there (or since launch), as printable keys only.
 func (s *session) lineKnown() bool {
 	switch {
-	case len(s.cmdLine) == 0, s.cmdBad, !s.lenKnown, s.draftBlind, s.draftPaste, s.inPaste, s.pastePop:
+	case len(s.cmdLine) == 0, s.cmdBad, !s.lenKnown && !s.cmdFresh, s.draftBlind, s.draftPaste, s.inPaste, s.pastePop:
 		return false
 	case s.cleared, s.escDoubt, s.escEmpty, s.escTwice, s.moved, s.askOpen(), s.exitGap:
 		return false
@@ -101,7 +109,7 @@ func (s *session) emptyComposer() {
 	s.slashOnly, s.slashEntered, s.slashLine = false, false, false
 	s.draftLen, s.draftBlind, s.draftHigh = 0, false, false
 	s.cmdLine, s.cmdBad = s.cmdLine[:0], false
-	s.toldDirty = false
+	s.toldDirty, s.cmdFresh = false, false
 	s.updateDirty()
 }
 
@@ -154,11 +162,26 @@ const promptBlockWait = 10 * time.Second
 // same prompt reported again.
 const promptRepeat = 2 * time.Second
 
+// promptAnswerWait bounds how long a socket goroutine waits for the main loop
+// to answer a prompt-command: under aggy hook's own 3 seconds, so a busy loop
+// lets the prompt through rather than the hook timing out.
+const promptAnswerWait = 2 * time.Second
+
+// promptReq is one prompt-command on its way to the main loop: the command,
+// where the answer goes, and claimed, which the main loop or a socket
+// goroutine that gave up waiting sets first; whoever does decides.
+type promptReq struct {
+	c       sessioncmd.Command
+	answer  chan error
+	claimed *atomic.Bool
+}
+
 // onPromptCommand takes a command a CLI's UserPromptSubmit hook reported
 // (T6910), on a connection's goroutine: the line is parsed again here, only
 // from the vendor on screen, only where aggy installs that hook (Claude and
 // Grok), and never a keyboard-only one, since any process in the CLI's tree
-// can send it. A nil answer makes aggy hook block the prompt.
+// can send it. The main loop then decides (hookCommand), and a nil answer
+// makes aggy hook block the prompt; any other lets it through.
 func (s *session) onPromptCommand(r Request) error {
 	on := s.o.Vendor
 	if r.Vendor != string(on) {
@@ -174,29 +197,64 @@ func (s *session) onPromptCommand(r Request) error {
 	case c.KeyboardOnly:
 		return coded(diag.CodeCommandKeyboard, fmt.Errorf("%s changes something, so aggy takes it only typed in full at the prompt", c.Name))
 	}
+	p := promptReq{c: c, answer: make(chan error, 1), claimed: new(atomic.Bool)}
 	select {
-	case s.prompts <- c:
-		return nil
+	case s.prompts <- p:
 	default:
 		return coded(diag.CodeCommandNotTaken, errors.New("another command from a hook is still waiting"))
 	}
+	t := time.NewTimer(promptAnswerWait)
+	defer t.Stop()
+	select {
+	case err := <-p.answer:
+		return err
+	case <-t.C:
+	}
+	if p.claimed.CompareAndSwap(false, true) {
+		return coded(diag.CodeCommandNotTaken, errors.New("aggy was busy, so the prompt went to the CLI"))
+	}
+	return <-p.answer // the main loop claimed it first and answers now
 }
 
-// hookCommand acts on a command a prompt hook reported. The hook blocked the
-// prompt, so the Enter that sent it started no turn: when it went at the
-// prompt, just now, with nothing typed since, the prompt is where it was. A
-// switch caught this way always asks on the status line: a hook can be forged.
-func (s *session) hookCommand(c sessioncmd.Command) {
+// answerPrompt is the main loop's side of onPromptCommand.
+func (s *session) answerPrompt(p promptReq) {
+	if !p.claimed.CompareAndSwap(false, true) {
+		return // its socket goroutine gave up; the prompt went to the CLI
+	}
+	p.answer <- s.hookCommand(p.c)
+}
+
+// hookCommand acts on a command a prompt hook reported, or says why not. Any
+// process in the CLI's tree can send one, so only the one that goes with a
+// real Enter is taken (R121): an Enter at the prompt, on a line that held only
+// a leading / command (what a menu's pick submits), with no key since, within
+// promptBlockWait, and one command per Enter. Nothing is taken over a list,
+// page, or picker already on screen, nor a switch over one waiting. The hook
+// then blocked that prompt, so that Enter started no turn: the prompt is where
+// it was, and its line is gone from the composer (both CLIs document a block
+// as stopping the prompt; that the composer is left empty is unverified,
+// TODO(T6895)). A switch caught this way always asks on the status line.
+func (s *session) hookCommand(c sessioncmd.Command) error {
 	// Claude may report one prompt twice, as submitted and as a command's
 	// expansion (UserPromptSubmit and UserPromptExpansion, hooks.md; which of
-	// them a menu pick sends is unverified). The second does nothing.
-	if c.Name == s.hookedName && time.Since(s.hookedAt) < promptRepeat {
-		return
+	// them a menu pick sends is unverified). The second blocks too and does
+	// nothing more.
+	if c.Name == s.hookedName && s.hookedEnter.Equal(s.enterAt) && time.Since(s.enterAt) < promptRepeat {
+		return nil
 	}
-	s.hookedName, s.hookedAt = c.Name, time.Now()
-	if s.enterAtPrompt && s.afterEnter == 0 && time.Since(s.enterAt) < promptBlockWait {
-		s.atPrompt = !s.held
+	switch {
+	case !s.enterAtPrompt || !s.enterSlash || s.afterEnter != 0 || time.Since(s.enterAt) >= promptBlockWait:
+		return coded(diag.CodeCommandNoEnter, errors.New("no Enter of a / command at the prompt just before it"))
+	case s.hookedEnter.Equal(s.enterAt):
+		return coded(diag.CodeCommandNoEnter, errors.New("aggy already took a command for that Enter"))
+	case s.open:
+		return coded(diag.CodeCommandNotTaken, errors.New("aggy's list or page is open"))
+	case (c.Kind == sessioncmd.Switch || c.Kind == sessioncmd.Picker) && s.sw.to != "":
+		return coded(diag.CodeCommandNotTaken, errors.New("a switch is already waiting"))
 	}
+	s.hookedName, s.hookedEnter = c.Name, s.enterAt
+	s.atPrompt = !s.held
+	s.emptyComposer()
 	s.log(diag.Rec{Event: diag.EvCommandCaught, Attrs: map[string]any{"command": c.Name, "via": "hook"}})
 	if c.Kind == sessioncmd.Switch && !s.turnRan {
 		// Before a turn end only quitting the CLI completes a switch, and a
@@ -206,12 +264,11 @@ func (s *session) hookCommand(c sessioncmd.Command) {
 	}
 	s.runCommand(c, false)
 	if c.Kind == sessioncmd.Switch && s.sw.to == c.Vendor && !s.sw.typed {
-		// The line went through the CLI's own menu, whose Enter leaves the
-		// composer in doubt; whether a blocked prompt's text comes back to it
-		// is unverified. The status line asks anyway, so it says that too,
-		// rather than a note first that only asks for a second pick.
+		// A hook can be forged, so the status line asks, and says where the
+		// switch came from.
 		s.sw.hooked, s.sw.keyed, s.sw.doubtOK = true, false, true
 	}
+	return nil
 }
 
 // aggyItems are /aggy's list: every command, in the CLI's own form.
@@ -302,6 +359,8 @@ type cmdResult struct {
 }
 
 func (s *session) goRun(seq int, args []string, answer bool) {
+	// TODO(T6954): a panic in the in-process command ends the whole session
+	// (goSafe re-panics), and a slow one (a check) holds its page until done.
 	run := s.o.Aggy
 	s.goSafe(func() {
 		out := run(args, answer)
