@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/diag"
@@ -82,10 +83,11 @@ var policyGroupNames = map[string]string{
 }
 
 // printPolicy says how the safety policy reaches each CLI in this folder: each
-// group's setting, what pre-approved a rule, and what a CLI cannot express.
+// group's setting, the allows that name or cover a rule (they change none),
+// and what a CLI cannot express.
 func printPolicy(w io.Writer, s permissions.Set) {
 	cwd, _ := os.Getwd()
-	plan := policyPlan(planOnScreen, cwd, s, nil)
+	plan := policyPlan(planOnScreen, cwd, s)
 	ds := plan.Decide()
 	fmt.Fprintln(w, "\nSafety policy, on screen (a borrow child and a headless run are always refused)")
 	for _, g := range permissions.PolicyGroups {
@@ -94,31 +96,33 @@ func printPolicy(w io.Writer, s permissions.Set) {
 			setting, from = string(k), originName(s.PolicyFrom[g])
 		}
 		fmt.Fprintf(w, "  %s: %s [%s]  %s\n", g, setting, from, policyGroupNames[g])
-		for _, d := range ds {
-			switch {
-			case d.Group != g:
-			case d.Kind == permissions.Allow:
-				fmt.Fprintf(w, "    pre-approved on Claude Code only: %s, by the allow %s [%s]\n", termsafe.Field(d.Text), termsafe.Field(d.By.Text), originName(d.By.Origin))
-			case d.Unused.Text != "":
-				fmt.Fprintf(w, "    not pre-approved: %s, though the allow %s names it: %s\n", termsafe.Field(d.Text), termsafe.Field(d.Unused.Text), d.Why)
+		rules := slices.Clone(s.Rules)
+		for _, k := range s.Skipped {
+			rules = append(rules, k.Rule)
+		}
+		for _, r := range rules {
+			if r.Kind != permissions.Allow || !slices.ContainsFunc(parity.CoveredRules(r.Text, plan.Branches), func(p parity.PolicyRule) bool { return p.Group == g }) {
+				continue
 			}
+			still := "asks every time on Claude Code, and the lines below say what each other CLI does"
+			if setting == string(permissions.Deny) {
+				still = "is refused"
+			}
+			fmt.Fprintf(w, "    your allow %s [%s] names or covers this group and changes nothing: the command still %s\n", termsafe.Field(r.Text), originName(r.Origin), still)
 		}
 	}
 	if _, known := defaultBranches(cwd); !known {
 		fmt.Fprintln(w, "  aggy could not read this repo's default branch, so only main, master, and trunk are strict")
 	}
 	ask, deny := parity.ClaudePolicy(ds)
-	fmt.Fprintf(w, "  Claude Code: %d ask and %d deny rules; a pre-approved rule is left out, and Claude's own prompt stands for the rest\n", len(ask), len(deny))
-	if plan.NoPrompt {
-		fmt.Fprintln(w, "    Claude's permission mode here does not prompt for a command no rule names, so no pre-approval takes effect")
-	}
-	fmt.Fprintf(w, "  Grok Build: %d deny rules; Grok has no flag for an ask rule aggy can confirm, so these stay denials there, and a pre-approval does not change them\n", len(parity.GrokPolicy(ds)))
+	fmt.Fprintf(w, "  Claude Code: %d ask and %d deny rules; an ask rule beats every allow, so a covered command asks every time\n", len(ask), len(deny))
+	fmt.Fprintf(w, "  Grok Build: %d deny rules; Grok has no flag for an ask rule aggy can confirm, so these stay denials there, and an allow that names one is not passed to Grok\n", len(parity.GrokPolicy(ds)))
 	oAsk, oDeny := parity.OpenCodePolicy(ds, false)
-	fmt.Fprintf(w, "  OpenCode: %d shell asks and %d shell denies (the strict rules, and all under --auto, which answers an ask); file reads stay refused by aggy's guard; a pre-approval does not change them\n", len(oAsk), len(oDeny))
+	fmt.Fprintf(w, "  OpenCode: %d shell asks and %d shell denies (the strict rules, and all under --auto, which answers an ask); file reads stay refused by aggy's guard\n", len(oAsk), len(oDeny))
 	fmt.Fprintln(w, "  Codex: its rules file asks before each rule, in every repo; the file is global, so a")
-	fmt.Fprintln(w, "    setting or pre-approval here does not reach it, and it has no rule for file reads")
-	fmt.Fprintln(w, "  Strict rules and file read rules are never pre-approved, on any CLI; a pre-approval")
-	fmt.Fprintln(w, "    from a CLI's own file counts only when narrower than one command word and *")
+	fmt.Fprintln(w, "    setting here does not reach it, and it has no rule for file reads")
+	fmt.Fprintln(w, "  No allow changes a policy rule on any CLI; exact pre-approval of one command is")
+	fmt.Fprintln(w, "    planned (T6976). aggy permissions policy <group> deny refuses a group instead")
 }
 
 // ruleCounts says how many rules of each kind.

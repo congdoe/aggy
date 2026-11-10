@@ -164,6 +164,44 @@ func TestDeniedNameTemplates(t *testing.T) {
 	}
 }
 
+// TestTemplateMustBePlain (T6967 re-review): a template name is exempt only
+// on a regular file with one link; a symlink or a hard link to .env is
+// refused like .env.
+func TestTemplateMustBePlain(t *testing.T) {
+	repo, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".env"), []byte("SECRET=x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".env.example"), []byte("SECRET="), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".env", filepath.Join(repo, ".env.sample")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(repo, ".env"), filepath.Join(repo, ".env.dist")); err != nil {
+		t.Fatal(err)
+	}
+	env := OpenCodeEnv{DeniedNames: []string{".env", ".env.*"}, ReadableNames: []string{".env.example", ".env.sample", ".env.template", ".env.dist"}}
+	for _, tc := range []struct {
+		path string
+		deny bool
+	}{
+		{".env.example", false}, {".env.template", false}, // a regular file, and one not there yet
+		{".env.sample", true}, {".env.dist", true}, {".env", true},
+	} {
+		b, err := json.Marshal(OpenCodeInput{Tool: "read", Path: tc.path, Directory: repo, Root: repo})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d := OpenCodeGuard(b, env); d.Deny != tc.deny {
+			t.Errorf("%s: %+v, want deny %v", tc.path, d, tc.deny)
+		}
+	}
+}
+
 // TestHoldsRuleCollapsesBoth: two spaces in a rule must not hide it from the gate.
 func TestHoldsRuleCollapsesBoth(t *testing.T) {
 	for _, tc := range []struct {
