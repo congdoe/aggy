@@ -2,6 +2,9 @@ package policyhook
 
 import (
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,7 +15,9 @@ import (
 const force = "git push --force origin main"
 
 func plan() DecidePlan {
-	return NewDecidePlan("claude", "2.1.322", false, parity.PolicyPlan{OnScreen: true}, parity.PreApproved{Commands: []string{force}})
+	d := NewDecidePlan("claude", "2.1.322", false, parity.PolicyPlan{OnScreen: true}, parity.PreApproved{Commands: []string{force}})
+	d.Root, d.Protected = "/repo", []string{"/home/u/.aggy"}
+	return d
 }
 
 func payload(t *testing.T, tool string, input map[string]any, extra map[string]any) []byte {
@@ -39,8 +44,10 @@ func TestJudgeUnreadable(t *testing.T) {
 		"not JSON":      []byte("git push --force origin main"),
 		"array":         []byte(`["Bash"]`),
 		"null":          []byte(`null`),
-		"unknown tool":  payload(t, "WebFetch", map[string]any{"url": "x"}, nil),
+		"no tool name":  []byte(`{"tool_input":{"command":"ls"}}`),
 		"no command":    payload(t, "Bash", map[string]any{}, nil),
+		"monitor, none": payload(t, "Monitor", map[string]any{"description": "x"}, nil),
+		"unknown, num":  payload(t, "mcp__x__run", map[string]any{"command": 3}, nil),
 		"command array": payload(t, "Bash", map[string]any{"command": []string{force}}, nil),
 		"empty command": payload(t, "Bash", map[string]any{"command": ""}, nil),
 		"no file_path":  payload(t, "Read", map[string]any{"path": "/x/.env"}, nil),
@@ -112,8 +119,18 @@ func judgeP(t *testing.T, d DecidePlan, p []byte) parity.CallDecision {
 // TestJudgeTools (T6976): each tool aggy's hook is matched to is judged, and
 // only a Read honours a read pre-approval.
 func TestJudgeTools(t *testing.T) {
+	root := t.TempDir()
+	key := filepath.Join(root, "k.pem")
+	if err := os.WriteFile(key, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dev, ino, err := FileIdentity(root, key)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := NewDecidePlan("claude", "", false, parity.PolicyPlan{OnScreen: true},
-		parity.PreApproved{Commands: []string{force}, Reads: []string{"/repo/k.pem"}})
+		parity.PreApproved{Commands: []string{force}, Reads: []parity.ReadApproval{{Path: key, Dev: dev, Ino: ino}}})
+	p.Root = root
 	for _, tt := range []struct {
 		tool  string
 		input map[string]any
@@ -122,9 +139,18 @@ func TestJudgeTools(t *testing.T) {
 		{"Bash", map[string]any{"command": force}, parity.VerdictAllow},
 		{"Bash", map[string]any{"command": force + " && true"}, parity.VerdictAsk},
 		{"Bash", map[string]any{"command": "ls"}, parity.VerdictNone},
-		{"Read", map[string]any{"file_path": "/repo/k.pem"}, parity.VerdictAllow},
+		// PR #129 review, HIGH-3: Monitor runs a shell command, and a tool
+		// aggy does not know by name is judged by its input.
+		{"Monitor", map[string]any{"command": "rm -rf ~", "description": "x"}, parity.VerdictAsk},
+		{"Monitor", map[string]any{"command": force}, parity.VerdictAllow},
+		{"mcp__shell__run", map[string]any{"command": "git push --force origin dev"}, parity.VerdictAsk},
+		{"SomeNewTool", map[string]any{"file_path": "/repo/.env"}, parity.VerdictAsk},
+		{"SomeNewTool", map[string]any{"path": "/repo/id_rsa"}, parity.VerdictAsk},
+		{"SomeNewTool", map[string]any{"path": key}, parity.VerdictAsk},
+		{"WebFetch", map[string]any{"url": "https://example.com/.env"}, parity.VerdictNone},
+		{"Read", map[string]any{"file_path": key}, parity.VerdictAllow},
 		{"Read", map[string]any{"file_path": "/repo/.env"}, parity.VerdictAsk},
-		{"Edit", map[string]any{"file_path": "/repo/k.pem"}, parity.VerdictAsk},
+		{"Edit", map[string]any{"file_path": key}, parity.VerdictAsk},
 		{"Write", map[string]any{"file_path": "/repo/.env.local"}, parity.VerdictAsk},
 		{"MultiEdit", map[string]any{"file_path": "/repo/id_rsa"}, parity.VerdictAsk},
 		{"NotebookEdit", map[string]any{"notebook_path": "/repo/x.key"}, parity.VerdictAsk},
@@ -173,8 +199,9 @@ func TestClaudeOutput(t *testing.T) {
 // prints a fixed decision: ask, or deny where no prompt can show. Neither
 // output depends on anything but that choice, and both are valid decisions.
 func TestDecideCommand(t *testing.T) {
+	sum := PlanSum([]byte("{}"))
 	for _, noPrompt := range []bool{false, true} {
-		cmd, err := DecideCommand("/usr/local/bin/aggy", "/home/u/.aggy/run/x/policy-decide.json", noPrompt)
+		cmd, err := DecideCommand("/usr/local/bin/aggy", "/home/u/.aggy/run/x/policy-decide.json", sum, noPrompt)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -183,8 +210,9 @@ func TestDecideCommand(t *testing.T) {
 			want = "deny"
 		}
 		out := FallbackOutput(noPrompt)
-		if !strings.HasPrefix(cmd, "/usr/local/bin/aggy hook decide --vendor claude --plan /home/u/.aggy/run/x/policy-decide.json || { ") ||
-			!strings.Contains(cmd, "hook decide-failed --vendor claude --plan /home/u/.aggy/run/x/policy-decide.json </dev/null >/dev/null 2>&1 & ") ||
+		args := " --vendor claude --plan /home/u/.aggy/run/x/policy-decide.json --sha256 " + sum
+		if !strings.HasPrefix(cmd, "out=$(/usr/local/bin/aggy hook decide"+args+`) && printf '%s' "$out" || { `) ||
+			!strings.Contains(cmd, "hook decide-failed"+args+" </dev/null >/dev/null 2>&1 & ") ||
 			!strings.HasSuffix(cmd, "printf '%s\\n' '"+out+"'; }") {
 			t.Errorf("command %q", cmd)
 		}
@@ -200,18 +228,182 @@ func TestDecideCommand(t *testing.T) {
 	if strings.Contains(FallbackOutput(false), "deny") || !strings.Contains(FallbackOutput(true), "deny") {
 		t.Error("fallback outputs mixed up")
 	}
-	for _, bad := range [][2]string{{"/a b/aggy", "/p"}, {"/bin/aggy", "/a'b/p"}, {"/bin/aggy", "rel/p"}, {"/bin/aggy", "/p;x"}} {
-		if _, err := DecideCommand(bad[0], bad[1], false); err == nil {
-			t.Errorf("DecideCommand(%q, %q) took it", bad[0], bad[1])
+	for _, bad := range [][3]string{{"/a b/aggy", "/p", sum}, {"/bin/aggy", "/a'b/p", sum}, {"/bin/aggy", "rel/p", sum}, {"/bin/aggy", "/p;x", sum},
+		{"/bin/aggy", "/p", "abc"}, {"/bin/aggy", "/p", strings.ToUpper(sum)}, {"/bin/aggy", "/p", sum[:63] + ";"}} {
+		if _, err := DecideCommand(bad[0], bad[1], bad[2], false); err == nil {
+			t.Errorf("DecideCommand(%q, %q, %q) took it", bad[0], bad[1], bad[2])
 		}
+	}
+}
+
+// TestCheckPlan (PR #129 review, HIGH-1): a plan is used only when its bytes
+// hash to the sum the launch put in the hook's command; a plan rewritten to
+// pre-approve a command, by a valid plan or not, is ErrPlanChanged.
+func TestCheckPlan(t *testing.T) {
+	good, err := json.Marshal(plan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := PlanSum(good)
+	if d, err := CheckPlan(good, sum); err != nil || d.Root != "/repo" {
+		t.Fatalf("good: %+v %v", d, err)
+	}
+	evil := plan()
+	evil.Commands = append(evil.Commands, "git push --force origin dev")
+	eb, _ := json.Marshal(evil)
+	for name, b := range map[string][]byte{"rewritten": eb, "empty": nil, "spaced": append(good, ' ')} {
+		if _, err := CheckPlan(b, sum); !errors.Is(err, ErrPlanChanged) {
+			t.Errorf("%s: %v, want ErrPlanChanged", name, err)
+		}
+	}
+	if _, err := CheckPlan(good, "nope"); !errors.Is(err, ErrPlanChanged) {
+		t.Errorf("bad sum: %v", err)
+	}
+	for _, mode := range []string{"", "default", "acceptEdits"} {
+		if d := PlanFailed(mode); d.Verdict != parity.VerdictAsk || d.Reason != parity.ReasonPlanChanged {
+			t.Errorf("%q: %+v", mode, d)
+		}
+	}
+	if d := PlanFailed("dontAsk"); d.Verdict != parity.VerdictDeny {
+		t.Errorf("dontAsk: %+v", d)
+	}
+}
+
+// TestJudgeProtected (PR #129 review, HIGH-1 and HIGH-4): a write to, or a
+// shell command naming, aggy's state folder (which holds the plan), its
+// permissions file, or a Claude settings file asks, in any spelling the review
+// named, and wins over a pre-approval; a group set to deny still refuses.
+func TestJudgeProtected(t *testing.T) {
+	root := t.TempDir()
+	aggyHome := filepath.Join(t.TempDir(), ".aggy")
+	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, ".claude"), filepath.Join(root, "c")); err != nil {
+		t.Fatal(err)
+	}
+	p := plan()
+	p.Root, p.Protected = root, []string{aggyHome}
+	planFile := filepath.Join(aggyHome, "run", "p.x.memory", "policy-decide.json")
+	p.Commands = append(p.Commands, "echo hi > "+planFile)
+	for _, tt := range []struct {
+		tool  string
+		input map[string]any
+	}{
+		{"Write", map[string]any{"file_path": planFile}},
+		{"Edit", map[string]any{"file_path": filepath.Join(aggyHome, "permissions.json")}},
+		{"Write", map[string]any{"file_path": filepath.Join(root, ".claude", "settings.local.json")}},
+		{"Write", map[string]any{"file_path": ".claude/settings.local.json"}},
+		{"Write", map[string]any{"file_path": "./.claude/../.claude/settings.json"}},
+		{"Write", map[string]any{"file_path": filepath.Join(root, ".CLAUDE", "Settings.Local.JSON")}},
+		{"Write", map[string]any{"file_path": filepath.Join(root, "sub", "..", ".claude", "settings.json")}},
+		{"Write", map[string]any{"file_path": filepath.Join(root, "c", "settings.local.json")}},
+		{"MultiEdit", map[string]any{"file_path": "/home/u/.claude/settings.json"}},
+		{"NotebookEdit", map[string]any{"notebook_path": filepath.Join(aggyHome, "x.ipynb")}},
+		{"Bash", map[string]any{"command": `echo '{"disableAllHooks":true}' > .claude/settings.local.json`}},
+		{"Bash", map[string]any{"command": "echo hi > " + planFile}},
+		{"Bash", map[string]any{"command": "cd ~/.aggy && echo x > permissions.json"}},
+		{"Bash", map[string]any{"command": `cp x ".cla"ude/sett"ings.json"`}},
+		{"Bash", map[string]any{"command": "rm ~/.aggy/run/*/policy-decide.json"}},
+		{"Monitor", map[string]any{"command": "tee .claude/settings.local.json"}},
+	} {
+		got := judgeP(t, p, payload(t, tt.tool, tt.input, nil))
+		if got.Verdict != parity.VerdictAsk {
+			t.Errorf("%s %v: %+v, want ask", tt.tool, tt.input, got)
+		}
+	}
+	for _, tt := range []struct {
+		tool  string
+		input map[string]any
+	}{
+		{"Write", map[string]any{"file_path": filepath.Join(root, "main.go")}},
+		{"Write", map[string]any{"file_path": filepath.Join(root, ".vscode", "launch.json")}},
+		{"Bash", map[string]any{"command": "go test ./..."}},
+		{"Read", map[string]any{"file_path": filepath.Join(root, ".claude", "settings.json")}},
+	} {
+		if got := judgeP(t, p, payload(t, tt.tool, tt.input, nil)); got.Verdict != parity.VerdictNone {
+			t.Errorf("%s %v: %+v, want no opinion", tt.tool, tt.input, got)
+		}
+	}
+	deny := p
+	deny.Settings = map[string]string{permissions.PolicyRmRf: "deny"}
+	if got := judgeP(t, deny, payload(t, "Bash", map[string]any{"command": "rm -rf " + aggyHome}, nil)); got.Verdict != parity.VerdictDeny {
+		t.Errorf("deny group: %+v", got)
+	}
+}
+
+// TestReadIdentity (PR #129 review, MEDIUM-4): a read pre-approval allows only
+// the same file at the same path: not a symlink put in its place or on its
+// path, not a replaced file, not a path outside the root.
+func TestReadIdentity(t *testing.T) {
+	root := t.TempDir()
+	write := func(p string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("k"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key, other := filepath.Join(root, "certs", "server.key"), filepath.Join(root, "other.key")
+	write(key)
+	write(other)
+	dev, ino, err := FileIdentity(root, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := func() DecidePlan {
+		d := plan()
+		d.Root, d.Reads = root, []parity.ReadApproval{{Path: key, Dev: dev, Ino: ino}}
+		return d
+	}
+	read := func() parity.Verdict {
+		return judgeP(t, mk(), payload(t, "Read", map[string]any{"file_path": key}, nil)).Verdict
+	}
+	if v := read(); v != parity.VerdictAllow {
+		t.Fatalf("same file: %s", v)
+	}
+	// A symlink in its place, to another key.
+	if err := os.Remove(key); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, key); err != nil {
+		t.Fatal(err)
+	}
+	if v := read(); v != parity.VerdictAsk {
+		t.Errorf("a symlink in its place: %s", v)
+	}
+	// A symlinked folder on its path.
+	_ = os.Remove(key)
+	if err := os.Rename(filepath.Join(root, "certs"), filepath.Join(root, "real")); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(root, "real", "server.key"))
+	if err := os.Symlink(filepath.Join(root, "real"), filepath.Join(root, "certs")); err != nil {
+		t.Fatal(err)
+	}
+	if v := read(); v != parity.VerdictAsk {
+		t.Errorf("a symlink on its path: %s", v)
+	}
+	// A replaced file at the same path.
+	_ = os.Remove(filepath.Join(root, "certs"))
+	write(key)
+	if v := read(); v != parity.VerdictAsk {
+		t.Errorf("a replaced file: %s", v)
+	}
+	if _, _, err := FileIdentity(root, filepath.Join(filepath.Dir(root), "x.key")); err == nil {
+		t.Error("a path outside the root has an identity")
 	}
 }
 
 // TestParseDecidePlan: a plan with an unknown key, another version, text
 // after it, or a group set to allow is refused.
 func TestParseDecidePlan(t *testing.T) {
-	good, err := json.Marshal(NewDecidePlan("claude", "", true, parity.PolicyPlan{OnScreen: true,
-		Settings: map[string]permissions.Kind{permissions.PolicyRmRf: permissions.Deny}}, parity.PreApproved{Commands: []string{"x"}}))
+	gp := NewDecidePlan("claude", "", true, parity.PolicyPlan{OnScreen: true,
+		Settings: map[string]permissions.Kind{permissions.PolicyRmRf: permissions.Deny}}, parity.PreApproved{Commands: []string{"x"}})
+	gp.Root = "/repo"
+	good, err := json.Marshal(gp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,11 +412,13 @@ func TestParseDecidePlan(t *testing.T) {
 		t.Fatalf("good: %+v %v", d, err)
 	}
 	for _, bad := range []string{
-		`{"version":1,"vendor":"claude","extra":1}`,
+		`{"version":2,"vendor":"claude","root":"/repo","extra":1}`,
+		`{"version":1,"vendor":"claude","root":"/repo"}`,
+		`{"version":2,"vendor":"claude","root":"/repo"} {}`,
+		`{"version":2,"vendor":"claude","root":"/repo","settings":{"rm-rf":"allow"}}`,
+		`{"version":2,"vendor":"claude","root":"/repo","settings":{"nope":"ask"}}`,
 		`{"version":2,"vendor":"claude"}`,
-		`{"version":1,"vendor":"claude"} {}`,
-		`{"version":1,"vendor":"claude","settings":{"rm-rf":"allow"}}`,
-		`{"version":1,"vendor":"claude","settings":{"nope":"ask"}}`,
+		`{"version":2,"vendor":"claude","root":"repo"}`,
 		`[]`, ``,
 	} {
 		if _, err := ParseDecidePlan([]byte(bad)); err == nil {
@@ -248,10 +442,13 @@ func TestOpenCodeJudge(t *testing.T) {
 		{`{"action":"shell","resources":["ls"],"effect":"allow"}`, parity.VerdictNone},
 		{`{"action":"shell","resources":[],"effect":"ask"}`, parity.VerdictAsk},
 		{`{"action":"shell","resources":[1],"effect":"ask"}`, parity.VerdictAsk},
-		{`{"action":"read","resources":["/x/.env"],"effect":"allow"}`, parity.VerdictNone},
+		{`{"action":"read","resources":["/x/.env"],"effect":"allow"}`, parity.VerdictAsk},
+		{`{"action":"read","resources":["certs/id_ed25519"],"effect":"allow"}`, parity.VerdictAsk},
+		{`{"action":"read","resources":["main.go"],"effect":"allow"}`, parity.VerdictNone},
+		{`{"action":"edit","resources":["/x/.env"],"effect":"allow"}`, parity.VerdictNone},
 		{`not json`, parity.VerdictAsk},
 	} {
-		calls, ok := OpenCodeCalls([]byte(tt.in))
+		calls, ok := OpenCodeCalls([]byte(tt.in), "/repo")
 		if got := JudgeOpenCode(p, calls, ok); got.Verdict != tt.want {
 			t.Errorf("%s: %+v, want %s", tt.in, got, tt.want)
 		}

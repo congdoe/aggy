@@ -278,7 +278,7 @@ func guardRules(payload []byte, getenv func(string) string) (rules []string, sca
 	shared, _ := parity.OpenCodeShared(s)
 	// An exact pre-approval of a policy match runs with no prompt too
 	// (T6976), so a command holding one is scanned like one holding an allow.
-	rules = append(shared.Allow, parity.PreApprovedFrom(s, in.Root).Commands...)
+	rules = append(shared.Allow, parity.PreApprovedFrom(s, in.Root, nil).Commands...)
 	return append(rules, renderedOpenCodeAllows(getenv("OPENCODE_CONFIG"))...), s.FileErr != nil || len(s.Problems) > 0
 }
 

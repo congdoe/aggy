@@ -1,6 +1,8 @@
 package parity
 
 import (
+	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -14,7 +16,8 @@ import (
 // letter, a comment, a compound command with the approved part in it.
 func TestDecideCall(t *testing.T) {
 	const force = "git push --force origin main"
-	pre := PreApproved{Commands: []string{force, "rm -rf dist"}, Reads: []string{"/repo/certs/server.pem"}}
+	pre := PreApproved{Commands: []string{force, "rm -rf dist"}, Reads: []ReadApproval{{Path: "/repo/certs/server.pem"}},
+		CheckRead: func(ReadApproval) bool { return true }}
 	on := PolicyPlan{OnScreen: true}
 	denyForce := PolicyPlan{OnScreen: true, Settings: map[string]permissions.Kind{permissions.PolicyForce: permissions.Deny, permissions.PolicyForceMain: permissions.Deny}}
 	shell := func(s string) Call { return Call{Kind: CallShell, Text: s} }
@@ -150,16 +153,68 @@ func TestPreApprovedFrom(t *testing.T) {
 		rule("Read(~/.ssh/id_rsa)", permissions.FromAggy),
 		{Kind: permissions.Ask, Text: "Bash(rm -rf x)", Origin: permissions.FromAggy},
 	}}
-	got := PreApprovedFrom(s, "/repo")
+	ids := func(p string) (uint64, uint64, bool) { return 1, uint64(len(p)), p != "/etc/ssl/k.pem" }
+	paths := func(rs []ReadApproval) string {
+		var out []string
+		for _, r := range rs {
+			out = append(out, r.Path)
+		}
+		return strings.Join(out, "|")
+	}
+	got := PreApprovedFrom(s, "/repo", ids)
 	if strings.Join(got.Commands, "|") != "git push --force origin main|rm -rf dist" {
 		t.Errorf("commands = %q", got.Commands)
 	}
-	if strings.Join(got.Reads, "|") != "/repo/certs/server.pem|/etc/ssl/k.pem" {
-		t.Errorf("reads = %q", got.Reads)
+	// PR #129 review: a read pre-approves only in a trusted repo, and only
+	// with a recorded identity (/etc/ssl/k.pem has none here).
+	if len(got.Reads) != 0 {
+		t.Errorf("untrusted reads = %+v", got.Reads)
+	}
+	s.Trusted = true
+	got = PreApprovedFrom(s, "/repo", ids)
+	if paths(got.Reads) != "/repo/certs/server.pem" || got.Reads[0].Ino != uint64(len("/repo/certs/server.pem")) {
+		t.Errorf("reads = %+v", got.Reads)
+	}
+	if got := PreApprovedFrom(s, "/repo", nil); len(got.Reads) != 0 {
+		t.Errorf("no identities: reads = %+v", got.Reads)
+	}
+	if got := strings.Join(ExactReads(s, "/repo"), "|"); got != "/repo/certs/server.pem|/etc/ssl/k.pem" {
+		t.Errorf("ExactReads = %q", got)
 	}
 	s.Withhold = "a file could not be read"
-	if got := PreApprovedFrom(s, "/repo"); len(got.Commands)+len(got.Reads) != 0 {
+	if got := PreApprovedFrom(s, "/repo", ids); len(got.Commands)+len(got.Reads) != 0 {
 		t.Errorf("withheld: %+v", got)
+	}
+}
+
+// TestDecideReadIdentity (PR #129 review, MEDIUM-4): a read pre-approval
+// allows only when CheckRead confirms the file, and never without CheckRead.
+func TestDecideReadIdentity(t *testing.T) {
+	on := PolicyPlan{OnScreen: true}
+	a := ReadApproval{Path: "/repo/certs/server.pem", Dev: 1, Ino: 2}
+	c := Call{CallRead, a.Path}
+	for _, tt := range []struct {
+		name  string
+		check func(ReadApproval) bool
+		want  Verdict
+	}{
+		{"confirmed", func(ReadApproval) bool { return true }, VerdictAllow},
+		{"replaced or a link", func(ReadApproval) bool { return false }, VerdictAsk},
+		{"no check", nil, VerdictAsk},
+	} {
+		if got := on.DecideCall(c, PreApproved{Reads: []ReadApproval{a}, CheckRead: tt.check}); got.Verdict != tt.want {
+			t.Errorf("%s: %+v, want %s", tt.name, got, tt.want)
+		}
+	}
+}
+
+// TestDecideTooLong (PR #129 review, LOW-2): a call past MaxCallText asks at
+// once, even when it is exactly pre-approved.
+func TestDecideTooLong(t *testing.T) {
+	long := "echo " + strings.Repeat("a", MaxCallText)
+	got := PolicyPlan{OnScreen: true}.DecideCall(Call{CallShell, long}, PreApproved{Commands: []string{long}})
+	if got.Verdict != VerdictAsk || got.Reason != ReasonTooLong {
+		t.Errorf("long call: %+v", got)
 	}
 }
 
@@ -179,14 +234,62 @@ func TestOpenCodeStrictAsk(t *testing.T) {
 		c   OpenCodeConfig
 		ask bool
 	}{
-		{OpenCodeConfig{Trusted: true, Decide: "/p"}, true},
-		{OpenCodeConfig{Trusted: false, Decide: "/p"}, false},
-		{OpenCodeConfig{Trusted: true, Decide: "/p", Auto: true}, false},
+		{OpenCodeConfig{Trusted: true, Decide: "/p", DecideSum: "ab"}, true},
+		{OpenCodeConfig{Trusted: true, Decide: "/p"}, false},
+		{OpenCodeConfig{Trusted: false, Decide: "/p", DecideSum: "ab"}, false},
+		{OpenCodeConfig{Trusted: true, Decide: "/p", DecideSum: "ab", Auto: true}, false},
 		{OpenCodeConfig{Trusted: true}, false},
 	} {
 		ask, deny := OpenCodePolicyFor(ds, tt.c.Auto, tt.c.strictAsk())
 		if strictIn(ask) != tt.ask || strictIn(deny) == tt.ask {
 			t.Errorf("%+v: strict asks %v, denies %v; want asks %v", tt.c, strictIn(ask), strictIn(deny), tt.ask)
 		}
+	}
+}
+
+// TestOpenCodeKeyReadsAsk (owner decision, 2026-11-10): on a trusted launch
+// without --auto, the read tool asks on a private key's name rather than being
+// refused, and the plugin is told to guard strict matches; untrusted, --auto,
+// or the key group set to deny keeps the refusal. .env reads stay refused.
+func TestOpenCodeKeyReadsAsk(t *testing.T) {
+	base := OpenCodeConfig{Trusted: true, Decide: "/p", DecideSum: "ab", Providers: []string{"openai"}, Plugin: "/plug", Aggy: "/bin/aggy", Root: "/repo",
+		Policy: PolicyPlan{OnScreen: true}.Decide()}
+	keysDeny := base
+	keysDeny.Policy = PolicyPlan{OnScreen: true, Settings: map[string]permissions.Kind{permissions.PolicyKeys: permissions.Deny}}.Decide()
+	untrusted, auto := base, base
+	untrusted.Trusted, auto.Auto = false, true
+	for _, tt := range []struct {
+		name string
+		c    OpenCodeConfig
+		ask  bool
+	}{
+		{"trusted", base, true},
+		{"untrusted", untrusted, false},
+		{"auto", auto, false},
+		{"key group denied", keysDeny, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := tt.c.Render()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var doc openCodeDoc
+			if err := json.Unmarshal(b, &doc); err != nil {
+				t.Fatal(err)
+			}
+			has := func(rs []openCodeRule, want openCodeRule) bool { return slices.Contains(rs, want) }
+			if got := has(doc.Permissions, openCodeRule{"read", "*/id_ed25519", "ask"}); got != tt.ask {
+				t.Errorf("read ask on a key = %v, want %v", got, tt.ask)
+			}
+			if got := has(doc.Policies, openCodeRule{"tool.use", "read:*/id_ed25519", "deny"}); got == tt.ask {
+				t.Errorf("read deny on a key = %v, want %v", got, !tt.ask)
+			}
+			if !has(doc.Policies, openCodeRule{"tool.use", "read:*/.env", "deny"}) || !has(doc.Policies, openCodeRule{"tool.use", "edit:*/id_ed25519", "deny"}) {
+				t.Error(".env reads or key edits are no longer refused")
+			}
+			if strict := doc.Plugins[0].Options["strict"] == "1"; strict != (tt.name != "untrusted" && tt.name != "auto") {
+				t.Errorf("strict option = %v", strict)
+			}
+		})
 	}
 }

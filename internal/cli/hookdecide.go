@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -28,28 +29,30 @@ import (
 // its records to be written.
 const decideLogWait = time.Second
 
-// decideArgs reads --vendor claude|opencode --plan <absolute path>.
-func decideArgs(args []string) (adapter.Vendor, string, bool) {
-	if len(args) != 4 || args[0] != "--vendor" || args[2] != "--plan" {
-		return "", "", false
+// decideArgs reads --vendor claude|opencode --plan <absolute path> --sha256
+// <hex>: the plan and the hash the launch wrote it with, both from the hook's
+// own command, which the session cannot change (PR #129 review, HIGH-1).
+func decideArgs(args []string) (v adapter.Vendor, plan, sum string, ok bool) {
+	if len(args) != 6 || args[0] != "--vendor" || args[2] != "--plan" || args[4] != "--sha256" {
+		return "", "", "", false
 	}
 	v, err := adapter.ParseVendor(args[1])
 	if err != nil || (v != adapter.Claude && v != adapter.OpenCode) {
-		return "", "", false
+		return "", "", "", false
 	}
-	if !filepath.IsAbs(args[3]) || filepath.Clean(args[3]) != args[3] {
-		return "", "", false
+	if !filepath.IsAbs(args[3]) || filepath.Clean(args[3]) != args[3] || !policyhook.ValidSum(args[5]) {
+		return "", "", "", false
 	}
-	return v, args[3], true
+	return v, args[3], args[5], true
 }
 
-// readDecidePlan reads the launch's plan.
-func readDecidePlan(path string) (policyhook.DecidePlan, error) {
+// readDecidePlan reads the launch's plan, which must hash to sum.
+func readDecidePlan(path, sum string) (policyhook.DecidePlan, error) {
 	b, err := safefs.ReadFileLimit(path, policyhook.MaxDecidePlan)
 	if err != nil {
 		return policyhook.DecidePlan{}, err
 	}
-	return policyhook.ParseDecidePlan(b)
+	return policyhook.CheckPlan(b, sum)
 }
 
 // decideCodes are the end record's codes, by the decision's reason.
@@ -60,22 +63,27 @@ var decideCodes = map[parity.Reason]diag.Code{
 	parity.ReasonGroupDenied:  diag.CodeDecideGroupDenied,
 	parity.ReasonNoPrompt:     diag.CodeDecideNoPrompt,
 	parity.ReasonUnknownInput: diag.CodeDecideUnreadable,
+	parity.ReasonTooLong:      diag.CodeDecideTooLong,
+	parity.ReasonProtected:    diag.CodeDecideProtected,
 }
 
 // hookDecide is aggy hook decide. On Claude it prints a PreToolUse decision,
-// or nothing for no opinion; on OpenCode one word. It exits 1 when it cannot
-// read its plan or its arguments, so Claude's wrapper falls back to asking and
-// OpenCode's plugin leaves the effect as its rules gave it.
+// or nothing for no opinion; on OpenCode one word. A plan that is missing,
+// unreadable, or does not hash to the --sha256 the launch put in the command
+// (PR #129 review, HIGH-1) is never used: the call is asked about, or refused
+// where the payload's mode shows no prompt, and the end record carries a
+// failure code. It exits 1 only on bad arguments, so Claude's wrapper falls
+// back to asking and OpenCode's plugin to asking for an allow.
 func hookDecide(args []string, in io.Reader, stdout, stderr io.Writer) int {
 	start := time.Now()
-	v, planPath, ok := decideArgs(args)
+	v, planPath, sum, ok := decideArgs(args)
 	if !ok {
 		drain(in)
-		return cmdUsage(stderr, "hook decide", "want --vendor claude|opencode --plan <absolute path>", hookUsage)
+		return cmdUsage(stderr, "hook decide", "want --vendor claude|opencode --plan <absolute path> --sha256 <hex>", hookUsage)
 	}
 	q := dlog.Queue(8)
 	defer q.Close(decideLogWait)
-	plan, planErr := readDecidePlan(planPath)
+	plan, planErr := readDecidePlan(planPath, sum)
 	vv := plan.VendorVersion
 	if vv == "" {
 		vv = "unknown"
@@ -85,23 +93,34 @@ func hookDecide(args []string, in io.Reader, stdout, stderr io.Writer) int {
 		q.Log(diag.Rec{Event: diag.EvDecideEnded, Code: code, Vendor: string(v), Cause: startID, Duration: max(time.Since(start), time.Millisecond),
 			Attrs: map[string]any{"vendor_version": vv, "decision": decision, "group": group}})
 	}
-	if planErr != nil {
-		drain(in)
-		end(diag.CodeDecidePlan, "error", "")
-		fmt.Fprintf(stderr, "aggy hook decide: the launch's decision plan could not be read %s\n", dlog.Tag(diag.CodeDecidePlan))
-		return 1
-	}
 	raw, err := io.ReadAll(io.LimitReader(in, hook.MaxPayload+1))
 	if err != nil || len(raw) > hook.MaxPayload {
 		raw = nil // judged as unreadable: asked, never allowed
 	}
 	var d parity.CallDecision
 	var out []byte
-	if v == adapter.OpenCode {
-		calls, ok := policyhook.OpenCodeCalls(raw)
+	switch {
+	case planErr != nil:
+		code := diag.CodeDecidePlan
+		if errors.Is(planErr, policyhook.ErrPlanChanged) {
+			code = diag.CodeDecidePlanChanged
+		}
+		d = policyhook.PlanFailed(policyhook.ClaudeMode(raw))
+		if v == adapter.OpenCode {
+			d = policyhook.PlanFailed("")
+			out = policyhook.OpenCodeOutput(d)
+		} else {
+			out = policyhook.ClaudeOutput(d)
+		}
+		_, _ = stdout.Write(out)
+		end(code, string(d.Verdict), "")
+		fmt.Fprintf(stderr, "aggy hook decide: the launch's decision plan is missing, unreadable, or changed, so this call is asked about %s\n", dlog.Tag(code))
+		return 0
+	case v == adapter.OpenCode:
+		calls, ok := policyhook.OpenCodeCalls(raw, plan.Root)
 		d = policyhook.JudgeOpenCode(plan, calls, ok)
 		out = policyhook.OpenCodeOutput(d)
-	} else {
+	default:
 		calls, mode, ok := policyhook.ClaudeCalls(raw)
 		d = policyhook.Judge(plan, calls, mode, ok)
 		out = policyhook.ClaudeOutput(d)
@@ -115,12 +134,12 @@ func hookDecide(args []string, in io.Reader, stdout, stderr io.Writer) int {
 // record that aggy hook decide failed and the fixed fallback answered. It reads
 // nothing but its plan's vendor version, and its output goes nowhere.
 func hookDecideFailed(args []string, stderr io.Writer) int {
-	v, planPath, ok := decideArgs(args)
+	v, planPath, sum, ok := decideArgs(args)
 	if !ok {
-		return cmdUsage(stderr, "hook decide-failed", "want --vendor claude|opencode --plan <absolute path>", hookUsage)
+		return cmdUsage(stderr, "hook decide-failed", "want --vendor claude|opencode --plan <absolute path> --sha256 <hex>", hookUsage)
 	}
 	vv := "unknown"
-	if plan, err := readDecidePlan(planPath); err == nil && plan.VendorVersion != "" {
+	if plan, err := readDecidePlan(planPath, sum); err == nil && plan.VendorVersion != "" {
 		vv = plan.VendorVersion
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), hookTimeout)

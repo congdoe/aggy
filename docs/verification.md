@@ -706,8 +706,62 @@ declined unless it says otherwise):
 - That a hook's ask beats a static allow rule in the same layer (`Bash(git
   push *)` beside the hook's ask on `git push --force origin dev`).
 - That no other built-in tool reads files past the hook's list.
-- Managed settings: `allowManagedHooksOnly` there would drop aggy's hook,
-  and aggy does not read that file.
+- Managed settings: aggy now reads the managed settings file at the path
+  `settings.md` ("Settings files") gives per OS (macOS `/Library/Application
+  Support/ClaudeCode/managed-settings.json`, Linux and WSL
+  `/etc/claude-code/managed-settings.json`, Windows `C:\Program
+  Files\ClaudeCode\managed-settings.json`), only its `disableAllHooks` and
+  `allowManagedHooksOnly`, and keeps the static asks when either is set. The
+  paths are the docs', not checked live at 2.1.322; a drop-in folder or
+  server-managed settings, if Claude has them, are not read. Check: with
+  `allowManagedHooksOnly: true` in that file, run `aggy claude` and see the
+  launch note, then `/hooks` in Claude.
+
+**Live, PR #129 review** (2026-11-10, a maintainer: Claude Code 2.1.322,
+macOS, a test folder, five one-turn runs, every prompt declined, hooks in a
+`--settings` layer):
+
+| Check | Result |
+| --- | --- |
+| A PreToolUse entry matched to `^(Bash\|Monitor)$` | Fired for a Bash call and gave the ask prompt: the anchored form works |
+| A hook that exits 0 printing two JSON objects back to back, with `onFailure: "block"` | Blocked: Claude reported the output could not be parsed and the entry's `onFailure` blocked the call. aggy's wrapper prints its answer only on exit 0 anyway |
+| A `Monitor` call with a hook matched to `Bash` only | The hook ran; the prompt read "Hook PreToolUse:Monitor requires confirmation for this command", so the hook's input names `Monitor`. A Bash matcher covering Monitor is verified at 2.1.322 only; aggy matches `*` and judges Monitor's `command` itself |
+| Launched in `<repo>/sub/` with `sub/.claude/settings.local.json` = `{"disableAllHooks":true}` and an ask hook in `--settings` | No hook ran; the command was "Allowed by auto mode". Claude reads project settings from the launch folder, and that file turns off a `--settings` hook (MEDIUM-1 confirmed) |
+| A session started with the ask hook; the first command prompted; then `.claude/settings.local.json` in the launch folder was written with `{"disableAllHooks":true}` mid-session | The next command ran, "Allowed by auto mode", no hook: a mid-session write of that file removes the hook for the rest of the session (HIGH-4 confirmed) |
+
+Because of the last row, aggy keeps static ask rules for writes of Claude's
+project settings files beside the hook (design.md, section 10), as a hook
+cannot ask once hooks are off.
+
+**Still unverified after the PR #129 review** (each with the check that would
+settle it; not checked live: bypass mode, plan mode, the Read matcher, managed
+settings, `CLAUDE_CODE_SIMPLE`):
+
+- Whether Claude reads a `--settings` *file* again during a session. aggy
+  keeps the static asks for that launch, so it does not depend on it. Check:
+  start `claude --settings <file>` with an ask rule, edit the file to drop it,
+  and run the command.
+- Whether Claude also reads `.claude/settings*.json` of folders between the
+  launch folder and the repo root. aggy reads them all. Check: the file in
+  `<repo>/a/`, launch in `<repo>/a/b/`.
+- `CLAUDE_CODE_SIMPLE`: its name and meaning (perhaps what `--bare` sets) are
+  unverified; aggy keeps the static asks when it is set. Check: `claude --bare
+  -p 'env | grep CLAUDE_CODE'` in a scratch folder.
+- That the matcher `*` sends an MCP tool and `WebFetch` to the hook (the
+  anchored form is verified above; `*` is from `hooks.md`). Check: a
+  recording hook matched to `*`, then a WebFetch.
+- That the static `Bash(*.claude/settings*)` ask matches with a leading `*`
+  (`permissions.md`, "Wildcard patterns", read 2026-11-10), and that
+  `Edit(//**/.claude/settings.local.json)` covers Write. Check: ask the model
+  to write the file both ways with the hook off.
+- A hook's ask after a mid-session switch to `bypassPermissions` (Shift+Tab):
+  aggy denies when the payload reports that mode; whether Claude shows the
+  ask or runs the call is unverified. Check: start in default mode with
+  `--allow-dangerously-skip-permissions`, switch, and run a policy match.
+- Grep or Glob whose `path` is a folder (`Grep` over `certs/`): aggy has no
+  opinion, as a folder names no key file; what the static ask rules did for
+  the same call on main is unverified. Check: `Read(**/*.pem)` as an ask rule,
+  then a Grep with `path` a folder holding a `.pem`, with and without the hook.
 
 ### OpenCode permission evaluate (T6976)
 
@@ -729,6 +783,31 @@ load does (the guard has the same exposure). Live check: in a trusted repo,
 `aggy run opencode` with a fake model that asks for that command, for it
 joined with `&& echo x`, and for `git push --force origin dev` answered
 Always allow and asked again: expect no prompt, a prompt, and a prompt.
+
+**After the PR #129 review** (2026-11-10, no live run). The plugin now turns
+an allow into an ask whenever aggy's answer does not come (a failure, a
+timeout, a throw), and on a strict launch aggy's guard refuses a strict match
+the `evaluate` hook did not clear in that process. `TestOpenCodePluginStrict`
+(`test/e2e`) runs the real plugin under node with the real aggy and a stand-in
+for OpenCode's plugin context, not OpenCode: with a saved allow, the hook API
+absent and an `evaluate` that never ran both end in the guard's refusal, and
+aggy failing, timing out, or its plan removed or changed all turn the effect
+into an ask. Unverified at 2.2.5, each with its check (a fake model, a trusted
+repo, no `--auto`):
+
+- What a read's `resources` holds (aggy takes a path, relative to the session
+  folder or absolute). Check: a private key read, then look at the clear the
+  guard used (`aggy hook opencode-guard` exits 0) or the refusal.
+- That `reply` is `reject` on `permission.replied` for a refusal (the plugin
+  forgets every clear on it). Check: refuse a force push's prompt, then ask
+  for it again with the evaluate hook made to fail.
+- That a key read by its own name prompts, answered once, and reads; that a
+  harmless name linked to a key is refused with no prompt. Check: both, with
+  `aggy run opencode`.
+- With the plugin not loaded at all, nothing of aggy's runs: a key read and a
+  strict force push prompt (the owner accepted this), and a saved Always allow
+  for either would run it (TODO(T6953)). Check: break the plugin's folder and
+  watch for the launch's missing `GuardLoaded`.
 
 ## Launch-time MCP (T6734)
 

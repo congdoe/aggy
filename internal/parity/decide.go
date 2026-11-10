@@ -63,7 +63,15 @@ const (
 	ReasonGroupDenied  Reason = "group-denied"  // the person set a matching group to deny
 	ReasonNoPrompt     Reason = "no-prompt"     // an ask in a session that cannot show a prompt
 	ReasonUnknownInput Reason = "unknown-input" // a call aggy cannot read: asked, never allowed
+	ReasonTooLong      Reason = "too-long"      // a call longer than MaxCallText: asked at once, never allowed
+	ReasonProtected    Reason = "protected"     // a call that names aggy's own files or a Claude settings file: asked
+	ReasonPlanChanged  Reason = "plan-changed"  // the launch's plan is missing, unreadable, or not what the launch wrote: asked
 )
+
+// MaxCallText caps what the matcher scans of one call. A longer one asks at
+// once (ReasonTooLong): the matcher tries every rule at every word in three
+// spellings, which takes seconds on a large command, past the hook's timeout.
+const MaxCallText = 64 << 10
 
 // CallDecision is the decision on one call. Group is the first matching
 // rule's group, "" when none matches.
@@ -74,12 +82,30 @@ type CallDecision struct {
 	Reason  Reason
 }
 
-// PreApproved are the person's exact pre-approvals for one launch: commands
-// and absolute file paths, each matched whole and byte for byte.
+// PreApproved are the person's exact pre-approvals for one launch: commands,
+// matched whole and byte for byte, and files, each by its cleaned absolute
+// path and the identity it had when the person added it.
 type PreApproved struct {
 	Commands []string
-	Reads    []string
+	Reads    []ReadApproval
+	// CheckRead says the file a read names is still the one approved: the
+	// path as given, with no link on the way, and the same identity. Nil
+	// allows no read (internal/policyhook sets it, as it reads the disk).
+	CheckRead func(ReadApproval) bool
 }
+
+// ReadApproval is one exact read pre-approval: the cleaned absolute path and
+// the file's device and inode when aggy permissions add recorded them, so a
+// file replaced, or a link put in its place, asks again (PR #129 review).
+type ReadApproval struct {
+	Path string `json:"path"`
+	Dev  uint64 `json:"dev"`
+	Ino  uint64 `json:"ino"`
+}
+
+// ReadIdentity is the identity aggy recorded for an exact read
+// pre-approval's path, from the index; ok is false when there is none.
+type ReadIdentity func(path string) (dev, ino uint64, ok bool)
 
 // PreApprovedFrom collects the exact pre-approvals in s: allows from aggy's
 // own permissions file only (permissions.FromAggy and FromAggyRepo), which
@@ -90,8 +116,10 @@ type PreApproved struct {
 // Read allow when it names one file, with no wildcard: //abs is absolute, and
 // ./rel or a bare relative path is under root, the launch's folder (a path
 // starting with / or ~ is Claude's relative-to-settings or home form, which
-// aggy's filter never passes for a key file, and is left out).
-func PreApprovedFrom(s permissions.Set, root string) PreApproved {
+// aggy's filter never passes for a key file, and is left out). A read counts
+// only in a trusted repo (s.Trusted), and only with the identity ids recorded
+// for it (PR #129 review): a read allow with none pre-approves nothing.
+func PreApprovedFrom(s permissions.Set, root string, ids ReadIdentity) PreApproved {
 	var out PreApproved
 	if s.Withhold != "" || s.FileErr != nil {
 		return out
@@ -106,8 +134,27 @@ func PreApprovedFrom(s permissions.Set, root string) PreApproved {
 			}
 			continue
 		}
-		if p, ok := ExactRead(r.Text, root); ok && !slices.Contains(out.Reads, p) {
-			out.Reads = append(out.Reads, p)
+		p, ok := ExactRead(r.Text, root)
+		if !ok || !s.Trusted || ids == nil || slices.ContainsFunc(out.Reads, func(a ReadApproval) bool { return a.Path == p }) {
+			continue
+		}
+		if dev, ino, ok := ids(p); ok {
+			out.Reads = append(out.Reads, ReadApproval{Path: p, Dev: dev, Ino: ino})
+		}
+	}
+	return out
+}
+
+// ExactReads are the paths of s's exact read allows from aggy's own file,
+// whatever their trust or identity, for aggy permissions to name.
+func ExactReads(s permissions.Set, root string) []string {
+	var out []string
+	for _, r := range s.Rules {
+		if r.Kind != permissions.Allow || (r.Origin != permissions.FromAggy && r.Origin != permissions.FromAggyRepo) {
+			continue
+		}
+		if p, ok := ExactRead(r.Text, root); ok && !slices.Contains(out, p) {
+			out = append(out, p)
 		}
 	}
 	return out
@@ -157,6 +204,9 @@ func ExactRead(rule, root string) (string, bool) {
 //
 // It reads no file and no environment, so nothing but its arguments decides.
 func (p PolicyPlan) DecideCall(c Call, pre PreApproved) CallDecision {
+	if len(c.Text) > MaxCallText {
+		return CallDecision{Verdict: VerdictAsk, Reason: ReasonTooLong}
+	}
 	var matched []PolicyDecision
 	for _, d := range p.Decide() {
 		if callMatches(c, d.PolicyRule) {
@@ -178,13 +228,18 @@ func (p PolicyPlan) DecideCall(c Call, pre PreApproved) CallDecision {
 }
 
 // preApproved is a byte-for-byte match of the whole call: no trimming, no
-// folding, no part of a compound command.
+// folding, no part of a compound command. A read must name the approved path
+// exactly, absolute and clean, and pass CheckRead.
 func preApproved(c Call, pre PreApproved) bool {
 	switch c.Kind {
 	case CallShell:
 		return c.Text != "" && slices.Contains(pre.Commands, c.Text)
 	case CallRead:
-		return c.Text != "" && slices.Contains(pre.Reads, c.Text)
+		if c.Text == "" || pre.CheckRead == nil {
+			return false
+		}
+		i := slices.IndexFunc(pre.Reads, func(a ReadApproval) bool { return a.Path == c.Text })
+		return i >= 0 && pre.CheckRead(pre.Reads[i])
 	}
 	return false
 }

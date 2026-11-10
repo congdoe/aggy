@@ -45,6 +45,20 @@ type OpenCodeInput struct {
 	// Always says the plugin saw a permission answered with Always allow this
 	// session, so a rule outside the rendered list is in force.
 	Always bool `json:"always"`
+	// Strict says this launch's strict groups ask rather than deny
+	// (parity.OpenCodeConfig's strictAsk), from the plugin's options: the
+	// guard then refuses a strict match nothing cleared (PR #129 review).
+	Strict bool `json:"strict"`
+	// Evaluating says the plugin's permission evaluate hook was registered in
+	// this OpenCode process; without it nothing can have cleared a call.
+	Evaluating bool `json:"evaluating"`
+	// Cleared are the resources of this tool's action that went to a prompt,
+	// or that aggy pre-approved, in this process, recently.
+	Cleared []string `json:"cleared"`
+	// Plan and Sum are the launch's decision plan and its SHA-256, for the
+	// strict groups and the default branches.
+	Plan string `json:"plan"`
+	Sum  string `json:"sum"`
 }
 
 // OpenCodeEnv is what the guard reads from outside the payload.
@@ -74,6 +88,13 @@ type OpenCodeEnv struct {
 	// AlwaysSeen says this repo has had a permission answered with Always allow
 	// under aggy, in any session. Nil means no.
 	AlwaysSeen func(root string) bool
+	// StrictShell reports a shell command a strict policy group matches, by
+	// the launch's plan (plan, sum); where the plan cannot be read, any policy
+	// match counts. Nil counts every command as strict.
+	StrictShell func(plan, sum, cmd string) bool
+	// KeyNames are the private key file names the read tool may open, after a
+	// prompt, on a strict launch (parity.OpenCodeKeyFiles).
+	KeyNames []string
 }
 
 // The refusals' words. They go to the model, as the tool's error.
@@ -83,6 +104,8 @@ const (
 	whyAuthExport = "aggy's guard refuses `opencode auth export`: it prints sign-in secrets."
 	whyFolder     = "aggy's guard refuses a tool call from another folder than the one this session was launched in: that project's settings and trust were not checked."
 	whyOutside    = "aggy's guard refuses a path outside this repo: its real location is elsewhere, or a link points out of the repo. Ask the person to copy it in, if it is needed."
+	whyDisguised  = "aggy's guard refuses this file: its name looks harmless, but it leads to a file the safety policy guards (a link, or another name of the same file), and a prompt would show the harmless name."
+	whyUncleared  = "aggy's guard refuses this call: it matches a strict safety policy group (a force push to a protected branch, or reading a private key), and neither a prompt you answered nor an exact pre-approval cleared it, as aggy's permission check did not run for it. Run it on its own so OpenCode asks, or run it yourself."
 )
 
 // authExportRE matches the command by its words, in any spacing. It sees
@@ -131,19 +154,36 @@ func OpenCodeGuard(payload []byte, env OpenCodeEnv) Decision {
 		r, err := realTarget(p, dir, env)
 		return err == nil && (within(r, root) || ownToolOutput(in.Tool, r, env))
 	}
+	strict := in.Strict && !in.Auto
+	used := 0
 	// Any tool's path counts, so a tool new in a later OpenCode is covered.
 	if in.Path != "" {
 		if !inside(in.Path) {
 			return Decision{Deny: true, Reason: whyOutside}
 		}
+		plain := plainFile(in.Path, dir, env)
 		readable := env.ReadableNames
-		if !plainFile(in.Path, dir, env) {
+		if !plain {
 			// A template name on a link or a second hard link may be .env
 			// itself, so it gets no exemption.
 			readable = nil
 		}
+		// A harmless name that leads to a guarded file (owner decision,
+		// 2026-11-10): OpenCode's prompt would show the harmless name.
+		if r, err := realTarget(in.Path, dir, env); err != nil || deniedName(r, env.DeniedNames, readable) && !deniedName(in.Path, env.DeniedNames, readable) {
+			return Decision{Deny: true, Reason: whyDisguised}
+		}
 		if deniedName(in.Path, env.DeniedNames, readable) {
-			return Decision{Deny: true, Reason: whyDeniedName}
+			// On a strict launch the read tool may open a private key by its
+			// own name, asked: the path as given is the file itself, with no
+			// link on the way and no second name, and a prompt or an exact
+			// pre-approval cleared it (owner decision, 2026-11-10).
+			if !strict || in.Tool != "read" || !plain || !deniedName(in.Path, env.KeyNames, nil) || !direct(in.Path, dir, env) {
+				return Decision{Deny: true, Reason: whyDeniedName}
+			}
+			if used = clearedPath(in, dir, env); used == 0 {
+				return Decision{Deny: true, Reason: whyUncleared}
+			}
 		}
 	}
 	switch in.Tool {
@@ -153,6 +193,16 @@ func OpenCodeGuard(payload []byte, env OpenCodeEnv) Decision {
 			return Decision{Deny: true, Reason: whyAuthExport}
 		case in.Workdir != "" && !inside(in.Workdir):
 			return Decision{Deny: true, Reason: whyOutside}
+		}
+		// A strict match runs only if a prompt or an exact pre-approval
+		// cleared this very command (PR #129 review, HIGH-2): a saved Always
+		// allow, a failing evaluate hook, or none at all, runs nothing strict.
+		if strict && (env.StrictShell == nil || env.StrictShell(in.Plan, in.Sum, in.Command)) {
+			i := slices.Index(in.Cleared, in.Command)
+			if !in.Evaluating || i < 0 {
+				return Decision{Deny: true, Reason: whyUncleared}
+			}
+			used = i + 1
 		}
 		// Full auto runs any command with no prompt, so what the scan protects
 		// is not there to protect (docs/design.md).
@@ -173,7 +223,47 @@ func OpenCodeGuard(payload []byte, env OpenCodeEnv) Decision {
 			return Decision{Deny: true, Reason: whyOutside}
 		}
 	}
-	return Decision{}
+	return Decision{Cleared: used}
+}
+
+// direct reports a path that leads where its text says, from base: no link
+// at any part of it, so the real path is the cleaned path.
+func direct(p, base string, env OpenCodeEnv) bool {
+	q, err := expandHome(p, env)
+	if err != nil {
+		return false
+	}
+	if !filepath.IsAbs(q) {
+		q = filepath.Join(base, q)
+	}
+	r, err := realTarget(p, base, env)
+	return err == nil && r == filepath.Clean(q)
+}
+
+// clearedPath is 1 + the index of the clear naming in.Path, a resource of a
+// read that went to a prompt or was pre-approved, compared from the session's
+// folder; 0 when none does or the evaluate hook is not there.
+func clearedPath(in OpenCodeInput, dir string, env OpenCodeEnv) int {
+	if !in.Evaluating {
+		return 0
+	}
+	abs := func(p string) string {
+		q, err := expandHome(p, env)
+		if err != nil {
+			return ""
+		}
+		if !filepath.IsAbs(q) {
+			q = filepath.Join(dir, q)
+		}
+		return filepath.Clean(q)
+	}
+	want := abs(in.Path)
+	for i, c := range in.Cleared {
+		if want != "" && abs(c) == want {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // within reports whether p is dir or under it. Both are real paths.

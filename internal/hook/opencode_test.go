@@ -202,6 +202,92 @@ func TestTemplateMustBePlain(t *testing.T) {
 	}
 }
 
+// TestOpenCodeStrictGuard (PR #129 review, HIGH-2, and the owner decision of
+// 2026-11-10): on a strict launch the guard runs a strict match only when the
+// plugin's evaluate hook ran in this process and cleared this very call, by a
+// prompt or an exact pre-approval: a saved Always allow with the hook API
+// absent, aggy failing, timing out, or the plan removed (none of which clears)
+// runs nothing strict. A private key may be read by its own name, cleared;
+// through a link, by a second name, or by a harmless name that leads to one,
+// it is refused.
+func TestOpenCodeStrictGuard(t *testing.T) {
+	repo, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(name string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(repo, name)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(repo, name), []byte("k"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("certs/server.key")
+	write("id_ed25519")
+	write("deploy.pem")
+	if err := os.Symlink("certs/server.key", filepath.Join(repo, "notes.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("certs/server.key", filepath.Join(repo, "alias.key")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(repo, "id_ed25519"), filepath.Join(repo, "copy.pem")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("certs", filepath.Join(repo, "c")); err != nil {
+		t.Fatal(err)
+	}
+	const force = "git push --force origin main"
+	env := OpenCodeEnv{DeniedNames: []string{".env", "*.pem", "*.key", "id_ed25519"}, KeyNames: []string{"*.pem", "*.key", "id_ed25519"},
+		StrictShell: func(_, _, cmd string) bool { return strings.Contains(cmd, "--force") && strings.Contains(cmd, "main") }}
+	cases := []struct {
+		name string
+		in   OpenCodeInput
+		why  string
+		used int
+	}{
+		// The shell.
+		{"cleared by a prompt", OpenCodeInput{Tool: "shell", Command: force, Strict: true, Evaluating: true, Cleared: []string{"ls", force}}, "", 2},
+		{"saved allow, hook API absent", OpenCodeInput{Tool: "shell", Command: force, Strict: true, Always: true}, whyUncleared, 0},
+		{"saved allow, aggy failed or timed out", OpenCodeInput{Tool: "shell", Command: force, Strict: true, Evaluating: true, Always: true}, whyUncleared, 0},
+		{"another command was cleared", OpenCodeInput{Tool: "shell", Command: force + " && true", Strict: true, Evaluating: true, Cleared: []string{force}}, whyUncleared, 0},
+		{"not strict on this launch", OpenCodeInput{Tool: "shell", Command: force}, "", 0},
+		{"under --auto", OpenCodeInput{Tool: "shell", Command: force, Strict: true, Auto: true}, "", 0},
+		{"a command no strict group matches", OpenCodeInput{Tool: "shell", Command: "go test ./...", Strict: true}, "", 0},
+		// Private key reads.
+		{"a key by its own name, cleared", OpenCodeInput{Tool: "read", Path: "certs/server.key", Strict: true, Evaluating: true, Cleared: []string{filepath.Join(repo, "certs", "server.key")}}, "", 1},
+		{"cleared by a relative resource", OpenCodeInput{Tool: "read", Path: filepath.Join(repo, "deploy.pem"), Strict: true, Evaluating: true, Cleared: []string{"deploy.pem"}}, "", 1},
+		{"a key with a second name", OpenCodeInput{Tool: "read", Path: "id_ed25519", Strict: true, Evaluating: true, Cleared: []string{"id_ed25519"}}, whyDeniedName, 0},
+		{"a key, not cleared", OpenCodeInput{Tool: "read", Path: "certs/server.key", Strict: true, Evaluating: true}, whyUncleared, 0},
+		{"a key, no evaluate hook", OpenCodeInput{Tool: "read", Path: "certs/server.key", Strict: true, Cleared: []string{"certs/server.key"}}, whyUncleared, 0},
+		{"a key, not strict", OpenCodeInput{Tool: "read", Path: "certs/server.key", Evaluating: true, Cleared: []string{"certs/server.key"}}, whyDeniedName, 0},
+		{"a key under --auto", OpenCodeInput{Tool: "read", Path: "certs/server.key", Strict: true, Auto: true, Evaluating: true, Cleared: []string{"certs/server.key"}}, whyDeniedName, 0},
+		{"a key, edited", OpenCodeInput{Tool: "edit", Path: "certs/server.key", Strict: true, Evaluating: true, Cleared: []string{"certs/server.key"}}, whyDeniedName, 0},
+		{"a key name on a link", OpenCodeInput{Tool: "read", Path: "alias.key", Strict: true, Evaluating: true, Cleared: []string{"alias.key"}}, whyDeniedName, 0},
+		{"a key through a linked folder", OpenCodeInput{Tool: "read", Path: "c/server.key", Strict: true, Evaluating: true, Cleared: []string{"c/server.key"}}, whyDeniedName, 0},
+		{"a second hard link", OpenCodeInput{Tool: "read", Path: "copy.pem", Strict: true, Evaluating: true, Cleared: []string{"copy.pem"}}, whyDeniedName, 0},
+		{"a harmless name for a key", OpenCodeInput{Tool: "read", Path: "notes.txt", Strict: true, Evaluating: true, Cleared: []string{"notes.txt"}}, whyDisguised, 0},
+		{"a harmless name for a key, not strict", OpenCodeInput{Tool: "read", Path: "notes.txt"}, whyDisguised, 0},
+		{".env stays refused", OpenCodeInput{Tool: "read", Path: ".env", Strict: true, Evaluating: true, Cleared: []string{".env"}}, whyDeniedName, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			in := c.in
+			in.Root, in.Directory = repo, repo
+			b, err := json.Marshal(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := OpenCodeGuard(b, env)
+			if d.Deny != (c.why != "") || d.Reason != c.why || d.Cleared != c.used {
+				t.Fatalf("got %+v, want %q, clear %d", d, c.why, c.used)
+			}
+		})
+	}
+}
+
 // TestHoldsRuleCollapsesBoth: two spaces in a rule must not hide it from the gate.
 func TestHoldsRuleCollapsesBoth(t *testing.T) {
 	for _, tc := range []struct {

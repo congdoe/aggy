@@ -77,8 +77,8 @@ func TestPolicyOnCommandLine(t *testing.T) {
 			vals := interactiveRecord(t, w).Flags[tc.flag]
 			if tc.vendor == "claude" {
 				// T6976: on screen the policy's asks are aggy's decision
-				// hook's, so no static rule is left.
-				if len(vals) != 1 || !decideHooked(t, vals[0]) || strings.Contains(vals[0], `"permissions"`) {
+				// hook's; only the settings-file guards stay static (PR #129).
+				if len(vals) != 1 || !decideHooked(t, vals[0]) || strings.Contains(vals[0], `Read(//**/.env)`) || !strings.Contains(vals[0], `"Bash(*.claude/settings*)"`) {
 					t.Errorf("--settings = %q", vals)
 				}
 				return
@@ -114,7 +114,7 @@ func TestSharedRulesOnCommandLine(t *testing.T) {
 		w := newWorld(t)
 		write(t, filepath.Join(w.home, ".aggy", "permissions.json"), `{"permissions":{"allow":["Bash(git log --oneline -20)"],"ask":["Bash(git push *)"]}}`)
 		vals := run(t, w, "claude").Flags["--settings"]
-		if len(vals) != 1 || !strings.Contains(vals[0], `"allow":["Bash(git log --oneline -20)"]`) || !strings.Contains(vals[0], `"ask":["Bash(git push *)"]`) || !decideHooked(t, vals[0]) {
+		if len(vals) != 1 || !strings.Contains(vals[0], `"allow":["Bash(git log --oneline -20)"]`) || !strings.Contains(vals[0], `"Bash(git push *)"]`) || !decideHooked(t, vals[0]) {
 			t.Errorf("--settings = %q", vals)
 		}
 		if _, err := os.Stat(filepath.Join(w.home, ".claude", "settings.json")); !os.IsNotExist(err) {

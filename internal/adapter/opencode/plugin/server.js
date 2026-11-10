@@ -9,6 +9,8 @@ import { execFile } from "node:child_process"
 const HOOK_MS = 3000
 const GUARD_MS = 8000
 const DECIDE_MS = 5000
+// How long a prompt or a pre-approval clears its call for the guard.
+const CLEAR_MS = 10 * 60 * 1000
 const MAX_REASON = 600
 
 // Only these reach the guard: the fields it reads, not a write's content.
@@ -52,39 +54,79 @@ export default {
     let always = false
     const directory = ctx.location.directory
 
+    // The safety policy's decision (T6976): OpenCode's rules decide first,
+    // and this only moves an ask to allow for a call the person pre-approved
+    // exactly, and an allow (an Always allow OpenCode saved) back to ask for
+    // any other policy match. A configured deny never reaches it
+    // (core/src/permission.ts at dev d4aeee5, read 2026-11-10; the hook
+    // turning an allow back to ask held on 2.2.5, docs/verification.md).
+    // Should aggy fail, not answer, or this throw, an allow becomes an ask: the
+    // hook cannot judge, so nothing it might have stopped runs unasked (PR #129
+    // review). Unverified on 2.2.5: the ask-to-allow direction, and what
+    // resources holds for a compound command or a read.
+    //
+    // cleared remembers each resource that went to a prompt, or that aggy
+    // pre-approved, for the guard below: on a strict launch the guard runs a
+    // strict match only if it was cleared here, in this process, and recently.
+    // A reply of reject clears the list.
+    const decide = ctx.options.decide
+    const sum = ctx.options.sum
+    const strict = ctx.options.strict === "1"
+    const cleared = new Map()
+    const clearKey = (action, resource) => action + "\n" + resource
+    let evaluating = false
+    if (decide && sum && ctx.permission && typeof ctx.permission.hook === "function") {
+      await ctx.permission.hook("evaluate", async (e) => {
+        try {
+          if (!e || (e.action !== "shell" && e.action !== "read")) return
+          if (e.effect !== "ask" && e.effect !== "allow") return
+          let want = ""
+          try {
+            const r = await run(aggy, ["hook", "decide", "--vendor", "opencode", "--plan", decide, "--sha256", sum], { action: e.action, resources: e.resources, effect: e.effect }, DECIDE_MS)
+            if (!r.failed) want = r.stdout.trim()
+          } catch {}
+          if (want === "allow") e.effect = "allow"
+          else if (want === "ask") e.effect = "ask"
+          else if (want === "deny") e.effect = "deny"
+          else if (want !== "none" && e.effect === "allow") e.effect = "ask"
+          if (e.effect === "ask" || want === "allow") {
+            for (const r of Array.isArray(e.resources) ? e.resources : []) {
+              if (typeof r === "string") cleared.set(clearKey(e.action, r), Date.now() + CLEAR_MS)
+            }
+          }
+        } catch {
+          try {
+            if (e && e.effect === "allow") e.effect = "ask"
+          } catch {}
+        }
+      })
+      evaluating = true
+    }
+    const clearsFor = (action) => {
+      const now = Date.now()
+      const out = []
+      for (const [k, until] of cleared) {
+        if (until < now) cleared.delete(k)
+        else if (k.startsWith(action + "\n")) out.push(k.slice(action.length + 1))
+      }
+      return out
+    }
+
     // Every call is checked. A check that crashes, hangs, or is missing
-    // refuses: a throw here fails that tool call alone.
+    // refuses: a throw here fails that tool call alone. On a strict launch the
+    // guard also refuses a strict match that was not cleared above; it prints
+    // the index of the clear it used, which is then spent.
     await ctx.tool.hook("execute.before", async (e) => {
-      const r = await run(aggy, ["hook", "opencode-guard"], { tool: e.tool, directory, root, auto, always, ...guardFields(e.input) }, GUARD_MS)
+      const action = e.tool === "read" ? "read" : "shell"
+      const clears = strict ? clearsFor(action) : []
+      const r = await run(aggy, ["hook", "opencode-guard"], { tool: e.tool, directory, root, auto, always, strict, evaluating, cleared: clears, plan: decide || "", sum: sum || "", ...guardFields(e.input) }, GUARD_MS)
       if (r.failed) {
         const why = r.stderr.trim().slice(0, MAX_REASON)
         throw new Error(why || "aggy's guard did not answer, so this call was refused")
       }
+      const used = Number.parseInt(r.stdout.trim(), 10)
+      if (Number.isInteger(used) && used >= 0 && used < clears.length) cleared.delete(clearKey(action, clears[used]))
     })
-
-    // The safety policy's decision (T6976): OpenCode's rules decide first,
-    // and this only moves an ask to allow for a command the person
-    // pre-approved exactly, and an allow (an Always allow OpenCode saved) back
-    // to ask for any other policy match. A configured deny never reaches it
-    // (core/src/permission.ts at dev d4aeee5, read 2026-11-10; the hook
-    // turning an allow back to ask held on 2.2.5, docs/verification.md).
-    // Should aggy fail or not answer, or this throw, the effect stays as the
-    // rules gave it. Unverified on 2.2.5: that setting e.effect is how the
-    // hook answers, and what resources holds for a compound command.
-    const decide = ctx.options.decide
-    if (decide && ctx.permission && typeof ctx.permission.hook === "function") {
-      await ctx.permission.hook("evaluate", async (e) => {
-        try {
-          if (!e || e.action !== "shell" || (e.effect !== "ask" && e.effect !== "allow")) return
-          const r = await run(aggy, ["hook", "decide", "--vendor", "opencode", "--plan", decide], { action: e.action, resources: e.resources, effect: e.effect }, DECIDE_MS)
-          if (r.failed) return
-          const want = r.stdout.trim()
-          if (want === "allow" && e.effect === "ask") e.effect = "allow"
-          else if (want === "ask" && e.effect === "allow") e.effect = "ask"
-          else if (want === "deny") e.effect = "deny"
-        } catch {}
-      })
-    }
 
     // Sent one at a time, so the supervisor sees them in order.
     let sending = Promise.resolve()
@@ -97,6 +139,7 @@ export default {
     send("GuardLoaded", { directory })
     ;(async () => {
       for await (const event of ctx.event.subscribe({ types: Object.keys(report) })) {
+        if (event.type === "permission.replied" && event.data.reply === "reject") cleared.clear()
         if (event.type === "permission.replied" && event.data.reply === "always") {
           always = true
           run(aggy, ["hook", "opencode-always"], { root }, HOOK_MS)

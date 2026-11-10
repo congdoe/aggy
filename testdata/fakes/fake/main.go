@@ -1566,7 +1566,8 @@ func (f *fake) toolDecision(layer map[string]any, c ToolCall) (string, []string)
 			break
 		}
 		matcher, _ := gm["matcher"].(string)
-		if matcher != "" {
+		// "*" and "" match every tool (hooks.md, "Structure").
+		if matcher != "" && matcher != "*" {
 			re, err := regexp.Compile(matcher)
 			if err != nil || !re.MatchString(c.Tool) {
 				continue

@@ -718,18 +718,33 @@ sources (`PagerArgs.prompt`; codex's usage `codex [OPTIONS] [PROMPT]`).
     person's own Claude settings file, which aggy does not touch.
   - The policy decision hook (T6976, design.md section 10, "Exact
     pre-approval"): on screen, aggy's layer carries a `PreToolUse` group
-    matched to `^(Bash|Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob)$`
-    whose one command hook has `timeout` 10 and `onFailure: "block"`, in place
-    of the policy's static `permissions.ask` rules; denies stay static. The
-    hook prints `hookSpecificOutput.permissionDecision` allow, ask, or deny
-    with a `permissionDecisionReason`, or nothing for no opinion; its
-    wrapper prints a fixed ask (deny in `bypassPermissions` or `dontAsk`) when
-    aggy fails. Sources: `hooks.md` and `permissions.md` ("Precedence among
-    rules, hooks, and mods"), read 2026-11-10, and the live check of
-    2026-11-10 (verification.md, "Claude PreToolUse decisions"). Should the
-    final layer turn hooks off or lack the entry, the adapter puts the static
-    asks back (`claude.SettingsJSON`); the launch keeps them for `--safe-mode`,
-    `--bare`, and hooks turned off in Claude's settings files aggy reads.
+    matched to `*`, every tool (`hooks.md`, "Structure"; PR #129 review: a
+    tool such as `Monitor`, which runs a shell command, or one aggy does not
+    know, must reach it), whose one command hook has `timeout` 10 and
+    `onFailure: "block"`, in place of the policy's static `permissions.ask`
+    rules; denies stay static. The command is `out=$(aggy hook decide
+    --vendor claude --plan <file> --sha256 <hex>) && printf '%s' "$out" || {
+    <record the failure in the background>; printf '%s\n' '<fixed ask>'; }`:
+    aggy's answer only when it exits 0, so stdout never holds two decisions.
+    The hook prints `hookSpecificOutput.permissionDecision` allow, ask, or deny
+    with a `permissionDecisionReason`, or nothing for no opinion; the fixed
+    answer is ask (deny in `bypassPermissions` or `dontAsk`). The hook checks
+    the plan file against the SHA-256 in its own argv and asks when it differs.
+    Sources: `hooks.md` and `permissions.md` ("Precedence among rules, hooks,
+    and mods"), read 2026-11-10, and the live check of 2026-11-10
+    (verification.md, "Claude PreToolUse decisions"); `Monitor`'s `command`
+    input is from Claude Code's tool definition as a session lists it,
+    unverified against the tools reference. Should the final layer turn hooks
+    off or lack the entry, the adapter puts the static asks back
+    (`claude.SettingsJSON`); the launch keeps them for `--safe-mode`, `--bare`,
+    `CLAUDE_CODE_SIMPLE` (unverified), a `--settings` file, and hooks turned
+    off in the Claude settings files aggy reads: the person's, the launch
+    folder's and each folder's up to the repo root, and the managed settings
+    file (`settings.md`, "Settings files": macOS `/Library/Application
+    Support/ClaudeCode/managed-settings.json`, Linux and WSL
+    `/etc/claude-code/managed-settings.json`, Windows `C:\Program
+    Files\ClaudeCode\managed-settings.json`; only `disableAllHooks` and
+    `allowManagedHooksOnly` are read; unverified live).
   - Claude `--mcp-config` takes aggy's MCP file into the person's own list.
     The reference says the flag takes space-separated values.
   - Claude `--append-system-prompt-file`: the person's files go ahead of the
@@ -980,16 +995,23 @@ A route to it is refused, and `Headless` returns `ErrUnsupported`. Facts are in
   and question events with `aggy hook --vendor opencode <event>`, from
   `session.execution.succeeded`, `failed`, and `interrupted`, `permission.asked` and
   `replied`, and `form.created`, `replied`, and `cancelled`. With the launch's
-  decision plan in its `decide` option (T6976), it also registers
-  `ctx.permission.hook("evaluate", ...)` for the `shell` action, which runs `aggy
-  hook decide --vendor opencode --plan <file>` and sets `effect` from ask to allow
-  for `allow`, from allow to ask for `ask`, or to deny for `deny`; anything else,
-  a failure, or a throw leaves it. Source: `packages/core/src/permission.ts` at
+  decision plan in its `decide` option and the plan's hash in `sum` (T6976), it
+  also registers `ctx.permission.hook("evaluate", ...)` for the `shell` and
+  `read` actions, which runs `aggy hook decide --vendor opencode --plan <file>
+  --sha256 <hex>` and sets `effect` to allow for `allow`, to ask for `ask`, or to
+  deny for `deny`, and leaves it for `none`; a failure, a timeout, or a throw
+  turns an allow into an ask (PR #129 review). With `strict` set (a trusted
+  launch without `--auto`), it remembers the resources that went to a prompt or
+  that aggy pre-approved and passes them, and whether the hook was registered, to
+  `aggy hook opencode-guard`, which refuses a strict match not cleared; the guard
+  prints the index of the clear it used, which the plugin spends. A `permission.replied`
+  of `reject` forgets every clear. Source: `packages/core/src/permission.ts` at
   dev `d4aeee5`, lines 184-201 and 340, and opencode.ai/docs/build/plugins/server,
   read 2026-11-10; at 2.2.5 only the allow-to-ask direction was seen
   (verification.md). Unverified at 2.2.5: that setting `e.effect` is how the hook
   answers, the ask-to-allow direction, what `resources` holds for a compound
-  command, and what a throw or a failed load does.
+  command or a read (a path, relative or absolute, is assumed), that `reject` is
+  the reply's word for a refusal, and what a throw or a failed load does.
 - Transcripts: `opencode session export <id> --standalone`, an `experimental` API,
   through `execrun.OpenCodeRunner`, parsed by `opencode.ParseExport`.
 - Credentials: `safefs` refuses `opencode.db*`, `opencode-<channel>.db*`, the legacy

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -65,66 +66,125 @@ func TestUsePolicyHook(t *testing.T) {
 	req, plan, s := onScreenReq(t, repo)
 	asks := slices.Clone(req.Ask)
 	dir := filepath.Join(t.TempDir(), "mem")
-	if note := usePolicyHook(&req, plan, s, repo, "2.1.322", dir); note != "" {
+	if note := usePolicyHook(&req, hookIn(plan, s, repo, repo, "2.1.322", dir)); note != "" {
 		t.Fatalf("note %q", note)
 	}
-	if req.PolicyHook == nil || len(req.Ask) != 0 || !slices.Equal(req.PolicyHook.Fallback, asks) {
+	if req.PolicyHook == nil || !slices.Equal(req.Ask, settingsGuardAsks(repo, repo)) || !slices.Equal(req.PolicyHook.Fallback, asks) {
 		t.Fatalf("hook %+v, asks %q", req.PolicyHook, req.Ask)
 	}
-	h := req.PolicyHook.Group.Hooks[0]
-	if h.OnFailure != "block" || h.Timeout != policyhook.DecideTimeout || req.PolicyHook.Group.Matcher != policyhook.ClaudeHookMatcher() ||
-		!strings.HasPrefix(h.Command, "/usr/local/bin/aggy hook decide --vendor claude --plan "+filepath.Join(dir, decidePlanFile)+" || ") {
-		t.Errorf("hook entry %+v", h)
+	// PR #129 review, live check of 2026-11-10: a settings file written
+	// mid-session turns hooks off, so static asks guard those writes beside
+	// the hook, and the static asks the hook replaced are all kept for when it
+	// cannot run.
+	for _, r := range []string{"Edit(//**/.claude/settings.local.json)", "Edit(//**/.claude/settings.json)",
+		"Edit(/" + filepath.ToSlash(filepath.Join(repo, ".claude", "settings.local.json")) + ")", "Bash(*.claude/settings*)"} {
+		if !slices.Contains(req.Ask, r) {
+			t.Errorf("static asks lack %s: %q", r, req.Ask)
+		}
 	}
-	d, err := readDecidePlan(filepath.Join(dir, decidePlanFile))
+	js, _, err := claude.SettingsJSON(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.VendorVersion != "2.1.322" || d.NoPrompt || !slices.Equal(d.Commands, []string{"git push --force origin main"}) {
+	var layer struct {
+		Permissions struct{ Ask []string } `json:"permissions"`
+	}
+	if err := json.Unmarshal(js, &layer); err != nil || !slices.Equal(layer.Permissions.Ask, req.Ask) {
+		t.Errorf("rendered asks %q, want %q (%v)", layer.Permissions.Ask, req.Ask, err)
+	}
+	off := req
+	off.UserSettings = map[string]any{"disableAllHooks": true}
+	if js, _, err := claude.SettingsJSON(off); err != nil || !strings.Contains(string(js), `"Bash(*.claude/settings*)"`) {
+		t.Errorf("hooks off: %s %v", js, err)
+	} else if err := json.Unmarshal(js, &layer); err != nil || !slices.Equal(layer.Permissions.Ask, append(slices.Clone(req.Ask), asks...)) {
+		t.Errorf("hooks off: asks %q", layer.Permissions.Ask)
+	}
+	h := req.PolicyHook.Group.Hooks[0]
+	if h.OnFailure != "block" || h.Timeout != policyhook.DecideTimeout || req.PolicyHook.Group.Matcher != "*" ||
+		!strings.HasPrefix(h.Command, "out=$(/usr/local/bin/aggy hook decide --vendor claude --plan "+filepath.Join(dir, decidePlanFile)+" --sha256 ") {
+		t.Errorf("hook entry %+v", h)
+	}
+	path, sum := planOf(t, req)
+	d, err := readDecidePlan(path, sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.VendorVersion != "2.1.322" || d.NoPrompt || !slices.Equal(d.Commands, []string{"git push --force origin main"}) || d.Root != repo || len(d.Protected) != 1 {
 		t.Errorf("plan %+v", d)
 	}
-	if note := policyHookNote(req, s, repo, plan.Branches); !strings.Contains(note, "1 exact pre-approval") {
+	if note := policyHookNote(req, d.PreApproved(), plan.Branches); !strings.Contains(note, "1 exact pre-approval") {
 		t.Errorf("note %q", note)
 	}
 
 	// A mode that shows no prompt makes the plan and the fallback deny.
 	req, plan, s = onScreenReq(t, repo)
 	req.Extra = []string{"--permission-mode", "dontAsk"}
-	if note := usePolicyHook(&req, plan, s, repo, "", filepath.Join(t.TempDir(), "m")); note != "" || req.PolicyHook == nil ||
+	if note := usePolicyHook(&req, hookIn(plan, s, repo, repo, "", filepath.Join(t.TempDir(), "m"))); note != "" || req.PolicyHook == nil ||
 		!strings.Contains(req.PolicyHook.Group.Hooks[0].Command, `"permissionDecision":"deny"`) {
 		t.Errorf("dontAsk: %q %+v", note, req.PolicyHook)
 	}
 
-	keeps := func(name string, mut func(*adapter.InteractiveRequest, *permissions.Set) string) {
+	keeps := func(name string, mut func(*adapter.InteractiveRequest, *policyHookIn)) {
 		t.Helper()
 		req, plan, s := onScreenReq(t, repo)
-		r := mut(&req, &s)
-		note := usePolicyHook(&req, plan, s, r, "", filepath.Join(t.TempDir(), "m"))
+		in := hookIn(plan, s, repo, repo, "", filepath.Join(t.TempDir(), "m"))
+		mut(&req, &in)
+		note := usePolicyHook(&req, in)
 		if req.PolicyHook != nil || len(req.Ask) == 0 || !strings.Contains(note, "asks as before") {
 			t.Errorf("%s: hook %+v asks %d note %q", name, req.PolicyHook, len(req.Ask), note)
 		}
 	}
-	keeps("--safe-mode", func(req *adapter.InteractiveRequest, _ *permissions.Set) string {
-		req.Extra = []string{"--safe-mode"}
-		return repo
+	keeps("--safe-mode", func(req *adapter.InteractiveRequest, _ *policyHookIn) { req.Extra = []string{"--safe-mode"} })
+	keeps("--bare", func(req *adapter.InteractiveRequest, _ *policyHookIn) { req.Extra = []string{"--bare"} })
+	keeps("hooks off in Claude's settings", func(_ *adapter.InteractiveRequest, in *policyHookIn) { in.rules.HooksOff = "/x" })
+	// PR #129 review, HIGH-1: a --settings file would hold the hash too.
+	keeps("a --settings file", func(_ *adapter.InteractiveRequest, in *policyHookIn) { in.settingsFile = true })
+	// PR #129 review, MEDIUM-3.
+	keeps(claudeSimpleVar+" in --settings env", func(req *adapter.InteractiveRequest, _ *policyHookIn) {
+		req.UserSettings = map[string]any{"env": map[string]any{claudeSimpleVar: "1"}}
 	})
-	keeps("--bare", func(req *adapter.InteractiveRequest, _ *permissions.Set) string {
-		req.Extra = []string{"--bare"}
-		return repo
-	})
-	keeps("hooks off in Claude's settings", func(_ *adapter.InteractiveRequest, s *permissions.Set) string { s.HooksOff = "/x"; return repo })
+	func() {
+		old := policyHookEnv
+		defer func() { policyHookEnv = old }()
+		policyHookEnv = func(k string) string {
+			if k == claudeSimpleVar {
+				return "1"
+			}
+			return ""
+		}
+		keeps(claudeSimpleVar+" in aggy's env", func(*adapter.InteractiveRequest, *policyHookIn) {})
+	}()
+	// PR #129 review, MEDIUM-2: managed settings that turn hooks off.
+	func() {
+		old := managedSettingsPath
+		defer func() { managedSettingsPath = old }()
+		managed := filepath.Join(t.TempDir(), "managed-settings.json")
+		writeAt(t, managed, `{"allowManagedHooksOnly":true}`, 0o600)
+		managedSettingsPath = func() string { return managed }
+		keeps("managed settings", func(*adapter.InteractiveRequest, *policyHookIn) {})
+	}()
 	for _, f := range []string{"settings.json", "settings.local.json"} {
 		other := tempRepo(t)
 		writeAt(t, filepath.Join(other, ".claude", f), `{"disableAllHooks":true}`, 0o600)
-		keeps("a repo's "+f, func(*adapter.InteractiveRequest, *permissions.Set) string { return other })
+		keeps("a repo's "+f, func(_ *adapter.InteractiveRequest, in *policyHookIn) { in.root, in.cwd = other, other })
 		bad := tempRepo(t)
 		writeAt(t, filepath.Join(bad, ".claude", f), `{not json`, 0o600)
-		keeps("a repo's unreadable "+f, func(*adapter.InteractiveRequest, *permissions.Set) string { return bad })
+		keeps("a repo's unreadable "+f, func(_ *adapter.InteractiveRequest, in *policyHookIn) { in.root, in.cwd = bad, bad })
+		// PR #129 review, MEDIUM-1: a launch in a folder below the root
+		// reads that folder's settings, and every one up to the root.
+		sub := tempRepo(t)
+		writeAt(t, filepath.Join(sub, "a", "b", ".claude", f), `{"disableAllHooks":true}`, 0o600)
+		keeps("a sub-folder's "+f, func(_ *adapter.InteractiveRequest, in *policyHookIn) {
+			in.root, in.cwd = sub, filepath.Join(sub, "a", "b")
+		})
+		keeps("a middle folder's "+f, func(_ *adapter.InteractiveRequest, in *policyHookIn) {
+			in.root, in.cwd = sub, filepath.Join(sub, "a", "b", "c")
+		})
 	}
 	fakeHookBin(t, "", errors.New("go run"))
-	keeps("no aggy path", func(*adapter.InteractiveRequest, *permissions.Set) string { return repo })
+	keeps("no aggy path", func(*adapter.InteractiveRequest, *policyHookIn) {})
 	fakeHookBin(t, "/a b/aggy", nil)
-	keeps("an aggy path a hook cannot hold", func(*adapter.InteractiveRequest, *permissions.Set) string { return repo })
+	keeps("an aggy path a hook cannot hold", func(*adapter.InteractiveRequest, *policyHookIn) {})
 
 	// A headless launch is left as it was.
 	var hreq adapter.InteractiveRequest
@@ -132,9 +192,60 @@ func TestUsePolicyHook(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeHookBin(t, "/usr/local/bin/aggy", nil)
-	if note := usePolicyHook(&hreq, policyPlan(planHeadless, repo, s), s, repo, "", t.TempDir()); note != "" || hreq.PolicyHook != nil {
+	if note := usePolicyHook(&hreq, hookIn(policyPlan(planHeadless, repo, s), s, repo, repo, "", t.TempDir())); note != "" || hreq.PolicyHook != nil {
 		t.Errorf("headless: %q %+v", note, hreq.PolicyHook)
 	}
+}
+
+// TestSettingsGuardAsks: the launch folder and each folder up to the root get
+// their own rules; a folder outside the root, or a path with a glob byte,
+// only the any-depth ones.
+func TestSettingsGuardAsks(t *testing.T) {
+	for _, tt := range []struct {
+		cwd, root string
+		want      []string
+	}{
+		{"/r/a", "/r", []string{"Edit(//r/a/.claude/settings.json)", "Edit(//r/.claude/settings.local.json)"}},
+		{"/other", "/r", nil},
+		{"/r/a*b", "/r", []string{"Edit(//r/.claude/settings.json)"}},
+	} {
+		got := settingsGuardAsks(tt.cwd, tt.root)
+		if got[0] != "Edit(//**/.claude/settings.json)" || got[len(got)-1] != "Bash(*.claude/settings*)" {
+			t.Errorf("%s: %q", tt.cwd, got)
+		}
+		for _, w := range tt.want {
+			if !slices.Contains(got, w) {
+				t.Errorf("%s: lacks %s: %q", tt.cwd, w, got)
+			}
+		}
+		if tt.want == nil && len(got) != 3 {
+			t.Errorf("%s: %q", tt.cwd, got)
+		}
+		if strings.Contains(strings.Join(got, " "), "a*b") {
+			t.Errorf("a glob byte reached a rule: %q", got)
+		}
+	}
+}
+
+// hookIn is usePolicyHook's input for a launch in cwd, with no identities.
+func hookIn(plan parity.PolicyPlan, s permissions.Set, root, cwd, version, dir string) policyHookIn {
+	return policyHookIn{plan: plan, rules: s, root: root, cwd: cwd, version: version, dir: dir}
+}
+
+// planArgsRE finds the plan and its sum in a decision hook's command.
+var planArgsRE = regexp.MustCompile(`--plan (\S+) --sha256 ([0-9a-f]{64})`)
+
+// planOf is the plan path and sum the hook in req names.
+func planOf(t *testing.T, req adapter.InteractiveRequest) (path, sum string) {
+	t.Helper()
+	if req.PolicyHook == nil {
+		t.Fatal("no decision hook")
+	}
+	m := planArgsRE.FindStringSubmatch(req.PolicyHook.Group.Hooks[0].Command)
+	if m == nil {
+		t.Fatalf("no plan in %q", req.PolicyHook.Group.Hooks[0].Command)
+	}
+	return m[1], m[2]
 }
 
 // TestNothingInRepoPreApproves (T6976): allows a repo or a model can write
@@ -163,10 +274,11 @@ func TestNothingInRepoPreApproves(t *testing.T) {
 	}
 	req, plan, s := onScreenReq(t, repo)
 	dir := t.TempDir()
-	if note := usePolicyHook(&req, plan, s, repo, "", dir); note != "" || req.PolicyHook == nil {
+	if note := usePolicyHook(&req, hookIn(plan, s, repo, repo, "", dir)); note != "" || req.PolicyHook == nil {
 		t.Fatalf("%q %+v", note, req.PolicyHook)
 	}
-	d, err := readDecidePlan(filepath.Join(dir, decidePlanFile))
+	path, sum := planOf(t, req)
+	d, err := readDecidePlan(path, sum)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,9 +287,122 @@ func TestNothingInRepoPreApproves(t *testing.T) {
 	}
 	var out bytes.Buffer
 	stdin := `{"tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}`
-	if code := hookWith([]string{"decide", "--vendor", "claude", "--plan", filepath.Join(dir, decidePlanFile)}, strings.NewReader(stdin),
+	if code := hookWith([]string{"decide", "--vendor", "claude", "--plan", path, "--sha256", sum}, strings.NewReader(stdin),
 		os.Getenv, &out, &bytes.Buffer{}); code != 0 || !strings.Contains(out.String(), `"permissionDecision":"ask"`) {
 		t.Errorf("hook: %d %q", code, out.String())
+	}
+}
+
+// TestPlanRewriteAsks (PR #129 review, HIGH-1, confirmed on d991153): the
+// model's shell rewrites the launch's plan to pre-approve a force push to main.
+// The hook checks the plan against the SHA-256 in its own command, so the push
+// still asks, with its own failure code; a removed plan asks too, and a
+// dontAsk session refuses. Neither ever allows.
+func TestPlanRewriteAsks(t *testing.T) {
+	isolate(t)
+	freshRun(t)
+	repo := inRepo(t)
+	fakeHookBin(t, "/usr/local/bin/aggy", nil)
+	req, plan, s := onScreenReq(t, repo)
+	if note := usePolicyHook(&req, hookIn(plan, s, repo, repo, "", t.TempDir())); note != "" {
+		t.Fatalf("note %q", note)
+	}
+	path, sum := planOf(t, req)
+	d, err := readDecidePlan(path, sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const force = "git push --force origin main"
+	d.Commands = append(d.Commands, force)
+	evil, _ := json.Marshal(d)
+	writeAt(t, path, string(evil), 0o600)
+	decide := func(mode string) (int, string) {
+		var out bytes.Buffer
+		b, _ := json.Marshal(map[string]any{"tool_name": "Bash", "tool_input": map[string]any{"command": force}, "permission_mode": mode})
+		code := hookWith([]string{"decide", "--vendor", "claude", "--plan", path, "--sha256", sum}, bytes.NewReader(b), os.Getenv, &out, &bytes.Buffer{})
+		return code, out.String()
+	}
+	if code, out := decide("default"); code != 0 || !strings.Contains(out, `"permissionDecision":"ask"`) {
+		t.Errorf("rewritten plan: %d %q, want ask", code, out)
+	}
+	if code, out := decide("dontAsk"); code != 0 || !strings.Contains(out, `"permissionDecision":"deny"`) {
+		t.Errorf("rewritten plan, dontAsk: %d %q, want deny", code, out)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := decide("default"); code != 0 || !strings.Contains(out, `"permissionDecision":"ask"`) {
+		t.Errorf("removed plan: %d %q, want ask", code, out)
+	}
+	stats := decideStats(context.Background())
+	var failures int64
+	for _, st := range stats {
+		failures += st.Failures()
+	}
+	if failures != 3 {
+		t.Errorf("failures %d, want 3: %+v", failures, stats)
+	}
+}
+
+// TestReadPreApprovalIdentity (PR #129 review, MEDIUM-4, confirmed on
+// d991153): aggy permissions add allow records a key file's identity; the
+// hook allows reading that file only, in a trusted repo; a symlink put in its
+// place, pointing at another key, asks; an untrusted repo pre-approves no read.
+func TestReadPreApprovalIdentity(t *testing.T) {
+	isolate(t)
+	repo := inRepo(t)
+	fakeHookBin(t, "/usr/local/bin/aggy", nil)
+	key, other := filepath.Join(repo, "certs", "server.key"), filepath.Join(repo, "other.key")
+	writeAt(t, key, "k1", 0o600)
+	writeAt(t, other, "k2", 0o600)
+	atKeyboard(t, "y\n")
+	if code, out, errb := run("permissions", "add", "allow", "Read(./certs/server.key)"); code != 0 || !strings.Contains(out, "trusted") {
+		t.Fatalf("add: %d %q %q", code, out, errb)
+	}
+	launch := func() (string, string) {
+		t.Helper()
+		db, err := store.OpenDefault(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = db.Close() }()
+		req, plan, s := onScreenReq(t, repo)
+		in := hookIn(plan, s, repo, repo, "", t.TempDir())
+		in.ids = readIdentities(context.Background(), db)
+		if note := usePolicyHook(&req, in); note != "" {
+			t.Fatalf("note %q", note)
+		}
+		return planOf(t, req)
+	}
+	read := func(path, sum string) string {
+		var out bytes.Buffer
+		b, _ := json.Marshal(map[string]any{"tool_name": "Read", "tool_input": map[string]any{"file_path": key}})
+		hookWith([]string{"decide", "--vendor", "claude", "--plan", path, "--sha256", sum}, bytes.NewReader(b), os.Getenv, &out, &bytes.Buffer{})
+		return out.String()
+	}
+	// Untrusted: no read pre-approval in the plan.
+	if out := read(launch()); !strings.Contains(out, `"permissionDecision":"ask"`) {
+		t.Errorf("untrusted: %q, want ask", out)
+	}
+	atKeyboard(t, "y\n")
+	if code, out, errb := run("trust", repo); code != 0 {
+		t.Fatalf("trust: %d %q %q", code, out, errb)
+	}
+	path, sum := launch()
+	if out := read(path, sum); !strings.Contains(out, `"permissionDecision":"allow"`) {
+		t.Errorf("trusted, same file: %q, want allow", out)
+	}
+	if err := os.Remove(key); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, key); err != nil {
+		t.Fatal(err)
+	}
+	if out := read(path, sum); !strings.Contains(out, `"permissionDecision":"ask"`) {
+		t.Errorf("a symlink to another key: %q, want ask", out)
+	}
+	if out := read(launch()); !strings.Contains(out, `"permissionDecision":"ask"`) {
+		t.Errorf("a symlink, at the next launch: %q, want ask", out)
 	}
 }
 
@@ -197,7 +422,7 @@ func TestHeadlessLayerUnchanged(t *testing.T) {
 	if _, err := addPolicy(adapter.Claude, []string{probe.CapSettings}, true, policyPlan(planHeadless, repo, s), &req); err != nil {
 		t.Fatal(err)
 	}
-	usePolicyHook(&req, policyPlan(planHeadless, repo, s), s, repo, "", t.TempDir())
+	usePolicyHook(&req, hookIn(policyPlan(planHeadless, repo, s), s, repo, repo, "", t.TempDir()))
 	js, _, err := claude.SettingsJSON(req)
 	if err != nil {
 		t.Fatal(err)
@@ -211,14 +436,18 @@ func TestHeadlessLayerUnchanged(t *testing.T) {
 	}
 }
 
-// writePlan writes a decision plan for the hook tests.
-func writePlan(t *testing.T, d policyhook.DecidePlan) string {
+// writePlan writes a decision plan for the hook tests, rooted in a temporary
+// folder unless it has a root, and returns its path and sum.
+func writePlan(t *testing.T, d policyhook.DecidePlan) (string, string) {
 	t.Helper()
-	p, err := writeDecidePlan(t.TempDir(), d)
+	if d.Root == "" {
+		d.Root = t.TempDir()
+	}
+	p, sum, err := writeDecidePlan(t.TempDir(), d)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return p
+	return p, sum
 }
 
 // TestHookDecide (T6976): aggy hook decide answers from its plan and logs a
@@ -231,8 +460,11 @@ func TestHookDecide(t *testing.T) {
 	home := os.Getenv("AGGY_HOME")
 	const canary = "dist-ocelot-canary-38"
 	approved := "rm -rf " + canary
-	plan := writePlan(t, policyhook.NewDecidePlan("claude", "2.1.322", false, parity.PolicyPlan{OnScreen: true},
+	plan, sum := writePlan(t, policyhook.NewDecidePlan("claude", "2.1.322", false, parity.PolicyPlan{OnScreen: true},
 		parity.PreApproved{Commands: []string{approved}}))
+	args := func(vendor, path string) []string {
+		return []string{"decide", "--vendor", vendor, "--plan", path, "--sha256", sum}
+	}
 	call := func(args []string, stdin string) (int, string) {
 		var out, errb bytes.Buffer
 		code := hookWith(args, strings.NewReader(stdin), func(string) string { return "" }, &out, &errb)
@@ -252,7 +484,7 @@ func TestHookDecide(t *testing.T) {
 		{"not json " + canary, "ask"},
 		{strings.Repeat("x", 2<<20), "ask"},
 	} {
-		code, out := call([]string{"decide", "--vendor", "claude", "--plan", plan}, tt.stdin)
+		code, out := call(args("claude", plan), tt.stdin)
 		if code != 0 {
 			t.Fatalf("exit %d", code)
 		}
@@ -266,16 +498,25 @@ func TestHookDecide(t *testing.T) {
 			t.Errorf("%.60q: %q, want %s", tt.stdin, out, tt.want)
 		}
 	}
-	if code, out := call([]string{"decide", "--vendor", "opencode", "--plan", plan}, `{"action":"shell","resources":["`+approved+`"],"effect":"ask"}`); code != 0 || out != "allow\n" {
+	if code, out := call(args("opencode", plan), `{"action":"shell","resources":["`+approved+`"],"effect":"ask"}`); code != 0 || out != "allow\n" {
 		t.Errorf("opencode: %d %q", code, out)
 	}
-	if code, out := call([]string{"decide", "--vendor", "claude", "--plan", filepath.Join(t.TempDir(), "none.json")}, bash(approved)); code != 1 || out != "" {
+	// A missing plan, or one that is not what the launch wrote, asks.
+	if code, out := call(args("claude", filepath.Join(t.TempDir(), "none.json")), bash(approved)); code != 0 || !strings.Contains(out, `"permissionDecision":"ask"`) {
 		t.Errorf("no plan: %d %q", code, out)
 	}
-	if code, _ := call([]string{"decide", "--vendor", "codex", "--plan", plan}, ""); code == 0 {
+	other, _ := writePlan(t, policyhook.NewDecidePlan("claude", "2.1.322", false, parity.PolicyPlan{OnScreen: true},
+		parity.PreApproved{Commands: []string{approved}}))
+	if code, out := call(args("opencode", other), `{"action":"shell","resources":["`+approved+`"],"effect":"ask"}`); code != 0 || out != "ask\n" {
+		t.Errorf("another plan: %d %q", code, out)
+	}
+	if code, _ := call([]string{"decide", "--vendor", "codex", "--plan", plan, "--sha256", sum}, ""); code == 0 {
 		t.Error("codex took")
 	}
-	if code, _ := call([]string{"decide-failed", "--vendor", "claude", "--plan", plan}, ""); code != 0 {
+	if code, _ := call([]string{"decide", "--vendor", "claude", "--plan", plan}, ""); code == 0 {
+		t.Error("no --sha256 took")
+	}
+	if code, _ := call(append([]string{"decide-failed"}, args("claude", plan)[1:]...), ""); code != 0 {
 		t.Errorf("decide-failed: %d", code)
 	}
 
@@ -295,8 +536,8 @@ func TestHookDecide(t *testing.T) {
 			fallbacks++
 		}
 	}
-	if len(starts) != 8 || len(ends) != 8 || fallbacks != 1 {
-		t.Fatalf("%d starts, %d ends, %d fallbacks; want 8, 8, 1", len(starts), len(ends), fallbacks)
+	if len(starts) != 9 || len(ends) != 9 || fallbacks != 1 {
+		t.Fatalf("%d starts, %d ends, %d fallbacks; want 9, 9, 1", len(starts), len(ends), fallbacks)
 	}
 	codes := map[string]int{}
 	for id, e := range ends {
@@ -305,12 +546,12 @@ func TestHookDecide(t *testing.T) {
 		}
 		var a map[string]any
 		_ = json.Unmarshal(e.Attrs, &a)
-		if e.Code != diag.CodeDecidePlan.String() && a["vendor_version"] != "2.1.322" {
+		if e.Code != diag.CodeDecidePlan.String() && e.Code != diag.CodeDecidePlanChanged.String() && a["vendor_version"] != "2.1.322" {
 			t.Errorf("end attrs %v", a)
 		}
 		codes[e.Code]++
 	}
-	for code, n := range map[diag.Code]int{diag.CodeDecidePreApproved: 2, diag.CodeDecideAsked: 2, diag.CodeDecideNoMatch: 1, diag.CodeDecideUnreadable: 2, diag.CodeDecidePlan: 1} {
+	for code, n := range map[diag.Code]int{diag.CodeDecidePreApproved: 2, diag.CodeDecideAsked: 2, diag.CodeDecideNoMatch: 1, diag.CodeDecideUnreadable: 2, diag.CodeDecidePlan: 1, diag.CodeDecidePlanChanged: 1} {
 		if codes[code.String()] != n {
 			t.Errorf("%s: %d ends, want %d (%v)", code, codes[code.String()], n, codes)
 		}
@@ -321,7 +562,7 @@ func TestHookDecide(t *testing.T) {
 		calls += s.Calls
 		failures += s.Failures()
 	}
-	if calls != 8 || failures != 2 {
+	if calls != 9 || failures != 3 {
 		t.Errorf("doctor's stats %+v", stats)
 	}
 	if fs := decideFindings(adapter.Claude, stats); len(fs) == 0 || !strings.Contains(fs[len(fs)-1].Message, "calls") {
@@ -335,6 +576,7 @@ func TestStoreDecideNames(t *testing.T) {
 	for got, want := range map[string]string{
 		store.DecideStarted: diag.EvDecideStarted.String(), store.DecideEnded: diag.EvDecideEnded.String(),
 		store.DecideFallback: diag.EvDecideFallback.String(), store.DecideFailedCode: diag.CodeDecidePlan.String(),
+		store.DecidePlanChangedCode: diag.CodeDecidePlanChanged.String(),
 	} {
 		if got != want {
 			t.Errorf("store %q, registry %q", got, want)
@@ -360,6 +602,10 @@ func TestDecideWrapper(t *testing.T) {
 	}
 	fails := stub("aggy-fails", "cat >/dev/null; echo partial >&2; exit 3\n")
 	answers := stub("aggy-answers", `cat >/dev/null; [ "$2" = decide ] && printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}\n'; exit 0`+"\n")
+	// PR #129 review, LOW-1: an answer printed before a non-zero exit must not
+	// reach Claude beside the fallback, as two JSON objects.
+	answersThenFails := stub("aggy-answers-fails", `cat >/dev/null; [ "$2" = decide ] && printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}\n'; exit 1`+"\n")
+	sum := policyhook.PlanSum([]byte("{}"))
 	for _, tt := range []struct {
 		bin      string
 		noPrompt bool
@@ -369,8 +615,9 @@ func TestDecideWrapper(t *testing.T) {
 		{fails, false, "ask"},
 		{fails, true, "deny"},
 		{answers, false, "allow"},
+		{answersThenFails, false, "ask"},
 	} {
-		cmd, err := policyhook.DecideCommand(tt.bin, plan, tt.noPrompt)
+		cmd, err := policyhook.DecideCommand(tt.bin, plan, sum, tt.noPrompt)
 		if err != nil {
 			t.Fatal(err)
 		}

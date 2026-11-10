@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/diag"
@@ -17,6 +18,7 @@ import (
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/patch"
 	"github.com/congdoe/aggy/internal/permissions"
+	"github.com/congdoe/aggy/internal/policyhook"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/suggest"
@@ -306,9 +308,15 @@ func permissionsChange(args []string, remove bool, stdout, stderr io.Writer) int
 	if remove {
 		verb = "Remove"
 	}
+	// An exact read pre-approval records the file's identity (PR #129 review,
+	// MEDIUM-4), so a file replaced or a link put in its place asks again.
+	read := readPreApproval(rule, cwd, kind)
 	if kind == permissions.Allow && !remove {
 		if w := strictWarning(rule, policyMatch(rule, cwd)); w != "" {
 			fmt.Fprintln(stdout, w)
+		}
+		if read.path != "" && read.err != nil {
+			fmt.Fprintf(stdout, "It will pre-approve nothing of the safety policy: %s is %s. Add it again once the file is there.\n", termsafe.Field(read.path), termsafe.Line(read.err.Error()))
 		}
 	}
 	if !confirmed(stdout, fmt.Sprintf("%s the %s rule %s for %s?", verb, kind, termsafe.Field(rule), where)) {
@@ -320,6 +328,14 @@ func permissionsChange(args []string, remove bool, stdout, stderr io.Writer) int
 		return fail(diag.CodePermBadFile, err.Error())
 	}
 	fmt.Fprintf(stdout, "Done (run %s). It applies at the next launch or switch. aggy unwire --run %s undoes it, once any change made after it is undone.\n", runID, runID)
+	if read.path != "" && (remove || read.err == nil) {
+		if err := recordReadApproval(ctx, read, remove); err != nil {
+			fmt.Fprintf(stdout, "aggy could not record the file's identity, so it pre-approves nothing yet: %s\n", termsafe.Line(err.Error()))
+		}
+	}
+	if read.path != "" && !remove && read.err == nil {
+		fmt.Fprintln(stdout, "A read pre-approval applies only in a repo you trusted (aggy trust), and only while the file is this same file at this path, with no link on the way: a replaced file asks again.")
+	}
 	if kind == permissions.Allow && !remove {
 		var policy map[string]permissions.Kind
 		if s, _, _, err := permissionsHere(ctx); err == nil {
@@ -335,6 +351,51 @@ func permissionsChange(args []string, remove bool, stdout, stderr io.Writer) int
 		}
 	}
 	return 0
+}
+
+// readApprovalIn is an exact Read allow's file: its path, and its identity or
+// why there is none.
+type readApprovalIn struct {
+	path     string
+	dev, ino uint64
+	err      error
+}
+
+// readPreApproval reads the file an exact Read allow names, from cwd's repo
+// root: path is "" for any other rule.
+func readPreApproval(rule, cwd string, kind permissions.Kind) readApprovalIn {
+	if kind != permissions.Allow {
+		return readApprovalIn{}
+	}
+	root, _ := repoRoot(cwd)
+	p, ok := parity.ExactRead(rule, root)
+	if !ok {
+		return readApprovalIn{}
+	}
+	if root == "" {
+		return readApprovalIn{path: p, err: errors.New("not in a git repo")}
+	}
+	dev, ino, err := policyhook.FileIdentity(root, p)
+	return readApprovalIn{path: p, dev: dev, ino: ino, err: err}
+}
+
+// recordReadApproval records, or with remove forgets, a read pre-approval's
+// identity in the index.
+func recordReadApproval(ctx context.Context, r readApprovalIn, remove bool) error {
+	if remove {
+		s, err := openIndex(ctx)
+		if err != nil || s == nil {
+			return err
+		}
+		defer func() { _ = s.Close() }()
+		return s.DeleteReadApproval(ctx, r.path)
+	}
+	s, err := store.OpenDefault(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = s.Close() }()
+	return s.PutReadApproval(ctx, store.ReadApproval{Path: r.path, Dev: r.dev, Ino: r.ino, At: time.Now()})
 }
 
 // preApproval is what an allow rule pre-approves of the safety policy: the

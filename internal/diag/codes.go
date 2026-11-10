@@ -264,6 +264,9 @@ var (
 	CodeDecideNoPrompt    = Code{"decision.no_prompt"}
 	CodeDecideUnreadable  = Code{"decision.call_unreadable"}
 	CodeDecidePlan        = Code{"decision.plan_unreadable"}
+	CodeDecidePlanChanged = Code{"decision.plan_changed"}
+	CodeDecideProtected   = Code{"decision.protected_path"}
+	CodeDecideTooLong     = Code{"decision.call_too_long"}
 	CodeDecideFallback    = Code{"decision.fallback"}
 	CodeTrustBadDir       = Code{"trust.bad_dir"}
 	CodeTrustBadFile      = Code{"trust.bad_file"}
@@ -493,7 +496,10 @@ var codes = []CodeInfo{
 	{CodeDecideGroupDenied, false, "The call matched a safety policy group you set to deny, so it was refused.", "aggy permissions policy <group> ask sets the group back to asking."},
 	{CodeDecideNoPrompt, false, "The call matched the safety policy in a session that cannot show a prompt (bypassPermissions or dontAsk), so it was refused instead of asked.", "Start the session in a mode that asks."},
 	{CodeDecideUnreadable, false, "The hook could not read the tool call (no payload, too large, not JSON, or a tool it does not know), so it asked, or refused where no prompt can show.", "The vendor CLI's version; aggy doctor."},
-	{CodeDecidePlan, false, "The hook could not read its launch's decision plan, so it exited non-zero and its wrapper's fixed answer applied.", "Quit and start the session again; aggy doctor."},
+	{CodeDecidePlan, false, "The hook could not read its launch's decision plan (missing, unreadable, or not valid), so it asked about the call, or refused it where no prompt can show, and never allowed it.", "Quit and start the session again; aggy doctor."},
+	{CodeDecidePlanChanged, false, "The launch's decision plan no longer matched the SHA-256 the launch put in the hook's command: something changed it during the session, so the hook asked about the call (or refused it where no prompt can show) and never allowed it.", "Quit and start the session again; if it happens again, look for what in the session writes to aggy's run folder."},
+	{CodeDecideProtected, false, "The call writes, or a shell command names, aggy's own files (its run folder, the decision plan, its permissions file) or a Claude settings file, so the hook asked about it, whatever else it matched.", "Approve it at the prompt if you meant it."},
+	{CodeDecideTooLong, false, "The call's command or path was longer than the hook scans (64 KiB), so it asked at once rather than judge it.", "Approve it at the prompt, or run it as a script file."},
 	{CodeDecideFallback, false, "aggy's policy decision hook failed or was missing, so its wrapper asked about the call (or refused it where no prompt can show) without judging it.", "aggy doctor for failures by CLI version; check that aggy is still installed at the path the launch used."},
 	{CodeGuardMissing, false, "aggy's OpenCode guard did not report from the launch's folder in time. OpenCode's rules from aggy's config still apply; the guard's own refusals may not.", "Quit and start again; aggy doctor for the CLI's version. A same-user process can overwrite or unload the plugin."},
 	{CodeTrustBadDir, false, "aggy trust was given a path that is not a folder aggy can resolve.", "The path; aggy resolves it to its repo root."},

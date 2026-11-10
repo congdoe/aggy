@@ -167,13 +167,13 @@ func (d *DiagDB) Prune(ctx context.Context, before time.Time, maxBytes int64) (i
 func (d *DiagDB) PruneDecisions(ctx context.Context, before time.Time) (int64, error) {
 	t := millis(before)
 	res, err := d.s.db.ExecContext(ctx, `DELETE FROM records WHERE event = ? AND ts < ? AND id IN
-		(SELECT cause_id FROM records WHERE event = ? AND code <> ? AND ts < ?)`,
-		DecideStarted, t, DecideEnded, DecideFailedCode, t)
+		(SELECT cause_id FROM records WHERE event = ? AND code NOT IN `+decideFailedCodes+` AND ts < ?)`,
+		DecideStarted, t, DecideEnded, t)
 	if err != nil {
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
-	res, err = d.s.db.ExecContext(ctx, `DELETE FROM records WHERE event = ? AND code <> ? AND ts < ?`, DecideEnded, DecideFailedCode, t)
+	res, err = d.s.db.ExecContext(ctx, `DELETE FROM records WHERE event = ? AND code NOT IN `+decideFailedCodes+` AND ts < ?`, DecideEnded, t)
 	if err != nil {
 		return n, err
 	}
@@ -536,8 +536,11 @@ const (
 	DecideStarted  = "hook.decision.started"
 	DecideEnded    = "hook.decision.ended"
 	DecideFallback = "hook.decision.fallback"
-	// DecideFailedCode is an end record whose hook exited non-zero.
-	DecideFailedCode = "decision.plan_unreadable"
+	// DecideFailedCode is an end record whose plan could not be read, and
+	// DecidePlanChangedCode one whose plan was not what the launch wrote
+	// (PR #129 review): both are failures.
+	DecideFailedCode      = "decision.plan_unreadable"
+	DecidePlanChangedCode = "decision.plan_changed"
 	// DecideKeep is how long a successful call's records are kept; a failure's
 	// are kept until the log's size cap is all that is left to drop.
 	DecideKeep = 30 * 24 * time.Hour
@@ -547,9 +550,12 @@ const (
 // leaves to PruneDecisions.
 const decideRows = `event IN ('` + DecideStarted + `', '` + DecideEnded + `', '` + DecideFallback + `')`
 
+// decideFailedCodes is SQL for the end codes that are failures.
+const decideFailedCodes = `('` + DecideFailedCode + `', '` + DecidePlanChangedCode + `')`
+
 // decideFailures is SQL for the decision hook's failure rows: a fallback, an
 // end with a failure code, and a start with no end.
-const decideFailures = `(event = '` + DecideFallback + `' OR (event = '` + DecideEnded + `' AND code = '` + DecideFailedCode + `')
+const decideFailures = `(event = '` + DecideFallback + `' OR (event = '` + DecideEnded + `' AND code IN ` + decideFailedCodes + `)
 	OR (event = '` + DecideStarted + `' AND id NOT IN (SELECT cause_id FROM records WHERE event = '` + DecideEnded + `')))`
 
 // DecideStat is one vendor CLI version's decision hook calls.
@@ -573,11 +579,11 @@ func (v *DiagView) DecideStats(ctx context.Context, now time.Time) ([]DecideStat
 	}
 	rows, err := v.db.QueryContext(ctx, `
 		SELECT vendor, coalesce(json_extract(attrs, '$.vendor_version'), 'unknown') AS vv,
-		  sum(event = ?), sum(event = ? AND code = ?), sum(event = ?),
+		  sum(event = ?), sum(event = ? AND code IN `+decideFailedCodes+`), sum(event = ?),
 		  sum(event = ? AND ts < ? AND id NOT IN (SELECT cause_id FROM diag.records WHERE event = ?))
 		FROM diag.records WHERE event IN (?, ?, ?)
 		GROUP BY vendor, vv ORDER BY vendor, vv`,
-		DecideStarted, DecideEnded, DecideFailedCode, DecideFallback,
+		DecideStarted, DecideEnded, DecideFallback,
 		DecideStarted, millis(now.Add(-time.Minute)), DecideEnded,
 		DecideStarted, DecideEnded, DecideFallback)
 	if err != nil {
