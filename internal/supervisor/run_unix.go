@@ -1516,6 +1516,10 @@ var interruptQuiet = 2 * time.Second
 // that interrupted nothing (one that closed a menu) and a turn running silent
 // for interruptQuiet leave the status line over that turn, where the person
 // sees it running and presses Esc.
+//
+// TODO(T6954): a double Esc (Claude's rewind menu) can bring the status line
+// over that menu, and the atPrompt set here outlives a status line the person
+// declines with Esc.
 func (s *session) settleInterrupt() {
 	now := time.Now()
 	if s.escStop.IsZero() || s.sw.to == "" || !s.turnRan || s.atPrompt || s.held ||
