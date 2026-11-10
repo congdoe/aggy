@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/congdoe/aggy/internal/claudetrust"
 	"github.com/congdoe/aggy/internal/diff"
 	"github.com/congdoe/aggy/internal/hook"
 	"github.com/congdoe/aggy/internal/patch"
@@ -104,10 +105,28 @@ const (
 // Claude-format hooks file (hook.Strip).
 const ReverseAggyHooks = "aggy-hooks"
 
-// reversers maps a change's Reverse to the transform that takes the
-// change's entries out of the file as it is now.
-var reversers = map[string]func([]byte) ([]byte, error){
-	ReverseAggyHooks: hook.Strip,
+// reverser takes a change's entries out of a file as it is now. noBackup: the
+// change took no backup (patch.Patch.NoBackup), so it is always undone this
+// way, never by restoring old bytes, and its file's content is never printed
+// (summary says what the undo does instead).
+type reverser struct {
+	fn       func([]byte) ([]byte, error)
+	noBackup bool
+	summary  string
+}
+
+// reverserFor finds the reverser a change's Reverse names: aggy's hook
+// entries, or one folder's Claude trust key (claudetrust.Reverse, T6977).
+// ok is false for an empty or unknown Reverse.
+func reverserFor(rev string) (reverser, bool) {
+	if rev == ReverseAggyHooks {
+		return reverser{fn: hook.Strip}, true
+	}
+	if before, folder, ok := claudetrust.ParseReverse(rev); ok {
+		return reverser{fn: func(b []byte) ([]byte, error) { return claudetrust.Undo(b, folder, before) }, noBackup: true,
+			summary: "put back " + claudetrust.Key + " for " + folder + " as it was before aggy set it, and leave the rest of the file"}, true
+	}
+	return reverser{}, false
 }
 
 // ErrNewerChange matches a Blocked result.
@@ -744,9 +763,9 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 	if f, ok := run.sim[simKey(r)]; ok {
 		cur, curHash = f.data, f.hash
 	}
-	if reverse := reversers[c.Reverse]; reverse != nil && c.Status == store.ChangeApplied &&
-		curHash != r.AfterHash && curHash != r.BeforeHash {
-		return m.strip(c, r, cur, curHash, reverse, run, &u, done, fail)
+	if rv, ok := reverserFor(c.Reverse); ok && curHash != r.BeforeHash &&
+		(rv.noBackup || c.Status == store.ChangeApplied && curHash != r.AfterHash) {
+		return m.strip(c, r, cur, curHash, rv, run, &u, done, fail)
 	}
 	byHand := false
 	switch {
@@ -813,7 +832,8 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 // restoring old bytes over the person's or the CLI's later edits. A
 // file gone, or already without aggy's entries, is left as it is.
 func (m *Manifest) strip(c store.Change, r patch.Record, cur []byte, curHash string,
-	reverse func([]byte) ([]byte, error), run *unwireRun, u *Undo, done func() Undo, fail func(error) Undo) Undo {
+	rv reverser, run *unwireRun, u *Undo, done func() Undo, fail func(error) Undo) Undo {
+	reverse := rv.fn
 	w := run.opt.DryRun
 	u.Outcome = Stripped
 	if curHash == patch.NoFile || patch.IsLinkHash(curHash) {
@@ -837,11 +857,15 @@ func (m *Manifest) strip(c store.Change, r patch.Record, cur []byte, curHash str
 		return done()
 	}
 	if w {
-		fmt.Fprint(run.w, termsafe.Lines(diff.Unified(r.File, r.File, cur, target)))
+		if rv.noBackup {
+			fmt.Fprintf(run.w, "# %s: change %s: would %s\n", termsafe.Line(r.File), termsafe.Line(c.ChangeID), termsafe.Line(rv.summary))
+		} else {
+			fmt.Fprint(run.w, termsafe.Lines(diff.Unified(r.File, r.File, cur, target)))
+		}
 		run.sim[simKey(r)] = simFile{data: target, hash: patch.Hash(target)}
 		return done()
 	}
-	_, err = patch.Apply(patch.Patch{File: r.File, ExpectedHash: curHash, Transform: reverse},
+	_, err = patch.Apply(patch.Patch{File: r.File, ExpectedHash: curHash, Transform: reverse, NoBackup: rv.noBackup},
 		filepath.Join(m.backupRoot, c.ChangeID))
 	if err != nil && !errors.Is(err, patch.ErrNotSynced) {
 		return fail(err)

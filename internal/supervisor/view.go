@@ -29,6 +29,9 @@ type menu struct {
 	title string
 	items []menuItem
 	at    int // the highlighted item
+	// check, when set, makes the menu a check list (the trust list, T6977):
+	// its rows are ticked in place, and the menu's items are unused.
+	check *checkList
 }
 
 // page is a result: lines to scroll, from top. confirm, when set, runs on y:
@@ -69,6 +72,8 @@ func (p *picker) drawView(w io.Writer, overCLI bool, rows, cols int) {
 	}
 	var lines []string
 	switch {
+	case p.menu != nil && p.menu.check != nil:
+		lines = p.menu.check.view(p.menu.title, rows)
 	case p.menu != nil:
 		m := p.menu
 		lines = append(lines, "aggy: "+m.title, "")

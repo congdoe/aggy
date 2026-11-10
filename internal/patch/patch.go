@@ -61,6 +61,14 @@ type Patch struct {
 	// uses it to take the change out of a file that changed since
 	// (manifest.ReverseAggyHooks), instead of refusing.
 	Reverse string
+	// NoBackup, for a content change, takes no copy of the old bytes: the file
+	// is another tool's and holds what aggy must not copy (Claude's own
+	// .claude.json, T6977). The manifest takes it only with a Reverse that
+	// undoes the change without a backup.
+	NoBackup bool
+	// Summary, when set, is what a preview says of the change instead of a
+	// diff, which would print the file's content.
+	Summary string
 }
 
 // kinds counts the change kinds p asks for; exactly one is valid.
@@ -419,7 +427,7 @@ func Apply(p Patch, backupDir string) (Record, error) {
 	if p.Transform == nil {
 		return applyNoFollow(p, rec, backupDir)
 	}
-	if pl.Action == Modify && backupDir == "" {
+	if pl.Action == Modify && backupDir == "" && !p.NoBackup {
 		return Record{}, errors.New("patch: backup directory is required")
 	}
 	var made []string
@@ -439,7 +447,7 @@ func Apply(p Patch, backupDir string) (Record, error) {
 	}
 	// The backup is taken only once the write is going ahead, so a refused
 	// patch leaves nothing behind.
-	if pl.Action == Modify {
+	if pl.Action == Modify && !p.NoBackup {
 		if rec.BackupPath, err = backup(backupDir, pl.Before); err != nil {
 			return fail(err)
 		}

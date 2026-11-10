@@ -354,6 +354,13 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// --no-policy, and the rest. What only --no-policy lets through is kept from
 	// a later launch of the session.
 	who := childPlan(pl.child.Kind)
+	// T6977: the first on-screen start in a folder asks the trust list, before
+	// the rules are read, which trust changes, and before Claude starts, whose
+	// own trust it can record. Not on a switch or a resume of the same session.
+	var trustNote string
+	if who == planOnScreen && pl.child.Kind == "" && t.SwitchFrom == "" && !t.SameChild {
+		trustNote = trustAtStart(ctx, pl.child.Cwd, cfg, os.Getenv, offerIn, stderr)
+	}
 	g, code, err := gateLaunch(ctx, tp, v, pl.child.Cwd, cfg, who == planOnScreen)
 	if err != nil {
 		// Exit 2, as print mode's and a subcommand's gate refusals
@@ -399,6 +406,9 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	}
 	if len(t.Loosens) > 0 {
 		warns = append(warns, "your flags "+strings.Join(t.Loosens, ", ")+" loosen approvals, the sandbox, or hook trust for this launch; --no-policy lets them through")
+	}
+	if trustNote != "" {
+		warns = append(warns, trustNote)
 	}
 	warns = append(warns, t.FlagNotes...)
 	// The person's shared rules, read now, so an approval given in another
@@ -789,6 +799,9 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		ToolNames: sessionToolNames,
 		// R121: the person's config may leave a command to the CLI.
 		CommandOff: cfg.Commands.CatchOff,
+		// T6977: /aggy trust lists this session's folder.
+		TrustList:   sessionTrustList(pl.child.Cwd),
+		TrustAnswer: sessionTrustAnswer(pl.child.Cwd),
 	})
 	px.guard(0, false) // the CLI was reaped: never signal its pid again
 	dlog.Release()

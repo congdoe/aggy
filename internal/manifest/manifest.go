@@ -190,8 +190,12 @@ func (m *Manifest) Apply(ctx context.Context, runID string, p patch.Patch) (stor
 		Unlocked:    !locked,
 		Reverse:     p.Reverse,
 	}
-	if _, ok := reversers[p.Reverse]; !ok && p.Reverse != "" {
+	rv, ok := reverserFor(p.Reverse)
+	if !ok && p.Reverse != "" {
 		return store.Change{}, fmt.Errorf("manifest: unknown reverse %q", p.Reverse)
+	}
+	if p.NoBackup != rv.noBackup || (p.NoBackup && p.Transform == nil) {
+		return store.Change{}, fmt.Errorf("manifest: %s: a change with no backup goes with a reverse that undoes it without one, and only such a change", p.File)
 	}
 	if pl.Action == patch.NoOp {
 		c.Status = store.ChangeNoop

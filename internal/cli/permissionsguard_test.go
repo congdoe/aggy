@@ -103,7 +103,7 @@ func TestCommittedCapitalsAreCommitted(t *testing.T) {
 	if out, err := exec.Command("git", "-C", repo, "add", "-f", ".CLAUDE/settings.local.json").CombinedOutput(); err != nil {
 		t.Fatalf("%v %s", err, out)
 	}
-	atKeyboard(t, "y\n")
+	atKeyboard(t, "1\n\n")
 	if code, out, errb := run("trust", repo); code != 0 {
 		t.Fatalf("%d %q %q", code, out, errb)
 	}
@@ -253,12 +253,12 @@ func TestTrustOutsideGitClaimsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	atKeyboard(t, "y\n")
+	atKeyboard(t, "1\n\n")
 	code, out, errb := run("trust", dir)
 	if code != 0 || !strings.Contains(out, "no git repo") || strings.Contains(out, "now apply here") {
 		t.Errorf("%d %q %q", code, out, errb)
 	}
-	if trustFileRepos(t) != nil {
+	if len(trustFileRepos(t)) != 0 {
 		t.Errorf("recorded: %q", trustFileRepos(t))
 	}
 }
@@ -276,7 +276,7 @@ func TestUnwireSaysCodexStaysTrusted(t *testing.T) {
 	if err := os.WriteFile(cfg, []byte("model = \"x\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	atKeyboard(t, "y\n")
+	atKeyboard(t, "1\n\n")
 	if code, out, errb := run("trust", repo); code != 0 {
 		t.Fatalf("%d %q %q", code, out, errb)
 	}
@@ -291,7 +291,7 @@ func TestUnwireSaysCodexStaysTrusted(t *testing.T) {
 	if !strings.Contains(out, "Codex still may") || !strings.Contains(out, "config.toml") || !strings.Contains(out, "--force") {
 		t.Errorf("%q", out)
 	}
-	if trustFileRepos(t) != nil {
+	if len(trustFileRepos(t)) != 0 {
 		t.Errorf("aggy's record stayed: %q", trustFileRepos(t))
 	}
 }

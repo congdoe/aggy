@@ -43,6 +43,9 @@ const (
 	ToolList
 	// Run runs one of aggy's own commands, Args, and shows what it printed.
 	Run
+	// TrustList opens this folder's trust list (/aggy trust, T6977): the
+	// person ticks rows on aggy's own screen, and confirming records them.
+	TrustList
 )
 
 // Command is one parsed command.
@@ -280,7 +283,7 @@ var Subcommands = []struct{ Name, What string }{
 	{"reject", "throw away an edit borrow: reject <id>"},
 	{"tool", "turn a managed tool on or off"},
 	{"permissions", "the permission rules aggy keeps in step"},
-	{"trust", "trust this folder for OpenCode"},
+	{"trust", "this folder's trust list: what may run here, where code goes"},
 }
 
 // parseAggy reads /aggy <sub> args. A first word that is no subcommand, or a
@@ -356,20 +359,18 @@ func parseAggy(sub string, args []string) (Command, bool) {
 		}
 		c.KeyboardOnly = true
 	case "trust":
-		opencode := false
 		switch {
 		case len(args) == 0:
+			// The folder's trust list, ticked on aggy's own screen (T6977).
+			return Command{Kind: TrustList, Name: c.Name, KeyboardOnly: true}, true
 		case len(args) == 1 && args[0] == "--opencode":
-			opencode = true
 		default:
 			return Command{}, false
 		}
-		// The first run answers its own question no, so it shows what trust
-		// does; y runs it again, answering yes.
-		c.Args = []string{"trust", "."}
-		if opencode {
-			c.Args = []string{"trust", "--opencode", "."}
-		}
+		// The shortcut that ticks OpenCode alone. The first run answers its
+		// own question no, so it shows what trust does; y runs it again,
+		// answering yes.
+		c.Args = []string{"trust", "--opencode", "."}
 		c.Confirm = c.Args
 		c.ConfirmLabel, c.Answer, c.KeyboardOnly = "y trusts this folder", true, true
 	default:

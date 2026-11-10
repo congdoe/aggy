@@ -151,7 +151,7 @@ func TestAllowsNeverChangePolicy(t *testing.T) {
 	}
 	gitIn(t, repo, "init", "-q")
 	t.Chdir(repo)
-	atKeyboard(t, "y\n")
+	atKeyboard(t, "1\n\n")
 	if code, out, errb := run("trust", repo); code != 0 {
 		t.Fatalf("trust: %d %q %q", code, out, errb)
 	}
@@ -306,7 +306,7 @@ func TestPermissionsShowPolicy(t *testing.T) {
 			t.Errorf("show lacks %q: %d\n%s", w, code, out)
 		}
 	}
-	atKeyboard(t, "y\n")
+	atKeyboard(t, "1\n\n") // the trust list (T6977): All, then Enter
 	if code, out, errb := run("trust", repo); code != 0 {
 		t.Fatalf("trust: %d %q %q", code, out, errb)
 	}
