@@ -128,6 +128,10 @@ var ErrLoosens = errors.New("it loosens approvals, the sandbox, or hook trust, o
 // instead of a session.
 var ErrNotFlag = errors.New("aggy passes a word there to the CLI as the session's first prompt, and this one names a subcommand of the CLI; put the prompt after -- to send it as text")
 
+// ErrCommandAfterDashes matches a first word after "--" that names a
+// subcommand of the CLI.
+var ErrCommandAfterDashes = errors.New("it names a subcommand of the CLI, and aggy has not checked that the CLI sends it as text after --; start the prompt with another word")
+
 // ParseOpts are the options of ParseWith.
 type ParseOpts struct {
 	// NoPolicy lets through the flags that loosen approvals, the sandbox, or
@@ -237,7 +241,7 @@ func (p PassFlags) takesValue(name string, values []string) valueKind {
 // Variadic, and Checked, and o.Values from the CLI's help) is that value.
 // Any other bare word is the prompt, as the CLI itself reads it: it goes to
 // the CLI in place, and Prompt lists it. "--" and every word after it go to
-// the CLI as typed and are prompt too. On screen, a first prompt word that
+// the CLI as typed and are prompt too, once checkAfterDashes passes them. On screen, a first prompt word that
 // names one of the CLI's Commands is refused (ErrNotFlag): the CLI could run
 // that subcommand instead of the session aggy records.
 //
@@ -261,6 +265,11 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
+			loosens, err := p.checkAfterDashes(args[i+1:], o)
+			if err != nil {
+				return out, err
+			}
+			out.Loosens = append(out.Loosens, loosens...)
 			out.Extra = append(out.Extra, args[i:]...)
 			out.Prompt = append(out.Prompt, args[i+1:]...)
 			break
@@ -363,6 +372,46 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 		}
 	}
 	return out, nil
+}
+
+// checkAfterDashes checks the words after "--" (PR #124 re-review). aggy does
+// not rely on the CLI reading them as prompt: a CLI that still dispatched
+// "-- agents" or parsed "-- --dangerously-skip-permissions" would get past the
+// policy. So the first word may not name one of Commands in any case, and every
+// later word that looks like a flag gets the same checks as one before "--"
+// (Refused, Gated, Checked, "=" forms included); it returns the ones
+// --no-policy lets through. A Checked flag with no word after it is left to the
+// CLI, which has no value to give it.
+//
+// TODO(T6895): a live check that each CLI reads "-- doctor" as a prompt
+// (claude -- doctor) would let the first-word rule be loosened.
+func (p PassFlags) checkAfterDashes(words []string, o ParseOpts) ([]string, error) {
+	if len(words) > 0 {
+		for _, c := range p.Commands {
+			if strings.EqualFold(words[0], c) {
+				return nil, fmt.Errorf("%q after --: %w", words[0], ErrCommandAfterDashes)
+			}
+		}
+	}
+	var loosens []string
+	for j := 0; j < len(words); j++ {
+		a := words[j]
+		if a == "-" || a == "--" || !strings.HasPrefix(a, "-") {
+			continue
+		}
+		name, val, hasVal := p.split(a)
+		if _, ok := p.checked(name); ok && !hasVal && j+1 == len(words) {
+			continue
+		}
+		l, err := p.checkPassed(words, &j, name, val, hasVal, o)
+		if err != nil {
+			return nil, err
+		}
+		if l {
+			loosens = append(loosens, name)
+		}
+	}
+	return loosens, nil
 }
 
 // split cuts a flag from its value: --name=value, -n=value, or -nvalue for
