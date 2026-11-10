@@ -45,6 +45,55 @@ func TestMergeKeepsPolicy(t *testing.T) {
 	}
 }
 
+// TestMergeKeepsHooks (PR #126 re-review): aggy's own hooks, a PreToolUse one
+// among them, are not the person's layer, so CheckSettings never sees them; and
+// a person's layer cannot remove or replace them in the merge.
+func TestMergeKeepsHooks(t *testing.T) {
+	own := map[string][]adapter.HookGroup{
+		"PreToolUse": {{Matcher: "Bash", Hooks: []adapter.HookCommand{{Type: "command", Command: "aggy-hook", Timeout: 10}}}},
+		"Stop":       {{Hooks: []adapter.HookCommand{{Type: "command", Command: "aggy-stop", Timeout: 10}}}},
+	}
+	for _, user := range []string{
+		`{"hooks":{}}`,
+		`{"hooks":null}`,
+		`{"hooks":{"Stop":[]}}`,
+		`{"hooks":{"Stop":null}}`,
+		`{"hooks":"none"}`,
+		`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"mine"}]}]}}`,
+	} {
+		m, err := ParseSettings([]byte(user))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := CheckSettings(m); err != nil {
+			t.Errorf("%s: CheckSettings = %v, want it to pass", user, err)
+		}
+		js, ok, err := SettingsJSON(adapter.InteractiveRequest{Hooks: own, UserSettings: m})
+		if err != nil || !ok {
+			t.Fatalf("%s: %v", user, err)
+		}
+		var got struct {
+			Hooks map[string][]struct {
+				Hooks []struct{ Command string } `json:"hooks"`
+			} `json:"hooks"`
+		}
+		if err := json.Unmarshal(js, &got); err != nil {
+			t.Fatalf("%s: %v", user, err)
+		}
+		for event, cmd := range map[string]string{"PreToolUse": "aggy-hook", "Stop": "aggy-stop"} {
+			found := false
+			for _, g := range got.Hooks[event] {
+				for _, h := range g.Hooks {
+					found = found || h.Command == cmd
+				}
+			}
+			if !found {
+				t.Errorf("%s: merged %s lost aggy's %s hook", user, js, event)
+			}
+		}
+	}
+}
+
 // TestCheckSettings (T6962): a person's --settings layer that would get past
 // aggy's policy or hooks loosens; one that only adds or tightens passes.
 func TestCheckSettings(t *testing.T) {
@@ -75,6 +124,14 @@ func TestCheckSettings(t *testing.T) {
 		{"project MCP servers approved by name", `{"enabledMcpjsonServers":["evil"]}`, true},
 		{"project MCP servers turned down by name", `{"disabledMcpjsonServers":["evil"]}`, false},
 		{"a proxy with no credentials", `{"env":{"HTTPS_PROXY":"http://h:1"}}`, false},
+		// PR #126 re-review: a hook that can answer the policy's asks.
+		{"a PermissionRequest hook", `{"hooks":{"PermissionRequest":[{"matcher":"*","hooks":[{"type":"command","command":"x"}]}]}}`, true},
+		{"a PreToolUse hook", `{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"x"}]}]}}`, true},
+		{"a hook event in another case", `{"hooks":{"permissionrequest":[]}}`, true},
+		{"a hook event in upper case", `{"HOOKS":{"PRETOOLUSE":[]}}`, true},
+		{"an answering event outside hooks", `{"x":{"PreToolUse":[]}}`, true},
+		{"an answering event, empty", `{"hooks":{"PermissionRequest":[]}}`, true},
+		{"a harmless hook event", `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"x"}]}],"PostToolUse":[]}}`, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

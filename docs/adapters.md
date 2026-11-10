@@ -681,7 +681,10 @@ sources (`PagerArgs.prompt`; codex's usage `codex [OPTIONS] [PROMPT]`).
     `allowManagedPermissionRulesOnly` (which would drop aggy's hooks and
     rules), `enableAllProjectMcpServers` (which skips the project MCP trust
     prompt), `enabledMcpjsonServers` (which approves named `.mcp.json`
-    servers without that prompt; settings reference, read 2026-11-10), any
+    servers without that prompt; settings reference, read 2026-11-10), a
+    `PermissionRequest` or `PreToolUse` hook, in any case and anywhere in the
+    layer (either can answer the policy's asks on screen, per the hooks
+    reference as the PR #126 re-review read it; TODO(T6895)), any
     `bypassPermissions` value, or a key naming `dangerous` or
     `bypass` (but not a `disable…Bypass…` key, which tightens). Arrays are
     walked as well as objects.

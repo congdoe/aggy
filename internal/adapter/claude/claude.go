@@ -280,6 +280,10 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			"--append-system-prompt-file", "--permission-mode", "--allowedTools", "--allowed-tools", "--disallowedTools",
 			"--disallowed-tools", "--add-dir", "--agents", "--agent", "--session-id", "--fork-session", "--system-prompt",
 			"--system-prompt-file", "--tools"},
+		// TODO(T6954): --setting-sources passes (before "--"), and a value
+		// leaving out user would drop aggy's hooks where they live in the
+		// user settings file (aggy hooks install) rather than in the inline
+		// layer.
 		Values: []string{"--advisor", "--agent", "--append-subagent-system-prompt", "--append-subagent-system-prompt-file",
 			"--append-system-prompt", "--append-system-prompt-file", "--autocompact", "--betas", "--debug-file", "--effort",
 			"--environment", "--fallback-model", "--from-pr", "--input-format", "--json-schema", "--max-budget-usd",
