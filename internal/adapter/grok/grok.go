@@ -360,8 +360,7 @@ func onlyValue(flag, ok string) func(string) error {
 // T6962: --deny (and --disallowedTools) passes, since a person's denies only
 // add to aggy's and --deny is a list (src/app/cli.rs at 2bdd1d6a). --rules (and
 // --append-system-prompt) is joined with the shared memory into aggy's one
-// --rules (Interactive). --agent passes when aggy passes no agent of its own,
-// that is, with no managed tool on for the session. The worktree and local
+// --rules (Interactive). --agent stays refused (PR #124 review). The worktree and local
 // workspace flags run the CLI directly, with aggy's launch flags and policy
 // and no session recorded (Print); --version runs it as given (Bare).
 func (Adapter) PassFlags() adapter.PassFlags {
@@ -377,6 +376,9 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			{Names: []string{"--cwd"}, Why: "aggy starts the CLI in the session's directory; cd there first"},
 			{Names: []string{"--installer"}, Why: "it writes Grok's config.toml outside aggy's manifest; run grok itself for it"},
 			{Names: []string{"--always-approve", "--trust", "--trust-folder"}, UnlessNoPolicy: true},
+			// PR #124 review: refused again, as before T6962, until the agent
+			// file's schema is checked for a permission mode. TODO(T6895).
+			{Names: []string{"--agent"}, Why: "an agent file may set its own permission mode, which aggy does not read yet (TODO(T6895)); run grok itself for it"},
 		},
 		Checked: []adapter.CheckedFlag{
 			{Names: []string{"--permission-mode"}, Check: checkPermissionMode},
@@ -413,13 +415,6 @@ func (Adapter) PassFlags() adapter.PassFlags {
 var Commands = []string{"agent", "completions", "dashboard", "disk-usage", "doctor", "du", "export", "inspect", "leader", "login",
 	"logout", "mcp", "memory", "models", "plugin", "sessions", "setup", "share", "trace", "update", "usage", "v", "version",
 	"workspace", "worktree", "wrap"}
-
-// Manage are the Commands that manage the CLI, its sign-in, MCP servers,
-// plugins, and models, which aggy runs as typed, with nothing added (T6963;
-// the same source). setup and memory are not among them, since they write the
-// config and memory aggy keeps in parity, nor the session and workspace
-// commands; run grok itself for those.
-var Manage = []string{"completions", "doctor", "login", "logout", "mcp", "models", "plugin", "update", "usage", "v", "version"}
 
 // checkPermissionMode passes plan and default, the mode nothing changes.
 func checkPermissionMode(mode string) error {

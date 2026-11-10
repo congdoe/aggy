@@ -318,6 +318,9 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			{Names: []string{"--no-alt-screen"}, Why: "aggy passes it when the CLI has it, so the scrollback keeps what came before a switch"},
 			{Names: []string{"--cd", "-C"}, Why: "aggy starts the CLI in the session's directory; cd there first"},
 			{Names: []string{"--yolo", "--approve-for-me", "--not-so-yolo"}, UnlessNoPolicy: true},
+			// PR #124 review: no longer run as given, since the run's agent is
+			// not here, where aggy's policy would apply.
+			{Names: []string{"--remote", "--remote-auth-token-env"}, Why: "it runs the session on a remote app server, where aggy's policy does not reach; run codex itself for it"},
 		},
 		Checked: []adapter.CheckedFlag{
 			{Names: []string{"--config", "-c"}, Check: checkConfigOverride},
@@ -331,11 +334,11 @@ func (Adapter) PassFlags() adapter.PassFlags {
 		Values: []string{"--image", "-i", "--local-provider"},
 		// codex exec runs one task and exits (visible alias e). T6962:
 		// --worktree runs the session where aggy records none, so aggy runs
-		// codex directly with its policy; --remote and its token flag run it
-		// on another machine, and --version prints, so those go as given.
+		// codex directly with its policy; --version alone prints, so it goes
+		// as given.
 		PrintCommands: []string{"exec", "e"},
 		Print:         []string{"--worktree"},
-		Bare:          []string{"--remote", "--remote-auth-token-env", "--version", "-V"},
+		Bare:          []string{"--version", "-V"},
 		Commands:      Commands,
 		DirFlags:      []string{"--add-dir"},
 		Noted: []adapter.NotedFlag{
@@ -353,15 +356,6 @@ var Commands = []string{"a", "agents", "app", "app-server", "apply", "archive", 
 	"delete", "doctor", "e", "exec", "exec-server", "execpolicy", "features", "fork", "login", "logout", "mcp", "migrate-nfs-db",
 	"migrate-rollouts", "plugin", "queue", "remote-control", "responses-api-proxy", "resume", "review", "sandbox",
 	"stdio-to-uds", "tcp-tunnel", "unarchive", "update"}
-
-// Manage are the Commands that manage the CLI, its sign-in, MCP servers, and
-// plugins, which aggy runs as typed, with nothing added (T6963; the same
-// source). apply (a) applies a cloud task's diff here, as typed. features is
-// not among them: its enable and disable persist a feature flag, hooks and
-// sandbox ones included, past aggy's launch gate; run codex itself for it. The
-// session commands (resume, fork, exec, review, and the rest) stay aggy's or
-// refused.
-var Manage = []string{"a", "apply", "completion", "doctor", "login", "logout", "mcp", "plugin", "update"}
 
 // The launch lines of the flags that pass with one. A gate would ask for
 // --no-policy, which drops the whole safety policy: for a daily profile or a

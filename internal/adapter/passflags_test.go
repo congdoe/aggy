@@ -141,8 +141,9 @@ func TestPassFlags(t *testing.T) {
 		// T6961: print mode is the caller's choice (PrintRequested); Parse marks it.
 		{name: "claude -p", p: cl, args: []string{"-p"},
 			want: adapter.ParsedFlags{Print: true, Extra: []string{"-p"}, Safe: []string{"-p"}}},
+		// PR #124 review: a cluster is not split to find print mode.
 		{name: "claude -p run together", p: cl, args: []string{"-dp"},
-			want: adapter.ParsedFlags{Print: true, Extra: []string{"-dp"}, Safe: []string{"-dp"}}},
+			want: adapter.ParsedFlags{Extra: []string{"-dp"}, Safe: []string{"-dp"}}},
 		{name: "claude -c run together", p: cl, args: []string{"-dc"}, refused: "write -c on its own"},
 		{name: "claude --worktree, for the first launch only", p: cl, args: []string{"-w", "x"},
 			want: adapter.ParsedFlags{Extra: []string{"-w", "x"}}},
@@ -151,8 +152,13 @@ func TestPassFlags(t *testing.T) {
 			want: adapter.ParsedFlags{Extra: []string{"--deny", "x"}, Safe: []string{"--deny", "x"}}},
 		{name: "grok --rules joins the memory", p: gk, args: []string{"--rules", "x"},
 			want: adapter.ParsedFlags{Extra: []string{"--rules", "x"}, Safe: []string{"--rules", "x"}}},
-		{name: "grok --agent, checked at launch", p: gk, args: []string{"--agent", "x"},
-			want: adapter.ParsedFlags{Extra: []string{"--agent", "x"}, Safe: []string{"--agent", "x"}}},
+		// PR #124 review: refused again until its file is read (TODO(T6895)).
+		{name: "grok --agent", p: gk, args: []string{"--agent", "x"}, refused: "--agent clashes"},
+		{name: "claude --desktop", p: cl, args: []string{"--desktop"}, refused: "outside this terminal"},
+		{name: "claude --environment", p: cl, args: []string{"--environment", "e1"}, refused: "outside this terminal"},
+		{name: "claude --bg", p: cl, args: []string{"--bg", "x"}, refused: "background worker"},
+		{name: "claude --tmux", p: cl, args: []string{"-w", "x", "--tmux"}, refused: "background worker"},
+		{name: "codex --remote", p: cx, args: []string{"--remote", "ws://x"}, refused: "remote app server"},
 		{name: "grok --no-alt-screen", p: gk, args: []string{"--no-alt-screen"}, refused: "--no-alt-screen clashes"},
 		{name: "codex --no-alt-screen", p: cx, args: []string{"--no-alt-screen"}, refused: "--no-alt-screen clashes"},
 		{name: "codex -C is not -c", p: cx, args: []string{"-C", "/x"}, refused: "-C clashes"},
@@ -296,7 +302,7 @@ func TestPassFlags(t *testing.T) {
 // TestParsePrint (T6961): in print mode aggy records no session, so it takes
 // over no flag and refuses only what clashes with more than that session.
 func TestParsePrint(t *testing.T) {
-	cl, gk := claude.Adapter{}.PassFlags(), grok.New().PassFlags()
+	cl, cx, gk := claude.Adapter{}.PassFlags(), codex.Adapter{}.PassFlags(), grok.New().PassFlags()
 	tests := []struct {
 		name    string
 		p       adapter.PassFlags
@@ -307,7 +313,10 @@ func TestParsePrint(t *testing.T) {
 		{"claude's own continue and model", cl, []string{"-c", "-p", "--model", "opus", "check types"}, []string{"-c", "-p", "--model", "opus", "check types"}, ""},
 		{"claude's own resume", cl, []string{"-p", "-r", "auth-refactor", "finish"}, []string{"-p", "-r", "auth-refactor", "finish"}, ""},
 		{"a session id is the CLI's", cl, []string{"-p", "--session-id", "x"}, []string{"-p", "--session-id", "x"}, ""},
-		{"a subcommand's name is a prompt", cl, []string{"-p", "mcp"}, []string{"-p", "mcp"}, ""},
+		// PR #124 review: refused in print mode too (claude -p ultrareview).
+		{"a subcommand's name is refused", cl, []string{"-p", "ultrareview"}, nil, "names a subcommand"},
+		{"after --, it is a prompt", cl, []string{"-p", "--", "mcp"}, []string{"-p", "--", "mcp"}, ""},
+		{"codex exec's own resume", cx, []string{"exec", "resume", "--last"}, []string{"exec", "resume", "--last"}, ""},
 		{"grok -p takes its prompt", gk, []string{"-p", "hi", "--no-alt-screen"}, []string{"-p", "hi", "--no-alt-screen"}, ""},
 		{"a bypass still needs --no-policy", cl, []string{"-p", "--dangerously-skip-permissions", "x"}, nil, "--no-policy"},
 		{"a session flag of aggy's still clashes on screen only", gk, []string{"-p", "x", "-s", "y"}, []string{"-p", "x", "-s", "y"}, ""},
@@ -335,38 +344,46 @@ func TestParsePrint(t *testing.T) {
 func TestRunMode(t *testing.T) {
 	cl, cx, gk := claude.Adapter{}.PassFlags(), codex.Adapter{}.PassFlags(), grok.New().PassFlags()
 	const screen, print, bare = adapter.RunScreen, adapter.RunPrint, adapter.RunBare
+	// Hand-edited for the PR #124 review: a bare run is a version flag alone,
+	// clusters are not split, and the rows the review found run as given now
+	// get the policy (screen or print).
 	tests := []struct {
-		name   string
-		p      adapter.PassFlags
-		args   []string
-		values []string
-		want   adapter.RunMode
+		name string
+		p    adapter.PassFlags
+		args []string
+		want adapter.RunMode
 	}{
-		{"claude -p", cl, []string{"-p", "hi"}, nil, print},
-		{"claude --print later", cl, []string{"--model", "opus", "--print"}, nil, print},
-		{"claude -p run together", cl, []string{"-dp"}, nil, print},
-		{"claude a value that says -p", cl, []string{"--model", "-p"}, nil, screen},
-		{"claude after --", cl, []string{"--", "-p"}, nil, screen},
-		{"claude none", cl, []string{"--verbose", "hi"}, nil, screen},
-		{"claude --tmux", cl, []string{"-w", "x", "--tmux"}, nil, print},
-		{"claude --bg", cl, []string{"--bg", "investigate"}, nil, print},
-		{"claude --desktop", cl, []string{"--desktop"}, nil, bare},
-		{"claude --version beats -p", cl, []string{"-p", "--version"}, nil, bare},
-		{"claude a help value that says --version", cl, []string{"--newflag", "--version"}, []string{"--newflag"}, screen},
-		{"claude -w alone stays on screen", cl, []string{"-w", "feature"}, nil, screen},
-		{"codex -p is a profile", cx, []string{"-p", "work"}, nil, screen},
-		{"codex exec", cx, []string{"exec", "hi"}, nil, print},
-		{"codex e", cx, []string{"e", "hi"}, nil, print},
-		{"codex exec as a later word", cx, []string{"--search", "exec"}, nil, screen},
-		{"codex --remote", cx, []string{"--remote", "ws://x"}, nil, bare},
-		{"codex --worktree", cx, []string{"--worktree"}, nil, print},
-		{"grok --prompt-file", gk, []string{"--prompt-file", "/x"}, nil, print},
-		{"grok -w", gk, []string{"-w"}, nil, print},
-		{"grok -v", gk, []string{"-v"}, nil, bare},
+		{"claude -p", cl, []string{"-p", "hi"}, print},
+		{"claude --print later", cl, []string{"--model", "opus", "--print"}, print},
+		{"claude a cluster is not split", cl, []string{"-dp"}, screen},
+		{"claude a value that says -p still adds the policy", cl, []string{"--model", "-p"}, print},
+		{"claude after --", cl, []string{"--", "-p"}, screen},
+		{"claude none", cl, []string{"--verbose", "hi"}, screen},
+		{"claude --teleport", cl, []string{"--teleport"}, print},
+		{"claude --version alone", cl, []string{"--version"}, bare},
+		{"claude -v alone", cl, []string{"-v"}, bare},
+		{"claude --version with -p", cl, []string{"-p", "--version"}, print},
+		{"claude -nv", cl, []string{"-nv", "do it"}, screen},
+		{"claude -wv", cl, []string{"-wv", "do it"}, screen},
+		{"claude a list then --version", cl, []string{"--allowedTools", "--version", "do it"}, screen},
+		{"claude --add-dir -v", cl, []string{"--add-dir", "-v", "do it"}, screen},
+		{"claude --version and a prompt", cl, []string{"--version", "do it"}, screen},
+		{"claude -w alone stays on screen", cl, []string{"-w", "feature"}, screen},
+		{"codex -p is a profile", cx, []string{"-p", "work"}, screen},
+		{"codex exec", cx, []string{"exec", "hi"}, print},
+		{"codex e", cx, []string{"e", "hi"}, print},
+		{"codex exec as a later word", cx, []string{"--search", "exec"}, screen},
+		{"codex -mV", cx, []string{"-mV", "do it"}, screen},
+		{"codex --worktree", cx, []string{"--worktree"}, print},
+		{"grok --prompt-file", gk, []string{"--prompt-file", "/x"}, print},
+		{"grok -w", gk, []string{"-w"}, print},
+		{"grok -v alone", gk, []string{"-v"}, bare},
+		{"grok -pv", gk, []string{"-pv"}, screen},
+		{"grok -mv", gk, []string{"-mv", "do it"}, screen},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.p.Mode(tt.args, tt.values); got != tt.want {
+			if got := tt.p.Mode(tt.args); got != tt.want {
 				t.Errorf("got %v, want %v", got, tt.want)
 			}
 		})
@@ -375,6 +392,37 @@ func TestRunMode(t *testing.T) {
 
 // TestTakeFlag (T6962): a flag's values come out in either spelling, and
 // nothing after "--" is touched.
+// TestGated (PR #124 review): a subcommand aggy runs as typed gets no policy,
+// so a flag the table gates anywhere in its words is refused outright, and one
+// of the extra names too; a flag that clashes only with aggy's session passes.
+func TestGated(t *testing.T) {
+	cl, cx, gk := claude.Adapter{}.PassFlags(), codex.Adapter{}.PassFlags(), grok.New().PassFlags()
+	tests := []struct {
+		name  string
+		p     adapter.PassFlags
+		words []string
+		gated bool
+	}{
+		{"claude mcp list", cl, []string{"list"}, false},
+		{"claude a bypass mode", cl, []string{"--permission-mode", "bypassPermissions"}, true},
+		{"claude a skip flag", cl, []string{"status", "--dangerously-skip-permissions"}, true},
+		{"claude --settings", cl, []string{"--settings", "{}"}, true},
+		{"claude a session id passes", cl, []string{"--session-id", "x"}, false},
+		{"claude after -- is the server's command", cl, []string{"add", "x", "--", "npx", "--dangerously-x"}, false},
+		{"codex a loose -c", cx, []string{"-c", `sandbox_mode="danger-full-access"`}, true},
+		{"codex --yolo in a cluster", cx, []string{"--yolo"}, true},
+		{"grok --always-approve", gk, []string{"--always-approve"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.p.Gated(tt.words, "--settings")
+			if (err != nil) != tt.gated || err != nil && !errors.Is(err, adapter.ErrSubcommandGated) {
+				t.Errorf("Gated = %v, want gated %v", err, tt.gated)
+			}
+		})
+	}
+}
+
 func TestTakeFlag(t *testing.T) {
 	vals, rest := adapter.TakeFlag([]string{"--settings", "a.json", "-p", "--settings={}", "hi", "--", "--settings", "x"}, "--settings")
 	if !slices.Equal(vals, []string{"a.json", "{}"}) || !slices.Equal(rest, []string{"-p", "hi", "--", "--settings", "x"}) {

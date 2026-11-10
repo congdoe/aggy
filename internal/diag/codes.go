@@ -386,7 +386,7 @@ var codes = []CodeInfo{
 	{CodeNotFound, false, "No session, borrow, change, or file has that id or name.", "List them: aggy sessions, aggy session, aggy inbox, or aggy log."},
 	{CodeConfig, false, "A config file could not be read or is invalid.", "The message names the file and key; fix it."},
 	{CodeStore, false, "The index (~/.aggy/aggy.db) could not be opened, read, or written.", "aggy doctor; the state dir's permissions and free space."},
-	{CodeOneHop, true, "aggy borrow or aggy gc ran inside a borrow child (AGGY_DELEGATED is set): borrows are one hop.", "Run it from your own shell. A child that tries this was steered to; read its task."},
+	{CodeOneHop, true, "aggy borrow, aggy gc, or a launch of a vendor CLI ran inside a borrow child (AGGY_DELEGATED is set): borrows are one hop.", "Run it from your own shell. A child that tries this was steered to; read its task."},
 	{CodeBorrowInvalid, false, "The borrow request failed validation: an empty or too long task, a bad path or constraint, or a flag the kind does not take.", "aggy borrow --help."},
 	{CodeGrokEdit, false, "aggy image --edit named an image Grok made. Grok keeps a session under its working directory, and the borrow's temp dir is gone, so a resumed child cannot start; no child ran.", "Make a new image with a full brief, or make it with --vendor codex, whose images --edit can change."},
 	{CodeNoVendor, false, "No candidate vendor could start the borrow.", "aggy diag --run <run id> --event borrow.vendor.skipped lists why each was passed over; aggy setup."},

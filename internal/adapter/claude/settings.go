@@ -2,7 +2,9 @@ package claude
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -59,6 +61,62 @@ func MergeSettings(a, b map[string]any) map[string]any {
 	return out
 }
 
+// SettingsJSON is the one settings layer an on-screen or print launch passes
+// (ok false when there is none): its permissions.deny list merges with every
+// settings file's, and a deny wins over any allow (code.claude.com/docs
+// settings.md, permissions.md). The tools' hooks ride in the same layer, for
+// this session only, as the borrow guard's do (GuardSettings). The person's
+// own --settings layers go in it too, under aggy's (T6962, mergeUser): lists
+// join, so aggy's deny rules and hooks stay, and where both set one value
+// aggy's wins, but for a stricter defaultMode of plan.
+//
+// aggy's own layer goes inline when the person gave no --settings file: it
+// holds rule patterns and hook commands, no secret, and an inline layer needs
+// no file the CLI may read after aggy removes it.
+func SettingsJSON(req adapter.InteractiveRequest) ([]byte, bool, error) {
+	perms := permissionsLayer(req)
+	if len(perms) == 0 && len(req.Hooks) == 0 && len(req.UserSettings) == 0 {
+		return nil, false, nil
+	}
+	layer := map[string]any{}
+	if len(perms) > 0 {
+		layer["permissions"] = perms
+	}
+	if len(req.Hooks) > 0 {
+		layer["hooks"] = req.Hooks
+	}
+	if len(req.UserSettings) > 0 {
+		own, err := asSettings(layer)
+		if err != nil {
+			return nil, false, err
+		}
+		layer, _ = mergeUser(req.UserSettings, own)
+	}
+	js, err := json.Marshal(layer)
+	return js, err == nil, err
+}
+
+// SettingsOverrides names the keys of the person's --settings that aggy's own
+// layer replaces for this launch, for a note (PR #124 review).
+func SettingsOverrides(req adapter.InteractiveRequest) []string {
+	if len(req.UserSettings) == 0 {
+		return nil
+	}
+	layer := map[string]any{}
+	if perms := permissionsLayer(req); len(perms) > 0 {
+		layer["permissions"] = perms
+	}
+	if len(req.Hooks) > 0 {
+		layer["hooks"] = req.Hooks
+	}
+	own, err := asSettings(layer)
+	if err != nil {
+		return nil
+	}
+	_, keys := mergeUser(req.UserSettings, own)
+	return keys
+}
+
 // asSettings is aggy's own layer as plain JSON values, for MergeSettings.
 func asSettings(layer map[string]any) (map[string]any, error) {
 	b, err := json.Marshal(layer)
@@ -96,12 +154,34 @@ func joinMCPConfig(extra []string, file string) ([]string, bool) {
 // aggy's safety policy or hooks (adapter.ErrLoosens, which --no-policy lets
 // through): a permissions.defaultMode the --permission-mode table gates,
 // disableAllHooks, which turns off hooks aggy's turn-end and tools rely on
-// (settings.md), and any key naming "dangerous" or "bypass" with a value that
-// is not false, as a later setting such as skipDangerousModePermissionPrompt
-// might. Other keys pass: an allow rule cannot carve an exception out of a deny
-// rule (permissions.md), so aggy's deny rules hold over the person's allows.
+// (settings.md), allowManagedHooksOnly and allowManagedPermissionRulesOnly,
+// which would drop aggy's hooks and deny rules (neither is managed),
+// enableAllProjectMcpServers, which skips the project MCP trust prompt, and
+// any key naming "dangerous" or "bypass" with a value that is not false, as a
+// later setting such as skipDangerousModePermissionPrompt might. Arrays are
+// walked as well as objects.
+//
+// Refused outright, --no-policy or not (ErrSettingsCredential): an env holding
+// an API key, an auth token, or a *_BASE_URL variable, and apiKeyHelper. aggy
+// never sets those for a CLI (CLAUDE.md), and passing them in argv would; the
+// person can put them in their own Claude settings file, which aggy does not
+// touch.
+//
+// Other keys pass: an allow rule cannot carve an exception out of a deny rule
+// (permissions.md), so aggy's deny rules hold over the person's allows. Keys
+// are read in sorted order, so the refusal names the same one each time.
 func CheckSettings(layer map[string]any) error {
 	gated := func(what string) error { return fmt.Errorf("--settings %s: %w", what, adapter.ErrLoosens) }
+	if _, ok := layer["apiKeyHelper"]; ok {
+		return fmt.Errorf("--settings apiKeyHelper: %w", ErrSettingsCredential)
+	}
+	if env, ok := layer["env"].(map[string]any); ok {
+		for _, k := range sortedKeys(env) {
+			if credentialVar(k) {
+				return fmt.Errorf("--settings env.%s: %w", k, ErrSettingsCredential)
+			}
+		}
+	}
 	if p, ok := layer["permissions"].(map[string]any); ok {
 		if m, ok := p["defaultMode"]; ok {
 			s, isString := m.(string)
@@ -110,24 +190,98 @@ func CheckSettings(layer map[string]any) error {
 			}
 		}
 	}
-	var walk func(m map[string]any, path string) error
-	walk = func(m map[string]any, path string) error {
-		for k, v := range m {
-			low := strings.ToLower(k)
-			tightens := strings.HasPrefix(low, "disable") && strings.Contains(low, "bypass") // disableBypassPermissionsMode
-			if (low == "disableallhooks" || strings.Contains(low, "dangerous") || strings.Contains(low, "bypass") && !tightens) && v != false {
-				return gated(path + k)
-			}
-			if s, ok := v.(string); ok && strings.EqualFold(s, "bypassPermissions") {
-				return gated(path + k)
-			}
-			if sub, ok := v.(map[string]any); ok {
+	var walk func(v any, path string) error
+	walk = func(v any, path string) error {
+		switch v := v.(type) {
+		case map[string]any:
+			for _, k := range sortedKeys(v) {
+				sub := v[k]
+				low := strings.ToLower(k)
+				tightens := strings.HasPrefix(low, "disable") && strings.Contains(low, "bypass") // disableBypassPermissionsMode
+				if (slices.Contains(loosening, low) || strings.Contains(low, "dangerous") || strings.Contains(low, "bypass") && !tightens) && sub != false {
+					return gated(path + k)
+				}
 				if err := walk(sub, path+k+"."); err != nil {
 					return err
 				}
+			}
+		case []any:
+			for i, e := range v {
+				if err := walk(e, fmt.Sprintf("%s%d.", path, i)); err != nil {
+					return err
+				}
+			}
+		case string:
+			if strings.EqualFold(v, "bypassPermissions") {
+				return gated(strings.TrimSuffix(path, "."))
 			}
 		}
 		return nil
 	}
 	return walk(layer, "")
+}
+
+// loosening are the settings keys, in lower case, that CheckSettings gates by
+// name (settings.md).
+var loosening = []string{"disableallhooks", "allowmanagedhooksonly", "allowmanagedpermissionrulesonly", "enableallprojectmcpservers"}
+
+// ErrSettingsCredential matches a --settings layer that would set a credential
+// or an endpoint for the CLI, which aggy never passes, with --no-policy or not.
+var ErrSettingsCredential = errors.New("it sets a credential or an API endpoint for the CLI, which aggy never passes on its command line; put it in your own Claude settings file")
+
+// credentialVar reports whether an env key names an API key, a token, or a
+// base URL.
+func credentialVar(k string) bool {
+	u := strings.ToUpper(k)
+	return strings.HasSuffix(u, "_BASE_URL") || strings.Contains(u, "API_KEY") || strings.Contains(u, "AUTH_TOKEN") ||
+		strings.HasSuffix(u, "_TOKEN") || strings.Contains(u, "SECRET")
+}
+
+// sortedKeys are m's keys in order.
+func sortedKeys(m map[string]any) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	slices.Sort(ks)
+	return ks
+}
+
+// mergeUser lays aggy's own layer over the person's (MergeSettings), except
+// that a person's permissions.defaultMode of plan, stricter than any mode aggy
+// sets, stands (PR #124 review). It returns the dotted keys where aggy's value
+// replaced a different one of theirs, for a note at launch.
+func mergeUser(user, own map[string]any) (map[string]any, []string) {
+	if p, ok := user["permissions"].(map[string]any); ok && p["defaultMode"] == "plan" {
+		if op, ok := own["permissions"].(map[string]any); ok {
+			op = maps.Clone(op)
+			delete(op, "defaultMode")
+			own = maps.Clone(own)
+			own["permissions"] = op
+		}
+	}
+	return MergeSettings(user, own), overridden(user, own, "")
+}
+
+// overridden lists the dotted keys whose scalar value in b differs from a's.
+func overridden(a, b map[string]any, path string) []string {
+	var out []string
+	for _, k := range sortedKeys(b) {
+		av, ok := a[k]
+		if !ok {
+			continue
+		}
+		switch bv := b[k].(type) {
+		case map[string]any:
+			if am, ok := av.(map[string]any); ok {
+				out = append(out, overridden(am, bv, path+k+".")...)
+			}
+		case []any:
+		default:
+			if _, isList := av.([]any); !isList && fmt.Sprint(av) != fmt.Sprint(bv) {
+				out = append(out, path+k)
+			}
+		}
+	}
+	return out
 }
