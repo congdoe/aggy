@@ -174,7 +174,7 @@ func TestFillAfterHook(t *testing.T) {
 		t.Fatal("no accept item")
 	}
 	for range at {
-		s.pickerInput([]byte("j"))
+		s.pickerInput([]byte("\x1b[B")) // Down: j is a letter in a list that narrows
 	}
 	s.pickerInput([]byte("\r"))
 	if s.pk.page != nil || s.open {
