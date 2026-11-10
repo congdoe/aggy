@@ -346,6 +346,10 @@ func personGate(getenv func(string) string) error {
 // which is how a model's tool shell looks; a person at a terminal, or aggy's
 // own in-session page (no such variables in aggy's process), passes. Like
 // personGate it guards against mistakes, not a determined model.
+//
+// TODO(T6975): it refuses a person's own `!aggy accept` from a CLI's shell
+// mode too, if stdin is not a terminal there (unverified), and unsetting the
+// AGGY_* variables gets past it.
 func shellGate(getenv func(string) string, tty bool) error {
 	if getenv("AGGY_DELEGATED") != "" {
 		return withCode(diag.CodeNoTerminal, errors.New("a borrow child cannot change this; only you can"))

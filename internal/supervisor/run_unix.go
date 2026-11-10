@@ -1183,6 +1183,8 @@ func (s *session) followKeys(typed []byte) {
 			// out whole and left the composer empty, so a command typed next is
 			// known whole (R121). lenKnown stays false for the switch's doubt,
 			// as a dialog the command opened may still be up.
+			// TODO(T6975): a command typed while /model's dialog still has
+			// focus is caught too, and its Ctrl+U goes into the dialog.
 			s.compLen, s.cmdFresh = 0, true
 		}
 	}
@@ -1489,6 +1491,11 @@ func (s *session) compose(c byte) {
 		s.cmdFresh = false
 	}
 	if c == '\r' {
+		// TODO(T6975): any control key sets cmdBad, so a menu pick made with the
+		// arrows or Tab is not a slash Enter here and its hook is refused; only a
+		// typed prefix and Enter on the menu's first entry is taken. Planned: keep
+		// the text typed before the menu keys and require it to prefix the
+		// reported command's name (hookCommand).
 		s.enterSlash = s.slashOnly && !s.inPaste && !s.cmdBad
 	}
 	switch {

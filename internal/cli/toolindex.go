@@ -159,6 +159,8 @@ func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, in io.R
 			return errNotIndexed
 		}
 	case os.Getenv("AGGY_VENDOR") != "":
+		// TODO(T6975): unreachable from aggy tool on since shellGate (R121)
+		// refuses that shell first; kept for any other caller.
 		// A nudge, not a security boundary: an agent in a session aggy
 		// started is asked to leave the first index, which runs the tool
 		// over the repo, to the person; clearing the variable gets past it.

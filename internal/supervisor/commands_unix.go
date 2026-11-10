@@ -237,6 +237,15 @@ func (s *session) answerPrompt(p promptReq) {
 // it was, and its line is gone from the composer (both CLIs document a block
 // as stopping the prompt; that the composer is left empty is unverified,
 // TODO(T6895)). A switch caught this way always asks on the status line.
+//
+// TODO(T6975): known limits (docs/design.md section 5, "Known limits of the
+// hook path"). A menu pick made with the arrows or Tab is refused (enterSlash)
+// and reaches the model through the skill. And these conditions take a forged
+// prompt-command within promptBlockWait of any slash Enter the person makes
+// (their own /deploy, /review, /compact, /clear), say from that turn's first
+// tool call: one page per Enter, and every change still needs a key. Planned
+// fix for both: require the text typed before the menu keys to prefix the
+// reported command's name.
 func (s *session) hookCommand(c sessioncmd.Command) error {
 	// Claude may report one prompt twice, as submitted and as a command's
 	// expansion (UserPromptSubmit and UserPromptExpansion, hooks.md; which of
@@ -257,6 +266,8 @@ func (s *session) hookCommand(c sessioncmd.Command) error {
 	}
 	s.hookedName, s.hookedEnter = c.Name, s.enterAt
 	s.atPrompt = !s.held
+	// TODO(T6975): a blocked prompt is taken as an empty composer, unverified;
+	// if the CLI puts the text back, an exit command is typed after it.
 	s.emptyComposer()
 	s.log(diag.Rec{Event: diag.EvCommandCaught, Attrs: map[string]any{"command": c.Name, "via": "hook"}})
 	if c.Kind == sessioncmd.Switch && !s.turnRan {
