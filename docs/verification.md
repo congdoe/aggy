@@ -583,6 +583,66 @@ Docs and source only, not run live (2026-10-28). `aggy run` and
   (`load_exec_policy_with_warning`). `-s`/`-a` replace the configured
   sandbox and approval policy. Source-verified at `6aaac69`.
 
+### Asking on screen (T6967)
+
+Docs and source only, read 2026-11-10. No real CLI was run; every line
+below is unverified live until the recipe at the end is run.
+
+- **Claude.** "Rules are evaluated in order: deny, then ask, then allow.
+  The first match in that order determines the outcome", and "a matching
+  ask rule prompts even when a more specific allow rule also matches the
+  same call" (`permissions.md`, "Manage permissions"). Deny and ask rules
+  apply to every subcommand, and "An ask rule like `Bash(git clean *)`
+  still prompts you ... even in auto mode" (same page, "Compound
+  commands"). PreToolUse hooks cannot override an ask ("a matching ask rule
+  still prompts even when the hook returned allow", "Precedence among
+  rules, hooks, and mods"). "Yes, and don't ask again" saves to
+  `.claude/settings.local.json` at the repository root; the page documents
+  no setting that hides that option for one rule. Doc-verified. Whether the
+  prompt for a command an ask rule matched offers "don't ask again" at all
+  is not stated, and unverified.
+- **Grok.** Its config has `ask` rules (`deny` beats `ask` beats `allow`,
+  above), but its command line documents `--allow` and `--deny` only
+  (`src/app/cli.rs` at `2bdd1d6a`); aggy writes no vendor config per
+  session, so the policy stays deny there. Source-verified.
+- **Codex.** `decision = "prompt"` is a documented decision
+  (`execpolicy/README.md`). In `create_exec_approval_requirement_for_parsed_commands`,
+  a prompt rule under `AskForApproval::Never` becomes `Forbidden` with
+  `PROMPT_CONFLICT_REASON` ("approval required by policy, but
+  AskForApproval is set to Never"; `prompt_is_rejected_by_policy`,
+  `core/src/exec_policy.rs` at `rust-v0.164.0`), and `codex exec` sets
+  approval to never (`exec/src/lib.rs#L591` at `6aaac69`, already cited by
+  `internal/adapter/codex`). The strictest decision wins, so an allow saved
+  at Codex's prompt (`default.rules`) cannot loosen a prompt rule.
+  Source-verified.
+- **OpenCode.** A later permission rule wins, and `--auto` answers an ask
+  with once while denies hold (this file, "OpenCode 2.2.5 as an on-screen
+  harness", fake-model and live). Whether a stored Always allow in
+  `opencode.db` beats a later `ask` rule in the launch's config is
+  unverified; aggy cannot see those rows.
+
+Live-check recipe (a maintainer, never in CI, no `--dangerously-*` flag,
+in a scratch git repo with a `.env`, a `.env.example`, `server.pem`, and a
+`dist` folder):
+
+1. `aggy run claude`; ask the model to `rm -rf dist`. Expect Claude's own
+   approval prompt, not a refusal. Record which options it offers.
+   Answer "don't ask again" if offered; quit; `aggy permissions show`
+   should list the saved allow (in a trusted repo) and `rm-rf` as
+   pre-approved; relaunch and expect no aggy ask for `rm -rf dist`.
+2. Ask it to read `.env.example`: no prompt from aggy's rules. Ask it to
+   read `.env`: a prompt.
+3. Ask it to read `server.pem`; answer "don't ask again" if offered;
+   relaunch: it must still ask. `aggy permissions add allow
+   'Read(./server.pem)'`: one line names `key-read`; relaunch: no prompt.
+4. `aggy permissions policy rm-rf deny`; relaunch: `rm -rf dist` is refused.
+5. `aggy policy wire` (replacing an older aggy file if there), `aggy run
+   codex`, ask for `git clean -n`: expect Codex's approval prompt with
+   aggy's justification. `aggy borrow edit` (or any `codex exec`) must
+   still refuse it.
+6. `aggy run grok`: `rm -rf dist` is refused with no prompt (deny).
+7. `aggy run opencode`: `rm -rf dist` asks; with `--auto` it is refused.
+
 ## Launch-time MCP (T6734)
 
 Live (2026-10-27), with a 25-line stdlib stdio MCP server exposing

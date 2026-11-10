@@ -46,7 +46,8 @@ type openCodeInput struct {
 	memory   string // framed shared memory, or ""
 	brief    string // the brief's text, or ""
 	noPolicy bool
-	rules    permissions.Set // the person's shared rules, for this repo
+	rules    permissions.Set         // the person's shared rules, for this repo
+	policy   []parity.PolicyDecision // the safety policy as decided; nil is every rule a deny
 }
 
 // prepareOpenCode builds the launch's folder (docs/design.md, section 15):
@@ -130,7 +131,7 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 	data, err := parity.OpenCodeConfig{
 		Trusted: trusted, Providers: providers, Model: in.model, Instructions: notes,
 		Plugin: pluginDir, Aggy: bin, Root: root, NoPolicy: in.noPolicy, Auto: out.launch.Auto,
-		Shared: shared,
+		Shared: shared, Policy: in.policy,
 	}.Render()
 	if err != nil {
 		return out, err

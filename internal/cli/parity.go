@@ -15,6 +15,7 @@ import (
 	"github.com/congdoe/aggy/internal/checkup"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/parity"
+	"github.com/congdoe/aggy/internal/permissions"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/supervisor"
@@ -174,15 +175,42 @@ func policyDelivery(v adapter.Vendor, caps []string) (why string, err error) {
 		case st == parity.RulesOther:
 			return whyRulesOther, nil
 		}
+		// RulesOld refuses where the current file asks: stricter, so it holds.
 	}
 	return "", nil
 }
 
+// policyPlan is how a launch in cwd gets the safety policy: on screen, the
+// person's group settings and pre-approvals from s apply; a borrow child's
+// launch (onScreen false) gets every rule as a deny.
+func policyPlan(onScreen bool, cwd string, s permissions.Set) parity.PolicyPlan {
+	p := parity.PolicyPlan{OnScreen: onScreen}
+	if !onScreen {
+		return p
+	}
+	p.Settings, p.Allows, p.Branches = s.Policy, s.PolicyAllows(), defaultBranches(cwd)
+	return p
+}
+
+// defaultBranches is the default branch of dir's repo, when git records one
+// (parity.DefaultBranch), for the strict force-push group.
+func defaultBranches(dir string) []string {
+	if dir == "" {
+		return nil
+	}
+	if root, ok := repoRoot(dir); ok {
+		if b := parity.DefaultBranch(root); b != "" {
+			return []string{b}
+		}
+	}
+	return nil
+}
+
 // addPolicy puts the safety policy on req for vendor v where it goes on
-// the command line. When v cannot get it, it fails closed: an error when
-// required (the default; only the user's own config or --no-policy
-// changes that), else a warning.
-func addPolicy(v adapter.Vendor, caps []string, required bool, req *adapter.InteractiveRequest) ([]string, error) {
+// the command line, as plan decides it. When v cannot get it, it fails
+// closed: an error when required (the default; only the user's own config
+// or --no-policy changes that), else a warning.
+func addPolicy(v adapter.Vendor, caps []string, required bool, plan parity.PolicyPlan, req *adapter.InteractiveRequest) ([]string, error) {
 	if why, err := policyDelivery(v, caps); why != "" {
 		if err != nil {
 			why += ": " + err.Error()
@@ -194,9 +222,9 @@ func addPolicy(v adapter.Vendor, caps []string, required bool, req *adapter.Inte
 	}
 	switch v {
 	case adapter.Claude:
-		req.Deny = parity.ClaudeDeny
+		req.Ask, req.Deny = parity.ClaudePolicy(plan.Decide())
 	case adapter.Grok:
-		req.Deny = parity.GrokDeny
+		req.Deny = parity.GrokPolicy(plan.Decide())
 	}
 	return nil, nil
 }
@@ -209,6 +237,7 @@ const (
 	codeMemoryNotDelivered = "memory-not-delivered" // warning: this CLI will not get it
 	codePolicyApplied      = "policy-applied"       // info
 	codePolicyNotWired     = "policy-not-wired"     // info: aggy policy wire has not run
+	codePolicyOld          = "policy-old"           // info: the Codex rules file is aggy's older, refusing one
 	codePolicyNotApplied   = "policy-not-applied"   // warning: this CLI will not get it
 	codePolicyFragile      = "policy-fragile"       // warning: another Codex rules file can switch aggy's off
 	codeGrokClaudeMCP      = "grok-claude-mcp"      // warning: Grok starts Claude's stdio MCP servers in a repo that excludes it
@@ -299,6 +328,13 @@ func parityFindings(cwd string, vendors []checkup.Vendor) []checkup.Finding {
 		switch why {
 		case "":
 			add(codePolicyApplied, checkup.LevelInfo, v, "", name+" gets the safety policy", nil)
+			if v == adapter.Codex {
+				if path, err := parity.CodexRulesPath(); err == nil {
+					if st, _ := parity.CodexRulesState(path); st == parity.RulesOld {
+						add(codePolicyOld, checkup.LevelInfo, v, "", "Codex has aggy's older rules file, which refuses where the current one asks; aggy policy wire updates it", nil)
+					}
+				}
+			}
 		case whyRulesMissed:
 			add(codePolicyNotWired, checkup.LevelInfo, v, "", name+" does not get the safety policy: "+why, nil)
 		default:

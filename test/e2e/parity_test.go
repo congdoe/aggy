@@ -61,7 +61,8 @@ func TestMemoryDelivered(t *testing.T) {
 }
 
 // TestPolicyOnCommandLine checks that Claude and Grok get the safety
-// policy as deny rules on the command line of the session aggy starts.
+// policy on the command line of the session aggy starts: on screen Claude as
+// ask rules (T6967), Grok, which has no ask flag, as deny rules.
 func TestPolicyOnCommandLine(t *testing.T) {
 	for _, tc := range []struct{ vendor, flag string }{
 		{"claude", "--settings"},
@@ -75,7 +76,7 @@ func TestPolicyOnCommandLine(t *testing.T) {
 			s.exit()
 			vals := interactiveRecord(t, w).Flags[tc.flag]
 			if tc.vendor == "claude" {
-				if len(vals) != 1 || !strings.HasPrefix(vals[0], `{"permissions":{"deny":["Read(//**/.env)",`) {
+				if len(vals) != 1 || !strings.HasPrefix(vals[0], `{"permissions":{"ask":["Read(//**/.env)",`) || strings.Contains(vals[0], `"deny"`) {
 					t.Errorf("--settings = %q", vals)
 				}
 				return
@@ -111,7 +112,7 @@ func TestSharedRulesOnCommandLine(t *testing.T) {
 		w := newWorld(t)
 		write(t, filepath.Join(w.home, ".aggy", "permissions.json"), `{"permissions":{"allow":["Bash(git log --oneline -20)"],"ask":["Bash(git push *)"]}}`)
 		vals := run(t, w, "claude").Flags["--settings"]
-		if len(vals) != 1 || !strings.Contains(vals[0], `"allow":["Bash(git log --oneline -20)"]`) || !strings.Contains(vals[0], `"ask":["Bash(git push *)"]`) || !strings.Contains(vals[0], `"Read(//**/.env)"`) {
+		if len(vals) != 1 || !strings.Contains(vals[0], `"allow":["Bash(git log --oneline -20)"]`) || !strings.Contains(vals[0], `,"Bash(git push *)"]`) || !strings.Contains(vals[0], `"Read(//**/.env)"`) {
 			t.Errorf("--settings = %q", vals)
 		}
 		if _, err := os.Stat(filepath.Join(w.home, ".claude", "settings.json")); !os.IsNotExist(err) {

@@ -89,6 +89,10 @@ type OpenCodeConfig struct {
 	// NoPolicy leaves out the safety policy's denies (aggy run
 	// --no-policy). The whitelist, providers, and guard stay.
 	NoPolicy bool
+	// Policy is the safety policy as this launch decided it (PolicyPlan):
+	// its shell asks and denies (OpenCodePolicy). Nil gives every rule as a
+	// deny.
+	Policy []PolicyDecision
 	// Auto tells the guard this launch runs with --auto, so it skips its scan
 	// of the command's text (docs/design.md).
 	Auto bool
@@ -297,14 +301,20 @@ func openCodePermissions(trusted bool, shared OpenCodeSharedRules) ([]openCodeRu
 	return rules, nil
 }
 
-// OpenCodeShellDeny is the policy's Bash rules as tool.use statements,
-// which match each simple command's text. A rule stops the wording it
-// names only: `shell:curl *` missed 15 of 26 shapes (fake model).
-func OpenCodeShellDeny() []string {
-	out := make([]string, 0, len(bashDeny)+2)
-	for _, r := range bashDeny {
-		out = append(out, "shell:"+strings.TrimSuffix(strings.TrimPrefix(r, "Bash("), ")"))
+// policyDecisions are the launch's, or every rule as a deny.
+func (c OpenCodeConfig) policyDecisions() []PolicyDecision {
+	if c.Policy == nil {
+		return PolicyPlan{}.Decide()
 	}
+	return c.Policy
+}
+
+// OpenCodeShellDeny is the policy's Bash rules as tool.use statements,
+// which match each simple command's text, with the shell asks of ds left
+// out. A rule stops the wording it names only: `shell:curl *` missed 15 of
+// 26 shapes (fake model). The sign-in rules always deny.
+func OpenCodeShellDeny(ds []PolicyDecision, auto bool) []string {
+	_, out := OpenCodePolicy(ds, auto)
 	return append(out, "shell:*opencode.db*", "shell:*opencode auth export*")
 }
 
@@ -344,7 +354,7 @@ func openCodePolicies(c OpenCodeConfig) ([]openCodeRule, error) {
 		rules = append(rules, openCodeRule{"provider.use", p, "deny"})
 	}
 	if !c.NoPolicy {
-		for _, r := range append(OpenCodeShellDeny(), openCodePathDeny()...) {
+		for _, r := range append(OpenCodeShellDeny(c.policyDecisions(), c.Auto), openCodePathDeny()...) {
 			rules = append(rules, openCodeRule{"tool.use", r, "deny"})
 		}
 	}
@@ -368,6 +378,13 @@ func (c OpenCodeConfig) Render() ([]byte, error) {
 	perms, err := openCodePermissions(c.Trusted, c.Shared)
 	if err != nil {
 		return nil, err
+	}
+	if !c.NoPolicy {
+		// Last, so a policy ask wins over any allow listed before it.
+		ask, _ := OpenCodePolicy(c.policyDecisions(), c.Auto)
+		for _, cmd := range ask {
+			perms = append(perms, openCodeRule{"shell", cmd, "ask"})
+		}
 	}
 	pol, err := openCodePolicies(c)
 	if err != nil {

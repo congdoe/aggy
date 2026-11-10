@@ -61,10 +61,12 @@ func TestAddPolicy(t *testing.T) {
 		{adapter.Grok, []string{probe.CapRules}, nil},
 		{adapter.Codex, []string{probe.CapConfigOverride}, nil},
 	}
+	// A borrow child's plan (the zero plan): every rule a deny, as before T6967.
+	borrow := parity.PolicyPlan{}
 	for _, tt := range tests {
 		// Required (the default): a CLI the policy cannot reach is refused.
 		var req adapter.InteractiveRequest
-		warns, err := addPolicy(tt.v, tt.caps, true, &req)
+		warns, err := addPolicy(tt.v, tt.caps, true, borrow, &req)
 		if !slices.Equal(req.Deny, tt.deny) || len(warns) > 0 || (err != nil) != (tt.deny == nil) {
 			t.Errorf("required %s %v: deny %v, warns %v, err %v", tt.v, tt.caps, req.Deny, warns, err)
 		}
@@ -73,7 +75,7 @@ func TestAddPolicy(t *testing.T) {
 		}
 		// Not required: a warning instead.
 		req = adapter.InteractiveRequest{}
-		warns, err = addPolicy(tt.v, tt.caps, false, &req)
+		warns, err = addPolicy(tt.v, tt.caps, false, borrow, &req)
 		if !slices.Equal(req.Deny, tt.deny) || err != nil || (len(warns) == 0) != (tt.deny != nil) {
 			t.Errorf("optional %s %v: deny %v, warns %v, err %v", tt.v, tt.caps, req.Deny, warns, err)
 		}
@@ -82,7 +84,34 @@ func TestAddPolicy(t *testing.T) {
 	// on its command line.
 	mustRun(t, "policy", "wire")
 	var req adapter.InteractiveRequest
-	if warns, err := addPolicy(adapter.Codex, nil, true, &req); len(warns) > 0 || err != nil || req.Deny != nil {
+	if warns, err := addPolicy(adapter.Codex, nil, true, borrow, &req); len(warns) > 0 || err != nil || req.Deny != nil {
 		t.Errorf("wired codex: %v %v %v", warns, err, req.Deny)
+	}
+}
+
+// TestAddPolicyOnScreen (T6967): on screen Claude gets the policy as asks and
+// no denies; Grok, which has no ask flag, keeps denies; Codex nothing on its
+// command line.
+func TestAddPolicyOnScreen(t *testing.T) {
+	isolate(t)
+	plan := parity.PolicyPlan{OnScreen: true}
+	var req adapter.InteractiveRequest
+	if _, err := addPolicy(adapter.Claude, []string{probe.CapSettings}, true, plan, &req); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []string{"Bash(rm -rf*)", "Bash(git push * main)", "Bash(git push --force*)", "Bash(git reset --hard*)", "Bash(git clean *)", "Read(//**/.env)", "Read(//**/*.pem)", "Read(//**/*.key)", "Bash(git push --force*main*)"} {
+		if !slices.Contains(req.Ask, r) {
+			t.Errorf("claude ask lacks %s: %v", r, req.Ask)
+		}
+	}
+	if len(req.Deny) != 0 {
+		t.Errorf("claude on screen still denies: %v", req.Deny)
+	}
+	req = adapter.InteractiveRequest{}
+	if _, err := addPolicy(adapter.Grok, []string{probe.CapDeny}, true, plan, &req); err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Ask) != 0 || !slices.Contains(req.Deny, "Bash(rm -rf*)") || !slices.Contains(req.Deny, "Read(**/.env)") {
+		t.Errorf("grok: ask %v deny %v", req.Ask, req.Deny)
 	}
 }

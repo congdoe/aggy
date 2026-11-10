@@ -372,24 +372,27 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		warns = append(warns, "your flags "+strings.Join(t.Loosens, ", ")+" loosen approvals, the sandbox, or hook trust for this launch; --no-policy lets them through")
 	}
 	warns = append(warns, t.FlagNotes...)
-	if t.NoPolicy {
-		warns = append(warns, "starting without the safety policy (--no-policy)")
-	} else {
-		pw, err := addPolicy(v, caps, cfg.Policy.Required, &req)
-		if err != nil {
-			return fail(diag.CodePolicy, err)
-		}
-		warns = append(warns, pw...)
-	}
 	// The person's shared rules, read now, so an approval given in another
 	// CLI since the last launch or switch holds here. A borrow's child, even
-	// reopened on screen, gets none.
+	// reopened on screen, gets none, and the safety policy as denies.
 	var rules permissions.Set
 	if pl.child.Kind == "" {
 		rules = loadPermissions(ctx, pl.child.Cwd, cfg)
 		if rules.FileErr != nil {
 			return fail(diag.CodePermBadFile, rules.FileErr)
 		}
+	}
+	plan := policyPlan(pl.child.Kind == "", pl.child.Cwd, rules)
+	if t.NoPolicy {
+		warns = append(warns, "starting without the safety policy (--no-policy)")
+	} else {
+		pw, err := addPolicy(v, caps, cfg.Policy.Required, plan, &req)
+		if err != nil {
+			return fail(diag.CodePolicy, err)
+		}
+		warns = append(warns, pw...)
+	}
+	if pl.child.Kind == "" {
 		warns = append(warns, addPermissions(v, caps, rules, &req)...)
 	}
 	// Memory comes from the child's own directory, never the current one:
@@ -434,7 +437,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	}
 	if v == adapter.OpenCode {
 		oc, err := prepareOpenCode(openCodeInput{cfg: eff, caps: caps, cwd: pl.child.Cwd, dir: memDir,
-			model: pl.child.Model, memory: req.Memory, brief: briefText, noPolicy: t.NoPolicy, rules: rules})
+			model: pl.child.Model, memory: req.Memory, brief: briefText, noPolicy: t.NoPolicy, rules: rules, policy: plan.Decide()})
 		if err != nil {
 			return fail(diag.CodePolicy, err)
 		}

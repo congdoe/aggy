@@ -242,6 +242,10 @@ type InteractiveRequest struct {
 	// permissions.deny in an inline --settings layer, Grok as --deny
 	// flags. Codex ignores them; its policy is a rules file.
 	Deny []string
+	// Ask holds the safety policy's rules that ask on screen
+	// (parity.ClaudePolicy): Claude takes them as permissions.ask in the
+	// same layer. Grok and Codex never get any.
+	Ask []string
 	// Rules are the person's shared rules for this session only
 	// (internal/permissions), on top of what the CLI reads itself. Claude
 	// takes them in the same inline --settings layer as Deny, Grok as --allow

@@ -265,7 +265,7 @@ func checkAgents(val string) error { return adapter.CheckAgents(val, checkPermis
 // under --safe-mode). So aggy's deny rules should hold, and gating the flag
 // would cost them, but aggy's turn-end hooks and managed tools may not run.
 // permissionsLayer is the inline layer's permissions object: the safety
-// policy's denies, and the person's shared rules. Lists merge across settings
+// policy's asks and denies, and the person's shared rules. Lists merge across settings
 // layers, and defaultMode may be set in a --settings layer (permission-modes.md
 // names --settings for permissions.defaultMode; not yet run live with aggy's
 // rules, TODO(T6895)).
@@ -277,8 +277,8 @@ func permissionsLayer(req adapter.InteractiveRequest) map[string]any {
 	if len(req.Rules.Allow) > 0 {
 		out["allow"] = req.Rules.Allow
 	}
-	if len(req.Rules.Ask) > 0 {
-		out["ask"] = req.Rules.Ask
+	if ask := append(slices.Clone(req.Ask), req.Rules.Ask...); len(ask) > 0 {
+		out["ask"] = ask
 	}
 	if req.Rules.Mode != "" {
 		out["defaultMode"] = req.Rules.Mode

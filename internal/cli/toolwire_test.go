@@ -314,7 +314,14 @@ func TestAddToolsHooks(t *testing.T) {
 	req = adapter.InteractiveRequest{Deny: parity.ClaudeDeny}
 	addTools(context.Background(), adapter.Claude, []string{probe.CapSettings}, repo, filepath.Join(t.TempDir(), "l"), nil, &req)
 	want := slices.Concat(parity.ClaudeDeny, []string{
-		"Bash(rtk *.env*)", "Bash(rtk *.env.*)", "Bash(rtk *.pem*)", "Bash(rtk *.key*)",
+		// T6967: the .env names are listed, so .env.example is not caught.
+		"Bash(rtk *.env*)", "Bash(rtk *.env.local*)", "Bash(rtk *.env.*.local*)", "Bash(rtk *.env.development*)",
+		"Bash(rtk *.env.dev*)", "Bash(rtk *.env.production*)", "Bash(rtk *.env.prod*)", "Bash(rtk *.env.staging*)",
+		"Bash(rtk *.env.stage*)", "Bash(rtk *.env.test*)", "Bash(rtk *.env.ci*)", "Bash(rtk *.env.preview*)",
+		"Bash(rtk *.env.qa*)", "Bash(rtk *.env.uat*)", "Bash(rtk *.env.live*)", "Bash(rtk *.env.backup*)",
+		"Bash(rtk *.env.bak*)", "Bash(rtk *.env.old*)", "Bash(rtk *.env.secret*)", "Bash(rtk *.env.secrets*)",
+		"Bash(rtk *.env.private*)",
+		"Bash(rtk *.pem*)", "Bash(rtk *.key*)",
 		"Bash(rtk *id_rsa*)", "Bash(rtk *id_dsa*)", "Bash(rtk *id_ecdsa*)", "Bash(rtk *id_ed25519*)",
 		"Bash(rtk git push * main)", "Bash(rtk git push * main *)", "Bash(rtk git push * *:main)", "Bash(rtk git push * *:main *)",
 		"Bash(rtk git push * refs/heads/main)", "Bash(rtk git push * refs/heads/main *)",
@@ -328,6 +335,12 @@ func TestAddToolsHooks(t *testing.T) {
 	})
 	if !slices.Equal(req.Deny, want) || !slices.Equal(parity.ClaudeDeny, policy) {
 		t.Errorf("deny = %q", req.Deny)
+	}
+	// T6967: on screen the policy asks, and its copies ask too.
+	req = adapter.InteractiveRequest{Ask: parity.ClaudeDeny}
+	addTools(context.Background(), adapter.Claude, []string{probe.CapSettings}, repo, filepath.Join(t.TempDir(), "l"), nil, &req)
+	if !slices.Equal(req.Ask, want) || req.Deny != nil || !slices.Equal(parity.ClaudeDeny, policy) {
+		t.Errorf("ask = %q, deny = %q", req.Ask, req.Deny)
 	}
 	if req, warns, _ := wireOnce(t, adapter.Claude, nil, repo); req.Hooks != nil || len(warns) != 1 || !strings.Contains(warns[0], "tool.no_launch_flag") {
 		t.Errorf("without --settings: %+v %q", req.Hooks, warns)

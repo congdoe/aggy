@@ -135,20 +135,67 @@ func TestPolicyCoverage(t *testing.T) {
 }
 
 // TestCodexRulesShape holds the rules file to the recorded syntax: every
-// rule is a forbidden prefix_rule with a justification, because a file
-// Codex cannot parse makes it drop the person's own rules too.
+// rule is a prompt prefix_rule with a justification (T6967: Codex asks on
+// screen, and refuses under approval never, as codex exec runs), because a
+// file Codex cannot parse makes it drop the person's own rules too. The
+// older file aggy still recognizes is every rule forbidden, with the same
+// patterns.
 func TestCodexRulesShape(t *testing.T) {
-	rules := strings.Count(CodexRules, "prefix_rule(")
-	if rules != 9 || strings.Count(CodexRules, `decision = "forbidden",`) != rules || strings.Count(CodexRules, "justification = \"aggy safety policy: ") != rules {
-		t.Errorf("rules file shape changed:\n%s", CodexRules)
-	}
-	if strings.Count(CodexRules, "(") != strings.Count(CodexRules, ")") || strings.Count(CodexRules, "[") != strings.Count(CodexRules, "]") {
-		t.Error("unbalanced brackets")
-	}
-	for _, l := range strings.Split(CodexRules, "\n") {
-		if strings.Contains(l, `decision = "allow"`) || strings.Contains(l, `"prompt"`) {
-			t.Errorf("a rule that is not a denial: %s", l)
+	for _, tc := range []struct {
+		text, decision string
+	}{{CodexRules, "prompt"}, {codexRulesV1, "forbidden"}} {
+		rules := strings.Count(tc.text, "prefix_rule(")
+		if rules != 9 || strings.Count(tc.text, `decision = "`+tc.decision+`",`) != rules || strings.Count(tc.text, "justification = \"aggy safety policy: ") != rules {
+			t.Errorf("rules file shape changed:\n%s", tc.text)
 		}
+		if strings.Count(tc.text, "(") != strings.Count(tc.text, ")") || strings.Count(tc.text, "[") != strings.Count(tc.text, "]") {
+			t.Error("unbalanced brackets")
+		}
+		for _, l := range strings.Split(tc.text, "\n") {
+			if strings.Contains(l, `decision = "allow"`) {
+				t.Errorf("a rule that allows: %s", l)
+			}
+		}
+	}
+	patterns := func(s string) []string {
+		var out []string
+		for _, l := range strings.Split(s, "\n") {
+			if strings.Contains(l, "pattern = ") {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+	if !slices.Equal(patterns(CodexRules), patterns(codexRulesV1)) {
+		t.Error("the asking file covers other commands than the refusing one")
+	}
+}
+
+// TestCodexRulesOld (T6967): aggy's older, refusing file still counts as
+// wired for a launch, and aggy policy wire replaces it, and only it.
+func TestCodexRulesOld(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	codex := t.TempDir()
+	t.Setenv("CODEX_HOME", codex)
+	path, _ := CodexRulesPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(codexRulesV1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := CodexRulesState(path); st != RulesOld || err != nil {
+		t.Fatalf("state %q, %v", st, err)
+	}
+	p, err := CodexRulesPatch(path)
+	if err != nil || p.ExpectedHash != patch.Hash([]byte(codexRulesV1)) {
+		t.Fatalf("%+v, %v", p, err)
+	}
+	if _, err := patch.Apply(p, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != CodexRules {
+		t.Errorf("not updated: %s", b)
 	}
 }
 
