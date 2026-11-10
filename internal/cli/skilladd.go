@@ -103,8 +103,8 @@ func (st skillTarget) defFile() bool { return st.defFI != nil }
 func (st skillTarget) stored() bool  { return st.storeFI != nil }
 
 func lookupSkillTarget(ctx context.Context, name string) (skillTarget, error) {
-	if !tooldef.ValidName(name) || ownSkill(name) {
-		return skillTarget{}, withCode(diag.CodeUsage, fmt.Errorf("%q cannot name a skill: want 1 to 32 of a-z, 0-9, and -, starting with a letter, and not one of aggy's own (aggy, switch, borrow, inbox)", name))
+	if !tooldef.ValidName(name) || name == skillName {
+		return skillTarget{}, withCode(diag.CodeUsage, fmt.Errorf("%q cannot name a skill: want 1 to 32 of a-z, 0-9, and -, starting with a letter, and not %s", name, skillName))
 	}
 	state, err := home.Dir()
 	if err != nil {
@@ -309,6 +309,12 @@ func skillAdd(ctx context.Context, a skillAddArgs, in io.Reader, tty bool, stdou
 	name := filepath.Base(src)
 	if a.hasName {
 		name = a.name
+	}
+	// switch, borrow, and inbox are aggy's command skills now (T6910): a new
+	// skill may not take them, though one stored before stays the person's,
+	// removable with aggy skill remove (R121).
+	if ownSkill(name) {
+		return withCode(diag.CodeUsage, fmt.Errorf("%q cannot name a skill: it is one of aggy's own (aggy, switch, borrow, inbox); pick another --name", name))
 	}
 	st, err := lookupSkillTarget(ctx, name)
 	if err != nil {
