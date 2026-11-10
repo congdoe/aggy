@@ -72,7 +72,7 @@ func waitStops(t *testing.T, log string, n int) {
 func TestTypedSwitchCaught(t *testing.T) {
 	w, sc, log := commandWorld(t)
 	s := w.start(t, sc, "run", "claude")
-	s.waitFor([]byte("READY>"))
+	s.waitWithin([]byte("READY>"), offerTimeout)
 	s.send([]byte("work\r"))
 	waitStops(t, log, 2) // the launch's and the turn's
 	s.typeSlowly("/switch grok")
@@ -109,7 +109,7 @@ func TestTypedCommandNotCaught(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			w, sc, log := commandWorld(t)
 			s := w.start(t, sc, "run", "claude")
-			s.waitFor([]byte("READY>"))
+			s.waitWithin([]byte("READY>"), offerTimeout)
 			s.send([]byte("work\r"))
 			waitStops(t, log, 2)
 			for _, k := range c.keys {
@@ -162,7 +162,7 @@ func TestHookBlockedSwitch(t *testing.T) {
 		"session_files": startedFiles(),
 	}
 	s := w.start(t, sc, "run", "claude")
-	s.waitFor([]byte("READY>"))
+	s.waitWithin([]byte("READY>"), offerTimeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(mark); err == nil {
@@ -189,11 +189,11 @@ func TestHookBlockedSwitch(t *testing.T) {
 func TestTypedInboxPage(t *testing.T) {
 	w, sc, log := commandWorld(t)
 	s := w.start(t, sc, "run", "claude")
-	s.waitFor([]byte("READY>"))
+	s.waitWithin([]byte("READY>"), offerTimeout)
 	waitStops(t, log, 1)
 	s.typeSlowly("/inbox")
 	s.send([]byte("\r"))
-	s.waitFor([]byte("No unread reports."))
+	s.waitWithin([]byte("No unread reports."), offerTimeout)
 	s.send([]byte("\x1b"))
 	time.Sleep(300 * time.Millisecond)
 	if got := stops(t, log); got != 1 {
@@ -211,11 +211,11 @@ func TestTypedInboxPage(t *testing.T) {
 func TestTypedPickerOpens(t *testing.T) {
 	w, sc, log := commandWorld(t)
 	s := w.start(t, sc, "run", "claude")
-	s.waitFor([]byte("READY>"))
+	s.waitWithin([]byte("READY>"), offerTimeout)
 	waitStops(t, log, 1)
 	s.typeSlowly("/switch")
 	s.send([]byte("\r"))
-	s.waitFor([]byte("aggy: switch vendor"))
+	s.waitWithin([]byte("aggy: switch vendor"), offerTimeout)
 	s.send([]byte("\x1b"))
 	time.Sleep(300 * time.Millisecond)
 	if got := stops(t, log); got != 1 {
