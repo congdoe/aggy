@@ -239,3 +239,28 @@ func TestAcceptPageOffersChecks(t *testing.T) {
 		t.Fatalf("ran %q, want %q", got, want)
 	}
 }
+
+// TestCommandOff (R121): a command the person's config turns off goes to the
+// CLI as typed, from the keys and from a hook, so their own skill of that
+// name runs; the others are still caught.
+func TestCommandOff(t *testing.T) {
+	s, _ := viewSess(t, adapter.Claude, "")
+	s.o.CommandOff = func(name string) bool { return name == "inbox" }
+	typeLine(s, "/inbox")
+	if got := sentTo(s); caught(got, "/inbox") || s.open {
+		t.Fatalf("an /inbox turned off was caught: %q", got)
+	}
+	s2, _ := viewSess(t, adapter.Claude, "")
+	s2.o.CommandOff = s.o.CommandOff
+	typeKeys(s2, "/in")
+	s2.send([]byte("\r"))
+	if err := hookAsk(s2, Request{Type: ReqPromptCommand, Vendor: "claude", Command: "/inbox"}); codeOf(err, diag.Code{}) != diag.CodeCommandNotTaken {
+		t.Fatalf("hook: err %v", err)
+	}
+	s3, _ := viewSess(t, adapter.Claude, "")
+	s3.o.CommandOff = s.o.CommandOff
+	typeLine(s3, "/aggy")
+	if !s3.open {
+		t.Fatal("/aggy, still on, was not caught")
+	}
+}
