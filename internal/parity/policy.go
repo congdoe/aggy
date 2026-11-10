@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/congdoe/aggy/internal/patch"
@@ -17,24 +18,31 @@ import (
 // mistakes, not a sandbox: every CLI matches these rules against the
 // command text or tool path it sees, so `git -C . push origin main`,
 // `/bin/rm -rf x`, or a script that opens .env itself gets past them.
-// aggy only ever adds denials: nothing here allows a tool, and a repo
-// cannot edit these rules. A trusted repo can still switch the Codex
-// part off with a rules file Codex cannot parse (OtherCodexRules).
+// On screen each rule asks rather than refuses, where the CLI can say ask
+// (PolicyPlan, docs/design.md section 10); a borrow child gets every rule
+// as a deny. Nothing here allows a tool, and a repo cannot edit these
+// rules. A trusted repo can still switch the Codex part off with a rules
+// file Codex cannot parse (OtherCodexRules).
 
-// keyFiles are the file names the policy never reads: .env files and
-// private keys by their usual names.
-var keyFiles = []string{".env", ".env.*", "*.pem", "*.key", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
+// envFiles are the .env files the policy guards, by name. `.env.*` is not
+// used, as it matched templates meant to be read (.env.example,
+// .env.sample, .env.template, .env.dist), and no glob all four CLIs read
+// alike can leave those out, so the usual secret-bearing names are listed
+// instead: another name, such as .env.foo, is not covered.
+var envFiles = []string{".env", ".env.local", ".env.*.local", ".env.development", ".env.dev",
+	".env.production", ".env.prod", ".env.staging", ".env.stage", ".env.test", ".env.ci",
+	".env.preview", ".env.qa", ".env.uat", ".env.live", ".env.backup", ".env.bak", ".env.old",
+	".env.secret", ".env.secrets", ".env.private"}
 
-// bashDeny are the policy's Bash rules, in the syntax Claude Code and
-// Grok Build share: a "*" matches any text, spaces included, and a deny
-// applies to every segment of a chained command (Claude: permissions.md,
-// "Wildcard patterns" and "Compound commands"; Grok: user-guide
-// 22-permissions-and-safety.md, "Bash Rules", where a pattern matches as
-// a prefix or as a whole-command glob). Grok splits a --deny value on
-// commas, so no rule holds one.
-var bashDeny = []string{
-	// Never push to main: the target is the last word, a refspec ending
-	// in :main or :refs/heads/main, or main with options after it.
+// privateKeyFiles are private keys by their usual names: the strict group.
+var privateKeyFiles = []string{"*.pem", "*.key", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
+
+// keyFiles are the file names the policy guards: .env files and private keys.
+var keyFiles = append(slices.Clone(envFiles), privateKeyFiles...)
+
+// pushMainRules: never push to main. The target is the last word, a refspec
+// ending in :main or :refs/heads/main, or main with options after it.
+var pushMainRules = []string{
 	"Bash(git push * main)",
 	"Bash(git push * main *)",
 	"Bash(git push * *:main)",
@@ -43,13 +51,34 @@ var bashDeny = []string{
 	"Bash(git push * refs/heads/main *)",
 	"Bash(git push * *:refs/heads/main)",
 	"Bash(git push * *:refs/heads/main *)",
-	// No force push: a force flag anywhere, or a +refspec.
+}
+
+// forceRules: no force push, a force flag anywhere or a +refspec.
+var forceRules = []string{
 	"Bash(git push --force*)",
 	"Bash(git push -f*)",
 	"Bash(git push * --force*)",
 	"Bash(git push * -f*)",
 	"Bash(git push * +*)",
-	// No recursive forced delete, in the usual spellings.
+}
+
+// forceBranchRules are a force push naming branch b: the strict group. They
+// match b anywhere after the flag or before it, so a remote or another branch
+// holding the word (maintenance) is caught too; for this group that is the
+// safe side, as it only asks.
+func forceBranchRules(b string) []string {
+	return []string{
+		"Bash(git push -f*" + b + "*)",
+		"Bash(git push --force*" + b + "*)",
+		"Bash(git push * -f*" + b + "*)",
+		"Bash(git push * --force*" + b + "*)",
+		"Bash(git push *" + b + "* -f*)",
+		"Bash(git push *" + b + "* --force*)",
+		"Bash(git push *+*" + b + "*)",
+	}
+}
+
+var rmRules = []string{
 	"Bash(rm -rf*)",
 	"Bash(rm -fr*)",
 	"Bash(rm -Rf*)",
@@ -66,27 +95,37 @@ var bashDeny = []string{
 	"Bash(rm --force -R*)",
 	"Bash(rm --recursive --force*)",
 	"Bash(rm --force --recursive*)",
-	// No hard reset, no git clean.
-	"Bash(git reset --hard*)",
-	"Bash(git reset * --hard*)",
-	"Bash(git clean *)",
 }
 
-// ClaudeDeny are the policy's deny rules for Claude Code, which takes
-// them as permissions.deny in an inline --settings layer (settings.md:
-// lists merge across layers; permissions.md: a deny wins over any
-// allow). A Read pattern starting with // is anchored at the file-system
-// root, so "//**/.env" matches a .env anywhere, not only under the
-// working directory (permissions.md, "Read and Edit"); a Read deny also
-// covers Edit and Write on the path, and the file commands Claude
-// recognizes in Bash, such as cat.
+var resetRules = []string{"Bash(git reset --hard*)", "Bash(git reset * --hard*)"}
+
+var cleanRules = []string{"Bash(git clean *)"}
+
+// bashDeny are the policy's Bash rules but the strict force-push ones, in the
+// syntax Claude Code and Grok Build share: a "*" matches any text, spaces
+// included, and a deny or ask applies to every segment of a chained command
+// (Claude: permissions.md, "Wildcard patterns" and "Compound commands"; Grok:
+// user-guide 22-permissions-and-safety.md, "Bash Rules", where a pattern
+// matches as a prefix or as a whole-command glob). Grok splits a --deny value
+// on commas, so no rule holds one.
+var bashDeny = slices.Concat(pushMainRules, forceRules, rmRules, resetRules, cleanRules)
+
+// ClaudeDeny are the policy's rules for Claude Code, all as denies, as a
+// borrow child or a CLI with no ask gets them. Claude takes them in an
+// inline --settings layer (settings.md: lists merge across layers;
+// permissions.md: a deny wins over any allow). A Read pattern starting with
+// // is anchored at the file-system root, so "//**/.env" matches a .env
+// anywhere, not only under the working directory (permissions.md, "Read and
+// Edit"); a Read rule also covers Edit and Write on the path, and the file
+// commands Claude recognizes in Bash, such as cat. PolicyPlan renders the
+// on-screen form.
 var ClaudeDeny = denyRules("Read(//**/")
 
-// GrokDeny are the policy's deny rules for Grok Build, one --deny flag
-// each (grok-build 2bdd1d6a, src/app/cli.rs; user-guide
-// 22-permissions-and-safety.md). Grok has no // anchor; an unrooted
-// "**/" glob matches anywhere, and a Read deny also covers the paths
-// shell commands such as cat name.
+// GrokDeny are the policy's rules for Grok Build, one --deny flag each
+// (grok-build 2bdd1d6a, src/app/cli.rs; user-guide
+// 22-permissions-and-safety.md). Grok has no // anchor; an unrooted "**/"
+// glob matches anywhere, and a Read deny also covers the paths shell
+// commands such as cat name.
 var GrokDeny = denyRules("Read(**/")
 
 // RewriteDeny are the policy's deny rules again for a hook that rewrites
@@ -105,20 +144,28 @@ var GrokDeny = denyRules("Read(**/")
 // cannot be copied with the prefix, and the key-file rules match any
 // prefixed command that names one, which also refuses harmless ones
 // (rtk ls .env). TODO(H78-1): narrow them once that set is recorded.
-func RewriteDeny(prefix string) []string {
-	out := make([]string, 0, len(keyFiles)+len(bashDeny))
-	for _, f := range keyFiles {
-		out = append(out, "Bash("+prefix+"*"+strings.Trim(f, "*")+"*)")
-	}
-	for _, r := range bashDeny {
-		out = append(out, "Bash("+prefix+strings.TrimPrefix(r, "Bash("))
+func RewriteDeny(prefix string) []string { return RewriteCopies(prefix, ClaudeDeny) }
+
+// RewriteCopies is RewriteDeny for any of the policy's rules in Claude's
+// spelling, such as the asks a launch renders: each keeps its kind, as Claude
+// matches an ask against the rewritten command just as it does a deny.
+func RewriteCopies(prefix string, rules []string) []string {
+	out := make([]string, 0, len(rules))
+	for _, r := range rules {
+		switch {
+		case strings.HasPrefix(r, "Read("):
+			f := strings.TrimSuffix(r[strings.LastIndexByte(r, '/')+1:], ")")
+			out = append(out, "Bash("+prefix+"*"+strings.Trim(f, "*")+"*)")
+		case strings.HasPrefix(r, "Bash("):
+			out = append(out, "Bash("+prefix+strings.TrimPrefix(r, "Bash("))
+		}
 	}
 	return out
 }
 
 // PrefixedDeny is RewriteDeny for the person's own Bash denies: Claude matches
-// a rewritten command, so each needs a copy with the prefix in front.
-// TODO(T6955): ask rules need the same copies.
+// a rewritten command, so each needs a copy with the prefix in front. The
+// person's ask rules get the same copies (toolwire).
 func PrefixedDeny(prefix string, rules []string) []string {
 	var out []string
 	for _, r := range rules {
@@ -150,10 +197,83 @@ func denyRules(readPrefix string) []string {
 // upstream, and Codex has no rule for reading a file: .env is not
 // covered here.
 //
+// The decision is "prompt": on screen Codex asks first. A borrow child runs
+// codex exec, which sets approval to never (exec/src/lib.rs#L591 at
+// 6aaac69), and under never a matching prompt rule is forbidden
+// (prompt_is_rejected_by_policy: "approval required by policy, but
+// AskForApproval is set to Never", core/src/exec_policy.rs at
+// rust-v0.164.0), so a borrow child is still refused. An allow Codex saves
+// from its own prompt cannot loosen a prompt rule, as the strictest
+// decision wins, so these always ask on screen. The file is global, so the
+// person's per-repo settings and pre-approvals (PolicyPlan) do not reach
+// it. Source only, not run live.
+//
 // A rules file Codex cannot parse makes it drop every rules file, the
 // person's own included (load_exec_policy_with_warning), so this text is
 // fixed and held by a golden test.
 const CodexRules = `# Written by aggy: its safety policy (aggy policy wire). aggy unwire
+# removes this file. A guardrail against mistakes, not a sandbox.
+# Codex asks before each of these; with approval set to never it refuses.
+
+prefix_rule(
+    pattern = ["git", "push", ["origin", "upstream"], ["main", "+main", "HEAD:main", "main:main", "refs/heads/main", "HEAD:refs/heads/main"]],
+    decision = "prompt",
+    justification = "aggy safety policy: a push to main. Pushing a branch and opening a pull request is safer.",
+)
+
+prefix_rule(
+    pattern = ["git", "push", ["-u", "--set-upstream"], ["origin", "upstream"], ["main", "+main", "HEAD:main", "main:main", "refs/heads/main", "HEAD:refs/heads/main"]],
+    decision = "prompt",
+    justification = "aggy safety policy: a push to main. Pushing a branch and opening a pull request is safer.",
+)
+
+prefix_rule(
+    pattern = ["git", "push", ["--force", "-f", "--force-with-lease", "--force-if-includes"]],
+    decision = "prompt",
+    justification = "aggy safety policy: a force push.",
+)
+
+prefix_rule(
+    pattern = ["git", "push", ["origin", "upstream"], ["--force", "-f", "--force-with-lease", "--force-if-includes"]],
+    decision = "prompt",
+    justification = "aggy safety policy: a force push.",
+)
+
+prefix_rule(
+    pattern = ["rm", ["-rf", "-fr", "-Rf", "-fR"]],
+    decision = "prompt",
+    justification = "aggy safety policy: a recursive forced delete.",
+)
+
+prefix_rule(
+    pattern = ["rm", ["-r", "-R", "--recursive"], ["-f", "--force"]],
+    decision = "prompt",
+    justification = "aggy safety policy: a recursive forced delete.",
+)
+
+prefix_rule(
+    pattern = ["rm", ["-f", "--force"], ["-r", "-R", "--recursive"]],
+    decision = "prompt",
+    justification = "aggy safety policy: a recursive forced delete.",
+)
+
+prefix_rule(
+    pattern = ["git", "reset", "--hard"],
+    decision = "prompt",
+    justification = "aggy safety policy: a hard reset drops uncommitted work.",
+)
+
+prefix_rule(
+    pattern = ["git", "clean"],
+    decision = "prompt",
+    justification = "aggy safety policy: git clean deletes untracked files.",
+)
+`
+
+// codexRulesV1 is the file aggy policy wire wrote before T6967, with every
+// rule forbidden. A launch still takes it (it only refuses more), and aggy
+// policy wire replaces it with CodexRules.
+const codexRulesV1 = `# Written by aggy: its safety policy (aggy policy wire). aggy unwire
 # removes this file. A guardrail against mistakes, not a sandbox.
 
 prefix_rule(
@@ -228,7 +348,8 @@ func CodexRulesPath() (string, error) {
 const (
 	RulesWired   = "wired"   // the file holds CodexRules
 	RulesMissing = "missing" // no file
-	RulesOther   = "other"   // a file aggy did not write, or an older policy
+	RulesOther   = "other"   // a file aggy did not write, or an unknown policy
+	RulesOld     = "old"     // codexRulesV1: every rule forbidden, which aggy policy wire updates
 )
 
 // CodexRulesState reports what is at path. It reads nothing but that
@@ -247,14 +368,17 @@ func CodexRulesState(path string) (string, error) {
 		return "", err
 	case bytes.Equal(b, []byte(CodexRules)):
 		return RulesWired, nil
+	case bytes.Equal(b, []byte(codexRulesV1)):
+		return RulesOld, nil
 	}
 	return RulesOther, nil
 }
 
 // CodexRulesPatch returns the patch that creates the rules file at path,
 // to apply through a manifest so aggy unwire removes it. It never
-// replaces a file: one already holding CodexRules gives a patch that
-// changes nothing, and any other file is refused.
+// replaces a file but aggy's own older policy: one already holding CodexRules
+// gives a patch that changes nothing, codexRulesV1 is updated (aggy unwire
+// puts it back), and any other file is refused.
 func CodexRulesPatch(path string) (patch.Patch, error) {
 	st, err := CodexRulesState(path)
 	if err != nil {
@@ -266,9 +390,11 @@ func CodexRulesPatch(path string) (patch.Patch, error) {
 		return patch.Patch{}, fmt.Errorf("parity: %s exists and is not aggy's current policy; aggy never replaces it (undo the old one with aggy unwire, or move the file away)", path)
 	case RulesWired:
 		h = patch.Hash([]byte(CodexRules))
+	case RulesOld:
+		h = patch.Hash([]byte(codexRulesV1))
 	}
 	return patch.Patch{File: path, ExpectedHash: h, Mode: 0o600, Transform: func(src []byte) ([]byte, error) {
-		if src != nil && !bytes.Equal(src, []byte(CodexRules)) {
+		if src != nil && !bytes.Equal(src, []byte(CodexRules)) && !bytes.Equal(src, []byte(codexRulesV1)) {
 			return nil, fmt.Errorf("parity: %s is not aggy's", path)
 		}
 		return []byte(CodexRules), nil

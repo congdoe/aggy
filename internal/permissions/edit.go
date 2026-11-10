@@ -175,6 +175,15 @@ func CheckFile(src []byte) []LineError {
 	check(Deny, f.Permissions.Deny)
 	check(Ask, f.Permissions.Ask)
 	check(Allow, f.Permissions.Allow)
+	policy := func(m map[string]string) {
+		for _, g := range slices.Sorted(maps.Keys(m)) {
+			if err := CheckPolicySetting(g, m[g]); err != nil {
+				quoted, _ := json.Marshal(g)
+				out = append(out, LineError{lineOf(src, string(quoted)), "this policy setting is not one aggy knows, so a launch refuses", err.Error()})
+			}
+		}
+	}
+	policy(f.Policy)
 	for _, key := range slices.Sorted(maps.Keys(f.Repos)) {
 		r := f.Repos[key]
 		quoted, _ := json.Marshal(key)
@@ -184,6 +193,7 @@ func CheckFile(src []byte) []LineError {
 		check(Deny, r.Deny)
 		check(Ask, r.Ask)
 		check(Allow, r.Allow)
+		policy(r.Policy)
 	}
 	return out
 }

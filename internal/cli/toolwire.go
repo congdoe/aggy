@@ -442,7 +442,7 @@ func addHooks(v adapter.Vendor, caps []string, on []switchboard.State, req *adap
 		warns = append(warns, refuse(r.Tool, r.Code, r.Code.String(), r.Why))
 	}
 	req.Hooks = hooks
-	if len(hooks) > 0 && (len(req.Deny) > 0 || len(req.Rules.Deny) > 0) {
+	if len(hooks) > 0 && len(req.Deny)+len(req.Ask)+len(req.Rules.Deny)+len(req.Rules.Ask) > 0 {
 		var prefixes []string
 		for _, st := range on {
 			for _, h := range st.Parts.Hooks {
@@ -451,9 +451,16 @@ func addHooks(v adapter.Vendor, caps []string, on []switchboard.State, req *adap
 				}
 			}
 		}
+		// Copies are made of the rules as rendered, never of another
+		// prefix's copies. The policy's rules keep their kind: an ask on
+		// screen, a deny in a borrow child reopened there.
+		deny, ask := slices.Clone(req.Deny), slices.Clone(req.Ask)
+		myDeny, myAsk := slices.Clone(req.Rules.Deny), slices.Clone(req.Rules.Ask)
 		for _, p := range prefixes {
-			req.Deny = append(slices.Clip(req.Deny), parity.RewriteDeny(p)...)
-			req.Rules.Deny = append(slices.Clip(req.Rules.Deny), parity.PrefixedDeny(p, req.Rules.Deny)...)
+			req.Deny = append(slices.Clip(req.Deny), parity.RewriteCopies(p, deny)...)
+			req.Ask = append(slices.Clip(req.Ask), parity.RewriteCopies(p, ask)...)
+			req.Rules.Deny = append(slices.Clip(req.Rules.Deny), parity.PrefixedDeny(p, myDeny)...)
+			req.Rules.Ask = append(slices.Clip(req.Rules.Ask), parity.PrefixedDeny(p, myAsk)...)
 		}
 	}
 	return warns

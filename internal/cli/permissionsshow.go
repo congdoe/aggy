@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/diag"
@@ -26,11 +27,12 @@ func permissionsShow(args []string, stdout, stderr io.Writer) int {
 	}
 	printPermissionsHeader(stdout, s, in)
 	if cfg.Policy.Required {
-		fmt.Fprintf(stdout, "Safety policy: on, and its denies stay on top of everything below (aggy policy --help).\n")
+		fmt.Fprintf(stdout, "Safety policy: on, and its rules stay on top of everything below (aggy policy --help).\n")
 	} else {
 		fmt.Fprintf(stdout, "Safety policy: on where a CLI can take it; [policy] required = false lets a CLI start without it.\n")
 	}
 	printRules(stdout, s)
+	printPolicy(stdout, s)
 
 	fmt.Fprintln(stdout, "\nWhat each CLI gets, at its next launch or switch")
 	claude := s.Render(adapter.Claude)
@@ -65,6 +67,47 @@ func permissionsShow(args []string, stdout, stderr io.Writer) int {
 	printPermissionsTroubles(stdout, s)
 	fmt.Fprintln(stdout, "\nNot shown: OpenCode's Always allow, which it keeps in opencode.db beside its sign-ins, and aggy never opens that.")
 	return 0
+}
+
+// policyGroupNames are the safety policy's groups in a person's words.
+var policyGroupNames = map[string]string{
+	permissions.PolicyEnv:       "reading .env files (not .env.example, .env.sample, .env.template, .env.dist)",
+	permissions.PolicyKeys:      "reading private key files (*.pem, *.key, id_rsa and the like), strict",
+	permissions.PolicyPushMain:  "a push to main",
+	permissions.PolicyForce:     "a force push",
+	permissions.PolicyForceMain: "a force push to main or the default branch, strict",
+	permissions.PolicyRmRf:      "a recursive forced delete (rm -rf)",
+	permissions.PolicyReset:     "git reset --hard",
+	permissions.PolicyClean:     "git clean",
+}
+
+// printPolicy says how the safety policy reaches each CLI in this folder: each
+// group's setting, what pre-approved a rule, and what a CLI cannot express.
+func printPolicy(w io.Writer, s permissions.Set) {
+	cwd, _ := os.Getwd()
+	ds := policyPlan(true, cwd, s).Decide()
+	fmt.Fprintln(w, "\nSafety policy, on screen (a borrow child is always refused)")
+	for _, g := range permissions.PolicyGroups {
+		setting, from := "ask", "the default"
+		if k, ok := s.Policy[g]; ok {
+			setting, from = string(k), originName(s.PolicyFrom[g])
+		}
+		fmt.Fprintf(w, "  %s: %s [%s]  %s\n", g, setting, from, policyGroupNames[g])
+		for _, d := range ds {
+			if d.Group == g && d.Kind == permissions.Allow {
+				fmt.Fprintf(w, "    pre-approved: %s, by the allow %s [%s]\n", termsafe.Field(d.Text), termsafe.Field(d.By.Text), originName(d.By.Origin))
+			}
+		}
+	}
+	ask, deny := parity.ClaudePolicy(ds)
+	fmt.Fprintf(w, "  Claude Code: %d ask and %d deny rules; its prompt is the one that asks\n", len(ask), len(deny))
+	fmt.Fprintf(w, "  Grok Build: %d deny rules; Grok has no flag for an ask rule aggy can confirm, so these stay denials there\n", len(parity.GrokPolicy(ds)))
+	oAsk, oDeny := parity.OpenCodePolicy(ds, false)
+	fmt.Fprintf(w, "  OpenCode: %d shell asks and %d shell denies (all denies under --auto, which answers an ask); file reads stay refused by aggy's guard\n", len(oAsk), len(oDeny))
+	fmt.Fprintln(w, "  Codex: its rules file asks before each rule, in every repo; the file is global, so a")
+	fmt.Fprintln(w, "    setting or pre-approval here does not reach it, and it has no rule for file reads")
+	fmt.Fprintln(w, "  Strict rules are never pre-approved by an answer at a CLI's prompt or by a broad allow,")
+	fmt.Fprintln(w, "    only by an allow you add with aggy permissions add that names them")
 }
 
 // ruleCounts says how many rules of each kind.

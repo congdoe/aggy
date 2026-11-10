@@ -109,6 +109,11 @@ type Set struct {
 	Notes []string
 	// HeldLocal counts allows in a repo's settings.local.json waiting for trust.
 	HeldLocal int
+	// Policy is the person's setting for a safety policy group (ask or deny),
+	// from aggy's own file, this repo's over everywhere; PolicyFrom names its
+	// scope. A group not listed asks on screen.
+	Policy     map[string]Kind
+	PolicyFrom map[string]Origin
 }
 
 // Input says where to read from.
@@ -153,6 +158,8 @@ type RepoRules struct {
 	Allow []string `json:"allow,omitempty"`
 	Ask   []string `json:"ask,omitempty"`
 	Deny  []string `json:"deny,omitempty"`
+	// Policy sets safety policy groups to ask or deny for this repo.
+	Policy map[string]string `json:"policy,omitempty"`
 }
 
 // AggyFile is ~/.aggy/permissions.json: Claude's object, the same format,
@@ -160,6 +167,8 @@ type RepoRules struct {
 type AggyFile struct {
 	Permissions Object               `json:"permissions"`
 	Repos       map[string]RepoRules `json:"repos,omitempty"`
+	// Policy sets safety policy groups to ask or deny in every repo.
+	Policy map[string]string `json:"policy,omitempty"`
 }
 
 // ParseAggyFile decodes the file. A key aggy does not know is no error, since
@@ -197,7 +206,7 @@ func UnknownKeys(b []byte) []string {
 		}
 	}
 	for _, k := range slices.Sorted(maps.Keys(top)) {
-		if k != "$schema" && k != "permissions" && k != "repos" {
+		if k != "$schema" && k != "permissions" && k != "repos" && k != "policy" {
 			out = append(out, k)
 		}
 	}
@@ -205,7 +214,7 @@ func UnknownKeys(b []byte) []string {
 	var repos map[string]json.RawMessage
 	if json.Unmarshal(top["repos"], &repos) == nil {
 		for _, k := range slices.Sorted(maps.Keys(repos)) {
-			object("repos entry: ", repos[k], "allow", "ask", "deny")
+			object("repos entry: ", repos[k], "allow", "ask", "deny", "policy")
 		}
 	}
 	return out
@@ -422,6 +431,7 @@ func (s *Set) loadAggy(in Input) {
 		s.Notes = append(s.Notes, fmt.Sprintf("%s: aggy does not use %s", FileName, k))
 	}
 	s.addObject(f.Permissions, FromAggy, in.AggyFile, in.Trusted)
+	s.loadPolicy(f.Policy, FromAggy, in.AggyFile)
 	if m := f.Permissions.DefaultMode; m != "" {
 		if mode, err := CheckMode(m); err != nil {
 			s.Notes = append(s.Notes, FileName+": "+err.Error())
@@ -438,6 +448,7 @@ func (s *Set) loadAggy(in Input) {
 		if key == in.RepoKey || canonical(key) == in.RepoKey {
 			r := f.Repos[key]
 			s.addObject(Object{Allow: r.Allow, Ask: r.Ask, Deny: r.Deny}, FromAggyRepo, in.AggyFile, in.Trusted)
+			s.loadPolicy(r.Policy, FromAggyRepo, in.AggyFile)
 		}
 	}
 }

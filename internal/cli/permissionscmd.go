@@ -9,10 +9,12 @@ import (
 	"io/fs"
 	"os"
 	"slices"
+	"strings"
 
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/manifest"
+	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/patch"
 	"github.com/congdoe/aggy/internal/permissions"
 	"github.com/congdoe/aggy/internal/safefs"
@@ -34,6 +36,9 @@ the next launch or switch, and a deny always wins.
                              Remove one of aggy's rules, for this repo or --everywhere
   suggest [--all]            Propose rules from commands you ran in Claude Code,
                              in this repo or, with --all, every repo; you confirm each
+  policy [GROUP ask|deny]    List the safety policy's groups, or set one to ask
+                             (the default on screen) or deny, for this repo or
+                             --everywhere
 
   --everywhere   the rule holds in every repo, not only this one
   --dry-run      show the change and make none
@@ -49,6 +54,14 @@ In a repo you have not trusted (aggy trust), only known read-only forms apply, s
 as git status and ls, and anything else is held and named. A repo's committed rules
 and .aggy/config.toml never become allows. Claude and Grok still apply what they
 read from their own files themselves, whatever aggy's filter says.
+
+The safety policy (aggy policy --help) asks on screen where a CLI can ask. An
+allow you add that matches one of its rules pre-approves that rule, and add says
+so. Two groups are strict: a force push to main or the default branch, and
+reading private key files. Only an allow that names them, added here or in
+permissions.json, pre-approves them; a broad allow such as Bash(git push *) or
+an answer at a CLI's prompt does not, and suggest never proposes them. A deny,
+yours or a group set to deny, always wins over an allow.
 
 Changing rules is for you, at a terminal: a session's tool shell and aggy unwire
 from one are refused. That holds against mistakes, not a model that tries: it can
@@ -77,6 +90,8 @@ func runPermissions(args []string, stdout, stderr io.Writer) int {
 		return permissionsChange(args[1:], true, stdout, stderr)
 	case "suggest":
 		return permissionsSuggest(args[1:], stdout, stderr)
+	case "policy":
+		return permissionsPolicy(args[1:], stdout, stderr)
 	}
 	return cmdUsage(stderr, "permissions", fmt.Sprintf("unknown command %q", args[0]), permissionsUsage)
 }
@@ -292,10 +307,129 @@ func permissionsChange(args []string, remove bool, stdout, stderr io.Writer) int
 		return fail(diag.CodePermBadFile, err.Error())
 	}
 	fmt.Fprintf(stdout, "Done (run %s). It applies at the next launch or switch. aggy unwire --run %s undoes it, once any change made after it is undone.\n", runID, runID)
+	if kind == permissions.Allow && !remove {
+		if line := preApprovedLine(rule, cwd); line != "" {
+			fmt.Fprintln(stdout, line)
+		}
+	}
 	if kind == permissions.Allow && !remove && !in.Trusted {
 		if class, why := permissions.CheckAllow(rule); class == permissions.RepoCode {
 			fmt.Fprintf(stdout, "It applies only in a repo you trusted: %s. aggy trust <dir> does that.\n", termsafe.Line(why))
 		}
+	}
+	return 0
+}
+
+// preApprovedLine is the one line aggy permissions add prints for an allow
+// that pre-approves safety policy rules on screen, or "".
+func preApprovedLine(rule, cwd string) string {
+	rs := parity.PreApproves(rule, defaultBranches(cwd))
+	if len(rs) == 0 {
+		return ""
+	}
+	var groups []string
+	strict := false
+	for _, r := range rs {
+		if !slices.Contains(groups, r.Group) {
+			groups = append(groups, r.Group)
+		}
+		strict = strict || r.Strict
+	}
+	line := fmt.Sprintf("This pre-approves %d of the safety policy's rules (%s), so on screen they no longer ask", len(rs), strings.Join(groups, ", "))
+	if strict {
+		line += ", strict ones among them"
+	}
+	return line + "; a group set to deny still refuses. aggy permissions show lists them."
+}
+
+// permissionsPolicy is aggy permissions policy: with no arguments it lists the
+// groups, and with a group and ask or deny it sets one, through the manifest.
+func permissionsPolicy(args []string, stdout, stderr io.Writer) int {
+	const name = "permissions policy"
+	fl := flag.NewFlagSet(name, flag.ContinueOnError)
+	fl.SetOutput(io.Discard)
+	everywhere := fl.Bool("everywhere", false, "")
+	dryRun := fl.Bool("dry-run", false, "")
+	var pos []string
+	for rest := args; ; {
+		if err := fl.Parse(rest); err != nil {
+			return cmdUsage(stderr, name, err.Error(), permissionsUsage)
+		}
+		if fl.NArg() == 0 {
+			break
+		}
+		pos = append(pos, fl.Arg(0))
+		rest = fl.Args()[1:]
+	}
+	ctx := context.Background()
+	if len(pos) == 0 {
+		s, _, _, err := permissionsHere(ctx)
+		if err != nil {
+			return cmdErr(stderr, name, diag.CodeConfig, err)
+		}
+		printPolicy(stdout, s)
+		return 0
+	}
+	if len(pos) != 2 {
+		return cmdUsage(stderr, name, "want a group and ask or deny", permissionsUsage)
+	}
+	fail := func(code diag.Code, msg string) int { return permFail(stderr, name, code, msg, *dryRun) }
+	group, setting := pos[0], pos[1]
+	if err := permissions.CheckPolicySetting(group, setting); err != nil {
+		return fail(diag.CodePermBadRule, err.Error())
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fail(diag.CodePermBadFile, err.Error())
+	}
+	repoKey := permissionInput(cwd).RepoKey
+	if *everywhere {
+		repoKey = ""
+	} else if repoKey == "" {
+		return fail(diag.CodePermScope, "this folder is in no git repo, so name --everywhere")
+	}
+	path, err := permissionsFile()
+	if err != nil {
+		return fail(diag.CodeStore, err.Error())
+	}
+	src, hash, err := readPermissionsFile(path)
+	if err != nil {
+		return fail(diag.CodePermBadFile, err.Error())
+	}
+	cur, err := permissions.PolicySetting(src, group, repoKey)
+	if err != nil {
+		return fail(diag.CodePermBadFile, fmt.Sprintf("%s is not valid: %s; aggy doctor says where", path, err))
+	}
+	where := "this repo"
+	if repoKey == "" {
+		where = "every repo"
+	}
+	if cur == setting {
+		fmt.Fprintf(stdout, "%s is already %s for %s.\n", group, setting, where)
+		return 0
+	}
+	edit := permissions.PolicyEdit{Group: group, Setting: setting, RepoKey: repoKey}
+	ps := []patch.Patch{{File: path, ExpectedHash: hash, Mode: 0o600, Transform: edit.Apply}}
+	if *dryRun {
+		if _, err := manifest.Preview(stdout, ps); err != nil {
+			return 1
+		}
+		return 0
+	}
+	if err := personGate(os.Getenv); err != nil {
+		return fail(diag.CodeNotAtKeyboard, err.Error())
+	}
+	if !confirmed(stdout, fmt.Sprintf("Set the safety policy's %s to %s for %s?", group, setting, where)) {
+		fmt.Fprintln(stdout, "Nothing changed.")
+		return 1
+	}
+	runID, err := applyPatches(ctx, ps)
+	if err != nil {
+		return fail(diag.CodePermBadFile, err.Error())
+	}
+	fmt.Fprintf(stdout, "Done (run %s). It applies at the next launch or switch. aggy unwire --run %s undoes it, once any change made after it is undone.\n", runID, runID)
+	if setting == string(permissions.Deny) {
+		fmt.Fprintln(stdout, "Claude Code, Grok Build, and OpenCode now refuse these; Codex's rules file is global and still asks.")
 	}
 	return 0
 }
@@ -402,6 +536,11 @@ func permissionsSuggest(args []string, stdout, stderr io.Writer) int {
 		}
 		// The rules may have changed, or the filter, since it was counted.
 		if !suggest.Plain(c.Command) {
+			continue
+		}
+		// A strict policy rule is pre-approved only by a rule the person
+		// writes themselves, never by a count.
+		if slices.ContainsFunc(parity.PreApproves(rule, defaultBranches(c.Repo)), func(r parity.PolicyRule) bool { return r.Strict }) {
 			continue
 		}
 		shown++

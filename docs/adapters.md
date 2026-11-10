@@ -726,12 +726,17 @@ OpenCode takes exact commands in its rendered config (`parity.OpenCodeShared`).
 Codex takes none yet.
 
 The safety policy (design.md section 10) is per launch for Claude and
-Grok: Claude `--settings '{"permissions":{"deny":[...]}}'` when the probe
-finds `--settings`, Grok one `--deny <rule>` per rule when it finds
-`--deny` (Grok splits a `--deny` value on commas, so a rule holding one
-is refused). The rules are `parity.DenyRules`, in the `Read(...)` and
-`Bash(...)` syntax both CLIs document. Codex gets nothing on its argv; it
-reads `$CODEX_HOME/rules/aggy.rules`, written by `aggy policy wire`.
+Grok: Claude `--settings '{"permissions":{"ask":[...],"deny":[...]}}'` when
+the probe finds `--settings` (on screen the rules ask, T6967, from
+`InteractiveRequest.Ask`; a borrow child's reopened session and a group the
+person set to deny go in `deny`), Grok one `--deny <rule>` per rule when it
+finds `--deny`, on screen too, since its command line has no ask flag
+(Grok splits a `--deny` value on commas, so a rule holding one is refused).
+The rules are `parity.PolicyRules`, decided by `parity.PolicyPlan`, in the
+`Read(...)` and `Bash(...)` syntax both CLIs document. Codex gets nothing on
+its argv; it reads `$CODEX_HOME/rules/aggy.rules`, written by `aggy policy
+wire`, whose rules are `prompt` (forbidden under `codex exec`'s approval
+never).
 
 Artifacts are paths only; copying them is the borrow runner's job, through
 `internal/safefs` and the artifact gate (one link, made during the run,
