@@ -65,8 +65,9 @@ func (s *session) openCodeEvent(ev hookEvent) bool {
 			s.log(diag.Rec{Event: diag.EvGuardMissing, Code: diag.CodeGuardMissing, Msg: "no report from aggy's OpenCode guard"})
 			if !s.open {
 				s.pk.tell("aggy has no report from its guard in OpenCode, so its refusals may not be running.",
-					"OpenCode's own rules from aggy still hold. A plugin that fails to load gives no error, so aggy cannot say why;",
-					"quit and start again, or see aggy diag.")
+					"OpenCode's own rules from aggy still apply, but in a repo trusted for OpenCode without --auto the strict",
+					"ones only ask, and an Always allow OpenCode saved for one would now run it with no prompt. A plugin that",
+					"fails to load gives no error, so aggy cannot say why: quit and start again, or see aggy diag.")
 				s.openPicker()
 			}
 		}

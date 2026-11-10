@@ -65,6 +65,8 @@ var decideCodes = map[parity.Reason]diag.Code{
 	parity.ReasonUnknownInput: diag.CodeDecideUnreadable,
 	parity.ReasonTooLong:      diag.CodeDecideTooLong,
 	parity.ReasonProtected:    diag.CodeDecideProtected,
+	parity.ReasonOtherTool:    diag.CodeDecideOtherTool,
+	parity.ReasonPlanChanged:  diag.CodeDecidePlanChanged,
 }
 
 // hookDecide is aggy hook decide. On Claude it prints a PreToolUse decision,
@@ -105,11 +107,14 @@ func hookDecide(args []string, in io.Reader, stdout, stderr io.Writer) int {
 		if errors.Is(planErr, policyhook.ErrPlanChanged) {
 			code = diag.CodeDecidePlanChanged
 		}
-		d = policyhook.PlanFailed(policyhook.ClaudeMode(raw))
+		// Only a call the hook would judge asks (PR #129 re-review).
 		if v == adapter.OpenCode {
-			d = policyhook.PlanFailed("")
+			calls, ok := policyhook.OpenCodeCalls(raw, "")
+			d = policyhook.PlanFailed(!ok || len(calls) > 0, "")
 			out = policyhook.OpenCodeOutput(d)
 		} else {
+			calls, mode, ok := policyhook.ClaudeCalls(raw)
+			d = policyhook.PlanFailed(!ok || len(calls) > 0, mode)
 			out = policyhook.ClaudeOutput(d)
 		}
 		_, _ = stdout.Write(out)

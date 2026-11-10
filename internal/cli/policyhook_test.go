@@ -334,13 +334,19 @@ func TestPlanRewriteAsks(t *testing.T) {
 	if code, out := decide("default"); code != 0 || !strings.Contains(out, `"permissionDecision":"ask"`) {
 		t.Errorf("removed plan: %d %q, want ask", code, out)
 	}
+	// PR #129 re-review: a call the hook would not judge gets no opinion.
+	var out bytes.Buffer
+	web := `{"tool_name":"WebFetch","tool_input":{"url":"https://example.com"},"permission_mode":"default"}`
+	if code := hookWith([]string{"decide", "--vendor", "claude", "--plan", path, "--sha256", sum}, strings.NewReader(web), os.Getenv, &out, &bytes.Buffer{}); code != 0 || out.Len() != 0 {
+		t.Errorf("removed plan, WebFetch: %d %q, want no opinion", code, out.String())
+	}
 	stats := decideStats(context.Background())
 	var failures int64
 	for _, st := range stats {
 		failures += st.Failures()
 	}
-	if failures != 3 {
-		t.Errorf("failures %d, want 3: %+v", failures, stats)
+	if failures != 4 {
+		t.Errorf("failures %d, want 4: %+v", failures, stats)
 	}
 }
 

@@ -311,13 +311,21 @@ func ClaudeCalls(payload []byte) (calls []parity.Call, mode string, ok bool) {
 		}
 		return calls, in.PermissionMode, true
 	}
-	// A tool aggy does not know by name (PR #129 review, HIGH-3).
+	// A tool aggy does not know by name (PR #129 review, HIGH-3): judged, but
+	// never allowed, as a pre-approval is for the shell or Claude's own file
+	// tools only (PR #129 re-review).
+	other := func(calls []parity.Call, mode string, ok bool) ([]parity.Call, string, bool) {
+		for i := range calls {
+			calls[i].Other = true
+		}
+		return calls, mode, ok
+	}
 	if _, present := in.ToolInput["command"]; present {
-		return one(parity.CallShell, "command")
+		return other(one(parity.CallShell, "command"))
 	}
 	for _, k := range fileKeys {
 		if _, present := in.ToolInput[k]; present {
-			return one(parity.CallWrite, k)
+			return other(one(parity.CallWrite, k))
 		}
 	}
 	return nil, in.PermissionMode, true
@@ -351,17 +359,27 @@ func Judge(plan DecidePlan, calls []parity.Call, mode string, ok bool) parity.Ca
 	return noPrompt(d, plan.NoPrompt || NoPromptMode(mode))
 }
 
-// noPrompt turns an ask into a deny where no prompt can show.
+// noPrompt turns an ask into a deny where no prompt can show. A policy match
+// says so (ReasonNoPrompt); any other reason is kept, so the refusal says
+// what failed.
 func noPrompt(d parity.CallDecision, no bool) parity.CallDecision {
 	if d.Verdict == parity.VerdictAsk && no {
-		d.Verdict, d.Reason = parity.VerdictDeny, parity.ReasonNoPrompt
+		d.Verdict = parity.VerdictDeny
+		if d.Reason == parity.ReasonPolicyMatch {
+			d.Reason = parity.ReasonNoPrompt
+		}
 	}
 	return d
 }
 
-// PlanFailed is the decision when the plan is missing, unreadable, or changed:
-// ask, or deny where the payload's mode shows no prompt. Never allow.
-func PlanFailed(mode string) parity.CallDecision {
+// PlanFailed is the decision when the plan is missing, unreadable, or
+// changed: for a call the hook would judge (judged), ask, or deny where the
+// payload's mode shows no prompt; for any other, no opinion, so a web fetch
+// or a to-do update goes on as without aggy (PR #129 re-review). Never allow.
+func PlanFailed(judged bool, mode string) parity.CallDecision {
+	if !judged {
+		return parity.CallDecision{Verdict: parity.VerdictNone, Reason: parity.ReasonNoMatch}
+	}
 	return noPrompt(parity.CallDecision{Verdict: parity.VerdictAsk, Reason: parity.ReasonPlanChanged}, NoPromptMode(mode))
 }
 
@@ -437,10 +455,26 @@ func claudeSettingsPath(p string) bool {
 }
 
 // protectedWords are the texts that make a shell command name a protected
-// file, lower case: aggy's plan file and state folders, and a Claude settings
-// file's name. ".claude" with "settings" anywhere counts too, as does ".aggy"
-// with "permissions" or "run".
+// file, lower case: aggy's plan file and its run and permissions paths, and a
+// Claude settings file's name. ".claude" with "settings" anywhere counts too,
+// as does ".aggy" with "permissions.json" (cd ~/.aggy, then the file).
 var protectedWords = []string{"policy-decide", ".aggy/run", ".aggy/permissions", "settings.local.json", "managed-settings"}
+
+// holdsPath reports w in f ending a path part: not followed by a letter,
+// digit, or _, so .aggy/run matches .aggy/run/x and not .aggy/runner.
+func holdsPath(f, w string) bool {
+	for from := 0; ; {
+		i := strings.Index(f[from:], w)
+		if i < 0 {
+			return false
+		}
+		end := from + i + len(w)
+		if end == len(f) || !strings.ContainsRune("abcdefghijklmnopqrstuvwxyz0123456789_", rune(f[end])) {
+			return true
+		}
+		from += i + 1
+	}
+}
 
 // protectedText reports a shell command whose text, in any of the matcher's
 // spellings (raw, continuations joined, quotes and backslashes gone), and
@@ -451,7 +485,7 @@ func protectedText(cmd string, protected []string) bool {
 	for _, f := range []string{cmd, joined, bare} {
 		f = strings.ToLower(f)
 		for _, w := range protectedWords {
-			if strings.Contains(f, w) {
+			if holdsPath(f, w) {
 				return true
 			}
 		}
@@ -463,7 +497,7 @@ func protectedText(cmd string, protected []string) bool {
 		if strings.Contains(f, ".claude") && strings.Contains(f, "settings") {
 			return true
 		}
-		if strings.Contains(f, ".aggy") && (strings.Contains(f, "permissions") || strings.Contains(f, "run")) {
+		if strings.Contains(f, ".aggy") && strings.Contains(f, "permissions.json") {
 			return true
 		}
 	}
@@ -477,10 +511,14 @@ const (
 	reasonAsk       = "aggy's safety policy (%s): approve this yourself"
 	reasonUnread    = "aggy could not read this call, so it asks: approve this yourself"
 	reasonTooLong   = "aggy does not scan a call this long, so it asks: approve this yourself"
-	reasonProtected = "this touches aggy's own files or a Claude settings file, so aggy asks: approve this yourself"
+	reasonProtected = "this touches aggy's own files or a Claude settings file, so it asks: approve this yourself"
 	reasonPlan      = "aggy's decision plan for this session changed or could not be read, so it asks: approve this yourself"
 	reasonDeny      = "aggy's safety policy refuses this: you set %s to deny (aggy permissions policy)"
 	reasonNoPrompt  = "aggy's safety policy (%s) asks about this, and this session cannot show a prompt, so it is refused"
+	// reasonAskTail ends each ask above; reasonRefusedTail replaces it where
+	// no prompt can show.
+	reasonAskTail     = ", so it asks: approve this yourself"
+	reasonRefusedTail = ", and this session cannot show a prompt, so it is refused"
 )
 
 // ClaudeOutput is the hook's stdout for d: a PreToolUse decision
@@ -493,6 +531,14 @@ func ClaudeOutput(d parity.CallDecision) []byte {
 	if group == "" {
 		group = "an unreadable call"
 	}
+	// What asked, for a reason other than a plain policy match; where no
+	// prompt can show, the same words say why the call was refused.
+	what := map[parity.Reason]string{
+		parity.ReasonUnknownInput: reasonUnread,
+		parity.ReasonTooLong:      reasonTooLong,
+		parity.ReasonProtected:    reasonProtected,
+		parity.ReasonPlanChanged:  reasonPlan,
+	}[d.Reason]
 	switch {
 	case d.Verdict == parity.VerdictNone:
 		return nil
@@ -500,16 +546,12 @@ func ClaudeOutput(d parity.CallDecision) []byte {
 		why = fmt.Sprintf(reasonAllow, group)
 	case d.Reason == parity.ReasonNoPrompt:
 		why = fmt.Sprintf(reasonNoPrompt, group)
+	case what != "" && d.Verdict == parity.VerdictDeny:
+		why = strings.TrimSuffix(what, reasonAskTail) + reasonRefusedTail
 	case d.Verdict == parity.VerdictDeny:
 		why = fmt.Sprintf(reasonDeny, group)
-	case d.Reason == parity.ReasonUnknownInput:
-		why = reasonUnread
-	case d.Reason == parity.ReasonTooLong:
-		why = reasonTooLong
-	case d.Reason == parity.ReasonProtected:
-		why = reasonProtected
-	case d.Reason == parity.ReasonPlanChanged:
-		why = reasonPlan
+	case what != "":
+		why = what
 	default:
 		why = fmt.Sprintf(reasonAsk, group)
 	}

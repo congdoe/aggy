@@ -267,6 +267,7 @@ var (
 	CodeDecidePlanChanged = Code{"decision.plan_changed"}
 	CodeDecideProtected   = Code{"decision.protected_path"}
 	CodeDecideTooLong     = Code{"decision.call_too_long"}
+	CodeDecideOtherTool   = Code{"decision.other_tool"}
 	CodeDecideFallback    = Code{"decision.fallback"}
 	CodeTrustBadDir       = Code{"trust.bad_dir"}
 	CodeTrustBadFile      = Code{"trust.bad_file"}
@@ -499,6 +500,7 @@ var codes = []CodeInfo{
 	{CodeDecidePlan, false, "The hook could not read its launch's decision plan (missing, unreadable, or not valid), so it asked about the call, or refused it where no prompt can show, and never allowed it.", "Quit and start the session again; aggy doctor."},
 	{CodeDecidePlanChanged, false, "The launch's decision plan no longer matched the SHA-256 the launch put in the hook's command: something changed it during the session, so the hook asked about the call (or refused it where no prompt can show) and never allowed it.", "Quit and start the session again; if it happens again, look for what in the session writes to aggy's run folder."},
 	{CodeDecideProtected, false, "The call writes, or a shell command names, aggy's own files (its run folder, the decision plan, its permissions file) or a Claude settings file, so the hook asked about it, whatever else it matched.", "Approve it at the prompt if you meant it."},
+	{CodeDecideOtherTool, false, "A tool other than the shell or Claude's own file tools (an MCP tool, say) carried text you pre-approved; a pre-approval is not for that tool, so the hook gave no opinion and the CLI's own permission flow decided.", "Nothing; approve it at the CLI's prompt if it asks."},
 	{CodeDecideTooLong, false, "The call's command or path was longer than the hook scans (64 KiB), so it asked at once rather than judge it.", "Approve it at the prompt, or run it as a script file."},
 	{CodeDecideFallback, false, "aggy's policy decision hook failed or was missing, so its wrapper asked about the call (or refused it where no prompt can show) without judging it.", "aggy doctor for failures by CLI version; check that aggy is still installed at the path the launch used."},
 	{CodeGuardMissing, false, "aggy's OpenCode guard did not report from the launch's folder in time. OpenCode's rules from aggy's config still apply; the guard's own refusals may not.", "Quit and start again; aggy doctor for the CLI's version. A same-user process can overwrite or unload the plugin."},
