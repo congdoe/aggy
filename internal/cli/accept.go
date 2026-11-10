@@ -320,6 +320,10 @@ func rejectWith(args []string, env borrowEnv, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, acceptUsage)
 		return 0
 	}
+	if err := shellGate(os.Getenv, isTerminal(os.Stdin)); err != nil {
+		refuse(context.Background(), stderr, "reject", diag.EvAcceptRefused, diag.CodeNoTerminal, err.Error(), errRec(diag.Rec{}, err))
+		return 1
+	}
 	id, _, s, stateDir, err := openEdit(args)
 	if err != nil {
 		return editUsage(stderr, "reject", diag.EvAcceptRefused, err, acceptUsage)
@@ -343,6 +347,10 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
 		fmt.Fprint(stdout, acceptUsage)
 		return 0
+	}
+	if err := shellGate(os.Getenv, tty); err != nil {
+		refuse(context.Background(), stderr, "accept", diag.EvAcceptRefused, diag.CodeNoTerminal, err.Error(), errRec(diag.Rec{}, err))
+		return 1
 	}
 	if err := acceptOS(); err != nil {
 		refuse(context.Background(), stderr, "accept", diag.EvAcceptRefused, diag.CodeAcceptOS, err.Error(), errRec(diag.Rec{}, err))

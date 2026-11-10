@@ -215,6 +215,9 @@ func toolSwitch(ctx context.Context, a toolArgs, on bool, in io.Reader, tty bool
 	if err := delegated(); err != nil {
 		return err
 	}
+	if err := shellGate(os.Getenv, tty); err != nil {
+		return err
+	}
 	name := a.pos[0]
 	if !tooldef.ValidName(name) {
 		return withCode(diag.CodeToolUnknown, fmt.Errorf("%q is not a tool name", name))

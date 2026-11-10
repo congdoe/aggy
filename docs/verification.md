@@ -829,7 +829,11 @@ Docs and source only, not run live (read 2026-11-09). What aggy relies on:
   with `command_name`, `command_args`, and the original `prompt`, and blocks the
   same way. The docs do not say outright whether a blocked prompt's text goes
   back to the input, nor which of the two hooks a skill picked from the `/` menu
-  sends: unverified.
+  sends: unverified. Nor is it recorded that Claude at the tested version
+  accepts a `UserPromptExpansion` entry in `settings.json`, so `aggy hooks
+  install` does not write one (R121); a live check would be: add it by hand to
+  a scratch `CLAUDE_CONFIG_DIR`'s settings, start `claude --version` and one
+  session, and see no settings error.
 - **Claude `disable-model-invocation: true`** (`code.claude.com/docs/en/skills.md`):
   "Description not in context, full skill loads when invoked"; `argument-hint`
   is the autocomplete hint.

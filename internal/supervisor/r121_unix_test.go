@@ -214,3 +214,28 @@ func TestNoCatchOnAltScreen(t *testing.T) {
 		})
 	}
 }
+
+// TestAcceptPageOffersChecks (R121): accept's page says y applies it with the
+// checks skipped, and offers c to run them first, as a terminal does; y still
+// applies after c.
+func TestAcceptPageOffersChecks(t *testing.T) {
+	s, ran := viewSess(t, adapter.Claude, "Not applied: run again with --yes")
+	typeLine(s, "/aggy accept 9f2")
+	settle(t, s)
+	if scr := screenOf(t, s); !strings.Contains(scr, "y applies it, checks skipped") || !strings.Contains(scr, "c runs the checks first") {
+		t.Fatalf("the page does not say the checks are skipped, or offer them: %q", scr)
+	}
+	s.viewInput([]byte("c"))
+	settle(t, s)
+	s.viewInput([]byte("c"))
+	s.viewInput([]byte("y"))
+	settle(t, s)
+	var got []string
+	for _, r := range *ran {
+		got = append(got, strings.Join(r, " "))
+	}
+	want := "accept 9f2 false|check 9f2 --yes false|accept 9f2 --yes false"
+	if strings.Join(got, "|") != want {
+		t.Fatalf("ran %q, want %q", got, want)
+	}
+}

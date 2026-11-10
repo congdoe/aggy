@@ -68,6 +68,11 @@ type Command struct {
 	Confirm      []string
 	ConfirmLabel string
 	Answer       bool
+	// Also, when set, is a step the person may take first with c, before y,
+	// on that same page; AlsoLabel names it. accept offers the repo's checks
+	// so, as accept at a terminal does (R121).
+	Also      []string
+	AlsoLabel string
 	// KeyboardOnly: it changes something, so it is taken only from the
 	// keyboard, never from a hook, which any process in the CLI's tree can
 	// send. No skill the model can call runs it.
@@ -276,7 +281,9 @@ func parseAggy(sub string, args []string) (Command, bool) {
 			case "check":
 				c.Args, c.Confirm, c.ConfirmLabel = []string{"check", id}, []string{"check", id, "--yes"}, "y runs the repo's checks"
 			case "accept":
-				c.Args, c.Confirm, c.ConfirmLabel = []string{"accept", id}, []string{"accept", id, "--yes"}, "y applies it"
+				c.Args, c.Confirm = []string{"accept", id}, []string{"accept", id, "--yes"}
+				c.ConfirmLabel = "y applies it, checks skipped"
+				c.Also, c.AlsoLabel = []string{"check", id, "--yes"}, "c runs the checks first"
 			case "reject":
 				c.Text = "Reject edit borrow " + id + ": aggy removes its worktree and its branch."
 				c.Confirm, c.ConfirmLabel = []string{"reject", id}, "y rejects it"

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/tooldef"
 )
 
@@ -53,30 +54,36 @@ func sessionAggy(args []string, answer bool) string {
 			toolWith(args[1:], none, false, w, w)
 			break
 		}
-		fmt.Fprintln(w, "aggy tool takes on, off, or status here.")
+		sessionRefuse(w, "tool", "aggy tool takes on, off, or status here")
 	case "trust":
 		if len(args) > 1 && args[len(args)-1] == "." {
 			Run(args, w, w)
 			break
 		}
-		fmt.Fprintln(w, "Inside a session, aggy trust takes only this folder.")
+		sessionRefuse(w, "trust", "inside a session, aggy trust takes only this folder")
 	case "sessions", "session", "usage", "stats", "log", "doctor", "diag", "brief", "inbox", "permissions":
 		if args[0] == "diag" && len(args) > 1 && args[1] != "show" && args[1] != "-n" {
-			fmt.Fprintln(w, "Inside a session, aggy diag shows the log or one run.")
+			sessionRefuse(w, "diag", "inside a session, aggy diag shows the log or one run")
 			break
 		}
 		if args[0] == "permissions" && (len(args) != 2 || args[1] != "list" && args[1] != "show") {
-			fmt.Fprintln(w, "Inside a session, aggy permissions lists and shows the rules; change them in a terminal.")
+			sessionRefuse(w, "permissions", "inside a session, aggy permissions lists and shows the rules; change them in a terminal")
 			break
 		}
 		Run(args, w, w)
 	default:
-		fmt.Fprintf(w, "aggy %s is not a command for inside a session.\n", args[0])
+		sessionRefuse(w, args[0], "not a command for inside a session")
 	}
 	if w.left <= 0 {
 		buf.WriteString("\n[cut: more than 1 MiB]\n")
 	}
 	return buf.String()
+}
+
+// sessionRefuse refuses a session command as every refusal does: logged, with
+// its code and run id on the line (docs/logging.md).
+func sessionRefuse(w io.Writer, cmd, msg string) {
+	refuse(context.Background(), w, cmd, diag.EvCommandRefused, diag.CodeUsage, msg, diag.Rec{})
 }
 
 // withAnswer makes keyboard answer y (answer) or no, until the func it returns

@@ -20,6 +20,6 @@ docs/design.md section 9. The command skills beside it (`switch`,
 
 Estimated offline as bytes / 4, rounded up (`skills.Estimate`; no
 tokenizer or model call): about 75 tokens every turn for the frontmatter
-a CLI keeps loaded, and about 1,370 more when the skill is invoked. A test
+a CLI keeps loaded, and about 1,440 more when the skill is invoked. A test
 holds them under 150 and 1,500; `aggy skill status` prints the current
 numbers.

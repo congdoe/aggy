@@ -75,6 +75,10 @@ answer it:
 - Commands that change things are the user's to run: `setup`, `hooks`,
   `policy`, and `skill` in a terminal; `tool on|off`, `trust`, `accept`,
   and `reject` there or typed as `/aggy <command>` at the prompt.
+- If `/aggy accept`, `reject`, `check`, `tool`, `permissions`, or `trust`
+  reaches you as a prompt, aggy did not catch it. Never run it yourself,
+  with or without `--yes`: tell the user to type it again at the prompt,
+  where aggy shows what it does first, or to run it in a terminal.
 
 ## Rules
 

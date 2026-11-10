@@ -28,6 +28,10 @@ func TestSessionAggyRefuses(t *testing.T) {
 		if !strings.Contains(got, c.want) {
 			t.Errorf("sessionAggy(%q) = %q, want %q in it", c.args, got, c.want)
 		}
+		// R121: a refusal carries its code and run id, as every refusal does.
+		if c.args[len(c.args)-1] != "--help" && !strings.Contains(got, "[cli.usage · run ") {
+			t.Errorf("sessionAggy(%q) = %q, with no [cli.usage · run <id>] tag", c.args, got)
+		}
 	}
 }
 

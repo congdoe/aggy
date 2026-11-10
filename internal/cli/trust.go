@@ -340,6 +340,27 @@ func personGate(getenv func(string) string) error {
 	return nil
 }
 
+// shellGate refuses a change a model could make for itself from the session's
+// own tool shell (R121): accept, reject, and tool on|off. It refuses in a
+// borrow child, and in a shell with a session's variables and no terminal,
+// which is how a model's tool shell looks; a person at a terminal, or aggy's
+// own in-session page (no such variables in aggy's process), passes. Like
+// personGate it guards against mistakes, not a determined model.
+func shellGate(getenv func(string) string, tty bool) error {
+	if getenv("AGGY_DELEGATED") != "" {
+		return withCode(diag.CodeNoTerminal, errors.New("a borrow child cannot change this; only you can"))
+	}
+	if tty {
+		return nil
+	}
+	for _, v := range []string{"AGGY_SOCKET", "AGGY_PARENT", "AGGY_VENDOR"} {
+		if getenv(v) != "" {
+			return withCode(diag.CodeNoTerminal, errors.New("this looks like a session's own tool shell with no terminal, and a model can use that; type it at the prompt (aggy catches it there and asks first), or run it yourself at a terminal"))
+		}
+	}
+	return nil
+}
+
 // confirmed asks, and takes only y or yes.
 func confirmed(stdout io.Writer, q string) bool {
 	fmt.Fprintf(stdout, "%s [y/N] ", q)
