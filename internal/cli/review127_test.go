@@ -320,9 +320,8 @@ func TestR127PickerPiped(t *testing.T) {
 	}
 }
 
-// TestR127ListingCost: -c reads the head of as few files as it needs, a list
-// at most what it shows, and a look that runs past nativeBudget gives up and
-// says so, going on with aggy's own index.
+// TestR127ListingCost: -c reads the head of as few files as it needs, and a
+// list at most what it shows (TestNativeBudgetTimeout has the time limit).
 func TestR127ListingCost(t *testing.T) {
 	home, cwd := nativeWorld(t)
 	big := strings.Repeat(`{"type":"assistant","message":{"content":"`+strings.Repeat("y", 4000)+`"}}`+"\n", 50)
@@ -342,6 +341,9 @@ func TestR127ListingCost(t *testing.T) {
 		writeNativeAt(t, filepath.Join(home, ".codex", "sessions", day, name), string(meta)+"\n", at)
 	}
 	s := testIndex(t)
+	// Head reads are the point, not time: a budget no load runs past.
+	defer func(d time.Duration) { nativeBudget = d }(nativeBudget)
+	nativeBudget = time.Hour
 	for _, v := range []adapter.Vendor{adapter.Claude, adapter.Codex} {
 		before := nativeHeadReads.Load()
 		ns, _ := nativeSessions(&sessionFiles{}, v, cwd)
@@ -356,9 +358,17 @@ func TestR127ListingCost(t *testing.T) {
 			t.Errorf("%s -c: %v adopted %v with %d head reads", v, err, p.adopted, n)
 		}
 	}
-	// Too slow: -c says so and goes on with aggy's index alone.
+}
+
+// TestNativeBudgetTimeout: a look at the vendors' folders that runs past
+// nativeBudget gives up, says so, and -c goes on with aggy's own index; a
+// blocking fake look stands in for a slow disk, and the budget is tiny.
+func TestNativeBudgetTimeout(t *testing.T) {
+	home, cwd := nativeWorld(t)
+	claudeNativeAt(t, home, cwd, natA, "here", time.Now())
+	s := testIndex(t)
 	defer func(d time.Duration, h func()) { nativeBudget, nativeScanHook = d, h }(nativeBudget, nativeScanHook)
-	nativeBudget = 10 * time.Millisecond
+	nativeBudget = time.Millisecond
 	release := make(chan struct{})
 	defer close(release)
 	nativeScanHook = func() { <-release }
@@ -366,6 +376,10 @@ func TestR127ListingCost(t *testing.T) {
 	_, err := plan(context.Background(), s, config.Default(), cwd, target{Continue: true, Vendor: adapter.Claude}, time.Now(), &errb)
 	if !errors.Is(err, errNoSession) || !strings.Contains(errb.String(), nativeSlowNote) {
 		t.Errorf("slow -c: %v, said %q", err, errb.String())
+	}
+	cs, slow, err := sessionChoices(context.Background(), s, cwd, []adapter.Vendor{adapter.Claude}, &sessionFiles{})
+	if err != nil || !slow || len(cs) != 0 {
+		t.Errorf("slow list: %+v slow %v, %v", cs, slow, err)
 	}
 }
 
@@ -386,5 +400,24 @@ func TestR127ContinueInstalled(t *testing.T) {
 	p, err = plan(context.Background(), s, config.Default(), cwd, target{Continue: true}, time.Now(), &errb)
 	if err != nil || p.resume != natB {
 		t.Errorf("-c not limited: %v resume %q, want codex's %s", err, p.resume, natB)
+	}
+}
+
+// TestCodexNativeNewestFirst: Codex's rollouts are walked newest first, across
+// date folders, and the walk stops once it has what it was asked for.
+func TestCodexNativeNewestFirst(t *testing.T) {
+	home, cwd := nativeWorld(t)
+	now := time.Now()
+	ids := []string{natA, natB, natC, natD} // oldest first, a day apart
+	for i, id := range ids {
+		codexNativeAt(t, home, cwd, id, "cli", "p", now.Add(time.Duration(i-len(ids))*24*time.Hour))
+	}
+	var seen []string
+	got := codexNative(filepath.Join(home, ".codex"), 2, func(n *nativeSession) bool {
+		seen = append(seen, n.ID)
+		return n.ID != natD
+	})
+	if len(got) != 2 || got[0].ID != natC || got[1].ID != natB || strings.Join(seen, ",") != natD+","+natC+","+natB {
+		t.Errorf("got %+v after accepting %v; want C and B, newest first, A never looked at", got, seen)
 	}
 }
