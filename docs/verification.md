@@ -1695,6 +1695,42 @@ Real OpenCode 2.2.5 against a loopback fake model in a temp `HOME`, with no cred
 - With a `read` allow on `*`, a read through a repo symlink sent a canary to the model with no prompt, past a deny on the target's name. The direct outside path prompted.
 - `run -m` with a denied provider, a resume after its provider was denied, and no allowed provider each exited 1 with no request. `mini -m` is untested.
 
+## Native sessions (T6965, 2026-11-10)
+
+Docs and source only; no vendor CLI was run and no real session file was read.
+The tests build session stores by hand under a temp HOME.
+
+- **Claude, doc-verified** (code.claude.com/docs/en/sessions, read
+  2026-11-10): transcripts are JSONL at
+  `~/.claude/projects/<project>/<session-id>.jsonl`, `<project>` being the
+  working directory "with non-alphanumeric characters replaced by `-`"; a
+  converted name over 200 characters is cut to 200 and "a hash of the full
+  path" added; `CLAUDE_CONFIG_DIR` moves the store, and with it set,
+  `CLAUDE_CODE_PROJECT_DIR_NAME` (1 to 64 letters, digits, hyphens, or
+  underscores) names the folder instead. `claude --resume <name>` resumes a
+  named session, an ambiguous name opens the picker, `claude --resume` alone
+  opens the picker, `--resume` also takes a transcript's absolute path, and an
+  id is searched for in every project. The picker and `--continue` leave out
+  `claude -p` and Agent SDK sessions. The entry format "is internal to Claude
+  Code and changes between versions". cli-reference (same day): `-r` "Resume a
+  specific session by ID or name, or show an interactive picker".
+  **Unverified:** the hash (so aggy lists nothing for such a folder), whether
+  a non-ASCII letter counts as alphanumeric (likewise), and which field marks
+  a `-p` session (so aggy's list may show one). This settles the folder name
+  `internal/transcript` and `sessionFiles` took from grok-build, for a short
+  ASCII path.
+- **Codex, source-verified**: as "Session file formats" above, plus
+  `session_meta`'s `source` and `cwd` (`rolloutInDir`, protocol.rs#L3275 at
+  6aaac694). Whether `codex resume` takes a thread name is not recorded, so
+  aggy passes Codex only ids.
+- **Grok**: the session folder as above; `-r`/`--resume
+  [<SESSION_ID_OR_TITLE>]` from `grok --help` at 1.0.77 ("Grok's flags"
+  below). The cwd encoding is `grok.EncodeCwd`'s reading, unconfirmed.
+- To confirm live (owner): in a scratch repo, one turn in plain `claude`,
+  then `aggy -r` lists it with its first prompt and reopens it; one turn in
+  `claude -n demo`, then `aggy claude -r demo` and, after quitting, `aggy
+  claude -c` reopens the same session.
+
 ## Claude Code session file fields (2026-11-06)
 
 Read on the owner's machine, by key and count only, from 39 session files of the last 30 days, at the installed Claude Code. Not a documented format. Shell calls appear as `tool_use` blocks named `Bash` with `input.command`; session lines carry `permissionMode` and `cwd`; `tool_result` blocks carry `tool_use_id` and `is_error` when a call failed. A full scan of 730 MB in Python took 2.7 seconds. `is_error` does not separate a denied command from a failed one. Not every line carries `permissionMode`, so `internal/suggest` keeps the last one a file named. Its fixture, `internal/suggest/testdata/session.jsonl`, is built by hand from this list, not from a real session; a live check should compare it with a current session file's keys.

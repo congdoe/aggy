@@ -122,6 +122,29 @@ func (s *Store) Children(ctx context.Context, parentID string) ([]Child, error) 
 	return out, rows.Err()
 }
 
+// ChildBySession returns the child, of any kind, that holds vendor session id
+// of vendor, or ErrNotFound. The unique index on (vendor, vendor_session_id)
+// makes it at most one, which is what keeps a native session adopted once.
+func (s *Store) ChildBySession(ctx context.Context, vendor, id string) (Child, error) {
+	if id == "" {
+		return Child{}, ErrNotFound
+	}
+	var c Child
+	var created, active int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT `+childCols+` FROM children WHERE vendor = ? AND vendor_session_id = ?`, capMillis(), vendor, id).
+		Scan(&c.ID, &c.ParentID, &c.Vendor, &c.VendorSessionID, &c.Kind, &c.Title, &c.Model,
+			&c.Cwd, &c.TranscriptPath, &c.Status, &created, &active, &c.VendorHome, &c.FileSeen)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Child{}, ErrNotFound
+	}
+	if err != nil {
+		return Child{}, err
+	}
+	c.CreatedAt, c.LastActive = fromMillis(created), fromMillis(active)
+	return c, nil
+}
+
 // ChildParent returns the id of the child's parent, ErrNotFound when
 // there is no such child.
 func (s *Store) ChildParent(ctx context.Context, childID string) (string, error) {

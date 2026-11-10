@@ -121,6 +121,9 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 		{"new", adapter.InteractiveRequest{}, nil},
 		{"new with an id", adapter.InteractiveRequest{SessionID: sid}, []string{"--session-id", sid}},
 		{"resume", adapter.InteractiveRequest{Resume: rid}, []string{"--resume", rid}},
+		// T6965: a name the CLI resolves, as one word right after --resume.
+		{"resume by name", adapter.InteractiveRequest{ResumeName: "auth refactor", Extra: []string{"--permission-mode", "plan"}},
+			[]string{"--resume", "auth refactor", "--permission-mode", "plan"}},
 		{"fork with a brief", adapter.InteractiveRequest{Resume: rid, Fork: true, SessionID: sid, BriefFile: brief},
 			[]string{"--resume", rid, "--fork-session", "--session-id", sid, adapter.BriefPrompt(brief)}},
 		{"resume with memory and a brief", adapter.InteractiveRequest{Resume: rid, MemoryFile: brief + ".mem", BriefFile: brief},

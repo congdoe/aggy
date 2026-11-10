@@ -141,6 +141,9 @@ func (a Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, e
 	if len(req.Extra) > 0 {
 		return adapter.Command{}, errors.New("opencode: aggy passes none of its other flags yet")
 	}
+	if req.ResumeName != "" {
+		return adapter.Command{}, errors.New("opencode: aggy resumes OpenCode sessions by aggy's id only")
+	}
 	l := req.OpenCode
 	if l == nil {
 		return adapter.Command{}, errors.New("opencode: no launch config, so aggy's rules would not reach it")

@@ -262,6 +262,11 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 	}
 	args = append(args, m...)
 	s, err := sessionArgs(req.SessionID, req.Resume, req.Fork)
+	if req.ResumeName != "" {
+		// -r/--resume [<SESSION_ID_OR_TITLE>] (grok --help at 1.0.77,
+		// docs/verification.md, "Grok's flags").
+		s, err = adapter.ResumeNameArgs(req)
+	}
 	if err != nil {
 		return adapter.Command{}, err
 	}

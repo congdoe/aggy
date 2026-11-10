@@ -334,6 +334,8 @@ func TestInteractiveGoldenArgv(t *testing.T) {
 		{"new with an id and a brief", adapter.InteractiveRequest{SessionID: sid, BriefFile: brief},
 			[]string{"--no-alt-screen", "--session-id", sid, adapter.BriefPrompt(brief)}},
 		{"resume", adapter.InteractiveRequest{Resume: sid}, []string{"--no-alt-screen", "--resume", sid}},
+		// T6965: a title the CLI resolves (-r/--resume [<SESSION_ID_OR_TITLE>]).
+		{"resume by title", adapter.InteractiveRequest{ResumeName: "my-title"}, []string{"--no-alt-screen", "--resume", "my-title"}},
 		{"fork", adapter.InteractiveRequest{Resume: sid, Fork: true}, []string{"--no-alt-screen", "--resume", sid, "--fork-session"}},
 		{"memory and a brief", adapter.InteractiveRequest{Memory: "notes, with a comma", BriefFile: brief},
 			[]string{"--no-alt-screen", "--rules", "notes, with a comma", adapter.BriefPrompt(brief)}},

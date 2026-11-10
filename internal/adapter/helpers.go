@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/congdoe/aggy/internal/safefs"
 )
@@ -110,6 +112,48 @@ func SubDirs(dir string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// MaxResumeName bounds a session name aggy passes to a CLI's --resume.
+const MaxResumeName = 200
+
+// ValidResumeName returns an error unless name may go to a CLI's --resume as
+// a session's name (T6965). It is only ever that flag's value, so it must not
+// read as a flag (a leading "-"), a path (Claude's --resume takes a
+// transcript's absolute path too, code.claude.com/docs/en/sessions: so no "/"
+// or "\" anywhere, and no leading "." or "~"), or carry a control, format, or
+// invalid byte; and it is at most MaxResumeName bytes.
+func ValidResumeName(name string) error {
+	switch {
+	case strings.TrimSpace(name) == "":
+		return errors.New("an empty session name")
+	case len(name) > MaxResumeName:
+		return fmt.Errorf("a session name over %d bytes", MaxResumeName)
+	case !utf8.ValidString(name):
+		return errors.New("a session name that is not UTF-8")
+	case strings.HasPrefix(name, "-"):
+		return errors.New("a session name that starts with -, which the CLI would read as a flag")
+	case strings.ContainsAny(name, `/\`) || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "~"):
+		return errors.New("a session name that could be a path")
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return errors.New("a session name with a control or format character")
+		}
+	}
+	return nil
+}
+
+// ResumeNameArgs is --resume <name> after ValidResumeName, for a request
+// with no other session flag (InteractiveRequest.ResumeName).
+func ResumeNameArgs(req InteractiveRequest) ([]string, error) {
+	if req.SessionID != "" || req.Resume != "" || req.Fork {
+		return nil, errors.New("adapter: a session name with another session flag")
+	}
+	if err := ValidResumeName(req.ResumeName); err != nil {
+		return nil, fmt.Errorf("adapter: %w", err)
+	}
+	return []string{"--resume", req.ResumeName}, nil
 }
 
 func isNotExist(err error) bool {
