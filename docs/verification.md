@@ -438,8 +438,9 @@ Codex only, source only: the `[projects."<path>"]` table's `trust_level` in
 trust dialog writes the same entry, and what each CLI exits with when its
 dialog is declined, are unverified: T6895 and T6896 wait for the owner to
 accept trust dialogs. To confirm: decline each CLI's dialog once under `aggy`,
-note the exit code, then check `config.toml` after accepting Codex's. Claude's
-and Grok's stored answers are not recorded, so doctor says nothing for them.
+note the exit code, then check `config.toml` after accepting Codex's. Grok's
+stored answer is not recorded; Claude's is (below, "Claude Code's folder
+trust"), though doctor does not read it yet. Doctor says nothing for either.
 
 ## Grok project config and folder trust (source only)
 
@@ -2096,6 +2097,14 @@ An agent ran these under the owner's approval for this work (at most 40 real Ope
 - **Unverified, live check owed:** that `opencode/*` free models appear in `opencode models` under aggy's per-launch config with `free_models` on, and not with it off. `opencode models` respecting `provider.use` was live for other providers (this file, "OpenCode 2.2.5 as an on-screen harness").
 - **Unverified, live check owed:** whether OpenCode's small or title model goes to the `opencode` provider when the setting is on while the session uses another provider.
 - **Unverified:** whether paid `opencode/*` models show without OpenCode credit or a Console key; the setting allows the whole provider. OpenCode's general terms of service and privacy policy were not read.
+
+## Claude Code's folder trust (T6977, live, 2026-11-10)
+
+**Run: the owner, Claude Code 2.1.322, macOS, a throwaway config folder** (`CLAUDE_CONFIG_DIR` set to an empty temporary folder; the real config was not read or changed; no permission- or trust-skipping flag).
+
+- **Live:** Claude keeps a folder's trust in `.claude.json` at the top of its config folder (`$CLAUDE_CONFIG_DIR/.claude.json` when that is set; `~/.claude.json` otherwise, as for MCP servers), under `projects["<absolute folder>"].hasTrustDialogAccepted`. With that key written `true` ahead of the run, Claude did not show its trust screen in that folder; with it `false`, it showed it; cancelling the screen recorded nothing.
+- **What aggy does with it:** the trust list's Claude Code row (docs/design.md, section 10, "Trust") sets that one key for the repo's work-tree root, by its real path, through the manifest: a minimal text edit, re-read and hash-checked just before the write, checked to decode to the old document plus that key, with no backup of the file (it holds Claude's history and account), and never the file's content in a preview or log. aggy unwire puts back just that key and keeps what Claude wrote since. A file that is not there is not made, and one that does not parse is left as it is.
+- **Unverified, live check owed:** that a signed-in Claude honours the key written ahead the same way (the check was signed out, in a fresh config folder); whether a trusted folder covers its subfolders (aggy writes the work-tree root only, so a start in a subfolder may still show Claude's screen once); how Claude spells the folder (aggy writes the real path, so `/tmp` and `/private/tmp` on macOS, or a folder reached through a link, may differ); and whether a running Claude overwrites a key written meanwhile when it next saves the file (aggy writes before the CLI it starts, and another Claude already running may still rewrite the file).
 
 ## Grok reviews under `$HOME` (T6922)
 

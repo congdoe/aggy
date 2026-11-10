@@ -190,16 +190,24 @@ func TestOpenCodeFreeModelsLaunch(t *testing.T) {
 		user    config.Config
 		repo    config.RepoConfig
 		allowed bool
+		// unticked: this folder's trust list does not have the row ticked
+		// (T6977), which the setting and the repo cannot make up for.
+		unticked bool
 	}{
-		{"off", config.Default(), config.RepoConfig{}, false},
-		{"on", on, config.RepoConfig{}, true},
-		{"on and the repo lists opencode-free", on, config.RepoConfig{AllowedVendors: []adapter.Vendor{"opencode", "codex", "opencode-free"}}, true},
-		{"on and the repo allows opencode with codex only", on, config.RepoConfig{AllowedVendors: []adapter.Vendor{"opencode", "codex"}}, false},
-		{"off and the repo turns it on", config.Default(), repoOn, false},
+		{"off", config.Default(), config.RepoConfig{}, false, false},
+		{"on", on, config.RepoConfig{}, true, false},
+		{"on and the repo lists opencode-free", on, config.RepoConfig{AllowedVendors: []adapter.Vendor{"opencode", "codex", "opencode-free"}}, true, false},
+		{"on and the repo allows opencode with codex only", on, config.RepoConfig{AllowedVendors: []adapter.Vendor{"opencode", "codex"}}, false, false},
+		{"off and the repo turns it on", config.Default(), repoOn, false, false},
+		{"on but this folder row unticked", on, config.RepoConfig{}, false, true},
+		{"on and the repo lists it but this folder row unticked", on, config.RepoConfig{AllowedVendors: []adapter.Vendor{"opencode", "codex", "opencode-free"}}, false, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			repo, dir := openCodeWorld(t)
+			if !c.unticked {
+				tickTrustRows(t, repo, trustRowOpenCodeFree)
+			}
 			in := openCodeInput{cfg: effective(c.user, c.repo), caps: openCodeCaps, cwd: repo, dir: dir}
 			s, err := prepareOpenCode(in)
 			if err != nil {
@@ -225,6 +233,9 @@ func TestOpenCodeFreeModelsLaunch(t *testing.T) {
 				t.Errorf("last provider.use opencode = %q, want %q", last, want)
 			}
 			repo2, dir2 := openCodeWorld(t)
+			if !c.unticked {
+				tickTrustRows(t, repo2, trustRowOpenCodeFree)
+			}
 			in.cwd, in.dir, in.model = repo2, dir2, "opencode/some-free-model"
 			_, err = prepareOpenCode(in)
 			if c.allowed != (err == nil) {
@@ -234,8 +245,11 @@ func TestOpenCodeFreeModelsLaunch(t *testing.T) {
 			// itself names the reason.
 			if err != nil {
 				want := "aggy config set opencode-free-models on"
-				if c.user.OpenCode.FreeModels {
+				switch {
+				case c.user.OpenCode.FreeModels && !slices.Contains(c.repo.AllowedVendors, "opencode-free") && c.repo.AllowedVendors != nil:
 					want = "does not list opencode-free"
+				case c.user.OpenCode.FreeModels:
+					want = "is not ticked for this folder"
 				}
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("refusal %q does not say %q", err, want)

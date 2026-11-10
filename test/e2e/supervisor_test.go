@@ -90,6 +90,9 @@ type world struct {
 	// offerSetup leaves bare aggy's first-run setup offer on (T6966); every
 	// other test runs with it off, as a scripted machine would.
 	offerSetup bool
+	// askTrust leaves the first start's trust list on (T6977); every other test
+	// runs with it off.
+	askTrust bool
 }
 
 func newWorld(t *testing.T) *world {
@@ -208,6 +211,9 @@ func (w *world) start(t *testing.T, scenario map[string]any, args ...string) *se
 	}
 	if !w.offerSetup {
 		s.cmd.Env = append(s.cmd.Env, "AGGY_SETUP_OFFER=0")
+	}
+	if !w.askTrust {
+		s.cmd.Env = append(s.cmd.Env, "AGGY_TRUST_ASK=0")
 	}
 	s.cmd.Env = append(s.cmd.Env, w.env...)
 	s.cmd.Stdin, s.cmd.Stdout, s.cmd.Stderr = slave, slave, slave

@@ -418,6 +418,11 @@ func runPrint(cmd string, v adapter.Vendor, t target, words []string, help adapt
 		warns = append(warns, "your flags "+strings.Join(p.Loosens, ", ")+" loosen approvals, the sandbox, or hook trust for this run; --no-policy lets them through")
 	}
 	warns = append(warns, p.Notes...)
+	// T6977: print mode never asks the trust list; what it has not answered
+	// counts as off, and is said once here.
+	if n := trustNoteFor(cwd, cfg, os.Getenv); n != "" {
+		warns = append(warns, n)
+	}
 	rules := loadPermissions(ctx, cwd, cfg)
 	if rules.FileErr != nil {
 		return fail(diag.CodePermBadFile, rules.FileErr)

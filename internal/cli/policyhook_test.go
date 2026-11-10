@@ -53,7 +53,7 @@ func TestUsePolicyHook(t *testing.T) {
 	isolate(t)
 	repo := inRepo(t)
 	fakeHookBin(t, "/usr/local/bin/aggy", nil)
-	atKeyboard(t, "y\n")
+	atKeyboard(t, "1\n\n") // the trust list (T6977): All, then Enter
 	if code, out, errb := run("trust", repo); code != 0 {
 		t.Fatalf("trust: %d %q %q", code, out, errb)
 	}
@@ -256,7 +256,7 @@ func TestNothingInRepoPreApproves(t *testing.T) {
 	h := isolate(t)
 	repo := inRepo(t)
 	fakeHookBin(t, "/usr/local/bin/aggy", nil)
-	atKeyboard(t, "y\n")
+	atKeyboard(t, "1\n\n") // the trust list (T6977): All, then Enter
 	if code, out, errb := run("trust", repo); code != 0 {
 		t.Fatalf("trust: %d %q %q", code, out, errb)
 	}
@@ -390,7 +390,7 @@ func TestReadPreApprovalIdentity(t *testing.T) {
 	if out := read(launch()); !strings.Contains(out, `"permissionDecision":"ask"`) {
 		t.Errorf("untrusted: %q, want ask", out)
 	}
-	atKeyboard(t, "y\n")
+	atKeyboard(t, "1\n\n") // the trust list (T6977): All, then Enter
 	if code, out, errb := run("trust", repo); code != 0 {
 		t.Fatalf("trust: %d %q %q", code, out, errb)
 	}

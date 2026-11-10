@@ -210,3 +210,66 @@ func TestUnlockedBackfill(t *testing.T) {
 		}
 	}
 }
+
+// TestClaudeTrustReverseFromV25 (T6977): migration 26 rebuilds changes on a
+// database at main's version 25 (read_approvals there), keeps every row and
+// index, and then takes a claude-trust reverse while still refusing others.
+func TestClaudeTrustReverseFromV25(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), FileName)
+	ms, err := migrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) != 26 || ms[24].version != 25 || ms[25].version != 26 {
+		t.Fatalf("migrations: %d", len(ms))
+	}
+	db, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range ms[:25] {
+		if _, err := db.ExecContext(ctx, m.sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, q := range []string{
+		`PRAGMA user_version = 25`,
+		`INSERT INTO changes (change_id, run_id, file, hash_before, hash_after, status, planned_at, reverse) VALUES ('old', 'r', '/a', 'none', 'h', 'applied', 1, 'aggy-hooks')`,
+		`INSERT INTO read_approvals (path, dev, ino, added_at) VALUES ('/x', 1, 2, 3)`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO changes (change_id, file, hash_before, hash_after, planned_at, reverse) VALUES ('ct', '/c', 'h', 'h', 1, 'claude-trust:nokey:/w')`); err == nil {
+		t.Fatal("version 25 took a claude-trust reverse")
+	}
+	_ = db.Close()
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if v, err := s.Version(ctx); err != nil || v != 26 {
+		t.Fatalf("version %d, %v", v, err)
+	}
+	if c, err := s.GetChange(ctx, "old"); err != nil || c.Reverse != "aggy-hooks" || c.File != "/a" {
+		t.Fatalf("old row %+v, %v", c, err)
+	}
+	at := time.Unix(10, 0)
+	if err := s.InsertChange(ctx, Change{ChangeID: "ct", RunID: "r", File: "/c", HashBefore: "h", HashAfter: "h2", PlannedAt: at, Reverse: "claude-trust:nokey:/w"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertChange(ctx, Change{ChangeID: "bad", RunID: "r", File: "/d", HashBefore: "h", HashAfter: "h2", PlannedAt: at, Reverse: "rm -rf"}); err == nil {
+		t.Fatal("an unknown reverse was taken")
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name IN ('changes_file', 'changes_run')`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("indexes %d, %v", n, err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM read_approvals`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("read_approvals %d, %v", n, err)
+	}
+}

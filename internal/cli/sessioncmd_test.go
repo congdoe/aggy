@@ -20,6 +20,7 @@ func TestSessionAggyRefuses(t *testing.T) {
 		{[]string{"borrow", "research", "x"}, "not a command for inside a session"},
 		{[]string{"tool", "add", "x"}, "takes on, off, or status here"},
 		{[]string{"trust", "/"}, "takes only this folder"},
+		{[]string{"trust", "."}, "/aggy trust opens the list"},
 		{[]string{"permissions", "add", "Bash(x)"}, "change them in a terminal"},
 		{[]string{"diag", "sql", "select 1"}, "shows the log or one run"},
 		{[]string{"accept", "--help"}, "Usage: aggy accept"},

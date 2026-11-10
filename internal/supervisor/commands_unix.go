@@ -127,6 +127,8 @@ func (s *session) takes(c sessioncmd.Command) bool {
 		return true
 	case sessioncmd.Run, sessioncmd.AggyList, sessioncmd.BorrowList, sessioncmd.ToolList:
 		return s.o.Aggy != nil
+	case sessioncmd.TrustList:
+		return s.o.TrustList != nil && s.o.TrustAnswer != nil
 	}
 	return false
 }
@@ -156,6 +158,8 @@ func (s *session) runCommand(c sessioncmd.Command, keyed bool) {
 		s.startRun(c, nil)
 	case sessioncmd.Run:
 		s.startRun(c, s.cmdArgs(c))
+	case sessioncmd.TrustList:
+		s.startTrust(c)
 	}
 }
 
@@ -199,10 +203,10 @@ func (s *session) onPromptCommand(r Request) error {
 	}
 	c, ok := sessioncmd.Parse(on, r.Command)
 	switch {
+	case ok && c.KeyboardOnly:
+		return coded(diag.CodeCommandKeyboard, fmt.Errorf("%s changes something, so aggy takes it only typed in full at the prompt", c.Name))
 	case !ok || !s.takes(c):
 		return coded(diag.CodeCommandNotTaken, errors.New("not a command aggy takes from a hook"))
-	case c.KeyboardOnly:
-		return coded(diag.CodeCommandKeyboard, fmt.Errorf("%s changes something, so aggy takes it only typed in full at the prompt", c.Name))
 	}
 	p := promptReq{c: c, line: r.Command, answer: make(chan error, 1), claimed: new(atomic.Bool)}
 	select {
@@ -372,6 +376,8 @@ type cmdResult struct {
 	out   string
 	tools bool
 	items []menuItem
+	// trust is the trust list read for /aggy trust.
+	trust *TrustList
 }
 
 func (s *session) goRun(seq int, args []string, answer bool) {
@@ -425,6 +431,9 @@ func (s *session) cmdDone(r cmdResult) {
 	case r.tools:
 		s.pk.page = nil
 		s.pk.menu = &menu{title: "turn a tool on or off (a resume of this CLI picks it up)", items: r.items}
+	case r.trust != nil:
+		s.pk.page = nil
+		s.pk.menu = &menu{title: g.title, check: &checkList{lines: r.trust.Lines, st: r.trust.State, opened: time.Now()}}
 	default:
 		g.lines, g.top = plainText(r.out), 0
 		if g.confirmIf != "" && !strings.Contains(r.out, g.confirmIf) {
@@ -471,6 +480,9 @@ func (s *session) viewInput(b []byte) {
 // menuKey takes one key at a menu, and reports whether the menu is gone.
 func (s *session) menuKey(k viewKey, r rune) bool {
 	m := s.pk.menu
+	if m.check != nil {
+		return s.checkKey(k, r)
+	}
 	switch {
 	case k == keyClose || r == 'q':
 		s.closeView()

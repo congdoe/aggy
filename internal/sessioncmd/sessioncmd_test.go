@@ -62,7 +62,7 @@ func TestParse(t *testing.T) {
 		{adapter.Claude, "/aggy tool on RTK", false, 0, "", nil, false},
 		{adapter.Claude, "/aggy permissions", true, Run, "aggy permissions", []string{"permissions", "list"}, true},
 		{adapter.Claude, "/aggy permissions add x", false, 0, "", nil, false},
-		{adapter.Claude, "/aggy trust", true, Run, "aggy trust", []string{"trust", "."}, true},
+		{adapter.Claude, "/aggy trust", true, TrustList, "aggy trust", nil, true},
 		{adapter.Claude, "/aggy trust --opencode", true, Run, "aggy trust", []string{"trust", "--opencode", "."}, true},
 		{adapter.Claude, "/aggy unwire", false, 0, "", nil, false},
 		{adapter.Grok, "/aggy sessions", true, Run, "aggy sessions", []string{"sessions"}, false},
@@ -105,7 +105,7 @@ func TestConfirmSteps(t *testing.T) {
 		{"/aggy accept 9f2", []string{"accept", "9f2", "--yes"}, false, false, []string{"accept", "9f2"}},
 		{"/aggy check 9f2", []string{"check", "9f2", "--yes"}, false, false, []string{"check", "9f2"}},
 		{"/aggy reject 9f2", []string{"reject", "9f2"}, false, true, nil},
-		{"/aggy trust", []string{"trust", "."}, true, false, []string{"trust", "."}},
+		{"/aggy trust --opencode", []string{"trust", "--opencode", "."}, true, false, []string{"trust", "--opencode", "."}},
 	}
 	for _, c := range cases {
 		got, ok := Parse(adapter.Claude, c.line)

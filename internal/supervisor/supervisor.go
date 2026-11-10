@@ -9,6 +9,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/diag"
+	"github.com/congdoe/aggy/internal/trustlist"
 )
 
 // Child is a vendor CLI running in a pseudo-terminal. Read and Write
@@ -142,6 +143,20 @@ type Options struct {
 	// aggy) the person's config leaves to the CLI (R121): aggy catches it
 	// neither from the keys nor from a hook. Nil leaves none.
 	CommandOff func(name string) bool
+	// TrustList reads this folder's trust list for /aggy trust (T6977), and
+	// TrustAnswer records the person's answer: the rows ticked, and whether
+	// it confirms or says never. It returns what it printed. Both are called
+	// off the main loop, and only for a list the keyboard opened and answered.
+	// Nil takes no /aggy trust list.
+	TrustList   func() (TrustList, error)
+	TrustAnswer func(ticked []string, c trustlist.Choice) string
+}
+
+// TrustList is a folder's trust list as /aggy trust shows it: what it says
+// first, and the rows.
+type TrustList struct {
+	Lines []string
+	State *trustlist.State
 }
 
 // ToolSet maps a managed tool's name to what a session gets of it (such

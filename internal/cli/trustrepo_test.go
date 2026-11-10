@@ -14,9 +14,9 @@ import (
 // atKeyboard stands in for a person at a terminal who answers.
 func atKeyboard(t *testing.T, answers string) {
 	t.Helper()
-	oldK, oldT := keyboard, stdinIsTerminal
-	keyboard, stdinIsTerminal = strings.NewReader(answers), func() bool { return true }
-	t.Cleanup(func() { keyboard, stdinIsTerminal = oldK, oldT })
+	oldK, oldT, oldA := keyboard, stdinIsTerminal, typeAhead
+	keyboard, stdinIsTerminal, typeAhead = strings.NewReader(answers), func() bool { return true }, 0
+	t.Cleanup(func() { keyboard, stdinIsTerminal, typeAhead = oldK, oldT, oldA })
 	for _, v := range []string{"AGGY_DELEGATED", "AGGY_SOCKET", "AGGY_PARENT", "AGGY_VENDOR"} {
 		t.Setenv(v, "")
 	}
@@ -107,18 +107,18 @@ func TestTrustRepo(t *testing.T) {
 	}
 
 	// A session's own shell, even with a terminal.
-	atKeyboard(t, "y\n")
+	atKeyboard(t, "1\n\n")
 	t.Setenv("AGGY_PARENT", "p")
 	if code, _, errb = run("trust", repo); code != 1 || !strings.Contains(errb, "tool shell") {
 		t.Errorf("session: %d %q", code, errb)
 	}
 	t.Setenv("AGGY_PARENT", "")
 
-	// A person says yes. What it means is said first, Claude and Grok plainly.
+	// A person ticks All and confirms. What it means is said first, Grok plainly.
 	if code, out, errb = run("trust", repo); code != 0 {
 		t.Fatalf("yes: %d %q %q", code, out, errb)
 	}
-	for _, w := range []string{"Claude and Grok: not handled yet", "committed .claude/settings.json", "aggy unwire", "trust_level"} {
+	for _, w := range []string{"Grok is not on this list", "committed .claude/settings.json", "aggy unwire", "trust_level", "Claude Code"} {
 		if !strings.Contains(out, w) {
 			t.Errorf("does not say %q:\n%s", w, out)
 		}
@@ -141,9 +141,9 @@ func TestTrustRepo(t *testing.T) {
 		t.Error("~/.claude.json must not be touched")
 	}
 
-	// Asked again, nothing to do.
-	atKeyboard(t, "")
-	if code, out, _ = run("trust", repo); code != 0 || !strings.Contains(out, "already trusted") {
+	// Asked again and confirmed as it is, nothing to do.
+	atKeyboard(t, "\n")
+	if code, out, _ = run("trust", repo); code != 0 || !strings.Contains(out, "Nothing to change") {
 		t.Errorf("again: %d %q", code, out)
 	}
 
@@ -175,7 +175,7 @@ func TestTrustRepoCodexLeftAlone(t *testing.T) {
 			if err := os.WriteFile(cfg, []byte(text), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			atKeyboard(t, "y\n")
+			atKeyboard(t, "1\n\n")
 			code, out, errb := run("trust", repo)
 			if code != 0 || !strings.Contains(out, tc.want) {
 				t.Errorf("%d %q %q", code, out, errb)
@@ -193,7 +193,7 @@ func TestTrustRepoCodexLeftAlone(t *testing.T) {
 func TestTrustRepoNoCodex(t *testing.T) {
 	isolate(t)
 	repo := tempRepo(t)
-	atKeyboard(t, "y\n")
+	atKeyboard(t, "1\n\n")
 	if code, out, errb := run("trust", repo); code != 0 || !strings.Contains(out, "no Codex config folder") {
 		t.Errorf("%d %q %q", code, out, errb)
 	}
@@ -208,7 +208,7 @@ func TestTrustMakesRepoCodeApply(t *testing.T) {
 	if s.Trusted {
 		t.Fatal("trusted from the start")
 	}
-	atKeyboard(t, "y\n")
+	atKeyboard(t, "1\n\n")
 	if code, out, errb := run("trust", repo); code != 0 {
 		t.Fatalf("%d %q %q", code, out, errb)
 	}
