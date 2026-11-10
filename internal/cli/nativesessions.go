@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -43,8 +44,9 @@ import (
 //   - Codex: <$CODEX_HOME or ~/.codex>/sessions/YYYY/MM/DD/rollout-*-<id>.jsonl
 //     (rollout/src/list.rs#L423 at rust-v0.164.0), whose first line, the
 //     session_meta, names the interactive TUI as its source and the folder as
-//     its cwd (rolloutInDir: protocol.rs#L3275 at 6aaac694). Every date folder
-//     is listed; the newest maxCodexScan rollouts by name have that line read.
+//     its cwd (rolloutInDir: protocol.rs#L3275 at 6aaac694). The date folders
+//     are walked newest first, and the walk stops once it has what it needs
+//     (codexNative), at most maxCodexScan rollouts.
 //   - Grok: <$GROK_HOME or ~/.grok>/sessions/<url-encoded cwd>/<id>/
 //     (grok-build 2bdd1d6a, user-guide/17-sessions.md, "Storage Layout"),
 //     with chat_history.jsonl for its first prompt. The exact encoding is
@@ -123,6 +125,16 @@ func folderForms(cwd string) []string {
 // each checked to be the folder's (checkNative). A vendor home or session
 // folder that is not there lists none.
 func nativeSessions(files *sessionFiles, v adapter.Vendor, cwd string) ([]nativeSession, error) {
+	if v == adapter.Codex {
+		// Checked as walked, newest first, until the list is full.
+		h, err := files.home(v)
+		if err != nil {
+			return nil, nil
+		}
+		out := codexNative(h, maxNativeListed, func(n *nativeSession) bool { return checkNative(n, cwd, true) })
+		sortNative(out, time.Now())
+		return out, nil
+	}
 	cands := scanNative(files, v, cwd)
 	sortNative(cands, time.Now())
 	var out []nativeSession
@@ -233,7 +245,7 @@ func scanNative(files *sessionFiles, v adapter.Vendor, cwd string) []nativeSessi
 	case adapter.Claude:
 		found = claudeNative(files, h, cwd)
 	case adapter.Codex:
-		found = codexNative(h)
+		found = codexNative(h, maxCodexScan, nil)
 	case adapter.Grok:
 		found = grokNative(h, cwd)
 	}
@@ -312,33 +324,62 @@ func claudeNative(files *sessionFiles, home, cwd string) []nativeSession {
 	return out
 }
 
-func codexNative(home string) []nativeSession {
+// codexNative is Codex's rollouts under home, newest first by name (whose
+// timestamp sorts as text), walking the date folders newest first and stopping
+// as soon as it has enough (PR #127 review): at most limit sessions that accept
+// takes (nil takes every one), from at most maxCodexScan rollouts. A heavy
+// Codex user's older folders are never listed for a -c that finds its session
+// in today's. accept may read the file (checkNative) and set n's title.
+func codexNative(home string, limit int, accept func(n *nativeSession) bool) []nativeSession {
 	root := filepath.Join(home, "sessions")
 	if !isDirNoFollow(root) {
 		return nil
 	}
-	type rollout struct{ id, path string }
-	var rs []rollout
-	for id, r := range indexRollouts(root) {
-		rs = append(rs, rollout{id, r.path})
-	}
-	// Newest first by name, whose timestamp sorts as text.
-	slices.SortFunc(rs, func(a, b rollout) int { return strings.Compare(filepath.Base(b.path), filepath.Base(a.path)) })
-	if len(rs) > maxCodexScan {
-		rs = rs[:maxCodexScan]
-	}
 	var out []nativeSession
-	for _, r := range rs {
-		rel, err := filepath.Rel(root, r.path)
-		if err != nil || !realDir(root, filepath.Dir(r.path)) {
-			continue
+	seen := map[string]bool{}
+	scanned := 0
+	newest := func(dir string, width int, lo, hi string) []string {
+		ds := dateDirs(dir, width, lo, hi)
+		slices.Reverse(ds)
+		return ds
+	}
+	for _, y := range newest(root, 4, "0000", "9999") {
+		for _, m := range newest(y, 2, "01", "12") {
+			for _, d := range newest(m, 2, "01", "31") {
+				if !realDir(root, d) {
+					continue
+				}
+				es, err := safefs.ReadDir(d)
+				if err != nil {
+					continue
+				}
+				slices.Reverse(es)
+				for _, e := range es {
+					id, ok := codex.RolloutThreadID(e.Name())
+					if !ok || seen[id] {
+						continue
+					}
+					if scanned == maxCodexScan || len(out) == limit {
+						return out
+					}
+					seen[id] = true
+					scanned++
+					p := filepath.Join(d, e.Name())
+					rel, err := filepath.Rel(root, p)
+					if err != nil {
+						continue
+					}
+					t, ok := regularMtime(p)
+					if !ok {
+						continue
+					}
+					n := nativeSession{Vendor: adapter.Codex, ID: id, Home: home, Modified: t, dir: rel}
+					if accept == nil || accept(&n) {
+						out = append(out, n)
+					}
+				}
+			}
 		}
-		// Whose folder it is, checkNative reads, for as few as are needed.
-		t, ok := regularMtime(r.path)
-		if !ok {
-			continue
-		}
-		out = append(out, nativeSession{Vendor: adapter.Codex, ID: r.id, Home: home, Modified: t, dir: rel})
 	}
 	return out
 }

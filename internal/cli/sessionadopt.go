@@ -71,23 +71,39 @@ func newestNative(ctx context.Context, s *store.Store, cfg config.Config, cwd st
 	r, done := withinBudget(func() found {
 		nf := &sessionFiles{getenv: files.getenv, now: files.now, readOnly: true}
 		now := time.Now()
+		free := func(n *nativeSession) bool {
+			_, err := s.ChildBySession(ctx, string(n.Vendor), n.ID)
+			return errors.Is(err, store.ErrNotFound)
+		}
 		var cands []nativeSession
+		var best found
 		for _, x := range vs {
-			cands = append(cands, scanNative(nf, x, cwd)...)
+			if x != adapter.Codex {
+				cands = append(cands, scanNative(nf, x, cwd)...)
+				continue
+			}
+			// Codex's newest that is this folder's, walked newest first: the
+			// walk stops there (codexNative), however many rollouts there are.
+			h, err := nf.home(x)
+			if err != nil {
+				continue
+			}
+			if c := codexNative(h, 1, func(n *nativeSession) bool {
+				return !nativeFuture(*n, now) && free(n) && checkNative(n, cwd, true)
+			}); len(c) == 1 {
+				best = found{c[0], true}
+			}
 		}
 		sortNative(cands, now)
 		for i, n := range cands {
-			if i == maxNativeChecked || nativeFuture(n, now) {
+			if i == maxNativeChecked || nativeFuture(n, now) || best.ok && !n.Modified.After(best.n.Modified) {
 				break
 			}
-			if _, err := s.ChildBySession(ctx, string(n.Vendor), n.ID); !errors.Is(err, store.ErrNotFound) {
-				continue
-			}
-			if checkNative(&n, cwd, true) {
+			if free(&n) && checkNative(&n, cwd, true) {
 				return found{n, true}
 			}
 		}
-		return found{}
+		return best
 	})
 	return r.n, r.ok, !done
 }
