@@ -317,8 +317,6 @@ func (Adapter) PassFlags() adapter.PassFlags {
 		Refused: []adapter.RefusedFlag{
 			{Names: []string{"--no-alt-screen"}, Why: "aggy passes it when the CLI has it, so the scrollback keeps what came before a switch"},
 			{Names: []string{"--cd", "-C"}, Why: "aggy starts the CLI in the session's directory; cd there first"},
-			{Names: []string{"--remote", "--remote-auth-token-env", "--worktree"}, Why: "it runs the session somewhere aggy does not record"},
-			{Names: []string{"--version", "-V"}, Why: "run codex --version"},
 			{Names: []string{"--yolo", "--approve-for-me", "--not-so-yolo"}, UnlessNoPolicy: true},
 		},
 		Checked: []adapter.CheckedFlag{
@@ -331,8 +329,13 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			{Names: []string{"--add-dir"}, Check: adapter.AnyValue},
 		},
 		Values: []string{"--image", "-i", "--local-provider"},
-		// codex exec runs one task and exits (visible alias e).
+		// codex exec runs one task and exits (visible alias e). T6962:
+		// --worktree runs the session where aggy records none, so aggy runs
+		// codex directly with its policy; --remote and its token flag run it
+		// on another machine, and --version prints, so those go as given.
 		PrintCommands: []string{"exec", "e"},
+		Print:         []string{"--worktree"},
+		Bare:          []string{"--remote", "--remote-auth-token-env", "--version", "-V"},
 		Commands:      Commands,
 		DirFlags:      []string{"--add-dir"},
 		Noted: []adapter.NotedFlag{
