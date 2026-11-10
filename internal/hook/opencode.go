@@ -60,6 +60,10 @@ type OpenCodeEnv struct {
 	// DeniedNames are the file names to refuse in any case
 	// (parity.OpenCodeDeniedNames, which this package cannot import).
 	DeniedNames []string
+	// ReadableNames are exempt from DeniedNames, exactly and whatever their
+	// case: .env templates meant to be read (parity.EnvTemplates), which the
+	// .env.* name would otherwise catch.
+	ReadableNames []string
 	// ShellRules are the rendered shell allow rules (parity.OpenCodeShellRules).
 	// None means the scan always runs.
 	ShellRules []string
@@ -132,7 +136,7 @@ func OpenCodeGuard(payload []byte, env OpenCodeEnv) Decision {
 		if !inside(in.Path) {
 			return Decision{Deny: true, Reason: whyOutside}
 		}
-		if deniedName(in.Path, env.DeniedNames) {
+		if deniedName(in.Path, env.DeniedNames, env.ReadableNames) {
 			return Decision{Deny: true, Reason: whyDeniedName}
 		}
 	}
@@ -234,8 +238,13 @@ func expandHome(p string, env OpenCodeEnv) (string, error) {
 // case: a policy's rule matches exactly, and macOS folds case, so `.ENV` is
 // `.env` there. It matches the name given, and grep's search text is not
 // covered at all (docs/design.md).
-func deniedName(p string, names []string) bool {
+func deniedName(p string, names, readable []string) bool {
 	base := strings.ToLower(filepath.Base(p))
+	for _, n := range readable {
+		if base == strings.ToLower(n) {
+			return false
+		}
+	}
 	for _, n := range names {
 		if ok, err := filepath.Match(strings.ToLower(n), base); err == nil && ok {
 			return true

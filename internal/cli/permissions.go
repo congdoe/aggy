@@ -214,6 +214,19 @@ func addPermissions(v adapter.Vendor, caps []string, s permissions.Set, req *ada
 			return notes
 		}
 	case adapter.Grok:
+		// An allow that names or covers a safety policy rule is not passed to
+		// Grok: Grok matches it as a word-boundary prefix, so Bash(rm -rf dist)
+		// would also allow rm -rf dist ~, and the rule's deny is all that stops
+		// that. Its deny stays (parity.GrokPolicy) whatever this says.
+		var kept []string
+		for _, a := range r.Allow {
+			if len(parity.PreApproves(a, nil)) > 0 {
+				notes = append(notes, fmt.Sprintf("your allow %s names a safety policy rule, so it does not go to Grok", termsafe.Field(a)))
+				continue
+			}
+			kept = append(kept, a)
+		}
+		r.Allow = kept
 		if len(r.Allow) > 0 && !slices.Contains(caps, probe.CapAllow) {
 			notes = append(notes, "grok --help does not list --allow, so your allow rules from aggy do not reach this session")
 			r.Allow = nil

@@ -619,7 +619,19 @@ below is unverified live until the recipe at the end is run.
   with once while denies hold (this file, "OpenCode 2.2.5 as an on-screen
   harness", fake-model and live). Whether a stored Always allow in
   `opencode.db` beats a later `ask` rule in the launch's config is
-  unverified; aggy cannot see those rows.
+  unverified; aggy cannot see those rows, so the strict groups stay
+  `tool.use` denies on OpenCode (TODO(T6895)).
+- **Claude bypass mode.** A `defaultMode` such as `bypassPermissions` in
+  the person's own Claude settings may skip the ask rules; aggy does not
+  read that file, and which modes skip an ask rule is unverified
+  (TODO(T6895)). The `permissions.md` line above says an ask rule still
+  prompts in auto mode only.
+- **Pre-approval.** Removing an ask is safe only where the CLI still
+  prompts for the other commands the rule covered: Claude's default mode
+  asks before a Bash command no allow covers (`permissions.md`), but no
+  CLI prompts before reading a file in its working directory (T6740
+  above), and Grok has no ask for a removed deny. So only ordinary Bash
+  rules on Claude are ever pre-approved (design.md section 10).
 
 Live-check recipe (a maintainer, never in CI, no `--dangerously-*` flag,
 in a scratch git repo with a `.env`, a `.env.example`, `server.pem`, and a
@@ -629,19 +641,28 @@ in a scratch git repo with a `.env`, a `.env.example`, `server.pem`, and a
    approval prompt, not a refusal. Record which options it offers.
    Answer "don't ask again" if offered; quit; `aggy permissions show`
    should list the saved allow (in a trusted repo) and `rm-rf` as
-   pre-approved; relaunch and expect no aggy ask for `rm -rf dist`.
+   pre-approved on Claude Code only; relaunch and expect no aggy ask for
+   `rm -rf dist`, and Claude's own prompt for `rm -rf build`. Record the
+   rule Claude saved: a `Bash(rm:*)` or `Bash(rm *)` one does not
+   pre-approve (too wide from `settings.local.json`).
 2. Ask it to read `.env.example`: no prompt from aggy's rules. Ask it to
    read `.env`: a prompt.
 3. Ask it to read `server.pem`; answer "don't ask again" if offered;
    relaunch: it must still ask. `aggy permissions add allow
-   'Read(./server.pem)'`: one line names `key-read`; relaunch: no prompt.
+   'Read(./server.pem)'`: one line says it does not change `key-read` on
+   any CLI; relaunch: it still asks.
 4. `aggy permissions policy rm-rf deny`; relaunch: `rm -rf dist` is refused.
 5. `aggy policy wire` (replacing an older aggy file if there), `aggy run
    codex`, ask for `git clean -n`: expect Codex's approval prompt with
    aggy's justification. `aggy borrow edit` (or any `codex exec`) must
    still refuse it.
-6. `aggy run grok`: `rm -rf dist` is refused with no prompt (deny).
-7. `aggy run opencode`: `rm -rf dist` asks; with `--auto` it is refused.
+6. `aggy run grok`: `rm -rf dist` is refused with no prompt (deny), also
+   after the pre-approval in step 1, and the launch notes that the allow
+   does not go to Grok.
+7. `aggy run opencode`: `rm -rf dist` asks; with `--auto` it is refused;
+   `git push --force origin main` is refused in both.
+8. `aggy resume <id>` of a finished Codex edit borrow: refused with
+   `policy.unreachable`, and Codex does not start.
 
 ## Launch-time MCP (T6734)
 

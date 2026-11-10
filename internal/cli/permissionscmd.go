@@ -321,25 +321,53 @@ func permissionsChange(args []string, remove bool, stdout, stderr io.Writer) int
 }
 
 // preApprovedLine is the one line aggy permissions add prints for an allow
-// that pre-approves safety policy rules on screen, or "".
+// that names safety policy rules, or "". It comes from the plan a launch here
+// makes, after the change, so it says what a launch does: where the allow
+// takes effect, and where it does not.
 func preApprovedLine(rule, cwd string) string {
-	rs := parity.PreApproves(rule, defaultBranches(cwd))
-	if len(rs) == 0 {
+	s, _, _, err := permissionsHere(context.Background())
+	if err != nil {
 		return ""
 	}
-	var groups []string
-	strict := false
-	for _, r := range rs {
-		if !slices.Contains(groups, r.Group) {
-			groups = append(groups, r.Group)
+	// This allow alone, as the launch's filter left it: one it drops
+	// pre-approves nothing.
+	i := slices.IndexFunc(s.PolicyAllows(), func(r permissions.Rule) bool {
+		return r.Text == rule && (r.Origin == permissions.FromAggy || r.Origin == permissions.FromAggyRepo)
+	})
+	if i < 0 {
+		return ""
+	}
+	plan := policyPlan(planOnScreen, cwd, s, nil)
+	plan.Allows = s.PolicyAllows()[i : i+1]
+	var removed, unused []string
+	why := ""
+	for _, d := range plan.Decide() {
+		switch {
+		case d.Kind == permissions.Allow && d.By.Text == rule:
+			if !slices.Contains(removed, d.Group) {
+				removed = append(removed, d.Group)
+			}
+		case d.Unused.Text == rule:
+			if !slices.Contains(unused, d.Group) {
+				unused = append(unused, d.Group)
+			}
+			if why == "" {
+				why = d.Why
+			}
 		}
-		strict = strict || r.Strict
 	}
-	line := fmt.Sprintf("This pre-approves %d of the safety policy's rules (%s), so on screen they no longer ask", len(rs), strings.Join(groups, ", "))
-	if strict {
-		line += ", strict ones among them"
+	var parts []string
+	if len(removed) > 0 {
+		parts = append(parts, fmt.Sprintf("On Claude Code this pre-approves the safety policy's %s rules it matches, and Claude's own prompt stands for the rest; Grok Build, Codex, and OpenCode still refuse or ask", strings.Join(removed, ", ")))
 	}
-	return line + "; a group set to deny still refuses. aggy permissions show lists them."
+	if len(unused) > 0 {
+		parts = append(parts, fmt.Sprintf("it does not change the safety policy's %s rules on any CLI (%s)", strings.Join(unused, ", "), why))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	line := strings.Join(parts, "; ")
+	return strings.ToUpper(line[:1]) + line[1:] + ". aggy permissions show lists them."
 }
 
 // permissionsPolicy is aggy permissions policy: with no arguments it lists the
@@ -540,7 +568,8 @@ func permissionsSuggest(args []string, stdout, stderr io.Writer) int {
 		}
 		// A strict policy rule is pre-approved only by a rule the person
 		// writes themselves, never by a count.
-		if slices.ContainsFunc(parity.PreApproves(rule, defaultBranches(c.Repo)), func(r parity.PolicyRule) bool { return r.Strict }) {
+		branches, _ := defaultBranches(c.Repo)
+		if slices.ContainsFunc(parity.PreApproves(rule, branches), func(r parity.PolicyRule) bool { return r.Strict }) {
 			continue
 		}
 		shown++

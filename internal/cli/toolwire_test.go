@@ -314,14 +314,7 @@ func TestAddToolsHooks(t *testing.T) {
 	req = adapter.InteractiveRequest{Deny: parity.ClaudeDeny}
 	addTools(context.Background(), adapter.Claude, []string{probe.CapSettings}, repo, filepath.Join(t.TempDir(), "l"), nil, &req)
 	want := slices.Concat(parity.ClaudeDeny, []string{
-		// T6967: the .env names are listed, so .env.example is not caught.
-		"Bash(rtk *.env*)", "Bash(rtk *.env.local*)", "Bash(rtk *.env.*.local*)", "Bash(rtk *.env.development*)",
-		"Bash(rtk *.env.dev*)", "Bash(rtk *.env.production*)", "Bash(rtk *.env.prod*)", "Bash(rtk *.env.staging*)",
-		"Bash(rtk *.env.stage*)", "Bash(rtk *.env.test*)", "Bash(rtk *.env.ci*)", "Bash(rtk *.env.preview*)",
-		"Bash(rtk *.env.qa*)", "Bash(rtk *.env.uat*)", "Bash(rtk *.env.live*)", "Bash(rtk *.env.backup*)",
-		"Bash(rtk *.env.bak*)", "Bash(rtk *.env.old*)", "Bash(rtk *.env.secret*)", "Bash(rtk *.env.secrets*)",
-		"Bash(rtk *.env.private*)",
-		"Bash(rtk *.pem*)", "Bash(rtk *.key*)",
+		"Bash(rtk *.env*)", "Bash(rtk *.env.*)", "Bash(rtk *.pem*)", "Bash(rtk *.key*)",
 		"Bash(rtk *id_rsa*)", "Bash(rtk *id_dsa*)", "Bash(rtk *id_ecdsa*)", "Bash(rtk *id_ed25519*)",
 		"Bash(rtk git push * main)", "Bash(rtk git push * main *)", "Bash(rtk git push * *:main)", "Bash(rtk git push * *:main *)",
 		"Bash(rtk git push * refs/heads/main)", "Bash(rtk git push * refs/heads/main *)",

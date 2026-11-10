@@ -85,8 +85,9 @@ var policyGroupNames = map[string]string{
 // group's setting, what pre-approved a rule, and what a CLI cannot express.
 func printPolicy(w io.Writer, s permissions.Set) {
 	cwd, _ := os.Getwd()
-	ds := policyPlan(true, cwd, s).Decide()
-	fmt.Fprintln(w, "\nSafety policy, on screen (a borrow child is always refused)")
+	plan := policyPlan(planOnScreen, cwd, s, nil)
+	ds := plan.Decide()
+	fmt.Fprintln(w, "\nSafety policy, on screen (a borrow child and a headless run are always refused)")
 	for _, g := range permissions.PolicyGroups {
 		setting, from := "ask", "the default"
 		if k, ok := s.Policy[g]; ok {
@@ -94,20 +95,30 @@ func printPolicy(w io.Writer, s permissions.Set) {
 		}
 		fmt.Fprintf(w, "  %s: %s [%s]  %s\n", g, setting, from, policyGroupNames[g])
 		for _, d := range ds {
-			if d.Group == g && d.Kind == permissions.Allow {
-				fmt.Fprintf(w, "    pre-approved: %s, by the allow %s [%s]\n", termsafe.Field(d.Text), termsafe.Field(d.By.Text), originName(d.By.Origin))
+			switch {
+			case d.Group != g:
+			case d.Kind == permissions.Allow:
+				fmt.Fprintf(w, "    pre-approved on Claude Code only: %s, by the allow %s [%s]\n", termsafe.Field(d.Text), termsafe.Field(d.By.Text), originName(d.By.Origin))
+			case d.Unused.Text != "":
+				fmt.Fprintf(w, "    not pre-approved: %s, though the allow %s names it: %s\n", termsafe.Field(d.Text), termsafe.Field(d.Unused.Text), d.Why)
 			}
 		}
 	}
+	if _, known := defaultBranches(cwd); !known {
+		fmt.Fprintln(w, "  aggy could not read this repo's default branch, so only main, master, and trunk are strict")
+	}
 	ask, deny := parity.ClaudePolicy(ds)
-	fmt.Fprintf(w, "  Claude Code: %d ask and %d deny rules; its prompt is the one that asks\n", len(ask), len(deny))
-	fmt.Fprintf(w, "  Grok Build: %d deny rules; Grok has no flag for an ask rule aggy can confirm, so these stay denials there\n", len(parity.GrokPolicy(ds)))
+	fmt.Fprintf(w, "  Claude Code: %d ask and %d deny rules; a pre-approved rule is left out, and Claude's own prompt stands for the rest\n", len(ask), len(deny))
+	if plan.NoPrompt {
+		fmt.Fprintln(w, "    Claude's permission mode here does not prompt for a command no rule names, so no pre-approval takes effect")
+	}
+	fmt.Fprintf(w, "  Grok Build: %d deny rules; Grok has no flag for an ask rule aggy can confirm, so these stay denials there, and a pre-approval does not change them\n", len(parity.GrokPolicy(ds)))
 	oAsk, oDeny := parity.OpenCodePolicy(ds, false)
-	fmt.Fprintf(w, "  OpenCode: %d shell asks and %d shell denies (all denies under --auto, which answers an ask); file reads stay refused by aggy's guard\n", len(oAsk), len(oDeny))
+	fmt.Fprintf(w, "  OpenCode: %d shell asks and %d shell denies (the strict rules, and all under --auto, which answers an ask); file reads stay refused by aggy's guard; a pre-approval does not change them\n", len(oAsk), len(oDeny))
 	fmt.Fprintln(w, "  Codex: its rules file asks before each rule, in every repo; the file is global, so a")
 	fmt.Fprintln(w, "    setting or pre-approval here does not reach it, and it has no rule for file reads")
-	fmt.Fprintln(w, "  Strict rules are never pre-approved by an answer at a CLI's prompt or by a broad allow,")
-	fmt.Fprintln(w, "    only by an allow you add with aggy permissions add that names them")
+	fmt.Fprintln(w, "  Strict rules and file read rules are never pre-approved, on any CLI; a pre-approval")
+	fmt.Fprintln(w, "    from a CLI's own file counts only when narrower than one command word and *")
 }
 
 // ruleCounts says how many rules of each kind.

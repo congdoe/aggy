@@ -24,15 +24,25 @@ import (
 // rules. A trusted repo can still switch the Codex part off with a rules
 // file Codex cannot parse (OtherCodexRules).
 
-// envFiles are the .env files the policy guards, by name. `.env.*` is not
-// used, as it matched templates meant to be read (.env.example,
-// .env.sample, .env.template, .env.dist), and no glob all four CLIs read
-// alike can leave those out, so the usual secret-bearing names are listed
-// instead: another name, such as .env.foo, is not covered.
-var envFiles = []string{".env", ".env.local", ".env.*.local", ".env.development", ".env.dev",
-	".env.production", ".env.prod", ".env.staging", ".env.stage", ".env.test", ".env.ci",
-	".env.preview", ".env.qa", ".env.uat", ".env.live", ".env.backup", ".env.bak", ".env.old",
-	".env.secret", ".env.secrets", ".env.private"}
+// envFiles are the .env files a deny nobody is asked about guards: a borrow
+// child's, and the OpenCode guard's, which itself lets the templates through
+// (EnvTemplates). The glob matches them too, which only refuses more.
+var envFiles = []string{".env", ".env.*"}
+
+// EnvTemplates are .env files meant to be read, which the on-screen rules and
+// the OpenCode guard leave alone.
+var EnvTemplates = []string{".env.example", ".env.sample", ".env.template", ".env.dist"}
+
+// envFilesOnScreen are the .env files the on-screen rules name. No glob that
+// Claude and Grok read alike leaves the templates out, so the usual
+// secret-bearing names are listed: an unusual name, such as .env.foo, is not
+// covered on screen.
+var envFilesOnScreen = []string{".env", ".env.local", ".env.*.local", ".env.local.*",
+	".env.development", ".env.dev", ".env.production", ".env.prod", ".env.prd",
+	".env.staging", ".env.stage", ".env.stg", ".env.test", ".env.e2e", ".env.ci",
+	".env.preview", ".env.qa", ".env.uat", ".env.live", ".env.docker", ".env.override",
+	".env.keys", ".env.me", ".env.vault", ".env.backup", ".env.bak", ".env.old",
+	".env.orig", ".env.save", ".env.secret", ".env.secrets", ".env.private"}
 
 // privateKeyFiles are private keys by their usual names: the strict group.
 var privateKeyFiles = []string{"*.pem", "*.key", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}

@@ -145,6 +145,25 @@ func TestOpenCodeGuardFailsClosed(t *testing.T) {
 	}
 }
 
+// TestDeniedNameTemplates (T6967 review 7): the guard keeps .env.*, so an
+// unusual name stays refused, and lets exactly the four templates through.
+func TestDeniedNameTemplates(t *testing.T) {
+	names := []string{".env", ".env.*", "*.pem"}
+	readable := []string{".env.example", ".env.sample", ".env.template", ".env.dist"}
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{".env", true}, {"a/.env.vault", true}, {".env.keys", true}, {".env.local.backup", true},
+		{".env.example", false}, {"x/.ENV.SAMPLE", false}, {".env.template", false}, {".env.dist", false},
+		{".env.example.local", true}, {"key.pem", true}, {"main.go", false},
+	} {
+		if got := deniedName(tc.path, names, readable); got != tc.want {
+			t.Errorf("%s: %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
 // TestHoldsRuleCollapsesBoth: two spaces in a rule must not hide it from the gate.
 func TestHoldsRuleCollapsesBoth(t *testing.T) {
 	for _, tc := range []struct {
