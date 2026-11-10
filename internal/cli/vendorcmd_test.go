@@ -115,6 +115,23 @@ func TestPrintRefuses(t *testing.T) {
 		{"a subcommand", []string{"claude", "mcp", "list"}, 1, "", "vendor.cli_missing"},
 		{"a subcommand's help", []string{"claude", "mcp", "--help"}, 1, "", "vendor.cli_missing"},
 		{"an OpenCode subcommand", []string{"opencode", "auth", "list"}, 1, "", "vendor.cli_missing"},
+		// PR #124 re-review: nothing after -- is left to the CLI's parser, a
+		// -- cannot hide a subcommand's second word, and more trust skips.
+		{"claude -p -- mcp serve", []string{"claude", "-p", "--", "mcp", "serve"}, 2, "names a subcommand", "cli.usage"},
+		{"-- agents with a bypass", []string{"--", "agents", "--permission-mode", "bypassPermissions"}, 2, "names a subcommand", "cli.usage"},
+		{"-- then a bypass", []string{"claude", "-p", "--", "hi", "--dangerously-skip-permissions"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"claude mcp -- serve", []string{"claude", "mcp", "--", "serve"}, 2, "a -- before", "cli.usage"},
+		{"claude mcp SERVE", []string{"claude", "mcp", "SERVE"}, 2, "serves the CLI's own tools", "cli.usage"},
+		{"a later -- is the subcommand's", []string{"claude", "mcp", "add", "x", "--", "npx", "y"}, 1, "", "vendor.cli_missing"},
+		{"-- then an ordinary word", []string{"--", "sessions", "list"}, 1, "", "vendor.cli_missing"},
+		{"codex exec --skip-git-repo-check", []string{"codex", "exec", "--skip-git-repo-check", "x"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"grok -p --no-ask-user", []string{"grok", "-p", "hi", "--no-ask-user"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"grok -p --fs-write", []string{"grok", "-p", "hi", "--fs-write", "/"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"enabledMcpjsonServers in --settings", []string{"claude", "-p", "--settings", `{"enabledMcpjsonServers":["evil"]}`, "hi"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"otelHeadersHelper in --settings", []string{"claude", "-p", "--settings", `{"otelHeadersHelper":"/tmp/x.sh"}`, "hi"}, 2, "credential", "cli.usage"},
+		{"a typo with more words", []string{"sesions", "list"}, 2, "did you mean aggy sessions", "cli.usage"},
+		{"a typo with more words, borrow", []string{"borow", "research", "x"}, 2, "did you mean aggy borrow", "cli.usage"},
+		{"a plural is a prompt", []string{"tools", "please"}, 1, "", "vendor.cli_missing"},
 	}
 	defer func(f func() bool) { stdinTerminal = f }(stdinTerminal)
 	stdinTerminal = func() bool { return false }
@@ -201,6 +218,19 @@ func TestLaunchGates(t *testing.T) {
 	}
 }
 
+// TestManageInCommands (PR #124 re-review): the words after -- are checked
+// against each vendor's Commands, so every management subcommand must be one
+// of them. OpenCode takes no prompt at all.
+func TestManageInCommands(t *testing.T) {
+	for _, v := range []adapter.Vendor{adapter.Claude, adapter.Codex, adapter.Grok} {
+		for _, c := range adapter.Manage[v].Commands {
+			if !slices.Contains(passFlags(v).Commands, c) {
+				t.Errorf("%s: management subcommand %q is not in Commands", v, c)
+			}
+		}
+	}
+}
+
 // TestNearCommand (T6961): a word one edit from a command is taken for a typo,
 // anything else for a prompt.
 func TestNearCommand(t *testing.T) {
@@ -213,8 +243,9 @@ func TestNearCommand(t *testing.T) {
 		{"run", ""}, // too short to guess at
 		{"explain", ""},
 		// PR #124 review (hand-edited: "Sessions" was a prompt): case is
-		// ignored, a swap is one edit, five letters may be two edits off, and
-		// vendor names and short forms count.
+		// ignored, a swap is one edit, and vendor names and short forms count.
+		// (The re-review dropped "five letters may be two edits off", which
+		// none of these rows used.)
 		{"Sessions", "sessions"},
 		{"Doctor", "doctor"},
 		{"dcotor", "doctor"},
@@ -226,6 +257,17 @@ func TestNearCommand(t *testing.T) {
 		{"borrw", "borrow"},
 		{"review", ""},
 		{"go", ""},
+		// PR #124 re-review: exactly one edit, an extra letter is no typo, and
+		// four letters at least, so these stay prompts.
+		{"hello", ""},
+		{"test", ""},
+		{"tools", ""},
+		{"logs", ""},
+		{"helpp", ""},
+		{"ues", ""},
+		{"brrow", "borrow"},
+		{"--model", ""},
+		{"vid", "video"},
 	}
 	for _, tt := range tests {
 		if got := nearCommand(tt.word); got != tt.want {

@@ -50,7 +50,9 @@ login, aggy codex login, aggy grok update, aggy opencode models. Its --help is
 the CLI's. A flag that loosens the policy is refused there. An IDE
 panel, the desktop app, or a web session starts the CLI without aggy, so
 aggy's policy and memory do not apply there. A first prompt word that names one of the CLI's subcommands is
-refused: put the prompt after --. A prompt with --continue or --resume is
+refused: put the prompt after --. After --, the first word still may not
+name one of the CLI's subcommands in any case, since the CLI may run it, and no
+later word may be a refused or gated flag. A prompt with --continue or --resume is
 claude's only. OpenCode takes no prompt yet.
 
 Print mode (claude -p, grok -p, codex exec) and a stdin that is no terminal
@@ -63,9 +65,10 @@ A flag that could get past aggy's safety policy or hooks (--dangerously-*,
 --permission-mode bypassPermissions, --yolo, -a never, --add-dir of your home or
 a folder of keys on codex and grok, and on codex --disable hooks and a -c aggy
 cannot tell is harmless) needs --no-policy, and aggy notes it at launch. A flag
-that only asks you less passes where your deny rules still hold, as on claude
---allowedTools and --permission-mode auto, and some pass with a line at launch,
-as on codex --profile and --enable.
+that only asks you less passes where aggy's policy rules (deny, or ask on
+screen) still hold, as on claude --allowedTools and --permission-mode auto, and
+some pass with a line at launch, as on codex --profile and --enable. A refused
+or gated flag exits 2, on screen and in print mode alike.
 
 aggy opencode takes only the flags above, none of OpenCode's own. Its model
 is provider/model. As on the other CLIs, --model on a resume applies in opencode

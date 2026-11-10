@@ -307,8 +307,18 @@ func (a Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, e
 // a safety feature, which the reference says translates to such a -c, and an
 // --add-dir that holds $HOME or keys (at launch: DirFlags). --profile, --enable,
 // and other --add-dirs pass with a line at launch. --approve-for-me is gated although
-// Claude's --allowedTools is not: Claude documents that its deny rules hold,
-// and whether Codex's rules file holds under it is unverified.
+// Claude's --allowedTools is not: Claude documents that aggy's policy rules
+// (deny, or ask on screen once PR #125 lands) hold, and whether Codex's rules
+// file holds under it is unverified.
+//
+// PR #124 re-review, through the new print paths: --skip-git-repo-check skips
+// Codex's check that it runs in a git repository it trusts, and
+// --ignore-user-config drops the user config.toml, aggy's hooks wiring with it
+// (both codex exec flags: probe's help-verified CapSkipGitCheck and
+// CapIgnoreUserConfig, docs/verification.md); both are trust or config skips,
+// so they need --no-policy and a person. --strict-config tightens. exec's other
+// flags were not re-read against 6aaac69 for this; one naming dangerously,
+// yolo, or a refused flag is gated as on screen, and the rest pass unverified.
 func (Adapter) PassFlags() adapter.PassFlags {
 	return adapter.PassFlags{
 		Model:    []string{"--model", "-m"},
@@ -318,6 +328,7 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			{Names: []string{"--no-alt-screen"}, Why: "aggy passes it when the CLI has it, so the scrollback keeps what came before a switch"},
 			{Names: []string{"--cd", "-C"}, Why: "aggy starts the CLI in the session's directory; cd there first"},
 			{Names: []string{"--yolo", "--approve-for-me", "--not-so-yolo"}, UnlessNoPolicy: true},
+			{Names: []string{SkipGitRepoCheck, "--ignore-user-config"}, UnlessNoPolicy: true},
 			// PR #124 review: no longer run as given, since the run's agent is
 			// not here, where aggy's policy would apply.
 			{Names: []string{"--remote", "--remote-auth-token-env"}, Why: "it runs the session on a remote app server, where aggy's policy does not reach; run codex itself for it"},

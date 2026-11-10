@@ -62,12 +62,13 @@ func MergeSettings(a, b map[string]any) map[string]any {
 }
 
 // SettingsJSON is the one settings layer an on-screen or print launch passes
-// (ok false when there is none): its permissions.deny list merges with every
-// settings file's, and a deny wins over any allow (code.claude.com/docs
-// settings.md, permissions.md). The tools' hooks ride in the same layer, for
-// this session only, as the borrow guard's do (GuardSettings). The person's
-// own --settings layers go in it too, under aggy's (T6962, mergeUser): lists
-// join, so aggy's deny rules and hooks stay, and where both set one value
+// (ok false when there is none): its permission lists merge with every
+// settings file's, and aggy's policy rules (deny, or ask on screen once PR
+// #125 lands) win over any allow (code.claude.com/docs settings.md,
+// permissions.md). The tools' hooks ride in the same layer, for this session
+// only, as the borrow guard's do (GuardSettings). The person's own --settings
+// layers go in it too, under aggy's (T6962, mergeUser): lists join, so aggy's
+// policy rules and hooks stay, and where both set one value
 // aggy's wins, but for a stricter defaultMode of plan.
 //
 // aggy's own layer goes inline when the person gave no --settings file: it
@@ -167,17 +168,22 @@ func joinMCPConfig(extra []string, file string) ([]string, bool) {
 // person can put them in their own Claude settings file, which aggy does not
 // touch.
 //
-// Other keys pass: an allow rule cannot carve an exception out of a deny rule
-// (permissions.md), so aggy's deny rules hold over the person's allows. Keys
+// Other keys pass: an allow rule cannot carve an exception out of a deny or
+// ask rule (permissions.md), so aggy's policy rules (deny, or ask on screen
+// once PR #125 lands) hold over the person's allows. TODO(T6895): that a
+// person's defaultMode of auto or dontAsk still stops at aggy's ask rules is
+// unchecked. Keys
 // are read in sorted order, so the refusal names the same one each time.
 func CheckSettings(layer map[string]any) error {
 	gated := func(what string) error { return fmt.Errorf("--settings %s: %w", what, adapter.ErrLoosens) }
-	if _, ok := layer["apiKeyHelper"]; ok {
-		return fmt.Errorf("--settings apiKeyHelper: %w", ErrSettingsCredential)
+	for _, k := range credentialHelpers {
+		if _, ok := layer[k]; ok {
+			return fmt.Errorf("--settings %s: %w", k, ErrSettingsCredential)
+		}
 	}
 	if env, ok := layer["env"].(map[string]any); ok {
 		for _, k := range sortedKeys(env) {
-			if credentialVar(k) {
+			if credentialVar(k, env[k]) {
 				return fmt.Errorf("--settings env.%s: %w", k, ErrSettingsCredential)
 			}
 		}
@@ -222,19 +228,48 @@ func CheckSettings(layer map[string]any) error {
 }
 
 // loosening are the settings keys, in lower case, that CheckSettings gates by
-// name (settings.md).
-var loosening = []string{"disableallhooks", "allowmanagedhooksonly", "allowmanagedpermissionrulesonly", "enableallprojectmcpservers"}
+// name. The settings reference's index (code.claude.com/docs/en/
+// settings-reference, read 2026-11-10): disableAllHooks "Turn off hooks";
+// allowManagedHooksOnly "Run only the hooks your organization deploys";
+// allowManagedPermissionRulesOnly "Make managed settings the only settings
+// source of permission rules"; enableAllProjectMcpServers "Approve every server
+// in project .mcp.json files without a prompt"; enabledMcpjsonServers "Approve
+// specific servers from a project's .mcp.json" (PR #124 re-review).
+var loosening = []string{"disableallhooks", "allowmanagedhooksonly", "allowmanagedpermissionrulesonly", "enableallprojectmcpservers",
+	"enabledmcpjsonservers"}
+
+// credentialHelpers are the settings keys that run a command of the person's
+// to produce a credential or headers, refused outright like the credentials
+// themselves. Same index: apiKeyHelper "Generate the API credential with your
+// own command"; otelHeadersHelper "Generate rotating OpenTelemetry headers with
+// your own command"; awsAuthRefresh "Refresh expired Bedrock credentials in
+// .aws with your own command"; awsCredentialExport "Supply Bedrock credentials
+// as JSON from your own command"; gcpAuthRefresh "Refresh Google Cloud
+// credentials with your own command". policyHelper "Run an executable that
+// computes managed settings at startup" is refused too: it would set policy
+// over aggy's. The fetch read the index, not every full entry (the page was
+// truncated), so a later key of this kind is not known.
+var credentialHelpers = []string{"apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "gcpAuthRefresh", "otelHeadersHelper", "policyHelper"}
 
 // ErrSettingsCredential matches a --settings layer that would set a credential
 // or an endpoint for the CLI, which aggy never passes, with --no-policy or not.
 var ErrSettingsCredential = errors.New("it sets a credential or an API endpoint for the CLI, which aggy never passes on its command line; put it in your own Claude settings file")
 
-// credentialVar reports whether an env key names an API key, a token, or a
-// base URL.
-func credentialVar(k string) bool {
+// credentialVar reports whether an env key names an API key, a token, a
+// secret, a password, an authorization or custom header, or a base URL, or is a
+// proxy variable whose value carries user@ credentials.
+func credentialVar(k string, v any) bool {
 	u := strings.ToUpper(k)
-	return strings.HasSuffix(u, "_BASE_URL") || strings.Contains(u, "API_KEY") || strings.Contains(u, "AUTH_TOKEN") ||
-		strings.HasSuffix(u, "_TOKEN") || strings.Contains(u, "SECRET")
+	switch {
+	case strings.HasSuffix(u, "_BASE_URL"), strings.Contains(u, "API_KEY"), strings.Contains(u, "AUTH_TOKEN"),
+		strings.HasSuffix(u, "_TOKEN"), strings.Contains(u, "SECRET"), strings.Contains(u, "PASSWORD"),
+		strings.HasSuffix(u, "_CUSTOM_HEADERS"), strings.Contains(u, "_AUTHORIZATION"), strings.HasPrefix(u, "AUTHORIZATION"):
+		return true
+	case u == "HTTP_PROXY" || u == "HTTPS_PROXY" || u == "ALL_PROXY":
+		s, _ := v.(string)
+		return strings.Contains(s, "@")
+	}
+	return false
 }
 
 // sortedKeys are m's keys in order.

@@ -235,7 +235,7 @@ var stdinTerminal = func() bool { return isTerminal(os.Stdin) }
 // flagCode is the reason code of a PassFlags refusal.
 func flagCode(err error) diag.Code {
 	switch {
-	case errors.Is(err, adapter.ErrNotFlag):
+	case errors.Is(err, adapter.ErrNotFlag), errors.Is(err, adapter.ErrCommandAfterDashes):
 		return diag.CodeUsage
 	case errors.Is(err, adapter.ErrLoosens):
 		return diag.CodeFlagLoosens
@@ -652,7 +652,11 @@ func runSubcommand(cmd string, v adapter.Vendor, own, args []string, stderr io.W
 	if len(own) > 0 {
 		return launchUsageErr(stderr, cmd, diag.CodeUsage, fmt.Sprintf("%s %s runs as typed, with none of aggy's flags; drop %s", v, args[0], own[0]), "")
 	}
-	if sub := secondWord(args[1:]); slices.Contains(manageRefused(v)[args[0]], sub) {
+	sub, dashesFirst := secondWord(args[1:])
+	if dashesFirst {
+		return launchUsageErr(stderr, cmd, diag.CodeUsage, fmt.Sprintf("%s %s: a -- before the subcommand's own word is refused, since aggy cannot tell what the CLI runs then; drop it", v, args[0]), "")
+	}
+	if slices.ContainsFunc(manageRefused(v)[args[0]], func(r string) bool { return strings.EqualFold(r, sub) }) {
 		return launchUsageErr(stderr, cmd, diag.CodeUsage, fmt.Sprintf("%s %s %s serves the CLI's own tools, which aggy would run with no policy; run %s itself for it", v, args[0], sub, v), "")
 	}
 	if err := passFlags(v).Gated(args[1:], "--settings"); err != nil {
@@ -661,17 +665,21 @@ func runSubcommand(cmd string, v adapter.Vendor, own, args []string, stderr io.W
 	return runAsGiven(cmd, v, args, "subcommand", stderr)
 }
 
-// secondWord is the first word of words that is not a flag, or "".
-func secondWord(words []string) string {
+// secondWord is the first word of words that is neither a flag nor "--", or
+// "", and whether a "--" comes before it (or, with no such word, at all). The
+// PR #124 re-review: stopping at "--" let claude mcp -- serve through, so the
+// word is found past it, and a "--" before it is refused by the caller. A later
+// "--" is the subcommand's own (claude mcp add name -- cmd args).
+func secondWord(words []string) (word string, dashesFirst bool) {
 	for _, w := range words {
-		if w == "--" {
-			return ""
-		}
-		if !strings.HasPrefix(w, "-") {
-			return w
+		switch {
+		case w == "--":
+			dashesFirst = true
+		case !strings.HasPrefix(w, "-"):
+			return w, dashesFirst
 		}
 	}
-	return ""
+	return "", dashesFirst
 }
 
 // manageRefused is v's refused second words (adapter.Manage).
@@ -686,55 +694,62 @@ var commandNames = hook.AggyCommands
 var commandAbbrevs = map[string]string{"img": "image", "vid": "video", "perms": "permissions", "cfg": "config", "sess": "sessions"}
 
 // nearCommand is the aggy command or vendor name word is close to, or "": a
-// single word that close is more likely a mistyped command than a prompt, as
-// claude udpate says "Did you mean claude update?" (PR #124 review). Case is
-// ignored and a swap of two letters is one edit (editDistance); a word of
-// five letters or more may be two edits off, a shorter one one edit; a known
-// short form (img) counts too. A word under three letters is never taken for
-// one.
+// first word that close is more likely a mistyped command than a prompt, as
+// claude udpate says "Did you mean claude update?" (PR #124 review). The
+// re-review's rule: case is ignored (Doctor is a typo of doctor), and a typo
+// is exactly one edit (oneEdit): one letter changed, two neighbouring letters
+// swapped (dcotor), or one letter missing (sesions, claud). An extra letter is
+// not taken for one, so tools, logs, and news stay prompts beside tool, log,
+// and new. Both the word and the command need four letters or more; a listed
+// short form (img) needs three. Only letters and "-" are looked at, so a
+// prompt with a space in it is never a typo.
 func nearCommand(word string) string {
 	low := strings.ToLower(word)
-	if len(low) < 3 || strings.Trim(low, "abcdefghijklmnopqrstuvwxyz-") != "" {
+	if len(low) < 3 || low[0] == '-' || strings.Trim(low, "abcdefghijklmnopqrstuvwxyz-") != "" {
 		return ""
 	}
 	if c, ok := commandAbbrevs[low]; ok {
 		return c
 	}
-	best, bestD := "", 3
+	if len(low) < 4 {
+		return ""
+	}
 	for _, c := range append(slices.Clone(commandNames), "claude", "codex", "grok", "opencode") {
-		limit := 1
-		if max(len(low), len(c)) >= 5 {
-			limit = 2
+		if len(c) < 4 || word == c {
+			continue
 		}
-		if d := editDistance(low, c); d <= limit && d < bestD && word != c {
-			best, bestD = c, d
+		if low == c || oneEdit(low, c) {
+			return c
 		}
 	}
-	return best
+	return ""
 }
 
-// editDistance is the optimal string alignment distance of a and b, in bytes:
-// Levenshtein with a swap of two neighbouring letters as one edit (Damerau).
-func editDistance(a, b string) int {
-	d := make([][]int, len(a)+1)
-	for i := range d {
-		d[i] = make([]int, len(b)+1)
-		d[i][0] = i
-	}
-	for j := range d[0] {
-		d[0][j] = j
-	}
-	for i := 1; i <= len(a); i++ {
-		for j := 1; j <= len(b); j++ {
-			cost := 1
-			if a[i-1] == b[j-1] {
-				cost = 0
+// oneEdit reports whether word is c with exactly one letter changed, two
+// neighbouring letters swapped, or one letter left out.
+func oneEdit(word, c string) bool {
+	switch len(word) {
+	case len(c):
+		var diff []int
+		for i := range word {
+			if word[i] != c[i] {
+				diff = append(diff, i)
 			}
-			d[i][j] = min(d[i-1][j]+1, d[i][j-1]+1, d[i-1][j-1]+cost)
-			if i > 1 && j > 1 && a[i-1] == b[j-2] && a[i-2] == b[j-1] {
-				d[i][j] = min(d[i][j], d[i-2][j-2]+1)
+		}
+		switch len(diff) {
+		case 1:
+			return true
+		case 2:
+			i, j := diff[0], diff[1]
+			return j == i+1 && word[i] == c[j] && word[j] == c[i]
+		}
+		return false
+	case len(c) - 1:
+		for i := range c {
+			if c[:i]+c[i+1:] == word {
+				return true
 			}
 		}
 	}
-	return d[len(a)][len(b)]
+	return false
 }
