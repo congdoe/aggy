@@ -39,6 +39,10 @@ type PassFlags struct {
 	// PrintCommands are subcommands that do the same, as the first word
 	// (codex exec).
 	PrintCommands []string
+	// Bare are the flags that start no local session at all (claude
+	// --desktop, --cloud, --version): aggy runs the CLI with the words as
+	// given and adds nothing, since its launch flags could only break them.
+	Bare []string
 	// Commands are the CLI's own subcommand names. On screen a first prompt
 	// word that names one is refused, since the CLI could run it instead of
 	// the session aggy records.
@@ -145,33 +149,53 @@ func (p PassFlags) Parse(args []string, noPolicy bool) (ParsedFlags, error) {
 	return p.ParseWith(args, ParseOpts{NoPolicy: noPolicy})
 }
 
-// PrintRequested reports whether args hold one of the Print flags, or start
-// with one of the PrintCommands: the run prints a reply and exits, so aggy
-// runs it directly, with nothing to supervise or record. The value of a flag
-// known to take one is skipped, and nothing after "--" counts.
-func (p PassFlags) PrintRequested(args []string, values []string) bool {
+// RunMode is how aggy runs a CLI's words (PassFlags.Mode).
+type RunMode int
+
+// Run modes.
+const (
+	// RunScreen is an on-screen session under the supervisor, recorded.
+	RunScreen RunMode = iota
+	// RunPrint runs the CLI directly with aggy's launch flags and policy, and
+	// records nothing: print mode, and the flags whose session aggy cannot
+	// supervise (Print, PrintCommands).
+	RunPrint
+	// RunBare runs the CLI directly with the words as given and nothing
+	// added: a flag that starts no local session (Bare).
+	RunBare
+)
+
+// Mode says how aggy runs args: RunBare when they hold a Bare flag, RunPrint
+// when they hold a Print flag or start with one of the PrintCommands, else
+// RunScreen. The value of a flag known to take one is skipped (values are the
+// CLI's help's, as ParseOpts.Values), and nothing after "--" counts.
+func (p PassFlags) Mode(args []string, values []string) RunMode {
+	mode := RunScreen
 	if len(args) > 0 && slices.Contains(p.PrintCommands, args[0]) {
-		return true
+		mode = RunPrint
 	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
-			return false
+			break
 		}
 		if a == "-" || !strings.HasPrefix(a, "-") {
 			continue
 		}
 		name, _, hasVal := p.split(a)
 		for _, n := range shortsOf(name) {
-			if slices.Contains(p.Print, n) {
-				return true
+			switch {
+			case slices.Contains(p.Bare, n):
+				return RunBare
+			case slices.Contains(p.Print, n):
+				mode = RunPrint
 			}
 		}
 		if !hasVal && (p.takesValue(name, values) == valueOne || slices.Contains(p.Model, name)) {
 			i++
 		}
 	}
-	return false
+	return mode
 }
 
 // shortsOf is name, or each of the short flags run together in it (-dp).
@@ -229,6 +253,13 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 		out.Extra, out.Safe = append(out.Extra, words...), append(out.Safe, words...)
 	}
 	after := valueNone // what the flag before takes
+	valueSafe := true  // whether that flag, so its value, is in Safe
+	value := func(a string) {
+		out.Extra = append(out.Extra, a)
+		if valueSafe {
+			out.Safe = append(out.Safe, a)
+		}
+	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
@@ -239,10 +270,10 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 		if a == "-" || !strings.HasPrefix(a, "-") {
 			switch {
 			case after == valueOne:
-				keep(a)
+				value(a)
 				after = valueNone
 			case after == valueMany:
-				keep(a)
+				value(a)
 			case !o.Print && len(out.Prompt) == 0 && slices.Contains(p.Commands, a):
 				return out, fmt.Errorf("%q: %w", a, ErrNotFlag)
 			default:
@@ -295,7 +326,7 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 				return out, err
 			}
 			for _, n := range shortsOf(name) {
-				if slices.Contains(p.Print, n) {
+				if slices.Contains(p.Print, n) || slices.Contains(p.Bare, n) {
 					out.Print = true
 				}
 			}
@@ -313,6 +344,7 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 				out.Dirs = append(out.Dirs, DirFlag{Name: name, Value: dir})
 			}
 			out.Extra = append(out.Extra, words...)
+			valueSafe = false
 			switch {
 			case loosens:
 				out.Loosens = append(out.Loosens, name)
@@ -320,6 +352,7 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 				out.Once = append(out.Once, name)
 			default:
 				out.Safe = append(out.Safe, words...)
+				valueSafe = true
 			}
 			if !hasVal && i == before {
 				after = p.takesValue(name, o.Values)
@@ -406,6 +439,32 @@ func (p PassFlags) checkPassed(args []string, i *int, name, val string, hasVal b
 		}
 	}
 	return loosens, nil
+}
+
+// TakeFlag takes every one of names out of words, written as two words or
+// with an =, and returns their values in order and the words left. Nothing
+// after "--" is looked at: it is prompt text. A name with no word after it
+// stays in rest.
+func TakeFlag(words []string, names ...string) (vals, rest []string) {
+	for i := 0; i < len(words); i++ {
+		w := words[i]
+		if w == "--" {
+			return vals, append(rest, words[i:]...)
+		}
+		name, val, hasVal := strings.Cut(w, "=")
+		switch {
+		case !slices.Contains(names, name):
+			rest = append(rest, w)
+		case hasVal:
+			vals = append(vals, val)
+		case i+1 < len(words):
+			i++
+			vals = append(vals, words[i])
+		default:
+			rest = append(rest, w)
+		}
+	}
+	return vals, rest
 }
 
 // AnyValue is the Check of a flag that takes any value but another flag: listed

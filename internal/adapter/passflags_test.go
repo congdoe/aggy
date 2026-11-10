@@ -130,9 +130,13 @@ func TestPassFlags(t *testing.T) {
 
 		{name: "claude --session-id", p: cl, args: []string{"--session-id", "x"}, refused: "--session-id clashes"},
 		{name: "claude --session-id=", p: cl, args: []string{"--session-id=x"}, refused: "--session-id clashes"},
-		{name: "claude --settings", p: cl, args: []string{"--settings", "{}"}, refused: "--settings clashes"},
-		{name: "claude memory", p: cl, args: []string{"--append-system-prompt-file", "x"}, refused: "shared memory"},
-		{name: "claude --mcp-config", p: cl, args: []string{"--mcp-config", "x"}, refused: "--mcp-config clashes"},
+		// T6962: merged with aggy's own at launch, so they pass here.
+		{name: "claude --settings", p: cl, args: []string{"--settings", "{}"},
+			want: adapter.ParsedFlags{Extra: []string{"--settings", "{}"}, Safe: []string{"--settings", "{}"}}},
+		{name: "claude memory", p: cl, args: []string{"--append-system-prompt-file", "x"},
+			want: adapter.ParsedFlags{Extra: []string{"--append-system-prompt-file", "x"}, Safe: []string{"--append-system-prompt-file", "x"}}},
+		{name: "claude --mcp-config, as many as given", p: cl, args: []string{"--mcp-config", "x", "y"},
+			want: adapter.ParsedFlags{Extra: []string{"--mcp-config", "x", "y"}, Safe: []string{"--mcp-config", "x", "y"}}},
 		{name: "claude --fork-session", p: cl, args: []string{"--fork-session"}, refused: "--fork-session clashes"},
 		// T6961: print mode is the caller's choice (PrintRequested); Parse marks it.
 		{name: "claude -p", p: cl, args: []string{"-p"},
@@ -140,11 +144,15 @@ func TestPassFlags(t *testing.T) {
 		{name: "claude -p run together", p: cl, args: []string{"-dp"},
 			want: adapter.ParsedFlags{Print: true, Extra: []string{"-dp"}, Safe: []string{"-dp"}}},
 		{name: "claude -c run together", p: cl, args: []string{"-dc"}, refused: "write -c on its own"},
-		{name: "claude --worktree", p: cl, args: []string{"-w", "x"}, refused: "-w clashes"},
+		{name: "claude --worktree, for the first launch only", p: cl, args: []string{"-w", "x"},
+			want: adapter.ParsedFlags{Extra: []string{"-w", "x"}}},
 		{name: "grok --session-id", p: gk, args: []string{"--session-id", "x"}, refused: "--session-id clashes"},
-		{name: "grok --deny", p: gk, args: []string{"--deny", "x"}, refused: "--deny clashes"},
-		{name: "grok --rules", p: gk, args: []string{"--rules", "x"}, refused: "--rules clashes"},
-		{name: "grok --agent", p: gk, args: []string{"--agent", "x"}, refused: "--agent clashes"},
+		{name: "grok --deny adds to aggy's", p: gk, args: []string{"--deny", "x"},
+			want: adapter.ParsedFlags{Extra: []string{"--deny", "x"}, Safe: []string{"--deny", "x"}}},
+		{name: "grok --rules joins the memory", p: gk, args: []string{"--rules", "x"},
+			want: adapter.ParsedFlags{Extra: []string{"--rules", "x"}, Safe: []string{"--rules", "x"}}},
+		{name: "grok --agent, checked at launch", p: gk, args: []string{"--agent", "x"},
+			want: adapter.ParsedFlags{Extra: []string{"--agent", "x"}, Safe: []string{"--agent", "x"}}},
 		{name: "grok --no-alt-screen", p: gk, args: []string{"--no-alt-screen"}, refused: "--no-alt-screen clashes"},
 		{name: "codex --no-alt-screen", p: cx, args: []string{"--no-alt-screen"}, refused: "--no-alt-screen clashes"},
 		{name: "codex -C is not -c", p: cx, args: []string{"-C", "/x"}, refused: "-C clashes"},
@@ -202,7 +210,8 @@ func TestPassFlags(t *testing.T) {
 		{name: "grok --print is --single, and takes its prompt", p: gk, args: []string{"--print", "x"},
 			want: adapter.ParsedFlags{Print: true, Extra: []string{"--print", "x"}, Safe: []string{"--print", "x"}}},
 		{name: "grok --load resumes around the index", p: gk, args: []string{"--load", "x"}, refused: "--load clashes"},
-		{name: "grok --append-system-prompt is --rules", p: gk, args: []string{"--append-system-prompt", "x"}, refused: "--append-system-prompt clashes"},
+		{name: "grok --append-system-prompt is --rules", p: gk, args: []string{"--append-system-prompt", "x"},
+			want: adapter.ParsedFlags{Extra: []string{"--append-system-prompt", "x"}, Safe: []string{"--append-system-prompt", "x"}}},
 		{name: "grok --installer writes config", p: gk, args: []string{"--installer", "x"}, refused: "--installer clashes"},
 		{name: "grok a hidden value flag", p: gk, args: []string{"--storage-mode", "x"},
 			want: adapter.ParsedFlags{Extra: []string{"--storage-mode", "x"}, Safe: []string{"--storage-mode", "x"}}},
@@ -210,10 +219,12 @@ func TestPassFlags(t *testing.T) {
 		{name: "grok -m is aggy's model", p: gk, args: []string{"-m", "grok-x"}, want: adapter.ParsedFlags{Model: "grok-x"}},
 		{name: "grok -s", p: gk, args: []string{"-s", "x"}, refused: "-s clashes"},
 		{name: "grok --cwd", p: gk, args: []string{"--cwd", "/x"}, refused: "--cwd clashes"},
-		{name: "grok -w", p: gk, args: []string{"-w"}, refused: "-w clashes"},
+		{name: "grok -w runs it directly", p: gk, args: []string{"-w"},
+			want: adapter.ParsedFlags{Print: true, Extra: []string{"-w"}, Safe: []string{"-w"}}},
 		{name: "grok --prompt-json", p: gk, args: []string{"--prompt-json", "[]"},
 			want: adapter.ParsedFlags{Print: true, Extra: []string{"--prompt-json", "[]"}, Safe: []string{"--prompt-json", "[]"}}},
-		{name: "grok --disallowedTools is --deny", p: gk, args: []string{"--disallowedTools", "x"}, refused: "--disallowedTools clashes"},
+		{name: "grok --disallowedTools is --deny", p: gk, args: []string{"--disallowedTools", "x"},
+			want: adapter.ParsedFlags{Extra: []string{"--disallowedTools", "x"}, Safe: []string{"--disallowedTools", "x"}}},
 		{name: "grok --permission-mode default", p: gk, args: []string{"--permission-mode", "default"},
 			want: adapter.ParsedFlags{Extra: []string{"--permission-mode", "default"}, Safe: []string{"--permission-mode", "default"}}},
 		{name: "grok a value flag from its help", p: gk, args: []string{"--add-dir", "/x", "--effort", "high"},
@@ -299,7 +310,8 @@ func TestParsePrint(t *testing.T) {
 		{"a subcommand's name is a prompt", cl, []string{"-p", "mcp"}, []string{"-p", "mcp"}, ""},
 		{"grok -p takes its prompt", gk, []string{"-p", "hi", "--no-alt-screen"}, []string{"-p", "hi", "--no-alt-screen"}, ""},
 		{"a bypass still needs --no-policy", cl, []string{"-p", "--dangerously-skip-permissions", "x"}, nil, "--no-policy"},
-		{"aggy's memory flag still clashes", gk, []string{"-p", "x", "--rules", "y"}, nil, "--rules clashes"},
+		{"a session flag of aggy's still clashes on screen only", gk, []string{"-p", "x", "-s", "y"}, []string{"-p", "x", "-s", "y"}, ""},
+		{"a cwd still clashes", gk, []string{"-p", "x", "--cwd", "/y"}, nil, "--cwd clashes"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -317,34 +329,59 @@ func TestParsePrint(t *testing.T) {
 	}
 }
 
-// TestPrintRequested (T6961): a print flag anywhere but in a flag's value or
-// after "--" asks for print mode, as does a print subcommand first.
-func TestPrintRequested(t *testing.T) {
+// TestRunMode (T6961, T6962): a print flag anywhere but in a flag's value or
+// after "--" asks for print mode, as does a print subcommand first; a flag that
+// starts no local session runs the CLI as given.
+func TestRunMode(t *testing.T) {
 	cl, cx, gk := claude.Adapter{}.PassFlags(), codex.Adapter{}.PassFlags(), grok.New().PassFlags()
+	const screen, print, bare = adapter.RunScreen, adapter.RunPrint, adapter.RunBare
 	tests := []struct {
-		name string
-		p    adapter.PassFlags
-		args []string
-		want bool
+		name   string
+		p      adapter.PassFlags
+		args   []string
+		values []string
+		want   adapter.RunMode
 	}{
-		{"claude -p", cl, []string{"-p", "hi"}, true},
-		{"claude --print later", cl, []string{"--model", "opus", "--print"}, true},
-		{"claude -p run together", cl, []string{"-dp"}, true},
-		{"claude a value that says -p", cl, []string{"--model", "-p"}, false},
-		{"claude after --", cl, []string{"--", "-p"}, false},
-		{"claude none", cl, []string{"--verbose", "hi"}, false},
-		{"codex -p is a profile", cx, []string{"-p", "work"}, false},
-		{"codex exec", cx, []string{"exec", "hi"}, true},
-		{"codex e", cx, []string{"e", "hi"}, true},
-		{"codex exec as a later word", cx, []string{"--search", "exec"}, false},
-		{"grok --prompt-file", gk, []string{"--prompt-file", "/x"}, true},
+		{"claude -p", cl, []string{"-p", "hi"}, nil, print},
+		{"claude --print later", cl, []string{"--model", "opus", "--print"}, nil, print},
+		{"claude -p run together", cl, []string{"-dp"}, nil, print},
+		{"claude a value that says -p", cl, []string{"--model", "-p"}, nil, screen},
+		{"claude after --", cl, []string{"--", "-p"}, nil, screen},
+		{"claude none", cl, []string{"--verbose", "hi"}, nil, screen},
+		{"claude --tmux", cl, []string{"-w", "x", "--tmux"}, nil, print},
+		{"claude --bg", cl, []string{"--bg", "investigate"}, nil, print},
+		{"claude --desktop", cl, []string{"--desktop"}, nil, bare},
+		{"claude --version beats -p", cl, []string{"-p", "--version"}, nil, bare},
+		{"claude a help value that says --version", cl, []string{"--newflag", "--version"}, []string{"--newflag"}, screen},
+		{"claude -w alone stays on screen", cl, []string{"-w", "feature"}, nil, screen},
+		{"codex -p is a profile", cx, []string{"-p", "work"}, nil, screen},
+		{"codex exec", cx, []string{"exec", "hi"}, nil, print},
+		{"codex e", cx, []string{"e", "hi"}, nil, print},
+		{"codex exec as a later word", cx, []string{"--search", "exec"}, nil, screen},
+		{"codex --remote", cx, []string{"--remote", "ws://x"}, nil, bare},
+		{"codex --worktree", cx, []string{"--worktree"}, nil, print},
+		{"grok --prompt-file", gk, []string{"--prompt-file", "/x"}, nil, print},
+		{"grok -w", gk, []string{"-w"}, nil, print},
+		{"grok -v", gk, []string{"-v"}, nil, bare},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.p.PrintRequested(tt.args, nil); got != tt.want {
+			if got := tt.p.Mode(tt.args, tt.values); got != tt.want {
 				t.Errorf("got %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestTakeFlag (T6962): a flag's values come out in either spelling, and
+// nothing after "--" is touched.
+func TestTakeFlag(t *testing.T) {
+	vals, rest := adapter.TakeFlag([]string{"--settings", "a.json", "-p", "--settings={}", "hi", "--", "--settings", "x"}, "--settings")
+	if !slices.Equal(vals, []string{"a.json", "{}"}) || !slices.Equal(rest, []string{"-p", "hi", "--", "--settings", "x"}) {
+		t.Errorf("vals %q, rest %q", vals, rest)
+	}
+	if vals, rest := adapter.TakeFlag([]string{"x", "--rules"}, "--rules"); len(vals) != 0 || !slices.Equal(rest, []string{"x", "--rules"}) {
+		t.Errorf("a flag with no value: vals %q, rest %q", vals, rest)
 	}
 }
 

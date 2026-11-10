@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -111,15 +112,29 @@ func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 	if !top && len(rest) > 0 && slices.Contains(passThroughCommands(v), rest[0]) {
 		return runSubcommand(cmd, v, t, rest, stderr)
 	}
-	printing := !stdinTerminal()
+	mode := adapter.RunScreen
+	if !stdinTerminal() {
+		mode = adapter.RunPrint
+	}
 	pv := v
-	if top && (printing || len(rest) > 0) {
+	if top && (mode != adapter.RunScreen || len(rest) > 0) {
 		pv = launchVendor()
 	}
-	if !printing && pv != "" {
-		printing = passFlags(pv).PrintRequested(rest, nil)
+	var values []string
+	if len(rest) > 0 {
+		// The CLI's help says which flags take a value (T6962).
+		values = cliValueFlags(pv)
+		if m := passFlags(pv).Mode(rest, values); m > mode {
+			mode = m
+		}
 	}
-	if printing {
+	if mode == adapter.RunBare {
+		if cont || resume {
+			return launchUsageErr(stderr, cmd, diag.CodeUsage, "-c and -r reopen a session; this flag starts none", "")
+		}
+		return runBare(cmd, pv, t, rest, values, stderr)
+	}
+	if mode == adapter.RunPrint {
 		switch {
 		case resume:
 			return launchUsageErr(stderr, cmd, diag.CodeUsage, "aggy -r reopens an aggy session on screen; in print mode give the CLI's own resume flag after the vendor, as aggy claude -p -r <its session>", "")
@@ -128,7 +143,7 @@ func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 		case cont:
 			rest = append([]string{"--continue"}, rest...)
 		}
-		return runPrint(cmd, pv, t, rest, stderr)
+		return runPrint(cmd, pv, t, rest, values, stderr)
 	}
 	if top {
 		switch {
@@ -152,12 +167,19 @@ func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 		}
 		return launch("aggy", t, stderr)
 	}
-	p, err := passFlags(v).ParseWith(rest, adapter.ParseOpts{NoPolicy: t.NoPolicy})
+	p, err := passFlags(v).ParseWith(rest, adapter.ParseOpts{NoPolicy: t.NoPolicy, Values: values})
 	if err != nil {
 		return launchUsageErr(stderr, cmd, flagCode(err), err.Error(), "")
 	}
 	if msg := promptRefusal(v, p, p.Continue || p.Resume); msg != "" {
 		return launchUsageErr(stderr, cmd, diag.CodeFlagClash, msg, vendorUsage)
+	}
+	// A --settings layer that defeats the policy is refused here too, before
+	// anything runs; the launch reads it again in the session's directory.
+	if cwd, err := os.Getwd(); err == nil && v == adapter.Claude {
+		if _, _, _, err := claudeSettings(p.Extra, cwd, t.NoPolicy); errors.Is(err, adapter.ErrLoosens) {
+			return launchUsageErr(stderr, cmd, diag.CodeFlagLoosens, err.Error(), "")
+		}
 	}
 	switch {
 	case p.Continue && p.Resume:
@@ -289,7 +311,7 @@ func screenAdapter(v adapter.Vendor, caps []string) adapter.Adapter {
 // given. words are the CLI's own, passed in order; aggy takes over none of
 // them (ParseOpts.Print), and refuses or gates the same flags as on screen,
 // except the ones that clash only with the session aggy records.
-func runPrint(cmd string, v adapter.Vendor, t target, words []string, stderr io.Writer) int {
+func runPrint(cmd string, v adapter.Vendor, t target, words, values []string, stderr io.Writer) int {
 	ctx := context.Background()
 	name := strings.TrimSpace("aggy " + cmd)
 	rec := diag.Rec{Vendor: string(v)}
@@ -301,7 +323,7 @@ func runPrint(cmd string, v adapter.Vendor, t target, words []string, stderr io.
 		return launchUsageErr(stderr, cmd, diag.CodeUnsupported, "aggy runs OpenCode on screen only: print mode and a stdin that is no terminal are not wired for it; run opencode itself", "")
 	}
 	// Sorted first, so a refused flag is refused before anything is looked up.
-	p, err := passFlags(v).ParseWith(words, adapter.ParseOpts{NoPolicy: t.NoPolicy, Print: true})
+	p, err := passFlags(v).ParseWith(words, adapter.ParseOpts{NoPolicy: t.NoPolicy, Print: true, Values: values})
 	if err != nil {
 		return launchUsageErr(stderr, cmd, flagCode(err), err.Error(), "")
 	}
@@ -316,6 +338,17 @@ func runPrint(cmd string, v adapter.Vendor, t target, words []string, stderr io.
 	if _, err := allowedIn(cfg, cwd, v); err != nil {
 		return fail(launchCode(err, diag.CodeConfig), err)
 	}
+	req := adapter.InteractiveRequest{Cwd: cwd, Extra: p.Extra, Print: true}
+	if v == adapter.Claude {
+		layer, rest, loosens, err := claudeSettings(p.Extra, cwd, t.NoPolicy)
+		if err != nil {
+			return launchUsageErr(stderr, cmd, settingsCode(err), err.Error(), "")
+		}
+		req.Extra, req.UserSettings = rest, layer
+		if loosens {
+			p.Loosens = append(p.Loosens, "--settings")
+		}
+	}
 	path, err := probe.LookPath(vendorBin(v))
 	if err != nil {
 		return fail(diag.CodeCLIMissing, err)
@@ -324,7 +357,7 @@ func runPrint(cmd string, v adapter.Vendor, t target, words []string, stderr io.
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: probing %s: %s; starting it without the flags help must list\n", name, v, termsafe.Line(err.Error()))
 	}
-	req := adapter.InteractiveRequest{Cwd: cwd, Extra: p.Extra, Print: true}
+	var warns []string
 	model := p.Model
 	if model == "" && v != adapter.Codex {
 		// Codex's model flag is not placed for codex exec; its own -m is.
@@ -332,7 +365,6 @@ func runPrint(cmd string, v adapter.Vendor, t target, words []string, stderr io.
 		model = req.Model
 	}
 	req.Env = childEnv(string(v), model)
-	var warns []string
 	if len(t.Tools) > 0 {
 		warns = append(warns, "--tool is for an on-screen session, so it is ignored here")
 	}
@@ -375,6 +407,9 @@ func runPrint(cmd string, v adapter.Vendor, t target, words []string, stderr io.
 	cleanup, mw := addMemory(v, caps, cwd, memDir, &req)
 	defer cleanup()
 	defer func() { _ = safefs.RemoveAll(memDir) }()
+	if err := joinAppendFiles(&req, cwd); err != nil {
+		return fail(diag.CodeUsage, err)
+	}
 	for _, w := range append(warns, mw...) {
 		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
 	}
@@ -393,6 +428,145 @@ func runPrint(cmd string, v adapter.Vendor, t target, words []string, stderr io.
 	dlog.Log(ctx, r)
 	return code
 }
+
+// runBare runs v's CLI directly with words as given and nothing added: a flag
+// that starts no local session (PassFlags.Bare), such as claude --desktop,
+// which takes no other flag, or --version. The words are still sorted first,
+// so what defeats the policy is refused as anywhere else. Nothing is recorded.
+func runBare(cmd string, v adapter.Vendor, t target, words, values []string, stderr io.Writer) int {
+	if _, err := passFlags(v).ParseWith(words, adapter.ParseOpts{NoPolicy: t.NoPolicy, Print: true, Values: values}); err != nil {
+		return launchUsageErr(stderr, cmd, flagCode(err), err.Error(), "")
+	}
+	return runAsGiven(cmd, v, words, "bare", stderr)
+}
+
+// runAsGiven runs v's CLI with words, on the person's terminal, with their own
+// environment and nothing of aggy's added (execrun.RunDirect), and returns its
+// exit code. aggy reads nothing the CLI writes.
+func runAsGiven(cmd string, v adapter.Vendor, words []string, mode string, stderr io.Writer) int {
+	ctx := context.Background()
+	rec := diag.Rec{Vendor: string(v)}
+	fail := func(code diag.Code, err error) int {
+		refuse(ctx, stderr, cmd, diag.EvLaunchRefused, code, err.Error(), rec)
+		return 1
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fail(diag.CodeLaunchFailed, err)
+	}
+	path, err := probe.LookPath(vendorBin(v))
+	if err != nil {
+		return fail(diag.CodeCLIMissing, err)
+	}
+	c := adapter.Command{Path: path, Args: slices.Clone(words), Dir: cwd, Stdin: adapter.StdinTerminal}
+	code, err := execrun.RunDirect(c)
+	if err != nil {
+		return fail(diag.CodeLaunchFailed, err)
+	}
+	rec.Event, rec.Exit = diag.EvDirectRan, diag.Int(code)
+	rec.Attrs = map[string]any{"mode": mode, "policy": false, "cli_words": len(words)}
+	dlog.Log(ctx, rec)
+	return code
+}
+
+// cliValueFlags are the flags v's CLI's help shows with a value, from its probe,
+// or none when the CLI is not on PATH or the probe fails.
+func cliValueFlags(v adapter.Vendor) []string {
+	path, err := probe.LookPath(vendorBin(v))
+	if err != nil {
+		return nil
+	}
+	pr, err := probeCLI(context.Background(), v, path)
+	if err != nil {
+		return nil
+	}
+	return pr.ValueFlags
+}
+
+// settingsCode is the reason code of a claudeSettings refusal.
+func settingsCode(err error) diag.Code {
+	if errors.Is(err, adapter.ErrLoosens) {
+		return diag.CodeFlagLoosens
+	}
+	return diag.CodeUsage
+}
+
+// claudeSettings takes the person's --settings out of extra and reads them, a
+// path against cwd through safefs, up to Claude's own 2 MiB (T6962): their
+// layers merged in order, and extra without them, for Claude's adapter to merge
+// under aggy's own layer. A layer that would get past aggy's policy
+// (claude.CheckSettings) is refused, unless noPolicy, which reports it.
+func claudeSettings(extra []string, cwd string, noPolicy bool) (layer map[string]any, rest []string, loosens bool, err error) {
+	vals, rest := adapter.TakeFlag(extra, "--settings")
+	for _, val := range vals {
+		b := []byte(val)
+		if !claude.InlineSettings(val) {
+			p := val
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(cwd, p)
+			}
+			if b, err = safefs.ReadFileLimit(p, claude.MaxSettings); err != nil {
+				return nil, nil, false, fmt.Errorf("--settings %s: %w", val, err)
+			}
+		}
+		m, err := claude.ParseSettings(b)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		if layer == nil {
+			layer = m
+		} else {
+			layer = claude.MergeSettings(layer, m)
+		}
+	}
+	if err := claude.CheckSettings(layer); err != nil {
+		if !noPolicy {
+			return nil, nil, false, err
+		}
+		loosens = true
+	}
+	return layer, rest, loosens, nil
+}
+
+// joinAppendFiles puts the text of the person's --append-system-prompt-file
+// flags into the shared memory's file, ahead of the memory, and takes the
+// flags out of req.Extra, when aggy passes that file too (T6962): neither is
+// dropped, and whether Claude takes the flag twice is unrecorded. A path is read
+// against cwd, through safefs.
+func joinAppendFiles(req *adapter.InteractiveRequest, cwd string) error {
+	if req.MemoryFile == "" {
+		return nil
+	}
+	vals, rest := adapter.TakeFlag(req.Extra, "--append-system-prompt-file")
+	if len(vals) == 0 {
+		return nil
+	}
+	var parts [][]byte
+	for _, val := range vals {
+		p := val
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(cwd, p)
+		}
+		b, err := safefs.ReadFileLimit(p, maxAppendFile)
+		if err != nil {
+			return fmt.Errorf("--append-system-prompt-file %s: %w", val, err)
+		}
+		parts = append(parts, b)
+	}
+	mem, err := safefs.ReadFile(req.MemoryFile)
+	if err != nil {
+		return err
+	}
+	parts = append(parts, mem)
+	if err := safefs.WriteFile(req.MemoryFile, bytes.Join(parts, []byte("\n\n")), 0o600); err != nil {
+		return err
+	}
+	req.Extra = rest
+	return nil
+}
+
+// maxAppendFile caps a file --append-system-prompt-file names.
+const maxAppendFile = 1 << 20
 
 // passThroughCommands are v's management subcommands that aggy runs as they
 // are (T6963). Empty until then.

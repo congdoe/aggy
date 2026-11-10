@@ -452,6 +452,9 @@ func Detect(ctx context.Context, run adapter.Runner, vendor adapter.Vendor, path
 	p.Version = version
 	hs, _ := helps(ctx, run, spec, path)
 	p.Capabilities = Capabilities(spec, hs)
+	if len(hs) > 0 {
+		p.ValueFlags = ValueFlags(hs[0])
+	}
 	return p, nil
 }
 
@@ -655,4 +658,36 @@ func Has(p adapter.Probe, name string) bool {
 		}
 	}
 	return false
+}
+
+// optionLine matches the start of an option line in a CLI's help: one or more
+// spellings, comma-separated (commander's "-r, --resume", clap's "-m,
+// --model"), then, when the option takes one, its value in angle brackets, a
+// trailing "..." (inside or after them) for a list. An optional value in
+// square brackets is not a value here: claude --debug binds its filter only in
+// the = form (cli-reference), so the next word stays the prompt.
+var optionLine = regexp.MustCompile(`^\s*((?:-[A-Za-z0-9]|--[A-Za-z0-9][\w-]*)(?:,\s*(?:-[A-Za-z0-9]|--[A-Za-z0-9][\w-]*))*)(?:[ =](<[^>]+>(?:\.\.\.)?))?`)
+
+// ValueFlags lists the options help shows with a required value, each
+// spelling once, with "..." after one that takes a list (commander's
+// <values...>, clap's <VALUE>...). It reads only the help's text.
+func ValueFlags(help []byte) []string {
+	var out []string
+	for _, line := range strings.Split(string(help), "\n") {
+		m := optionLine.FindStringSubmatch(line)
+		if m == nil || m[2] == "" {
+			continue
+		}
+		many := strings.Contains(m[2], "...")
+		for _, n := range strings.Split(m[1], ",") {
+			n = strings.TrimSpace(n)
+			if many {
+				n += "..."
+			}
+			if !slices.Contains(out, n) {
+				out = append(out, n)
+			}
+		}
+	}
+	return out
 }
