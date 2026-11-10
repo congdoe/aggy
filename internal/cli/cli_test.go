@@ -17,7 +17,8 @@ func TestRun(t *testing.T) {
 	}{
 		// T6961: with no terminal, bare aggy runs the default CLI directly,
 		// and here there is none on PATH.
-		{name: "no args and no terminal run the CLI directly", args: nil, wantCode: 1, wantStderr: "vendor.cli_missing"},
+		// PR #124 review (hand-edited): no prompt and no terminal is refused.
+		{name: "no args and no terminal are refused", args: nil, wantCode: 2, wantStderr: "supervisor.no_terminal"},
 		{name: "version", args: []string{"version"}, wantCode: 0, wantStdout: "aggy dev"},
 		{name: "version flag", args: []string{"--version"}, wantCode: 0, wantStdout: "aggy dev"},
 		{name: "help", args: []string{"help"}, wantCode: 0, wantStdout: "Commands:"},
