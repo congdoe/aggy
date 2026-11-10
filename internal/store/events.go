@@ -9,19 +9,20 @@ import (
 // Event types written to the events table and shown by aggy log.
 const (
 	// EventScreen: a harness came on screen, other than by a switch.
-	// Detail: vendor, model. internal/cli writes it once a launch is
-	// recorded.
+	// Detail: vendor, model. internal/cli writes it once the launch's CLI
+	// has started.
 	EventScreen = "screen"
 	// EventSwitch: the on-screen harness changed. Detail: from, to,
-	// model, reason (user, agent, limit, or "back: it never started").
-	// internal/cli writes it once the next CLI's launch is recorded.
+	// model, reason (user, agent, limit, "limit, unverified", or "back: it
+	// never started"). internal/cli writes it once the next CLI has started.
 	EventSwitch = "switch"
 	// EventBorrow: a borrow finished. Detail: borrow, kind, vendor,
 	// model, tokens, ms, outcome, and group for a --vendor both run.
 	EventBorrow = "borrow"
-	// EventFiles: files changed in the main checkout. Detail: files, and
-	// borrow and via ("accept") for an accepted edit borrow, so far the
-	// only writer (aggy accept).
+	// EventFiles: files changed in the main checkout. Detail: files (at
+	// most 50 names), more (how many past those), and borrow and via
+	// ("accept") for an accepted edit borrow, so far the only writer (aggy
+	// accept).
 	EventFiles = "files"
 	// EventSession: the on-screen CLI reported its session id. Detail:
 	// vendor, session, source, via ("hook" or "sessions folder").

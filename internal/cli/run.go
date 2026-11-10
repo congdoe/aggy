@@ -455,11 +455,18 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	if err != nil {
 		return fail(diag.CodeLaunchFailed, err)
 	}
-	// The launch is recorded: aggy log shows which CLI came on screen, or the
-	// switch that put it there (T6925). The log is a record, so a failed
-	// write never stops the launch.
-	if e, ok := screenEvent(t, pl.parent.ID, pl.child, time.Now()); ok {
-		_ = s.AppendEvent(ctx, e)
+	// onScreen records, once the CLI's process has started, which CLI came on
+	// screen or the switch that put it there (T6925). Not at the commit: a
+	// brief that cannot be written, an interrupted tool proxy, or a CLI that
+	// cannot be started ends the launch after it, and the log must not show a
+	// CLI that never ran. The log is a record, so a failed write never stops
+	// the launch.
+	// TODO(T6955): the write waits up to the store's busy timeout on a locked
+	// index, as the commit above can.
+	onScreen := func() {
+		if e, ok := screenEvent(t, pl.parent.ID, pl.child, time.Now()); ok {
+			_ = s.AppendEvent(ctx, e)
+		}
 	}
 	if pl.child.Kind == "" {
 		stopScan, note := suggestAtLaunch(ctx, s, pl.child.Cwd)
@@ -563,7 +570,10 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		code, err := runDirect(cmd, runDir, parentID, v, assigned, cids.set, func(r diag.Rec) {
 			r.Parent, r.Child, r.Vendor = parentID, pl.child.ID, string(v)
 			q.LogWait(r, 100*time.Millisecond) // the socket's goroutines
-		}, func(pid int) { px.guard(pid, false) })
+		}, func(pid int) {
+			px.guard(pid, false)
+			onScreen()
+		})
 		px.guard(0, false)
 		dlog.Release()
 		if err != nil {
@@ -644,6 +654,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			ch, err := startPTY(c, rows, cols)
 			if err == nil {
 				px.guard(ch.Pid(), true)
+				onScreen()
 			}
 			return ch, err
 		},

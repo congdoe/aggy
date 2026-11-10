@@ -603,11 +603,18 @@ func (s *session) setSwitch(p pendingSwitch) {
 	s.waiting.Store(p.to != "")
 }
 
-// origin is who asked for the switch, for RunFacts.SwitchOrigin.
+// origin is who asked for the switch, for RunFacts.SwitchOrigin, from the
+// fields the confirmation line reads (confirmLine): a pick in the list, a first one
+// or again over an agent's or a limit's switch, is the user's; a limit only
+// a hook reported is unverified, as the status line says (limitWho).
 func (p pendingSwitch) origin() string {
 	switch {
+	case p.picked:
+		return "user"
 	case p.asked:
 		return "agent"
+	case p.limit && p.unverified:
+		return "limit, unverified"
 	case p.limit:
 		return "limit"
 	}

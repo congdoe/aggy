@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -105,4 +106,51 @@ func TestAcceptLogsFiles(t *testing.T) {
 		t.Errorf("aggy log: code %d:\n%s%s", code, out.String(), errb.String())
 	}
 	noMarkers(t, markers)
+}
+
+// TestFilesRowCapped (T6925): a files row keeps at most maxLoggedFiles
+// names and counts the rest, and aggy log quotes a name that a comma,
+// quote, or edge space would make ambiguous.
+func TestFilesRowCapped(t *testing.T) {
+	s := sessionStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	if err := s.InsertParent(ctx, store.Parent{ID: "aa11", Dir: t.TempDir(), CreatedAt: now, LastActive: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertChild(ctx, store.Child{ID: "c1", ParentID: "aa11", Vendor: "codex", Kind: "edit", Cwd: t.TempDir(), Status: "open", CreatedAt: now, LastActive: now}); err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{"a, b.go", `q"x.go`, " lead.go", "plain.go"}
+	for i := len(paths); i < 120; i++ {
+		paths = append(paths, fmt.Sprintf("f%03d.go", i))
+	}
+	if err := recordFiles(ctx, s, store.Borrow{ID: "b1", ChildID: "c1"}, paths, now); err != nil {
+		t.Fatal(err)
+	}
+	evs, err := s.Events(ctx, store.EventFilter{})
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("events %+v, %v", evs, err)
+	}
+	e := evs[0]
+	if fs, _ := e.Detail["files"].([]any); len(fs) != maxLoggedFiles || e.Detail["more"] != float64(70) || e.ParentID != "aa11" {
+		t.Fatalf("row %+v", e)
+	}
+	got := describe(e)
+	for _, want := range []string{`"a, b.go", "q\"x.go", " lead.go", plain.go, f004.go`, "f049.go and 70 more (accepted from borrow b1)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("describe = %q, want it to hold %q", got, want)
+		}
+	}
+	if strings.Contains(got, "f050.go") {
+		t.Errorf("describe shows past the cap: %q", got)
+	}
+	// An older or edited row past the cap shows the cap too.
+	many := make([]any, 60)
+	for i := range many {
+		many[i] = fmt.Sprintf("g%02d", i)
+	}
+	if got := describe(store.Event{Type: store.EventFiles, Detail: map[string]any{"files": many}}); !strings.HasSuffix(got, "g49 and 10 more") {
+		t.Errorf("long row = %q", got)
+	}
 }

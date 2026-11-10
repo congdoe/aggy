@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -112,6 +113,16 @@ func withModel(vendor, model string) string {
 	return vendor + " (" + model + ")"
 }
 
+// fileName is a path as a files row shows it: quoted when it could be read
+// as more than one name or none (a comma, a quote, space at an end, or
+// empty), else as it is.
+func fileName(p string) string {
+	if p == "" || strings.ContainsAny(p, ",\"") || strings.TrimSpace(p) != p {
+		return strconv.Quote(p)
+	}
+	return p
+}
+
 // describe renders one event's detail on one line.
 func describe(e store.Event) string {
 	d := e.Detail
@@ -151,11 +162,20 @@ func describe(e store.Event) string {
 		return s + " [run " + str(d, "run") + "; aggy diag show " + str(d, "record") + "]"
 	case store.EventFiles:
 		if fs, ok := d["files"].([]any); ok {
-			names := make([]string, len(fs))
-			for i, f := range fs {
-				names[i] = fmt.Sprint(f)
+			// A row holds at most maxLoggedFiles names, but an older or
+			// edited one may hold more: show that many and count the rest.
+			names := make([]string, 0, min(len(fs), maxLoggedFiles))
+			for _, f := range fs[:min(len(fs), maxLoggedFiles)] {
+				names = append(names, fileName(fmt.Sprint(f)))
 			}
 			s := strings.Join(names, ", ")
+			more := len(fs) - len(names)
+			if m, ok := d["more"].(float64); ok && m > 0 {
+				more += int(m)
+			}
+			if more > 0 {
+				s += fmt.Sprintf(" and %d more", more)
+			}
 			if b := str(d, "borrow"); b != "" {
 				s += " (accepted from borrow " + b + ")"
 			}

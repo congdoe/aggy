@@ -122,6 +122,8 @@ func TestLimitSwitchWithBrief(t *testing.T) {
 		t.Errorf("briefs .gitignore = %q, %v", gi, err)
 	}
 	s.restored("after the switch")
+	// T6925: a limit only a hook reported is logged as unverified.
+	wantLogged(t, w, "switch", "claude -> "+next.Vendor+" [limit, unverified]")
 }
 
 // TestBorrowRoundTrip (T6683): the on-screen agent runs aggy borrow
