@@ -27,6 +27,10 @@ func firstRunWorld(t *testing.T) (*world, string) {
 // TestFirstRunAccepted (T6966): bare aggy on a fresh HOME shows one screen
 // naming the files it changes, takes one answer, writes them through the
 // manifest, and launches; aggy unwire restores them; the offer is not made again.
+// answerAfter is how long a test waits after a question before it answers:
+// past the window in which aggy takes a line as typed ahead (typeAhead).
+const answerAfter = 400 * time.Millisecond
+
 func TestFirstRunAccepted(t *testing.T) {
 	w, rules := firstRunWorld(t)
 	sc := map[string]any{"raw_echo": true, "stdout": "READY>"}
@@ -38,6 +42,7 @@ func TestFirstRunAccepted(t *testing.T) {
 	if _, err := os.Stat(rules); err == nil {
 		t.Fatal("the rules file was written before the answer")
 	}
+	time.Sleep(answerAfter) // typed to the question, not ahead of it
 	s.send([]byte("y\r"))
 	s.waitWithin([]byte("READY>"), offerTimeout)
 	s.send([]byte{0x04})
@@ -82,7 +87,11 @@ func TestFirstRunDeclined(t *testing.T) {
 	w, rules := firstRunWorld(t)
 	sc := map[string]any{"raw_echo": true, "stdout": "READY>"}
 	s := w.start(t, sc)
+	// PR #127 review: a yes typed before the question is typed ahead, not an
+	// answer to it.
+	s.send([]byte("y\r"))
 	s.waitWithin([]byte("Set up now? [y/N]"), offerTimeout)
+	time.Sleep(answerAfter)
 	s.send([]byte("n\r"))
 	s.waitWithin([]byte("READY>"), offerTimeout)
 	s.send([]byte{0x04})
