@@ -81,9 +81,10 @@ func recordFreeModelsNote(ctx context.Context, out io.Writer) {
 }
 
 // openCodeFreeRefusal says why a model on OpenCode's own provider is refused:
-// the person's setting is off (a repo's own does not count), or this repo's
-// allowed_vendors does not list opencode-free.
-func openCodeFreeRefusal(e config.Effective, model string) error {
+// the person's setting is off (a repo's own does not count), this repo's
+// allowed_vendors does not list opencode-free, or this folder's trust list
+// does not have the row ticked (here false; T6977). All three must allow it.
+func openCodeFreeRefusal(e config.Effective, model string, here bool, root string) error {
 	if !e.OpenCode.FreeModels {
 		why := "OpenCode's own models are off; aggy config set " + freeModelsKey + " on allows them"
 		if e.Repo.SetsFreeModels() {
@@ -91,19 +92,42 @@ func openCodeFreeRefusal(e config.Effective, model string) error {
 		}
 		return fmt.Errorf("model %s is refused: %s", model, why)
 	}
-	return fmt.Errorf("model %s is refused: OpenCode's own models are on in your config, but this repo's allowed_vendors does not list %s",
-		model, config.OpenCodeFreeRepoName)
+	if !slices.Contains(e.OpenCodeProviders(), config.OpenCodeFreeProvider) {
+		return fmt.Errorf("model %s is refused: OpenCode's own models are on in your config, but this repo's allowed_vendors does not list %s",
+			model, config.OpenCodeFreeRepoName)
+	}
+	return fmt.Errorf("model %s is refused: OpenCode's own models are on in your config, but %s is not ticked for this folder in aggy's trust list; aggy trust %s lists it",
+		model, freeModelsRow, root)
+}
+
+// freeModelsRow names the trust list's row in the lines below.
+const freeModelsRow = `"OpenCode free models"`
+
+// openCodeFreeProviders are the providers a session in this folder may use:
+// the repo's (e.OpenCodeProviders), without OpenCode's own when this folder's
+// trust list does not have it ticked (here).
+func openCodeFreeProviders(e config.Effective, here bool) []string {
+	providers := e.OpenCodeProviders()
+	if !here {
+		providers = slices.DeleteFunc(providers, func(p string) bool { return p == config.OpenCodeFreeProvider })
+	}
+	return providers
 }
 
 // openCodeFreeWarns are the launch's lines about free_models: a repo's own
-// setting, which is ignored, and the person's, when this repo refuses it.
-func openCodeFreeWarns(e config.Effective, providers []string) []string {
+// setting, which is ignored, and the person's, when this repo refuses it or
+// this folder's trust list has it unticked (here false).
+func openCodeFreeWarns(e config.Effective, here bool, root string) []string {
 	var out []string
 	if e.Repo.SetsFreeModels() {
 		out = append(out, "this repo's .aggy/config.toml sets [opencode] free_models, which aggy ignores: only your own config turns OpenCode's free models on (aggy config set "+freeModelsKey+" on)")
 	}
-	if e.OpenCode.FreeModels && !slices.Contains(providers, config.OpenCodeFreeProvider) {
+	switch {
+	case !e.OpenCode.FreeModels:
+	case !slices.Contains(e.OpenCodeProviders(), config.OpenCodeFreeProvider):
 		out = append(out, "OpenCode's free models are on in your config, but this repo's allowed_vendors does not list "+config.OpenCodeFreeRepoName+", so they are off here")
+	case !here:
+		out = append(out, "OpenCode's free models are on in your config, but "+freeModelsRow+" is not ticked for this folder in aggy's trust list, so they are off here; aggy trust "+root+" lists it")
 	}
 	return out
 }

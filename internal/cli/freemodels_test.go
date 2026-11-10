@@ -164,13 +164,18 @@ func TestOpenCodeFreeWarns(t *testing.T) {
 		user config.Config
 		repo string
 		want []string // substrings, one per line, in order
+		// unticked: this folder's trust list has the row unticked (T6977).
+		unticked bool
 	}{
-		{"off, no repo setting", config.Default(), "", nil},
-		{"on, allowed", on, "", nil},
-		{"repo sets it: ignored", config.Default(), "[opencode]\nfree_models = true\n", []string{"aggy ignores"}},
-		{"on, repo refuses", on, `allowed_vendors = ["opencode", "codex"]`, []string{"does not list opencode-free"}},
+		{"off, no repo setting", config.Default(), "", nil, false},
+		{"on, allowed", on, "", nil, false},
+		{"on, allowed, row unticked", on, "", []string{`"OpenCode free models" is not ticked for this folder`}, true},
+		{"on, repo refuses, row unticked: the repo is named", on, `allowed_vendors = ["opencode", "codex"]`, []string{"does not list opencode-free"}, true},
+		{"off, row unticked: nothing to say", config.Default(), "", nil, true},
+		{"repo sets it: ignored", config.Default(), "[opencode]\nfree_models = true\n", []string{"aggy ignores"}, false},
+		{"on, repo refuses", on, `allowed_vendors = ["opencode", "codex"]`, []string{"does not list opencode-free"}, false},
 		{"on, repo sets it and refuses", on, "allowed_vendors = [\"opencode\", \"codex\"]\n[opencode]\nfree_models = true\n",
-			[]string{"aggy ignores", "does not list opencode-free"}},
+			[]string{"aggy ignores", "does not list opencode-free"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -179,7 +184,7 @@ func TestOpenCodeFreeWarns(t *testing.T) {
 				t.Fatal(err)
 			}
 			e := config.Merge(c.user, rc)
-			got := openCodeFreeWarns(e, e.OpenCodeProviders())
+			got := openCodeFreeWarns(e, !c.unticked, "/r")
 			if len(got) != len(c.want) {
 				t.Fatalf("warns = %q, want %q", got, c.want)
 			}

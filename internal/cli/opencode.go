@@ -85,12 +85,17 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 			out.launch.Auto = true
 		}
 	}
-	providers := in.cfg.OpenCodeProviders()
-	out.warns = append(out.warns, openCodeFreeWarns(in.cfg, providers)...)
+	// T6977: OpenCode's own provider needs the person's setting, the repo's
+	// allowed_vendors, and this folder's trust list row, all three.
+	here := openCodeFreeHere(real)
+	providers := openCodeFreeProviders(in.cfg, here)
+	out.warns = append(out.warns, openCodeFreeWarns(in.cfg, here, root)...)
 	if len(providers) == 0 {
 		msg := "no OpenCode provider is left for this repo: its allowed_vendors and [opencode] providers have none in common"
-		if in.cfg.OpenCode.FreeModels {
+		if in.cfg.OpenCode.FreeModels && !slices.Contains(in.cfg.OpenCodeProviders(), config.OpenCodeFreeProvider) {
 			msg += ", and it does not list " + config.OpenCodeFreeRepoName + " for OpenCode's own models"
+		} else if in.cfg.OpenCode.FreeModels && !here {
+			msg += ", and " + freeModelsRow + " is not ticked for this folder in aggy's trust list (aggy trust " + root + ")"
 		}
 		return out, errors.New(msg)
 	}
@@ -100,7 +105,7 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 		p, _, ok := strings.Cut(in.model, "/")
 		if ok && p == config.OpenCodeFreeProvider && !slices.Contains(providers, p) {
 			// The launch returns before printing warns, so the reason goes here.
-			return out, openCodeFreeRefusal(in.cfg, in.model)
+			return out, openCodeFreeRefusal(in.cfg, in.model, here, root)
 		}
 		if !ok || !slices.Contains(providers, p) {
 			return out, fmt.Errorf("model %s is not on a provider allowed here (%s)", in.model, strings.Join(providers, ", "))

@@ -169,11 +169,11 @@ func TestCommandConfirm(t *testing.T) {
 		t.Fatal("y ran it twice")
 	}
 	s2, ran2 := viewSess(t, adapter.Claude, "Trust it? [y/N] Not trusted.")
-	typeLine(s2, "/aggy trust")
+	typeLine(s2, "/aggy trust --opencode")
 	settle(t, s2)
 	s2.viewInput([]byte("y"))
 	settle(t, s2)
-	if len(*ran2) != 2 || strings.Join((*ran2)[1], " ") != "trust . true" {
+	if len(*ran2) != 2 || strings.Join((*ran2)[1], " ") != "trust --opencode . true" {
 		t.Fatalf("ran %q", *ran2)
 	}
 }

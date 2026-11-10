@@ -128,7 +128,7 @@ func TestAllowsNeverChangePolicy(t *testing.T) {
 	}
 	gitIn(t, repo, "init", "-q")
 	t.Chdir(repo)
-	atKeyboard(t, "y\n")
+	atKeyboard(t, "1\n\n")
 	if code, out, errb := run("trust", repo); code != 0 {
 		t.Fatalf("trust: %d %q %q", code, out, errb)
 	}
