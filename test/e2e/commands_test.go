@@ -183,6 +183,93 @@ func TestHookBlockedSwitch(t *testing.T) {
 	}
 }
 
+// TestHookMenuPickTab (T6975): a /switch picked from Claude's menu with Tab
+// (/sw, Tab, then the vendor), which the keys do not spell whole, is taken
+// from the UserPromptSubmit hook, as the typed prefix and the arguments match
+// the reported command; it asks on the status line as every hook's switch.
+// The same keys with another vendor reported are refused: the hook does not
+// block the prompt, and nothing switches.
+func TestHookMenuPickTab(t *testing.T) {
+	for _, c := range []struct {
+		name, prompt string
+		taken        bool
+	}{
+		{"the picked command", "/switch grok", true},
+		{"other arguments", "/switch codex", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w := newWorld(t)
+			setup := exec.Command(buildAggy(t), "setup", "--yes")
+			setup.Dir = w.cwd
+			setup.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
+			if out, err := setup.CombinedOutput(); err != nil {
+				t.Fatalf("aggy setup: %v\n%s", err, out)
+			}
+			mark := filepath.Join(w.home, "launched")
+			answers := filepath.Join(w.home, "answers.log")
+			script := `[ "$AGGY_VENDOR" = claude ] || exit 0; case "$1" in ` +
+				`Stop) [ -f '` + mark + `' ] && exit 0; exec ` + aggySh(t) + ` hook --vendor claude Stop ;; ` +
+				`UserPromptSubmit) [ -f '` + mark + `' ] || { touch '` + mark + `'; exit 0; }; ` +
+				aggySh(t) + ` hook --vendor claude UserPromptSubmit > '` + answers + `.tmp'; mv '` + answers + `.tmp' '` + answers + `' ;; esac`
+			sc := map[string]any{
+				"stdout":       "READY>",
+				"hook_command": []string{"/bin/sh", "-c", script, "sh"},
+				"hooks": []map[string]any{
+					{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}},
+					{"event": "UserPromptSubmit", "payload": map[string]any{"session_id": "{session_id}", "prompt": c.prompt}},
+				},
+				"session_files": startedFiles(),
+			}
+			s := w.start(t, sc, "run", "claude")
+			s.waitWithin([]byte("READY>"), offerTimeout)
+			deadline := time.Now().Add(timeout)
+			for time.Now().Before(deadline) {
+				if _, err := os.Stat(mark); err == nil {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			time.Sleep(1500 * time.Millisecond) // past the launch's quiet gap
+			s.typeSlowly("/sw")
+			s.send([]byte("\t"))
+			time.Sleep(50 * time.Millisecond)
+			s.typeSlowly("grok")
+			s.send([]byte("\r"))
+			if c.taken {
+				s.waitWithin([]byte("switch via hook -> grok. Ctrl+"), offerTimeout)
+				s.confirmPastGuard(time.Now())
+				w.waitRuns(t, s, 2)
+			} else {
+				deadline := time.Now().Add(timeout)
+				for time.Now().Before(deadline) {
+					if _, err := os.Stat(answers); err == nil {
+						break
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+				b, err := os.ReadFile(answers)
+				if err != nil {
+					t.Fatalf("the hook never answered: %v", err)
+				}
+				if strings.Contains(string(b), "block") {
+					t.Fatalf("the hook blocked a prompt aggy refused: %q", b)
+				}
+				time.Sleep(500 * time.Millisecond)
+				if runs := interactiveRuns(t, w); len(runs) != 1 {
+					t.Fatalf("interactive runs = %+v, want claude alone", runs)
+				}
+			}
+			s.send([]byte("/exit\r"))
+			if code := s.exit(); code != 0 {
+				t.Fatalf("aggy exit = %d", code)
+			}
+			if runs := interactiveRuns(t, w); c.taken && (len(runs) != 2 || runs[1].Vendor != "grok") {
+				t.Fatalf("interactive runs = %+v, want claude then grok", runs)
+			}
+		})
+	}
+}
+
 // TestTypedInboxPage (T6909): /inbox shows aggy inbox's output on the
 // alternate screen, no turn spent, and Esc gives the CLI its screen back.
 func TestTypedInboxPage(t *testing.T) {

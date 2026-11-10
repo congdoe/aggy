@@ -858,13 +858,26 @@ func ownStates(ctx context.Context, ls []skillLayout) (map[string]ownState, erro
 			}
 		}
 		out[name] = ownForeign
-		// TODO(T6975): paths are compared as spelled, so an AGGY_HOME spelled
-		// another way (a symlink, a trailing dot) leaves aggy's own skill
-		// unrefreshed: it fails safe, as foreign.
+		// Paths are compared canonical (T6975): a row written under an
+		// AGGY_HOME spelled another way (through a symlink, or a folder whose
+		// case differs) is the same file. Only rows for a SKILL.md in a folder
+		// of this name are resolved, so the cost stays small.
 		abs, _ := filepath.Abs(file)
+		canon := ""
 		for _, c := range rows {
-			if filepath.Clean(c.File) != abs || c.Status != store.ChangeApplied && c.Status != store.ChangeUndone {
+			if c.Status != store.ChangeApplied && c.Status != store.ChangeUndone {
 				continue
+			}
+			if f := filepath.Clean(c.File); f != abs {
+				if filepath.Base(f) != "SKILL.md" || !strings.EqualFold(filepath.Base(filepath.Dir(f)), name) {
+					continue
+				}
+				if canon == "" {
+					canon = canonicalPath(file)
+				}
+				if canonicalPath(f) != canon {
+					continue
+				}
 			}
 			if c.Status == store.ChangeApplied && c.HashAfter == cur {
 				out[name] = ownAggy

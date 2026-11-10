@@ -123,10 +123,11 @@ func typeKeys(s *session, keys string) {
 }
 
 // TestAfterLocalCommand (R121): after a Claude command its docs list as
-// starting no turn, typed whole, the next command typed in full is caught.
-// On the other CLIs no such list is recorded, so the composer stays in doubt
-// and the next command goes to the CLI until a turn end (docs/design.md
-// section 5, a known limit).
+// starting no turn and opening no dialog (/clear), typed whole, the next
+// command typed in full is caught; after one that may open a dialog (/model,
+// T6975) it goes to the CLI. On the other CLIs no such list is recorded, so
+// the composer stays in doubt and the next command goes to the CLI until a
+// turn end (docs/design.md section 5, a known limit).
 func TestAfterLocalCommand(t *testing.T) {
 	for _, c := range []struct {
 		on          adapter.Vendor
@@ -134,7 +135,7 @@ func TestAfterLocalCommand(t *testing.T) {
 		caught      bool
 	}{
 		{adapter.Claude, "/clear", "/switch grok", true},
-		{adapter.Claude, "/model", "/inbox", true},
+		{adapter.Claude, "/model", "/inbox", false},   // its picker may have the keys (T6975)
 		{adapter.Claude, "/compact", "/inbox", false}, // may run a turn
 		{adapter.Codex, "/model", "$switch grok", false},
 		{adapter.Codex, "/status", "/switch grok", false},
