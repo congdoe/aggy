@@ -280,12 +280,15 @@ func TestPassFlags(t *testing.T) {
 		{name: "-- then a management subcommand", p: cx, args: []string{"--", "login"}, refused: "names a subcommand"},
 		{name: "-- then a grok subcommand", p: gk, args: []string{"--", "Doctor"}, refused: "names a subcommand"},
 		{name: "-- then a bypass", p: cl, args: []string{"--", "fix", "--dangerously-skip-permissions"}, loosens: true},
-		{name: "-- then a gated mode", p: cl, args: []string{"--", "fix", "--permission-mode", "bypassPermissions"}, loosens: true},
-		{name: "-- then a gated mode, = form", p: cl, args: []string{"--", "fix", "--permission-mode=bypassPermissions"}, loosens: true},
-		{name: "-- then codex -c", p: cx, args: []string{"--", "fix", "-c", "sandbox_mode=danger-full-access"}, loosens: true},
+		// Hand-edited for the second re-review: these four rows wanted
+		// ErrLoosens or a clash; a flag aggy owns is now refused after --
+		// outright, --no-policy or not (Owned).
+		{name: "-- then a gated mode", p: cl, args: []string{"--", "fix", "--permission-mode", "bypassPermissions"}, refused: "may not come after --"},
+		{name: "-- then a gated mode, = form", p: cl, args: []string{"--", "fix", "--permission-mode=bypassPermissions"}, refused: "may not come after --"},
+		{name: "-- then codex -c", p: cx, args: []string{"--", "fix", "-c", "sandbox_mode=danger-full-access"}, refused: "may not come after --"},
 		{name: "-- then codex --yolo", p: cx, args: []string{"--", "fix", "--yolo"}, loosens: true},
 		{name: "-- then grok --always-approve", p: gk, args: []string{"--", "fix", "--always-approve"}, loosens: true},
-		{name: "-- then a refused flag", p: gk, args: []string{"--", "fix", "--cwd", "/x"}, refused: "--cwd clashes"},
+		{name: "-- then a refused flag", p: gk, args: []string{"--", "fix", "--cwd", "/x"}, refused: "may not come after --"},
 		{name: "-- then a bypass with --no-policy", p: cl, args: []string{"--", "fix", "--dangerously-skip-permissions"}, noPolicy: true,
 			want: adapter.ParsedFlags{Extra: []string{"--", "fix", "--dangerously-skip-permissions"}, Prompt: []string{"fix", "--dangerously-skip-permissions"}}},
 		{name: "-", p: cl, args: []string{"-"},
@@ -351,7 +354,9 @@ func TestParsePrint(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.p.ParseWith(tt.args, adapter.ParseOpts{Print: true})
+			// Hand-edited for the second re-review: -p as Claude's help shows
+			// it, a switch, so a "--" may follow it (rule A).
+			got, err := tt.p.ParseWith(tt.args, adapter.ParseOpts{Print: true, Switches: []string{"-p"}})
 			if tt.refused != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.refused) {
 					t.Fatalf("err = %v, want %q", err, tt.refused)
@@ -435,7 +440,11 @@ func TestGated(t *testing.T) {
 		{"claude a skip flag", cl, []string{"status", "--dangerously-skip-permissions"}, true},
 		{"claude --settings", cl, []string{"--settings", "{}"}, true},
 		{"claude a session id passes", cl, []string{"--session-id", "x"}, false},
-		{"claude after -- is the server's command", cl, []string{"add", "x", "--", "npx", "--dangerously-x"}, false},
+		// Hand-edited for the PR #124 re-review (rule B): this row wanted
+		// false, since words after -- were not looked at; they are now.
+		{"claude after -- is still checked", cl, []string{"add", "x", "--", "npx", "--dangerously-x"}, true},
+		{"claude a harmless server command after --", cl, []string{"add", "x", "--", "npx", "-y", "pkg@1.0.0"}, false},
+		{"claude --settings after a value-taking flag and --", cl, []string{"add", "--transport", "--", "--settings", "{}"}, true},
 		{"codex a loose -c", cx, []string{"-c", `sandbox_mode="danger-full-access"`}, true},
 		{"codex --yolo in a cluster", cx, []string{"--yolo"}, true},
 		{"grok --always-approve", gk, []string{"--always-approve"}, true},
@@ -450,9 +459,88 @@ func TestGated(t *testing.T) {
 	}
 }
 
+// TestDashesEndOptions (PR #124 second re-review): aggy and the CLI's parser
+// must agree on where the options end. Rule A: a "--" counts only after words
+// that leave no flag waiting for a value; rule B: the words after it are
+// checked as flags anyway, and the flags aggy owns are refused there.
+func TestDashesEndOptions(t *testing.T) {
+	cl, cx, gk := claude.Adapter{}.PassFlags(), codex.Adapter{}.PassFlags(), grok.New().PassFlags()
+	sw := []string{"-p", "--print", "--verbose", "-c", "--continue"} // as Claude's help shows them
+	bypass := `{"permissions":{"defaultMode":"bypassPermissions"}}`
+	tests := []struct {
+		name  string
+		p     adapter.PassFlags
+		args  []string
+		print bool
+		err   error // nil: parsed
+	}{
+		// A: a "--" the CLI may take as a value.
+		{"--name --", cl, []string{"--name", "--", "--settings", bypass, "do it"}, false, adapter.ErrDashesValue},
+		{"-n --", cl, []string{"-n", "--", "--verbose", "agents"}, false, adapter.ErrDashesValue},
+		{"print --debug-file --", cl, []string{"-p", "--debug-file", "--", "--settings", bypass, "do it"}, true, adapter.ErrDashesValue},
+		{"a list flag --", cl, []string{"--add-dir", "a", "b", "--", "hi"}, false, adapter.ErrDashesValue},
+		{"an unknown flag --", cl, []string{"--newflag", "--", "hi"}, false, adapter.ErrDashesValue},
+		{"a flag help does not show --", cl, []string{"--debug", "--", "hi"}, false, adapter.ErrDashesValue},
+		{"a cluster --", cl, []string{"-pv", "--", "hi"}, true, adapter.ErrDashesValue},
+		{"a resume with no id --", cl, []string{"-p", "-r", "--", "hi"}, true, adapter.ErrDashesValue},
+		{"a prompt word --", cl, []string{"fix", "--", "more"}, false, adapter.ErrDashesValue},
+		{"a checked flag takes --", cl, []string{"--permission-mode", "--", "hi"}, false, adapter.ErrDashesValue},
+		{"a dir flag takes --", cx, []string{"--add-dir", "--", "--settings", "x"}, false, adapter.ErrDashesValue},
+		{"codex exec's own flag --", cx, []string{"exec", "--json", "--", "hi"}, true, adapter.ErrDashesValue},
+		{"grok -p takes --", gk, []string{"-p", "--", "--always-approve"}, true, adapter.ErrDashesValue},
+		{"a known switch --", cl, []string{"--verbose", "--", "hi"}, false, nil},
+		{"print -p --", cl, []string{"-p", "--", "hi"}, true, nil},
+		{"--flag=value --", cl, []string{"--name=x", "--", "hi"}, false, nil},
+		{"a value flag and its value --", cl, []string{"--name", "x", "--", "hi"}, false, nil},
+		{"a model --", cl, []string{"--model", "opus", "--", "hi"}, false, nil},
+		{"a resume id --", cl, []string{"-p", "-r", "abc", "--", "hi"}, true, nil},
+		{"codex exec --", cx, []string{"exec", "--", "hi"}, true, nil},
+		{"-- first", cl, []string{"--", "sessions"}, false, nil},
+		// B: after "--", checked anyway.
+		{"-- --settings", cl, []string{"--", "--settings", bypass}, false, adapter.ErrOwnedAfterDashes},
+		{"-- --settings=", cl, []string{"--", "x", "--settings=" + bypass}, true, adapter.ErrOwnedAfterDashes},
+		{"-- --mcp-config", cl, []string{"--", "x", "--mcp-config", "m.json"}, false, adapter.ErrOwnedAfterDashes},
+		{"-- --append-system-prompt-file", cl, []string{"--", "x", "--append-system-prompt-file=f"}, false, adapter.ErrOwnedAfterDashes},
+		{"-- --allowedTools", cl, []string{"--", "x", "--allowedTools", "Bash"}, false, adapter.ErrOwnedAfterDashes},
+		{"-- --model", cl, []string{"--", "x", "--model", "opus"}, false, adapter.ErrOwnedAfterDashes},
+		{"-- a cluster with -c", cl, []string{"--", "x", "-vc"}, false, adapter.ErrOwnedAfterDashes},
+		{"-- codex -c", cx, []string{"--", "x", "-cfoo=1"}, false, adapter.ErrOwnedAfterDashes},
+		{"-- codex -s", cx, []string{"--", "x", "-s", "read-only"}, true, adapter.ErrOwnedAfterDashes},
+		{"-- grok --rules", gk, []string{"--", "x", "--rules=y"}, true, adapter.ErrOwnedAfterDashes},
+		{"-- grok --deny", gk, []string{"--", "x", "--deny", "y"}, false, adapter.ErrOwnedAfterDashes},
+		{"-- grok --agent", gk, []string{"--", "x", "--agent", "y"}, false, adapter.ErrOwnedAfterDashes},
+		{"-- a flag then a subcommand", cl, []string{"--", "--verbose", "agents"}, false, adapter.ErrCommandAfterDashes},
+		{"-- a blank word then a subcommand", cl, []string{"--", "", "agents"}, false, adapter.ErrCommandAfterDashes},
+		{"-- a value then a subcommand", cl, []string{"--", "--name", "x", "AGENTS"}, false, adapter.ErrCommandAfterDashes},
+		{"-- a bypass", cl, []string{"--", "x", "--dangerously-skip-permissions"}, false, adapter.ErrLoosens},
+		{"-- a prompt naming a subcommand later", cl, []string{"--", "fix", "agents"}, false, nil},
+		{"-- an ordinary flag-like word", cl, []string{"--", "fix", "--verbose"}, false, nil},
+		// Before "--": a word the CLI may take as a value is still checked as a flag.
+		{"a gated flag as a value", cl, []string{"--name", "--dangerously-skip-permissions"}, false, adapter.ErrLoosens},
+		{"a blank word then a subcommand", cl, []string{"", "agents"}, false, adapter.ErrNotFlag},
+		{"a subcommand in another case", cl, []string{"Agents"}, false, adapter.ErrNotFlag},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.p.ParseWith(tt.args, adapter.ParseOpts{Print: tt.print, Switches: sw})
+			if tt.err == nil && err != nil || tt.err != nil && !errors.Is(err, tt.err) {
+				t.Errorf("err = %v, want %v", err, tt.err)
+			}
+		})
+	}
+}
+
 func TestTakeFlag(t *testing.T) {
+	// Hand-edited for the PR #124 re-review (rule C): TakeFlag no longer stops
+	// at "--", so the last --settings is taken too (it used to stay in rest).
 	vals, rest := adapter.TakeFlag([]string{"--settings", "a.json", "-p", "--settings={}", "hi", "--", "--settings", "x"}, "--settings")
-	if !slices.Equal(vals, []string{"a.json", "{}"}) || !slices.Equal(rest, []string{"-p", "hi", "--", "--settings", "x"}) {
+	if !slices.Equal(vals, []string{"a.json", "{}", "x"}) || !slices.Equal(rest, []string{"-p", "hi", "--"}) {
+		t.Errorf("vals %q, rest %q", vals, rest)
+	}
+	// Every occurrence, both forms, and one after a flag aggy cannot tell
+	// takes a value.
+	vals, rest = adapter.TakeFlag([]string{"--unknown", "--settings", "a", "--name", "--settings=b", "--settings", "c"}, "--settings")
+	if !slices.Equal(vals, []string{"a", "b", "c"}) || !slices.Equal(rest, []string{"--unknown", "--name"}) {
 		t.Errorf("vals %q, rest %q", vals, rest)
 	}
 	if vals, rest := adapter.TakeFlag([]string{"x", "--rules"}, "--rules"); len(vals) != 0 || !slices.Equal(rest, []string{"x", "--rules"}) {

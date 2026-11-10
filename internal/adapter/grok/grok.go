@@ -403,8 +403,13 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			"--rules", "--append-system-prompt", "--deny", "--disallowedTools", "--agent", "--worktree-ref", "--ref", "--fs-write"},
 		Print: []string{"-p", "--single", "--print", "--prompt-file", "--prompt-json",
 			"--worktree", "-w", "--worktree-ref", "--ref", "--local-workspace", "--local-workspace-attach", "--local-workspace-cwd"},
-		Bare:      []string{"--version", "-v"},
-		Commands:  Commands,
+		Bare:     []string{"--version", "-v"},
+		Commands: Commands,
+		// PR #124 re-review: the flags aggy merges with its own, sets, or
+		// whose value it checks, refused after "--".
+		Owned: []string{"--rules", "--append-system-prompt", "--deny", "--disallowedTools", "--disallowed-tools", "--allow",
+			"--allowedTools", "--allowed-tools", "--permission-mode", "--sandbox", "--add-dir", "--agent", "--agents", "--tools",
+			"--session-id", "-s", "--no-alt-screen", "--cwd", "--load", "--fork-session"},
 		LoosensIf: []string{"approve", "approval", "yolo", "bypass", "no-sandbox", "skip-permission", "trust", "unsafe", "insecure"},
 		DirFlags:  []string{"--add-dir"},
 		Noted: []adapter.NotedFlag{
