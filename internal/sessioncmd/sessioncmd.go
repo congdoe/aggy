@@ -68,6 +68,9 @@ type Command struct {
 	Confirm      []string
 	ConfirmLabel string
 	Answer       bool
+	// ConfirmIf, when set, keeps the y step only on a page whose first run
+	// printed it: tool on asks a question only for a first index (T6975).
+	ConfirmIf string
 	// Also, when set, is a step the person may take first with c, before y,
 	// on that same page; AlsoLabel names it. accept offers the repo's checks
 	// so, as accept at a terminal does (R121).
@@ -227,6 +230,39 @@ func inbox(args []string) (Command, bool) {
 	return c, true
 }
 
+// Asked is how aggy's own commands end a yes-or-no question they print.
+const Asked = "[y/N]"
+
+// Picked reports whether line, a command a CLI submitted and its prompt hook
+// reported, can be the one the person's keys picked from the CLI's own menu
+// (docs/design.md section 5, T6975). typed is what they typed at the prompt
+// before any menu key (Up, Down, Tab), as printable keys only; tabbed, that a
+// Tab came after it; after, what they typed after that Tab.
+//
+// typed must be v's prefix and at least one character of a command word: a
+// bare / is a prefix of every command, the person's own included, so it
+// matches none. While no space ends the word, the word must start the line's
+// command word (/sw for /switch); once a space ends it, it must be that word
+// whole, as no menu completes it then. The arguments typed (after that space,
+// or after the Tab) must be the line's own, word for word: a Tab completes the
+// command's name only, so a line with other arguments is not the person's.
+func Picked(v adapter.Vendor, typed string, tabbed bool, after, line string) bool {
+	if len(typed) < 2 || len(line) < 2 || typed[0] != line[0] || !strings.ContainsRune(Prefixes(v), rune(typed[0])) || line[1] == ' ' {
+		return false
+	}
+	word, rest, spaced := strings.Cut(typed[1:], " ")
+	words := strings.Fields(line[1:])
+	switch {
+	case word == "" || len(words) == 0:
+		return false
+	case spaced && (tabbed || word != words[0]):
+		return false
+	case !strings.HasPrefix(words[0], word):
+		return false
+	}
+	return slices.Equal(strings.Fields(rest+" "+after), words[1:])
+}
+
 // Subcommands are the /aggy commands that start no turn, in the order the
 // list shows them, with what each does.
 var Subcommands = []struct{ Name, What string }{
@@ -299,6 +335,12 @@ func parseAggy(sub string, args []string) (Command, bool) {
 			c.Args = []string{"tool", "status"}
 		case len(args) == 2 && (args[0] == "on" || args[0] == "off") && tooldef.ValidName(args[1]):
 			c.Args, c.KeyboardOnly = []string{"tool", args[0], args[1]}, true
+			if args[0] == "on" {
+				// The first run answers a question it asks (a first index's
+				// y/N) no, on the page; y runs it again answering yes, as at
+				// a terminal (T6975). A run that asked nothing has no y step.
+				c.Confirm, c.ConfirmLabel, c.Answer, c.ConfirmIf = c.Args, "y answers its question yes", true, Asked
+			}
 		default:
 			return Command{}, false
 		}

@@ -33,13 +33,16 @@ type menu struct {
 
 // page is a result: lines to scroll, from top. confirm, when set, runs on y:
 // the arguments, what the key does, and whether that run answers its own
-// question y. busy: a run is going, and its result replaces lines.
+// question y; confirmIf, when set, keeps it only if the first run printed that
+// (a question it answered no). busy: a run is going, and its result replaces
+// lines.
 type page struct {
 	title        string
 	lines        []string
 	top          int
 	confirm      []string
 	confirmLabel string
+	confirmIf    string
 	also         []string
 	alsoLabel    string
 	answer       bool

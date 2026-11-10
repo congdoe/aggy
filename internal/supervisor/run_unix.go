@@ -535,8 +535,9 @@ type session struct {
 	// printable keys only, no cursor key, no edit, no paste. localEnter: the
 	// Enter just composed ended a line the vendor's docs list as starting no
 	// model turn (adapter.LocalCommand).
-	cmdLine            []byte
-	cmdBad, localEnter bool
+	// localFree: that line also leaves the keys with the prompt (promptFree).
+	cmdLine                       []byte
+	cmdBad, localEnter, localFree bool
 	// typedSince: text was typed or pasted, or a line recalled with Up, since the
 	// last Enter, in an earlier read. Other cursor keys are not text: Down and
 	// Enter answer an approval's menu.
@@ -604,15 +605,17 @@ type session struct {
 	viewPaste  pasteFilter
 	// prompts brings the commands a CLI's prompt hook reported (T6910), each
 	// with where its answer goes; hookedName and hookedEnter are the last one
-	// taken and the Enter it was taken for (hookCommand). enterSlash: the last
-	// Enter ended a line that held only a leading / command, the only Enter a
-	// menu's command goes with. cmdFresh: a line just went out that leaves the
-	// composer empty though lenKnown is false (a Claude local command, a prompt
-	// a hook blocked), so a command typed next is known whole (lineKnown).
+	// taken and the Enter it was taken for (hookCommand). pick follows what the
+	// person types for a pick from the CLI's own menu (T6975), and enterPick is
+	// it as it was at the last Enter: the only keys a menu's command goes with.
+	// cmdFresh: a line just went out that leaves the composer empty though
+	// lenKnown is false (Claude's /clear), so a command typed next is known
+	// whole (lineKnown).
 	hookedName  string
 	hookedEnter time.Time
 	prompts     chan promptReq
-	enterSlash  bool
+	pick        menuPick
+	enterPick   menuPick
 	cmdFresh    bool
 }
 
@@ -1202,11 +1205,11 @@ func (s *session) followKeys(typed []byte) {
 		if s.o.Vendor == adapter.Claude {
 			// The same rule (adapter.LocalCommand, Claude only): the line went
 			// out whole and left the composer empty, so a command typed next is
-			// known whole (R121). lenKnown stays false for the switch's doubt,
-			// as a dialog the command opened may still be up.
-			// TODO(T6975): a command typed while /model's dialog still has
-			// focus is caught too, and its Ctrl+U goes into the dialog.
-			s.compLen, s.cmdFresh = 0, true
+			// known whole (R121), but only after a command that leaves the keys
+			// with the prompt (promptFree): after one that may open a dialog, a
+			// caught command's Ctrl+U would go into that dialog (T6975).
+			// lenKnown stays false for the switch's doubt either way.
+			s.compLen, s.cmdFresh = 0, s.localFree
 		}
 	}
 	if s.escEmpty && enter {
@@ -1423,6 +1426,7 @@ func (s *session) pointer(b []byte) {
 	s.inputSinceTurn = true
 	s.moved = true
 	s.slashOnly = false
+	s.pick.bad = true
 	s.afterEnter++
 	s.sw.toldDoubt, s.sw.doubtOK = false, false
 	if s.hadAt {
@@ -1511,13 +1515,14 @@ func (s *session) compose(c byte) {
 	if c == '\r' || c == '\n' || c == ctrlU {
 		s.cmdFresh = false
 	}
+	s.pickByte(c)
 	if c == '\r' {
-		// TODO(T6975): any control key sets cmdBad, so a menu pick made with the
-		// arrows or Tab is not a slash Enter here and its hook is refused; only a
-		// typed prefix and Enter on the menu's first entry is taken. Planned: keep
-		// the text typed before the menu keys and require it to prefix the
-		// reported command's name (hookCommand).
-		s.enterSlash = s.slashOnly && !s.inPaste && !s.cmdBad
+		// What a menu's pick may go with (hookCommand): a line that held only a
+		// leading / command, typed as menuPick allows. An Enter that makes a
+		// newline leaves the next line no pick.
+		s.enterPick = s.pick
+		s.enterPick.bad = s.pick.bad || !s.slashOnly || s.inPaste
+		s.pick = menuPick{bad: prev == esc || prev == '\\' || s.inPaste}
 	}
 	switch {
 	case c == '\r':
@@ -1570,6 +1575,7 @@ func (s *session) compose(c byte) {
 		s.afterEnter = 0
 		s.slashEntered = s.slashOnly
 		s.localEnter = s.slashOnly && !s.moved && !s.cmdBad && adapter.LocalCommand(s.o.Vendor, string(s.cmdLine))
+		s.localFree = s.localEnter && promptFree(s.o.Vendor, string(s.cmdLine))
 		s.cmdLine, s.cmdBad = s.cmdLine[:0], false
 	case c == '\r':
 		// TODO(T6895): an Enter that answers an approval leaves a draft under it in

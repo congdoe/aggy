@@ -873,12 +873,22 @@ Ctrl+U, then Enter, and see no message sent: with that recorded here for a CLI,
 `/switch <vendor>` there skips the status line (R121); type `/inbox`; pick
 `/switch` from the CLI's own menu with a vendor (Claude and Grok: the prompt is
 blocked and the status line asks); and check `aggy log` and `aggy diag` for
-`supervisor.command.caught`. For the hook path's known limits (TODO(T6975),
-design.md section 5): on Claude and Grok, pick `/switch` from the menu with
-the arrow keys and Enter and see whether the hook fires and what aggy logs
-(`aggy diag -n 20`); send a prompt the hook blocks and see whether the CLI puts
-its text back in the composer; and in each CLI's shell mode (Claude's `!`) run
-`test -t 0 && echo tty` to see whether stdin is a terminal there.
+`supervisor.command.caught`. For the typed-prefix rule (T6975, design.md
+section 5), on Claude and Grok: type `/s`, press Down until `/switch` is
+highlighted, and Enter (the picker opens, `via: hook` in `aggy diag -n 20`);
+type `/sw`, Tab, `grok`, Enter (the status line asks `/switch via hook`), and
+note what Tab put in the composer (`/switch ` with its space, or not); type
+`/in`, Tab, Enter (the inbox page); type `/`, Down to `/aggy`, Enter (refused,
+`command.no_enter`, and the skill tells the model to change nothing); and with
+`/s` typed, press Up and see whether the menu moves or a history line comes
+back. Record each, and whether a menu pick fires `UserPromptSubmit` with the
+command as `prompt`. For the hook path's known limits (TODO(T6975)): send a
+prompt the hook blocks and see whether the CLI puts its text back in the
+composer; and in each CLI's shell mode (Claude's `!`) run `test -t 0 && echo
+tty` to see whether stdin is a terminal there. After Claude's `/model`, with
+its picker closed by Esc, type `/switch` and Enter: today it goes to the CLI
+until a turn end (only `/clear` frees the composer at once); a check that the
+prompt has the keys again after each local command would let it be caught.
 
 ## Skill folders
 

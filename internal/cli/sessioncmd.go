@@ -51,9 +51,12 @@ func sessionAggy(args []string, answer bool) string {
 		rejectWith(args[1:], defaultBorrowEnv(), w, w)
 	case "tool":
 		if len(args) > 1 && (args[1] == "on" || args[1] == "off" || args[1] == "status") {
-			// TODO(T6975): with no terminal, tool on codegraph skips the first
-			// index's y/N question that a terminal asks.
-			toolWith(args[1:], none, false, w, w)
+			// The page stands in for the terminal (T6975): a question tool on
+			// asks there (a first index's y/N) is printed on the page and gets
+			// answer, no on the first run and y on the page's y step
+			// (sessioncmd's Confirm for tool on), never skipped as with no
+			// terminal. --proxy, the other question, never comes here.
+			toolWith(args[1:], keyboard, true, w, w)
 			break
 		}
 		sessionRefuse(w, "tool", "aggy tool takes on, off, or status here")

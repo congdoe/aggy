@@ -150,22 +150,19 @@ func prebuildIndex(ctx context.Context, t tooldef.Tool, repo toolRepoAt, in io.R
 		}
 	}
 	argv := argvs[0]
-	switch {
-	case tty:
+	if tty {
+		// The [y/N] ending is what the in-session page looks for to offer its
+		// y step (sessioncmd.Asked).
 		fmt.Fprintf(stdout, "Index %s with %s? This runs %s, which writes %s/ in the repo. [y/N] ", termsafe.Field(repo.main), t.Name, quoteArgv(argv), ix.dir)
 		line, _ := bufio.NewReader(io.LimitReader(in, maxAnswer)).ReadString('\n')
 		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
 			fmt.Fprintln(stdout, "Nothing indexed or turned on.")
 			return errNotIndexed
 		}
-	case os.Getenv("AGGY_VENDOR") != "":
-		// TODO(T6975): unreachable from aggy tool on since shellGate (R121)
-		// refuses that shell first; kept for any other caller.
-		// A nudge, not a security boundary: an agent in a session aggy
-		// started is asked to leave the first index, which runs the tool
-		// over the repo, to the person; clearing the variable gets past it.
-		return fail(fmt.Errorf("the first index of a repo runs %s, so you run it yourself, at a terminal: aggy tool on %s --repo %s", quoteArgv(argv), t.Name, termsafe.Field(repo.main)))
 	}
+	// An agent's shell in a session aggy started (AGGY_* set, no terminal)
+	// never gets here: toolSwitch, the only caller, refuses it first
+	// (shellGate, R121), so this step's own refusal of it was removed (T6975).
 	excluded := excludeIndex(ctx, repo.main, ix.dir, stdout)
 	names, set := toolTelemetry("", t)
 	for _, m := range t.MCP {

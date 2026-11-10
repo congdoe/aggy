@@ -3,8 +3,10 @@
 package supervisor
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -109,6 +111,7 @@ func (s *session) emptyComposer() {
 	s.slashOnly, s.slashEntered, s.slashLine = false, false, false
 	s.draftLen, s.draftBlind, s.draftHigh = 0, false, false
 	s.cmdLine, s.cmdBad = s.cmdLine[:0], false
+	s.pick = menuPick{}
 	s.toldDirty, s.cmdFresh = false, false
 	s.updateDirty()
 }
@@ -175,6 +178,7 @@ const promptAnswerWait = 2 * time.Second
 // goroutine that gave up waiting sets first; whoever does decides.
 type promptReq struct {
 	c       sessioncmd.Command
+	line    string
 	answer  chan error
 	claimed *atomic.Bool
 }
@@ -200,7 +204,7 @@ func (s *session) onPromptCommand(r Request) error {
 	case c.KeyboardOnly:
 		return coded(diag.CodeCommandKeyboard, fmt.Errorf("%s changes something, so aggy takes it only typed in full at the prompt", c.Name))
 	}
-	p := promptReq{c: c, answer: make(chan error, 1), claimed: new(atomic.Bool)}
+	p := promptReq{c: c, line: r.Command, answer: make(chan error, 1), claimed: new(atomic.Bool)}
 	select {
 	case s.prompts <- p:
 	default:
@@ -224,29 +228,25 @@ func (s *session) answerPrompt(p promptReq) {
 	if !p.claimed.CompareAndSwap(false, true) {
 		return // its socket goroutine gave up; the prompt went to the CLI
 	}
-	p.answer <- s.hookCommand(p.c)
+	p.answer <- s.hookCommand(p.c, p.line)
 }
 
-// hookCommand acts on a command a prompt hook reported, or says why not. Any
-// process in the CLI's tree can send one, so only the one that goes with a
-// real Enter is taken (R121): an Enter at the prompt, on a line that held only
-// a leading / command (what a menu's pick submits), with no key since, within
-// promptBlockWait, and one command per Enter. Nothing is taken over a list,
-// page, or picker already on screen, nor a switch over one waiting. The hook
-// then blocked that prompt, so that Enter started no turn: the prompt is where
-// it was, and its line is gone from the composer (both CLIs document a block
-// as stopping the prompt; that the composer is left empty is unverified,
-// TODO(T6895)). A switch caught this way always asks on the status line.
-//
-// TODO(T6975): known limits (docs/design.md section 5, "Known limits of the
-// hook path"). A menu pick made with the arrows or Tab is refused (enterSlash)
-// and reaches the model through the skill. And these conditions take a forged
-// prompt-command within promptBlockWait of any slash Enter the person makes
-// (their own /deploy, /review, /compact, /clear), say from that turn's first
-// tool call: one page per Enter, and every change still needs a key. Planned
-// fix for both: require the text typed before the menu keys to prefix the
-// reported command's name.
-func (s *session) hookCommand(c sessioncmd.Command) error {
+// hookCommand acts on a command a prompt hook reported as line, or says why
+// not. Any process in the CLI's tree can send one, so only the one that goes
+// with a real Enter is taken (R121): an Enter at the prompt, on a line that
+// held only a leading / command, with no key since, within promptBlockWait,
+// and one command per Enter. And the keys before that Enter must be able to
+// have picked line from the CLI's menu (T6975, menuPick and sessioncmd.Picked):
+// the person typed at least / and one letter of its name (/sw for /switch),
+// then perhaps Up, Down, or Tab, and after a Tab its arguments. So a forged
+// request after the person's own /deploy or /clear names nothing they typed,
+// and is refused. Nothing is taken over a list, page, or picker already on
+// screen, nor a switch over one waiting. The hook then blocked that prompt, so
+// that Enter started no turn: the prompt is where it was, and its line is gone
+// from the composer (both CLIs document a block as stopping the prompt; that
+// the composer is left empty is unverified, TODO(T6895)). A switch caught this
+// way always asks on the status line.
+func (s *session) hookCommand(c sessioncmd.Command, line string) error {
 	// Claude may report one prompt twice, as submitted and as a command's
 	// expansion (UserPromptSubmit and UserPromptExpansion, hooks.md; which of
 	// them a menu pick sends is unverified). The second blocks too and does
@@ -255,8 +255,10 @@ func (s *session) hookCommand(c sessioncmd.Command) error {
 		return nil
 	}
 	switch {
-	case !s.enterAtPrompt || !s.enterSlash || s.afterEnter != 0 || time.Since(s.enterAt) >= promptBlockWait:
+	case !s.enterAtPrompt || s.enterPick.bad || s.afterEnter != 0 || time.Since(s.enterAt) >= promptBlockWait:
 		return coded(diag.CodeCommandNoEnter, errors.New("no Enter of a / command at the prompt just before it"))
+	case !sessioncmd.Picked(s.o.Vendor, string(s.enterPick.text), s.enterPick.tab, string(s.enterPick.args), line):
+		return coded(diag.CodeCommandNoEnter, errors.New("the keys typed before that Enter do not start that command"))
 	case s.hookedEnter.Equal(s.enterAt):
 		return coded(diag.CodeCommandNoEnter, errors.New("aggy already took a command for that Enter"))
 	case s.open:
@@ -345,7 +347,7 @@ func (s *session) startRun(c sessioncmd.Command, args []string) {
 		s.closePicker()
 	}
 	s.cmdSeq++
-	pg := &page{title: c.Name, seq: s.cmdSeq, confirm: c.Confirm, confirmLabel: c.ConfirmLabel, answer: c.Answer, also: c.Also, alsoLabel: c.AlsoLabel}
+	pg := &page{title: c.Name, seq: s.cmdSeq, confirm: c.Confirm, confirmLabel: c.ConfirmLabel, confirmIf: c.ConfirmIf, answer: c.Answer, also: c.Also, alsoLabel: c.AlsoLabel}
 	switch {
 	case c.Text != "":
 		pg.lines = []string{c.Text}
@@ -425,6 +427,10 @@ func (s *session) cmdDone(r cmdResult) {
 		s.pk.menu = &menu{title: "turn a tool on or off (a resume of this CLI picks it up)", items: r.items}
 	default:
 		g.lines, g.top = plainText(r.out), 0
+		if g.confirmIf != "" && !strings.Contains(r.out, g.confirmIf) {
+			g.confirm, g.also = nil, nil // it asked nothing, so y has nothing to answer
+		}
+		g.confirmIf = ""
 	}
 	s.redrawView()
 }
@@ -556,4 +562,120 @@ func (s *session) fillComposer(line string) {
 		return
 	}
 	s.send([]byte(line))
+}
+
+// menuPick is what the person typed at the prompt for a pick from the CLI's own
+// menu (T6975, docs/design.md section 5), which the keys do not spell: text, the
+// printable keys typed since the line began, before any menu key; menu, that
+// Up or Down or a Tab came after them; tab, that a Tab did, and args, the
+// printable keys typed after it. seq holds an escape sequence still coming in.
+//
+// bad: something else came, so the line is no pick aggy can tell from its
+// keys: a paste, Esc, a cursor key other than Up and Down (Left moves into the
+// text), a menu key before any text (Up there recalls history) or after a space
+// (the command word has ended, and the menu with it), text typed after Up or
+// Down but before a Tab (the menu filters again, or a recalled line grows), a
+// key after a Tab other than text and Backspace, an edit other than a
+// Backspace at the end, Ctrl+U, a control key, a click, or a newline.
+type menuPick struct {
+	text, args []byte
+	menu, tab  bool
+	bad        bool
+	seq        []byte
+}
+
+// menuArrow matches Up or Down as a legacy terminal or kitty sends it, a press
+// or a repeat with no modifier but Caps or Num Lock; menuArrowRelease is its
+// release, which kitty's report-all mode sends and which changes nothing.
+var (
+	menuArrow        = regexp.MustCompile(`^\x1b(\[(1;(1|65|129|193)(:[12])?)?|O)[AB]$`)
+	menuArrowRelease = regexp.MustCompile(`^\x1b\[1;(1|65|129|193):3[AB]$`)
+)
+
+// pickByte follows one byte the person sent, for menuPick.
+func (s *session) pickByte(c byte) {
+	p := &s.pick
+	if s.inPaste {
+		p.bad = true
+		return
+	}
+	if len(p.seq) > 0 || c == esc {
+		p.seq = append(p.seq, c)
+		if !seqDone(p.seq) {
+			return
+		}
+		seq := string(p.seq)
+		p.seq = nil
+		switch {
+		case menuArrowRelease.MatchString(seq):
+		case menuArrow.MatchString(seq):
+			p.menuKey(false)
+		default:
+			p.bad = true
+		}
+		return
+	}
+	switch {
+	case p.bad, c == '\r':
+	case c == '\t':
+		p.menuKey(true)
+	case c == 0x7f || c == 0x08:
+		switch {
+		case p.tab && len(p.args) > 0:
+			p.args = p.args[:len(p.args)-1]
+		case !p.menu && len(p.text) > 0:
+			p.text = p.text[:len(p.text)-1]
+		default:
+			p.bad = true
+		}
+	case c < 0x20 || c > 0x7e, len(p.text)+len(p.args) >= sessioncmd.MaxLine:
+		p.bad = true
+	case p.tab:
+		p.args = append(p.args, c)
+	case p.menu:
+		p.bad = true
+	default:
+		p.text = append(p.text, c)
+	}
+}
+
+// menuKey takes Up, Down (tab false), or a Tab: allowed after the start of a
+// command word, before a space and before any Tab.
+func (p *menuPick) menuKey(tab bool) {
+	if len(p.text) == 0 || p.tab || bytes.IndexByte(p.text, ' ') >= 0 {
+		p.bad = true
+		return
+	}
+	p.menu, p.tab = true, tab
+}
+
+// seqDone reports whether seq, which starts with ESC, is a whole escape
+// sequence: CSI to its final byte, SS3 and any other two bytes whole. A long
+// one is done too, and none that menuPick takes.
+func seqDone(seq []byte) bool {
+	switch {
+	case len(seq) < 2:
+		return false
+	case len(seq) > 32:
+		return true
+	case seq[1] == '[':
+		return len(seq) > 2 && seq[len(seq)-1] >= 0x40 && seq[len(seq)-1] <= 0x7e
+	case seq[1] == 'O':
+		return len(seq) == 3
+	}
+	return true
+}
+
+// promptFree reports whether line, a command adapter.LocalCommand lists for v,
+// leaves the keys with the prompt at once, so a command typed after it is the
+// composer's (lineKnown, cmdFresh). Only Claude's /clear: commands.md ("All
+// commands", read 2026-11-07) says it starts "a new conversation with empty
+// context", and describes no dialog. /model "opens a picker" with no
+// argument, /config and /status open "the Settings interface", /permissions
+// "an interactive dialog", and /memory edits CLAUDE.md files; /usage, /cost,
+// /help, and /context show a panel or a display whose focus after it the docs
+// do not say, so they take the safe side: a command typed next goes to the CLI
+// until a turn end (T6975).
+func promptFree(v adapter.Vendor, line string) bool {
+	return v == adapter.Claude && line == "/clear"
 }
