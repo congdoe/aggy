@@ -23,13 +23,14 @@ import (
 	"github.com/congdoe/aggy/internal/devfix"
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/execrun"
+	"github.com/congdoe/aggy/internal/manifest"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
 	"github.com/congdoe/aggy/skills"
 )
 
-const setupUsage = `Usage: aggy setup [--yes] [--only VENDORS]
+const setupUsage = `Usage: aggy setup [--yes] [--only VENDORS] [--wire [--dry-run]]
 
 Checks Claude Code, Codex, and Grok Build one at a time: finds each CLI
 on PATH, reads its version and capabilities, and asks whether it is
@@ -45,6 +46,12 @@ how.
 
   --yes          check without asking (also when stdin is not a terminal)
   --only LIST    check only these vendors, e.g. --only claude,codex
+  --wire         then also do what aggy hooks install and aggy policy wire
+                 do, for each of claude, codex, and grok on PATH: aggy's hooks
+                 in each CLI's hooks file and Codex's rules file, through the
+                 manifest (aggy unwire undoes it). Bare aggy offers the same
+                 the first time it runs at a terminal.
+  --dry-run      with --wire: show the changes and make none
 `
 
 // probeTimeout bounds each run of a vendor CLI during setup and doctor.
@@ -136,6 +143,8 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 	fl.SetOutput(io.Discard)
 	yes := fl.Bool("yes", false, "")
 	only := fl.String("only", "", "")
+	wire := fl.Bool("wire", false, "")
+	dryRun := fl.Bool("dry-run", false, "")
 	if err := fl.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprint(stdout, setupUsage)
@@ -154,6 +163,20 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 	if err != nil {
 		refuse(context.Background(), stderr, "setup", diag.EvSetupFailed, diag.CodeUsage, err.Error(), errRec(diag.Rec{}, err))
 		return 2
+	}
+	if *dryRun {
+		// T6966: a dry run opens no index and writes nothing.
+		if !*wire {
+			refuse(context.Background(), stderr, "setup", diag.EvSetupFailed, diag.CodeUsage, "--dry-run goes with --wire", diag.Rec{})
+			return 2
+		}
+		w := planWire(env.home)
+		if _, err := manifest.Preview(stdout, w.patches); err != nil {
+			refuse(context.Background(), stderr, "setup", diag.EvSetupFailed, diag.CodeWireFailed, err.Error(), errRec(diag.Rec{}, err))
+			return 1
+		}
+		reportWire(stdout, env.home, wirePlan{problems: w.problems, left: w.left}, "")
+		return 0
 	}
 	ctx := context.Background()
 	s, err := store.OpenDefault(ctx)
@@ -181,6 +204,18 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 		}
 	}
 	st.skills(ctx, selected)
+	if *wire {
+		w := planWire(env.home)
+		fmt.Fprintln(stdout)
+		runID, err := applyWire(ctx, s, w)
+		if err != nil {
+			refuse(ctx, stderr, "setup", diag.EvSetupFailed, diag.CodeWireFailed, err.Error(), errRec(diag.Rec{}, err))
+			return 1
+		}
+		reportWire(stdout, env.home, w, runID)
+		fmt.Fprintln(stdout, "\nRun aggy memory import --from claude to keep memory in step across the CLIs.")
+		return code
+	}
 	fmt.Fprintln(stdout, "\nRun aggy hooks install so aggy hears when a session starts, a turn ends, or a CLI hits a limit; aggy hooks status shows what is installed.")
 	fmt.Fprintln(stdout, "\nRun aggy policy wire and aggy memory import --from claude to keep safety rules and memory in step across the CLIs.")
 	return code

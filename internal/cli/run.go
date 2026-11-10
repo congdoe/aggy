@@ -385,7 +385,9 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	if pl.child.Kind != "" {
 		warns = append(warns, borrowNote(pl))
 	}
-	if w := hookWarning(v); w != "" {
+	// T6966: after a declined first-run offer, whose one note said so, hooks
+	// not installed at all are not said on every launch.
+	if w := hookWarning(v); w != "" && (!hooksMissing(v) || !setupDeclined(ctx, s)) {
 		warns = append(warns, w)
 	}
 	switch {

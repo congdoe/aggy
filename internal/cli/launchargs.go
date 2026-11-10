@@ -193,6 +193,11 @@ func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 		if len(rest) > 0 {
 			t.Flags = rest
 		}
+		// T6966: bare aggy, the first time at a terminal, offers setup in
+		// place, then launches whatever the answer.
+		if len(args) == 0 && shouldOffer(context.Background(), os.Getenv) {
+			offerSetup(context.Background(), defaultCheckEnv(), stderr)
+		}
 		return launch("aggy", t, stderr)
 	}
 	p, err := passFlags(v).ParseWith(rest, adapter.ParseOpts{NoPolicy: t.NoPolicy, Values: help.Values, Switches: help.Switches})
