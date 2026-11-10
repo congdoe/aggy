@@ -460,12 +460,19 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// brief that cannot be written, an interrupted tool proxy, or a CLI that
 	// cannot be started ends the launch after it, and the log must not show a
 	// CLI that never ran. The log is a record, so a failed write never stops
-	// the launch.
-	// TODO(T6955): the write waits up to the store's busy timeout on a locked
-	// index, as the commit above can.
+	// the launch. It is written off the start, so the pass-through never waits
+	// on the disk (G67-6), and waited for before the store closes.
+	// TODO(T6955): the write can take up to the store's busy timeout on a
+	// locked index, as the commit above can.
+	var logged sync.WaitGroup
+	defer logged.Wait() // deferred after s.Close, so it runs first
 	onScreen := func() {
 		if e, ok := screenEvent(t, pl.parent.ID, pl.child, time.Now()); ok {
-			_ = s.AppendEvent(ctx, e)
+			logged.Add(1)
+			go func() {
+				defer logged.Done()
+				_ = s.AppendEvent(ctx, e)
+			}()
 		}
 	}
 	if pl.child.Kind == "" {
