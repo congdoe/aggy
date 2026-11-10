@@ -449,6 +449,16 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	if err := joinAppendFiles(&req, pl.child.Cwd); err != nil {
 		return fail(diag.CodeUsage, err)
 	}
+	// Before the tools, whose rewrite copies are made of the static asks: with
+	// the decision hook on, there are none to copy (T6976).
+	if v == adapter.Claude && !t.NoPolicy {
+		root, _ := repoRoot(pl.child.Cwd)
+		if w := usePolicyHook(&req, plan, rules, root, version, memDir); w != "" {
+			warns = append(warns, w)
+		} else if w := policyHookNote(req, rules, root, plan.Branches); w != "" {
+			warns = append(warns, w)
+		}
+	}
 	// The tools that are on, for this child's own vendor and repo: a
 	// switch or resume is wired again for the CLI it starts. Their files
 	// share the launch's private folder, removed when the CLI exits.
@@ -484,7 +494,8 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	}
 	if v == adapter.OpenCode {
 		oc, err := prepareOpenCode(openCodeInput{cfg: eff, caps: caps, cwd: pl.child.Cwd, dir: memDir,
-			model: pl.child.Model, memory: req.Memory, brief: briefText, noPolicy: t.NoPolicy, rules: rules, policy: plan.Decide()})
+			model: pl.child.Model, memory: req.Memory, brief: briefText, noPolicy: t.NoPolicy, rules: rules, policy: plan.Decide(),
+			plan: plan, version: version})
 		if err != nil {
 			return fail(diag.CodePolicy, err)
 		}

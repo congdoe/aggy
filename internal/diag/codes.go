@@ -145,6 +145,9 @@ var (
 	EvHookToolFailed       = Event{"hook.tool.failed"}
 	EvGuardRefused         = Event{"hook.guard.refused"}
 	EvGuardMissing         = Event{"hook.guard.missing"}
+	EvDecideStarted        = Event{"hook.decision.started"}
+	EvDecideEnded          = Event{"hook.decision.ended"}
+	EvDecideFallback       = Event{"hook.decision.fallback"}
 	EvTrustRefused         = Event{"trust.request.refused"}
 	EvPermissionsRefused   = Event{"permissions.request.refused"}
 	EvConfigRefused        = Event{"config.request.refused"}
@@ -253,44 +256,53 @@ var (
 	CodeBadPayload       = Code{"hook.bad_payload"}
 	CodeGuardRefused     = Code{"guard.refused"}
 	CodeGuardMissing     = Code{"guard.no_report"}
-	CodeTrustBadDir      = Code{"trust.bad_dir"}
-	CodeTrustBadFile     = Code{"trust.bad_file"}
-	CodeNotAtKeyboard    = Code{"permissions.not_at_keyboard"}
-	CodePermBadRule      = Code{"permissions.bad_rule"}
-	CodePermBadFile      = Code{"permissions.bad_file"}
-	CodePermNotFound     = Code{"permissions.not_found"}
-	CodePermScope        = Code{"permissions.no_repo"}
-	CodeConfigBadValue   = Code{"config.bad_value"}
-	CodeConfigByHand     = Code{"config.edit_by_hand"}
-	CodeToolChanged      = Code{"tool.changed_since_add"}
-	CodeToolNameClash    = Code{"tool.name_clash"}
-	CodeToolRepoPath     = Code{"tool.repo_path"}
-	CodeToolNoFlag       = Code{"tool.no_launch_flag"}
-	CodeToolWireFailed   = Code{"tool.wire_failed"}
-	CodeToolUnverified   = Code{"tool.vendor_unverified"}
-	CodeToolExec         = Code{"tool.exec_refused"}
-	CodeToolHookApproves = Code{"tool.hook_approves"}
-	CodeToolHookOutput   = Code{"tool.hook_output"}
-	CodeToolHookFailed   = Code{"tool.hook_failed"}
-	CodeToolSkillMissing = Code{"tool.skill_missing"}
-	CodeToolBorrowKind   = Code{"tool.borrow_kind"}
-	CodeToolUnlisted     = Code{"tool.borrow_unlisted"}
-	CodeToolNetwork      = Code{"tool.borrow_network"}
-	CodeToolSkillChanged = Code{"tool.skill_changed"}
-	CodeToolIndexFailed  = Code{"tool.index_failed"}
-	CodeToolIndexCopy    = Code{"tool.index_copy_refused"}
-	CodeToolSkillExists  = Code{"tool.skill_exists"}
-	CodeToolSkillRefused = Code{"tool.skill_refused"}
-	CodeToolSkillSwapped = Code{"tool.skill_swapped"}
-	CodeProxyVendor      = Code{"tool.proxy_vendor_needed"}
-	CodeProxyConfirm     = Code{"tool.proxy_not_confirmed"}
-	CodeProxyPortTaken   = Code{"tool.proxy_port_taken"}
-	CodeProxyUnhealthy   = Code{"tool.proxy_unhealthy"}
-	CodeProxyFailed      = Code{"tool.proxy_failed"}
-	CodeProxyConflict    = Code{"tool.proxy_conflict"}
-	CodeProxyNotOwned    = Code{"tool.proxy_not_owned"}
-	CodeProxyEnvProxy    = Code{"tool.proxy_env_proxy"}
-	CodeProxyHoldFailed  = Code{"tool.proxy_hold_failed"}
+	// The decision hook's end records (T6976).
+	CodeDecideNoMatch     = Code{"decision.no_match"}
+	CodeDecidePreApproved = Code{"decision.pre_approved"}
+	CodeDecideAsked       = Code{"decision.policy_match"}
+	CodeDecideGroupDenied = Code{"decision.group_denied"}
+	CodeDecideNoPrompt    = Code{"decision.no_prompt"}
+	CodeDecideUnreadable  = Code{"decision.call_unreadable"}
+	CodeDecidePlan        = Code{"decision.plan_unreadable"}
+	CodeDecideFallback    = Code{"decision.fallback"}
+	CodeTrustBadDir       = Code{"trust.bad_dir"}
+	CodeTrustBadFile      = Code{"trust.bad_file"}
+	CodeNotAtKeyboard     = Code{"permissions.not_at_keyboard"}
+	CodePermBadRule       = Code{"permissions.bad_rule"}
+	CodePermBadFile       = Code{"permissions.bad_file"}
+	CodePermNotFound      = Code{"permissions.not_found"}
+	CodePermScope         = Code{"permissions.no_repo"}
+	CodeConfigBadValue    = Code{"config.bad_value"}
+	CodeConfigByHand      = Code{"config.edit_by_hand"}
+	CodeToolChanged       = Code{"tool.changed_since_add"}
+	CodeToolNameClash     = Code{"tool.name_clash"}
+	CodeToolRepoPath      = Code{"tool.repo_path"}
+	CodeToolNoFlag        = Code{"tool.no_launch_flag"}
+	CodeToolWireFailed    = Code{"tool.wire_failed"}
+	CodeToolUnverified    = Code{"tool.vendor_unverified"}
+	CodeToolExec          = Code{"tool.exec_refused"}
+	CodeToolHookApproves  = Code{"tool.hook_approves"}
+	CodeToolHookOutput    = Code{"tool.hook_output"}
+	CodeToolHookFailed    = Code{"tool.hook_failed"}
+	CodeToolSkillMissing  = Code{"tool.skill_missing"}
+	CodeToolBorrowKind    = Code{"tool.borrow_kind"}
+	CodeToolUnlisted      = Code{"tool.borrow_unlisted"}
+	CodeToolNetwork       = Code{"tool.borrow_network"}
+	CodeToolSkillChanged  = Code{"tool.skill_changed"}
+	CodeToolIndexFailed   = Code{"tool.index_failed"}
+	CodeToolIndexCopy     = Code{"tool.index_copy_refused"}
+	CodeToolSkillExists   = Code{"tool.skill_exists"}
+	CodeToolSkillRefused  = Code{"tool.skill_refused"}
+	CodeToolSkillSwapped  = Code{"tool.skill_swapped"}
+	CodeProxyVendor       = Code{"tool.proxy_vendor_needed"}
+	CodeProxyConfirm      = Code{"tool.proxy_not_confirmed"}
+	CodeProxyPortTaken    = Code{"tool.proxy_port_taken"}
+	CodeProxyUnhealthy    = Code{"tool.proxy_unhealthy"}
+	CodeProxyFailed       = Code{"tool.proxy_failed"}
+	CodeProxyConflict     = Code{"tool.proxy_conflict"}
+	CodeProxyNotOwned     = Code{"tool.proxy_not_owned"}
+	CodeProxyEnvProxy     = Code{"tool.proxy_env_proxy"}
+	CodeProxyHoldFailed   = Code{"tool.proxy_hold_failed"}
 )
 
 const showRun = "aggy diag show <run id> for what led to it"
@@ -308,6 +320,9 @@ var events = []EventInfo{
 	{EvGrokLockdown, LevelError, "adapter.grok", "Grok rejected a lockdown flag, reported an unknown tool, or ran without its sandbox; the run was discarded.", "aggy doctor for the version; attach aggy diag bundle to an issue."},
 	{EvGuardRefused, LevelWarn, "hook", "aggy's OpenCode guard refused a tool call: a variable declaration in a shell command, a real path outside the repo, a call from another folder, or opencode auth export.", "The code's entry; the model saw the same reason."},
 	{EvGuardMissing, LevelWarn, "hook", "aggy's OpenCode guard did not report in time, so its refusals may not be running; a plugin that fails to load gives no error.", "The code's entry."},
+	{EvDecideStarted, LevelInfo, "hook", "aggy's policy decision hook started on one tool call (attrs.vendor_version). It never records the command or the path.", "A start with no hook.decision.ended (cause_id) is a hang or a kill: aggy doctor counts them per CLI version."},
+	{EvDecideEnded, LevelInfo, "hook", "aggy's policy decision hook answered (attrs.decision: allow, ask, deny, no-opinion, or error; attrs.group; the code says why; duration_ms).", "The code's entry; aggy doctor sums them per CLI version."},
+	{EvDecideFallback, LevelWarn, "hook", "aggy hook decide failed or was missing, and its wrapper's fixed answer (ask, or deny where no prompt can show) went to the CLI instead.", "aggy doctor; a hook.decision.ended with decision.plan_unreadable, or none, in the same trace says more."},
 	{EvTrustRefused, LevelError, "trust", "aggy trust refused; nothing was changed.", "The code's entry."},
 	{EvPermissionsRefused, LevelError, "permissions", "aggy permissions refused; nothing was changed.", "The code's entry."},
 	{EvConfigRefused, LevelError, "config", "aggy config set refused; nothing was changed.", "The code's entry."},
@@ -472,6 +487,14 @@ var codes = []CodeInfo{
 	{CodePeerUnknown, false, "aggy could not tell which user or process opened a connection to the supervisor's socket, so it was closed unanswered.", "Usually a process that connected and exited at once; nothing, unless hooks stop arriving."},
 	{CodeWrongVendor, true, "A hook event from the CLI's tree came from another vendor's hook than the one on screen, so it did not gate a switch.", "A nested CLI of another vendor in the session; nothing else."},
 	{CodeGuardRefused, false, "aggy's OpenCode guard refused a tool call. It reads the raw input, so it catches mistakes only.", "Run the command another way, or at the terminal yourself."},
+	{CodeDecideNoMatch, false, "No safety policy rule matched the call, so the hook gave no opinion and the CLI's own permission flow decided.", "Nothing."},
+	{CodeDecidePreApproved, false, "The call matched the safety policy and was exactly one you pre-approved with aggy permissions add allow, so it ran without asking.", "aggy permissions list shows the pre-approvals; aggy permissions remove allow takes one back."},
+	{CodeDecideAsked, false, "The call matched the safety policy and nothing pre-approved it as a whole, so the CLI asked.", "Approve it at the prompt, or pre-approve the exact command with aggy permissions add allow."},
+	{CodeDecideGroupDenied, false, "The call matched a safety policy group you set to deny, so it was refused.", "aggy permissions policy <group> ask sets the group back to asking."},
+	{CodeDecideNoPrompt, false, "The call matched the safety policy in a session that cannot show a prompt (bypassPermissions or dontAsk), so it was refused instead of asked.", "Start the session in a mode that asks."},
+	{CodeDecideUnreadable, false, "The hook could not read the tool call (no payload, too large, not JSON, or a tool it does not know), so it asked, or refused where no prompt can show.", "The vendor CLI's version; aggy doctor."},
+	{CodeDecidePlan, false, "The hook could not read its launch's decision plan, so it exited non-zero and its wrapper's fixed answer applied.", "Quit and start the session again; aggy doctor."},
+	{CodeDecideFallback, false, "aggy's policy decision hook failed or was missing, so its wrapper asked about the call (or refused it where no prompt can show) without judging it.", "aggy doctor for failures by CLI version; check that aggy is still installed at the path the launch used."},
 	{CodeGuardMissing, false, "aggy's OpenCode guard did not report from the launch's folder in time. OpenCode's rules from aggy's config still apply; the guard's own refusals may not.", "Quit and start again; aggy doctor for the CLI's version. A same-user process can overwrite or unload the plugin."},
 	{CodeTrustBadDir, false, "aggy trust was given a path that is not a folder aggy can resolve.", "The path; aggy resolves it to its repo root."},
 	{CodeNotAtKeyboard, false, "A change to permissions or settings came from somewhere that is not a person at a terminal: a borrow child, a session's own tool shell, or no terminal on stdin.", "Run it yourself at a terminal outside the session."},

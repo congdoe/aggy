@@ -96,8 +96,8 @@ type PolicyDecision struct {
 // settings file or flag it does not read, a mode changed after launch) may
 // cover the rest of what the rule matched.
 //
-// TODO(T6976): exact per-command pre-approval belongs at a per-command
-// decision point, a tool-use hook decision, never in the rendered rules.
+// Exact per-command pre-approval is at a per-command decision point, a
+// tool-use hook (DecideCall), never in the rendered rules.
 //
 // A headless plan's decisions are ClaudeDeny's rules, in that order: the
 // strict force-push rules are left out wherever the force-push group denies,
@@ -254,13 +254,22 @@ func grokSpelling(r string) string {
 // answer could silence them for good; TODO(T6895), a live check. File reads
 // are not here: the guard refuses those names whatever is set.
 func OpenCodePolicy(ds []PolicyDecision, auto bool) (ask, deny []string) {
+	return OpenCodePolicyFor(ds, auto, false)
+}
+
+// OpenCodePolicyFor is OpenCodePolicy where strictAsk makes the strict shell
+// rules asks too (T6976): only on a launch whose plugin carries aggy's
+// permission evaluate hook, in a repo trusted for OpenCode and without
+// --auto (OpenCodeConfig.strictAsk). The hook turns an Always allow OpenCode
+// saved back into an ask, and lifts an ask only for an exact pre-approval.
+func OpenCodePolicyFor(ds []PolicyDecision, auto, strictAsk bool) (ask, deny []string) {
 	for _, d := range ds {
 		cmd, ok := strings.CutPrefix(d.Text, "Bash(")
 		if !ok {
 			continue
 		}
 		cmd = strings.TrimSuffix(cmd, ")")
-		if d.Kind == permissions.Deny || d.Strict || auto {
+		if d.Kind == permissions.Deny || (d.Strict && !strictAsk) || auto {
 			deny = append(deny, "shell:"+cmd)
 		} else {
 			ask = append(ask, cmd)

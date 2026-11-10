@@ -255,8 +255,15 @@ type InteractiveRequest struct {
 	Deny []string
 	// Ask holds the safety policy's rules that ask on screen
 	// (parity.ClaudePolicy): Claude takes them as permissions.ask in the
-	// same layer. Grok and Codex never get any.
+	// same layer. Grok and Codex never get any. With PolicyHook set, the
+	// launch has moved them there instead.
 	Ask []string
+	// PolicyHook, when set, is aggy's policy decision hook for Claude
+	// (T6976): a PreToolUse entry that asks, allows an exact pre-approval, or
+	// denies, in place of the static asks, which it keeps as Fallback. The
+	// adapter puts the static asks back whenever the final layer would not
+	// run the hook (claude.SettingsJSON).
+	PolicyHook *PolicyHook
 	// Rules are the person's shared rules for this session only
 	// (internal/permissions), on top of what the CLI reads itself. Claude
 	// takes them in the same inline --settings layer as Deny, Grok as --allow
@@ -337,6 +344,20 @@ type HookCommand struct {
 	Type    string `json:"type"`
 	Command string `json:"command"`
 	Timeout int    `json:"timeout,omitempty"`
+	// OnFailure "block" blocks the call when the hook fails (times out,
+	// exits with an error other than 2, or prints bad JSON); without it
+	// Claude goes on through its normal permission flow (code.claude.com/docs
+	// hooks.md, read 2026-11-10; live 2026-11-10, docs/verification.md).
+	OnFailure string `json:"onFailure,omitempty"`
+}
+
+// PolicyHook is aggy's policy decision hook on a Claude launch.
+type PolicyHook struct {
+	// Group is the PreToolUse matcher group that runs it.
+	Group HookGroup
+	// Fallback are the static ask rules it replaces, put back when the hook
+	// would not run.
+	Fallback []string
 }
 
 // MCPServer is one stdio MCP server a session gets at launch.

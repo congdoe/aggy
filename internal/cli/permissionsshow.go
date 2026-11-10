@@ -100,29 +100,42 @@ func printPolicy(w io.Writer, s permissions.Set) {
 		for _, k := range s.Skipped {
 			rules = append(rules, k.Rule)
 		}
-		for _, r := range rules {
-			if r.Kind != permissions.Allow || !slices.ContainsFunc(parity.CoveredRules(r.Text, plan.Branches), func(p parity.PolicyRule) bool { return p.Group == g }) {
+		for i, r := range rules {
+			if r.Kind != permissions.Allow {
 				continue
 			}
-			still := "asks every time on Claude Code, and the lines below say what each other CLI does"
-			if setting == string(permissions.Deny) {
-				still = "is refused"
+			m := policyMatch(r.Text, cwd)
+			if !slices.Contains(m.groups, g) {
+				continue
 			}
-			fmt.Fprintf(w, "    your allow %s [%s] names or covers this group and changes nothing: the command still %s\n", termsafe.Field(r.Text), originName(r.Origin), still)
+			what := "names or covers this group and pre-approves nothing: what it covers still asks on Claude Code and OpenCode"
+			switch {
+			case setting == string(permissions.Deny):
+				what = "matches this group, which is set to deny, so it is refused"
+			case m.exact && (r.Origin == permissions.FromAggy || r.Origin == permissions.FromAggyRepo) && i >= len(s.Rules):
+				what = "would pre-approve this exact command, but it does not apply here (aggy permissions show says why), so the command still asks"
+			case m.exact && (r.Origin == permissions.FromAggy || r.Origin == permissions.FromAggyRepo) && s.Withhold != "":
+				what = "would pre-approve this exact command, but aggy sends no allow until the problem below is fixed, so the command still asks"
+			case m.exact && (r.Origin == permissions.FromAggy || r.Origin == permissions.FromAggyRepo):
+				what = "pre-approves this exact command or file: it runs without asking on Claude Code and OpenCode"
+			case m.exact:
+				what = "is not in aggy's own file, so it pre-approves nothing: the command still asks"
+			}
+			fmt.Fprintf(w, "    your allow %s [%s] %s\n", termsafe.Field(r.Text), originName(r.Origin), what)
 		}
 	}
 	if _, known := defaultBranches(cwd); !known {
 		fmt.Fprintln(w, "  aggy could not read this repo's default branch, so only main, master, and trunk are strict")
 	}
 	ask, deny := parity.ClaudePolicy(ds)
-	fmt.Fprintf(w, "  Claude Code: %d ask and %d deny rules; an ask rule beats every allow, so a covered command asks every time\n", len(ask), len(deny))
+	fmt.Fprintf(w, "  Claude Code: %d deny rules, and %d asks made by aggy's decision hook, which asks for every match but an exact pre-approval (static ask rules, which nothing lifts, when hooks are off)\n", len(deny), len(ask))
 	fmt.Fprintf(w, "  Grok Build: %d deny rules; Grok has no flag for an ask rule aggy can confirm, so these stay denials there, and an allow that names one is not passed to Grok\n", len(parity.GrokPolicy(ds)))
 	oAsk, oDeny := parity.OpenCodePolicy(ds, false)
-	fmt.Fprintf(w, "  OpenCode: %d shell asks and %d shell denies (the strict rules, and all under --auto, which answers an ask); file reads stay refused by aggy's guard\n", len(oAsk), len(oDeny))
+	fmt.Fprintf(w, "  OpenCode: %d shell asks and %d shell denies (the strict rules ask instead in a repo trusted for OpenCode; all deny under --auto, which answers an ask); aggy's plugin lifts an ask only for an exact pre-approval; file reads stay refused by aggy's guard\n", len(oAsk), len(oDeny))
 	fmt.Fprintln(w, "  Codex: its rules file asks before each rule, in every repo; the file is global, so a")
-	fmt.Fprintln(w, "    setting here does not reach it, and it has no rule for file reads")
-	fmt.Fprintln(w, "  No allow changes a policy rule on any CLI; exact pre-approval of one command is")
-	fmt.Fprintln(w, "    planned (T6976). aggy permissions policy <group> deny refuses a group instead")
+	fmt.Fprintln(w, "    setting here does not reach it, it has no rule for file reads, and no pre-approval changes it")
+	fmt.Fprintln(w, "  aggy permissions add allow \"Bash(<exact command>)\" pre-approves one command on Claude")
+	fmt.Fprintln(w, "    Code and OpenCode; aggy permissions policy <group> deny refuses a group instead")
 }
 
 // ruleCounts says how many rules of each kind.

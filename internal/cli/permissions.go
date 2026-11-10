@@ -276,7 +276,10 @@ func guardRules(payload []byte, getenv func(string) string) (rules []string, sca
 	pi.Tracked = func(string) (bool, error) { return false, nil }
 	s := permissions.Load(pi)
 	shared, _ := parity.OpenCodeShared(s)
-	return append(shared.Allow, renderedOpenCodeAllows(getenv("OPENCODE_CONFIG"))...), s.FileErr != nil || len(s.Problems) > 0
+	// An exact pre-approval of a policy match runs with no prompt too
+	// (T6976), so a command holding one is scanned like one holding an allow.
+	rules = append(shared.Allow, parity.PreApprovedFrom(s, in.Root).Commands...)
+	return append(rules, renderedOpenCodeAllows(getenv("OPENCODE_CONFIG"))...), s.FileErr != nil || len(s.Problems) > 0
 }
 
 // renderedOpenCodeAllows reads the shell allows of a rendered config.

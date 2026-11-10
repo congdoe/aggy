@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/checkup"
@@ -128,6 +129,7 @@ func doctor(ctx context.Context, env checkEnv) doctorResult {
 	envFindings := checkup.Environment(env.environ)
 	installed := 0
 	var vrs []checkup.Vendor
+	stats := decideStats(ctx)
 	for _, a := range env.adapters {
 		v := a.Vendor()
 		name := vendorNames[v]
@@ -150,6 +152,7 @@ func doctor(ctx context.Context, env checkEnv) doctorResult {
 		case vr.Installed:
 			fs = append(fs, hookFinding(v, name))
 		}
+		fs = append(fs, decideFindings(v, stats)...)
 		res.sections = append(res.sections, doctorSection{title: name, findings: fs})
 	}
 	var general []checkup.Finding
@@ -168,6 +171,49 @@ func doctor(ctx context.Context, env checkEnv) doctorResult {
 	res.sections = append(res.sections, doctorSection{title: "Tools", findings: toolFindings(ctx, env.cwd)})
 	res.sections = append(res.sections, doctorSection{title: "Config aggy changed", findings: driftFindings(ctx)})
 	return res
+}
+
+// codeDecideCalls is the finding of the policy decision hook's calls.
+const codeDecideCalls = "policy-hook-calls"
+
+// decideStats reads the decision hook's calls from the diagnostic log, opened
+// read-only; none when there is no log or it cannot be read.
+func decideStats(ctx context.Context) []store.DecideStat {
+	path, err := store.DiagPath()
+	if err != nil {
+		return nil
+	}
+	if _, err := safefs.Stat(path); err != nil {
+		return nil
+	}
+	v, err := store.OpenDiagView(ctx, path, "")
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = v.Close() }()
+	stats, _ := v.DecideStats(ctx, time.Now())
+	return stats
+}
+
+// decideFindings are one line per CLI version of v that ran aggy's policy
+// decision hook (T6976): its calls and failures (non-zero exits, the
+// wrapper's fallbacks, and starts with no end, a hang or a kill). A version
+// with a failure warns.
+func decideFindings(v adapter.Vendor, stats []store.DecideStat) []checkup.Finding {
+	var out []checkup.Finding
+	for _, s := range stats {
+		if s.Vendor != string(v) {
+			continue
+		}
+		f := checkup.Finding{Code: codeDecideCalls, Level: checkup.LevelInfo, Vendor: v,
+			Message: fmt.Sprintf("safety policy hook on %s %s: %d calls, %d failures (%d non-zero exits, %d fallbacks, %d starts without an end)",
+				vendorNames[v], termsafe.Field(s.VendorVersion), s.Calls, s.Failures(), s.Failed, s.Fallbacks, s.Unended)}
+		if s.Failures() > 0 {
+			f.Level = checkup.LevelWarn
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // hookFinding says whether aggy's hooks are installed for v. Its

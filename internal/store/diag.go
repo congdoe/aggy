@@ -123,8 +123,11 @@ func (d *DiagDB) BorrowTrace(ctx context.Context, id string) (string, error) {
 // compacts the file after each delete and returns how many it deleted.
 // Should the compacted file still be over (pages are not filled evenly),
 // it deletes again, at most sizePasses times in all.
+//
+// The decision hook's records follow their own rule (PruneDecisions): the age
+// delete leaves them, and the size delete leaves their failures.
 func (d *DiagDB) Prune(ctx context.Context, before time.Time, maxBytes int64) (int64, error) {
-	res, err := d.s.db.ExecContext(ctx, `DELETE FROM records WHERE ts < ?`, millis(before))
+	res, err := d.s.db.ExecContext(ctx, `DELETE FROM records WHERE ts < ? AND NOT `+decideRows, millis(before))
 	if err != nil {
 		return 0, err
 	}
@@ -141,7 +144,7 @@ func (d *DiagDB) Prune(ctx context.Context, before time.Time, maxBytes int64) (i
 			return n, err
 		}
 		res, err := d.s.db.ExecContext(ctx,
-			`DELETE FROM records WHERE seq IN (SELECT seq FROM records ORDER BY ts, seq LIMIT ?)`, drop)
+			`DELETE FROM records WHERE seq IN (SELECT seq FROM records WHERE NOT `+decideFailures+` ORDER BY ts, seq LIMIT ?)`, drop)
 		if err != nil {
 			return n, err
 		}
@@ -155,6 +158,27 @@ func (d *DiagDB) Prune(ctx context.Context, before time.Time, maxBytes int64) (i
 		}
 	}
 	return n, nil
+}
+
+// PruneDecisions deletes the decision hook's successful calls older than
+// before (DecideKeep, at aggy gc): each end with no failure code, and the
+// start it names. Failures stay: a fallback, a failed end, and a start with no
+// end. It returns how many records it deleted.
+func (d *DiagDB) PruneDecisions(ctx context.Context, before time.Time) (int64, error) {
+	t := millis(before)
+	res, err := d.s.db.ExecContext(ctx, `DELETE FROM records WHERE event = ? AND ts < ? AND id IN
+		(SELECT cause_id FROM records WHERE event = ? AND code <> ? AND ts < ?)`,
+		DecideStarted, t, DecideEnded, DecideFailedCode, t)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	res, err = d.s.db.ExecContext(ctx, `DELETE FROM records WHERE event = ? AND code <> ? AND ts < ?`, DecideEnded, DecideFailedCode, t)
+	if err != nil {
+		return n, err
+	}
+	k, _ := res.RowsAffected()
+	return n + k, nil
 }
 
 // sizePasses bounds Prune's deletes by size.
@@ -503,6 +527,72 @@ func (v *DiagView) CountBefore(ctx context.Context, t time.Time) (int64, error) 
 	var n int64
 	err := v.db.QueryRowContext(ctx, `SELECT count(*) FROM diag.records WHERE ts < ?`, millis(t)).Scan(&n)
 	return n, ReadError(err)
+}
+
+// The policy decision hook's records (T6976): the event names and the end
+// codes that mark a failure, as internal/diag registers them (this package
+// cannot import it; a test in internal/cli holds them equal).
+const (
+	DecideStarted  = "hook.decision.started"
+	DecideEnded    = "hook.decision.ended"
+	DecideFallback = "hook.decision.fallback"
+	// DecideFailedCode is an end record whose hook exited non-zero.
+	DecideFailedCode = "decision.plan_unreadable"
+	// DecideKeep is how long a successful call's records are kept; a failure's
+	// are kept until the log's size cap is all that is left to drop.
+	DecideKeep = 30 * 24 * time.Hour
+)
+
+// decideRows is SQL for the decision hook's rows, which Prune's age rule
+// leaves to PruneDecisions.
+const decideRows = `event IN ('` + DecideStarted + `', '` + DecideEnded + `', '` + DecideFallback + `')`
+
+// decideFailures is SQL for the decision hook's failure rows: a fallback, an
+// end with a failure code, and a start with no end.
+const decideFailures = `(event = '` + DecideFallback + `' OR (event = '` + DecideEnded + `' AND code = '` + DecideFailedCode + `')
+	OR (event = '` + DecideStarted + `' AND id NOT IN (SELECT cause_id FROM records WHERE event = '` + DecideEnded + `')))`
+
+// DecideStat is one vendor CLI version's decision hook calls.
+type DecideStat struct {
+	Vendor, VendorVersion string
+	Calls                 int64 // starts
+	Failed                int64 // ends with a failure code: a non-zero exit
+	Fallbacks             int64 // the wrapper's fallback records
+	Unended               int64 // starts with no end, older than a minute
+}
+
+// Failures is every kind of failure.
+func (s DecideStat) Failures() int64 { return s.Failed + s.Fallbacks + s.Unended }
+
+// DecideStats sums the decision hook's records per vendor and CLI version, in
+// that order. A start younger than now less a minute is not yet counted as
+// unended.
+func (v *DiagView) DecideStats(ctx context.Context, now time.Time) ([]DecideStat, error) {
+	if !v.diag {
+		return nil, nil
+	}
+	rows, err := v.db.QueryContext(ctx, `
+		SELECT vendor, coalesce(json_extract(attrs, '$.vendor_version'), 'unknown') AS vv,
+		  sum(event = ?), sum(event = ? AND code = ?), sum(event = ?),
+		  sum(event = ? AND ts < ? AND id NOT IN (SELECT cause_id FROM diag.records WHERE event = ?))
+		FROM diag.records WHERE event IN (?, ?, ?)
+		GROUP BY vendor, vv ORDER BY vendor, vv`,
+		DecideStarted, DecideEnded, DecideFailedCode, DecideFallback,
+		DecideStarted, millis(now.Add(-time.Minute)), DecideEnded,
+		DecideStarted, DecideEnded, DecideFallback)
+	if err != nil {
+		return nil, ReadError(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []DecideStat
+	for rows.Next() {
+		var s DecideStat
+		if err := rows.Scan(&s.Vendor, &s.VendorVersion, &s.Calls, &s.Failed, &s.Fallbacks, &s.Unended); err != nil {
+			return nil, ReadError(err)
+		}
+		out = append(out, s)
+	}
+	return out, ReadError(rows.Err())
 }
 
 // DiagVersion is diag.db's schema version, 0 without one.

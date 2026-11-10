@@ -700,7 +700,9 @@ sources (`PagerArgs.prompt`; codex's usage `codex [OPTIONS] [PROMPT]`).
     servers without that prompt; settings reference, read 2026-11-10), a
     `PermissionRequest` or `PreToolUse` hook, in any case and anywhere in the
     layer (either can answer the policy's asks on screen, per the hooks
-    reference as the PR #126 re-review read it; TODO(T6895)), any
+    reference as the PR #126 re-review read it, and a `PreToolUse` hook's
+    `updatedInput` could change the command after aggy's decision hook
+    judged it; TODO(T6895)), any
     `bypassPermissions` value, or a key naming `dangerous` or
     `bypass` (but not a `disable…Bypass…` key, which tightens). Arrays are
     walked as well as objects.
@@ -714,6 +716,20 @@ sources (`PagerArgs.prompt`; codex's usage `codex [OPTIONS] [PROMPT]`).
     credentials, is refused even with `--no-policy`: aggy never sets those
     for a CLI, and passing them in argv would. They belong in the
     person's own Claude settings file, which aggy does not touch.
+  - The policy decision hook (T6976, design.md section 10, "Exact
+    pre-approval"): on screen, aggy's layer carries a `PreToolUse` group
+    matched to `^(Bash|Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob)$`
+    whose one command hook has `timeout` 10 and `onFailure: "block"`, in place
+    of the policy's static `permissions.ask` rules; denies stay static. The
+    hook prints `hookSpecificOutput.permissionDecision` allow, ask, or deny
+    with a `permissionDecisionReason`, or nothing for no opinion; its
+    wrapper prints a fixed ask (deny in `bypassPermissions` or `dontAsk`) when
+    aggy fails. Sources: `hooks.md` and `permissions.md` ("Precedence among
+    rules, hooks, and mods"), read 2026-11-10, and the live check of
+    2026-11-10 (verification.md, "Claude PreToolUse decisions"). Should the
+    final layer turn hooks off or lack the entry, the adapter puts the static
+    asks back (`claude.SettingsJSON`); the launch keeps them for `--safe-mode`,
+    `--bare`, and hooks turned off in Claude's settings files aggy reads.
   - Claude `--mcp-config` takes aggy's MCP file into the person's own list.
     The reference says the flag takes space-separated values.
   - Claude `--append-system-prompt-file`: the person's files go ahead of the
@@ -963,7 +979,17 @@ A route to it is refused, and `Headless` returns `ErrUnsupported`. Facts are in
   sends `Stop`, `StopFailure`, `StopCancelled`, `GuardLoaded`, and the permission
   and question events with `aggy hook --vendor opencode <event>`, from
   `session.execution.succeeded`, `failed`, and `interrupted`, `permission.asked` and
-  `replied`, and `form.created`, `replied`, and `cancelled`.
+  `replied`, and `form.created`, `replied`, and `cancelled`. With the launch's
+  decision plan in its `decide` option (T6976), it also registers
+  `ctx.permission.hook("evaluate", ...)` for the `shell` action, which runs `aggy
+  hook decide --vendor opencode --plan <file>` and sets `effect` from ask to allow
+  for `allow`, from allow to ask for `ask`, or to deny for `deny`; anything else,
+  a failure, or a throw leaves it. Source: `packages/core/src/permission.ts` at
+  dev `d4aeee5`, lines 184-201 and 340, and opencode.ai/docs/build/plugins/server,
+  read 2026-11-10; at 2.2.5 only the allow-to-ask direction was seen
+  (verification.md). Unverified at 2.2.5: that setting `e.effect` is how the hook
+  answers, the ask-to-allow direction, what `resources` holds for a compound
+  command, and what a throw or a failed load does.
 - Transcripts: `opencode session export <id> --standalone`, an `experimental` API,
   through `execrun.OpenCodeRunner`, parsed by `opencode.ParseExport`.
 - Credentials: `safefs` refuses `opencode.db*`, `opencode-<channel>.db*`, the legacy

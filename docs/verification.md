@@ -620,7 +620,8 @@ below is unverified live until the recipe at the end is run.
   harness", fake-model and live). Whether a stored Always allow in
   `opencode.db` beats a later `ask` rule in the launch's config is
   unverified; aggy cannot see those rows, so the strict groups stay
-  `tool.use` denies on OpenCode (TODO(T6895)).
+  `tool.use` denies on OpenCode (TODO(T6895)), except where aggy's
+  `evaluate` hook can turn such an allow back to ask (T6976, below).
 - **Claude bypass mode.** A `defaultMode` such as `bypassPermissions` in
   the person's own Claude settings may skip the ask rules; aggy does not
   read that file, and which modes skip an ask rule is unverified
@@ -631,7 +632,8 @@ below is unverified live until the recipe at the end is run.
   rest of the rule (re-review HIGH-N1: `Bash(rm:*)` in
   `~/.claude/settings.json` plus a removed `Bash(rm -rf*)` ask let
   `rm -rf ~` run unasked; a unit test, not live). So no allow changes a
-  policy rule; exact per-command pre-approval is T6976.
+  rendered policy rule; exact per-command pre-approval is a hook decision
+  since T6976 (below, "Claude PreToolUse decisions").
 
 Live-check recipe (a maintainer, never in CI, no `--dangerously-*` flag,
 in a scratch git repo with a `.env`, a `.env.example`, `server.pem`, and a
@@ -659,6 +661,74 @@ in a scratch git repo with a `.env`, a `.env.example`, `server.pem`, and a
    `git push --force origin main` is refused in both.
 8. `aggy resume <id>` of a finished Codex edit borrow: refused with
    `policy.unreachable`, and Codex does not start.
+
+### Claude PreToolUse decisions (T6976)
+
+**Docs, read 2026-11-10** (code.claude.com/docs `hooks.md`, "PreToolUse
+decision control", and `permissions.md`, "Precedence among rules, hooks, and
+mods"): a PreToolUse hook's output `hookSpecificOutput.permissionDecision` is
+`allow`, `ask`, `deny`, or `defer`, with `permissionDecisionReason`; several
+hooks combine as deny > defer > ask > allow. A matching static deny rule
+blocks, and a matching static ask rule still prompts, even when a hook
+returns allow, so a static ask can never be lifted by a hook. A hook failure
+(timeout, a bad exit, bad JSON) goes on through the normal permission flow,
+unless the hook entry has `onFailure: "block"`. `permissions.md` ("Read and
+Edit") applies Read rules to the built-in tools that read files, Grep and
+Glob best effort, and Edit rules to those that edit them, which is the list
+aggy's matcher names.
+
+**Live, 2026-11-10**: Claude Code 2.1.322, macOS, three one-turn runs in a
+scratch folder, every prompt declined, no `--dangerously-*` flag, the real
+Claude config untouched (the hooks were in a `--settings` layer):
+
+| Check | Result |
+| --- | --- |
+| Default mode | Auto mode is the default permission mode at this version |
+| A hook whose inner command exited 3, with a shell `\|\|` fallback printing an ask decision, in auto mode and in acceptEdits | A prompt: "Hook PreToolUse:Bash requires confirmation for this command: <reason>", options Yes and No only, no "don't ask again" |
+| A hook that slept past its `timeout`, with `onFailure: "block"` | The call was blocked |
+
+**Unverified, and the live check that would settle each** (a maintainer,
+never in CI, no `--dangerously-*` flag, a scratch folder, every prompt
+declined unless it says otherwise):
+
+- Bypass mode (`--permission-mode bypassPermissions` with `--no-policy` and
+  the hook in a `--settings` layer): whether a hook's deny and ask hold.
+  aggy denies in that mode, as it does in `dontAsk`.
+- A hook's allow against auto mode's own classifier: run `aggy claude` with
+  `aggy permissions add allow "Bash(git push --force origin main)"` in a
+  scratch repo with a local bare remote, and see whether the classifier
+  still stops it.
+- Plan mode: whether a hook's ask or deny is shown or overridden.
+- The `Read` tool matcher, and the regular-expression form
+  `^(Bash|Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob)$`: ask the model
+  to read `.env` and to run `ls`; expect a prompt for the first and none
+  from aggy for the second, and no hook call for `WebFetch`.
+- That a hook's ask beats a static allow rule in the same layer (`Bash(git
+  push *)` beside the hook's ask on `git push --force origin dev`).
+- That no other built-in tool reads files past the hook's list.
+- Managed settings: `allowManagedHooksOnly` there would drop aggy's hook,
+  and aggy does not read that file.
+
+### OpenCode permission evaluate (T6976)
+
+**Source, read 2026-11-10, not run**: anomalyco/opencode `dev` at `d4aeee5`,
+`packages/core/src/permission.ts` lines 184-201 and 340, and
+opencode.ai/docs/build/plugins/server: a plugin's
+`ctx.permission.hook("evaluate", ...)` may change `effect` to allow, ask, or
+deny; the event carries `action` and `resources`. An explicit configured
+deny is final and does not invoke the hook; a saved Always allow is
+evaluated before the hook, and the hook can turn it back to ask. At the
+pinned 2.2.5, the fake-model run above ("Always allow") saw a plugin's
+`evaluate` hook set an allow back to ask, and it held; nothing else of the
+hook was tried there. **Unverified at 2.2.5**: the ask-to-allow direction;
+that assigning `e.effect` is how the hook answers (the plugin assigns it);
+what `resources` holds for a compound shell command (aggy allows only one
+resource, the whole command); and what a throw or a plugin that fails to
+load does (the guard has the same exposure). Live check: in a trusted repo,
+`aggy permissions add allow "Bash(git push --force origin main)"`, then
+`aggy run opencode` with a fake model that asks for that command, for it
+joined with `&& echo x`, and for `git push --force origin dev` answered
+Always allow and asked again: expect no prompt, a prompt, and a prompt.
 
 ## Launch-time MCP (T6734)
 

@@ -105,8 +105,9 @@ func TestToolHookWired(t *testing.T) {
 	w := newWorld(t)
 	w.aggyIn(t, "tool", "on", "rtk")
 	f := w.launchRecord(t, "claude").Flags["--settings"]
-	// On screen the policy asks (T6967), its rtk copies with it.
-	if len(f) != 1 || !strings.Contains(f[0], `"permissions":{"ask":[`) || !strings.Contains(f[0], `"Bash(rtk rm -rf*)"`) || !strings.Contains(f[0], "/aggy hook-tool --vendor claude rtk 0 ") {
+	// On screen the policy asks through aggy's decision hook (T6976), which
+	// judges a rule at every word start, so `rtk rm -rf` matches too.
+	if len(f) != 1 || !decideHooked(t, f[0]) || !strings.Contains(f[0], "/aggy hook-tool --vendor claude rtk 0 ") {
 		t.Errorf("--settings %q", f)
 	}
 	w.aggyIn(t, "tool", "off", "rtk")
