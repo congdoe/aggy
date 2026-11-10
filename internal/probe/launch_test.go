@@ -28,7 +28,7 @@ func (c *countRunner) run(_ context.Context, cmd adapter.Command) (adapter.Outpu
 	if c.fail {
 		return adapter.Output{ExitCode: 1, Stderr: []byte("transient failure")}, nil
 	}
-	return adapter.Output{Stdout: []byte("Usage: grok\n  -p, --single <PROMPT>\n  --session-id <ID>\n  --add-dir <DIR>...\n  --debug [FILTER]\n")}, nil
+	return adapter.Output{Stdout: []byte("Usage: grok\n  -p, --single <PROMPT>\n  --session-id <ID>\n  --add-dir <DIR>...\n  --debug [FILTER]\n  -c, --continue\n")}, nil
 }
 
 // TestLaunchCachesByBinary (T6964): a launch's probe is cached by the binary's
@@ -87,6 +87,10 @@ func TestLaunchCachesByBinary(t *testing.T) {
 		}
 		if !st.fail && (!slices.Equal(p.ValueFlags, []string{"-p", "--single", "--session-id", "--add-dir..."}) || !Has(p, CapSessionID)) {
 			t.Errorf("%s: value flags %q, caps %q", st.name, p.ValueFlags, p.Capabilities)
+		}
+		// PR #124 second re-review: the switches survive the cache too.
+		if !st.fail && !slices.Equal(p.Switches, []string{"-c", "--continue"}) {
+			t.Errorf("%s: switches %q", st.name, p.Switches)
 		}
 		if slices.ContainsFunc(p.Capabilities, func(c string) bool { return strings.Contains(c, ":") }) {
 			t.Errorf("%s: a stored marker leaked into the capabilities: %q", st.name, p.Capabilities)

@@ -50,9 +50,13 @@ login, aggy codex login, aggy grok update, aggy opencode models. Its --help is
 the CLI's. A flag that loosens the policy is refused there. An IDE
 panel, the desktop app, or a web session starts the CLI without aggy, so
 aggy's policy and memory do not apply there. A first prompt word that names one of the CLI's subcommands is
-refused: put the prompt after --. After --, the first word still may not
-name one of the CLI's subcommands in any case, since the CLI may run it, and no
-later word may be a refused or gated flag. A prompt with --continue or --resume is
+refused: put the prompt after --. A -- counts only where the CLI cannot take
+it as a flag's value: every word before it must be a switch the CLI's help
+shows, a --flag=value, or a flag with its value, else give the flag its value
+or put the whole prompt after the --. After --, the first word still may not
+name one of the CLI's subcommands in any case, no word may be a refused or
+gated flag, and the flags aggy merges or sets (--settings, --rules, -c, and
+the like) are refused. A prompt with --continue or --resume is
 claude's only. OpenCode takes no prompt yet.
 
 Print mode (claude -p, grok -p, codex exec) and a stdin that is no terminal

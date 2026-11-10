@@ -39,13 +39,14 @@ func BinaryID(path string) (string, error) {
 	return hex.EncodeToString(sum[:16]), nil
 }
 
-// valuePrefix marks a stored pseudo-capability that is one of the probe's
-// ValueFlags, and launchStamp the rows a launch's probe recorded with them, so
-// a row a borrow's probe recorded (no value flags) or an older parse of them
-// is not taken for one.
+// valuePrefix and switchPrefix mark a stored pseudo-capability that is one of
+// the probe's ValueFlags or Switches, and launchStamp the rows a launch's probe
+// recorded with them, so a row a borrow's probe recorded (no value flags) or
+// an older parse of them is not taken for one. launch:2 added the switches.
 const (
-	valuePrefix = "value:"
-	launchStamp = "launch:1"
+	valuePrefix  = "value:"
+	switchPrefix = "switch:"
+	launchStamp  = "launch:2"
 )
 
 // Launch probes vendor's CLI at path for a launch (T6964): the version, the
@@ -81,7 +82,8 @@ func Launch(ctx context.Context, s *store.Store, run adapter.Runner, vendor adap
 		row, err := s.ProbeByBinary(ctx, string(vendor), id, version)
 		if err == nil && slices.Contains(row.Capabilities, stamp) && slices.Contains(row.Capabilities, launchStamp) {
 			res.ProbedAt = row.ProbedAt
-			res.Capabilities, res.ValueFlags = unstamped(row.Capabilities), valueFlags(row.Capabilities)
+			res.Capabilities, res.ValueFlags = unstamped(row.Capabilities), prefixed(row.Capabilities, valuePrefix)
+			res.Switches = prefixed(row.Capabilities, switchPrefix)
 			return res, true, nil
 		}
 		// Otherwise (none, another spec, or a read error), probe the help.
@@ -89,7 +91,7 @@ func Launch(ctx context.Context, s *store.Store, run adapter.Runner, vendor adap
 	hs, herr := helps(ctx, run, spec, path)
 	res.Capabilities = Capabilities(spec, hs)
 	if len(hs) > 0 {
-		res.ValueFlags = ValueFlags(hs[0])
+		res.ValueFlags, res.Switches = ValueFlags(hs[0]), Switches(hs[0])
 	}
 	res.ProbedAt = time.Now().UTC().Truncate(time.Millisecond)
 	if !record || s == nil || idErr != nil || verr != nil || herr != nil {
@@ -103,6 +105,9 @@ func Launch(ctx context.Context, s *store.Store, run adapter.Runner, vendor adap
 	for _, f := range res.ValueFlags {
 		caps = append(caps, valuePrefix+f)
 	}
+	for _, f := range res.Switches {
+		caps = append(caps, switchPrefix+f)
+	}
 	if err := s.InsertProbe(ctx, store.Probe{Vendor: string(vendor), CLIPath: path, Version: version,
 		Capabilities: caps, ProbedAt: res.ProbedAt, BinaryID: id}); err != nil {
 		return res, false, fmt.Errorf("%w: %w", ErrNotRecorded, err)
@@ -114,11 +119,11 @@ func Launch(ctx context.Context, s *store.Store, run adapter.Runner, vendor adap
 // but which the store could not record.
 var ErrNotRecorded = errors.New("probe: not recorded")
 
-// valueFlags returns the value flags stored among caps.
-func valueFlags(caps []string) []string {
+// prefixed returns the flags stored among caps under prefix.
+func prefixed(caps []string, prefix string) []string {
 	var out []string
 	for _, c := range caps {
-		if f, ok := strings.CutPrefix(c, valuePrefix); ok {
+		if f, ok := strings.CutPrefix(c, prefix); ok {
 			out = append(out, f)
 		}
 	}

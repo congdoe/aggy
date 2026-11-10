@@ -60,6 +60,11 @@ type PassFlags struct {
 	// lists them (ParsedFlags.Dirs), for the launch to resolve against the
 	// directory the CLI starts in.
 	DirFlags []string
+	// Owned are the flags aggy merges with its own or takes over (claude
+	// --settings, grok --rules, codex -c). After "--" each is refused, in any
+	// form (checkAfterDashes): there it would reach the CLI unmerged and
+	// unchecked if the CLI did not take "--" as the end of its options.
+	Owned []string
 }
 
 // DirFlag is one folder a flag on the command line names.
@@ -132,6 +137,16 @@ var ErrNotFlag = errors.New("aggy passes a word there to the CLI as the session'
 // subcommand of the CLI.
 var ErrCommandAfterDashes = errors.New("it names a subcommand of the CLI, and aggy has not checked that the CLI sends it as text after --; start the prompt with another word")
 
+// ErrDashesValue matches a "--" the CLI may read as a flag's value rather
+// than the end of its options (PR #124 re-review): a commander option that
+// takes a value takes the next word even when it is "--", and then reads
+// every word after it as options.
+var ErrDashesValue = errors.New("the CLI may read this -- as that flag's value and every word after it as its own options; give the flag its value, use the --flag=value form, or drop the --")
+
+// ErrOwnedAfterDashes matches a flag after "--" that aggy merges or takes
+// over: if the CLI read it, aggy's own copy would not be the one that holds.
+var ErrOwnedAfterDashes = errors.New("aggy merges or sets this flag itself, so it may not come after --; put it before the --")
+
 // ParseOpts are the options of ParseWith.
 type ParseOpts struct {
 	// NoPolicy lets through the flags that loosen approvals, the sandbox, or
@@ -146,6 +161,10 @@ type ParseOpts struct {
 	// probe's reading of the CLI's own help (adapter.Probe.ValueFlags). A
 	// name ending in "..." takes every word up to the next flag.
 	Values []string
+	// Switches are the flags the same help shows with no value
+	// (adapter.Probe.Switches). Of the flags with no value attached, only
+	// these, in their exact spelling, may stand before a "--" (ParseWith).
+	Switches []string
 }
 
 // Parse is ParseWith for an on-screen session.
@@ -262,9 +281,27 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 			out.Safe = append(out.Safe, a)
 		}
 	}
+	// Rule A of the PR #124 re-review: a "--" ends the options only where the
+	// CLI cannot read it as a value. unsure is the first word before it that
+	// leaves that open (a flag that takes or may take a value with none
+	// attached, one the CLI's help does not show as a switch, a prompt word),
+	// and pending the flag still waiting for its value.
+	unsure, pending := "", ""
+	doubt := func(w string) {
+		if unsure == "" {
+			unsure = w
+		}
+	}
+	prompted := false // a first prompt word that is not blank was seen
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
+			switch {
+			case after != valueNone:
+				return out, fmt.Errorf("-- after %s: %w", pending, ErrDashesValue)
+			case unsure != "":
+				return out, fmt.Errorf("-- after %q: %w", unsure, ErrDashesValue)
+			}
 			loosens, err := p.checkAfterDashes(args[i+1:], o)
 			if err != nil {
 				return out, err
@@ -286,16 +323,22 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 				// arguments the CLI's top-level Commands do not name.
 				keep(a)
 				printCmd = true
-			case !printCmd && len(out.Prompt) == 0 && slices.Contains(p.Commands, a):
+			case !printCmd && !prompted && p.isCommand(a):
 				// In print mode too (PR #124 review): claude -p ultrareview
-				// would run the subcommand, not a reply.
+				// would run the subcommand, not a reply. Any case, and past
+				// blank words (PR #124 re-review).
 				return out, fmt.Errorf("%q: %w", a, ErrNotFlag)
 			default:
 				out.Extra = append(out.Extra, a)
 				out.Prompt = append(out.Prompt, a)
+				prompted = prompted || strings.TrimSpace(a) != ""
+				doubt(a)
 			}
 			continue
 		}
+		// A dash-led word is always checked as a flag, even where the flag
+		// before it waits for a value: the CLI may take it as that value,
+		// which drops it, but aggy never lets it through unchecked.
 		after = valueNone
 		name, val, hasVal := p.split(a)
 		switch {
@@ -318,6 +361,9 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 			}
 		case slices.Contains(p.Continue, name):
 			out.Continue = true
+			if !slices.Contains(o.Switches, a) {
+				doubt(a)
+			}
 			if o.Print {
 				keep(a)
 			}
@@ -328,6 +374,9 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 				i++
 				val = args[i]
 				words = append(words, val)
+			}
+			if !hasVal && len(words) == 1 {
+				doubt(a) // an optional value, which the CLI may give "--"
 			}
 			out.ResumeID = val
 			if o.Print {
@@ -368,30 +417,78 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 			}
 			if !hasVal && i == before {
 				after = p.takesValue(name, o.Values)
+				switch {
+				case after != valueNone:
+					pending = name
+					if after == valueMany {
+						doubt(a) // its list may run on past a "--" on some parsers
+					}
+				case !slices.Contains(o.Switches, a):
+					// Not shown as a switch in exactly this spelling: it may
+					// take a value (an unknown flag, a cluster, an optional
+					// value), so a "--" after it may be that value.
+					doubt(a)
+				}
 			}
 		}
 	}
 	return out, nil
 }
 
-// checkAfterDashes checks the words after "--" (PR #124 re-review). aggy does
-// not rely on the CLI reading them as prompt: a CLI that still dispatched
-// "-- agents" or parsed "-- --dangerously-skip-permissions" would get past the
-// policy. So the first word may not name one of Commands in any case, and every
-// later word that looks like a flag gets the same checks as one before "--"
-// (Refused, Gated, Checked, "=" forms included); it returns the ones
-// --no-policy lets through. A Checked flag with no word after it is left to the
-// CLI, which has no value to give it.
+// owned reports whether name, or any short flag run together in it, is one
+// aggy merges or takes over (Owned, Model, Continue, Resume).
+func (p PassFlags) owned(name string) bool {
+	for _, n := range append([]string{name}, shortsOf(name)...) {
+		if slices.Contains(p.Owned, n) || slices.Contains(p.Model, n) || slices.Contains(p.Continue, n) || slices.Contains(p.Resume, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// isCommand reports whether w names one of Commands, in any case.
+func (p PassFlags) isCommand(w string) bool {
+	return slices.ContainsFunc(p.Commands, func(c string) bool { return strings.EqualFold(w, c) })
+}
+
+// checkAfterDashes checks the words after "--" (PR #124 re-reviews), as a
+// defence that holds even if ParseWith's rule A misjudged the "--" and the CLI
+// reads these words as options. aggy does not rely on the CLI reading them as
+// prompt: a CLI that still dispatched "-- agents" or parsed "--
+// --dangerously-skip-permissions" would get past the policy. So:
+//
+//   - The first word that is neither blank nor dash-led may not name one of
+//     Commands, in any case; nor may one that directly follows a dash-led word
+//     before it (it could be that flag's value, and the next word the
+//     subcommand), up to the first that does not.
+//   - Every dash-led word gets the same checks as one before "--" (Refused,
+//     Gated, Checked, LoosensIf, "=" forms included); it returns the ones
+//     --no-policy lets through. A Checked flag with no word after it is left
+//     to the CLI, which has no value to give it.
+//   - A flag aggy merges or takes over (Owned, Model, Continue, Resume) is
+//     refused there outright, in any form, as is a short-flag cluster holding
+//     one.
 //
 // TODO(T6895): a live check that each CLI reads "-- doctor" as a prompt
-// (claude -- doctor) would let the first-word rule be loosened.
+// (claude -- doctor) would let the first-word rule be loosened. Commands is
+// the reference's list: a subcommand a later CLI adds and the table does not
+// list is not caught here.
 func (p PassFlags) checkAfterDashes(words []string, o ParseOpts) ([]string, error) {
-	if len(words) > 0 {
-		for _, c := range p.Commands {
-			if strings.EqualFold(words[0], c) {
-				return nil, fmt.Errorf("%q after --: %w", words[0], ErrCommandAfterDashes)
-			}
+	afterFlag := false
+	for _, w := range words {
+		switch {
+		case w != "-" && strings.HasPrefix(w, "-"):
+			afterFlag = true
+			continue
+		case strings.TrimSpace(w) == "":
+			continue
+		case p.isCommand(w):
+			return nil, fmt.Errorf("%q after --: %w", w, ErrCommandAfterDashes)
 		}
+		if !afterFlag {
+			break
+		}
+		afterFlag = false
 	}
 	var loosens []string
 	for j := 0; j < len(words); j++ {
@@ -400,6 +497,9 @@ func (p PassFlags) checkAfterDashes(words []string, o ParseOpts) ([]string, erro
 			continue
 		}
 		name, val, hasVal := p.split(a)
+		if p.owned(name) {
+			return nil, fmt.Errorf("%s after --: %w", name, ErrOwnedAfterDashes)
+		}
 		if _, ok := p.checked(name); ok && !hasVal && j+1 == len(words) {
 			continue
 		}
@@ -458,6 +558,11 @@ func (p PassFlags) checkPassed(args []string, i *int, name, val string, hasVal b
 			}
 			*i++
 			val = args[*i]
+			if val == "--" {
+				// The CLI takes it as the value and reads the words after it
+				// as options; aggy would have to as well (PR #124 re-review).
+				return false, fmt.Errorf("-- after %s: %w", name, ErrDashesValue)
+			}
 		}
 		return gate(c.Check(val))
 	}
@@ -499,15 +604,17 @@ func (p PassFlags) checkPassed(args []string, i *int, name, val string, hasVal b
 // Checked flag whose value its Check refuses, or one of extra (flags that carry
 // a policy of their own, such as claude --settings). Such a run gets no policy
 // from aggy, so --no-policy has nothing to let through and the flag is refused
-// outright. A flag clashing only with aggy's session passes. Nothing after
-// "--" is looked at: it is the subcommand's own command, as claude mcp add's.
+// outright. A flag clashing only with aggy's session passes.
+//
+// The words after "--" are looked at too (PR #124 re-review, rule B): they are
+// usually the subcommand's own command (claude mcp add name -- cmd args), but
+// a "--" the CLI read as a flag's value would make them its options. So an MCP
+// server command whose own arguments hold such a flag is refused; run the CLI
+// itself for it.
 func (p PassFlags) Gated(words []string, extra ...string) error {
 	for i := 0; i < len(words); i++ {
 		a := words[i]
-		if a == "--" {
-			return nil
-		}
-		if a == "-" || !strings.HasPrefix(a, "-") {
+		if a == "-" || a == "--" || !strings.HasPrefix(a, "-") {
 			continue
 		}
 		name, val, hasVal := p.split(a)
@@ -531,15 +638,19 @@ func (p PassFlags) isChecked(name string) bool {
 }
 
 // TakeFlag takes every one of names out of words, written as two words or
-// with an =, and returns their values in order and the words left. Nothing
-// after "--" is looked at: it is prompt text. A name with no word after it
-// stays in rest.
+// with an =, and returns their values in order and the words left. A name
+// with no word after it stays in rest.
+//
+// It looks past "--" too (PR #124 re-review, rule C): a "--" the CLI takes as
+// a flag's value is no end of options, and a --settings after it would then
+// replace aggy's own layer. ParseWith refuses these names after a "--" it
+// takes as the end of options (PassFlags.Owned), so no prompt text is taken.
+// It also takes one that follows a flag aggy cannot tell takes a value
+// (--unknown --settings x): the CLI may read it either way, and aggy then
+// merges and checks it rather than let it pass.
 func TakeFlag(words []string, names ...string) (vals, rest []string) {
 	for i := 0; i < len(words); i++ {
 		w := words[i]
-		if w == "--" {
-			return vals, append(rest, words[i:]...)
-		}
 		name, val, hasVal := strings.Cut(w, "=")
 		switch {
 		case !slices.Contains(names, name):
