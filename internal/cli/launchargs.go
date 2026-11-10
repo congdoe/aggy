@@ -20,6 +20,7 @@ import (
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
+	"github.com/congdoe/aggy/internal/hook"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
@@ -121,24 +122,41 @@ func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 	mode := adapter.RunScreen
 	if !stdinTerminal() {
 		mode = adapter.RunPrint
+		if len(rest) == 0 && !cont && !resume {
+			// aggy </dev/null: no session to show and no prompt to answer
+			// (PR #124 review).
+			return launchUsageErr(stderr, cmd, diag.CodeNoTerminal, "needs a terminal or a prompt: stdin is not a terminal and no prompt was given", "")
+		}
 	}
 	pv := v
 	if top && (mode != adapter.RunScreen || len(rest) > 0) {
 		pv = launchVendor()
 	}
+	if top && len(rest) > 0 {
+		// aggy -p "x" is Claude's and Grok's print form; on Codex -p is
+		// --profile, and OpenCode takes none (PR #124 review).
+		if msg := printFormRefusal(pv, rest); msg != "" {
+			return launchUsageErr(stderr, cmd, diag.CodeUsage, msg, "")
+		}
+	}
 	var values []string
 	if len(rest) > 0 {
-		// The CLI's help says which flags take a value (T6962).
-		values = cliValueFlags(pv)
-		if m := passFlags(pv).Mode(rest, values); m > mode {
+		if m := passFlags(pv).Mode(rest); m > mode {
 			mode = m
+		}
+		// The CLI's help says which flags take a value (T6962). codex exec's
+		// flags are its own, not the top-level help's, so none is assumed
+		// there: a word after one of them is taken for the prompt, and the run
+		// still gets aggy's policy.
+		if !slices.Contains(passFlags(pv).PrintCommands, rest[0]) {
+			values = cliValueFlags(pv)
 		}
 	}
 	if mode == adapter.RunBare {
 		if cont || resume {
 			return launchUsageErr(stderr, cmd, diag.CodeUsage, "-c and -r reopen a session; this flag starts none", "")
 		}
-		return runBare(cmd, pv, t, rest, values, stderr)
+		return runBare(cmd, pv, t, rest, stderr)
 	}
 	if mode == adapter.RunPrint {
 		switch {
@@ -183,8 +201,8 @@ func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 	// A --settings layer that defeats the policy is refused here too, before
 	// anything runs; the launch reads it again in the session's directory.
 	if cwd, err := os.Getwd(); err == nil && v == adapter.Claude {
-		if _, _, _, err := claudeSettings(p.Extra, cwd, t.NoPolicy); errors.Is(err, adapter.ErrLoosens) {
-			return launchUsageErr(stderr, cmd, diag.CodeFlagLoosens, err.Error(), "")
+		if _, _, _, _, err := claudeSettings(p.Extra, cwd, t.NoPolicy); errors.Is(err, adapter.ErrLoosens) || errors.Is(err, claude.ErrSettingsCredential) {
+			return launchUsageErr(stderr, cmd, settingsCode(err), err.Error(), "")
 		}
 	}
 	switch {
@@ -341,28 +359,25 @@ func runPrint(cmd string, v adapter.Vendor, t target, words, values []string, st
 	if err != nil {
 		return fail(diag.CodeLaunchFailed, err)
 	}
-	if _, err := allowedIn(cfg, cwd, v); err != nil {
-		return fail(launchCode(err, diag.CodeConfig), err)
+	// The same gate as on screen (PR #124 review): delegation, allowed vendors,
+	// folder flags, --settings, who asked for --no-policy, and the shared rules.
+	gt := target{Vendor: v, NoPolicy: t.NoPolicy, Extra: p.Extra, SafeExtra: p.Safe, Loosens: p.Loosens, Dirs: p.Dirs}
+	g, code, err := gateLaunch(ctx, &gt, v, cwd, cfg, true)
+	if err != nil {
+		return launchUsageErr(stderr, cmd, code, err.Error(), "")
 	}
-	req := adapter.InteractiveRequest{Cwd: cwd, Extra: p.Extra, Print: true}
-	if v == adapter.Claude {
-		layer, rest, loosens, err := claudeSettings(p.Extra, cwd, t.NoPolicy)
-		if err != nil {
-			return launchUsageErr(stderr, cmd, settingsCode(err), err.Error(), "")
-		}
-		req.Extra, req.UserSettings = rest, layer
-		if loosens {
-			p.Loosens = append(p.Loosens, "--settings")
-		}
-	}
+	p.Loosens = gt.Loosens
+	req := adapter.InteractiveRequest{Cwd: cwd, Extra: g.extra, UserSettings: g.layer, Print: true}
 	path, err := probe.LookPath(vendorBin(v))
 	if err != nil {
 		return fail(diag.CodeCLIMissing, err)
 	}
-	caps, _, err := probeCaps(ctx, v, path)
+	// Checked, so the probe may record (probeCLI).
+	probed, err := probeCLI(ctx, v, path, true)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: probing %s: %s; starting it without the flags help must list\n", name, v, termsafe.Line(err.Error()))
 	}
+	caps := probed.Capabilities
 	var warns []string
 	model := p.Model
 	if model == "" && v != adapter.Codex {
@@ -392,6 +407,9 @@ func runPrint(cmd string, v adapter.Vendor, t target, words, values []string, st
 		return fail(diag.CodePermBadFile, rules.FileErr)
 	}
 	warns = append(warns, addPermissions(v, caps, rules, &req)...)
+	if v == adapter.Claude {
+		warns = append(warns, settingsNotes(req)...)
+	}
 	stateDir, err := home.Dir()
 	if err != nil {
 		return fail(diag.CodeStore, err)
@@ -416,6 +434,9 @@ func runPrint(cmd string, v adapter.Vendor, t target, words, values []string, st
 	if err := joinAppendFiles(&req, cwd); err != nil {
 		return fail(diag.CodeUsage, err)
 	}
+	if err := writeSettingsFile(&req, g, memDir); err != nil {
+		return fail(diag.CodeLaunchFailed, err)
+	}
 	for _, w := range append(warns, mw...) {
 		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
 	}
@@ -424,31 +445,36 @@ func runPrint(cmd string, v adapter.Vendor, t target, words, values []string, st
 		return fail(diag.CodeUnsupported, err)
 	}
 	c.Path = path
-	code, err := execrun.RunDirect(c)
+	exit, err := execrun.RunDirect(c)
 	if err != nil {
 		return fail(diag.CodeLaunchFailed, err)
 	}
 	r := rec
-	r.Event, r.Exit = diag.EvDirectRan, diag.Int(code)
+	r.Event, r.Exit = diag.EvDirectRan, diag.Int(exit)
 	r.Attrs = map[string]any{"mode": "print", "policy": !t.NoPolicy, "cli_words": len(p.Extra)}
 	dlog.Log(ctx, r)
-	return code
+	return exit
 }
 
-// runBare runs v's CLI directly with words as given and nothing added: a flag
-// that starts no local session (PassFlags.Bare), such as claude --desktop,
-// which takes no other flag, or --version. The words are still sorted first,
-// so what defeats the policy is refused as anywhere else. Nothing is recorded.
-func runBare(cmd string, v adapter.Vendor, t target, words, values []string, stderr io.Writer) int {
-	if _, err := passFlags(v).ParseWith(words, adapter.ParseOpts{NoPolicy: t.NoPolicy, Print: true, Values: values}); err != nil {
-		return launchUsageErr(stderr, cmd, flagCode(err), err.Error(), "")
+// runBare runs v's CLI directly with words as given and nothing added: a Bare
+// flag (--version) that is the only word (PassFlags.Mode), which starts no
+// session. It still goes through gateLaunch. Nothing is recorded.
+func runBare(cmd string, v adapter.Vendor, t target, words []string, stderr io.Writer) int {
+	if passFlags(v).Mode(words) != adapter.RunBare {
+		// Mode chose it; this keeps runBare from running anything else.
+		return launchUsageErr(stderr, cmd, diag.CodeUsage, "only a version flag, alone, runs as given", "")
+	}
+	if t.NoPolicy || len(t.Tools) > 0 {
+		return launchUsageErr(stderr, cmd, diag.CodeUsage, fmt.Sprintf("%s alone runs as given, with none of aggy's flags", words[0]), "")
 	}
 	return runAsGiven(cmd, v, words, "bare", stderr)
 }
 
 // runAsGiven runs v's CLI with words, on the person's terminal, with their own
 // environment and nothing of aggy's added (execrun.RunDirect), and returns its
-// exit code. aggy reads nothing the CLI writes.
+// exit code. aggy reads nothing the CLI writes. gateLaunch runs first, with no
+// words to sort: a borrow child, a vendor the repo leaves out, and shared rules
+// that cannot be read are refused here too.
 func runAsGiven(cmd string, v adapter.Vendor, words []string, mode string, stderr io.Writer) int {
 	ctx := context.Background()
 	rec := diag.Rec{Vendor: string(v)}
@@ -459,6 +485,13 @@ func runAsGiven(cmd string, v adapter.Vendor, words []string, mode string, stder
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fail(diag.CodeLaunchFailed, err)
+	}
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		return fail(diag.CodeConfig, err)
+	}
+	if _, code, err := gateLaunch(ctx, &target{Vendor: v}, v, cwd, cfg, true); err != nil {
+		return launchUsageErr(stderr, cmd, code, err.Error(), "")
 	}
 	path, err := probe.LookPath(vendorBin(v))
 	if err != nil {
@@ -476,17 +509,41 @@ func runAsGiven(cmd string, v adapter.Vendor, words []string, mode string, stder
 }
 
 // cliValueFlags are the flags v's CLI's help shows with a value, from its probe,
-// or none when the CLI is not on PATH or the probe fails.
+// or none when the CLI is not on PATH or the probe fails. It runs before the
+// launch's checks, so it records nothing (probeCLI's record is false).
 func cliValueFlags(v adapter.Vendor) []string {
 	path, err := probe.LookPath(vendorBin(v))
 	if err != nil {
 		return nil
 	}
-	pr, err := probeCLI(context.Background(), v, path)
+	pr, err := probeCLI(context.Background(), v, path, false)
 	if err != nil {
 		return nil
 	}
 	return pr.ValueFlags
+}
+
+// printFormRefusal says why aggy -p, with no vendor named, cannot go to the
+// default vendor pv, or "": -p is print mode on Claude and Grok, but --profile
+// on Codex, and OpenCode takes none (PR #124 review). It names the vendor's own
+// print form.
+func printFormRefusal(pv adapter.Vendor, words []string) string {
+	pf := passFlags(pv)
+	for _, w := range words {
+		if w == "--" {
+			break
+		}
+		name, _, _ := strings.Cut(w, "=")
+		if (name == "-p" || name == "--print") && !slices.Contains(pf.Print, name) {
+			switch {
+			case len(pf.PrintCommands) > 0:
+				return fmt.Sprintf("the default vendor here is %s, whose print form is %s %s, not %s; run aggy %s %s", pv, pv, pf.PrintCommands[0], name, pv, pf.PrintCommands[0])
+			default:
+				return fmt.Sprintf("the default vendor here is %s, which has no print mode aggy runs; name another vendor, as aggy claude -p", pv)
+			}
+		}
+	}
+	return ""
 }
 
 // settingsCode is the reason code of a claudeSettings refusal.
@@ -501,23 +558,26 @@ func settingsCode(err error) diag.Code {
 // path against cwd through safefs, up to Claude's own 2 MiB (T6962): their
 // layers merged in order, and extra without them, for Claude's adapter to merge
 // under aggy's own layer. A layer that would get past aggy's policy
-// (claude.CheckSettings) is refused, unless noPolicy, which reports it.
-func claudeSettings(extra []string, cwd string, noPolicy bool) (layer map[string]any, rest []string, loosens bool, err error) {
+// (claude.CheckSettings) is refused, unless noPolicy, which reports it; one
+// that sets a credential is refused either way. fromFile says a value was a
+// file, whose content must stay off argv (writeSettingsFile).
+func claudeSettings(extra []string, cwd string, noPolicy bool) (layer map[string]any, rest []string, loosens, fromFile bool, err error) {
 	vals, rest := adapter.TakeFlag(extra, "--settings")
 	for _, val := range vals {
 		b := []byte(val)
 		if !claude.InlineSettings(val) {
+			fromFile = true
 			p := val
 			if !filepath.IsAbs(p) {
 				p = filepath.Join(cwd, p)
 			}
 			if b, err = safefs.ReadFileLimit(p, claude.MaxSettings); err != nil {
-				return nil, nil, false, fmt.Errorf("--settings %s: %w", val, err)
+				return nil, nil, false, false, fmt.Errorf("--settings %s: %w", val, err)
 			}
 		}
 		m, err := claude.ParseSettings(b)
 		if err != nil {
-			return nil, nil, false, err
+			return nil, nil, false, false, err
 		}
 		if layer == nil {
 			layer = m
@@ -526,12 +586,12 @@ func claudeSettings(extra []string, cwd string, noPolicy bool) (layer map[string
 		}
 	}
 	if err := claude.CheckSettings(layer); err != nil {
-		if !noPolicy {
-			return nil, nil, false, err
+		if !noPolicy || !errors.Is(err, adapter.ErrLoosens) {
+			return nil, nil, false, false, err
 		}
 		loosens = true
 	}
-	return layer, rest, loosens, nil
+	return layer, rest, loosens, fromFile, nil
 }
 
 // joinAppendFiles puts the text of the person's --append-system-prompt-file
@@ -575,71 +635,106 @@ func joinAppendFiles(req *adapter.InteractiveRequest, cwd string) error {
 const maxAppendFile = 1 << 20
 
 // passThroughCommands are v's management subcommands that aggy runs as they
-// are (T6963): each adapter's Manage, with its source there.
-func passThroughCommands(v adapter.Vendor) []string {
-	switch v {
-	case adapter.Claude:
-		return claude.Manage
-	case adapter.Codex:
-		return codex.Manage
-	case adapter.Grok:
-		return grok.Manage
-	case adapter.OpenCode:
-		return opencode.Manage
-	}
-	return nil
-}
+// are (T6963): adapter.Manage, with its sources there.
+func passThroughCommands(v adapter.Vendor) []string { return adapter.Manage[v].Commands }
 
 // runSubcommand runs a management subcommand of v's CLI (T6963): args as
 // typed, the subcommand first, on the person's terminal with their own
 // environment, and no supervisor, hooks, policy, or flag of aggy's
 // (runAsGiven). A sign-in writes what it writes; aggy reads none of it.
 // aggy's own flags mean nothing there, so a subcommand after one is refused.
+//
+// The PR #124 review: a subcommand whose second word runs an agent after all
+// (ManageRefused, as claude mcp serve) is refused, and so is any flag the
+// vendor's table gates anywhere in the words (PassFlags.Gated), since aggy adds
+// no policy here for --no-policy to let it through. gateLaunch runs too.
 func runSubcommand(cmd string, v adapter.Vendor, own, args []string, stderr io.Writer) int {
 	if len(own) > 0 {
 		return launchUsageErr(stderr, cmd, diag.CodeUsage, fmt.Sprintf("%s %s runs as typed, with none of aggy's flags; drop %s", v, args[0], own[0]), "")
 	}
+	if sub := secondWord(args[1:]); slices.Contains(manageRefused(v)[args[0]], sub) {
+		return launchUsageErr(stderr, cmd, diag.CodeUsage, fmt.Sprintf("%s %s %s serves the CLI's own tools, which aggy would run with no policy; run %s itself for it", v, args[0], sub, v), "")
+	}
+	if err := passFlags(v).Gated(args[1:], "--settings"); err != nil {
+		return launchUsageErr(stderr, cmd, diag.CodeFlagClash, fmt.Sprintf("%s %s: %s; run %s itself for it", v, args[0], err, v), "")
+	}
 	return runAsGiven(cmd, v, args, "subcommand", stderr)
 }
 
-// commandNames are aggy's own commands, which a bare first word names before
-// it can be a prompt.
-var commandNames = []string{"accept", "attribution", "borrow", "brief", "check", "config", "dev", "diag", "doctor", "gc", "help",
-	"hook", "hook-tool", "hooks", "image", "inbox", "log", "mcp", "memory", "new", "permissions", "policy", "reject", "resume",
-	"run", "session", "sessions", "setup", "skill", "stats", "switch", "tool", "trust", "unwire", "usage", "version", "video"}
-
-// nearCommand is the aggy command word is one edit from, or "": a single
-// lower-case word that close is more likely a mistyped command than a
-// prompt, as claude udpate says "Did you mean claude update?".
-func nearCommand(word string) string {
-	if len(word) < 4 || strings.Trim(word, "abcdefghijklmnopqrstuvwxyz-") != "" {
-		return ""
-	}
-	for _, c := range commandNames {
-		if editDistance(word, c) == 1 {
-			return c
+// secondWord is the first word of words that is not a flag, or "".
+func secondWord(words []string) string {
+	for _, w := range words {
+		if w == "--" {
+			return ""
+		}
+		if !strings.HasPrefix(w, "-") {
+			return w
 		}
 	}
 	return ""
 }
 
-// editDistance is the Levenshtein distance of a and b, in bytes.
+// manageRefused is v's refused second words (adapter.Manage).
+func manageRefused(v adapter.Vendor) map[string][]string { return adapter.Manage[v].Refused }
+
+// commandNames are aggy's own commands, which a bare first word names before
+// it can be a prompt. The guard hook reads the same list.
+var commandNames = hook.AggyCommands
+
+// commandAbbrevs are short forms a person may type for a command, which are
+// taken as typos of it rather than prompts.
+var commandAbbrevs = map[string]string{"img": "image", "vid": "video", "perms": "permissions", "cfg": "config", "sess": "sessions"}
+
+// nearCommand is the aggy command or vendor name word is close to, or "": a
+// single word that close is more likely a mistyped command than a prompt, as
+// claude udpate says "Did you mean claude update?" (PR #124 review). Case is
+// ignored and a swap of two letters is one edit (editDistance); a word of
+// five letters or more may be two edits off, a shorter one one edit; a known
+// short form (img) counts too. A word under three letters is never taken for
+// one.
+func nearCommand(word string) string {
+	low := strings.ToLower(word)
+	if len(low) < 3 || strings.Trim(low, "abcdefghijklmnopqrstuvwxyz-") != "" {
+		return ""
+	}
+	if c, ok := commandAbbrevs[low]; ok {
+		return c
+	}
+	best, bestD := "", 3
+	for _, c := range append(slices.Clone(commandNames), "claude", "codex", "grok", "opencode") {
+		limit := 1
+		if max(len(low), len(c)) >= 5 {
+			limit = 2
+		}
+		if d := editDistance(low, c); d <= limit && d < bestD && word != c {
+			best, bestD = c, d
+		}
+	}
+	return best
+}
+
+// editDistance is the optimal string alignment distance of a and b, in bytes:
+// Levenshtein with a swap of two neighbouring letters as one edit (Damerau).
 func editDistance(a, b string) int {
-	prev := make([]int, len(b)+1)
-	for j := range prev {
-		prev[j] = j
+	d := make([][]int, len(a)+1)
+	for i := range d {
+		d[i] = make([]int, len(b)+1)
+		d[i][0] = i
+	}
+	for j := range d[0] {
+		d[0][j] = j
 	}
 	for i := 1; i <= len(a); i++ {
-		cur := make([]int, len(b)+1)
-		cur[0] = i
 		for j := 1; j <= len(b); j++ {
 			cost := 1
 			if a[i-1] == b[j-1] {
 				cost = 0
 			}
-			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+			d[i][j] = min(d[i-1][j]+1, d[i][j-1]+1, d[i-1][j-1]+cost)
+			if i > 1 && j > 1 && a[i-1] == b[j-2] && a[i-2] == b[j-1] {
+				d[i][j] = min(d[i][j], d[i-2][j-2]+1)
+			}
 		}
-		prev = cur
 	}
-	return prev[len(b)]
+	return d[len(a)][len(b)]
 }

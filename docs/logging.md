@@ -284,7 +284,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `cli.not_found` |  | No session, borrow, change, or file has that id or name. | List them: aggy sessions, aggy session, aggy inbox, or aggy log. |
 | `cli.config_invalid` |  | A config file could not be read or is invalid. | The message names the file and key; fix it. |
 | `store.unavailable` |  | The index (~/.aggy/aggy.db) could not be opened, read, or written. | aggy doctor; the state dir's permissions and free space. |
-| `borrow.one_hop` | yes | aggy borrow or aggy gc ran inside a borrow child (AGGY_DELEGATED is set): borrows are one hop. | Run it from your own shell. A child that tries this was steered to; read its task. |
+| `borrow.one_hop` | yes | aggy borrow, aggy gc, or a launch of a vendor CLI ran inside a borrow child (AGGY_DELEGATED is set): borrows are one hop. | Run it from your own shell. A child that tries this was steered to; read its task. |
 | `borrow.invalid_request` |  | The borrow request failed validation: an empty or too long task, a bad path or constraint, or a flag the kind does not take. | aggy borrow --help. |
 | `borrow.grok_edit` |  | aggy image --edit named an image Grok made. Grok keeps a session under its working directory, and the borrow's temp dir is gone, so a resumed child cannot start; no child ran. | Make a new image with a full brief, or make it with --vendor codex, whose images --edit can change. |
 | `borrow.no_vendor` |  | No candidate vendor could start the borrow. | aggy diag --run &lt;run id&gt; --event borrow.vendor.skipped lists why each was passed over; aggy setup. |

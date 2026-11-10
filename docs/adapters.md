@@ -445,15 +445,19 @@ the spec it was made with, so a newer aggy that looks for more features
 A launch's probe (on screen, print mode, or as given; `probe.Launch`, T6964)
 is cached in the same `probes` table, by the binary's identity: a hash of its
 resolved path, size, modification time, device, and inode (`binary_id`,
-schema version 23, read through safefs). An unchanged binary costs no
-process start, not even `--version`. A changed one (updated, replaced,
-touched, or another path) is probed again. Nothing is recorded when the
-version or any help run fails, or when the identity changed while the probe
-ran, so the next launch probes again. The row also keeps the flags the help
-shows with a value (`probe.ValueFlags`), under a marker for how they were
-parsed. Without the index, or on an OS with no inode, the CLI is probed
-every time. A borrow's probe keeps its own rule above: it runs `--version`
-each time and reuses a probe of that path and version.
+schema version 23, read through safefs), and the version it reports.
+`--version` runs on every launch, one process, since behind a version
+manager's shim (volta, mise, asdf) the file never changes when the CLI does.
+An unchanged binary that reports the same version runs no help. A changed
+one (updated, replaced, touched, another path, or a new version) is probed
+again. Nothing is recorded when the version or any help run fails, when the
+identity changed while the probe ran, or before the launch's checks have
+passed (a refused launch writes nothing, not even the index), so the next
+launch probes again. The row also keeps the flags the help shows with a
+value (`probe.ValueFlags`), under a marker for how they were parsed. Without
+the index, or on an OS with no inode, the CLI is probed in full every time.
+A borrow's probe keeps its own rule above: it runs `--version` each time and
+reuses a probe of that path and version.
 
 Headless argv per kind, as built (the prompt file is stdin, or Grok's
 `--prompt-file <p>`, shown as `grok …` below; `<id>` a
@@ -663,11 +667,26 @@ sources (`PagerArgs.prompt`; codex's usage `codex [OPTIONS] [PROMPT]`).
     directory, or inline JSON, at most 2 MiB as the reference says) is merged
     under aggy's layer into the one `--settings` Claude gets. Lists such as
     `permissions.allow` and `permissions.deny` are joined, and aggy's scalar
-    wins. A merged inline layer over 256 KiB is refused. A layer that would get
-    past the policy is refused unless `--no-policy`: a `defaultMode` the
-    `--permission-mode` table gates, `disableAllHooks`, any
-    `bypassPermissions` value, or a key naming `dangerous` or `bypass` (but
-    not a `disable…Bypass…` key, which tightens).
+    wins, with a line at launch naming each key it replaced. A person's
+    `defaultMode` of `plan`, stricter than any mode aggy sets, stands. When
+    the person's value was a file, the merged layer goes in a 0600 file in
+    aggy's run directory (written through safefs, removed with the run) and
+    Claude gets its path, so the file's content is not on argv where `ps`
+    shows it. aggy's own layer, which holds only rule patterns and hook
+    commands, stays inline otherwise. A merged inline layer over 256 KiB is
+    refused.
+  - A `--settings` layer that would get past the policy is refused unless
+    `--no-policy`: a `defaultMode` the `--permission-mode` table gates,
+    `disableAllHooks`, `allowManagedHooksOnly` and
+    `allowManagedPermissionRulesOnly` (which would drop aggy's hooks and
+    rules), `enableAllProjectMcpServers` (which skips the project MCP trust
+    prompt), any `bypassPermissions` value, or a key naming `dangerous` or
+    `bypass` (but not a `disable…Bypass…` key, which tightens). Arrays are
+    walked as well as objects.
+  - A layer with `apiKeyHelper`, or an `env` holding an API key, a token, a
+    secret, or a `*_BASE_URL`, is refused even with `--no-policy`: aggy never
+    sets those for a CLI, and passing them in argv would. They belong in the
+    person's own Claude settings file, which aggy does not touch.
   - Claude `--mcp-config` takes aggy's MCP file into the person's own list.
     The reference says the flag takes space-separated values.
   - Claude `--append-system-prompt-file`: the person's files go ahead of the
@@ -679,8 +698,17 @@ sources (`PagerArgs.prompt`; codex's usage `codex [OPTIONS] [PROMPT]`).
     the shared memory into aggy's one `--rules`.
   - Grok `--deny` (and `--disallowedTools`) passes. It is a list, so it only
     adds to aggy's.
-  - Grok `--agent` passes, unless aggy passes its own agent file for a
-    managed tool. Then it is refused, and the message names `aggy tool off`.
+- Refused, until checked (PR #124 review):
+  - Grok `--agent`: an agent file may set its own permission mode, which
+    aggy does not read yet (TODO(T6895)).
+  - Claude `--bg`/`--background`, `--exec`, and `--tmux`: a background
+    worker may read aggy's memory and policy files after the run removes
+    them, which no live check has looked at (TODO(T6895)).
+- Refused, because the session runs outside this terminal, where aggy's
+  policy does not reach. The message says to run the CLI itself:
+  - Claude `--desktop` (the Desktop app), `--cloud` and its alias `--remote`,
+    and `--environment` (a cloud session), per the reference.
+  - Codex `--remote` and `--remote-auth-token-env` (a remote app server).
 - Refused, because aggy passes the flag at launch:
   - Claude `--session-id`.
   - Codex `-c` on `developer_instructions`, `model`, or `mcp_servers.*`.
@@ -698,18 +726,31 @@ sources (`PagerArgs.prompt`; codex's usage `codex [OPTIONS] [PROMPT]`).
     message says to run grok itself for it.
 - Run directly, as print mode is, with aggy's launch flags and policy, but
   with no supervisor and no session recorded (`PassFlags.Print`, T6962). The
-  session runs elsewhere, or the CLI does not stay on screen:
-  - Claude: `--bg`/`--background`, `--tmux` (which needs `--worktree`),
-    `--teleport`, `--from-pr`, `--init-only`, `--exec`.
+  session is one aggy cannot record, or the CLI does not stay on screen:
+  - Claude: `--teleport` (a cloud session resumed here), `--from-pr` (the
+    session picker), `--init-only` (the Setup and SessionStart hooks).
   - Codex: `--worktree`.
   - Grok: `--worktree` (`-w`), `--worktree-ref`/`--ref`, and
     `--local-workspace*`.
   - A line at launch says aggy -c cannot reopen it.
-- Run as given, with nothing of aggy's added (`PassFlags.Bare`):
-  - Claude `--desktop`, which takes no other flags per the reference, and
-    `--cloud`, `--remote`, `--environment`.
-  - Codex `--remote` and `--remote-auth-token-env`.
-  - `--version` on every vendor.
+- Run as given, with nothing of aggy's added (`PassFlags.Bare`): `--version`
+  (Claude and Grok `-v`, Codex `-V`) only when it is the one word after the
+  vendor. With any other word, or inside a cluster such as `-nv`, the run is
+  a screen or print run with the policy: aggy does not guess how the CLI
+  reads the words in a way that drops a check. `PassFlags.Mode` does not
+  split a cluster to find print mode either.
+- Every path that starts a CLI (on screen, print, run directly, as given, a
+  subcommand) runs one gate first (`gateLaunch` in `internal/cli`): a borrow
+  child (`AGGY_DELEGATED`) is refused; the repo's `allowed_vendors`; the
+  folder flags (`--add-dir` of a home's keys or a vendor's config); the
+  `--settings` checks above; `--no-policy` and any flag only it lets through
+  need a person, that is, not a session's tool shell (aggy's variables) and a
+  terminal on stdin or stderr; and shared rules that cannot be read.
+- `aggy -p` with no vendor named is refused when the default vendor's `-p` is
+  not print mode (Codex's is `--profile`), naming its own print form
+  (`aggy codex exec`). Bare `aggy` with no prompt and no terminal is refused.
+  A first prompt word that names a subcommand is refused in print mode too
+  (`claude -p ultrareview`), except `codex exec`'s own words.
 - Passed on screen, for the first launch only (`PassFlags.Once`): Claude
   `--worktree` (`-w`, which takes a name). Claude starts in a git worktree
   under `.claude/worktrees`. aggy does not pass `-w` again on a resume, and
@@ -719,25 +760,42 @@ sources (`PagerArgs.prompt`; codex's usage `codex [OPTIONS] [PROMPT]`).
 - A flag no table lists passes. It takes the next word as its value only when
   the CLI's help, read by the launch probe, shows it with a `<value>`
   (`probe.ValueFlags`). An optional `[value]` is not counted, since Claude
-  binds `--debug`'s filter only in the `=` form.
-- Management subcommands (`Manage` in each adapter, T6963) run as typed,
-  with nothing of aggy's added and no session recorded. Their sources are the
-  same as the `Commands` lists above.
-  - Claude: `agents`, `attach`, `auth`, `auto-mode`, `daemon`, `doctor`,
-    `install`, `kill`, `logs`, `mcp`, `plugin`/`plugins`, `purge`, `respawn`,
-    `rm`, `setup-token`, `stop`, and `update`. `gateway`, `import`,
-    `rc`/`remote-control`, `self-hosted-runner`, and `ultrareview` stay
-    refused.
-  - Codex: `login`, `logout`, `mcp`, `plugin`, `completion`, `doctor`,
-    `update`, and `apply` (`a`). `features` stays refused, because its
-    enable and disable persist a hooks or sandbox feature past the launch
-    gate.
+  binds `--debug`'s filter only in the `=` form. Claude's `--rc`
+  (`--remote-control`) takes an optional name, which the reference's example
+  gives as the next word, so the next bare word is taken as that name, as
+  commander takes an optional value. `codex exec`'s flags are not in the
+  top-level help, so none is taken to have a value there: a word after one is
+  read as the prompt, and the run still gets the policy.
+- Management subcommands (`adapter.Manage`, T6963) run as typed, with
+  nothing of aggy's added and no session recorded. They are the ones that run
+  no agent (the PR #124 review took out the rest). Their sources are the same
+  as the `Commands` lists above. Any flag the vendor's table gates anywhere in
+  the words (`PassFlags.Gated`: what loosens the policy, a Checked flag's
+  refused value, and Claude `--settings`) is refused outright, since aggy
+  adds no policy there for `--no-policy` to let it through.
+  - Claude: `auth`, `auto-mode`, `doctor`, `install`, `kill`, `logs`, `mcp`
+    (not `mcp serve`, which serves Claude Code's own tools, per its MCP
+    docs), `plugin`/`plugins`, `purge`, `rm`, `setup-token`, `stop`, and
+    `update`. Refused: `agents` (it dispatches background sessions and takes
+    `--permission-mode` and `--settings`), `attach` and `respawn` (they
+    reattach to or restart one), `daemon` (`daemon run` hosts them), and
+    `gateway`, `import`, `rc`/`remote-control`, `self-hosted-runner`, and
+    `ultrareview`.
+  - Codex: `login`, `logout`, `mcp`, `plugin`, `completion`, `doctor`, and
+    `update`. Refused: `apply` (`a`), which writes a cloud task's diff that
+    aggy did not review into this tree; `features`, whose enable and disable
+    persist a hooks or sandbox feature past the launch gate; and the session
+    and server commands. A server mode of `codex mcp` is unverified and
+    refused on the safe side.
   - Grok: `login`, `logout`, `mcp`, `plugin`, `models`, `usage`, `doctor`,
-    `update`, `completions`, and `version` (`v`). `setup` and `memory` stay
-    refused, because they write config and memory aggy keeps in parity.
-  - OpenCode: `auth`, `models`, `mcp`, and `debug`, as recorded live at
-    2.2.5 (verification.md). `upgrade` is not recorded, so it is left out as
-    unverified.
+    `update`, `completions`, and `version` (`v`). Refused: `setup` and
+    `memory` (config and memory aggy keeps in parity) and the session and
+    workspace commands. A server mode of `grok mcp` is unverified and refused
+    on the safe side.
+  - OpenCode: `auth`, `models`, and `mcp`, as recorded live at 2.2.5
+    (verification.md). Refused: `debug`, since some of its subcommands may run
+    an agent or a tool, which is not checked at 2.2.5, and `upgrade`, which is
+    not recorded (unverified).
 - Refused unless `--no-policy`, then noted at launch and logged
   (`loosening_flags`): anything naming `dangerously`, on every vendor; Claude
   `--permission-mode` outside `default` (`manual`), `acceptEdits`, `plan`, `auto`,

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/congdoe/aggy/internal/adapter"
 )
 
 // MaxPayload caps a hook payload read from stdin.
@@ -306,6 +308,9 @@ func nestedIn(ws []string) string {
 				return "opencode --prompt"
 			}
 		case "aggy":
+			if what := aggyStartsCLI(rest); what != "" {
+				return what
+			}
 			if k := skipFlags(rest, 0, nil); k < len(rest) && slices.Contains([]string{"borrow", "image", "video"}, rest[k]) {
 				return "aggy " + rest[k]
 			} else if k < len(rest) && rest[k] == "tool" {
@@ -324,6 +329,71 @@ func nestedIn(ws []string) string {
 		return ""
 	}
 	return ""
+}
+
+// AggyCommands are aggy's own command names: a first word that is none of
+// them, nor a vendor's name, is the default vendor's prompt (T6961).
+var AggyCommands = []string{"accept", "attribution", "borrow", "brief", "check", "config", "dev", "diag", "doctor", "gc", "help",
+	"hook", "hook-tool", "hooks", "image", "inbox", "log", "mcp", "memory", "new", "permissions", "policy", "reject", "resume",
+	"run", "session", "sessions", "setup", "skill", "stats", "switch", "tool", "trust", "unwire", "usage", "version", "video"}
+
+// aggyOwnValueFlags are the flags before aggy's first word that take a value:
+// its own --tool, and the CLI words it passes on that take one (-r, --model).
+var aggyOwnValueFlags = []string{"--tool", "--model", "-m", "-r", "--resume"}
+
+// aggyStartsCLI says what aggy's words rest start that is a vendor CLI run
+// (PR #124 review), or "": aggy -p, aggy "prompt", aggy with only the CLI's
+// flags, aggy <vendor> [words] (print mode, codex exec, a piped stdin, and
+// --direct among them), except a management subcommand that runs no agent
+// (each adapter's Manage, less its ManageRefused). Bare aggy, which needs a
+// terminal for a session, and aggy's own commands are left to the cases
+// after it.
+func aggyStartsCLI(rest []string) string {
+	if len(rest) == 0 {
+		return ""
+	}
+	k := skipFlags(rest, 0, aggyOwnValueFlags)
+	if slices.Contains(rest[:k], "--") {
+		return "aggy -- (a prompt)"
+	}
+	if k == len(rest) {
+		if slices.Contains(rest, "--version") || slices.Contains(rest, "-v") || slices.Contains(rest, "--help") || slices.Contains(rest, "-h") {
+			return ""
+		}
+		return "aggy " + rest[0]
+	}
+	w := rest[k]
+	manage, refused := vendorManage(w)
+	if manage == nil && slices.Contains(AggyCommands, w) {
+		return ""
+	}
+	if manage == nil {
+		return "aggy (a prompt)"
+	}
+	j := skipFlags(rest, k+1, aggyOwnValueFlags)
+	if j < len(rest) && slices.Contains(manage, rest[j]) {
+		sub := ""
+		for _, x := range rest[j+1:] {
+			if !strings.HasPrefix(x, "-") {
+				sub = x
+				break
+			}
+		}
+		if !slices.Contains(refused[rest[j]], sub) {
+			return ""
+		}
+	}
+	return "aggy " + w
+}
+
+// vendorManage is the vendor named w's management subcommands and the second
+// words refused among them (adapter.Manage), or nil when w names no vendor.
+func vendorManage(w string) ([]string, map[string][]string) {
+	m, ok := adapter.Manage[adapter.Vendor(w)]
+	if !ok {
+		return nil, nil
+	}
+	return m.Commands, m.Refused
 }
 
 // hasFlag reports whether args hold one of flags, alone or as

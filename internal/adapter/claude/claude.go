@@ -172,32 +172,16 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		}
 		args = append(args, "--append-system-prompt-file", req.MemoryFile)
 	}
-	if perms := permissionsLayer(req); len(perms) > 0 || len(req.Hooks) > 0 || len(req.UserSettings) > 0 {
-		// An inline settings layer: its permissions.deny list merges with
-		// every settings file's, and a deny wins over any allow
-		// (code.claude.com/docs settings.md, permissions.md). The tools'
-		// hooks ride in the same layer, for this session only, as the
-		// borrow guard's do (GuardSettings). The person's own --settings
-		// layers go in it too, under aggy's (T6962): lists join, so aggy's
-		// deny rules and hooks stay, and where both set one value aggy's wins.
-		layer := map[string]any{}
-		if len(perms) > 0 {
-			layer["permissions"] = perms
-		}
-		if len(req.Hooks) > 0 {
-			layer["hooks"] = req.Hooks
-		}
-		if len(req.UserSettings) > 0 {
-			own, err := asSettings(layer)
-			if err != nil {
-				return adapter.Command{}, err
-			}
-			layer = MergeSettings(req.UserSettings, own)
-		}
-		js, err := json.Marshal(layer)
-		if err != nil {
+	if req.SettingsPath != "" {
+		// The layer below, written by the launch to a 0600 file in aggy's run
+		// directory: a person's --settings file stays off argv (PR #124 review).
+		if err := adapter.CheckAbs("settings file", req.SettingsPath); err != nil {
 			return adapter.Command{}, err
 		}
+		args = append(args, "--settings", req.SettingsPath)
+	} else if js, ok, err := SettingsJSON(req); err != nil {
+		return adapter.Command{}, err
+	} else if ok {
 		if len(js) > maxInlineSettings {
 			return adapter.Command{}, fmt.Errorf("claude: your --settings and aggy's layer come to %d KiB, too much to pass on the command line; put yours in .claude/settings.json", len(js)>>10)
 		}
@@ -241,12 +225,26 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 // dropped and aggy's deny rules still apply. --append-system-prompt passes: the
 // reference says it combines with --append-system-prompt-file from v2.1.283,
 // and Tested is later. -w/--worktree passes, noted, to the first launch only.
-// The flags whose session aggy cannot supervise or record (--bg, --tmux,
-// --teleport, --from-pr, --init-only, --exec) run the CLI directly with aggy's
-// launch flags and policy (Print); the ones that start no local session
-// (--desktop, which takes no other flag, --cloud, --remote, --environment,
-// --version) run it with the words as given (Bare).
+//
+// After the PR #124 review, by what each flag starts (same reference):
+//   - --teleport (a cloud session resumed in this terminal), --from-pr (the
+//     session picker), and --init-only (the Setup and SessionStart hooks) run a
+//     local agent or its hooks that aggy cannot record: the CLI runs directly
+//     with aggy's launch flags and policy (Print).
+//   - --desktop (the Desktop app on this directory), --cloud and its alias
+//     --remote, and --environment (a cloud session) run the session outside
+//     this terminal, where aggy's policy does not reach: refused.
+//   - --bg/--background and --exec (a background agent or job) and --tmux: a
+//     background worker may read aggy's memory and policy files after the run
+//     removes them, which is unchecked: refused, TODO(T6895).
+//   - --version alone runs as given (Bare: only as the one word).
+//   - --rc/--remote-control starts an interactive local session with an
+//     optional name, which the reference's example gives as the next word
+//     (claude --remote-control "My Project"): on screen, the next bare word
+//     taken as that name, as commander takes an optional value.
 func (Adapter) PassFlags() adapter.PassFlags {
+	outside := "it runs the session outside this terminal (the Desktop app or a cloud session), where aggy's policy does not reach; run claude itself for it"
+	background := "a background worker may read aggy's memory and policy files after aggy removes them, which is unchecked (TODO(T6895)); run claude itself for it"
 	return adapter.PassFlags{
 		Model:    []string{"--model"},
 		Continue: []string{"--continue", "-c"},
@@ -254,6 +252,8 @@ func (Adapter) PassFlags() adapter.PassFlags {
 		Refused: []adapter.RefusedFlag{
 			{Names: []string{"--session-id"}, Why: "aggy gives each new session its id", ScreenOnly: true},
 			{Names: []string{"--fork-session"}, Why: "aggy keeps one vendor session per child", ScreenOnly: true},
+			{Names: []string{"--desktop", "--cloud", "--remote", "--environment"}, Why: outside},
+			{Names: []string{"--bg", "--background", "--exec", "--tmux"}, Why: background},
 		},
 		Checked: []adapter.CheckedFlag{
 			{Names: []string{"--permission-mode"}, Check: checkPermissionMode},
@@ -262,18 +262,18 @@ func (Adapter) PassFlags() adapter.PassFlags {
 		Noted: []adapter.NotedFlag{
 			{Names: []string{"--safe-mode", "--bare"}, Note: noHooksNote},
 			{Names: []string{"--worktree", "-w"}, Note: worktreeNote},
-			{Names: []string{"--bg", "--background", "--tmux", "--teleport", "--from-pr", "--init-only", "--exec"}, Note: directNote},
+			{Names: []string{"--teleport", "--from-pr", "--init-only"}, Note: directNote},
 		},
 		// claude -p "query" and cat file | claude -p "query" (cli-reference).
-		Print: []string{"--print", "-p", "--bg", "--background", "--tmux", "--teleport", "--from-pr", "--init-only", "--exec"},
-		Bare:  []string{"--desktop", "--cloud", "--remote", "--environment", "--version", "-v"},
+		Print: []string{"--print", "-p", "--teleport", "--from-pr", "--init-only"},
+		Bare:  []string{"--version", "-v"},
 		Once:  []string{"--worktree", "-w"},
 		// The reference's examples give these several space-separated values.
 		Variadic: []string{"--add-dir", "--allowedTools", "--allowed-tools", "--disallowedTools", "--disallowed-tools", "--mcp-config", "--channels"},
 		Commands: Commands,
 		Values: []string{"--advisor", "--agent", "--append-subagent-system-prompt", "--append-subagent-system-prompt-file",
 			"--append-system-prompt", "--append-system-prompt-file", "--autocompact", "--betas", "--debug-file", "--effort",
-			"--environment", "--exec", "--fallback-model", "--from-pr", "--input-format", "--json-schema", "--max-budget-usd",
+			"--environment", "--fallback-model", "--from-pr", "--input-format", "--json-schema", "--max-budget-usd",
 			"--max-turns", "--name", "-n", "--output-format", "--permission-prompt-tool", "--permission-prompts", "--plugin-dir",
 			"--plugin-url", "--rc", "--ref", "--remote-control", "--remote-control-session-name-prefix", "--setting-sources",
 			"--settings", "--system-prompt", "--system-prompt-file", "--system-prompt-snapshot", "--teammate-mode", "--tools",
@@ -297,15 +297,6 @@ const (
 var Commands = []string{"agents", "attach", "auth", "auto-mode", "daemon", "doctor", "gateway", "import", "install", "kill", "logs",
 	"mcp", "plugin", "plugins", "purge", "rc", "remote-control", "respawn", "rm", "self-hosted-runner", "setup-token", "stop",
 	"ultrareview", "update"}
-
-// Manage are the Commands that manage the CLI, its sign-in, its MCP servers
-// and plugins, or its background sessions, which aggy runs as typed, with
-// nothing added (T6963; the same reference). The rest stay refused as a
-// session's first word: gateway, import, rc and remote-control,
-// self-hosted-runner, and ultrareview start or move work aggy does not
-// record; run claude itself for them.
-var Manage = []string{"agents", "attach", "auth", "auto-mode", "daemon", "doctor", "install", "kill", "logs", "mcp", "plugin",
-	"plugins", "purge", "respawn", "rm", "setup-token", "stop", "update"}
 
 // checkPermissionMode lets through the modes that still ask or deny
 // (permission-modes.md; manual is an alias of default, the mode that asks
