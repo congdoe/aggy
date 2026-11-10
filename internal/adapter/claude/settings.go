@@ -159,7 +159,9 @@ func joinMCPConfig(extra []string, file string) ([]string, bool) {
 // disableAllHooks, which turns off hooks aggy's turn-end and tools rely on
 // (settings.md), allowManagedHooksOnly and allowManagedPermissionRulesOnly,
 // which would drop aggy's hooks and deny rules (neither is managed),
-// enableAllProjectMcpServers, which skips the project MCP trust prompt, and
+// enableAllProjectMcpServers, which skips the project MCP trust prompt, a hook
+// for PermissionRequest or PreToolUse, which can answer the policy's asks
+// (answeringHooks), and
 // any key naming "dangerous" or "bypass" with a value that is not false, as a
 // later setting such as skipDangerousModePermissionPrompt might. Arrays are
 // walked as well as objects.
@@ -206,6 +208,11 @@ func CheckSettings(layer map[string]any) error {
 				sub := v[k]
 				low := strings.ToLower(k)
 				tightens := strings.HasPrefix(low, "disable") && strings.Contains(low, "bypass") // disableBypassPermissionsMode
+				if slices.Contains(answeringHooks, low) {
+					// Under hooks or anywhere else: aggy does not rely on where
+					// Claude reads a hook event from.
+					return gated(path + k)
+				}
 				if (slices.Contains(loosening, low) || strings.Contains(low, "dangerous") || strings.Contains(low, "bypass") && !tightens) && sub != false {
 					return gated(path + k)
 				}
@@ -239,6 +246,19 @@ func CheckSettings(layer map[string]any) error {
 // specific servers from a project's .mcp.json" (PR #124 re-review).
 var loosening = []string{"disableallhooks", "allowmanagedhooksonly", "allowmanagedpermissionrulesonly", "enableallprojectmcpservers",
 	"enabledmcpjsonservers"}
+
+// answeringHooks are the hook events, in lower case, whose hooks can answer a
+// permission request, gated in a person's --settings layer wherever the event's
+// name appears (PR #126 re-review). Since PR #125 the policy's rules ask on
+// screen, and the hooks reference (code.claude.com/docs/en/hooks, as the PR
+// #126 re-review read it; not re-read for this change) says a
+// PermissionRequest hook's decision.behavior "allow" answers the permission
+// request, and a PreToolUse hook's permissionDecision "allow" may do the same:
+// either could approve every safety-policy ask with no --no-policy. Other events pass. aggy's own hooks (some PreToolUse)
+// are in its own layer, which this does not check, and the merge keeps them
+// (lists join). TODO(T6895): a live check of how Claude combines a hook's
+// allow with an ask rule could narrow this.
+var answeringHooks = []string{"permissionrequest", "pretooluse"}
 
 // credentialHelpers are the settings keys that run a command of the person's
 // to produce a credential or headers, refused outright like the credentials

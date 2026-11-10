@@ -702,6 +702,10 @@ func ValueFlags(help []byte) []string {
 // "--" after one of these, in this exact spelling, as the end of the CLI's
 // options (adapter.ParseOpts.Switches). Commander and clap both put a value
 // in brackets, so a bare word after the spellings is the description.
+//
+// TODO(T6954): help in another style (yargs puts "[string]" after the
+// description, not the name) would be read as switches, and so would a wrapped
+// description line that begins with a flag's name.
 func Switches(help []byte) []string {
 	values := ValueFlags(help)
 	var out []string
