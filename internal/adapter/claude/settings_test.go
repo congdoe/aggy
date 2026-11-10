@@ -28,6 +28,12 @@ func TestCheckSettings(t *testing.T) {
 		{"hooks off", `{"disableAllHooks":true}`, true},
 		{"a later dangerous key", `{"skipDangerousModePermissionPrompt":true}`, true},
 		{"bypass anywhere as a value", `{"env":{"X":"bypassPermissions"}}`, true},
+		// PR #124 review.
+		{"project MCP servers trusted", `{"enableAllProjectMcpServers":true}`, true},
+		{"only managed hooks", `{"allowManagedHooksOnly":true}`, true},
+		{"only managed rules", `{"allowManagedPermissionRulesOnly":true}`, true},
+		{"bypass inside a list", `{"hooks":{"Stop":[{"x":"bypassPermissions"}]}}`, true},
+		{"a dangerous key inside a list", `{"a":[{"skipDangerousModePermissionPrompt":true}]}`, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -39,6 +45,17 @@ func TestCheckSettings(t *testing.T) {
 				t.Errorf("CheckSettings = %v, loosens want %v", err, tt.loosens)
 			}
 		})
+	}
+	// Refused whatever --no-policy says: a credential or an endpoint.
+	for _, layer := range []string{`{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:1"}}`, `{"env":{"ANTHROPIC_API_KEY":"x"}}`,
+		`{"env":{"ANTHROPIC_AUTH_TOKEN":"x"}}`, `{"apiKeyHelper":"/bin/echo x"}`} {
+		m, err := ParseSettings([]byte(layer))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := CheckSettings(m); !errors.Is(err, ErrSettingsCredential) {
+			t.Errorf("CheckSettings(%s) = %v, want a credential refusal", layer, err)
+		}
 	}
 	if _, err := ParseSettings([]byte(`["x"]`)); err == nil {
 		t.Error("a JSON array parsed as a settings layer")
@@ -73,12 +90,49 @@ func TestInteractiveMergesSettings(t *testing.T) {
 	if err := json.Unmarshal([]byte(c.Args[i+1]), &got); err != nil {
 		t.Fatal(err)
 	}
+	// PR #124 review (hand-edited): the person's plan, stricter than aggy's
+	// acceptEdits, stands, and no note says it was replaced.
 	if !slices.Equal(got.Permissions.Deny, []string{"Read(own)", "Bash(rm -rf*)"}) || !slices.Equal(got.Permissions.Allow, []string{"Bash(npm test)"}) ||
-		got.Permissions.DefaultMode != "acceptEdits" || got.Model != "opus" {
+		got.Permissions.DefaultMode != "plan" || got.Model != "opus" {
 		t.Errorf("layer = %s", c.Args[i+1])
 	}
 	if !slices.Equal(c.Args[len(c.Args)-2:], []string{"-p", "hi"}) {
 		t.Errorf("args %q, want the person's words last", c.Args)
+	}
+	if o := SettingsOverrides(req); len(o) != 0 {
+		t.Errorf("overrides = %q, want none", o)
+	}
+}
+
+// TestSettingsOverrides (PR #124 review): a key of the person's --settings
+// that aggy's own layer replaces is named for a note, unless it is a plan mode,
+// which stands; with a SettingsPath, the layer goes in that file, not argv.
+func TestSettingsOverrides(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+		want []string
+	}{
+		{"a looser mode is replaced", "acceptEdits", []string{"permissions.defaultMode"}},
+		{"plan stands", "plan", nil},
+		{"the same mode is no override", "default", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := adapter.InteractiveRequest{Cwd: "/w", SessionID: sid, Rules: adapter.SharedRules{Mode: "default"},
+				UserSettings: map[string]any{"permissions": map[string]any{"defaultMode": tt.mode}}}
+			if got := SettingsOverrides(req); !slices.Equal(got, tt.want) {
+				t.Errorf("overrides = %q, want %q", got, tt.want)
+			}
+			req.SettingsPath = "/run/x/settings.json"
+			c, err := Adapter{}.Interactive(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if i := slices.Index(c.Args, "--settings"); i < 0 || c.Args[i+1] != req.SettingsPath {
+				t.Errorf("args %q, want --settings %s", c.Args, req.SettingsPath)
+			}
+		})
 	}
 }
 

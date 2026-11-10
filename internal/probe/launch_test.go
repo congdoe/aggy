@@ -32,25 +32,30 @@ func (c *countRunner) run(_ context.Context, cmd adapter.Command) (adapter.Outpu
 }
 
 // TestLaunchCachesByBinary (T6964): a launch's probe is cached by the binary's
-// identity. An unchanged binary starts no process; a changed one (touched,
-// replaced, or a new version) is probed again; a failed probe is not cached.
+// identity and the version it reports. An unchanged binary runs --version
+// only; a changed one (touched, replaced, or a new version behind an unchanged
+// shim, PR #124 review) is probed again; a failed probe, or one not asked to
+// record, is not cached.
 func TestLaunchCachesByBinary(t *testing.T) {
 	steps := []struct {
 		name    string
 		change  func(t *testing.T, path string)
 		version string
 		fail    bool
+		record  bool
 		runs    int
 		cached  bool
 	}{
-		{"first launch probes", nil, "1.0.70", false, 2, false},
-		{"unchanged: no process", nil, "1.0.70", false, 0, true},
+		{"a refused launch records nothing", nil, "1.0.70", false, false, 2, false},
+		{"so the first that records probes", nil, "1.0.70", false, true, 2, false},
+		{"unchanged: --version only", nil, "1.0.70", false, true, 1, true},
 		{"touched: probed again", func(t *testing.T, p string) {
 			if err := os.Chtimes(p, time.Now(), time.Now().Add(time.Hour)); err != nil {
 				t.Fatal(err)
 			}
-		}, "1.0.70", false, 2, false},
-		{"then cached again", nil, "1.0.70", false, 0, true},
+		}, "1.0.70", false, true, 2, false},
+		{"then cached again", nil, "1.0.70", false, true, 1, true},
+		{"a new version behind the same shim", nil, "1.0.71", false, true, 2, false},
 		{"replaced by a new version", func(t *testing.T, p string) {
 			if err := os.Remove(p); err != nil {
 				t.Fatal(err)
@@ -58,9 +63,9 @@ func TestLaunchCachesByBinary(t *testing.T) {
 			if err := os.WriteFile(p, []byte("#!/bin/sh\n# a newer build\n"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-		}, "1.1.0", true, 2, false},
-		{"a failed help was not cached", nil, "1.1.0", false, 2, false},
-		{"until it succeeds", nil, "1.1.0", false, 0, true},
+		}, "1.1.0", true, true, 2, false},
+		{"a failed help was not cached", nil, "1.1.0", false, true, 2, false},
+		{"until it succeeds", nil, "1.1.0", false, true, 1, true},
 	}
 	f := setup(t)
 	ctx := context.Background()
@@ -73,7 +78,7 @@ func TestLaunchCachesByBinary(t *testing.T) {
 			st.change(t, path)
 		}
 		r := &countRunner{version: st.version, fail: st.fail}
-		p, cached, err := Launch(ctx, f.store, r.run, adapter.Grok, path)
+		p, cached, err := Launch(ctx, f.store, r.run, adapter.Grok, path, st.record)
 		if err != nil || cached != st.cached || r.runs != st.runs {
 			t.Fatalf("%s: cached %v, runs %d, %v; want cached %v, runs %d", st.name, cached, r.runs, err, st.cached, st.runs)
 		}
@@ -98,7 +103,7 @@ func TestLaunchWithoutStore(t *testing.T) {
 	}
 	for range 2 {
 		r := &countRunner{version: "1.0.70"}
-		if _, cached, err := Launch(context.Background(), nil, r.run, adapter.Grok, path); err != nil || cached || r.runs != 2 {
+		if _, cached, err := Launch(context.Background(), nil, r.run, adapter.Grok, path, true); err != nil || cached || r.runs != 2 {
 			t.Fatalf("cached %v, runs %d, %v", cached, r.runs, err)
 		}
 	}

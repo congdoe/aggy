@@ -210,7 +210,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	// Anything else is the default vendor's CLI, as it takes its words at
 	// launch: aggy --model opus, aggy -c, aggy "explain this repo" (T6961).
-	if c := nearCommand(args[0]); c != "" {
+	// A single bare word close to a command or vendor name is a likely typo,
+	// not a prompt worth a model turn (PR #124 review).
+	if c := nearCommand(args[0]); c != "" && len(args) == 1 {
 		return cmdUsage(stderr, "", fmt.Sprintf("unknown command %q; did you mean aggy %s? To send it as a prompt: aggy -- %s", args[0], c, args[0]), "")
 	}
 	return runLaunch("", args, stdout, stderr)

@@ -2,8 +2,8 @@
 // --version and --help through an adapter.Runner, records the result in
 // the store's probes table, and reuses that record until the CLI at that
 // path reports a different version, or aggy's spec for the vendor changes.
-// A launch's probe (Launch) is reused by the binary's identity instead, so an
-// unchanged binary starts no process.
+// A launch's probe (Launch) is reused by the binary's identity and version
+// instead, so an unchanged binary runs only --version.
 //
 // A missing or unrecognized feature is recorded as an absent capability,
 // never a crash: adapters check capabilities and degrade. Probing never

@@ -165,34 +165,31 @@ const (
 	RunBare
 )
 
-// Mode says how aggy runs args: RunBare when they hold a Bare flag, RunPrint
-// when they hold a Print flag or start with one of the PrintCommands, else
-// RunScreen. The value of a flag known to take one is skipped (values are the
-// CLI's help's, as ParseOpts.Values), and nothing after "--" counts.
-func (p PassFlags) Mode(args []string, values []string) RunMode {
+// Mode says how aggy runs args: RunBare only when args are one Bare flag and
+// nothing else (claude --version), RunPrint when they hold a Print flag or
+// start with one of the PrintCommands, else RunScreen.
+//
+// aggy never guesses how the CLI parses its words in a way that would drop its
+// policy (PR #124 review): a short-flag cluster (-nv) is not split to find a
+// mode, since the CLI may read it as a flag with a value; a Bare flag with any
+// other word is no bare run, whatever the CLI makes of it. Both other modes
+// add aggy's policy, so a wrong guess between them (a Print flag's spelling
+// read as some flag's value) costs only whether the run is recorded. Nothing
+// after "--" counts.
+func (p PassFlags) Mode(args []string) RunMode {
+	if len(args) == 1 && slices.Contains(p.Bare, args[0]) {
+		return RunBare
+	}
 	mode := RunScreen
 	if len(args) > 0 && slices.Contains(p.PrintCommands, args[0]) {
 		mode = RunPrint
 	}
-	for i := 0; i < len(args); i++ {
-		a := args[i]
+	for _, a := range args {
 		if a == "--" {
 			break
 		}
-		if a == "-" || !strings.HasPrefix(a, "-") {
-			continue
-		}
-		name, _, hasVal := p.split(a)
-		for _, n := range shortsOf(name) {
-			switch {
-			case slices.Contains(p.Bare, n):
-				return RunBare
-			case slices.Contains(p.Print, n):
-				mode = RunPrint
-			}
-		}
-		if !hasVal && (p.takesValue(name, values) == valueOne || slices.Contains(p.Model, name)) {
-			i++
+		if name, _, _ := strings.Cut(a, "="); strings.HasPrefix(a, "-") && slices.Contains(p.Print, name) {
+			mode = RunPrint
 		}
 	}
 	return mode
@@ -254,6 +251,7 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 	}
 	after := valueNone // what the flag before takes
 	valueSafe := true  // whether that flag, so its value, is in Safe
+	printCmd := false  // the first word is one of PrintCommands
 	value := func(a string) {
 		out.Extra = append(out.Extra, a)
 		if valueSafe {
@@ -274,7 +272,14 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 				after = valueNone
 			case after == valueMany:
 				value(a)
-			case !o.Print && len(out.Prompt) == 0 && slices.Contains(p.Commands, a):
+			case i == 0 && slices.Contains(p.PrintCommands, a):
+				// codex exec: the print subcommand itself, whose own
+				// arguments the CLI's top-level Commands do not name.
+				keep(a)
+				printCmd = true
+			case !printCmd && len(out.Prompt) == 0 && slices.Contains(p.Commands, a):
+				// In print mode too (PR #124 review): claude -p ultrareview
+				// would run the subcommand, not a reply.
 				return out, fmt.Errorf("%q: %w", a, ErrNotFlag)
 			default:
 				out.Extra = append(out.Extra, a)
@@ -325,10 +330,8 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 			if err != nil {
 				return out, err
 			}
-			for _, n := range shortsOf(name) {
-				if slices.Contains(p.Print, n) || slices.Contains(p.Bare, n) {
-					out.Print = true
-				}
+			if slices.Contains(p.Print, name) || slices.Contains(p.Bare, name) {
+				out.Print = true
 			}
 			for _, n := range p.Noted {
 				if slices.Contains(n.Names, name) && !slices.Contains(out.Notes, n.Note) {
@@ -439,6 +442,43 @@ func (p PassFlags) checkPassed(args []string, i *int, name, val string, hasVal b
 		}
 	}
 	return loosens, nil
+}
+
+// Gated refuses the words of a subcommand aggy runs as typed (T6963) when any
+// of them is a flag the table gates: one that loosens approvals, the sandbox,
+// or hook trust (a refused UnlessNoPolicy flag, "dangerously", LoosensIf), a
+// Checked flag whose value its Check refuses, or one of extra (flags that carry
+// a policy of their own, such as claude --settings). Such a run gets no policy
+// from aggy, so --no-policy has nothing to let through and the flag is refused
+// outright. A flag clashing only with aggy's session passes. Nothing after
+// "--" is looked at: it is the subcommand's own command, as claude mcp add's.
+func (p PassFlags) Gated(words []string, extra ...string) error {
+	for i := 0; i < len(words); i++ {
+		a := words[i]
+		if a == "--" {
+			return nil
+		}
+		if a == "-" || !strings.HasPrefix(a, "-") {
+			continue
+		}
+		name, val, hasVal := p.split(a)
+		if slices.Contains(extra, name) {
+			return fmt.Errorf("%s: %w", name, ErrSubcommandGated)
+		}
+		if _, err := p.checkPassed(words, &i, name, val, hasVal, ParseOpts{Print: true}); errors.Is(err, ErrLoosens) || err != nil && p.isChecked(name) {
+			return fmt.Errorf("%s: %w", name, ErrSubcommandGated)
+		}
+	}
+	return nil
+}
+
+// ErrSubcommandGated matches a flag Gated refuses.
+var ErrSubcommandGated = errors.New("aggy adds no policy to a subcommand it runs as typed, so it passes no flag that loosens or sets one")
+
+// isChecked reports whether name is a Checked flag.
+func (p PassFlags) isChecked(name string) bool {
+	_, ok := p.checked(name)
+	return ok
 }
 
 // TakeFlag takes every one of names out of words, written as two words or
