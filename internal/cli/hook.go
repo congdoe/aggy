@@ -26,6 +26,7 @@ import (
 const hookUsage = `Usage: aggy hook pretooluse
        aggy hook opencode-guard
        aggy hook opencode-always
+       aggy hook decide --vendor claude|opencode --plan <file>
        aggy hook --vendor V <event>
 
 Called by a vendor CLI's hook, with the JSON payload on stdin. aggy hooks
@@ -43,6 +44,12 @@ install writes these calls into each CLI's hook config.
   opencode-always
                what the plugin runs when a permission is answered with Always
                allow: from then on the guard scans every command in this repo.
+  decide       the safety policy's decision on one tool call, which a Claude
+               or OpenCode launch wires in with its own plan file: allow for
+               a command you pre-approved exactly (aggy permissions add allow),
+               ask for any other policy match, deny for a group set to deny,
+               and nothing otherwise. decide-failed is what its wrapper runs
+               to record that it failed.
   <event>      a Claude, Codex, or Grok hook event (Stop, StopFailure,
                StopCancelled, SessionStart, Notification, and on Claude
                and Grok UserPromptSubmit, which blocks a command typed
@@ -70,6 +77,13 @@ func runHook(args []string, stdout, stderr io.Writer) int {
 // A forwarded event never writes to stdout: Claude adds a SessionStart
 // hook's stdout to the model's context (hooks.md, "exit code 0").
 func hookWith(args []string, in io.Reader, getenv func(string) string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "decide" {
+		return hookDecide(args[1:], in, stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "decide-failed" {
+		drain(in)
+		return hookDecideFailed(args[1:], stderr)
+	}
 	if len(args) == 1 {
 		switch args[0] {
 		case "-h", "--help":

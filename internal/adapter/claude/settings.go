@@ -76,27 +76,111 @@ func MergeSettings(a, b map[string]any) map[string]any {
 // aggy's own layer goes inline when the person gave no --settings file: it
 // holds rule patterns and hook commands, no secret, and an inline layer needs
 // no file the CLI may read after aggy removes it.
+//
+// With req.PolicyHook, aggy's policy decision hook goes in the layer's
+// PreToolUse list in place of the policy's static asks (T6976). Should the
+// final layer not run it (it is missing, or disableAllHooks or
+// allowManagedHooksOnly is set in it), the static asks go back in: a launch
+// never has neither.
 func SettingsJSON(req adapter.InteractiveRequest) ([]byte, bool, error) {
 	perms := permissionsLayer(req)
-	if len(perms) == 0 && len(req.Hooks) == 0 && len(req.UserSettings) == 0 {
+	hooks := hooksLayer(req)
+	if len(perms) == 0 && len(hooks) == 0 && len(req.UserSettings) == 0 {
 		return nil, false, nil
 	}
 	layer := map[string]any{}
 	if len(perms) > 0 {
 		layer["permissions"] = perms
 	}
-	if len(req.Hooks) > 0 {
-		layer["hooks"] = req.Hooks
+	if len(hooks) > 0 {
+		layer["hooks"] = hooks
+	}
+	if len(req.UserSettings) == 0 && req.PolicyHook == nil {
+		// As before T6976, byte for byte.
+		js, err := json.Marshal(layer)
+		return js, err == nil, err
+	}
+	own, err := asSettings(layer)
+	if err != nil {
+		return nil, false, err
 	}
 	if len(req.UserSettings) > 0 {
-		own, err := asSettings(layer)
-		if err != nil {
-			return nil, false, err
-		}
-		layer, _ = mergeUser(req.UserSettings, own)
+		own, _ = mergeUser(req.UserSettings, own)
 	}
-	js, err := json.Marshal(layer)
+	if req.PolicyHook != nil && !PolicyHookRuns(own, req.PolicyHook.Group) {
+		own = withAsks(own, req.PolicyHook.Fallback)
+	}
+	js, err := json.Marshal(own)
 	return js, err == nil, err
+}
+
+// hooksLayer is the layer's hooks: the tools' and, under PreToolUse, aggy's
+// policy decision hook, last, so the tools' entries keep their order.
+func hooksLayer(req adapter.InteractiveRequest) map[string][]adapter.HookGroup {
+	if req.PolicyHook == nil {
+		return req.Hooks
+	}
+	out := make(map[string][]adapter.HookGroup, len(req.Hooks)+1)
+	for k, v := range req.Hooks {
+		out[k] = v
+	}
+	out["PreToolUse"] = append(slices.Clone(out["PreToolUse"]), req.PolicyHook.Group)
+	return out
+}
+
+// PolicyHookRuns says a settings layer, as plain JSON values, runs the policy
+// hook g: its PreToolUse list holds g's command with g's matcher, and nothing
+// in the layer turns hooks off. Any value of disableAllHooks or
+// allowManagedHooksOnly but false counts as off: settings.md gives them as
+// true or false, and aggy reads anything else as the stricter outcome for
+// itself (no hook, so the static asks).
+func PolicyHookRuns(layer map[string]any, g adapter.HookGroup) bool {
+	for _, k := range []string{"disableAllHooks", "allowManagedHooksOnly"} {
+		if v, ok := layer[k]; ok && v != false {
+			return false
+		}
+	}
+	if len(g.Hooks) != 1 {
+		return false
+	}
+	hooks, _ := layer["hooks"].(map[string]any)
+	list, _ := hooks["PreToolUse"].([]any)
+	for _, e := range list {
+		m, _ := e.(map[string]any)
+		if m == nil || m["matcher"] != g.Matcher {
+			continue
+		}
+		cmds, _ := m["hooks"].([]any)
+		for _, c := range cmds {
+			cm, _ := c.(map[string]any)
+			if cm != nil && cm["type"] == "command" && cm["command"] == g.Hooks[0].Command {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// withAsks puts asks into the layer's permissions.ask, which aggy's own
+// layer always holds as a list or not at all.
+func withAsks(layer map[string]any, asks []string) map[string]any {
+	if len(asks) == 0 {
+		return layer
+	}
+	out := maps.Clone(layer)
+	perms, _ := out["permissions"].(map[string]any)
+	perms = maps.Clone(perms)
+	if perms == nil {
+		perms = map[string]any{}
+	}
+	cur, _ := perms["ask"].([]any)
+	cur = slices.Clone(cur)
+	for _, a := range asks {
+		cur = append(cur, a)
+	}
+	perms["ask"] = cur
+	out["permissions"] = perms
+	return out
 }
 
 // SettingsOverrides names the keys of the person's --settings that aggy's own
@@ -109,8 +193,8 @@ func SettingsOverrides(req adapter.InteractiveRequest) []string {
 	if perms := permissionsLayer(req); len(perms) > 0 {
 		layer["permissions"] = perms
 	}
-	if len(req.Hooks) > 0 {
-		layer["hooks"] = req.Hooks
+	if hooks := hooksLayer(req); len(hooks) > 0 {
+		layer["hooks"] = hooks
 	}
 	own, err := asSettings(layer)
 	if err != nil {

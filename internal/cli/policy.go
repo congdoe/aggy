@@ -27,11 +27,12 @@ and a repo cannot edit it (but see Codex below).
 On screen the CLI asks you before each of these, where it can: Claude
 Code and OpenCode's shell rules ask, Grok Build has no way to be told to
 ask, so there they stay denials, and OpenCode's file reads stay refused
-by aggy's guard. A borrow child is always refused. On Claude Code an ask
-rule beats every allow, so a covered command asks every time, whatever
-you allow; exact pre-approval of one command is planned (T6976). aggy
-permissions policy moves a group to deny (aggy permissions show says
-what each CLI gets).
+by aggy's guard. A borrow child is always refused. On Claude Code and
+OpenCode, aggy's own hook asks for every match but a command you
+pre-approved exactly (aggy permissions add allow), which runs; Codex
+and Grok Build are not changed by a pre-approval. aggy permissions
+policy moves a group to deny (aggy permissions show says what each CLI
+gets).
 
 Claude Code and Grok Build get it on the command line of every session
 aggy starts (claude --settings, grok --deny), so nothing is stored.

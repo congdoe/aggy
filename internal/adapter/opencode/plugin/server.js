@@ -8,6 +8,7 @@ import { execFile } from "node:child_process"
 
 const HOOK_MS = 3000
 const GUARD_MS = 8000
+const DECIDE_MS = 5000
 const MAX_REASON = 600
 
 // Only these reach the guard: the fields it reads, not a write's content.
@@ -32,10 +33,10 @@ const report = {
 
 const run = (aggy, args, payload, ms) =>
   new Promise((resolve) => {
-    const child = execFile(aggy, args, { timeout: ms, killSignal: "SIGKILL" }, (error, _stdout, stderr) =>
-      resolve({ failed: Boolean(error), stderr: String(stderr || "") }),
+    const child = execFile(aggy, args, { timeout: ms, killSignal: "SIGKILL" }, (error, stdout, stderr) =>
+      resolve({ failed: Boolean(error), stdout: String(stdout || ""), stderr: String(stderr || "") }),
     )
-    child.on("error", () => resolve({ failed: true, stderr: "" }))
+    child.on("error", () => resolve({ failed: true, stdout: "", stderr: "" }))
     child.stdin.on("error", () => {})
     child.stdin.end(JSON.stringify(payload))
   })
@@ -60,6 +61,30 @@ export default {
         throw new Error(why || "aggy's guard did not answer, so this call was refused")
       }
     })
+
+    // The safety policy's decision (T6976): OpenCode's rules decide first,
+    // and this only moves an ask to allow for a command the person
+    // pre-approved exactly, and an allow (an Always allow OpenCode saved) back
+    // to ask for any other policy match. A configured deny never reaches it
+    // (core/src/permission.ts at dev d4aeee5, read 2026-11-10; the hook
+    // turning an allow back to ask held on 2.2.5, docs/verification.md).
+    // Should aggy fail or not answer, or this throw, the effect stays as the
+    // rules gave it. Unverified on 2.2.5: that setting e.effect is how the
+    // hook answers, and what resources holds for a compound command.
+    const decide = ctx.options.decide
+    if (decide && ctx.permission && typeof ctx.permission.hook === "function") {
+      await ctx.permission.hook("evaluate", async (e) => {
+        try {
+          if (!e || e.action !== "shell" || (e.effect !== "ask" && e.effect !== "allow")) return
+          const r = await run(aggy, ["hook", "decide", "--vendor", "opencode", "--plan", decide], { action: e.action, resources: e.resources, effect: e.effect }, DECIDE_MS)
+          if (r.failed) return
+          const want = r.stdout.trim()
+          if (want === "allow" && e.effect === "ask") e.effect = "allow"
+          else if (want === "ask" && e.effect === "allow") e.effect = "ask"
+          else if (want === "deny") e.effect = "deny"
+        } catch {}
+      })
+    }
 
     // Sent one at a time, so the supervisor sees them in order.
     let sending = Promise.resolve()

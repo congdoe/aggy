@@ -114,6 +114,10 @@ type Set struct {
 	// scope. A group not listed asks on screen.
 	Policy     map[string]Kind
 	PolicyFrom map[string]Origin
+	// HooksOff is the Claude settings file that turns hooks off
+	// (disableAllHooks or allowManagedHooksOnly), or "": a launch then keeps
+	// the safety policy's static asks rather than its decision hook (T6976).
+	HooksOff string
 }
 
 // Input says where to read from.
@@ -151,6 +155,10 @@ type Object struct {
 // claudeFile is the part of a Claude settings file aggy reads.
 type claudeFile struct {
 	Permissions Object `json:"permissions"`
+	// DisableAllHooks and AllowManagedHooksOnly turn hooks off, aggy's
+	// policy decision hook among them (settings-reference, read 2026-11-10).
+	DisableAllHooks       any `json:"disableAllHooks"`
+	AllowManagedHooksOnly any `json:"allowManagedHooksOnly"`
 }
 
 // RepoRules are one repo's rules in aggy's own file.
@@ -299,6 +307,11 @@ func (s *Set) loadClaudeFrom(from, path string, o Origin, trusted bool) {
 		return
 	}
 	s.addObject(f.Permissions, o, path, trusted)
+	for _, v := range []any{f.DisableAllHooks, f.AllowManagedHooksOnly} {
+		if v != nil && v != false && s.HooksOff == "" {
+			s.HooksOff = path
+		}
+	}
 	if f.Permissions.DefaultMode != "" {
 		// Claude's own mode is shown as set. Any value counts: it is the
 		// person's, and Claude applies it itself.

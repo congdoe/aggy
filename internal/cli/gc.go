@@ -445,7 +445,11 @@ func planDiag(ctx context.Context, p *gcPlan, l config.Log, now time.Time) error
 			return err
 		}
 		defer func() { _ = db.Close() }()
-		_, err = db.Prune(ctx, before, max)
+		if _, err = db.Prune(ctx, before, max); err != nil {
+			return err
+		}
+		// The decision hook's calls keep their own time (T6976).
+		_, err = db.PruneDecisions(ctx, now.Add(-store.DecideKeep))
 		return err
 	}})
 	return nil

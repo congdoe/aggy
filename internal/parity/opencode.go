@@ -101,6 +101,17 @@ type OpenCodeConfig struct {
 	// Auto tells the guard this launch runs with --auto, so it skips its scan
 	// of the command's text (docs/design.md).
 	Auto bool
+	// Decide is the absolute path of the launch's decision plan, which the
+	// plugin's permission evaluate hook hands aggy hook decide (T6976), or ""
+	// for no evaluate hook.
+	Decide string
+}
+
+// strictAsk says the strict shell rules ask rather than deny on this launch:
+// its plugin carries the evaluate hook, the repo is trusted for OpenCode, and
+// --auto, which answers every ask, is off (T6976).
+func (c OpenCodeConfig) strictAsk() bool {
+	return c.Decide != "" && c.Trusted && !c.Auto && !c.NoPolicy
 }
 
 // openCodeRule is a permission or policy statement.
@@ -319,7 +330,11 @@ func (c OpenCodeConfig) policyDecisions() []PolicyDecision {
 // out. A rule stops the wording it names only: `shell:curl *` missed 15 of
 // 26 shapes (fake model). The sign-in rules always deny.
 func OpenCodeShellDeny(ds []PolicyDecision, auto bool) []string {
-	_, out := OpenCodePolicy(ds, auto)
+	return openCodeShellDeny(ds, auto, false)
+}
+
+func openCodeShellDeny(ds []PolicyDecision, auto, strictAsk bool) []string {
+	_, out := OpenCodePolicyFor(ds, auto, strictAsk)
 	return append(out, "shell:*opencode.db*", "shell:*opencode auth export*")
 }
 
@@ -368,7 +383,7 @@ func openCodePolicies(c OpenCodeConfig) ([]openCodeRule, error) {
 		rules = append(rules, openCodeRule{"provider.use", p, "deny"})
 	}
 	if !c.NoPolicy {
-		for _, r := range append(OpenCodeShellDeny(c.policyDecisions(), c.Auto), openCodePathDeny()...) {
+		for _, r := range append(openCodeShellDeny(c.policyDecisions(), c.Auto, c.strictAsk()), openCodePathDeny()...) {
 			rules = append(rules, openCodeRule{"tool.use", r, "deny"})
 		}
 	}
@@ -384,7 +399,7 @@ func (c OpenCodeConfig) Render() ([]byte, error) {
 	// OpenCode expands these anywhere in a config file, with no escape
 	// (core/src/config/variable.ts at v2.2.5), so a repo folder with one in
 	// its name would read an environment value or a file into the config.
-	for _, v := range append([]string{c.Root, c.Plugin, c.Aggy, c.Model}, c.Instructions...) {
+	for _, v := range append([]string{c.Root, c.Plugin, c.Aggy, c.Model, c.Decide}, c.Instructions...) {
 		if strings.Contains(v, "{env:") || strings.Contains(v, "{file:") {
 			return nil, fmt.Errorf("parity: OpenCode would expand %q in its config, so this folder cannot be used with it", v)
 		}
@@ -395,7 +410,7 @@ func (c OpenCodeConfig) Render() ([]byte, error) {
 	}
 	if !c.NoPolicy {
 		// Last, so a policy ask wins over any allow listed before it.
-		ask, _ := OpenCodePolicy(c.policyDecisions(), c.Auto)
+		ask, _ := OpenCodePolicyFor(c.policyDecisions(), c.Auto, c.strictAsk())
 		for _, cmd := range ask {
 			perms = append(perms, openCodeRule{"shell", cmd, "ask"})
 		}
@@ -410,6 +425,9 @@ func (c OpenCodeConfig) Render() ([]byte, error) {
 	options := map[string]string{"aggy": c.Aggy, "root": c.Root}
 	if c.Auto {
 		options["auto"] = "1"
+	}
+	if c.Decide != "" && !c.NoPolicy {
+		options["decide"] = c.Decide
 	}
 	doc := openCodeDoc{
 		Model:        c.Model,

@@ -15,9 +15,9 @@ import (
 )
 
 // TestPolicyAcrossSwitch (T6967): the safety policy reaches each CLI of a
-// session as that CLI can express it, before and after a switch. Claude asks;
-// Grok, with no ask flag, denies; an allow in aggy's file naming a rule
-// changes it on neither; a group the person set to deny is a deny on both.
+// session as that CLI can express it, before and after a switch. Claude asks,
+// through aggy's decision hook (T6976); Grok, with no ask flag, denies; a
+// group the person set to deny is a deny on both.
 func TestPolicyAcrossSwitch(t *testing.T) {
 	w := newWorld(t)
 	if err := os.MkdirAll(filepath.Join(w.home, ".aggy"), 0o700); err != nil {
@@ -72,22 +72,30 @@ func TestPolicyAcrossSwitch(t *testing.T) {
 	}
 	var layer struct {
 		Permissions struct{ Ask, Deny []string } `json:"permissions"`
+		Hooks       map[string][]struct {
+			Hooks []struct{ Command string } `json:"hooks"`
+		} `json:"hooks"`
 	}
 	if err := json.Unmarshal([]byte(vals[0]), &layer); err != nil {
 		t.Fatal(err)
 	}
 	p := layer.Permissions
-	for _, r := range []string{"Bash(git clean *)", "Bash(git push * main)", "Bash(git push --force*)", "Read(//**/.env)", "Read(//**/*.pem)", "Bash(git push --force*main*)"} {
-		if !slices.Contains(p.Ask, r) {
-			t.Errorf("claude asks lack %s: %v", r, p.Ask)
+	// On screen the asks are aggy's decision hook's (T6976), which asks for
+	// every policy match but an exact pre-approval: none are static rules.
+	if len(p.Ask) != 0 {
+		t.Errorf("claude has static asks beside the decision hook: %v", p.Ask)
+	}
+	hooked := false
+	for _, g := range layer.Hooks["PreToolUse"] {
+		for _, h := range g.Hooks {
+			hooked = hooked || strings.Contains(h.Command, " hook decide --vendor claude --plan ")
 		}
 	}
-	if !slices.Contains(p.Deny, "Bash(git reset --hard*)") || slices.Contains(p.Ask, "Bash(git reset --hard*)") {
-		t.Errorf("the group set to deny: ask %v, deny %v", p.Ask, p.Deny)
+	if !hooked {
+		t.Errorf("claude lacks the decision hook: %+v", layer.Hooks)
 	}
-	// An allow never removes a policy rule: Bash(rm -rf dist) leaves the ask.
-	if !slices.Contains(p.Ask, "Bash(rm -rf*)") || !slices.Contains(p.Ask, "Bash(rm -fr*)") {
-		t.Errorf("an allow removed a claude ask: %v", p.Ask)
+	if !slices.Contains(p.Deny, "Bash(git reset --hard*)") {
+		t.Errorf("the group set to deny: deny %v", p.Deny)
 	}
 
 	deny := runs[1].Flags["--deny"]

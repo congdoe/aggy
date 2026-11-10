@@ -84,29 +84,52 @@ func samePolicy(t *testing.T, what string, got, want map[string][]string) {
 	}
 }
 
-// TestPermissionsAddPolicyCovered (T6967, re-review): aggy permissions add
-// takes an allow that names or covers a policy rule, changes no rendering,
-// and says the command still asks every time, and that exact pre-approval is
-// planned.
+// TestPermissionsAddPolicyCovered (T6967, re-review; T6976): aggy permissions
+// add takes an allow that matches, names, or covers a policy rule, changes no
+// static rendering, and says per CLI what it does now: an exact command or file
+// runs without asking on Claude Code and OpenCode (a strict one is explained
+// before the question), a wildcard pre-approves nothing, and neither changes
+// Codex or Grok Build.
 func TestPermissionsAddPolicyCovered(t *testing.T) {
 	isolate(t)
 	inRepo(t)
 	base := policyRendered(t)
-	for _, rule := range []string{"Bash(git push *)", "Bash(git push --force-with-lease origin main)", "Read(./certs/server.pem)", "Bash(rm -rf dist)", "Bash(rm:*)"} {
+	for _, tt := range []struct {
+		rule          string
+		exact, strict bool
+	}{
+		{"Bash(git push *)", false, false},
+		{"Bash(git push --force-with-lease origin main)", true, true},
+		{"Read(./certs/server.pem)", true, true},
+		{"Bash(rm -rf dist)", true, false},
+		{"Bash(rm:*)", false, false},
+	} {
 		atKeyboard(t, "y\n")
-		code, out, errb := run("permissions", "add", "allow", rule)
+		code, out, errb := run("permissions", "add", "allow", tt.rule)
 		if code != 0 {
-			t.Fatalf("add %s: %d %q %q", rule, code, out, errb)
+			t.Fatalf("add %s: %d %q %q", tt.rule, code, out, errb)
 		}
-		for _, w := range []string{"covered by aggy's safety policy", "still ask every time on Claude Code, Codex, and OpenCode", "refused on Grok Build", "T6976", "aggy permissions policy <group> deny"} {
+		want := []string{"aggy's safety policy (", "Codex and Grok Build: no effect on policy matches"}
+		if tt.exact {
+			want = append(want, "pre-approves an exact match", "Claude Code: runs without asking", "Any other spelling still asks")
+		} else {
+			want = append(want, "only one exact command or file pre-approves", "aggy permissions policy <group> deny")
+		}
+		if tt.strict {
+			want = append(want, "pre-approves a strict safety policy case", "repo trusted for OpenCode without --auto")
+		}
+		for _, w := range want {
 			if !strings.Contains(out, w) {
-				t.Errorf("add %s lacks %q: %q", rule, w, out)
+				t.Errorf("add %s lacks %q: %q", tt.rule, w, out)
 			}
 		}
-		if strings.Contains(out, "pre-approves") {
-			t.Errorf("add %s claims a pre-approval: %q", rule, out)
+		if !tt.exact && strings.Contains(out, "runs without asking") {
+			t.Errorf("add %s claims a pre-approval: %q", tt.rule, out)
 		}
-		samePolicy(t, "add "+rule, policyRendered(t), base)
+		if !tt.strict && strings.Contains(out, "strict") {
+			t.Errorf("add %s calls itself strict: %q", tt.rule, out)
+		}
+		samePolicy(t, "add "+tt.rule, policyRendered(t), base)
 	}
 	atKeyboard(t, "y\n")
 	if code, out, _ := run("permissions", "add", "allow", "Bash(npm test)"); code != 0 || strings.Contains(out, "safety policy") {
@@ -260,26 +283,42 @@ func TestPolicyTwoRepoKeys(t *testing.T) {
 	}
 }
 
-// TestPermissionsShowPolicy: show says how each CLI gets the policy, and that
-// an allow naming a policy rule changes nothing.
+// TestPermissionsShowPolicy (T6976): show says how each CLI gets the policy,
+// and what each allow naming a policy rule does: an exact one from aggy's file
+// pre-approves once it applies (here, once the repo is trusted), a wildcard
+// never does.
 func TestPermissionsShowPolicy(t *testing.T) {
 	isolate(t)
-	inRepo(t)
-	atKeyboard(t, "y\n")
-	if code, out, errb := run("permissions", "add", "allow", "Bash(git push --force origin main)"); code != 0 {
-		t.Fatalf("add: %d %q %q", code, out, errb)
+	repo := inRepo(t)
+	for _, rule := range []string{"Bash(git push --force origin main)", "Bash(git push *)"} {
+		atKeyboard(t, "y\n")
+		if code, out, errb := run("permissions", "add", "allow", rule); code != 0 {
+			t.Fatalf("add: %d %q %q", code, out, errb)
+		}
 	}
 	code, out, _ := run("permissions", "show")
-	if strings.Contains(out, "pre-approved") {
-		t.Errorf("show claims a pre-approval:\n%s", out)
-	}
 	for _, w := range []string{"Safety policy, on screen", permissions.PolicyForceMain + ": ask [the default]",
-		"your allow Bash(git push --force origin main) [aggy, this repo] names or covers this group and changes nothing: the command still asks every time on Claude Code",
-		"an ask rule beats every allow", "Grok has no flag for an ask rule", "an allow that names one is not passed to Grok", "Codex: its rules file asks",
-		"file reads stay refused by aggy's guard", "No allow changes a policy rule on any CLI", "T6976"} {
+		"your allow Bash(git push --force origin main) [aggy, this repo] would pre-approve this exact command, but it does not apply here",
+		"your allow Bash(git push *) [aggy, this repo] names or covers this group and pre-approves nothing",
+		"asks made by aggy's decision hook", "Grok has no flag for an ask rule", "an allow that names one is not passed to Grok", "Codex: its rules file asks",
+		"file reads stay refused by aggy's guard", "no pre-approval changes it"} {
 		if code != 0 || !strings.Contains(out, w) {
 			t.Errorf("show lacks %q: %d\n%s", w, code, out)
 		}
+	}
+	atKeyboard(t, "y\n")
+	if code, out, errb := run("trust", repo); code != 0 {
+		t.Fatalf("trust: %d %q %q", code, out, errb)
+	}
+	code, out, _ = run("permissions", "show")
+	if w := "your allow Bash(git push --force origin main) [aggy, this repo] pre-approves this exact command or file"; code != 0 || !strings.Contains(out, w) {
+		t.Errorf("trusted, show lacks %q:\n%s", w, out)
+	}
+	code, out, _ = run("permissions", "list")
+	if code != 0 || !strings.Contains(out, "Exact pre-approvals of the safety policy") ||
+		!strings.Contains(out, "Bash(git push --force origin main)  [aggy, this repo] push-main, force-push, force-push-main  STRICT") ||
+		strings.Contains(out, "Bash(git push *)  [aggy, this repo] push") {
+		t.Errorf("list:\n%s", out)
 	}
 }
 

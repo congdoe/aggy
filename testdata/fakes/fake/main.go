@@ -102,6 +102,20 @@ type Scenario struct {
 	// ClearHooks make a line /clear in an interactive run move it to a new
 	// session id, write session_files again, and call these hooks.
 	ClearHooks []Hook `json:"clear_hooks"`
+	// ToolCalls are tool calls claude makes, after the hooks: each is judged
+	// by the PreToolUse hooks and permission rules of its --settings layer,
+	// as toolDecision says, and the outcome appended to $AGGY_FAKE_RECORD.
+	ToolCalls []ToolCall `json:"tool_calls"`
+}
+
+// ToolCall is one tool call a fake claude makes.
+type ToolCall struct {
+	Tool  string          `json:"tool"`
+	Input json.RawMessage `json:"input"`
+	// Mode is the payload's permission_mode; default when empty.
+	Mode string `json:"mode"`
+	// Raw, when set, is the hook's whole stdin instead of a built payload.
+	Raw *string `json:"raw"`
 }
 
 // Reply is the fixed answer to one exact argument list.
@@ -824,6 +838,9 @@ func (f *fake) main(args []string) int {
 	if err := f.startMCP(); err != nil {
 		return fail(3, "mcp: %v", err)
 	}
+	if f.vendor == "claude" {
+		f.toolCalls()
+	}
 	if f.sc.Error != "" {
 		text := limitText[f.vendor]
 		if f.sc.ErrorText != nil {
@@ -1478,4 +1495,195 @@ func runHook() int {
 		appendJSON(p, map[string]any{"vendor": "hook", "args": os.Args[1:], "stdin": string(b)})
 	}
 	return 0
+}
+
+// toolCalls makes the scenario's tool calls and records each outcome as a
+// "tool_decision" record: tool, decision (allow, ask, deny, or none), and
+// the hooks' own answers.
+func (f *fake) toolCalls() {
+	if len(f.sc.ToolCalls) == 0 {
+		return
+	}
+	layer := f.settingsLayer()
+	for _, c := range f.sc.ToolCalls {
+		decision, answers := f.toolDecision(layer, c)
+		if p := os.Getenv("AGGY_FAKE_RECORD"); p != "" {
+			appendJSON(p, map[string]any{"vendor": f.vendor, "mode": "tool_decision", "tool": c.Tool, "decision": decision, "answers": answers})
+		}
+	}
+}
+
+// settingsLayer is the --settings value: inline JSON, or the file it names.
+func (f *fake) settingsLayer() map[string]any {
+	vals := f.flags["--settings"]
+	if len(vals) == 0 {
+		return nil
+	}
+	b := []byte(vals[0])
+	if !strings.HasPrefix(strings.TrimSpace(vals[0]), "{") {
+		var err error
+		if b, err = os.ReadFile(vals[0]); err != nil {
+			return nil
+		}
+	}
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	return m
+}
+
+// toolDecision judges one call as Claude Code's documented order does
+// (code.claude.com/docs hooks.md and permissions.md, read 2026-11-10): every
+// matching PreToolUse command hook runs with the payload on stdin; their
+// decisions combine deny > defer > ask > allow; a hook that fails (exit other
+// than 0 or 2, bad JSON, past its timeout) blocks when its entry says
+// onFailure "block" and is ignored otherwise; exit 2 blocks. Then a matching
+// deny rule blocks, and a matching ask rule asks even over a hook's allow.
+// Rule matching here is a whole-command glob for Bash and a file-name glob for
+// Read: a stand-in, not Claude's matcher. disableAllHooks skips the hooks.
+func (f *fake) toolDecision(layer map[string]any, c ToolCall) (string, []string) {
+	mode := c.Mode
+	if mode == "" {
+		mode = "default"
+	}
+	payload := ""
+	if c.Raw != nil {
+		payload = *c.Raw
+	} else {
+		cwd, _ := os.Getwd()
+		b, _ := json.Marshal(map[string]any{"session_id": f.id, "hook_event_name": "PreToolUse", "tool_name": c.Tool,
+			"tool_input": c.Input, "permission_mode": mode, "cwd": cwd})
+		payload = string(b)
+	}
+	rank := map[string]int{"deny": 0, "defer": 1, "ask": 2, "allow": 3, "none": 4}
+	got := "none"
+	var answers []string
+	hooksOff := layer["disableAllHooks"] != nil && layer["disableAllHooks"] != false
+	hooks, _ := layer["hooks"].(map[string]any)
+	groups, _ := hooks["PreToolUse"].([]any)
+	for _, g := range groups {
+		gm, _ := g.(map[string]any)
+		if hooksOff || gm == nil {
+			break
+		}
+		matcher, _ := gm["matcher"].(string)
+		if matcher != "" {
+			re, err := regexp.Compile(matcher)
+			if err != nil || !re.MatchString(c.Tool) {
+				continue
+			}
+		}
+		cmds, _ := gm["hooks"].([]any)
+		for _, h := range cmds {
+			hm, _ := h.(map[string]any)
+			command, _ := hm["command"].(string)
+			if command == "" {
+				continue
+			}
+			timeout := 60.0
+			if t, ok := hm["timeout"].(float64); ok && t > 0 {
+				timeout = t
+			}
+			d := runPreToolUse(command, payload, time.Duration(timeout*float64(time.Second)), hm["onFailure"] == "block")
+			answers = append(answers, d)
+			if rank[d] < rank[got] {
+				got = d
+			}
+		}
+	}
+	perms, _ := layer["permissions"].(map[string]any)
+	matches := func(kind string) bool {
+		list, _ := perms[kind].([]any)
+		for _, r := range list {
+			if s, _ := r.(string); s != "" && ruleMatches(s, c) {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case got == "deny" || matches("deny"):
+		return "deny", answers
+	case got == "ask" || matches("ask"):
+		return "ask", answers
+	}
+	return got, answers
+}
+
+// runPreToolUse runs one hook command with sh -c and reads its decision:
+// allow, ask, deny, defer, or none (exit 0 and no decision). A failure is
+// deny when block, else none.
+func runPreToolUse(command, payload string, timeout time.Duration, block bool) string {
+	failed := "none"
+	if block {
+		failed = "deny"
+	}
+	cmd := exec.Command("/bin/sh", "-c", command)
+	cmd.Stdin = strings.NewReader(payload)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		return failed
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(timeout):
+		_ = cmd.Process.Kill()
+		<-done
+		return failed
+	}
+	var ee *exec.ExitError
+	switch {
+	case errors.As(err, &ee) && ee.ExitCode() == 2:
+		return "deny"
+	case err != nil:
+		return failed
+	}
+	if strings.TrimSpace(out.String()) == "" {
+		return "none"
+	}
+	var v struct {
+		HookSpecificOutput struct {
+			PermissionDecision string `json:"permissionDecision"`
+		} `json:"hookSpecificOutput"`
+	}
+	if json.Unmarshal(out.Bytes(), &v) != nil {
+		return failed
+	}
+	switch d := v.HookSpecificOutput.PermissionDecision; d {
+	case "allow", "ask", "deny", "defer":
+		return d
+	case "":
+		return "none"
+	}
+	return failed
+}
+
+// ruleMatches is the fake's stand-in rule match: Bash(cmd) by a glob over the
+// whole command, Read(...) by the file name's glob against file_path.
+func ruleMatches(rule string, c ToolCall) bool {
+	var in map[string]any
+	_ = json.Unmarshal(c.Input, &in)
+	tool, spec, ok := strings.Cut(strings.TrimSuffix(rule, ")"), "(")
+	if !ok || tool != c.Tool {
+		return false
+	}
+	switch tool {
+	case "Bash":
+		cmd, _ := in["command"].(string)
+		return fakeGlob(spec, cmd)
+	case "Read":
+		p, _ := in["file_path"].(string)
+		return p != "" && fakeGlob(filepath.Base(spec), filepath.Base(p))
+	}
+	return false
+}
+
+// fakeGlob matches s against a pattern where * is any text.
+func fakeGlob(pattern, s string) bool {
+	ok, _ := regexp.MatchString("^"+strings.ReplaceAll(regexp.QuoteMeta(pattern), `\*`, "(?s:.*)")+"$", s)
+	return ok
 }

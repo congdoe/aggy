@@ -334,6 +334,62 @@ func checkPermissionMode(mode string) error {
 	return fmt.Errorf("--permission-mode %s: %w", mode, adapter.ErrLoosens)
 }
 
+// noPromptModes are the modes in which Claude never shows a prompt:
+// bypassPermissions runs every call, and dontAsk "auto-denies tools unless
+// pre-approved" (permission-modes.md, read 2026-11-10).
+var noPromptModes = []string{"bypassPermissions", "dontAsk"}
+
+// NoPromptLaunch says a launch starts in a mode that shows no prompt, however
+// it was set: --permission-mode (or the =value form) or a --dangerously-*
+// skip flag among the person's flags (before "--"), permissions.defaultMode in
+// their --settings layer, or mode, the default mode in force from the files
+// aggy reads (permissions.Set.Mode). aggy's decision hook then denies where it
+// would ask (T6976). A mode switched to during the session is read from each
+// hook payload instead (hook.NoPromptMode).
+func NoPromptLaunch(extra []string, user map[string]any, mode string) bool {
+	if slices.Contains(noPromptModes, mode) {
+		return true
+	}
+	if p, ok := user["permissions"].(map[string]any); ok {
+		if m, ok := p["defaultMode"].(string); ok && slices.Contains(noPromptModes, m) {
+			return true
+		}
+	}
+	for i, w := range extra {
+		if w == "--" {
+			break
+		}
+		name, val, hasVal := strings.Cut(w, "=")
+		if strings.HasPrefix(name, "--dangerously-") || strings.HasPrefix(name, "--allow-dangerously-") {
+			return true
+		}
+		if name != "--permission-mode" {
+			continue
+		}
+		if !hasVal && i+1 < len(extra) {
+			val = extra[i+1]
+		}
+		if slices.Contains(noPromptModes, val) {
+			return true
+		}
+	}
+	return false
+}
+
+// SkipsHooks says the person's flags start Claude without its hooks:
+// --safe-mode and --bare (noHooksNote).
+func SkipsHooks(extra []string) bool {
+	for _, w := range extra {
+		if w == "--" {
+			return false
+		}
+		if w == "--safe-mode" || w == "--bare" {
+			return true
+		}
+	}
+	return false
+}
+
 // checkAgents gates inline subagents with a mode the --permission-mode table
 // gates, or that aggy cannot read.
 func checkAgents(val string) error { return adapter.CheckAgents(val, checkPermissionMode) }

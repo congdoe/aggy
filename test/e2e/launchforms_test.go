@@ -78,6 +78,43 @@ func settingsRules(t *testing.T, r fakecli.Record) []string {
 	return append(layer.Permissions.Ask, layer.Permissions.Deny...)
 }
 
+// policyHeld reports whether the --settings layer aggy passed holds the
+// policy's rule: as a static rule, or, on screen since T6976, through aggy's
+// decision hook, which judges every policy match and blocks on failure.
+func policyHeld(t *testing.T, r fakecli.Record, rule string) bool {
+	t.Helper()
+	if slices.Contains(settingsRules(t, r), rule) {
+		return true
+	}
+	v := r.Flags["--settings"]
+	return len(v) > 0 && decideHooked(t, v[len(v)-1])
+}
+
+// decideHooked reports whether a --settings layer carries aggy's decision
+// hook under PreToolUse, set to block when it fails.
+func decideHooked(t *testing.T, layerJSON string) bool {
+	t.Helper()
+	var layer struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command   string `json:"command"`
+				OnFailure string `json:"onFailure"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal([]byte(layerJSON), &layer); err != nil {
+		t.Fatalf("--settings %q: %v", layerJSON, err)
+	}
+	for _, g := range layer.Hooks["PreToolUse"] {
+		for _, h := range g.Hooks {
+			if strings.Contains(h.Command, " hook decide --vendor claude --plan ") && h.OnFailure == "block" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // TestPromptArgument (T6961): a prompt on aggy's command line, with or without
 // the vendor's name and its flags, starts the on-screen session with it, after
 // aggy's own launch flags, as the CLI itself takes it.
@@ -110,7 +147,7 @@ func TestPromptArgument(t *testing.T) {
 			}
 			// Hand-edited for PR #125: on screen the policy asks, so look in
 			// both lists (settingsRules), not only the deny list.
-			if len(r.Flags["--session-id"]) != 1 || !slices.Contains(settingsRules(t, r), "Bash(rm -rf*)") {
+			if len(r.Flags["--session-id"]) != 1 || !policyHeld(t, r, "Bash(rm -rf*)") {
 				t.Errorf("aggy's own launch flags: %q", r.Args)
 			}
 		})
@@ -188,7 +225,7 @@ func TestFlagPassThrough(t *testing.T) {
 				t.Errorf("%s = %q, positional %q; args %q", tt.flag, r.Flags[tt.flag], r.Positional, r.Args)
 			}
 			// Hand-edited for PR #125: on screen the policy may ask.
-			if len(r.Flags["--session-id"]) != 1 || !slices.Contains(settingsRules(t, r), "Bash(rm -rf*)") {
+			if len(r.Flags["--session-id"]) != 1 || !policyHeld(t, r, "Bash(rm -rf*)") {
 				t.Errorf("aggy's own launch flags: %q", r.Args)
 			}
 		})
@@ -255,16 +292,16 @@ func TestSettingsMerged(t *testing.T) {
 			if err := json.Unmarshal([]byte(r.Flags["--settings"][0]), &layer); err != nil {
 				t.Fatal(err)
 			}
-			// Hand-edited for PR #125: on screen the policy's rule is an ask,
-			// in print mode a deny (planHeadless); the person's deny stays a
-			// deny either way.
+			// Hand-edited for PR #125, then T6976: on screen the policy's
+			// rule is judged by aggy's decision hook, in print mode a static
+			// deny (planHeadless); the person's deny stays a deny either way.
 			deny := layer.Permissions.Deny
-			policy := layer.Permissions.Ask
+			held := decideHooked(t, r.Flags["--settings"][0])
 			if tt.print {
-				policy = deny
+				held = slices.Contains(deny, "Bash(rm -rf*)")
 			}
 			if !slices.Contains(layer.Permissions.Allow, "Bash(ls)") || !slices.Contains(deny, "Read(./secret)") ||
-				!slices.Contains(policy, "Bash(rm -rf*)") || layer.Model != "x" {
+				!held || layer.Model != "x" {
 				t.Errorf("merged layer = %s", r.Flags["--settings"][0])
 			}
 		})
