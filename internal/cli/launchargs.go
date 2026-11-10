@@ -394,18 +394,20 @@ func runPrint(cmd string, v adapter.Vendor, t target, words []string, help adapt
 		warns = append(warns, "your flags "+strings.Join(p.Loosens, ", ")+" loosen approvals, the sandbox, or hook trust for this run; --no-policy lets them through")
 	}
 	warns = append(warns, p.Notes...)
+	rules := loadPermissions(ctx, cwd, cfg)
+	if rules.FileErr != nil {
+		return fail(diag.CodePermBadFile, rules.FileErr)
+	}
 	if t.NoPolicy {
 		warns = append(warns, "running without the safety policy (--no-policy)")
 	} else {
-		pw, err := addPolicy(v, caps, cfg.Policy.Required, &req)
+		// Every rule a deny (PR #125 integration): no one may be there to
+		// answer an ask, and a --permission-prompt-tool could answer it.
+		pw, err := addPolicy(v, caps, cfg.Policy.Required, policyPlan(planHeadless, cwd, rules), &req)
 		if err != nil {
 			return fail(diag.CodePolicy, err)
 		}
 		warns = append(warns, pw...)
-	}
-	rules := loadPermissions(ctx, cwd, cfg)
-	if rules.FileErr != nil {
-		return fail(diag.CodePermBadFile, rules.FileErr)
 	}
 	warns = append(warns, addPermissions(v, caps, rules, &req)...)
 	if v == adapter.Claude {

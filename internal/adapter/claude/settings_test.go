@@ -9,6 +9,42 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 )
 
+// TestMergeKeepsPolicy (PR #125 integration): a person's --settings layer,
+// merged under aggy's, never empties or drops aggy's asks or denies, however
+// it sets permissions; its allow joins, and Claude's ask still beats it
+// (permissions.md: deny, then ask, then allow).
+func TestMergeKeepsPolicy(t *testing.T) {
+	ask, deny := []string{"Bash(git clean *)"}, []string{"Read(//**/.env)"}
+	for _, user := range []string{
+		`{"permissions":{"ask":[]}}`,
+		`{"permissions":{"deny":[]}}`,
+		`{"permissions":{"ask":[],"deny":[]}}`,
+		`{"permissions":null}`,
+		`{"permissions":{"ask":null,"deny":"x"}}`,
+		`{"permissions":"none"}`,
+		`{"permissions":{"allow":["Bash(git clean *)"]}}`,
+		`{"permissions":{"ask":["Bash(own)"],"deny":["Read(own)"]}}`,
+	} {
+		m, err := ParseSettings([]byte(user))
+		if err != nil {
+			t.Fatal(err)
+		}
+		js, ok, err := SettingsJSON(adapter.InteractiveRequest{Ask: ask, Deny: deny, UserSettings: m})
+		if err != nil || !ok {
+			t.Fatalf("%s: %v", user, err)
+		}
+		var got struct {
+			Permissions struct{ Ask, Deny []string } `json:"permissions"`
+		}
+		if err := json.Unmarshal(js, &got); err != nil {
+			t.Fatalf("%s: %v", user, err)
+		}
+		if !slices.Contains(got.Permissions.Ask, ask[0]) || !slices.Contains(got.Permissions.Deny, deny[0]) {
+			t.Errorf("%s: merged %s lost aggy's ask or deny", user, js)
+		}
+	}
+}
+
 // TestCheckSettings (T6962): a person's --settings layer that would get past
 // aggy's policy or hooks loosens; one that only adds or tightens passes.
 func TestCheckSettings(t *testing.T) {

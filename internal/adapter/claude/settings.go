@@ -63,9 +63,11 @@ func MergeSettings(a, b map[string]any) map[string]any {
 
 // SettingsJSON is the one settings layer an on-screen or print launch passes
 // (ok false when there is none): its permission lists merge with every
-// settings file's, and aggy's policy rules (deny, or ask on screen once PR
-// #125 lands) win over any allow (code.claude.com/docs settings.md,
-// permissions.md). The tools' hooks ride in the same layer, for this session
+// settings file's, and aggy's policy rules (deny, or ask on screen; every one
+// a deny in print mode, planHeadless) win over any allow
+// (code.claude.com/docs settings.md, permissions.md). A person's layer cannot
+// empty or drop them: lists join, and a non-list value of theirs under
+// permissions gives way to aggy's (MergeSettings; TestMergeKeepsPolicy). The tools' hooks ride in the same layer, for this session
 // only, as the borrow guard's do (GuardSettings). The person's own --settings
 // layers go in it too, under aggy's (T6962, mergeUser): lists join, so aggy's
 // policy rules and hooks stay, and where both set one value
@@ -169,8 +171,8 @@ func joinMCPConfig(extra []string, file string) ([]string, bool) {
 // touch.
 //
 // Other keys pass: an allow rule cannot carve an exception out of a deny or
-// ask rule (permissions.md), so aggy's policy rules (deny, or ask on screen
-// once PR #125 lands) hold over the person's allows. TODO(T6895): that a
+// ask rule (permissions.md), so aggy's policy rules (deny, or ask on screen)
+// hold over the person's allows. TODO(T6895): that a
 // person's defaultMode of auto or dontAsk still stops at aggy's ask rules is
 // unchecked. Keys
 // are read in sorted order, so the refusal names the same one each time.

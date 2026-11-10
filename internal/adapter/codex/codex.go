@@ -308,7 +308,7 @@ func (a Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, e
 // --add-dir that holds $HOME or keys (at launch: DirFlags). --profile, --enable,
 // and other --add-dirs pass with a line at launch. --approve-for-me is gated although
 // Claude's --allowedTools is not: Claude documents that aggy's policy rules
-// (deny, or ask on screen once PR #125 lands) hold, and whether Codex's rules
+// (deny, or ask on screen) hold, and whether Codex's rules
 // file holds under it is unverified.
 //
 // PR #124 re-review, through the new print paths: --skip-git-repo-check skips
