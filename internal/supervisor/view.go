@@ -40,6 +40,8 @@ type page struct {
 	top          int
 	confirm      []string
 	confirmLabel string
+	also         []string
+	alsoLabel    string
 	answer       bool
 	busy         bool
 	seq          int
@@ -107,6 +109,9 @@ func (p *picker) drawView(w io.Writer, overCLI bool, rows, cols int) {
 			foot = "Running... " + foot
 		case len(g.confirm) > 0:
 			foot = g.confirmLabel + "; " + foot
+			if len(g.also) > 0 {
+				foot = g.alsoLabel + "; " + foot
+			}
 		}
 		lines = append(lines, "", foot)
 	}

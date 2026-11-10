@@ -258,7 +258,7 @@ func TestHookStates(t *testing.T) {
 		}
 		return s + `}}`
 	}
-	all := []string{"Stop", "StopFailure", "SessionStart", "Notification", "UserPromptSubmit", "UserPromptExpansion"} // T6910 added the last two
+	all := []string{"Stop", "StopFailure", "SessionStart", "Notification", "UserPromptSubmit"} // T6910 added the last; R121 kept UserPromptExpansion out
 	for _, tt := range []struct {
 		name, content, state string
 		missing              bool

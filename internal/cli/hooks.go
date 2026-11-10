@@ -95,7 +95,11 @@ func hookFiles(v adapter.Vendor) ([]hookFile, error) {
 	switch v {
 	case adapter.Claude:
 		return []hookFile{{filepath.Join(h, ".claude", "settings.json"),
-			entries(v, "Stop", "StopFailure", "SessionStart", "Notification", "UserPromptSubmit", "UserPromptExpansion")}}, nil
+			// Not UserPromptExpansion: hooks.md lists it, but that Claude at the
+			// recorded version accepts it in settings.json is unverified, and a
+			// rejected settings file would break every launch (R121).
+			// TODO(T6895): a live check of a settings.json with it, then add it.
+			entries(v, "Stop", "StopFailure", "SessionStart", "Notification", "UserPromptSubmit")}}, nil
 	case adapter.Codex:
 		ch, err := codexHome(h)
 		if err != nil {

@@ -39,3 +39,14 @@ func TestOwnSkills(t *testing.T) {
 		}
 	}
 }
+
+// TestAggySkillKeyboardOnly (R121): the aggy skill tells the model that a
+// keyboard-only command reaching it was missed, and not to run it.
+func TestAggySkillKeyboardOnly(t *testing.T) {
+	body := string(Aggy)
+	for _, want := range []string{"aggy did not catch it", "Never run it yourself", "`--yes`", "type it again at the prompt"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the aggy skill lacks %q", want)
+		}
+	}
+}

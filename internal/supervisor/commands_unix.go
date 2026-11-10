@@ -331,7 +331,7 @@ func (s *session) startRun(c sessioncmd.Command, args []string) {
 		s.closePicker()
 	}
 	s.cmdSeq++
-	pg := &page{title: c.Name, seq: s.cmdSeq, confirm: c.Confirm, confirmLabel: c.ConfirmLabel, answer: c.Answer}
+	pg := &page{title: c.Name, seq: s.cmdSeq, confirm: c.Confirm, confirmLabel: c.ConfirmLabel, answer: c.Answer, also: c.Also, alsoLabel: c.AlsoLabel}
 	switch {
 	case c.Text != "":
 		pg.lines = []string{c.Text}
@@ -493,10 +493,18 @@ func (s *session) pageKey(k viewKey, r rune) bool {
 		g.top = 0
 	case r == 'G':
 		g.top = len(g.lines)
+	case r == 'c' && len(g.also) > 0 && !g.busy:
+		// The step before y (accept's checks): y stays for once it is done.
+		args := g.also
+		s.cmdSeq++
+		g.seq, g.busy, g.also, g.top = s.cmdSeq, true, nil, 0
+		g.lines = []string{"Running aggy " + strings.Join(args, " ") + "..."}
+		s.log(diag.Rec{Event: diag.EvCommandCaught, Attrs: map[string]any{"command": g.title, "via": "keys", "step": args[0]}})
+		s.goRun(g.seq, args, false)
 	case r == 'y' && len(g.confirm) > 0 && !g.busy:
 		args := g.confirm
 		s.cmdSeq++
-		g.seq, g.busy, g.confirm, g.top = s.cmdSeq, true, nil, 0
+		g.seq, g.busy, g.confirm, g.also, g.top = s.cmdSeq, true, nil, nil, 0
 		g.lines = []string{"Running aggy " + strings.Join(args, " ") + "..."}
 		s.log(diag.Rec{Event: diag.EvCommandCaught, Attrs: map[string]any{"command": g.title, "via": "keys", "confirmed": true}})
 		s.goRun(g.seq, args, g.answer)
