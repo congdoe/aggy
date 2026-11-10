@@ -13,6 +13,12 @@ func TestOpenCodeDefaults(t *testing.T) {
 	if c.OpenCode.Auto {
 		t.Error("full auto must be off until the person sets it")
 	}
+	if c.OpenCode.FreeModels {
+		t.Error("OpenCode's free models must be off until the person turns them on")
+	}
+	if got := Merge(c, RepoConfig{}).OpenCodeProviders(); slices.Contains(got, OpenCodeFreeProvider) {
+		t.Errorf("default providers %q hold OpenCode's own", got)
+	}
 	if !slices.Equal(c.OpenCode.Providers, []string{"openai", "xai"}) {
 		t.Errorf("providers = %q", c.OpenCode.Providers)
 	}
@@ -38,7 +44,10 @@ func TestOpenCodeParse(t *testing.T) {
 	}{
 		{"auto and providers", "[opencode]\nauto = true\nproviders = [\"xai\", \"mistral\"]\n", ""},
 		{"claude-agent never", "[opencode]\nproviders = [\"claude-agent\"]\n", "never allows"},
-		{"opencode's own service never", "[opencode]\nproviders = [\"opencode\"]\n", "never allows"},
+		{"opencode's own service only through free_models", "[opencode]\nproviders = [\"opencode\"]\n", "opencode-free-models on"},
+		{"the repo name is not a provider", "[opencode]\nproviders = [\"opencode-free\"]\n", "opencode-free-models on"},
+		{"free models on", "[opencode]\nfree_models = true\n", ""},
+		{"free models not a bool", "[opencode]\nfree_models = \"yes\"\n", "free_models"},
 		{"anthropic until aggy key", "[opencode]\nproviders = [\"anthropic\"]\n", "never allows"},
 		{"a bad name", "[opencode]\nproviders = [\"../x\"]\n", "not a provider id"},
 		{"a route to it", "[routing]\nreview = [\"opencode\"]\n", "on screen only"},
@@ -82,6 +91,59 @@ func TestOpenCodeProviders(t *testing.T) {
 				t.Errorf("Allows(opencode) = %v, want %v", e.Allows(adapter.OpenCode), c.allow)
 			}
 		})
+	}
+}
+
+// TestOpenCodeFreeModels: the user's free_models adds OpenCode's own
+// provider; a repo's allowed_vendors refuses it unless it names
+// opencode-free; a repo's own free_models turns nothing on.
+func TestOpenCodeFreeModels(t *testing.T) {
+	cases := []struct {
+		name     string
+		user     string // user config text
+		repo     string // repo config text
+		want     []string
+		repoSets bool
+	}{
+		{"off", "", "", []string{"openai", "xai"}, false},
+		{"on: added last", "[opencode]\nfree_models = true\n", "", []string{"openai", "xai", "opencode"}, false},
+		{"on, repo allows opencode only: refused", "[opencode]\nfree_models = true\n",
+			`allowed_vendors = ["opencode", "codex"]`, []string{"openai"}, false},
+		{"on, repo names opencode-free", "[opencode]\nfree_models = true\n",
+			`allowed_vendors = ["opencode", "opencode-free"]`, []string{"opencode"}, false},
+		{"on, repo leaves opencode out", "[opencode]\nfree_models = true\n",
+			`allowed_vendors = ["codex"]`, []string{"openai"}, false},
+		{"off, repo turns it on: ignored", "", "[opencode]\nfree_models = true\n", []string{"openai", "xai"}, true},
+		{"off, repo turns it on and lists it: still ignored", "",
+			"allowed_vendors = [\"opencode\", \"opencode-free\"]\n[opencode]\nfree_models = true\n", []string{}, true},
+		{"on, repo turns it off: ignored too", "[opencode]\nfree_models = true\n", "[opencode]\nfree_models = false\n",
+			[]string{"openai", "xai", "opencode"}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			user, err := Parse(c.user)
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo, err := ParseRepo(c.repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e := Merge(user, repo)
+			if got := e.OpenCodeProviders(); !slices.Equal(got, c.want) {
+				t.Errorf("providers = %q, want %q", got, c.want)
+			}
+			if repo.SetsFreeModels() != c.repoSets {
+				t.Errorf("SetsFreeModels = %v, want %v", repo.SetsFreeModels(), c.repoSets)
+			}
+			if !c.repoSets && e.OpenCode.FreeModels != user.OpenCode.FreeModels {
+				t.Error("Merge changed free_models")
+			}
+		})
+	}
+	// Any other key in a repo's [opencode] is still unknown.
+	if _, err := ParseRepo("[opencode]\nproviders = [\"opencode\"]\n"); err == nil || !strings.Contains(err.Error(), "unknown key") {
+		t.Errorf("a repo's [opencode] providers: err = %v, want an unknown key", err)
 	}
 }
 

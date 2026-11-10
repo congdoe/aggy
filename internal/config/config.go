@@ -151,7 +151,8 @@ type Media struct {
 }
 
 // OpenCode configures the OpenCode harness (docs/design.md, section 15). It
-// is user config only: a repo's .aggy/config.toml has no such table.
+// is user config only: a repo's .aggy/config.toml has no such table but for
+// free_models, which is read only to be ignored (RepoOpenCode).
 type OpenCode struct {
 	// Auto is full auto: OpenCode's --auto answers each ask with once.
 	// Denies still hold. It applies only in a repo trusted for OpenCode.
@@ -161,7 +162,27 @@ type OpenCode struct {
 	// allowed_vendors. openai and xai are the plans allowed in writing
 	// (docs/design.md); keys come with aggy key.
 	Providers []string `toml:"providers"`
+	// FreeModels adds OpenCode's own provider (OpenCodeFreeProvider, whose
+	// models include its free ones) to Providers. Off by default. Prompts
+	// and code then go to OpenCode's own service, under OpenCode's terms
+	// (docs/design.md, section 15). A repo's config that sets it is ignored
+	// and the launch says so (RepoConfig.SetsFreeModels); a repo's
+	// allowed_vendors refuses it unless it names OpenCodeFreeRepoName. It
+	// never reaches a borrow: OpenCode is on screen only (Validate).
+	FreeModels bool `toml:"free_models"`
 }
+
+// OpenCodeFreeProvider is OpenCode's own provider id: its models, the free
+// ones among them, are named opencode/<model-id> (opencode.ai/docs/zen, read
+// 2026-11-10). Which free models a real OpenCode lists under aggy's config is
+// unverified (a live check is owed, docs/verification.md).
+const OpenCodeFreeProvider = "opencode"
+
+// OpenCodeFreeRepoName is the name a repo's allowed_vendors lists to let
+// OpenCode's own provider see it. It is not "opencode", which a repo lists to
+// let the harness run at all, so a repo that allowed OpenCode with other
+// providers before free_models existed does not start allowing it.
+const OpenCodeFreeRepoName = "opencode-free"
 
 // providerRE is an OpenCode provider id, as in opencode models' provider/model.
 var providerRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
@@ -568,8 +589,9 @@ func Parse(text string) (Config, error) {
 }
 
 // openCodeNever are providers no launch allows (parity.OpenCodeAlwaysDenied,
-// which says why; anthropic waits for aggy key).
-var openCodeNever = []string{"claude-agent", "opencode", "anthropic"}
+// which says why; anthropic waits for aggy key). OpenCode's own provider is
+// apart: only [opencode] free_models allows it.
+var openCodeNever = []string{"claude-agent", "anthropic"}
 
 // Validate checks vendor names and budgets.
 func (c Config) Validate() error {
@@ -603,6 +625,8 @@ func (c Config) Validate() error {
 		switch {
 		case !providerRE.MatchString(p):
 			return fmt.Errorf("opencode.providers: %q is not a provider id", p)
+		case p == OpenCodeFreeProvider || p == OpenCodeFreeRepoName:
+			return fmt.Errorf("opencode.providers: %q is not listed here: aggy config set opencode-free-models on allows OpenCode's own provider", p)
 		case slices.Contains(openCodeNever, p):
 			return fmt.Errorf("opencode.providers: aggy never allows %q on OpenCode", p)
 		}

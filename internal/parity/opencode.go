@@ -47,10 +47,15 @@ var openCodeUIActions = []string{"todowrite", "question"}
 var openCodeReadTools = []string{"read", "grep", "glob"}
 
 // OpenCodeAlwaysDenied are providers no launch allows: claude-agent runs
-// the local claude, opencode's free models send prompts to OpenCode's own
-// service, and anthropic is only for a key added with aggy key, which
-// does not exist yet.
-var OpenCodeAlwaysDenied = []string{"claude-agent", "opencode", "anthropic"}
+// the local claude, and anthropic is only for a key added with aggy key,
+// which does not exist yet.
+var OpenCodeAlwaysDenied = []string{"claude-agent", "anthropic"}
+
+// OpenCodeOwnProvider is OpenCode's own provider, whose models (its free
+// ones among them) send prompts to OpenCode's own service. It is denied
+// last, like OpenCodeAlwaysDenied, unless the launch's Providers name it,
+// which only the person's [opencode] free_models does (config.Effective).
+const OpenCodeOwnProvider = "opencode"
 
 // openCodeCredentials are the file names of OpenCode's sign-ins, denied
 // where a rule can see a path: sessions and credentials share opencode.db.
@@ -343,16 +348,23 @@ func openCodePathDeny() []string {
 
 // openCodePolicies renders the provider allow-list and the tool denies. A
 // statement's last match wins, so the deny-all goes first and the
-// always-denied providers last.
+// always-denied providers last, with OpenCode's own unless it is allowed.
 func openCodePolicies(c OpenCodeConfig) ([]openCodeRule, error) {
 	if len(c.Providers) == 0 {
 		return nil, errors.New("parity: no provider is allowed for this launch")
 	}
 	rules := []openCodeRule{{"provider.use", "*", "deny"}}
 	for _, p := range c.Providers {
+		if slices.Contains(OpenCodeAlwaysDenied, p) {
+			return nil, fmt.Errorf("parity: aggy never allows provider %q on OpenCode", p)
+		}
 		rules = append(rules, openCodeRule{"provider.use", p, "allow"})
 	}
-	for _, p := range OpenCodeAlwaysDenied {
+	denied := slices.Clone(OpenCodeAlwaysDenied)
+	if !slices.Contains(c.Providers, OpenCodeOwnProvider) {
+		denied = append(denied, OpenCodeOwnProvider)
+	}
+	for _, p := range denied {
 		rules = append(rules, openCodeRule{"provider.use", p, "deny"})
 	}
 	if !c.NoPolicy {
