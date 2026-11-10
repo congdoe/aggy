@@ -46,6 +46,15 @@ const (
 	// TrustList opens this folder's trust list (/aggy trust, T6977): the
 	// person ticks rows on aggy's own screen, and confirming records them.
 	TrustList
+	// Pick opens a list filtered to what was typed (T6978): List names it
+	// ("aggy", "switch", or "borrow") and Prefix is the word typed. A prefix
+	// that names more than one item, or a command that changes setup, opens
+	// it, and the person picks.
+	Pick
+	// Fill types Line into the composer for the person to finish: a borrow
+	// kind completed from its prefix (/borrow res), whose task is a model
+	// turn.
+	Fill
 )
 
 // Command is one parsed command.
@@ -83,6 +92,12 @@ type Command struct {
 	// keyboard, never from a hook, which any process in the CLI's tree can
 	// send. No skill the model can call runs it.
 	KeyboardOnly bool
+	// Pick: the list and the prefix typed. Fill: the line.
+	List, Prefix string
+	Line         string
+	// FromList is set by the supervisor for a line picked from its own list,
+	// whose words came from that list: a tool's name needs no check then.
+	FromList bool
 }
 
 // Prefixes returns the characters a command may start with on v: "/" on every
@@ -120,19 +135,21 @@ func Parse(v adapter.Vendor, line string) (Command, bool) {
 		return Command{}, false
 	}
 	name, args := words[0], words[1:]
+	if name == "aggy" && len(args) > 0 && args[0] == "allow" {
+		// Its rule is quoted, so its words are not plain (parseAllow).
+		return parseAllow(line)
+	}
 	for _, w := range args {
 		if !plainWord(w) {
 			return Command{}, false
 		}
 	}
+	pre := Prefix(v)
 	switch name {
 	case "switch":
 		return parseSwitch(args)
 	case "borrow":
-		if len(args) == 0 {
-			return Command{Kind: BorrowList, Name: "borrow"}, true
-		}
-		return Command{}, false // a borrow is a model turn: its report lands in the conversation
+		return parseBorrow(pre, "", args)
 	case "inbox":
 		c, ok := inbox(args)
 		c.Name = "inbox"
@@ -141,9 +158,110 @@ func Parse(v adapter.Vendor, line string) (Command, bool) {
 		if len(args) == 0 {
 			return Command{Kind: AggyList, Name: "aggy"}, true
 		}
-		return parseAggy(args[0], args[1:])
+		return parseAggyWord(pre, args[0], args[1:])
 	}
 	return Command{}, false
+}
+
+// parseBorrow reads /borrow's words (/aggy borrow's, under is "aggy "): none
+// lists the kinds; one that is a kind or starts one or more (T6978) types
+// /borrow <kind> into the composer, or lists those it starts; anything more
+// is a model turn, whose report lands in the conversation.
+func parseBorrow(pre, under string, args []string) (Command, bool) {
+	name := under + "borrow"
+	switch {
+	case len(args) == 0:
+		return Command{Kind: BorrowList, Name: name}, true
+	case len(args) > 1:
+		return Command{}, false
+	}
+	var kinds []string
+	for _, k := range adapter.Kinds() {
+		if strings.HasPrefix(string(k), args[0]) {
+			kinds = append(kinds, string(k))
+		}
+	}
+	switch len(kinds) {
+	case 0:
+		return Command{}, false
+	case 1:
+		return Command{Kind: Fill, Name: name, Line: pre + name + " " + kinds[0] + " "}, true
+	}
+	return Command{Kind: Pick, Name: name, List: "borrow", Prefix: args[0]}, true
+}
+
+// parseAggyWord reads /aggy <word> args (T6978): a subcommand by its name,
+// or by a prefix that names only one, which runs as the name does, unless
+// the command changes setup or handles an edit borrow (Setup), which opens
+// the list filtered to the prefix instead. A prefix of more than one, alone,
+// opens that list. Anything else, a prefix with words its command does not
+// take included, is a question for the helper.
+func parseAggyWord(pre, word string, args []string) (Command, bool) {
+	if _, ok := subcommand(word); ok {
+		return parseAggy(pre, word, args)
+	}
+	var subs []string
+	for _, s := range Subcommands {
+		if strings.HasPrefix(s.Name, word) {
+			subs = append(subs, s.Name)
+		}
+	}
+	switch len(subs) {
+	case 0:
+		return Command{}, false
+	case 1:
+		c, ok := parseAggy(pre, subs[0], args)
+		if s, _ := subcommand(subs[0]); s.Setup && (ok || len(args) == 0) {
+			return Command{Kind: Pick, Name: "aggy", List: "aggy", Prefix: word}, true
+		}
+		return c, ok
+	}
+	if len(args) > 0 {
+		return Command{}, false
+	}
+	return Command{Kind: Pick, Name: "aggy", List: "aggy", Prefix: word}, true
+}
+
+// subcommand finds a subcommand by its whole name.
+func subcommand(name string) (Sub, bool) {
+	for _, s := range Subcommands {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return Sub{}, false
+}
+
+// parseAllow reads /aggy allow "<rule>" (T6978): the keyboard-only alias for
+// aggy permissions add allow "<rule>" in this folder, with its checks and
+// refusals. The rule is the rest of the line, in double quotes or bare, with
+// no double quote inside. Its page first shows the question aggy permissions
+// add asks, answered no; y answers it yes.
+func parseAllow(line string) (Command, bool) {
+	rest := strings.TrimLeft(line[1:], " ")
+	rest = strings.TrimLeft(strings.TrimPrefix(rest, "aggy"), " ")
+	rest, ok := strings.CutPrefix(rest, "allow")
+	if !ok {
+		return Command{}, false
+	}
+	c := Command{Kind: Run, Name: "aggy allow", Sub: "allow", KeyboardOnly: true}
+	if rest == "" {
+		c.Args = []string{"permissions", "--help"}
+		return c, true
+	}
+	if rest[0] != ' ' {
+		return Command{}, false
+	}
+	rule := strings.TrimSpace(rest)
+	if len(rule) >= 2 && rule[0] == '"' && rule[len(rule)-1] == '"' {
+		rule = rule[1 : len(rule)-1]
+	}
+	if rule == "" || strings.ContainsRune(rule, '"') {
+		return Command{}, false
+	}
+	c.Args = []string{"permissions", "add", "allow", rule}
+	c.Confirm, c.ConfirmLabel, c.Answer, c.ConfirmIf = c.Args, "y adds the rule", true, Asked
+	return c, true
 }
 
 // plainWord reports whether w holds only characters that need no quoting and
@@ -205,7 +323,22 @@ func parseSwitch(args []string) (Command, bool) {
 		case !strings.HasPrefix(a, "-") && c.Vendor == "":
 			v, err := adapter.ParseVendor(a)
 			if err != nil {
-				return Command{}, false
+				// A prefix of one vendor names it (T6978); of more, alone,
+				// it lists them.
+				var vs []adapter.Vendor
+				for _, k := range adapter.Known() {
+					if strings.HasPrefix(string(k), a) {
+						vs = append(vs, k)
+					}
+				}
+				switch {
+				case len(vs) == 1:
+					v = vs[0]
+				case len(vs) > 1 && len(args) == 1:
+					return Command{Kind: Pick, Name: "switch", List: "switch", Prefix: a}, true
+				default:
+					return Command{}, false
+				}
 			}
 			c.Vendor = v
 		default:
@@ -266,31 +399,53 @@ func Picked(v adapter.Vendor, typed string, tabbed bool, after, line string) boo
 	return slices.Equal(strings.Fields(rest+" "+after), words[1:])
 }
 
-// Subcommands are the /aggy commands that start no turn, in the order the
-// list shows them, with what each does.
-var Subcommands = []struct{ Name, What string }{
-	{"sessions", "every session, its directory and last vendor"},
-	{"session", "the children of this session"},
-	{"usage", "what each vendor has left"},
-	{"stats", "finished borrows per kind and vendor"},
-	{"log", "what happened in this session"},
-	{"inbox", "borrow reports you have not read"},
-	{"brief", "the handoff brief the next CLI would get"},
-	{"doctor", "check the CLIs, keys, policy, and tools"},
-	{"diag", "the diagnostic log; diag <id> for one run"},
-	{"check", "run the repo's checks on an edit borrow: check <id>"},
-	{"accept", "apply an edit borrow: accept <id>"},
-	{"reject", "throw away an edit borrow: reject <id>"},
-	{"tool", "turn a managed tool on or off"},
-	{"permissions", "the permission rules aggy keeps in step"},
-	{"trust", "this folder's trust list: what may run here, where code goes"},
+// Sub is one /aggy subcommand: its name, what it does, and whether it
+// changes setup or handles an edit borrow (Setup: never run from a prefix,
+// T6978), or needs a word after it that the list leaves to the person
+// (Fill).
+type Sub struct {
+	Name, What  string
+	Setup, Fill bool
+}
+
+// Subcommands are the /aggy commands, in the order the list shows them: the
+// stand-alone ones first, which /aggy runs the same way (T6978), so a name
+// the person's [commands] turns off still works under /aggy.
+var Subcommands = []Sub{
+	{Name: "switch", What: "switch to another CLI"},
+	{Name: "borrow", What: "borrow a task to another CLI (a model turn)"},
+	{Name: "inbox", What: "borrow reports you have not read"},
+	{Name: "sessions", What: "every session, its directory and last vendor"},
+	{Name: "session", What: "the children of this session"},
+	{Name: "usage", What: "what each vendor has left"},
+	{Name: "stats", What: "finished borrows per kind and vendor"},
+	{Name: "log", What: "what happened in this session"},
+	{Name: "brief", What: "the handoff brief the next CLI would get"},
+	{Name: "doctor", What: "check the CLIs, keys, policy, and tools"},
+	{Name: "diag", What: "the diagnostic log; diag <id> for one run"},
+	{Name: "check", What: "run the repo's checks on an edit borrow: check <id>", Fill: true},
+	{Name: "accept", What: "apply an edit borrow: accept <id>", Setup: true, Fill: true},
+	{Name: "reject", What: "throw away an edit borrow: reject <id>", Setup: true, Fill: true},
+	{Name: "tool", What: "turn a managed tool on or off", Setup: true},
+	{Name: "permissions", What: "the permission rules aggy keeps in step", Setup: true},
+	{Name: "allow", What: "allow a command here: allow \"Bash(npm test)\"", Setup: true, Fill: true},
+	{Name: "trust", What: "this folder's trust list: what may run here, where code goes", Setup: true},
 }
 
 // parseAggy reads /aggy <sub> args. A first word that is no subcommand, or a
-// subcommand with other arguments, is a question for the model.
-func parseAggy(sub string, args []string) (Command, bool) {
+// subcommand with other arguments, is a question for the model. switch,
+// borrow, and inbox are the stand-alone commands, under /aggy (T6978).
+func parseAggy(pre, sub string, args []string) (Command, bool) {
 	c := Command{Kind: Run, Name: "aggy " + sub, Sub: sub}
 	switch sub {
+	case "switch":
+		r, ok := parseSwitch(args)
+		r.Name = c.Name
+		return r, ok
+	case "borrow":
+		return parseBorrow(pre, "aggy ", args)
+	case "allow":
+		return Command{}, false // only whole, with its rule (parseAllow)
 	case "sessions", "session", "usage", "stats", "doctor", "brief", "log":
 		if len(args) > 0 {
 			return Command{}, false

@@ -36,6 +36,36 @@ func TestSessionAggyRefuses(t *testing.T) {
 	}
 }
 
+// TestSessionAllow (T6978): /aggy allow is aggy permissions add allow for this
+// folder: the first run asks and answers no, y answers yes; its checks and
+// refusals are the command's own, and nothing else of permissions changes
+// from a session.
+func TestSessionAllow(t *testing.T) {
+	isolate(t)
+	inRepo(t)
+	atKeyboard(t, "")
+	ask := []string{"permissions", "add", "allow", "Bash(npm test)"}
+	if out := sessionAggy(ask, false); !strings.Contains(out, "[y/N]") || !strings.Contains(out, "Nothing changed") || aggyFileText(t) != "" {
+		t.Fatalf("first run: %q", out)
+	}
+	if out := sessionAggy(ask, true); !strings.Contains(aggyFileText(t), "Bash(npm test)") {
+		t.Fatalf("y: %q", out)
+	}
+	if out := sessionAggy([]string{"permissions", "add", "allow", "Bash(*)"}, true); !strings.Contains(out, "permissions.bad_rule") {
+		t.Errorf("a rule aggy permissions refuses: %q", out)
+	}
+	for _, args := range [][]string{
+		{"permissions", "add", "deny", "Bash(x)"},
+		{"permissions", "add", "allow", "Bash(x)", "--everywhere"},
+		{"permissions", "add", "allow", "--everywhere"},
+		{"permissions", "remove", "allow", "Bash(npm test)"},
+	} {
+		if out := sessionAggy(args, true); !strings.Contains(out, "change them in a terminal") {
+			t.Errorf("sessionAggy(%q) = %q", args, out)
+		}
+	}
+}
+
 // TestWithAnswer: a run's question gets the answer given, never the terminal,
 // and keyboard is put back.
 func TestWithAnswer(t *testing.T) {

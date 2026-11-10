@@ -225,8 +225,10 @@ func TestForgedSwitchAfterPickAsks(t *testing.T) {
 // answering yes, as at a terminal; a run that asked nothing has no y step.
 func TestToolOnPageAsks(t *testing.T) {
 	s, ran := viewSess(t, adapter.Claude, "Index /r with codegraph? This runs codegraph init /r, which writes .codegraph/ in the repo. [y/N] Nothing indexed or turned on.")
+	s.o.ToolNames = func() []string { return []string{"rtk", "codegraph"} }
 	typeLine(s, "/aggy tool on codegraph")
 	settle(t, s)
+	settle(t, s) // the names, read, then the run
 	if len(*ran) != 1 || strings.Join((*ran)[0], " ") != "tool on codegraph false" {
 		t.Fatalf("ran %q", *ran)
 	}
@@ -238,6 +240,7 @@ func TestToolOnPageAsks(t *testing.T) {
 	s2, ran2 := viewSess(t, adapter.Claude, "rtk for claude: on")
 	typeLine(s2, "/aggy tool on rtk")
 	settle(t, s2)
+	settle(t, s2) // the names, read, then the run
 	s2.viewInput([]byte("y"))
 	if len(*ran2) != 1 || s2.pk.page == nil || s2.pk.page.busy {
 		t.Fatalf("y ran a tool on that asked nothing: %q", *ran2)

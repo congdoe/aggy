@@ -2,7 +2,7 @@
 name: switch
 description: aggy's switch to another vendor's CLI, picked by the person. Not for the model.
 disable-model-invocation: true
-argument-hint: "[claude|codex|grok] [--brief] [--new] [--model ID]"
+argument-hint: "[claude|codex|grok|opencode] [--brief] [--new] [--model ID]"
 ---
 
 # /switch reached you
