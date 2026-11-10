@@ -270,6 +270,64 @@ func TestSubcommandPassThrough(t *testing.T) {
 	}
 }
 
+// TestProbeCached (T6964): a second launch of an unchanged CLI starts no probe
+// process (--version or --help).
+func TestProbeCached(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"on screen", []string{"claude", "--max-turns", "2"}},
+		{"bare", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			sc := map[string]any{"raw_echo": true, "stdout": "READY>", "extra_flags": []string{"--max-turns"}}
+			// A probe runs with a scrubbed environment, so the fake cannot
+			// record it: a wrapper in its place logs each --version and
+			// --help to a fixed file, then runs the fake.
+			real := filepath.Join(w.home, "real", "claude")
+			if err := os.MkdirAll(filepath.Dir(real), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(filepath.Join(w.bin, "claude"), real); err != nil {
+				t.Fatal(err)
+			}
+			log := filepath.Join(w.home, "probes.log")
+			wrapper := "#!/bin/sh\ncase \" $* \" in *' --version '*|*' --help '*) echo \"$*\" >> '" + log + "';; esac\nexec '" + real + "' \"$@\"\n"
+			if err := os.WriteFile(filepath.Join(w.bin, "claude"), []byte(wrapper), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			probes := func() int {
+				b, err := os.ReadFile(log)
+				if err != nil && !os.IsNotExist(err) {
+					t.Fatal(err)
+				}
+				return strings.Count(string(b), "\n")
+			}
+			launch := func() {
+				t.Helper()
+				s := w.start(t, sc, tt.args...)
+				s.waitFor([]byte("READY>"))
+				s.send([]byte{0x04})
+				if code := s.exit(); code != 0 {
+					t.Fatalf("exit = %d\n%s", code, s.screen())
+				}
+			}
+			launch()
+			first := probes()
+			if first == 0 {
+				t.Fatal("first launch: no probe ran")
+			}
+			launch()
+			if n := probes(); n != first {
+				t.Errorf("second launch started %d probe processes", n-first)
+			}
+		})
+	}
+}
+
 // TestContinueWithFlags (T6961): aggy -c takes the CLI's flags too, sorted by
 // the vendor of the session it reopens, as claude -c --model x does.
 func TestContinueWithFlags(t *testing.T) {

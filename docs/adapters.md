@@ -442,6 +442,19 @@ usage error is a cached absence. A cached probe also carries a stamp of
 the spec it was made with, so a newer aggy that looks for more features
 (such as Grok's `--sandbox`) probes a cached CLI again, once.
 
+A launch's probe (on screen, print mode, or as given; `probe.Launch`, T6964)
+is cached in the same `probes` table, by the binary's identity: a hash of its
+resolved path, size, modification time, device, and inode (`binary_id`,
+schema version 23, read through safefs). An unchanged binary costs no
+process start, not even `--version`. A changed one (updated, replaced,
+touched, or another path) is probed again. Nothing is recorded when the
+version or any help run fails, or when the identity changed while the probe
+ran, so the next launch probes again. The row also keeps the flags the help
+shows with a value (`probe.ValueFlags`), under a marker for how they were
+parsed. Without the index, or on an OS with no inode, the CLI is probed
+every time. A borrow's probe keeps its own rule above: it runs `--version`
+each time and reuses a probe of that path and version.
+
 Headless argv per kind, as built (the prompt file is stdin, or Grok's
 `--prompt-file <p>`, shown as `grok …` below; `<id>` a
 session id; `--model <m>`, or `-c model="<m>"` on Codex, only when a model
