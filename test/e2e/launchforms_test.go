@@ -60,6 +60,24 @@ func settingsDeny(t *testing.T, r fakecli.Record) []string {
 	return layer.Permissions.Deny
 }
 
+// settingsRules is the ask and deny lists of the --settings layer aggy
+// passed: on screen the safety policy asks where Claude can (PR #125), so an
+// on-screen launch's policy is in either list.
+func settingsRules(t *testing.T, r fakecli.Record) []string {
+	t.Helper()
+	v := r.Flags["--settings"]
+	if len(v) == 0 {
+		return nil
+	}
+	var layer struct {
+		Permissions struct{ Ask, Deny []string } `json:"permissions"`
+	}
+	if err := json.Unmarshal([]byte(v[len(v)-1]), &layer); err != nil {
+		t.Fatalf("--settings %q: %v", v[len(v)-1], err)
+	}
+	return append(layer.Permissions.Ask, layer.Permissions.Deny...)
+}
+
 // TestPromptArgument (T6961): a prompt on aggy's command line, with or without
 // the vendor's name and its flags, starts the on-screen session with it, after
 // aggy's own launch flags, as the CLI itself takes it.
@@ -90,7 +108,9 @@ func TestPromptArgument(t *testing.T) {
 			if got := r.Flags["--model"]; tt.model != "" && (len(got) != 1 || got[0] != tt.model) {
 				t.Errorf("--model = %q, want %q", got, tt.model)
 			}
-			if len(r.Flags["--session-id"]) != 1 || len(settingsDeny(t, r)) == 0 {
+			// Hand-edited for PR #125: on screen the policy asks, so look in
+			// both lists (settingsRules), not only the deny list.
+			if len(r.Flags["--session-id"]) != 1 || !slices.Contains(settingsRules(t, r), "Bash(rm -rf*)") {
 				t.Errorf("aggy's own launch flags: %q", r.Args)
 			}
 		})
@@ -167,7 +187,8 @@ func TestFlagPassThrough(t *testing.T) {
 			if !slices.Equal(r.Flags[tt.flag], tt.want) || !slices.Equal(r.Positional, []string{"fix it"}) {
 				t.Errorf("%s = %q, positional %q; args %q", tt.flag, r.Flags[tt.flag], r.Positional, r.Args)
 			}
-			if len(r.Flags["--session-id"]) != 1 || !slices.Contains(settingsDeny(t, r), "Bash(rm -rf*)") {
+			// Hand-edited for PR #125: on screen the policy may ask.
+			if len(r.Flags["--session-id"]) != 1 || !slices.Contains(settingsRules(t, r), "Bash(rm -rf*)") {
 				t.Errorf("aggy's own launch flags: %q", r.Args)
 			}
 		})
@@ -228,15 +249,22 @@ func TestSettingsMerged(t *testing.T) {
 				return
 			}
 			var layer struct {
-				Permissions struct{ Allow, Deny []string } `json:"permissions"`
-				Model       string                         `json:"model"`
+				Permissions struct{ Allow, Ask, Deny []string } `json:"permissions"`
+				Model       string                              `json:"model"`
 			}
 			if err := json.Unmarshal([]byte(r.Flags["--settings"][0]), &layer); err != nil {
 				t.Fatal(err)
 			}
+			// Hand-edited for PR #125: on screen the policy's rule is an ask,
+			// in print mode a deny (planHeadless); the person's deny stays a
+			// deny either way.
 			deny := layer.Permissions.Deny
+			policy := layer.Permissions.Ask
+			if tt.print {
+				policy = deny
+			}
 			if !slices.Contains(layer.Permissions.Allow, "Bash(ls)") || !slices.Contains(deny, "Read(./secret)") ||
-				!slices.Contains(deny, "Bash(rm -rf*)") || layer.Model != "x" {
+				!slices.Contains(policy, "Bash(rm -rf*)") || layer.Model != "x" {
 				t.Errorf("merged layer = %s", r.Flags["--settings"][0])
 			}
 		})

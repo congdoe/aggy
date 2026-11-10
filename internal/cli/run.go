@@ -352,7 +352,8 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// person's own --settings, merged under aggy's layer (T6962), who asked for
 	// --no-policy, and the rest. What only --no-policy lets through is kept from
 	// a later launch of the session.
-	g, code, err := gateLaunch(ctx, tp, v, pl.child.Cwd, cfg, pl.child.Kind == "")
+	who := childPlan(pl.child.Kind)
+	g, code, err := gateLaunch(ctx, tp, v, pl.child.Cwd, cfg, who == planOnScreen)
 	if err != nil {
 		// Exit 2, as print mode's and a subcommand's gate refusals
 		// (launchUsageErr) and a refused flag above (PR #124 re-review).
@@ -394,21 +395,19 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// The person's shared rules, read now, so an approval given in another
 	// CLI since the last launch or switch holds here. A borrow's child, even
 	// reopened on screen, gets none, and the safety policy as denies.
+	// One choice (childPlan) decides both whether gateLaunch read the shared
+	// rules and whether the policy asks.
 	var rules permissions.Set
-	if pl.child.Kind == "" {
+	if who == planOnScreen {
 		rules = loadPermissions(ctx, pl.child.Cwd, cfg)
 		if rules.FileErr != nil {
 			return fail(diag.CodePermBadFile, rules.FileErr)
 		}
 	}
-	who := planOnScreen
-	if pl.child.Kind != "" {
-		who = planHeadless
-	}
 	plan := policyPlan(who, pl.child.Cwd, rules)
 	if t.NoPolicy {
 		warns = append(warns, "starting without the safety policy (--no-policy)")
-	} else if v == adapter.Codex && pl.child.Kind != "" {
+	} else if v == adapter.Codex && who == planHeadless {
 		// Codex's global rules file asks, and an interactive Codex prompts, so a
 		// borrow child reopened there would be asked where it was refused. The
 		// only per-launch way to refuse a prompt rule is approval never, which
@@ -422,7 +421,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		}
 		warns = append(warns, pw...)
 	}
-	if pl.child.Kind == "" {
+	if who == planOnScreen {
 		warns = append(warns, addPermissions(v, caps, rules, &req)...)
 	}
 	// Memory comes from the child's own directory, never the current one:

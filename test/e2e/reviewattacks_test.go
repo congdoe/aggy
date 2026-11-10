@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -145,6 +146,51 @@ func TestGateExitCodeOnScreen(t *testing.T) {
 		for _, r := range fakecli.Records(t, w.record) {
 			t.Errorf("the CLI ran: %+v", r)
 		}
+	}
+}
+
+// TestPrintPolicyAllDeny (PR #125 integration): a run aggy does not supervise
+// (print mode, a stdin that is no terminal, the flags that run like it) gets
+// the safety policy as denies only, never asks: no one may be there to answer,
+// and a --permission-prompt-tool could answer for them.
+func TestPrintPolicyAllDeny(t *testing.T) {
+	for _, args := range [][]string{
+		{"claude", "-p", "hi"},
+		{"-p", "hi"},
+		{"claude", "--init-only"},
+		{"claude", "--permission-prompt-tool", "mcp__x__y", "-p", "hi"},
+	} {
+		w := newWorld(t)
+		sc := map[string]any{"stdout": "ran\n", "interactive_without_tty": true, "extra_switches": []string{"--init-only"}, "extra_flags": []string{"--permission-prompt-tool"}}
+		code, _, errb := w.pipe(t, sc, "", args...)
+		recs := fakecli.Records(t, w.record)
+		if code != 0 || len(recs) != 1 {
+			t.Fatalf("%q: exit %d, runs %d, stderr %q", args, code, len(recs), errb)
+		}
+		v := recs[0].Flags["--settings"]
+		if len(v) == 0 {
+			t.Fatalf("%q: no --settings", args)
+		}
+		var layer struct {
+			Permissions struct{ Ask, Deny []string } `json:"permissions"`
+		}
+		if err := json.Unmarshal([]byte(v[len(v)-1]), &layer); err != nil {
+			t.Fatal(err)
+		}
+		if len(layer.Permissions.Ask) != 0 {
+			t.Errorf("%q: asks %q, want none", args, layer.Permissions.Ask)
+		}
+		for _, r := range []string{"Bash(git clean *)", "Bash(rm -rf*)", "Read(//**/.env)"} {
+			if !slices.Contains(layer.Permissions.Deny, r) {
+				t.Errorf("%q: deny %q lacks %q", args, layer.Permissions.Deny, r)
+			}
+		}
+	}
+	w := newWorld(t)
+	code, _, errb := w.pipe(t, map[string]any{"stdout": "ran\n"}, "", "grok", "-p", "hi")
+	recs := fakecli.Records(t, w.record)
+	if code != 0 || len(recs) != 1 || !slices.Contains(recs[0].Flags["--deny"], "Bash(git clean *)") {
+		t.Fatalf("grok -p: exit %d, stderr %q, runs %+v", code, errb, recs)
 	}
 }
 

@@ -290,7 +290,7 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 	for _, r := range req.Rules.Allow {
 		// A deny outranks an allow (decision_rank, policy.rs:791 at
 		// grok-build 2bdd1d6a), so aggy's policy rules (deny, or ask on
-		// screen once PR #125 lands) still hold. TODO(T6895): not yet run
+		// screen) still hold. TODO(T6895): not yet run
 		// live on screen, and that an ask outranks an allow is unchecked.
 		if r == "" || strings.HasPrefix(r, "-") || strings.ContainsAny(r, ",\x00") {
 			return adapter.Command{}, fmt.Errorf("grok: allow rule %q cannot be passed as one --allow value", r)

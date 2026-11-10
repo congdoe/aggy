@@ -401,6 +401,8 @@ func runPrint(cmd string, v adapter.Vendor, t target, words []string, help adapt
 	if t.NoPolicy {
 		warns = append(warns, "running without the safety policy (--no-policy)")
 	} else {
+		// Every rule a deny (PR #125 integration): no one may be there to
+		// answer an ask, and a --permission-prompt-tool could answer it.
 		pw, err := addPolicy(v, caps, cfg.Policy.Required, policyPlan(planHeadless, cwd, rules), &req)
 		if err != nil {
 			return fail(diag.CodePolicy, err)
