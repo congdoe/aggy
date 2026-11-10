@@ -44,7 +44,7 @@ func (Adapter) LockdownCaps(adapter.Kind) []string { return nil }
 func (Adapter) SelfTestKind() adapter.Kind { return adapter.Research }
 
 // PassFlags is `aggy opencode`'s table. It passes none of OpenCode's own flags
-// yet, so runVendor and Interactive refuse any Extra.
+// yet, so runLaunch and Interactive refuse any Extra.
 func (Adapter) PassFlags() adapter.PassFlags {
 	return adapter.PassFlags{
 		Model:    []string{"--model"},

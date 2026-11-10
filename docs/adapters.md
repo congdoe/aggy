@@ -628,9 +628,21 @@ Codex resume, so no flag can take the id as its value. Each adapter's
 `PassFlags` table says which flags aggy takes over (`--model`, `--continue`,
 `--resume`, so the index stays true) and which it refuses; the rest pass
 unchanged, so a new vendor flag needs no aggy change. `PassFlags.Parse` is
-generic: a new vendor supplies a table only. A bare word is passed only after
-a flag the table's `Values` or `Checked` say takes a value; for another flag
-it is `--flag=value`.
+generic: a new vendor supplies a table only. The words keep their order. A bare
+word directly after a flag the table's `Values`, `Variadic`, or `Checked`
+says takes a value is that value; any
+other bare word is the prompt (T6961). A first prompt word in the table's
+`Commands` (the CLI's subcommands) is refused on screen. `Print` and
+`PrintCommands` name print mode (Claude `-p`/`--print`; Grok `-p`/`--single`/
+`--print`, `--prompt-file`, `--prompt-json`; `codex exec`/`e`), which aggy runs
+directly with no supervisor; there a refused flag marked `ScreenOnly` (the
+session id, `--fork-session`, Grok's `--load` and `--no-alt-screen`) passes,
+and the model, continue, and resume flags go to the CLI as typed. The
+subcommand lists are Claude's CLI reference (read 2026-11-09), Codex's
+`Subcommand` enum in `codex-rs/cli/src/main.rs` at `6aaac69`, and Grok's
+`Command` enum in `xai-grok-pager/src/app/cli.rs` at grok-build `2bdd1d6a`, all
+read 2026-11-09. That Grok and Codex take a positional prompt is from the same
+sources (`PagerArgs.prompt`; codex's usage `codex [OPTIONS] [PROMPT]`).
 
 - Refused, because aggy passes the flag at launch: Claude `--session-id`,
   `--settings`, `--append-system-prompt-file` (and `--append-system-prompt`),
@@ -639,10 +651,10 @@ it is `--flag=value`.
   (`-s`), `--no-alt-screen`, `--rules` (and its alias `--append-system-prompt`),
   `--deny` (and its alias `--disallowedTools`), `--agent`.
 - Refused, because the session would not be the one aggy recorded: Claude
-  `--fork-session`, `-p`, `--worktree`, `--bg`, `--cloud`, and the like;
-  Codex `-C`, `--remote`, `--worktree`; Grok `--fork-session`, `-p` (`--single`,
-  `--print`), `--prompt-file`, `--prompt-json`, `--load`, `--cwd`, `--worktree`
-  (`-w`), `--worktree-ref`, `--local-workspace*`. Grok `--installer` too, which
+  `--fork-session` (on screen), `--worktree`, `--bg`, `--cloud`, and the like;
+  Codex `-C`, `--remote`, `--worktree`; Grok `--fork-session` and `--load` (on
+  screen), `--cwd`, `--worktree` (`-w`), `--worktree-ref`,
+  `--local-workspace*`. Grok `--installer` too, which
   writes its config outside aggy's manifest.
 - Refused unless `--no-policy`, then noted at launch and logged
   (`loosening_flags`): anything naming `dangerously`, on every vendor; Claude

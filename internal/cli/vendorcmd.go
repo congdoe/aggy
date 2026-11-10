@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,13 +16,13 @@ import (
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/termsafe"
-	"github.com/congdoe/aggy/internal/tooldef"
 )
 
-const vendorUsage = `Usage: aggy <claude|codex|grok|opencode> [--direct] [--no-policy] [--tool NAME]... [the CLI's own flags]
+const vendorUsage = `Usage: aggy <claude|codex|grok|opencode> [--direct] [--no-policy] [--tool NAME]... [the CLI's own flags] [prompt]
 
-Starts a new session of that CLI here, with the CLI's own flags, as if you
-had opened it yourself: aggy claude --model opus --permission-mode plan.
+Starts a new session of that CLI here, with the CLI's own flags and first
+prompt, as if you had opened it yourself: aggy claude --model opus "fix the
+build". Without a vendor, aggy [flags] [prompt] is the default vendor's.
 
   --continue    Reopen the latest session of this CLI here, or refuse (also
                 -c on claude)
@@ -34,10 +33,19 @@ had opened it yourself: aggy claude --model opus --permission-mode plan.
   --no-policy   Without aggy's safety policy
   --tool NAME   Turn a tool on for this session only
 
-Every other flag goes to the CLI. aggy refuses the ones that clash with what
-it passes at launch (--session-id, --settings, and so on; the message says
-why), a prompt, and a subcommand: type the prompt once the session starts,
-and run the CLI itself for its subcommands and its own --help.
+Every other word goes to the CLI, in the order given, after aggy's own launch
+flags. aggy refuses the flags that clash with what it passes at launch
+(--session-id and so on; the message says why). A bare word directly after a
+flag that takes a value is that value; any other is the prompt, and the session
+starts with it. A first prompt word that names one of the CLI's subcommands is
+refused: put the prompt after --. A prompt with --continue or --resume is
+claude's only. OpenCode takes no prompt yet.
+
+Print mode (claude -p, grok -p, codex exec) and a stdin that is no terminal
+run the CLI on your terminal with no switch key and no session recorded: aggy
+adds its safety policy, your shared rules, and the shared memory, and passes
+the rest as typed, -c and -r included; stdin, stdout, and the exit code are
+the CLI's. git diff | aggy claude -p "review this".
 
 A flag that could get past aggy's safety policy or hooks (--dangerously-*,
 --permission-mode bypassPermissions, --yolo, -a never, --add-dir of your home or
@@ -45,8 +53,7 @@ a folder of keys on codex and grok, and on codex --disable hooks and a -c aggy
 cannot tell is harmless) needs --no-policy, and aggy notes it at launch. A flag
 that only asks you less passes where your deny rules still hold, as on claude
 --allowedTools and --permission-mode auto, and some pass with a line at launch,
-as on codex --profile and --enable. A bare word is taken as a value only after a
-flag aggy knows takes one; for any other flag write --flag=value.
+as on codex --profile and --enable.
 
 aggy opencode takes only the flags above, none of OpenCode's own. Its model
 is provider/model. As on the other CLIs, --model on a resume applies in opencode
@@ -67,88 +74,6 @@ func launchUsageErr(stderr io.Writer, cmd string, code diag.Code, msg, usage str
 		fmt.Fprintf(stderr, "\n%s", usage)
 	}
 	return 2
-}
-
-// runVendor is `aggy <vendor> [flags]`: a new session of v here, or with
-// --continue or --resume an old one, with the CLI's own flags for it. Ids
-// never come from these flags: --resume takes an aggy id, checked as aggy
-// resume checks it, and the adapter passes only the id the index holds.
-func runVendor(v adapter.Vendor, args []string, stderr io.Writer) int {
-	name := string(v)
-	t := target{Vendor: v}
-	var rest []string
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		flag, val, hasVal := strings.Cut(a, "=")
-		switch {
-		case a == "--direct":
-			t.Direct = true
-		case a == "--no-policy":
-			t.NoPolicy = true
-		case flag == "--tool":
-			if !hasVal {
-				if i+1 == len(args) {
-					return launchUsageErr(stderr, name, diag.CodeUsage, "--tool needs a name", vendorUsage)
-				}
-				i++
-				val = args[i]
-			}
-			if !tooldef.ValidName(val) {
-				return launchUsageErr(stderr, name, diag.CodeUsage, fmt.Sprintf("%q is not a tool name", val), "")
-			}
-			t.Tools = append(t.Tools, val)
-		default:
-			rest = append(rest, a)
-		}
-	}
-	p, err := passFlags(v).Parse(rest, t.NoPolicy)
-	if err != nil {
-		code := diag.CodeFlagClash
-		switch {
-		case errors.Is(err, adapter.ErrNotFlag):
-			code = diag.CodeUsage
-		case errors.Is(err, adapter.ErrLoosens):
-			code = diag.CodeFlagLoosens
-		}
-		return launchUsageErr(stderr, name, code, err.Error(), "")
-	}
-	if v == adapter.OpenCode && len(p.Extra) > 0 {
-		return launchUsageErr(stderr, name, diag.CodeFlagClash, fmt.Sprintf("aggy passes none of OpenCode's own flags yet, so not %q", p.Extra[0]), vendorUsage)
-	}
-	t.Model, t.Extra, t.SafeExtra, t.Loosens, t.FlagNotes, t.Dirs = p.Model, p.Extra, p.Safe, p.Loosens, p.Notes, p.Dirs
-	switch {
-	case p.Continue && p.Resume:
-		return launchUsageErr(stderr, name, diag.CodeUsage, "use --continue or --resume, not both", vendorUsage)
-	case p.Continue:
-		t.Continue = true
-	case p.Resume && p.ResumeID != "":
-		id, msg := sessionArg(p.ResumeID)
-		if msg != "" {
-			return launchUsageErr(stderr, name, diag.CodeUsage, msg, "")
-		}
-		t.ParentID = id
-	case p.Resume:
-		t.Continue = true
-	default:
-		t.New = true
-	}
-	return launch("aggy "+name, t, stderr)
-}
-
-// runContinue is `aggy --continue` (-c): the session last active here, in
-// any vendor; an error when there is none, as for claude --continue.
-func runContinue(args []string, stderr io.Writer) int {
-	t := target{Continue: true}
-	for _, a := range args {
-		switch a {
-		case "--no-policy":
-			t.NoPolicy = true
-		case "--continue", "-c":
-		default:
-			return cmdUsage(stderr, "", "aggy --continue takes only --no-policy", continueUsage)
-		}
-	}
-	return launch("aggy", t, stderr)
 }
 
 // sessionArg checks an id given on the command line, and returns it in

@@ -134,8 +134,11 @@ func TestPassFlags(t *testing.T) {
 		{name: "claude memory", p: cl, args: []string{"--append-system-prompt-file", "x"}, refused: "shared memory"},
 		{name: "claude --mcp-config", p: cl, args: []string{"--mcp-config", "x"}, refused: "--mcp-config clashes"},
 		{name: "claude --fork-session", p: cl, args: []string{"--fork-session"}, refused: "--fork-session clashes"},
-		{name: "claude -p", p: cl, args: []string{"-p"}, refused: "-p clashes"},
-		{name: "claude -p run together", p: cl, args: []string{"-dp"}, refused: "-p clashes"},
+		// T6961: print mode is the caller's choice (PrintRequested); Parse marks it.
+		{name: "claude -p", p: cl, args: []string{"-p"},
+			want: adapter.ParsedFlags{Print: true, Extra: []string{"-p"}, Safe: []string{"-p"}}},
+		{name: "claude -p run together", p: cl, args: []string{"-dp"},
+			want: adapter.ParsedFlags{Print: true, Extra: []string{"-dp"}, Safe: []string{"-dp"}}},
 		{name: "claude -c run together", p: cl, args: []string{"-dc"}, refused: "write -c on its own"},
 		{name: "claude --worktree", p: cl, args: []string{"-w", "x"}, refused: "-w clashes"},
 		{name: "grok --session-id", p: gk, args: []string{"--session-id", "x"}, refused: "--session-id clashes"},
@@ -179,7 +182,8 @@ func TestPassFlags(t *testing.T) {
 			want: adapter.ParsedFlags{Extra: []string{"-px"}, Safe: []string{"-px"}}},
 		{name: "codex --enable passes", p: cx, args: []string{"--enable", "x"},
 			want: adapter.ParsedFlags{Extra: []string{"--enable", "x"}, Safe: []string{"--enable", "x"}}},
-		{name: "codex --profile takes its word only", p: cx, args: []string{"--profile", "x", "fix"}, refused: "not a flag"},
+		{name: "codex --profile takes its word only", p: cx, args: []string{"--profile", "x", "fix"},
+			want: adapter.ParsedFlags{Extra: []string{"--profile", "x", "fix"}, Safe: []string{"--profile", "x"}, Prompt: []string{"fix"}}},
 		{name: "claude --agents with a mode that asks", p: cl, args: []string{"--agents", `{"a":{"permissionMode":"auto","prompt":"say auto"}}`},
 			want: adapter.ParsedFlags{Extra: []string{"--agents", `{"a":{"permissionMode":"auto","prompt":"say auto"}}`}, Safe: []string{"--agents", `{"a":{"permissionMode":"auto","prompt":"say auto"}}`}}},
 		{name: "grok --agents with plan", p: gk, args: []string{"--agents", `{"a":{"permissionMode":"plan","model":"auto"}}`},
@@ -195,7 +199,8 @@ func TestPassFlags(t *testing.T) {
 			want: adapter.ParsedFlags{Extra: []string{"--agents", `{"a":{"prompt":"permissionMode","model":"sonnet"}}`}, Safe: []string{"--agents", `{"a":{"prompt":"permissionMode","model":"sonnet"}}`}}},
 		{name: "claude --agents, an array and a nested object", p: cl, args: []string{"--agents", `{"a":{"tools":["permissionMode","x"],"b":{},"model":"sonnet","permissionMode":"plan"}}`},
 			want: adapter.ParsedFlags{Extra: []string{"--agents", `{"a":{"tools":["permissionMode","x"],"b":{},"model":"sonnet","permissionMode":"plan"}}`}, Safe: []string{"--agents", `{"a":{"tools":["permissionMode","x"],"b":{},"model":"sonnet","permissionMode":"plan"}}`}}},
-		{name: "grok --print is --single", p: gk, args: []string{"--print", "x"}, refused: "--print clashes"},
+		{name: "grok --print is --single, and takes its prompt", p: gk, args: []string{"--print", "x"},
+			want: adapter.ParsedFlags{Print: true, Extra: []string{"--print", "x"}, Safe: []string{"--print", "x"}}},
 		{name: "grok --load resumes around the index", p: gk, args: []string{"--load", "x"}, refused: "--load clashes"},
 		{name: "grok --append-system-prompt is --rules", p: gk, args: []string{"--append-system-prompt", "x"}, refused: "--append-system-prompt clashes"},
 		{name: "grok --installer writes config", p: gk, args: []string{"--installer", "x"}, refused: "--installer clashes"},
@@ -206,7 +211,8 @@ func TestPassFlags(t *testing.T) {
 		{name: "grok -s", p: gk, args: []string{"-s", "x"}, refused: "-s clashes"},
 		{name: "grok --cwd", p: gk, args: []string{"--cwd", "/x"}, refused: "--cwd clashes"},
 		{name: "grok -w", p: gk, args: []string{"-w"}, refused: "-w clashes"},
-		{name: "grok --prompt-json", p: gk, args: []string{"--prompt-json", "[]"}, refused: "--prompt-json clashes"},
+		{name: "grok --prompt-json", p: gk, args: []string{"--prompt-json", "[]"},
+			want: adapter.ParsedFlags{Print: true, Extra: []string{"--prompt-json", "[]"}, Safe: []string{"--prompt-json", "[]"}}},
 		{name: "grok --disallowedTools is --deny", p: gk, args: []string{"--disallowedTools", "x"}, refused: "--disallowedTools clashes"},
 		{name: "grok --permission-mode default", p: gk, args: []string{"--permission-mode", "default"},
 			want: adapter.ParsedFlags{Extra: []string{"--permission-mode", "default"}, Safe: []string{"--permission-mode", "default"}}},
@@ -220,19 +226,34 @@ func TestPassFlags(t *testing.T) {
 		{name: "--flag=value needs no table entry", p: cl, args: []string{"--newflag=x"},
 			want: adapter.ParsedFlags{Extra: []string{"--newflag=x"}, Safe: []string{"--newflag=x"}}},
 
-		// Only a flag known to take a value takes the next word.
-		{name: "a prompt after a switch", p: cl, args: []string{"--verbose", "fix the bug"}, refused: "not a flag"},
-		{name: "a subcommand after a switch", p: cx, args: []string{"--search", "resume", "--last"}, refused: "not a flag"},
-		{name: "a word after an unknown flag", p: gk, args: []string{"--newflag", "x"}, refused: "not a flag"},
-		{name: "two words after a value flag", p: cl, args: []string{"--add-dir", "/x", "fix"}, refused: "not a flag"},
+		// T6961: only a flag known to take a value takes the next word; any
+		// other bare word is the prompt, passed in place and kept out of Safe.
+		{name: "a prompt after a switch", p: cl, args: []string{"--verbose", "fix the bug"},
+			want: adapter.ParsedFlags{Extra: []string{"--verbose", "fix the bug"}, Safe: []string{"--verbose"}, Prompt: []string{"fix the bug"}}},
+		{name: "a subcommand after a switch", p: cx, args: []string{"--search", "resume", "--last"}, refused: "names a subcommand"},
+		{name: "a word after an unknown flag", p: gk, args: []string{"--newflag", "x"},
+			want: adapter.ParsedFlags{Extra: []string{"--newflag", "x"}, Safe: []string{"--newflag"}, Prompt: []string{"x"}}},
+		{name: "two words after a value flag", p: cl, args: []string{"--effort", "high", "fix"},
+			want: adapter.ParsedFlags{Extra: []string{"--effort", "high", "fix"}, Safe: []string{"--effort", "high"}, Prompt: []string{"fix"}}},
 
-		{name: "a prompt", p: cl, args: []string{"fix the bug"}, refused: "not a flag"},
-		{name: "a subcommand", p: cx, args: []string{"resume", "abc"}, refused: "not a flag"},
-		{name: "a word after a flag's value", p: cl, args: []string{"--permission-mode", "plan", "fix"}, refused: "not a flag"},
-		{name: "a word after --flag=value", p: cl, args: []string{"--permission-mode=plan", "fix"}, refused: "not a flag"},
-		{name: "a word after a model", p: cl, args: []string{"--model", "opus", "fix"}, refused: "not a flag"},
-		{name: "--", p: cl, args: []string{"--", "fix"}, refused: "starts a prompt"},
-		{name: "-", p: cl, args: []string{"-"}, refused: "not a flag"},
+		{name: "a prompt", p: cl, args: []string{"fix the bug"},
+			want: adapter.ParsedFlags{Extra: []string{"fix the bug"}, Prompt: []string{"fix the bug"}}},
+		{name: "a prompt, then flags", p: cl, args: []string{"fix", "--verbose"},
+			want: adapter.ParsedFlags{Extra: []string{"fix", "--verbose"}, Safe: []string{"--verbose"}, Prompt: []string{"fix"}}},
+		{name: "a subcommand", p: cx, args: []string{"resume", "abc"}, refused: "names a subcommand"},
+		{name: "a subcommand of claude", p: cl, args: []string{"mcp", "list"}, refused: "names a subcommand"},
+		{name: "a subcommand's name later in a prompt", p: cl, args: []string{"fix", "mcp"},
+			want: adapter.ParsedFlags{Extra: []string{"fix", "mcp"}, Prompt: []string{"fix", "mcp"}}},
+		{name: "a word after a flag's value", p: cl, args: []string{"--permission-mode", "plan", "fix"},
+			want: adapter.ParsedFlags{Extra: []string{"--permission-mode", "plan", "fix"}, Safe: []string{"--permission-mode", "plan"}, Prompt: []string{"fix"}}},
+		{name: "a word after --flag=value", p: cl, args: []string{"--permission-mode=plan", "fix"},
+			want: adapter.ParsedFlags{Extra: []string{"--permission-mode=plan", "fix"}, Safe: []string{"--permission-mode=plan"}, Prompt: []string{"fix"}}},
+		{name: "a word after a model", p: cl, args: []string{"--model", "opus", "fix"},
+			want: adapter.ParsedFlags{Model: "opus", Extra: []string{"fix"}, Prompt: []string{"fix"}}},
+		{name: "--", p: cl, args: []string{"--", "mcp"},
+			want: adapter.ParsedFlags{Extra: []string{"--", "mcp"}, Prompt: []string{"mcp"}}},
+		{name: "-", p: cl, args: []string{"-"},
+			want: adapter.ParsedFlags{Extra: []string{"-"}, Prompt: []string{"-"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -253,8 +274,75 @@ func TestPassFlags(t *testing.T) {
 				t.Fatal(err)
 			}
 			if got.Model != tt.want.Model || got.Continue != tt.want.Continue || got.Resume != tt.want.Resume ||
-				got.ResumeID != tt.want.ResumeID || !slices.Equal(got.Extra, tt.want.Extra) || !slices.Equal(got.Safe, tt.want.Safe) {
+				got.ResumeID != tt.want.ResumeID || !slices.Equal(got.Extra, tt.want.Extra) || !slices.Equal(got.Safe, tt.want.Safe) ||
+				!slices.Equal(got.Prompt, tt.want.Prompt) || got.Print != tt.want.Print {
 				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParsePrint (T6961): in print mode aggy records no session, so it takes
+// over no flag and refuses only what clashes with more than that session.
+func TestParsePrint(t *testing.T) {
+	cl, gk := claude.Adapter{}.PassFlags(), grok.New().PassFlags()
+	tests := []struct {
+		name    string
+		p       adapter.PassFlags
+		args    []string
+		want    []string
+		refused string
+	}{
+		{"claude's own continue and model", cl, []string{"-c", "-p", "--model", "opus", "check types"}, []string{"-c", "-p", "--model", "opus", "check types"}, ""},
+		{"claude's own resume", cl, []string{"-p", "-r", "auth-refactor", "finish"}, []string{"-p", "-r", "auth-refactor", "finish"}, ""},
+		{"a session id is the CLI's", cl, []string{"-p", "--session-id", "x"}, []string{"-p", "--session-id", "x"}, ""},
+		{"a subcommand's name is a prompt", cl, []string{"-p", "mcp"}, []string{"-p", "mcp"}, ""},
+		{"grok -p takes its prompt", gk, []string{"-p", "hi", "--no-alt-screen"}, []string{"-p", "hi", "--no-alt-screen"}, ""},
+		{"a bypass still needs --no-policy", cl, []string{"-p", "--dangerously-skip-permissions", "x"}, nil, "--no-policy"},
+		{"aggy's memory flag still clashes", gk, []string{"-p", "x", "--rules", "y"}, nil, "--rules clashes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.p.ParseWith(tt.args, adapter.ParseOpts{Print: true})
+			if tt.refused != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.refused) {
+					t.Fatalf("err = %v, want %q", err, tt.refused)
+				}
+				return
+			}
+			if err != nil || !slices.Equal(got.Extra, tt.want) {
+				t.Errorf("extra %q, err %v; want %q", got.Extra, err, tt.want)
+			}
+		})
+	}
+}
+
+// TestPrintRequested (T6961): a print flag anywhere but in a flag's value or
+// after "--" asks for print mode, as does a print subcommand first.
+func TestPrintRequested(t *testing.T) {
+	cl, cx, gk := claude.Adapter{}.PassFlags(), codex.Adapter{}.PassFlags(), grok.New().PassFlags()
+	tests := []struct {
+		name string
+		p    adapter.PassFlags
+		args []string
+		want bool
+	}{
+		{"claude -p", cl, []string{"-p", "hi"}, true},
+		{"claude --print later", cl, []string{"--model", "opus", "--print"}, true},
+		{"claude -p run together", cl, []string{"-dp"}, true},
+		{"claude a value that says -p", cl, []string{"--model", "-p"}, false},
+		{"claude after --", cl, []string{"--", "-p"}, false},
+		{"claude none", cl, []string{"--verbose", "hi"}, false},
+		{"codex -p is a profile", cx, []string{"-p", "work"}, false},
+		{"codex exec", cx, []string{"exec", "hi"}, true},
+		{"codex e", cx, []string{"e", "hi"}, true},
+		{"codex exec as a later word", cx, []string{"--search", "exec"}, false},
+		{"grok --prompt-file", gk, []string{"--prompt-file", "/x"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.p.PrintRequested(tt.args, nil); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
 			}
 		})
 	}

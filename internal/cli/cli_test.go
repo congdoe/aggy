@@ -15,11 +15,14 @@ func TestRun(t *testing.T) {
 		wantStdout string
 		wantStderr string
 	}{
-		{name: "no args needs a terminal", args: nil, wantCode: 1, wantStderr: "needs a terminal"},
+		// T6961: with no terminal, bare aggy runs the default CLI directly,
+		// and here there is none on PATH.
+		{name: "no args and no terminal run the CLI directly", args: nil, wantCode: 1, wantStderr: "vendor.cli_missing"},
 		{name: "version", args: []string{"version"}, wantCode: 0, wantStdout: "aggy dev"},
 		{name: "version flag", args: []string{"--version"}, wantCode: 0, wantStdout: "aggy dev"},
 		{name: "help", args: []string{"help"}, wantCode: 0, wantStdout: "Commands:"},
-		{name: "unknown command", args: []string{"nope"}, wantCode: 2, wantStderr: `unknown command "nope"`},
+		{name: "a mistyped command", args: []string{"sesions"}, wantCode: 2, wantStderr: `unknown command "sesions"; did you mean aggy sessions?`},
+		{name: "any other word is a prompt", args: []string{"nope"}, wantCode: 1, wantStderr: "vendor.cli_missing"},
 	}
 	// Bare aggy launches a session: keep it off the real home and CLIs.
 	t.Setenv("HOME", t.TempDir())
