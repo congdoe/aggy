@@ -37,6 +37,12 @@ loosens things (a permission mode, a harness turning on) asks y/N first.
                        own (docs/design.md); Codex has no such modes.
   harness.<harness>    on or off. Off, aggy neither opens it nor borrows from it,
                        and a repo cannot turn it back on.
+  opencode-free-models on or off (default off). On, OpenCode sessions may use
+                       OpenCode's own models (opencode/*, its free ones among
+                       them), which send prompts and code to OpenCode's own
+                       service. Never for borrows; a repo cannot turn it on,
+                       and refuses it unless its allowed_vendors lists
+                       opencode-free.
   commands             on or off: whether aggy catches its commands typed in a
                        session (/switch, /borrow, /inbox, /aggy). Off, each goes
                        to the CLI as typed; Ctrl+\ still opens the picker.
@@ -99,6 +105,17 @@ func parseConfigKey(key string) (configKey, error) {
 			return "true", nil
 		}
 		return "", errors.New("use on or off")
+	}
+	if key == freeModelsKey {
+		return configKey{config.Setting{Table: "opencode", Key: "free_models"}, func(val string) (string, error) {
+			switch val {
+			case "on":
+				return "true", nil
+			case "off":
+				return "", nil
+			}
+			return "", errors.New("use on or off")
+		}}, nil
 	}
 	if key == "commands" {
 		return configKey{config.Setting{Table: "commands", Key: "off"}, onOff}, nil
@@ -194,6 +211,7 @@ func configList(stdout, stderr io.Writer) int {
 		}
 		return "on"
 	}
+	fmt.Fprintf(stdout, "%s %s\n", freeModelsKey, onOff(!cfg.OpenCode.FreeModels))
 	fmt.Fprintf(stdout, "commands           %s\n", onOff(cfg.Commands.Off))
 	for _, n := range config.CommandNames {
 		fmt.Fprintf(stdout, "command.%-10s %s\n", n, onOff(cfg.Commands.CatchOff(n)))
@@ -201,9 +219,11 @@ func configList(stdout, stderr io.Writer) int {
 	return 0
 }
 
-// loosens says a setting can let more run: any permission mode, or a harness on.
+// loosens says a setting can let more run: any permission mode, a harness on,
+// or OpenCode's free models on.
 func loosens(key, val string) bool {
-	return (key == "permission-mode" && val != "none") || (strings.HasPrefix(key, "harness.") && val == "on")
+	return (key == "permission-mode" && val != "none") || (strings.HasPrefix(key, "harness.") && val == "on") ||
+		(key == freeModelsKey && val == "on")
 }
 
 func configSet(args []string, stdout, stderr io.Writer) int {
@@ -279,6 +299,9 @@ func configSet(args []string, stdout, stderr io.Writer) int {
 	}
 	if err := personGate(os.Getenv); err != nil {
 		return fail(diag.CodeNotAtKeyboard, err.Error())
+	}
+	if pos[0] == freeModelsKey && pos[1] == "on" {
+		showFreeModelsNote(context.Background(), stdout)
 	}
 	if loosens(pos[0], pos[1]) && !confirmed(stdout, fmt.Sprintf("Set %s to %s?", pos[0], termsafe.Field(pos[1]))) {
 		fmt.Fprintln(stdout, "Nothing changed.")

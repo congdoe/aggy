@@ -177,6 +177,63 @@ func TestOpenCodeLaunchFolder(t *testing.T) {
 	}
 }
 
+// TestOpenCodeFreeModelsLaunch (T6956): with the person's free_models on, a
+// launch allows OpenCode's own provider and takes a model on it; off, or in a
+// repo whose allowed_vendors does not list opencode-free, or turned on only by
+// the repo, it denies the provider and refuses the model.
+func TestOpenCodeFreeModelsLaunch(t *testing.T) {
+	on := config.Default()
+	on.OpenCode.FreeModels = true
+	repoOn := config.RepoConfig{OpenCode: config.RepoOpenCode{FreeModels: true}}
+	cases := []struct {
+		name    string
+		user    config.Config
+		repo    config.RepoConfig
+		allowed bool
+	}{
+		{"off", config.Default(), config.RepoConfig{}, false},
+		{"on", on, config.RepoConfig{}, true},
+		{"on and the repo lists opencode-free", on, config.RepoConfig{AllowedVendors: []adapter.Vendor{"opencode", "codex", "opencode-free"}}, true},
+		{"on and the repo allows opencode with codex only", on, config.RepoConfig{AllowedVendors: []adapter.Vendor{"opencode", "codex"}}, false},
+		{"off and the repo turns it on", config.Default(), repoOn, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			repo, dir := openCodeWorld(t)
+			in := openCodeInput{cfg: effective(c.user, c.repo), caps: openCodeCaps, cwd: repo, dir: dir}
+			s, err := prepareOpenCode(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := os.ReadFile(s.launch.ConfigFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var doc struct {
+				Policies []struct{ Action, Resource, Effect string }
+			}
+			if err := json.Unmarshal(b, &doc); err != nil {
+				t.Fatal(err)
+			}
+			last := ""
+			for _, p := range doc.Policies {
+				if p.Action == "provider.use" && p.Resource == "opencode" {
+					last = p.Effect
+				}
+			}
+			if want := map[bool]string{true: "allow", false: "deny"}[c.allowed]; last != want {
+				t.Errorf("last provider.use opencode = %q, want %q", last, want)
+			}
+			repo2, dir2 := openCodeWorld(t)
+			in.cwd, in.dir, in.model = repo2, dir2, "opencode/some-free-model"
+			_, err = prepareOpenCode(in)
+			if c.allowed != (err == nil) {
+				t.Errorf("model on opencode: err = %v, want allowed %v", err, c.allowed)
+			}
+		})
+	}
+}
+
 // TestOpenCodeRefusals: a launch aggy's rules cannot reach never starts.
 func TestOpenCodeRefusals(t *testing.T) {
 	cases := []struct {

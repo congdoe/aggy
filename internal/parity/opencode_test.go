@@ -78,6 +78,51 @@ func TestExactRule(t *testing.T) {
 	}
 }
 
+// TestOpenCodeOwnProvider: OpenCode's own provider is denied last unless the
+// launch's providers name it (free_models on); claude-agent and anthropic
+// stay denied, and a launch that names them is refused.
+func TestOpenCodeOwnProvider(t *testing.T) {
+	providerRules := func(c OpenCodeConfig) []openCodeRule {
+		var out []openCodeRule
+		for _, r := range renderDoc(t, c).Policies {
+			if r.Action == "provider.use" {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	cases := []struct {
+		name      string
+		providers []string
+		want      []openCodeRule
+	}{
+		{"off: denied last", []string{"xai"}, []openCodeRule{
+			{"provider.use", "*", "deny"}, {"provider.use", "xai", "allow"},
+			{"provider.use", "claude-agent", "deny"}, {"provider.use", "anthropic", "deny"}, {"provider.use", "opencode", "deny"},
+		}},
+		{"on: allowed, no deny after it", []string{"xai", "opencode"}, []openCodeRule{
+			{"provider.use", "*", "deny"}, {"provider.use", "xai", "allow"}, {"provider.use", "opencode", "allow"},
+			{"provider.use", "claude-agent", "deny"}, {"provider.use", "anthropic", "deny"},
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := baseConfig()
+			cfg.Providers = c.providers
+			if got := providerRules(cfg); !slices.Equal(got, c.want) {
+				t.Errorf("provider rules = %+v, want %+v", got, c.want)
+			}
+		})
+	}
+	for _, p := range OpenCodeAlwaysDenied {
+		cfg := baseConfig()
+		cfg.Providers = []string{"xai", p}
+		if _, err := cfg.Render(); err == nil {
+			t.Errorf("a launch allowing %q rendered", p)
+		}
+	}
+}
+
 func TestOpenCodePolicies(t *testing.T) {
 	c := baseConfig()
 	c.Providers = []string{"openai", "xai"}
@@ -99,7 +144,7 @@ func TestOpenCodePolicies(t *testing.T) {
 	}
 	want := []openCodeRule{
 		{"provider.use", "*", "deny"}, {"provider.use", "openai", "allow"}, {"provider.use", "xai", "allow"},
-		{"provider.use", "claude-agent", "deny"}, {"provider.use", "opencode", "deny"}, {"provider.use", "anthropic", "deny"},
+		{"provider.use", "claude-agent", "deny"}, {"provider.use", "anthropic", "deny"}, {"provider.use", "opencode", "deny"},
 	}
 	if !slices.Equal(provider, want) {
 		t.Errorf("provider rules = %+v, want %+v (the last match wins)", provider, want)

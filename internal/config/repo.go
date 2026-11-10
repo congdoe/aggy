@@ -45,7 +45,23 @@ type RepoConfig struct {
 	// has no way to turn a tool on: cloning a repo must never start an
 	// MCP server or a hook on the person's machine.
 	ToolsOff []string `toml:"tools_off"`
+	// OpenCode is a repo's [opencode] table: nothing in it is acted on. Its
+	// free_models is read only so the launch can say it is ignored
+	// (SetsFreeModels); any other key there is still an unknown key.
+	OpenCode RepoOpenCode `toml:"opencode"`
 }
+
+// RepoOpenCode is a repo's [opencode] table. A repo can never turn on
+// OpenCode's free models: that sends prompts and code to OpenCode's own
+// service, which only the person's own config can choose.
+type RepoOpenCode struct {
+	// FreeModels is decoded, whatever its type, and ignored.
+	FreeModels any `toml:"free_models"`
+}
+
+// SetsFreeModels reports whether the repo's config sets [opencode]
+// free_models, which aggy ignores.
+func (rc RepoConfig) SetsFreeModels() bool { return rc.OpenCode.FreeModels != nil }
 
 // toolNameRE is tooldef's tool name rule.
 var toolNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
@@ -236,15 +252,22 @@ type Effective struct {
 }
 
 // OpenCodeProviders are the providers an OpenCode session may use in this
-// repo: the user's list, narrowed by allowed_vendors, where xai counts as
-// grok and openai as codex, and any other provider needs its own name.
+// repo: the user's list, plus OpenCode's own provider when the user's
+// [opencode] free_models is on, narrowed by allowed_vendors, where xai counts
+// as grok, openai as codex, opencode as opencode-free, and any other provider
+// needs its own name. A repo's own free_models never counts.
 func (e Effective) OpenCodeProviders() []string {
-	if e.Repo.AllowedVendors == nil {
-		return e.OpenCode.Providers
+	user := slices.Clone(e.OpenCode.Providers)
+	if e.OpenCode.FreeModels && !slices.Contains(user, OpenCodeFreeProvider) {
+		user = append(user, OpenCodeFreeProvider)
 	}
-	counts := map[string]adapter.Vendor{"xai": adapter.Grok, "openai": adapter.Codex}
+	if e.Repo.AllowedVendors == nil {
+		return user
+	}
+	counts := map[string]adapter.Vendor{"xai": adapter.Grok, "openai": adapter.Codex,
+		OpenCodeFreeProvider: OpenCodeFreeRepoName}
 	out := []string{}
-	for _, p := range e.OpenCode.Providers {
+	for _, p := range user {
 		v, ok := counts[p]
 		if !ok {
 			v = adapter.Vendor(p)

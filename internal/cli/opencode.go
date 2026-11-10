@@ -86,6 +86,7 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 		}
 	}
 	providers := in.cfg.OpenCodeProviders()
+	out.warns = append(out.warns, openCodeFreeWarns(in.cfg, providers)...)
 	if len(providers) == 0 {
 		return out, errors.New("no OpenCode provider is left for this repo: its allowed_vendors and [opencode] providers have none in common")
 	}
