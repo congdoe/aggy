@@ -25,6 +25,7 @@ import (
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/termsafe"
+	"github.com/congdoe/aggy/internal/tooldef"
 	"github.com/congdoe/aggy/skills"
 )
 
@@ -217,6 +218,16 @@ func runSkill(args []string, stdout, stderr io.Writer) int {
 	case "link", "unlink":
 	default:
 		return cmdUsage(stderr, "skill", fmt.Sprintf("unknown subcommand %q", op), skillUsage)
+	}
+	// A folder under one of aggy's names that aggy did not write (a skill of
+	// the person's, or one changed by hand) is neither written nor linked nor
+	// unlinked here (R121).
+	ls, notes, err := ownWritable(context.Background(), ls)
+	if err != nil {
+		return cmdErrDry(stderr, "skill "+op, diag.CodeWireFailed, err, *dryRun)
+	}
+	for _, n := range notes {
+		fmt.Fprintf(stdout, "note: %s.\n", n)
 	}
 	want := map[string]bool{}
 	for _, v := range vendors {
@@ -719,6 +730,11 @@ func (l skillLayout) visible(v string) ([]string, error) {
 
 func skillStatus(ls []skillLayout, stdout, stderr io.Writer) int {
 	code := aggySkillStatus(ls[0], stdout, stderr)
+	if _, notes, err := ownWritable(context.Background(), ls); err == nil {
+		for _, n := range notes {
+			fmt.Fprintf(stdout, "note: %s.\n", n)
+		}
+	}
 	for _, l := range ls[1:] {
 		name := filepath.Base(l.store)
 		var parts []string
@@ -780,13 +796,129 @@ func aggySkillStatus(l skillLayout, stdout, stderr io.Writer) int {
 	return code
 }
 
+// ownState is whose a skill folder under one of aggy's own names is.
+type ownState int
+
+const (
+	// ownAbsent: no SKILL.md there; aggy may write one.
+	ownAbsent ownState = iota
+	// ownAggy: the SKILL.md is what aggy itself last wrote there, by the
+	// manifest's record.
+	ownAggy
+	// ownEdited: aggy wrote there once, and the file has changed since.
+	ownEdited
+	// ownForeign: aggy never wrote what is there, or a tool of the person's
+	// has the name (a skill aggy skill add stored before the name was
+	// aggy's, R121).
+	ownForeign
+)
+
+// ownStates says, for each of aggy's own skills (by name), whose its installed
+// SKILL.md is. It only reads: the tool definitions, the file, and the index's
+// change rows, read-only.
+func ownStates(ctx context.Context, ls []skillLayout) (map[string]ownState, error) {
+	state, err := home.Dir()
+	if err != nil {
+		return nil, err
+	}
+	r, _, err := tooldef.Load(state)
+	if err != nil {
+		return nil, err
+	}
+	var rows []store.Change
+	loaded := false
+	out := map[string]ownState{}
+	for _, l := range ls {
+		name := filepath.Base(l.store)
+		if t, ok := r.Get(name); ok && !t.BuiltIn {
+			out[name] = ownForeign
+			continue
+		}
+		file := filepath.Join(l.store, "SKILL.md")
+		cur, err := patch.HashFile(file)
+		if err != nil {
+			return nil, err
+		}
+		if cur == patch.NoFile {
+			out[name] = ownAbsent
+			continue
+		}
+		if !loaded {
+			loaded = true
+			s, _, err := openIndexReadOnly(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if s != nil {
+				rows, err = s.ChangesNewestFirst(ctx, "")
+				_ = s.Close()
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		out[name] = ownForeign
+		abs, _ := filepath.Abs(file)
+		for _, c := range rows {
+			if filepath.Clean(c.File) != abs || c.Status != store.ChangeApplied && c.Status != store.ChangeUndone {
+				continue
+			}
+			if c.Status == store.ChangeApplied && c.HashAfter == cur {
+				out[name] = ownAggy
+				break
+			}
+			out[name] = ownEdited // aggy wrote there once; not what is there now
+		}
+	}
+	return out, nil
+}
+
+// ownNote says what to do about one of aggy's own skill folders it will not
+// write, or "" for one it may.
+func ownNote(l skillLayout, st ownState) string {
+	name := filepath.Base(l.store)
+	switch {
+	case st == ownForeign && name == skillName:
+		return fmt.Sprintf("%s holds a SKILL.md aggy did not write, so aggy leaves it; move it away and run aggy skill link for aggy's own", termsafe.Field(l.store))
+	case st == ownForeign:
+		return fmt.Sprintf("%s holds a skill of yours, so aggy's /%s command skill stays unlinked and yours is left as it is. To use aggy's, store yours under another name (aggy skill remove %s, then aggy skill add <dir> --name <other>) and run aggy skill link", termsafe.Field(l.store), name, name)
+	case st == ownEdited:
+		return fmt.Sprintf("%s was changed by hand since aggy wrote it, so aggy does not update it; to get this version's, move SKILL.md out of that folder and run aggy skill link", termsafe.Field(l.store))
+	}
+	return ""
+}
+
+// ownWritable returns the layouts aggy may write and link (aggy skill link,
+// setup), and a note for each it leaves alone. The aggy skill is always kept,
+// as before this check: only an explicit link rewrites it, as it always has.
+func ownWritable(ctx context.Context, ls []skillLayout) ([]skillLayout, []string, error) {
+	sts, err := ownStates(ctx, ls)
+	if err != nil {
+		return nil, nil, err
+	}
+	var keep []skillLayout
+	var notes []string
+	for _, l := range ls {
+		st := sts[filepath.Base(l.store)]
+		if filepath.Base(l.store) == skillName || st == ownAbsent || st == ownAggy {
+			keep = append(keep, l)
+			continue
+		}
+		notes = append(notes, ownNote(l, st))
+	}
+	return keep, notes, nil
+}
+
 // refreshPatches returns, for each of aggy's own skills linked into any CLI,
 // a patch that rewrites its installed SKILL.md when that differs from the one
 // this aggy carries (T6911): after an upgrade, a linked skill would otherwise
-// keep the old text. An unlinked skill is left alone, and a skill never linked
-// is never installed by it.
-func refreshPatches(ls []skillLayout) ([]patch.Patch, error) {
+// keep the old text. Only a file whose content is what aggy itself last wrote
+// there (ownAggy) is rewritten: one changed by hand, or a skill of the
+// person's under the same name, is left as it is, with a note saying what to
+// do (R121). An unlinked skill is left alone, and none is ever installed here.
+func refreshPatches(ls []skillLayout, sts map[string]ownState) ([]patch.Patch, []string, error) {
 	var ps []patch.Patch
+	var notes []string
 	for _, l := range ls {
 		if l.content == nil {
 			continue
@@ -795,7 +927,7 @@ func refreshPatches(ls []skillLayout) ([]patch.Patch, error) {
 		for _, v := range skillVendors {
 			ok, err := l.linked(l.links[v])
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			linked = linked || ok
 		}
@@ -805,31 +937,83 @@ func refreshPatches(ls []skillLayout) ([]patch.Patch, error) {
 		file := filepath.Join(l.store, "SKILL.md")
 		h, err := patch.HashFile(file)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if h == patch.Hash(l.content) {
+			continue
+		}
+		if st := sts[filepath.Base(l.store)]; st != ownAggy {
+			if n := ownNote(l, st); n != "" {
+				notes = append(notes, n)
+			}
 			continue
 		}
 		content := l.content
 		ps = append(ps, patch.Patch{File: file, ExpectedHash: h, Mode: 0o644,
 			Transform: func([]byte) ([]byte, error) { return content, nil }})
 	}
-	return ps, nil
+	return ps, notes, nil
+}
+
+// noteOnce reports whether note was not yet shown, and records it as shown, in
+// aggy's own state folder (<state>/notes), so a launch says it once. A failure
+// to record shows it again next time.
+func noteOnce(note string) bool {
+	state, err := home.Dir()
+	if err != nil {
+		return true
+	}
+	dir := filepath.Join(state, "notes")
+	file := filepath.Join(dir, "skill-"+patch.Hash([]byte(note))[:16])
+	if _, err := safefs.Lstat(file); err == nil {
+		return false
+	}
+	if safefs.MkdirAll(dir, 0o700) == nil {
+		_ = safefs.WriteFile(file, nil, 0o600)
+	}
+	return true
 }
 
 // refreshSkills applies refreshPatches through the manifest, so aggy unwire
-// undoes it, and says on w what it changed. It runs at each launch and in
-// aggy setup; a failure is a warning, and it changes nothing at all when no
-// installed copy is out of date.
+// undoes it, and says on w what it changed, and once each what it left alone.
+// It runs at each launch and in aggy setup; a failure is a warning, and it
+// writes no skill at all when no installed copy of aggy's is out of date. It
+// never changes a file aggy did not write.
 func refreshSkills(ctx context.Context, w io.Writer) {
 	err := func() error {
 		ls, err := ownLayouts()
 		if err != nil {
 			return err
 		}
-		ps, err := refreshPatches(ls)
-		if err != nil || len(ps) == 0 {
+		// Only a linked skill out of date is looked at further, so a launch
+		// with nothing to do reads no index.
+		var stale []skillLayout
+		for _, l := range ls {
+			file := filepath.Join(l.store, "SKILL.md")
+			if h, err := patch.HashFile(file); err != nil {
+				return err
+			} else if h != patch.NoFile && h != patch.Hash(l.content) {
+				stale = append(stale, l)
+			}
+		}
+		if len(stale) == 0 {
+			return nil
+		}
+		sts, err := ownStates(ctx, stale)
+		if err != nil {
 			return err
+		}
+		ps, notes, err := refreshPatches(stale, sts)
+		if err != nil {
+			return err
+		}
+		for _, n := range notes {
+			if noteOnce(n) {
+				fmt.Fprintf(w, "aggy: %s.\n", n)
+			}
+		}
+		if len(ps) == 0 {
+			return nil
 		}
 		s, err := store.OpenDefault(ctx)
 		if err != nil {

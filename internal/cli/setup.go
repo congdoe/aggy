@@ -9,6 +9,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -359,6 +360,15 @@ func (r *setupRun) skills(ctx context.Context, selected []adapter.Adapter) {
 	if err != nil || len(vendors) == 0 {
 		return
 	}
+	// A folder under one of aggy's names that aggy did not write is left alone
+	// (R121), and says so.
+	ls, notes, err := ownWritable(ctx, ls)
+	if err != nil {
+		return
+	}
+	for _, n := range notes {
+		fmt.Fprintf(r.out, "note: %s.\n", n)
+	}
 	want := map[string]bool{}
 	for _, v := range vendors {
 		for _, l := range ls {
@@ -370,13 +380,13 @@ func (r *setupRun) skills(ctx context.Context, selected []adapter.Adapter) {
 	if len(want) == 0 {
 		return
 	}
-	always, _ := skills.Estimate(skills.Aggy)
+	cost := ownSkillCost(ls, slices.Sorted(maps.Keys(want)))
 	fmt.Fprintf(r.out, "\naggy's skills put /aggy (help), /switch, /borrow, and /inbox in each CLI's menu ($aggy and so on in Codex); not linked yet for %s.\n", strings.Join(slices.Sorted(maps.Keys(want)), ", "))
 	if !r.ask {
-		fmt.Fprintf(r.out, "Run aggy skill link to link them (the aggy skill costs about %d tokens every turn in a CLI that loads it; aggy skill status shows each).\n", always)
+		fmt.Fprintf(r.out, "Run aggy skill link to link them (%s; aggy skill status shows each).\n", cost)
 		return
 	}
-	ans, ok := r.answer(fmt.Sprintf("  Link them now? About %d tokens every turn for the aggy skill. [y/N] ", always))
+	ans, ok := r.answer(fmt.Sprintf("  Link them now? %s. [y/N] ", cost))
 	if !ok || ans != "y" && ans != "yes" {
 		fmt.Fprintln(r.out, "  not linked; aggy skill link does it later")
 		return
@@ -384,4 +394,25 @@ func (r *setupRun) skills(ctx context.Context, selected []adapter.Adapter) {
 	if err := linkSkills(ctx, ls, want, r.out); err != nil {
 		fmt.Fprintf(r.out, "  warning: the skills were not linked: %s\n", termsafe.Line(err.Error()))
 	}
+}
+
+// ownSkillCost says what linking the skills of ls costs every turn in each of
+// vendors, estimated offline (skills.Estimate): every skill's frontmatter,
+// except a command skill's on Claude and Grok, whose disable-model-invocation
+// keeps it out of the context there (docs/design.md section 5); Codex has no
+// such key that is recorded, so there each one is paid.
+func ownSkillCost(ls []skillLayout, vendors []string) string {
+	var parts []string
+	for _, v := range vendors {
+		n := 0
+		for _, l := range ls {
+			if filepath.Base(l.store) != skillName && v != "codex" {
+				continue
+			}
+			always, _ := skills.Estimate(l.content)
+			n += always
+		}
+		parts = append(parts, fmt.Sprintf("about %d tokens every turn in %s", n, v))
+	}
+	return strings.Join(parts, ", ")
 }

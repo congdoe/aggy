@@ -39,8 +39,12 @@ func hasSkill(t tooldef.Tool) bool {
 // toolSkillLayout is where t's skill is stored and linked: its folder is
 // <state>/skills/<name>, the only place a tool's skill is linked from.
 func toolSkillLayout(t tooldef.Tool) (skillLayout, error) {
-	if ownSkill(t.Name) {
-		return skillLayout{}, fmt.Errorf("a tool named %s would share aggy's own skill links", t.Name)
+	// Only the aggy skill's name is refused here. A tool of the person's named
+	// switch, borrow, or inbox may predate those being aggy's (R121): it keeps
+	// its folder, and aggy's command skill of that name stays unlinked
+	// (ownStates); aggy skill add refuses those names for a new skill.
+	if t.Name == skillName {
+		return skillLayout{}, fmt.Errorf("a tool named %s would share aggy's own skill links", skillName)
 	}
 	for _, v := range adapter.Vendors() {
 		// TODO(T6715): a built-in skill stored elsewhere under home.

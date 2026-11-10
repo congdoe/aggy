@@ -341,9 +341,9 @@ func TestRefreshSkills(t *testing.T) {
 			}
 			file := filepath.Join(l.store, "SKILL.md")
 			if tt.stale {
-				if err := os.WriteFile(file, []byte(old), 0o644); err != nil {
-					t.Fatal(err)
-				}
+				// As an older aggy wrote it: through the manifest (R121: a
+				// file aggy did not write is never refreshed).
+				writeAsAggy(t, file, old)
 			}
 			before, _ := os.ReadFile(file)
 			var out strings.Builder
