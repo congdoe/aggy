@@ -644,18 +644,69 @@ subcommand lists are Claude's CLI reference (read 2026-11-09), Codex's
 read 2026-11-09. That Grok and Codex take a positional prompt is from the same
 sources (`PagerArgs.prompt`; codex's usage `codex [OPTIONS] [PROMPT]`).
 
-- Refused, because aggy passes the flag at launch: Claude `--session-id`,
-  `--settings`, `--append-system-prompt-file` (and `--append-system-prompt`),
-  `--mcp-config`; Codex `--no-alt-screen`, and `-c` on
-  `developer_instructions`, `model`, or `mcp_servers.*`; Grok `--session-id`
-  (`-s`), `--no-alt-screen`, `--rules` (and its alias `--append-system-prompt`),
-  `--deny` (and its alias `--disallowedTools`), `--agent`.
-- Refused, because the session would not be the one aggy recorded: Claude
-  `--fork-session` (on screen), `--worktree`, `--bg`, `--cloud`, and the like;
-  Codex `-C`, `--remote`, `--worktree`; Grok `--fork-session` and `--load` (on
-  screen), `--cwd`, `--worktree` (`-w`), `--worktree-ref`,
-  `--local-workspace*`. Grok `--installer` too, which
-  writes its config outside aggy's manifest.
+- Merged with aggy's own (T6962), so neither is dropped and aggy's deny rules
+  stay:
+  - Claude `--settings` (a path, read through safefs against the session's
+    directory, or inline JSON, at most 2 MiB as the reference says) is merged
+    under aggy's layer into the one `--settings` Claude gets. Lists such as
+    `permissions.allow` and `permissions.deny` are joined, and aggy's scalar
+    wins. A merged inline layer over 256 KiB is refused. A layer that would get
+    past the policy is refused unless `--no-policy`: a `defaultMode` the
+    `--permission-mode` table gates, `disableAllHooks`, any
+    `bypassPermissions` value, or a key naming `dangerous` or `bypass` (but
+    not a `disable…Bypass…` key, which tightens).
+  - Claude `--mcp-config` takes aggy's MCP file into the person's own list.
+    The reference says the flag takes space-separated values.
+  - Claude `--append-system-prompt-file`: the person's files go ahead of the
+    shared memory in the one file aggy passes. Whether Claude takes the flag
+    twice is not recorded, so aggy passes it once.
+  - Claude `--append-system-prompt` passes. The reference says it combines
+    with the `-file` form from v2.1.283; on older versions that is unverified.
+  - Grok `--rules` (and its alias `--append-system-prompt`) is joined with
+    the shared memory into aggy's one `--rules`.
+  - Grok `--deny` (and `--disallowedTools`) passes. It is a list, so it only
+    adds to aggy's.
+  - Grok `--agent` passes, unless aggy passes its own agent file for a
+    managed tool. Then it is refused, and the message names `aggy tool off`.
+- Refused, because aggy passes the flag at launch:
+  - Claude `--session-id`.
+  - Codex `-c` on `developer_instructions`, `model`, or `mcp_servers.*`.
+  - Grok `--session-id` (`-s`).
+  - Codex and Grok `--no-alt-screen`: aggy always passes it on screen, so the
+    scrollback keeps what came before a switch (Codex: when its help lists
+    the flag). The message says so. In Grok's print mode, where aggy adds
+    none, the flag passes. `codex exec` is not recorded as taking it, so it
+    stays refused there.
+- Refused, because the session would not be the one aggy recorded:
+  - Claude `--fork-session` (on screen).
+  - Codex `-C`.
+  - Grok `--fork-session` and `--load` (on screen), and `--cwd`.
+  - Grok `--installer`, which writes its config outside aggy's manifest. The
+    message says to run grok itself for it.
+- Run directly, as print mode is, with aggy's launch flags and policy, but
+  with no supervisor and no session recorded (`PassFlags.Print`, T6962). The
+  session runs elsewhere, or the CLI does not stay on screen:
+  - Claude: `--bg`/`--background`, `--tmux` (which needs `--worktree`),
+    `--teleport`, `--from-pr`, `--init-only`, `--exec`.
+  - Codex: `--worktree`.
+  - Grok: `--worktree` (`-w`), `--worktree-ref`/`--ref`, and
+    `--local-workspace*`.
+  - A line at launch says aggy -c cannot reopen it.
+- Run as given, with nothing of aggy's added (`PassFlags.Bare`):
+  - Claude `--desktop`, which takes no other flags per the reference, and
+    `--cloud`, `--remote`, `--environment`.
+  - Codex `--remote` and `--remote-auth-token-env`.
+  - `--version` on every vendor.
+- Passed on screen, for the first launch only (`PassFlags.Once`): Claude
+  `--worktree` (`-w`, which takes a name). Claude starts in a git worktree
+  under `.claude/worktrees`. aggy does not pass `-w` again on a resume, and
+  the reference says `--resume` searches the project's worktrees. The
+  launch notes this. That aggy's later resume finds the session is
+  unverified live.
+- A flag no table lists passes. It takes the next word as its value only when
+  the CLI's help, read by the launch probe, shows it with a `<value>`
+  (`probe.ValueFlags`). An optional `[value]` is not counted, since Claude
+  binds `--debug`'s filter only in the `=` form.
 - Refused unless `--no-policy`, then noted at launch and logged
   (`loosening_flags`): anything naming `dangerously`, on every vendor; Claude
   `--permission-mode` outside `default` (`manual`), `acceptEdits`, `plan`, `auto`,
