@@ -59,16 +59,20 @@ func TestDecideCall(t *testing.T) {
 		{"cat .env quoted", on, shell(`cat ".e"nv`), VerdictAsk, permissions.PolicyEnv},
 		{"a template", on, shell("cat .env.example"), VerdictNone, ""},
 		{"a word with .env inside", on, shell("grep process.env src"), VerdictNone, ""},
-		{"read pre-approved", on, Call{CallRead, "/repo/certs/server.pem"}, VerdictAllow, permissions.PolicyKeys},
-		{"read another key", on, Call{CallRead, "/repo/certs/other.pem"}, VerdictAsk, permissions.PolicyKeys},
-		{"read the same key by another spelling", on, Call{CallRead, "/repo/certs/../certs/server.pem"}, VerdictAsk, permissions.PolicyKeys},
-		{"write the pre-approved read", on, Call{CallWrite, "/repo/certs/server.pem"}, VerdictAsk, permissions.PolicyKeys},
-		{"read .ENV", on, Call{CallRead, "/repo/.ENV"}, VerdictAsk, permissions.PolicyEnv},
-		{"read a plain file", on, Call{CallRead, "/repo/main.go"}, VerdictNone, ""},
-		{"search for keys", on, Call{CallSearch, "**/*.pem"}, VerdictAsk, permissions.PolicyKeys},
-		{"search .env files", on, Call{CallSearch, ".env*"}, VerdictAsk, permissions.PolicyEnv},
-		{"a pre-approved command as a search", on, Call{CallSearch, force}, VerdictNone, ""},
+		{"read pre-approved", on, Call{Kind: CallRead, Text: "/repo/certs/server.pem"}, VerdictAllow, permissions.PolicyKeys},
+		{"read another key", on, Call{Kind: CallRead, Text: "/repo/certs/other.pem"}, VerdictAsk, permissions.PolicyKeys},
+		{"read the same key by another spelling", on, Call{Kind: CallRead, Text: "/repo/certs/../certs/server.pem"}, VerdictAsk, permissions.PolicyKeys},
+		{"write the pre-approved read", on, Call{Kind: CallWrite, Text: "/repo/certs/server.pem"}, VerdictAsk, permissions.PolicyKeys},
+		{"read .ENV", on, Call{Kind: CallRead, Text: "/repo/.ENV"}, VerdictAsk, permissions.PolicyEnv},
+		{"read a plain file", on, Call{Kind: CallRead, Text: "/repo/main.go"}, VerdictNone, ""},
+		{"search for keys", on, Call{Kind: CallSearch, Text: "**/*.pem"}, VerdictAsk, permissions.PolicyKeys},
+		{"search .env files", on, Call{Kind: CallSearch, Text: ".env*"}, VerdictAsk, permissions.PolicyEnv},
+		{"a pre-approved command as a search", on, Call{Kind: CallSearch, Text: force}, VerdictNone, ""},
 		{"headless denies", PolicyPlan{}, shell(force), VerdictDeny, permissions.PolicyPushMain},
+		// PR #129 re-review: another tool's text is never allowed.
+		{"another tool, pre-approved", on, Call{Kind: CallShell, Text: force, Other: true}, VerdictNone, permissions.PolicyPushMain},
+		{"another tool, not pre-approved", on, Call{Kind: CallShell, Text: "rm -rf ~", Other: true}, VerdictAsk, permissions.PolicyRmRf},
+		{"another tool, group denied", denyForce, Call{Kind: CallShell, Text: force, Other: true}, VerdictDeny, permissions.PolicyForce},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -93,7 +97,7 @@ func TestDecideStrict(t *testing.T) {
 		{"rm -rf build", false},
 		{"cat id_ed25519", true},
 	} {
-		if got := on.DecideCall(Call{CallShell, tt.cmd}, PreApproved{}); got.Strict != tt.strict || got.Verdict != VerdictAsk {
+		if got := on.DecideCall(Call{Kind: CallShell, Text: tt.cmd}, PreApproved{}); got.Strict != tt.strict || got.Verdict != VerdictAsk {
 			t.Errorf("%q: %+v, want ask, strict %v", tt.cmd, got, tt.strict)
 		}
 	}
@@ -112,16 +116,16 @@ func TestDecideCoversStaticRules(t *testing.T) {
 		var c Call
 		switch tool {
 		case "Bash":
-			c = Call{CallShell, strings.ReplaceAll(spec, "*", "x y")}
+			c = Call{Kind: CallShell, Text: strings.ReplaceAll(spec, "*", "x y")}
 		case "Read":
-			c = Call{CallRead, "/some/dir/" + strings.ReplaceAll(strings.TrimPrefix(spec, "**/"), "*", "a")}
+			c = Call{Kind: CallRead, Text: "/some/dir/" + strings.ReplaceAll(strings.TrimPrefix(spec, "**/"), "*", "a")}
 		}
 		if got := on.DecideCall(c, PreApproved{}); got.Verdict != VerdictAsk {
 			t.Errorf("%s: %q decided %+v, want ask", d.Text, c.Text, got)
 		}
 		if tool == "Read" {
 			name := strings.ReplaceAll(strings.TrimPrefix(spec, "**/"), "*", "a")
-			if got := on.DecideCall(Call{CallShell, "cat " + name}, PreApproved{}); got.Verdict != VerdictAsk {
+			if got := on.DecideCall(Call{Kind: CallShell, Text: "cat " + name}, PreApproved{}); got.Verdict != VerdictAsk {
 				t.Errorf("%s: cat %s decided %+v, want ask", d.Text, name, got)
 			}
 		}
@@ -192,7 +196,7 @@ func TestPreApprovedFrom(t *testing.T) {
 func TestDecideReadIdentity(t *testing.T) {
 	on := PolicyPlan{OnScreen: true}
 	a := ReadApproval{Path: "/repo/certs/server.pem", Dev: 1, Ino: 2}
-	c := Call{CallRead, a.Path}
+	c := Call{Kind: CallRead, Text: a.Path}
 	for _, tt := range []struct {
 		name  string
 		check func(ReadApproval) bool
@@ -212,7 +216,7 @@ func TestDecideReadIdentity(t *testing.T) {
 // once, even when it is exactly pre-approved.
 func TestDecideTooLong(t *testing.T) {
 	long := "echo " + strings.Repeat("a", MaxCallText)
-	got := PolicyPlan{OnScreen: true}.DecideCall(Call{CallShell, long}, PreApproved{Commands: []string{long}})
+	got := PolicyPlan{OnScreen: true}.DecideCall(Call{Kind: CallShell, Text: long}, PreApproved{Commands: []string{long}})
 	if got.Verdict != VerdictAsk || got.Reason != ReasonTooLong {
 		t.Errorf("long call: %+v", got)
 	}

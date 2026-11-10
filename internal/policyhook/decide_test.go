@@ -260,12 +260,54 @@ func TestCheckPlan(t *testing.T) {
 		t.Errorf("bad sum: %v", err)
 	}
 	for _, mode := range []string{"", "default", "acceptEdits"} {
-		if d := PlanFailed(mode); d.Verdict != parity.VerdictAsk || d.Reason != parity.ReasonPlanChanged {
+		if d := PlanFailed(true, mode); d.Verdict != parity.VerdictAsk || d.Reason != parity.ReasonPlanChanged {
 			t.Errorf("%q: %+v", mode, d)
 		}
 	}
-	if d := PlanFailed("dontAsk"); d.Verdict != parity.VerdictDeny {
-		t.Errorf("dontAsk: %+v", d)
+	// PR #129 re-review: refused where no prompt shows, saying what failed;
+	// and a call the hook would not judge (a web fetch) gets no opinion.
+	d := PlanFailed(true, "dontAsk")
+	if out := string(ClaudeOutput(d)); d.Verdict != parity.VerdictDeny || !strings.Contains(out, "decision plan") || strings.Contains(out, "unreadable call") {
+		t.Errorf("dontAsk: %+v %s", d, out)
+	}
+	if d := PlanFailed(false, "dontAsk"); d.Verdict != parity.VerdictNone {
+		t.Errorf("not judged: %+v", d)
+	}
+}
+
+// TestOtherToolNeverAllowed (PR #129 re-review, confirmed on f003bef): an MCP
+// tool carrying an exactly pre-approved command, or a pre-approved read path,
+// is never allowed: the pre-approval is for Bash or Monitor, and for Read.
+// What would be an allow is no opinion; an ask stays an ask.
+func TestOtherToolNeverAllowed(t *testing.T) {
+	root := t.TempDir()
+	key := filepath.Join(root, "k.pem")
+	if err := os.WriteFile(key, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dev, ino, err := FileIdentity(root, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := plan()
+	p.Root, p.Commands = root, []string{"rm -rf node_modules"}
+	p.Reads = []parity.ReadApproval{{Path: key, Dev: dev, Ino: ino}}
+	for _, tt := range []struct {
+		tool  string
+		input map[string]any
+		want  parity.Verdict
+	}{
+		{"Bash", map[string]any{"command": "rm -rf node_modules"}, parity.VerdictAllow},
+		{"Monitor", map[string]any{"command": "rm -rf node_modules"}, parity.VerdictAllow},
+		{"Read", map[string]any{"file_path": key}, parity.VerdictAllow},
+		{"mcp__ssh__exec", map[string]any{"command": "rm -rf node_modules", "host": "prod"}, parity.VerdictNone},
+		{"mcp__ssh__exec", map[string]any{"command": "rm -rf /", "host": "prod"}, parity.VerdictAsk},
+		{"mcp__fs__read", map[string]any{"path": key}, parity.VerdictAsk},
+		{"mcp__fs__read", map[string]any{"file_path": key}, parity.VerdictAsk},
+	} {
+		if got := judgeP(t, p, payload(t, tt.tool, tt.input, nil)); got.Verdict != tt.want {
+			t.Errorf("%s %v: %+v, want %s", tt.tool, tt.input, got, tt.want)
+		}
 	}
 }
 
@@ -319,6 +361,9 @@ func TestJudgeProtected(t *testing.T) {
 		{"Write", map[string]any{"file_path": filepath.Join(root, "main.go")}},
 		{"Write", map[string]any{"file_path": filepath.Join(root, ".vscode", "launch.json")}},
 		{"Bash", map[string]any{"command": "go test ./..."}},
+		// PR #129 re-review: .aggy and the word run are not the run folder.
+		{"Bash", map[string]any{"command": "cat .aggy/memory.md && npm run build"}},
+		{"Bash", map[string]any{"command": "ls ~/.aggy/runner"}},
 		{"Read", map[string]any{"file_path": filepath.Join(root, ".claude", "settings.json")}},
 	} {
 		if got := judgeP(t, p, payload(t, tt.tool, tt.input, nil)); got.Verdict != parity.VerdictNone {

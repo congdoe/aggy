@@ -104,7 +104,7 @@ const (
 	whyAuthExport = "aggy's guard refuses `opencode auth export`: it prints sign-in secrets."
 	whyFolder     = "aggy's guard refuses a tool call from another folder than the one this session was launched in: that project's settings and trust were not checked."
 	whyOutside    = "aggy's guard refuses a path outside this repo: its real location is elsewhere, or a link points out of the repo. Ask the person to copy it in, if it is needed."
-	whyDisguised  = "aggy's guard refuses this file: its name looks harmless, but it leads to a file the safety policy guards (a link, or another name of the same file), and a prompt would show the harmless name."
+	whyDisguised  = "aggy's guard refuses this file: its name looks harmless, but it is a link, or passes through one, to a file the safety policy guards, and a prompt would show the harmless name."
 	whyUncleared  = "aggy's guard refuses this call: it matches a strict safety policy group (a force push to a protected branch, or reading a private key), and neither a prompt you answered nor an exact pre-approval cleared it, as aggy's permission check did not run for it. Run it on its own so OpenCode asks, or run it yourself."
 )
 

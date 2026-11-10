@@ -40,6 +40,11 @@ const (
 type Call struct {
 	Kind CallKind
 	Text string
+	// Other is a call from a tool that is not the one a pre-approval is for
+	// (an MCP tool with a command, say): it is never allowed, and what would
+	// be an allow is no opinion, so the CLI's own flow decides (PR #129
+	// re-review).
+	Other bool
 }
 
 // Verdict is what the hook answers.
@@ -66,6 +71,7 @@ const (
 	ReasonTooLong      Reason = "too-long"      // a call longer than MaxCallText: asked at once, never allowed
 	ReasonProtected    Reason = "protected"     // a call that names aggy's own files or a Claude settings file: asked
 	ReasonPlanChanged  Reason = "plan-changed"  // the launch's plan is missing, unreadable, or not what the launch wrote: asked
+	ReasonOtherTool    Reason = "other-tool"    // pre-approved text from a tool the pre-approval is not for: no opinion
 )
 
 // MaxCallText caps what the matcher scans of one call. A longer one asks at
@@ -223,6 +229,9 @@ func (p PolicyPlan) DecideCall(c Call, pre PreApproved) CallDecision {
 	out := CallDecision{Verdict: VerdictAsk, Group: matched[0].Group, Strict: strict, Reason: ReasonPolicyMatch}
 	if preApproved(c, pre) {
 		out.Verdict, out.Reason = VerdictAllow, ReasonPreApproved
+		if c.Other {
+			out.Verdict, out.Reason = VerdictNone, ReasonOtherTool
+		}
 	}
 	return out
 }
