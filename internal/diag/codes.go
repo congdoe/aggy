@@ -107,6 +107,7 @@ var (
 	EvToolsChanged         = Event{"supervisor.tools.changed"}
 	EvLaunchRefused        = Event{"supervisor.launch.refused"}
 	EvCommandRefused       = Event{"cli.command.refused"}
+	EvDirectRan            = Event{"cli.direct.exited"}
 	EvLaunched             = Event{"supervisor.child.launched"}
 	EvSessionExited        = Event{"supervisor.child.exited"}
 	EvSwitchReturned       = Event{"supervisor.switch.returned"}
@@ -331,6 +332,7 @@ var events = []EventInfo{
 	{EvToolsNotified, LevelInfo, "tool", "aggy tool on or off told running sessions their tools may have changed (attrs: sessions told, failed).", "supervisor.tools.changed in each session's trace."},
 	{EvToolsChanged, LevelInfo, "supervisor", "A running session's tools for its vendor and repo differ from its launch's; it offers a resume of the same session at the turn end (attrs: changed, how: queued, note, waiting, busy, or reverted).", "switch.request.offered follows at a quiet turn end."},
 	{EvCommandRefused, LevelError, "cli", "A command refused its arguments or failed; the code says why.", "The code's entry; " + showRun + "."},
+	{EvDirectRan, LevelInfo, "cli", "aggy ran a vendor CLI on your terminal with no supervisor and recorded no session: print mode, a stdin that is no terminal, a flag that starts no session here, or a vendor subcommand (attrs: mode, policy; exit_code).", "Nothing: what the CLI printed is its own. aggy -c cannot reopen such a run."},
 	{EvLaunchRefused, LevelError, "supervisor", "aggy run, new, or resume did not put the CLI on screen, or the supervisor failed while it ran.", "The code's entry; " + showRun + "."},
 	{EvLaunched, LevelInfo, "supervisor", "A CLI went on screen (attrs: new_child, brief, model_set, direct). Its trace is the one its hooks, switches, and borrows carry.", "aggy diag show <trace id> for the whole session."},
 	{EvSessionFollowed, LevelInfo, "supervisor", "The on-screen CLI moved to another session (/clear, /resume), so turn ends of that one count now (attrs.via: the evidence).", "If aggy resume does not reopen it, its session file was not found: aggy keeps the id it had."},

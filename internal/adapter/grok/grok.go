@@ -252,7 +252,10 @@ func sessionArgs(sessionID, resume string, fork bool) ([]string, error) {
 // message pointing to the file; that Grok takes a prompt argument at
 // session start is unconfirmed (T6619).
 func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, error) {
-	args := []string{"--no-alt-screen"}
+	var args []string
+	if !req.Print {
+		args = append(args, "--no-alt-screen")
+	}
 	m, err := modelArgs(req.Model)
 	if err != nil {
 		return adapter.Command{}, err
@@ -349,14 +352,13 @@ func (Adapter) PassFlags() adapter.PassFlags {
 		Continue: []string{"--continue", "-c"},
 		Resume:   []string{"--resume", "-r"},
 		Refused: []adapter.RefusedFlag{
-			{Names: []string{"--session-id", "-s"}, Why: "aggy gives each new session its id"},
-			{Names: []string{"--fork-session"}, Why: "aggy keeps one vendor session per child"},
-			{Names: []string{"--no-alt-screen"}, Why: "aggy always passes it"},
+			{Names: []string{"--session-id", "-s"}, Why: "aggy gives each new session its id", ScreenOnly: true},
+			{Names: []string{"--fork-session"}, Why: "aggy keeps one vendor session per child", ScreenOnly: true},
+			{Names: []string{"--no-alt-screen"}, Why: "aggy always passes it on screen, so the scrollback keeps what came before a switch", ScreenOnly: true},
 			{Names: []string{"--rules", "--append-system-prompt"}, Why: "aggy passes the shared memory with it"},
 			{Names: []string{"--deny", "--disallowedTools"}, Why: "aggy's safety policy uses it; add yours in Grok's config"},
 			{Names: []string{"--agent"}, Why: "aggy passes the managed tools' servers with it"},
-			{Names: []string{"--load"}, Why: "it resumes a session aggy's index does not pick; use --resume"},
-			{Names: []string{"--prompt-file", "--prompt-json", "--single", "--print", "-p"}, Why: "aggy runs an on-screen session; aggy borrow runs one task headless"},
+			{Names: []string{"--load"}, Why: "it resumes a session aggy's index does not pick; use --resume", ScreenOnly: true},
 			{Names: []string{"--cwd"}, Why: "aggy starts the CLI in the session's directory; cd there first"},
 			{Names: []string{"--worktree", "-w", "--worktree-ref", "--ref", "--local-workspace", "--local-workspace-attach", "--local-workspace-cwd"}, Why: elsewhere},
 			{Names: []string{"--installer"}, Why: "it writes Grok's config.toml outside aggy's manifest"},
@@ -372,12 +374,25 @@ func (Adapter) PassFlags() adapter.PassFlags {
 		Values: []string{"--allow", "--allowedTools", "--allowed-tools", "--background-wait-timeout", "--client-identifier",
 			"--compaction-detail", "--compaction-mode", "--debug-file", "--disallowed-tools", "--effort", "--hunk-tracker-mode",
 			"--json-schema", "--leader-socket", "--max-turns", "--output-format", "--reasoning-effort", "--storage-mode",
-			"--system-prompt", "--system-prompt-override", "--tools"},
+			"--system-prompt", "--system-prompt-override", "--tools",
+			// The print forms' values: -p is --single <PROMPT> (verification.md, T6952).
+			"-p", "--single", "--print", "--prompt-file", "--prompt-json"},
+		Print:     []string{"-p", "--single", "--print", "--prompt-file", "--prompt-json"},
+		Commands:  Commands,
 		LoosensIf: []string{"approve", "approval", "yolo", "bypass", "no-sandbox", "skip-permission", "trust", "unsafe", "insecure"},
 		DirFlags:  []string{"--add-dir"},
 		Noted:     []adapter.NotedFlag{{Names: []string{"--add-dir"}, Note: "--add-dir lets Grok work in more folders; that aggy's deny rules cover them is unverified"}},
 	}
 }
+
+// Commands are Grok's subcommands: the Command enum of PagerArgs in
+// crates/codegen/xai-grok-pager/src/app/cli.rs at grok-build 2bdd1d6a (source,
+// read 2026-11-09), names in clap's kebab case, with aliases. The binary is
+// newer than that tree (verification.md, T6952), so one added since is not
+// known.
+var Commands = []string{"agent", "completions", "dashboard", "disk-usage", "doctor", "du", "export", "inspect", "leader", "login",
+	"logout", "mcp", "memory", "models", "plugin", "sessions", "setup", "share", "trace", "update", "usage", "v", "version",
+	"workspace", "worktree", "wrap"}
 
 // checkPermissionMode passes plan and default, the mode nothing changes.
 func checkPermissionMode(mode string) error {

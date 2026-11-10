@@ -20,7 +20,10 @@ func TestEveryRefusalEndsWithCode(t *testing.T) {
 		exit int
 		code string
 	}{
-		{[]string{"frobnicate"}, 2, "cli.usage"},
+		// T6961: a word that is no command is the default CLI's prompt, here
+		// with no terminal and no CLI on PATH; one edit from a command is a typo.
+		{[]string{"frobnicate"}, 1, "vendor.cli_missing"},
+		{[]string{"sesions"}, 2, "cli.usage"},
 		{[]string{"run", "frob"}, 2, "cli.usage"},
 		{[]string{"run"}, 2, "cli.usage"},
 		{[]string{"run", "--frob", "claude"}, 2, "cli.usage"},
@@ -30,7 +33,8 @@ func TestEveryRefusalEndsWithCode(t *testing.T) {
 		{[]string{"resume", "--frob"}, 2, "cli.usage"},
 		{[]string{"sessions", "x"}, 2, "cli.usage"},
 		{[]string{"session", "x"}, 2, "cli.usage"},
-		{[]string{"--continue", "x"}, 2, "cli.usage"},
+		{[]string{"--continue", "x"}, 1, "vendor.cli_missing"}, // print mode: claude's own --continue
+		{[]string{"--continue", "--resume"}, 2, "cli.usage"},
 		{[]string{"unwire"}, 2, "cli.usage"},
 		{[]string{"unwire", "--frob"}, 2, "cli.usage"},
 		{[]string{"unwire", "--change", "nosuch"}, 1, "cli.not_found"},

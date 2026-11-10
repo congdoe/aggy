@@ -272,6 +272,11 @@ type InteractiveRequest struct {
 	// PassFlags.Parse let through. Each adapter puts them after its own
 	// arguments and before a brief pointer.
 	Extra []string
+	// Print builds a run aggy neither supervises nor records (print mode,
+	// a stdin that is no terminal): no session id, no brief, and no flag
+	// that only shapes the screen (Codex's and Grok's --no-alt-screen).
+	// Extra holds the CLI's own words for it, a print subcommand included.
+	Print bool
 	// OpenCode is how an OpenCode session is launched; only that adapter
 	// reads it, and it refuses to build a command without it.
 	OpenCode *OpenCodeLaunch
