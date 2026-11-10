@@ -193,6 +193,19 @@ const (
 	planHeadless
 )
 
+// childPlan is who answers an on-screen launch of a child of kind: a person
+// for the session's own child (kind ""), no one for a borrow's child reopened
+// on screen. launchOnce uses it for both of its choices, the shared rules
+// gateLaunch and addPermissions read and the plan policyPlan makes, so they
+// cannot drift apart (PR #125 integration). Print mode and every other
+// direct run is planHeadless (runPrint).
+func childPlan(kind string) planFor {
+	if kind == "" {
+		return planOnScreen
+	}
+	return planHeadless
+}
+
 // policyPlan is how a launch in cwd gets the safety policy: on screen, the
 // person's group settings from s apply (ask or deny per group); headless,
 // every rule is a deny. No allow changes it (parity.PolicyPlan.Decide).

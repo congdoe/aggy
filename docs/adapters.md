@@ -849,7 +849,7 @@ sources (`PagerArgs.prompt`; codex's usage `codex [OPTIONS] [PROMPT]`).
   `--permission-mode auto` ask less, and Claude documents that deny rules block in
   every mode and that an allow rule cannot carve an exception out of one
   (permission-modes.md, permissions.md), so aggy's policy rules (deny, or ask on
-  screen once PR #125 lands) hold; that `auto` and `dontAsk` still stop at an
+  screen) hold; that `auto` and `dontAsk` still stop at an
   ask rule is unverified, TODO(T6895). Codex's `--approve-for-me` stays gated
   because the same is unverified for its rules file.
 

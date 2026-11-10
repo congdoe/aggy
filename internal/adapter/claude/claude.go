@@ -214,7 +214,7 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 // auto do ask less, and pass: "Deny rules block in every mode" and "An allow
 // rule can't carve an exception out of a deny rule" (permission-modes.md and
 // permissions.md, read 2026-11-07), and aggy's policy rules (deny, or ask on
-// screen once PR #125 lands) are its policy here. Gating them would cost that
+// screen) are its policy here. Gating them would cost that
 // policy for what it does not protect. TODO(T6895): once aggy's rules can be
 // ask rules, check that --permission-mode auto and dontAsk still stop at them.
 //
@@ -224,7 +224,7 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 // T6962, from the same reference read 2026-11-09: --settings,
 // --append-system-prompt-file, and --mcp-config, which aggy passes too, are
 // merged with aggy's own at launch (internal/cli; Interactive), so neither is
-// dropped and aggy's policy rules (deny, or ask on screen once PR #125 lands)
+// dropped and aggy's policy rules (deny, or ask on screen)
 // still apply. --append-system-prompt passes: the
 // reference says it combines with --append-system-prompt-file from v2.1.283,
 // and Tested is later. -w/--worktree passes, noted, to the first launch only.
