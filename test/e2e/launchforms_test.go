@@ -233,6 +233,43 @@ func TestSettingsMerged(t *testing.T) {
 	}
 }
 
+// TestSubcommandPassThrough (T6963): a management subcommand of the CLI runs
+// as typed, with nothing of aggy's added and no session recorded; its stdin,
+// stdout, and exit code are the CLI's.
+func TestSubcommandPassThrough(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"claude mcp", []string{"claude", "mcp", "list"}, []string{"mcp", "list"}},
+		{"claude auth, a flag after it", []string{"claude", "auth", "status", "--json"}, []string{"auth", "status", "--json"}},
+		{"codex login, aggy's flag name after it", []string{"codex", "login", "--no-policy"}, []string{"login", "--no-policy"}},
+		{"grok update", []string{"grok", "update"}, []string{"update"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			sc := map[string]any{"stdout": "listed\n", "exit_code": 4, "interactive_without_tty": true,
+				"extra_switches": []string{"--json", "--no-policy"}}
+			code, out, errb := w.pipe(t, sc, "", tt.args...)
+			if code != 4 || out != "listed\n" {
+				t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errb)
+			}
+			recs := fakecli.Records(t, w.record)
+			if len(recs) != 1 {
+				t.Fatalf("runs = %+v", recs)
+			}
+			if r := recs[0]; !slices.Equal(r.Args, tt.want) {
+				t.Errorf("args = %q, want %q", r.Args, tt.want)
+			}
+			if c, out := w.aggyCode(t, "sessions"); c != 0 || strings.Contains(out, w.cwd) {
+				t.Errorf("a session was recorded: %d\n%s", c, out)
+			}
+		})
+	}
+}
+
 // TestContinueWithFlags (T6961): aggy -c takes the CLI's flags too, sorted by
 // the vendor of the session it reopens, as claude -c --model x does.
 func TestContinueWithFlags(t *testing.T) {

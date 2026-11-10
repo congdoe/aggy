@@ -414,6 +414,13 @@ var Commands = []string{"agent", "completions", "dashboard", "disk-usage", "doct
 	"logout", "mcp", "memory", "models", "plugin", "sessions", "setup", "share", "trace", "update", "usage", "v", "version",
 	"workspace", "worktree", "wrap"}
 
+// Manage are the Commands that manage the CLI, its sign-in, MCP servers,
+// plugins, and models, which aggy runs as typed, with nothing added (T6963;
+// the same source). setup and memory are not among them, since they write the
+// config and memory aggy keeps in parity, nor the session and workspace
+// commands; run grok itself for those.
+var Manage = []string{"completions", "doctor", "login", "logout", "mcp", "models", "plugin", "update", "usage", "v", "version"}
+
 // checkPermissionMode passes plan and default, the mode nothing changes.
 func checkPermissionMode(mode string) error {
 	if mode == "default" {

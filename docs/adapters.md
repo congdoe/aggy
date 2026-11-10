@@ -707,6 +707,24 @@ sources (`PagerArgs.prompt`; codex's usage `codex [OPTIONS] [PROMPT]`).
   the CLI's help, read by the launch probe, shows it with a `<value>`
   (`probe.ValueFlags`). An optional `[value]` is not counted, since Claude
   binds `--debug`'s filter only in the `=` form.
+- Management subcommands (`Manage` in each adapter, T6963) run as typed,
+  with nothing of aggy's added and no session recorded. Their sources are the
+  same as the `Commands` lists above.
+  - Claude: `agents`, `attach`, `auth`, `auto-mode`, `daemon`, `doctor`,
+    `install`, `kill`, `logs`, `mcp`, `plugin`/`plugins`, `purge`, `respawn`,
+    `rm`, `setup-token`, `stop`, and `update`. `gateway`, `import`,
+    `rc`/`remote-control`, `self-hosted-runner`, and `ultrareview` stay
+    refused.
+  - Codex: `login`, `logout`, `mcp`, `plugin`, `completion`, `doctor`,
+    `update`, and `apply` (`a`). `features` stays refused, because its
+    enable and disable persist a hooks or sandbox feature past the launch
+    gate.
+  - Grok: `login`, `logout`, `mcp`, `plugin`, `models`, `usage`, `doctor`,
+    `update`, `completions`, and `version` (`v`). `setup` and `memory` stay
+    refused, because they write config and memory aggy keeps in parity.
+  - OpenCode: `auth`, `models`, `mcp`, and `debug`, as recorded live at
+    2.2.5 (verification.md). `upgrade` is not recorded, so it is left out as
+    unverified.
 - Refused unless `--no-policy`, then noted at launch and logged
   (`loosening_flags`): anything naming `dangerously`, on every vendor; Claude
   `--permission-mode` outside `default` (`manual`), `acceptEdits`, `plan`, `auto`,

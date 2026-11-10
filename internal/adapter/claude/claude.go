@@ -298,6 +298,15 @@ var Commands = []string{"agents", "attach", "auth", "auto-mode", "daemon", "doct
 	"mcp", "plugin", "plugins", "purge", "rc", "remote-control", "respawn", "rm", "self-hosted-runner", "setup-token", "stop",
 	"ultrareview", "update"}
 
+// Manage are the Commands that manage the CLI, its sign-in, its MCP servers
+// and plugins, or its background sessions, which aggy runs as typed, with
+// nothing added (T6963; the same reference). The rest stay refused as a
+// session's first word: gateway, import, rc and remote-control,
+// self-hosted-runner, and ultrareview start or move work aggy does not
+// record; run claude itself for them.
+var Manage = []string{"agents", "attach", "auth", "auto-mode", "daemon", "doctor", "install", "kill", "logs", "mcp", "plugin",
+	"plugins", "purge", "respawn", "rm", "setup-token", "stop", "update"}
+
 // checkPermissionMode lets through the modes that still ask or deny
 // (permission-modes.md; manual is an alias of default, the mode that asks
 // most), and gates bypassPermissions and any mode not listed.

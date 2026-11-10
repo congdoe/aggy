@@ -62,6 +62,7 @@ aggy claude --model opus --permission-mode plan   # a vendor CLI with its own fl
 aggy --model opus "explain this repo"             # the default vendor's flags and first prompt
 git diff | aggy -p "review this"                  # print mode: the CLI's own output, aggy's policy, nothing recorded
 aggy opencode --model xai/grok-4                  # OpenCode, on the plans and keys you set up
+aggy claude mcp list                              # a vendor's own management command, run as typed
 aggy skill link        # let each CLI call aggy itself
 aggy policy wire       # write aggy's safety policy into Codex (Claude and Grok get it per launch)
 aggy memory import --from claude   # copy Claude's memory into .aggy/memory.md, after a diff
@@ -73,6 +74,8 @@ aggy diag bundle > aggy-bundle.md   # scrubbed, to hand to an agent or attach to
 ```
 
 `aggy <command> --help` gives the details. Every refusal or error ends with `[<code> · run <id>]`: `aggy diag codes <code>` says what it means and what to check next, and `aggy diag` filters and queries the diagnostic log (`--since 1h`, `--borrow`, `--json`, `aggy diag sql`); see [docs/logging.md](docs/logging.md). Routing picks a vendor for each kind and says why it skipped the others; `--vendor` picks one yourself.
+
+aggy's policy, memory, and switching apply only to what starts through `aggy`. A session in an IDE panel, the vendor's desktop app, or its web sessions starts without aggy.
 
 ## Vendor support
 
