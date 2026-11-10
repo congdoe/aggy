@@ -65,6 +65,25 @@ func TestReviewAttacks(t *testing.T) {
 		{"claude -dp", nil, []string{"claude", "-dp", "hi"}, "", claudePolicy},
 		{"grok -p --no-ask-user --fs-write", nil, []string{"grok", "-p", "hi", "--no-ask-user", "--fs-write", "/"}, "cli.flag_needs_no_policy", nil},
 		{"a borrow child's mcp add", []string{"AGGY_DELEGATED=1"}, []string{"claude", "mcp", "add", "evil", "--", "sh"}, "borrow.one_hop", nil},
+		// PR #124 second re-review: a "--" the CLI takes as a flag's value.
+		{"--name -- --settings bypass", nil, []string{"claude", "--name", "--", "--settings", bypass, "do it"}, "cli.usage", nil},
+		{"print --debug-file -- --settings bypass", nil, []string{"claude", "-p", "--debug-file", "--", "--settings", bypass, "do it"}, "cli.usage", nil},
+		{"-n -- --verbose agents", nil, []string{"claude", "-n", "--", "--verbose", "agents"}, "cli.usage", nil},
+		{"bare --name -- --verbose mcp serve", nil, []string{"--name", "--", "--verbose", "mcp", "serve"}, "cli.usage", nil},
+		{"-- --verbose agents", nil, []string{"claude", "--", "--verbose", "agents"}, "cli.usage", nil},
+		{"-- a blank word then agents", nil, []string{"claude", "--", "", "agents"}, "cli.usage", nil},
+		{"-- AGENTS", nil, []string{"claude", "--", "AGENTS"}, "cli.usage", nil},
+		{"--name -- --permission-mode", nil, []string{"claude", "--name", "--", "--permission-mode"}, "cli.usage", nil},
+		{"-- --settings bypass", nil, []string{"claude", "--", "--settings", bypass}, "cli.usage", nil},
+		{"mcp SERVE", nil, []string{"claude", "mcp", "SERVE"}, "cli.usage", nil},
+		{"mcp --x serve", nil, []string{"claude", "mcp", "--x", "serve"}, "cli.usage", nil},
+		{"mcp add x -- npx y", nil, []string{"claude", "mcp", "add", "x", "--", "npx", "y"}, "", asTyped("mcp", "add", "x", "--", "npx", "y")},
+		{"-- sessions list", nil, []string{"--", "sessions", "list"}, "", claudePolicy},
+		{"print -p --, -p a switch in the help", nil, []string{"claude", "-p", "--", "hi"}, "", claudePolicy},
+		// Rule C: every --settings is merged and checked, wherever it stands.
+		{"a second --settings", nil, []string{"claude", "-p", "--settings", "{}", "--settings", bypass, "hi"}, "cli.flag_needs_no_policy", nil},
+		{"--settings after an unknown flag", nil, []string{"claude", "-p", "--verbose", "--settings", bypass, "hi"}, "cli.flag_needs_no_policy", nil},
+		{"--settings after a value flag", nil, []string{"claude", "-p", "--name", "--settings", bypass, "hi"}, "cli.flag_needs_no_policy", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -85,8 +104,8 @@ func TestReviewAttacks(t *testing.T) {
 				}
 			}
 			sc := map[string]any{"stdout": "ran\n", "interactive_without_tty": true,
-				"extra_switches": []string{"-nv", "-pv", "--environment", "-dp", "--skip-git-repo-check", "--no-ask-user", "--rc"},
-				"extra_flags":    []string{"--fs-write"}}
+				"extra_switches": []string{"-nv", "-pv", "--environment", "-dp", "--skip-git-repo-check", "--no-ask-user", "--rc", "--verbose"},
+				"extra_flags":    []string{"--fs-write", "--name"}}
 			code, out, errb := w.pipe(t, sc, "", args...)
 			var recs []fakecli.Record
 			if _, err := os.Stat(w.record); err == nil {
