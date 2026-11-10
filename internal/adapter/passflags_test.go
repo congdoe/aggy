@@ -267,8 +267,27 @@ func TestPassFlags(t *testing.T) {
 			want: adapter.ParsedFlags{Extra: []string{"--permission-mode=plan", "fix"}, Safe: []string{"--permission-mode=plan"}, Prompt: []string{"fix"}}},
 		{name: "a word after a model", p: cl, args: []string{"--model", "opus", "fix"},
 			want: adapter.ParsedFlags{Model: "opus", Extra: []string{"fix"}, Prompt: []string{"fix"}}},
-		{name: "--", p: cl, args: []string{"--", "mcp"},
-			want: adapter.ParsedFlags{Extra: []string{"--", "mcp"}, Prompt: []string{"mcp"}}},
+		// Hand-edited for the PR #124 re-review: this row was "-- mcp", which
+		// is now refused (below); an ordinary word, or one of aggy's own
+		// command names, still passes after --.
+		{name: "--", p: cl, args: []string{"--", "sessions", "list"},
+			want: adapter.ParsedFlags{Extra: []string{"--", "sessions", "list"}, Prompt: []string{"sessions", "list"}}},
+		{name: "-- with a flag-like word that is harmless", p: cl, args: []string{"--", "fix", "--verbose", "-x"},
+			want: adapter.ParsedFlags{Extra: []string{"--", "fix", "--verbose", "-x"}, Prompt: []string{"fix", "--verbose", "-x"}}},
+		// PR #124 re-review: nothing after -- is left to the CLI's parser.
+		{name: "-- then a subcommand", p: cl, args: []string{"--", "mcp"}, refused: "names a subcommand"},
+		{name: "-- then a subcommand in another case", p: cl, args: []string{"--", "AGENTS"}, refused: "names a subcommand"},
+		{name: "-- then a management subcommand", p: cx, args: []string{"--", "login"}, refused: "names a subcommand"},
+		{name: "-- then a grok subcommand", p: gk, args: []string{"--", "Doctor"}, refused: "names a subcommand"},
+		{name: "-- then a bypass", p: cl, args: []string{"--", "fix", "--dangerously-skip-permissions"}, loosens: true},
+		{name: "-- then a gated mode", p: cl, args: []string{"--", "fix", "--permission-mode", "bypassPermissions"}, loosens: true},
+		{name: "-- then a gated mode, = form", p: cl, args: []string{"--", "fix", "--permission-mode=bypassPermissions"}, loosens: true},
+		{name: "-- then codex -c", p: cx, args: []string{"--", "fix", "-c", "sandbox_mode=danger-full-access"}, loosens: true},
+		{name: "-- then codex --yolo", p: cx, args: []string{"--", "fix", "--yolo"}, loosens: true},
+		{name: "-- then grok --always-approve", p: gk, args: []string{"--", "fix", "--always-approve"}, loosens: true},
+		{name: "-- then a refused flag", p: gk, args: []string{"--", "fix", "--cwd", "/x"}, refused: "--cwd clashes"},
+		{name: "-- then a bypass with --no-policy", p: cl, args: []string{"--", "fix", "--dangerously-skip-permissions"}, noPolicy: true,
+			want: adapter.ParsedFlags{Extra: []string{"--", "fix", "--dangerously-skip-permissions"}, Prompt: []string{"fix", "--dangerously-skip-permissions"}}},
 		{name: "-", p: cl, args: []string{"-"},
 			want: adapter.ParsedFlags{Extra: []string{"-"}, Prompt: []string{"-"}}},
 	}
@@ -315,7 +334,15 @@ func TestParsePrint(t *testing.T) {
 		{"a session id is the CLI's", cl, []string{"-p", "--session-id", "x"}, []string{"-p", "--session-id", "x"}, ""},
 		// PR #124 review: refused in print mode too (claude -p ultrareview).
 		{"a subcommand's name is refused", cl, []string{"-p", "ultrareview"}, nil, "names a subcommand"},
-		{"after --, it is a prompt", cl, []string{"-p", "--", "mcp"}, []string{"-p", "--", "mcp"}, ""},
+		// Hand-edited for the PR #124 re-review: "-p -- mcp" was a prompt; a
+		// subcommand's name after -- is now refused in print mode too.
+		{"after --, it is a prompt", cl, []string{"-p", "--", "fix"}, []string{"-p", "--", "fix"}, ""},
+		{"after --, a subcommand is refused", cl, []string{"-p", "--", "mcp", "serve"}, nil, "names a subcommand"},
+		{"after --, a bypass still needs --no-policy", cl, []string{"-p", "--", "x", "--dangerously-skip-permissions"}, nil, "--no-policy"},
+		{"codex exec --skip-git-repo-check", cx, []string{"exec", "--skip-git-repo-check", "x"}, nil, "--no-policy"},
+		{"codex exec --ignore-user-config", cx, []string{"exec", "--ignore-user-config", "x"}, nil, "--no-policy"},
+		{"grok --no-ask-user", gk, []string{"-p", "hi", "--no-ask-user"}, nil, "--no-policy"},
+		{"grok --fs-write", gk, []string{"-p", "hi", "--fs-write", "/"}, nil, "--no-policy"},
 		{"codex exec's own resume", cx, []string{"exec", "resume", "--last"}, []string{"exec", "resume", "--last"}, ""},
 		{"grok -p takes its prompt", gk, []string{"-p", "hi", "--no-alt-screen"}, []string{"-p", "hi", "--no-alt-screen"}, ""},
 		{"a bypass still needs --no-policy", cl, []string{"-p", "--dangerously-skip-permissions", "x"}, nil, "--no-policy"},

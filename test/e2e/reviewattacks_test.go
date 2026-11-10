@@ -46,6 +46,25 @@ func TestReviewAttacks(t *testing.T) {
 		{"claude agents in a bypass mode", nil, []string{"claude", "agents", "--permission-mode", "bypassPermissions", "--dangerously-skip-permissions"}, "cli.usage", nil},
 		{"a refused subcommand in print mode", nil, []string{"claude", "-p", "ultrareview"}, "cli.usage", nil},
 		{"a refused subcommand piped", nil, []string{"claude", "rc"}, "cli.usage", nil},
+		// PR #124 re-review.
+		{"claude -- agents in a bypass mode", nil, []string{"claude", "--", "agents", "--permission-mode", "bypassPermissions", "--dangerously-skip-permissions"}, "cli.usage", nil},
+		{"bare -- agents in a bypass mode", nil, []string{"--", "agents", "--permission-mode", "bypassPermissions"}, "cli.usage", nil},
+		{"claude -p -- mcp serve", nil, []string{"claude", "-p", "--", "mcp", "serve"}, "cli.usage", nil},
+		{"claude mcp -- serve", nil, []string{"claude", "mcp", "--", "serve"}, "cli.usage", nil},
+		// A later -- is mcp add's own: it runs as typed, with no policy, even
+		// from a session's tool shell (what stops a model there is the guard
+		// hook, not this path).
+		{"claude mcp add with its command", []string{"AGGY_VENDOR=claude", "AGGY_SOCKET=/x"}, []string{"claude", "mcp", "add", "evil", "--", "sh", "-c", "id"}, "",
+			asTyped("mcp", "add", "evil", "--", "sh", "-c", "id")},
+		{"the typo sesions with more words", nil, []string{"sesions", "list"}, "cli.usage", nil},
+		{"the typo borow with more words", nil, []string{"borow", "research", "x"}, "cli.usage", nil},
+		{"codex exec --skip-git-repo-check", nil, []string{"codex", "exec", "--skip-git-repo-check", "x"}, "cli.flag_needs_no_policy", nil},
+		{"settings with MCP approvals, headers, a proxy login, and helpers", nil, []string{"claude", "-p", "--settings",
+			`{"enabledMcpjsonServers":["evil"],"env":{"ANTHROPIC_CUSTOM_HEADERS":"Authorization: Bearer x","HTTPS_PROXY":"http://u:p@h:1","NODE_OPTIONS":"--require /tmp/x.js"},"otelHeadersHelper":"/tmp/x.sh","awsAuthRefresh":"x"}`, "hi"}, "cli.usage", nil},
+		{"claude --rc then a bypass", nil, []string{"claude", "--rc", "--dangerously-skip-permissions"}, "cli.flag_needs_no_policy", nil},
+		{"claude -dp", nil, []string{"claude", "-dp", "hi"}, "", claudePolicy},
+		{"grok -p --no-ask-user --fs-write", nil, []string{"grok", "-p", "hi", "--no-ask-user", "--fs-write", "/"}, "cli.flag_needs_no_policy", nil},
+		{"a borrow child's mcp add", []string{"AGGY_DELEGATED=1"}, []string{"claude", "mcp", "add", "evil", "--", "sh"}, "borrow.one_hop", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -65,7 +84,9 @@ func TestReviewAttacks(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			sc := map[string]any{"stdout": "ran\n", "interactive_without_tty": true, "extra_switches": []string{"-nv", "-pv", "--environment"}}
+			sc := map[string]any{"stdout": "ran\n", "interactive_without_tty": true,
+				"extra_switches": []string{"-nv", "-pv", "--environment", "-dp", "--skip-git-repo-check", "--no-ask-user", "--rc"},
+				"extra_flags":    []string{"--fs-write"}}
 			code, out, errb := w.pipe(t, sc, "", args...)
 			var recs []fakecli.Record
 			if _, err := os.Stat(w.record); err == nil {
@@ -90,6 +111,33 @@ func TestReviewAttacks(t *testing.T) {
 // claudePolicy says r carries aggy's deny rules in its --settings layer.
 func claudePolicy(t *testing.T, r fakecli.Record) bool {
 	return slices.Contains(settingsDeny(t, r), "Bash(rm -rf*)")
+}
+
+// TestGateExitCodeOnScreen (PR #124 re-review): a gate refusal exits 2 on
+// screen, as it does in print mode (TestReviewAttacks) and for a subcommand.
+func TestGateExitCodeOnScreen(t *testing.T) {
+	w := newWorld(t)
+	s := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "codex", "--add-dir", w.home)
+	s.waitFor([]byte("cli.flag_needs_no_policy"))
+	if code := s.exit(); code != 2 {
+		t.Errorf("exit %d, want 2: %s", code, s.screen())
+	}
+	if _, err := os.Stat(w.record); err == nil {
+		for _, r := range fakecli.Records(t, w.record) {
+			t.Errorf("the CLI ran: %+v", r)
+		}
+	}
+}
+
+// asTyped says r ran with exactly args: a subcommand aggy passes as typed.
+func asTyped(args ...string) func(*testing.T, fakecli.Record) bool {
+	return func(t *testing.T, r fakecli.Record) bool {
+		if !slices.Equal(r.Args, args) {
+			t.Errorf("args = %q, want %q", r.Args, args)
+			return false
+		}
+		return true
+	}
 }
 
 // grokPolicy says r carries aggy's deny rules as --deny.

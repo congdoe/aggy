@@ -289,8 +289,9 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 	}
 	for _, r := range req.Rules.Allow {
 		// A deny outranks an allow (decision_rank, policy.rs:791 at
-		// grok-build 2bdd1d6a), so the policy's denies still hold.
-		// TODO(T6895): not yet run live on screen.
+		// grok-build 2bdd1d6a), so aggy's policy rules (deny, or ask on
+		// screen once PR #125 lands) still hold. TODO(T6895): not yet run
+		// live on screen, and that an ask outranks an allow is unchecked.
 		if r == "" || strings.HasPrefix(r, "-") || strings.ContainsAny(r, ",\x00") {
 			return adapter.Command{}, fmt.Errorf("grok: allow rule %q cannot be passed as one --allow value", r)
 		}
@@ -376,6 +377,13 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			{Names: []string{"--cwd"}, Why: "aggy starts the CLI in the session's directory; cd there first"},
 			{Names: []string{"--installer"}, Why: "it writes Grok's config.toml outside aggy's manifest; run grok itself for it"},
 			{Names: []string{"--always-approve", "--trust", "--trust-folder"}, UnlessNoPolicy: true},
+			// PR #124 re-review: hidden PagerArgs flags reachable through
+			// grok -p, which the review read in cli.rs at grok-build 2bdd1d6a
+			// as skipping the person's questions and widening where Grok may
+			// write. Not re-read here, so what each does is unverified;
+			// gated on the safe side, and --fs-write's value is taken as one
+			// word (unverified).
+			{Names: []string{"--no-ask-user", "--fs-write"}, UnlessNoPolicy: true},
 			// PR #124 review: refused again, as before T6962, until the agent
 			// file's schema is checked for a permission mode. TODO(T6895).
 			{Names: []string{"--agent"}, Why: "an agent file may set its own permission mode, which aggy does not read yet (TODO(T6895)); run grok itself for it"},
@@ -392,7 +400,7 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			"--system-prompt", "--system-prompt-override", "--tools",
 			// The print forms' values: -p is --single <PROMPT> (verification.md, T6952).
 			"-p", "--single", "--print", "--prompt-file", "--prompt-json",
-			"--rules", "--append-system-prompt", "--deny", "--disallowedTools", "--agent", "--worktree-ref", "--ref"},
+			"--rules", "--append-system-prompt", "--deny", "--disallowedTools", "--agent", "--worktree-ref", "--ref", "--fs-write"},
 		Print: []string{"-p", "--single", "--print", "--prompt-file", "--prompt-json",
 			"--worktree", "-w", "--worktree-ref", "--ref", "--local-workspace", "--local-workspace-attach", "--local-workspace-cwd"},
 		Bare:      []string{"--version", "-v"},
