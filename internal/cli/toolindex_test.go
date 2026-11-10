@@ -206,9 +206,10 @@ func TestCodegraphIndexOnFirstOn(t *testing.T) {
 		t.Fatalf("declined: %d %q", code, out)
 	}
 	codegraphOff(t, asked)
-	// An agent with no terminal is refused.
+	// An agent with no terminal is refused: since R121 by shellGate, before
+	// the index step's own refusal ("you run it yourself") is reached.
 	t.Setenv("AGGY_VENDOR", "codex")
-	if code, _, errOut := toolRun("", false, "on", "codegraph", "--repo", asked); code != 1 || !strings.Contains(errOut, "you run it yourself") || exists(t, filepath.Join(asked, ".codegraph")) {
+	if code, _, errOut := toolRun("", false, "on", "codegraph", "--repo", asked); code != 1 || !strings.Contains(errOut, "session's own tool shell") || exists(t, filepath.Join(asked, ".codegraph")) {
 		t.Fatalf("agent: %d %q", code, errOut)
 	}
 	t.Setenv("AGGY_VENDOR", "")
