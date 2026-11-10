@@ -230,6 +230,10 @@ type InteractiveRequest struct {
 	SessionID string
 	// Resume reopens this vendor session id instead of starting one.
 	Resume string
+	// ResumeName reopens the session the CLI itself finds by this name (or an
+	// id it searches for), as --resume <name> (T6965): Claude and Grok only,
+	// with no SessionID, Resume, or Fork. It must pass ValidResumeName.
+	ResumeName string
 	// Fork branches the resumed session instead of reusing its id.
 	Fork bool
 	// BriefFile is a file the new session is told to read. Briefs are never

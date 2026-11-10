@@ -81,6 +81,16 @@ type target struct {
 	// Preview: nothing launches (--brief --show), so a note says what a launch
 	// would do.
 	Preview bool
+	// Native reopens a session found in the vendor's own store for the
+	// current directory (T6965): the child that already holds it, or, on first
+	// use, a new parent and child adopted for it. A picked session and -c's
+	// newest are native when aggy has not recorded them.
+	Native *nativeSession
+	// ResumeName reopens the session the CLI finds by this name, passed as its
+	// --resume <name> (Claude and Grok, T6965). The new child has no id until
+	// the CLI exits, when the one session file of this directory that changed
+	// since the launch names it (adoptNamed).
+	ResumeName string
 	// SwitchFrom is the vendor this launch was switched from, and
 	// SwitchReason why, for the switch row of aggy log (T6925); "" for a
 	// launch that is not a switch's, which writes a screen row instead.
@@ -144,6 +154,11 @@ type launchPlan struct {
 	remakeCwd bool
 	// preview: nothing launches (target.Preview), so nothing is written.
 	preview bool
+	// adopted: the child is a native session recorded for the first time,
+	// which commit logs (T6965).
+	adopted bool
+	// resumeName is target.ResumeName, for the CLI's own --resume.
+	resumeName string
 }
 
 // plan decides the parent and child a launch opens. It writes only what
@@ -173,6 +188,17 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 	switch {
 	case t.New:
 		p.newParent = true
+	case t.ResumeName != "":
+		return p, p.byName(ctx, s, cfg, cwd, t, now)
+	case t.Native != nil:
+		par, id, err := nativeOwner(ctx, s, *t.Native)
+		if err != nil {
+			return p, err
+		}
+		if id == "" {
+			return p, p.adopt(cfg, cwd, *t.Native, now)
+		}
+		p.parent, pick = par, id
 	case t.ParentID != "":
 		ps, err := s.ParentsByPrefix(ctx, t.ParentID)
 		if err != nil {
@@ -194,11 +220,17 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 			p.parent, pick = par, kids[0]
 		}
 	case t.Continue:
-		par, id, err := latestResumable(ctx, s, cwd, t.Vendor, t.Preview)
+		par, last, err := latestResumable(ctx, s, cwd, t.Vendor, t.Preview)
+		// T6965: a session the vendor CLI started here by itself counts too,
+		// when it is newer than the one aggy recorded.
+		if ns, ok := newestNative(ctx, s, cfg, cwd, t.Vendor, &sessionFiles{readOnly: t.Preview}); ok &&
+			(err != nil && errors.Is(err, errNoSession) || err == nil && ns.Modified.After(last.LastActive)) {
+			return p, p.adopt(cfg, cwd, ns, now)
+		}
 		if err != nil {
 			return p, err
 		}
-		p.parent, pick = par, id
+		p.parent, pick = par, last.ID
 	default:
 		key, err := safefs.CanonicalPath(cwd)
 		if err != nil {
@@ -480,14 +512,14 @@ func remakeBorrowDir(cwd string) (func(), error) {
 // child last active in dir (of v, when set) that can still be reopened, in
 // whichever of dir's parents holds it, since every bare aggy starts a
 // parent of its own and one quit before its first message saves nothing.
-func latestResumable(ctx context.Context, s *store.Store, dir string, v adapter.Vendor, readOnly bool) (store.Parent, string, error) {
+func latestResumable(ctx context.Context, s *store.Store, dir string, v adapter.Vendor, readOnly bool) (store.Parent, store.Child, error) {
 	key, err := safefs.CanonicalPath(dir)
 	if err != nil {
-		return store.Parent{}, "", err
+		return store.Parent{}, store.Child{}, err
 	}
 	ps, err := s.ParentsInDir(ctx, key, dir)
 	if err != nil {
-		return store.Parent{}, "", err
+		return store.Parent{}, store.Child{}, err
 	}
 	for _, par := range ps {
 		if replaced(par) {
@@ -495,12 +527,12 @@ func latestResumable(ctx context.Context, s *store.Store, dir string, v adapter.
 		}
 		children, err := planRefresh(ctx, s, par.ID, &sessionFiles{readOnly: readOnly})
 		if err != nil {
-			return store.Parent{}, "", err
+			return store.Parent{}, store.Child{}, err
 		}
 		for _, c := range children {
 			if c.Kind == "" && (v == "" || c.Vendor == string(v)) && c.VendorSessionID != "" &&
 				c.Status != stateClosed && c.Status != stateGone {
-				return par, c.ID, nil
+				return par, c, nil
 			}
 		}
 	}
@@ -508,7 +540,7 @@ func latestResumable(ctx context.Context, s *store.Store, dir string, v adapter.
 	if v != "" {
 		what = string(v) + " session"
 	}
-	return store.Parent{}, "", fmt.Errorf("%w to continue: no %s here can be reopened (aggy sessions lists them; aggy starts a new one)", errNoSession, what)
+	return store.Parent{}, store.Child{}, fmt.Errorf("%w to continue: no %s here can be reopened (aggy sessions lists them; aggy starts a new one)", errNoSession, what)
 }
 
 // newChildOf plans a new interactive child of v (empty means the default
@@ -627,6 +659,12 @@ func (p *launchPlan) commit(ctx context.Context, s *store.Store, now time.Time) 
 			return nil, err
 		}
 	}
+	if p.adopted {
+		// The index's record that aggy took this session on (T6965); a failed
+		// write loses only the line.
+		_ = s.AppendEvent(ctx, store.Event{At: now, ParentID: p.parent.ID, ChildID: p.child.ID, Type: store.EventSession,
+			Detail: map[string]any{"vendor": p.child.Vendor, "session": p.child.VendorSessionID, "via": "adopted"}})
+	}
 	var lease *store.Lease
 	if id := p.child.VendorSessionID; id != "" {
 		var err error
@@ -656,9 +694,12 @@ func (p *launchPlan) interactiveRequest() adapter.InteractiveRequest {
 		Model: p.child.Model,
 		Env:   childEnv(p.child.Vendor, p.child.Model),
 	}
-	if p.resume != "" {
+	switch {
+	case p.resume != "":
 		req.Resume = p.resume
-	} else {
+	case p.resumeName != "":
+		req.ResumeName = p.resumeName
+	default:
 		req.SessionID = p.child.VendorSessionID
 	}
 	return req

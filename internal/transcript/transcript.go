@@ -228,40 +228,11 @@ func readTail(root, path string) ([]byte, error) { return ReadTail(root, path, M
 // window cut. The file opened must be the one checked, so a folder
 // swapped for a symlink after the check is refused.
 func ReadTail(root, path string, n int64) ([]byte, error) {
-	rel, err := filepath.Rel(root, path)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return nil, fmt.Errorf("transcript: %s is outside %s", path, root)
-	}
-	var last fs.FileInfo
-	p := root
-	parts := append([]string{""}, strings.Split(rel, string(filepath.Separator))...)
-	for i, part := range parts {
-		p = filepath.Join(p, part)
-		fi, err := safefs.Lstat(p)
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil, fmt.Errorf("%w: %v", adapter.ErrNoTranscript, err)
-			}
-			return nil, err
-		}
-		final := i == len(parts)-1
-		if final && !fi.Mode().IsRegular() || !final && !fi.IsDir() {
-			return nil, &fs.PathError{Op: "transcript", Path: p, Err: ErrUnsafe}
-		}
-		last = fi
-	}
-	f, err := safefs.OpenRegular(path)
+	f, fi, err := openUnder(root, path)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !os.SameFile(fi, last) {
-		return nil, &fs.PathError{Op: "transcript", Path: path, Err: safefs.ErrChanged}
-	}
 	off := max(fi.Size()-n, 0)
 	if _, err := f.Seek(off, io.SeekStart); err != nil {
 		return nil, err
@@ -279,6 +250,73 @@ func ReadTail(root, path string, n int64) ([]byte, error) {
 		data = data[i+1:]
 	}
 	return data, nil
+}
+
+// ReadHead reads the first n bytes of path, under root as for ReadTail, and
+// drops a last line the window cut, so a line too long for the window is
+// never half read. It is for listing a session (its first prompt), never for
+// a brief.
+func ReadHead(root, path string, n int64) ([]byte, error) {
+	f, _, err := openUnder(root, path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, n))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) == n {
+		if i := bytes.LastIndexByte(data, '\n'); i >= 0 {
+			data = data[:i+1]
+		} else {
+			data = nil
+		}
+	}
+	return data, nil
+}
+
+// openUnder opens path, which must be a regular file under root reached
+// through real directories only, and returns it with its info. The file
+// opened must be the one checked, so a folder swapped for a symlink after the
+// check is refused.
+func openUnder(root, path string) (*os.File, fs.FileInfo, error) {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, nil, fmt.Errorf("transcript: %s is outside %s", path, root)
+	}
+	var last fs.FileInfo
+	p := root
+	parts := append([]string{""}, strings.Split(rel, string(filepath.Separator))...)
+	for i, part := range parts {
+		p = filepath.Join(p, part)
+		fi, err := safefs.Lstat(p)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil, nil, fmt.Errorf("%w: %v", adapter.ErrNoTranscript, err)
+			}
+			return nil, nil, err
+		}
+		final := i == len(parts)-1
+		if final && !fi.Mode().IsRegular() || !final && !fi.IsDir() {
+			return nil, nil, &fs.PathError{Op: "transcript", Path: p, Err: ErrUnsafe}
+		}
+		last = fi
+	}
+	f, err := safefs.OpenRegular(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, err
+	}
+	if !os.SameFile(fi, last) {
+		_ = f.Close()
+		return nil, nil, &fs.PathError{Op: "transcript", Path: path, Err: safefs.ErrChanged}
+	}
+	return f, fi, nil
 }
 
 // parse reads the turns in JSON lines data. ok is false when data has
@@ -308,6 +346,22 @@ func parse(v adapter.Vendor, data []byte) (turns []adapter.Turn, ok bool) {
 		}
 	}
 	return turns, lines == 0 || known > 0
+}
+
+// FirstPrompt is the text of the first turn the user typed in data, the head
+// of a session file of vendor v (ReadHead), or "" when there is none. It is
+// what a session list shows to tell sessions apart, as Claude's own picker
+// shows a first prompt (code.claude.com/docs/en/sessions, "Use the session
+// picker"). The text is the model's input as stored: untrusted, and the
+// caller escapes it before it reaches a terminal.
+func FirstPrompt(v adapter.Vendor, data []byte) string {
+	turns, _ := parse(v, data)
+	for _, t := range turns {
+		if t.Role == "user" && strings.TrimSpace(t.Text) != "" {
+			return t.Text
+		}
+	}
+	return ""
 }
 
 // textPart is one content block: {"type": ..., "text": ...}.

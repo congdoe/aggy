@@ -24,10 +24,12 @@ Starts a new session of that CLI here, with the CLI's own flags and first
 prompt, as if you had opened it yourself: aggy claude --model opus "fix the
 build". Without a vendor, aggy [flags] [prompt] is the default vendor's.
 
-  --continue    Reopen the latest session of this CLI here, or refuse (also
-                -c on claude)
-  --resume [ID] Reopen the aggy session with this id, or the latest here
-                (also -r on claude and grok)
+  --continue    Reopen the latest session of this CLI here, aggy's or one the
+                CLI started by itself, or refuse (also -c on claude and grok)
+  --resume [ID] Reopen the session with this aggy id or vendor session id, or
+                on claude and grok one the CLI finds by this name; with none,
+                pick from a list of this folder's sessions, aggy's and the
+                CLI's own (also -r on claude and grok)
   --model NAME  The model for this session (also -m on codex)
   --direct      On your terminal, without aggy's pass-through (no switch key)
   --no-policy   Without aggy's safety policy

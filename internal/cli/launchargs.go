@@ -174,13 +174,17 @@ func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 		case cont:
 			t.Continue = true
 		case resume && resumeID != "":
-			id, msg := sessionArg(resumeID)
-			if msg != "" {
-				return launchUsageErr(stderr, cmd, diag.CodeUsage, msg, "")
+			if code, err := resolveResume(&t, "", resumeID); err != nil {
+				return resumeRefused(stderr, cmd, code, err)
 			}
-			t.ParentID = id
 		case resume:
-			t.Continue = true
+			picked, code, err := pickSession(&t, "", stderr)
+			if err != nil {
+				return resumeRefused(stderr, cmd, code, err)
+			}
+			if !picked {
+				return 0
+			}
 		default:
 			t.New = true
 		}
@@ -211,13 +215,17 @@ func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 	case p.Continue:
 		t.Continue = true
 	case p.Resume && p.ResumeID != "":
-		id, msg := sessionArg(p.ResumeID)
-		if msg != "" {
-			return launchUsageErr(stderr, cmd, diag.CodeUsage, msg, "")
+		if code, err := resolveResume(&t, v, p.ResumeID); err != nil {
+			return resumeRefused(stderr, cmd, code, err)
 		}
-		t.ParentID = id
 	case p.Resume:
-		t.Continue = true
+		picked, code, err := pickSession(&t, v, stderr)
+		if err != nil {
+			return resumeRefused(stderr, cmd, code, err)
+		}
+		if !picked {
+			return 0
+		}
 	default:
 		t.New = true
 	}
@@ -227,6 +235,16 @@ func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 		t.Flags = []string{}
 	}
 	return launch("aggy "+cmd, t, stderr)
+}
+
+// resumeRefused refuses a -r that finds no session (exit 1, as a launch that
+// finds none) or is given a value aggy will not pass (exit 2, a usage error).
+func resumeRefused(stderr io.Writer, cmd string, code diag.Code, err error) int {
+	if code == diag.CodeUsage {
+		return launchUsageErr(stderr, cmd, code, err.Error(), "")
+	}
+	refuse(context.Background(), stderr, cmd, diag.EvLaunchRefused, code, err.Error(), diag.Rec{})
+	return 1
 }
 
 // stdinTerminal reports whether aggy's stdin is a terminal; a test sets it.

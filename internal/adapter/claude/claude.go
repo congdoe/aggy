@@ -160,6 +160,12 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 	}
 	args = append(args, m...)
 	s, err := sessionArgs(req.SessionID, req.Resume, req.Fork)
+	if req.ResumeName != "" {
+		// "Resume a specific session by ID or name" (cli-reference,
+		// --resume; sessions.md, "Resume by session ID or name", read
+		// 2026-11-10).
+		s, err = adapter.ResumeNameArgs(req)
+	}
 	if err != nil {
 		return adapter.Command{}, err
 	}

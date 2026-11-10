@@ -254,6 +254,10 @@ func (a Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, e
 	if req.Fork {
 		return adapter.Command{}, fmt.Errorf("codex: fork: %w", adapter.ErrUnsupported)
 	}
+	if req.ResumeName != "" {
+		// Whether codex resume takes a name is not recorded.
+		return adapter.Command{}, fmt.Errorf("codex: a session name: %w", adapter.ErrUnsupported)
+	}
 	var args []string
 	if req.Memory != "" {
 		// -c is global, so it goes before resume (docs/verification.md,

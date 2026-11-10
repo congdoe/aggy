@@ -388,6 +388,12 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	if w := hookWarning(v); w != "" {
 		warns = append(warns, w)
 	}
+	switch {
+	case pl.adopted:
+		warns = append(warns, fmt.Sprintf("%s's own session %s is aggy's session %s now: aggy log, switching, and briefs know it", v, shortID(pl.child.VendorSessionID), shortID(pl.parent.ID)))
+	case pl.resumeName != "":
+		warns = append(warns, byNameNote)
+	}
 	if len(t.Loosens) > 0 {
 		warns = append(warns, "your flags "+strings.Join(t.Loosens, ", ")+" loosen approvals, the sandbox, or hook trust for this launch; --no-policy lets them through")
 	}
@@ -641,6 +647,9 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		} else {
 			exited(code, "")
 		}
+		if pl.resumeName != "" {
+			adoptNamed(ctx, s, pl.child, began, &sessionFiles{})
+		}
 		return code
 	}
 	onHook, stopIndex, index := startIndex(parentID, v, assigned, cids.set)
@@ -748,6 +757,9 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	dlog.Release()
 	// Before the next launch, whose brief reads this child's transcript.
 	cids.settle(ctx, appendEvent, &sessionFiles{})
+	if pl.resumeName != "" {
+		adoptNamed(ctx, s, pl.child, began, &sessionFiles{})
+	}
 	if err != nil {
 		r := ids
 		r.Event, r.Code, r.Cause, r.Msg = diag.EvLaunchRefused, diag.CodeLaunchFailed, cause, "the supervisor failed"

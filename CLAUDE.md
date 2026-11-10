@@ -19,7 +19,7 @@ aggy is a Go CLI that runs the official Claude Code, Codex, and Grok Build CLIs 
 - `internal/suggest`: finds commands to propose as allow rules, from Claude Code's session files, read locally with no model. A count is a hint, never an allow; a person adds one at the keyboard.
 - `internal/brief`: the task file (`.aggy/task.md`) and the handoff brief, built without a model from the task file, the transcript tail, and git state that `internal/cli` gathers (`aggy brief --show`), written to `.aggy/briefs/<child-id>.md` for `aggy resume --brief`; a return to a child gets only the turns other CLIs added since it was last closed.
 - `internal/redact`: secret-shaped text (keys, tokens, private keys, secret settings): the fixture scrubber replaces it, and a brief drops every line that holds it.
-- `internal/transcript`: reads the tail of a Claude, Codex, or Grok session file for a brief.
+- `internal/transcript`: reads the tail of a Claude, Codex, or Grok session file for a brief, and the head of one for its first prompt in a session list (`aggy -r`).
 - `internal/borrow`: headless borrows (routing with fall-through, isolation, budgets and leases, reports, the per-borrow log). `internal/hook`: the PreToolUse guard that stops a delegated child from starting another vendor CLI.
 - `internal/limits`: plan-limit signals (StopFailure hints, the Codex rollout tail, borrow failures), recorded as `limit` events and read back for the router's skip rule; and the Codex quotas behind `aggy usage` and the near-limit warning.
 - `internal/notify`: desktop notifications (osascript, notify-send), off unless the user config turns them on; the text goes as argv, never as script or markup.

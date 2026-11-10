@@ -51,9 +51,11 @@ Usage:
                     with aggy's safety policy, and aggy records no session
                     (git diff | aggy -p "review this"); codex: aggy codex exec
   aggy -c, --continue [flags]
-                    Reopen the session last active in this directory
+                    Reopen the session last active in this directory, aggy's
+                    or one a CLI started by itself
   aggy -r, --resume [id] [flags]
-                    Reopen the session with this id, or the latest here
+                    Reopen the session with this id (aggy's or the CLI's),
+                    or pick from this directory's sessions
   aggy <vendor> [flags] [prompt]
                     Start claude, codex, grok, or opencode, with its flags
                     (aggy claude --model x); flags that clash with aggy's are

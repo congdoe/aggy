@@ -299,10 +299,15 @@ was tested against.
 - Headless is `claude -p --output-format json`. Read-only uses
   `--permission-mode plan`.
 - Sessions: `--session-id <uuid>`, `--resume <id>`, and `--fork-session`.
-  Unverified: each session is saved as `projects/<folder per cwd>/<id>.jsonl`
-  under `~/.claude` (or `$CLAUDE_CONFIG_DIR`); aggy stats it for a child's
-  last-active time and looks in every project folder, since the folder
-  naming is not recorded.
+  Each session is saved as `projects/<folder per cwd>/<id>.jsonl` under
+  `~/.claude` (or `$CLAUDE_CONFIG_DIR`); aggy stats it for a child's
+  last-active time and looks in every project folder. The folder name (every
+  non-alphanumeric character as `-`, a hash past 200 characters) is
+  doc-verified since T6965 (verification.md, "Native sessions"); aggy lists a
+  folder's native sessions only where it needs no hash.
+- Resume by name (T6965): `InteractiveRequest.ResumeName` gives Claude and
+  Grok `--resume <name>` in place of the session flags, after
+  `adapter.ValidResumeName`; Codex and OpenCode refuse it.
 - MCP at launch: `--mcp-config <file> --strict-mcp-config`; it is not kept
   with the session, so pass it again on resume. With an empty
   `{"mcpServers":{}}` no MCP or connector tool is left. On screen, aggy
@@ -962,7 +967,10 @@ reads through `safefs`, at most the last 4 MiB (`transcript.MaxTail`),
 refuses a symlink anywhere between the vendor's session folder and the
 file (`ErrUnsafe`) and a file swapped after the check, and returns
 `ErrNoTranscript` when it finds no file, or a file with no line in a known
-shape, or when the last line is larger than that window. Several files
+shape, or when the last line is larger than that window. For a session list
+(`aggy -r`, T6965), `ReadHead` reads the start of a file the same way, dropping
+a line the window cut, and `FirstPrompt` takes the first turn the user typed
+from it, with the same filters. Several files
 for one id are an error, never a guess. Only message text is read: tool
 calls, tool output, and reasoning are skipped, and so is context the CLI
 wrote into a user message: Codex's AGENTS.md text, environment context,
