@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"runtime/debug"
+	"slices"
 
 	"github.com/congdoe/aggy/internal/adapter"
 )
@@ -39,11 +40,20 @@ const usage = `aggy runs the official Claude Code, Codex, and Grok Build CLIs.
 Usage:
   aggy              Start a new session here on the default vendor (default_vendor,
                     else the first one connected), as claude starts one
-  aggy -c, --continue
+  aggy [flags] [prompt]
+                    The same on the default vendor, with its CLI's own flags
+                    and first prompt, as you would type them to it:
+                    aggy --model opus, aggy "explain this repo". A prompt that
+                    is also an aggy command goes after --: aggy -- review
+  aggy -p [flags] [prompt], or a pipe into aggy
+                    Print mode (claude, grok): the CLI runs on your terminal
+                    with aggy's safety policy, and aggy records no session
+                    (git diff | aggy -p "review this"); codex: aggy codex exec
+  aggy -c, --continue [flags]
                     Reopen the session last active in this directory
-  aggy -r, --resume [id]
+  aggy -r, --resume [id] [flags]
                     Reopen the session with this id, or the latest here
-  aggy <vendor> [flags]
+  aggy <vendor> [flags] [prompt]
                     Start claude, codex, grok, or opencode, with its flags
                     (aggy claude --model x); flags that clash with aggy's are
                     refused
@@ -105,9 +115,11 @@ Commands:
 // the process exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		return launch("aggy", target{New: true}, stderr)
+		// A new session, never a resume; with a stdin that is no terminal,
+		// the CLI's own reading of it (runPrint).
+		return runLaunch("", nil, stdout, stderr)
 	}
-	if u, ok := commandHelp[args[0]]; ok && wantsHelp(args[1:]) {
+	if u, ok := commandHelp[args[0]]; ok && wantsHelp(args[1:]) && !vendorSubcommand(args) {
 		fmt.Fprint(stdout, u)
 		return 0
 	}
@@ -140,25 +152,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runSwitch(args[1:], stdout, stderr)
 	case "run":
 		return runRun(args[1:], stdout, stderr)
-	case "--direct":
-		return runRun(args, stdout, stderr)
-	case "--no-policy":
-		if len(args) == 1 {
-			return launch("aggy", target{New: true, NoPolicy: true}, stderr)
-		}
-		switch args[1] {
-		case "--continue", "-c":
-			return runContinue(args, stderr)
-		case "--resume", "-r":
-			return runResumeFlag(append([]string{"--no-policy"}, args[2:]...), stdout, stderr)
-		}
-		return runRun(args, stdout, stderr)
-	case "--continue", "-c":
-		return runContinue(args[1:], stderr)
-	case "--resume", "-r":
-		return runResumeFlag(args[1:], stdout, stderr)
 	case "claude", "codex", "grok", "opencode":
-		return runVendor(adapter.Vendor(args[0]), args[1:], stderr)
+		return runLaunch(adapter.Vendor(args[0]), args[1:], stdout, stderr)
 	case "new":
 		return runNew(args[1:], stdout, stderr)
 	case "resume":
@@ -212,7 +207,18 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "--help", "-h":
 		fmt.Fprint(stdout, usage)
 		return 0
-	default:
-		return cmdUsage(stderr, "", fmt.Sprintf("unknown command %q", args[0]), usage)
 	}
+	// Anything else is the default vendor's CLI, as it takes its words at
+	// launch: aggy --model opus, aggy -c, aggy "explain this repo" (T6961).
+	if c := nearCommand(args[0]); c != "" {
+		return cmdUsage(stderr, "", fmt.Sprintf("unknown command %q; did you mean aggy %s? To send it as a prompt: aggy -- %s", args[0], c, args[0]), "")
+	}
+	return runLaunch("", args, stdout, stderr)
+}
+
+// vendorSubcommand reports whether args name a vendor and one of its
+// subcommands aggy runs as they are, whose own --help is the CLI's.
+func vendorSubcommand(args []string) bool {
+	v, err := adapter.ParseVendor(args[0])
+	return err == nil && len(args) > 1 && slices.Contains(passThroughCommands(v), args[1])
 }

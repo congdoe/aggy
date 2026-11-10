@@ -30,10 +30,13 @@ func TestVendorCommandRefuses(t *testing.T) {
 		{"settings", []string{"claude", "--settings", "{}"}, "--settings clashes", "cli.flag_clash"},
 		{"codex memory", []string{"codex", "-c", "developer_instructions=x"}, "shared memory", "cli.flag_clash"},
 		{"grok deny", []string{"grok", "--deny", "x"}, "--deny clashes", "cli.flag_clash"},
-		{"a prompt", []string{"claude", "fix it"}, "not a flag", "cli.usage"},
-		{"a prompt after a switch", []string{"claude", "--verbose", "fix it"}, "not a flag", "cli.usage"},
-		{"a subcommand", []string{"codex", "exec"}, "not a flag", "cli.usage"},
-		{"--", []string{"claude", "--", "fix"}, "starts a prompt", "cli.usage"},
+		// T6961: a prompt passes; a first word naming a subcommand does not.
+		{"a subcommand", []string{"codex", "resume"}, "names a subcommand", "cli.usage"},
+		{"a subcommand after a switch", []string{"codex", "--search", "fork"}, "names a subcommand", "cli.usage"},
+		{"a prompt to OpenCode", []string{"opencode", "fix it"}, "no prompt to OpenCode", "cli.flag_clash"},
+		{"a prompt with a codex resume", []string{"codex", "--continue", "fix it"}, "unverified", "cli.flag_clash"},
+		{"a prompt with a grok resume", []string{"grok", "-c", "fix it"}, "unverified", "cli.flag_clash"},
+		{"a typo of a command", []string{"sesions"}, "did you mean aggy sessions", "cli.usage"},
 		{"a loosening flag", []string{"claude", "--dangerously-skip-permissions"}, "--no-policy", "cli.flag_needs_no_policy"},
 		{"a loosening -c", []string{"codex", "-c", `sandbox_mode="danger-full-access"`}, "--no-policy", "cli.flag_needs_no_policy"},
 		{"both", []string{"claude", "-c", "-r"}, "not both", "cli.usage"},
@@ -41,6 +44,10 @@ func TestVendorCommandRefuses(t *testing.T) {
 		{"a tool with no name", []string{"claude", "--tool"}, "needs a name", "cli.usage"},
 		{"a bad tool name", []string{"grok", "--tool=A B"}, "not a tool name", "cli.usage"},
 	}
+	// On a terminal: with none, the run is print mode, where aggy records no
+	// session and so refuses less (TestPrintRefuses).
+	defer func(f func() bool) { stdinTerminal = f }(stdinTerminal)
+	stdinTerminal = func() bool { return true }
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			isolate(t)
@@ -53,6 +60,62 @@ func TestVendorCommandRefuses(t *testing.T) {
 				t.Errorf("stderr = %q, want %q and %s", errb.String(), tt.want, tt.code)
 			}
 		})
+	}
+}
+
+// TestPrintRefuses (T6961): print mode and a stdin that is no terminal refuse
+// what defeats the policy or clashes with what aggy still passes, before
+// anything runs, and reach the CLI's lookup otherwise.
+func TestPrintRefuses(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		exit int
+		want string
+		code string
+	}{
+		{"a loosening flag", []string{"claude", "-p", "--dangerously-skip-permissions", "hi"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"aggy's memory flag", []string{"grok", "-p", "hi", "--rules", "x"}, 2, "--rules clashes", "cli.flag_clash"},
+		{"OpenCode", []string{"opencode"}, 2, "on screen only", "adapter.unsupported"},
+		{"aggy -r with an id", []string{"-r", "abcd", "-p", "hi"}, 2, "own resume flag", "cli.usage"},
+		{"a session id is the CLI's here", []string{"claude", "-p", "--session-id", "x", "hi"}, 1, "", "vendor.cli_missing"},
+		{"bare flags", []string{"--model", "opus", "-p", "hi"}, 1, "", "vendor.cli_missing"},
+		{"codex exec", []string{"codex", "exec", "hi"}, 1, "", "vendor.cli_missing"},
+	}
+	defer func(f func() bool) { stdinTerminal = f }(stdinTerminal)
+	stdinTerminal = func() bool { return false }
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			t.Setenv("PATH", t.TempDir())
+			var out, errb bytes.Buffer
+			if code := Run(tt.args, &out, &errb); code != tt.exit {
+				t.Errorf("exit = %d, want %d", code, tt.exit)
+			}
+			if !strings.Contains(errb.String(), tt.want) || !strings.Contains(errb.String(), "["+tt.code+" · run ") {
+				t.Errorf("stderr = %q, want %q and %s", errb.String(), tt.want, tt.code)
+			}
+		})
+	}
+}
+
+// TestNearCommand (T6961): a word one edit from a command is taken for a typo,
+// anything else for a prompt.
+func TestNearCommand(t *testing.T) {
+	tests := []struct{ word, want string }{
+		{"sesions", "sessions"},
+		{"borow", "borrow"},
+		{"docter", "doctor"},
+		{"fix the build", ""},
+		{"nope", ""},
+		{"run", ""}, // too short to guess at
+		{"explain", ""},
+		{"Sessions", ""},
+	}
+	for _, tt := range tests {
+		if got := nearCommand(tt.word); got != tt.want {
+			t.Errorf("nearCommand(%q) = %q, want %q", tt.word, got, tt.want)
+		}
 	}
 }
 

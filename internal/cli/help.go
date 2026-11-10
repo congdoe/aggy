@@ -30,11 +30,12 @@ an interactive one, or a borrow's once it has ended.
   --show        With --brief: print the brief and start nothing
   --no-policy   Without aggy's safety policy
 `
-	continueUsage = `Usage: aggy --continue [--no-policy]
+	continueUsage = `Usage: aggy --continue [--no-policy] [the CLI's own flags]
 
 Reopens the session last active in this directory that can still be reopened,
 or refuses when there is none. Also -c. aggy <vendor> --continue does so for
-that vendor.
+that vendor. Flags after it go to that session's CLI, sorted by its vendor's
+rules (aggy help claude).
 `
 	sessionsUsage = `Usage: aggy sessions
 
