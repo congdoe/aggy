@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -57,7 +58,8 @@ func TestConfigFreeModels(t *testing.T) {
 		on          bool
 	}{
 		{"on", "n\n", 1, true, false}, // the note, then no
-		{"on", "y\n", 0, false, true}, // asked again, the note not repeated
+		{"on", "n\n", 1, true, false}, // a no records nothing: the note again
+		{"on", "y\n", 0, true, true},  // the note, then yes, which records it
 		{"off", "", 0, false, false},  // off loosens nothing: no question
 		{"on", "y\n", 0, false, true}, // still no note
 		{"on", "", 0, false, true},    // already on
@@ -72,6 +74,17 @@ func TestConfigFreeModels(t *testing.T) {
 		}
 		if got := strings.Contains(out, "OpenCode's own service"); got != s.note {
 			t.Errorf("step %d (%s): note shown = %v, want %v: %q", i, s.val, got, s.note, out)
+		}
+		// M2: the note and the question say paid models come too.
+		if s.note {
+			for _, w := range []string{"only its free models", "paid models", "spend your OpenCode credit", "OpenCode's and each model provider's terms"} {
+				if !strings.Contains(out, w) {
+					t.Errorf("step %d: the note lacks %q: %q", i, w, out)
+				}
+			}
+		}
+		if s.answer != "" && (!strings.Contains(out, "free and paid") || !strings.Contains(out, "OpenCode credit)? [y/N]")) {
+			t.Errorf("step %d: the question does not name paid models: %q", i, out)
 		}
 		if s.val == "maybe" && !strings.Contains(errb, "[config.bad_value · run ") {
 			t.Errorf("step %d: %q", i, errb)
@@ -88,6 +101,58 @@ func TestConfigFreeModels(t *testing.T) {
 		} else {
 			listed("off")
 		}
+	}
+}
+
+// TestConfigSetOtherSpelling (PR #128 review, M1): a file that spells a key
+// another way than the line edit finds is never reported as "already" the
+// value asked while aggy reads another; the set is refused with
+// config.edit_by_hand and the file is unchanged. "Already" goes by the value
+// aggy reads.
+func TestConfigSetOtherSpelling(t *testing.T) {
+	cases := []struct {
+		name, text, key, val string
+		already              bool
+	}{
+		{"dotted key", "opencode.free_models = true\n", "opencode-free-models", "off", false},
+		{"inline table", "opencode = { free_models = true }\n", "opencode-free-models", "off", false},
+		{"another case", "[opencode]\nFree_Models = true\n", "opencode-free-models", "off", false},
+		{"dotted harness", "vendors.codex.off = true\n", "harness.codex", "on", false},
+		{"inline commands", "commands = { off = true }\n", "commands", "on", false},
+		{"dotted, already on", "opencode.free_models = true\n", "opencode-free-models", "on", true},
+		{"explicit false is already off", "[opencode]\nfree_models = false\n", "opencode-free-models", "off", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			isolate(t)
+			path, err := config.Path()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(c.text), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			atKeyboard(t, "y\n")
+			code, out, errb := run("config", "set", c.key, c.val)
+			if c.already {
+				if code != 0 || !strings.Contains(out, "already") {
+					t.Errorf("%d %q %q, want already", code, out, errb)
+				}
+				return
+			}
+			if strings.Contains(out, "already") {
+				t.Errorf("said already while aggy reads the old value: %q", out)
+			}
+			if code != 1 || !strings.Contains(errb, "edit that line by hand") || !strings.Contains(errb, "[config.edit_by_hand · run ") {
+				t.Errorf("%d %q %q, want a refusal naming the file", code, out, errb)
+			}
+			if b, _ := os.ReadFile(path); string(b) != c.text {
+				t.Errorf("the file changed: %q", b)
+			}
+		})
 	}
 }
 

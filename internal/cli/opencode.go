@@ -88,12 +88,20 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 	providers := in.cfg.OpenCodeProviders()
 	out.warns = append(out.warns, openCodeFreeWarns(in.cfg, providers)...)
 	if len(providers) == 0 {
-		return out, errors.New("no OpenCode provider is left for this repo: its allowed_vendors and [opencode] providers have none in common")
+		msg := "no OpenCode provider is left for this repo: its allowed_vendors and [opencode] providers have none in common"
+		if in.cfg.OpenCode.FreeModels {
+			msg += ", and it does not list " + config.OpenCodeFreeRepoName + " for OpenCode's own models"
+		}
+		return out, errors.New(msg)
 	}
 	// TODO(T6932): the picker's model list groups by vendor, so /switch names
 	// an OpenCode model as provider/model by hand; group it by provider.
 	if in.model != "" {
 		p, _, ok := strings.Cut(in.model, "/")
+		if ok && p == config.OpenCodeFreeProvider && !slices.Contains(providers, p) {
+			// The launch returns before printing warns, so the reason goes here.
+			return out, openCodeFreeRefusal(in.cfg, in.model)
+		}
 		if !ok || !slices.Contains(providers, p) {
 			return out, fmt.Errorf("model %s is not on a provider allowed here (%s)", in.model, strings.Join(providers, ", "))
 		}
