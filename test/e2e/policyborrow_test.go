@@ -86,8 +86,8 @@ func TestReopenedBorrowKeepsDenies(t *testing.T) {
 		if code := s.exit(); code != 1 {
 			t.Errorf("exit = %d, want 1", code)
 		}
-		if !strings.Contains(s.screen(), "Codex borrow child") {
-			t.Errorf("the refusal does not say why: %s", s.screen())
+		if scr := s.screen(); !strings.Contains(scr, "Codex borrow child") || !strings.Contains(scr, "aggy accept") || strings.Contains(scr, "--no-policy") {
+			t.Errorf("the refusal does not say why and what to do: %s", scr)
 		}
 		for _, r := range fakecli.Records(t, w.record)[runs:] {
 			if r.Mode == "interactive" {

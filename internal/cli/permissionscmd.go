@@ -55,13 +55,14 @@ as git status and ls, and anything else is held and named. A repo's committed ru
 and .aggy/config.toml never become allows. Claude and Grok still apply what they
 read from their own files themselves, whatever aggy's filter says.
 
-The safety policy (aggy policy --help) asks on screen where a CLI can ask. An
-allow you add that matches one of its rules pre-approves that rule, and add says
-so. Two groups are strict: a force push to main or the default branch, and
-reading private key files. Only an allow that names them, added here or in
-permissions.json, pre-approves them; a broad allow such as Bash(git push *) or
-an answer at a CLI's prompt does not, and suggest never proposes them. A deny,
-yours or a group set to deny, always wins over an allow.
+The safety policy (aggy policy --help) asks on screen where a CLI can ask. No
+allow changes it, from here or any CLI's own file: on Claude Code an ask rule
+beats every allow, so a command it covers asks every time, and add says so when
+an allow names or covers one of its rules. Exact pre-approval of one command is
+planned (T6976). Two groups are strict: a force push to main, master, trunk, or
+the default branch, and reading private key files; OpenCode refuses them, and
+suggest never proposes them. A deny, yours or a group set to deny, always wins
+over an allow.
 
 Changing rules is for you, at a terminal: a session's tool shell and aggy unwire
 from one are refused. That holds against mistakes, not a model that tries: it can
@@ -308,7 +309,7 @@ func permissionsChange(args []string, remove bool, stdout, stderr io.Writer) int
 	}
 	fmt.Fprintf(stdout, "Done (run %s). It applies at the next launch or switch. aggy unwire --run %s undoes it, once any change made after it is undone.\n", runID, runID)
 	if kind == permissions.Allow && !remove {
-		if line := preApprovedLine(rule, cwd); line != "" {
+		if line := policyCoveredLine(rule, cwd); line != "" {
 			fmt.Fprintln(stdout, line)
 		}
 	}
@@ -320,54 +321,26 @@ func permissionsChange(args []string, remove bool, stdout, stderr io.Writer) int
 	return 0
 }
 
-// preApprovedLine is the one line aggy permissions add prints for an allow
-// that names safety policy rules, or "". It comes from the plan a launch here
-// makes, after the change, so it says what a launch does: where the allow
-// takes effect, and where it does not.
-func preApprovedLine(rule, cwd string) string {
-	s, _, _, err := permissionsHere(context.Background())
-	if err != nil {
-		return ""
-	}
-	// This allow alone, as the launch's filter left it: one it drops
-	// pre-approves nothing.
-	i := slices.IndexFunc(s.PolicyAllows(), func(r permissions.Rule) bool {
-		return r.Text == rule && (r.Origin == permissions.FromAggy || r.Origin == permissions.FromAggyRepo)
-	})
-	if i < 0 {
-		return ""
-	}
-	plan := policyPlan(planOnScreen, cwd, s, nil)
-	plan.Allows = s.PolicyAllows()[i : i+1]
-	var removed, unused []string
-	why := ""
-	for _, d := range plan.Decide() {
-		switch {
-		case d.Kind == permissions.Allow && d.By.Text == rule:
-			if !slices.Contains(removed, d.Group) {
-				removed = append(removed, d.Group)
-			}
-		case d.Unused.Text == rule:
-			if !slices.Contains(unused, d.Group) {
-				unused = append(unused, d.Group)
-			}
-			if why == "" {
-				why = d.Why
-			}
+// policyCoveredLine is the one line aggy permissions add prints for an allow
+// that names or covers safety policy rules, or "". Such an allow changes no
+// policy rule on any CLI: on Claude Code an ask rule beats every allow
+// (permissions.md), so the command asks every time.
+//
+// TODO(T6976): exact per-command pre-approval, through a tool-use hook
+// decision.
+func policyCoveredLine(rule, cwd string) string {
+	branches, _ := defaultBranches(cwd)
+	var groups []string
+	for _, r := range parity.CoveredRules(rule, branches) {
+		if !slices.Contains(groups, r.Group) {
+			groups = append(groups, r.Group)
 		}
 	}
-	var parts []string
-	if len(removed) > 0 {
-		parts = append(parts, fmt.Sprintf("On Claude Code this pre-approves the safety policy's %s rules it matches, and Claude's own prompt stands for the rest; Grok Build, Codex, and OpenCode still refuse or ask", strings.Join(removed, ", ")))
-	}
-	if len(unused) > 0 {
-		parts = append(parts, fmt.Sprintf("it does not change the safety policy's %s rules on any CLI (%s)", strings.Join(unused, ", "), why))
-	}
-	if len(parts) == 0 {
+	if len(groups) == 0 {
 		return ""
 	}
-	line := strings.Join(parts, "; ")
-	return strings.ToUpper(line[:1]) + line[1:] + ". aggy permissions show lists them."
+	return fmt.Sprintf("This command is covered by aggy's safety policy (%s), so it will still ask every time on Claude Code, Codex, and OpenCode and is refused on Grok Build (on OpenCode, a key or .env read and a force push to a protected branch are refused too); exact pre-approval is planned (T6976). aggy permissions policy <group> deny refuses it instead.",
+		strings.Join(groups, ", "))
 }
 
 // permissionsPolicy is aggy permissions policy: with no arguments it lists the
@@ -566,10 +539,9 @@ func permissionsSuggest(args []string, stdout, stderr io.Writer) int {
 		if !suggest.Plain(c.Command) {
 			continue
 		}
-		// A strict policy rule is pre-approved only by a rule the person
-		// writes themselves, never by a count.
+		// A command that names a strict policy rule is never proposed.
 		branches, _ := defaultBranches(c.Repo)
-		if slices.ContainsFunc(parity.PreApproves(rule, branches), func(r parity.PolicyRule) bool { return r.Strict }) {
+		if slices.ContainsFunc(parity.CoveredRules(rule, branches), func(r parity.PolicyRule) bool { return r.Strict }) {
 			continue
 		}
 		shown++

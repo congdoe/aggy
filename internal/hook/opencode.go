@@ -136,7 +136,13 @@ func OpenCodeGuard(payload []byte, env OpenCodeEnv) Decision {
 		if !inside(in.Path) {
 			return Decision{Deny: true, Reason: whyOutside}
 		}
-		if deniedName(in.Path, env.DeniedNames, env.ReadableNames) {
+		readable := env.ReadableNames
+		if !plainFile(in.Path, dir, env) {
+			// A template name on a link or a second hard link may be .env
+			// itself, so it gets no exemption.
+			readable = nil
+		}
+		if deniedName(in.Path, env.DeniedNames, readable) {
 			return Decision{Deny: true, Reason: whyDeniedName}
 		}
 	}
@@ -232,6 +238,27 @@ func expandHome(p string, env OpenCodeEnv) (string, error) {
 		return "", errors.New("no home to expand ~ with")
 	}
 	return filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/")), nil
+}
+
+// plainFile reports that p, from base, names a regular file with one link,
+// not a symlink, or nothing yet (a file about to be written). Anything it
+// cannot check is not plain.
+func plainFile(p, base string, env OpenCodeEnv) bool {
+	p, err := expandHome(p, env)
+	if err != nil {
+		return false
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(base, p)
+	}
+	fi, err := env.Lstat(p)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return true
+	case err != nil:
+		return false
+	}
+	return fi.Mode().IsRegular() && safefs.LinkCount(fi) <= 1
 }
 
 // deniedName reports a path whose file name the policy denies, whatever its

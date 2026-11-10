@@ -25,8 +25,8 @@ const (
 // PolicyGroups lists them in the order aggy shows them.
 var PolicyGroups = []string{PolicyEnv, PolicyKeys, PolicyPushMain, PolicyForce, PolicyForceMain, PolicyRmRf, PolicyReset, PolicyClean}
 
-// StrictGroup says a group's prompt must not be answered for good: only an
-// allow in aggy's own file that names one of its rules pre-approves it.
+// StrictGroup says a group's prompt must not be answered for good: OpenCode,
+// whose Always allow could, refuses it, and suggest never proposes it.
 func StrictGroup(group string) bool {
 	return group == PolicyKeys || group == PolicyForceMain
 }
@@ -64,27 +64,6 @@ func (s *Set) loadPolicy(m map[string]string, from Origin, path string) {
 		}
 		s.Policy[g], s.PolicyFrom[g] = Kind(m[g]), from
 	}
-}
-
-// PolicyAllows are the allows that may pre-approve a policy rule
-// (parity.PolicyPlan): those that apply here, and those in aggy's own file
-// held only for trust, since the person wrote them and a repo cannot.
-func (s Set) PolicyAllows() []Rule {
-	var out []Rule
-	for _, r := range s.Rules {
-		if r.Kind == Allow {
-			out = append(out, r)
-		}
-	}
-	for _, k := range s.Skipped {
-		if k.Kind != Allow || (k.Origin != FromAggy && k.Origin != FromAggyRepo) {
-			continue
-		}
-		if class, _ := CheckAllow(k.Text); class != Drop && !slices.Contains(out, k.Rule) {
-			out = append(out, k.Rule)
-		}
-	}
-	return out
 }
 
 // PolicyEdit sets one group's setting in aggy's own file. RepoKey "" means

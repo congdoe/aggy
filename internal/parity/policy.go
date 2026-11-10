@@ -215,8 +215,7 @@ func denyRules(readPrefix string) []string {
 // rust-v0.164.0), so a borrow child is still refused. An allow Codex saves
 // from its own prompt cannot loosen a prompt rule, as the strictest
 // decision wins, so these always ask on screen. The file is global, so the
-// person's per-repo settings and pre-approvals (PolicyPlan) do not reach
-// it. Source only, not run live.
+// person's per-repo settings (PolicyPlan) do not reach it. Source only, not run live.
 //
 // A rules file Codex cannot parse makes it drop every rules file, the
 // person's own included (load_exec_policy_with_warning), so this text is

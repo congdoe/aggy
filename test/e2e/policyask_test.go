@@ -16,9 +16,8 @@ import (
 
 // TestPolicyAcrossSwitch (T6967): the safety policy reaches each CLI of a
 // session as that CLI can express it, before and after a switch. Claude asks;
-// Grok, with no ask flag, denies; a rule the person pre-approved in aggy's file
-// no longer asks on Claude but stays a deny on Grok; a group the person set to
-// deny is a deny on both.
+// Grok, with no ask flag, denies; an allow in aggy's file naming a rule
+// changes it on neither; a group the person set to deny is a deny on both.
 func TestPolicyAcrossSwitch(t *testing.T) {
 	w := newWorld(t)
 	if err := os.MkdirAll(filepath.Join(w.home, ".aggy"), 0o700); err != nil {
@@ -86,11 +85,9 @@ func TestPolicyAcrossSwitch(t *testing.T) {
 	if !slices.Contains(p.Deny, "Bash(git reset --hard*)") || slices.Contains(p.Ask, "Bash(git reset --hard*)") {
 		t.Errorf("the group set to deny: ask %v, deny %v", p.Ask, p.Deny)
 	}
-	if slices.Contains(p.Ask, "Bash(rm -rf*)") || slices.Contains(p.Deny, "Bash(rm -rf*)") {
-		t.Errorf("a pre-approved rule reached claude: ask %v, deny %v", p.Ask, p.Deny)
-	}
-	if !slices.Contains(p.Ask, "Bash(rm -fr*)") {
-		t.Errorf("another spelling than the one named still asks: %v", p.Ask)
+	// An allow never removes a policy rule: Bash(rm -rf dist) leaves the ask.
+	if !slices.Contains(p.Ask, "Bash(rm -rf*)") || !slices.Contains(p.Ask, "Bash(rm -fr*)") {
+		t.Errorf("an allow removed a claude ask: %v", p.Ask)
 	}
 
 	deny := runs[1].Flags["--deny"]
@@ -99,10 +96,9 @@ func TestPolicyAcrossSwitch(t *testing.T) {
 			t.Errorf("grok denies lack %s: %v", r, deny)
 		}
 	}
-	// Grok has no prompt behind a removed rule, so a pre-approval keeps its
-	// deny, and the allow that names it does not reach Grok (review 2).
+	// The deny stays, and the allow that names it does not reach Grok.
 	if !slices.Contains(deny, "Bash(rm -rf*)") {
-		t.Errorf("a pre-approval removed a grok deny: %v", deny)
+		t.Errorf("an allow removed a grok deny: %v", deny)
 	}
 	for _, a := range runs[1].Flags["--allow"] {
 		if strings.Contains(a, "rm -rf") {

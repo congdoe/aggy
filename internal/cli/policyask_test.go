@@ -12,13 +12,13 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/adapter/grok"
 	"github.com/congdoe/aggy/internal/hook"
+	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/permissions"
 	"github.com/congdoe/aggy/internal/probe"
 )
 
-// policyHere is what a launch of v in cwd would get from the policy, on screen
-// with the person's own flags extra.
-func policyHere(t *testing.T, v adapter.Vendor, caps, extra []string) adapter.InteractiveRequest {
+// policyHere is what a launch of v in cwd would get from the policy, on screen.
+func policyHere(t *testing.T, v adapter.Vendor, caps []string) adapter.InteractiveRequest {
 	t.Helper()
 	s, _, _, err := permissionsHere(t.Context())
 	if err != nil {
@@ -29,7 +29,7 @@ func policyHere(t *testing.T, v adapter.Vendor, caps, extra []string) adapter.In
 	}
 	cwd, _ := os.Getwd()
 	var req adapter.InteractiveRequest
-	if _, err := addPolicy(v, caps, true, policyPlan(planOnScreen, cwd, s, extra), &req); err != nil {
+	if _, err := addPolicy(v, caps, true, policyPlan(planOnScreen, cwd, s), &req); err != nil {
 		t.Fatal(err)
 	}
 	return req
@@ -37,67 +37,90 @@ func policyHere(t *testing.T, v adapter.Vendor, caps, extra []string) adapter.In
 
 func claudePolicyHere(t *testing.T) (ask, deny []string) {
 	t.Helper()
-	req := policyHere(t, adapter.Claude, []string{probe.CapSettings}, nil)
+	req := policyHere(t, adapter.Claude, []string{probe.CapSettings})
 	return req.Ask, req.Deny
 }
 
-// TestPermissionsAddPreApproves (T6967 b, c, review 4 and 10): an allow added
-// with aggy permissions add removes, on Claude only, the ordinary Bash patterns
-// it matches, and says where it takes effect and where not. A strict or read
-// rule it names stays, and the line says so.
-func TestPermissionsAddPreApproves(t *testing.T) {
-	isolate(t)
-	inRepo(t)
-	const forceMain = "Bash(git push --force*main*)"
+// policyRendered is every rendering of the policy a launch in cwd gets, on
+// screen and headless, for Claude, Grok, and OpenCode (with and without
+// --auto). Codex's rules file is fixed text with no input, so nothing can
+// change it.
+func policyRendered(t *testing.T) map[string][]string {
+	t.Helper()
+	s, _, _, err := permissionsHere(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.FileErr != nil {
+		t.Fatal(s.FileErr)
+	}
+	cwd, _ := os.Getwd()
+	out := map[string][]string{}
+	for _, f := range []planFor{planOnScreen, planHeadless} {
+		name := map[planFor]string{planOnScreen: "on screen ", planHeadless: "headless "}[f]
+		ds := policyPlan(f, cwd, s).Decide()
+		out[name+"claude ask"], out[name+"claude deny"] = parity.ClaudePolicy(ds)
+		out[name+"grok deny"] = parity.GrokPolicy(ds)
+		out[name+"opencode ask"], out[name+"opencode deny"] = parity.OpenCodePolicy(ds, false)
+		out[name+"opencode --auto ask"], out[name+"opencode --auto deny"] = parity.OpenCodePolicy(ds, true)
+		var req adapter.InteractiveRequest
+		if _, err := addPolicy(adapter.Claude, []string{probe.CapSettings}, true, policyPlan(f, cwd, s), &req); err != nil {
+			t.Fatal(err)
+		}
+		out[name+"claude req ask"], out[name+"claude req deny"] = req.Ask, req.Deny
+	}
+	return out
+}
 
-	atKeyboard(t, "y\n")
-	code, out, errb := run("permissions", "add", "allow", "Bash(git push *)")
-	if code != 0 {
-		t.Fatalf("add: %d %q %q", code, out, errb)
-	}
-	if !strings.Contains(out, "On Claude Code this pre-approves") || !strings.Contains(out, "Grok Build, Codex, and OpenCode still refuse or ask") {
-		t.Errorf("broad allow: %q", out)
-	}
-	ask, _ := claudePolicyHere(t)
-	if slices.Contains(ask, "Bash(git push * main)") || !slices.Contains(ask, forceMain) {
-		t.Errorf("broad allow: ask %v", ask)
-	}
-
-	atKeyboard(t, "y\n")
-	code, out, errb = run("permissions", "add", "allow", "Bash(git push --force-with-lease origin main)")
-	if code != 0 {
-		t.Fatalf("add: %d %q %q", code, out, errb)
-	}
-	if n := strings.Count(out, "pre-approves"); n != 1 || !strings.Contains(out, "does not change the safety policy's "+permissions.PolicyForceMain) {
-		t.Errorf("naming allow: %q", out)
-	}
-	ask, _ = claudePolicyHere(t)
-	for _, r := range []string{forceMain, "Bash(git push * --force*main*)", "Bash(git push --force*master*)"} {
-		if !slices.Contains(ask, r) {
-			t.Errorf("a strict rule lost its ask: %s", r)
+func samePolicy(t *testing.T, what string, got, want map[string][]string) {
+	t.Helper()
+	for k, w := range want {
+		if !slices.Equal(got[k], w) {
+			t.Errorf("%s changed %s:\n got %v\nwant %v", what, k, got[k], w)
 		}
 	}
-
-	// A key file read changes nothing anywhere, and says so.
-	atKeyboard(t, "y\n")
-	if code, out, errb = run("permissions", "add", "allow", "Read(./certs/server.pem)"); code != 0 || !strings.Contains(out, "does not change the safety policy's "+permissions.PolicyKeys) || strings.Contains(out, "On Claude Code") {
-		t.Fatalf("key read: %d %q %q", code, out, errb)
+	if len(want["on screen claude ask"]) == 0 || len(want["headless claude deny"]) == 0 {
+		t.Fatalf("no baseline: %v", want)
 	}
-	if ask, _ = claudePolicyHere(t); !slices.Contains(ask, "Read(//**/*.pem)") {
-		t.Errorf("key read: ask %v", ask)
-	}
+}
 
-	// An allow that names nothing of the policy says nothing about it.
+// TestPermissionsAddPolicyCovered (T6967, re-review): aggy permissions add
+// takes an allow that names or covers a policy rule, changes no rendering,
+// and says the command still asks every time, and that exact pre-approval is
+// planned.
+func TestPermissionsAddPolicyCovered(t *testing.T) {
+	isolate(t)
+	inRepo(t)
+	base := policyRendered(t)
+	for _, rule := range []string{"Bash(git push *)", "Bash(git push --force-with-lease origin main)", "Read(./certs/server.pem)", "Bash(rm -rf dist)", "Bash(rm:*)"} {
+		atKeyboard(t, "y\n")
+		code, out, errb := run("permissions", "add", "allow", rule)
+		if code != 0 {
+			t.Fatalf("add %s: %d %q %q", rule, code, out, errb)
+		}
+		for _, w := range []string{"covered by aggy's safety policy", "still ask every time on Claude Code, Codex, and OpenCode", "refused on Grok Build", "T6976", "aggy permissions policy <group> deny"} {
+			if !strings.Contains(out, w) {
+				t.Errorf("add %s lacks %q: %q", rule, w, out)
+			}
+		}
+		if strings.Contains(out, "pre-approves") {
+			t.Errorf("add %s claims a pre-approval: %q", rule, out)
+		}
+		samePolicy(t, "add "+rule, policyRendered(t), base)
+	}
 	atKeyboard(t, "y\n")
-	if code, out, _ = run("permissions", "add", "allow", "Bash(npm test)"); code != 0 || strings.Contains(out, "pre-approves") || strings.Contains(out, "safety policy") {
+	if code, out, _ := run("permissions", "add", "allow", "Bash(npm test)"); code != 0 || strings.Contains(out, "safety policy") {
 		t.Errorf("npm test: %d %q", code, out)
 	}
 }
 
-// TestPreApprovalOnlyOnClaude (review 1, 2): Grok keeps the deny and gets no
-// allow that names a policy rule; under a Claude mode with no prompt, no
-// pre-approval takes effect.
-func TestPreApprovalOnlyOnClaude(t *testing.T) {
+// TestAllowsNeverChangePolicy (T6967, re-review HIGH-N1): with allows from
+// every source the shared permissions read (aggy's file in both scopes, the
+// person's Claude settings, a trusted repo's untracked settings.local.json),
+// exact and wildcard, every policy rule renders as with none, on screen and
+// headless. The HIGH-N1 case: Bash(rm:*) in ~/.claude/settings.json plus
+// aggy permissions add allow 'Bash(rm -rf dist)' left rm -rf ~ unasked.
+func TestAllowsNeverChangePolicy(t *testing.T) {
 	isolate(t)
 	repo, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -109,23 +132,42 @@ func TestPreApprovalOnlyOnClaude(t *testing.T) {
 	if code, out, errb := run("trust", repo); code != 0 {
 		t.Fatalf("trust: %d %q %q", code, out, errb)
 	}
+	base := policyRendered(t)
+
+	writeAt(t, filepath.Join(os.Getenv("HOME"), ".claude", "settings.json"), `{"permissions":{"allow":["Bash(rm:*)"]}}`, 0o600)
 	atKeyboard(t, "y\n")
-	if code, out, errb := run("permissions", "add", "allow", "Bash(rm -rf dist)", "--everywhere"); code != 0 {
+	if code, out, errb := run("permissions", "add", "allow", "Bash(rm -rf dist)"); code != 0 {
 		t.Fatalf("add: %d %q %q", code, out, errb)
 	}
-	if ask, _ := claudePolicyHere(t); slices.Contains(ask, "Bash(rm -rf*)") {
-		t.Errorf("claude still asks: %v", ask)
+	got := policyRendered(t)
+	samePolicy(t, "HIGH-N1", got, base)
+	if !slices.Contains(got["on screen claude req ask"], "Bash(rm -rf*)") {
+		t.Errorf("rm -rf no longer asks on Claude: %v", got["on screen claude req ask"])
 	}
-	req := policyHere(t, adapter.Claude, []string{probe.CapSettings}, []string{"--permission-mode", "acceptEdits"})
-	if !slices.Contains(req.Ask, "Bash(rm -rf*)") {
-		t.Errorf("acceptEdits: the rule was removed with no prompt behind it: %v", req.Ask)
+
+	writeAt(t, filepath.Join(repo, ".claude", "settings.local.json"),
+		`{"permissions":{"allow":["Bash(rm -*)","Bash(git p*)","Bash(git push *)","Bash(git clean -n)","Bash(git push --force origin main)","Read(./server.pem)","Read(**)","Bash"]}}`, 0o600)
+	samePolicy(t, "settings.local.json", policyRendered(t), base)
+
+	for _, args := range [][]string{
+		{"Bash(git reset --hard origin/main)", "--everywhere"},
+		{"Bash(git push --force origin main)"},
+		{"Read(./.env)", "--everywhere"},
+	} {
+		atKeyboard(t, "y\n")
+		if code, out, errb := run(append([]string{"permissions", "add", "allow"}, args...)...); code != 0 {
+			t.Fatalf("add %v: %d %q %q", args, code, out, errb)
+		}
 	}
-	req = policyHere(t, adapter.Grok, []string{probe.CapDeny, probe.CapAllow}, nil)
-	if !slices.Contains(req.Deny, "Bash(rm -rf*)") {
-		t.Errorf("grok lost the deny: %v", req.Deny)
-	}
+	samePolicy(t, "aggy's file", policyRendered(t), base)
+
+	// Grok: the deny stays, and no allow naming a policy rule is passed.
 	s, _, _, err := permissionsHere(t.Context())
 	if err != nil {
+		t.Fatal(err)
+	}
+	var req adapter.InteractiveRequest
+	if _, err := addPolicy(adapter.Grok, []string{probe.CapDeny, probe.CapAllow}, true, policyPlan(planOnScreen, repo, s), &req); err != nil {
 		t.Fatal(err)
 	}
 	notes := addPermissions(adapter.Grok, []string{probe.CapDeny, probe.CapAllow}, s, &req)
@@ -133,48 +175,12 @@ func TestPreApprovalOnlyOnClaude(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if joined := strings.Join(cmd.Args, " "); strings.Contains(joined, "--allow Bash(rm -rf dist)") || !strings.Contains(joined, "--deny Bash(rm -rf*)") {
+	joined := strings.Join(cmd.Args, " ")
+	if strings.Contains(joined, "--allow Bash(rm -rf dist)") || strings.Contains(joined, "--allow Bash(git push *)") || !strings.Contains(joined, "--deny Bash(rm -rf*)") {
 		t.Errorf("grok argv: %s", joined)
 	}
 	if !slices.ContainsFunc(notes, func(n string) bool { return strings.Contains(n, "does not go to Grok") }) {
 		t.Errorf("notes: %q", notes)
-	}
-}
-
-// TestPolicyNotGrantedByRepo (T6967 b, c, review 8): an allow in the repo's
-// settings.local.json never removes a strict or read rule, a tracked one
-// removes nothing, and an untracked one in a trusted repo removes only the
-// ordinary Bash patterns it names, never from a wide wildcard.
-func TestPolicyNotGrantedByRepo(t *testing.T) {
-	isolate(t)
-	repo, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	gitIn(t, repo, "init", "-q")
-	t.Chdir(repo)
-	local := filepath.Join(repo, ".claude", "settings.local.json")
-	writeAt(t, local, `{"permissions":{"allow":["Bash(git push --force origin main)","Read(./server.pem)","Bash(git clean -n)","Bash(rm:*)"]}}`, 0o600)
-	gitIn(t, repo, "add", "-f", ".claude/settings.local.json")
-	ask, _ := claudePolicyHere(t)
-	for _, r := range []string{"Bash(git push --force*main*)", "Read(//**/*.pem)", "Bash(git clean *)", "Bash(git push --force*)", "Bash(rm -rf*)"} {
-		if !slices.Contains(ask, r) {
-			t.Errorf("a committed file pre-approved %s", r)
-		}
-	}
-	gitIn(t, repo, "rm", "-q", "--cached", ".claude/settings.local.json")
-	atKeyboard(t, "y\n")
-	if code, out, errb := run("trust", repo); code != 0 {
-		t.Fatalf("trust: %d %q %q", code, out, errb)
-	}
-	ask, _ = claudePolicyHere(t)
-	if slices.Contains(ask, "Bash(git clean *)") || slices.Contains(ask, "Bash(git push --force*)") {
-		t.Errorf("the person's own prompt answers did not carry: %v", ask)
-	}
-	for _, r := range []string{"Bash(git push --force*main*)", "Read(//**/*.pem)", "Bash(rm -rf*)", "Bash(rm -fr*)"} {
-		if !slices.Contains(ask, r) {
-			t.Errorf("a CLI's file removed %s", r)
-		}
 	}
 }
 
@@ -187,8 +193,8 @@ func TestPermissionsPolicyMove(t *testing.T) {
 	if code, out, errb := run("permissions", "add", "allow", "Bash(rm -rf dist)"); code != 0 {
 		t.Fatalf("add: %d %q %q", code, out, errb)
 	}
-	if ask, deny := claudePolicyHere(t); slices.Contains(ask, "Bash(rm -rf*)") || slices.Contains(deny, "Bash(rm -rf*)") {
-		t.Fatalf("pre-approved: ask %v deny %v", ask, deny)
+	if ask, deny := claudePolicyHere(t); !slices.Contains(ask, "Bash(rm -rf*)") || slices.Contains(deny, "Bash(rm -rf*)") {
+		t.Fatalf("with an allow: ask %v deny %v", ask, deny)
 	}
 	atKeyboard(t, "")
 	t.Setenv("AGGY_VENDOR", "claude")
@@ -216,8 +222,8 @@ func TestPermissionsPolicyMove(t *testing.T) {
 	if code, out, errb := run("permissions", "policy", permissions.PolicyRmRf, "ask"); code != 0 {
 		t.Fatalf("back to ask: %d %q %q", code, out, errb)
 	}
-	if ask, deny = claudePolicyHere(t); slices.Contains(deny, "Bash(rm -rf*)") || slices.Contains(ask, "Bash(rm -rf*)") {
-		t.Errorf("back to ask, the allow pre-approves again: ask %v deny %v", ask, deny)
+	if ask, deny = claudePolicyHere(t); slices.Contains(deny, "Bash(rm -rf*)") || !slices.Contains(ask, "Bash(rm -rf*)") {
+		t.Errorf("back to ask: ask %v deny %v", ask, deny)
 	}
 	path, err := permissionsFile()
 	if err != nil {
@@ -255,7 +261,7 @@ func TestPolicyTwoRepoKeys(t *testing.T) {
 }
 
 // TestPermissionsShowPolicy: show says how each CLI gets the policy, and that
-// a pre-approval takes effect on Claude Code only.
+// an allow naming a policy rule changes nothing.
 func TestPermissionsShowPolicy(t *testing.T) {
 	isolate(t)
 	inRepo(t)
@@ -264,8 +270,13 @@ func TestPermissionsShowPolicy(t *testing.T) {
 		t.Fatalf("add: %d %q %q", code, out, errb)
 	}
 	code, out, _ := run("permissions", "show")
-	for _, w := range []string{"Safety policy, on screen", permissions.PolicyForceMain + ": ask [the default]", "pre-approved on Claude Code only",
-		"not pre-approved: Bash(git push --force*main*)", "Grok has no flag for an ask rule", "a pre-approval does not change them", "Codex: its rules file asks", "file reads stay refused by aggy's guard"} {
+	if strings.Contains(out, "pre-approved") {
+		t.Errorf("show claims a pre-approval:\n%s", out)
+	}
+	for _, w := range []string{"Safety policy, on screen", permissions.PolicyForceMain + ": ask [the default]",
+		"your allow Bash(git push --force origin main) [aggy, this repo] names or covers this group and changes nothing: the command still asks every time on Claude Code",
+		"an ask rule beats every allow", "Grok has no flag for an ask rule", "an allow that names one is not passed to Grok", "Codex: its rules file asks",
+		"file reads stay refused by aggy's guard", "No allow changes a policy rule on any CLI", "T6976"} {
 		if code != 0 || !strings.Contains(out, w) {
 			t.Errorf("show lacks %q: %d\n%s", w, code, out)
 		}
@@ -282,6 +293,9 @@ func TestSuggestNeverStrict(t *testing.T) {
 	code, out, errb := run("permissions", "suggest")
 	if code != 0 || strings.Contains(out, "git push") || !strings.Contains(out, "gh pr view") {
 		t.Errorf("%d %q %q", code, out, errb)
+	}
+	if !slices.ContainsFunc(parity.CoveredRules("Bash(git push --force origin main)", nil), func(r parity.PolicyRule) bool { return r.Strict }) {
+		t.Error("the command does name a strict rule")
 	}
 }
 

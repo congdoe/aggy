@@ -194,27 +194,15 @@ const (
 )
 
 // policyPlan is how a launch in cwd gets the safety policy: on screen, the
-// person's group settings and pre-approvals from s apply, unless the session's
-// Claude mode (s.Mode, or a --permission-mode in extra, the person's own flags)
-// does not prompt; headless, every rule is a deny.
-func policyPlan(f planFor, cwd string, s permissions.Set, extra []string) parity.PolicyPlan {
+// person's group settings from s apply (ask or deny per group); headless,
+// every rule is a deny. No allow changes it (parity.PolicyPlan.Decide).
+func policyPlan(f planFor, cwd string, s permissions.Set) parity.PolicyPlan {
 	p := parity.PolicyPlan{OnScreen: f == planOnScreen}
 	if !p.OnScreen {
 		return p
 	}
-	p.Settings, p.Allows = s.Policy, s.PolicyAllows()
+	p.Settings = s.Policy
 	p.Branches, _ = defaultBranches(cwd)
-	mode := s.Mode
-	for i, a := range extra {
-		if v, ok := strings.CutPrefix(a, "--permission-mode="); ok {
-			mode = v
-		} else if a == "--permission-mode" && i+1 < len(extra) {
-			mode = extra[i+1]
-		}
-	}
-	// Modes that ask for a command no rule names (permission-modes.md); manual
-	// is default's other name. Any other, or one aggy does not know, may not.
-	p.NoPrompt = !slices.Contains([]string{"", "default", "manual", "plan"}, mode)
 	return p
 }
 
