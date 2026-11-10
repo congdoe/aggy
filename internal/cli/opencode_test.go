@@ -230,6 +230,20 @@ func TestOpenCodeFreeModelsLaunch(t *testing.T) {
 			if c.allowed != (err == nil) {
 				t.Errorf("model on opencode: err = %v, want allowed %v", err, c.allowed)
 			}
+			// L3: the launch prints no warns once refused, so the refusal
+			// itself names the reason.
+			if err != nil {
+				want := "aggy config set opencode-free-models on"
+				if c.user.OpenCode.FreeModels {
+					want = "does not list opencode-free"
+				}
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("refusal %q does not say %q", err, want)
+				}
+				if c.repo.SetsFreeModels() && !strings.Contains(err.Error(), "ignored") {
+					t.Errorf("refusal %q does not say the repo's setting is ignored", err)
+				}
+			}
 		})
 	}
 }

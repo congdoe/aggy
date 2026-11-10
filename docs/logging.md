@@ -377,6 +377,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `permissions.not_found` |  | aggy's own file has no such rule at that scope, or the rule is in a CLI's own file, which aggy does not edit. | aggy permissions list, which names each rule's source. |
 | `permissions.no_repo` |  | A rule for this repo, or a suggestion for it, was asked for outside any git repo. | Name --everywhere, or --all for suggestions. |
 | `config.bad_value` |  | aggy config set was given a key or value it does not take. | aggy config --help. |
+| `config.edit_by_hand` |  | aggy config set could not make the setting take the value asked, as the config file spells it another way (a dotted key, an inline table, or another case), so nothing was changed. | Edit that line of ~/.aggy/config.toml by hand; aggy config list shows the value in force. |
 | `trust.bad_file` |  | aggy could not read or change its list of trusted repos (trust.json or opencode-trust.json in aggy's state folder). | The file's contents, or aggy unwire. |
 | `hook.bad_payload` |  | aggy hook could not read the vendor's hook payload, or it was not a JSON object. | The vendor CLI's version; aggy doctor. |
 | `tool.name_clash` |  | A tool that is on was not wired: the CLI already loads an MCP server of that name from the user's or the repo's config, and aggy never replaces or merges into one. | Rename or remove that server in the CLI's config, or turn the tool off. |
