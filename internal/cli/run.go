@@ -303,10 +303,6 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	}
 	v := adapter.Vendor(pl.child.Vendor)
 	ids = diag.Rec{Parent: pl.parent.ID, Child: pl.child.ID, Vendor: string(v)}
-	if err := gateDirFlags(tp, pl.child.Cwd); err != nil {
-		return fail(diag.CodeFlagLoosens, err)
-	}
-	t = *tp
 	if pl.remakeCwd {
 		remove, err := remakeBorrowDir(pl.child.Cwd)
 		if err != nil {
@@ -331,17 +327,29 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: probing %s: %s; starting it without the flags help must list\n", name, v, termsafe.Line(err.Error()))
 	}
-	var a adapter.Adapter
-	switch v {
-	case adapter.Claude:
-		a = claude.Adapter{Caps: caps}
-	case adapter.Codex:
-		a = codex.Adapter{Caps: caps}
-	case adapter.Grok:
-		a = grok.New()
-	case adapter.OpenCode:
-		a = opencode.New()
+	a := screenAdapter(v, caps)
+	// The CLI's own words, sorted now that the vendor is known (T6961). A
+	// refusal is a usage error, as when aggy <vendor> sorts them first.
+	if t.Flags != nil {
+		if code, err := parseLaunchFlags(tp, v, nil, pl.resume != ""); err != nil {
+			r := ids
+			info, _ := diag.LookupCode(code)
+			r.Event, r.Code, r.Msg = diag.EvLaunchRefused, code, info.Meaning
+			dlog.Log(context.Background(), r)
+			fmt.Fprintf(stderr, "%s: %s %s\n", name, termsafe.Line(err.Error()), dlog.Tag(code))
+			return 2
+		}
+		if tp.Model != "" {
+			if err := adapter.ValidModel(tp.Model); err != nil {
+				return fail(diag.CodeUsage, err)
+			}
+			pl.child.Model = tp.Model
+		}
 	}
+	if err := gateDirFlags(tp, pl.child.Cwd); err != nil {
+		return fail(diag.CodeFlagLoosens, err)
+	}
+	t = *tp
 	key, err := config.ParseKey(cfg.Switch.Key)
 	if err != nil {
 		return fail(diag.CodeConfig, err)
@@ -557,7 +565,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	launched := ids
 	launched.Event, launched.VendorSession = diag.EvLaunched, assigned
 	launched.Attrs = map[string]any{"new_child": pl.newChild, "new_parent": pl.newParent, "resumed": pl.resume != "",
-		"brief": t.Brief, "model_set": t.Model != "", "direct": t.Direct, "cli_flags": len(t.Extra)}
+		"brief": t.Brief, "model_set": t.Model != "", "direct": t.Direct, "cli_flags": len(t.Extra), "prompt": t.Prompt}
 	if len(t.Loosens) > 0 {
 		launched.Attrs["loosening_flags"] = strings.Join(t.Loosens, ",")
 	}
@@ -678,7 +686,8 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		Vendor:    v,
 		CanSwitch: canSwitch,
 		// OpenCode takes a brief in its instructions, so none starts a turn.
-		StartsTurn: t.Brief && v != adapter.OpenCode,
+		// A prompt given at launch starts one (T6961).
+		StartsTurn: (t.Brief || t.Prompt) && v != adapter.OpenCode,
 		SessionID:  cids.current,
 		OnFollow:   cids.follow,
 		// T6848: only when aggy can say so for this binary; one that cannot

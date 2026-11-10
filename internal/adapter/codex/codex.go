@@ -273,7 +273,7 @@ func (a Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, e
 		}
 		args = append(args, "resume")
 	}
-	if slices.Contains(a.Caps, probe.CapNoAltScreen) {
+	if slices.Contains(a.Caps, probe.CapNoAltScreen) && !req.Print {
 		args = append(args, "--no-alt-screen")
 	}
 	m, err := modelArgs(req.Model)
@@ -315,7 +315,7 @@ func (Adapter) PassFlags() adapter.PassFlags {
 		Continue: []string{"--continue"},
 		Resume:   []string{"--resume"},
 		Refused: []adapter.RefusedFlag{
-			{Names: []string{"--no-alt-screen"}, Why: "aggy passes it when the CLI has it"},
+			{Names: []string{"--no-alt-screen"}, Why: "aggy passes it when the CLI has it, so the scrollback keeps what came before a switch"},
 			{Names: []string{"--cd", "-C"}, Why: "aggy starts the CLI in the session's directory; cd there first"},
 			{Names: []string{"--remote", "--remote-auth-token-env", "--worktree"}, Why: "it runs the session somewhere aggy does not record"},
 			{Names: []string{"--version", "-V"}, Why: "run codex --version"},
@@ -330,8 +330,11 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			{Names: []string{"--profile", "-p"}, Check: adapter.AnyValue},
 			{Names: []string{"--add-dir"}, Check: adapter.AnyValue},
 		},
-		Values:   []string{"--image", "-i", "--local-provider"},
-		DirFlags: []string{"--add-dir"},
+		Values: []string{"--image", "-i", "--local-provider"},
+		// codex exec runs one task and exits (visible alias e).
+		PrintCommands: []string{"exec", "e"},
+		Commands:      Commands,
+		DirFlags:      []string{"--add-dir"},
 		Noted: []adapter.NotedFlag{
 			{Names: []string{"--add-dir"}, Note: addDirNote},
 			{Names: []string{"--profile", "-p"}, Note: profileNote},
@@ -339,6 +342,14 @@ func (Adapter) PassFlags() adapter.PassFlags {
 		},
 	}
 }
+
+// Commands are Codex's subcommands: the Subcommand enum of
+// codex-rs/cli/src/main.rs at 6aaac69 (source, read 2026-11-09), names in
+// clap's kebab case, with aliases.
+var Commands = []string{"a", "agents", "app", "app-server", "apply", "archive", "cloud", "cloud-tasks", "completion", "debug",
+	"delete", "doctor", "e", "exec", "exec-server", "execpolicy", "features", "fork", "login", "logout", "mcp", "migrate-nfs-db",
+	"migrate-rollouts", "plugin", "queue", "remote-control", "responses-api-proxy", "resume", "review", "sandbox",
+	"stdio-to-uds", "tcp-tunnel", "unarchive", "update"}
 
 // The launch lines of the flags that pass with one. A gate would ask for
 // --no-policy, which drops the whole safety policy: for a daily profile or a

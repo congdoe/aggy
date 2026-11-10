@@ -482,7 +482,7 @@ func TestOpenCodeCommand(t *testing.T) {
 		{[]string{"--auto"}, "[opencode] auto"},
 		{[]string{"--session", "x"}, "gives each session its id"},
 		{[]string{"--standalone"}, "always passes it"},
-		{[]string{"say hi"}, "not a flag"},
+		{[]string{"say hi"}, "no prompt to OpenCode"},
 		{[]string{"--continue", "--resume"}, "not both"},
 		{[]string{"--tool"}, "--tool needs a name"},
 		// Flags other CLIs gate, note, or read a folder from are not OpenCode's
@@ -494,6 +494,9 @@ func TestOpenCodeCommand(t *testing.T) {
 		{[]string{"--no-policy", "--trust-all"}, "none of OpenCode's own flags"},
 		{[]string{"--profile=x"}, "none of OpenCode's own flags"},
 	}
+	// On a terminal (T6961): with none, OpenCode is refused as print mode.
+	defer func(f func() bool) { stdinTerminal = f }(stdinTerminal)
+	stdinTerminal = func() bool { return true }
 	for _, c := range cases {
 		t.Run(strings.Join(c.args, " "), func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())

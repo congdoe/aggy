@@ -63,6 +63,14 @@ type target struct {
 	// a resume of the same session keeps SafeExtra, since it drops
 	// --no-policy (S-6), and a switch keeps neither.
 	Extra, SafeExtra, Loosens []string
+	// Flags are the CLI's own words as given, not yet sorted: the launch
+	// sorts them into Extra and the rest once it knows the vendor
+	// (parseLaunchFlags). nil means Extra is already sorted.
+	Flags []string
+	// Prompt says Extra holds a prompt, so the CLI starts with a turn
+	// running. A later launch of the session never sends it again
+	// (SafeExtra leaves it out).
+	Prompt bool
 	// FlagNotes are the launch lines of the flags given (PassFlags.Noted).
 	FlagNotes []string
 	// Dirs are the folders the flags name, for gateDirFlags.
@@ -547,16 +555,18 @@ func (p *launchPlan) newChildOf(ctx context.Context, s *store.Store, cfg config.
 // defaultVendor is default_vendor, else the first vendor of allowed (in
 // claude, codex, grok order) that aggy setup did not find signed out and
 // whose CLI is on PATH, else the first allowed one, else claude, which
-// launch then refuses. cfg is narrowed by the repo (config.Merge), so
+// launch then refuses. A nil s counts none signed out. cfg is narrowed by the repo (config.Merge), so
 // default_vendor is empty when the repo does not allow it.
 func defaultVendor(ctx context.Context, s *store.Store, cfg config.Config, allowed []adapter.Vendor) adapter.Vendor {
 	if cfg.DefaultVendor != "" {
 		return cfg.DefaultVendor
 	}
 	out := map[string]bool{}
-	if rows, err := s.VendorStatuses(ctx); err == nil {
-		for _, r := range rows {
-			out[r.Vendor] = r.Connected == string(adapter.SignedOut)
+	if s != nil {
+		if rows, err := s.VendorStatuses(ctx); err == nil {
+			for _, r := range rows {
+				out[r.Vendor] = r.Connected == string(adapter.SignedOut)
+			}
 		}
 	}
 	for _, v := range allowed {

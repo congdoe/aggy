@@ -59,6 +59,8 @@ aggy borrow edit "Rename Foo to Bar in pkg/x"   # Codex edits in its own git wor
 aggy accept <borrow-id>                         # see its diff stat, run the checks, apply it
 aggy -c                # reopen the latest session here (aggy -r <id> for another)
 aggy claude --model opus --permission-mode plan   # a vendor CLI with its own flags
+aggy --model opus "explain this repo"             # the default vendor's flags and first prompt
+git diff | aggy -p "review this"                  # print mode: the CLI's own output, aggy's policy, nothing recorded
 aggy opencode --model xai/grok-4                  # OpenCode, on the plans and keys you set up
 aggy skill link        # let each CLI call aggy itself
 aggy policy wire       # write aggy's safety policy into Codex (Claude and Grok get it per launch)

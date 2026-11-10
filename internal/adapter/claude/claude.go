@@ -223,12 +223,11 @@ func (Adapter) PassFlags() adapter.PassFlags {
 		Continue: []string{"--continue", "-c"},
 		Resume:   []string{"--resume", "-r"},
 		Refused: []adapter.RefusedFlag{
-			{Names: []string{"--session-id"}, Why: "aggy gives each new session its id"},
-			{Names: []string{"--fork-session"}, Why: "aggy keeps one vendor session per child"},
+			{Names: []string{"--session-id"}, Why: "aggy gives each new session its id", ScreenOnly: true},
+			{Names: []string{"--fork-session"}, Why: "aggy keeps one vendor session per child", ScreenOnly: true},
 			{Names: []string{"--settings"}, Why: "aggy's safety policy and tool hooks use it"},
 			{Names: []string{"--append-system-prompt-file", "--append-system-prompt"}, Why: "aggy passes the shared memory this way"},
 			{Names: []string{"--mcp-config"}, Why: "aggy passes the managed tools' servers with it; add yours with claude mcp"},
-			{Names: []string{"--print", "-p"}, Why: "aggy runs an on-screen session; aggy borrow runs one task headless"},
 			{Names: []string{"--bg", "--background", "--desktop", "--cloud", "--remote", "--teleport", "--exec", "--environment", "--from-pr", "--init-only", "--worktree", "-w", "--tmux"}, Why: elsewhere},
 			{Names: []string{"--version", "-v"}, Why: "run claude --version"},
 		},
@@ -237,6 +236,9 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			{Names: []string{"--agents"}, Check: checkAgents},
 		},
 		Noted: []adapter.NotedFlag{{Names: []string{"--safe-mode", "--bare"}, Note: noHooksNote}},
+		// claude -p "query" and cat file | claude -p "query" (cli-reference).
+		Print:    []string{"--print", "-p"},
+		Commands: Commands,
 		Values: []string{"--add-dir", "--advisor", "--agent", "--allowedTools", "--allowed-tools",
 			"--append-subagent-system-prompt", "--append-subagent-system-prompt-file", "--autocompact", "--betas", "--channels",
 			"--debug-file", "--disallowedTools", "--disallowed-tools", "--effort", "--fallback-model", "--name", "-n",
@@ -244,6 +246,12 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			"--system-prompt-file", "--system-prompt-snapshot", "--teammate-mode", "--tools"},
 	}
 }
+
+// Commands are Claude Code's subcommands, from the CLI reference's commands
+// table (code.claude.com/docs/en/cli-reference, read 2026-11-09).
+var Commands = []string{"agents", "attach", "auth", "auto-mode", "daemon", "doctor", "gateway", "import", "install", "kill", "logs",
+	"mcp", "plugin", "plugins", "purge", "rc", "remote-control", "respawn", "rm", "self-hosted-runner", "setup-token", "stop",
+	"ultrareview", "update"}
 
 // checkPermissionMode lets through the modes that still ask or deny
 // (permission-modes.md; manual is an alias of default, the mode that asks
