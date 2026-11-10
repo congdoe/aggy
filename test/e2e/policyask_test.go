@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,7 +17,8 @@ import (
 // TestPolicyAcrossSwitch (T6967): the safety policy reaches each CLI of a
 // session as that CLI can express it, before and after a switch. Claude asks;
 // Grok, with no ask flag, denies; a rule the person pre-approved in aggy's file
-// reaches neither; a group the person set to deny is a deny on both.
+// no longer asks on Claude but stays a deny on Grok; a group the person set to
+// deny is a deny on both.
 func TestPolicyAcrossSwitch(t *testing.T) {
 	w := newWorld(t)
 	if err := os.MkdirAll(filepath.Join(w.home, ".aggy"), 0o700); err != nil {
@@ -97,10 +99,14 @@ func TestPolicyAcrossSwitch(t *testing.T) {
 			t.Errorf("grok denies lack %s: %v", r, deny)
 		}
 	}
-	if slices.Contains(deny, "Bash(rm -rf*)") {
-		t.Errorf("a pre-approved rule reached grok: %v", deny)
+	// Grok has no prompt behind a removed rule, so a pre-approval keeps its
+	// deny, and the allow that names it does not reach Grok (review 2).
+	if !slices.Contains(deny, "Bash(rm -rf*)") {
+		t.Errorf("a pre-approval removed a grok deny: %v", deny)
 	}
-	if slices.Contains(runs[1].Flags["--allow"], "Bash(rm -rf*)") {
-		t.Errorf("an ask became an allow on grok: %v", runs[1].Flags["--allow"])
+	for _, a := range runs[1].Flags["--allow"] {
+		if strings.Contains(a, "rm -rf") {
+			t.Errorf("an allow naming a policy rule reached grok: %v", runs[1].Flags["--allow"])
+		}
 	}
 }

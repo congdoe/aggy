@@ -1,6 +1,8 @@
 package parity
 
 import (
+	"errors"
+	"io/fs"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -15,19 +17,31 @@ import (
 type PolicyRule struct {
 	Group string // a permissions.Policy* group
 	Text  string
-	// Strict rules are never pre-approved by an answer at a CLI's prompt, nor
-	// by an allow that only happens to cover them (permissions.StrictGroup).
+	// Strict rules are never left out of any rendering (permissions.StrictGroup).
 	Strict bool
 }
+
+// Read says the rule guards a file read. A pre-approval never removes one: a
+// CLI reads a file it is not told about with no prompt of its own (Claude in
+// its working directory, Grok in every mode, verification.md T6740), so one
+// allowed file would expose every other.
+func (r PolicyRule) Read() bool { return strings.HasPrefix(r.Text, "Read(") }
+
+// ProtectedBranches are always held to the strict force-push rules, besides
+// the default branch read from the repo, which may not be recorded.
+var ProtectedBranches = []string{"main", "master", "trunk"}
 
 // branchName is a branch aggy may write into a rule: no glob, comma, space,
 // or parenthesis, which would change what the rule matches.
 var branchName = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,100}$`)
 
-// PolicyRules lists every rule, with a strict force-push group for main and
-// for each extra branch (the repo's default branch, when it is not main). A
-// branch name that is not plain is left out.
-func PolicyRules(branches []string) []PolicyRule {
+// PolicyRules lists every rule, as an on-screen session or a headless one gets
+// it. They differ in the .env names: headless, every rule is a deny nobody is
+// asked about, so .env.* stays; on screen the usual names are listed
+// (envFilesOnScreen), as no glob all the CLIs read alike leaves the templates
+// out. The strict force-push group covers ProtectedBranches and branches; a
+// name that is not plain is left out.
+func PolicyRules(onScreen bool, branches []string) []PolicyRule {
 	var out []PolicyRule
 	add := func(group string, rules []string) {
 		for _, r := range rules {
@@ -41,12 +55,16 @@ func PolicyRules(branches []string) []PolicyRule {
 		}
 		return rs
 	}
-	add(permissions.PolicyEnv, read(envFiles))
+	env := envFiles
+	if onScreen {
+		env = envFilesOnScreen
+	}
+	add(permissions.PolicyEnv, read(env))
 	add(permissions.PolicyKeys, read(privateKeyFiles))
 	add(permissions.PolicyPushMain, pushMainRules)
 	add(permissions.PolicyForce, forceRules)
-	seen := []string{}
-	for _, b := range append([]string{"main"}, branches...) {
+	var seen []string
+	for _, b := range append(slices.Clone(ProtectedBranches), branches...) {
 		if slices.Contains(seen, b) || !branchName.MatchString(b) || strings.Contains(b, "..") {
 			continue
 		}
@@ -61,43 +79,55 @@ func PolicyRules(branches []string) []PolicyRule {
 
 // PolicyPlan says how a launch gets the safety policy.
 type PolicyPlan struct {
-	// OnScreen is a session the person sees, where a rule can ask. A borrow
-	// child, even one reopened on screen, gets every rule as a deny.
+	// OnScreen is a session a person sees and can answer, where a rule can
+	// ask. Anything else (a borrow child, one reopened on screen, a headless
+	// run) gets every rule as a deny, whatever is set.
 	OnScreen bool
+	// NoPrompt says the session's Claude permission mode does not prompt for
+	// a command no rule names (acceptEdits, auto, dontAsk, bypassPermissions),
+	// so leaving a rule out would not leave Claude's own prompt behind it:
+	// then no pre-approval takes effect.
+	NoPrompt bool
 	// Settings are the person's group settings (permissions.Set.Policy).
 	Settings map[string]permissions.Kind
 	// Allows may pre-approve a rule (permissions.Set.PolicyAllows).
 	Allows []permissions.Rule
-	// Branches are default branches besides main, for the strict group.
+	// Branches are default branches besides ProtectedBranches.
 	Branches []string
 }
 
 // PolicyDecision is what one rule becomes for a launch.
 type PolicyDecision struct {
 	PolicyRule
-	// Kind is Deny or Ask, or Allow when an allow pre-approved it, so it is
-	// not rendered at all: the CLI then does what it does without aggy's rule.
+	// Kind is Deny or Ask, or Allow when an allow pre-approved it on Claude:
+	// Claude's rendering leaves it out, so Claude's own prompt stands for what
+	// it covered. Every other CLI renders an Allow as it would an Ask.
 	Kind permissions.Kind
 	// By is the allow that pre-approved it.
 	By permissions.Rule
+	// Unused is an allow in aggy's own file that names or covers the rule but
+	// does not pre-approve it, and Why says why: a strict or read rule, or a
+	// mode with no prompt behind it.
+	Unused permissions.Rule
+	Why    string
 }
 
 // Decide decides every rule. A deny the person set always holds, whatever
-// allows say; an ask can be pre-approved.
+// allows say. A pre-approval removes a rule only where the CLI itself still
+// prompts for every other command the rule covered, which today is an
+// ordinary Bash rule on Claude in a prompting mode.
 //
-// A borrow child's decisions are ClaudeDeny's rules, in that order: the strict
-// force-push rules are left out wherever the force-push group denies, as its
-// rules already cover them.
+// A headless plan's decisions are ClaudeDeny's rules, in that order: the
+// strict force-push rules are left out wherever the force-push group denies,
+// as its rules already cover them.
 func (p PolicyPlan) Decide() []PolicyDecision {
 	forceDenied := !p.OnScreen || p.Settings[permissions.PolicyForce] == permissions.Deny
 	var out []PolicyDecision
-	for _, r := range PolicyRules(p.Branches) {
+	for _, r := range PolicyRules(p.OnScreen, p.Branches) {
 		d := PolicyDecision{PolicyRule: r, Kind: permissions.Deny}
 		if p.OnScreen && p.Settings[r.Group] != permissions.Deny {
 			d.Kind = permissions.Ask
-			if a, ok := preApproval(r, p.Allows); ok {
-				d.Kind, d.By = permissions.Allow, a
-			}
+			p.preApprove(&d)
 		}
 		if r.Group == permissions.PolicyForceMain && forceDenied && d.Kind == permissions.Deny {
 			continue
@@ -107,37 +137,62 @@ func (p PolicyPlan) Decide() []PolicyDecision {
 	return out
 }
 
-// preApproval finds an allow that pre-approves r. An ordinary rule is
-// pre-approved by an allow that names it (matches what the rule matches,
-// such as Bash(rm -rf dist) for Bash(rm -rf*)) or covers it (Bash(rm *)). A
-// strict rule only by one that names it, and only from aggy's own file: the
-// person wrote that deliberately, and an answer at a CLI's prompt, which no CLI
-// lets aggy keep from offering, does not count.
-func preApproval(r PolicyRule, allows []permissions.Rule) (permissions.Rule, bool) {
-	for _, a := range allows {
-		if a.Kind != permissions.Allow {
+func (p PolicyPlan) preApprove(d *PolicyDecision) {
+	for _, a := range p.Allows {
+		if a.Kind != permissions.Allow || !Names(d.Text, a.Text) && !covers(a.Text, d.Text) {
 			continue
 		}
-		if r.Strict {
-			if (a.Origin == permissions.FromAggy || a.Origin == permissions.FromAggyRepo) && Names(r.Text, a.Text) {
-				return a, true
-			}
+		mine := a.Origin == permissions.FromAggy || a.Origin == permissions.FromAggyRepo
+		why := ""
+		switch {
+		case d.Strict:
+			// TODO(T6976): an exact per-command pre-approval of a strict rule
+			// (the owner's choice for an allow in aggy's file that names it)
+			// needs a per-command decision point, a PreToolUse hook decision,
+			// as removing the rule would also let every other command it
+			// covers through. Until then a strict rule always asks.
+			why = "a strict rule; a pre-approval does not change it on any CLI yet"
+		case d.Read():
+			// TODO(T6976): the same, for one file read.
+			why = "a file read rule; no CLI prompts for the other files it covers, so a pre-approval does not change it"
+		case p.NoPrompt:
+			why = "Claude's permission mode here does not prompt for a command no rule names"
+		case !mine && tooWide(a.Text):
+			// A CLI's own approval file can be written by another harness's
+			// session (settings.local.json), so from there only a rule narrower
+			// than one command word and * removes anything.
 			continue
+		default:
+			d.Kind, d.By = permissions.Allow, a
+			return
 		}
-		if Names(r.Text, a.Text) || covers(a.Text, r.Text) {
-			return a, true
+		if mine && d.Unused.Text == "" {
+			d.Unused, d.Why = a, why
 		}
 	}
-	return permissions.Rule{}, false
 }
 
-// PreApproves lists the rules an allow in aggy's own file would pre-approve,
-// for aggy permissions add to name, and suggest to leave out.
+// tooWide says an allow has a wildcard within its first word or right after
+// it, as Bash(rm *) and Bash(rm:*) do.
+func tooWide(allow string) bool {
+	cmd, wild, ok := permissions.BashCommand(allow)
+	if !ok {
+		return true
+	}
+	if !wild {
+		return false
+	}
+	lit, _, _ := strings.Cut(cmd, "*")
+	return len(strings.Fields(lit)) < 2
+}
+
+// PreApproves lists the rules an allow in aggy's own file names or covers,
+// whether or not a launch takes it as a pre-approval: suggest leaves out a
+// command that names a strict one.
 func PreApproves(allow string, branches []string) []PolicyRule {
-	a := permissions.Rule{Kind: permissions.Allow, Text: allow, Origin: permissions.FromAggy}
 	var out []PolicyRule
-	for _, r := range PolicyRules(branches) {
-		if _, ok := preApproval(r, []permissions.Rule{a}); ok {
+	for _, r := range PolicyRules(true, branches) {
+		if Names(r.Text, allow) || covers(allow, r.Text) {
 			out = append(out, r)
 		}
 	}
@@ -226,7 +281,8 @@ func glob(pattern, s string) bool {
 // ClaudePolicy renders the decisions for Claude: asks in permissions.ask and
 // denies in permissions.deny of the same inline --settings layer
 // (permissions.md: "Rules are evaluated in order: deny, then ask, then
-// allow"). A pre-approved rule is left out.
+// allow"). A pre-approved rule is left out, and Claude's own prompt stands for
+// what it covered.
 func ClaudePolicy(ds []PolicyDecision) (ask, deny []string) {
 	for _, d := range ds {
 		switch d.Kind {
@@ -241,13 +297,11 @@ func ClaudePolicy(ds []PolicyDecision) (ask, deny []string) {
 
 // GrokPolicy renders them for Grok, which takes --deny and --allow on its
 // command line and no flag for ask rules that aggy can confirm (cli.rs at
-// grok-build 2bdd1d6a): an ask stays a deny there, never an allow. A
-// pre-approved rule is left out, so Grok does what it does without it.
+// grok-build 2bdd1d6a): every rule is a deny there, never an allow, and a
+// pre-approval removes none, as Grok has no prompt of its own behind a removed
+// rule (it matches an allow as a word-boundary prefix, and reads every file).
 func GrokPolicy(ds []PolicyDecision) (deny []string) {
 	for _, d := range ds {
-		if d.Kind == permissions.Allow {
-			continue
-		}
 		deny = append(deny, grokSpelling(d.Text))
 	}
 	return deny
@@ -265,8 +319,11 @@ func grokSpelling(r string) string {
 // OpenCodePolicy renders the shell rules for OpenCode: an ask goes last in its
 // permissions, where a later rule wins over the person's allows, and a deny is
 // a tool.use policy. Under --auto, which answers an ask with once
-// (verification.md, "OpenCode 2.2.5"), every ask is a deny. File reads are
-// not here: the guard refuses those names whatever is set (OpenCodeDeniedNames).
+// (verification.md, "OpenCode 2.2.5"), every ask is a deny. A pre-approval
+// removes none. The strict rules stay denies: OpenCode may keep an Always
+// answer as a wildcard that beats a later ask (design.md section 15), so one
+// answer could silence them for good; TODO(T6895), a live check. File reads
+// are not here: the guard refuses those names whatever is set.
 func OpenCodePolicy(ds []PolicyDecision, auto bool) (ask, deny []string) {
 	for _, d := range ds {
 		cmd, ok := strings.CutPrefix(d.Text, "Bash(")
@@ -274,10 +331,9 @@ func OpenCodePolicy(ds []PolicyDecision, auto bool) (ask, deny []string) {
 			continue
 		}
 		cmd = strings.TrimSuffix(cmd, ")")
-		switch {
-		case d.Kind == permissions.Deny, d.Kind == permissions.Ask && auto:
+		if d.Kind == permissions.Deny || d.Strict || auto {
 			deny = append(deny, "shell:"+cmd)
-		case d.Kind == permissions.Ask:
+		} else {
 			ask = append(ask, cmd)
 		}
 	}
@@ -287,19 +343,27 @@ func OpenCodePolicy(ds []PolicyDecision, auto bool) (ask, deny []string) {
 // DefaultBranch reads the repo's default branch from
 // refs/remotes/origin/HEAD in its common git dir, as git clone and git remote
 // set-head write it ("ref: refs/remotes/origin/<branch>"), without running
-// git. It is "" when that file is not there or names no plain branch.
-func DefaultBranch(root string) string {
+// git. known is false when it could not be read: a reftable repo keeps it
+// elsewhere, and a packed-refs file holds no symbolic ref. It is "" with known
+// true when the repo records none.
+func DefaultBranch(root string) (name string, known bool) {
 	common, err := GitCommonDir(root)
 	if err != nil {
-		return ""
+		return "", false
+	}
+	if _, err := safefs.Lstat(filepath.Join(common, "reftable")); err == nil {
+		return "", false
 	}
 	b, err := safefs.ReadFileLimit(filepath.Join(common, "refs", "remotes", "origin", "HEAD"), maxGitFile)
-	if err != nil {
-		return ""
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", true
+	case err != nil:
+		return "", false
 	}
 	name, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "ref: refs/remotes/origin/")
 	if !ok || !branchName.MatchString(name) || strings.Contains(name, "..") {
-		return ""
+		return "", false
 	}
-	return name
+	return name, true
 }

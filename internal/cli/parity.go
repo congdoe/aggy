@@ -180,30 +180,60 @@ func policyDelivery(v adapter.Vendor, caps []string) (why string, err error) {
 	return "", nil
 }
 
+// planFor is who answers a launch's prompts, which decides how it gets the
+// safety policy (policyPlan).
+type planFor int
+
+const (
+	// planOnScreen: a person sees the session and can answer the CLI's own
+	// prompt, so rules ask where the CLI can say ask.
+	planOnScreen planFor = iota + 1
+	// planHeadless: no one can answer (a borrow child, one reopened on screen,
+	// a print or other headless run), so every rule is a deny.
+	planHeadless
+)
+
 // policyPlan is how a launch in cwd gets the safety policy: on screen, the
-// person's group settings and pre-approvals from s apply; a borrow child's
-// launch (onScreen false) gets every rule as a deny.
-func policyPlan(onScreen bool, cwd string, s permissions.Set) parity.PolicyPlan {
-	p := parity.PolicyPlan{OnScreen: onScreen}
-	if !onScreen {
+// person's group settings and pre-approvals from s apply, unless the session's
+// Claude mode (s.Mode, or a --permission-mode in extra, the person's own flags)
+// does not prompt; headless, every rule is a deny.
+func policyPlan(f planFor, cwd string, s permissions.Set, extra []string) parity.PolicyPlan {
+	p := parity.PolicyPlan{OnScreen: f == planOnScreen}
+	if !p.OnScreen {
 		return p
 	}
-	p.Settings, p.Allows, p.Branches = s.Policy, s.PolicyAllows(), defaultBranches(cwd)
+	p.Settings, p.Allows = s.Policy, s.PolicyAllows()
+	p.Branches, _ = defaultBranches(cwd)
+	mode := s.Mode
+	for i, a := range extra {
+		if v, ok := strings.CutPrefix(a, "--permission-mode="); ok {
+			mode = v
+		} else if a == "--permission-mode" && i+1 < len(extra) {
+			mode = extra[i+1]
+		}
+	}
+	// Modes that ask for a command no rule names (permission-modes.md); manual
+	// is default's other name. Any other, or one aggy does not know, may not.
+	p.NoPrompt = !slices.Contains([]string{"", "default", "manual", "plan"}, mode)
 	return p
 }
 
 // defaultBranches is the default branch of dir's repo, when git records one
-// (parity.DefaultBranch), for the strict force-push group.
-func defaultBranches(dir string) []string {
+// (parity.DefaultBranch), for the strict force-push group. known is false
+// when the repo's record could not be read.
+func defaultBranches(dir string) (branches []string, known bool) {
 	if dir == "" {
-		return nil
+		return nil, true
 	}
-	if root, ok := repoRoot(dir); ok {
-		if b := parity.DefaultBranch(root); b != "" {
-			return []string{b}
-		}
+	root, ok := repoRoot(dir)
+	if !ok {
+		return nil, true
 	}
-	return nil
+	b, known := parity.DefaultBranch(root)
+	if b != "" {
+		branches = []string{b}
+	}
+	return branches, known
 }
 
 // addPolicy puts the safety policy on req for vendor v where it goes on

@@ -275,7 +275,7 @@ func openCodeGuard(in io.Reader, getenv func(string) string, stderr io.Writer) i
 	if err != nil {
 		b = nil // refused as unreadable: the rules aggy ships do not render
 	}
-	d := hook.OpenCodeGuard(b, hook.OpenCodeEnv{Getenv: getenv, DeniedNames: parity.OpenCodeDeniedNames(), ShellRules: rules, ScanAlways: scanAlways, AlwaysSeen: openCodeAlwaysSeen})
+	d := hook.OpenCodeGuard(b, hook.OpenCodeEnv{Getenv: getenv, DeniedNames: parity.OpenCodeDeniedNames(), ReadableNames: parity.EnvTemplates, ShellRules: rules, ScanAlways: scanAlways, AlwaysSeen: openCodeAlwaysSeen})
 	if !d.Deny {
 		return 0
 	}

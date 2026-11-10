@@ -320,8 +320,10 @@ func OpenCodeShellDeny(ds []PolicyDecision, auto bool) []string {
 
 // openCodePathDeny is one deny per tool on each protected file name, at
 // any depth. A path deny stops the tool, not `cat` in the shell.
+// The .env names are the on-screen list, so a template stays readable; the
+// guard refuses the rest of .env.* by its own name check.
 func openCodePathDeny() []string {
-	names := OpenCodeDeniedNames()
+	names := slices.Concat(envFilesOnScreen, privateKeyFiles, openCodeCredentials)
 	var out []string
 	for _, tool := range openCodePathTools {
 		for _, n := range names {

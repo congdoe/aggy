@@ -57,6 +57,11 @@ func (s *Set) loadPolicy(m map[string]string, from Origin, path string) {
 			s.Policy = map[string]Kind{}
 			s.PolicyFrom = map[string]Origin{}
 		}
+		// Two keys of the file may name one repo (spelled two ways): of those,
+		// the stricter setting wins, not the one that sorts last.
+		if from == FromAggyRepo && s.PolicyFrom[g] == FromAggyRepo && s.Policy[g] == Deny {
+			continue
+		}
 		s.Policy[g], s.PolicyFrom[g] = Kind(m[g]), from
 	}
 }

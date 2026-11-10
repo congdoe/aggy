@@ -729,9 +729,13 @@ The safety policy (design.md section 10) is per launch for Claude and
 Grok: Claude `--settings '{"permissions":{"ask":[...],"deny":[...]}}'` when
 the probe finds `--settings` (on screen the rules ask, T6967, from
 `InteractiveRequest.Ask`; a borrow child's reopened session and a group the
-person set to deny go in `deny`), Grok one `--deny <rule>` per rule when it
-finds `--deny`, on screen too, since its command line has no ask flag
+person set to deny go in `deny`; a pre-approval removes only an ordinary Bash
+ask), Grok one `--deny <rule>` per rule when it
+finds `--deny`, on screen too, since its command line has no ask flag, and
+whatever allows say: an allow that names or covers a policy rule is not
+passed as `--allow`
 (Grok splits a `--deny` value on commas, so a rule holding one is refused).
+A Codex borrow child is not reopened on screen (design.md section 10).
 The rules are `parity.PolicyRules`, decided by `parity.PolicyPlan`, in the
 `Read(...)` and `Bash(...)` syntax both CLIs document. Codex gets nothing on
 its argv; it reads `$CODEX_HOME/rules/aggy.rules`, written by `aggy policy

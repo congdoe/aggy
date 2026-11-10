@@ -382,9 +382,20 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			return fail(diag.CodePermBadFile, rules.FileErr)
 		}
 	}
-	plan := policyPlan(pl.child.Kind == "", pl.child.Cwd, rules)
+	who := planOnScreen
+	if pl.child.Kind != "" {
+		who = planHeadless
+	}
+	plan := policyPlan(who, pl.child.Cwd, rules, t.Extra)
 	if t.NoPolicy {
 		warns = append(warns, "starting without the safety policy (--no-policy)")
+	} else if v == adapter.Codex && pl.child.Kind != "" {
+		// Codex's global rules file asks, and an interactive Codex prompts, so a
+		// borrow child reopened there would be asked where it was refused. The
+		// only per-launch way to refuse a prompt rule is approval never, which
+		// also runs every other command unasked (prompt_is_rejected_by_policy,
+		// core/src/exec_policy.rs at rust-v0.164.0), so aggy does not reopen it.
+		return fail(diag.CodePolicy, errors.New("the safety policy cannot refuse in a Codex borrow child reopened on screen, as Codex's rules ask there; pass --no-policy to open it anyway"))
 	} else {
 		pw, err := addPolicy(v, caps, cfg.Policy.Required, plan, &req)
 		if err != nil {
