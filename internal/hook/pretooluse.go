@@ -16,6 +16,9 @@ const MaxPayload = 1 << 20
 type Decision struct {
 	Deny   bool
 	Reason string
+	// Cleared is 1 + the index of the OpenCode plugin's clear an allowed
+	// strict call used, which the plugin then spends; 0 for none.
+	Cleared int
 }
 
 // PreToolUse decides on one PreToolUse payload: it denies a tool call

@@ -301,7 +301,7 @@ func TestPermissionsShowPolicy(t *testing.T) {
 		"your allow Bash(git push --force origin main) [aggy, this repo] would pre-approve this exact command, but it does not apply here",
 		"your allow Bash(git push *) [aggy, this repo] names or covers this group and pre-approves nothing",
 		"asks made by aggy's decision hook", "Grok has no flag for an ask rule", "an allow that names one is not passed to Grok", "Codex: its rules file asks",
-		"file reads stay refused by aggy's guard", "no pre-approval changes it"} {
+		"private key reads ask there too, but aggy's guard refuses one by another name or through a link", "no pre-approval changes it"} {
 		if code != 0 || !strings.Contains(out, w) {
 			t.Errorf("show lacks %q: %d\n%s", w, code, out)
 		}

@@ -78,8 +78,13 @@ func TestPolicyHookDecisions(t *testing.T) {
 		{"tool": "Read", "input": map[string]any{"file_path": "/" + canary + "/.env"}},
 		bash("git reset --hard " + canary),
 		{"tool": "Bash", "raw": notJSON},
+		// PR #129 review: Monitor runs a shell command, and a write to a
+		// Claude settings file asks.
+		{"tool": "Monitor", "input": map[string]any{"command": "rm -rf " + canary, "description": "x"}},
+		{"tool": "Write", "input": map[string]any{"file_path": filepath.Join(w.cwd, ".claude", "settings.local.json"), "content": "{}"}},
+		{"tool": "WebFetch", "input": map[string]any{"url": "https://example.com/" + canary}},
 	}
-	want := []string{"allow", "ask", "none", "ask", "ask", "deny", "ask"}
+	want := []string{"allow", "ask", "none", "ask", "ask", "deny", "ask", "ask", "ask", "none"}
 	sc := map[string]any{"stdout": "READY>", "tool_calls": calls, "extra_values": map[string][]string{"--permission-mode": {"dontAsk"}}}
 
 	runOnce := func(args ...string) []map[string]any {
@@ -109,8 +114,14 @@ func TestPolicyHookDecisions(t *testing.T) {
 		if err := json.Unmarshal([]byte(runs[0].Flags["--settings"][0]), &layer); err != nil {
 			t.Fatal(err)
 		}
-		if len(layer.Permissions.Ask) != 0 {
-			t.Errorf("static asks are still there: %q", layer.Permissions.Ask)
+		// Only the guards on Claude's settings files stay static (PR #129).
+		for _, a := range layer.Permissions.Ask {
+			if !strings.Contains(a, ".claude/settings") {
+				t.Errorf("static policy asks are still there: %q", layer.Permissions.Ask)
+			}
+		}
+		if !strings.Contains(strings.Join(layer.Permissions.Ask, " "), "Bash(*.claude/settings*)") {
+			t.Errorf("the settings guards are missing: %q", layer.Permissions.Ask)
 		}
 		if !strings.Contains(strings.Join(layer.Permissions.Deny, " "), "Bash(git reset --hard*)") {
 			t.Errorf("the group set to deny is not a static deny: %q", layer.Permissions.Deny)

@@ -92,7 +92,7 @@ func hookWith(args []string, in io.Reader, getenv func(string) string, stdout, s
 		case "pretooluse", "PreToolUse":
 			return preToolUse(in, stderr)
 		case "opencode-guard":
-			return openCodeGuard(in, getenv, stderr)
+			return openCodeGuard(in, getenv, stdout, stderr)
 		case "opencode-always":
 			return openCodeAlways(in, stderr)
 		}
@@ -276,10 +276,26 @@ func openCodeAlways(in io.Reader, stderr io.Writer) int {
 	return 0
 }
 
+// strictShell reports a command a strict policy group matches, by the
+// launch's plan read through its SHA-256. Where the plan cannot be read, or is
+// not the launch's, any policy match counts: the guard then refuses more,
+// never less.
+func strictShell(plan, sum, cmd string) bool {
+	d, err := readDecidePlan(plan, sum)
+	if err != nil {
+		g, _ := parity.MatchedGroups(parity.Call{Kind: parity.CallShell, Text: cmd}, nil)
+		return len(g) > 0
+	}
+	_, strict := parity.MatchedGroups(parity.Call{Kind: parity.CallShell, Text: cmd}, d.Branches)
+	return strict
+}
+
 // openCodeGuard runs the check behind the plugin's execute.before. Its exit
 // code decides, so a crash or a hang refuses too; the plugin passes stderr
 // to the model as the tool's error, ending with the reason code and run id.
-func openCodeGuard(in io.Reader, getenv func(string) string, stderr io.Writer) int {
+// An allowed strict call prints the plugin's clear it used (1 + its index is
+// Cleared; the plugin reads the index) on stdout.
+func openCodeGuard(in io.Reader, getenv func(string) string, stdout, stderr io.Writer) int {
 	b, err := io.ReadAll(io.LimitReader(in, hook.MaxPayload+1))
 	if err != nil || len(b) > hook.MaxPayload {
 		b = nil // refused as unreadable
@@ -289,8 +305,12 @@ func openCodeGuard(in io.Reader, getenv func(string) string, stderr io.Writer) i
 	if err != nil {
 		b = nil // refused as unreadable: the rules aggy ships do not render
 	}
-	d := hook.OpenCodeGuard(b, hook.OpenCodeEnv{Getenv: getenv, DeniedNames: parity.OpenCodeDeniedNames(), ReadableNames: parity.EnvTemplates, ShellRules: rules, ScanAlways: scanAlways, AlwaysSeen: openCodeAlwaysSeen})
+	d := hook.OpenCodeGuard(b, hook.OpenCodeEnv{Getenv: getenv, DeniedNames: parity.OpenCodeDeniedNames(), ReadableNames: parity.EnvTemplates,
+		ShellRules: rules, ScanAlways: scanAlways, AlwaysSeen: openCodeAlwaysSeen, StrictShell: strictShell, KeyNames: parity.OpenCodeKeyFiles()})
 	if !d.Deny {
+		if d.Cleared > 0 {
+			fmt.Fprintf(stdout, "%d\n", d.Cleared-1)
+		}
 		return 0
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), hookTimeout)

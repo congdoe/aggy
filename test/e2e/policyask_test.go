@@ -81,9 +81,15 @@ func TestPolicyAcrossSwitch(t *testing.T) {
 	}
 	p := layer.Permissions
 	// On screen the asks are aggy's decision hook's (T6976), which asks for
-	// every policy match but an exact pre-approval: none are static rules.
-	if len(p.Ask) != 0 {
-		t.Errorf("claude has static asks beside the decision hook: %v", p.Ask)
+	// every policy match but an exact pre-approval: none are static rules but
+	// the guards on Claude's settings files (PR #129 review).
+	for _, a := range p.Ask {
+		if !strings.Contains(a, ".claude/settings") {
+			t.Errorf("claude has a policy ask beside the decision hook: %v", p.Ask)
+		}
+	}
+	if !slices.Contains(p.Ask, "Bash(*.claude/settings*)") || !slices.Contains(p.Ask, "Edit(//**/.claude/settings.local.json)") {
+		t.Errorf("claude lacks the settings guards: %v", p.Ask)
 	}
 	hooked := false
 	for _, g := range layer.Hooks["PreToolUse"] {

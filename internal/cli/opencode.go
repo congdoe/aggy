@@ -53,6 +53,7 @@ type openCodeInput struct {
 	// version is the CLI's version from the probe, or "".
 	plan    parity.PolicyPlan
 	version string
+	ids     parity.ReadIdentity // read pre-approvals' identities, from the index
 }
 
 // prepareOpenCode builds the launch's folder (docs/design.md, section 15):
@@ -143,17 +144,21 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 		out.warns = append(out.warns, skippedNote(n, "OpenCode"))
 	}
 	// The decision hook's plan (T6976), for an on-screen launch with the policy.
-	decide := ""
+	decide, sum := "", ""
 	if !in.noPolicy && in.plan.OnScreen {
-		d := policyhook.NewDecidePlan(string(adapter.OpenCode), in.version, out.launch.Auto, in.plan, parity.PreApprovedFrom(in.rules, root))
-		if decide, err = writeDecidePlan(base, d); err != nil {
+		// A read pre-approval needs the repo trusted for OpenCode too.
+		rules := in.rules
+		rules.Trusted = rules.Trusted && trusted
+		d := policyhook.NewDecidePlan(string(adapter.OpenCode), in.version, out.launch.Auto, in.plan, parity.PreApprovedFrom(rules, root, in.ids))
+		d.Root, d.Protected = root, protectedPaths()
+		if decide, sum, err = writeDecidePlan(base, d); err != nil {
 			return out, err
 		}
 	}
 	data, err := parity.OpenCodeConfig{
 		Trusted: trusted, Providers: providers, Model: in.model, Instructions: notes,
 		Plugin: pluginDir, Aggy: bin, Root: root, NoPolicy: in.noPolicy, Auto: out.launch.Auto,
-		Shared: shared, Policy: in.policy, Decide: decide,
+		Shared: shared, Policy: in.policy, Decide: decide, DecideSum: sum,
 	}.Render()
 	if err != nil {
 		return out, err

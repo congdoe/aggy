@@ -114,6 +114,8 @@ func printPolicy(w io.Writer, s permissions.Set) {
 				what = "matches this group, which is set to deny, so it is refused"
 			case m.exact && (r.Origin == permissions.FromAggy || r.Origin == permissions.FromAggyRepo) && i >= len(s.Rules):
 				what = "would pre-approve this exact command, but it does not apply here (aggy permissions show says why), so the command still asks"
+			case m.exact && (r.Origin == permissions.FromAggy || r.Origin == permissions.FromAggyRepo) && isRead(r.Text) && !s.Trusted:
+				what = "would pre-approve this exact file, but a read pre-approval applies only in a repo you trusted (aggy trust), so the read still asks"
 			case m.exact && (r.Origin == permissions.FromAggy || r.Origin == permissions.FromAggyRepo) && s.Withhold != "":
 				what = "would pre-approve this exact command, but aggy sends no allow until the problem below is fixed, so the command still asks"
 			case m.exact && (r.Origin == permissions.FromAggy || r.Origin == permissions.FromAggyRepo):
@@ -131,11 +133,17 @@ func printPolicy(w io.Writer, s permissions.Set) {
 	fmt.Fprintf(w, "  Claude Code: %d deny rules, and %d asks made by aggy's decision hook, which asks for every match but an exact pre-approval (static ask rules, which nothing lifts, when hooks are off)\n", len(deny), len(ask))
 	fmt.Fprintf(w, "  Grok Build: %d deny rules; Grok has no flag for an ask rule aggy can confirm, so these stay denials there, and an allow that names one is not passed to Grok\n", len(parity.GrokPolicy(ds)))
 	oAsk, oDeny := parity.OpenCodePolicy(ds, false)
-	fmt.Fprintf(w, "  OpenCode: %d shell asks and %d shell denies (the strict rules ask instead in a repo trusted for OpenCode; all deny under --auto, which answers an ask); aggy's plugin lifts an ask only for an exact pre-approval; file reads stay refused by aggy's guard\n", len(oAsk), len(oDeny))
+	fmt.Fprintf(w, "  OpenCode: %d shell asks and %d shell denies (the strict rules ask instead in a repo trusted for OpenCode; all deny under --auto, which answers an ask); aggy's plugin lifts an ask only for an exact pre-approval; private key reads ask there too, but aggy's guard refuses one by another name or through a link, and other secret files stay refused\n", len(oAsk), len(oDeny))
 	fmt.Fprintln(w, "  Codex: its rules file asks before each rule, in every repo; the file is global, so a")
 	fmt.Fprintln(w, "    setting here does not reach it, it has no rule for file reads, and no pre-approval changes it")
 	fmt.Fprintln(w, "  aggy permissions add allow \"Bash(<exact command>)\" pre-approves one command on Claude")
 	fmt.Fprintln(w, "    Code and OpenCode; aggy permissions policy <group> deny refuses a group instead")
+}
+
+// isRead reports a Read rule.
+func isRead(rule string) bool {
+	tool, _, _, err := permissions.ParseRule(rule)
+	return err == nil && tool == "Read"
 }
 
 // ruleCounts says how many rules of each kind.

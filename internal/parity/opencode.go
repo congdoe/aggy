@@ -105,14 +105,33 @@ type OpenCodeConfig struct {
 	// plugin's permission evaluate hook hands aggy hook decide (T6976), or ""
 	// for no evaluate hook.
 	Decide string
+	// DecideSum is the plan's SHA-256, hex, which aggy hook decide checks the
+	// file against on every call (PR #129 review).
+	DecideSum string
 }
 
 // strictAsk says the strict shell rules ask rather than deny on this launch:
 // its plugin carries the evaluate hook, the repo is trusted for OpenCode, and
-// --auto, which answers every ask, is off (T6976).
+// --auto, which answers every ask, is off (T6976). The plugin's guard then
+// refuses a strict match that neither an answered prompt nor an exact
+// pre-approval cleared, so a saved Always allow and a failing hook never run
+// one (PR #129 review).
 func (c OpenCodeConfig) strictAsk() bool {
-	return c.Decide != "" && c.Trusted && !c.Auto && !c.NoPolicy
+	return c.Decide != "" && c.DecideSum != "" && c.Trusted && !c.Auto && !c.NoPolicy
 }
+
+// keyReadsAsk says the read tool asks, rather than is refused, on a private
+// key file's name: a strictAsk launch whose key group is not set to deny
+// (owner decision, 2026-11-10).
+func (c OpenCodeConfig) keyReadsAsk() bool {
+	return c.strictAsk() && !slices.ContainsFunc(c.policyDecisions(), func(d PolicyDecision) bool {
+		return d.Group == permissions.PolicyKeys && d.Kind == permissions.Deny
+	})
+}
+
+// OpenCodeKeyFiles are the private key file names the guard lets the read
+// tool open, asked, on a launch whose key reads ask.
+func OpenCodeKeyFiles() []string { return slices.Clone(privateKeyFiles) }
 
 // openCodeRule is a permission or policy statement.
 type openCodeRule struct {
@@ -342,11 +361,18 @@ func openCodeShellDeny(ds []PolicyDecision, auto, strictAsk bool) []string {
 // any depth. A path deny stops the tool, not `cat` in the shell.
 // The .env names are the on-screen list, so a template stays readable; the
 // guard refuses the rest of .env.* by its own name check.
-func openCodePathDeny() []string {
+//
+// With keyReadsAsk, the read tool's key file denies are left out: they ask
+// instead (openCodeKeyReadAsks), and the guard refuses a key read that is not
+// the key file itself by its own name (owner decision, 2026-11-10).
+func openCodePathDeny(keyReadsAsk bool) []string {
 	names := slices.Concat(envFilesOnScreen, privateKeyFiles, openCodeCredentials)
 	var out []string
 	for _, tool := range openCodePathTools {
 		for _, n := range names {
+			if keyReadsAsk && tool == "read" && slices.Contains(privateKeyFiles, n) {
+				continue
+			}
 			out = append(out, tool+":"+n, tool+":*/"+n)
 		}
 	}
@@ -383,7 +409,7 @@ func openCodePolicies(c OpenCodeConfig) ([]openCodeRule, error) {
 		rules = append(rules, openCodeRule{"provider.use", p, "deny"})
 	}
 	if !c.NoPolicy {
-		for _, r := range append(openCodeShellDeny(c.policyDecisions(), c.Auto, c.strictAsk()), openCodePathDeny()...) {
+		for _, r := range append(openCodeShellDeny(c.policyDecisions(), c.Auto, c.strictAsk()), openCodePathDeny(c.keyReadsAsk())...) {
 			rules = append(rules, openCodeRule{"tool.use", r, "deny"})
 		}
 	}
@@ -414,6 +440,11 @@ func (c OpenCodeConfig) Render() ([]byte, error) {
 		for _, cmd := range ask {
 			perms = append(perms, openCodeRule{"shell", cmd, "ask"})
 		}
+		if c.keyReadsAsk() {
+			for _, n := range privateKeyFiles {
+				perms = append(perms, openCodeRule{"read", n, "ask"}, openCodeRule{"read", "*/" + n, "ask"})
+			}
+		}
 	}
 	pol, err := openCodePolicies(c)
 	if err != nil {
@@ -428,6 +459,12 @@ func (c OpenCodeConfig) Render() ([]byte, error) {
 	}
 	if c.Decide != "" && !c.NoPolicy {
 		options["decide"] = c.Decide
+		options["sum"] = c.DecideSum
+	}
+	if c.strictAsk() {
+		// The guard then refuses a strict match no answered prompt or exact
+		// pre-approval cleared (PR #129 review).
+		options["strict"] = "1"
 	}
 	doc := openCodeDoc{
 		Model:        c.Model,
