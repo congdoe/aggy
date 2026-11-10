@@ -117,10 +117,23 @@ func TestPrintRefuses(t *testing.T) {
 		{"an OpenCode subcommand", []string{"opencode", "auth", "list"}, 1, "", "vendor.cli_missing"},
 		// PR #124 re-review: nothing after -- is left to the CLI's parser, a
 		// -- cannot hide a subcommand's second word, and more trust skips.
-		{"claude -p -- mcp serve", []string{"claude", "-p", "--", "mcp", "serve"}, 2, "names a subcommand", "cli.usage"},
+		// Hand-edited for the second re-review: with no CLI on PATH there is
+		// no help to show -p as a switch, so "claude -p -- ..." is refused
+		// for its "--" now; these rows drop the -p (stdin is no terminal, so
+		// the run is print mode anyway).
+		{"claude -- mcp serve", []string{"claude", "--", "mcp", "serve"}, 2, "names a subcommand", "cli.usage"},
+		{"claude -p -- with no help to read", []string{"claude", "-p", "--", "mcp", "serve"}, 2, "may read this --", "cli.usage"},
+		{"--name --", []string{"claude", "--name", "--", "--settings", `{"permissions":{"defaultMode":"bypassPermissions"}}`, "do it"}, 2, "may read this --", "cli.usage"},
+		{"-- --settings", []string{"claude", "--", "--settings", `{}`}, 2, "may not come after --", "cli.usage"},
+		{"a second --settings", []string{"claude", "-p", "--settings", `{}`, "--settings", `{"permissions":{"defaultMode":"bypassPermissions"}}`, "hi"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"a second --settings, = form", []string{"claude", "-p", "--settings={}", "--settings=" + `{"disableAllHooks":true}`, "hi"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"--settings after an unknown flag", []string{"claude", "-p", "--unknown", "--settings", `{"disableAllHooks":true}`, "hi"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"--settings after a value flag", []string{"claude", "-p", "--name", "--settings", `{"disableAllHooks":true}`, "hi"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"claude mcp --x serve", []string{"claude", "mcp", "--x", "serve"}, 2, "before the subcommand's own word", "cli.usage"},
+		{"a dir flag that takes --", []string{"codex", "exec", "--add-dir", "--", "-c", "x=1", "hi"}, 2, "may read this --", "cli.usage"},
 		{"-- agents with a bypass", []string{"--", "agents", "--permission-mode", "bypassPermissions"}, 2, "names a subcommand", "cli.usage"},
-		{"-- then a bypass", []string{"claude", "-p", "--", "hi", "--dangerously-skip-permissions"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
-		{"claude mcp -- serve", []string{"claude", "mcp", "--", "serve"}, 2, "a -- before", "cli.usage"},
+		{"-- then a bypass", []string{"claude", "--", "hi", "--dangerously-skip-permissions"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"claude mcp -- serve", []string{"claude", "mcp", "--", "serve"}, 2, "before the subcommand's own word", "cli.usage"},
 		{"claude mcp SERVE", []string{"claude", "mcp", "SERVE"}, 2, "serves the CLI's own tools", "cli.usage"},
 		{"a later -- is the subcommand's", []string{"claude", "mcp", "add", "x", "--", "npx", "y"}, 1, "", "vendor.cli_missing"},
 		{"-- then an ordinary word", []string{"--", "sessions", "list"}, 1, "", "vendor.cli_missing"},

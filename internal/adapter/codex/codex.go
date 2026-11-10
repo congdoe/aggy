@@ -351,7 +351,11 @@ func (Adapter) PassFlags() adapter.PassFlags {
 		Print:         []string{"--worktree"},
 		Bare:          []string{"--version", "-V"},
 		Commands:      Commands,
-		DirFlags:      []string{"--add-dir"},
+		// PR #124 re-review: the flags aggy sets or whose value it checks,
+		// refused after "--".
+		Owned: []string{"-c", "--config", "-s", "--sandbox", "-a", "--ask-for-approval", "--add-dir", "-p", "--profile",
+			"--enable", "--disable", "--cd", "-C", "--no-alt-screen"},
+		DirFlags: []string{"--add-dir"},
 		Noted: []adapter.NotedFlag{
 			{Names: []string{"--add-dir"}, Note: addDirNote},
 			{Names: []string{"--profile", "-p"}, Note: profileNote},

@@ -139,7 +139,7 @@ func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 			return launchUsageErr(stderr, cmd, diag.CodeUsage, msg, "")
 		}
 	}
-	var values []string
+	var help adapter.ParseOpts // the CLI's value flags and switches
 	if len(rest) > 0 {
 		if m := passFlags(pv).Mode(rest); m > mode {
 			mode = m
@@ -149,7 +149,7 @@ func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 		// there: a word after one of them is taken for the prompt, and the run
 		// still gets aggy's policy.
 		if !slices.Contains(passFlags(pv).PrintCommands, rest[0]) {
-			values = cliValueFlags(pv)
+			help = cliHelpFlags(pv)
 		}
 	}
 	if mode == adapter.RunBare {
@@ -167,7 +167,7 @@ func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 		case cont:
 			rest = append([]string{"--continue"}, rest...)
 		}
-		return runPrint(cmd, pv, t, rest, values, stderr)
+		return runPrint(cmd, pv, t, rest, help, stderr)
 	}
 	if top {
 		switch {
@@ -191,7 +191,7 @@ func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 		}
 		return launch("aggy", t, stderr)
 	}
-	p, err := passFlags(v).ParseWith(rest, adapter.ParseOpts{NoPolicy: t.NoPolicy, Values: values})
+	p, err := passFlags(v).ParseWith(rest, adapter.ParseOpts{NoPolicy: t.NoPolicy, Values: help.Values, Switches: help.Switches})
 	if err != nil {
 		return launchUsageErr(stderr, cmd, flagCode(err), err.Error(), "")
 	}
@@ -235,7 +235,8 @@ var stdinTerminal = func() bool { return isTerminal(os.Stdin) }
 // flagCode is the reason code of a PassFlags refusal.
 func flagCode(err error) diag.Code {
 	switch {
-	case errors.Is(err, adapter.ErrNotFlag), errors.Is(err, adapter.ErrCommandAfterDashes):
+	case errors.Is(err, adapter.ErrNotFlag), errors.Is(err, adapter.ErrCommandAfterDashes),
+		errors.Is(err, adapter.ErrDashesValue), errors.Is(err, adapter.ErrOwnedAfterDashes):
 		return diag.CodeUsage
 	case errors.Is(err, adapter.ErrLoosens):
 		return diag.CodeFlagLoosens
@@ -262,10 +263,10 @@ func promptRefusal(v adapter.Vendor, p adapter.ParsedFlags, resuming bool) strin
 // parseLaunchFlags sorts tp.Flags, the CLI's words, against v's table, now
 // that the launch knows v (the default vendor, or the vendor of the session
 // -c or -r found), and sets the target's model, CLI words, and notes from
-// them. values are the value flags the CLI's help lists. resuming says the
+// them. help holds the value flags and switches the CLI's help lists. resuming says the
 // launch resumes a session.
-func parseLaunchFlags(tp *target, v adapter.Vendor, values []string, resuming bool) (diag.Code, error) {
-	p, err := passFlags(v).ParseWith(tp.Flags, adapter.ParseOpts{NoPolicy: tp.NoPolicy, Values: values})
+func parseLaunchFlags(tp *target, v adapter.Vendor, help adapter.ParseOpts, resuming bool) (diag.Code, error) {
+	p, err := passFlags(v).ParseWith(tp.Flags, adapter.ParseOpts{NoPolicy: tp.NoPolicy, Values: help.Values, Switches: help.Switches})
 	if err != nil {
 		return flagCode(err), err
 	}
@@ -335,7 +336,7 @@ func screenAdapter(v adapter.Vendor, caps []string) adapter.Adapter {
 // given. words are the CLI's own, passed in order; aggy takes over none of
 // them (ParseOpts.Print), and refuses or gates the same flags as on screen,
 // except the ones that clash only with the session aggy records.
-func runPrint(cmd string, v adapter.Vendor, t target, words, values []string, stderr io.Writer) int {
+func runPrint(cmd string, v adapter.Vendor, t target, words []string, help adapter.ParseOpts, stderr io.Writer) int {
 	ctx := context.Background()
 	name := strings.TrimSpace("aggy " + cmd)
 	rec := diag.Rec{Vendor: string(v)}
@@ -347,7 +348,7 @@ func runPrint(cmd string, v adapter.Vendor, t target, words, values []string, st
 		return launchUsageErr(stderr, cmd, diag.CodeUnsupported, "aggy runs OpenCode on screen only: print mode and a stdin that is no terminal are not wired for it; run opencode itself", "")
 	}
 	// Sorted first, so a refused flag is refused before anything is looked up.
-	p, err := passFlags(v).ParseWith(words, adapter.ParseOpts{NoPolicy: t.NoPolicy, Print: true, Values: values})
+	p, err := passFlags(v).ParseWith(words, adapter.ParseOpts{NoPolicy: t.NoPolicy, Print: true, Values: help.Values, Switches: help.Switches})
 	if err != nil {
 		return launchUsageErr(stderr, cmd, flagCode(err), err.Error(), "")
 	}
@@ -508,19 +509,20 @@ func runAsGiven(cmd string, v adapter.Vendor, words []string, mode string, stder
 	return code
 }
 
-// cliValueFlags are the flags v's CLI's help shows with a value, from its probe,
-// or none when the CLI is not on PATH or the probe fails. It runs before the
+// cliHelpFlags are the flags v's CLI's help shows with a value and with none,
+// from its probe, or none when the CLI is not on PATH or the probe fails (then
+// no "--" after a flag is taken as the end of options). It runs before the
 // launch's checks, so it records nothing (probeCLI's record is false).
-func cliValueFlags(v adapter.Vendor) []string {
+func cliHelpFlags(v adapter.Vendor) adapter.ParseOpts {
 	path, err := probe.LookPath(vendorBin(v))
 	if err != nil {
-		return nil
+		return adapter.ParseOpts{}
 	}
 	pr, err := probeCLI(context.Background(), v, path, false)
 	if err != nil {
-		return nil
+		return adapter.ParseOpts{}
 	}
-	return pr.ValueFlags
+	return adapter.ParseOpts{Values: pr.ValueFlags, Switches: pr.Switches}
 }
 
 // printFormRefusal says why aggy -p, with no vendor named, cannot go to the
@@ -652,9 +654,9 @@ func runSubcommand(cmd string, v adapter.Vendor, own, args []string, stderr io.W
 	if len(own) > 0 {
 		return launchUsageErr(stderr, cmd, diag.CodeUsage, fmt.Sprintf("%s %s runs as typed, with none of aggy's flags; drop %s", v, args[0], own[0]), "")
 	}
-	sub, dashesFirst := secondWord(args[1:])
-	if dashesFirst {
-		return launchUsageErr(stderr, cmd, diag.CodeUsage, fmt.Sprintf("%s %s: a -- before the subcommand's own word is refused, since aggy cannot tell what the CLI runs then; drop it", v, args[0]), "")
+	sub, unsure := secondWord(args[1:])
+	if unsure {
+		return launchUsageErr(stderr, cmd, diag.CodeUsage, fmt.Sprintf("%s %s: a -- or a flag before the subcommand's own word is refused, since aggy cannot tell what the CLI runs then; put %s's own word first", v, args[0], args[0]), "")
 	}
 	if slices.ContainsFunc(manageRefused(v)[args[0]], func(r string) bool { return strings.EqualFold(r, sub) }) {
 		return launchUsageErr(stderr, cmd, diag.CodeUsage, fmt.Sprintf("%s %s %s serves the CLI's own tools, which aggy would run with no policy; run %s itself for it", v, args[0], sub, v), "")
@@ -666,20 +668,26 @@ func runSubcommand(cmd string, v adapter.Vendor, own, args []string, stderr io.W
 }
 
 // secondWord is the first word of words that is neither a flag nor "--", or
-// "", and whether a "--" comes before it (or, with no such word, at all). The
-// PR #124 re-review: stopping at "--" let claude mcp -- serve through, so the
-// word is found past it, and a "--" before it is refused by the caller. A later
-// "--" is the subcommand's own (claude mcp add name -- cmd args).
-func secondWord(words []string) (word string, dashesFirst bool) {
+// "", and whether something before it leaves open which word the CLI takes for
+// the subcommand (unsure): a "--" (or, with no such word, a "--" at all), or
+// any flag, which may take that word as its value and leave the next one the
+// subcommand (claude mcp --x serve). The PR #124 re-reviews: stopping at "--"
+// let claude mcp -- serve through, so the word is found past it, and the
+// caller refuses an unsure one. A later "--" is the subcommand's own (claude
+// mcp add name -- cmd args).
+func secondWord(words []string) (word string, unsure bool) {
+	dashes, flag := false, false
 	for _, w := range words {
 		switch {
 		case w == "--":
-			dashesFirst = true
-		case !strings.HasPrefix(w, "-"):
-			return w, dashesFirst
+			dashes = true
+		case strings.HasPrefix(w, "-"):
+			flag = true
+		default:
+			return w, dashes || flag
 		}
 	}
-	return "", dashesFirst
+	return "", dashes
 }
 
 // manageRefused is v's refused second words (adapter.Manage).

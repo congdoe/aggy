@@ -202,6 +202,9 @@ type Probe struct {
 	// required value (probe.ValueFlags), for sorting a bare word after a
 	// flag aggy's table does not know (PassFlags.ParseWith).
 	ValueFlags []string
+	// Switches are the options the same help shows with no value
+	// (probe.Switches): the only flags a "--" may follow (ParseOpts).
+	Switches []string
 }
 
 // SessionRef identifies one vendor session.

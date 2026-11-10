@@ -455,7 +455,7 @@ func Detect(ctx context.Context, run adapter.Runner, vendor adapter.Vendor, path
 	hs, _ := helps(ctx, run, spec, path)
 	p.Capabilities = Capabilities(spec, hs)
 	if len(hs) > 0 {
-		p.ValueFlags = ValueFlags(hs[0])
+		p.ValueFlags, p.Switches = ValueFlags(hs[0]), Switches(hs[0])
 	}
 	return p, nil
 }
@@ -646,7 +646,7 @@ func specStamp(spec Spec) string {
 func unstamped(caps []string) []string {
 	out := []string{}
 	for _, c := range caps {
-		if !strings.HasPrefix(c, stampPrefix) && !strings.HasPrefix(c, valuePrefix) && c != launchStamp {
+		if !strings.HasPrefix(c, stampPrefix) && !strings.HasPrefix(c, valuePrefix) && !strings.HasPrefix(c, switchPrefix) && c != launchStamp {
 			out = append(out, c)
 		}
 	}
@@ -690,6 +690,36 @@ func ValueFlags(help []byte) []string {
 			if !slices.Contains(out, n) {
 				out = append(out, n)
 			}
+		}
+	}
+	return out
+}
+
+// Switches lists the options help shows with no value at all, each spelling
+// once (PR #124 re-review): a line whose spellings are followed by neither a
+// <value> nor an optional [value]. A name ValueFlags lists anywhere is left
+// out, so a flag shown both ways counts as taking a value. aggy accepts a
+// "--" after one of these, in this exact spelling, as the end of the CLI's
+// options (adapter.ParseOpts.Switches). Commander and clap both put a value
+// in brackets, so a bare word after the spellings is the description.
+func Switches(help []byte) []string {
+	values := ValueFlags(help)
+	var out []string
+	for _, line := range strings.Split(string(help), "\n") {
+		m := optionLine.FindStringSubmatchIndex(line)
+		if m == nil || m[4] >= 0 {
+			continue
+		}
+		rest := strings.TrimSpace(line[m[1]:])
+		if strings.HasPrefix(rest, "[") || strings.HasPrefix(rest, "<") || strings.HasPrefix(rest, "=") {
+			continue
+		}
+		for _, n := range strings.Split(line[m[2]:m[3]], ",") {
+			n = strings.TrimSpace(n)
+			if slices.Contains(values, n) || slices.Contains(values, n+"...") || slices.Contains(out, n) {
+				continue
+			}
+			out = append(out, n)
 		}
 	}
 	return out

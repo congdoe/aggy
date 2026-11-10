@@ -333,7 +333,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// The CLI's own words, sorted now that the vendor is known (T6961). A
 	// refusal is a usage error, as when aggy <vendor> sorts them first.
 	if t.Flags != nil {
-		if code, err := parseLaunchFlags(tp, v, probed.ValueFlags, pl.resume != ""); err != nil {
+		if code, err := parseLaunchFlags(tp, v, adapter.ParseOpts{Values: probed.ValueFlags, Switches: probed.Switches}, pl.resume != ""); err != nil {
 			r := ids
 			info, _ := diag.LookupCode(code)
 			r.Event, r.Code, r.Msg = diag.EvLaunchRefused, code, info.Meaning

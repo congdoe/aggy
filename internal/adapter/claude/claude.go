@@ -274,6 +274,12 @@ func (Adapter) PassFlags() adapter.PassFlags {
 		// The reference's examples give these several space-separated values.
 		Variadic: []string{"--add-dir", "--allowedTools", "--allowed-tools", "--disallowedTools", "--disallowed-tools", "--mcp-config", "--channels"},
 		Commands: Commands,
+		// PR #124 re-review: the flags aggy merges with its own or whose
+		// value it checks (Interactive, internal/cli), refused after "--".
+		Owned: []string{"--settings", "--setting-sources", "--mcp-config", "--strict-mcp-config", "--append-system-prompt",
+			"--append-system-prompt-file", "--permission-mode", "--allowedTools", "--allowed-tools", "--disallowedTools",
+			"--disallowed-tools", "--add-dir", "--agents", "--agent", "--session-id", "--fork-session", "--system-prompt",
+			"--system-prompt-file", "--tools"},
 		Values: []string{"--advisor", "--agent", "--append-subagent-system-prompt", "--append-subagent-system-prompt-file",
 			"--append-system-prompt", "--append-system-prompt-file", "--autocompact", "--betas", "--debug-file", "--effort",
 			"--environment", "--fallback-model", "--from-pr", "--input-format", "--json-schema", "--max-budget-usd",
