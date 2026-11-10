@@ -205,6 +205,8 @@ func setupWith(args []string, env checkEnv, stdout, stderr io.Writer) int {
 	}
 	st.skills(ctx, selected)
 	if *wire {
+		// TODO(T6954): without a terminal, --wire writes without asking, as
+		// aggy hooks install does; --dry-run shows the changes first.
 		w := planWire(env.home)
 		fmt.Fprintln(stdout)
 		runID, err := applyWire(ctx, s, w)

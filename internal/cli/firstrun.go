@@ -49,6 +49,26 @@ var offerTerminal = func() bool { return isTerminal(os.Stdin) && isTerminal(os.S
 // offerIn is where the offer reads its answer; a test sets it.
 var offerIn io.Reader = os.Stdin
 
+// typeAhead is how soon after the question a line counts as typed before it
+// (PR #127 review): a line already waiting, typed before aggy asked (say, the
+// first prompt meant for the CLI), arrives at once and is dropped, so only an
+// answer typed to the question answers it. aggy cannot flush the terminal's
+// input itself (no termios ioctl: golang.org/x/sys and raw syscalls are
+// banned), so this is a heuristic; a test sets it to 0.
+var typeAhead = 150 * time.Millisecond
+
+// readAnswer reads the line that answers a question asked at asked, dropping
+// any whole line that arrives within typeAhead of it (typed ahead), and reads
+// a byte at a time, so nothing past the answer is taken from the terminal.
+func readAnswer(r io.Reader, asked time.Time) string {
+	for {
+		line, err := readLine(r, maxAnswer)
+		if err != nil || time.Since(asked) >= typeAhead {
+			return line
+		}
+	}
+}
+
 // shouldOffer reports whether bare aggy offers setup now: a person at a
 // terminal (not a borrow child, not a session's own tool shell, not turned
 // off), and no answer recorded and no vendor ever checked by aggy setup. It
@@ -214,17 +234,27 @@ func offerSetup(ctx context.Context, env checkEnv, out io.Writer) {
 	w := planWire(env.home)
 	fmt.Fprint(out, offerScreen(w))
 	fmt.Fprint(out, "Set up now? [y/N] ")
-	line, _ := bufio.NewReader(io.LimitReader(offerIn, maxAnswer)).ReadString('\n')
-	a := strings.ToLower(strings.TrimSpace(line))
+	a := strings.ToLower(strings.TrimSpace(readAnswer(offerIn, time.Now())))
+	declined := a != "y" && a != "yes"
+	if declined {
+		fmt.Fprintf(out, "aggy: %s\n", declinedNote)
+	}
 	s, err := store.OpenDefault(ctx)
-	if err != nil {
-		fmt.Fprintf(out, "aggy: %s %s\n", termsafe.Line(err.Error()), dlog.Tag(diag.CodeStore))
+	if err == nil {
+		defer func() { _ = s.Close() }()
+	}
+	if declined {
+		if err == nil {
+			err = s.SetNote(ctx, setupOfferNote, offerDeclined, time.Now())
+		}
+		if err != nil {
+			// Said once; the launch goes on, and the next bare aggy asks again.
+			fmt.Fprintf(out, "aggy: that answer could not be saved, so the next aggy asks again: %s %s\n", termsafe.Line(err.Error()), dlog.Tag(diag.CodeStore))
+		}
 		return
 	}
-	defer func() { _ = s.Close() }()
-	if a != "y" && a != "yes" {
-		fmt.Fprintf(out, "aggy: %s\n", declinedNote)
-		_ = s.SetNote(ctx, setupOfferNote, offerDeclined, time.Now())
+	if err != nil {
+		fmt.Fprintf(out, "aggy: %s %s\n", termsafe.Line(err.Error()), dlog.Tag(diag.CodeStore))
 		return
 	}
 	if err := setupAndWire(ctx, s, env, w, out); err != nil {

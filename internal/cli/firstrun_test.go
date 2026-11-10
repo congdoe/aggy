@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,8 @@ func TestShouldOffer(t *testing.T) {
 		{"no terminal", nil, false, nil, false},
 		{"a borrow child", map[string]string{"AGGY_DELEGATED": "1"}, true, nil, false},
 		{"a session's tool shell", map[string]string{"AGGY_SOCKET": "/x"}, true, nil, false},
+		// PR #127 review.
+		{"under an aggy session", map[string]string{"AGGY_PARENT": "p"}, true, nil, false},
 		{"turned off", map[string]string{setupOfferEnv: "0"}, true, nil, false},
 		{"declined before", nil, true, func(t *testing.T, s *store.Store) {
 			if err := s.SetNote(context.Background(), setupOfferNote, offerDeclined, time.Now()); err != nil {
@@ -96,9 +99,9 @@ func TestOfferSetup(t *testing.T) {
 				}
 			}
 			t.Setenv("PATH", bin)
-			old := offerIn
-			offerIn = strings.NewReader(tt.answer)
-			t.Cleanup(func() { offerIn = old })
+			old, oldAhead := offerIn, typeAhead
+			offerIn, typeAhead = strings.NewReader(tt.answer), 0
+			t.Cleanup(func() { offerIn, typeAhead = old, oldAhead })
 			w := newFakeWorld(t, fakes)
 			var out bytes.Buffer
 			offerSetup(context.Background(), w.env(home, "", false), &out)
@@ -164,5 +167,66 @@ func TestSetupWireDryRun(t *testing.T) {
 				t.Error("a dry run wrote the rules file")
 			}
 		})
+	}
+}
+
+// slowReader gives its lines one at a time, the first at once and each next
+// one after a pause, as a person typing would.
+type slowReader struct {
+	lines []string
+	pause time.Duration
+	cur   *strings.Reader
+}
+
+func (r *slowReader) Read(b []byte) (int, error) {
+	if r.cur == nil || r.cur.Len() == 0 {
+		if len(r.lines) == 0 {
+			return 0, io.EOF
+		}
+		if r.cur != nil {
+			time.Sleep(r.pause)
+		}
+		r.cur, r.lines = strings.NewReader(r.lines[0]), r.lines[1:]
+	}
+	return r.cur.Read(b)
+}
+
+// TestReadAnswer (PR #127 review): a line already waiting when the question is
+// asked is typed ahead and dropped; the answer is the next line, and nothing
+// past it is read.
+func TestReadAnswer(t *testing.T) {
+	old := typeAhead
+	typeAhead = 50 * time.Millisecond
+	t.Cleanup(func() { typeAhead = old })
+	r := &slowReader{lines: []string{"y\n", "n\n", "rest\n"}, pause: 100 * time.Millisecond}
+	if got := readAnswer(r, time.Now()); got != "n" {
+		t.Errorf("answer %q, want n (the typed-ahead y dropped)", got)
+	}
+	if rest, _ := io.ReadAll(r); string(rest) != "rest\n" {
+		t.Errorf("left %q", rest)
+	}
+	// An answer at the end of input is taken as it is.
+	if got := readAnswer(strings.NewReader("y"), time.Now()); got != "y" {
+		t.Errorf("answer %q, want y", got)
+	}
+}
+
+// TestOfferDeclineUnsaved (PR #127 review): a no that cannot be recorded is
+// said once, and the offer returns so the launch goes on.
+func TestOfferDeclineUnsaved(t *testing.T) {
+	home := isolate(t)
+	// The state dir is a file: the index cannot be opened.
+	bad := filepath.Join(t.TempDir(), "state")
+	if err := os.WriteFile(bad, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGGY_HOME", bad)
+	old, oldAhead := offerIn, typeAhead
+	offerIn, typeAhead = strings.NewReader("n\n"), 0
+	t.Cleanup(func() { offerIn, typeAhead = old, oldAhead })
+	var out bytes.Buffer
+	offerSetup(context.Background(), checkEnv{home: home}, &out)
+	if n := strings.Count(out.String(), "could not be saved"); n != 1 || !strings.Contains(out.String(), "aggy setup --wire") {
+		t.Errorf("said %q, want the decline note and one could-not-save line", out.String())
 	}
 }
