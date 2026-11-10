@@ -27,9 +27,12 @@ func TestVendorCommandRefuses(t *testing.T) {
 		code string
 	}{
 		{"session id", []string{"claude", "--session-id", "x"}, "--session-id clashes", "cli.flag_clash"},
-		{"settings", []string{"claude", "--settings", "{}"}, "--settings clashes", "cli.flag_clash"},
+		// T6962: --settings is merged now, and one that defeats the policy needs --no-policy.
+		{"settings that turn hooks off", []string{"claude", "--settings", `{"disableAllHooks":true}`}, "--no-policy", "cli.flag_needs_no_policy"},
+		{"settings in a bypass mode", []string{"claude", "--settings={\"permissions\":{\"defaultMode\":\"bypassPermissions\"}}"}, "--no-policy", "cli.flag_needs_no_policy"},
 		{"codex memory", []string{"codex", "-c", "developer_instructions=x"}, "shared memory", "cli.flag_clash"},
-		{"grok deny", []string{"grok", "--deny", "x"}, "--deny clashes", "cli.flag_clash"},
+		// T6962: grok --deny passes now; --installer is still refused.
+		{"grok installer", []string{"grok", "--installer", "x"}, "--installer clashes", "cli.flag_clash"},
 		// T6961: a prompt passes; a first word naming a subcommand does not.
 		{"a subcommand", []string{"codex", "resume"}, "names a subcommand", "cli.usage"},
 		{"a subcommand after a switch", []string{"codex", "--search", "fork"}, "names a subcommand", "cli.usage"},
@@ -75,7 +78,9 @@ func TestPrintRefuses(t *testing.T) {
 		code string
 	}{
 		{"a loosening flag", []string{"claude", "-p", "--dangerously-skip-permissions", "hi"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
-		{"aggy's memory flag", []string{"grok", "-p", "hi", "--rules", "x"}, 2, "--rules clashes", "cli.flag_clash"},
+		// T6962: grok --rules is joined into aggy's own now; --cwd is still refused.
+		{"a flag that clashes", []string{"grok", "-p", "hi", "--cwd", "x"}, 2, "--cwd clashes", "cli.flag_clash"},
+		{"settings that turn hooks off", []string{"claude", "-p", "hi", "--settings", `{"disableAllHooks":true}`}, 2, "--no-policy", "cli.flag_needs_no_policy"},
 		{"OpenCode", []string{"opencode"}, 2, "on screen only", "adapter.unsupported"},
 		{"aggy -r with an id", []string{"-r", "abcd", "-p", "hi"}, 2, "own resume flag", "cli.usage"},
 		{"a session id is the CLI's here", []string{"claude", "-p", "--session-id", "x", "hi"}, 1, "", "vendor.cli_missing"},

@@ -266,10 +266,19 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		return adapter.Command{}, err
 	}
 	args = append(args, s...)
-	if req.Memory != "" {
+	extra := req.Extra
+	memory := req.Memory
+	if memory != "" {
+		// The person's own --rules (or --append-system-prompt) go in aggy's
+		// one --rules, theirs first, so neither replaces the other (T6962):
+		// whether grok takes --rules twice is unrecorded.
+		var own []string
+		if own, extra = adapter.TakeFlag(extra, "--rules", "--append-system-prompt"); len(own) > 0 {
+			memory = strings.Join(own, "\n\n") + "\n\n" + memory
+		}
 		// Inline text only; there is no file variant
 		// (docs/verification.md, T6619).
-		args = append(args, "--rules", req.Memory)
+		args = append(args, "--rules", memory)
 	}
 	for _, r := range append(slices.Clone(req.Deny), req.Rules.Deny...) {
 		// --deny splits its value on commas (src/app/cli.rs at 2bdd1d6a).
@@ -303,9 +312,12 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		if err := adapter.CheckAbs("agent file", req.AgentFile); err != nil {
 			return adapter.Command{}, err
 		}
+		if own, _ := adapter.TakeFlag(extra, "--agent"); len(own) > 0 {
+			return adapter.Command{}, errors.New("grok: aggy passes the managed tools' servers with --agent, so yours cannot go too; turn the tools off for this session (aggy tool off) to use your own")
+		}
 		args = append(args, "--agent", req.AgentFile)
 	}
-	args = append(args, req.Extra...)
+	args = append(args, extra...)
 	if req.BriefFile != "" {
 		if err := adapter.CheckAbs("brief file", req.BriefFile); err != nil {
 			return adapter.Command{}, err
@@ -343,10 +355,16 @@ func onlyValue(flag, ok string) func(string) error {
 // aggy never adds any of them on its own.
 //
 // TODO(T6895): --agent x names an agent, which may be a repo's own file with a
-// permissionMode in it; aggy does not read it (and refuses --agent here today,
-// since it passes its own).
+// permissionMode in it; aggy does not read it.
+//
+// T6962: --deny (and --disallowedTools) passes, since a person's denies only
+// add to aggy's and --deny is a list (src/app/cli.rs at 2bdd1d6a). --rules (and
+// --append-system-prompt) is joined with the shared memory into aggy's one
+// --rules (Interactive). --agent passes when aggy passes no agent of its own,
+// that is, with no managed tool on for the session. The worktree and local
+// workspace flags run the CLI directly, with aggy's launch flags and policy
+// and no session recorded (Print); --version runs it as given (Bare).
 func (Adapter) PassFlags() adapter.PassFlags {
-	const elsewhere = "it runs the session somewhere aggy does not record"
 	return adapter.PassFlags{
 		Model:    []string{"--model", "-m"},
 		Continue: []string{"--continue", "-c"},
@@ -355,14 +373,9 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			{Names: []string{"--session-id", "-s"}, Why: "aggy gives each new session its id", ScreenOnly: true},
 			{Names: []string{"--fork-session"}, Why: "aggy keeps one vendor session per child", ScreenOnly: true},
 			{Names: []string{"--no-alt-screen"}, Why: "aggy always passes it on screen, so the scrollback keeps what came before a switch", ScreenOnly: true},
-			{Names: []string{"--rules", "--append-system-prompt"}, Why: "aggy passes the shared memory with it"},
-			{Names: []string{"--deny", "--disallowedTools"}, Why: "aggy's safety policy uses it; add yours in Grok's config"},
-			{Names: []string{"--agent"}, Why: "aggy passes the managed tools' servers with it"},
 			{Names: []string{"--load"}, Why: "it resumes a session aggy's index does not pick; use --resume", ScreenOnly: true},
 			{Names: []string{"--cwd"}, Why: "aggy starts the CLI in the session's directory; cd there first"},
-			{Names: []string{"--worktree", "-w", "--worktree-ref", "--ref", "--local-workspace", "--local-workspace-attach", "--local-workspace-cwd"}, Why: elsewhere},
-			{Names: []string{"--installer"}, Why: "it writes Grok's config.toml outside aggy's manifest"},
-			{Names: []string{"--version", "-v"}, Why: "run grok --version"},
+			{Names: []string{"--installer"}, Why: "it writes Grok's config.toml outside aggy's manifest; run grok itself for it"},
 			{Names: []string{"--always-approve", "--trust", "--trust-folder"}, UnlessNoPolicy: true},
 		},
 		Checked: []adapter.CheckedFlag{
@@ -376,12 +389,19 @@ func (Adapter) PassFlags() adapter.PassFlags {
 			"--json-schema", "--leader-socket", "--max-turns", "--output-format", "--reasoning-effort", "--storage-mode",
 			"--system-prompt", "--system-prompt-override", "--tools",
 			// The print forms' values: -p is --single <PROMPT> (verification.md, T6952).
-			"-p", "--single", "--print", "--prompt-file", "--prompt-json"},
-		Print:     []string{"-p", "--single", "--print", "--prompt-file", "--prompt-json"},
+			"-p", "--single", "--print", "--prompt-file", "--prompt-json",
+			"--rules", "--append-system-prompt", "--deny", "--disallowedTools", "--agent", "--worktree-ref", "--ref"},
+		Print: []string{"-p", "--single", "--print", "--prompt-file", "--prompt-json",
+			"--worktree", "-w", "--worktree-ref", "--ref", "--local-workspace", "--local-workspace-attach", "--local-workspace-cwd"},
+		Bare:      []string{"--version", "-v"},
 		Commands:  Commands,
 		LoosensIf: []string{"approve", "approval", "yolo", "bypass", "no-sandbox", "skip-permission", "trust", "unsafe", "insecure"},
 		DirFlags:  []string{"--add-dir"},
-		Noted:     []adapter.NotedFlag{{Names: []string{"--add-dir"}, Note: "--add-dir lets Grok work in more folders; that aggy's deny rules cover them is unverified"}},
+		Noted: []adapter.NotedFlag{
+			{Names: []string{"--add-dir"}, Note: "--add-dir lets Grok work in more folders; that aggy's deny rules cover them is unverified"},
+			{Names: []string{"--worktree", "-w", "--worktree-ref", "--ref", "--local-workspace", "--local-workspace-attach", "--local-workspace-cwd"},
+				Note: "aggy runs grok directly for this flag, with its safety policy: no switch key, and aggy records no session (aggy -c cannot reopen it)"},
+		},
 	}
 }
 

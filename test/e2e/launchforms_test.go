@@ -138,6 +138,101 @@ func TestPrintModePipe(t *testing.T) {
 	}
 }
 
+// TestFlagPassThrough (T6962): a flag of the CLI's that aggy listed as refused,
+// or does not know, reaches the CLI on screen as typed, with aggy's own launch
+// flags, and the prompt after it stays the prompt.
+func TestFlagPassThrough(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		flag string
+		want []string
+	}{
+		{"a value flag aggy lists", []string{"claude", "--max-turns", "3", "fix it"}, "--max-turns", []string{"3"}},
+		{"a switch aggy does not know", []string{"claude", "--zap-mode", "fix it"}, "--zap-mode", []string{""}},
+		{"bare, a value flag", []string{"--max-turns=4", "fix it"}, "--max-turns", []string{"4"}},
+		{"the appended prompt", []string{"claude", "--append-system-prompt", "be brief", "fix it"}, "--append-system-prompt", []string{"be brief"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			sc := map[string]any{"raw_echo": true, "stdout": "READY>", "extra_flags": []string{"--max-turns", "--append-system-prompt"}, "extra_switches": []string{"--zap-mode"}}
+			s := w.start(t, sc, tt.args...)
+			s.waitFor([]byte("READY>"))
+			s.send([]byte{0x04})
+			if code := s.exit(); code != 0 {
+				t.Fatalf("exit = %d\n%s", code, s.screen())
+			}
+			r := interactiveRecord(t, w)
+			if !slices.Equal(r.Flags[tt.flag], tt.want) || !slices.Equal(r.Positional, []string{"fix it"}) {
+				t.Errorf("%s = %q, positional %q; args %q", tt.flag, r.Flags[tt.flag], r.Positional, r.Args)
+			}
+			if len(r.Flags["--session-id"]) != 1 || !slices.Contains(settingsDeny(t, r), "Bash(rm -rf*)") {
+				t.Errorf("aggy's own launch flags: %q", r.Args)
+			}
+		})
+	}
+}
+
+// TestSettingsMerged (T6962): the person's --settings, inline or a file, is
+// merged with aggy's own layer into the one --settings Claude gets: their
+// allow rules and aggy's deny rules both hold, on screen and in print mode.
+func TestSettingsMerged(t *testing.T) {
+	const user = `{"permissions":{"allow":["Bash(ls)"],"deny":["Read(./secret)"]},"model":"x"}`
+	tests := []struct {
+		name  string
+		file  bool
+		print bool
+	}{
+		{"inline, on screen", false, false},
+		{"a file, on screen", true, false},
+		{"inline, print mode", false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t)
+			val := user
+			if tt.file {
+				if err := os.WriteFile(filepath.Join(w.cwd, "mine.json"), []byte(user), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				val = "mine.json"
+			}
+			var r fakecli.Record
+			if tt.print {
+				code, out, errb := w.pipe(t, map[string]any{"stdout": "ok\n", "interactive_without_tty": true}, "", "claude", "-p", "--settings", val, "hi")
+				if code != 0 || out != "ok\n" {
+					t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errb)
+				}
+				r = fakecli.Records(t, w.record)[0]
+			} else {
+				s := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "claude", "--settings", val)
+				s.waitFor([]byte("READY>"))
+				s.send([]byte{0x04})
+				if code := s.exit(); code != 0 {
+					t.Fatalf("exit = %d\n%s", code, s.screen())
+				}
+				r = interactiveRecord(t, w)
+			}
+			if n := len(r.Flags["--settings"]); n != 1 {
+				t.Fatalf("--settings given %d times: %q", n, r.Args)
+			}
+			var layer struct {
+				Permissions struct{ Allow, Deny []string } `json:"permissions"`
+				Model       string                         `json:"model"`
+			}
+			if err := json.Unmarshal([]byte(r.Flags["--settings"][0]), &layer); err != nil {
+				t.Fatal(err)
+			}
+			deny := layer.Permissions.Deny
+			if !slices.Contains(layer.Permissions.Allow, "Bash(ls)") || !slices.Contains(deny, "Read(./secret)") ||
+				!slices.Contains(deny, "Bash(rm -rf*)") || layer.Model != "x" {
+				t.Errorf("merged layer = %s", r.Flags["--settings"][0])
+			}
+		})
+	}
+}
+
 // TestContinueWithFlags (T6961): aggy -c takes the CLI's flags too, sorted by
 // the vendor of the session it reopens, as claude -c --model x does.
 func TestContinueWithFlags(t *testing.T) {

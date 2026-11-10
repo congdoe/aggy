@@ -198,6 +198,10 @@ type Probe struct {
 	Connected    bool      // the CLI reports itself signed in
 	Capabilities []string  // feature names this version supports, e.g. "headless-json"
 	ProbedAt     time.Time // when the probe ran
+	// ValueFlags are the options the CLI's top-level help shows with a
+	// required value (probe.ValueFlags), for sorting a bare word after a
+	// flag aggy's table does not know (PassFlags.ParseWith).
+	ValueFlags []string
 }
 
 // SessionRef identifies one vendor session.
@@ -272,6 +276,10 @@ type InteractiveRequest struct {
 	// PassFlags.Parse let through. Each adapter puts them after its own
 	// arguments and before a brief pointer.
 	Extra []string
+	// UserSettings is the person's own --settings layers for Claude, read and
+	// checked by the launch (T6962), which Claude merges into the inline layer
+	// it passes, under aggy's: neither is dropped, and aggy's deny rules stay.
+	UserSettings map[string]any
 	// Print builds a run aggy neither supervises nor records (print mode,
 	// a stdin that is no terminal): no session id, no brief, and no flag
 	// that only shapes the screen (Codex's and Grok's --no-alt-screen).

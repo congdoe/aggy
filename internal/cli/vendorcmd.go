@@ -34,10 +34,14 @@ build". Without a vendor, aggy [flags] [prompt] is the default vendor's.
   --tool NAME   Turn a tool on for this session only
 
 Every other word goes to the CLI, in the order given, after aggy's own launch
-flags. aggy refuses the flags that clash with what it passes at launch
-(--session-id and so on; the message says why). A bare word directly after a
-flag that takes a value is that value; any other is the prompt, and the session
-starts with it. A first prompt word that names one of the CLI's subcommands is
+flags. A flag aggy passes too is merged with aggy's own: claude --settings,
+--mcp-config, and --append-system-prompt-file, and grok --rules. aggy refuses
+the few that clash with the session it records (--session-id and so on; the
+message says why). A flag whose session aggy cannot keep (claude --bg, --tmux;
+codex and grok --worktree) runs the CLI as print mode does, and claude
+--desktop and --version run it as given. A bare word directly after a flag
+that takes a value (the CLI's help says which) is that value; any other is the
+prompt, and the session starts with it. A first prompt word that names one of the CLI's subcommands is
 refused: put the prompt after --. A prompt with --continue or --resume is
 claude's only. OpenCode takes no prompt yet.
 

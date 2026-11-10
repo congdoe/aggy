@@ -44,12 +44,16 @@ func (Adapter) LockdownCaps(adapter.Kind) []string { return nil }
 func (Adapter) SelfTestKind() adapter.Kind { return adapter.Research }
 
 // PassFlags is `aggy opencode`'s table. It passes none of OpenCode's own flags
-// yet, so runLaunch and Interactive refuse any Extra.
+// yet, so runLaunch and Interactive refuse any Extra: aggy writes the session's
+// whole config per launch (docs/design.md, section 15), and no flag of
+// OpenCode's has been checked against it. --version, which the probe runs,
+// goes to the CLI as given (Bare).
 func (Adapter) PassFlags() adapter.PassFlags {
 	return adapter.PassFlags{
 		Model:    []string{"--model"},
 		Continue: []string{"--continue"},
 		Resume:   []string{"--resume"},
+		Bare:     []string{"--version"},
 		Refused: []adapter.RefusedFlag{
 			{Names: []string{"--session", "-s"}, Why: "aggy gives each session its id"},
 			{Names: []string{"--standalone"}, Why: "aggy always passes it"},

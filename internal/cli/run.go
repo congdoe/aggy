@@ -323,15 +323,16 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// The probe finds the flags whose presence is only known from help:
 	// Codex --no-alt-screen and -c, Claude --settings, Grok --rules and
 	// --deny.
-	caps, version, err := probeCaps(ctx, v, path)
+	probed, err := probeCLI(ctx, v, path)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: probing %s: %s; starting it without the flags help must list\n", name, v, termsafe.Line(err.Error()))
 	}
+	caps, version := probed.Capabilities, probed.Version
 	a := screenAdapter(v, caps)
 	// The CLI's own words, sorted now that the vendor is known (T6961). A
 	// refusal is a usage error, as when aggy <vendor> sorts them first.
 	if t.Flags != nil {
-		if code, err := parseLaunchFlags(tp, v, nil, pl.resume != ""); err != nil {
+		if code, err := parseLaunchFlags(tp, v, probed.ValueFlags, pl.resume != ""); err != nil {
 			r := ids
 			info, _ := diag.LookupCode(code)
 			r.Event, r.Code, r.Msg = diag.EvLaunchRefused, code, info.Meaning
@@ -349,6 +350,21 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	if err := gateDirFlags(tp, pl.child.Cwd); err != nil {
 		return fail(diag.CodeFlagLoosens, err)
 	}
+	// The person's own --settings, merged under aggy's layer (T6962); one that
+	// only --no-policy lets through is kept from a later launch of the session.
+	extra := tp.Extra
+	var userSettings map[string]any
+	if v == adapter.Claude {
+		layer, rest, loosens, err := claudeSettings(tp.Extra, pl.child.Cwd, tp.NoPolicy)
+		if err != nil {
+			return fail(settingsCode(err), err)
+		}
+		extra, userSettings = rest, layer
+		if loosens {
+			tp.Loosens = append(tp.Loosens, "--settings")
+			_, tp.SafeExtra = adapter.TakeFlag(tp.SafeExtra, "--settings")
+		}
+	}
 	t = *tp
 	key, err := config.ParseKey(cfg.Switch.Key)
 	if err != nil {
@@ -365,7 +381,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	}
 	sweepMemoryDirs(runDir, time.Now())
 	req := pl.interactiveRequest()
-	req.Extra = t.Extra
+	req.Extra, req.UserSettings = extra, userSettings
 	// The policy is checked before the launch is recorded (commit), so a
 	// refused launch adds no parent, child, or lease. plan's refresh may
 	// already have raised last-active times from session files (D19-9).
@@ -428,6 +444,9 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		cleanup, mw = addMemory(v, caps, pl.child.Cwd, memDir, &req)
 	}
 	defer cleanup()
+	if err := joinAppendFiles(&req, pl.child.Cwd); err != nil {
+		return fail(diag.CodeUsage, err)
+	}
 	// The tools that are on, for this child's own vendor and repo: a
 	// switch or resume is wired again for the CLI it starts. Their files
 	// share the launch's private folder, removed when the CLI exits.
@@ -1003,13 +1022,23 @@ func (r *roIndex) close() {
 // probeCaps probes v's CLI at path for the flags whose presence is only
 // known from its help, and its version.
 func probeCaps(ctx context.Context, v adapter.Vendor, path string) ([]string, string, error) {
-	probed, err := map[adapter.Vendor]adapter.Adapter{adapter.Claude: claude.Adapter{Path: path},
-		adapter.Codex: codex.Adapter{Path: path}, adapter.Grok: grok.Adapter{Path: path},
-		adapter.OpenCode: opencode.Adapter{Path: path}}[v].Probe(ctx, execrun.ExecRunner(probeTimeout))
+	probed, err := probeCLI(ctx, v, path)
 	if err != nil {
 		return nil, "", err
 	}
 	return probed.Capabilities, probed.Version, nil
+}
+
+// probeCLI probes v's CLI at path: its version, capabilities, and the flags its
+// help shows with a value.
+func probeCLI(ctx context.Context, v adapter.Vendor, path string) (adapter.Probe, error) {
+	probed, err := map[adapter.Vendor]adapter.Adapter{adapter.Claude: claude.Adapter{Path: path},
+		adapter.Codex: codex.Adapter{Path: path}, adapter.Grok: grok.Adapter{Path: path},
+		adapter.OpenCode: opencode.Adapter{Path: path}}[v].Probe(ctx, execrun.ExecRunner(probeTimeout))
+	if err != nil {
+		return adapter.Probe{}, err
+	}
+	return probed, nil
 }
 
 // pickerVendors lists the vendors in order, except on, that aggy setup
