@@ -858,6 +858,9 @@ func ownStates(ctx context.Context, ls []skillLayout) (map[string]ownState, erro
 			}
 		}
 		out[name] = ownForeign
+		// TODO(T6975): paths are compared as spelled, so an AGGY_HOME spelled
+		// another way (a symlink, a trailing dot) leaves aggy's own skill
+		// unrefreshed: it fails safe, as foreign.
 		abs, _ := filepath.Abs(file)
 		for _, c := range rows {
 			if filepath.Clean(c.File) != abs || c.Status != store.ChangeApplied && c.Status != store.ChangeUndone {

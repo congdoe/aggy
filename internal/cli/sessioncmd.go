@@ -51,6 +51,8 @@ func sessionAggy(args []string, answer bool) string {
 		rejectWith(args[1:], defaultBorrowEnv(), w, w)
 	case "tool":
 		if len(args) > 1 && (args[1] == "on" || args[1] == "off" || args[1] == "status") {
+			// TODO(T6975): with no terminal, tool on codegraph skips the first
+			// index's y/N question that a terminal asks.
 			toolWith(args[1:], none, false, w, w)
 			break
 		}

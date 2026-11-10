@@ -873,7 +873,12 @@ Ctrl+U, then Enter, and see no message sent: with that recorded here for a CLI,
 `/switch <vendor>` there skips the status line (R121); type `/inbox`; pick
 `/switch` from the CLI's own menu with a vendor (Claude and Grok: the prompt is
 blocked and the status line asks); and check `aggy log` and `aggy diag` for
-`supervisor.command.caught`.
+`supervisor.command.caught`. For the hook path's known limits (TODO(T6975),
+design.md section 5): on Claude and Grok, pick `/switch` from the menu with
+the arrow keys and Enter and see whether the hook fires and what aggy logs
+(`aggy diag -n 20`); send a prompt the hook blocks and see whether the CLI puts
+its text back in the composer; and in each CLI's shell mode (Claude's `!`) run
+`test -t 0 && echo tty` to see whether stdin is a terminal there.
 
 ## Skill folders
 
