@@ -41,7 +41,13 @@ message says why). A flag whose session aggy cannot keep (claude --bg, --tmux;
 codex and grok --worktree) runs the CLI as print mode does, and claude
 --desktop and --version run it as given. A bare word directly after a flag
 that takes a value (the CLI's help says which) is that value; any other is the
-prompt, and the session starts with it. A first prompt word that names one of the CLI's subcommands is
+prompt, and the session starts with it.
+
+A management subcommand runs as typed, with nothing of aggy's added and no
+session recorded: aggy claude mcp list, aggy claude auth login, aggy codex
+login, aggy grok update, aggy opencode models. Its --help is the CLI's. An IDE
+panel, the desktop app, or a web session starts the CLI without aggy, so
+aggy's policy and memory do not apply there. A first prompt word that names one of the CLI's subcommands is
 refused: put the prompt after --. A prompt with --continue or --resume is
 claude's only. OpenCode takes no prompt yet.
 

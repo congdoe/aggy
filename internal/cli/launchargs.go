@@ -44,6 +44,11 @@ import (
 func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 	cmd := string(v)
 	top := v == ""
+	// T6963: the CLI's own management subcommands run as they are, every word
+	// after the subcommand the CLI's, aggy's flag names included.
+	if !top && len(args) > 0 && slices.Contains(passThroughCommands(v), args[0]) {
+		return runSubcommand(cmd, v, nil, args, stderr)
+	}
 	t := target{Vendor: v}
 	var rest, own []string
 	var cont, resume bool
@@ -108,9 +113,10 @@ func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 		}
 		return runResumeFlag(ra, stdout, stderr)
 	}
-	// T6963: the CLI's own management subcommands run as they are.
+	// T6963: a management subcommand after one of aggy's own flags (the one
+	// first on the line ran above, before any word was sorted).
 	if !top && len(rest) > 0 && slices.Contains(passThroughCommands(v), rest[0]) {
-		return runSubcommand(cmd, v, t, rest, stderr)
+		return runSubcommand(cmd, v, own, rest, stderr)
 	}
 	mode := adapter.RunScreen
 	if !stdinTerminal() {
@@ -569,12 +575,31 @@ func joinAppendFiles(req *adapter.InteractiveRequest, cwd string) error {
 const maxAppendFile = 1 << 20
 
 // passThroughCommands are v's management subcommands that aggy runs as they
-// are (T6963). Empty until then.
-func passThroughCommands(adapter.Vendor) []string { return nil }
+// are (T6963): each adapter's Manage, with its source there.
+func passThroughCommands(v adapter.Vendor) []string {
+	switch v {
+	case adapter.Claude:
+		return claude.Manage
+	case adapter.Codex:
+		return codex.Manage
+	case adapter.Grok:
+		return grok.Manage
+	case adapter.OpenCode:
+		return opencode.Manage
+	}
+	return nil
+}
 
-// runSubcommand runs a vendor subcommand as it is (T6963).
-func runSubcommand(cmd string, _ adapter.Vendor, _ target, rest []string, stderr io.Writer) int {
-	return launchUsageErr(stderr, cmd, diag.CodeUsage, fmt.Sprintf("%q is a subcommand", rest[0]), "")
+// runSubcommand runs a management subcommand of v's CLI (T6963): args as
+// typed, the subcommand first, on the person's terminal with their own
+// environment, and no supervisor, hooks, policy, or flag of aggy's
+// (runAsGiven). A sign-in writes what it writes; aggy reads none of it.
+// aggy's own flags mean nothing there, so a subcommand after one is refused.
+func runSubcommand(cmd string, v adapter.Vendor, own, args []string, stderr io.Writer) int {
+	if len(own) > 0 {
+		return launchUsageErr(stderr, cmd, diag.CodeUsage, fmt.Sprintf("%s %s runs as typed, with none of aggy's flags; drop %s", v, args[0], own[0]), "")
+	}
+	return runAsGiven(cmd, v, args, "subcommand", stderr)
 }
 
 // commandNames are aggy's own commands, which a bare first word names before

@@ -46,6 +46,10 @@ func TestVendorCommandRefuses(t *testing.T) {
 		{"a resume id that could be a path", []string{"claude", "-r", "../x"}, "not a session id", "cli.usage"},
 		{"a tool with no name", []string{"claude", "--tool"}, "needs a name", "cli.usage"},
 		{"a bad tool name", []string{"grok", "--tool=A B"}, "not a tool name", "cli.usage"},
+		// T6963: a management subcommand runs as typed, so aggy's flags before it mean nothing.
+		{"aggy's flag before a subcommand", []string{"claude", "--no-policy", "mcp", "list"}, "drop --no-policy", "cli.usage"},
+		{"aggy's flag before the vendor and a subcommand", []string{"--direct", "codex", "login"}, "drop --direct", "cli.usage"},
+		{"a session subcommand stays refused", []string{"claude", "ultrareview"}, "names a subcommand", "cli.usage"},
 	}
 	// On a terminal: with none, the run is print mode, where aggy records no
 	// session and so refuses less (TestPrintRefuses).
@@ -86,6 +90,10 @@ func TestPrintRefuses(t *testing.T) {
 		{"a session id is the CLI's here", []string{"claude", "-p", "--session-id", "x", "hi"}, 1, "", "vendor.cli_missing"},
 		{"bare flags", []string{"--model", "opus", "-p", "hi"}, 1, "", "vendor.cli_missing"},
 		{"codex exec", []string{"codex", "exec", "hi"}, 1, "", "vendor.cli_missing"},
+		// T6963: a management subcommand goes to the CLI, its --help too.
+		{"a subcommand", []string{"claude", "mcp", "list"}, 1, "", "vendor.cli_missing"},
+		{"a subcommand's help", []string{"claude", "mcp", "--help"}, 1, "", "vendor.cli_missing"},
+		{"an OpenCode subcommand", []string{"opencode", "auth", "list"}, 1, "", "vendor.cli_missing"},
 	}
 	defer func(f func() bool) { stdinTerminal = f }(stdinTerminal)
 	stdinTerminal = func() bool { return false }

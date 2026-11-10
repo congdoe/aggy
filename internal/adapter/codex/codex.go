@@ -354,6 +354,15 @@ var Commands = []string{"a", "agents", "app", "app-server", "apply", "archive", 
 	"migrate-rollouts", "plugin", "queue", "remote-control", "responses-api-proxy", "resume", "review", "sandbox",
 	"stdio-to-uds", "tcp-tunnel", "unarchive", "update"}
 
+// Manage are the Commands that manage the CLI, its sign-in, MCP servers, and
+// plugins, which aggy runs as typed, with nothing added (T6963; the same
+// source). apply (a) applies a cloud task's diff here, as typed. features is
+// not among them: its enable and disable persist a feature flag, hooks and
+// sandbox ones included, past aggy's launch gate; run codex itself for it. The
+// session commands (resume, fork, exec, review, and the rest) stay aggy's or
+// refused.
+var Manage = []string{"a", "apply", "completion", "doctor", "login", "logout", "mcp", "plugin", "update"}
+
 // The launch lines of the flags that pass with one. A gate would ask for
 // --no-policy, which drops the whole safety policy: for a daily profile or a
 // feature, that is less safe than a noted pass.
