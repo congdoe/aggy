@@ -242,6 +242,7 @@ func Run(o Options) (Exit, error) {
 			}
 		case <-check:
 			s.releaseQueued()
+			s.settleInterrupt()
 			if s.sw.to != "" && !s.sw.typed {
 				s.offerSwitch()
 			}
@@ -548,6 +549,10 @@ type session struct {
 	// the last Enter went (settleDoubt).
 	popupEnter bool
 	enterAt    time.Time
+	// escStop: when a lone Esc went while a turn ran (turnRan, not atPrompt),
+	// with no Enter since: perhaps an interrupt, which Claude sends no Stop for
+	// (settleInterrupt). Zero when none.
+	escStop time.Time
 	// hookSeen: a hook of the vendor on screen came from the session.
 	hookSeen atomic.Bool
 	// foreign is, per session id a turn end named that was not the
@@ -838,6 +843,7 @@ func (s *session) hookEvent(ev hookEvent) {
 				s.pk.padRows = 0
 			}
 			s.moveRefused = false // it names the session on screen
+			s.escStop = time.Time{}
 			s.settleDoubt()
 			s.popupEnter = false
 			// Told of the doubt, and promised this turn end: its status line says
@@ -1127,6 +1133,9 @@ func (s *session) send(b []byte) {
 		}
 		s.enterAtPrompt = s.atPrompt && !s.askOpen()
 		s.atPrompt, s.toldDirty = false, false // an Enter may start a turn
+		s.escStop = time.Time{}
+	} else if isEsc(typed) && s.turnRan && !s.atPrompt && !s.held && !s.askOpen() {
+		s.escStop = time.Now() // perhaps an interrupt (settleInterrupt)
 	} else if tabKey.Match(typed) && (s.dirty || string(tabKey.Find(typed)) != string(typed)) {
 		// Tab with text queues a message on Codex during a turn:
 		// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/chat_composer.rs#L3531
@@ -1483,6 +1492,43 @@ func (s *session) releaseQueued() {
 	}
 	s.queued, s.queuedWait = 0, false
 	s.atPrompt, s.inputSinceTurn = !s.held, false
+}
+
+// interruptQuiet is how long the CLI and the typing must be silent after an
+// Esc sent during a turn before aggy takes that turn as one that may have
+// ended (settleInterrupt). A variable for tests.
+var interruptQuiet = 2 * time.Second
+
+// settleInterrupt takes an Esc sent while a turn ran, and then quiet, as a
+// turn that may have ended (M4, T6968). Claude's Stop "does not run if the
+// stoppage occurred due to a user interrupt" (hooks.md), and its docs name no
+// other hook for one. Grok sends StopCancelled with reason user_interrupt
+// (user-guide/10-hooks.md at grok-build 2bdd1d6a, verification.md), which
+// already counts as a turn end and clears this, though it is not seen live
+// for an interrupt. No signal is recorded for Codex or OpenCode. So without
+// this, a switch picked after Esc waited for a turn end that never came.
+//
+// It is a guess, so it only moves the switch on to its status line, in doubt:
+// atPrompt again, and the composer in doubt (escDoubt), so the line says aggy
+// cannot tell if the prompt is empty, and only the switch key types the exit
+// command. It never counts as a turn end: turnRan, a hold, a queued message, an
+// open ask, unsent text, and every notice's wait (inputSinceTurn) stand. An Esc
+// that interrupted nothing (one that closed a menu) and a turn running silent
+// for interruptQuiet leave the status line over that turn, where the person
+// sees it running and presses Esc.
+func (s *session) settleInterrupt() {
+	now := time.Now()
+	if s.escStop.IsZero() || s.sw.to == "" || !s.turnRan || s.atPrompt || s.held ||
+		s.queued > 0 || s.queuedWait || s.askOpen() || s.lastIn.After(s.escStop) ||
+		now.Sub(s.lastIn) < interruptQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < interruptQuiet {
+		return
+	}
+	s.escStop = time.Time{}
+	s.atPrompt, s.escDoubt = true, true
+	s.updateDirty()
+	// The list the person picked from said aggy switches when the turn ends,
+	// so as at a turn end, the status line asks, with its can't-tell words.
+	s.sw.doubtOK = s.sw.doubtOK || s.sw.picked
 }
 
 // mayBeRunning reports whether a turn may be running, so a notice that can wait

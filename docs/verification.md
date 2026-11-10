@@ -1728,6 +1728,21 @@ real CLI.
   2026-11-07: rows not marked Skill, each describing a dialog or a display. That
   none starts a turn, and that a user's skill cannot take a name, is not checked live.
   That Claude's `/compact` ends a turn (so no doubt follows) is unverified.
+- An interrupted turn (T6968): Claude's `Stop` "does not run if the stoppage
+  occurred due to a user interrupt" (`hooks.md`, read 2026-11-10), and the docs
+  name no other hook for it; Grok's `StopCancelled` carries `reason`
+  `user_interrupt` (`user-guide/10-hooks.md` at `2bdd1d6a`); nothing is recorded
+  for Codex or OpenCode. aggy takes a lone Esc during a turn, then 2 seconds of
+  quiet, as a turn that may have ended, for a waiting switch only, in doubt.
+  Live check (owner): under `aggy run claude`, send a message that runs long,
+  press Esc while it runs, press `Ctrl+\` and pick another vendor. Expect,
+  about two seconds after Claude goes quiet, the status line with `can't tell if
+  the prompt is empty`, and no `/exit` until the switch key. Then the same with
+  the first turn of a fresh session: expect the list's quit-by-hand words and no
+  status line. On Grok, confirm that Esc sends `StopCancelled` (aggy's diag log
+  shows the counted turn end). Also check that Claude prints nothing for 2
+  seconds after its interrupt, and that a long silent tool call with no Esc
+  never brings the line.
 
 Read from the Codex source at 6aaac694, not seen live: `SessionStart` hooks run
 from `run_turn` (`core/src/session/turn.rs#L340`); idle, Tab does not submit a `!`
