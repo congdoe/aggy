@@ -10,7 +10,6 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/diag"
-	"github.com/congdoe/aggy/internal/sessioncmd"
 )
 
 // TestPromptCommandTaken (T6910): a command a prompt hook reports is parsed
@@ -37,14 +36,15 @@ func TestPromptCommandTaken(t *testing.T) {
 	} {
 		t.Run(string(c.on)+" "+c.command, func(t *testing.T) {
 			s, _ := viewSess(t, c.on, "")
-			s.prompts = make(chan sessioncmd.Command, 1)
-			err := s.onSwitch(Request{Type: ReqPromptCommand, Vendor: c.vendor, Command: c.command})
+			s.turnRan = true
+			s.send([]byte(c.command + "\r")) // one read: not caught from the keys
+			err := hookAsk(s, Request{Type: ReqPromptCommand, Vendor: c.vendor, Command: c.command})
 			if c.code.IsZero() {
 				if err != nil {
 					t.Fatalf("refused: %v", err)
 				}
-				if len(s.prompts) != 1 {
-					t.Fatal("not queued for the main loop")
+				if !s.open && s.sw.to == "" {
+					t.Fatal("taken, and nothing opened")
 				}
 				return
 			}
@@ -52,6 +52,23 @@ func TestPromptCommandTaken(t *testing.T) {
 				t.Fatalf("err %v, want code %s", err, c.code)
 			}
 		})
+	}
+}
+
+// hookAsk sends r as a socket's goroutine would, and answers it as the main
+// loop would, if it gets that far.
+func hookAsk(s *session, r Request) error {
+	if s.prompts == nil {
+		s.prompts = make(chan promptReq, 1)
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.onSwitch(r) }()
+	select {
+	case err := <-done:
+		return err
+	case p := <-s.prompts:
+		s.answerPrompt(p)
+		return <-done
 	}
 }
 

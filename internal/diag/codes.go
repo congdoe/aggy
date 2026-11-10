@@ -232,6 +232,7 @@ var (
 	CodeSwitchHeld       = Code{"switch.held"}
 	CodeCommandNotTaken  = Code{"command.not_taken"}
 	CodeCommandKeyboard  = Code{"command.keyboard_only"}
+	CodeCommandNoEnter   = Code{"command.no_enter"}
 	CodeNotSupervised    = Code{"switch.not_supervised"}
 	CodeExitTimeout      = Code{"switch.exit_timeout"}
 	CodeNoQuota          = Code{"switch.no_quota"}
@@ -448,6 +449,7 @@ var codes = []CodeInfo{
 	{CodeSwitchVendor, false, "The vendor cannot be switched to now: on screen already, not offered, not allowed by the repo, not on PATH, or the safety policy cannot reach it.", "The record's msg; aggy setup; the repo's allowed_vendors."},
 	{CodeSwitchBusy, false, "Another switch is already waiting.", "Wait for it, or cancel it in the picker."},
 	{CodeCommandNotTaken, false, "A CLI's prompt hook reported a line that is not a command this session takes from a hook: not one at all, one with a model turn, another vendor's, or one from a CLI that has no such hook under aggy (Codex, OpenCode).", "Nothing; it went to the CLI as typed. Type the command in full at the prompt for aggy to catch it from the keys."},
+	{CodeCommandNoEnter, false, "A command from a CLI's prompt hook came with no Enter of a / command at the prompt just before it (a second one for the same Enter, one after a key or a turn started, or one sent by some other process in the CLI's tree), so aggy did not take it.", "Nothing; the prompt went to the CLI. Type the command in full at the prompt for aggy to catch it from the keys."},
 	{CodeCommandKeyboard, false, "A command that changes something (accept, check, reject, tool, permissions, trust) came from a prompt hook, which any process in the CLI's tree can send, so aggy did not take it.", "Type it in full at the prompt: from the keys aggy takes it, and shows what it does before it runs."},
 	{CodeSwitchHeld, false, "The CLI said it waits for the user (a permission prompt or a notice), so the switch waits.", "Answer the CLI, and the switch goes on at that turn's end. If nothing is waiting on screen, press Enter on the empty prompt and pick the vendor again, which spends no turn."},
 	{CodeNotSupervised, false, "aggy switch ran outside a session aggy supervises, or in one started with --direct.", "Press aggy's switch key in a session started with aggy run."},

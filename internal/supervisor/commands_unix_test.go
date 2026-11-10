@@ -4,6 +4,7 @@ package supervisor
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,10 +161,18 @@ func TestPlainEnter(t *testing.T) {
 // confirmation; on Codex, which signals no approval prompt, the status line asks.
 func TestTypedSwitchConfirms(t *testing.T) {
 	for _, c := range []struct {
-		on   adapter.Vendor
-		asks bool
-	}{{adapter.Claude, false}, {adapter.Codex, true}} {
-		t.Run(string(c.on), func(t *testing.T) {
+		on      adapter.Vendor
+		checked bool // a live check recorded Ctrl+U clearing the composer
+		asks    bool
+	}{
+		{adapter.Claude, false, true}, // R121: none is recorded yet
+		{adapter.Claude, true, false},
+		{adapter.Codex, true, true}, // no approval signal
+	} {
+		t.Run(fmt.Sprintf("%s checked %v", c.on, c.checked), func(t *testing.T) {
+			was := clearsLine
+			clearsLine = func(adapter.Vendor) bool { return c.checked }
+			t.Cleanup(func() { clearsLine = was })
 			ts, ch, done, _ := switchRunTurned(t, c.on)
 			for _, k := range strings.Split("/switch grok", "") {
 				ts.typeIn(t, k)
@@ -174,7 +183,7 @@ func TestTypedSwitchConfirms(t *testing.T) {
 			if c.asks {
 				poll(t, "the status line", []byte("-> grok. Ctrl+"), ts.screen)
 				if bytes.Contains(ch.received(), []byte("/exit")) {
-					t.Fatalf("Codex got the exit command before the person confirmed: %q", ch.received())
+					t.Fatalf("%s got the exit command before the person confirmed: %q", c.on, ch.received())
 				}
 				ts.typeIn(t, "\x1b")
 				time.Sleep(escTimeout + 60*time.Millisecond)

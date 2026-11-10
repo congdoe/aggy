@@ -66,9 +66,9 @@ func waitStops(t *testing.T, log string, n int) {
 }
 
 // TestTypedSwitchCaught (T6908): /switch grok typed in full at Claude's prompt
-// never reaches the CLI (no turn, no Stop) and, Claude signalling its approval
-// prompts, switches at once with no status line: a caught command started no
-// turn, so nothing waits for a turn end.
+// never reaches the CLI (no turn, no Stop), and a caught command started no
+// turn, so nothing waits for a turn end: the status line asks at once (R121:
+// Ctrl+U clearing Claude's composer is not recorded live, so it still asks).
 func TestTypedSwitchCaught(t *testing.T) {
 	w, sc, log := commandWorld(t)
 	s := w.start(t, sc, "run", "claude")
@@ -77,12 +77,11 @@ func TestTypedSwitchCaught(t *testing.T) {
 	waitStops(t, log, 2) // the launch's and the turn's
 	s.typeSlowly("/switch grok")
 	s.send([]byte("\r"))
+	s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
+	s.confirmPastGuard(time.Now())
 	w.waitRuns(t, s, 2)
 	if got := stops(t, log); got != 2 {
 		t.Errorf("Stop hooks = %d, want 2: the command reached Claude as a turn", got)
-	}
-	if strings.Contains(s.screen(), "Esc stays") {
-		t.Errorf("a status line asked for a typed switch: %q", s.screen())
 	}
 	s.send([]byte("/exit\r"))
 	if code := s.exit(); code != 0 {

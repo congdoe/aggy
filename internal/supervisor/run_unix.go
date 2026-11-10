@@ -109,7 +109,7 @@ func Run(o Options) (Exit, error) {
 	t := &tty{fd: fd}
 	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, lenKnown: true, events: make(chan hookEvent, 16), asks: make(chan Choice, 1), quit: make(chan struct{}), shares: make(chan shareReading), childChecks: make(chan childCheck),
 		toolNotes: make(chan struct{}, 1), toolReads: make(chan toolReading), cmdResults: make(chan cmdResult),
-		prompts: make(chan sessioncmd.Command, 1)}
+		prompts: make(chan promptReq, 1)}
 	defer close(s.quit)
 	// The last minute's repeats, queued before the caller closes the
 	// diagnostic queue (G67-R3); deferred first, so it runs after the
@@ -260,8 +260,8 @@ func Run(o Options) (Exit, error) {
 			s.childChecked(r)
 		case r := <-s.cmdResults:
 			s.cmdDone(r)
-		case c := <-s.prompts:
-			s.hookCommand(c)
+		case p := <-s.prompts:
+			s.answerPrompt(p)
 		case r := <-s.shares:
 			if r.seq != s.shareRead {
 				break // a read given up on as stuck (T6811)
@@ -599,11 +599,18 @@ type session struct {
 	cmdResults chan cmdResult
 	cmdSeq     int
 	viewPaste  pasteFilter
-	// prompts brings the commands a CLI's prompt hook reported (T6910);
-	// hookedName and hookedAt are the last one taken (hookCommand).
-	hookedName string
-	hookedAt   time.Time
-	prompts    chan sessioncmd.Command
+	// prompts brings the commands a CLI's prompt hook reported (T6910), each
+	// with where its answer goes; hookedName and hookedEnter are the last one
+	// taken and the Enter it was taken for (hookCommand). enterSlash: the last
+	// Enter ended a line that held only a leading / command, the only Enter a
+	// menu's command goes with. cmdFresh: a line just went out that leaves the
+	// composer empty though lenKnown is false (a Claude local command, a prompt
+	// a hook blocked), so a command typed next is known whole (lineKnown).
+	hookedName  string
+	hookedEnter time.Time
+	prompts     chan promptReq
+	enterSlash  bool
+	cmdFresh    bool
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -1171,6 +1178,13 @@ func (s *session) followKeys(typed []byte) {
 		// a turn end: it may have opened a dialog, and aggy cannot see one.
 		s.localEnter = false
 		s.atPrompt = s.enterAtPrompt
+		if s.o.Vendor == adapter.Claude {
+			// The same rule (adapter.LocalCommand, Claude only): the line went
+			// out whole and left the composer empty, so a command typed next is
+			// known whole (R121). lenKnown stays false for the switch's doubt,
+			// as a dialog the command opened may still be up.
+			s.compLen, s.cmdFresh = 0, true
+		}
 	}
 	if s.escEmpty && enter {
 		// On an empty composer Codex takes Esc, Esc, Enter as a backtrack, which
@@ -1462,14 +1476,21 @@ func cursorKey(c byte) bool {
 	return false
 }
 
-// maxCmdLine bounds cmdLine: no vendor's listed command is near it.
-const maxCmdLine = 32
+// maxCmdLine bounds cmdLine: the longest line sessioncmd takes as a command
+// (docs/design.md section 5), which is far past any vendor's listed command.
+const maxCmdLine = sessioncmd.MaxLine
 
 // compose follows one byte the user sent (see send).
 func (s *session) compose(c byte) {
 	prev := s.lastByte
 	s.lastByte = c
 	s.afterEnter++
+	if c == '\r' || c == '\n' || c == ctrlU {
+		s.cmdFresh = false
+	}
+	if c == '\r' {
+		s.enterSlash = s.slashOnly && !s.inPaste && !s.cmdBad
+	}
 	switch {
 	case c == '\r':
 	case c < 0x20 || c > 0x7e || s.inPaste || len(s.cmdLine) >= maxCmdLine:
@@ -1524,7 +1545,8 @@ func (s *session) compose(c byte) {
 		s.cmdLine, s.cmdBad = s.cmdLine[:0], false
 	case c == '\r':
 		// TODO(T6895): an Enter that answers an approval leaves a draft under it in
-		// the composer, and aggy counts it as sent. Only "See its prompt?" is left.
+		// the composer, and aggy counts it as sent. Only "See its prompt?" is left;
+		// a command typed next is caught, and its Ctrl+U may meet that draft.
 		s.compLen, s.lenKnown, s.cleared, s.hadAt, s.moved = 0, true, false, false, false // sent
 		s.popupEnter, s.afterEnter = false, 0
 		s.slashOnly, s.slashEntered, s.escDoubt = false, false, false
@@ -1664,7 +1686,7 @@ func (s *session) offerSwitch() {
 		s.tellNoTurn(what)
 		return
 	}
-	if s.sw.keyed && !s.sw.hooked && !s.sw.resume && holdSignal(on) && !s.doubt() {
+	if s.sw.keyed && !s.sw.hooked && !s.sw.resume && holdSignal(on) && clearsLine(on) && !s.doubt() {
 		// T6908: the person typed the switch at this prompt, and the CLI says
 		// when it waits for them, so the command was the confirmation. All the
 		// checks above still held: a turn ended, nothing holds it, the prompt
