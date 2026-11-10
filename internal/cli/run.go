@@ -1017,10 +1017,26 @@ func probeCaps(ctx context.Context, v adapter.Vendor, path string) ([]string, st
 
 // probeCLI probes v's CLI at path: its version, capabilities, and the flags its
 // help shows with a value.
+//
+// The result is cached in the index by the binary's identity (T6964,
+// probe.Launch): an unchanged binary costs no process start. Without the
+// index (it cannot be opened), the CLI is probed as before and nothing is
+// recorded. The probe row is the only thing a print-mode or as-given run
+// records.
 func probeCLI(ctx context.Context, v adapter.Vendor, path string) (adapter.Probe, error) {
-	probed, err := map[adapter.Vendor]adapter.Adapter{adapter.Claude: claude.Adapter{Path: path},
-		adapter.Codex: codex.Adapter{Path: path}, adapter.Grok: grok.Adapter{Path: path},
-		adapter.OpenCode: opencode.Adapter{Path: path}}[v].Probe(ctx, execrun.ExecRunner(probeTimeout))
+	var s *store.Store
+	if sp, err := store.DefaultPath(); err == nil {
+		if s, err = store.Open(ctx, sp); err == nil {
+			defer func() { _ = s.Close() }()
+		} else {
+			s = nil
+		}
+	}
+	probed, _, err := probe.Launch(ctx, s, execrun.ExecRunner(probeTimeout), v, path)
+	if errors.Is(err, probe.ErrNotRecorded) {
+		// The probe ran; only recording it failed.
+		return probed, nil
+	}
 	if err != nil {
 		return adapter.Probe{}, err
 	}

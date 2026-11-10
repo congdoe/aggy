@@ -2,6 +2,8 @@
 // --version and --help through an adapter.Runner, records the result in
 // the store's probes table, and reuses that record until the CLI at that
 // path reports a different version, or aggy's spec for the vendor changes.
+// A launch's probe (Launch) is reused by the binary's identity instead, so an
+// unchanged binary starts no process.
 //
 // A missing or unrecognized feature is recorded as an absent capability,
 // never a crash: adapters check capabilities and degrade. Probing never
@@ -639,11 +641,12 @@ func specStamp(spec Spec) string {
 	return stampPrefix + hex.EncodeToString(sum[:8])
 }
 
-// unstamped returns caps without the spec stamp.
+// unstamped returns caps without the spec stamp, and without what a launch's
+// probe records beside the capabilities (Launch).
 func unstamped(caps []string) []string {
 	out := []string{}
 	for _, c := range caps {
-		if !strings.HasPrefix(c, stampPrefix) {
+		if !strings.HasPrefix(c, stampPrefix) && !strings.HasPrefix(c, valuePrefix) && c != launchStamp {
 			out = append(out, c)
 		}
 	}

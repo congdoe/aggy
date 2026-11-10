@@ -18,6 +18,9 @@ type Probe struct {
 	Connected    bool
 	Capabilities []string
 	ProbedAt     time.Time
+	// BinaryID is the identity of the CLI binary a launch probed
+	// (probe.BinaryID), or "" (T6964).
+	BinaryID string
 }
 
 // InsertProbe records a probe.
@@ -27,23 +30,36 @@ func (s *Store) InsertProbe(ctx context.Context, p Probe) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO probes (vendor, cli_path, version, connected, capabilities, probed_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		p.Vendor, p.CLIPath, p.Version, p.Connected, string(caps), millis(p.ProbedAt))
+		`INSERT INTO probes (vendor, cli_path, version, connected, capabilities, probed_at, binary_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		p.Vendor, p.CLIPath, p.Version, p.Connected, string(caps), millis(p.ProbedAt), p.BinaryID)
 	return err
 }
 
 // LatestProbe returns the newest probe of vendor's CLI at cliPath that
 // reported version, or ErrNotFound.
 func (s *Store) LatestProbe(ctx context.Context, vendor, cliPath, version string) (Probe, error) {
+	return s.probe(ctx, `WHERE vendor = ? AND cli_path = ? AND version = ?`, vendor, cliPath, version)
+}
+
+// ProbeByBinary returns the newest probe of vendor's CLI recorded with
+// binaryID, or ErrNotFound. An empty binaryID matches nothing.
+func (s *Store) ProbeByBinary(ctx context.Context, vendor, binaryID string) (Probe, error) {
+	if binaryID == "" {
+		return Probe{}, ErrNotFound
+	}
+	return s.probe(ctx, `WHERE vendor = ? AND binary_id = ?`, vendor, binaryID)
+}
+
+// probe returns the newest probes row where says, or ErrNotFound.
+func (s *Store) probe(ctx context.Context, where string, args ...any) (Probe, error) {
 	var p Probe
 	var caps string
 	var at int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, vendor, cli_path, version, connected, capabilities, probed_at FROM probes
-		 WHERE vendor = ? AND cli_path = ? AND version = ?
-		 ORDER BY probed_at DESC, id DESC LIMIT 1`, vendor, cliPath, version).
-		Scan(&p.ID, &p.Vendor, &p.CLIPath, &p.Version, &p.Connected, &caps, &at)
+		`SELECT id, vendor, cli_path, version, connected, capabilities, probed_at, binary_id FROM probes `+
+			where+` ORDER BY probed_at DESC, id DESC LIMIT 1`, args...).
+		Scan(&p.ID, &p.Vendor, &p.CLIPath, &p.Version, &p.Connected, &caps, &at, &p.BinaryID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Probe{}, ErrNotFound
 	}
