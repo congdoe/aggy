@@ -27,6 +27,16 @@ func TestValidResumeName(t *testing.T) {
 		{"a\u202eb", false},
 		{"bad\xff", false},
 		{strings.Repeat("n", MaxResumeName), true},
+		// PR #127 review.
+		{"foo.jsonl", false},
+		{"foo.JSONL", false},
+		{" -x", false},
+		{"x ", false},
+		{"x\u00a0", false},
+		{"x\u2028y", false},
+		{"x\u2029y", false},
+		{"a\tb", false},
+		{"x\u00a0y", true},
 		{strings.Repeat("n", MaxResumeName+1), false},
 	}
 	for _, tt := range tests {
@@ -41,11 +51,12 @@ func TestResumeNameArgs(t *testing.T) {
 		req  InteractiveRequest
 		want []string
 	}{
-		{InteractiveRequest{ResumeName: "auth"}, []string{"--resume", "auth"}},
+		{InteractiveRequest{ResumeName: "auth"}, []string{"--resume=auth"}},
 		{InteractiveRequest{ResumeName: "auth", SessionID: "x"}, nil},
 		{InteractiveRequest{ResumeName: "auth", Resume: "x"}, nil},
 		{InteractiveRequest{ResumeName: "auth", Fork: true}, nil},
 		{InteractiveRequest{ResumeName: "-x"}, nil},
+		{InteractiveRequest{ResumeName: "a b"}, []string{"--resume=a b"}},
 	}
 	for _, tt := range tests {
 		got, err := ResumeNameArgs(tt.req)

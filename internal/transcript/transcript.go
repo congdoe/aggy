@@ -364,6 +364,28 @@ func FirstPrompt(v adapter.Vendor, data []byte) string {
 	return ""
 }
 
+// ClaudeCwd is the working directory the first line of data, the head of a
+// Claude session file (ReadHead), records as "cwd", and false when no line
+// before the end of data records one. Session lines carry "cwd"
+// (docs/verification.md, "Claude Code session file fields": read live, not a
+// documented format), so a caller that needs the session's folder and gets
+// false must take the session as being nobody's folder.
+func ClaudeCwd(data []byte) (string, bool) {
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 || !bytes.Contains(line, []byte(`"cwd"`)) {
+			continue
+		}
+		var l struct {
+			Cwd *string `json:"cwd"`
+		}
+		if json.Unmarshal(line, &l) != nil || l.Cwd == nil {
+			continue
+		}
+		return *l.Cwd, *l.Cwd != ""
+	}
+	return "", false
+}
+
 // textPart is one content block: {"type": ..., "text": ...}.
 type textPart struct {
 	Type string `json:"type"`

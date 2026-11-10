@@ -54,3 +54,26 @@ func TestReadHeadFirstPrompt(t *testing.T) {
 		t.Error("ReadHead followed a symlink")
 	}
 }
+
+// TestClaudeCwd (PR #127 review): the folder a Claude session records is its
+// first line's "cwd"; a file with none records no folder.
+func TestClaudeCwd(t *testing.T) {
+	tests := []struct {
+		name, data, want string
+		ok               bool
+	}{
+		{"first line with one", `{"type":"summary"}` + "\n" + `{"type":"user","cwd":"/w/my-app","message":{"content":"x"}}` + "\n" + `{"cwd":"/w/other"}` + "\n", "/w/my-app", true},
+		{"none", `{"type":"user","message":{"content":"x"}}` + "\n", "", false},
+		{"empty", `{"cwd":""}` + "\n", "", false},
+		{"not a string", `{"cwd":7}` + "\n" + `{"cwd":"/w/a"}` + "\n", "/w/a", true},
+		{"only in a nested object", `{"message":{"cwd":"/w/a"}}` + "\n", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := ClaudeCwd([]byte(tt.data))
+			if got != tt.want || ok != tt.ok {
+				t.Errorf("ClaudeCwd = %q, %v; want %q, %v", got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}

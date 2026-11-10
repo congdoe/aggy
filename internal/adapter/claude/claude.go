@@ -170,6 +170,12 @@ func (Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, err
 		return adapter.Command{}, err
 	}
 	args = append(args, s...)
+	if req.NoSessionPersistence {
+		if !req.Print {
+			return adapter.Command{}, fmt.Errorf("claude: --no-session-persistence is for print mode only")
+		}
+		args = append(args, "--no-session-persistence")
+	}
 	if req.MemoryFile != "" {
 		// Live-confirmed on 2.1.312 although --help omits it
 		// (docs/verification.md, T6619).

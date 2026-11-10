@@ -507,6 +507,13 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	}
 	cmd.Path = path
 	lease, err := pl.commit(ctx, s, time.Now())
+	if errors.Is(err, errAdoptedElsewhere) && !tp.replanned {
+		// Planned again, once: the session is that aggy's now, and the plan
+		// reopens it through its child, or says it is open there.
+		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(err.Error()+"; reopening it as that session"))
+		tp.replanned = true
+		return launchOnce(name, tp, stderr, next, q)
+	}
 	if err != nil {
 		return fail(diag.CodeLaunchFailed, err)
 	}
@@ -619,6 +626,13 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	dlog.Hold()
 	defer dlog.Release()
 	began := time.Now()
+	// A launch by name learns its session from the CLI's SessionStart hook
+	// (adoptNamed, PR #127 review).
+	named := &namedSession{vendor: v}
+	var onNamed func(supervisor.Request)
+	if pl.resumeName != "" {
+		onNamed = named.hook
+	}
 	exited := func(code int, to adapter.Vendor) {
 		r := ids
 		r.Event, r.Cause, r.Exit, r.Duration = diag.EvSessionExited, cause, diag.Int(code), time.Since(began)
@@ -629,7 +643,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	}
 	if t.Direct {
 		// --direct's CLI shares aggy's process group: only it is killed.
-		code, err := runDirect(cmd, runDir, parentID, v, assigned, cids.set, func(r diag.Rec) {
+		code, err := runDirect(cmd, runDir, parentID, v, assigned, cids.set, onNamed, func(r diag.Rec) {
 			r.Parent, r.Child, r.Vendor = parentID, pl.child.ID, string(v)
 			q.LogWait(r, 100*time.Millisecond) // the socket's goroutines
 		}, func(pid int) {
@@ -650,7 +664,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			exited(code, "")
 		}
 		if pl.resumeName != "" {
-			adoptNamed(ctx, s, pl.child, began, &sessionFiles{})
+			adoptNamed(ctx, s, pl.child, named.reported(), &sessionFiles{}, stderr)
 		}
 		return code
 	}
@@ -665,6 +679,13 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		}
 	})
 	defer stopLimits()
+	if onNamed != nil {
+		inner := onHook
+		onHook = func(r supervisor.Request) {
+			onNamed(r)
+			inner(r)
+		}
+	}
 	// A switch is checked when picked or asked for, and again before the
 	// CLI is told to exit; launch checks everything once more.
 	// The probes switchCheck starts end with this launch.
@@ -760,7 +781,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// Before the next launch, whose brief reads this child's transcript.
 	cids.settle(ctx, appendEvent, &sessionFiles{})
 	if pl.resumeName != "" {
-		adoptNamed(ctx, s, pl.child, began, &sessionFiles{})
+		adoptNamed(ctx, s, pl.child, named.reported(), &sessionFiles{}, stderr)
 	}
 	if err != nil {
 		r := ids

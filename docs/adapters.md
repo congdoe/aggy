@@ -306,8 +306,19 @@ was tested against.
   doc-verified since T6965 (verification.md, "Native sessions"); aggy lists a
   folder's native sessions only where it needs no hash.
 - Resume by name (T6965): `InteractiveRequest.ResumeName` gives Claude and
-  Grok `--resume <name>` in place of the session flags, after
-  `adapter.ValidResumeName`; Codex and OpenCode refuse it.
+  Grok `--resume=<name>` in place of the session flags, after
+  `adapter.ValidResumeName`; Codex and OpenCode refuse it. The `=` form is
+  documented for both parsers: commander's README ("Options": the
+  option-argument can "follow an `=` for a long option") and clap's tutorial
+  ("Options": `--name=bob`), read 2026-11-10. Session ids stay
+  `--resume <id>`, as recorded.
+- Print without a session (PR #127 review): `InteractiveRequest.NoSessionPersistence`
+  gives Claude `--no-session-persistence` ("Disable session persistence so
+  sessions are not saved to disk and cannot be resumed. Print mode only",
+  cli-reference, read 2026-11-10), only with `Print`. The launch sets it for
+  `-p`/`--print` runs when the probe finds the flag in help
+  (`probe.CapNoSessionPersistence`), unless the words resume, continue, name,
+  or set the session.
 - MCP at launch: `--mcp-config <file> --strict-mcp-config`; it is not kept
   with the session, so pass it again on resume. With an empty
   `{"mcpServers":{}}` no MCP or connector tool is left. On screen, aggy
@@ -970,7 +981,9 @@ file (`ErrUnsafe`) and a file swapped after the check, and returns
 shape, or when the last line is larger than that window. For a session list
 (`aggy -r`, T6965), `ReadHead` reads the start of a file the same way, dropping
 a line the window cut, and `FirstPrompt` takes the first turn the user typed
-from it, with the same filters. Several files
+from it, with the same filters, and `ClaudeCwd` the first `cwd` a Claude
+file records, which a list checks against the folder (session lines carry
+`cwd`: verification.md, "Claude Code session file fields"). Several files
 for one id are an error, never a guess. Only message text is read: tool
 calls, tool output, and reasoning are skipped, and so is context the CLI
 wrote into a user message: Codex's AGENTS.md text, environment context,

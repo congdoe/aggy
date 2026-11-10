@@ -87,10 +87,17 @@ type target struct {
 	// newest are native when aggy has not recorded them.
 	Native *nativeSession
 	// ResumeName reopens the session the CLI finds by this name, passed as its
-	// --resume <name> (Claude and Grok, T6965). The new child has no id until
-	// the CLI exits, when the one session file of this directory that changed
-	// since the launch names it (adoptNamed).
+	// --resume=<name> (Claude and Grok, T6965). The new child has no id until
+	// the CLI exits, when the id its SessionStart hook reported names it, if
+	// that session is this folder's (adoptNamed).
 	ResumeName string
+	// Installed: -c with no vendor named looks only at the sessions of vendors
+	// whose CLI is on PATH (PR #127 review), so a session of a CLI that is gone
+	// does not stop the launch.
+	Installed bool
+	// replanned: this launch's first plan adopted a session another aggy
+	// recorded first, and it is planned again once (errAdoptedElsewhere).
+	replanned bool
 	// SwitchFrom is the vendor this launch was switched from, and
 	// SwitchReason why, for the switch row of aggy log (T6925); "" for a
 	// launch that is not a switch's, which writes a screen row instead.
@@ -220,11 +227,23 @@ func planChild(ctx context.Context, s *store.Store, cfg config.Config, cwd strin
 			p.parent, pick = par, kids[0]
 		}
 	case t.Continue:
-		par, last, err := latestResumable(ctx, s, cwd, t.Vendor, t.Preview)
+		par, last, err := latestResumable(ctx, s, cwd, t.Vendor, t.Preview, t.Installed)
 		// T6965: a session the vendor CLI started here by itself counts too,
-		// when it is newer than the one aggy recorded.
-		if ns, ok := newestNative(ctx, s, cfg, cwd, t.Vendor, &sessionFiles{readOnly: t.Preview}); ok &&
-			(err != nil && errors.Is(err, errNoSession) || err == nil && ns.Modified.After(last.LastActive)) {
+		// when it is newer than the one aggy recorded (PR #127 review: and is
+		// this folder's, not in the future, and not a print run aggy knows of).
+		ns, ok, slow := newestNative(ctx, s, cfg, cwd, t.Vendor, &sessionFiles{readOnly: t.Preview}, t.Installed)
+		if slow {
+			msg := nativeSlowNote // a note: the launch goes on
+			fmt.Fprintf(stderr, "aggy: %s\n", msg)
+		}
+		if ok && (err != nil && errors.Is(err, errNoSession) || err == nil && ns.Modified.After(last.LastActive)) {
+			title := sessionTitle(ns.Title)
+			if title == "" {
+				title = "(no prompt yet)"
+			}
+			// A note: the launch goes on.
+			msg := fmt.Sprintf("continuing %s's own session from %s, new to aggy: %s", ns.Vendor, ago(ns.Modified, now), title)
+			fmt.Fprintf(stderr, "aggy: %s\n", msg)
 			return p, p.adopt(cfg, cwd, ns, now)
 		}
 		if err != nil {
@@ -512,7 +531,9 @@ func remakeBorrowDir(cwd string) (func(), error) {
 // child last active in dir (of v, when set) that can still be reopened, in
 // whichever of dir's parents holds it, since every bare aggy starts a
 // parent of its own and one quit before its first message saves nothing.
-func latestResumable(ctx context.Context, s *store.Store, dir string, v adapter.Vendor, readOnly bool) (store.Parent, store.Child, error) {
+//
+// With installed, a child whose vendor's CLI is not on PATH is passed over.
+func latestResumable(ctx context.Context, s *store.Store, dir string, v adapter.Vendor, readOnly, installed bool) (store.Parent, store.Child, error) {
 	key, err := safefs.CanonicalPath(dir)
 	if err != nil {
 		return store.Parent{}, store.Child{}, err
@@ -531,7 +552,7 @@ func latestResumable(ctx context.Context, s *store.Store, dir string, v adapter.
 		}
 		for _, c := range children {
 			if c.Kind == "" && (v == "" || c.Vendor == string(v)) && c.VendorSessionID != "" &&
-				c.Status != stateClosed && c.Status != stateGone {
+				c.Status != stateClosed && c.Status != stateGone && (!installed || cliInstalled(adapter.Vendor(c.Vendor))) {
 				return par, c, nil
 			}
 		}
@@ -649,12 +670,21 @@ func repoEffective(cfg config.Config, dir string) (config.Effective, error) {
 // vendor session, so no other process drives it at the same time. A
 // Codex child that has no id yet has nothing to lease (nil lease).
 func (p *launchPlan) commit(ctx context.Context, s *store.Store, now time.Time) (*store.Lease, error) {
-	if p.newParent {
+	switch {
+	case p.adopted:
+		// Both rows at once, and neither when another aggy adopted the
+		// session first (PR #127 review).
+		if err := s.InsertParentChild(ctx, p.parent, p.child); errors.Is(err, store.ErrSessionHeld) {
+			return nil, errAdoptedElsewhere
+		} else if err != nil {
+			return nil, err
+		}
+	case p.newParent:
 		if err := s.InsertParent(ctx, p.parent); err != nil {
 			return nil, err
 		}
 	}
-	if p.newChild {
+	if p.newChild && !p.adopted {
 		if err := s.InsertChild(ctx, p.child); err != nil {
 			return nil, err
 		}

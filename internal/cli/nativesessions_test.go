@@ -15,6 +15,7 @@ import (
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/supervisor"
 	"github.com/congdoe/aggy/internal/transcript"
 )
 
@@ -46,11 +47,18 @@ func claudeUserLine(text string) string {
 	return string(b) + "\n"
 }
 
+// claudeLineIn is a Claude user line with text, recording cwd as its folder,
+// as session lines do (docs/verification.md, "Claude Code session file fields").
+func claudeLineIn(cwd, text string) string {
+	b, _ := json.Marshal(map[string]any{"type": "user", "cwd": cwd, "message": map[string]any{"content": text}})
+	return string(b) + "\n"
+}
+
 // claudeNativeAt writes a Claude session of cwd under home.
 func claudeNativeAt(t *testing.T, home, cwd, id, prompt string, at time.Time) string {
 	t.Helper()
 	p := filepath.Join(home, ".claude", "projects", transcript.ClaudeProjectDir(cwd), id+".jsonl")
-	writeNativeAt(t, p, claudeUserLine(prompt), at)
+	writeNativeAt(t, p, claudeLineIn(cwd, prompt), at)
 	return p
 }
 
@@ -169,7 +177,11 @@ func TestNativeTitleUntrusted(t *testing.T) {
 	home, cwd := nativeWorld(t)
 	now := time.Now()
 	claudeNativeAt(t, home, cwd, natA, "\x1b[2J\x1b]52;c;aGk=\x07evil\r\nline\u202e", now)
-	claudeNativeAt(t, home, cwd, natB, strings.Repeat("x", nativeHead+10), now.Add(-time.Minute))
+	// The folder on a first line of its own (PR #127 review: a file whose head
+	// records no folder is not listed), then a prompt too large to read.
+	p := claudeNativeAt(t, home, cwd, natB, "", now.Add(-time.Minute))
+	b, _ := json.Marshal(map[string]any{"type": "system", "cwd": cwd})
+	writeNativeAt(t, p, string(b)+"\n"+claudeUserLine(strings.Repeat("x", nativeHead+10)), now.Add(-time.Minute))
 	ns, err := nativeSessions(&sessionFiles{}, adapter.Claude, cwd)
 	if err != nil || len(ns) != 2 {
 		t.Fatalf("sessions = %+v, %v", ns, err)
@@ -361,6 +373,8 @@ func TestPickSession(t *testing.T) {
 		t.Run(strings.TrimSpace(tt.answer), func(t *testing.T) {
 			pickIn = strings.NewReader(tt.answer)
 			defer func() { pickIn = os.Stdin }()
+			defer func(f func() bool) { stdinTerminal = f }(stdinTerminal)
+			stdinTerminal = func() bool { return true }
 			var out strings.Builder
 			var tg target
 			picked, code, _ := pickSession(&tg, "", &out)
@@ -378,17 +392,23 @@ func TestPickSession(t *testing.T) {
 	}
 }
 
-// TestAdoptNamed (T6965): a session resumed by name gets the id of the one
-// session file of its folder that changed during the run, and none when two did.
+// TestAdoptNamed (T6965, PR #127 review): a session resumed by name gets the
+// id the CLI's SessionStart hook reported, when that session is this folder's;
+// otherwise neither its child nor its parent is kept.
 func TestAdoptNamed(t *testing.T) {
 	tests := []struct {
-		name    string
-		changed []string
-		want    string
+		name     string
+		reported string
+		write    []string // sessions written in the run
+		held     bool     // the reported session is another child's already
+		want     string   // the id recorded, or "" for the rows dropped
+		say      string
 	}{
-		{"one changed", []string{natA}, natA},
-		{"two changed", []string{natA, natB}, ""},
-		{"none changed", nil, ""},
+		{"reported and here", natA, []string{natA}, false, natA, "is aggy's session"},
+		{"reported, another changed too", natA, []string{natA, natB}, false, natA, "is aggy's session"},
+		{"nothing reported, one changed", "", []string{natA}, false, "", "did not say"},
+		{"reported but not here", natD, []string{natA}, false, "", "not this folder's"},
+		{"reported and held", natC, nil, true, "", "already"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -401,6 +421,18 @@ func TestAdoptNamed(t *testing.T) {
 			defer func() { _ = s.Close() }()
 			claudeNativeAt(t, home, cwd, natC, "old", time.Now().Add(-time.Hour))
 			var errb strings.Builder
+			if tt.held {
+				ns, _ := findNative(&sessionFiles{}, []adapter.Vendor{adapter.Claude}, cwd, natC)
+				p, err := plan(ctx, s, config.Default(), cwd, target{Native: &ns}, time.Now(), &errb)
+				if err != nil {
+					t.Fatal(err)
+				}
+				l, err := p.commit(ctx, s, time.Now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = l.Release(ctx)
+			}
 			p, err := plan(ctx, s, config.Default(), cwd, target{ResumeName: "auth", Vendor: adapter.Claude}, time.Now(), &errb)
 			if err != nil {
 				t.Fatal(err)
@@ -411,15 +443,52 @@ func TestAdoptNamed(t *testing.T) {
 			if _, err := p.commit(ctx, s, time.Now()); err != nil {
 				t.Fatal(err)
 			}
-			began := time.Now().Add(-time.Second)
-			for _, id := range tt.changed {
+			for _, id := range tt.write {
 				claudeNativeAt(t, home, cwd, id, "x", time.Now())
 			}
-			adoptNamed(ctx, s, p.child, began, &sessionFiles{})
+			var out strings.Builder
+			adoptNamed(ctx, s, p.child, tt.reported, &sessionFiles{}, &out)
+			if !strings.Contains(out.String(), tt.say) {
+				t.Errorf("said %q, want %q", out.String(), tt.say)
+			}
 			cs, _ := s.Children(ctx, p.parent.ID)
+			if tt.want == "" {
+				if _, err := s.GetParent(ctx, p.parent.ID); len(cs) != 0 || !errors.Is(err, store.ErrNotFound) {
+					t.Errorf("children %+v, parent %v; want both dropped", cs, err)
+				}
+				return
+			}
 			if len(cs) != 1 || cs[0].VendorSessionID != tt.want {
 				t.Errorf("children = %+v, want the id %q", cs, tt.want)
 			}
 		})
+	}
+}
+
+// TestNamedSessionHook (PR #127 review): only the first SessionStart from the
+// session's own process tree, for the vendor on screen, names the session.
+func TestNamedSessionHook(t *testing.T) {
+	pay := func(id string) []byte { return []byte(`{"session_id":"` + id + `","source":"resume"}`) }
+	tests := []struct {
+		name string
+		reqs []supervisor.Request
+		want string
+	}{
+		{"first", []supervisor.Request{{Vendor: "claude", Event: "SessionStart", Payload: pay(natA), FromSession: true},
+			{Vendor: "claude", Event: "SessionStart", Payload: pay(natB), FromSession: true}}, natA},
+		{"not from the session", []supervisor.Request{{Vendor: "claude", Event: "SessionStart", Payload: pay(natA)}}, ""},
+		{"another event", []supervisor.Request{{Vendor: "claude", Event: "Stop", Payload: pay(natA), FromSession: true}}, ""},
+		{"another vendor", []supervisor.Request{{Vendor: "grok", Event: "SessionStart", Payload: pay(natA), FromSession: true}}, ""},
+		{"not an id", []supervisor.Request{{Vendor: "claude", Event: "SessionStart", Payload: pay("-x"), FromSession: true},
+			{Vendor: "claude", Event: "SessionStart", Payload: pay(natB), FromSession: true}}, ""},
+	}
+	for _, tt := range tests {
+		n := &namedSession{vendor: adapter.Claude}
+		for _, r := range tt.reqs {
+			n.hook(r)
+		}
+		if got := n.reported(); got != tt.want {
+			t.Errorf("%s: reported %q, want %q", tt.name, got, tt.want)
+		}
 	}
 }
