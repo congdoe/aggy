@@ -12,4 +12,5 @@ CI runs them on Linux and macOS only in their own job, with `go test -race -p 1 
 | Plan limit to a switch | `TestLimitSwitchWithBrief` |
 | Brief file: written, handed over, content and redaction | `TestLimitSwitchWithBrief` |
 | Borrow from the on-screen agent, answer back | `TestBorrowRoundTrip` |
+| First run (T6966): the setup offer's screen, accepted (written, undone by unwire, not offered again), declined (launch, one note, not repeated), no offer without a terminal, for a borrow child, or with words | `TestFirstRunAccepted`, `TestFirstRunDeclined`, `TestFirstRunNoOffer` |
 | A CLI's own sessions (T6965): `-c` continues and adopts once, the `-r` picker, `--resume` by id and by name, refused values | `TestContinueNativeSession`, `TestContinueNativeCodex`, `TestPickSession`, `TestResumeNativeIDAndName`, `TestResumeNativeRefused` |

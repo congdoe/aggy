@@ -87,6 +87,9 @@ type world struct {
 	// lastOut is what the terminal showed in the last launchRecord: aggy's
 	// warnings, such as a tool it did not wire, for a failure message.
 	lastOut string
+	// offerSetup leaves bare aggy's first-run setup offer on (T6966); every
+	// other test runs with it off, as a scripted machine would.
+	offerSetup bool
 }
 
 func newWorld(t *testing.T) *world {
@@ -202,6 +205,9 @@ func (w *world) start(t *testing.T, scenario map[string]any, args ...string) *se
 		"PATH=" + w.bin + ":/usr/bin:/bin", "TERM=xterm-256color",
 		"USER_OWN_SETTING=kept",
 		fakecli.EnvScenario + "=" + scPath, fakecli.EnvRecord + "=" + w.record,
+	}
+	if !w.offerSetup {
+		s.cmd.Env = append(s.cmd.Env, "AGGY_SETUP_OFFER=0")
 	}
 	s.cmd.Env = append(s.cmd.Env, w.env...)
 	s.cmd.Stdin, s.cmd.Stdout, s.cmd.Stderr = slave, slave, slave
