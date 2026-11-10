@@ -6,6 +6,7 @@ import (
 	"io"
 	"runtime/debug"
 	"slices"
+	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
 )
@@ -210,10 +211,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	// Anything else is the default vendor's CLI, as it takes its words at
 	// launch: aggy --model opus, aggy -c, aggy "explain this repo" (T6961).
-	// A single bare word close to a command or vendor name is a likely typo,
-	// not a prompt worth a model turn (PR #124 review).
-	if c := nearCommand(args[0]); c != "" && len(args) == 1 {
-		return cmdUsage(stderr, "", fmt.Sprintf("unknown command %q; did you mean aggy %s? To send it as a prompt: aggy -- %s", args[0], c, args[0]), "")
+	// A first word close to a command or vendor name is a likely typo, not a
+	// prompt worth a model turn (PR #124 review), whatever follows it: the
+	// re-review's aggy sesions list and aggy borow research x.
+	if c := nearCommand(args[0]); c != "" {
+		return cmdUsage(stderr, "", fmt.Sprintf("unknown command %q; did you mean aggy %s? To send it as a prompt: aggy -- %s", args[0], c, strings.Join(args, " ")), "")
 	}
 	return runLaunch("", args, stdout, stderr)
 }

@@ -34,6 +34,11 @@ func TestCheckSettings(t *testing.T) {
 		{"only managed rules", `{"allowManagedPermissionRulesOnly":true}`, true},
 		{"bypass inside a list", `{"hooks":{"Stop":[{"x":"bypassPermissions"}]}}`, true},
 		{"a dangerous key inside a list", `{"a":[{"skipDangerousModePermissionPrompt":true}]}`, true},
+		// PR #124 re-review: approving .mcp.json servers by name is gated like
+		// enableAllProjectMcpServers.
+		{"project MCP servers approved by name", `{"enabledMcpjsonServers":["evil"]}`, true},
+		{"project MCP servers turned down by name", `{"disabledMcpjsonServers":["evil"]}`, false},
+		{"a proxy with no credentials", `{"env":{"HTTPS_PROXY":"http://h:1"}}`, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -48,7 +53,14 @@ func TestCheckSettings(t *testing.T) {
 	}
 	// Refused whatever --no-policy says: a credential or an endpoint.
 	for _, layer := range []string{`{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:1"}}`, `{"env":{"ANTHROPIC_API_KEY":"x"}}`,
-		`{"env":{"ANTHROPIC_AUTH_TOKEN":"x"}}`, `{"apiKeyHelper":"/bin/echo x"}`} {
+		`{"env":{"ANTHROPIC_AUTH_TOKEN":"x"}}`, `{"apiKeyHelper":"/bin/echo x"}`,
+		// PR #124 re-review: helpers that run a command for credentials or
+		// headers, and env that carries them.
+		`{"otelHeadersHelper":"/tmp/x.sh"}`, `{"awsAuthRefresh":"x"}`, `{"awsCredentialExport":"x"}`,
+		`{"gcpAuthRefresh":"x"}`, `{"policyHelper":"x"}`,
+		`{"env":{"ANTHROPIC_CUSTOM_HEADERS":"Authorization: Bearer x"}}`, `{"env":{"OTEL_EXPORTER_OTLP_HEADERS_AUTHORIZATION":"x"}}`,
+		`{"env":{"DB_PASSWORD":"x"}}`, `{"env":{"HTTPS_PROXY":"http://u:p@h:1"}}`, `{"env":{"https_proxy":"http://u:p@h:1"}}`,
+		`{"env":{"all_proxy":"socks5://u:p@h:1"}}`, `{"env":{"HTTP_PROXY":"http://u@h:1"}}`} {
 		m, err := ParseSettings([]byte(layer))
 		if err != nil {
 			t.Fatal(err)

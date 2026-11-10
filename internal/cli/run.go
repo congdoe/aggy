@@ -354,7 +354,10 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// a later launch of the session.
 	g, code, err := gateLaunch(ctx, tp, v, pl.child.Cwd, cfg, pl.child.Kind == "")
 	if err != nil {
-		return fail(code, err)
+		// Exit 2, as print mode's and a subcommand's gate refusals
+		// (launchUsageErr) and a refused flag above (PR #124 re-review).
+		fail(code, err)
+		return 2
 	}
 	extra, userSettings := g.extra, g.layer
 	t = *tp

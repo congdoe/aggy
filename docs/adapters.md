@@ -680,12 +680,20 @@ sources (`PagerArgs.prompt`; codex's usage `codex [OPTIONS] [PROMPT]`).
     `disableAllHooks`, `allowManagedHooksOnly` and
     `allowManagedPermissionRulesOnly` (which would drop aggy's hooks and
     rules), `enableAllProjectMcpServers` (which skips the project MCP trust
-    prompt), any `bypassPermissions` value, or a key naming `dangerous` or
+    prompt), `enabledMcpjsonServers` (which approves named `.mcp.json`
+    servers without that prompt; settings reference, read 2026-11-10), any
+    `bypassPermissions` value, or a key naming `dangerous` or
     `bypass` (but not a `disable…Bypass…` key, which tightens). Arrays are
     walked as well as objects.
-  - A layer with `apiKeyHelper`, or an `env` holding an API key, a token, a
-    secret, or a `*_BASE_URL`, is refused even with `--no-policy`: aggy never
-    sets those for a CLI, and passing them in argv would. They belong in the
+  - A layer with a key that runs a command to produce credentials or headers
+    (`apiKeyHelper`, `awsAuthRefresh`, `awsCredentialExport`,
+    `gcpAuthRefresh`, `otelHeadersHelper`, and `policyHelper`, each so
+    described in the settings reference, read 2026-11-10), or an `env`
+    holding an API key, a token, a secret, a password, a `*_BASE_URL`, a
+    `*_CUSTOM_HEADERS` or `*_AUTHORIZATION*` variable, or an `HTTP_PROXY`,
+    `HTTPS_PROXY`, or `ALL_PROXY` (any case) whose value holds `@`
+    credentials, is refused even with `--no-policy`: aggy never sets those
+    for a CLI, and passing them in argv would. They belong in the
     person's own Claude settings file, which aggy does not touch.
   - Claude `--mcp-config` takes aggy's MCP file into the person's own list.
     The reference says the flag takes space-separated values.
@@ -804,8 +812,14 @@ sources (`PagerArgs.prompt`; codex's usage `codex [OPTIONS] [PROMPT]`).
   that is a safety layer (`hooks`, `codex_hooks`, sandbox, approval, guardian,
   permission features, `credential_masking`, `secret_auth_storage`,
   `code_mode_only`), and `-c` of any key but a short list that changes only display
-  and reasoning, or `features.<name>=false` that `--disable` would pass; Grok
-  `--always-approve`, `--trust` and `--trust-folder` (they persist hook trust), any
+  and reasoning, or `features.<name>=false` that `--disable` would pass, and
+  (PR #124 re-review, reachable through `codex exec`) `--skip-git-repo-check`,
+  which skips the trusted-repository check, and `--ignore-user-config`, which
+  drops the user `config.toml` and aggy's hook wiring with it; Grok
+  `--always-approve`, `--trust` and `--trust-folder` (they persist hook trust),
+  the hidden `--no-ask-user` and `--fs-write` (PR #124 re-review, from its
+  reading of `cli.rs` at grok-build `2bdd1d6a`, not re-read for this; what each
+  does is unverified, so they are gated on the safe side), any
   flag naming `approve`, `approval`, `yolo`, `bypass`, `no-sandbox`,
   `skip-permission`, `trust`, `unsafe`, or `insecure`, any `--permission-mode` but `plan` or `default`, and any
   `--sandbox` but `strict`.
@@ -834,7 +848,9 @@ sources (`PagerArgs.prompt`; codex's usage `codex [OPTIONS] [PROMPT]`).
 - Passed, on purpose: Claude `--allowedTools`, other `--agents`, and
   `--permission-mode auto` ask less, and Claude documents that deny rules block in
   every mode and that an allow rule cannot carve an exception out of one
-  (permission-modes.md, permissions.md). Codex's `--approve-for-me` stays gated
+  (permission-modes.md, permissions.md), so aggy's policy rules (deny, or ask on
+  screen once PR #125 lands) hold; that `auto` and `dontAsk` still stop at an
+  ask rule is unverified, TODO(T6895). Codex's `--approve-for-me` stays gated
   because the same is unverified for its rules file.
 
 Sources: Claude code.claude.com/docs/en/cli-reference, permission-modes,
