@@ -22,6 +22,9 @@ type menuItem struct {
 	label string
 	line  string
 	fill  bool
+	// key is the word typing in the list matches (T6978); an item with
+	// none is shown only while nothing is typed.
+	key string
 }
 
 // menu is an option list.
@@ -32,6 +35,25 @@ type menu struct {
 	// check, when set, makes the menu a check list (the trust list, T6977):
 	// its rows are ticked in place, and the menu's items are unused.
 	check *checkList
+	// filterable: letters typed narrow the list to the items whose key
+	// starts with filter, and Backspace takes one back (T6978); q, j, and
+	// k are letters there, and Esc and the arrows close and move.
+	filterable bool
+	filter     string
+}
+
+// shown are the items the filter leaves.
+func (m *menu) shown() []menuItem {
+	if m.filter == "" {
+		return m.items
+	}
+	var out []menuItem
+	for _, it := range m.items {
+		if it.key != "" && strings.HasPrefix(it.key, m.filter) {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 // page is a result: lines to scroll, from top. confirm, when set, runs on y:
@@ -78,11 +100,18 @@ func (p *picker) drawView(w io.Writer, overCLI bool, rows, cols int) {
 		m := p.menu
 		lines = append(lines, "aggy: "+m.title, "")
 		room := rows - 4
+		items := m.shown()
+		if m.filterable {
+			lines[1] = "  typed: " + m.filter
+			if len(items) == 0 {
+				lines = append(lines, "  nothing starts with that; Backspace takes a letter back")
+			}
+		}
 		start := 0
 		if m.at >= room {
 			start = m.at - room + 1
 		}
-		for i := start; i < len(m.items) && i < start+room; i++ {
+		for i := start; i < len(items) && i < start+room; i++ {
 			mark := " "
 			if i == m.at {
 				mark = ">"
@@ -91,12 +120,16 @@ func (p *picker) drawView(w io.Writer, overCLI bool, rows, cols int) {
 			if i < 9 {
 				num = fmt.Sprintf("%d ", i+1)
 			}
-			lines = append(lines, fmt.Sprintf(" %s%s %s", mark, num, m.items[i].label))
+			lines = append(lines, fmt.Sprintf(" %s%s %s", mark, num, items[i].label))
 		}
 		for len(lines) < rows-2 {
 			lines = append(lines, "")
 		}
-		lines = append(lines, "", "Up, Down, and Enter or a number pick; Esc goes back to the CLI.")
+		foot := "Up, Down, and Enter or a number pick; Esc goes back to the CLI."
+		if m.filterable {
+			foot = "Type to narrow; Up, Down, and Enter or a number pick; Esc goes back to the CLI."
+		}
+		lines = append(lines, "", foot)
 	case p.page != nil:
 		g := p.page
 		lines = append(lines, "aggy: "+g.title, "")
@@ -197,6 +230,7 @@ const (
 	keyPageDown
 	keyEnter
 	keyClose
+	keyBackspace
 )
 
 // viewKeys reads b as keys, outside a paste (pastes are dropped before this):
@@ -229,6 +263,8 @@ func viewKeys(b []byte, swKey byte) (keys []viewKey, runes []rune) {
 						k = keyClose
 					case cu.code == 13 || cu.code == kittyKeypadCR:
 						k = keyEnter
+					case cu.code == 127 && mods == 0:
+						k = keyBackspace
 					case mods == 0 && cu.code > 0x20 && cu.code < 0x7f:
 						r = rune(cu.code)
 					}
@@ -238,6 +274,8 @@ func viewKeys(b []byte, swKey byte) (keys []viewKey, runes []rune) {
 			k = keyClose
 		case c == '\r':
 			k = keyEnter
+		case c == 0x7f || c == 0x08:
+			k = keyBackspace
 		case c > 0x20 && c < 0x7f:
 			r = rune(c)
 		case c == ' ':

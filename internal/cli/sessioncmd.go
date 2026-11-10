@@ -77,7 +77,11 @@ func sessionAggy(args []string, answer bool) string {
 			sessionRefuse(w, "diag", "inside a session, aggy diag shows the log or one run")
 			break
 		}
-		if args[0] == "permissions" && (len(args) != 2 || args[1] != "list" && args[1] != "show") {
+		// /aggy allow "<rule>" (T6978): aggy permissions add allow, for this
+		// folder, with its own checks, refusals, and question, which the
+		// page answers (no, then y on the person's y).
+		allow := args[0] == "permissions" && len(args) == 4 && args[1] == "add" && args[2] == "allow" && !strings.HasPrefix(args[3], "-")
+		if args[0] == "permissions" && !allow && (len(args) != 2 || args[1] != "list" && args[1] != "show") {
 			sessionRefuse(w, "permissions", "inside a session, aggy permissions lists and shows the rules; change them in a terminal")
 			break
 		}

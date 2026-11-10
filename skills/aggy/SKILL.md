@@ -1,6 +1,7 @@
 ---
 name: aggy
 description: Borrow a bounded task to a vendor's CLI with aggy (image, video, research, news, review), and answer questions about aggy. Use for anything that may have changed since training, for images or video, for a fresh-context code review, or when asked how aggy works.
+argument-hint: "[switch|borrow|inbox|usage|log|tool|allow|trust|...] or a question"
 ---
 
 # aggy: borrow a task, or answer about aggy
@@ -49,9 +50,11 @@ aggy inbox            # unread borrow reports; aggy inbox <id> shows one
 The user switches with `/switch` (`$switch` in Codex) typed at the prompt:
 bare it opens aggy's picker, `/switch <vendor>` switches at the turn end,
 and aggy catches it before you see it. Ctrl+\ opens the picker too.
-`/inbox` shows borrow reports the same way. If a `/switch` or `/inbox`
-reaches you, aggy missed it: change nothing and tell the user to type it
-at the prompt.
+`/inbox` shows borrow reports the same way. `/aggy switch`, `/aggy inbox`,
+and a word's start (`/aggy sw`) do the same. If one of them reaches you,
+aggy missed it: change nothing and tell the user to type it at the prompt.
+`/aggy borrow <kind> <task>` is a borrow, as `/borrow` is: run `aggy borrow
+<kind> "<task>"` as below.
 
 `aggy switch [--brief] <claude|codex|grok>` is your way to ask: run it
 only when the user asks for that vendor, then end your turn; aggy asks the
@@ -75,8 +78,8 @@ answer it:
 - Commands that change things are the user's to run: `setup`, `hooks`,
   `policy`, and `skill` in a terminal; `tool on|off`, `trust`, `accept`,
   and `reject` there or typed as `/aggy <command>` at the prompt.
-- If `/aggy accept`, `reject`, `check`, `tool`, `permissions`, or `trust`
-  reaches you as a prompt, aggy did not catch it. Never run it yourself,
+- If `/aggy accept`, `reject`, `check`, `tool`, `permissions`, `allow`, or
+  `trust` reaches you as a prompt, aggy did not catch it. Never run it yourself,
   with or without `--yes`: tell the user to type it again at the prompt,
   where aggy shows what it does first, or to run it in a terminal.
 

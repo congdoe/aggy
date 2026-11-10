@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -125,7 +126,9 @@ func (s *session) takes(c sessioncmd.Command) bool {
 	switch c.Kind {
 	case sessioncmd.Picker, sessioncmd.Switch:
 		return true
-	case sessioncmd.Run, sessioncmd.AggyList, sessioncmd.BorrowList, sessioncmd.ToolList:
+	case sessioncmd.Pick:
+		return c.List == "switch" || s.o.Aggy != nil
+	case sessioncmd.Run, sessioncmd.AggyList, sessioncmd.BorrowList, sessioncmd.ToolList, sessioncmd.Fill:
 		return s.o.Aggy != nil
 	case sessioncmd.TrustList:
 		return s.o.TrustList != nil && s.o.TrustAnswer != nil
@@ -147,16 +150,22 @@ func (s *session) runCommand(c sessioncmd.Command, keyed bool) {
 		}
 		s.pickSwitch(Choice{Vendor: c.Vendor, Brief: c.Brief, New: c.New, Model: c.Model}, keyed)
 	case sessioncmd.AggyList:
-		s.showMenu(&menu{title: "commands", items: s.aggyItems()})
+		s.showMenu(&menu{title: "commands", items: s.aggyItems(), filterable: true})
 	case sessioncmd.BorrowList:
-		var items []menuItem
-		for _, k := range adapter.Kinds() {
-			items = append(items, menuItem{label: string(k), line: sessioncmd.Prefix(s.o.Vendor) + "borrow " + string(k) + " ", fill: true})
+		s.showMenu(s.borrowMenu(c, ""))
+	case sessioncmd.Pick:
+		s.openPick(c)
+	case sessioncmd.Fill:
+		if s.open {
+			s.closeView()
 		}
-		s.showMenu(&menu{title: "borrow which kind? Picking one starts the line; write the task and press Enter", items: items})
+		s.fillComposer(c.Line)
 	case sessioncmd.ToolList:
 		s.startRun(c, nil)
 	case sessioncmd.Run:
+		if s.toolByPrefix(c) {
+			return
+		}
 		s.startRun(c, s.cmdArgs(c))
 	case sessioncmd.TrustList:
 		s.startTrust(c)
@@ -291,23 +300,102 @@ func (s *session) hookCommand(c sessioncmd.Command, line string) error {
 	return nil
 }
 
-// aggyItems are /aggy's list: every command, in the CLI's own form.
+// aggyItems are /aggy's list: every command, in the CLI's own form, switch,
+// borrow, and inbox first. Each runs as /aggy <name> (T6978), which works
+// when the person's [commands] leaves the stand-alone name to the CLI; the
+// label shows the stand-alone form for those three.
 func (s *session) aggyItems() []menuItem {
 	pre := sessioncmd.Prefix(s.o.Vendor)
-	items := []menuItem{
-		{label: fmt.Sprintf("%-14s %s", pre+"switch", "switch to another CLI"), line: pre + "switch"},
-		{label: fmt.Sprintf("%-14s %s", pre+"borrow", "borrow a task to another CLI (a model turn)"), line: pre + "borrow"},
-		{label: fmt.Sprintf("%-14s %s", pre+"inbox", "borrow reports you have not read"), line: pre + "inbox"},
-	}
+	var items []menuItem
 	for _, sub := range sessioncmd.Subcommands {
+		label := "aggy " + sub.Name
+		if sub.Name == "switch" || sub.Name == "borrow" || sub.Name == "inbox" {
+			label = pre + sub.Name
+		}
 		line := pre + "aggy " + sub.Name
-		fill := sub.Name == "check" || sub.Name == "accept" || sub.Name == "reject"
-		if fill {
+		if sub.Fill {
 			line += " "
 		}
-		items = append(items, menuItem{label: fmt.Sprintf("%-14s %s", "aggy "+sub.Name, sub.What), line: line, fill: fill})
+		items = append(items, menuItem{label: fmt.Sprintf("%-14s %s", label, sub.What), line: line, fill: sub.Fill, key: sub.Name})
 	}
 	return append(items, menuItem{label: fmt.Sprintf("%-14s %s", pre+"aggy ...", "ask aggy's helper a question (a model turn)"), line: pre + "aggy ", fill: true})
+}
+
+// under is the form a command was typed in: "aggy " for /aggy switch and
+// the like (T6978), so a line built from it works as typed did.
+func under(c sessioncmd.Command) string {
+	if strings.HasPrefix(c.Name, "aggy") {
+		return "aggy "
+	}
+	return ""
+}
+
+// borrowMenu lists the borrow kinds, filtered to prefix: picking one types
+// /borrow <kind> into the composer, in the form c was typed in.
+func (s *session) borrowMenu(c sessioncmd.Command, prefix string) *menu {
+	pre := sessioncmd.Prefix(s.o.Vendor) + under(c)
+	var items []menuItem
+	for _, k := range adapter.Kinds() {
+		items = append(items, menuItem{label: string(k), line: pre + "borrow " + string(k) + " ", fill: true, key: string(k)})
+	}
+	return &menu{title: "borrow which kind? Picking one starts the line; write the task and press Enter", items: items, filterable: true, filter: prefix}
+}
+
+// openPick opens the list c names, filtered to what was typed (T6978):
+// /aggy's commands, the CLIs to switch to, or the borrow kinds. Typing in
+// it narrows it further.
+func (s *session) openPick(c sessioncmd.Command) {
+	switch c.List {
+	case "aggy":
+		s.showMenu(&menu{title: "commands", items: s.aggyItems(), filterable: true, filter: c.Prefix})
+	case "borrow":
+		s.showMenu(s.borrowMenu(c, c.Prefix))
+	case "switch":
+		pre := sessioncmd.Prefix(s.o.Vendor) + under(c)
+		var items []menuItem
+		for _, v := range s.o.Vendors {
+			items = append(items, menuItem{label: string(v), line: pre + "switch " + string(v), key: string(v)})
+		}
+		s.showMenu(&menu{title: "switch to which CLI?", items: items, filterable: true, filter: c.Prefix})
+	}
+}
+
+// toolByPrefix takes /aggy tool on|off <name> typed (not picked from aggy's
+// list), whose name must be a tool's whole name to run (T6978): it reads the
+// tools off the main loop, runs the command when the name is one, and
+// otherwise opens the tools list filtered to it. It reports whether it took c.
+func (s *session) toolByPrefix(c sessioncmd.Command) bool {
+	if c.Sub != "tool" || len(c.Args) != 3 || c.FromList || (c.Args[1] != "on" && c.Args[1] != "off") {
+		return false
+	}
+	if s.open {
+		s.closePicker()
+	}
+	s.cmdSeq++
+	pg := &page{title: c.Name, seq: s.cmdSeq, lines: []string{"Reading the tools..."}, busy: true}
+	names, seq, pre := s.o.ToolNames, s.cmdSeq, sessioncmd.Prefix(s.o.Vendor)
+	s.goSafe(func() {
+		r := cmdResult{seq: seq, tools: true, filter: c.Args[2]}
+		var all []string
+		if names != nil {
+			all = names()
+		}
+		if slices.Contains(all, c.Args[2]) {
+			r.tools, r.runCmd = false, &c
+		}
+		for _, n := range all {
+			r.items = append(r.items, menuItem{label: fmt.Sprintf("%-16s turn it %s", n, c.Args[1]), line: pre + "aggy tool " + c.Args[1] + " " + n, key: n})
+		}
+		select {
+		case s.cmdResults <- r:
+		case <-s.quit:
+		}
+	})
+	s.pk.list()
+	s.pk.page = pg
+	s.viewPaste = pasteFilter{}
+	s.openPicker()
+	return true
 }
 
 // cmdArgs are a Run command's arguments, with the session's own ids where
@@ -378,6 +466,10 @@ type cmdResult struct {
 	items []menuItem
 	// trust is the trust list read for /aggy trust.
 	trust *TrustList
+	// filter narrows the tools listed (toolByPrefix); runCmd is the command
+	// to run once the tool's name was found whole.
+	filter string
+	runCmd *sessioncmd.Command
 }
 
 func (s *session) goRun(seq int, args []string, answer bool) {
@@ -426,11 +518,14 @@ func (s *session) cmdDone(r cmdResult) {
 	}
 	g.busy = false
 	switch {
+	case r.runCmd != nil:
+		s.startRun(*r.runCmd, s.cmdArgs(*r.runCmd))
+		return
 	case r.tools && len(r.items) == 0:
 		g.lines = []string{"No managed tools are defined. aggy tool list shows them."}
 	case r.tools:
 		s.pk.page = nil
-		s.pk.menu = &menu{title: "turn a tool on or off (a resume of this CLI picks it up)", items: r.items}
+		s.pk.menu = &menu{title: "turn a tool on or off (a resume of this CLI picks it up)", items: r.items, filterable: true, filter: r.filter}
 	case r.trust != nil:
 		s.pk.page = nil
 		s.pk.menu = &menu{title: g.title, check: &checkList{lines: r.trust.Lines, st: r.trust.State, opened: time.Now()}}
@@ -483,20 +578,26 @@ func (s *session) menuKey(k viewKey, r rune) bool {
 	if m.check != nil {
 		return s.checkKey(k, r)
 	}
+	items := m.shown()
 	switch {
-	case k == keyClose || r == 'q':
+	case k == keyClose || r == 'q' && !m.filterable:
 		s.closeView()
 		return true
-	case k == keyUp || r == 'k':
+	case k == keyUp || r == 'k' && !m.filterable:
 		m.at = max(m.at-1, 0)
-	case k == keyDown || r == 'j':
-		m.at = max(min(m.at+1, len(m.items)-1), 0)
-	case k == keyEnter && len(m.items) > 0:
-		s.choose(m.items[m.at])
+	case k == keyDown || r == 'j' && !m.filterable:
+		m.at = max(min(m.at+1, len(items)-1), 0)
+	case k == keyEnter && len(items) > 0:
+		s.choose(items[min(m.at, len(items)-1)])
 		return true
-	case r >= '1' && r <= '9' && int(r-'1') < len(m.items):
-		s.choose(m.items[r-'1'])
+	case r >= '1' && r <= '9' && int(r-'1') < len(items):
+		s.choose(items[r-'1'])
 		return true
+	case k == keyBackspace && m.filterable && m.filter != "":
+		// Typing narrows a list opened from what was typed (T6978).
+		m.filter, m.at = m.filter[:len(m.filter)-1], 0
+	case m.filterable && (r >= 'a' && r <= 'z' || r == '-' || r == '_'):
+		m.filter, m.at = m.filter+string(r), 0
 	}
 	return false
 }
@@ -556,6 +657,7 @@ func (s *session) choose(it menuItem) {
 	if !ok || !s.takes(c) {
 		return
 	}
+	c.FromList = true
 	s.log(diag.Rec{Event: diag.EvCommandCaught, Attrs: map[string]any{"command": c.Name, "via": "list"}})
 	s.runCommand(c, true)
 }
