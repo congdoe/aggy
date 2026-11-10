@@ -698,6 +698,8 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		// T6909: commands typed in the session run in this process.
 		Aggy:      sessionAggy,
 		ToolNames: sessionToolNames,
+		// R121: the person's config may leave a command to the CLI.
+		CommandOff: cfg.Commands.CatchOff,
 	})
 	px.guard(0, false) // the CLI was reaped: never signal its pid again
 	dlog.Release()

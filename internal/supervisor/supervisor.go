@@ -138,6 +138,10 @@ type Options struct {
 	// when Tools says this session would get it now. Off the main loop; nil
 	// lists none.
 	ToolNames func() []string
+	// CommandOff reports a command inside a session (switch, borrow, inbox,
+	// aggy) the person's config leaves to the CLI (R121): aggy catches it
+	// neither from the keys nor from a hook. Nil leaves none.
+	CommandOff func(name string) bool
 }
 
 // ToolSet maps a managed tool's name to what a session gets of it (such

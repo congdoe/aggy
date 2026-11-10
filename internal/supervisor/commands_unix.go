@@ -116,6 +116,9 @@ func (s *session) emptyComposer() {
 // takes reports whether this session acts on c. Each kind is taken only where
 // it has something to act with.
 func (s *session) takes(c sessioncmd.Command) bool {
+	if name, _, _ := strings.Cut(c.Name, " "); s.o.CommandOff != nil && s.o.CommandOff(name) {
+		return false
+	}
 	switch c.Kind {
 	case sessioncmd.Picker, sessioncmd.Switch:
 		return true

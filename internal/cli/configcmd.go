@@ -37,6 +37,11 @@ loosens things (a permission mode, a harness turning on) asks y/N first.
                        own (docs/design.md); Codex has no such modes.
   harness.<harness>    on or off. Off, aggy neither opens it nor borrows from it,
                        and a repo cannot turn it back on.
+  commands             on or off: whether aggy catches its commands typed in a
+                       session (/switch, /borrow, /inbox, /aggy). Off, each goes
+                       to the CLI as typed; Ctrl+\ still opens the picker.
+  command.<name>       on or off, for one of switch, borrow, inbox, or aggy, so
+                       your own or a project's skill of that name runs instead.
 
   --dry-run         show the change and make none
 
@@ -86,7 +91,25 @@ func parseConfigKey(key string) (configKey, error) {
 			return config.Quote(m), nil
 		}}, nil
 	}
+	onOff := func(val string) (string, error) {
+		switch val {
+		case "on":
+			return "", nil
+		case "off":
+			return "true", nil
+		}
+		return "", errors.New("use on or off")
+	}
+	if key == "commands" {
+		return configKey{config.Setting{Table: "commands", Key: "off"}, onOff}, nil
+	}
 	head, name, ok := strings.Cut(key, ".")
+	if ok && head == "command" {
+		if !slices.Contains(config.CommandNames, name) {
+			return configKey{}, fmt.Errorf("%q is not one of aggy's commands: use %s", name, strings.Join(config.CommandNames, ", "))
+		}
+		return configKey{config.Setting{Table: "commands." + name, Key: "off"}, onOff}, nil
+	}
 	if ok && (head == "model" || head == "harness") {
 		v, err := vendor(name)
 		if err != nil {
@@ -164,6 +187,16 @@ func configList(stdout, stderr io.Writer) int {
 			state = "off"
 		}
 		fmt.Fprintf(stdout, "harness.%-10s %s\n", v, state)
+	}
+	onOff := func(off bool) string {
+		if off {
+			return "off"
+		}
+		return "on"
+	}
+	fmt.Fprintf(stdout, "commands           %s\n", onOff(cfg.Commands.Off))
+	for _, n := range config.CommandNames {
+		fmt.Fprintf(stdout, "command.%-10s %s\n", n, onOff(cfg.Commands.CatchOff(n)))
 	}
 	return 0
 }

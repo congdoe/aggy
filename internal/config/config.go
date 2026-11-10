@@ -41,6 +41,9 @@ type Config struct {
 	GC       GC           `toml:"gc"`
 	Log      Log          `toml:"log"`
 	Tools    Tools        `toml:"tools"`
+	// Commands turns off aggy's catch of its commands inside a session (R121).
+	// The user's config only: a repo's config has no such table.
+	Commands Commands `toml:"commands"`
 }
 
 // Tools is user config for managed tools' processes. A repo's
@@ -213,6 +216,47 @@ func (vs Vendors) For(v adapter.Vendor) VendorConfig {
 		return vs.OpenCode
 	}
 	return VendorConfig{}
+}
+
+// Commands says which of aggy's commands inside a session it catches
+// (docs/design.md section 5): all of them unless turned off here, all at once
+// (off) or one name at a time ([commands.<name>] off). One turned off goes to
+// the CLI as typed, so a person's or a project's own skill of that name works
+// under aggy; aggy's own skill of the name stays as linked (aggy skill unlink
+// takes them all out).
+type Commands struct {
+	Off    bool          `toml:"off"`
+	Switch CommandConfig `toml:"switch"`
+	Borrow CommandConfig `toml:"borrow"`
+	Inbox  CommandConfig `toml:"inbox"`
+	Aggy   CommandConfig `toml:"aggy"`
+}
+
+// CommandConfig is one command's [commands.<name>] table.
+type CommandConfig struct {
+	Off bool `toml:"off"`
+}
+
+// CommandNames are the commands Commands names, in order.
+var CommandNames = []string{"switch", "borrow", "inbox", "aggy"}
+
+// CatchOff reports whether aggy leaves the command named name (switch, borrow,
+// inbox, or aggy) to the CLI.
+func (c Commands) CatchOff(name string) bool {
+	if c.Off {
+		return true
+	}
+	switch name {
+	case "switch":
+		return c.Switch.Off
+	case "borrow":
+		return c.Borrow.Off
+	case "inbox":
+		return c.Inbox.Off
+	case "aggy":
+		return c.Aggy.Off
+	}
+	return false
 }
 
 // Switch configures the vendor switch picker.

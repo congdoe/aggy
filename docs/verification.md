@@ -853,6 +853,16 @@ Docs and source only, not run live (read 2026-11-09). What aggy relies on:
 - **OpenCode**: only that it loads `~/.claude/skills` and `~/.agents/skills`
   (fake-model, below); whether the command skills show in its menu, and any
   prompt hook, are unverified, so aggy uses the keystroke catch alone there.
+- **Claude skill precedence** (`code.claude.com/docs/en/skills.md`, "Resolve
+  skills that share a name", read 2026-11-09): "Enterprise over personal, and
+  personal over project"; so aggy's skills, linked in `~/.claude/skills`, win
+  over a project's skill of the same name.
+- **OpenCode built-in commands** (`opencode.ai/docs/tui`, read 2026-11-09,
+  current docs, not pinned to a version): `/connect`, `/compact`
+  (`/summarize`), `/editor`, `/exit` (`/quit`, `/q`), `/export`, `/help`,
+  `/init`, `/models`, `/new` (`/clear`), `/redo`, `/sessions` (`/resume`,
+  `/continue`), `/themes`, `/thinking`, `/undo`, `/update`: none is `switch`,
+  `borrow`, `inbox`, or `aggy`.
 - **Every CLI, unverified**: that Ctrl+U (or its CSI u form) clears the composer
   line, which the keystroke catch types in place of the held Enter.
 
