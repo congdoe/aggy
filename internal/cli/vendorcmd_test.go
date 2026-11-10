@@ -14,6 +14,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/diag"
+	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/store"
 )
 
@@ -85,7 +86,27 @@ func TestPrintRefuses(t *testing.T) {
 		// T6962: grok --rules is joined into aggy's own now; --cwd is still refused.
 		{"a flag that clashes", []string{"grok", "-p", "hi", "--cwd", "x"}, 2, "--cwd clashes", "cli.flag_clash"},
 		{"settings that turn hooks off", []string{"claude", "-p", "hi", "--settings", `{"disableAllHooks":true}`}, 2, "--no-policy", "cli.flag_needs_no_policy"},
-		{"OpenCode", []string{"opencode"}, 2, "on screen only", "adapter.unsupported"},
+		// PR #124 review (hand-edited: no words and no terminal is refused
+		// first now, on any vendor).
+		{"OpenCode", []string{"opencode", "-p", "x"}, 2, "on screen only", "adapter.unsupported"},
+		{"no prompt and no terminal", []string{"opencode"}, 2, "needs a terminal or a prompt", "supervisor.no_terminal"},
+		{"bare aggy with no terminal", nil, 2, "needs a terminal or a prompt", "supervisor.no_terminal"},
+		{"a refused subcommand in print mode", []string{"claude", "-p", "ultrareview"}, 2, "names a subcommand", "cli.usage"},
+		{"a refused subcommand piped", []string{"claude", "rc"}, 2, "names a subcommand", "cli.usage"},
+		{"a credential in --settings", []string{"claude", "-p", "--settings", `{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:1"}}`, "hi"}, 2, "credential", "cli.usage"},
+		{"a trust skip in --settings", []string{"claude", "-p", "--settings", `{"enableAllProjectMcpServers":true}`, "hi"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"--no-policy with no terminal", []string{"claude", "--no-policy", "-p", "--dangerously-skip-permissions", "hi"}, 2, "neither stdin nor stderr", "supervisor.no_terminal"},
+		{"--desktop", []string{"claude", "--desktop"}, 2, "outside this terminal", "cli.flag_clash"},
+		{"--bg", []string{"claude", "--bg", "x"}, 2, "background worker", "cli.flag_clash"},
+		{"a cluster with a version flag adds the policy", []string{"claude", "-nv", "--settings", `{"permissions":{"defaultMode":"bypassPermissions"}}`, "do it"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"a list then --version adds the policy", []string{"claude", "--allowedTools", "--version", "--dangerously-skip-permissions", "do it"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"codex exec --add-dir keys", []string{"codex", "exec", "--add-dir", "~/.ssh", "x"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"grok -p --add-dir keys", []string{"grok", "-p", "x", "--add-dir", "~/.ssh"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"codex --worktree --add-dir keys", []string{"codex", "--worktree", "--add-dir", "~/.ssh", "x"}, 2, "--no-policy", "cli.flag_needs_no_policy"},
+		{"claude agents", []string{"claude", "agents", "--permission-mode", "bypassPermissions"}, 2, "names a subcommand", "cli.usage"},
+		{"claude mcp serve", []string{"claude", "mcp", "serve"}, 2, "serves the CLI's own tools", "cli.usage"},
+		{"a gated flag in a subcommand", []string{"claude", "auth", "status", "--dangerously-skip-permissions"}, 2, "no policy", "cli.flag_clash"},
+		{"--version alone runs as given", []string{"claude", "--version"}, 1, "", "vendor.cli_missing"},
 		{"aggy -r with an id", []string{"-r", "abcd", "-p", "hi"}, 2, "own resume flag", "cli.usage"},
 		{"a session id is the CLI's here", []string{"claude", "-p", "--session-id", "x", "hi"}, 1, "", "vendor.cli_missing"},
 		{"bare flags", []string{"--model", "opus", "-p", "hi"}, 1, "", "vendor.cli_missing"},
@@ -97,6 +118,8 @@ func TestPrintRefuses(t *testing.T) {
 	}
 	defer func(f func() bool) { stdinTerminal = f }(stdinTerminal)
 	stdinTerminal = func() bool { return false }
+	defer func(f func() bool) { stderrTerminal = f }(stderrTerminal)
+	stderrTerminal = func() bool { return false }
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			isolate(t)
@@ -108,7 +131,73 @@ func TestPrintRefuses(t *testing.T) {
 			if !strings.Contains(errb.String(), tt.want) || !strings.Contains(errb.String(), "["+tt.code+" · run ") {
 				t.Errorf("stderr = %q, want %q and %s", errb.String(), tt.want, tt.code)
 			}
+			// A refusal has no side effects (PR #124 review): no index.
+			dir, err := home.Dir()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, store.FileName)); err == nil {
+				t.Errorf("the run created the index")
+			}
 		})
+	}
+}
+
+// TestLaunchGates (PR #124 review): every path that starts a vendor CLI
+// refuses in a borrow child, and --no-policy from a session's tool shell or
+// with no terminal; aggy -p names the default vendor's own print form when -p
+// is not one.
+func TestLaunchGates(t *testing.T) {
+	tests := []struct {
+		name string
+		env  []string
+		args []string
+		tty  bool
+		want string
+		code string
+	}{
+		{"a borrow child's aggy -p", []string{"AGGY_DELEGATED=1"}, []string{"-p", "hi"}, false, "borrow child", "borrow.one_hop"},
+		{"a borrow child's aggy claude -p", []string{"AGGY_DELEGATED=1"}, []string{"claude", "-p", "hi"}, false, "borrow child", "borrow.one_hop"},
+		{"a borrow child's subcommand", []string{"AGGY_DELEGATED=1"}, []string{"claude", "mcp", "list"}, false, "borrow child", "borrow.one_hop"},
+		{"a borrow child's --version", []string{"AGGY_DELEGATED=1"}, []string{"codex", "--version"}, false, "borrow child", "borrow.one_hop"},
+		{"--no-policy from a session's shell", []string{"AGGY_VENDOR=claude", "AGGY_SOCKET=/x"}, []string{"claude", "--no-policy", "-p", "--dangerously-skip-permissions", "hi"}, true, "tool shell", "supervisor.no_terminal"},
+	}
+	defer func(f func() bool) { stdinTerminal = f }(stdinTerminal)
+	defer func(f func() bool) { stderrTerminal = f }(stderrTerminal)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolate(t)
+			t.Setenv("PATH", t.TempDir())
+			for _, kv := range tt.env {
+				k, v, _ := strings.Cut(kv, "=")
+				t.Setenv(k, v)
+			}
+			stdinTerminal = func() bool { return false }
+			stderrTerminal = func() bool { return tt.tty }
+			var out, errb bytes.Buffer
+			if code := Run(tt.args, &out, &errb); code != 2 {
+				t.Errorf("exit = %d, want 2", code)
+			}
+			if !strings.Contains(errb.String(), tt.want) || !strings.Contains(errb.String(), "["+tt.code+" · run ") {
+				t.Errorf("stderr = %q, want %q and %s", errb.String(), tt.want, tt.code)
+			}
+		})
+	}
+	for _, c := range []struct {
+		v    adapter.Vendor
+		args []string
+		want string
+	}{
+		{adapter.Codex, []string{"-p", "x"}, "codex exec"},
+		{adapter.Codex, []string{"--print=x"}, "codex exec"},
+		{adapter.OpenCode, []string{"-p", "x"}, "no print mode"},
+		{adapter.Claude, []string{"-p", "x"}, ""},
+		{adapter.Grok, []string{"-p", "x"}, ""},
+		{adapter.Codex, []string{"--", "-p"}, ""},
+	} {
+		if got := printFormRefusal(c.v, c.args); c.want == "" && got != "" || !strings.Contains(got, c.want) {
+			t.Errorf("printFormRefusal(%s, %q) = %q, want %q", c.v, c.args, got, c.want)
+		}
 	}
 }
 
@@ -123,7 +212,20 @@ func TestNearCommand(t *testing.T) {
 		{"nope", ""},
 		{"run", ""}, // too short to guess at
 		{"explain", ""},
-		{"Sessions", ""},
+		// PR #124 review (hand-edited: "Sessions" was a prompt): case is
+		// ignored, a swap is one edit, five letters may be two edits off, and
+		// vendor names and short forms count.
+		{"Sessions", "sessions"},
+		{"Doctor", "doctor"},
+		{"dcotor", "doctor"},
+		{"swtich", "switch"},
+		{"setpu", "setup"},
+		{"claud", "claude"},
+		{"codx", "codex"},
+		{"img", "image"},
+		{"borrw", "borrow"},
+		{"review", ""},
+		{"go", ""},
 	}
 	for _, tt := range tests {
 		if got := nearCommand(tt.word); got != tt.want {

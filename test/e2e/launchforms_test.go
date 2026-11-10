@@ -217,6 +217,16 @@ func TestSettingsMerged(t *testing.T) {
 			if n := len(r.Flags["--settings"]); n != 1 {
 				t.Fatalf("--settings given %d times: %q", n, r.Args)
 			}
+			if tt.file {
+				// PR #124 review (hand-edited): a settings file's content stays
+				// off argv; the merged layer goes in a 0600 file in aggy's run
+				// directory, removed with the run, so only its path is seen.
+				v := r.Flags["--settings"][0]
+				if !strings.HasPrefix(v, filepath.Join(w.home, ".aggy", "run")+"/") || strings.Contains(strings.Join(r.Args, " "), "Bash(ls)") {
+					t.Errorf("--settings %q, args %q: want a path in aggy's run directory and none of the file's content", v, r.Args)
+				}
+				return
+			}
 			var layer struct {
 				Permissions struct{ Allow, Deny []string } `json:"permissions"`
 				Model       string                         `json:"model"`
@@ -270,8 +280,8 @@ func TestSubcommandPassThrough(t *testing.T) {
 	}
 }
 
-// TestProbeCached (T6964): a second launch of an unchanged CLI starts no probe
-// process (--version or --help).
+// TestProbeCached (T6964): a second launch of an unchanged CLI runs no help
+// probe; its --version runs each time (PR #124 review).
 func TestProbeCached(t *testing.T) {
 	tests := []struct {
 		name string
@@ -299,12 +309,14 @@ func TestProbeCached(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(w.bin, "claude"), []byte(wrapper), 0o755); err != nil {
 				t.Fatal(err)
 			}
+			// PR #124 review: --version runs on every launch, behind a shim the
+			// binary does not change; only the help runs are cached.
 			probes := func() int {
 				b, err := os.ReadFile(log)
 				if err != nil && !os.IsNotExist(err) {
 					t.Fatal(err)
 				}
-				return strings.Count(string(b), "\n")
+				return strings.Count(string(b), "--help")
 			}
 			launch := func() {
 				t.Helper()
@@ -322,7 +334,7 @@ func TestProbeCached(t *testing.T) {
 			}
 			launch()
 			if n := probes(); n != first {
-				t.Errorf("second launch started %d probe processes", n-first)
+				t.Errorf("second launch ran %d help probes", n-first)
 			}
 		})
 	}

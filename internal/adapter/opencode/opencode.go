@@ -62,12 +62,6 @@ func (Adapter) PassFlags() adapter.PassFlags {
 	}
 }
 
-// Manage are OpenCode's subcommands aggy runs as typed, with nothing added
-// (T6963): the ones recorded live at 2.2.5 (docs/verification.md: auth list,
-// models, mcp list, debug config). Its upgrade command is not recorded, so it
-// is not here (unverified); run opencode itself for it.
-var Manage = []string{"auth", "debug", "mcp", "models"}
-
 // TestedVersions returns Tested.
 func (Adapter) TestedVersions() adapter.VersionRange { return Tested }
 

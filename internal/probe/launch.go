@@ -49,31 +49,25 @@ const (
 )
 
 // Launch probes vendor's CLI at path for a launch (T6964): the version, the
-// capabilities, and the flags its help shows with a value. When the store
-// holds a probe of the same binary (BinaryID) made with the same spec, it
-// returns that one (cached is true) and starts no process. Otherwise it probes
-// in full and records the result under the binary's identity, unless a help
-// run or the version failed or the binary changed while it ran. A version or
-// help that failed leaves nothing recorded, so the next launch probes again.
-// With no store, or a binary with no identity, it probes and records nothing.
-func Launch(ctx context.Context, s *store.Store, run adapter.Runner, vendor adapter.Vendor, path string) (res adapter.Probe, cached bool, err error) {
+// capabilities, and the flags its help shows with a value. It runs --version
+// every time, one process: behind a version manager's shim (volta, mise, asdf)
+// the file path names never changes when the CLI does (PR #124 review). When
+// the store holds a probe of the same binary (BinaryID) that reported the same
+// version, made with the same spec, it returns that one (cached is true) and
+// runs no help. Otherwise it probes the help too, and, when record is set,
+// records the result under the binary's identity and version, unless a help
+// run or the version failed or the binary changed while it ran, so the next
+// launch probes again. With no store, or a binary with no identity, it probes
+// in full and records nothing. A launch passes record only once its checks
+// have passed, so a refused one writes nothing.
+func Launch(ctx context.Context, s *store.Store, run adapter.Runner, vendor adapter.Vendor, path string, record bool) (res adapter.Probe, cached bool, err error) {
 	spec, ok := Specs[vendor]
 	if !ok {
 		return adapter.Probe{}, false, fmt.Errorf("probe: no spec for vendor %q", vendor)
 	}
 	stamp := specStamp(spec)
-	id, idErr := BinaryID(path)
-	if s != nil && idErr == nil {
-		row, err := s.ProbeByBinary(ctx, string(vendor), id)
-		switch {
-		case err == nil && slices.Contains(row.Capabilities, stamp) && slices.Contains(row.Capabilities, launchStamp):
-			res := adapter.Probe{Vendor: vendor, Path: path, Version: row.Version, ProbedAt: row.ProbedAt,
-				Capabilities: unstamped(row.Capabilities), ValueFlags: valueFlags(row.Capabilities)}
-			return res, true, nil
-		}
-		// Otherwise (none, another spec, or a read error), probe in full.
-	}
 	res = adapter.Probe{Vendor: vendor, Path: path, Capabilities: []string{}}
+	id, idErr := BinaryID(path)
 	version, verr := Version(ctx, run, path, spec.Programs)
 	if verr != nil && !unreadable(verr) {
 		return res, false, verr
@@ -83,13 +77,22 @@ func Launch(ctx context.Context, s *store.Store, run adapter.Runner, vendor adap
 		res.VersionLine = ve.Line
 	}
 	res.Version = version
+	if s != nil && idErr == nil {
+		row, err := s.ProbeByBinary(ctx, string(vendor), id, version)
+		if err == nil && slices.Contains(row.Capabilities, stamp) && slices.Contains(row.Capabilities, launchStamp) {
+			res.ProbedAt = row.ProbedAt
+			res.Capabilities, res.ValueFlags = unstamped(row.Capabilities), valueFlags(row.Capabilities)
+			return res, true, nil
+		}
+		// Otherwise (none, another spec, or a read error), probe the help.
+	}
 	hs, herr := helps(ctx, run, spec, path)
 	res.Capabilities = Capabilities(spec, hs)
 	if len(hs) > 0 {
 		res.ValueFlags = ValueFlags(hs[0])
 	}
 	res.ProbedAt = time.Now().UTC().Truncate(time.Millisecond)
-	if s == nil || idErr != nil || verr != nil || herr != nil {
+	if !record || s == nil || idErr != nil || verr != nil || herr != nil {
 		return res, false, nil
 	}
 	if after, err := BinaryID(path); err != nil || after != id {

@@ -323,7 +323,8 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// The probe finds the flags whose presence is only known from help:
 	// Codex --no-alt-screen and -c, Claude --settings, Grok --rules and
 	// --deny.
-	probed, err := probeCLI(ctx, v, path)
+	// Recorded: the index is open and plan has used it already.
+	probed, err := probeCLI(ctx, v, path, true)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: probing %s: %s; starting it without the flags help must list\n", name, v, termsafe.Line(err.Error()))
 	}
@@ -347,24 +348,15 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			pl.child.Model = tp.Model
 		}
 	}
-	if err := gateDirFlags(tp, pl.child.Cwd); err != nil {
-		return fail(diag.CodeFlagLoosens, err)
+	// The one gate every path runs (PR #124 review): folder flags, the
+	// person's own --settings, merged under aggy's layer (T6962), who asked for
+	// --no-policy, and the rest. What only --no-policy lets through is kept from
+	// a later launch of the session.
+	g, code, err := gateLaunch(ctx, tp, v, pl.child.Cwd, cfg, pl.child.Kind == "")
+	if err != nil {
+		return fail(code, err)
 	}
-	// The person's own --settings, merged under aggy's layer (T6962); one that
-	// only --no-policy lets through is kept from a later launch of the session.
-	extra := tp.Extra
-	var userSettings map[string]any
-	if v == adapter.Claude {
-		layer, rest, loosens, err := claudeSettings(tp.Extra, pl.child.Cwd, tp.NoPolicy)
-		if err != nil {
-			return fail(settingsCode(err), err)
-		}
-		extra, userSettings = rest, layer
-		if loosens {
-			tp.Loosens = append(tp.Loosens, "--settings")
-			_, tp.SafeExtra = adapter.TakeFlag(tp.SafeExtra, "--settings")
-		}
-	}
+	extra, userSettings := g.extra, g.layer
 	t = *tp
 	key, err := config.ParseKey(cfg.Switch.Key)
 	if err != nil {
@@ -457,6 +449,13 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		tw = addTools(ctx, v, caps, pl.child.Cwd, memDir, t.Tools, &req)
 	}
 	defer func() { _ = safefs.RemoveAll(memDir) }()
+	if v == adapter.Claude {
+		// After the tools, whose hooks ride in the same layer.
+		if err := writeSettingsFile(&req, g, memDir); err != nil {
+			return fail(diag.CodeLaunchFailed, err)
+		}
+		tw = append(tw, settingsNotes(req)...)
+	}
 	for _, w := range append(append(warns, mw...), tw...) {
 		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
 	}
@@ -1022,7 +1021,7 @@ func (r *roIndex) close() {
 // probeCaps probes v's CLI at path for the flags whose presence is only
 // known from its help, and its version.
 func probeCaps(ctx context.Context, v adapter.Vendor, path string) ([]string, string, error) {
-	probed, err := probeCLI(ctx, v, path)
+	probed, err := probeCLI(ctx, v, path, true)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1032,21 +1031,29 @@ func probeCaps(ctx context.Context, v adapter.Vendor, path string) ([]string, st
 // probeCLI probes v's CLI at path: its version, capabilities, and the flags its
 // help shows with a value.
 //
-// The result is cached in the index by the binary's identity (T6964,
-// probe.Launch): an unchanged binary costs no process start. Without the
-// index (it cannot be opened), the CLI is probed as before and nothing is
-// recorded. The probe row is the only thing a print-mode or as-given run
-// records.
-func probeCLI(ctx context.Context, v adapter.Vendor, path string) (adapter.Probe, error) {
+// The help is cached in the index by the binary's identity and the version it
+// reports (T6964, probe.Launch): an unchanged binary costs one process, its
+// --version. record is set once the launch's checks have passed: it may then
+// create the index and add the probe. Without it, a probe reads an index that
+// is there and writes nothing, so a refused launch has no side effects (PR
+// #124 review). Without an index, the CLI is probed in full.
+func probeCLI(ctx context.Context, v adapter.Vendor, path string, record bool) (adapter.Probe, error) {
 	var s *store.Store
 	if sp, err := store.DefaultPath(); err == nil {
-		if s, err = store.Open(ctx, sp); err == nil {
+		if record {
+			s, err = store.Open(ctx, sp)
+		} else if _, serr := safefs.Stat(sp); serr == nil {
+			s, err = store.OpenReadOnly(ctx, sp)
+		} else {
+			err = serr
+		}
+		if err == nil {
 			defer func() { _ = s.Close() }()
 		} else {
 			s = nil
 		}
 	}
-	probed, _, err := probe.Launch(ctx, s, execrun.ExecRunner(probeTimeout), v, path)
+	probed, _, err := probe.Launch(ctx, s, execrun.ExecRunner(probeTimeout), v, path, record)
 	if errors.Is(err, probe.ErrNotRecorded) {
 		// The probe ran; only recording it failed.
 		return probed, nil

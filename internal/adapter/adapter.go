@@ -280,6 +280,11 @@ type InteractiveRequest struct {
 	// checked by the launch (T6962), which Claude merges into the inline layer
 	// it passes, under aggy's: neither is dropped, and aggy's deny rules stay.
 	UserSettings map[string]any
+	// SettingsPath, when set, is an absolute 0600 file in aggy's run
+	// directory that holds the settings layer Claude's adapter would pass
+	// inline (claude.SettingsJSON), written by the launch so a person's
+	// --settings file is not copied onto argv (PR #124 review).
+	SettingsPath string
 	// Print builds a run aggy neither supervises nor records (print mode,
 	// a stdin that is no terminal): no session id, no brief, and no flag
 	// that only shapes the screen (Codex's and Grok's --no-alt-screen).

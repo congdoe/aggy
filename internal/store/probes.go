@@ -43,12 +43,13 @@ func (s *Store) LatestProbe(ctx context.Context, vendor, cliPath, version string
 }
 
 // ProbeByBinary returns the newest probe of vendor's CLI recorded with
-// binaryID, or ErrNotFound. An empty binaryID matches nothing.
-func (s *Store) ProbeByBinary(ctx context.Context, vendor, binaryID string) (Probe, error) {
-	if binaryID == "" {
+// binaryID that reported version, or ErrNotFound. An empty binaryID or
+// version matches nothing.
+func (s *Store) ProbeByBinary(ctx context.Context, vendor, binaryID, version string) (Probe, error) {
+	if binaryID == "" || version == "" {
 		return Probe{}, ErrNotFound
 	}
-	return s.probe(ctx, `WHERE vendor = ? AND binary_id = ?`, vendor, binaryID)
+	return s.probe(ctx, `WHERE vendor = ? AND binary_id = ? AND version = ?`, vendor, binaryID, version)
 }
 
 // probe returns the newest probes row where says, or ErrNotFound.
