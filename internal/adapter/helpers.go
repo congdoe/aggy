@@ -121,8 +121,11 @@ const MaxResumeName = 200
 // a session's name (T6965). It is only ever that flag's value, so it must not
 // read as a flag (a leading "-"), a path (Claude's --resume takes a
 // transcript's absolute path too, code.claude.com/docs/en/sessions: so no "/"
-// or "\" anywhere, and no leading "." or "~"), or carry a control, format, or
-// invalid byte; and it is at most MaxResumeName bytes.
+// or "\" anywhere, no leading "." or "~", and no ".jsonl" ending), or carry a
+// control, format, line or paragraph separator, or invalid byte; it has no
+// white space at either end, which a CLI might trim into another name; and it
+// is at most MaxResumeName bytes (PR #127 review). That it is no subcommand of
+// the CLI the caller checks, which knows the CLI's list.
 func ValidResumeName(name string) error {
 	switch {
 	case strings.TrimSpace(name) == "":
@@ -133,19 +136,27 @@ func ValidResumeName(name string) error {
 		return errors.New("a session name that is not UTF-8")
 	case strings.HasPrefix(name, "-"):
 		return errors.New("a session name that starts with -, which the CLI would read as a flag")
-	case strings.ContainsAny(name, `/\`) || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "~"):
+	case strings.ContainsAny(name, `/\`) || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "~") ||
+		strings.HasSuffix(strings.ToLower(name), ".jsonl"):
 		return errors.New("a session name that could be a path")
+	case strings.TrimFunc(name, unicode.IsSpace) != name:
+		return errors.New("a session name with white space at an end")
 	}
 	for _, r := range name {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
-			return errors.New("a session name with a control or format character")
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
+			return errors.New("a session name with a control, format, or line-separator character")
 		}
 	}
 	return nil
 }
 
-// ResumeNameArgs is --resume <name> after ValidResumeName, for a request
-// with no other session flag (InteractiveRequest.ResumeName).
+// ResumeNameArgs is --resume=<name> after ValidResumeName, for a request with
+// no other session flag (InteractiveRequest.ResumeName). The "=" form binds the
+// name to the flag whatever it holds, and both CLIs that take a name document
+// it for their parser: Claude's commander ("the option-argument can ... follow
+// an = for a long option", github.com/tj/commander.js Readme.md, "Options",
+// read 2026-11-10) and Grok's clap (--name=bob, docs.rs/clap tutorial,
+// "Options", read 2026-11-10). Codex takes no name (it is not passed one).
 func ResumeNameArgs(req InteractiveRequest) ([]string, error) {
 	if req.SessionID != "" || req.Resume != "" || req.Fork {
 		return nil, errors.New("adapter: a session name with another session flag")
@@ -153,7 +164,7 @@ func ResumeNameArgs(req InteractiveRequest) ([]string, error) {
 	if err := ValidResumeName(req.ResumeName); err != nil {
 		return nil, fmt.Errorf("adapter: %w", err)
 	}
-	return []string{"--resume", req.ResumeName}, nil
+	return []string{"--resume=" + req.ResumeName}, nil
 }
 
 func isNotExist(err error) bool {

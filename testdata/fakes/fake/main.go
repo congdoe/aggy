@@ -327,7 +327,7 @@ var specs = map[string]flagSpec{
 		// "Launch-time MCP"); its variadic form is not modelled, aggy
 		// passes one comma-joined value.
 		values:   []string{"--output-format", "--permission-mode", "--session-id", "--tools", "--setting-sources", "--append-system-prompt-file", "--settings", "--allowedTools", "--model"},
-		switches: []string{"-p", "--fork-session", "--strict-mcp-config"},
+		switches: []string{"-p", "--fork-session", "--strict-mcp-config", "--no-session-persistence"},
 		optional: []string{"--resume"},
 		variadic: []string{"--mcp-config"},
 	},

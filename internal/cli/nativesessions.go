@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -72,8 +73,11 @@ const (
 	// maxNativeListed bounds the sessions per vendor whose first prompt is
 	// read for one list.
 	maxNativeListed = 50
-	// maxCodexScan bounds the rollouts whose first line is read for one list.
+	// maxCodexScan bounds the rollouts, newest by name, that one scan stats.
 	maxCodexScan = 400
+	// maxNativeChecked bounds the sessions of one vendor whose head one list
+	// or -c reads to check them (checkNative).
+	maxNativeChecked = 400
 	// nativeHead is how much of a session file is read for its first prompt.
 	nativeHead = 256 << 10
 )
@@ -114,28 +118,108 @@ func folderForms(cwd string) []string {
 	return out
 }
 
-// nativeSessions lists v's sessions for the folder cwd, newest first, at most
-// maxNativeListed. A vendor home or session folder that is not there lists
-// none.
+// nativeSessions lists v's sessions for the folder cwd, newest first (one
+// modified past the future limit last, nativeFuture), at most maxNativeListed,
+// each checked to be the folder's (checkNative). A vendor home or session
+// folder that is not there lists none.
 func nativeSessions(files *sessionFiles, v adapter.Vendor, cwd string) ([]nativeSession, error) {
-	out := scanNative(files, v, cwd)
-	slices.SortStableFunc(out, func(a, b nativeSession) int {
+	cands := scanNative(files, v, cwd)
+	sortNative(cands, time.Now())
+	var out []nativeSession
+	for i, n := range cands {
+		if len(out) == maxNativeListed || i == maxNativeChecked {
+			break
+		}
+		if checkNative(&n, cwd, true) {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
+// nativeFuture reports whether n was modified past now and store.FutureSlack: a
+// clock that was wrong, or a file's time set by hand (PR #127 review). Such a
+// session is listed last and never wins -c.
+func nativeFuture(n nativeSession, now time.Time) bool {
+	return n.Modified.After(now.Add(store.FutureSlack))
+}
+
+// sortNative sorts ns newest first, those past the future limit last.
+func sortNative(ns []nativeSession, now time.Time) {
+	slices.SortStableFunc(ns, func(a, b nativeSession) int {
+		if fa, fb := nativeFuture(a, now), nativeFuture(b, now); fa != fb {
+			if fa {
+				return 1
+			}
+			return -1
+		}
 		if n := b.Modified.Compare(a.Modified); n != 0 {
 			return n
 		}
 		return strings.Compare(a.ID, b.ID)
 	})
-	if len(out) > maxNativeListed {
-		out = out[:maxNativeListed]
-	}
-	for i := range out {
-		out[i].Title = nativeTitle(out[i])
-	}
-	return out, nil
 }
 
-// scanNative is every session of v found for cwd, in no order and without
-// titles.
+// nativeHeadReads counts the session files whose head was read (checkNative);
+// a test reads it to see what a list or -c costs.
+var nativeHeadReads atomic.Int64
+
+// checkNative reports whether n, a session scanNative found for cwd, is that
+// folder's, from the head of its file, and with title set, sets n.Title from
+// the same read (PR #127 review):
+//
+//   - Claude: the folder name is not one-to-one (my_app and my-app share one,
+//     and CLAUDE_CODE_PROJECT_DIR_NAME can name one for every folder), so the
+//     file must record this folder as its cwd (transcript.ClaudeCwd); a file
+//     that records none is no folder's.
+//   - Codex: the rollout's session_meta must name the interactive TUI as its
+//     source and this folder as its cwd (rolloutInDir).
+//   - Grok: its folder name is the cwd url-encoded, one-to-one, and the session
+//     files record no cwd in a field aggy has a source for, so the folder
+//     scanNative found it in is its folder; nothing is read but the title.
+func checkNative(n *nativeSession, cwd string, title bool) bool {
+	root, path := nativeFile(*n, n.dir)
+	switch n.Vendor {
+	case adapter.Claude:
+		nativeHeadReads.Add(1)
+		data, err := transcript.ReadHead(root, path, nativeHead)
+		if err != nil {
+			return false
+		}
+		if c, ok := transcript.ClaudeCwd(data); !ok || !sameFolder(c, folderForms(cwd)) {
+			return false
+		}
+		if title {
+			n.Title = transcript.FirstPrompt(n.Vendor, data)
+		}
+		return true
+	case adapter.Codex:
+		nativeHeadReads.Add(1)
+		if !rolloutInDir(path, n.ID, folderForms(cwd)) {
+			return false
+		}
+	}
+	if title {
+		n.Title = nativeTitle(*n)
+	}
+	return true
+}
+
+// sameFolder reports whether recorded, a folder a session file names, is one
+// of cwds (folderForms), as given or resolved.
+func sameFolder(recorded string, cwds []string) bool {
+	if !filepath.IsAbs(recorded) {
+		return false
+	}
+	if slices.Contains(cwds, filepath.Clean(recorded)) {
+		return true
+	}
+	c, err := safefs.CanonicalPath(recorded)
+	return err == nil && slices.Contains(cwds, c)
+}
+
+// scanNative is every session of v found for cwd, in no order, without titles,
+// and not yet checked (checkNative): what listing the session folder gives.
 func scanNative(files *sessionFiles, v adapter.Vendor, cwd string) []nativeSession {
 	if !slices.Contains(nativeVendors, v) || cwd == "" {
 		return nil
@@ -149,7 +233,7 @@ func scanNative(files *sessionFiles, v adapter.Vendor, cwd string) []nativeSessi
 	case adapter.Claude:
 		found = claudeNative(files, h, cwd)
 	case adapter.Codex:
-		found = codexNative(h, cwd)
+		found = codexNative(h)
 	case adapter.Grok:
 		found = grokNative(h, cwd)
 	}
@@ -183,6 +267,7 @@ func nativeFile(s nativeSession, cwdDir string) (root, path string) {
 
 // nativeTitle reads the first prompt of s, or "" when it cannot.
 func nativeTitle(s nativeSession) string {
+	nativeHeadReads.Add(1)
 	root, path := nativeFile(s, s.dir)
 	head := int64(nativeHead)
 	if s.Vendor == adapter.Codex {
@@ -227,7 +312,7 @@ func claudeNative(files *sessionFiles, home, cwd string) []nativeSession {
 	return out
 }
 
-func codexNative(home, cwd string) []nativeSession {
+func codexNative(home string) []nativeSession {
 	root := filepath.Join(home, "sessions")
 	if !isDirNoFollow(root) {
 		return nil
@@ -242,15 +327,15 @@ func codexNative(home, cwd string) []nativeSession {
 	if len(rs) > maxCodexScan {
 		rs = rs[:maxCodexScan]
 	}
-	cwds := folderForms(cwd)
 	var out []nativeSession
 	for _, r := range rs {
 		rel, err := filepath.Rel(root, r.path)
 		if err != nil || !realDir(root, filepath.Dir(r.path)) {
 			continue
 		}
+		// Whose folder it is, checkNative reads, for as few as are needed.
 		t, ok := regularMtime(r.path)
-		if !ok || !rolloutInDir(r.path, r.id, cwds) {
+		if !ok {
 			continue
 		}
 		out = append(out, nativeSession{Vendor: adapter.Codex, ID: r.id, Home: home, Modified: t, dir: rel})
@@ -312,24 +397,36 @@ type sessionChoice struct {
 	Title   string // untrusted; shown through sessionTitle
 	ChildID string // the recorded child, or ""
 	Native  *nativeSession
+	// future: a native session modified past the future limit, listed last.
+	future bool
 }
 
 // sessionChoices lists the sessions of vendors in the folder cwd, newest
 // first: the interactive children aggy recorded in the folder's parents that
 // can be reopened, and the native sessions in the vendors' own stores that no
 // child of aggy's holds (one a borrow ran there is a child too, and is left
-// out). s may be nil (no index yet): then every session is native.
-func sessionChoices(ctx context.Context, s *store.Store, cwd string, vendors []adapter.Vendor, files *sessionFiles) ([]sessionChoice, error) {
-	var out []sessionChoice
-	byID := map[string]int{} // vendor/session id to its choice
+// out), a native one modified past the future limit last (nativeFuture). s may
+// be nil (no index yet): then every session is native. slow says the vendors'
+// own folders took longer than nativeBudget and only aggy's are listed.
+func sessionChoices(ctx context.Context, s *store.Store, cwd string, vendors []adapter.Vendor, files *sessionFiles) (out []sessionChoice, slow bool, err error) {
+	natives, ok := withinBudget(func() [][]nativeSession {
+		nf := &sessionFiles{getenv: files.getenv, now: files.now, readOnly: true}
+		var all [][]nativeSession
+		for _, v := range vendors {
+			ns, _ := nativeSessions(nf, v, cwd)
+			all = append(all, ns)
+		}
+		return all
+	})
+	byID := map[string]int{} // vendor/session id, folded, to its choice
 	if s != nil {
 		key, err := safefs.CanonicalPath(cwd)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		ps, err := s.ParentsInDir(ctx, key, cwd)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		for _, par := range ps {
 			if replaced(par) {
@@ -337,7 +434,7 @@ func sessionChoices(ctx context.Context, s *store.Store, cwd string, vendors []a
 			}
 			children, err := planRefresh(ctx, s, par.ID, files)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			for _, c := range children {
 				if c.Kind != "" || c.VendorSessionID == "" || c.Status == stateClosed || c.Status == stateGone ||
@@ -348,51 +445,88 @@ func sessionChoices(ctx context.Context, s *store.Store, cwd string, vendors []a
 				if title == "" {
 					title = par.Title
 				}
-				byID[c.Vendor+"/"+c.VendorSessionID] = len(out)
+				byID[c.Vendor+"/"+strings.ToLower(c.VendorSessionID)] = len(out)
 				out = append(out, sessionChoice{Vendor: adapter.Vendor(c.Vendor), When: c.LastActive, Title: title, ChildID: c.ID})
 			}
 		}
 	}
-	for _, v := range vendors {
-		ns, err := nativeSessions(files, v, cwd)
-		if err != nil {
-			return nil, err
-		}
+	now := time.Now()
+	for _, ns := range natives {
 		for i := range ns {
 			n := ns[i]
-			if j, ok := byID[string(v)+"/"+n.ID]; ok {
+			if j, ok := byID[string(n.Vendor)+"/"+strings.ToLower(n.ID)]; ok {
 				if out[j].Title == "" {
 					out[j].Title = n.Title
 				}
 				continue
 			}
 			if s != nil {
-				if _, err := s.ChildBySession(ctx, string(v), n.ID); err == nil {
+				if _, err := s.ChildBySession(ctx, string(n.Vendor), n.ID); err == nil {
 					continue
 				} else if !errors.Is(err, store.ErrNotFound) {
-					return nil, err
+					return nil, false, err
 				}
 			}
-			out = append(out, sessionChoice{Vendor: v, When: n.Modified, Title: n.Title, Native: &n})
+			out = append(out, sessionChoice{Vendor: n.Vendor, When: n.Modified, Title: n.Title, Native: &n,
+				future: nativeFuture(n, now)})
 		}
 	}
-	limit := time.Now().Add(store.FutureSlack)
-	at := func(c sessionChoice) time.Time {
-		if c.When.After(limit) {
-			return limit
+	slices.SortStableFunc(out, func(a, b sessionChoice) int {
+		if a.future != b.future {
+			if a.future {
+				return 1
+			}
+			return -1
 		}
-		return c.When
-	}
-	slices.SortStableFunc(out, func(a, b sessionChoice) int { return at(b).Compare(at(a)) })
-	return out, nil
+		return b.When.Compare(a.When)
+	})
+	return out, !ok, nil
 }
 
-// findNative is the native session of one of vendors in cwd with id, or false.
+// nativeBudget bounds one look at the vendors' own session folders (PR #127
+// review): a folder on a slow or hung disk must not hold up a launch. Past it,
+// aggy goes on with its own index alone and says so (nativeSlowNote).
+var nativeBudget = 3 * time.Second
+
+// nativeScanHook, when set, runs first in each look withinBudget makes; a test
+// makes the look slow with it.
+var nativeScanHook func()
+
+// nativeSlowNote is said when a look took longer than nativeBudget.
+const nativeSlowNote = "the CLIs' own session folders took more than a few seconds to read, so aggy looked at its own sessions only"
+
+// withinBudget runs fn, which must only read, and returns its result, or false
+// when it took longer than nativeBudget. fn then runs on to its end unwatched,
+// and its result is dropped.
+func withinBudget[T any](fn func() T) (T, bool) {
+	ch := make(chan T, 1)
+	hook := nativeScanHook
+	go func() {
+		if hook != nil {
+			hook()
+		}
+		ch <- fn()
+	}()
+	t := time.NewTimer(nativeBudget)
+	defer t.Stop()
+	select {
+	case v := <-ch:
+		return v, true
+	case <-t.C:
+		var zero T
+		return zero, false
+	}
+}
+
+// findNative is the native session of one of vendors in cwd with id, in any
+// case, checked to be that folder's (checkNative), or false.
 func findNative(files *sessionFiles, vendors []adapter.Vendor, cwd, id string) (nativeSession, bool) {
 	for _, v := range vendors {
 		for _, n := range scanNative(files, v, cwd) {
-			if n.ID == id {
-				n.Title = nativeTitle(n)
+			if strings.EqualFold(n.ID, id) {
+				if !checkNative(&n, cwd, true) {
+					return nativeSession{}, false
+				}
 				return n, true
 			}
 		}

@@ -1716,7 +1716,19 @@ The tests build session stores by hand under a temp HOME.
   specific session by ID or name, or show an interactive picker".
   **Unverified:** the hash (so aggy lists nothing for such a folder), whether
   a non-ASCII letter counts as alphanumeric (likewise), and which field marks
-  a `-p` session (so aggy's list may show one). This settles the folder name
+  a `-p` session (so aggy's list may show one). The folder name is not
+  one-to-one (`my_app`, `my-app`, and `my.app` share one; so do `/a/b-c` and
+  `/a/b/c`), so aggy also requires a file's first `cwd` to name the folder:
+  session lines carry `cwd` ("Claude Code session file fields" below, read
+  live, not documented), and a file whose head records none is listed for no
+  folder. cli-reference (same day): `--no-session-persistence`, "Disable
+  session persistence so sessions are not saved to disk and cannot be resumed.
+  Print mode only"; aggy's `-p` runs pass it when help lists it (help listing
+  unverified live). Parsers, for `--resume=<name>`: commander's README
+  ("Options", the option-argument can "follow an `=` for a long option") and
+  clap's tutorial ("Options", `--name=bob`), read 2026-11-10; that Claude
+  parses with commander and Grok with clap is as recorded in
+  docs/adapters.md and the fakes. This settles the folder name
   `internal/transcript` and `sessionFiles` took from grok-build, for a short
   ASCII path.
 - **Codex, source-verified**: as "Session file formats" above, plus
@@ -1725,7 +1737,12 @@ The tests build session stores by hand under a temp HOME.
   aggy passes Codex only ids.
 - **Grok**: the session folder as above; `-r`/`--resume
   [<SESSION_ID_OR_TITLE>]` from `grok --help` at 1.0.77 ("Grok's flags"
-  below). The cwd encoding is `grok.EncodeCwd`'s reading, unconfirmed.
+  below). The cwd encoding is `grok.EncodeCwd`'s reading, unconfirmed. No
+  recorded source names a cwd field in Grok's session files, so aggy checks
+  none: the url-encoded folder name is one-to-one, and a miss lists nothing.
+  Which session a `--resume <title>` reopened comes from Grok's
+  `SessionStart` hook (`sessionId`, "Hook payloads and config" above), as for Claude's
+  `session_id`.
 - To confirm live (owner): in a scratch repo, one turn in plain `claude`,
   then `aggy -r` lists it with its first prompt and reopens it; one turn in
   `claude -n demo`, then `aggy claude -r demo` and, after quitting, `aggy

@@ -172,7 +172,7 @@ func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 	if top {
 		switch {
 		case cont:
-			t.Continue = true
+			t.Continue, t.Installed = true, true
 		case resume && resumeID != "":
 			if code, err := resolveResume(&t, "", resumeID); err != nil {
 				return resumeRefused(stderr, cmd, code, err)
@@ -402,6 +402,7 @@ func runPrint(cmd string, v adapter.Vendor, t target, words []string, help adapt
 		fmt.Fprintf(stderr, "%s: probing %s: %s; starting it without the flags help must list\n", name, v, termsafe.Line(err.Error()))
 	}
 	caps := probed.Capabilities
+	req.NoSessionPersistence = printLeavesNoSession(v, caps, words)
 	var warns []string
 	model := p.Model
 	if model == "" && v != adapter.Codex {
@@ -480,6 +481,33 @@ func runPrint(cmd string, v adapter.Vendor, t target, words []string, help adapt
 	r.Attrs = map[string]any{"mode": "print", "policy": !t.NoPolicy, "cli_words": len(p.Extra)}
 	dlog.Log(ctx, r)
 	return exit
+}
+
+// printLeavesNoSession reports whether a print run of v with the CLI's words
+// should leave no session on disk (PR #127 review): aggy -p's one-off runs, and
+// a tool's, would otherwise fill the folder's resume list, aggy's and the
+// CLI's, as aggy cannot tell them apart from on-screen sessions by a documented
+// field. Only Claude has the flag, only when its help lists it, and only for
+// -p/--print; a run whose words resume, continue, name, or set the session
+// keeps it, as the person asked for that session.
+func printLeavesNoSession(v adapter.Vendor, caps, words []string) bool {
+	if v != adapter.Claude || !slices.Contains(caps, probe.CapNoSessionPersistence) {
+		return false
+	}
+	printing := false
+	for _, w := range words {
+		if w == "--" {
+			break
+		}
+		name, _, _ := strings.Cut(w, "=")
+		switch name {
+		case "-p", "--print":
+			printing = true
+		case "-c", "--continue", "-r", "--resume", "--session-id", "--fork-session", "-n", "--name", "--no-session-persistence":
+			return false
+		}
+	}
+	return printing
 }
 
 // runBare runs v's CLI directly with words as given and nothing added: a Bare

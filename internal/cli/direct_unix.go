@@ -13,11 +13,19 @@ import (
 // pseudo-terminal, raw mode, switch key, or picker, so nothing of aggy's
 // sits between the CLI and the terminal. The supervisor socket still
 // listens and the index is still kept through hooks, as under aggy run.
-func runDirect(c adapter.Command, runDir, parentID string, v adapter.Vendor, assigned string, onID func(string), log func(diag.Rec), started func(pid int)) (int, error) {
+func runDirect(c adapter.Command, runDir, parentID string, v adapter.Vendor, assigned string, onID func(string), also func(supervisor.Request), log func(diag.Rec), started func(pid int)) (int, error) {
 	onHook, stopIndex, _ := startIndex(parentID, v, assigned, onID)
 	defer stopIndex()
 	onHook, stopLimits := startLimits(parentID, v, onHook, nil)
 	defer stopLimits()
+	if also != nil {
+		// Also told every hook event: a launch by name's SessionStart.
+		inner := onHook
+		onHook = func(r supervisor.Request) {
+			also(r)
+			inner(r)
+		}
+	}
 	srv, err := supervisor.Listen(runDir, parentID, nil, onHook)
 	if err != nil {
 		return 1, err

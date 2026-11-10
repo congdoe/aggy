@@ -25,10 +25,11 @@ const (
 )
 
 // nativeClaude writes a Claude session of dir under the world's HOME, at the
-// project folder Claude's docs give, with prompt as its first line, changed at.
+// project folder Claude's docs give, with prompt as its first line, which
+// records dir as its cwd, changed at.
 func nativeClaude(t *testing.T, w *world, dir, id, prompt string, at time.Time) {
 	t.Helper()
-	b, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"content": prompt}})
+	b, _ := json.Marshal(map[string]any{"type": "user", "cwd": dir, "message": map[string]any{"content": prompt}})
 	p := filepath.Join(w.home, ".claude", "projects", transcript.ClaudeProjectDir(dir), id+".jsonl")
 	writeFileAt(t, p, string(b)+"\n", at)
 }
@@ -80,6 +81,12 @@ func runToReady(t *testing.T, w *world, sc map[string]any, args ...string) *sess
 		t.Fatalf("aggy %q exit = %d; screen %q", args, code, s.screen())
 	}
 	return s
+}
+
+// claudeLine is a Claude session file's user line with text, recording dir.
+func claudeLine(dir, text string) string {
+	b, _ := json.Marshal(map[string]any{"type": "user", "cwd": dir, "message": map[string]any{"content": text}})
+	return string(b) + "\n"
 }
 
 // childrenWith counts the index's children that hold vendor session id.
@@ -144,7 +151,7 @@ func TestPickSession(t *testing.T) {
 	w := newWorld(t)
 	sc := map[string]any{"raw_echo": true, "stdout": "READY>",
 		"session_files": []map[string]any{{"path": "projects/" + transcript.ClaudeProjectDir(w.cwd) + "/{session_id}.jsonl",
-			"content": `{"type":"user","message":{"content":"aggy started this"}}` + "\n"}}}
+			"content": claudeLine(w.cwd, "aggy started this")}}}
 	runToReady(t, w, sc, "run", "claude")
 	aggyID := lastInteractive(t, w).SessionID
 	nativeClaude(t, w, w.cwd, nativeA, "\x1b[2Jcleared\x07 and more", time.Now().Add(-2*time.Hour))
@@ -182,7 +189,7 @@ func TestPickSession(t *testing.T) {
 
 // TestResumeNativeIDAndName (T6965): --resume takes a vendor session id found
 // here, and, for Claude, a name, which Claude resolves; aggy records the session
-// that changed in the run, so -c reopens it.
+// Claude's SessionStart hook reported (PR #127 review), so -c reopens it.
 func TestResumeNativeIDAndName(t *testing.T) {
 	w := newWorld(t)
 	nativeClaude(t, w, w.cwd, nativeA, "by id", time.Now().Add(-time.Hour))
@@ -192,15 +199,20 @@ func TestResumeNativeIDAndName(t *testing.T) {
 		t.Fatalf("args = %q, want --resume %s", r.Args, nativeA)
 	}
 
-	// The fake, given a name, "finds" nativeB and writes to its file.
+	// The fake, given a name, "finds" nativeB, writes to its file, and says so
+	// in its SessionStart hook.
+	script := `[ "$AGGY_VENDOR" = claude ] || exit 0; exec ` + aggySh(t) + ` hook --vendor claude "$1"`
 	named := map[string]any{"raw_echo": true, "stdout": "READY>",
-		"session_files": []map[string]any{{"path": "projects/" + transcript.ClaudeProjectDir(w.cwd) + "/" + nativeB + ".jsonl",
-			"content": `{"type":"user","message":{"content":"named"}}` + "\n"}}}
+		"hook_command": []string{"/bin/sh", "-c", script, "sh"},
+		"hooks":        []map[string]any{{"event": "SessionStart", "payload": map[string]any{"session_id": nativeB, "source": "resume"}}},
+		"session_files": []map[string]any{
+			{"path": "projects/" + transcript.ClaudeProjectDir(w.cwd) + "/" + nativeB + ".jsonl", "content": claudeLine(w.cwd, "named")}}}
 	s := runToReady(t, w, named, "claude", "--resume", "auth-refactor")
-	if r := lastInteractive(t, w); !slices.Equal(r.Flags["--resume"], []string{"auth-refactor"}) || len(r.Flags["--session-id"]) != 0 {
-		t.Fatalf("args = %q, want --resume auth-refactor and no session id", r.Args)
+	if r := lastInteractive(t, w); !slices.Equal(r.Flags["--resume"], []string{"auth-refactor"}) || len(r.Flags["--session-id"]) != 0 ||
+		!slices.Contains(r.Args, "--resume=auth-refactor") {
+		t.Fatalf("args = %q, want --resume=auth-refactor and no session id", r.Args)
 	}
-	if !strings.Contains(s.screen(), "records which one when it exits") {
+	if !strings.Contains(s.screen(), "records it as it exits") || !strings.Contains(s.screen(), "is aggy's session") {
 		t.Errorf("no note about the name: %q", s.screen())
 	}
 	if n := childrenWith(t, w, nativeB); n != 1 {
@@ -224,6 +236,12 @@ func TestResumeNativeRefused(t *testing.T) {
 		{[]string{"claude", "--resume", "a\\b"}, "cli.usage"},
 		{[]string{"codex", "--resume", "auth-refactor"}, "cli.not_found"},
 		{[]string{"claude", "--resume", nativeC}, "cli.not_found"},
+		// PR #127 review: an id-shaped value is never passed on as a name, nor a
+		// subcommand's, a transcript's, or a separator-holding one.
+		{[]string{"claude", "--resume", "3f2a"}, "cli.not_found"},
+		{[]string{"claude", "--resume", "mcp"}, "cli.usage"},
+		{[]string{"claude", "--resume", "x.jsonl"}, "cli.usage"},
+		{[]string{"claude", "--resume", "x\u2028y"}, "cli.usage"},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
@@ -237,6 +255,59 @@ func TestResumeNativeRefused(t *testing.T) {
 				if r.Mode == "interactive" {
 					t.Errorf("the CLI started: %q", r.Args)
 				}
+			}
+		})
+	}
+}
+
+// TestResumeByNameUnreported (PR #127 review): a launch by name whose CLI never
+// reports its session records nothing, not even the session that changed in
+// the folder meanwhile, and leaves no empty session behind.
+func TestResumeByNameUnreported(t *testing.T) {
+	w := newWorld(t)
+	sc := map[string]any{"raw_echo": true, "stdout": "READY>",
+		"session_files": []map[string]any{{"path": "projects/" + transcript.ClaudeProjectDir(w.cwd) + "/" + nativeB + ".jsonl",
+			"content": claudeLine(w.cwd, "someone else's")}}}
+	s := runToReady(t, w, sc, "claude", "--resume", "typo-name")
+	if !strings.Contains(s.screen(), "recorded none") {
+		t.Errorf("screen %q does not say nothing was recorded", s.screen())
+	}
+	if n := childrenWith(t, w, nativeB); n != 0 {
+		t.Errorf("the session that changed was recorded")
+	}
+	st, err := store.Open(context.Background(), filepath.Join(w.home, ".aggy", "aggy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	if ps, _ := st.Parents(context.Background()); len(ps) != 0 {
+		t.Errorf("parents left: %+v", ps)
+	}
+}
+
+// TestPrintLeavesNoSession (PR #127 review): aggy claude -p passes
+// --no-session-persistence, so the run is in no resume list; a run that names
+// its session keeps it.
+func TestPrintLeavesNoSession(t *testing.T) {
+	tests := []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"claude", "-p", "hi"}, true},
+		{[]string{"claude", "-p", "--session-id", nativeA, "hi"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
+			w := newWorld(t)
+			if code, out, errb := w.pipe(t, map[string]any{"stdout": "ok\n", "interactive_without_tty": true}, "", tt.args...); code != 0 {
+				t.Fatalf("aggy %q: exit %d\n%s%s", tt.args, code, out, errb)
+			}
+			recs := fakecli.Records(t, w.record)
+			if len(recs) == 0 {
+				t.Fatal("the CLI did not run")
+			}
+			if got := slices.Contains(recs[len(recs)-1].Args, "--no-session-persistence"); got != tt.want {
+				t.Errorf("args %q: --no-session-persistence %v, want %v", recs[len(recs)-1].Args, got, tt.want)
 			}
 		})
 	}

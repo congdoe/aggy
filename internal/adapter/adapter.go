@@ -297,6 +297,13 @@ type InteractiveRequest struct {
 	// that only shapes the screen (Codex's and Grok's --no-alt-screen).
 	// Extra holds the CLI's own words for it, a print subcommand included.
 	Print bool
+	// NoSessionPersistence keeps a print run's session off the disk, so it is
+	// never in the CLI's resume list or aggy's (PR #127 review). Claude only,
+	// and only with Print: its --no-session-persistence ("Disable session
+	// persistence so sessions are not saved to disk and cannot be resumed.
+	// Print mode only", code.claude.com/docs/en/cli-reference, read
+	// 2026-11-10). The launch sets it only when the probe found the flag.
+	NoSessionPersistence bool
 	// OpenCode is how an OpenCode session is launched; only that adapter
 	// reads it, and it refuses to build a command without it.
 	OpenCode *OpenCodeLaunch

@@ -125,6 +125,8 @@ func (s *Store) Children(ctx context.Context, parentID string) ([]Child, error) 
 // ChildBySession returns the child, of any kind, that holds vendor session id
 // of vendor, or ErrNotFound. The unique index on (vendor, vendor_session_id)
 // makes it at most one, which is what keeps a native session adopted once.
+// ASCII case is ignored (PR #127 review): a UUID names one session in either
+// case, and an exact match wins over one that differs only in case.
 func (s *Store) ChildBySession(ctx context.Context, vendor, id string) (Child, error) {
 	if id == "" {
 		return Child{}, ErrNotFound
@@ -132,7 +134,8 @@ func (s *Store) ChildBySession(ctx context.Context, vendor, id string) (Child, e
 	var c Child
 	var created, active int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT `+childCols+` FROM children WHERE vendor = ? AND vendor_session_id = ?`, capMillis(), vendor, id).
+		`SELECT `+childCols+` FROM children WHERE vendor = ? AND lower(vendor_session_id) = lower(?)
+		 ORDER BY vendor_session_id = ? DESC, id LIMIT 1`, capMillis(), vendor, id, id).
 		Scan(&c.ID, &c.ParentID, &c.Vendor, &c.VendorSessionID, &c.Kind, &c.Title, &c.Model,
 			&c.Cwd, &c.TranscriptPath, &c.Status, &created, &active, &c.VendorHome, &c.FileSeen)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -217,6 +220,18 @@ func (s *Store) MoveChildSession(ctx context.Context, childID, from, to string) 
 func (s *Store) DeleteUnstartedChild(ctx context.Context, childID string) (bool, error) {
 	res, err := s.db.ExecContext(ctx,
 		`DELETE FROM children WHERE id = ? AND kind = '' AND file_seen = 0 AND lease_nonce IS NULL`, childID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// DeleteEmptyParent removes the parent id when no child row is left under it,
+// and reports whether it did. Only the index is touched.
+func (s *Store) DeleteEmptyParent(ctx context.Context, id string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM parents WHERE id = ? AND NOT EXISTS (SELECT 1 FROM children WHERE parent_id = ?)`, id, id)
 	if err != nil {
 		return false, err
 	}

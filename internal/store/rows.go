@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -91,10 +92,55 @@ type Worktree struct {
 // InsertChild adds a child. The parent must exist. An empty Status means
 // "open".
 func (s *Store) InsertChild(ctx context.Context, c Child) error {
+	return insertChild(ctx, s.db, c)
+}
+
+// ErrSessionHeld is InsertParentChild's error when another child of the vendor
+// already holds the child's vendor session id.
+var ErrSessionHeld = errors.New("store: another child holds that vendor session")
+
+// InsertParentChild adds a new parent and its first child at once, both or
+// neither (PR #127 review). When another child of the vendor already holds the
+// child's vendor session id, in any case (a second aggy adopted it first),
+// nothing is added and the error is ErrSessionHeld.
+func (s *Store) InsertParentChild(ctx context.Context, p Parent, c Child) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if c.VendorSessionID != "" {
+			var n int
+			if err := tx.QueryRowContext(ctx,
+				`SELECT count(*) FROM children WHERE vendor = ? AND lower(vendor_session_id) = lower(?)`,
+				c.Vendor, c.VendorSessionID).Scan(&n); err != nil {
+				return err
+			}
+			if n > 0 {
+				return ErrSessionHeld
+			}
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO parents (id, title, dir, last_vendor, created_at, last_active, dir_key, dir_id)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			p.ID, p.Title, p.Dir, p.LastVendor, millis(p.CreatedAt), millis(p.LastActive), p.DirKey, p.DirID); err != nil {
+			return err
+		}
+		err := insertChild(ctx, tx, c)
+		if err != nil && strings.Contains(err.Error(), "UNIQUE") && strings.Contains(err.Error(), "vendor_session_id") {
+			// Another connection wrote it between the check and the insert.
+			return ErrSessionHeld
+		}
+		return err
+	})
+}
+
+// execer is what insertChild needs of a database or a transaction.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func insertChild(ctx context.Context, db execer, c Child) error {
 	if c.Status == "" {
 		c.Status = "open"
 	}
-	_, err := s.db.ExecContext(ctx,
+	_, err := db.ExecContext(ctx,
 		`INSERT INTO children (id, parent_id, vendor, vendor_session_id, kind, title, model, cwd,
 		                       transcript_path, status, created_at, last_active, vendor_home, trace_id)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''))`,

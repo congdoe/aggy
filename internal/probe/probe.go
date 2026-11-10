@@ -128,6 +128,10 @@ const (
 	CapStrictConfig = "strict-config"
 	CapSkipGitCheck = "skip-git-repo-check"
 	CapCwd          = "cwd"
+	// CapNoSessionPersistence is claude --no-session-persistence, which keeps
+	// a print run's session off the disk (cli-reference, read 2026-11-10). Not
+	// in a recorded help: present only when help lists it.
+	CapNoSessionPersistence = "no-session-persistence"
 	// CapStandalone is opencode --standalone, a private server per launch:
 	// a running shared service does not pick up per-launch config, so
 	// aggy's rules could not reach it (docs/verification.md, T6930).
@@ -193,6 +197,7 @@ var Specs = map[adapter.Vendor]Spec{
 			{CapTools, 0, "--tools", Option},
 			{CapMCPConfig, 0, "--mcp-config", Option},
 			{CapStrictMCP, 0, "--strict-mcp-config", Option},
+			{CapNoSessionPersistence, 0, "--no-session-persistence", Option},
 		},
 	},
 	adapter.Grok: {
