@@ -2,6 +2,9 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +19,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/antigravity"
 	"github.com/congdoe/aggy/internal/checkup"
 	"github.com/congdoe/aggy/internal/diag"
+	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/hook"
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/patch"
@@ -189,9 +193,9 @@ func prepareAntigravity(ctx context.Context, in agyInput) (agySetup, error) {
 	if warn != "" {
 		out.warns = append(out.warns, warn)
 	}
-	// The policy's static rules, whatever --no-policy says: they only deny or
-	// ask, and agy's own layer is the person's. --no-policy turns the hook's
-	// decisions off (no plan), as on Claude.
+	// The policy's static rules go in --settings as asks and denies, never an
+	// allow. --no-policy leaves the file with no rules and writes no plan, so
+	// the hook gives no decisions either (#141 review, L3).
 	settings, err := antigravity.Settings(agyRules(in.plan.Decide()))
 	if err == nil && in.noPolicy {
 		settings = []byte(`{"permissions":{}}`)
@@ -214,13 +218,16 @@ func prepareAntigravity(ctx context.Context, in agyInput) (agySetup, error) {
 			d.Root = root
 		}
 		d.Protected = append(protectedPaths(), agyProtected(in.cwd, os.Getenv("HOME"))...)
-		d.Words = []string{".agents", ".gemini", ".antigravity"}
+		// hooks.json too (#141 review, M3): a command that names the hooks
+		// file by a spelling that misses .agents (rm .ag*/hooks.json,
+		// find -name hooks.json -delete) asks.
+		d.Words = []string{".agents", "hooks.json", ".gemini", ".antigravity"}
 		if out.launch.Plan, out.launch.PlanSum, err = writeDecidePlan(in.dir, d); err != nil {
 			return out, err
 		}
 	}
 	if written {
-		out.warns = append(out.warns, "Antigravity: "+antigravity.TermsNote+".")
+		out.warns = append(out.warns, "Antigravity: "+antigravity.TermsNote+".", agyEntryNote)
 	}
 	out.warns = append(out.warns, agyHookNote)
 	if in.noPolicy {
@@ -281,6 +288,9 @@ func writeAgyHooks(ctx context.Context, in agyInput, bin string) (written bool, 
 	if err != nil {
 		return false, "", agyFail(diag.CodeAgyHooksFile, "aggy's hook entry cannot be made: %v", err)
 	}
+	if err := antigravity.CheckHooksPath(file); err != nil {
+		return false, "", agyFail(diag.CodeAgyHooksLink, "%v; aggy writes its hook entry only into this folder's own .agents/hooks.json, so agy was not started: replace the link with a real folder or file", err)
+	}
 	before, err := safefs.ReadFileLimit(file, agyMaxHooks)
 	p := patch.Patch{File: file, Mode: 0o644, Reverse: antigravity.Reverse,
 		Transform: func(src []byte) ([]byte, error) { return antigravity.SetHooks(src, entry) }}
@@ -294,6 +304,20 @@ func writeAgyHooks(ctx context.Context, in agyInput, bin string) (written bool, 
 		if _, err := antigravity.SetHooks(before, entry); err != nil {
 			return false, "", agyFail(diag.CodeAgyHooksFile, "%s is left as it is: %v; fix it or move it away, then start again", file, err)
 		}
+		if foreign, _ := antigravity.ForeignEntry(before); foreign {
+			return false, "", agyFail(diag.CodeAgyHooksFile, "%s already has an entry named %q that aggy did not write, so aggy left it as it is and did not start agy: rename that entry, then start again", file, antigravity.EntryName)
+		}
+		if _, added := agyHooksChanged(file, entry); len(added) > 0 {
+			dlog.Log(ctx, diag.Rec{Event: diag.EvAgyHooksChanged, Code: diag.CodeAgyHooksForeign, Vendor: string(adapter.Antigravity)})
+			yes := agyAsk(in, inPlace{
+				change: fmt.Sprintf("%s has entries aggy did not see when it last wrote the file: %q. An entry there runs with agy's tools and can allow or auto-approve them past aggy's hook.", file, added),
+				undo:   "Nothing is changed by answering; look at the file first.",
+				ask:    "Start agy with those entries?",
+			})
+			if !yes {
+				return false, "", agyFail(diag.CodeAgyHooksForeign, "%s has entries aggy did not write since its last launch here (%q), so agy was not started: look at them, then start again at a terminal and answer yes, or remove them", file, added)
+			}
+		}
 		p.ExpectedHash = patch.Hash(before)
 	}
 	pl, err := patch.Plan(p)
@@ -301,7 +325,7 @@ func writeAgyHooks(ctx context.Context, in agyInput, bin string) (written bool, 
 		return false, "", agyFail(diag.CodeAgyHooksFile, "cannot plan aggy's entry in %s: %v", file, err)
 	}
 	if pl.Action == patch.NoOp {
-		return false, "", nil
+		return false, "", recordAgyHooks(file)
 	}
 	ps := []patch.Patch{p}
 	if root, ok := repoRoot(in.cwd); ok {
@@ -313,7 +337,7 @@ func writeAgyHooks(ctx context.Context, in agyInput, bin string) (written bool, 
 				return false, "", agyFail(diag.CodeAgyHooksFile, "cannot tell whether git tracks %s: %v", file, err)
 			}
 			if tracked {
-				yes, _ := askInPlace(in.getenv, in.in, in.out, inPlace{
+				yes := agyAsk(in, inPlace{
 					change: fmt.Sprintf("%s is tracked by git. aggy adds its one entry (%q) to it, so the change shows in your diff; your other entries stay as they are.", file, antigravity.EntryName),
 					undo:   "aggy unwire takes aggy's entry out.",
 					ask:    "Add aggy's entry to the tracked file and start agy?",
@@ -331,7 +355,7 @@ func writeAgyHooks(ctx context.Context, in agyInput, bin string) (written bool, 
 	if _, err := applyPatches(ctx, ps); err != nil {
 		return false, "", agyFail(diag.CodeAgyHooksFile, "cannot write aggy's entry into %s: %v; if something changed it while aggy wrote it, start again", file, err)
 	}
-	return true, warn, nil
+	return true, warn, recordAgyHooks(file)
 }
 
 // agyMaxHooks caps the hooks file aggy reads.
@@ -367,6 +391,7 @@ func antigravityHook(args []string, in io.Reader, getenv func(string) string, st
 		return 0
 	}
 	if event != "PreToolUse" {
+		agyHookCheck(stderr)
 		return hookWith([]string{"--vendor", string(adapter.Antigravity), event}, in, getenv, stdout, stderr)
 	}
 	defer func() {
@@ -377,11 +402,14 @@ func antigravityHook(args []string, in io.Reader, getenv func(string) string, st
 	}()
 	plan, sum := getenv(antigravity.PlanEnv), getenv(antigravity.PlanSumEnv)
 	if plan == "" && sum == "" {
-		drain(in) // --no-policy: no decision
+		drain(in) // --no-policy: no decision; one of the two alone asks (agyDecide)
 		return 0
 	}
-	return agyDecide(plan, sum, in, stdout, stderr)
+	return agyDecideFn(plan, sum, in, stdout, stderr)
 }
+
+// agyDecideFn is agyDecide; tests replace it to check the panic fallback.
+var agyDecideFn = agyDecide
 
 // agyDecide answers one PreToolUse from the plan at path, which must be clean,
 // absolute, and hash to sum, recording a start and an end as aggy hook decide
@@ -434,6 +462,7 @@ func antigravityFindings(vr checkup.Vendor) []checkup.Finding {
 		out = append(out, checkup.Finding{Code: codeAgyUnreachable, Level: checkup.LevelWarn, Vendor: adapter.Antigravity,
 			Message: why + ", which aggy's launch needs"})
 	}
+	out = append(out, checkup.Finding{Code: codeAgyEntry, Level: checkup.LevelInfo, Vendor: adapter.Antigravity, Message: agyEntryNote})
 	out = append(out, checkup.Finding{Code: codeAgyUpdates, Level: checkup.LevelInfo, Vendor: adapter.Antigravity,
 		Message: "agy updates itself in the background, and a new version may change its hooks (1.5.4 changed their payload): " + antigravity.UpdateEnv + "=true in your shell turns that off"})
 	return out
@@ -444,6 +473,7 @@ const (
 	codeAgyScope       = "antigravity-scope"
 	codeAgyUnreachable = "antigravity-unreachable"
 	codeAgyUpdates     = "antigravity-updates"
+	codeAgyEntry       = "antigravity-entry"
 )
 
 // antigravitySetupNote is what setup says about Antigravity.
@@ -476,4 +506,144 @@ func agyRules(ds []parity.PolicyDecision) []antigravity.Rule {
 		rs = append(rs, antigravity.Rule{Text: d.Text, Kind: d.Kind})
 	}
 	return rs
+}
+
+// agyEntryNote is the launch line and the doctor line on aggy's entry (#141
+// review, M4). It runs aggy by its absolute path, so once aggy is removed or
+// moved a plain agy in that folder cannot start the hook, which blocks every
+// tool (LIVE). A command that skips a missing aggy would need a shell, and
+// whether agy runs a hook command through one is unverified: a word-split
+// command with no shell would fail on such a form in every session. So the
+// entry stays the plain path, and the person is told.
+const agyEntryNote = "aggy's entry in a folder's .agents/hooks.json runs aggy by its absolute path: if you remove or move aggy, plain agy blocks every tool in that folder until you run aggy unwire (or delete the entry named aggy)"
+
+// agyRecord is what aggy keeps of a hooks file right after it last wrote it
+// or found its entry in place (#141 review, M3): the file's SHA-256 and its
+// entries' names, in aggy's own state folder, keyed by the file's path.
+type agyRecord struct {
+	Hash  string   `json:"hash"`
+	Names []string `json:"names"`
+}
+
+// agyRecordPath is where aggy keeps file's record.
+func agyRecordPath(file string) (string, error) {
+	h, err := home.Dir()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(file)))
+	return filepath.Join(h, "antigravity", hex.EncodeToString(sum[:12])+".json"), nil
+}
+
+// readAgyRecord reads file's record; ok is false when there is none or it
+// cannot be read.
+func readAgyRecord(file string) (agyRecord, bool) {
+	var r agyRecord
+	p, err := agyRecordPath(file)
+	if err != nil {
+		return r, false
+	}
+	b, err := safefs.ReadFileLimit(p, 1<<16)
+	if err != nil || json.Unmarshal(b, &r) != nil || r.Hash == "" {
+		return agyRecord{}, false
+	}
+	return r, true
+}
+
+// recordAgyHooks records the hooks file as it is now.
+func recordAgyHooks(file string) error {
+	src, err := safefs.ReadFileLimit(file, agyMaxHooks)
+	if err != nil {
+		return agyFail(diag.CodeAgyHooksFile, "cannot read %s back: %v", file, err)
+	}
+	names, err := antigravity.Names(src)
+	if err != nil {
+		return agyFail(diag.CodeAgyHooksFile, "%s: %v", file, err)
+	}
+	p, err := agyRecordPath(file)
+	if err != nil {
+		return err
+	}
+	if err := ensureDir(filepath.Dir(p)); err != nil {
+		return err
+	}
+	b, _ := json.Marshal(agyRecord{Hash: patch.Hash(src), Names: names})
+	return safefs.WriteFile(p, b, 0o600)
+}
+
+// agyHooksChanged says how the hooks file differs from what aggy last
+// recorded: msg is "" when it holds aggy's entry exactly and no entry aggy did
+// not see; added are the entries that appeared since.
+func agyHooksChanged(file string, entry []byte) (msg string, added []string) {
+	src, err := safefs.ReadFileLimit(file, agyMaxHooks)
+	if err != nil {
+		return "it cannot be read, so aggy's entry may be gone", nil
+	}
+	var why []string
+	if !antigravity.HasEntry(src, entry) {
+		why = append(why, "aggy's entry in it is gone or changed")
+	}
+	if rec, ok := readAgyRecord(file); ok && patch.Hash(src) != rec.Hash {
+		names, _ := antigravity.Names(src)
+		for _, n := range names {
+			if n != antigravity.EntryName && !slices.Contains(rec.Names, n) {
+				added = append(added, n)
+			}
+		}
+		if len(added) > 0 {
+			why = append(why, fmt.Sprintf("entries aggy did not write appeared (%q)", added))
+		}
+	}
+	return strings.Join(why, ", and "), added
+}
+
+// agyHookCheck is the SessionStart and Stop hook's look at its own hooks file
+// (#141 review, M3): agy runs hooks in <workspace>/.agents (LIVE). A change is
+// logged and said on stderr; the event still goes on to the supervisor.
+// Whether agy reads the file again during a session is unverified.
+func agyHookCheck(stderr io.Writer) {
+	wd, err := os.Getwd()
+	if err != nil || filepath.Base(wd) != ".agents" {
+		return
+	}
+	bin, err := aggyBin()
+	if err != nil {
+		return
+	}
+	entry, err := antigravity.Entry(bin)
+	if err != nil {
+		return
+	}
+	if msg, _ := agyHooksChanged(filepath.Join(wd, "hooks.json"), entry); msg != "" {
+		dlog.Log(context.Background(), diag.Rec{Event: diag.EvAgyHooksChanged, Code: diag.CodeAgyHooksChanged, Vendor: string(adapter.Antigravity)})
+		fmt.Fprintf(stderr, "aggy: this folder's .agents/hooks.json changed during the session: %s %s\n", msg, dlog.Tag(diag.CodeAgyHooksChanged))
+	}
+}
+
+// agyExitCheck is the line after agy exits when its hooks file changed during
+// the session, or "".
+func agyExitCheck(cwd string) string {
+	bin, err := aggyBin()
+	if err != nil {
+		return ""
+	}
+	entry, err := antigravity.Entry(bin)
+	if err != nil {
+		return ""
+	}
+	msg, _ := agyHooksChanged(filepath.Join(filepath.Clean(cwd), antigravity.HooksFile), entry)
+	if msg == "" {
+		return ""
+	}
+	return "this folder's .agents/hooks.json changed during the session: " + msg + "; the next aggy antigravity here puts aggy's entry back and asks about new entries"
+}
+
+// agyAsk asks in place at the launch's terminal; with nothing to ask at (no
+// reader or getenv given), the answer is no.
+func agyAsk(in agyInput, q inPlace) bool {
+	if in.getenv == nil || in.in == nil {
+		return false
+	}
+	yes, _ := askInPlace(in.getenv, in.in, in.out, q)
+	return yes
 }

@@ -115,6 +115,9 @@ type reverser struct {
 	fn       func([]byte) ([]byte, error)
 	noBackup bool
 	summary  string
+	// guard, when set, is checked on the file before it is read or written
+	// (#141 review, M1: a hooks file reached through a link is refused).
+	guard func(file string) error
 }
 
 // reverserFor finds the reverser a change's Reverse names: aggy's hook
@@ -134,7 +137,7 @@ func reverserFor(rev string) (reverser, bool) {
 	if rev == antigravity.Reverse {
 		// aggy's one entry in a workspace .agents/hooks.json (T6957): the
 		// person's other entries stay, edited since or not.
-		return reverser{fn: antigravity.StripHooks,
+		return reverser{fn: antigravity.StripHooks, guard: antigravity.CheckHooksPath,
 			summary: "take aggy's entry out of the folder's .agents/hooks.json, and leave the rest of the file"}, true
 	}
 	if before, folder, ok := claudetrust.ParseReverse(rev); ok {
@@ -771,6 +774,11 @@ func (m *Manifest) undo(ctx context.Context, c store.Change, run *unwireRun) Und
 		return done()
 	}
 
+	if rv, ok := reverserFor(c.Reverse); ok && rv.guard != nil {
+		if err := rv.guard(r.File); err != nil {
+			return fail(err)
+		}
+	}
 	cur, curHash, err := patch.Current(r)
 	if err != nil {
 		return fail(err)

@@ -2256,7 +2256,7 @@ First round (1.5.3, no model turn):
 
 - **Live:** `agy --version` prints `1.5.3` alone.
 - **Live:** `agy --help` prints `Usage of agy:` and the flags `--add-dir`, `--agent`, `-c`/`--continue`, `--conversation`, `--dangerously-skip-permissions`, `--disable-slash-commands`, `--effort` (low, medium, high, xhigh, max), `-i`/`--prompt-interactive`, `--input-format`, `--json-schema`, `--log-file`, `--mode` (accept-edits, auto, plan), `--model`, `--new-project`, `--output-format`, `-p`/`--print`, `--print-timeout`, `--project`, `--prompt` (an alias of `--print`), `--remote-agent`, `--remote-control`, `--sandbox`, and `--settings` ("Settings for this session only, never saved: a JSON object of settings.json keys, inline or as a file path"); the subcommands `acp`, `agent`, `agents`, `changelog`, `help`, `install`, `mcp`, `mic-serve`, `models`, `plugin`, `plugins`, `remote-control`, and `update`.
-- **Live:** an unknown flag prints `flags provided but not defined: -no-such-flag` and the usage: Go's flag package, where one and two dashes name the same flag. The exit status was not captured reliably.
+- **Live:** an unknown flag prints `flags provided but not defined: -no-such-flag` and the usage. Only that is live. That agy parses with Go's flag package (whose message is "flag provided"), that one and two dashes name the same flag, and that parsing stops at the first bare word are unverified; aggy passes only canonical spellings either way. The exit status was not captured reliably.
 - **Live:** `agy models` prints `Fetching available models...` and then `id<TAB>display name` lines. `agy plugin list --json` prints `[]`. `agy changelog` lists release notes newest first, and listed 1.5.5 while the binary was 1.5.3.
 - **Live:** the first interactive start in a folder not yet trusted uses the alternate screen, emits OSC 7501 sequences (payload not decoded), shows `Welcome to the Antigravity CLI`, then a trust dialog: `Accessing workspace: <folder>`, `Do you trust the contents of this project?`, `Antigravity CLI requires permission to read, edit, and execute files here.`, with `Yes, I trust this folder` (highlighted) and `No, exit`. It was not answered in this round.
 
@@ -2273,15 +2273,17 @@ Second round (1.5.5, a trusted folder, logging hooks in `<folder>/.agents/hooks.
 - **Live, `--settings`.** `--settings '{"permissions":{"allow":["command(echo)","command(touch)"]}}'` was honoured: those commands ran with no prompt, where `ls`, with no rule, prompted. A file path worked as well as inline JSON. An unknown key is refused at start: `Error: --settings: unknown setting "hooks"`, exit status 1, so hooks cannot be passed per run.
 - **Live, session.** `/exit` (listed in the slash menu as `/exit Exit the CLI`) exits 0 and prints `Resume with -c (or command below):` and then `agy --conversation=<uuid>`. `-c` resumed the folder's last conversation (the same `conversationId` in the hooks). The banner named the plan.
 
-**Live checks still owed** (none of these ran):
+**Live checks still owed** (none of these ran; the list from the #141 review):
 
-1. `--conversation=<id>` given explicitly, and whether SessionStart fires on it.
-2. `-i` as the first prompt, with a brief pointer, and SessionStart's `injectSteps` (DOCS) as another route for a brief.
-3. `permissions.deny` and `permissions.ask` from `--settings`: that they hold, and how a `*` in a target matches (`command(git push * main)`, `read_file(**/.env)`).
-4. The arguments of `read_file`, and the docs' tool names and keys (`view_file {AbsolutePath}`, `write_to_file`, `replace_file_content`, `multi_replace_file_content {TargetFile}`, `grep_search {SearchPath}`, `find_by_name {SearchDirectory}`, `list_dir {DirectoryPath}`, `manage_task {Action, Input}`) in a real PreToolUse payload.
-5. Which folder is the workspace when agy starts in a subfolder of a repo, and so which `.agents/hooks.json` it loads.
-6. Whether a persisted "always allow" (choice 3 above, written to agy's settings.json) beats `force_ask`.
-7. aggy itself end to end: `aggy antigravity` in a ticked folder, agy's trust dialog under aggy's pseudo-terminal, the alternate screen and OSC 7501, a policy match asking through `force_ask`, a Stop reaching the supervisor, the switch typing `/exit`, Ctrl-C, and `aggy unwire` taking aggy's entry out of `.agents/hooks.json`.
-8. Whether `--sandbox`, `--mode plan`, and `--effort` behave as the help says under aggy.
-9. Whether `GEMINI_API_KEY` or `GOOGLE_GEMINI_BASE_URL` in the person's environment moves agy off the Google sign-in.
-10. The names only (never the contents) of files under `~/.gemini/antigravity-cli`, to place the token file fallback the docs mention; until then aggy denies both folders whole.
+1. A PreToolUse hook that prints nothing and exits 0: that agy takes it as no opinion, for an allowed and for an unruled command.
+2. `read_file`'s real argument keys, and the docs' tool names and keys (`view_file {AbsolutePath}`, `write_to_file`, `replace_file_content`, `multi_replace_file_content {TargetFile}`, `grep_search {SearchPath}`, `find_by_name {SearchDirectory}`, `list_dir {DirectoryPath}`, `manage_task {Action, Input}`) in real payloads.
+3. Whether agy reads `.agents/hooks.json` again during a session (an entry added or removed mid-session), and how it combines several entries' PreToolUse decisions (deny and allow, force_ask and allow).
+4. `permissions.deny` and `permissions.ask` from `--settings`: that they hold, and how a `*` in a target matches (`command(git push * main)`, `read_file(**/.env)`).
+5. agy's flag parser: whether `-model` means `--model`, whether `--c` is `-c`, whether letters run together, and whether parsing stops at the first bare word.
+6. A saved "always allow" (the approval prompt's third choice, written to agy's settings.json) against `force_ask`; and `force_ask` and `deny` under `--dangerously-skip-permissions` and under `--mode auto`.
+7. Which folder is the workspace when agy starts in a subfolder of a repo, and so which `.agents/hooks.json` it loads.
+8. `--conversation=<id>` given explicitly, and whether SessionStart fires before the first tool call of a new conversation and not on that resume.
+9. A hook command that cannot start (aggy removed after the entry was written): that it blocks the tool, and what agy shows.
+10. The full run under aggy's pseudo-terminal: `aggy antigravity` in a ticked folder, agy's trust dialog, the alternate screen and OSC 7501, `-i` with a brief pointer, a policy match asking through `force_ask`, a Stop reaching the supervisor, the switch typing `/exit`, Ctrl-C, and `aggy unwire` taking aggy's entry out.
+
+Also not checked: `--sandbox`, `--mode plan`, and `--effort` under aggy; whether `GEMINI_API_KEY` or `GOOGLE_GEMINI_BASE_URL` in the person's environment moves agy off the Google sign-in; and the names only (never the contents) of files under `~/.gemini/antigravity-cli`, to place the token file fallback the docs mention (until then aggy denies both folders whole).
