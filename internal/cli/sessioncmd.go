@@ -172,6 +172,7 @@ func sessionTrustAnswer(cwd string) func(ticked []string, c trustlist.Choice) st
 			return buf.String()
 		}
 		l.tick(ticked)
+		l.inSession = true
 		applyTrustList(context.Background(), l, c == trustlist.Never, true, false, w, w)
 		return buf.String()
 	}

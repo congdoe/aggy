@@ -455,10 +455,21 @@ func claudeSettingsPath(p string) bool {
 }
 
 // protectedWords are the texts that make a shell command name a protected
-// file, lower case: aggy's plan file and its run and permissions paths, and a
+// file, lower case: aggy's plan file, its run and permissions paths, its trust
+// records (trust.json and opencode-trust.json, T6977, PR #130 review), and a
 // Claude settings file's name. ".claude" with "settings" anywhere counts too,
-// as does ".aggy" with "permissions.json" (cd ~/.aggy, then the file).
-var protectedWords = []string{"policy-decide", ".aggy/run", ".aggy/permissions", "settings.local.json", "managed-settings"}
+// as does aggy's folder (".aggy", or "aggy_home" for $AGGY_HOME) with one of
+// aggyFileNames anywhere (cd ~/.aggy, then the file).
+var protectedWords = []string{"policy-decide", ".aggy/run", ".aggy/permissions", ".aggy/trust.json", ".aggy/opencode-trust.json", "settings.local.json", "managed-settings"}
+
+// aggyFolderWords name aggy's state folder in a shell command, and
+// aggyFileNames the files in it that a command naming that folder must not
+// name too. A name is matched as holdsPath matches, so a longer name is not
+// it, and "cat .aggy/memory.md" names neither.
+var (
+	aggyFolderWords = []string{".aggy", "aggy_home"}
+	aggyFileNames   = []string{"permissions.json", "trust.json"}
+)
 
 // holdsPath reports w in f ending a path part: not followed by a letter,
 // digit, or _, so .aggy/run matches .aggy/run/x and not .aggy/runner.
@@ -497,7 +508,8 @@ func protectedText(cmd string, protected []string) bool {
 		if strings.Contains(f, ".claude") && strings.Contains(f, "settings") {
 			return true
 		}
-		if strings.Contains(f, ".aggy") && strings.Contains(f, "permissions.json") {
+		if slices.ContainsFunc(aggyFolderWords, func(w string) bool { return strings.Contains(f, w) }) &&
+			slices.ContainsFunc(aggyFileNames, func(n string) bool { return holdsPath(f, n) }) {
 			return true
 		}
 	}

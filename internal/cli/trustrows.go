@@ -40,6 +40,14 @@ type trustRowDef struct {
 	// plan is what ticking (on) or unticking it changes for tg, planned just
 	// before the write: patches for the manifest, and lines to say.
 	plan func(tg trustTarget, on bool) (trustRowPlan, error)
+	// later: inside a running session the row's change waits for the next
+	// start here (trustlist.Folder.Later), since the CLI it changes may be
+	// writing that file now and keeps no lock aggy can take.
+	later bool
+	// oldTrustNote, when set, is the row's line in a repo aggy trusted before
+	// the list whose answer has not shown the row: the row is new and
+	// unticked there, since ticking it does more than that trust did.
+	oldTrustNote string
 }
 
 // trustRowPlan is what one row changes.
@@ -80,10 +88,12 @@ func init() {
 	registerTrustRow(trustRowDef{
 		Row: trustlist.Row{ID: trustRowClaude, Label: "Claude Code", Group: trustlist.Harness},
 		bin: vendorBin(adapter.Claude), order: 10,
-		// aggy's own record stands for it: before the list, aggy trust was
-		// that record, and Claude went by it.
-		current: func(tg trustTarget) bool { return tg.inRepo && repoTrusted(tg.key) },
-		plan:    claudeRowPlan,
+		// Never ticked from aggy's own record (PR #130 review): aggy trust
+		// never wrote Claude's own trust, so a repo trusted before the list
+		// shows the row new and unticked, saying so.
+		oldTrustNote: "ticking it also records Claude's own trust for this folder, which aggy trust did not; aggy's own trust for this repo stays as it is either way",
+		plan:         claudeRowPlan,
+		later:        true,
 	})
 	registerTrustRow(trustRowDef{
 		Row: trustlist.Row{ID: trustRowOpenCode, Label: "OpenCode (the ChatGPT and Grok harness)", Group: trustlist.Harness,
