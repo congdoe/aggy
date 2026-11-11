@@ -17,8 +17,10 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/opencode"
 	"github.com/congdoe/aggy/internal/checkup"
 	"github.com/congdoe/aggy/internal/config"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
+	"github.com/congdoe/aggy/internal/keyring"
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/permissions"
 	"github.com/congdoe/aggy/internal/policyhook"
@@ -54,6 +56,12 @@ type openCodeInput struct {
 	plan    parity.PolicyPlan
 	version string
 	ids     parity.ReadIdentity // read pre-approvals' identities, from the index
+	// keys are the keys aggy key stored, by name and provider (T6931); person
+	// says a person started this launch at a terminal (trustPerson), the only
+	// launch a key is read for; readKey reads one from the OS keychain.
+	keys    []store.Key
+	person  bool
+	readKey func(k store.Key) (*keyring.Value, error)
 }
 
 // prepareOpenCode builds the launch's folder (docs/design.md, section 15):
@@ -96,6 +104,21 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 	here := openCodeFreeHere(real)
 	providers := openCodeFreeProviders(in.cfg, here)
 	out.warns = append(out.warns, openCodeFreeWarns(in.cfg, here, root)...)
+	// T6931: the keys aggy key stored, read now for this launch only, each
+	// adding its provider. Their bytes are zeroed once written, or on any
+	// refusal below.
+	keyed, keyWarns := openCodeKeys(in)
+	defer func() {
+		for _, k := range keyed {
+			k.value.Wipe()
+		}
+	}()
+	out.warns = append(out.warns, keyWarns...)
+	for _, k := range keyed {
+		if !slices.Contains(providers, k.provider) {
+			providers = append(providers, k.provider)
+		}
+	}
 	if len(providers) == 0 {
 		msg := "no OpenCode provider is left for this repo: its allowed_vendors and [opencode] providers have none in common"
 		if in.cfg.OpenCode.FreeModels && !slices.Contains(in.cfg.OpenCodeProviders(), config.OpenCodeFreeProvider) {
@@ -139,6 +162,11 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 			return out, err
 		}
 	}
+	keyFiles, keyLines, err := writeOpenCodeKeys(base, keyed)
+	out.warns = append(out.warns, keyLines...)
+	if err != nil {
+		return out, err
+	}
 	notes, warns, err := openCodeInstructions(root, notesDir, in.memory, in.brief)
 	out.warns = append(out.warns, warns...)
 	if err != nil {
@@ -163,7 +191,7 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 	data, err := parity.OpenCodeConfig{
 		Trusted: trusted, Providers: providers, Model: in.model, Instructions: notes,
 		Plugin: pluginDir, Aggy: bin, Root: root, NoPolicy: in.noPolicy, Auto: out.launch.Auto,
-		Shared: shared, Policy: in.policy, Decide: decide, DecideSum: sum,
+		Shared: shared, Policy: in.policy, Decide: decide, DecideSum: sum, KeyFiles: keyFiles,
 	}.Render()
 	if err != nil {
 		return out, err
@@ -174,6 +202,39 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+// writeOpenCodeKeys writes each key read for this launch to its own 0600 file
+// in base/keys (base is the launch's own 0700 folder under aggy's run folder,
+// removed when the CLI exits and swept after a crash, sweepMemoryDirs), and
+// zeroes the key's bytes. OpenCode reads the file at config load, through
+// "{file:<path>}" in the provider's apiKey (docs/design.md, section 15;
+// docs/verification.md, "Key file"). It returns each provider's file and the
+// launch's lines about them.
+func writeOpenCodeKeys(base string, keyed []openCodeKey) (map[string]string, []string, error) {
+	if len(keyed) == 0 {
+		return nil, nil, nil
+	}
+	dir := filepath.Join(base, "keys")
+	if err := safefs.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return nil, nil, err
+	}
+	files := map[string]string{}
+	var lines []string
+	for _, k := range keyed {
+		p := filepath.Join(dir, k.provider)
+		err := safefs.WriteFile(p, k.value.Bytes(), 0o600)
+		k.value.Wipe()
+		if err != nil {
+			return nil, lines, fmt.Errorf("cannot write the file OpenCode reads key %s from: %w", k.name, err)
+		}
+		files[k.provider] = p
+		dlog.Log(context.Background(), diag.Rec{Event: diag.EvKeyPassed, Msg: "key passed", Vendor: string(adapter.OpenCode),
+			Attrs: map[string]any{"provider": k.provider}})
+		lines = append(lines, fmt.Sprintf("OpenCode gets your key %s for %s, in a 0600 file in this launch's own folder, removed when OpenCode exits", k.name, k.provider))
+	}
+	lines = append(lines, "any process OpenCode starts (its shell, tools, and plugins) can read a key it was given, and so can anything that asks its local server for its config")
+	return files, lines, nil
 }
 
 // openCodeInstructions copies what the session should read into dir and

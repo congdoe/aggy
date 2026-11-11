@@ -42,6 +42,9 @@ type Fakes struct {
 	Hermes   string
 	Hook     string
 	MCP      string // fake-mcp, a stand-in MCP server (testdata/fakes)
+	// Keychain is fake-keychain, the stand-in for security and secret-tool
+	// (aggy key); it keeps items in $AGGY_FAKE_KEYCHAIN.
+	Keychain string
 }
 
 // For returns the fake for vendor ("claude", "codex", "grok", "opencode", "hermes", "hook", or "mcp").
@@ -88,13 +91,14 @@ func Build(t testing.TB) Fakes {
 	if err := safefs.WriteFile(bin, data, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, v := range []string{"codex", "grok", "opencode", "hermes", "hook", "mcp"} {
+	for _, v := range []string{"codex", "grok", "opencode", "hermes", "hook", "mcp", "keychain"} {
 		if err := safefs.WriteFile(filepath.Join(dir, "fake-"+v), data, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	f := Fakes{Dir: dir}
 	f.Claude, f.Codex, f.Grok, f.OpenCode, f.Hermes, f.Hook, f.MCP = f.For("claude"), f.For("codex"), f.For("grok"), f.For("opencode"), f.For("hermes"), f.For("hook"), f.For("mcp")
+	f.Keychain = f.For("keychain")
 	return f
 }
 
@@ -185,6 +189,12 @@ type Record struct {
 	// OpenCode only: the launch's config and the text of each instruction.
 	OpenCodeConfig       json.RawMessage `json:"opencode_config,omitempty"`
 	OpenCodeInstructions []string        `json:"opencode_instructions,omitempty"`
+	// CanaryIn names where the scenario's canary appeared (env:<name>, args,
+	// stdin, prompt, mcp_config, opencode_config); empty is nowhere.
+	CanaryIn []string `json:"canary_in,omitempty"`
+	// OpenCodeKeys are the SHA-256s of the key files the OpenCode config
+	// names, by provider.
+	OpenCodeKeys map[string]string `json:"opencode_keys,omitempty"`
 }
 
 // Records reads the runs recorded at path, oldest first. A missing file

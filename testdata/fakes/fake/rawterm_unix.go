@@ -46,3 +46,16 @@ func termSize(fd int) (rows, cols int) {
 	_ = ioctl(fd, syscall.TIOCGWINSZ, unsafe.Pointer(&ws))
 	return int(ws.Row), int(ws.Col)
 }
+
+// noEcho turns echo off on fd, as a password prompt does, and returns the old
+// state.
+func noEcho(fd int) (*termState, error) {
+	var t syscall.Termios
+	if err := ioctl(fd, ioctlGet, unsafe.Pointer(&t)); err != nil {
+		return nil, err
+	}
+	old := &termState{t}
+	t.Lflag &^= syscall.ECHO
+	t.Lflag |= syscall.ICANON
+	return old, ioctl(fd, ioctlSet, unsafe.Pointer(&t))
+}

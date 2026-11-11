@@ -48,7 +48,7 @@ func TestOpenCodeParse(t *testing.T) {
 		{"the repo name is not a provider", "[opencode]\nproviders = [\"opencode-free\"]\n", "opencode-free-models on"},
 		{"free models on", "[opencode]\nfree_models = true\n", ""},
 		{"free models not a bool", "[opencode]\nfree_models = \"yes\"\n", "free_models"},
-		{"anthropic until aggy key", "[opencode]\nproviders = [\"anthropic\"]\n", "never allows"},
+		{"anthropic only with aggy key", "[opencode]\nproviders = [\"anthropic\"]\n", "aggy key add"},
 		{"a bad name", "[opencode]\nproviders = [\"../x\"]\n", "not a provider id"},
 		{"a route to it", "[routing]\nreview = [\"opencode\"]\n", "on screen only"},
 	}

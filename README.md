@@ -8,7 +8,7 @@ aggy runs the official CLIs, signed in with your own accounts, and lets them wor
 
 ## What aggy never does
 
-- It never reads, copies, or stores vendor credentials. Each CLI signs in with its own flow. `aggy setup` records each CLI's version and when it checked; no CLI has a verified way for aggy to ask whether it is signed in, so aggy records that as unknown and tells you how to sign in.
+- It never reads, copies, or stores vendor credentials. Each CLI signs in with its own flow. The one exception is an API key you store with `aggy key add` for OpenCode: the keychain tool asks you for it, it stays in your OS keychain (the macOS Keychain or the Linux secret service), aggy's index keeps only its name, and aggy hands it only to an OpenCode launch you start at a terminal, as a file in that launch's own folder. Any process OpenCode starts can read it. It never reaches Claude Code, Codex, Grok, or a borrow. `aggy setup` records each CLI's version and when it checked; no CLI has a verified way for aggy to ask whether it is signed in, so aggy records that as unknown and tells you how to sign in.
 - It never sends model requests or calls a vendor API. Only the official CLIs talk to their vendors.
 - It collects no telemetry, and routes vendor traffic through nothing unless you turn on a local proxy tool for a vendor (such as Headroom's: off by default, with a warning and a typed confirmation). aggy's own network use is a local Unix socket in `~/.aggy/run`, and a loopback health check of a proxy you turned on.
 - It never sets API-key variables, and sets a `*_BASE_URL` only to point an on-screen CLI at a local proxy you turned on for it. Borrow children run with those removed from their environment, and `aggy doctor` warns when such settings could bill an API instead of your subscription.
@@ -60,6 +60,7 @@ aggy accept <borrow-id>                         # see its diff stat, run the che
 aggy -c                # reopen the latest session here (aggy -r <id> for another)
 aggy claude --model opus --permission-mode plan   # a vendor CLI with its own flags
 aggy --model opus "explain this repo"             # the default vendor's flags and first prompt
+aggy key add anth --provider anthropic            # an API key for OpenCode, asked for and kept in your OS keychain
 git diff | aggy -p "review this"                  # print mode: the CLI's own output, aggy's policy, nothing recorded
 aggy opencode --model xai/grok-4                  # OpenCode, on the plans and keys you set up
 aggy hermes                                       # Hermes Agent, once ticked in this folder's trust list

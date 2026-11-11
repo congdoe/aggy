@@ -591,9 +591,10 @@ func Parse(text string) (Config, error) {
 	return cfg, nil
 }
 
-// openCodeNever are providers no launch allows (parity.OpenCodeAlwaysDenied,
-// which says why; anthropic waits for aggy key). OpenCode's own provider is
-// apart: only [opencode] free_models allows it.
+// openCodeNever are providers [opencode] providers cannot list
+// (parity.OpenCodeAlwaysDenied, which says why; anthropic is allowed only by
+// a key bound to it with aggy key, parity.OpenCodeKeyOnly). OpenCode's own
+// provider is apart: only [opencode] free_models allows it.
 var openCodeNever = []string{"claude-agent", "anthropic"}
 
 // Validate checks vendor names and budgets.
@@ -630,6 +631,8 @@ func (c Config) Validate() error {
 			return fmt.Errorf("opencode.providers: %q is not a provider id", p)
 		case p == OpenCodeFreeProvider || p == OpenCodeFreeRepoName:
 			return fmt.Errorf("opencode.providers: %q is not listed here: aggy config set opencode-free-models on allows OpenCode's own provider", p)
+		case p == "anthropic":
+			return errors.New(`opencode.providers: "anthropic" is not listed here: OpenCode gets it only with an API key, which aggy key add <name> --provider anthropic stores`)
 		case slices.Contains(openCodeNever, p):
 			return fmt.Errorf("opencode.providers: aggy never allows %q on OpenCode", p)
 		}

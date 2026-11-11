@@ -337,7 +337,7 @@ func nestedIn(ws []string) string {
 // AggyCommands are aggy's own command names: a first word that is none of
 // them, nor a vendor's name, is the default vendor's prompt (T6961).
 var AggyCommands = []string{"accept", "attribution", "borrow", "brief", "check", "config", "dev", "diag", "doctor", "gc", "help",
-	"hook", "hook-tool", "hooks", "image", "inbox", "log", "mcp", "memory", "new", "permissions", "policy", "reject", "resume",
+	"hook", "hook-tool", "hooks", "image", "inbox", "key", "log", "mcp", "memory", "new", "permissions", "policy", "reject", "resume",
 	"run", "session", "sessions", "setup", "skill", "stats", "switch", "tool", "trust", "unwire", "usage", "version", "video"}
 
 // aggyOwnValueFlags are the flags before aggy's first word that take a value:

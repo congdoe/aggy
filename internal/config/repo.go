@@ -54,7 +54,16 @@ type RepoConfig struct {
 	// (T6979), are the person's own, in ~/.aggy/permissions.json. A launch
 	// says it is ignored (SetsPolicy).
 	Policy any `toml:"policy"`
+	// Keys is a repo's [keys] table, decoded whatever it holds and never acted
+	// on (T6931): a repo can never name a key, bind one to a provider, or hand
+	// one to anything. Keys are the person's own (aggy key), in the OS keychain
+	// and aggy's index. A launch says it is ignored (SetsKeys).
+	Keys any `toml:"keys"`
 }
+
+// SetsKeys reports whether the repo's config has a [keys] table, which aggy
+// ignores.
+func (rc RepoConfig) SetsKeys() bool { return rc.Keys != nil }
 
 // RepoOpenCode is a repo's [opencode] table. A repo can never turn on
 // OpenCode's free models: that sends prompts and code to OpenCode's own
@@ -128,7 +137,7 @@ func ParseRepo(text string) (RepoConfig, error) {
 	if err != nil {
 		return RepoConfig{}, err
 	}
-	if err := unknownKeys(md, "policy"); err != nil {
+	if err := unknownKeys(md, "policy", "keys"); err != nil {
 		return RepoConfig{}, err
 	}
 	if md.IsDefined("allowed_vendors") && rc.AllowedVendors == nil {
@@ -273,19 +282,30 @@ func (e Effective) OpenCodeProviders() []string {
 	if e.Repo.AllowedVendors == nil {
 		return user
 	}
-	counts := map[string]adapter.Vendor{"xai": adapter.Grok, "openai": adapter.Codex,
-		OpenCodeFreeProvider: OpenCodeFreeRepoName}
 	out := []string{}
 	for _, p := range user {
-		v, ok := counts[p]
-		if !ok {
-			v = adapter.Vendor(p)
-		}
-		if slices.Contains(e.Repo.AllowedVendors, v) {
+		if e.OpenCodeProviderAllowed(p) {
 			out = append(out, p)
 		}
 	}
 	return out
+}
+
+// OpenCodeProviderAllowed reports whether this repo's allowed_vendors lets
+// provider p see it on OpenCode, counted as OpenCodeProviders counts: with no
+// allowed_vendors, every provider. A key's provider (aggy key) is narrowed the
+// same way: anthropic needs its own name in the list.
+func (e Effective) OpenCodeProviderAllowed(p string) bool {
+	if e.Repo.AllowedVendors == nil {
+		return true
+	}
+	counts := map[string]adapter.Vendor{"xai": adapter.Grok, "openai": adapter.Codex,
+		OpenCodeFreeProvider: OpenCodeFreeRepoName}
+	v, ok := counts[p]
+	if !ok {
+		v = adapter.Vendor(p)
+	}
+	return slices.Contains(e.Repo.AllowedVendors, v)
 }
 
 // Allows reports whether vendor v may see this repo.
