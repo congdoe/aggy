@@ -1373,8 +1373,11 @@ runs fake-agy (testdata/fakes/fake/antigravity.go). `Tested` is 1.5.3 to 1.5.5.
   range say so.
 - **Trust.** The trust row "Antigravity (Gemini)" is off until ticked, and
   "All" never ticks it (`trustlist.Row.NotInAll`): the terms note needs a
-  tick of its own. At a terminal an unticked launch offers to tick that row
-  alone.
+  tick of its own, and the list says so under the row. At a terminal an
+  unticked launch offers to tick that row alone: on a terminal that takes the
+  trust select, as the select with that one row, which starts with no cursor
+  and keeps its typing guard, so a key typed for agy ticks nothing; otherwise
+  as a typed y/N question (default no).
 
 | Unconfirmed fact (Antigravity) | Fallback in code |
 | --- | --- |

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/adapter/antigravity"
@@ -533,5 +534,59 @@ func TestAgyPlanWords(t *testing.T) {
 	payload := []byte(`{"toolCall":{"name":"run_command","args":{"CommandLine":"find . -name hooks.json -delete"}}}`)
 	if d := policyhook.JudgeAntigravity(plan, payload); d.Verdict != parity.VerdictAsk {
 		t.Errorf("find -name hooks.json -delete: %+v", d)
+	}
+}
+
+// TestAntigravityTickSelect (T6957, port onto the trust select): on a
+// terminal that takes the select, the offer to tick Antigravity is the select
+// with its row alone: a move to the row, Space, and Enter tick it; Space or
+// Enter at once, All, the digit 1, and text typed for the CLI tick nothing.
+func TestAntigravityTickSelect(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		keys []string
+		gap  time.Duration
+		yes  bool
+	}{
+		{"down to the row then Space and Enter", []string{"\x1b[B", "\x1b[B", " ", "\r"}, time.Second, true},
+		{"its number then Enter", []string{"2", "\r"}, time.Second, true},
+		{"Enter at once", []string{"\r"}, time.Second, false},
+		{"Space at once", []string{" ", "\r"}, time.Second, false},
+		{"All", []string{"\x1b[B", " ", "\r"}, time.Second, false},
+		{"1", []string{"1", "\r"}, time.Second, false},
+		{"y typed", []string{"y", "\r"}, time.Second, false},
+		{"yes typed fast", []string{"y", "e", "s", "\r"}, 80 * time.Millisecond, false},
+		{"2 files typed", []string{"2", " ", "f", "\r"}, 80 * time.Millisecond, false},
+		{"x then Enter", []string{"x", "\r"}, time.Second, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			repo, dir := agyWorld(t, false)
+			inPlaceWorld(t, "", true, false)
+			raw := &fakeRaw{rows: 40, cols: 200}
+			oldSel, oldStart, oldNow := selectTerminal, startInPlace, selectNow
+			selectTerminal = func(io.Reader, io.Writer) bool { return true }
+			startInPlace = func(_ io.Reader, cleanup, _ func()) (inPlaceTerm, error) {
+				raw.cleanup = cleanup
+				return raw, nil
+			}
+			at := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+			selectNow = func() time.Time { at = at.Add(c.gap); return at }
+			t.Cleanup(func() { selectTerminal, startInPlace, selectNow = oldSel, oldStart, oldNow })
+			var out bytes.Buffer
+			in := agyIn(repo, dir)
+			in.getenv, in.in, in.out = os.Getenv, &reads{chunks: c.keys}, &out
+			_, err := prepareAntigravity(context.Background(), in)
+			if (err == nil) != c.yes || antigravityTicked(repo) != c.yes {
+				t.Errorf("err %v, ticked %v", err, antigravityTicked(repo))
+			}
+			for _, want := range []string{"consumer plans", "Antigravity (Gemini)", "All does not tick this one"} {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("the select does not say %q:\n%q", want, out.String())
+				}
+			}
+			if strings.Contains(out.String(), "[y/N]") || raw.restored < 1 {
+				t.Errorf("typed question asked too, or the terminal not put back (%d)", raw.restored)
+			}
+		})
 	}
 }

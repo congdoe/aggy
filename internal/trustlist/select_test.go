@@ -202,7 +202,8 @@ func TestSelectTypingShown(t *testing.T) {
 // warning, never on All, so a stray Space or Enter grants nothing risky; with
 // every row warned it starts on none, and Space does nothing until a move.
 // Asked again for new rows (PR #140 review, L4), it starts on the first new
-// row with no warning, else the first new row.
+// row with no warning, else on none (T6957: a new row with a warning, such as
+// Antigravity's terms row, is never one Space away).
 func TestSelectStart(t *testing.T) {
 	if s := selectOf(); s.At != 1 {
 		t.Errorf("at %d, want 1 (Claude Code)", s.At)
@@ -218,8 +219,8 @@ func TestSelectStart(t *testing.T) {
 		t.Errorf("re-asked: at %d, want the new sandbox row", s.At)
 	}
 	s = NewSelect(NewState([]Row{claude, oc, free}, answered, true, nil))
-	if s.At != 3 || s.St.Rows[2].ID != "opencode-free" {
-		t.Errorf("re-asked, the new row warned: at %d, want it", s.At)
+	if s.At != -1 {
+		t.Errorf("re-asked, the new row warned: at %d, want none", s.At)
 	}
 	s = NewSelect(NewState([]Row{oc, free}, Folder{}, false, nil))
 	if s.At != -1 {
@@ -399,5 +400,53 @@ func TestWrapLongWord(t *testing.T) {
 				t.Errorf("width %d: %q", w, l)
 			}
 		}
+	}
+}
+
+// agyRow is a harness row All never ticks, as Antigravity's is (T6957).
+var agyRow = Row{ID: "antigravity", Label: "Antigravity (Gemini)", Group: Harness, Warning: "terms", NotInAll: true}
+
+// TestSelectNotInAll (T6957, port onto the select): Space on All and the
+// digit 1 never tick a row All skips; a re-ask whose only new row is that
+// row starts with no cursor, so one Space cannot tick it unseen; and the note
+// under the row is drawn with it, the cursor's mark on the row's first line
+// only.
+func TestSelectNotInAll(t *testing.T) {
+	rows := []Row{claude, oc, agyRow}
+	for _, keys := range [][]Input{{up, rn(' ')}, {rn('1')}, {up, rn(' '), rn(' '), rn(' ')}, {rn('1'), rn('1'), rn('1')}} {
+		s := NewSelect(NewState(rows, Folder{}, false, nil))
+		pressAll(s, time.Second, keys...)
+		if slices.Contains(s.St.Ticked(), "antigravity") {
+			t.Errorf("%v ticked Antigravity: %q", keys, s.St.Ticked())
+		}
+	}
+	answered := Folder{Shown: []string{"claude", "opencode"}, On: []string{"claude"}}
+	s := NewSelect(NewState(rows, answered, true, nil))
+	if s.At != -1 {
+		t.Fatalf("re-asked for Antigravity alone: at %d, want none", s.At)
+	}
+	if c := pressAll(s, time.Second, rn(' ')); c != Nothing || !slices.Equal(s.St.Ticked(), []string{"claude"}) {
+		t.Errorf("Space with no cursor: %d, ticked %q", c, s.St.Ticked())
+	}
+	s = NewSelect(NewState(rows, Folder{}, false, nil))
+	pressAll(s, time.Second, down, down)
+	want := `   1 [ ] All harnesses
+
+     Harnesses that may run here
+   2 [ ] Claude Code
+   3 [ ] OpenCode
+          ! plugins run
+>  4 [ ] Antigravity (Gemini)
+          ! terms
+          (All does not tick this one: tick it on its own)
+
+` + SelectKeys
+	if got := strings.Join(s.Frame(200, 40), "\n"); got != want {
+		t.Errorf("frame:\n%s\nwant:\n%s", got, want)
+	}
+	// A short screen keeps the note with its row.
+	got := s.Frame(200, 8)
+	if !slices.Contains(got, "          (All does not tick this one: tick it on its own)") {
+		t.Errorf("short frame lost the note:\n%s", strings.Join(got, "\n"))
 	}
 }

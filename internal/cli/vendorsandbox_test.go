@@ -92,6 +92,16 @@ func TestClaudeSandboxRow(t *testing.T) {
 		if i < 0 || l.st.On[i] || !l.st.New[i] {
 			t.Errorf("aggy trust's list: row %d, on %v, new %v", i, l.st.On, l.st.New)
 		}
+		// T6957 on the select: All, four harnesses (Antigravity among them),
+		// and the sandbox, six items, seven with the free models offered;
+		// under ten, so a digit acts at once. The sandbox is item 6, as typed
+		// below.
+		if n := len(l.st.Rows) + 1; n != 6 || i+2 != 6 {
+			t.Errorf("aggy trust's list: %d items, the sandbox item %d; want 6 and 6", n, i+2)
+		}
+		if lf, err := openTrustList(tg, freeOn(), true); err != nil || len(lf.st.Rows)+1 != 7 {
+			t.Errorf("with the free models: %v", err)
+		}
 		if p := l.pending(); slices.Contains(p, trustRowClaudeSandbox) {
 			t.Errorf("pending %q", p)
 		}

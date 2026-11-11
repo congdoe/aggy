@@ -27,6 +27,7 @@ import (
 	"github.com/congdoe/aggy/internal/policyhook"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/store"
+	"github.com/congdoe/aggy/internal/termsafe"
 	"github.com/congdoe/aggy/internal/trustlist"
 )
 
@@ -77,7 +78,10 @@ func antigravityTicked(dir string) bool {
 
 // antigravityTickInPlace offers, at a launch in a folder whose trust list
 // does not tick Antigravity, to tick it there and go on (T6979), showing the
-// terms sentence: only that row changes. yes says it is ticked now.
+// terms sentence: only that row changes. yes says it is ticked now. On a
+// terminal that can take the trust select it is that select with the one row
+// (agyTickSelect), so its typing guard holds and no Space or Enter typed for
+// the CLI ticks it; otherwise the typed y/N question, default no.
 func antigravityTickInPlace(ctx context.Context, cwd string, getenv func(string) string, in io.Reader, out io.Writer) (bool, error) {
 	if in == nil || getenv == nil {
 		return false, nil
@@ -103,11 +107,18 @@ func antigravityTickInPlace(ctx context.Context, cwd string, getenv func(string)
 	if err != nil || !changes {
 		return false, err
 	}
-	yes, asked := askInPlace(getenv, in, out, inPlace{
+	q := inPlace{
 		change: fmt.Sprintf("Antigravity (Gemini) is not ticked in aggy's trust list for %s. aggy can tick it there, and only it. %s.", tg.root, antigravity.TermsNote),
 		undo:   "aggy unwire undoes it, or aggy trust " + tg.root + " and untick it.",
 		ask:    "Tick Antigravity (Gemini) here and start agy?",
-	})
+	}
+	if !trustPerson(getenv) {
+		return false, nil
+	}
+	yes, asked := agyTickSelect(q, in, out)
+	if !asked {
+		yes, asked = askInPlace(getenv, in, out, q)
+	}
 	if !asked || !yes {
 		return false, nil
 	}
@@ -117,6 +128,25 @@ func antigravityTickInPlace(ctx context.Context, cwd string, getenv func(string)
 	}
 	fmt.Fprintf(out, "Done (run %s). aggy unwire --run %s undoes it.\n", runID, runID)
 	return true, nil
+}
+
+// agyTickSelect asks q as the trust select with Antigravity's row alone: the
+// row carries a warning, so the cursor starts on none and one Space ticks
+// nothing; the row ticked and Enter is yes, and any other way out is no and
+// records nothing. asked is false when the terminal cannot take the select.
+func agyTickSelect(q inPlace, in io.Reader, out io.Writer) (yes, asked bool) {
+	i := slices.IndexFunc(trustRowDefs, func(d trustRowDef) bool { return d.ID == trustRowAntigravity })
+	if i < 0 || !selectTerminal(in, out) {
+		return false, false
+	}
+	st := trustlist.NewState([]trustlist.Row{trustRowDefs[i].Row}, trustlist.Folder{}, false, nil)
+	header := termsafe.Lines(q.change) + "\n" + termsafe.Lines(q.undo) + "\n" +
+		termsafe.Line(q.ask) + " Tick its row (Down to it, then Space) and press Enter; Enter alone, n, Esc, or x starts nothing and records nothing.\n\n"
+	c, ok := selectTrustList(&trustListAt{st: st}, header, in, out)
+	if !ok {
+		return false, false
+	}
+	return c == trustlist.Confirm && slices.Contains(st.Ticked(), trustRowAntigravity), true
 }
 
 // agyInput is what a launch hands prepareAntigravity.
