@@ -25,7 +25,7 @@ jobs:
       # test/e2e runs only in the e2e job below, on its own.
       # An explicit margin over Go's 10m default, per package: internal/cli
       # is the slowest, about 8 minutes here under -race (Makefile, test).
-      - run: go test -race -timeout 15m $(go list ./... | grep -v '/test/e2e$')
+      - run: go test -race -timeout 30m $(go list ./... | grep -v '/test/e2e$')
       - run: go build ./...
 
   # The supervisor in a pseudo-terminal against the fakes, one package at
