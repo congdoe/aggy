@@ -1,5 +1,6 @@
 // Package fakecli builds the fake vendor CLIs in testdata/fakes for tests:
-// fake-claude, fake-codex, fake-grok, and fake-hook. Only tests import it.
+// fake-claude, fake-codex, fake-grok, fake-opencode, fake-hermes, and
+// fake-hook. Only tests import it.
 // The scenario format is documented in testdata/fakes/README.md.
 package fakecli
 
@@ -36,11 +37,12 @@ type Fakes struct {
 	Codex    string
 	Grok     string
 	OpenCode string
+	Hermes   string
 	Hook     string
 	MCP      string // fake-mcp, a stand-in MCP server (testdata/fakes)
 }
 
-// For returns the fake for vendor ("claude", "codex", "grok", "opencode", "hook", or "mcp").
+// For returns the fake for vendor ("claude", "codex", "grok", "opencode", "hermes", "hook", or "mcp").
 func (f Fakes) For(vendor string) string {
 	return filepath.Join(f.Dir, "fake-"+vendor)
 }
@@ -87,13 +89,13 @@ func Build(t testing.TB) Fakes {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, v := range []string{"codex", "grok", "opencode", "hook", "mcp"} {
+	for _, v := range []string{"codex", "grok", "opencode", "hermes", "hook", "mcp"} {
 		if err := safefs.WriteFile(filepath.Join(dir, "fake-"+v), data, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	f := Fakes{Dir: dir}
-	f.Claude, f.Codex, f.Grok, f.OpenCode, f.Hook, f.MCP = f.For("claude"), f.For("codex"), f.For("grok"), f.For("opencode"), f.For("hook"), f.For("mcp")
+	f.Claude, f.Codex, f.Grok, f.OpenCode, f.Hermes, f.Hook, f.MCP = f.For("claude"), f.For("codex"), f.For("grok"), f.For("opencode"), f.For("hermes"), f.For("hook"), f.For("mcp")
 	return f
 }
 

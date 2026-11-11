@@ -67,4 +67,11 @@ var Manage = map[Vendor]Management{
 	OpenCode: {
 		Commands: []string{"auth", "mcp", "models"},
 	},
+	// Hermes Agent 0.23.1: sign-in and the model picker, in the person's own
+	// default profile (hermes --help lists both, live; docs/verification.md).
+	// Not here: config, profile, sessions, hooks, and gateway change or reach
+	// what aggy keeps (its profile, the hook consent, the daemon).
+	Hermes: {
+		Commands: []string{"auth", "model"},
+	},
 }

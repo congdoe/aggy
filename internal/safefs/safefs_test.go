@@ -20,6 +20,8 @@ func fakeHome(t *testing.T) string {
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CODEX_HOME", "")
 	t.Setenv("GROK_HOME", "")
+	t.Setenv("HERMES_HOME", "")
+	t.Setenv("HERMES_DATA_DIR_SUFFIX", "")
 	return home
 }
 

@@ -12,6 +12,10 @@
 //     with their -wal and -shm), and the legacy auth.json; and the file
 //     $OPENCODE_DB names. Transcripts come only through `opencode session
 //     export`, which is the CLI reading its own database.
+//   - Hermes Agent: under ~/.hermes (or $HERMES_HOME) and under every
+//     profile in its profiles/ folder, the credential, token, and secret
+//     cache files and folders in hermesEntries, and state.db, which holds
+//     the transcripts: they come only through `hermes sessions export`.
 //
 // Two checks run on every call:
 //
@@ -45,8 +49,8 @@
 // is refused outright, with ErrAuthPath.
 //
 // safefs fails closed. When no absolute home directory can be found, or
-// CLAUDE_CONFIG_DIR, CODEX_HOME, or GROK_HOME is set to a relative path,
-// every call returns an error matching ErrLocate.
+// CLAUDE_CONFIG_DIR, CODEX_HOME, GROK_HOME, or HERMES_HOME is set to a
+// relative path, every call returns an error matching ErrLocate.
 package safefs
 
 import (
@@ -140,6 +144,76 @@ func isChannelDB(base string) bool {
 	return strings.HasPrefix(base, "opencode-") && (strings.HasSuffix(base, ".db") || strings.HasSuffix(base, ".db-wal") || strings.HasSuffix(base, ".db-shm") || strings.HasSuffix(base, ".db-journal"))
 }
 
+// hermesEntries are Hermes Agent's credential and token stores, relative to
+// its home and to every profile's home (agent/file_safety.py:346-373 and
+// hermes_cli/home_data_layout.py:8-18 at v0.23.1: the files Hermes' own guard
+// refuses, its secret caches with their legacy places, and the folders it
+// refuses whole), and state.db, which holds the transcripts beside the
+// sessions (hermes_state_common.py:467-559): aggy reads a session only through
+// `hermes sessions export`. pairing/ is from the fact sheet's list of token
+// folders (unverified in the guard's source at v0.23.1; refused on the safe
+// side).
+var hermesEntries = []string{
+	".env", "auth.json", "auth.lock", ".anthropic_oauth.json", "webhook_subscriptions.json", "auth/google_oauth.json",
+	"bws_cache.json", "bws_cache.enc.json", "op_cache.json", "photon-sidecar.json",
+	"cache/bws_cache.json", "cache/bws_cache.enc.json", "cache/op_cache.json", "runtime/photon-sidecar.json",
+	"mcp-tokens", "vault", "browser-profile", "webapp", "pairing",
+	"state.db", "state.db-wal", "state.db-shm", "state.db-journal",
+}
+
+// hermesRoots lists the folders Hermes' home may be: $HERMES_HOME, else
+// ~/.hermes for each home (hermes_constants.py:57-64, 190-197 at v0.23.1),
+// with $HERMES_DATA_DIR_SUFFIX when it is a plain name. Each root's profiles
+// are under profiles/<name> (hermes_cli/profiles.py:442-455).
+func hermesRoots(homes []string) ([]string, error) {
+	suffix := os.Getenv("HERMES_DATA_DIR_SUFFIX")
+	if strings.ContainsAny(suffix, `/\`) || suffix == "." || suffix == ".." {
+		suffix = ""
+	}
+	var roots []string
+	for _, h := range homes {
+		roots = append(roots, filepath.Join(h, ".hermes"))
+		if suffix != "" {
+			roots = append(roots, filepath.Join(h, ".hermes"+suffix))
+		}
+	}
+	if v := os.Getenv("HERMES_HOME"); v != "" {
+		if !filepath.IsAbs(v) {
+			return nil, fmt.Errorf("%w: HERMES_HOME=%q is not an absolute path", ErrLocate, v)
+		}
+		v = filepath.Clean(v)
+		roots = append(roots, v)
+		// A HERMES_HOME that is itself a profile names its root too.
+		if filepath.Base(filepath.Dir(v)) == "profiles" {
+			roots = append(roots, filepath.Dir(filepath.Dir(v)))
+		}
+	}
+	return roots, nil
+}
+
+// hermesMatch reports whether n, normalized, is a Hermes store under root r
+// (normalized), at the root or in any profile, existing or not.
+func hermesMatch(n, r string) bool {
+	rel, ok := strings.CutPrefix(n, r+string(filepath.Separator))
+	if !ok {
+		return false
+	}
+	in := func(rel string) bool {
+		for _, e := range hermesEntries {
+			e = normPath(filepath.FromSlash(e))
+			if rel == e || strings.HasPrefix(rel, e+string(filepath.Separator)) {
+				return true
+			}
+		}
+		return false
+	}
+	if in(rel) {
+		return true
+	}
+	parts := strings.SplitN(rel, string(filepath.Separator), 3)
+	return len(parts) == 3 && parts[0] == "profiles" && in(parts[2])
+}
+
 // listDir lists a folder, for idMatch. A test counts its calls.
 var listDir = os.ReadDir
 
@@ -197,6 +271,9 @@ type guard struct {
 	dbs    []string      // folders where a channel's database counts too, normalized
 	dbDirs []string      // the same, as they are, to list for idMatch
 	ids    []fs.FileInfo // identities of the credential files that exist
+	// hermes are Hermes' roots, normalized, raw and real (hermesMatch), and
+	// hermesDirs the same as they are, whose profiles idMatch lists.
+	hermes, hermesDirs []string
 }
 
 func loadGuard() (*guard, error) {
@@ -217,6 +294,20 @@ func loadGuard() (*guard, error) {
 		}
 	}
 	g := &guard{}
+	hroots, err := hermesRoots(homes)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range hroots {
+		// The root's own stores get identities here; a profile's are matched
+		// by path, and by identity in idMatch for a file with a second name.
+		folders = append(folders, credFolder{r, hermesEntries})
+		g.hermes = append(g.hermes, normPath(r))
+		g.hermesDirs = append(g.hermesDirs, r)
+		if real, err := resolveExisting(r); err == nil && real != r {
+			g.hermes = append(g.hermes, normPath(real))
+		}
+	}
 	for _, d := range openCodeDirs(homes) {
 		folders = append(folders, credFolder{d, openCodeFiles})
 		g.dbs = append(g.dbs, normPath(d))
@@ -288,6 +379,11 @@ func (g *guard) pathMatch(path string) bool {
 	dir, base := filepath.Split(n)
 	if isChannelDB(base) && slices.Contains(g.dbs, strings.TrimSuffix(dir, string(filepath.Separator))) {
 		return true
+	}
+	for _, r := range g.hermes {
+		if hermesMatch(n, r) {
+			return true
+		}
 	}
 	return false
 }
@@ -509,6 +605,21 @@ func (g *guard) idMatch(fi fs.FileInfo) bool {
 			}
 			if id, err := os.Lstat(filepath.Join(d, e.Name())); err == nil && os.SameFile(id, fi) {
 				return true
+			}
+		}
+	}
+	// Each Hermes profile's stores, for the same rare file with a second
+	// name: a profile can be made at any time, so it is listed only now.
+	for _, r := range g.hermesDirs {
+		es, err := listDir(filepath.Join(r, "profiles"))
+		if err != nil {
+			continue
+		}
+		for _, e := range es {
+			for _, name := range hermesEntries {
+				if id, err := os.Lstat(filepath.Join(r, "profiles", e.Name(), filepath.FromSlash(name))); err == nil && os.SameFile(id, fi) {
+					return true
+				}
 			}
 		}
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/claude"
 	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
+	"github.com/congdoe/aggy/internal/adapter/hermes"
 	"github.com/congdoe/aggy/internal/adapter/opencode"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/diag"
@@ -277,6 +278,10 @@ func promptRefusal(v adapter.Vendor, p adapter.ParsedFlags, resuming bool) strin
 		return "aggy passes no prompt to OpenCode yet; type it once the session starts"
 	case v == adapter.OpenCode && len(p.Extra) > 0:
 		return fmt.Sprintf("aggy passes none of OpenCode's own flags yet, so not %q", p.Extra[0])
+	case v == adapter.Hermes && len(p.Prompt) > 0:
+		// TODO(T6933): chat -q seeds the first turn on a terminal
+		// (hermes_cli/_parser.py:236-240 at v0.23.1), unchecked under aggy.
+		return "aggy passes no prompt to Hermes yet; type it once the session starts"
 	case len(p.Prompt) > 0 && resuming && v != adapter.Claude:
 		return fmt.Sprintf("a prompt with a resumed %s session is unverified; type it once the session is back", v)
 	}
@@ -383,6 +388,8 @@ func screenAdapter(v adapter.Vendor, caps []string) adapter.Adapter {
 		return grok.New()
 	case adapter.OpenCode:
 		return opencode.New()
+	case adapter.Hermes:
+		return hermes.New()
 	}
 	return claude.Adapter{Caps: caps}
 }
@@ -405,8 +412,8 @@ func runPrint(cmd string, v adapter.Vendor, t target, words []string, help adapt
 		refuse(ctx, stderr, cmd, diag.EvLaunchRefused, code, err.Error(), rec)
 		return 1
 	}
-	if v == adapter.OpenCode {
-		return launchUsageErr(stderr, cmd, diag.CodeUnsupported, "aggy runs OpenCode on screen only: print mode and a stdin that is no terminal are not wired for it; run opencode itself", "")
+	if adapter.OpenHarness(v) {
+		return launchUsageErr(stderr, cmd, diag.CodeUnsupported, fmt.Sprintf("aggy runs %s on screen only: print mode and a stdin that is no terminal are not wired for it; run %s itself", vendorNames[v], vendorBin(v)), "")
 	}
 	// Sorted first, so a refused flag is refused before anything is looked up.
 	p, err := passFlags(v).ParseWith(words, adapter.ParseOpts{NoPolicy: t.NoPolicy, Print: true, Values: help.Values, Switches: help.Switches})
@@ -818,7 +825,7 @@ func nearCommand(word string) string {
 	if len(low) < 4 {
 		return ""
 	}
-	for _, c := range append(slices.Clone(commandNames), "claude", "codex", "grok", "opencode") {
+	for _, c := range append(slices.Clone(commandNames), "claude", "codex", "grok", "opencode", "hermes") {
 		if len(c) < 4 || word == c {
 			continue
 		}

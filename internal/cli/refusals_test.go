@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -37,6 +38,17 @@ func TestCLIMissing(t *testing.T) {
 	if len(others) != 2 || others[0] != adapter.Claude && others[1] != adapter.Claude {
 		t.Fatalf("installed: %q", others)
 	}
+	// T6933: an installed Hermes is offered only where it is ticked.
+	lookPathFor = func(v adapter.Vendor) bool { return v == adapter.Claude || v == adapter.Hermes }
+	if got := installedElse(config.Default(), t.TempDir(), adapter.Grok); slices.Contains(got, adapter.Hermes) {
+		t.Errorf("unticked Hermes offered: %q", got)
+	}
+	ticked := t.TempDir()
+	tickTrustRows(t, ticked, trustRowHermes)
+	if got := installedElse(config.Default(), ticked, adapter.Grok); !slices.Contains(got, adapter.Hermes) {
+		t.Errorf("ticked Hermes not offered: %q", got)
+	}
+	lookPathFor = func(v adapter.Vendor) bool { return v == adapter.Claude || v == adapter.Codex }
 	// #133 review: the picked vendor starts with the policy on, whatever
 	// flags the missing one was given, and the pick says so.
 	if nt := pickedTarget(adapter.Claude, target{Vendor: adapter.Grok, NoPolicy: true, Direct: true}); nt.NoPolicy || !nt.New || nt.Vendor != adapter.Claude || !nt.Direct {

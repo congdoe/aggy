@@ -13,7 +13,7 @@ import (
 // pseudo-terminal, raw mode, switch key, or picker, so nothing of aggy's
 // sits between the CLI and the terminal. The supervisor socket still
 // listens and the index is still kept through hooks, as under aggy run.
-func runDirect(c adapter.Command, runDir, parentID string, v adapter.Vendor, assigned string, onID func(string), also func(supervisor.Request), log func(diag.Rec), started func(pid int)) (int, error) {
+func runDirect(c adapter.Command, runDir, parentID string, v adapter.Vendor, assigned, token string, onID func(string), also func(supervisor.Request), log func(diag.Rec), started func(pid int)) (int, error) {
 	onHook, stopIndex, _ := startIndex(parentID, v, assigned, onID)
 	defer stopIndex()
 	onHook, stopLimits := startLimits(parentID, v, onHook, nil)
@@ -32,6 +32,7 @@ func runDirect(c adapter.Command, runDir, parentID string, v adapter.Vendor, ass
 	}
 	defer func() { _ = srv.Close() }()
 	srv.SetLog(log)
+	srv.SetToken(token) // a Hermes launch's; "" accepts none
 	c.Env = supervisor.SocketEnv(c.Env, srv.Path(), parentID)
 	return execrun.RunDirectStarted(c, func(pid int) {
 		srv.SetRoot(pid)

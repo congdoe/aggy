@@ -33,6 +33,11 @@ var keep = map[adapter.Vendor][]string{
 		"stopHookActive", "error", "errorDetails", "reason", "notificationType"},
 	// What aggy's own plugin sends (internal/adapter/opencode/plugin/server.js).
 	adapter.OpenCode: {"sessionID", "requestID", "directory", "error", "reason"},
+	// What aggy's Hermes hook forwards (internal/cli, hermesHook): the
+	// session id only. Hermes' own payload (agent/shell_hooks.py:87-107 at
+	// v0.23.1) never reaches the socket, and its extra, which may hold the
+	// conversation, is never read.
+	adapter.Hermes: {"session_id"},
 }
 
 // maxField drops a kept value longer than this once encoded (an

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/congdoe/aggy/internal/adapter/hermes"
 	"github.com/congdoe/aggy/internal/claudetrust"
 	"github.com/congdoe/aggy/internal/diff"
 	"github.com/congdoe/aggy/internal/hook"
@@ -121,6 +122,13 @@ type reverser struct {
 func reverserFor(rev string) (reverser, bool) {
 	if rev == ReverseAggyHooks {
 		return reverser{fn: hook.Strip}, true
+	}
+	if rev == hermes.Reverse {
+		// aggy's block in its own Hermes profile's config.yaml (T6933): the
+		// file may hold a key the person's root config seeded, which aggy
+		// never copies, so it is undone by taking the block out.
+		return reverser{fn: hermes.StripBlock, noBackup: true,
+			summary: "take aggy's block out of its Hermes profile's config.yaml, and leave the rest of the file"}, true
 	}
 	if before, folder, ok := claudetrust.ParseReverse(rev); ok {
 		return reverser{fn: func(b []byte) ([]byte, error) { return claudetrust.Undo(b, folder, before) }, noBackup: true,

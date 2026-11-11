@@ -1,4 +1,4 @@
-// Command fake is fake-claude, fake-codex, fake-grok, fake-opencode, and fake-hook: a
+// Command fake is fake-claude, fake-codex, fake-grok, fake-opencode, fake-hermes, and fake-hook: a
 // stand-in for the vendor CLIs that follows a scenario file, so tests never
 // run a real vendor CLI or need a login. The vendor is the binary's name
 // without the "fake-" prefix, or $AGGY_FAKE_VENDOR. See ../README.md for
@@ -106,6 +106,8 @@ type Scenario struct {
 	// by the PreToolUse hooks and permission rules of its --settings layer,
 	// as toolDecision says, and the outcome appended to $AGGY_FAKE_RECORD.
 	ToolCalls []ToolCall `json:"tool_calls"`
+	// Hermes drives fake-hermes (hermes.go).
+	Hermes *HermesScenario `json:"hermes"`
 }
 
 // ToolCall is one tool call a fake claude makes.
@@ -447,6 +449,9 @@ func run() int {
 	if vendor == "hook" {
 		return runHook()
 	}
+	if vendor == "hermes" {
+		return runHermes()
+	}
 	if vendor == "mcp" {
 		return runMCP()
 	}
@@ -477,7 +482,7 @@ func checkHome(string) error {
 	if h == "" || !filepath.IsAbs(h) {
 		return errors.New("HOME must be an absolute temp directory")
 	}
-	for _, env := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME"} {
+	for _, env := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME", "HERMES_HOME"} {
 		if v := os.Getenv(env); v != "" && !filepath.IsAbs(v) {
 			return fmt.Errorf("%s must be absolute, got %q", env, v)
 		}
@@ -490,20 +495,20 @@ func checkHome(string) error {
 	if canon(h) == realHome {
 		return errors.New("refusing to run with HOME set to the real home directory")
 	}
-	for _, v := range []string{"claude", "codex", "grok"} {
+	for _, v := range []string{"claude", "codex", "grok", "hermes"} {
 		vh := canon(vendorHome(v))
 		if vh == realHome || strings.HasPrefix(vh, realHome+"/") {
 			return fmt.Errorf("refusing to run with the %s home %s inside the real home directory", v, vendorHome(v))
 		}
 	}
 	var real []os.FileInfo
-	for _, p := range []string{u.HomeDir, filepath.Join(u.HomeDir, ".claude"), filepath.Join(u.HomeDir, ".codex"), filepath.Join(u.HomeDir, ".grok")} {
+	for _, p := range []string{u.HomeDir, filepath.Join(u.HomeDir, ".claude"), filepath.Join(u.HomeDir, ".codex"), filepath.Join(u.HomeDir, ".grok"), filepath.Join(u.HomeDir, ".hermes")} {
 		if fi, err := os.Stat(p); err == nil {
 			real = append(real, fi)
 		}
 	}
 	candidates := []string{h}
-	for _, v := range []string{"claude", "codex", "grok"} {
+	for _, v := range []string{"claude", "codex", "grok", "hermes"} {
 		candidates = append(candidates, vendorHome(v))
 	}
 	for _, c := range candidates {
@@ -576,7 +581,7 @@ func loadScenario() (*Scenario, error) {
 // vendorHome is the vendor's config directory: the relocation variable when
 // set, else ~/.<vendor>.
 func vendorHome(vendor string) string {
-	env := map[string]string{"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME", "grok": "GROK_HOME"}[vendor]
+	env := map[string]string{"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME", "grok": "GROK_HOME", "hermes": "HERMES_HOME"}[vendor]
 	if v := os.Getenv(env); v != "" {
 		return filepath.Clean(v)
 	}

@@ -42,7 +42,7 @@ var passEnv = []string{
 	"HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE",
 	// The vendor CLIs' own config locations, so a probe sees the same
 	// install the user runs.
-	"CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME",
+	"CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME", "HERMES_HOME",
 }
 
 // extraNames are the only variables a command's own Env may add, by
@@ -262,6 +262,43 @@ func OpenCodeRunner(timeout time.Duration) adapter.Runner {
 			env = append(env, kv)
 		}
 		return runEnvCap(ctx, c, timeout, false, env, maxOpenCodeExport)
+	}
+}
+
+// hermesEnv are what a Hermes subcommand aggy runs (adapter/hermes: profile
+// create, config get, sessions export) inherits besides Env's (which has
+// HERMES_HOME): the suffix of the person's Hermes root. It may add no variables.
+var hermesEnv = []string{"HERMES_DATA_DIR_SUFFIX"}
+
+// maxHermesExport caps a Hermes export: a whole session, tool output
+// included, and one cut short cannot be parsed.
+const maxHermesExport = 64 << 20
+
+// HermesRunner returns a Runner for the Hermes subcommands aggy runs:
+// ExecRunner, plus hermesEnv from aggy's environment and the larger cap. No
+// key or base URL reaches them.
+func HermesRunner(timeout time.Duration) adapter.Runner {
+	return func(ctx context.Context, c adapter.Command) (adapter.Output, error) {
+		if c.Stdin != adapter.StdinNull || len(c.Env) > 0 {
+			return adapter.Output{}, errors.New("execrun: a Hermes subcommand gets no stdin and no added environment")
+		}
+		env, err := Env(os.Environ(), nil)
+		if err != nil {
+			return adapter.Output{}, err
+		}
+		for _, k := range hermesEnv {
+			if v, ok := os.LookupEnv(k); ok {
+				env = append(env, k+"="+v)
+			}
+		}
+		// The fakes' variables, inherited, since nothing else starts this
+		// command with a scenario. The real CLI ignores them.
+		for _, kv := range os.Environ() {
+			if strings.HasPrefix(kv, extraPrefix) {
+				env = append(env, kv)
+			}
+		}
+		return runEnvCap(ctx, c, timeout, false, env, maxHermesExport)
 	}
 }
 

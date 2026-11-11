@@ -1019,6 +1019,91 @@ A route to it is refused, and `Headless` returns `ErrUnsupported`. Facts are in
 - System and managed config (`packages/core/src/config/discovery.ts`) outrank every
   launch setting, so `aggy doctor` warns when any exists.
 
+### Hermes
+
+On screen only (T6933): `adapter.Known()` adds Hermes, `adapter.OpenHarness` is
+true for it, a route to it is refused, and `Headless` returns `ErrUnsupported`.
+Facts are from the source at hermes-agent v0.23.1 (commit 3b42157858), cited
+by path and line, or LIVE: the checks of 2026-11-10 recorded in
+[verification.md](verification.md) ("Hermes Agent 0.23.1"). Hermes was not run
+under aggy; every test runs fake-hermes (testdata/fakes/fake/hermes.go).
+
+- Launch: `hermes -p <profile> chat --cli [--resume <id> --no-restore-cwd]
+  [-m <model>] [flags...] [--query-file <brief>]` in the session's folder.
+  `-p` is taken before argparse and sets `HERMES_HOME` to the profile
+  (`hermes_cli/_parser.py:13-16`, `main.py:508-566`); `--cli` is the classic
+  screen (`_parser.py:216, :326`); `--resume` and `--no-restore-cwd`
+  (`:179-182, :278-282`); `--query-file` seeds the first turn on a terminal
+  (`:236-245`). Hermes mints its session ids, `YYYYMMDD_HHMMSS_<6 hex>`
+  (`hermes_state_ids.py:50-60`), so a new session's id comes from aggy's hook.
+- Environment: `execrun.PTYEnv` drops every `HERMES_*` but `HERMES_HOME` and
+  `HERMES_DATA_DIR_SUFFIX`; the memory goes as `HERMES_EPHEMERAL_SYSTEM_PROMPT`
+  (`agent/session_client_env.py:23`, `hermes_cli/cli_init_mixin.py:349`).
+- Profile: `hermes profile create <name> --no-alias --no-skills`
+  (`hermes_cli/profiles.py:1344-1420`; LIVE), names `aggy-<12 hex>` within
+  `PROFILE_ID_RE` (`hermes_constants.py:401`). Its `config.yaml` gets aggy's
+  block (`adapter/hermes.Block`), read back with `hermes -p <profile> config
+  get <key> --json` (`hermes_cli/subcommands/config.py:20-25`,
+  `hermes_cli/config.py:3450-3483`; LIVE without `--json`). The person's
+  default profile is only read, with `hermes config get
+  auth.adopt_external_logins --json` (default true,
+  `hermes_cli/config_defaults.py:1733-1739`).
+- Approvals: `approvals.mode` manual|smart|off (default smart, LIVE),
+  `approvals.deny` as fnmatch globs matched lower case against terminal
+  commands and their de-obfuscated variants before yolo or mode off
+  (`tools/approval_floors.py:23-44`, `tools/approval.py:1189-1212`).
+- Hooks (`agent/shell_hooks.py`): configured under `hooks.<event>` with
+  `command`, `timeout` (default 60, max 300, `:37-38`), and `fail_closed`
+  (pre_tool_call only, `:44`); the command is split like a shell and run with
+  none (`:493`). Stdin: `{hook_event_name, tool_name, tool_input, session_id,
+  cwd, profile, extra}` (`:87-107, :626-628`; LIVE, with `cwd` the install
+  folder). pre_tool_call's answers: `{"action":"block","message"}` or
+  `{"decision":"block","reason"}` block, `{"action":"approve","message",
+  "rule_key"}` escalates to the approval prompt (`:637-658`,
+  `tools/approval.py:1246-1270`), nothing passes; an error, a timeout, a
+  non-zero exit with no directive, or unparseable stdout blocks a fail-closed
+  hook (`:560-616`). Consent: per `(event, command)` in the profile's
+  `shell-hooks-allowlist.json`, asked on a terminal only (`:703-790`),
+  skipped by `--accept-hooks`, `HERMES_ACCEPT_HOOKS`, or `hooks_auto_accept`
+  (`:816-823`). `on_session_end` fires at the end of every turn with
+  `completed`, `failed`, and `interrupted` in `extra`
+  (`agent/turn_finalizer.py:882-896`; LIVE for one `-q` turn).
+- Tools judged by the hook (`policyhook.HermesCalls`): `terminal{command}`
+  (`tools/terminal_tool.py:1750`), `read_file{path}`, `write_file{path}`,
+  `patch{path}`, `search_files{pattern, path}` (`tools/file_tools.py:1152-1435`);
+  any other tool by a `command`, `path`, or `file_path` field.
+- Transcripts: `hermes -p <profile> sessions export - --session-id <id> --format
+  jsonl --redact`, one JSON session per line on stdout
+  (`hermes_cli/subcommands/sessions.py:100-127`,
+  `hermes_cli/sessions_cmd.py:114-118`), the dict `export_session` returns
+  (`hermes_state_portability.py:347-355`) with messages from
+  `_row_to_message_dict` (`hermes_state_messages.py:1308-1330`), through
+  `execrun.HermesRunner`, parsed by `hermes.ParseExport`. The test fixture is
+  hand-built from that source (`internal/adapter/hermes/testdata`).
+- Version: the first line of `hermes --version`, `Hermes Agent v0.23.1
+  (2026.9.24) · stable · local <hash>` (LIVE), which `probe.ParseVersion` reads
+  with the tail after the middle dot.
+- Credentials: `safefs` refuses Hermes' credential and token files and folders,
+  and `state.db*`, at its home (`$HERMES_HOME`, else `~/.hermes`, and with
+  `$HERMES_DATA_DIR_SUFFIX`) and under every `profiles/<name>`
+  (`agent/file_safety.py:346-373`, `hermes_cli/home_data_layout.py:8-18`).
+- Management: `aggy hermes auth ...` and `aggy hermes model` run as typed
+  (`adapter.Manage`).
+
+Unconfirmed, with what the code does:
+
+| Fact | In code |
+| --- | --- |
+| A hook runs for a `--cli` session's tool calls in the daemon, as for `-q` | The hook takes nothing from its environment or folder; a hook that cannot place its launch blocks. |
+| `on_session_end` fires once per turn of an interactive `--cli` session | It is the only turn end; without it a switch waits for the person to quit Hermes. |
+| A `pre_tool_call` block, `fail_closed`, and `{"action":"approve"}` with a `rule_key` behave as the source says | `fail_closed: true` and a 10 s timeout; an ask is an approve with a new `rule_key` per call. |
+| The consent prompt without `--accept-hooks` under aggy's pseudo-terminal | The launch says Hermes will ask, and why. |
+| `--query-file` and `HERMES_EPHEMERAL_SYSTEM_PROMPT` reach a resumed session | Both are passed on a resume too. |
+| `/exit` ends `--cli` at its prompt | `adapter.ExitCommand` (unverified for every vendor but OpenCode). |
+| `config get <key> --json` prints JSON | The read-back refuses the launch on anything else. |
+| `sessions export ... --redact` output under a real session | `ParseExport` refuses a shape it does not recognize (`ErrNoTranscript`). |
+| The first-run telemetry consent and the no-provider setup guard (`hermes_cli/observability/shared_metrics_consent.py`, `main.py:1617-1619`) | Hermes shows them itself; aggy passes keys through. |
+
 ### Transcript formats
 
 `internal/transcript` reads the tail of a session file for a brief. It
@@ -1064,6 +1149,7 @@ A launch of a vendor whose CLI is not on PATH names where to get it (T6979,
 | Grok Build | `https://github.com/xai-org/grok-build` | the repository whose commit (2bdd1d6a) this guide cites |
 | Claude Code | `https://code.claude.com/docs/en/setup` | unverified: on the docs site this guide cites (cli-reference, skills.md), but that this is the install page is not checked |
 | OpenCode | `https://opencode.ai/docs` | unverified: the docs site this guide cites (opencode.ai/docs/tui, docs/zen), not checked as the install page |
+| Hermes Agent | `https://github.com/NousResearch/hermes-agent` | the repository of the source checkout (v0.23.1, 3b42157858) this guide cites; offered as a pick instead of a missing CLI only in a folder whose trust list ticks Hermes |
 
 ### Sign-in
 
@@ -1128,7 +1214,7 @@ passes any of these variables to a CLI (`execrun.Env`).
 
 Each adapter declares the CLI versions it was tested on, from the verified
 versions above: claude 2.1.311 to 2.1.312, codex-cli 0.164.0, grok
-1.0.70, and opencode 2.2.5.
+1.0.70, opencode 2.2.5, and Hermes Agent 0.23.1.
 Each declares it as `Tested` and through `TestedVersions()`.
 `adapter.VersionWarning(a, version, line)` returns a warning when a probed
 version falls outside that range or cannot be parsed (then it quotes

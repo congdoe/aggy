@@ -22,6 +22,10 @@ const (
 	// only. It is not in Vendors, so it has no borrows, hooks, tools, or
 	// default route, and its adapter refuses Headless.
 	OpenCode Vendor = "opencode"
+	// Hermes is Nous Research's Hermes Agent, an open harness like OpenCode
+	// (docs/design.md, section 16): on screen only, in an aggy-owned profile.
+	// It is not in Vendors either, and its adapter refuses Headless.
+	Hermes Vendor = "hermes"
 )
 
 // Vendors returns the subscription vendors in a stable order: those with
@@ -30,7 +34,11 @@ func Vendors() []Vendor { return []Vendor{Claude, Codex, Grok} }
 
 // Known returns every vendor aggy can name: Vendors, then the open
 // harnesses, which are only ever on screen, and only when the person asks.
-func Known() []Vendor { return append(Vendors(), OpenCode) }
+func Known() []Vendor { return append(Vendors(), OpenCode, Hermes) }
+
+// OpenHarness reports an open harness: a vendor on screen only, opened only
+// when the person names it (OpenCode and Hermes).
+func OpenHarness(v Vendor) bool { return v == OpenCode || v == Hermes }
 
 // ParseVendor returns the vendor named s, or an error naming the valid ones.
 func ParseVendor(s string) (Vendor, error) {
@@ -39,7 +47,7 @@ func ParseVendor(s string) (Vendor, error) {
 			return v, nil
 		}
 	}
-	return "", fmt.Errorf("unknown vendor %q (want claude, codex, grok, or opencode)", s)
+	return "", fmt.Errorf("unknown vendor %q (want claude, codex, grok, opencode, or hermes)", s)
 }
 
 // ExitCommand is the line the supervisor types into vendor v's session,
@@ -96,6 +104,7 @@ var clearLineChecked = map[Vendor]bool{
 	Codex:    false,
 	Grok:     false,
 	OpenCode: false,
+	Hermes:   false,
 }
 
 // ClearLineChecked reports whether a live check shows Ctrl+U emptying v's
@@ -314,6 +323,17 @@ type InteractiveRequest struct {
 	// OpenCode is how an OpenCode session is launched; only that adapter
 	// reads it, and it refuses to build a command without it.
 	OpenCode *OpenCodeLaunch
+	// Hermes is how a Hermes session is launched; only that adapter reads it,
+	// and it refuses to build a command without it.
+	Hermes *HermesLaunch
+}
+
+// HermesLaunch is what the launch made for one Hermes session
+// (docs/design.md, section 16): the aggy-owned profile it runs in, whose
+// config.yaml carries aggy's approvals and hooks.
+type HermesLaunch struct {
+	// Profile is the profile's name, passed as -p.
+	Profile string
 }
 
 // OpenCodeLaunch is what the launch made for one OpenCode session
