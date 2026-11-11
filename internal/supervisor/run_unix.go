@@ -639,6 +639,19 @@ type session struct {
 	pick        menuPick
 	enterPick   menuPick
 	cmdFresh    bool
+	// cmdHead is the first byte of the line cmdLine follows past any escape
+	// sequence, once headSeen; headSeq is headByte's place in a sequence.
+	// unsettled names why the last counted turn end left lenKnown false, or
+	// that none came since the Enter that did. missAt, missN, and missSkipped
+	// bound the miss records (noteMiss, T6982).
+	cmdHead     byte
+	lineSeqs    []string
+	headSeen    bool
+	headSeq     int
+	unsettled   string
+	missAt      time.Time
+	missN       int
+	missSkipped int
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -1143,6 +1156,7 @@ func (s *session) send(b []byte) {
 	if s.catchCommand(b, typed) {
 		return
 	}
+	s.noteMiss(b, typed)
 	if len(s.cmdLine) == 0 && !s.cmdBad {
 		s.lineInput = s.inputSinceTurn // as it was before this line began
 	}
@@ -1225,10 +1239,14 @@ func (s *session) followKeys(typed []byte) {
 		s.escEmpty = false
 	}
 	inert := s.followDraft(typed)
+	s.noteSeqs(typed)
 	before := s.compLen
 	for _, c := range typed {
 		s.compose(c)
 	}
+	// A sequence is whole in its read (the key filter holds a split one), so
+	// an Esc the read ends on is the key, and the next read starts afresh.
+	s.headSeq = 0
 	if onlyEsc || inert {
 		s.compLen = before // an Esc types nothing, nor does a key that edits nothing
 	}
@@ -1431,14 +1449,23 @@ var settleTurnGap = time.Second
 // composer then holds text aggy calls empty, and only the status line's "See its
 // prompt?" is left (docs/design.md, TestTurnEndEvidence). An Enter sent while a
 // turn runs is no evidence: it may have answered an approval, or queued.
+//
+// unsettled keeps why a turn end left lenKnown false, for a miss record.
 func (s *session) settleDoubt() {
-	if s.afterEnter != 0 || time.Since(s.enterAt) < settleTurnGap {
+	switch {
+	case s.afterEnter != 0:
+		s.unsettled = "input_after_enter"
+		return
+	case time.Since(s.enterAt) < settleTurnGap:
+		s.unsettled = "too_soon"
 		return
 	}
 	s.escEmpty, s.escTwice, s.escDoubt = false, false, false
 	if s.enterAtPrompt || s.popupEnter {
 		s.compLen, s.lenKnown, s.popup, s.cleared, s.hadAt, s.moved, s.pastePop = 0, true, false, false, false, false, false
 		s.slashOnly, s.slashEntered = false, false
+	} else {
+		s.unsettled = "enter_not_at_prompt"
 	}
 	s.updateDirty()
 }
@@ -1592,6 +1619,7 @@ func (s *session) compose(c byte) {
 	prev := s.lastByte
 	s.lastByte = c
 	s.afterEnter++
+	s.headByte(c)
 	if c == '\r' || c == '\n' || c == ctrlU {
 		s.cmdFresh = false
 	}
@@ -1654,6 +1682,7 @@ func (s *session) compose(c byte) {
 		s.slashOnly, s.slashEntered, s.escDoubt = false, false, false
 	case c == '\r' && s.popup:
 		s.lenKnown = false // the popup may have taken it and added text
+		s.unsettled = "no_turn_end"
 		s.popupEnter = s.popupEnter || s.enterAtPrompt
 		s.afterEnter = 0
 		s.slashEntered = s.slashOnly

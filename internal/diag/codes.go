@@ -114,6 +114,7 @@ var (
 	EvSessionFollowed      = Event{"supervisor.session.followed"}
 	EvCommandCaught        = Event{"supervisor.command.caught"}
 	EvPromptRefused        = Event{"supervisor.command.refused"}
+	EvCommandPassed        = Event{"supervisor.command.passed"}
 	EvSwitchQueued         = Event{"switch.request.queued"}
 	EvSwitchOffered        = Event{"switch.request.offered"}
 	EvSwitchConfirmed      = Event{"switch.request.confirmed"}
@@ -372,6 +373,7 @@ var events = []EventInfo{
 	{EvSwitchReturned, LevelWarn, "supervisor", "A CLI switched to closed before it started, so aggy reopened the CLI before it (attrs.from, attrs.to, attrs.exit).", "Its code's fix; the child that never started is not kept."},
 	{EvSessionExited, LevelInfo, "supervisor", "The on-screen CLI exited; exit_code and duration_ms say how, attrs.switch_to the vendor launched next, if any.", "A switch_to with no supervisor.child.launched after it: the next launch's supervisor.launch.refused."},
 	{EvCommandCaught, LevelInfo, "supervisor", "A command inside the session (/switch, /inbox, /aggy ...) was taken before it reached the CLI, so it started no model turn (attrs.command: its fixed name, never its arguments; attrs.via: keys, typed in full at the prompt, list, picked from one of aggy's lists, or hook, a CLI's prompt hook; attrs.confirmed: the person pressed y to run what the page showed).", "Nothing. A command that went to the CLI instead was not typed in full: see docs/design.md, section 5."},
+	{EvCommandPassed, LevelInfo, "supervisor", "An Enter ended a line that reads as one of aggy's commands, or a line aggy lost track of that began with / or $, and the key catch let it through to the CLI. attrs.command is its fixed name (absent for a lost line); attrs.why lists fixed reason names (docs/logging.md, \"Why a command went to the CLI\"); attrs.unsettled says why the last turn end left the composer unknown; attrs.skipped counts misses not recorded since the last one (at most 5 a minute). It never holds the typed text.", "Read attrs.why: docs/logging.md says what each reason means. A command picked from the CLI's menu is caught only by its prompt hook (aggy hooks install)."},
 	{EvPromptRefused, LevelWarn, "supervisor", "A command a CLI's prompt hook reported was not taken, so aggy hook let the prompt through to the CLI, whose skill tells the model to change nothing; the code says why.", "The code's entry. Typed in full at the prompt, the command is caught from the keys instead."},
 	{EvSwitchQueued, LevelInfo, "switch", "A switch waits for the turn end (attrs.origin: user, agent, or limit; brief, new, model_set).", "No switch.request.offered after it: the session never reached a quiet turn end; look for hook.event.accepted (Stop) and switch.request.refused."},
 	{EvSwitchOffered, LevelInfo, "switch", "The turn ended and aggy asked the user to confirm the switch.", "switch.request.confirmed or switch.request.cancelled follows."},
