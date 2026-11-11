@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/congdoe/aggy/internal/adapter/antigravity"
 	"github.com/congdoe/aggy/internal/adapter/hermes"
 	"github.com/congdoe/aggy/internal/claudetrust"
 	"github.com/congdoe/aggy/internal/diff"
@@ -129,6 +130,12 @@ func reverserFor(rev string) (reverser, bool) {
 		// never copies, so it is undone by taking the block out.
 		return reverser{fn: hermes.StripBlock, noBackup: true,
 			summary: "take aggy's block out of its Hermes profile's config.yaml, and leave the rest of the file"}, true
+	}
+	if rev == antigravity.Reverse {
+		// aggy's one entry in a workspace .agents/hooks.json (T6957): the
+		// person's other entries stay, edited since or not.
+		return reverser{fn: antigravity.StripHooks,
+			summary: "take aggy's entry out of the folder's .agents/hooks.json, and leave the rest of the file"}, true
 	}
 	if before, folder, ok := claudetrust.ParseReverse(rev); ok {
 		return reverser{fn: func(b []byte) ([]byte, error) { return claudetrust.Undo(b, folder, before) }, noBackup: true,

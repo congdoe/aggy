@@ -100,7 +100,7 @@ func TestClaudeSandboxRow(t *testing.T) {
 		_, repo := trustWorld(t, "claude")
 		sandboxCan(t, "")
 		tickTrustRows(t, repo, "claude")
-		atKeyboard(t, "5\n\n") // every harness is listed from the shell: Claude, OpenCode, Hermes, then the sandbox
+		atKeyboard(t, "6\n\n") // every harness is listed from the shell: Claude, OpenCode, Hermes, Antigravity, then the sandbox
 		if code, out, errb := run("trust", repo); code != 0 {
 			t.Fatalf("aggy trust: %d %q %q", code, out, errb)
 		}

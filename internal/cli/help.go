@@ -70,7 +70,7 @@ var commandHelp = map[string]string{
 	"hook-tool": hookToolUsage, "trust": trustUsage, "switch": switchUsage, "run": runHelpText, "--direct": runHelpText,
 	"new": newUsage, "resume": resumeUsage, "--resume": resumeUsage, "-r": resumeUsage,
 	"--continue": continueUsage, "-c": continueUsage, "--no-policy": runHelpText,
-	"claude": vendorUsage, "codex": vendorUsage, "grok": vendorUsage, "opencode": vendorUsage, "hermes": vendorUsage,
+	"claude": vendorUsage, "codex": vendorUsage, "grok": vendorUsage, "opencode": vendorUsage, "hermes": vendorUsage, "antigravity": vendorUsage,
 	"sessions": sessionsUsage, "session": sessionUsage, "setup": setupUsage, "doctor": doctorUsage,
 	"log": logUsage, "diag": diagUsage, "stats": statsUsage, "usage": usageUsage, "dev": devUsage,
 	"unwire": unwireUsage, "skill": skillUsage, "tool": toolUsage, "hooks": hooksUsage,

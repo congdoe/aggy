@@ -11,9 +11,11 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/adapter/antigravity"
 	"github.com/congdoe/aggy/internal/adapter/claude"
 	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
@@ -604,6 +606,20 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w+"; Hermes' hooks, approvals, and session export are checked only on that version"))
 		}
 	}
+	// Antigravity (T6957): its trust tick, aggy's hooks entry in the folder's
+	// .agents/hooks.json, the --settings file, and the plan its hook reads,
+	// ready before the launch is recorded.
+	if v == adapter.Antigravity {
+		as, err := prepareAntigravity(ctx, agyInput{caps: caps, cwd: pl.child.Cwd, dir: memDir, noPolicy: t.NoPolicy, plan: plan,
+			rules: rules, version: version, ids: readIdentities(ctx, s), getenv: os.Getenv, in: offerIn, out: stderr})
+		if err != nil {
+			return fail(agyCode(err, diag.CodeLaunchFailed), err)
+		}
+		req.Antigravity = &as.launch
+		for _, w := range as.warns {
+			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
+		}
+	}
 	cmd, err := a.Interactive(req)
 	if err != nil {
 		return fail(diag.CodeUnsupported, err)
@@ -801,6 +817,18 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			inner(r)
 		}
 	}
+	// T6957: whether any of agy's hooks reached aggy, for the line after an
+	// agy that refused aggy's --settings.
+	var agySeen atomic.Bool
+	if v == adapter.Antigravity {
+		inner := onHook
+		onHook = func(r supervisor.Request) {
+			if r.FromSession && r.Vendor == string(adapter.Antigravity) {
+				agySeen.Store(true)
+			}
+			inner(r)
+		}
+	}
 	// A switch is checked when picked or asked for, and again before the
 	// CLI is told to exit; launch checks everything once more.
 	// The probes switchCheck starts end with this launch.
@@ -917,6 +945,11 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		return ex.Code
 	}
 	exited(ex.Code, ex.SwitchTo)
+	if v == adapter.Antigravity {
+		if n := agyExitNote(ex.Code, agySeen.Load() || facts.TurnRan); n != "" {
+			fmt.Fprintf(stderr, "%s: %s %s\n", name, n, dlog.Tag(diag.CodeAgySettings))
+		}
+	}
 	if ex.SwitchTo != "" {
 		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next, child: pl.child.ID, from: v, fromID: cids.current(), origin: facts.SwitchOrigin}
 		return ex.Code
@@ -1257,7 +1290,8 @@ func pickerVendors(order []adapter.Vendor, on adapter.Vendor) []adapter.Vendor {
 
 // vendorBin is the vendor CLI's command name.
 func vendorBin(v adapter.Vendor) string {
-	return map[adapter.Vendor]string{adapter.Claude: claude.Bin, adapter.Codex: codex.Bin, adapter.Grok: grok.Bin, adapter.OpenCode: opencode.Bin, adapter.Hermes: hermes.Bin}[v]
+	return map[adapter.Vendor]string{adapter.Claude: claude.Bin, adapter.Codex: codex.Bin, adapter.Grok: grok.Bin, adapter.OpenCode: opencode.Bin, adapter.Hermes: hermes.Bin,
+		adapter.Antigravity: antigravity.Bin}[v]
 }
 
 // proxyTools are the --tool names a tool proxy may start for: none on an

@@ -12,6 +12,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/adapter/antigravity"
 	"github.com/congdoe/aggy/internal/adapter/hermes"
 	"github.com/congdoe/aggy/internal/checkup"
 	"github.com/congdoe/aggy/internal/config"
@@ -39,6 +40,10 @@ func memoryDelivery(v adapter.Vendor, caps []string) (bool, string) {
 		if !slices.Contains(caps, probe.CapRules) {
 			return false, "grok --help does not list --rules"
 		}
+	case adapter.Antigravity:
+		// TODO(T6957): agy reads AGENTS.md and GEMINI.md, and .agents/rules
+		// (Google's docs), and takes no system-prompt flag aggy knows.
+		return false, "agy takes no text aggy can pass at launch (it reads AGENTS.md, GEMINI.md, and .agents/rules, from Google's docs)"
 	}
 	return true, ""
 }
@@ -166,6 +171,11 @@ func policyDelivery(v adapter.Vendor, caps []string) (why string, err error) {
 	case adapter.Hermes:
 		// Rendered into aggy's profile per launch (prepareHermes).
 		if why := hermes.Reachable(caps); why != "" {
+			return why, nil
+		}
+	case adapter.Antigravity:
+		// Rendered per launch (prepareAntigravity).
+		if why := antigravity.Reachable(caps); why != "" {
 			return why, nil
 		}
 	case adapter.Codex:

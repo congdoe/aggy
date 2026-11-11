@@ -912,7 +912,7 @@ func sessionMoves(v adapter.Vendor, source string) bool {
 	switch v {
 	case adapter.Grok:
 		return true
-	case adapter.OpenCode, adapter.Hermes:
+	case adapter.OpenCode, adapter.Hermes, adapter.Antigravity:
 		// Hermes: aggy does not follow a move (/new or /resume inside Hermes):
 		// its hook cannot tell one from a nested hermes -p the model ran
 		// (#134 review), so the launch keeps the session it claimed.

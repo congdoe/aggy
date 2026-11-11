@@ -98,6 +98,17 @@ func openCodeDrops(k string) bool {
 // at v0.23.1). It is no key and no base URL.
 var hermesExtraNames = []string{"HERMES_EPHEMERAL_SYSTEM_PROMPT"}
 
+// antigravityExtraNames are what an Antigravity launch sets besides those,
+// and only when AGGY_VENDOR names it (T6957): the launch's decision plan and
+// its SHA-256, which agy's hooks inherit (live, agy 1.5.5). Both are aggy's
+// own variables; neither is a key or a base URL.
+var antigravityExtraNames = []string{"AGGY_DECIDE_PLAN", "AGGY_DECIDE_SHA256"}
+
+// antigravityDrops reports an inherited variable an Antigravity launch
+// removes: an outer launch's plan, which a launch with --no-policy would
+// otherwise hand its hook.
+func antigravityDrops(k string) bool { return contains(antigravityExtraNames, k) }
+
 // hermesDrops reports an inherited variable a Hermes launch removes: every
 // HERMES_* but HERMES_HOME (which names the person's Hermes root) and
 // HERMES_DATA_DIR_SUFFIX. Among them are the loosening forms
@@ -133,7 +144,8 @@ func PTYEnv(base, extra []string) ([]string, error) {
 		if !ok || k == "" {
 			return nil, fmt.Errorf("execrun: bad environment entry %q", kv)
 		}
-		if vendor == adapter.OpenCode && contains(openCodeExtraNames, k) || vendor == adapter.Hermes && contains(hermesExtraNames, k) {
+		if vendor == adapter.OpenCode && contains(openCodeExtraNames, k) || vendor == adapter.Hermes && contains(hermesExtraNames, k) ||
+			vendor == adapter.Antigravity && contains(antigravityExtraNames, k) {
 			set[k] = true
 			continue
 		}
@@ -150,7 +162,8 @@ func PTYEnv(base, extra []string) ([]string, error) {
 	})
 	for _, kv := range base {
 		k, v, _ := strings.Cut(kv, "=")
-		if vendor == adapter.OpenCode && openCodeDrops(k) || vendor == adapter.Hermes && hermesDrops(k) {
+		if vendor == adapter.OpenCode && openCodeDrops(k) || vendor == adapter.Hermes && hermesDrops(k) ||
+			vendor == adapter.Antigravity && antigravityDrops(k) {
 			continue
 		}
 		if !set[k] && (!nested || !staleProxyURL(k, v)) {

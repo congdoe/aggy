@@ -38,6 +38,11 @@ var keep = map[adapter.Vendor][]string{
 	// v0.23.1) never reaches the socket, and its extra, which may hold the
 	// conversation, is never read.
 	adapter.Hermes: {"session_id"},
+	// Antigravity's agy 1.5.5 (live, docs/verification.md): every event
+	// carries conversationId and hookEventName; Stop adds fullyIdle and
+	// terminationReason. lastUserInput holds the person's prompt and
+	// transcriptPath points into agy's sign-in tree: neither is kept.
+	adapter.Antigravity: {"conversationId", "hookEventName", "fullyIdle", "terminationReason"},
 }
 
 // maxField drops a kept value longer than this once encoded (an
@@ -87,6 +92,8 @@ func Parse(v adapter.Vendor, payload []byte) Event {
 	switch v {
 	case adapter.Grok:
 		return Event{SessionID: s("sessionId"), Error: s("error"), Reason: s("reason"), NotificationType: s("notificationType")}
+	case adapter.Antigravity:
+		return Event{SessionID: s("conversationId"), Reason: s("terminationReason")}
 	case adapter.OpenCode:
 		e := Event{SessionID: s("sessionID"), Reason: s("reason"), Request: s("requestID")}
 		// session.execution.failed's error type (core/src/session/to-session-error.ts

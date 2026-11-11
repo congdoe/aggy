@@ -213,6 +213,8 @@ type Vendors struct {
 	Grok     VendorConfig `toml:"grok"`
 	OpenCode VendorConfig `toml:"opencode"`
 	Hermes   VendorConfig `toml:"hermes"`
+	// Antigravity is Google's agy, on screen only (T6957).
+	Antigravity VendorConfig `toml:"antigravity"`
 }
 
 // VendorConfig is one vendor's settings.
@@ -238,6 +240,8 @@ func (vs Vendors) For(v adapter.Vendor) VendorConfig {
 		return vs.OpenCode
 	case adapter.Hermes:
 		return vs.Hermes
+	case adapter.Antigravity:
+		return vs.Antigravity
 	}
 	return VendorConfig{}
 }
@@ -642,6 +646,10 @@ func (c Config) Validate() error {
 		// TODO(T6933): Hermes borrows are out of scope for now.
 		if slices.Contains(route.Vendors, adapter.Hermes) {
 			return errors.New("routing: hermes runs on screen only, so a borrow cannot route to it")
+		}
+		// T6957: never a borrow on a consumer Google sign-in (Google's FAQ).
+		if slices.Contains(route.Vendors, adapter.Antigravity) {
+			return errors.New("routing: antigravity runs on screen only, so a borrow cannot route to it")
 		}
 	}
 	if !(c.Switch.WarnAt >= 0 && c.Switch.WarnAt <= 1) { // NaN fails too

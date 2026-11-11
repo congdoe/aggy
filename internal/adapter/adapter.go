@@ -26,6 +26,11 @@ const (
 	// (docs/design.md, section 16): on screen only, in an aggy-owned profile.
 	// It is not in Vendors either, and its adapter refuses Headless.
 	Hermes Vendor = "hermes"
+	// Antigravity is Google's Antigravity CLI, whose binary is agy
+	// (docs/design.md, section 15, "Antigravity"): on screen only, on the
+	// person's own Google sign-in, with no borrows and no print mode. Its
+	// vendor name is never the binary's, one letter from aggy's own.
+	Antigravity Vendor = "antigravity"
 )
 
 // Vendors returns the subscription vendors in a stable order: those with
@@ -34,11 +39,12 @@ func Vendors() []Vendor { return []Vendor{Claude, Codex, Grok} }
 
 // Known returns every vendor aggy can name: Vendors, then the open
 // harnesses, which are only ever on screen, and only when the person asks.
-func Known() []Vendor { return append(Vendors(), OpenCode, Hermes) }
+func Known() []Vendor { return append(Vendors(), OpenCode, Hermes, Antigravity) }
 
-// OpenHarness reports an open harness: a vendor on screen only, opened only
-// when the person names it (OpenCode and Hermes).
-func OpenHarness(v Vendor) bool { return v == OpenCode || v == Hermes }
+// OpenHarness reports a harness on screen only, opened only when the person
+// names it: the open harnesses OpenCode and Hermes, and Antigravity, whose
+// FAQ does not support it wrapped headless (docs/design.md, section 15).
+func OpenHarness(v Vendor) bool { return v == OpenCode || v == Hermes || v == Antigravity }
 
 // ParseVendor returns the vendor named s, or an error naming the valid ones.
 func ParseVendor(s string) (Vendor, error) {
@@ -47,17 +53,20 @@ func ParseVendor(s string) (Vendor, error) {
 			return v, nil
 		}
 	}
-	return "", fmt.Errorf("unknown vendor %q (want claude, codex, grok, opencode, or hermes)", s)
+	return "", fmt.Errorf("unknown vendor %q (want claude, codex, grok, opencode, hermes, or antigravity)", s)
 }
 
 // ExitCommand is the line the supervisor types into vendor v's session,
 // at a turn end, to end it for a switch, and whether that is verified.
 // It is "/exit" for every vendor, unverified except on OpenCode, where
 // it exits 0 with nothing open (docs/verification.md, T6930), and Hermes,
-// where it exits 0 at the prompt (T6933, 2026-11-11); the others have no
-// live check of it yet (docs/adapters.md). The supervisor asks
+// where it exits 0 at the prompt (T6933, 2026-11-11), and Antigravity, where
+// /exit exits 0 and prints the resume line (agy 1.5.5, 2026-11-11); the others
+// have no live check of it yet (docs/adapters.md). The supervisor asks
 // the user before it types anything, verified or not.
-func ExitCommand(v Vendor) (cmd string, verified bool) { return "/exit", v == OpenCode || v == Hermes }
+func ExitCommand(v Vendor) (cmd string, verified bool) {
+	return "/exit", v == OpenCode || v == Hermes || v == Antigravity
+}
 
 // localCommands are, per vendor, the commands that start no model turn. Each
 // comes from the vendor's docs; a vendor with none sourced has none, which is the
@@ -101,11 +110,12 @@ var localCommands = map[Vendor][]string{
 // what may be leftover text. A live check flips its entry.
 // TODO(T6895): the live check for each CLI.
 var clearLineChecked = map[Vendor]bool{
-	Claude:   false,
-	Codex:    false,
-	Grok:     false,
-	OpenCode: false,
-	Hermes:   false,
+	Claude:      false,
+	Codex:       false,
+	Grok:        false,
+	OpenCode:    false,
+	Hermes:      false,
+	Antigravity: false,
 }
 
 // ClearLineChecked reports whether a live check shows Ctrl+U emptying v's
@@ -332,6 +342,24 @@ type InteractiveRequest struct {
 	// Hermes is how a Hermes session is launched; only that adapter reads it,
 	// and it refuses to build a command without it.
 	Hermes *HermesLaunch
+	// Antigravity is how an Antigravity session is launched; only that adapter
+	// reads it, and it refuses to build a command without it.
+	Antigravity *AntigravityLaunch
+}
+
+// AntigravityLaunch is what the launch made for one Antigravity session
+// (docs/design.md, section 15, "Antigravity"): the per-run settings file aggy
+// passes as --settings, and the decision plan its hook reads.
+type AntigravityLaunch struct {
+	// SettingsFile is an absolute path in the launch's private folder holding
+	// aggy's permissions.deny and permissions.ask.
+	SettingsFile string
+	// Plan and PlanSum are the decision plan aggy's PreToolUse hook judges by
+	// and its SHA-256. They reach the hook in the CLI's environment, which the
+	// hook inherits (live, agy 1.5.5), as AGGY_DECIDE_PLAN and
+	// AGGY_DECIDE_SHA256. Both empty is a launch with no decisions
+	// (--no-policy).
+	Plan, PlanSum string
 }
 
 // HermesLaunch is what the launch made for one Hermes session

@@ -723,6 +723,19 @@ const (
 // permissionDecision allow, ask, or deny, and permissionDecisionReason), or
 // nothing for no opinion, which leaves the call to Claude's own flow.
 func ClaudeOutput(d parity.CallDecision) []byte {
+	if d.Verdict == parity.VerdictNone {
+		return nil
+	}
+	b, _ := json.Marshal(map[string]any{"hookSpecificOutput": map[string]string{
+		"hookEventName":            "PreToolUse",
+		"permissionDecision":       string(d.Verdict),
+		"permissionDecisionReason": reasonText(d),
+	}})
+	return append(b, '\n')
+}
+
+// reasonText is the reason a decision shows: fixed text and a group name.
+func reasonText(d parity.CallDecision) string {
 	var why string
 	group := d.Group
 	if group == "" {
@@ -737,8 +750,6 @@ func ClaudeOutput(d parity.CallDecision) []byte {
 		parity.ReasonPlanChanged:  reasonPlan,
 	}[d.Reason]
 	switch {
-	case d.Verdict == parity.VerdictNone:
-		return nil
 	case d.Verdict == parity.VerdictAllow:
 		why = fmt.Sprintf(reasonAllow, group)
 	case d.Reason == parity.ReasonNoPrompt:
@@ -752,12 +763,7 @@ func ClaudeOutput(d parity.CallDecision) []byte {
 	default:
 		why = fmt.Sprintf(reasonAsk, group)
 	}
-	b, _ := json.Marshal(map[string]any{"hookSpecificOutput": map[string]string{
-		"hookEventName":            "PreToolUse",
-		"permissionDecision":       string(d.Verdict),
-		"permissionDecisionReason": why,
-	}})
-	return append(b, '\n')
+	return why
 }
 
 // DecideTimeout is the decision hook entry's timeout, in seconds. With
