@@ -10,6 +10,7 @@ package supervisor
 import (
 	"bufio"
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,9 +47,11 @@ var ErrUnproven = errors.New("supervisor: the socket's peer did not show it hold
 // socket, and anyone of this uid can bind a socket in the run directory, so
 // an answer that is OK counts only when it carries the proof replyWithLock
 // attaches: one open file, the lock file runDir/<parent-id>.lock by
-// identity, on which an exclusive flock succeeds at once. While the real
-// supervisor holds that lock, only its own open file passes; any other open
-// of the same file fails the flock. Without the proof the answer is
+// identity, on which an exclusive flock succeeds at once. That proves the
+// sender could open the lock file and that no one else holds the lock: on
+// the holder's own open file the flock changes nothing, any other open of
+// the file fails it while the lock is held, and when no one holds the lock
+// the flock succeeds on any open of it (#136 review). Without the proof the answer is
 // ErrUnproven, which the hook treats as a supervisor it cannot reach: it
 // asks. A refusal needs no proof, since it loosens nothing.
 //
@@ -109,30 +112,32 @@ func send(runDir, path string, req Request, timeout time.Duration, proof bool) (
 	return resp, nil
 }
 
-// maxRights is how many open files a reply may carry before the rest are
-// cut off; a proof is exactly one.
-const maxRights = 4
+// maxRights is how many open files a reply may carry before the kernel cuts
+// the rest off (MSG_CTRUNC); a proof is exactly one. Linux sends at most
+// 253 in a message (SCM_MAX_FD), and darwin refused 300 (EINVAL) in a check
+// on macOS 26; a test lowers it.
+var maxRights = 512
 
 // readWithRights reads one reply line from c with the open files sent along
-// with it (SCM_RIGHTS), which the caller closes.
+// with it (SCM_RIGHTS), which the caller closes, on every path. A reply whose
+// open files did not fit (MSG_CTRUNC: the kernel cut the control message, so
+// what was sent cannot be known) is ErrUnproven (#136 review).
 func readWithRights(c *net.UnixConn) (line []byte, fds []int, err error) {
 	buf := make([]byte, MaxMessage+1)
 	oob := make([]byte, syscall.CmsgSpace(4*maxRights))
 	n := 0
+	cut := false
 	for {
-		k, oobn, _, _, rerr := c.ReadMsgUnix(buf[n:], oob)
+		k, oobn, flags, _, rerr := c.ReadMsgUnix(buf[n:], oob)
+		cut = cut || flags&syscall.MSG_CTRUNC != 0
 		if oobn > 0 {
-			msgs, perr := syscall.ParseSocketControlMessage(oob[:oobn])
-			if perr == nil {
-				for i := range msgs {
-					if r, err := syscall.ParseUnixRights(&msgs[i]); err == nil {
-						fds = append(fds, r...)
-					}
-				}
-			}
+			fds = append(fds, rightsIn(oob[:oobn])...)
 		}
 		n += k
 		if i := bytes.IndexByte(buf[:n], '\n'); i >= 0 {
+			if cut {
+				return nil, fds, ErrUnproven
+			}
 			return buf[:i+1], fds, nil
 		}
 		switch {
@@ -146,19 +151,48 @@ func readWithRights(c *net.UnixConn) (line []byte, fds []int, err error) {
 	}
 }
 
+// rightsIn returns the open files in the control messages b. A message the
+// kernel cut short (its length past the end of b; darwin still puts the
+// files that fit, and more, in the receiver's table) is read as far as b
+// goes, so those files can be closed too: its header is the length, then the
+// level and the type as two int32s right before the data, at CmsgLen(0), on
+// every OS aggy runs on, all little-endian.
+func rightsIn(b []byte) []int {
+	if msgs, err := syscall.ParseSocketControlMessage(b); err == nil {
+		var fds []int
+		for i := range msgs {
+			if r, err := syscall.ParseUnixRights(&msgs[i]); err == nil {
+				fds = append(fds, r...)
+			}
+		}
+		return fds
+	}
+	hdr := syscall.CmsgLen(0)
+	if len(b) < hdr || int32(binary.LittleEndian.Uint32(b[hdr-8:])) != syscall.SOL_SOCKET ||
+		int32(binary.LittleEndian.Uint32(b[hdr-4:])) != syscall.SCM_RIGHTS {
+		return nil
+	}
+	var fds []int
+	for i := hdr; i+4 <= len(b); i += 4 {
+		fds = append(fds, int(int32(binary.LittleEndian.Uint32(b[i:]))))
+	}
+	return fds
+}
+
 func closeFDs(fds []int) {
 	for _, fd := range fds {
 		_ = syscall.Close(fd)
 	}
 }
 
-// holdsLock reports whether fds is the proof that its sender holds the
-// lock at lockPath: exactly one open file, which is that lock file (by
-// device and inode) and on which an exclusive flock succeeds without
-// waiting. flock locks belong to an open file, not a process, so while the
-// supervisor holds its lock no other open of the file can take it, and on
-// the supervisor's own open file the flock is a no-op. It only reads the
-// file's metadata.
+// holdsLock reports whether fds is the proof SendHermesPin asks for: exactly
+// one open file, which is the lock file at lockPath (by device and inode)
+// and on which an exclusive flock succeeds without waiting. flock locks
+// belong to an open file, not a process, so while the supervisor holds its
+// lock no other open of the file can take it, and on the supervisor's own
+// open file the flock is a no-op; with no holder, any open of it succeeds.
+// So it shows the sender could open the lock file and no one else held the
+// lock, not that the sender held it. It only reads the file's metadata.
 func holdsLock(lockPath string, fds []int) error {
 	if len(fds) != 1 {
 		return ErrUnproven
