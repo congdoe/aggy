@@ -723,18 +723,22 @@ func unknownKinds(md toml.MetaData) error {
 }
 
 // unknownKeys returns an error naming the keys md did not decode. An
-// unknown table is reported once, not each key inside it.
-func unknownKeys(md toml.MetaData) error {
-	und := md.Undecoded()
-	if len(und) == 0 {
-		return nil
-	}
+// unknown table is reported once, not each key inside it. Keys inside a
+// table named in ignored are read only to be ignored, so they are not
+// unknown.
+func unknownKeys(md toml.MetaData, ignored ...string) error {
 	var keys []string
-	for _, k := range und {
+	for _, k := range md.Undecoded() {
 		s := k.String()
+		if slices.ContainsFunc(ignored, func(p string) bool { return strings.HasPrefix(s, p+".") }) {
+			continue
+		}
 		if !slices.ContainsFunc(keys, func(p string) bool { return strings.HasPrefix(s, p+".") }) {
 			keys = append(keys, s)
 		}
+	}
+	if len(keys) == 0 {
+		return nil
 	}
 	if len(keys) == 1 {
 		return fmt.Errorf("unknown key %s", keys[0])

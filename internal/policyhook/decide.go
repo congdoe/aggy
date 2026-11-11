@@ -675,13 +675,33 @@ func OpenCodeCalls(payload []byte, root string) (calls []parity.Call, ok bool) {
 }
 
 // JudgeOpenCode is Judge for OpenCode: several resources may ask or deny, but
-// never allow, since no single resource is the whole command.
+// never allow, since no single resource is the whole command. A read whose
+// path, as written, lies outside the plan's root asks (T6979), whatever else
+// it matched short of a deny: OpenCode then shows a prompt, the plugin clears
+// that read, and aggy's guard lets it through only if it is an honest path
+// outside the repo (hook.OpenCodeGuard).
 func JudgeOpenCode(plan DecidePlan, calls []parity.Call, ok bool) parity.CallDecision {
 	d := Judge(plan, calls, "", ok)
 	if d.Verdict == parity.VerdictAllow && len(calls) != 1 {
 		d.Verdict, d.Reason = parity.VerdictAsk, parity.ReasonPolicyMatch
 	}
+	if ok && (d.Verdict == parity.VerdictNone || d.Verdict == parity.VerdictAllow) &&
+		slices.ContainsFunc(calls, func(c parity.Call) bool { return c.Kind == parity.CallRead && outsideRoot(c.Text, plan.Root) }) {
+		d = parity.CallDecision{Verdict: parity.VerdictAsk, Group: d.Group, Strict: d.Strict, Reason: parity.ReasonOutside}
+	}
 	return d
+}
+
+// outsideRoot says the absolute path p, as written and cleaned, is not root
+// or under it. A relative path was taken from root (OpenCodeCalls), and a
+// leading ~ is not expanded, so it counts as inside: the guard refuses such a
+// path when it leads out, as nothing cleared it.
+func outsideRoot(p, root string) bool {
+	if !filepath.IsAbs(p) || root == "" {
+		return false
+	}
+	p = filepath.Clean(p)
+	return p != root && !strings.HasPrefix(p, strings.TrimSuffix(root, "/")+"/")
 }
 
 // OpenCodeOutput is the one word the plugin reads: allow, ask, deny, or none.

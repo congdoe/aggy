@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/adapter/grok"
@@ -225,7 +226,7 @@ func TestPermissionsPolicyMove(t *testing.T) {
 		t.Errorf("from a session's shell: %d %q", code, errb)
 	}
 	t.Setenv("AGGY_VENDOR", "") // empty is unset to personGate
-	for _, args := range [][]string{{"nope", "deny"}, {permissions.PolicyRmRf, "allow"}} {
+	for _, args := range [][]string{{"nope", "deny"}, {permissions.PolicyRmRf, "maybe"}} {
 		if code, _, errb := run(append([]string{"permissions", "policy"}, args...)...); code != 1 || !strings.Contains(errb, "permissions.bad_rule") {
 			t.Errorf("%q: %d %q", args, code, errb)
 		}
@@ -252,9 +253,83 @@ func TestPermissionsPolicyMove(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeAt(t, path, `{"policy":{"rm-rf":"allow"}}`, 0o600)
+	writeAt(t, path, `{"policy":{"rm-rf":"maybe"}}`, 0o600)
 	if s, _, _, _ := permissionsHere(t.Context()); s.FileErr == nil {
-		t.Error("a policy group set to allow was taken")
+		t.Error("a policy setting aggy does not know was taken")
+	}
+}
+
+// TestPolicyGroupOffCommand (T6979): aggy permissions policy GROUP allow asks
+// in place, with the strict warning for a strict group; yes turns the group
+// off on screen (no rule on Claude Code, Grok Build, or OpenCode) and leaves
+// headless renders alone; no, no terminal, a session's tool shell, a line
+// typed ahead, and a dry run change nothing.
+func TestPolicyGroupOffCommand(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		group       string
+		typed       string
+		term, shell bool
+		dry         bool
+		code        int
+		off         bool
+		say         string
+	}{
+		{"yes", permissions.PolicyRmRf, "y\n", true, false, false, 0, true, "rm-rf is off on screen"},
+		{"yes to a strict group", permissions.PolicyKeys, "y\n", true, false, false, 0, true, "key-read is strict. Off, a session reads your private key files"},
+		{"no", permissions.PolicyRmRf, "n\n", true, false, false, 1, false, "Nothing changed."},
+		{"empty is no", permissions.PolicyForceMain, "\n", true, false, false, 1, false, "force-push-main is strict"},
+		{"no terminal", permissions.PolicyRmRf, "y\n", false, false, false, 1, false, "not_at_keyboard"},
+		{"a session's tool shell", permissions.PolicyRmRf, "y\n", true, true, false, 1, false, "not_at_keyboard"},
+		{"typed ahead", permissions.PolicyRmRf, "y\n", true, false, false, 1, false, "Nothing changed."},
+		{"dry run", permissions.PolicyRmRf, "y\n", true, false, true, 0, false, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			isolate(t)
+			inRepo(t)
+			atKeyboard(t, "")
+			inPlaceWorld(t, c.typed, c.term, c.shell)
+			if c.name == "typed ahead" {
+				// A y already waiting is dropped; nothing comes after it.
+				typeAhead = 20 * time.Millisecond
+				offerIn = &slowReader{lines: []string{c.typed}, pause: 60 * time.Millisecond}
+			}
+			before := policyRendered(t)
+			args := []string{"permissions", "policy", c.group, "allow"}
+			if c.dry {
+				args = append(args, "--dry-run")
+			}
+			code, out, errb := run(args...)
+			if code != c.code || !strings.Contains(out+errb, c.say) {
+				t.Fatalf("%d %q %q", code, out, errb)
+			}
+			s, _, _, err := permissionsHere(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := slices.Contains(s.OffGroups(), c.group); got != c.off {
+				t.Fatalf("off = %v, want %v", got, c.off)
+			}
+			rendered := policyRendered(t)
+			for k, rs := range rendered {
+				if strings.HasPrefix(k, "headless ") {
+					if !slices.Equal(rs, before[k]) {
+						t.Errorf("%s changed:\n got %v\nwant %v", k, rs, before[k])
+					}
+					continue
+				}
+				if c.off && c.group == permissions.PolicyRmRf && slices.ContainsFunc(rs, func(r string) bool { return strings.Contains(r, "rm -rf") }) {
+					t.Errorf("%s still has rm -rf: %v", k, rs)
+				}
+				if !c.off && !slices.Equal(rs, before[k]) {
+					t.Errorf("%s changed with nothing turned off", k)
+				}
+			}
+			_, show, _ := run("permissions", "show")
+			if c.off != strings.Contains(show, "the safety policy is off on screen for "+c.group) {
+				t.Errorf("show:\n%s", show)
+			}
+		})
 	}
 }
 

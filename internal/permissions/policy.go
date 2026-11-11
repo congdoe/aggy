@@ -8,9 +8,11 @@ import (
 )
 
 // The safety policy's rule groups (internal/parity renders their rules). On
-// screen each group asks by default; a person moves one to deny, for this repo
-// or everywhere, with aggy permissions policy, kept under "policy" in
-// permissions.json. A borrow child gets every group as deny, whatever is set.
+// screen each group asks by default; a person moves one to deny, or turns it
+// off with allow (T6979), for this repo or everywhere, with aggy permissions
+// policy, kept under "policy" in permissions.json, aggy's own file: a repo's
+// files never set one. A borrow child, a headless run, and print mode get
+// every group as deny, whatever is set.
 const (
 	PolicyEnv       = "env-read"        // reading .env files
 	PolicyKeys      = "key-read"        // reading private key files: strict
@@ -32,15 +34,31 @@ func StrictGroup(group string) bool {
 }
 
 // CheckPolicySetting refuses a group aggy does not know or a setting other than
-// ask or deny: a policy rule can never be set to allow.
+// ask, deny, or allow. Allow turns the group off on screen (T6979): its rules
+// render as nothing there, and it never reaches a borrow, headless, or print
+// render, which deny every group.
 func CheckPolicySetting(group, setting string) error {
 	if !slices.Contains(PolicyGroups, group) {
 		return fmt.Errorf("%q is not a policy group (one of %v)", group, PolicyGroups)
 	}
-	if setting != string(Ask) && setting != string(Deny) {
-		return fmt.Errorf("a policy group is ask or deny, not %q", setting)
+	if setting != string(Ask) && setting != string(Deny) && setting != string(Allow) {
+		return fmt.Errorf("a policy group is ask, deny, or allow, not %q", setting)
 	}
 	return nil
+}
+
+// policyRank orders settings by strictness: deny, then ask, then allow.
+var policyRank = []Kind{Deny, Ask, Allow}
+
+// OffGroups lists the groups set to allow, in PolicyGroups' order.
+func (s Set) OffGroups() []string {
+	var out []string
+	for _, g := range PolicyGroups {
+		if s.Policy[g] == Allow {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 // loadPolicy keeps valid settings. A mistake is a FileErr, as a deny the person
@@ -59,7 +77,7 @@ func (s *Set) loadPolicy(m map[string]string, from Origin, path string) {
 		}
 		// Two keys of the file may name one repo (spelled two ways): of those,
 		// the stricter setting wins, not the one that sorts last.
-		if from == FromAggyRepo && s.PolicyFrom[g] == FromAggyRepo && s.Policy[g] == Deny {
+		if from == FromAggyRepo && s.PolicyFrom[g] == FromAggyRepo && slices.Index(policyRank, s.Policy[g]) < slices.Index(policyRank, Kind(m[g])) {
 			continue
 		}
 		s.Policy[g], s.PolicyFrom[g] = Kind(m[g]), from

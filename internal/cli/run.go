@@ -469,6 +469,16 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			return fail(diag.CodePolicy, err)
 		}
 		warns = append(warns, pw...)
+		// T6979: one line each while a group is off, for a repo's own [policy]
+		// table, which is ignored, and for Grok and Codex, where the policy
+		// cannot ask as it does on Claude Code and OpenCode.
+		if who == planOnScreen && len(pw) == 0 {
+			for _, l := range []string{policyOffLine(rules), repoPolicyLine(eff.Repo), policyVendorLine(v, rules)} {
+				if l != "" {
+					warns = append(warns, l)
+				}
+			}
+		}
 	}
 	if who == planOnScreen {
 		warns = append(warns, addPermissions(v, caps, rules, &req)...)

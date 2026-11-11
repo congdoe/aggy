@@ -799,6 +799,12 @@ repo, no `--auto`):
 - What a read's `resources` holds (aggy takes a path, relative to the session
   folder or absolute). Check: a private key read, then look at the clear the
   guard used (`aggy hook opencode-guard` exits 0) or the refusal.
+- A read of a file outside the repo (T6979): that OpenCode runs the read
+  action's `evaluate` before `execute.before`, with the path as written, so
+  aggy's ask clears it; and whether OpenCode's own `external_directory` ask
+  comes too. `TestOpenCodePluginOutside` runs the real plugin under node, not
+  OpenCode. Check: in a trusted repo, without `--auto`, a fake model that
+  reads `../other/notes.txt`: expect one prompt, answered once, then the read.
 - That `reply` is `reject` on `permission.replied` for a refusal (the plugin
   forgets every clear on it). Check: refuse a force push's prompt, then ask
   for it again with the evaluate hook made to fail.

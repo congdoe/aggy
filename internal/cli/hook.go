@@ -286,8 +286,9 @@ func strictShell(plan, sum, cmd string) bool {
 		g, _ := parity.MatchedGroups(parity.Call{Kind: parity.CallShell, Text: cmd}, nil)
 		return len(g) > 0
 	}
-	_, strict := parity.MatchedGroups(parity.Call{Kind: parity.CallShell, Text: cmd}, d.Branches)
-	return strict
+	// A strict group the person turned off (T6979) is not strict here: the
+	// launch rendered no ask for it, so nothing could have cleared it.
+	return d.Policy().StrictMatch(parity.Call{Kind: parity.CallShell, Text: cmd})
 }
 
 // openCodeGuard runs the check behind the plugin's execute.before. Its exit
@@ -306,7 +307,8 @@ func openCodeGuard(in io.Reader, getenv func(string) string, stdout, stderr io.W
 		b = nil // refused as unreadable: the rules aggy ships do not render
 	}
 	d := hook.OpenCodeGuard(b, hook.OpenCodeEnv{Getenv: getenv, DeniedNames: parity.OpenCodeDeniedNames(), ReadableNames: parity.EnvTemplates,
-		ShellRules: rules, ScanAlways: scanAlways, AlwaysSeen: openCodeAlwaysSeen, StrictShell: strictShell, KeyNames: parity.OpenCodeKeyFiles()})
+		ShellRules: rules, ScanAlways: scanAlways, AlwaysSeen: openCodeAlwaysSeen, StrictShell: strictShell, KeyNames: parity.OpenCodeKeyFiles(),
+		Protected: protectedPaths()})
 	if !d.Deny {
 		if d.Cleared > 0 {
 			fmt.Fprintf(stdout, "%d\n", d.Cleared-1)

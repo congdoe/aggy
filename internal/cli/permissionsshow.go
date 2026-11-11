@@ -112,6 +112,8 @@ func printPolicy(w io.Writer, s permissions.Set) {
 			switch {
 			case setting == string(permissions.Deny):
 				what = "matches this group, which is set to deny, so it is refused"
+			case setting == string(permissions.Allow):
+				what = "matches this group, which is off here, so aggy adds nothing to it but on Codex, which still asks"
 			case m.exact && (r.Origin == permissions.FromAggy || r.Origin == permissions.FromAggyRepo) && i >= len(s.Rules):
 				what = "would pre-approve this exact command, but it does not apply here (aggy permissions show says why), so the command still asks"
 			case m.exact && (r.Origin == permissions.FromAggy || r.Origin == permissions.FromAggyRepo) && isRead(r.Text) && !s.Trusted:
@@ -128,6 +130,9 @@ func printPolicy(w io.Writer, s permissions.Set) {
 	}
 	if _, known := defaultBranches(cwd); !known {
 		fmt.Fprintln(w, "  aggy could not read this repo's default branch, so only main, master, and trunk are strict")
+	}
+	if l := policyOffLine(s); l != "" {
+		fmt.Fprintf(w, "  %s\n", l)
 	}
 	ask, deny := parity.ClaudePolicy(ds)
 	fmt.Fprintf(w, "  Claude Code: %d deny rules, and %d asks made by aggy's decision hook, which asks for every match but an exact pre-approval (static ask rules, which nothing lifts, when hooks are off)\n", len(deny), len(ask))

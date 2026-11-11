@@ -69,6 +69,7 @@ const (
 	ReasonProtected    Reason = "protected"     // a call that names aggy's own files or a Claude settings file: asked
 	ReasonPlanChanged  Reason = "plan-changed"  // the launch's plan is missing, unreadable, or not what the launch wrote: asked
 	ReasonOtherTool    Reason = "other-tool"    // pre-approved text from a tool the pre-approval is not for: no opinion
+	ReasonOutside      Reason = "outside"       // an OpenCode read of a path outside the launch's root: asked (T6979)
 )
 
 // MaxCallText caps what the matcher scans of one call. A longer one asks at
@@ -270,6 +271,15 @@ func preApproved(c Call, pre PreApproved) bool {
 		return i >= 0 && pre.CheckRead(pre.Reads[i])
 	}
 	return false
+}
+
+// StrictMatch says a strict group's rule matches c, as MatchedGroups reads
+// it, but for a group the person turned off on screen (allow, T6979).
+func (p PolicyPlan) StrictMatch(c Call) bool {
+	return slices.ContainsFunc(PolicyRules(true, p.Branches), func(r PolicyRule) bool {
+		off := p.OnScreen && p.Settings[r.Group] == permissions.Allow
+		return r.Strict && !off && callMatches(c, r)
+	})
 }
 
 // MatchedGroups lists the groups whose on-screen rules match c, once each,

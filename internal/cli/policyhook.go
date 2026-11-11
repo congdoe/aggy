@@ -84,12 +84,18 @@ type policyHookIn struct {
 // the launch folder's or any folder's up to the repo root, managed), a
 // --settings file, or an aggy path that cannot go in a hook command. It does
 // nothing at all for a launch with no asks: a headless one, --no-policy, or
-// every group set to deny.
+// every group set to deny. A launch with a group turned off (T6979) gets the
+// hook even with no asks left, for the protected paths and the settings
+// files, which turning a group off never turns off.
 func usePolicyHook(req *adapter.InteractiveRequest, in policyHookIn) string {
-	if !in.plan.OnScreen || len(req.Ask) == 0 || req.PolicyHook != nil {
+	off := len(in.rules.OffGroups()) > 0
+	if !in.plan.OnScreen || (len(req.Ask) == 0 && !off) || req.PolicyHook != nil {
 		return ""
 	}
-	const keep = "exact pre-approvals do not apply this session, and the safety policy asks as before: "
+	keep := "exact pre-approvals do not apply this session, and the safety policy asks as before: "
+	if len(req.Ask) == 0 {
+		keep = "aggy's asks on writes to its own files and Claude's settings files are not on this session: "
+	}
 	switch {
 	case claude.SkipsHooks(req.Extra):
 		return keep + "--safe-mode and --bare start Claude without hooks"

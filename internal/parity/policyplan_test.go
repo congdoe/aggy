@@ -5,6 +5,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/congdoe/aggy/internal/permissions"
@@ -65,17 +66,91 @@ func kindOf(ds []PolicyDecision, text string) permissions.Kind {
 	return ""
 }
 
-// TestPolicyPlanBorrow: a headless plan gets exactly the deny list it had
-// before T6967, whatever settings say.
+// TestPolicyPlanBorrow: a headless plan (a borrow child, a headless run,
+// print mode) gets exactly the deny list it had before T6967, whatever
+// settings say, a group turned off (allow, T6979) included.
 func TestPolicyPlanBorrow(t *testing.T) {
-	plan := PolicyPlan{Branches: []string{"develop"},
-		Settings: map[string]permissions.Kind{permissions.PolicyRmRf: permissions.Ask}}
-	ask, deny := ClaudePolicy(plan.Decide())
-	if len(ask) != 0 || !slices.Equal(deny, ClaudeDeny) {
-		t.Errorf("claude borrow: ask %v, deny %v", ask, deny)
+	allOff := map[string]permissions.Kind{}
+	for _, g := range permissions.PolicyGroups {
+		allOff[g] = permissions.Allow
 	}
-	if got := GrokPolicy(plan.Decide()); !slices.Equal(got, GrokDeny) {
-		t.Errorf("grok borrow: %v", got)
+	tests := []struct {
+		name     string
+		settings map[string]permissions.Kind
+	}{
+		{"nothing set", nil},
+		{"an ask", map[string]permissions.Kind{permissions.PolicyRmRf: permissions.Ask}},
+		{"one group off", map[string]permissions.Kind{permissions.PolicyKeys: permissions.Allow}},
+		{"every group off", allOff},
+	}
+	for _, tt := range tests {
+		plan := PolicyPlan{Branches: []string{"develop"}, Settings: tt.settings}
+		ask, deny := ClaudePolicy(plan.Decide())
+		if len(ask) != 0 || !slices.Equal(deny, ClaudeDeny) {
+			t.Errorf("%s: claude borrow: ask %v, deny %v", tt.name, ask, deny)
+		}
+		if got := GrokPolicy(plan.Decide()); !slices.Equal(got, GrokDeny) {
+			t.Errorf("%s: grok borrow: %v", tt.name, got)
+		}
+		oAsk, oDeny := OpenCodePolicy(plan.Decide(), false)
+		if len(oAsk) != 0 || !slices.Contains(oDeny, "shell:rm -rf*") || !slices.Contains(oDeny, "shell:git push --force*") {
+			t.Errorf("%s: opencode borrow: ask %v deny %v", tt.name, oAsk, oDeny)
+		}
+		if !plan.StrictMatch(Call{Kind: CallShell, Text: "git push --force origin main"}) {
+			t.Errorf("%s: a headless plan lost a strict match", tt.name)
+		}
+	}
+}
+
+// TestPolicyGroupOff: a group set to allow on screen (T6979) has no rule on
+// any CLI and no opinion from the decision hook; the other groups keep theirs.
+func TestPolicyGroupOff(t *testing.T) {
+	tests := []struct {
+		name       string
+		off        string
+		gone, kept []string // Claude spellings
+		call       string
+	}{
+		{"rm-rf", permissions.PolicyRmRf, []string{"Bash(rm -rf*)"}, []string{"Bash(git reset --hard*)", "Read(//**/.env)"}, "rm -rf build"},
+		{"key-read, strict", permissions.PolicyKeys, []string{"Read(//**/*.pem)"}, []string{"Bash(git push --force*main*)"}, "cat server.pem"},
+		{"force-push-main, strict", permissions.PolicyForceMain, []string{"Bash(git push --force*main*)"}, []string{"Bash(git push --force*)"}, ""},
+	}
+	for _, tt := range tests {
+		plan := PolicyPlan{OnScreen: true, Settings: map[string]permissions.Kind{tt.off: permissions.Allow}}
+		ds := plan.Decide()
+		ask, deny := ClaudePolicy(ds)
+		grok := GrokPolicy(ds)
+		oAsk, oDeny := OpenCodePolicyFor(ds, false, true)
+		for _, r := range tt.gone {
+			if slices.Contains(ask, r) || slices.Contains(deny, r) || slices.Contains(grok, grokSpelling(r)) {
+				t.Errorf("%s: %s still rendered: ask %v deny %v grok %v", tt.name, r, ask, deny, grok)
+			}
+			if cmd, ok := strings.CutPrefix(r, "Bash("); ok {
+				cmd = strings.TrimSuffix(cmd, ")")
+				if slices.Contains(oAsk, cmd) || slices.Contains(oDeny, "shell:"+cmd) {
+					t.Errorf("%s: %s still on OpenCode: ask %v deny %v", tt.name, r, oAsk, oDeny)
+				}
+			}
+		}
+		for _, r := range tt.kept {
+			if !slices.Contains(ask, r) || !slices.Contains(grok, grokSpelling(r)) {
+				t.Errorf("%s: %s lost: ask %v grok %v", tt.name, r, ask, grok)
+			}
+		}
+		if tt.call != "" {
+			if d := plan.DecideCall(Call{Kind: CallShell, Text: tt.call}, PreApproved{}); d.Verdict != VerdictNone {
+				t.Errorf("%s: the hook has an opinion on %q: %+v", tt.name, tt.call, d)
+			}
+		}
+		if tt.off == permissions.PolicyForceMain {
+			c := Call{Kind: CallShell, Text: "git push --force origin main"}
+			if plan.StrictMatch(c) {
+				t.Errorf("%s: still strict", tt.name)
+			}
+			if d := plan.DecideCall(c, PreApproved{}); d.Verdict != VerdictAsk || d.Strict {
+				t.Errorf("%s: the other push groups should still ask, not strict: %+v", tt.name, d)
+			}
+		}
 	}
 }
 
