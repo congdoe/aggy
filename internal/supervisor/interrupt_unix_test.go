@@ -32,7 +32,7 @@ func TestInterruptThenSwitch(t *testing.T) {
 	c.waitGot(t, []byte("go on\r\x1b"))
 	ts.typeIn(t, "\x1c2")
 	poll(t, "the status line", []byte("-> grok. Ctrl+"), ts.screen)
-	if !bytes.Contains(ts.screen(), []byte("can't tell")) {
+	if !bytes.Contains(ts.screen(), []byte("may not be empty")) {
 		t.Errorf("the status line does not say aggy cannot tell: %q", ts.screen())
 	}
 	if bytes.Contains(c.received(), []byte("/exit")) {

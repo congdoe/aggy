@@ -106,7 +106,7 @@ func TestSwitchWaitsForTurnEnd(t *testing.T) {
 		t.Fatalf("hook reply %q", r)
 	}
 	poll(t, "the confirmation", []byte("-> grok. Ctrl+"), ts.screen)
-	for _, want := range []string{"See claude's prompt?", "It types /exit"} {
+	for _, want := range []string{"It types /exit at claude's prompt."} {
 		if !bytes.Contains(ts.screen(), []byte(want)) {
 			t.Errorf("the confirmation does not say %q", want)
 		}
@@ -523,7 +523,7 @@ func TestSwitchCodexAgentRefused(t *testing.T) {
 	ts.typeIn(t, "\x1c2")
 	poll(t, "the list to close", []byte(altScreenOff), ts.screen)
 	_ = request(t, sock, codexStop)
-	poll(t, "the confirmation", []byte("-> grok. Ctrl+\\ switches, Esc stays. See codex's prompt?"), ts.screen)
+	poll(t, "the confirmation", []byte("-> grok. Ctrl+\\ switches, Esc stays. It types /exit at codex's prompt"), ts.screen)
 	confirm(t, ts)
 	c.waitGot(t, []byte("/exit\r"))
 	c.quit(0)

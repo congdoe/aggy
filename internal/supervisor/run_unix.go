@@ -327,7 +327,7 @@ func Run(o Options) (Exit, error) {
 			// A prompt aggy opened since the press (an offer, a note)
 			// keeps the screen: the list never opens over it (H1).
 			if !s.open {
-				s.openList()
+				s.switchKey()
 			}
 		case sig := <-sigs:
 			switch sig {
@@ -724,6 +724,11 @@ type pendingSwitch struct {
 	// reported the command, which any process in its tree can forge, so the
 	// status line always asks (T6910).
 	keyed, hooked bool
+	// lapsed: its status line closed without a yes or a no (other keys went to
+	// the CLI, or the check after a yes found the picker open or a turn
+	// running), so the switch key brings that line back rather than the list
+	// (T6982). again: offerSwitch runs for that key, past the quiet gap.
+	lapsed, again bool
 	// choice is what was picked or asked for with the vendor (T6665).
 	choice Choice
 	// rec is the id of the switch's latest diagnostic record, the cause
@@ -1764,8 +1769,8 @@ func (s *session) offerSwitch() {
 	if s.refuseSignalled() {
 		return
 	}
-	if now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
-		return
+	if !s.sw.again && (now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet) {
+		return // the person's switch key (again) is its own pause
 	}
 	if s.sw.resume && s.toolsWaitTurn {
 		return // one turned down at this turn end: the next one asks (L2)
@@ -1853,7 +1858,7 @@ func (s *session) offerSwitch() {
 	confirmLine := func(model, tools string) string {
 		var why []string
 		if inDoubt {
-			why = append(why, []string{"can't tell if the prompt is empty", "can't tell if prompt is empty", "can't tell if empty"}[short])
+			why = append(why, []string{"the prompt may not be empty", "prompt may not be empty", "may not be empty"}[short])
 		}
 		switch {
 		case s.sw.resume:
@@ -1879,7 +1884,9 @@ func (s *session) offerSwitch() {
 		if len(why) > 0 {
 			head = strings.Join(why, ", ") + sep + head
 		}
-		line := fmt.Sprintf("%s. %s %s, Esc stays. See %s's prompt? It types %s.", head, keyName(s.pk.key), does, on, cmd)
+		// T6982: in plain words what the key does where (the owner read "See
+		// claude's prompt?" as a key to press).
+		line := fmt.Sprintf("%s. %s %s, Esc stays. It types %s at %s's prompt.", head, keyName(s.pk.key), does, cmd, on)
 		if short > 0 {
 			line = fmt.Sprintf("%s. %s types %s, %s", head, keyName(s.pk.key), cmd, keysEnd)
 		}
@@ -1895,6 +1902,7 @@ func (s *session) offerSwitch() {
 		s.pk.preselect = "" // offered once (O56-5); a limit's stays past a resume
 	}
 	s.pk.ask(v, lines...)
+	s.sw.lapsed = false
 	if s.sw.resume {
 		// The tools' names go first when the keys would not fit.
 		s.pk.fit = func(cols int) string {
@@ -2437,7 +2445,11 @@ func (s *session) childChecked(r childCheck) {
 	}
 	s.sw.checkSeq, s.sw.checkAt = 0, time.Time{}
 	switch {
-	case s.open || !s.atPrompt:
+	case s.open:
+		s.offerLapsed("picker_open")
+		return
+	case !s.atPrompt:
+		s.offerLapsed("not_at_prompt")
 		return
 	case r.ok:
 		s.typeExit()
@@ -2630,8 +2642,10 @@ func (s *session) pickerInput(b []byte) {
 		s.toChild.push(b) // no key of the user's: it closes nothing
 		return
 	}
-	if b = s.typedOf(b); len(b) == 0 {
-		return // the mouse moved: aggy's prompts take keys only
+	if b = s.typedOf(b); len(b) == 0 || mouseOnly(b) {
+		// aggy's prompts take keys only. A click, such as one that brings the
+		// terminal's window forward, closed a status line before (T6982).
+		return
 	}
 	if s.pk.menu != nil || s.pk.page != nil {
 		s.viewInput(b)
@@ -2817,8 +2831,34 @@ func (s *session) promptInput(b []byte) {
 		s.openList()
 	default:
 		s.closePicker()
+		if confirming {
+			s.offerLapsed("typed")
+		}
 		s.input(b)
 	}
+}
+
+// offerLapsed records that the status line for the waiting switch closed with
+// no yes or no, so the switch key brings it back (pendingSwitch.lapsed).
+func (s *session) offerLapsed(how string) {
+	s.sw.lapsed = true
+	s.log(diag.Rec{Event: diag.EvOfferLapsed, Cause: s.sw.rec, Attrs: map[string]any{"how": how, "to": string(s.sw.to)}})
+}
+
+// switchKey acts on a press of the switch key alone at the CLI: the status
+// line of a switch whose question lapsed comes back (T6982), or else the list
+// opens. Before, a person who pressed it to say yes to a status line that
+// other keys had closed got the list.
+func (s *session) switchKey() {
+	if s.sw.lapsed && s.sw.to != "" && !s.sw.typed {
+		s.sw.lapsed, s.sw.again = false, true
+		s.offerSwitch()
+		s.sw.again = false
+		if s.open {
+			return
+		}
+	}
+	s.openList()
 }
 
 // exitNote says what a late exit does, and how to cancel it.

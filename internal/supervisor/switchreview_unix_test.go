@@ -127,7 +127,7 @@ func TestBacktrackAsksFirst(t *testing.T) {
 			time.Sleep(60 * time.Millisecond)
 			ts.typeIn(t, "1")
 			since := func() []byte { return ts.screen()[seen:] }
-			poll(t, "the status line", []byte("can't tell if prompt is empty"), since)
+			poll(t, "the status line", []byte("prompt may not be empty"), since)
 			if bytes.Contains(c.received(), []byte("/exit")) {
 				t.Fatalf("typed before the confirm: %q", c.received())
 			}
@@ -394,7 +394,7 @@ func TestCompactThirdPick(t *testing.T) {
 	ts.typeIn(t, "\x1c")
 	time.Sleep(60 * time.Millisecond)
 	ts.typeIn(t, "2")
-	poll(t, "the status line", []byte("can't tell if prompt is empty"), since)
+	poll(t, "the status line", []byte("prompt may not be empty"), since)
 	ts.typeIn(t, "\x1b")
 	time.Sleep(escTimeout + 60*time.Millisecond)
 	seen = len(ts.screen())
