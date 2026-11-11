@@ -111,10 +111,11 @@ type Select struct {
 
 // NewSelect starts the select on st with the cursor on a row a stray Space
 // right away cannot make risky: never All, which ticks every harness. On a
-// list asked again for new rows, the first new row with no warning, else the
-// first new row, so a Space never changes an earlier answer unseen; otherwise
-// the first row with no warning. A first list whose rows all carry a warning
-// starts with no cursor, and Space does nothing until a move.
+// list asked again for new rows, the first new row with no warning, so a
+// Space never changes an earlier answer unseen; otherwise the first row with
+// no warning. A first list whose rows all carry a warning, or a list asked
+// again whose new rows all do (Antigravity's terms row alone, T6957), starts
+// with no cursor, and Space does nothing until a move.
 func NewSelect(st *State) *Select {
 	s := &Select{St: st, At: -1}
 	pick := func(ok func(i int) bool) bool {
@@ -127,7 +128,7 @@ func NewSelect(st *State) *Select {
 		return false
 	}
 	if slices.Contains(st.New, true) {
-		_ = pick(func(i int) bool { return st.New[i] && st.Rows[i].Warning == "" }) || pick(func(i int) bool { return st.New[i] })
+		pick(func(i int) bool { return st.New[i] && st.Rows[i].Warning == "" })
 	} else {
 		pick(func(i int) bool { return st.Rows[i].Warning == "" })
 	}
@@ -339,7 +340,8 @@ type entry struct {
 }
 
 // entries are the list's lines: All, then each group's rows with their
-// numbers, ticks, new marks, and warnings.
+// numbers, ticks, new marks, warnings, and, for a row All never ticks, a note
+// saying so (T6957), each tied to its row so a window keeps them together.
 func (s *State) entries() []entry {
 	box := func(on bool) string {
 		if on {
@@ -365,20 +367,28 @@ func (s *State) entries() []entry {
 		if r.Warning != "" {
 			out = append(out, entry{"        ! " + r.Warning, i + 1})
 		}
+		if r.NotInAll {
+			out = append(out, entry{NotInAllNote, i + 1})
+		}
 	}
 	return out
 }
 
-// Lines are the list with the cursor: "> " before the item under it, two
-// spaces before every other line. Every warning shows, the highlighted row's
-// among them.
+// NotInAllNote is the line under a row All never ticks.
+const NotInAllNote = "        (All does not tick this one: tick it on its own)"
+
+// Lines are the list with the cursor: "> " before the item under it, on its
+// first line only, two spaces before every other line. Every warning and note
+// shows, the highlighted row's among them.
 func (s *Select) Lines() []string {
 	var out []string
+	prev := -1
 	for _, e := range s.St.entries() {
 		mark := "  "
-		if e.item == s.At && s.At >= 0 && !strings.HasPrefix(e.text, "        !") {
+		if e.item == s.At && s.At >= 0 && e.item != prev {
 			mark = "> "
 		}
+		prev = e.item
 		out = append(out, strings.TrimRight(mark+e.text, " "))
 	}
 	return out

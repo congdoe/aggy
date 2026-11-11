@@ -74,8 +74,15 @@ func agyRecords(t *testing.T, w *world, mode string) []fakecli.Record {
 func TestAntigravityUnticked(t *testing.T) {
 	w := agyWorldE2E(t, false)
 	s := w.start(t, map[string]any{"raw_echo": true}, "run", "antigravity")
-	s.waitFor([]byte("Tick Antigravity (Gemini) here and start agy? [y/N]"))
-	s.answerUntil("n\r", []byte("aggy trust"))
+	// On a terminal the offer is the trust select with the row alone (T6957,
+	// port onto #140's select): n ends it, ticking nothing.
+	s.waitWithin([]byte(trustlist.SelectKeys[:20]), offerTimeout)
+	if !strings.Contains(strings.Join(strings.Fields(s.screen()), " "), "Tick Antigravity (Gemini) here and start agy?") {
+		t.Errorf("the offer: %q", s.screen())
+	}
+	time.Sleep(300 * time.Millisecond) // past the typed-ahead guard
+	s.send([]byte("n"))
+	s.waitWithin([]byte("aggy trust"), offerTimeout)
 	if code := s.exit(); code == 0 {
 		t.Fatal("aggy run antigravity started in an unticked folder")
 	}
