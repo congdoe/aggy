@@ -1,1 +1,1 @@
-{"sandbox":{"enabled":true,"failIfUnavailable":true}}
+{"sandbox":{"autoAllowBashIfSandboxed":false,"enabled":true,"failIfUnavailable":true}}

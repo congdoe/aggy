@@ -2,8 +2,14 @@ package claude
 
 // Claude Code's own sandbox (T6980, docs/design.md section 10, "The vendors'
 // own sandboxes"). Every fact here is from Claude Code's docs, read
-// 2026-11-11, and none is live-checked at 2.1.322, the version aggy's other
-// Claude checks ran on (docs/verification.md lists the checks owed):
+// 2026-11-11. A maintainer's live run on 2.1.322 (2026-11-11,
+// docs/verification.md, "The vendors' own sandboxes") confirmed that
+// enabled and autoAllowBashIfSandboxed are read from --settings, that
+// auto-allow drops the prompt for an in-folder command and false brings it
+// back, that a write outside the project is blocked and its unsandboxed
+// retry asks, and that a PreToolUse hook's ask still prompts under
+// auto-allow. failIfUnavailable, the platform facts, and nesting are not
+// live-checked (the checks owed are listed there):
 //
 //   - code.claude.com/docs/en/sandboxing: "The sandbox is off by default";
 //     set sandbox.enabled to true in a settings file. It "covers shell
@@ -19,11 +25,16 @@ package claude
 //     allowUnsandboxedCommands false forbids it. aggy leaves that as Claude
 //     sets it: the retry asks the person, and aggy's decision hook judges
 //     every Bash call, sandboxed or not.
-//   - Same page: in its default auto-allow mode (sandbox.
-//     autoAllowBashIfSandboxed, default true), a sandboxed command runs with
-//     no permission prompt, but deny rules and content-scoped ask rules
-//     (Bash(git push *)) still apply; a bare Bash ask rule does not. aggy
-//     leaves that default too.
+//   - Same page, "Sandbox modes": in auto-allow mode (sandbox.
+//     autoAllowBashIfSandboxed, default true) Claude "approves a command
+//     automatically, with no prompt, when the command runs inside the
+//     sandbox"; in regular permissions mode "All Bash commands go through
+//     the regular permission flow, even when sandboxed". Reads still reach
+//     most of the machine, so auto-allow would drop the person's prompts for
+//     a cat of ~/.aws/credentials or an rm -rf inside the folder (PR #135
+//     review). aggy sets it false: the sandbox only adds confinement, and
+//     prompting stays as it was without it.
+//     TODO(T6954): auto-allow could become a separate, plainly worded choice.
 //   - Same page: it runs on macOS (Seatbelt, built in), Linux and WSL2
 //     (bubblewrap and socat must be installed); on native Windows commands
 //     run unsandboxed. "By default, when the platform doesn't support the
@@ -38,8 +49,9 @@ package claude
 //     file". --settings sits above the user and project files.
 
 // SandboxLayer is the "sandbox" value aggy's inline --settings layer holds
-// when the folder's trust list ticks Claude's sandbox: on, and Claude exits
-// at startup rather than run its shell unsandboxed.
+// when the folder's trust list ticks Claude's sandbox: on, Claude exits at
+// startup rather than run its shell unsandboxed, and every Bash command still
+// goes through Claude's permission flow (no auto-allow).
 func SandboxLayer() map[string]any {
-	return map[string]any{"enabled": true, "failIfUnavailable": true}
+	return map[string]any{"enabled": true, "failIfUnavailable": true, "autoAllowBashIfSandboxed": false}
 }

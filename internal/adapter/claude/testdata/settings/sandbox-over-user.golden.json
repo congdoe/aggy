@@ -1,1 +1,1 @@
-{"permissions":{"deny":["Bash(rm -rf*)"]},"sandbox":{"enabled":true,"excludedCommands":["docker *"],"failIfUnavailable":true}}
+{"permissions":{"deny":["Bash(rm -rf*)"]},"sandbox":{"autoAllowBashIfSandboxed":false,"enabled":true,"excludedCommands":["docker *"],"failIfUnavailable":true}}

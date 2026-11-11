@@ -1,1 +1,1 @@
-{"permissions":{"ask":["Bash(git push*)"],"deny":["Bash(rm -rf*)"]},"sandbox":{"enabled":true,"failIfUnavailable":true}}
+{"permissions":{"ask":["Bash(git push*)"],"deny":["Bash(rm -rf*)"]},"sandbox":{"autoAllowBashIfSandboxed":false,"enabled":true,"failIfUnavailable":true}}

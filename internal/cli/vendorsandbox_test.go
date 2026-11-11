@@ -23,21 +23,31 @@ func sandboxCan(t *testing.T, missing string) {
 }
 
 // TestClaudeSandboxRow (T6980): the trust list offers Claude's sandbox in a
-// folder never answered, ticked where it can start and unticked, saying why,
-// where it cannot; a folder answered before the row existed is not asked
-// again, keeps it off, and aggy trust shows it new and unticked there.
+// folder never answered, unticked (PR #135 review: it costs network in daily
+// use, so the person chooses it), saying what it costs, or why it cannot
+// start; All does not tick it; a folder answered before the row existed is
+// not asked again, keeps it off, and aggy trust shows it new and unticked.
 func TestClaudeSandboxRow(t *testing.T) {
-	t.Run("a new folder: offered and ticked", func(t *testing.T) {
+	t.Run("a new folder: offered unticked, saying what it costs", func(t *testing.T) {
 		_, repo := trustWorld(t, "claude")
 		sandboxCan(t, "")
-		out, _ := startIn(repo, config.Default(), "\n")
-		if !strings.Contains(out, "How a harness runs here") || !strings.Contains(out, "[x] Claude Code: run its shell commands in Claude's own sandbox") ||
-			!strings.Contains(out, "file tools, hooks, and MCP servers stay outside it") {
+		out, _ := startIn(repo, config.Default(), "1\n\n")
+		if !strings.Contains(out, "How a harness runs here") || !strings.Contains(out, "[ ] Claude Code: run its shell commands in Claude's own sandbox") ||
+			!strings.Contains(out, "file tools, hooks, and MCP servers stay outside it") || !strings.Contains(out, "npm install will raise Claude's own") ||
+			!strings.Contains(out, "Claude still asks before each command") {
 			t.Fatalf("the list: %q", out)
 		}
-		if a, _ := folderAnswer(t, repo); !slices.Equal(a.On, []string{trustRowClaudeSandbox}) {
-			t.Errorf("answer %+v", a)
+		if a, _ := folderAnswer(t, repo); !slices.Equal(a.On, []string{"claude"}) {
+			t.Errorf("All or the default ticked the sandbox: %+v", a)
 		}
+		if on, _ := claudeSandboxHere(repo); on {
+			t.Error("on without being ticked")
+		}
+	})
+	t.Run("a new folder: ticked by the person", func(t *testing.T) {
+		_, repo := trustWorld(t, "claude")
+		sandboxCan(t, "")
+		startIn(repo, config.Default(), "3\n\n")
 		if on, _ := claudeSandboxHere(repo); !on {
 			t.Error("the launch does not see it ticked")
 		}
@@ -101,13 +111,15 @@ func TestClaudeSandboxRow(t *testing.T) {
 }
 
 // TestClaudeSandboxLaunch (T6980): what an on-screen Claude launch does with
-// the folder's choice: on where it can start; ticked where it cannot, asked
-// in place, a yes starts without it and a no refuses, and with no one to ask
-// it starts without it and says so; not ticked, the person's own settings.
+// the folder's choice: on where it can start, --no-policy or not (PR #135
+// review); ticked where it cannot, asked in place, a yes starts without it and
+// a no refuses, and with no one to ask it refuses too, naming the ways
+// forward (PR #135 review); not ticked, the person's own settings.
 func TestClaudeSandboxLaunch(t *testing.T) {
 	cases := []struct {
 		name     string
 		ticked   bool
+		noPolicy bool
 		missing  string
 		person   bool
 		answer   string
@@ -117,11 +129,14 @@ func TestClaudeSandboxLaunch(t *testing.T) {
 		question bool
 	}{
 		{name: "ticked, can start", ticked: true, on: true, line: "Claude's sandbox: on for its shell commands"},
+		{name: "ticked, can start, --no-policy", ticked: true, noPolicy: true, on: true, line: "still on with --no-policy, since this folder chose it; aggy trust"},
 		{name: "not ticked", line: "not chosen for this folder, so your own Claude settings decide; aggy trust"},
+		{name: "not ticked, --no-policy", noPolicy: true, line: "as your own Claude settings set it (--no-policy"},
 		{name: "not ticked, cannot start", missing: "no bwrap", line: "not chosen for this folder"},
 		{name: "ticked, cannot start, yes", ticked: true, missing: "no bwrap", person: true, answer: "y\n", line: "off this launch, as you said: no bwrap", question: true},
 		{name: "ticked, cannot start, no", ticked: true, missing: "no bwrap", person: true, answer: "\n", err: errClaudeSandboxDeclined, question: true},
-		{name: "ticked, cannot start, no one to ask", ticked: true, missing: "no bwrap", line: "off, though chosen for this folder: no bwrap"},
+		{name: "ticked, cannot start, no one to ask", ticked: true, missing: "no bwrap", err: errClaudeSandboxNoOne},
+		{name: "ticked, cannot start, no one to ask, --no-policy", ticked: true, noPolicy: true, missing: "no bwrap", err: errClaudeSandboxNoOne},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -135,9 +150,12 @@ func TestClaudeSandboxLaunch(t *testing.T) {
 			tickTrustRows(t, repo, ids...)
 			var req adapter.InteractiveRequest
 			var out bytes.Buffer
-			line, err := claudeSandboxLaunch(&req, repo, os.Getenv, strings.NewReader(c.answer), &out)
+			line, err := claudeSandboxLaunch(&req, repo, c.noPolicy, os.Getenv, strings.NewReader(c.answer), &out)
 			if !errors.Is(err, c.err) || err == nil && c.err != nil {
 				t.Fatalf("err %v, want %v", err, c.err)
+			}
+			if err != nil && (!strings.Contains(err.Error(), "aggy trust "+repo) || !strings.Contains(err.Error(), "bubblewrap and socat")) {
+				t.Errorf("the refusal names no way forward: %v", err)
 			}
 			if req.ClaudeSandbox != c.on {
 				t.Errorf("ClaudeSandbox = %v, want %v", req.ClaudeSandbox, c.on)
@@ -153,7 +171,7 @@ func TestClaudeSandboxLaunch(t *testing.T) {
 	t.Run("home is no folder for it", func(t *testing.T) {
 		h, _ := trustWorld(t, "claude")
 		var req adapter.InteractiveRequest
-		line, err := claudeSandboxLaunch(&req, h, os.Getenv, strings.NewReader(""), &bytes.Buffer{})
+		line, err := claudeSandboxLaunch(&req, h, false, os.Getenv, strings.NewReader(""), &bytes.Buffer{})
 		if err != nil || req.ClaudeSandbox || !strings.Contains(line, "does not turn it on in this folder") {
 			t.Errorf("%q %v %v", line, req.ClaudeSandbox, err)
 		}
@@ -172,7 +190,7 @@ func TestSandboxDoctor(t *testing.T) {
 		msg     string
 	}{
 		{"on", true, "", checkup.LevelInfo, "on for this folder's sessions"},
-		{"chosen, cannot start", true, "no socat", checkup.LevelWarn, "cannot start on this machine, so aggy asks"},
+		{"chosen, cannot start", true, "no socat", checkup.LevelWarn, "cannot start on this machine: aggy asks at a terminal"},
 		{"not chosen", false, "", checkup.LevelInfo, "not chosen for this folder (aggy trust offers it)"},
 		{"not chosen, cannot start", false, "no socat", checkup.LevelInfo, "not chosen for this folder, and it cannot start"},
 	}

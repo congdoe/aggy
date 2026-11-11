@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"runtime"
 	"slices"
@@ -26,23 +27,24 @@ import (
 // trustRowClaudeSandbox is the trust list's row for Claude's sandbox.
 const trustRowClaudeSandbox = "claude-sandbox"
 
-// claudeSandboxWarning is the row's line when the sandbox can start here.
-const claudeSandboxWarning = "its shell commands may then write only in the folder it starts in and a temp folder, and reach the network only through Claude's proxy, which asks per host; " +
-	"its file tools, hooks, and MCP servers stay outside it, and a blocked command may ask you to run it outside (Claude Code's docs; not live-checked)"
+// claudeSandboxWarning is the row's line when the sandbox can start here:
+// what it confines, and what it costs in daily use (PR #135 review).
+const claudeSandboxWarning = "its shell commands may then write only in the folder it starts in and a temp folder, and get no network unless a domain is allowed, " +
+	"so git push or npm install will raise Claude's own \"run outside the sandbox?\" prompt; Claude still asks before each command as it does now, " +
+	"and its file tools, hooks, and MCP servers stay outside it (Claude Code's docs)"
 
 func init() {
 	registerTrustRow(trustRowDef{
 		Row: trustlist.Row{ID: trustRowClaudeSandbox, Label: "Claude Code: run its shell commands in Claude's own sandbox", Group: trustlist.Setting,
 			Warning: claudeSandboxWarning, Quiet: true},
 		bin: vendorBin(adapter.Claude), order: 10,
-		// Ticked by default in a folder never answered, where the sandbox can
-		// start: the one row whose tick confines rather than allows. A folder
-		// answered before the row existed is not asked again (Quiet), and it
-		// stays off there, as it was, until aggy trust shows the list.
-		defaultOn: func() bool { return claudeSandboxMissing() == "" },
+		// Unticked by default, as every row (PR #135 review): it costs
+		// network in daily use, so the person chooses it. A folder answered
+		// before the row existed is not asked again (Quiet), and it stays off
+		// there until aggy trust shows the list.
 		note: func() string {
 			if m := claudeSandboxMissing(); m != "" {
-				return "it cannot start on this machine: " + m + "; ticked, aggy asks before it starts Claude Code without it"
+				return "it cannot start on this machine: " + m + "; ticked, aggy asks before it starts Claude Code without it, and refuses to start it with no one to ask"
 			}
 			return ""
 		},
@@ -100,14 +102,24 @@ func claudeSandboxHere(dir string) (on bool, root string) {
 // would not start Claude Code without the sandbox they chose.
 var errClaudeSandboxDeclined = errors.New("not started: you chose to run Claude Code sandboxed in this folder, and its sandbox cannot start here")
 
+// errClaudeSandboxNoOne is the launch refused when the sandbox the folder
+// chose cannot start and no one is at a terminal to say to start without it.
+var errClaudeSandboxNoOne = errors.New("not started: this folder chose to run Claude Code sandboxed, its sandbox cannot start here, and no one is at a terminal to say to start without it")
+
 // claudeSandboxLaunch sets req to turn Claude's sandbox on when cwd's trust
-// list ticks it, and returns the launch's line saying what holds. Ticked but
-// unable to start, it asks in place whether to start without it (no one to
-// ask: it starts without it and the line says so); a no refuses the launch.
-func claudeSandboxLaunch(req *adapter.InteractiveRequest, cwd string, getenv func(string) string, in io.Reader, out io.Writer) (string, error) {
+// list ticks it, and returns the launch's line saying what holds. noPolicy
+// keeps it on: --no-policy turns off aggy's decisions, not confinement the
+// person chose (PR #135 review). Ticked but unable to start, it asks in place
+// whether to start without it, and a no refuses the launch; with no one to
+// ask (no terminal, a borrow child, a session's tool shell) it refuses too,
+// naming the ways forward (PR #135 review).
+func claudeSandboxLaunch(req *adapter.InteractiveRequest, cwd string, noPolicy bool, getenv func(string) string, in io.Reader, out io.Writer) (string, error) {
 	on, root := claudeSandboxHere(cwd)
 	if !on {
-		if root == "" {
+		switch {
+		case noPolicy:
+			return "Claude's sandbox: as your own Claude settings set it (--no-policy, and not chosen for this folder)", nil
+		case root == "":
 			return "Claude's sandbox: aggy does not turn it on in this folder; your own Claude settings decide", nil
 		}
 		return "Claude's sandbox: not chosen for this folder, so your own Claude settings decide; aggy trust " + root + " offers it", nil
@@ -115,20 +127,26 @@ func claudeSandboxLaunch(req *adapter.InteractiveRequest, cwd string, getenv fun
 	missing := claudeSandboxMissing()
 	if missing == "" {
 		req.ClaudeSandbox = true
-		return "Claude's sandbox: on for its shell commands (writes to this folder and temp only, network through its proxy); its file tools, hooks, and MCP servers are outside it, and Claude exits if the sandbox cannot start", nil
+		line := "Claude's sandbox: on for its shell commands (writes to this folder and temp only, no network unless a domain is allowed), and Claude still asks before each command; " +
+			"its file tools, hooks, and MCP servers are outside it, and Claude exits if the sandbox cannot start"
+		if noPolicy {
+			line = "Claude's sandbox: still on with --no-policy, since this folder chose it; aggy trust " + root + " unticks it"
+		}
+		return line, nil
 	}
+	ways := "install what is missing (on Linux, bubblewrap and socat), or untick the sandbox with aggy trust " + root
 	yes, asked := askInPlace(getenv, in, out, inPlace{
 		change: "You chose to run Claude Code sandboxed in this folder, but its sandbox cannot start here: " + missing + ".",
 		undo:   "A yes holds for this launch only; aggy trust " + root + " unticks the choice for good.",
 		ask:    "Start Claude Code without its sandbox this time?",
 	})
 	switch {
-	case asked && !yes:
-		return "", errClaudeSandboxDeclined
-	case asked:
-		return "Claude's sandbox: off this launch, as you said: " + missing, nil
+	case !asked:
+		return "", fmt.Errorf("%w (%s); %s", errClaudeSandboxNoOne, missing, ways)
+	case !yes:
+		return "", fmt.Errorf("%w (%s); %s", errClaudeSandboxDeclined, missing, ways)
 	}
-	return "Claude's sandbox: off, though chosen for this folder: " + missing, nil
+	return "Claude's sandbox: off this launch, as you said: " + missing, nil
 }
 
 // codexSandboxLine is a Codex launch's line for its sandbox, from the CLI
@@ -150,7 +168,7 @@ func claudeSandboxFinding(cwd string) checkup.Finding {
 	switch {
 	case on && missing != "":
 		f.Level = checkup.LevelWarn
-		f.Message = "Claude's sandbox: chosen for this folder, but it cannot start on this machine, so aggy asks before starting Claude Code without it"
+		f.Message = "Claude's sandbox: chosen for this folder, but it cannot start on this machine: aggy asks at a terminal before starting Claude Code without it, and refuses to start it with no one to ask"
 		f.Detail = missing
 	case on:
 		f.Message = "Claude's sandbox: on for this folder's sessions (its shell commands only; aggy passes sandbox.enabled in its --settings layer)"
