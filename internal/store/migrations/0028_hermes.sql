@@ -22,9 +22,7 @@ CREATE TABLE hermes_launches (
     profile     TEXT NOT NULL,             -- aggy's Hermes profile for the repo
     root        TEXT NOT NULL,             -- the repo root, absolute
     cwd         TEXT NOT NULL,             -- the session's folder, absolute
-    plan        TEXT NOT NULL DEFAULT '',  -- the decision plan's path; '' with --no-policy
-    plan_sum    TEXT NOT NULL DEFAULT '',  -- its SHA-256, the pin the hook checks
-    token       TEXT NOT NULL,             -- what the hook shows the supervisor
+    token       TEXT NOT NULL,             -- what the hook shows the supervisor; the plan's pin is the supervisor's
     session_id  TEXT NOT NULL DEFAULT '',  -- Hermes' session id, once a hook named it
     started_at  INTEGER NOT NULL
 );
@@ -32,7 +30,9 @@ CREATE INDEX hermes_launches_profile ON hermes_launches (profile);
 
 -- A change may name aggy's block in its Hermes profile's config.yaml as its
 -- reverse ('hermes-block'): it keeps no backup, as the file may hold what the
--- person's root config seeded, and aggy unwire takes the block out.
+-- person's root config seeded, and aggy unwire takes the block out. A marker
+-- may name a Hermes profile aggy made ('hermes-profile'), which aggy unwire
+-- deletes with hermes profile delete.
 CREATE TABLE changes_v28 (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     change_id    TEXT NOT NULL UNIQUE,         -- names the backup folder backups/<change_id>
@@ -54,7 +54,7 @@ CREATE TABLE changes_v28 (
     kind         TEXT NOT NULL DEFAULT 'change' CHECK (kind IN ('change', 'marker')),
     unlocked     INTEGER NOT NULL DEFAULT 1 CHECK (unlocked IN (0, 1)),
     reverse      TEXT NOT NULL DEFAULT ''
-                 CHECK (reverse IN ('', 'aggy-hooks', 'hermes-block') OR reverse LIKE 'claude-trust:%')
+                 CHECK (reverse IN ('', 'aggy-hooks', 'hermes-block', 'hermes-profile') OR reverse LIKE 'claude-trust:%')
 );
 INSERT INTO changes_v28 (id, change_id, run_id, file, hash_before, hash_after, backup_path,
                          created_file, file_mode, created_dirs, status, planned_at,

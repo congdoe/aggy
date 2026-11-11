@@ -29,12 +29,10 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -79,6 +77,9 @@ type hermesFake struct {
 var hermesSessionRE = regexp.MustCompile(`^(local-[0-9a-f]{64}|[0-9]{8}_[0-9]{6}_[0-9a-f]{6,12})$`)
 
 func runHermes() int {
+	if code, ok := hermesSpawned(); ok {
+		return code
+	}
 	sc, err := loadScenario()
 	if err != nil {
 		return fail(97, "scenario: %v", err)
@@ -213,6 +214,8 @@ func (h *hermesFake) main(args []string) int {
 		return 0
 	case len(args) >= 2 && args[0] == "profile" && args[1] == "create":
 		return h.profileCreate(args[2:])
+	case len(args) >= 2 && args[0] == "profile" && args[1] == "delete":
+		return h.profileDelete(args[2:])
 	case len(args) >= 2 && args[0] == "config" && args[1] == "get":
 		return h.configGet(args[2:])
 	case len(args) >= 2 && args[0] == "config" && args[1] == "set":
@@ -257,6 +260,27 @@ func (h *hermesFake) profileCreate(args []string) int {
 	h.profile, h.home = args[0], dir
 	h.record("profile-create", nil)
 	fmt.Printf("Profile '%s' created at %s\n", args[0], dir)
+	return 0
+}
+
+// profileDelete is `hermes profile delete <name> --yes` (LIVE: it removed the
+// profile). The default is never deleted.
+func (h *hermesFake) profileDelete(args []string) int {
+	if len(args) != 2 || args[1] != "--yes" || args[0] == "default" || !regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`).MatchString(args[0]) {
+		h.record("error", nil)
+		fmt.Fprintln(os.Stderr, "hermes: error: profile delete <name> --yes")
+		return 2
+	}
+	dir := filepath.Join(h.root, "profiles", args[0])
+	if !isDir(dir) {
+		fmt.Fprintf(os.Stderr, "Error: Profile '%s' does not exist\n", args[0])
+		return 1
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fail(1, "hermes: %v", err)
+	}
+	h.record("profile-delete", nil)
+	fmt.Printf("Profile '%s' deleted\n", args[0])
 	return 0
 }
 
@@ -750,30 +774,22 @@ func (h *hermesFake) runHook(hk hermesHook, payload []byte) map[string]any {
 	if len(words) == 0 {
 		return block("empty command")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(hk.timeout)*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, words[0], words[1:]...)
-	cmd.Dir = installDir()
+	// The daemon's environment: no AGGY_* variable (the fakes' own aside), and
+	// none of the CLI's HERMES_* either; the install folder for a cwd.
+	var env []string
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "AGGY_") || strings.HasPrefix(kv, "AGGY_FAKE_") || strings.HasPrefix(kv, "AGGY_TEST_") {
-			cmd.Env = append(cmd.Env, kv)
+		if (!strings.HasPrefix(kv, "AGGY_") || strings.HasPrefix(kv, "AGGY_FAKE_") || strings.HasPrefix(kv, "AGGY_TEST_")) && !strings.HasPrefix(kv, "HERMES_") {
+			env = append(env, kv)
 		}
 	}
-	cmd.Stdin = strings.NewReader(string(payload))
+	stdoutS, stderrS, code, failure := runDetached(words, hk.timeout, env, installDir(), payload)
+	appendJSON(os.Getenv("AGGY_FAKE_RECORD"), map[string]any{"vendor": "hermes", "mode": "hook", "args": []string{hk.event, strings.TrimSpace(stdoutS), strings.TrimSpace(stderrS)}, "session_id": h.id})
+	if failure != "" {
+		return block(failure)
+	}
 	var stdout, stderr strings.Builder
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	appendJSON(os.Getenv("AGGY_FAKE_RECORD"), map[string]any{"vendor": "hermes", "mode": "hook", "args": []string{hk.event, strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String())}, "session_id": h.id})
-	if ctx.Err() != nil {
-		return block("timed out after " + strconv.Itoa(hk.timeout) + "s")
-	}
-	code := 0
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		code = ee.ExitCode()
-	} else if err != nil {
-		return block(err.Error())
-	}
+	stdout.WriteString(stdoutS)
+	stderr.WriteString(stderrS)
 	if hk.event != "pre_tool_call" {
 		return nil
 	}

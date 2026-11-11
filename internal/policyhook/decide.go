@@ -54,6 +54,11 @@ type DecidePlan struct {
 	// command, always ask (PR #129 review): aggy's state folder, which holds
 	// this plan, the run folders, and aggy's permissions file.
 	Protected []string `json:"protected,omitempty"`
+	// Words are more texts whose naming in a shell command asks, matched as
+	// a path part, lower case: on Hermes, aggy's profile name, so a nested
+	// hermes -p <profile> or a ~/.hermes/profiles/<profile> spelling asks
+	// (#134 review).
+	Words []string `json:"words,omitempty"`
 	// Settings are the person's group settings, ask or deny.
 	Settings map[string]string `json:"settings,omitempty"`
 	// Branches are default branches besides parity.ProtectedBranches.
@@ -398,7 +403,7 @@ var realPath = safefs.RealPath
 func (d DecidePlan) protectedCall(c parity.Call) bool {
 	switch c.Kind {
 	case parity.CallShell:
-		return protectedText(c.Text, d.Protected)
+		return protectedText(c.Text, d.Protected, d.Words)
 	case parity.CallWrite:
 		return d.protectedPath(c.Text)
 	}
@@ -470,7 +475,10 @@ func claudeSettingsPath(p string) bool {
 // Claude settings file's name. ".claude" with "settings" anywhere counts too,
 // as does aggy's folder (".aggy", or "aggy_home" for $AGGY_HOME) with one of
 // aggyFileNames anywhere (cd ~/.aggy, then the file).
-var protectedWords = []string{"policy-decide", ".aggy/run", ".aggy/permissions", ".aggy/trust.json", ".aggy/opencode-trust.json", "settings.local.json", "managed-settings"}
+var protectedWords = []string{"policy-decide", ".aggy/run", ".aggy/permissions", ".aggy/trust.json", ".aggy/opencode-trust.json", "settings.local.json", "managed-settings",
+	// aggy's index and diagnostic log, which hold the launch rows a hook trusts
+	// (#134 review: live, a terminal sqlite3 on the index ran unasked).
+	"aggy.db", "diag.db"}
 
 // aggyFolderWords name aggy's state folder in a shell command, and
 // aggyFileNames the files in it that a command naming that folder must not
@@ -478,7 +486,7 @@ var protectedWords = []string{"policy-decide", ".aggy/run", ".aggy/permissions",
 // it, and "cat .aggy/memory.md" names neither.
 var (
 	aggyFolderWords = []string{".aggy", "aggy_home"}
-	aggyFileNames   = []string{"permissions.json", "trust.json"}
+	aggyFileNames   = []string{"permissions.json", "trust.json", "aggy.db", "diag.db"}
 )
 
 // holdsPath reports w in f ending a path part: not followed by a letter,
@@ -500,13 +508,18 @@ func holdsPath(f, w string) bool {
 // protectedText reports a shell command whose text, in any of the matcher's
 // spellings (raw, continuations joined, quotes and backslashes gone), and
 // without regard to case, names a protected path.
-func protectedText(cmd string, protected []string) bool {
+func protectedText(cmd string, protected, words []string) bool {
 	joined := strings.ReplaceAll(cmd, "\\\n", "")
 	bare := strings.NewReplacer(`"`, "", "'", "", `\`, "").Replace(joined)
 	for _, f := range []string{cmd, joined, bare} {
 		f = strings.ToLower(f)
 		for _, w := range protectedWords {
 			if holdsPath(f, w) {
+				return true
+			}
+		}
+		for _, w := range words {
+			if w != "" && holdsPath(f, strings.ToLower(w)) {
 				return true
 			}
 		}

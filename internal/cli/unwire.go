@@ -117,15 +117,37 @@ func runUnwire(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return cmdErr(stderr, "unwire", diag.CodeStore, err)
 	}
+	// A Hermes profile aggy made (#134 review) is a marker, which the
+	// manifest skips: it is deleted after the changes, so its block is
+	// undone first.
+	profiles, err := hermesProfileMarkers(ctx, s, sel)
+	if err != nil {
+		return cmdErr(stderr, "unwire", diag.CodeStore, err)
+	}
+	if sel.ChangeID != "" && len(profiles) == 1 {
+		if *force {
+			return cmdUsage(stderr, "unwire", "--force does not apply to a Hermes profile aggy made", "")
+		}
+		if _, left := unwireHermesProfiles(ctx, s, profiles, opt.DryRun, stdout, stderr); left {
+			return 1
+		}
+		return 0
+	}
 	undos, err := m.Unwire(ctx, sel, opt, stdout)
-	if len(undos) == 0 && err != nil {
+	if len(undos) == 0 && err != nil && len(profiles) == 0 {
 		code := diag.CodeUnwireFailed
 		if errors.Is(err, store.ErrNotFound) {
 			code = diag.CodeNotFound
 		}
 		return cmdErrDry(stderr, "unwire", code, err, opt.DryRun)
 	}
-	return report(undos, opt, *force && !*yes, stdout, stderr)
+	code := report(undos, opt, *force && !*yes, stdout, stderr)
+	if len(profiles) > 0 && (!*force || *yes) {
+		if _, left := unwireHermesProfiles(ctx, s, profiles, opt.DryRun, stdout, stderr); left {
+			code = 1
+		}
+	}
+	return code
 }
 
 // report prints one line per change and returns the exit code: 0 when

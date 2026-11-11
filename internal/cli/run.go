@@ -652,8 +652,10 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// Hermes' hooks find this launch by its row while the CLI runs (hermesFind).
 	if v == adapter.Hermes {
 		hid, err := s.PutHermesLaunch(ctx, store.HermesLaunch{ParentID: parentID, ChildID: pl.child.ID, Profile: hs.launch.Profile,
-			Root: hs.root, Cwd: pl.child.Cwd, Plan: hs.planPath, PlanSum: hs.planSum, Token: hs.token,
-			SessionID: pl.child.VendorSessionID, Started: time.Now()})
+			Root: hs.root, Cwd: pl.child.Cwd, Token: hs.token, SessionID: pl.child.VendorSessionID, Started: time.Now()})
+		if errors.Is(err, store.ErrHermesUnclaimed) {
+			return fail(diag.CodeHermesUnclaimed, errors.New("another aggy Hermes session in this repo has not started a turn yet; type a first message there, or quit it, then start this one"))
+		}
 		if err != nil {
 			return fail(diag.CodeStore, err)
 		}
@@ -740,7 +742,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	}
 	if t.Direct {
 		// --direct's CLI shares aggy's process group: only it is killed.
-		code, err := runDirect(cmd, runDir, parentID, v, assigned, hs.token, cids.set, onNamed, func(r diag.Rec) {
+		code, err := runDirect(cmd, runDir, parentID, v, assigned, hs.token, hs.pin(pl.child.VendorSessionID, t.Brief), cids.set, onNamed, func(r diag.Rec) {
 			r.Parent, r.Child, r.Vendor = parentID, pl.child.ID, string(v)
 			q.LogWait(r, 100*time.Millisecond) // the socket's goroutines
 		}, func(pid int) {
@@ -871,6 +873,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		ChildID:  pl.child.ID,
 		// T6933: a Hermes hook runs in its daemon, with this token for a lineage.
 		HermesToken: hs.token,
+		HermesPin:   hs.pin(pl.child.VendorSessionID, t.Brief),
 		// T6909: commands typed in the session run in this process.
 		Aggy:      sessionAggy,
 		ToolNames: sessionToolNames,

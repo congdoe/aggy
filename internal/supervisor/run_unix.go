@@ -126,6 +126,10 @@ func Run(o Options) (Exit, error) {
 		defer func() { _ = srv.Close() }()
 		srv.SetLog(s.logWait)
 		srv.SetToken(o.HermesToken)
+		if o.HermesPin != nil {
+			s.hermes = NewHermesClaim(*o.HermesPin)
+			srv.SetHermesPin(s.hermes.Answer)
+		}
 		srv.SetTools(s.onTools)
 		if o.CanSwitch != nil {
 			srv.SetSwitch(s.onSwitch)
@@ -388,6 +392,9 @@ type session struct {
 	o     Options
 	t     *tty
 	child Child
+	// hermes is a Hermes launch's session claim (Options.HermesPin), nil
+	// for any other vendor.
+	hermes *HermesClaim
 	// outMu is held while the CLI's output must not reach the terminal:
 	// during a suspend, and while the picker is on screen.
 	outMu sync.Mutex
@@ -798,6 +805,10 @@ func (s *session) hookEvent(ev hookEvent) {
 	if own == "" && s.o.SessionID != nil {
 		own = s.o.SessionID()
 	}
+	if s.hermes != nil {
+		// Hermes: the session its hook claimed, and no other (#134 review).
+		own = s.hermes.Claimed()
+	}
 	if own != "" && ev.sessionID == own && len(ev.chain) > 0 && (s.host == nil || len(ev.chain) < len(s.host)) {
 		s.host = slices.Clone(ev.chain)
 	}
@@ -899,11 +910,12 @@ func (s *session) hookEvent(ev hookEvent) {
 // socket moves nothing.
 func sessionMoves(v adapter.Vendor, source string) bool {
 	switch v {
-	case adapter.Grok, adapter.Hermes:
-		// Hermes: aggy's hook sends SessionStart only when the session its
-		// launch recorded names a new id (internal/cli, hermesHook).
+	case adapter.Grok:
 		return true
-	case adapter.OpenCode:
+	case adapter.OpenCode, adapter.Hermes:
+		// Hermes: aggy does not follow a move (/new or /resume inside Hermes):
+		// its hook cannot tell one from a nested hermes -p the model ran
+		// (#134 review), so the launch keeps the session it claimed.
 		return false
 	}
 	return source == "clear" || source == "resume" || source == "fork"
@@ -934,9 +946,7 @@ func (s *session) sessionStart(ev hookEvent, own string) {
 	if ev.sessionID == "" || ev.sessionID == own || own == "" || !sessionMoves(s.o.Vendor, ev.source) {
 		return
 	}
-	// A Hermes event came with the launch's token, from Hermes' daemon: there
-	// is no lineage to check (Server.SetToken, T6933).
-	if adapter.ValidSessionID(s.o.Vendor, ev.sessionID) != nil || (s.o.Vendor != adapter.Hermes && !s.followsFrom(ev.chain)) {
+	if adapter.ValidSessionID(s.o.Vendor, ev.sessionID) != nil || !s.followsFrom(ev.chain) {
 		s.log(diag.Rec{Event: diag.EvHookIgnored, Code: diag.CodeFollowRefused, Msg: "a session start that says the CLI moved, from outside where its own hooks run",
 			Attrs: map[string]any{"event": hookName(ev.name), "source": safeSource(ev.source), "known_host": s.host != nil}})
 		s.moveRefused = true
@@ -1586,6 +1596,9 @@ func (s *session) compose(c byte) {
 		s.cmdFresh = false
 	}
 	s.pickByte(c)
+	if c == '\r' && !s.inPaste && s.hermes != nil {
+		s.hermes.Entered()
+	}
 	if c == '\r' {
 		// What a menu's pick may go with (hookCommand): a line that held only a
 		// leading / command, typed as menuPick allows. An Enter that makes a

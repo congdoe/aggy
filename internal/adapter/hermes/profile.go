@@ -91,9 +91,12 @@ type Block struct {
 //   - approvals.mode manual: a person answers each flagged command, never the
 //     auxiliary model "smart" asks (config_defaults.py:1646-1660); cron,
 //     single-query, and unattended runs deny (their defaults, set again).
-//   - hooks: pre_tool_call with fail_closed, so a hook that fails, hangs, or
-//     prints no directive blocks the call (shell_hooks.py:560-616), and
-//     on_session_end; hooks_auto_accept false, so Hermes asks the person once
+//   - hooks: pre_tool_call with fail_closed, so a hook that errs, hangs,
+//     exits non-zero with no directive, or prints stdout that is not a JSON
+//     object blocks the call (shell_hooks.py:560-616; LIVE for exit 1 with no
+//     output); exit 0 with empty stdout is no directive, which lets the call
+//     go on to Hermes' own approvals (:600-616), so aggy's hook prints a
+//     block or an approve whenever it has an opinion; and on_session_end; hooks_auto_accept false, so Hermes asks the person once
 //     for each (shell_hooks.py:816-823).
 //   - updates.check false: no network update check at launch
 //     (hermes_cli/source_check.py:570).
@@ -180,9 +183,12 @@ func SetBlock(src, block []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, l := range strings.Split(string(rest), "\n") {
-		k, _, ok := strings.Cut(l, ":")
-		if ok && slices.Contains(OwnedKeys, strings.TrimSpace(k)) && k == strings.TrimLeft(k, " \t-") {
+	for i, l := range strings.Split(string(rest), "\n") {
+		k, err := topKey(l)
+		if err != nil {
+			return nil, fmt.Errorf("%w: line %d outside aggy's block %v", ErrBlock, i+1, err)
+		}
+		if slices.Contains(OwnedKeys, k) {
 			return nil, fmt.Errorf("%w: it sets %s outside aggy's block", ErrBlock, k)
 		}
 	}
@@ -191,6 +197,52 @@ func SetBlock(src, block []byte) ([]byte, error) {
 		out = append(out, '\n')
 	}
 	return append(out, block...), nil
+}
+
+// plainKey is a top-level key aggy can read: a plain YAML scalar.
+var plainKey = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.\-]*$`)
+
+// topKey is the key a line of config.yaml sets at the top level, "" for a
+// line that sets none (blank, a comment, or indented, so inside a value). A
+// line at the top level that is not `key:` with a plain, or simply quoted,
+// key is an error: a flow mapping, a complex (?) or merge (<<) key, a
+// sequence, a directive or document marker, an anchor or alias in the key, or
+// a quoted key with an escape could set one of aggy's keys where this check
+// cannot see it (#134 review), so aggy refuses what it cannot classify.
+func topKey(l string) (string, error) {
+	l = strings.TrimRight(l, "\r\n")
+	if l == "" || l[0] == ' ' || l[0] == '#' {
+		return "", nil
+	}
+	if strings.TrimSpace(l) == "" {
+		return "", nil
+	}
+	var key, after string
+	switch l[0] {
+	case '"', '\'':
+		end := strings.IndexByte(l[1:], l[0])
+		if end < 0 {
+			return "", errors.New("has a quoted key aggy cannot read")
+		}
+		key, after = l[1:1+end], l[2+end:]
+		if strings.ContainsAny(key, `\"'`) {
+			return "", errors.New("has a quoted key aggy cannot read")
+		}
+	default:
+		var ok bool
+		key, after, ok = strings.Cut(l, ":")
+		if !ok {
+			return "", errors.New("is not a key aggy can read")
+		}
+		key, after = strings.TrimRight(key, " "), ":"+after
+	}
+	if !strings.HasPrefix(after, ":") || (len(after) > 1 && after[1] != ' ' && after[1] != '\t') {
+		return "", errors.New("is not a key aggy can read")
+	}
+	if !plainKey.MatchString(key) {
+		return "", errors.New("has a key aggy cannot read")
+	}
+	return key, nil
 }
 
 // StripBlock returns src without aggy's block: what aggy unwire leaves.
@@ -217,6 +269,18 @@ func StripBlock(src []byte) ([]byte, error) {
 		return src, nil
 	case start < 0 || end < 0:
 		return nil, fmt.Errorf("%w: a start line with no end", ErrBlock)
+	}
+	// Only the keys aggy writes are taken out (#134 review): a key Hermes'
+	// config writer, or the person, put between the markers is refused, not
+	// deleted.
+	for _, l := range lines[start+1 : end] {
+		k, err := topKey(l)
+		if err != nil {
+			return nil, fmt.Errorf("%w: a line inside aggy's block %v", ErrBlock, err)
+		}
+		if k != "" && !slices.Contains(OwnedKeys, k) {
+			return nil, fmt.Errorf("%w: %s, which aggy does not set, is inside aggy's block; move it above the block's start line", ErrBlock, k)
+		}
 	}
 	return []byte(strings.Join(lines[:start], "") + strings.Join(lines[end+1:], "")), nil
 }

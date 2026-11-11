@@ -23,6 +23,7 @@ import (
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/hook"
+	"github.com/congdoe/aggy/internal/manifest"
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/patch"
 	"github.com/congdoe/aggy/internal/permissions"
@@ -66,7 +67,11 @@ func hermesRoot(getenv func(string) string) (string, error) {
 	if h == "" || !filepath.IsAbs(h) {
 		return "", errors.New("HOME is not an absolute path")
 	}
-	return filepath.Join(h, ".hermes"+getenv("HERMES_DATA_DIR_SUFFIX")), nil
+	suffix := getenv("HERMES_DATA_DIR_SUFFIX")
+	if !safefs.HermesSuffixOK(suffix) {
+		return "", fmt.Errorf("HERMES_DATA_DIR_SUFFIX=%q is not a plain name (no /, \\, control character, . or ..): unset it or fix it", suffix)
+	}
+	return filepath.Join(h, ".hermes"+suffix), nil
 }
 
 // hermesTicked reports whether this folder's trust list has Hermes ticked.
@@ -111,7 +116,6 @@ func hermesTickInPlace(ctx context.Context, in hermesInput) (bool, error) {
 		ans.Shown = append(slices.Clone(ans.Shown), trustRowHermes)
 	}
 	ans.On = append(slices.Clone(ans.On), trustRowHermes)
-	ans.Never = false
 	p, changes, err := trustFileChange(path, tg.key, 0, tg.key, &ans)
 	if err != nil || !changes {
 		return false, err
@@ -173,6 +177,16 @@ type hermesSetup struct {
 	planPath, planSum string
 	token             string
 	warns             []string
+}
+
+// pin is what the launch's supervisor holds for its hook (supervisor.HermesPin):
+// nil for any other vendor's launch. No plan is --no-policy (or a policy off
+// on screen), which only the supervisor's own answer says to the hook.
+func (h hermesSetup) pin(session string, brief bool) *supervisor.HermesPin {
+	if h.token == "" {
+		return nil
+	}
+	return &supervisor.HermesPin{Plan: h.planPath, PlanSum: h.planSum, NoPolicy: h.planPath == "", Session: session, Brief: brief}
 }
 
 // hermesErr is a refused Hermes launch, with its code.
@@ -237,11 +251,20 @@ func prepareHermes(ctx context.Context, in hermesInput) (hermesSetup, error) {
 	if err != nil {
 		return out, hermesFail(diag.CodeHermesProfile, "%v", err)
 	}
-	written, err := writeHermesBlock(ctx, filepath.Join(out.profileDir, "config.yaml"), block)
+	written, run, err := writeHermesBlock(ctx, filepath.Join(out.profileDir, "config.yaml"), block)
 	if err != nil {
 		return out, err
 	}
-	if err := checkHermesBlock(ctx, in.path, profile, filepath.Join(out.profileDir, "config.yaml"), block, bin, stateDir, created || written); err != nil {
+	if created {
+		// aggy unwire deletes the profile, after taking the block out (#134 review).
+		if run == "" {
+			run = manifest.NewRunID()
+		}
+		if err := recordHermesProfile(ctx, run, out.profileDir); err != nil {
+			return out, err
+		}
+	}
+	if err := checkHermesBlock(ctx, in.path, profile, filepath.Join(out.profileDir, "config.yaml"), block, bin, stateDir); err != nil {
 		return out, err
 	}
 	if created || written {
@@ -249,7 +272,7 @@ func prepareHermes(ctx context.Context, in hermesInput) (hermesSetup, error) {
 	}
 	if !in.noPolicy && in.plan.OnScreen {
 		d := policyhook.NewDecidePlan(string(adapter.Hermes), in.version, false, in.plan, parity.PreApprovedFrom(in.rules, root, in.ids))
-		d.Root, d.Protected = root, append(protectedPaths(), out.profileDir)
+		d.Root, d.Protected, d.Words = root, append(protectedPaths(), out.profileDir), []string{profile}
 		if out.planPath, out.planSum, err = writeDecidePlan(in.dir, d); err != nil {
 			return out, err
 		}
@@ -333,7 +356,7 @@ func ensureHermesProfile(ctx context.Context, path, profile, dir string) (create
 // own, seeded from the person's root config (hermes_cli/profiles.py:735-748),
 // which may hold a provider's key, so the change keeps no backup and undoes
 // by taking the block out (hermes.Reverse). written says it changed the file.
-func writeHermesBlock(ctx context.Context, file string, block []byte) (written bool, err error) {
+func writeHermesBlock(ctx context.Context, file string, block []byte) (written bool, run string, err error) {
 	before, err := safefs.ReadFileLimit(file, hermesMaxConfig)
 	p := patch.Patch{File: file, Summary: "aggy's block in its Hermes profile's config.yaml (approvals, hooks, updates, and auth)",
 		Transform: func(src []byte) ([]byte, error) { return hermes.SetBlock(src, block) }}
@@ -341,40 +364,40 @@ func writeHermesBlock(ctx context.Context, file string, block []byte) (written b
 	case errors.Is(err, fs.ErrNotExist):
 		p.ExpectedHash = patch.NoFile
 	case err != nil:
-		return false, hermesFail(diag.CodeHermesProfile, "cannot read aggy's Hermes profile config: %v", err)
+		return false, "", hermesFail(diag.CodeHermesProfile, "cannot read aggy's Hermes profile config: %v", err)
 	default:
 		if _, err := hermes.SetBlock(before, block); err != nil {
-			return false, hermesFail(diag.CodeHermesProfile, "%v; edit %s: move those settings into aggy's block or delete them, then start again (aggy unwire takes aggy's block out)", err, file)
+			return false, "", hermesFail(diag.CodeHermesProfile, "%v; edit %s: move those settings into aggy's block or delete them, then start again (aggy unwire takes aggy's block out)", err, file)
 		}
 		p.ExpectedHash, p.NoBackup, p.Reverse = patch.Hash(before), true, hermes.Reverse
 	}
 	pl, err := patch.Plan(p)
 	if err != nil {
-		return false, hermesFail(diag.CodeHermesProfile, "cannot plan aggy's block: %v", err)
+		return false, "", hermesFail(diag.CodeHermesProfile, "cannot plan aggy's block: %v", err)
 	}
 	if pl.Action == patch.NoOp {
-		return false, nil
+		return false, "", nil
 	}
-	if _, err := applyPatches(ctx, []patch.Patch{p}); err != nil {
-		return false, hermesFail(diag.CodeHermesProfile, "cannot write aggy's block into its Hermes profile: %v; if Hermes changed %s while aggy wrote it, start again", err, file)
+	run, err = applyPatches(ctx, []patch.Patch{p})
+	if err != nil {
+		return false, "", hermesFail(diag.CodeHermesProfile, "cannot write aggy's block into its Hermes profile: %v; if Hermes changed %s while aggy wrote it, start again", err, file)
 	}
-	return true, nil
+	return true, run, nil
 }
 
 // hermesMaxConfig caps the profile's config.yaml aggy reads.
 const hermesMaxConfig = 1 << 20
 
 // checkHermesBlock reads the config back: the file must hold the block as
-// rendered, and, after a write, Hermes itself must read aggy's settings
-// (hermes -p <profile> config get ... --json) as aggy wrote them. Anything
-// else refuses the launch.
-func checkHermesBlock(ctx context.Context, path, profile, file string, block []byte, bin, stateDir string, ask bool) error {
+// rendered, and Hermes itself must read aggy's settings (hermes -p <profile>
+// config get ... --json) as aggy wrote them, at every launch, written or not:
+// a line before the block that breaks the YAML, or a later copy of a key,
+// changes what Hermes reads with the block's bytes unchanged (#134 review).
+// Anything else refuses the launch.
+func checkHermesBlock(ctx context.Context, path, profile, file string, block []byte, bin, stateDir string) error {
 	b, err := safefs.ReadFileLimit(file, hermesMaxConfig)
 	if err != nil || !bytes.Contains(b, block) {
 		return hermesFail(diag.CodeHermesProfile, "aggy's Hermes profile config %s does not read back as aggy wrote it; start again, and if it still differs, aggy unwire takes aggy's block out so it can be written fresh", file)
-	}
-	if !ask {
-		return nil
 	}
 	get := func(key string) ([]byte, error) {
 		cmd, err := hermes.ConfigGetCommand(path, profile, key)
@@ -404,18 +427,20 @@ func checkHermesBlock(ctx context.Context, path, profile, file string, block []b
 		return fail("hooks_auto_accept")
 	}
 	hooks, err := get("hooks")
-	var hs map[string][]struct {
-		Command string `json:"command"`
+	// LIVE: one object keyed by event, each a list of {command, timeout,
+	// fail_closed}.
+	type hookEntry struct {
+		Command    string `json:"command"`
+		FailClosed bool   `json:"fail_closed"`
 	}
+	var hs map[string][]hookEntry
 	if err != nil || json.Unmarshal(bytes.TrimSpace(hooks), &hs) != nil {
 		return fail("hooks")
 	}
 	for _, ev := range hermes.Events {
 		want, _ := hermes.HookCommand(bin, stateDir, profile, ev)
-		if !slices.ContainsFunc(hs[ev], func(h struct {
-			Command string `json:"command"`
-		}) bool {
-			return h.Command == want
+		if !slices.ContainsFunc(hs[ev], func(h hookEntry) bool {
+			return h.Command == want && (h.FailClosed || ev != hermes.EventPreToolCall)
 		}) {
 			return fail("hooks." + ev)
 		}
@@ -429,7 +454,7 @@ func checkHermesBlock(ctx context.Context, path, profile, file string, block []b
 func hermesLaunchNotes(ctx context.Context, path, profileDir, bin, stateDir, profile string, created bool) []string {
 	var out []string
 	if created {
-		out = append(out, "made aggy's Hermes profile "+profile+" for this repo (hermes profile create); hermes profile delete "+profile+" removes it")
+		out = append(out, "made aggy's Hermes profile "+profile+" for this repo (hermes profile create); aggy unwire deletes it, with aggy's block")
 	}
 	if missing := hermesConsentMissing(profileDir, bin, stateDir, profile); len(missing) > 0 {
 		out = append(out, "Hermes asks you once, at its own prompt, to allow aggy's hooks ("+strings.Join(missing, " and ")+"): answer y, or aggy's policy decisions and switching cannot reach this session")
@@ -565,14 +590,20 @@ func hermesHookArgs(args []string) (homeDir, profile, event string, ok bool) {
 // entry gives it hermes.PreToolTimeout seconds and then blocks the call.
 const hermesHookWait = 6 * time.Second
 
-// hermesHook is aggy hook hermes, run by Hermes' daemon. It finds the launch
-// (hermesFind), then answers pre_tool_call with the safety policy's decision
-// (policyhook.JudgeHermes) and passes on_session_end to the launch's
-// supervisor as a turn end. It reads the payload's tool, session id, and
-// profile, and on_session_end's failed and interrupted flags; it never logs,
-// stores, or forwards anything else of the payload, extra included, which may
-// hold the conversation. On pre_tool_call, every failure blocks the call; on
-// on_session_end, nothing it does reaches Hermes.
+// hermesHook is aggy hook hermes, run by Hermes' daemon. It finds the launch's
+// row in the index (hermesFind), which only says which supervisor to ask; then
+// asks that supervisor, with the row's token, whether this session is its own
+// and for the decision plan's pin (hermesAskPin, #134 review). A session the
+// supervisor does not own is refused; on pre_tool_call, the call is blocked.
+// With the pin, it answers pre_tool_call with the safety policy's decision
+// (policyhook.JudgeHermes), or nothing when the supervisor says the launch has
+// --no-policy, and passes on_session_end to the supervisor as a turn end.
+// When the supervisor cannot be asked, or the plan does not match its pin, a
+// pre_tool_call is asked about, never let through.
+//
+// It reads the payload's tool, session id, and profile, and on_session_end's
+// failed and interrupted flags; it never logs, stores, or forwards anything
+// else of the payload, extra included, which may hold the conversation.
 func hermesHook(args []string, in io.Reader, stdout, stderr io.Writer) int {
 	homeDir, profile, event, ok := hermesHookArgs(args)
 	if !ok {
@@ -605,13 +636,27 @@ func hermesHook(args []string, in io.Reader, stdout, stderr io.Writer) int {
 	case !pok || p.Profile != profile:
 		return refuse("the hook's payload is not from aggy's Hermes profile")
 	}
-	l, moved, err := hermesFind(ctx, profile, p.SessionID)
+	l, err := hermesFind(ctx, profile, p.SessionID)
 	if err != nil {
-		return refuse("no aggy launch is running for this Hermes session (start it with aggy run hermes)")
+		return refuse("no aggy launch is running for this Hermes session (a session started inside Hermes with /new or /resume, by a nested hermes, a cron job, or a delegated task is not one aggy started; quit Hermes and start aggy run hermes, or aggy resume)")
 	}
 	runDir := filepath.Join(homeDir, "run")
-	if moved {
-		_ = hermesSend(runDir, l, "SessionStart", p.SessionID) // a hint; the turn end below says the rest
+	pin, err := hermesAskPin(runDir, l, p.SessionID)
+	if errors.Is(err, errNotHermesSession) {
+		return refuse("this Hermes session is not the one aggy started on screen (a session started inside Hermes with /new or /resume, by a nested hermes, a cron job, or a delegated task); quit Hermes and start aggy run hermes, or aggy resume")
+	}
+	if err != nil {
+		dlog.Log(ctx, diag.Rec{Event: diag.EvHookForwardFailed, Code: diag.CodeUnreachable, Msg: "the supervisor's socket could not be reached", Vendor: string(adapter.Hermes)})
+		if pre {
+			_, _ = stdout.Write(policyhook.HermesOutput(parity.CallDecision{Verdict: parity.VerdictAsk, Reason: parity.ReasonPlanChanged}, policyhook.HermesTool(raw)))
+		}
+		fmt.Fprintf(stderr, "aggy hook hermes: the supervisor could not be reached: %s %s\n", termsafe.Line(err.Error()), dlog.Tag(diag.CodeUnreachable))
+		return 0
+	}
+	if l.SessionID != p.SessionID {
+		// The supervisor took this session as its own: the row follows, so the
+		// next hook finds it by id. Bookkeeping only; the supervisor decides.
+		_ = hermesClaimRow(ctx, l, p.SessionID)
 	}
 	if !pre {
 		ev := "Stop"
@@ -634,24 +679,30 @@ func hermesHook(args []string, in io.Reader, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	if l.Plan == "" {
-		return 0 // --no-policy: no decision
+	if pin.NoPolicy {
+		return 0 // --no-policy, as the supervisor says: no decision
 	}
-	return hermesDecide(l, raw, stdout, stderr)
+	return hermesDecide(pin.Plan, pin.PlanSum, raw, stdout, stderr)
 }
 
-// hermesDecide answers one pre_tool_call from the launch's plan, recording a
-// start and an end as aggy hook decide does.
-func hermesDecide(l store.HermesLaunch, raw []byte, stdout, stderr io.Writer) int {
+// hermesDecide answers one pre_tool_call from the plan at path, which must
+// hash to sum, the supervisor's pin, recording a start and an end as aggy
+// hook decide does. An empty path or sum, a plan that is missing, or one that
+// does not match asks.
+func hermesDecide(path, sum string, raw []byte, stdout, stderr io.Writer) int {
 	start := time.Now()
 	q := dlog.Queue(8)
 	defer q.Close(decideLogWait)
-	plan, planErr := readDecidePlan(l.Plan, l.PlanSum)
+	plan, planErr := policyhook.DecidePlan{}, error(policyhook.ErrPlanChanged)
+	if path != "" && sum != "" {
+		plan, planErr = readDecidePlan(path, sum)
+	}
 	vv := plan.VendorVersion
 	if vv == "" {
 		vv = "unknown"
 	}
 	v := string(adapter.Hermes)
+	tool := policyhook.HermesTool(raw)
 	startID := q.Log(diag.Rec{Event: diag.EvDecideStarted, Vendor: v, Attrs: map[string]any{"vendor_version": vv}})
 	end := func(code diag.Code, decision, group string) {
 		q.Log(diag.Rec{Event: diag.EvDecideEnded, Code: code, Vendor: v, Cause: startID, Duration: max(time.Since(start), time.Millisecond),
@@ -662,15 +713,15 @@ func hermesDecide(l store.HermesLaunch, raw []byte, stdout, stderr io.Writer) in
 		if errors.Is(planErr, policyhook.ErrPlanChanged) {
 			code = diag.CodeDecidePlanChanged
 		}
-		calls, ok := policyhook.HermesCalls(raw, "")
-		d := policyhook.PlanFailed(!ok || len(calls) > 0, "")
-		_, _ = stdout.Write(policyhook.HermesOutput(d))
+		_, judged := policyhook.HermesCalls(raw, "")
+		d := policyhook.PlanFailed(judged, "")
+		_, _ = stdout.Write(policyhook.HermesOutput(d, tool))
 		end(code, string(d.Verdict), "")
 		fmt.Fprintf(stderr, "aggy hook hermes: the launch's decision plan is missing, unreadable, or changed, so this call is asked about %s\n", dlog.Tag(code))
 		return 0
 	}
 	d := policyhook.JudgeHermes(plan, raw)
-	_, _ = stdout.Write(policyhook.HermesOutput(d))
+	_, _ = stdout.Write(policyhook.HermesOutput(d, tool))
 	end(decideCodes[d.Reason], string(d.Verdict), d.Group)
 	return 0
 }
@@ -678,62 +729,85 @@ func hermesDecide(l store.HermesLaunch, raw []byte, stdout, stderr io.Writer) in
 // errNoHermesLaunch is a hook whose launch cannot be told.
 var errNoHermesLaunch = errors.New("no aggy launch for this Hermes session")
 
-// hermesFind finds the live launch a hook belongs to, in aggy's index: the
-// one that recorded this session id; else the oldest one with none yet,
-// which the id now claims; else, when only one launch is live in the profile,
-// that one, whose session moved (moved: /new or /resume inside Hermes).
-// Anything else, two live launches with neither id among them included, is
-// errNoHermesLaunch. Rows whose supervisor is gone are removed.
-func hermesFind(ctx context.Context, profile, id string) (l store.HermesLaunch, moved bool, err error) {
+// errNotHermesSession is a launch's supervisor saying the session is not its.
+var errNotHermesSession = errors.New("the launch's supervisor says this is not its Hermes session")
+
+// hermesFind finds the launch a hook should ask, in aggy's index: the one
+// that recorded this session id; else the one live launch in the profile with
+// no session yet, whose supervisor then decides whether this session is its
+// own (hermesAskPin). Anything else is errNoHermesLaunch: aggy follows no
+// move to another session (#134 review). The index only says which
+// supervisor to ask, with which token: a row a tool rewrote leads to a
+// supervisor that refuses a session it does not own, or to a token its
+// socket refuses. Rows whose supervisor is gone are removed.
+func hermesFind(ctx context.Context, profile, id string) (l store.HermesLaunch, err error) {
 	if adapter.ValidSessionID(adapter.Hermes, id) != nil {
-		return l, false, errNoHermesLaunch
+		return l, errNoHermesLaunch
 	}
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
-		return l, false, err
+		return l, err
 	}
 	defer func() { _ = s.Close() }()
 	dir, err := home.Dir()
 	if err != nil {
-		return l, false, err
+		return l, err
 	}
 	runDir := filepath.Join(dir, "run")
 	ls, err := s.HermesLaunches(ctx, profile)
 	if err != nil {
-		return l, false, err
+		return l, err
 	}
-	var live []store.HermesLaunch
+	var unclaimed []store.HermesLaunch
 	for _, x := range ls {
 		if hermesGone(runDir, x, time.Now()) {
 			_ = s.DeleteHermesLaunch(ctx, x.ID)
 			continue
 		}
-		live = append(live, x)
-	}
-	for _, x := range live {
 		if x.SessionID == id {
-			return x, false, nil
+			return x, nil
 		}
-	}
-	for _, x := range live {
 		if x.SessionID == "" {
-			if ok, err := s.ClaimHermesSession(ctx, x.ID, "", id); err == nil && ok {
-				x.SessionID = id
-				return x, false, nil
-			}
+			unclaimed = append(unclaimed, x)
 		}
 	}
-	if len(live) == 1 {
-		x := live[0]
-		if ok, err := s.ClaimHermesSession(ctx, x.ID, x.SessionID, id); err == nil && ok {
-			x.SessionID = id
-			return x, true, nil
-		}
+	if len(unclaimed) == 1 {
+		return unclaimed[0], nil
 	}
-	return l, false, errNoHermesLaunch
+	return l, errNoHermesLaunch
 }
 
-// hermesSend tells the launch's supervisor of an event, with the launch's
+// hermesClaimRow records the session the launch's supervisor took as its
+// own on the launch's row, if the row still has none.
+func hermesClaimRow(ctx context.Context, l store.HermesLaunch, id string) error {
+	s, err := store.OpenDefault(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = s.Close() }()
+	_, err = s.ClaimHermesSession(ctx, l.ID, "", id)
+	return err
+}
+
+// hermesAskPin asks the launch's supervisor, with the row's token, whether id
+// is its session, and for its decision plan's pin. errNotHermesSession is its
+// refusal; any other error is that it could not be asked.
+func hermesAskPin(runDir string, l store.HermesLaunch, id string) (supervisor.Response, error) {
+	payload, _ := json.Marshal(map[string]string{"session_id": id})
+	resp, err := supervisor.Send(runDir, filepath.Join(runDir, l.ParentID+".sock"),
+		supervisor.Request{Type: supervisor.ReqHermesPin, Vendor: string(adapter.Hermes), Payload: payload, Token: l.Token}, hookTimeout)
+	switch {
+	case err != nil:
+		return resp, err
+	case !resp.OK && resp.Code == diag.CodeHermesNoLaunch.String():
+		return resp, errNotHermesSession
+	case !resp.OK:
+		return resp, errors.New(resp.Error)
+	}
+	return resp, nil
+}
+
+// hermesSend tells the launch's supervisor of a turn end, with the launch's
 // token in place of a lineage, and the session id as the whole payload.
 func hermesSend(runDir string, l store.HermesLaunch, event, id string) error {
 	payload, _ := json.Marshal(map[string]string{"session_id": id})

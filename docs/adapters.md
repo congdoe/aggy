@@ -1074,10 +1074,42 @@ under aggy; every test runs fake-hermes (testdata/fakes/fake/hermes.go).
   Block, exit 2 with stderr, `fail_closed` on exit 1 with no output, and
   approve reaching the four-choice approval prompt: LIVE. Under fail_closed the
   model is told the hook's full command, which holds no token.
-- Tools judged by the hook (`policyhook.HermesCalls`): `terminal{command}`
-  (`tools/terminal_tool.py:1750`), `read_file{path}`, `write_file{path}`,
-  `patch{path}`, `search_files{pattern, path}` (`tools/file_tools.py:1152-1435`);
-  any other tool by a `command`, `path`, or `file_path` field.
+- Tools (#134 review; `policyhook.readHermes`). Every tool reaches
+  `pre_tool_call`, and Hermes' approvals cover terminal commands only (LIVE:
+  `write_file` and `execute_code` ran unprompted under `approvals.mode:
+  manual`), so the hook is the guard. Code, judged as a command's text and
+  asked when nothing matches: `execute_code{code}`
+  (`tools/code_execution_tool.py:955-968`; LIVE shape), `browser_exec{code}`
+  (`tools/browser_use_cli.py:990-1003`), `process_manage` `write`/`submit`
+  `{data}` (`tools/process_registry.py:2586-2616`). `terminal{command,
+  workdir, background, timeout, pty, notify, heartbeat, persist_on_release}`
+  (`tools/terminal_tool.py:1617-1670`): the command judged, the workdir as a
+  folder. Files by path: `read_file{path}`, `write_file{path, content}`,
+  `patch{path}`, `search_files{path, pattern}` (`tools/file_tools.py:
+  1152-1435`; LIVE shapes), `vision_analyze{image_url, video_url}` when local
+  (`tools/vision_tools.py:1031`). No opinion, read-only from the source:
+  `web_search`, `web_extract` (`tools/web_tools.py:560-570`), `x_search`
+  (`tools/x_search_tool.py:339`), `clarify` (`tools/clarify_tool.py:218`),
+  `todo_list` (`tools/todo_tool.py:333`), `read_terminal`
+  (`tools/read_terminal_tool.py:76`), `read_window_below`
+  (`tools/read_window_tool.py:42`), `skills_list` (`tools/skills_tool.py:753`),
+  and `process_manage` `list`/`poll`/`log`/`wait`. Every other name asks
+  (`decision.unjudged_tool`), MCP tools and later tools included; whether a
+  `delegate_task` child's own tool calls reach the hook is unverified.
+- Flags: Hermes' argparse expands abbreviations (`hermes_cli/_parser.py:
+  354-397`; LIVE: `--yol`, `--api-ke x`, `--accept-hook`, `--safe-mod`,
+  `--onesho` were taken), so `PassFlags.Only` lists the spellings aggy passes,
+  in full, and any other dash-led word is refused (`adapter.ErrNotListed`),
+  naming the flag without its value. Top-level abbreviations (`--profil`)
+  gave a different error live; aggy refuses them all the same.
+- Pin and session (#134 review): the hook asks the launch's supervisor over
+  its socket (`hermes-pin`, with the launch's token) whether the session is
+  its own and for the plan's path, SHA-256, and `--no-policy`; the index row
+  only names the socket and token. A new session is claimed only after the
+  launch's first turn (the brief, or an Enter in aggy's terminal); no move is
+  followed.
+- Profile removal: `hermes profile delete <name> --yes` (LIVE), run by `aggy
+  unwire` for a profile aggy made (`hermes.ProfileReverse`).
 - Transcripts: `hermes -p <profile> sessions export - --session-id <id> --format
   jsonl --redact`, one JSON session per line on stdout
   (`hermes_cli/subcommands/sessions.py:100-127`,

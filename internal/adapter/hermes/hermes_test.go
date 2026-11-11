@@ -89,6 +89,46 @@ func TestPassFlags(t *testing.T) {
 	}
 }
 
+// TestPassFlagsAbbreviations (#134 review): Hermes' argparse expands
+// abbreviations (LIVE), so every spelling that is not listed in full is
+// refused, even with --no-policy, and a key-looking value never shows in the
+// error or reaches Extra or Safe.
+func TestPassFlagsAbbreviations(t *testing.T) {
+	pf := New().PassFlags()
+	for _, args := range [][]string{
+		{"--yol"}, {"--accept-hook"}, {"--safe-mod"}, {"--ignore-user"}, {"--onesho"}, {"--profil", "x"},
+		{"--api-ke", "sk-secret123"}, {"--api-ke=sk-secret123"}, {"--base-ur=http://x"}, {"--zzzunknown"},
+		{"-psk-secret123"}, {"--provid", "x"}, {"--toolset", "x"},
+	} {
+		for _, noPolicy := range []bool{false, true} {
+			got, err := pf.Parse(args, noPolicy)
+			if err == nil {
+				t.Errorf("%q (no-policy %v) passed: %+v", args, noPolicy, got)
+				continue
+			}
+			if strings.Contains(err.Error(), "secret123") || strings.Contains(err.Error(), "http://x") {
+				t.Errorf("%q: the value is in the error: %v", args, err)
+			}
+		}
+	}
+	for _, args := range [][]string{{"--provider", "x"}, {"--toolsets=a,b"}, {"-t", "a"}, {"--checkpoints"}, {"-v"}, {"--max-turns", "3"}} {
+		if _, err := pf.Parse(args, false); err != nil {
+			t.Errorf("%q: %v", args, err)
+		}
+	}
+	// A loosening flag in full still goes to the ask (ErrLoosens), not here.
+	if _, err := pf.Parse([]string{"--yolo"}, false); !errors.Is(err, adapter.ErrLoosens) {
+		t.Errorf("--yolo: %v", err)
+	}
+	if _, err := pf.Parse([]string{"--yol"}, false); !errors.Is(err, adapter.ErrNotListed) || !strings.Contains(err.Error(), "--yolo") {
+		t.Errorf("--yol: %v", err)
+	}
+	// A subcommand aggy runs as typed refuses an abbreviated loosening flag.
+	if err := pf.Gated([]string{"auth", "list", "--yol"}); !errors.Is(err, adapter.ErrSubcommandGated) {
+		t.Errorf("gated --yol: %v", err)
+	}
+}
+
 // TestLoosenEffect (T6979): every flag aggy lets through only with
 // --no-policy, or a yes asked in place, says what it does on Hermes.
 func TestLoosenEffect(t *testing.T) {
@@ -296,6 +336,22 @@ func TestBlock(t *testing.T) {
 		{"start without end", BlockStart + "\nx: 1\n", "", true},
 		{"two starts", BlockStart + "\n" + BlockStart + "\n" + BlockEnd + "\n", "", true},
 		{"end first", BlockEnd + "\n" + BlockStart + "\n", "", true},
+		// #134 review: spellings the old line check missed, and what aggy
+		// cannot classify, are refused.
+		{"double-quoted owned key", "\"approvals\":\n  mode: off\n", "", true},
+		{"single-quoted owned key", "'hooks': {}\n", "", true},
+		{"escaped quoted key", "\"appro\\x76als\": {}\n", "", true},
+		{"flow mapping", "{approvals: {mode: off}}\n", "", true},
+		{"merge key", "<<: *defaults\n", "", true},
+		{"complex key", "? approvals\n: {mode: off}\n", "", true},
+		{"anchor before the key", "&a approvals: {}\n", "", true},
+		{"spaced owned key", "approvals :\n  mode: off\n", "", true},
+		{"telemetry outside", "telemetry:\n  shared_metrics: {}\n", "", true},
+		{"document marker", "---\nmodel: x\n", "", true},
+		{"tab-indented", "\tapprovals: x\n", "", true},
+		{"a key aggy does not set inside the block", string(empty[:len(empty)-len(BlockEnd)-1]) + "command_allowlist:\n  - ls\n" + BlockEnd + "\n", "", true},
+		{"quoted other key is fine", "\"model\": x\n", "\"model\": x\n" + string(block), false},
+		{"value with a colon is fine", "model: \"a:b\"\n", "model: \"a:b\"\n" + string(block), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

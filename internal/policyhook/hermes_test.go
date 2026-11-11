@@ -2,6 +2,8 @@ package policyhook
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -33,13 +35,15 @@ func TestHermesCalls(t *testing.T) {
 		{"read relative, from the repo root not cwd", "read_file", map[string]any{"path": ".env"}, []parity.Call{{Kind: parity.CallRead, Text: "/repo/.env"}}, true},
 		{"write", "write_file", map[string]any{"path": "/x/a", "content": "c"}, []parity.Call{{Kind: parity.CallWrite, Text: "/x/a"}}, true},
 		{"patch", "patch", map[string]any{"path": "a.go"}, []parity.Call{{Kind: parity.CallWrite, Text: "/repo/a.go"}}, true},
-		{"patch with no path", "patch", map[string]any{"patch": "*** Begin Patch"}, nil, false},
+		{"patch with no path", "patch", map[string]any{"patch": "*** Begin Patch"}, nil, true},
 		{"search", "search_files", map[string]any{"pattern": "x", "path": "src"},
 			[]parity.Call{{Kind: parity.CallSearch, Text: "/repo/src"}, {Kind: parity.CallSearch, Text: "x"}}, true},
-		{"terminal mistyped", "terminal", map[string]any{"command": 1}, nil, false},
-		{"terminal missing", "terminal", map[string]any{}, nil, false},
+		{"terminal mistyped", "terminal", map[string]any{"command": 1}, nil, true},
+		{"terminal missing", "terminal", map[string]any{}, nil, true},
 		{"other with a command", "mcp_x_run", map[string]any{"command": "x"}, []parity.Call{{Kind: parity.CallShell, Text: "x", Other: true}}, true},
-		{"other with nothing", "web_search", map[string]any{"query": "x"}, nil, true},
+		{"code", "execute_code", map[string]any{"code": "print(1)"}, []parity.Call{{Kind: parity.CallShell, Text: "print(1)", Other: true}}, true},
+		{"read-only, not judged", "web_search", map[string]any{"query": "x"}, nil, false},
+		{"not classified, judged", "delegate_task", map[string]any{"goal": "x"}, nil, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -55,8 +59,8 @@ func TestHermesCalls(t *testing.T) {
 		})
 	}
 	for _, bad := range []string{"", "not json", "[1]", `{"tool_input":{}}`} {
-		if _, ok := HermesCalls([]byte(bad), "/repo"); ok {
-			t.Errorf("HermesCalls(%q) ok", bad)
+		if _, judged := HermesCalls([]byte(bad), "/repo"); !judged {
+			t.Errorf("HermesCalls(%q) not judged", bad)
 		}
 	}
 }
@@ -92,8 +96,36 @@ func TestJudgeHermes(t *testing.T) {
 		{"code that pushes asks", "execute_code", map[string]any{"code": "import os; os.system('git push --force')"}, parity.VerdictAsk},
 		{"stdin typed into a shell is judged", "process_manage", map[string]any{"action": "submit", "session_id": "proc_1", "data": "rm -rf build"}, parity.VerdictAsk},
 		{"process list", "process_manage", map[string]any{"action": "list"}, parity.VerdictNone},
+		// #134 review, H1: code asks even when no rule matches; anything not
+		// known to be read-only asks; the read-only list has no opinion.
+		{"code with no match still asks", "execute_code", map[string]any{"code": "print(1)"}, parity.VerdictAsk},
+		{"browser code asks", "browser_exec", map[string]any{"code": "print(page.title())"}, parity.VerdictAsk},
+		{"stdin with no match still asks", "process_manage", map[string]any{"action": "submit", "session_id": "proc_1", "data": "ls"}, parity.VerdictAsk},
+		{"process kill asks", "process_manage", map[string]any{"action": "kill", "session_id": "proc_1"}, parity.VerdictAsk},
+		{"process poll", "process_manage", map[string]any{"action": "poll", "session_id": "proc_1"}, parity.VerdictNone},
+		{"delegate asks", "delegate_task", map[string]any{"goal": "x"}, parity.VerdictAsk},
+		{"skill_manage asks", "skill_manage", map[string]any{"action": "create", "name": "x"}, parity.VerdictAsk},
+		{"memory asks", "memory", map[string]any{"action": "add", "content": "x"}, parity.VerdictAsk},
+		{"an MCP tool asks", "mcp_github_search", map[string]any{"query": "x"}, parity.VerdictAsk},
+		{"a future tool asks", "teleport", map[string]any{}, parity.VerdictAsk},
+		{"web search", "web_search", map[string]any{"query": "x"}, parity.VerdictNone},
+		{"clarify", "clarify", map[string]any{"questions": []any{}}, parity.VerdictNone},
+		{"terminal in another folder asks", "terminal", map[string]any{"command": "ls", "workdir": "/etc"}, parity.VerdictAsk},
+		{"terminal in the repo", "terminal", map[string]any{"command": "ls", "workdir": "src", "background": true}, parity.VerdictNone},
+		{"terminal workdir mistyped asks", "terminal", map[string]any{"command": "ls", "workdir": 3}, parity.VerdictAsk},
+		{"a nested hermes in aggy's profile asks", "terminal", map[string]any{"command": "hermes -p aggy-0123456789ab chat -q hi"}, parity.VerdictAsk},
+		{"vision on the web", "vision_analyze", map[string]any{"image_url": "https://x/y.png", "question": "?"}, parity.VerdictNone},
+		{"vision on a file outside asks", "vision_analyze", map[string]any{"image_url": "/etc/y.png", "question": "?"}, parity.VerdictAsk},
+		{"vision in the repo", "vision_analyze", map[string]any{"image_url": "shot.png", "question": "?"}, parity.VerdictNone},
+		// H2: aggy's index, by any spelling of its folder.
+		{"sqlite3 on the index asks", "terminal", map[string]any{"command": `sqlite3 ~/.aggy/aggy.db "update hermes_launches set token=''"`}, parity.VerdictAsk},
+		{"the index by $HOME asks", "terminal", map[string]any{"command": "cp x ${HOME}/.aggy/aggy.db-wal"}, parity.VerdictAsk},
+		{"the index by $AGGY_HOME asks", "terminal", map[string]any{"command": "cd $AGGY_HOME && sqlite3 aggy.db .dump"}, parity.VerdictAsk},
+		{"the diag log asks", "terminal", map[string]any{"command": "rm diag.db"}, parity.VerdictAsk},
+		{"the profile by ~ asks", "terminal", map[string]any{"command": "cat ~/.hermes/profiles/aggy-0123456789ab/config.yaml"}, parity.VerdictAsk},
 	}
 	p.Protected = append(p.Protected, "/home/u/.hermes/profiles/aggy-0123456789ab")
+	p.Words = []string{"aggy-0123456789ab"}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := JudgeHermes(p, hermesPayload(t, tt.tool, tt.in)); got.Verdict != tt.want {
@@ -104,24 +136,59 @@ func TestJudgeHermes(t *testing.T) {
 }
 
 func TestHermesOutput(t *testing.T) {
-	if out := HermesOutput(parity.CallDecision{Verdict: parity.VerdictNone}); out != nil {
+	if out := HermesOutput(parity.CallDecision{Verdict: parity.VerdictNone}, "terminal"); out != nil {
 		t.Errorf("none = %q", out)
 	}
-	if out := HermesOutput(parity.CallDecision{Verdict: parity.VerdictAllow}); out != nil {
+	if out := HermesOutput(parity.CallDecision{Verdict: parity.VerdictAllow}, "terminal"); out != nil {
 		t.Errorf("allow = %q, want nothing: Hermes' own approvals decide", out)
 	}
 	var deny map[string]string
-	if err := json.Unmarshal(HermesOutput(parity.CallDecision{Verdict: parity.VerdictDeny, Group: "destructive"}), &deny); err != nil || deny["action"] != "block" || deny["message"] == "" || deny["rule_key"] != "" {
+	if err := json.Unmarshal(HermesOutput(parity.CallDecision{Verdict: parity.VerdictDeny, Group: "destructive"}, "terminal"), &deny); err != nil || deny["action"] != "block" || deny["message"] == "" || deny["rule_key"] != "" {
 		t.Errorf("deny = %v, %v", deny, err)
 	}
 	var a, b map[string]string
-	_ = json.Unmarshal(HermesOutput(parity.CallDecision{Verdict: parity.VerdictAsk, Group: "destructive"}), &a)
-	_ = json.Unmarshal(HermesOutput(parity.CallDecision{Verdict: parity.VerdictAsk, Group: "destructive"}), &b)
+	_ = json.Unmarshal(HermesOutput(parity.CallDecision{Verdict: parity.VerdictAsk, Group: "destructive"}, "terminal"), &a)
+	_ = json.Unmarshal(HermesOutput(parity.CallDecision{Verdict: parity.VerdictAsk, Group: "destructive"}, "terminal"), &b)
 	if a["action"] != "approve" || !strings.HasPrefix(a["rule_key"], "aggy-") || a["rule_key"] == b["rule_key"] {
 		t.Errorf("ask = %v and %v: want approve with a new rule_key each time", a, b)
 	}
 	if blk := string(HermesBlock("why")); blk != `{"action":"block","message":"why"}`+"\n" {
 		t.Errorf("block = %q", blk)
+	}
+}
+
+// TestJudgeHermesOnDisk (#134 review): a vendor credential file is refused,
+// whatever the policy says, and a path in the repo whose folder is a link out
+// of it asks; the tool's name is in the message, never its input.
+func TestJudgeHermesOnDisk(t *testing.T) {
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	repo := filepath.Join(h, "repo")
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(h, filepath.Join(repo, "out")); err != nil {
+		t.Fatal(err)
+	}
+	p := plan()
+	p.Root = repo
+	cred := filepath.Join(h, ".codex", "auth.json")
+	if d := JudgeHermes(p, hermesPayload(t, "read_file", map[string]any{"path": cred})); d.Verdict != parity.VerdictDeny {
+		t.Errorf("credential read: %+v", d)
+	}
+	if d := JudgeHermes(p, hermesPayload(t, "write_file", map[string]any{"path": "out/x", "content": "c"})); d.Verdict != parity.VerdictAsk || d.Reason != parity.ReasonOutside {
+		t.Errorf("write through a link out: %+v", d)
+	}
+	if d := JudgeHermes(p, hermesPayload(t, "write_file", map[string]any{"path": "src/x", "content": "c"})); d.Verdict != parity.VerdictNone {
+		t.Errorf("write in the repo: %+v", d)
+	}
+	d := JudgeHermes(p, hermesPayload(t, "execute_code", map[string]any{"code": "print('sk-secret')"}))
+	out := string(HermesOutput(d, HermesTool(hermesPayload(t, "execute_code", nil))))
+	if !strings.Contains(out, "execute_code") || strings.Contains(out, "sk-secret") || !strings.Contains(out, `"approve"`) {
+		t.Errorf("code ask: %s", out)
+	}
+	if got := HermesTool(hermesPayload(t, "x\n\x1b[31mred", nil)); got != "this tool" {
+		t.Errorf("tool name shown: %q", got)
 	}
 }
 

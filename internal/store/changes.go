@@ -186,6 +186,19 @@ func (s *Store) FinishChange(ctx context.Context, c Change) error {
 	return oneRow(res, "pending change "+c.ChangeID)
 }
 
+// MarkHermesProfileGone marks a hermes-profile marker undone: aggy unwire
+// deleted the Hermes profile it names.
+func (s *Store) MarkHermesProfileGone(ctx context.Context, changeID string, at time.Time) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE changes SET status = 'undone', undone_at = ?
+		 WHERE change_id = ? AND status = 'applied' AND kind = 'marker' AND reverse = 'hermes-profile'`,
+		millis(at), changeID)
+	if err != nil {
+		return err
+	}
+	return oneRow(res, "hermes profile "+changeID)
+}
+
 // MarkChangeUndone marks a change undone. Only an applied, pending, or
 // failed change can be undone: aggy unwire undoes a pending or failed
 // change too, whose write may have happened before the process stopped.

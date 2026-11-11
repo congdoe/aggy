@@ -40,8 +40,8 @@ func decodeRequest(line []byte) (Request, error) {
 	if r.Type != ReqPromptCommand && r.Command != "" {
 		return r, errors.New("bad request: command is for prompt-command")
 	}
-	if r.Token != "" && (r.Type != ReqHookEvent || r.Vendor != string(adapter.Hermes)) {
-		return r, errors.New("bad request: token is for a Hermes hook-event")
+	if r.Token != "" && (r.Type != ReqHookEvent && r.Type != ReqHermesPin || r.Vendor != string(adapter.Hermes)) {
+		return r, errors.New("bad request: token is for a Hermes hook-event or hermes-pin")
 	}
 	switch r.Type {
 	case ReqPing, ReqToolsChanged:
@@ -57,6 +57,13 @@ func decodeRequest(line []byte) (Request, error) {
 		}
 		if p := bytes.TrimSpace(r.Payload); len(p) == 0 || p[0] != '{' {
 			return r, errors.New("bad request: a hook payload must be a JSON object")
+		}
+	case ReqHermesPin:
+		if r.Vendor != string(adapter.Hermes) || r.Token == "" || r.Event != "" {
+			return r, errors.New("bad request: hermes-pin takes vendor hermes, a token, and a payload")
+		}
+		if p := bytes.TrimSpace(r.Payload); len(p) == 0 || p[0] != '{' {
+			return r, errors.New("bad request: a hermes-pin payload must be a JSON object")
 		}
 	case ReqSwitchRequest:
 		if _, err := adapter.ParseVendor(r.Vendor); err != nil {
@@ -130,6 +137,10 @@ func answer(line []byte, fromSession bool, onHook func(Request), onSwitch func(R
 			onHook(r)
 		}
 		return Response{OK: true}
+	case ReqHermesPin:
+		// Answered by the server only for a line with the launch's token
+		// (Server.SetHermesPin); here it has none.
+		return refuse(diag.EvHookRejected, diag.CodeLineage, errors.New("hermes-pin without the launch's token"), map[string]any{"from": r.Vendor})
 	case ReqPromptCommand:
 		// The session's requests go to onSwitch, which sorts them by type.
 		attrs := map[string]any{"from": r.Vendor}
