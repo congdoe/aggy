@@ -65,6 +65,7 @@ func TestHermesHook(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = srv.Close() }()
+	srv.SetRoot(1 << 30) // no CLI: no lineage to wait rootWait for; the hook comes from the daemon
 	srv.SetToken("tok")
 	claim := supervisor.NewHermesClaim(supervisor.HermesPin{Plan: planPath, PlanSum: planSum})
 	srv.SetHermesPin(claim.Answer)
@@ -183,6 +184,7 @@ func TestHermesHookNoPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = srv.Close() }()
+	srv.SetRoot(1 << 30) // no CLI: no lineage to wait rootWait for; the hook comes from the daemon
 	srv.SetToken("tok")
 	srv.SetHermesPin(supervisor.NewHermesClaim(supervisor.HermesPin{NoPolicy: true, Session: sid}).Answer)
 	if _, err := s.PutHermesLaunch(ctx, store.HermesLaunch{ParentID: "99999999-9999-4999-8999-999999999999", ChildID: "c9", Profile: profile, Root: repo, Cwd: repo, Token: "tok", SessionID: sid, Started: time.Now()}); err != nil {
@@ -210,4 +212,75 @@ func TestHermesHookNoPolicy(t *testing.T) {
 			t.Fatalf("unproven: %q, want an ask", stdout.String())
 		}
 	})
+}
+
+// TestHermesHookShared (T6954): the hook tells the supervisor of a launch
+// with no session yet whether another aggy Hermes launch in the profile is
+// live, and blocks the call when that supervisor refuses the claim for it
+// (here a --direct launch, which claims only alone).
+func TestHermesHookShared(t *testing.T) {
+	repo, _ := openCodeWorld(t)
+	homeDir := shortAggyHome(t)
+	ctx := context.Background()
+	s, err := store.OpenDefault(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	const profile = "aggy-0123456789ab"
+	const sidA, sidB = "20261110_101500_a1b2c3", "20261110_101600_d4e5f6"
+	const idA, idB = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	runDir := filepath.Join(homeDir, "run")
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range []struct {
+		id, sid string
+		pin     supervisor.HermesPin
+	}{
+		{idA, sidA, supervisor.HermesPin{NoPolicy: true, Session: sidA}},
+		{idB, "", supervisor.HermesPin{NoPolicy: true, Direct: true}},
+	} {
+		srv, err := supervisor.Listen(runDir, l.id, nil, func(supervisor.Request) {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = srv.Close() })
+		srv.SetRoot(1 << 30)
+		srv.SetToken("tok" + l.id)
+		srv.SetHermesPin(supervisor.NewHermesClaim(l.pin).Answer)
+		if _, err := s.PutHermesLaunch(ctx, store.HermesLaunch{ParentID: l.id, ChildID: "c" + l.id, Profile: profile, Root: repo, Cwd: repo, Token: "tok" + l.id, SessionID: l.sid, Started: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hookOut := func(id string) string {
+		t.Helper()
+		b, _ := json.Marshal(map[string]any{"hook_event_name": "pre_tool_call", "tool_name": "terminal", "tool_input": map[string]any{"command": "ls"},
+			"session_id": id, "profile": profile})
+		var stdout, stderr bytes.Buffer
+		hookWith([]string{"hermes", "--home", homeDir, "--profile", profile, "--event", "pre_tool_call"}, bytes.NewReader(b), os.Getenv, &stdout, &stderr)
+		return stdout.String()
+	}
+	// A's own session goes on.
+	if out := hookOut(sidA); out != "" {
+		t.Fatalf("A's session: %q", out)
+	}
+	// A new session while A is live (A's /new, or B's first turn): B cannot
+	// tell, so the call is blocked, and B stays unclaimed.
+	if out := hookOut(sidB); !strings.Contains(out, `"action":"block"`) || !strings.Contains(out, diag.CodeHermesClaimLate.String()) {
+		t.Fatalf("shared: %q", out)
+	}
+	if ls, _ := s.HermesLaunches(ctx, profile); len(ls) != 2 || ls[0].SessionID+ls[1].SessionID != sidA {
+		t.Fatalf("launches = %+v", ls)
+	}
+	// With A gone, B is alone, and its first session claims it.
+	ls, _ := s.HermesLaunches(ctx, profile)
+	for _, l := range ls {
+		if l.ParentID == idA {
+			_ = s.DeleteHermesLaunch(ctx, l.ID)
+		}
+	}
+	if out := hookOut(sidB); out != "" {
+		t.Fatalf("alone: %q", out)
+	}
 }

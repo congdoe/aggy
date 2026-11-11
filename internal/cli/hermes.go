@@ -160,10 +160,12 @@ type hermesInput struct {
 	dir      string // the launch's private folder, removed when the CLI exits
 	runDir   string // the supervisors' sockets
 	noPolicy bool
-	plan     parity.PolicyPlan
-	rules    permissions.Set
-	version  string
-	ids      parity.ReadIdentity
+	// direct is aggy --direct; resume, a launch that knows its session.
+	direct, resume bool
+	plan           parity.PolicyPlan
+	rules          permissions.Set
+	version        string
+	ids            parity.ReadIdentity
 	// getenv, in, and out ask in place (askInPlace); a nil in asks nothing.
 	getenv func(string) string
 	in     io.Reader
@@ -224,7 +226,7 @@ func prepareHermes(ctx context.Context, in hermesInput) (hermesSetup, error) {
 	if why := hermes.Reachable(in.caps); why != "" {
 		return out, hermesFail(diag.CodeHermesProfile, "the safety policy cannot be applied: %s; update Hermes (aggy was checked on 0.23.1), or pass --no-policy to start it without aggy's decisions", why)
 	}
-	if err := hermesUnclaimed(ctx, in.s, in.runDir, profile); err != nil {
+	if err := hermesUnclaimed(ctx, in.s, in.runDir, profile, in.direct && !in.resume); err != nil {
 		return out, err
 	}
 	bin, err := aggyBin()
@@ -290,7 +292,13 @@ func prepareHermes(ctx context.Context, in hermesInput) (hermesSetup, error) {
 // profile has no session id yet: the first hook naming a new session claims
 // the oldest such launch, so two at once could be swapped. A row whose
 // supervisor is gone is removed.
-func hermesUnclaimed(ctx context.Context, s *store.Store, runDir, profile string) error {
+//
+// A new session under --direct (directNew) is refused while any other launch
+// in the profile is live (T6954): aggy sees no keys there, so its supervisor
+// cannot tell the session's first call from one the other launch started,
+// and would refuse every claim (supervisor.HermesClaim.Answer). A launch
+// that starts at the same moment is still caught there.
+func hermesUnclaimed(ctx context.Context, s *store.Store, runDir, profile string, directNew bool) error {
 	if s == nil {
 		return nil
 	}
@@ -305,6 +313,9 @@ func hermesUnclaimed(ctx context.Context, s *store.Store, runDir, profile string
 		}
 		if l.SessionID == "" {
 			return hermesFail(diag.CodeHermesUnclaimed, "another aggy Hermes session in this repo has not started a turn yet; type a first message there, or quit it, then start this one")
+		}
+		if directNew {
+			return hermesFail(diag.CodeHermesDirectBusy, "another aggy Hermes session in this repo is open, and under --direct aggy sees no keys, so it could not tell this session's first tool call from one the other started; quit the other, or start this one without --direct")
 		}
 	}
 	return nil
@@ -622,13 +633,14 @@ func hermesHook(args []string, in io.Reader, stdout, stderr io.Writer) int {
 	}
 	p, pok := policyhook.ParseHermes(raw)
 	pre := event == hermes.EventPreToolCall
-	refuse := func(why string) int {
-		dlog.Log(ctx, diag.Rec{Event: diag.EvHermesRefused, Code: diag.CodeHermesNoLaunch, Vendor: string(adapter.Hermes), Attrs: map[string]any{"event": event}})
+	refuseAs := func(code diag.Code, why string) int {
+		dlog.Log(ctx, diag.Rec{Event: diag.EvHermesRefused, Code: code, Vendor: string(adapter.Hermes), Attrs: map[string]any{"event": event}})
 		if pre {
-			_, _ = stdout.Write(policyhook.HermesBlock("aggy: " + why + ", so this call is refused " + dlog.Tag(diag.CodeHermesNoLaunch)))
+			_, _ = stdout.Write(policyhook.HermesBlock("aggy: " + why + ", so this call is refused " + dlog.Tag(code)))
 		}
 		return 0
 	}
+	refuse := func(why string) int { return refuseAs(diag.CodeHermesNoLaunch, why) }
 	switch {
 	case tooBig:
 		// Its launch cannot be told without the payload's session id.
@@ -636,12 +648,15 @@ func hermesHook(args []string, in io.Reader, stdout, stderr io.Writer) int {
 	case !pok || p.Profile != profile:
 		return refuse("the hook's payload is not from aggy's Hermes profile")
 	}
-	l, err := hermesFind(ctx, profile, p.SessionID)
+	l, shared, err := hermesFind(ctx, profile, p.SessionID)
 	if err != nil {
 		return refuse("no aggy launch is running for this Hermes session (a session started inside Hermes with /new or /resume, by a nested hermes, a cron job, or a delegated task is not one aggy started; quit Hermes and start aggy run hermes, or aggy resume)")
 	}
 	runDir := filepath.Join(homeDir, "run")
-	pin, err := hermesAskPin(runDir, l, p.SessionID)
+	pin, err := hermesAskPin(runDir, l, p.SessionID, shared)
+	if errors.Is(err, errHermesClaimLate) {
+		return refuseAs(diag.CodeHermesClaimLate, "another aggy Hermes session in this repo is open, and this session's first call did not come within a minute of an Enter typed in the aggy session that has none yet, so aggy cannot tell it from a session the other one started (/new, a nested hermes); if this is the session you just typed in, type your message again there")
+	}
 	if errors.Is(err, errNotHermesSession) {
 		return refuse("this Hermes session is not the one aggy started on screen (a session started inside Hermes with /new or /resume, by a nested hermes, a cron job, or a delegated task); quit Hermes and start aggy run hermes, or aggy resume")
 	}
@@ -732,6 +747,10 @@ var errNoHermesLaunch = errors.New("no aggy launch for this Hermes session")
 // errNotHermesSession is a launch's supervisor saying the session is not its.
 var errNotHermesSession = errors.New("the launch's supervisor says this is not its Hermes session")
 
+// errHermesClaimLate is a launch's supervisor refusing a new session's claim
+// while another launch in the profile is live (T6954).
+var errHermesClaimLate = errors.New("the launch's supervisor cannot tell this new Hermes session is its own")
+
 // hermesFind finds the launch a hook should ask, in aggy's index: the one
 // that recorded this session id; else the one live launch in the profile with
 // no session yet, whose supervisor then decides whether this session is its
@@ -740,41 +759,51 @@ var errNotHermesSession = errors.New("the launch's supervisor says this is not i
 // supervisor to ask, with which token: a row a tool rewrote leads to a
 // supervisor that refuses a session it does not own, or to a token its
 // socket refuses. Rows whose supervisor is gone are removed.
-func hermesFind(ctx context.Context, profile, id string) (l store.HermesLaunch, err error) {
+//
+// shared says another launch in the profile is live besides the one found,
+// which the supervisor needs to judge a claim (supervisor.HermesClaim.Answer,
+// T6954). A row a tool removed reads as no other launch: the claim is then
+// judged as for one launch alone, as before.
+func hermesFind(ctx context.Context, profile, id string) (l store.HermesLaunch, shared bool, err error) {
 	if adapter.ValidSessionID(adapter.Hermes, id) != nil {
-		return l, errNoHermesLaunch
+		return l, false, errNoHermesLaunch
 	}
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
-		return l, err
+		return l, false, err
 	}
 	defer func() { _ = s.Close() }()
 	dir, err := home.Dir()
 	if err != nil {
-		return l, err
+		return l, false, err
 	}
 	runDir := filepath.Join(dir, "run")
 	ls, err := s.HermesLaunches(ctx, profile)
 	if err != nil {
-		return l, err
+		return l, false, err
 	}
-	var unclaimed []store.HermesLaunch
+	var unclaimed, found []store.HermesLaunch
+	live := 0
 	for _, x := range ls {
 		if hermesGone(runDir, x, time.Now()) {
 			_ = s.DeleteHermesLaunch(ctx, x.ID)
 			continue
 		}
-		if x.SessionID == id {
-			return x, nil
-		}
-		if x.SessionID == "" {
+		live++
+		switch x.SessionID {
+		case id:
+			found = append(found, x)
+		case "":
 			unclaimed = append(unclaimed, x)
 		}
 	}
-	if len(unclaimed) == 1 {
-		return unclaimed[0], nil
+	switch {
+	case len(found) > 0:
+		return found[0], live > 1, nil
+	case len(unclaimed) == 1:
+		return unclaimed[0], live > 1, nil
 	}
-	return l, errNoHermesLaunch
+	return l, false, errNoHermesLaunch
 }
 
 // hermesClaimRow records the session the launch's supervisor took as its
@@ -798,8 +827,8 @@ func hermesClaimRow(ctx context.Context, l store.HermesLaunch, id string) error 
 // (supervisor.SendHermesPin, T6954): one that cannot show it, or an OS where
 // it cannot be checked, is a supervisor that cannot be asked, so the call
 // asks.
-func hermesAskPin(runDir string, l store.HermesLaunch, id string) (supervisor.Response, error) {
-	payload, _ := json.Marshal(map[string]string{"session_id": id})
+func hermesAskPin(runDir string, l store.HermesLaunch, id string, shared bool) (supervisor.Response, error) {
+	payload, _ := json.Marshal(map[string]any{"session_id": id, "shared": shared})
 	resp, err := hermesPinSend(runDir, filepath.Join(runDir, l.ParentID+".sock"),
 		supervisor.Request{Type: supervisor.ReqHermesPin, Vendor: string(adapter.Hermes), Payload: payload, Token: l.Token}, hookTimeout)
 	switch {
@@ -807,6 +836,8 @@ func hermesAskPin(runDir string, l store.HermesLaunch, id string) (supervisor.Re
 		return resp, err
 	case !resp.OK && resp.Code == diag.CodeHermesNoLaunch.String():
 		return resp, errNotHermesSession
+	case !resp.OK && resp.Code == diag.CodeHermesClaimLate.String():
+		return resp, errHermesClaimLate
 	case !resp.OK:
 		return resp, errors.New(resp.Error)
 	}

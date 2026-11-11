@@ -35,10 +35,11 @@ func runDirect(c adapter.Command, runDir, parentID string, v adapter.Vendor, ass
 	srv.SetToken(token) // a Hermes launch's; "" accepts none
 	if pin != nil {
 		// No keys pass through aggy here, so the first session a hook names
-		// is taken (supervisor.NewHermesClaim).
-		// TODO(T6954): the claim window under --direct (see NewHermesClaim).
+		// is taken, but only while no other aggy Hermes launch in the profile
+		// is live (supervisor.HermesClaim.Answer); prepareHermes refuses a
+		// new --direct launch while one is (T6954).
 		p := *pin
-		p.Brief = true
+		p.Direct = true
 		srv.SetHermesPin(supervisor.NewHermesClaim(p).Answer)
 	}
 	c.Env = supervisor.SocketEnv(c.Env, srv.Path(), parentID)

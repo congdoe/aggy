@@ -586,7 +586,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	var hs hermesSetup
 	if v == adapter.Hermes {
 		hs, err = prepareHermes(ctx, hermesInput{s: s, caps: caps, path: path, cwd: pl.child.Cwd, dir: memDir, runDir: runDir,
-			noPolicy: t.NoPolicy, plan: plan, rules: rules, version: version, ids: readIdentities(ctx, s), getenv: os.Getenv, in: offerIn, out: stderr})
+			noPolicy: t.NoPolicy, direct: t.Direct, resume: pl.child.VendorSessionID != "", plan: plan, rules: rules, version: version, ids: readIdentities(ctx, s), getenv: os.Getenv, in: offerIn, out: stderr})
 		if err != nil {
 			code := diag.CodeHermesProfile
 			if he := (*hermesErr)(nil); errors.As(err, &he) {
