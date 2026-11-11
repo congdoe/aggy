@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"io/fs"
 	"os"
@@ -28,7 +29,10 @@ func TestKeyCycle(t *testing.T) {
 	w := openCodeWorldE2E(t)
 	chain := t.TempDir() // the fake keychain, outside HOME
 	w.env = append(w.env, "AGGY_FAKE_KEYCHAIN="+chain)
-	const canary = "sk-ant-e2e-canary-T6931-424242"
+	// A shape the redactor does not know (#138 review M2), so a leak into the
+	// diagnostic log is not hidden by redact dropping it; searched for plain
+	// and encoded (holdsKey).
+	const canary = "gsk_e2eCanary12AB34cd56EF78gh90IJkl"
 	var shown []string
 	finish := func(s *session) {
 		t.Helper()
@@ -53,6 +57,14 @@ func TestKeyCycle(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(chain, "item.aggy-key.anth@anthropic")); err != nil || string(b) != canary {
 		t.Fatalf("keychain item = %q, %v", b, err)
 	}
+	// The add's own calls: a look (macOS) or a clear (Linux), then the add.
+	addCalls := 0
+	if calls, err := os.ReadFile(filepath.Join(chain, "calls.jsonl")); err == nil {
+		addCalls = bytes.Count(calls, []byte("\n"))
+	}
+	if addCalls != 2 {
+		t.Errorf("aggy key add made %d keychain calls, want 2", addCalls)
+	}
 
 	// Claude Code, Codex, and Grok on screen, and Claude under --direct.
 	for _, args := range [][]string{{"run", "claude"}, {"run", "codex"}, {"run", "grok"}, {"run", "--direct", "claude"}} {
@@ -76,7 +88,7 @@ func TestKeyCycle(t *testing.T) {
 			t.Errorf("%s got key files: %v", r.Vendor, r.OpenCodeKeys)
 		}
 	}
-	if calls, _ := os.ReadFile(filepath.Join(chain, "calls.jsonl")); bytes.Count(calls, []byte("\n")) != 1 {
+	if calls, _ := os.ReadFile(filepath.Join(chain, "calls.jsonl")); bytes.Count(calls, []byte("\n")) != addCalls {
 		t.Errorf("the keychain tool ran for a launch that is not OpenCode's:\n%s", calls)
 	}
 	_ = os.Remove(w.record)
@@ -122,7 +134,7 @@ func TestKeyCycle(t *testing.T) {
 	if oc := interactiveRuns(t, w); len(oc) != 1 || len(oc[0].OpenCodeKeys) > 0 || slices.Contains(ocPolicies(t, oc[0]), "anthropic=allow") {
 		t.Errorf("a session shell's launch got the key: %+v", oc)
 	}
-	if calls, _ := os.ReadFile(filepath.Join(chain, "calls.jsonl")); bytes.Count(calls, []byte("\n")) != 2 {
+	if calls, _ := os.ReadFile(filepath.Join(chain, "calls.jsonl")); bytes.Count(calls, []byte("\n")) != addCalls+1 {
 		t.Errorf("want the add and one read only:\n%s", calls)
 	}
 
@@ -149,7 +161,7 @@ func TestKeyCycle(t *testing.T) {
 	}
 
 	for _, out := range shown {
-		if strings.Contains(out, canary) {
+		if holdsKey([]byte(out), canary) {
 			t.Errorf("the terminal showed the key:\n%s", out)
 		}
 	}
@@ -159,7 +171,7 @@ func TestKeyCycle(t *testing.T) {
 		if err != nil || d.IsDir() || !d.Type().IsRegular() || p == scenario {
 			return nil
 		}
-		if b, err := os.ReadFile(p); err == nil && bytes.Contains(b, []byte(canary)) {
+		if b, err := os.ReadFile(p); err == nil && holdsKey(b, canary) {
 			t.Errorf("the key is in %s", p)
 		}
 		return nil
@@ -167,9 +179,21 @@ func TestKeyCycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls, _ := os.ReadFile(filepath.Join(chain, "calls.jsonl")); bytes.Contains(calls, []byte(canary)) {
+	if calls, _ := os.ReadFile(filepath.Join(chain, "calls.jsonl")); holdsKey(calls, canary) {
 		t.Error("the key reached the keychain tool's arguments")
 	}
+}
+
+// holdsKey reports whether b holds key plain, or as hex, base64, or base64url.
+func holdsKey(b []byte, key string) bool {
+	k := []byte(key)
+	for _, f := range [][]byte{k, []byte(hex.EncodeToString(k)), []byte(base64.StdEncoding.EncodeToString(k)),
+		[]byte(base64.RawStdEncoding.EncodeToString(k)), []byte(base64.URLEncoding.EncodeToString(k)), []byte(base64.RawURLEncoding.EncodeToString(k))} {
+		if bytes.Contains(b, f) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestKeyControlCanary: the fakes report a canary that does reach them, so

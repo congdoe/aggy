@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/congdoe/aggy/internal/keyring"
 	"github.com/congdoe/aggy/internal/safefs"
@@ -94,6 +98,13 @@ func exitOf(ctx context.Context, cmd *exec.Cmd, err error, timeout time.Duration
 // person there). It stays in aggy's process group, the terminal's foreground
 // group, so it can read the terminal; past timeout it is killed. Its stdout is
 // dropped and its stderr is the person's terminal.
+//
+// The tool turns echo off to ask; killed mid-prompt (the timeout, a signal)
+// it cannot turn it back on. So the terminal's state is saved first and put
+// back on every path (#138 review L1): an interrupt, hangup, or terminate
+// that reaches aggy meanwhile ends the tool and comes back as
+// ErrInterrupted, after the terminal is restored, rather than ending aggy
+// with echo off.
 func KeychainPrompt(ctx context.Context, path string, args []string, tty *os.File, timeout time.Duration) (int, error) {
 	if tty == nil {
 		return -1, errors.New("execrun: the keychain tool needs the terminal")
@@ -107,8 +118,36 @@ func KeychainPrompt(ctx context.Context, path string, args []string, tty *os.Fil
 	cmd.Stdin = tty
 	cmd.Stdout = nil // /dev/null
 	cmd.Stderr = os.Stderr
-	return exitOf(ctx, cmd, cmd.Run(), timeout)
+	if fd := int(tty.Fd()); term.IsTerminal(fd) {
+		if st, err := term.GetState(fd); err == nil {
+			defer func() { _ = term.Restore(fd, st) }()
+		}
+	}
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGHUP, syscall.SIGTERM)
+	defer signal.Stop(sigs)
+	interrupted := make(chan struct{})
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-sigs:
+			close(interrupted)
+			cancel()
+		case <-done:
+		}
+	}()
+	code, err := exitOf(ctx, cmd, cmd.Run(), timeout)
+	select {
+	case <-interrupted:
+		return -1, ErrInterrupted
+	default:
+	}
+	return code, err
 }
+
+// ErrInterrupted is a keychain prompt a signal ended.
+var ErrInterrupted = errors.New("execrun: the keychain tool was interrupted")
 
 // KeychainRun runs the tool with no stdin and every output dropped: a
 // presence check or a removal. Only its exit status comes back.

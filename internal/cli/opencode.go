@@ -37,6 +37,19 @@ type openCodeSetup struct {
 	launch adapter.OpenCodeLaunch
 	warns  []string
 	root   string // the repo root, by its real path
+	// keys are the keys read for this launch, written only by writeKeys,
+	// once the launch is recorded (#138 review L2), and zeroed by wipeKeys.
+	keys []openCodeKey
+	// dir is the launch's own folder, and base its opencode folder.
+	dir, base string
+}
+
+// wipeKeys zeroes the keys read for the launch; the launch defers it.
+func (s *openCodeSetup) wipeKeys() {
+	for _, k := range s.keys {
+		k.value.Wipe()
+	}
+	s.keys = nil
 }
 
 // openCodeInput is what a launch hands prepareOpenCode.
@@ -105,12 +118,16 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 	providers := openCodeFreeProviders(in.cfg, here)
 	out.warns = append(out.warns, openCodeFreeWarns(in.cfg, here, root)...)
 	// T6931: the keys aggy key stored, read now for this launch only, each
-	// adding its provider. Their bytes are zeroed once written, or on any
-	// refusal below.
+	// adding its provider. They are written to their files only once the
+	// launch is recorded (writeKeys); their bytes are zeroed on any refusal
+	// below, and by the caller's wipeKeys otherwise.
 	keyed, keyWarns := openCodeKeys(in)
+	handed := false
 	defer func() {
-		for _, k := range keyed {
-			k.value.Wipe()
+		if !handed {
+			for _, k := range keyed {
+				k.value.Wipe()
+			}
 		}
 	}()
 	out.warns = append(out.warns, keyWarns...)
@@ -148,9 +165,15 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 	configDir := filepath.Join(base, "config")
 	pluginDir := filepath.Join(base, "plugin")
 	notesDir := filepath.Join(base, "instructions")
-	for _, d := range []string{in.dir, base, configDir, pluginDir, notesDir} {
-		if err := safefs.Mkdir(d, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-			return out, err
+	// The launch's folder may be there already (its memory copy); the folders
+	// inside it are new to this launch, so one already there is refused
+	// (#138 review M1): someone else made it.
+	if err := safefs.Mkdir(in.dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return out, err
+	}
+	for _, d := range []string{base, configDir, pluginDir, notesDir} {
+		if err := safefs.Mkdir(d, 0o700); err != nil {
+			return out, fmt.Errorf("cannot make this launch's own folder %s: %w", d, err)
 		}
 	}
 	files, err := opencode.Plugin()
@@ -162,11 +185,7 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 			return out, err
 		}
 	}
-	keyFiles, keyLines, err := writeOpenCodeKeys(base, keyed)
-	out.warns = append(out.warns, keyLines...)
-	if err != nil {
-		return out, err
-	}
+	keyFiles := openCodeKeyPaths(base, keyed)
 	notes, warns, err := openCodeInstructions(root, notesDir, in.memory, in.brief)
 	out.warns = append(out.warns, warns...)
 	if err != nil {
@@ -201,40 +220,87 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 	if err := safefs.WriteFile(out.launch.ConfigFile, data, 0o600); err != nil {
 		return out, err
 	}
+	out.keys, out.dir, out.base, handed = keyed, in.dir, base, true
 	return out, nil
 }
 
-// writeOpenCodeKeys writes each key read for this launch to its own 0600 file
-// in base/keys (base is the launch's own 0700 folder under aggy's run folder,
-// removed when the CLI exits and swept after a crash, sweepMemoryDirs), and
-// zeroes the key's bytes. OpenCode reads the file at config load, through
-// "{file:<path>}" in the provider's apiKey (docs/design.md, section 15;
-// docs/verification.md, "Key file"). It returns each provider's file and the
-// launch's lines about them.
-func writeOpenCodeKeys(base string, keyed []openCodeKey) (map[string]string, []string, error) {
+// openCodeKeyPaths are the files the keys will be in, by provider, for the
+// config: base/keys/<provider>.
+func openCodeKeyPaths(base string, keyed []openCodeKey) map[string]string {
 	if len(keyed) == 0 {
-		return nil, nil, nil
-	}
-	dir := filepath.Join(base, "keys")
-	if err := safefs.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-		return nil, nil, err
+		return nil
 	}
 	files := map[string]string{}
-	var lines []string
 	for _, k := range keyed {
+		files[k.provider] = filepath.Join(base, "keys", k.provider)
+	}
+	return files
+}
+
+// writeKeys writes each key read for this launch to its own 0600 file in
+// base/keys (base is in the launch's own 0700 folder under aggy's run folder,
+// removed when the CLI exits and swept at the next launch after a crash,
+// sweepMemoryDirs), and zeroes the key's bytes. OpenCode reads the file at
+// config load, through "{file:<path>}" in the provider's apiKey
+// (docs/design.md, section 15; docs/verification.md, "Key file"). The launch
+// calls it only once it is recorded (#138 review L2), so a launch planned
+// again leaves no key file behind. It returns the launch's lines.
+//
+// #138 review M1: the keys folder must be new, made with the chain from the
+// launch's folder through descriptors that follow no link; each file must be
+// new (O_EXCL, never through a link) and, once written, a regular file of
+// this user's, mode 0600, with one link, in that very folder. On any doubt
+// every key file written is removed and the launch refused.
+func (s *openCodeSetup) writeKeys() (lines []string, err error) {
+	defer s.wipeKeys()
+	if len(s.keys) == 0 {
+		return nil, nil
+	}
+	dir := filepath.Join(s.base, "keys")
+	var written []string
+	defer func() {
+		if err != nil {
+			for _, p := range written {
+				if fi, lerr := safefs.Lstat(p); lerr == nil {
+					_ = safefs.RemoveSame(p, fi)
+				}
+			}
+		}
+	}()
+	if err := safefs.Mkdir(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("cannot make the folder OpenCode reads keys from, so no key is handed over: %w", err)
+	}
+	dirFi, err := safefs.Lstat(s.dir)
+	if err != nil || !ownPrivateDir(dirFi) {
+		return nil, errors.New("this launch's folder is not a private folder of yours, so no key is handed to OpenCode")
+	}
+	rel, err := filepath.Rel(s.dir, dir)
+	if err != nil {
+		return nil, err
+	}
+	keysFi, err := safefs.MkdirChain(s.dir, dirFi, strings.Split(rel, string(filepath.Separator)), 0o700)
+	if err != nil || !ownPrivateDir(keysFi) {
+		return nil, fmt.Errorf("the folder OpenCode reads keys from is not this launch's own, so no key is handed over: %v", err)
+	}
+	for _, k := range s.keys {
 		p := filepath.Join(dir, k.provider)
-		err := safefs.WriteFile(p, k.value.Bytes(), 0o600)
+		err := safefs.WriteFileNoFollowIn(keysFi, p, k.value.Bytes(), 0o600, nil)
 		k.value.Wipe()
 		if err != nil {
-			return nil, lines, fmt.Errorf("cannot write the file OpenCode reads key %s from: %w", k.name, err)
+			return lines, fmt.Errorf("cannot write the file OpenCode reads key %s from, so no key is handed over: %w", k.name, err)
 		}
-		files[k.provider] = p
+		written = append(written, p)
+		fi, err := safefs.Lstat(p)
+		now, derr := safefs.Lstat(dir)
+		if err != nil || derr != nil || !ownPrivateFile(fi) || !os.SameFile(now, keysFi) {
+			return lines, fmt.Errorf("the file OpenCode would read key %s from is not the private file aggy wrote, so no key is handed over", k.name)
+		}
 		dlog.Log(context.Background(), diag.Rec{Event: diag.EvKeyPassed, Msg: "key passed", Vendor: string(adapter.OpenCode),
 			Attrs: map[string]any{"provider": k.provider}})
-		lines = append(lines, fmt.Sprintf("OpenCode gets your key %s for %s, in a 0600 file in this launch's own folder, removed when OpenCode exits", k.name, k.provider))
+		lines = append(lines, fmt.Sprintf("OpenCode gets your key %s for %s, in a 0600 file in this launch's own folder, removed when OpenCode exits (after a crash, at the next aggy launch)", k.name, k.provider))
 	}
-	lines = append(lines, "any process OpenCode starts (its shell, tools, and plugins) can read a key it was given, and so can anything that asks its local server for its config")
-	return files, lines, nil
+	lines = append(lines, "any process running as you (OpenCode's shell, tools, and plugins among them) can read a key it was given while OpenCode runs, and so can anything that asks OpenCode's local server for its config")
+	return lines, nil
 }
 
 // openCodeInstructions copies what the session should read into dir and

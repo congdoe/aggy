@@ -406,6 +406,70 @@ func (d DecidePlan) protectedCall(c parity.Call) bool {
 		return protectedText(c.Text, d.Protected, d.Words)
 	case parity.CallWrite:
 		return d.protectedPath(c.Text)
+	case parity.CallRead:
+		return d.keyFilePath(c.Text, false)
+	case parity.CallSearch:
+		return d.keyFilePath(c.Text, true)
+	}
+	return false
+}
+
+// keyFilePath reports a read of an OpenCode launch's key file (T6931, #138
+// review M3): a path under aggy's run folder (<state>/run, where each
+// protected folder is a candidate state folder) with opencode/keys in it, by
+// its spelling and by its real path, so a link to one counts. A search (search
+// true) counts when it covers the run folder at all: its path, or a pattern's
+// part before the first wildcard, is the state folder, the run folder, or
+// under the run folder. A read or search above the state folder is not
+// covered. While OpenCode runs, the file is readable by any process of the
+// person's; this only makes another session's file tools ask first.
+func (d DecidePlan) keyFilePath(p string, search bool) bool {
+	if p == "" {
+		return false
+	}
+	if search {
+		if i := strings.IndexAny(p, "*?[{"); i >= 0 {
+			p = p[:i]
+			if !strings.HasSuffix(p, "/") {
+				p = filepath.Dir(p)
+			}
+		}
+		if p == "" {
+			return false
+		}
+	}
+	if !filepath.IsAbs(p) {
+		if d.Root == "" {
+			return false
+		}
+		p = filepath.Join(d.Root, p)
+	}
+	p = filepath.Clean(p)
+	cands := []string{p}
+	if r, err := hermesTarget(p); err == nil {
+		cands = append(cands, r)
+	}
+	for _, c := range cands {
+		lc := strings.ToLower(c)
+		for _, q := range d.Protected {
+			lq := strings.TrimSuffix(strings.ToLower(filepath.Clean(q)), "/")
+			run := lq + "/run"
+			under := strings.HasPrefix(lc, run+"/")
+			if search && (lc == lq || lc == run || under) {
+				return true
+			}
+			if under && strings.Contains(lc+"/", "/opencode/keys/") {
+				return true
+			}
+			// The same folder by identity (#133 review): another spelling
+			// of the run folder.
+			if r, err := realPath(q); err == nil && !strings.EqualFold(r, q) {
+				lr := strings.ToLower(filepath.Join(r, "run"))
+				if strings.HasPrefix(lc, lr+"/") && (search || strings.Contains(lc+"/", "/opencode/keys/")) {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
@@ -592,7 +656,7 @@ func claudeSettingsPath(p string) bool {
 // Claude settings file's name. ".claude" with "settings" anywhere counts too,
 // as does aggy's folder (".aggy", or "aggy_home" for $AGGY_HOME) with one of
 // aggyFileNames anywhere (cd ~/.aggy, then the file).
-var protectedWords = []string{"policy-decide", ".aggy/run", ".aggy/permissions", ".aggy/trust.json", ".aggy/opencode-trust.json", "settings.local.json", "managed-settings"}
+var protectedWords = []string{"policy-decide", ".aggy/run", "opencode/keys", ".aggy/permissions", ".aggy/trust.json", ".aggy/opencode-trust.json", "settings.local.json", "managed-settings"}
 
 // stateFileNames are aggy's index and diagnostic log, which hold the launch
 // rows a hook trusts (#134 review: live, a terminal sqlite3 on the index ran
@@ -686,6 +750,12 @@ func protectedText(cmd string, protected, words []string) bool {
 		}
 		if slices.ContainsFunc(aggyFolderWords, func(w string) bool { return strings.Contains(f, w) }) &&
 			slices.ContainsFunc(aggyFileNames, func(n string) bool { return holdsPath(f, n) }) {
+			return true
+		}
+		// aggy's folder with a wildcard (T6931, #138 review M3): a glob such
+		// as ~/.aggy/r*/*/opencode/k*/* can reach an OpenCode launch's key
+		// file without naming it.
+		if slices.ContainsFunc(aggyFolderWords, func(w string) bool { return strings.Contains(f, w) }) && strings.ContainsAny(f, "*?[") {
 			return true
 		}
 	}
