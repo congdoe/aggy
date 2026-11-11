@@ -41,6 +41,8 @@ var (
 		return supervisor.StartInPlace(f, cleanup, resized)
 	}
 	interruptAggy = supervisor.Interrupt
+	// selectNow is the select's clock, for its typing guard.
+	selectNow = time.Now
 )
 
 // selectTerminal reports whether the select can be drawn; a test replaces it.
@@ -127,12 +129,18 @@ func (t *trustScreen) redraw() {
 	_, _ = io.WriteString(t.w, b.String())
 }
 
-// start writes the header and draws the list.
-func (t *trustScreen) start() {
+// start writes the header and draws the list. It reports false, writing
+// nothing, when the select was already put away (a signal came between raw
+// mode and the first draw).
+func (t *trustScreen) start() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.closed {
+		return false
+	}
 	_, _ = io.WriteString(t.w, hideCursor+bracketOn+crlf(t.header))
 	t.redraw()
+	return true
 }
 
 // resized draws the header and the list again from the top of the screen:
@@ -196,22 +204,34 @@ func selectTrustList(l *trustListAt, header string, in io.Reader, out io.Writer)
 // go through the decoder, so a paste begun then is still seen. The end of
 // input, or a read that fails, is not now.
 func runTrustSelect(t *trustScreen, r io.Reader) trustlist.Choice {
-	t.start()
-	shown := time.Now()
+	if !t.start() {
+		return trustlist.NotNow
+	}
+	shown := selectNow()
+	t.mu.Lock()
+	t.sel.Shown(shown)
+	t.mu.Unlock()
 	var d trustlist.Decoder
 	buf := make([]byte, 256)
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
+			now := selectNow()
 			keys := d.Feed(buf[:n])
-			if time.Since(shown) < typeAhead {
+			if now.Sub(shown) < typeAhead && len(keys) > 0 && keys[0].Key != trustlist.KeyInterrupt {
+				// Typed before the list was there: nothing, and what follows
+				// is typing until a pause.
+				t.mu.Lock()
+				t.sel.Typed(now)
+				t.redraw()
+				t.mu.Unlock()
 				keys = nil
 			}
 			for _, k := range keys {
 				t.mu.Lock()
-				c := t.sel.Press(k)
-				if c == trustlist.Toggled {
-					t.redraw()
+				c := t.sel.Press(k, now)
+				if c == trustlist.Toggled || c == trustlist.Nothing {
+					t.redraw() // a note may have come or gone
 				}
 				t.mu.Unlock()
 				switch c {

@@ -17,9 +17,14 @@ import (
 func trustSess(t *testing.T) (*session, *[]string) {
 	t.Helper()
 	s, _ := viewSess(t, adapter.Claude, "")
-	old := checkTypeAhead
+	old, oldNow := checkTypeAhead, checkNow
 	checkTypeAhead = 0
-	t.Cleanup(func() { checkTypeAhead = old })
+	// Keys a second apart, as a person answering presses them, unless a
+	// test sets checkGap.
+	checkGap = time.Second
+	at := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+	checkNow = func() time.Time { at = at.Add(checkGap); return at }
+	t.Cleanup(func() { checkTypeAhead, checkNow = old, oldNow })
 	var answers []string
 	s.o.TrustList = func() (TrustList, error) {
 		st := trustlist.NewState([]trustlist.Row{
@@ -56,9 +61,12 @@ func TestTrustListView(t *testing.T) {
 		{"Up to All and Space", []string{"\x1b[A", " ", "\r"}, []string{"claude,opencode confirm"}, "Saved."},
 		{"Ctrl-N, Ctrl-P, j, k", []string{"\x0e", "\x0e", "\x10", "j", "k", " ", "\r"}, []string{"opencode confirm"}, "Saved."},
 		{"a paste picks nothing", []string{"\x1b[200~1\r\x1b[201~", "\r"}, []string{" confirm"}, "Saved."},
-		{"a burst picks nothing", []string{"2\r", "x\r", "\r"}, []string{" confirm"}, "Saved."},
-		{"an unknown sequence is not Esc then x", []string{"\x1bx", "\x1b[1;5A", "\r"}, []string{" confirm"}, "Saved."},
-		{"never", []string{"2", "x"}, []string{"claude never"}, "Saved."},
+		// A burst or an unknown sequence is typing: an Enter right after it
+		// confirms nothing; a move after a pause, then Enter, does.
+		{"a burst picks nothing", []string{"2\r", "x\r", "\r", "\x1b[B", "\r"}, []string{" confirm"}, "Saved."},
+		{"an unknown sequence is not Esc then x", []string{"\x1bx", "\x1b[1;5A", "\r", "\x1b[B", "\r"}, []string{" confirm"}, "Saved."},
+		{"never needs Enter after x", []string{"2", "x", "\r"}, []string{"claude never"}, "Saved."},
+		{"Esc while typing still closes", []string{"1", "a", "\x1b"}, nil, ""},
 		{"not now", []string{"1", "n"}, nil, ""},
 		{"Esc", []string{"1", "\x1b"}, nil, ""},
 		{"Ctrl-C", []string{"1", "\x03"}, nil, ""},
@@ -107,6 +115,32 @@ func TestTrustListTypedAhead(t *testing.T) {
 	s.viewInput([]byte("\r"))
 	if len(*answers) != 0 || s.pk.menu == nil || len(s.pk.menu.check.sel.St.Ticked()) != 0 {
 		t.Fatalf("typed-ahead keys answered: %q", *answers)
+	}
+}
+
+// checkGap is how far apart trustSess's clock puts the keys.
+var checkGap time.Duration
+
+// TestTrustListTyping (PR #140 review, H1): text typed at the page a byte a
+// read, at typing speed, answers nothing and leaves the list up, with nothing
+// ticked; the page says it is ignoring typed text. Each fails at 4de725e.
+func TestTrustListTyping(t *testing.T) {
+	for _, text := range []string{"ok go\r", "see issue 4\r", "add tests\r", "fix it\r", "just do it\r", " hello\r"} {
+		t.Run(strings.TrimSpace(text), func(t *testing.T) {
+			s, answers := trustSess(t)
+			typeLine(s, "/aggy trust")
+			settle(t, s)
+			checkGap = 80 * time.Millisecond
+			for _, b := range []byte(text) {
+				s.viewInput([]byte{b})
+			}
+			if len(*answers) != 0 || !s.open || s.pk.menu == nil || len(s.pk.menu.check.sel.St.Ticked()) != 0 {
+				t.Fatalf("typing answered: %q", *answers)
+			}
+			if !strings.Contains(screenOf(t, s), "Ignoring typed text") {
+				t.Error("the page does not say it ignores typed text")
+			}
+		})
 	}
 }
 

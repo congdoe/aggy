@@ -13,17 +13,23 @@ import (
 // /aggy trust (T6977): this folder's trust list on aggy's own screen, drawn as
 // a menu is, with its rows ticked in place. Only the keyboard opens it (the
 // command is keyboard only) and only keys answer it: a paste is dropped before
-// it (viewPaste), keys that arrive within checkTypeAhead of it opening
-// were typed before it, so they do nothing, and a read of several keys, or
-// of one aggy does not know, does nothing (checkBurst).
+// it (viewPaste); keys that arrive within checkTypeAhead of it opening were
+// typed before it, so they do nothing and start the select's typing guard;
+// and a read of several keys, or of one aggy does not know, is typing
+// (checkBurst). Esc, Ctrl-C, and the switch key always close it.
 
 // checkTypeAhead is how soon after the list opens a key counts as typed
 // before it, as the trust list before a launch drops a line typed ahead; a
 // variable for tests.
 var checkTypeAhead = 150 * time.Millisecond
 
+// checkNow is the trust list's clock, for the select's typing guard; a test
+// sets it.
+var checkNow = time.Now
+
 // checkList is a trust list being answered: the same select, keys, and look
-// as the list at a first start (trustlist.Select, T6981).
+// as the list at a first start (trustlist.Select, T6981), typing guard
+// included.
 type checkList struct {
 	lines  []string // what it says first
 	sel    *trustlist.Select
@@ -31,7 +37,9 @@ type checkList struct {
 }
 
 func newCheckList(lines []string, st *trustlist.State) *checkList {
-	return &checkList{lines: lines, sel: trustlist.NewSelect(st), opened: time.Now()}
+	c := &checkList{lines: lines, sel: trustlist.NewSelect(st), opened: checkNow()}
+	c.sel.Shown(c.opened)
+	return c
 }
 
 // view is the list's screen: title, what it says, then the select in the
@@ -90,9 +98,7 @@ func (s *session) startTrust(c sessioncmd.Command) {
 func (s *session) checkKey(k viewKey, r rune) bool {
 	m := s.pk.menu
 	c := m.check
-	if time.Since(c.opened) < checkTypeAhead {
-		return false // typed before the list was there
-	}
+	now := checkNow()
 	in := trustlist.Input{Key: trustlist.KeyRune, Rune: r}
 	switch k {
 	case keyUp:
@@ -102,17 +108,23 @@ func (s *session) checkKey(k viewKey, r rune) bool {
 	case keyEnter:
 		in.Key = trustlist.KeyEnter
 	case keyClose:
-		in.Key = trustlist.KeyEsc // Esc, Ctrl-C, or the switch key
+		// Esc, Ctrl-C, or the switch key always go back to the CLI, typing
+		// or not: the page closes and nothing is recorded.
+		in.Key = trustlist.KeyInterrupt
 	case keyBackspace:
 		in.Key = trustlist.KeyBack
 	case keyNone:
 		if r == 0 {
-			return false
+			in.Key = trustlist.KeyUnknown
 		}
 	default:
 		return false
 	}
-	switch c.sel.Press(in) {
+	if now.Sub(c.opened) < checkTypeAhead && in.Key != trustlist.KeyInterrupt {
+		c.sel.Typed(now) // typed before the list was there
+		return false
+	}
+	switch c.sel.Press(in, now) {
 	case trustlist.NotNow, trustlist.Interrupt:
 		// Esc, or not now: nothing is recorded, and a start asks again.
 		s.closeView()
