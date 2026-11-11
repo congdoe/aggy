@@ -165,6 +165,13 @@ type trustListAt struct {
 	prev     trustlist.Folder
 	answered bool
 	st       *trustlist.State
+	// oldTrust: the repo was trusted for aggy's rules before the folder had
+	// an answer (aggy trust before the list), so the first answer leaves
+	// that trust as it is, whatever is ticked.
+	oldTrust bool
+	// inSession: the answer is given inside a running session (/aggy trust),
+	// so rows marked later are recorded and their change waits.
+	inSession bool
 }
 
 // openTrustList builds tg's list from the rows cfg offers (every harness when
@@ -188,6 +195,15 @@ func openTrustList(tg trustTarget, cfg config.Config, all bool) (*trustListAt, e
 		d, ok := l.def(id)
 		return ok && d.current != nil && d.current(tg)
 	})
+	trustedBefore := tg.inRepo && repoTrusted(tg.key)
+	l.oldTrust = trustedBefore && !l.answered
+	for i, r := range l.st.Rows {
+		d, _ := l.def(r.ID)
+		if d.oldTrustNote != "" && trustedBefore && !slices.Contains(l.prev.Shown, r.ID) {
+			l.st.On[i], l.st.New[i] = false, true
+			l.st.Rows[i].Warning = d.oldTrustNote
+		}
+	}
 	return l, nil
 }
 
@@ -262,6 +278,10 @@ func (l *trustListAt) plan(never, explicit bool) ([]patch.Patch, []string, error
 		switch {
 		case harness:
 			repo = 1
+		case l.oldTrust:
+			// PR #130 review: the first answer in a repo trusted before
+			// the list leaves that trust as it was.
+			lines = append(lines, "aggy: this repo stays trusted for aggy's rules, as aggy trust left it; aggy trust "+l.tg.root+" with no harness ticked takes that back.")
 		case repoTrusted(l.tg.key):
 			repo = -1
 			lines = append(lines, "aggy: no harness ticked, so this repo is no longer trusted for aggy's rules.")
@@ -271,17 +291,18 @@ func (l *trustListAt) plan(never, explicit bool) ([]patch.Patch, []string, error
 	if err != nil {
 		return nil, nil, err
 	}
-	p, changes, err := trustFileChange(path, l.tg.key, repo, l.tg.key, &ans)
-	if err != nil {
-		return nil, nil, err
-	}
-	var ps, last []patch.Patch
-	if changes {
-		ps = append(ps, p)
-	}
 	if never {
+		p, changes, err := trustFileChange(path, l.tg.key, repo, l.tg.key, &ans)
+		if err != nil {
+			return nil, nil, err
+		}
+		var ps []patch.Patch
+		if changes {
+			ps = append(ps, p)
+		}
 		return ps, append(lines, "Never for this folder: aggy does not ask here again, and rows not ticked count as off. aggy trust "+l.tg.root+" shows the list again."), nil
 	}
+	var rowPs, last []patch.Patch
 	for i, r := range l.st.Rows {
 		d, _ := l.def(r.ID)
 		if d.plan == nil {
@@ -291,9 +312,26 @@ func (l *trustListAt) plan(never, explicit bool) ([]patch.Patch, []string, error
 		if err != nil {
 			return nil, nil, err
 		}
-		ps, last = append(ps, rp.patches...), append(last, rp.last...)
+		if l.inSession && d.later && len(rp.last) > 0 {
+			// PR #130 review: the CLI on screen may be writing this file
+			// now, and aggy cannot take its lock, so the change waits for
+			// the next start here, before the CLI starts (trustLater).
+			ans.Later = append(ans.Later, r.ID)
+			lines = append(lines, d.Label+": its own trust for this folder is written at the next aggy start here, before it starts, since the one on screen may be writing its config now.")
+			continue
+		}
+		rowPs, last = append(rowPs, rp.patches...), append(last, rp.last...)
 		lines = append(lines, rp.lines...)
 	}
+	p, changes, err := trustFileChange(path, l.tg.key, repo, l.tg.key, &ans)
+	if err != nil {
+		return nil, nil, err
+	}
+	var ps []patch.Patch
+	if changes {
+		ps = append(ps, p)
+	}
+	ps = append(ps, rowPs...)
 	if explicit && harness {
 		codexLine, codexPatch := codexTrust(l.tg.main)
 		if codexPatch != nil {
@@ -447,11 +485,17 @@ func trustPerson(getenv func(string) string) bool {
 // notes. / and the home folder are never offered. It returns "" when there is
 // nothing to say.
 func trustAtStart(ctx context.Context, cwd string, cfg config.Config, getenv func(string) string, in io.Reader, out io.Writer) string {
-	if getenv(trustAskEnv) == "0" || getenv("AGGY_DELEGATED") != "" {
+	if getenv("AGGY_DELEGATED") != "" {
 		return ""
 	}
 	tg, err := trustTargetFor(cwd)
 	if err != nil {
+		return ""
+	}
+	// An answer already given waits for no one: AGGY_TRUST_ASK=0 turns the
+	// question off, not a change the person asked for.
+	trustLater(ctx, tg, out)
+	if getenv(trustAskEnv) == "0" {
 		return ""
 	}
 	l, err := openTrustList(tg, cfg, false)
@@ -474,6 +518,72 @@ func trustAtStart(ctx context.Context, cwd string, cfg config.Config, getenv fun
 		fmt.Fprintln(out, "Not now: aggy asks again at the next start here; until then what is not ticked counts as off.")
 	}
 	return ""
+}
+
+// trustLater makes, at a start and before the CLI starts, the changes an
+// answer given inside a session left for it (trustlist.Folder.Later; PR #130
+// review): Claude's own key, its file read now and the write refused if the
+// file changes before the rename, as at a first start. Clearing Later comes
+// after that write in the same run, so a write refused for a change
+// underneath is tried again at the next start; the run is one aggy unwire
+// takes back.
+// testHookTrustLaterPlanned runs in trustLater between reading Claude's file
+// and writing it; a test changes the file there.
+var testHookTrustLaterPlanned func()
+
+func trustLater(ctx context.Context, tg trustTarget, out io.Writer) {
+	path, err := trustFile()
+	if err != nil {
+		return
+	}
+	f, err := readTrustRecord(path)
+	if err != nil {
+		return
+	}
+	ans, ok := f.Folders[tg.key]
+	if !ok || len(ans.Later) == 0 {
+		return
+	}
+	var ps []patch.Patch
+	var lines []string
+	for _, id := range ans.Later {
+		i := slices.IndexFunc(trustRowDefs, func(d trustRowDef) bool { return d.ID == id })
+		if i < 0 || trustRowDefs[i].plan == nil || !slices.Contains(ans.On, id) || ans.Never {
+			continue
+		}
+		rp, err := trustRowDefs[i].plan(tg, true)
+		if err != nil {
+			lines = append(lines, trustRowDefs[i].Label+": "+err.Error())
+			continue
+		}
+		ps = append(append(ps, rp.patches...), rp.last...)
+		lines = append(lines, rp.lines...)
+	}
+	done := ans
+	done.Later = nil
+	p, changes, err := trustFileChange(path, tg.key, 0, tg.key, &done)
+	if err != nil {
+		return
+	}
+	if changes {
+		ps = append(ps, p)
+	}
+	for _, line := range lines {
+		fmt.Fprintln(out, termsafe.Lines(line))
+	}
+	if len(ps) == 0 {
+		return
+	}
+	if testHookTrustLaterPlanned != nil {
+		testHookTrustLaterPlanned()
+	}
+	runID, err := applyPatchesRun(ctx, ps)
+	if err != nil {
+		refuse(ctx, out, "trust", diag.EvTrustRefused, diag.CodeTrustBadFile,
+			"what your answer in a session left for this start was not written: "+err.Error()+"; aggy tries again at the next start here", diag.Rec{})
+		return
+	}
+	fmt.Fprintf(out, "Wrote what your answer in a session left for this start (run %s); aggy unwire --run %s undoes it.\n", runID, runID)
 }
 
 // unansweredNote is the launch's one line for rows not answered, with no one

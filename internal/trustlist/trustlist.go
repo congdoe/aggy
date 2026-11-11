@@ -67,6 +67,10 @@ type Folder struct {
 	On []string `json:"on"`
 	// Never: the person said never for this folder, so no start asks again.
 	Never bool `json:"never,omitempty"`
+	// Later are ticked rows whose change waits for the next start here,
+	// before the CLI starts: an answer given inside a running session leaves
+	// Claude's own file alone while that Claude may be writing it.
+	Later []string `json:"later,omitempty"`
 }
 
 // File is aggy's trust file (~/.aggy/trust.json): the repos trusted for aggy's

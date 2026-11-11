@@ -44,8 +44,8 @@ func TestAggySwitchCaught(t *testing.T) {
 
 // TestAggyTrustList (T6977, T6978): /aggy trust, typed at the prompt, opens
 // the trust list on aggy's own screen; All and Enter save the answer, which
-// records aggy's trust and Claude's own key for the folder, and nothing
-// reaches Claude as a turn.
+// records aggy's trust at once and Claude's own key for the folder at the
+// next start (PR #130 review), and nothing reaches Claude as a turn.
 func TestAggyTrustList(t *testing.T) {
 	w, sc, log := commandWorld(t)
 	gi := exec.Command("/usr/bin/git", "init", "-q", w.cwd)
@@ -83,6 +83,17 @@ func TestAggyTrustList(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(w.home, ".aggy", "trust.json"))
 	if err != nil || !strings.Contains(string(b), w.cwd) {
 		t.Fatalf("trust.json = %q, %v", b, err)
+	}
+	// PR #130 review: the Claude on screen may be writing its config, so its
+	// own trust waits for the next start here, before it starts.
+	if b, _ := os.ReadFile(claudeJSON); string(b) != `{"numStartups": 3, "projects": {}}` {
+		t.Fatalf("the session's answer wrote .claude.json: %s", b)
+	}
+	s2 := w.start(t, sc, "run", "claude")
+	s2.waitWithin([]byte("READY>"), offerTimeout)
+	s2.send([]byte("/exit\r"))
+	if code := s2.exit(); code != 0 {
+		t.Fatalf("second aggy exit = %d", code)
 	}
 	var cj struct {
 		NumStartups int                        `json:"numStartups"`

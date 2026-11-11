@@ -109,7 +109,7 @@ func TestUsePolicyHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.VendorVersion != "2.1.322" || d.NoPrompt || !slices.Equal(d.Commands, []string{"git push --force origin main"}) || d.Root != repo || len(d.Protected) != 1 {
+	if d.VendorVersion != "2.1.322" || d.NoPrompt || !slices.Equal(d.Commands, []string{"git push --force origin main"}) || d.Root != repo || len(d.Protected) != 3 || filepath.Base(d.Protected[1]) != "trust.json" || filepath.Base(d.Protected[2]) != "opencode-trust.json" {
 		t.Errorf("plan %+v", d)
 	}
 	if note := policyHookNote(req, d.PreApproved(), plan.Branches); !strings.Contains(note, "1 exact pre-approval") {

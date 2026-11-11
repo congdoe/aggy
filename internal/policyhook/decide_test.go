@@ -377,6 +377,53 @@ func TestJudgeProtected(t *testing.T) {
 	}
 }
 
+// TestJudgeTrustRecords (T6977, PR #130 review): aggy's trust records,
+// trust.json and opencode-trust.json, are protected as its permissions file
+// is: a write to either, or a shell command naming either by its absolute
+// path, under ~/.aggy or $AGGY_HOME, or by name after naming aggy's folder,
+// asks; a file of that name elsewhere, or another file in .aggy, does not.
+func TestJudgeTrustRecords(t *testing.T) {
+	root := t.TempDir()
+	aggyHome := filepath.Join(t.TempDir(), "state")
+	p := plan()
+	p.Root, p.Protected = root, []string{aggyHome}
+	for _, name := range []string{"trust.json", "opencode-trust.json"} {
+		abs := filepath.Join(aggyHome, name)
+		for _, tt := range []struct {
+			tool  string
+			input map[string]any
+		}{
+			{"Write", map[string]any{"file_path": abs}},
+			{"Edit", map[string]any{"file_path": abs}},
+			{"Bash", map[string]any{"command": "echo '{}' > " + abs}},
+			{"Bash", map[string]any{"command": "echo '{}' > ~/.aggy/" + name}},
+			{"Bash", map[string]any{"command": "cp x ~/.AGGY/" + name}},
+			{"Bash", map[string]any{"command": "echo '{}' > \"$AGGY_HOME/" + name + "\""}},
+			{"Bash", map[string]any{"command": "echo '{}' > ${AGGY_HOME}/" + name}},
+			{"Bash", map[string]any{"command": "cd ~/.aggy && echo '{}' > " + name}},
+			{"Bash", map[string]any{"command": `cd "$AGGY_HOME"; sed -i '' s/a/b/ ` + name}},
+		} {
+			if got := judgeP(t, p, payload(t, tt.tool, tt.input, nil)); got.Verdict != parity.VerdictAsk || got.Reason != parity.ReasonProtected {
+				t.Errorf("%s %v: %+v, want ask", tt.tool, tt.input, got)
+			}
+		}
+	}
+	for _, tt := range []struct {
+		tool  string
+		input map[string]any
+	}{
+		{"Bash", map[string]any{"command": "cat .aggy/memory.md && npm run build"}},
+		{"Bash", map[string]any{"command": "cat trust.json"}},
+		{"Bash", map[string]any{"command": "cat ~/.aggy/trust.jsonl"}},
+		{"Write", map[string]any{"file_path": filepath.Join(root, "trust.json")}},
+		{"Write", map[string]any{"file_path": filepath.Join(root, "config", "opencode-trust.json")}},
+	} {
+		if got := judgeP(t, p, payload(t, tt.tool, tt.input, nil)); got.Verdict != parity.VerdictNone {
+			t.Errorf("%s %v: %+v, want no opinion", tt.tool, tt.input, got)
+		}
+	}
+}
+
 // TestReadIdentity (PR #129 review, MEDIUM-4): a read pre-approval allows only
 // the same file at the same path: not a symlink put in its place or on its
 // path, not a replaced file, not a path outside the root.

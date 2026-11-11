@@ -186,12 +186,20 @@ func simpleMode(user map[string]any) bool {
 
 // protectedPaths are the paths whose writes, and whose naming in a shell
 // command, the decision hook always asks about: aggy's state folder, which
-// holds the plan, the run folders, and aggy's permissions file.
+// holds the plan, the run folders, aggy's permissions file, and its trust
+// records (T6977), which are named too, so a narrower folder later still
+// keeps them.
 func protectedPaths() []string {
+	var out []string
 	if d, err := home.Dir(); err == nil {
-		return []string{d}
+		out = append(out, d)
 	}
-	return nil
+	for _, f := range []func() (string, error){trustFile, openCodeTrustFile} {
+		if p, err := f(); err == nil {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // writeDecidePlan writes d into dir, which it makes when it is not there yet
