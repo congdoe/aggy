@@ -566,11 +566,17 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			return fail(diag.CodeLaunchFailed, err)
 		}
 	}
+	// oc's keys are written once the launch is recorded, below, and zeroed
+	// when it ends, whatever the path.
+	var oc openCodeSetup
+	defer oc.wipeKeys()
 	if v == adapter.OpenCode {
-		oc, err := prepareOpenCode(openCodeInput{cfg: eff, caps: caps, cwd: pl.child.Cwd, dir: memDir,
+		// #138 review L4: keys are read only for an on-screen launch a person
+		// started at a terminal.
+		oc, err = prepareOpenCode(openCodeInput{cfg: eff, caps: caps, cwd: pl.child.Cwd, dir: memDir,
 			model: pl.child.Model, memory: req.Memory, brief: briefText, noPolicy: t.NoPolicy, rules: rules, policy: plan.Decide(),
 			plan: plan, version: version, ids: readIdentities(ctx, s),
-			keys: storedKeys(ctx, s), person: trustPerson(os.Getenv), readKey: func(k store.Key) (*keyring.Value, error) { return readKeychain(ctx, k) }})
+			keys: storedKeys(ctx, s), person: keyPerson(who, os.Getenv), readKey: func(k store.Key) (*keyring.Value, error) { return readKeychain(ctx, k) }})
 		if err != nil {
 			return fail(diag.CodePolicy, err)
 		}
@@ -618,8 +624,13 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	lease, err := pl.commit(ctx, s, time.Now())
 	if errors.Is(err, errAdoptedElsewhere) && !tp.replanned {
 		// Planned again, once: the session is that aggy's now, and the plan
-		// reopens it through its child, or says it is open there.
+		// reopens it through its child, or says it is open there. This
+		// launch's folder goes now, not when the replanned launch ends; it
+		// holds no key file, which is written only after the commit (#138
+		// review L2).
 		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(err.Error()+"; reopening it as that session"))
+		oc.wipeKeys()
+		_ = safefs.RemoveAll(memDir)
 		tp.replanned = true
 		return launchOnce(name, tp, stderr, next, q)
 	}
@@ -682,6 +693,18 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			return fail(diag.CodeStore, err)
 		}
 		defer func() { _ = s.DeleteHermesLaunch(context.WithoutCancel(ctx), hid) }()
+	}
+	// T6931: the keys read for OpenCode go to their files only now the launch
+	// is recorded (#138 review L2). A file that cannot be written safely ends
+	// the launch: OpenCode would start without the provider its config names.
+	if v == adapter.OpenCode {
+		lines, err := oc.writeKeys()
+		for _, l := range lines {
+			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(l))
+		}
+		if err != nil {
+			return fail(diag.CodeLaunchFailed, err)
+		}
 	}
 	// T6780: a tool's proxy, once the launch is recorded, so a refused
 	// launch never starts one. It is stopped when this CLI exits, before

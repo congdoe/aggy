@@ -63,6 +63,9 @@ const trustWarning = `Trust %s for OpenCode?
   approvals from Codex among them.
 - aggy gives guardrails against mistakes, not protection from a hostile repo or a
   tricked model. A model's shell runs as you with no OS sandbox.
+- A key you stored with aggy key is in a file while OpenCode runs, and any process
+  running as you, the repo's plugins and other sessions' shells among them, can
+  read it then.
 
 The repo's own OpenCode config stays off.
 `

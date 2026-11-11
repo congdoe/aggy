@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"regexp"
 	"slices"
+	"strings"
 )
 
 // Service is the one service name aggy stores and reads its keychain items
@@ -125,15 +126,19 @@ func label(account string) string { return "aggy key " + account }
 
 // AddArgs store a key under account (Account). With security, -T "" leaves the item's list
 // of trusted programs empty, so every read, by security itself too, asks the
-// person in a macOS dialog (unverified live); -U replaces an item already
-// there; and -w is last with no value, so security asks for the value on the
-// terminal (man security, add-generic-password: "-w password  Specify
-// password to be added. Put at end of command to be prompted (recommended)";
-// unverified live). secret-tool store reads the value from stdin, and asks on
-// the terminal when stdin is one (secret-tool(1); unverified live).
+// person in a macOS dialog (unverified live); and -w is last with no value,
+// so security asks for the value on the terminal (man security,
+// add-generic-password: "-w password  Specify password to be added. Put at
+// end of command to be prompted (recommended)"; unverified live). There is
+// never -U (#138 review H1): updating an item already there may keep its old
+// list of trusted programs (unverified live), so an item someone planted with
+// a program trusted would stay readable by that program. aggy deletes an item
+// that is there and adds a fresh one (internal/cli keyAdd). secret-tool store
+// reads the value from stdin, and asks on the terminal when stdin is one
+// (secret-tool(1); unverified live); aggy clears the item first there too.
 func (h Helper) AddArgs(account string) []string {
 	if h.Kind == Security {
-		return []string{"add-generic-password", "-U", "-s", Service, "-a", account, "-l", label(account), "-T", "", "-w"}
+		return []string{"add-generic-password", "-s", Service, "-a", account, "-l", label(account), "-T", "", "-w"}
 	}
 	return []string{"store", "--label=" + label(account), "service", Service, "account", account}
 }
@@ -193,8 +198,8 @@ type Value struct{ b []byte }
 const placeholder = "[key]"
 
 // Parse takes raw, the tool's stdout, as a Value: one trailing newline (or
-// CRLF) is dropped, and the rest must be 1 to MaxValue printable ASCII
-// characters with no space. raw is the Value's backing array: the caller
+// CRLF) is dropped, and the rest must be 1 to MaxValue characters from
+// [A-Za-z0-9._~+/=-] (valueByte). raw is the Value's backing array: the caller
 // keeps no other reference. On error raw is zeroed, and the error never
 // quotes it.
 func Parse(raw []byte) (*Value, error) {
@@ -207,16 +212,29 @@ func Parse(raw []byte) (*Value, error) {
 	}
 	bad := len(b) == 0 || len(b) > MaxValue
 	for _, c := range b {
-		if c < 0x21 || c > 0x7e {
+		if !valueByte(c) {
 			bad = true
 			break
 		}
 	}
 	if bad {
 		clear(raw)
-		return nil, errors.New("the stored key is empty, too long, or holds a space or a character that is not printable ASCII")
+		return nil, errors.New("the stored key is empty, too long, or holds a character API keys do not use (only letters, digits, and . _ ~ + / = -)")
 	}
 	return &Value{b: b}, nil
+}
+
+// valueByte reports whether c may be in a key (#138 review L5): letters,
+// digits, and . _ ~ + / = -, which covers the API keys and tokens aggy knows
+// of (base64, base64url, and the vendors' dashed prefixes). Anything else,
+// braces, quotes, backslashes, dollars, or colons, could make a file OpenCode
+// reads through {file:} mean more than a key, and is refused.
+func valueByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	}
+	return strings.IndexByte("._~+/=-", c) >= 0
 }
 
 // Bytes are the value. The caller must not keep them past Wipe.

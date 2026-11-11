@@ -97,10 +97,9 @@ func openCodeDrops(k string) bool {
 // session client variable it never persists (agent/session_client_env.py:23
 // at v0.23.1). It is no key and no base URL.
 //
-// TODO(T6933): aggy key (T6931) hands no key to Hermes. When it does, the
-// design sends one as the provider's environment variable (docs/design.md,
-// section 15, "Hermes"), which needs a narrow, reviewed addition here; until
-// then a stored key never reaches a Hermes launch.
+// TODO(T6933): aggy key (T6931) hands no key to Hermes, and a stored key
+// never reaches a Hermes launch. How Hermes would receive a key is undecided
+// and needs its own rule change; nothing here may pass one until then.
 var hermesExtraNames = []string{"HERMES_EPHEMERAL_SYSTEM_PROMPT"}
 
 // hermesDrops reports an inherited variable a Hermes launch removes: every
