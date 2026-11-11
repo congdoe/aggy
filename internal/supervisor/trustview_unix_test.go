@@ -140,6 +140,16 @@ func TestTrustListTyping(t *testing.T) {
 			if !strings.Contains(screenOf(t, s), "Ignoring typed text") {
 				t.Error("the page does not say it ignores typed text")
 			}
+			// PR #140 re-review, M2: Enter after a pause is ignored, and the
+			// page says why.
+			checkGap = 2 * time.Second
+			s.viewInput([]byte("\r"))
+			if len(*answers) != 0 || !s.open {
+				t.Fatalf("Enter after typing answered: %q", *answers)
+			}
+			if scr := screenOf(t, s); !strings.Contains(scr[strings.LastIndex(scr, "Trust /repo?"):], trustlist.EnterNote) {
+				t.Error("the page does not say why Enter did nothing")
+			}
 		})
 	}
 }

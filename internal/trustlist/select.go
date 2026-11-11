@@ -69,6 +69,13 @@ const (
 // TypingNote is the line the select shows while it ignores typed text.
 const TypingNote = "Ignoring typed text: pause, then use the arrows."
 
+// EnterNote is the line the select shows after an Enter it ignored, with
+// enterKeys, the hint without "Enter confirms", which is not true then.
+const (
+	EnterNote = "Enter confirms after a move or a tick: press Up or Down, then Enter."
+	enterKeys = "Up/Down move; Space ticks; a number ticks its row; n or Esc: not now (asked next start); x then Enter: never for this folder."
+)
+
 // NeverNote is the line the select shows after x.
 const NeverNote = "Never ask in this folder? Enter or y says never; any other key goes back to the list."
 
@@ -89,13 +96,15 @@ type Select struct {
 	// acted: the last key moved the cursor or ticked a row, so Enter may
 	// confirm.
 	acted bool
+	// enterNote: an Enter was ignored, and the hint says why until a key acts.
+	enterNote bool
 	// keys counts the keys taken since the list appeared.
 	keys int
 	// last is when the last key came, or the list appeared; lastChar when
 	// the last character (or input that is no key) came.
 	last, lastChar time.Time
-	// before is the list as it was before the current run of characters,
-	// put back when the run turns out to be typing.
+	// before is the list as it was at the last key that is no character, or
+	// as it appeared: put back when typing starts.
 	beforeOn []bool
 	beforeAt int
 }
@@ -151,7 +160,7 @@ func (s *Select) mark() {
 func (s *Select) startTyping() Choice {
 	copy(s.St.On, s.beforeOn)
 	s.At = s.beforeAt
-	s.typing, s.never, s.acted, s.digits = true, false, false, ""
+	s.typing, s.never, s.acted, s.enterNote, s.digits = true, false, false, false, ""
 	return Toggled
 }
 
@@ -191,10 +200,23 @@ func (s *Select) Press(in Input, now time.Time) Choice {
 		if run && !number {
 			return s.startTyping()
 		}
-		if !run {
+	}
+	c := s.press(in, gap)
+	// A key that is no character (an arrow, Enter, Backspace) is never
+	// typing: the list as it leaves is what typing puts back (PR #140
+	// re-review). A character never moves that mark, so a slow typist's
+	// stray ticks are undone too.
+	switch in.Key {
+	case KeyUp, KeyDown, KeyEnter, KeyBack:
+		if c == Toggled || c == Nothing {
 			s.mark()
 		}
 	}
+	return c
+}
+
+// press is Press for a key the typing guard lets through.
+func (s *Select) press(in Input, gap time.Duration) Choice {
 	acted := s.acted
 	s.acted = false
 	if s.never {
@@ -229,6 +251,7 @@ func (s *Select) Press(in Input, now time.Time) Choice {
 		if acted || s.keys == 1 && gap >= enterQuiet {
 			return Confirm
 		}
+		s.enterNote = true // say why, until a key acts
 		return Nothing
 	case KeyEsc:
 		return NotNow
@@ -245,7 +268,7 @@ func (s *Select) Press(in Input, now time.Time) Choice {
 				return Nothing
 			}
 			s.St.Toggle(s.At + 1)
-			s.acted = true
+			s.act()
 			return Toggled
 		case 'n', 'N', 'q':
 			return NotNow
@@ -261,7 +284,7 @@ func (s *Select) Press(in Input, now time.Time) Choice {
 // move moves the cursor by d, staying on the list; with none, a move shows
 // it on All.
 func (s *Select) move(d int) Choice {
-	s.acted = true
+	s.act()
 	if s.At < 0 {
 		s.At = 0
 		return Toggled
@@ -292,9 +315,13 @@ func (s *Select) typed() Choice {
 		return Nothing
 	}
 	s.At = n - 1
-	s.acted = true
+	s.act()
 	return Toggled
 }
+
+// act records that a key moved the cursor or ticked a row: Enter may confirm
+// next.
+func (s *Select) act() { s.acted, s.enterNote = true, false }
 
 func atoi(d string) int {
 	n := 0
@@ -386,6 +413,8 @@ func (s *Select) Frame(cols, rows int) []string {
 		hint = NeverNote
 	case s.digits != "":
 		hint = "Typed " + s.digits + ": another digit, or Space or Enter to tick it. " + hint
+	case s.enterNote:
+		hint = EnterNote + " " + enterKeys
 	}
 	foot := append([]string{""}, wrap(hint, width)...)
 	if len(phys)+len(foot) <= rows {

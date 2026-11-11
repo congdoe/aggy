@@ -115,6 +115,11 @@ func TestSelectTyping(t *testing.T) {
 		{"x and a word", "x marks\r", 80 * time.Millisecond},
 		{"x and a fast Enter", "x\r", 80 * time.Millisecond},
 		{"slow typing", "ok go\r", 250 * time.Millisecond},
+		// PR #140 re-review, M1: a slow typist's characters, each past the
+		// 300 ms run, tick on the way (k to All, Space ticks it; 1 ticks All);
+		// typing undoes them all. Each fails at 9219f2d.
+		{"slow, a move and a tick first", "k the\r", 400 * time.Millisecond},
+		{"slow, digits first", "12 tests\r", 400 * time.Millisecond},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -143,7 +148,15 @@ func TestSelectTyping(t *testing.T) {
 			if s.Typing() {
 				t.Error("still typing after a pause")
 			}
+			// M2: and the list says why, without claiming Enter confirms.
+			frame := strings.Join(s.Frame(400, 40), "\n")
+			if !strings.Contains(frame, EnterNote) || strings.Contains(frame, "Enter confirms;") {
+				t.Errorf("an ignored Enter is not explained:\n%s", frame)
+			}
 			s.Press(down, at.Add(time.Second))
+			if strings.Contains(strings.Join(s.Frame(400, 40), "\n"), EnterNote) {
+				t.Error("the note stays after a move")
+			}
 			if got := s.Press(enter, at.Add(2*time.Second)); got != Confirm {
 				t.Errorf("a move and Enter after typing: %d", got)
 			}
@@ -167,9 +180,16 @@ func TestSelectTypingShown(t *testing.T) {
 		t.Errorf("Ctrl-C while typing: %d", got)
 	}
 	s = selectOf()
+	// Typing puts back the list as at the last key that is no character: a
+	// tick by Space is undone, one after an arrow and Enter is kept.
 	pressAll(s, time.Second, rn(' '), unkn)
-	if !s.Typing() || !slices.Equal(s.St.Ticked(), []string{"claude"}) {
-		t.Errorf("an unknown key a second after a tick: typing %v, ticked %q", s.Typing(), s.St.Ticked())
+	if !s.Typing() || len(s.St.Ticked()) != 0 {
+		t.Errorf("an unknown key after a Space: typing %v, ticked %q", s.Typing(), s.St.Ticked())
+	}
+	s = selectOf()
+	pressAll(s, time.Second, down, rn(' '), up, unkn)
+	if !s.Typing() || !slices.Equal(s.St.Ticked(), []string{"opencode"}) || s.At != 1 {
+		t.Errorf("an unknown key after a tick and an arrow: typing %v, ticked %q, at %d", s.Typing(), s.St.Ticked(), s.At)
 	}
 	s = selectOf()
 	pressAll(s, time.Second, rn('x'))
@@ -348,6 +368,26 @@ Up/Down move; Space ticks; Enter confirms; a number ticks its row; n or Esc: not
 				}
 			}
 		})
+	}
+}
+
+// TestSelectFrameEnterIgnored (PR #140 re-review, M2): an Enter the select
+// ignored says why, and the hint then does not say Enter confirms.
+func TestSelectFrameEnterIgnored(t *testing.T) {
+	s := NewSelect(NewState([]Row{claude, oc}, Folder{}, false, nil))
+	if c := pressAll(s, time.Second, back, enter); c != Nothing {
+		t.Fatalf("Enter after a key that did nothing: %d", c)
+	}
+	want := `   1 [ ] All harnesses
+
+     Harnesses that may run here
+>  2 [ ] Claude Code
+   3 [ ] OpenCode
+          ! plugins run
+
+Enter confirms after a move or a tick: press Up or Down, then Enter. Up/Down move; Space ticks; a number ticks its row; n or Esc: not now (asked next start); x then Enter: never for this folder.`
+	if got := strings.Join(s.Frame(220, 40), "\n"); got != want {
+		t.Errorf("frame:\n%s\nwant:\n%s", got, want)
 	}
 }
 
