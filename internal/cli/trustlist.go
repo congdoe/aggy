@@ -362,10 +362,22 @@ const (
 	pasteEnd   = "\x1b[201~"
 )
 
-// askTrustList shows the list and reads lines until one confirms, says not
+// askTrustList shows the list and returns the answer: as a select drawn in
+// place when in and out are a terminal that can take one (trustselect.go,
+// T6981), and otherwise as typed lines (askTrustLines).
+func askTrustList(l *trustListAt, header string, in io.Reader, out io.Writer) trustlist.Choice {
+	if selectTerminal(in, out) {
+		if c, ok := selectTrustList(l, header, in, out); ok {
+			return c
+		}
+	}
+	return askTrustLines(l, header, in, out)
+}
+
+// askTrustLines shows the list and reads lines until one confirms, says not
 // now, or says never. A pasted line (bracketed), or the end of input, picks
 // nothing; the end of input is not now.
-func askTrustList(l *trustListAt, header string, in io.Reader, out io.Writer) trustlist.Choice {
+func askTrustLines(l *trustListAt, header string, in io.Reader, out io.Writer) trustlist.Choice {
 	fmt.Fprint(out, header)
 	pasting := false
 	for range 64 {

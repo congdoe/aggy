@@ -108,7 +108,7 @@ func (p *picker) drawView(w io.Writer, overCLI bool, rows, cols int) {
 	var lines []string
 	switch {
 	case p.menu != nil && p.menu.check != nil:
-		lines = p.menu.check.view(p.menu.title, rows)
+		lines = p.menu.check.view(p.menu.title, rows, cols)
 	case p.menu != nil:
 		m := p.menu
 		lines = append(lines, "aggy: "+m.title, "")
@@ -285,6 +285,10 @@ func viewKeys(b []byte, swKey byte) (keys []viewKey, runes []rune) {
 			}
 		case c == 0x03 || c == swKey:
 			k = keyClose
+		case c == 0x10: // Ctrl-P, as in Claude Code's lists
+			k = keyUp
+		case c == 0x0e: // Ctrl-N
+			k = keyDown
 		case c == '\r':
 			k = keyEnter
 		case c == 0x7f || c == 0x08:

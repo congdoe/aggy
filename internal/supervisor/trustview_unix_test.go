@@ -48,11 +48,20 @@ func TestTrustListView(t *testing.T) {
 	}{
 		{"All and Enter", []string{"1", "\r"}, []string{"claude,opencode confirm"}, "Saved."},
 		{"a source is its own tick", []string{"1", "4", "\r"}, []string{"claude,opencode,opencode-free confirm"}, "Saved."},
-		{"Down and Space", []string{"\x1b[B", " ", "\r"}, []string{"claude confirm"}, "Saved."},
+		// T6981: the cursor starts on Claude Code, the first row with no
+		// warning, not on All.
+		{"Enter at once grants nothing", []string{"\r"}, []string{" confirm"}, "Saved."},
+		{"Space at once", []string{" ", "\r"}, []string{"claude confirm"}, "Saved."},
+		{"Down and Space", []string{"\x1b[B", " ", "\r"}, []string{"opencode confirm"}, "Saved."},
+		{"Up to All and Space", []string{"\x1b[A", " ", "\r"}, []string{"claude,opencode confirm"}, "Saved."},
+		{"Ctrl-N, Ctrl-P, j, k", []string{"\x0e", "\x0e", "\x10", "j", "k", " ", "\r"}, []string{"opencode confirm"}, "Saved."},
 		{"a paste picks nothing", []string{"\x1b[200~1\r\x1b[201~", "\r"}, []string{" confirm"}, "Saved."},
+		{"a burst picks nothing", []string{"2\r", "x\r", "\r"}, []string{" confirm"}, "Saved."},
+		{"an unknown sequence is not Esc then x", []string{"\x1bx", "\x1b[1;5A", "\r"}, []string{" confirm"}, "Saved."},
 		{"never", []string{"2", "x"}, []string{"claude never"}, "Saved."},
 		{"not now", []string{"1", "n"}, nil, ""},
 		{"Esc", []string{"1", "\x1b"}, nil, ""},
+		{"Ctrl-C", []string{"1", "\x03"}, nil, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -63,7 +72,7 @@ func TestTrustListView(t *testing.T) {
 				t.Fatalf("no list: menu %+v page %+v", s.pk.menu, s.pk.page)
 			}
 			scr := screenOf(t, s)
-			for _, w := range []string{"Trust /repo?", "All harnesses", "Claude Code", "! plugins run", "Enter confirms"} {
+			for _, w := range []string{"Trust /repo?", "All harnesses", ">  2 [ ] Claude Code", "! plugins run", "Up/Down move; Space ticks; Enter confirms"} {
 				if !strings.Contains(scr, w) {
 					t.Errorf("the list does not show %q", w)
 				}
@@ -96,7 +105,7 @@ func TestTrustListTypedAhead(t *testing.T) {
 	settle(t, s)
 	s.viewInput([]byte("1"))
 	s.viewInput([]byte("\r"))
-	if len(*answers) != 0 || s.pk.menu == nil || len(s.pk.menu.check.st.Ticked()) != 0 {
+	if len(*answers) != 0 || s.pk.menu == nil || len(s.pk.menu.check.sel.St.Ticked()) != 0 {
 		t.Fatalf("typed-ahead keys answered: %q", *answers)
 	}
 }
