@@ -273,10 +273,12 @@ func migrationsIn(dir string) ([]migration, error) {
 	return ms, nil
 }
 
-// Migrate applies every migration newer than PRAGMA user_version. Each one
-// runs in its own write transaction (BEGIN IMMEDIATE) that also bumps the
-// version, so a crash leaves the schema at a whole version and two processes
-// cannot apply the same migration twice. Running it again is a no-op.
+// Migrate applies every migration newer than PRAGMA user_version, in one
+// write transaction (BEGIN IMMEDIATE) that also bumps the version after each,
+// so a crash leaves the schema at the version it had (never part of one) and
+// two processes cannot apply the same migration twice. Running it again is a
+// no-op. One transaction for all, not one each, is one commit for a new index
+// rather than one per migration (T6954).
 func (s *Store) Migrate(ctx context.Context) error { return s.migrate(ctx, "migrations") }
 
 func (s *Store) migrate(ctx context.Context, dir string) error {
@@ -289,15 +291,23 @@ func (s *Store) migrate(ctx context.Context, dir string) error {
 		return err
 	}
 	defer func() { _ = conn.Close() }()
-	for _, m := range ms {
-		if err := apply(ctx, conn, m); err != nil {
-			return fmt.Errorf("store: migration %s: %w", m.name, err)
-		}
+	// An index already at the newest version needs no write lock at all:
+	// user_version only grows, so this read cannot skip a migration a
+	// concurrent open has yet to apply (T6954: every open took the lock once
+	// per migration).
+	var cur int
+	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&cur); err != nil {
+		return err
 	}
-	return nil
+	if len(ms) == 0 || cur >= ms[len(ms)-1].version {
+		return nil
+	}
+	return apply(ctx, conn, ms)
 }
 
-func apply(ctx context.Context, conn *sql.Conn, m migration) (err error) {
+// apply runs the migrations in ms newer than user_version, read again under
+// the write lock, in one transaction.
+func apply(ctx context.Context, conn *sql.Conn, ms []migration) (err error) {
 	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return err
 	}
@@ -310,15 +320,16 @@ func apply(ctx context.Context, conn *sql.Conn, m migration) (err error) {
 	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&cur); err != nil {
 		return err
 	}
-	if cur >= m.version {
-		_, err = conn.ExecContext(ctx, "COMMIT")
-		return err
-	}
-	if _, err := conn.ExecContext(ctx, m.sql); err != nil {
-		return err
-	}
-	if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", m.version)); err != nil {
-		return err
+	for _, m := range ms {
+		if cur >= m.version {
+			continue
+		}
+		if _, err := conn.ExecContext(ctx, m.sql); err != nil {
+			return fmt.Errorf("store: migration %s: %w", m.name, err)
+		}
+		if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", m.version)); err != nil {
+			return fmt.Errorf("store: migration %s: %w", m.name, err)
+		}
 	}
 	_, err = conn.ExecContext(ctx, "COMMIT")
 	return err

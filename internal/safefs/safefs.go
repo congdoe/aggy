@@ -312,6 +312,7 @@ func loadGuard() (*guard, error) {
 		}
 	}
 	g := &guard{}
+	memo := evalMemo{}
 	hroots, err := hermesRoots(homes)
 	if err != nil {
 		return nil, err
@@ -322,7 +323,7 @@ func loadGuard() (*guard, error) {
 		folders = append(folders, credFolder{r, hermesEntries})
 		g.hermes = append(g.hermes, normPath(r))
 		g.hermesDirs = append(g.hermesDirs, r)
-		if real, err := resolveExisting(r); err == nil && real != r {
+		if real, err := resolveExistingMemo(r, memo); err == nil && real != r {
 			g.hermes = append(g.hermes, normPath(real))
 		}
 	}
@@ -345,7 +346,7 @@ func loadGuard() (*guard, error) {
 		}
 	}
 	for _, f := range folders {
-		real, realErr := resolveExisting(f.dir)
+		real, realErr := resolveExistingMemo(f.dir, memo)
 		if realErr == nil && real != f.dir {
 			// A channel's database counts in the folder by either name.
 			if slices.Contains(g.dbDirs, f.dir) {
@@ -412,19 +413,39 @@ func (g *guard) pathMatch(path string) bool {
 // folds to "s", "ß" to "ss", and the Kelvin sign to "k", where
 // strings.ToLower would leave all three alone.
 func normPath(p string) string {
-	p = norm.NFC.String(p)
 	prefix := dataVolume
-	if foldCase {
+	switch {
+	case isASCII(p) && foldCase:
+		// ASCII is already NFC, and full case folding maps only A-Z within
+		// it (CaseFolding.txt), so ToLower is the same answer, without the
+		// cost of norm and cases on every path of every guard (T6954).
+		p = strings.ToLower(p)
+		prefix = foldedDataVolume
+	case isASCII(p):
+	case foldCase:
+		p = norm.NFC.String(p)
 		// Fold first, so every spelling APFS takes for the prefix
 		// ("/Syſtem/Volumes/Data") is stripped too.
 		p = norm.NFC.String(cases.Fold().String(p))
 		prefix = foldedDataVolume
+	default:
+		p = norm.NFC.String(p)
 	}
 	if stripFirmlink && strings.HasPrefix(p, prefix+string(filepath.Separator)) {
 		// /System/Volumes/Data/Users/x is /Users/x through a firmlink.
 		p = p[len(prefix):]
 	}
 	return p
+}
+
+// isASCII reports a string of 7-bit bytes only.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 // foldedDataVolume is dataVolume case-folded.
@@ -662,30 +683,64 @@ func absRaw(name string) (string, error) {
 // does not exist, the longest existing prefix is resolved and the rest is
 // appended.
 func resolveExisting(p string) (string, error) {
+	return resolveExistingMemo(p, nil)
+}
+
+// evalMemo keeps EvalSymlinks' answers within one loadGuard, whose folders
+// share their home's prefix. nil keeps none.
+type evalMemo map[string]evalResult
+
+type evalResult struct {
+	real string
+	err  error
+}
+
+// evalSymlinks is filepath.EvalSymlinks, through m when it is not nil.
+func (m evalMemo) evalSymlinks(p string) (string, error) {
+	if m == nil {
+		return filepath.EvalSymlinks(p)
+	}
+	if r, ok := m[p]; ok {
+		return r.real, r.err
+	}
 	r, err := filepath.EvalSymlinks(p)
-	if err == nil {
-		return r, nil
-	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		return "", err
-	}
+	m[p] = evalResult{r, err}
+	return r, err
+}
+
+// resolveExistingMemo is resolveExisting with m. It tries the path, then
+// each parent, longest first, as resolveExisting always has, but asks
+// EvalSymlinks only about a prefix that lstat finds there: a prefix the
+// kernel reports missing (ENOENT) is one EvalSymlinks, which resolves as the
+// kernel does, would report missing too, so the walk costs one lstat per
+// missing level instead of a whole EvalSymlinks (T6954: every safefs call
+// builds its guard this way, for folders mostly not there). Any other lstat
+// answer goes to EvalSymlinks, which decides as before.
+func resolveExistingMemo(p string, m evalMemo) (string, error) {
 	sep := string(filepath.Separator)
-	end := len(p)
-	for {
-		i := strings.LastIndex(p[:end], sep)
-		if i <= 0 {
-			return filepath.Clean(p), nil
+	for end, first := len(p), true; ; first = false {
+		prefix := p[:end]
+		if !first {
+			i := strings.LastIndex(p[:end], sep)
+			if i <= 0 {
+				return filepath.Clean(p), nil
+			}
+			prefix, end = p[:i], i
 		}
-		r, err := filepath.EvalSymlinks(p[:i])
-		if err == nil {
+		if _, err := os.Lstat(prefix); errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		r, err := m.evalSymlinks(prefix)
+		switch {
+		case err == nil && first:
+			return r, nil
+		case err == nil:
 			// The rest does not exist, so a ".." in it would fail in the
 			// kernel anyway; cleaning it can only refuse more, not less.
-			return filepath.Join(r, p[i+1:]), nil
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
+			return filepath.Join(r, p[end+1:]), nil
+		case !errors.Is(err, fs.ErrNotExist):
 			return "", err
 		}
-		end = i
 	}
 }
 
