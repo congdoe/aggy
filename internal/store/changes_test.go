@@ -222,7 +222,7 @@ func TestClaudeTrustReverseFromV25(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 26 || ms[24].version != 25 || ms[25].version != 26 {
+	if len(ms) < 26 || ms[24].version != 25 || ms[25].version != 26 {
 		t.Fatalf("migrations: %d", len(ms))
 	}
 	db, err := sql.Open("sqlite", dsn(path))
@@ -252,7 +252,7 @@ func TestClaudeTrustReverseFromV25(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Close() }()
-	if v, err := s.Version(ctx); err != nil || v != 26 {
+	if v, err := s.Version(ctx); err != nil || v != len(ms) {
 		t.Fatalf("version %d, %v", v, err)
 	}
 	if c, err := s.GetChange(ctx, "old"); err != nil || c.Reverse != "aggy-hooks" || c.File != "/a" {

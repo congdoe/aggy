@@ -412,6 +412,49 @@ func TestReadPreApprovalIdentity(t *testing.T) {
 	}
 }
 
+// TestPreApprovalLegacyRead (T6976, CI on ubuntu): a read pre-approval whose
+// recorded identity predates the size and times says, in permissions list,
+// that it asks until the rule is added again; a complete one, or a command,
+// says nothing of it.
+func TestPreApprovalLegacyRead(t *testing.T) {
+	isolate(t)
+	repo := inRepo(t)
+	const rule = "Read(./certs/server.key)"
+	key := filepath.Join(repo, "certs", "server.key")
+	s := permissions.Set{Rules: []permissions.Rule{
+		{Kind: permissions.Allow, Origin: permissions.FromAggy, Text: rule},
+		{Kind: permissions.Allow, Origin: permissions.FromAggy, Text: "Bash(git push --force)"},
+	}}
+	const note = "asks until you add it again"
+	for _, tt := range []struct {
+		name   string
+		legacy func(string) bool
+		want   bool
+	}{
+		{"no index", nil, false},
+		{"complete row", func(string) bool { return false }, false},
+		{"legacy row", func(p string) bool { return p == key }, true},
+	} {
+		var out bytes.Buffer
+		printPreApprovals(&out, s, repo, tt.legacy)
+		var keyLine, pushLine string
+		for _, l := range strings.Split(out.String(), "\n") {
+			switch {
+			case strings.Contains(l, rule):
+				keyLine = l
+			case strings.Contains(l, "git push"):
+				pushLine = l
+			}
+		}
+		if keyLine == "" || pushLine == "" {
+			t.Fatalf("%s: missing lines in %q", tt.name, out.String())
+		}
+		if strings.Contains(keyLine, note) != tt.want || strings.Contains(pushLine, note) {
+			t.Errorf("%s: %q", tt.name, out.String())
+		}
+	}
+}
+
 // TestHeadlessLayerUnchanged (T6976): a headless, print, or reopened-borrow
 // Claude launch renders exactly what it rendered before: one inline layer
 // with every policy rule a deny, ClaudeDeny in order, held by a golden file.
