@@ -652,7 +652,10 @@ func allowedIn(cfg config.Config, dir string, v adapter.Vendor) (config.Effectiv
 		return eff, fmt.Errorf("%w: aggy config set harness.%s on", errHarnessOff, v)
 	}
 	if !eff.Allows(v) {
-		return eff, fmt.Errorf("%w %s", errNotAllowed, v)
+		// T6979: the file and the key, so the way forward is plain.
+		root, _ := repoRoot(dir)
+		file := config.RepoPath(root)
+		return eff, fmt.Errorf("%w %s: the allowed_vendors key in %s leaves it out; add %s there to start it in this repo", errNotAllowed, v, file, v)
 	}
 	return eff, nil
 }

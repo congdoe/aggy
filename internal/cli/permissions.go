@@ -203,7 +203,7 @@ func addPermissions(v adapter.Vendor, caps []string, s permissions.Set, req *ada
 		}
 	}
 	if skipped > 0 {
-		notes = append(notes, skippedNote(skipped, vendorNames[v]))
+		notes = append(notes, skippedNote(skipped, vendorNames[v], !s.Trusted))
 	}
 	switch v {
 	case adapter.Claude:
@@ -250,12 +250,18 @@ func addPermissions(v adapter.Vendor, caps []string, s permissions.Set, req *ada
 	return notes
 }
 
-// skippedNote is the launch's one line about rules that do not apply.
-func skippedNote(n int, name string) string {
+// skippedNote is the launch's one line about rules that do not apply. In a
+// repo not trusted, it names the way to trust it (T6979): some of them wait
+// for that.
+func skippedNote(n int, name string, untrusted bool) string {
+	s := fmt.Sprintf("%d of your permission rules do not apply on %s; aggy permissions show says why", n, name)
 	if n == 1 {
-		return fmt.Sprintf("1 of your permission rules does not apply on %s; aggy permissions show says why", name)
+		s = fmt.Sprintf("1 of your permission rules does not apply on %s; aggy permissions show says why", name)
 	}
-	return fmt.Sprintf("%d of your permission rules do not apply on %s; aggy permissions show says why", n, name)
+	if untrusted {
+		s += "; this repo is not trusted, and an allow from it waits for that: aggy trust in a terminal, or /aggy trust in the session"
+	}
+	return s
 }
 
 // guardRules are the person's exact rules the OpenCode guard must count, for

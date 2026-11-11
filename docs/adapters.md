@@ -1053,6 +1053,18 @@ fixture yet; the tests use lines in the shapes below. Sources are in
 | Codex | the one `sessions/YYYY/MM/DD/rollout-*-<id>.jsonl` | `type` `response_item` whose `payload` is a `message` with `role` `user` or `assistant`; `input_text` and `output_text` content joined; `timestamp` kept | Source-verified (0.164.0) |
 | Grok | `sessions/<grok.EncodeCwd(cwd)>/<id>/chat_history.jsonl`, else the one `sessions/*/<id>/chat_history.jsonl` | `type` `user` (text parts; skipped when `synthetic_reason` is set) and `assistant` (`content` a string) | Source-verified at a revision possibly newer than 1.0.70 |
 
+### Install pages
+
+A launch of a vendor whose CLI is not on PATH names where to get it (T6979,
+`installPage` in `internal/cli/install.go`). aggy never installs a CLI.
+
+| Vendor | Page | Source |
+| --- | --- | --- |
+| Codex | `https://github.com/openai/codex` | the repository whose tags (rust-v0.164.0, 6aaac69) this guide cites |
+| Grok Build | `https://github.com/xai-org/grok-build` | the repository whose commit (2bdd1d6a) this guide cites |
+| Claude Code | `https://code.claude.com/docs/en/setup` | unverified: on the docs site this guide cites (cli-reference, skills.md), but that this is the install page is not checked |
+| OpenCode | `https://opencode.ai/docs` | unverified: the docs site this guide cites (opencode.ai/docs/tui, docs/zen), not checked as the install page |
+
 ### Sign-in
 
 No sign-in status command is recorded above, so no adapter has a

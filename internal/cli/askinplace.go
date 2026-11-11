@@ -54,6 +54,30 @@ func harnessOnInPlace(ctx context.Context, v adapter.Vendor, getenv func(string)
 	return true, nil
 }
 
+// pickInPlace asks the person to pick one of options by number, as askInPlace
+// asks (the same gate, typed-ahead and pasted answers dropped), and returns
+// its index, or -1 for none, the default. asked is false with no one to ask.
+func pickInPlace(getenv func(string) string, in io.Reader, out io.Writer, intro string, options []string) (int, bool) {
+	if !trustPerson(getenv) || len(options) == 0 {
+		return -1, false
+	}
+	fmt.Fprintln(out, termsafe.Lines(intro))
+	for i, o := range options {
+		fmt.Fprintf(out, "  %d  %s\n", i+1, termsafe.Line(o))
+	}
+	fmt.Fprint(out, "Start which? A number, or Enter for none: ")
+	line := readAnswer(in, time.Now())
+	if strings.Contains(line, pasteStart) {
+		fmt.Fprintln(out, "A paste answers nothing here: none.")
+		return -1, true
+	}
+	var n int
+	if _, err := fmt.Sscanf(strings.TrimSpace(line), "%d", &n); err != nil || n < 1 || n > len(options) || fmt.Sprint(n) != strings.TrimSpace(line) {
+		return -1, true
+	}
+	return n - 1, true
+}
+
 // askInPlace asks q of the person at the terminal and reports a yes. It
 // asks only a person (trustPerson: not a borrow child, not a session's own
 // tool shell, stdin and stderr terminals); with no one to ask, asked is

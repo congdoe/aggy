@@ -383,6 +383,32 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 		return fail(err)
 	}
 	patch, paths, err := showEdit(ctx, g, b, wt, stdout)
+	if prot := protectedOf(err); prot != nil {
+		// T6979: at a terminal, the files that triggered it and their
+		// hunks, then a question; every other check stays.
+		yes, asked := false, false
+		if tty {
+			showProtected(ctx, g, wt, prot, stdout)
+			yes, asked = askInPlace(os.Getenv, in, stdout, inPlace{
+				change: "These files may hold hooks, CI, config, or instructions a tool or CLI runs or loads; accepting writes them into " + wt.Repo + ".",
+				undo:   "aggy does not stage or commit it: git restore or git checkout in that repo takes it back.",
+				ask:    "Accept anyway, these files included?",
+			})
+		}
+		if !asked {
+			return fail(withCode(diag.CodeProtected, fmt.Errorf("%v; at a terminal aggy accept %s shows them and asks; by hand: git -C %s diff --binary %s %s | git -C %s apply, then aggy reject %s",
+				err, b.ID, wt.Path, wt.Base, wt.Tree, wt.Repo, b.ID)))
+		}
+		if !yes {
+			declined := rec
+			declined.Event, declined.Attrs = diag.EvAcceptDeclined, map[string]any{"why": "answered no to protected files"}
+			dlog.Log(ctx, declined)
+			fmt.Fprintln(stdout, "Not applied.")
+			return 1
+		}
+		g.allowProtected = true
+		patch, paths, err = showEdit(ctx, g, b, wt, stdout)
+	}
 	if err != nil {
 		return fail(err)
 	}
@@ -539,7 +565,7 @@ func (g *gitWorktrees) editDiff(ctx context.Context, wt store.Worktree) (stat, p
 		return "", "", nil, err
 	}
 	paths, err = checkTouched(raw, hooks)
-	if err != nil {
+	if err != nil && (!g.allowProtected || protectedOf(err) == nil) {
 		return "", "", nil, err
 	}
 	if len(paths) == 0 {
@@ -665,7 +691,7 @@ func realPath(p string) (string, error) {
 // which protects every top-level file).
 func checkTouched(raw, hooks string) ([]string, error) {
 	fields := strings.Split(strings.TrimSuffix(raw, "\x00"), "\x00")
-	var paths []string
+	var paths, prot []string
 	for i := 0; i+1 < len(fields); i += 2 {
 		meta, p := fields[i], fields[i+1]
 		m := strings.Fields(strings.TrimPrefix(meta, ":"))
@@ -679,12 +705,65 @@ func checkTouched(raw, hooks string) ([]string, error) {
 		}
 		inHooks := hooks != "" && ((hooks == "." && !strings.Contains(p, "/")) ||
 			strings.EqualFold(p, hooks) || strings.HasPrefix(strings.ToLower(p), strings.ToLower(hooks)+"/"))
+		// A .git part is never written, asked or not: it is git's own state.
+		if slices.ContainsFunc(strings.Split(p, "/"), func(c string) bool { return strings.EqualFold(c, ".git") }) {
+			return nil, withCode(diag.CodeProtected, fmt.Errorf("refusing: the diff touches %s, inside a .git folder, which aggy never writes", p))
+		}
 		if borrow.ProtectedPath(p) || inHooks {
-			return nil, withCode(diag.CodeProtected, fmt.Errorf("refusing: the diff touches %s, which may hold hooks, CI, config, or instructions a tool or CLI runs or loads; review the worktree by hand", p))
+			prot = append(prot, p)
 		}
 		paths = append(paths, p)
 	}
+	if len(prot) > 0 {
+		return paths, withCode(diag.CodeProtected, &protectedTouch{paths: prot})
+	}
 	return paths, nil
+}
+
+// protectedTouch is a diff that touches files that may hold hooks, CI,
+// config, or instructions (checkTouched). At a terminal aggy accept shows
+// them and asks (T6979); otherwise it refuses.
+type protectedTouch struct{ paths []string }
+
+func (e *protectedTouch) Error() string {
+	return fmt.Sprintf("refusing: the diff touches %s, which may hold hooks, CI, config, or instructions a tool or CLI runs or loads", strings.Join(e.paths, ", "))
+}
+
+// maxProtectedLines caps the hunks showProtected prints.
+const maxProtectedLines = 400
+
+// showProtected prints the hunks of the protected files the diff touches,
+// cut at maxProtectedLines, its control characters taken out.
+func showProtected(ctx context.Context, g *gitWorktrees, wt store.Worktree, paths []string, out io.Writer) {
+	fmt.Fprintf(out, "The diff touches files that may hold hooks, CI, config, or instructions: %s\n", strings.Join(paths, ", "))
+	run, err := g.wtRun(ctx, wt)
+	if err != nil {
+		fmt.Fprintf(out, "aggy cannot show their hunks: %s\n", termsafe.Line(err.Error()))
+		return
+	}
+	args := append([]string{"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", wt.Base, wt.Tree, "--"}, paths...)
+	d, _, err := run(args...)
+	if err != nil {
+		fmt.Fprintf(out, "aggy cannot show their hunks: %s\n", termsafe.Line(err.Error()))
+		return
+	}
+	lines := strings.Split(strings.TrimRight(d, "\n"), "\n")
+	for i, l := range lines {
+		if i == maxProtectedLines {
+			fmt.Fprintf(out, "  ... %d more lines; review them in %s\n", len(lines)-i, wt.Path)
+			break
+		}
+		fmt.Fprintf(out, "  %s\n", termsafe.Line(l))
+	}
+}
+
+// protectedOf reports the files err refuses for, or nil.
+func protectedOf(err error) []string {
+	var p *protectedTouch
+	if errors.As(err, &p) {
+		return p.paths
+	}
+	return nil
 }
 
 // cleanIn refuses when the main checkout at repo has any change, staged,

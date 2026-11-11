@@ -146,7 +146,7 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 	}
 	shared, skipped := parity.OpenCodeShared(in.rules)
 	if n := len(skipped); n > 0 {
-		out.warns = append(out.warns, skippedNote(n, "OpenCode"))
+		out.warns = append(out.warns, skippedNote(n, "OpenCode", !in.rules.Trusted))
 	}
 	// The decision hook's plan (T6976), for an on-screen launch with the policy.
 	decide, sum := "", ""
