@@ -105,6 +105,9 @@ type world struct {
 	// askTrust leaves the first start's trust list on (T6977); every other test
 	// runs with it off.
 	askTrust bool
+	// askFix leaves the launch's question about missing hooks and command
+	// skills on (T6982); every other test runs with it off.
+	askFix bool
 }
 
 func newWorld(t *testing.T) *world {
@@ -226,6 +229,9 @@ func (w *world) start(t *testing.T, scenario map[string]any, args ...string) *se
 	}
 	if !w.askTrust {
 		s.cmd.Env = append(s.cmd.Env, "AGGY_TRUST_ASK=0")
+	}
+	if !w.askFix {
+		s.cmd.Env = append(s.cmd.Env, "AGGY_FIX_ASK=0")
 	}
 	s.cmd.Env = append(s.cmd.Env, w.env...)
 	s.cmd.Stdin, s.cmd.Stdout, s.cmd.Stderr = slave, slave, slave
