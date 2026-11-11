@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -438,6 +439,18 @@ func (d DecidePlan) keyFilePath(p string, search bool) bool {
 			return false
 		}
 	}
+	// #138 re-review L2: a leading ~/ or $HOME/ is the home folder, in case
+	// the tool expands it (whether OpenCode's or Hermes' read tools do is
+	// unverified; Claude's Read takes absolute paths), rather than a folder
+	// of that name in the repo.
+	for _, pre := range []string{"~/", "$HOME/", "${HOME}/"} {
+		if rest, ok := strings.CutPrefix(p, pre); ok {
+			if h, err := os.UserHomeDir(); err == nil && h != "" {
+				p = filepath.Join(h, rest)
+			}
+			break
+		}
+	}
 	if !filepath.IsAbs(p) {
 		if d.Root == "" {
 			return false
@@ -722,6 +735,31 @@ func holdsPath(f, w string) bool {
 	}
 }
 
+// stateGlobPrefixes are the spellings of aggy's state folder at the start of
+// a shell word, in lower case with quotes gone.
+var stateGlobPrefixes = []string{"~/.aggy", "$home/.aggy", "${home}/.aggy", "$aggy_home", "${aggy_home}"}
+
+// stateGlob reports a shell word in f (lower case) that holds a wildcard and
+// starts with aggy's state folder: one of stateGlobPrefixes, or a protected
+// path as resolved.
+func stateGlob(f string, protected []string) bool {
+	words := strings.FieldsFunc(f, func(r rune) bool { return strings.ContainsRune(" \t\n;|&()<>`=", r) })
+	for _, w := range words {
+		if !strings.ContainsAny(w, "*?[") {
+			continue
+		}
+		if slices.ContainsFunc(stateGlobPrefixes, func(p string) bool { return strings.HasPrefix(w, p) }) {
+			return true
+		}
+		for _, q := range protected {
+			if q != "" && strings.HasPrefix(w, strings.ToLower(filepath.Clean(q))) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // protectedText reports a shell command whose text, in any of the matcher's
 // spellings (raw, continuations joined, quotes and backslashes gone), and
 // without regard to case, names a protected path.
@@ -752,10 +790,12 @@ func protectedText(cmd string, protected, words []string) bool {
 			slices.ContainsFunc(aggyFileNames, func(n string) bool { return holdsPath(f, n) }) {
 			return true
 		}
-		// aggy's folder with a wildcard (T6931, #138 review M3): a glob such
-		// as ~/.aggy/r*/*/opencode/k*/* can reach an OpenCode launch's key
-		// file without naming it.
-		if slices.ContainsFunc(aggyFolderWords, func(w string) bool { return strings.Contains(f, w) }) && strings.ContainsAny(f, "*?[") {
+		// aggy's state folder with a wildcard in the same shell word (T6931,
+		// #138 review M3, re-review L1): a glob such as
+		// ~/.aggy/r*/*/opencode/k*/* can reach an OpenCode launch's key file
+		// without naming it. The repo's own .aggy folder (ls .aggy/*, git add
+		// .aggy/memory.md docs/*.md, [ -f .aggy/memory.md ]) is not it.
+		if stateGlob(f, protected) {
 			return true
 		}
 	}
