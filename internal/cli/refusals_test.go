@@ -37,6 +37,11 @@ func TestCLIMissing(t *testing.T) {
 	if len(others) != 2 || others[0] != adapter.Claude && others[1] != adapter.Claude {
 		t.Fatalf("installed: %q", others)
 	}
+	// #133 review: the picked vendor starts with the policy on, whatever
+	// flags the missing one was given, and the pick says so.
+	if nt := pickedTarget(adapter.Claude, target{Vendor: adapter.Grok, NoPolicy: true, Direct: true}); nt.NoPolicy || !nt.New || nt.Vendor != adapter.Claude || !nt.Direct {
+		t.Errorf("picked target %+v", nt)
+	}
 	for _, c := range []struct {
 		name, typed string
 		term, shell bool
@@ -55,6 +60,9 @@ func TestCLIMissing(t *testing.T) {
 			var out bytes.Buffer
 			if got := pickInstead(context.Background(), adapter.Grok, others, offerIn, &out); got != c.want {
 				t.Errorf("picked %q, want %q: %q", got, c.want, out.String())
+			}
+			if c.term && !c.shell && !strings.Contains(out.String(), "with aggy's safety policy on") {
+				t.Errorf("the pick does not say the policy is on: %q", out.String())
 			}
 		})
 	}
@@ -127,6 +135,19 @@ func TestAcceptProtectedAsks(t *testing.T) {
 		}
 		if b, err := os.ReadFile(filepath.Join(f.repo, ".github", "workflows", "ci.yml")); err != nil || !strings.Contains(string(b), "SEEN") {
 			t.Errorf("not applied: %v", err)
+		}
+	})
+	// #133 review: a borrow child picks the names, so a control character in
+	// one is escaped in the summary above the question and in the refusal.
+	t.Run("a name with control characters", func(t *testing.T) {
+		evil := ".github/workflows/x\x1b[2K\rAll clear.yml"
+		for _, term := range []bool{true, false} {
+			inPlaceWorld(t, "", term, false)
+			id, _ := editBorrow(t, f, map[string]string{"a.go": "package a\n", evil: "on: push\n"})
+			code, out, errOut := accept(f, "n\n", term, id)
+			if code != 1 || strings.ContainsAny(out+errOut, "\x1b\r") || !strings.Contains(out+errOut, "All clear.yml") {
+				t.Errorf("terminal %v: code %d: %q %q", term, code, out, errOut)
+			}
 		}
 	})
 	t.Run("a .git path is refused", func(t *testing.T) {

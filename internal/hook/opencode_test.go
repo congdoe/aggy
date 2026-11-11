@@ -318,7 +318,19 @@ func TestOpenCodeOutsideRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	notes := filepath.Join(other, "notes.txt")
-	env := OpenCodeEnv{Getenv: os.Getenv, DeniedNames: []string{".env", "*.pem", "*.key"}, KeyNames: []string{"*.pem", "*.key"}, Protected: []string{state}}
+	// #133 review, owner decision: a private key outside the repo asks, each
+	// time, and runs only once a prompt cleared that very file.
+	sshKey := filepath.Join(home, ".ssh", "id_ed25519")
+	if err := os.MkdirAll(filepath.Dir(sshKey), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sshKey, []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sshKey, filepath.Join(other, "deploy_notes")); err != nil {
+		t.Fatal(err)
+	}
+	env := OpenCodeEnv{Getenv: os.Getenv, DeniedNames: []string{".env", "*.pem", "*.key", "id_ed25519"}, KeyNames: []string{"*.pem", "*.key", "id_ed25519"}, Protected: []string{state}}
 	cases := []struct {
 		name string
 		in   OpenCodeInput
@@ -338,6 +350,11 @@ func TestOpenCodeOutsideRead(t *testing.T) {
 		{"aggy's own state", OpenCodeInput{Tool: "read", Path: filepath.Join(state, "permissions.json"), Strict: true, Evaluating: true, Cleared: []string{filepath.Join(state, "permissions.json")}}, whyOutside, 0},
 		{"a vendor credential", OpenCodeInput{Tool: "read", Path: filepath.Join(home, ".codex", "auth.json"), Strict: true, Evaluating: true, Cleared: []string{filepath.Join(home, ".codex", "auth.json")}}, whyOutside, 0},
 		{".env outside stays refused", OpenCodeInput{Tool: "read", Path: filepath.Join(other, ".env"), Strict: true, Evaluating: true, Cleared: []string{filepath.Join(other, ".env")}}, whyDeniedName, 0},
+		{"a private key outside, cleared", OpenCodeInput{Tool: "read", Path: "~/.ssh/id_ed25519", Strict: true, Evaluating: true, Cleared: []string{sshKey}}, "", 1},
+		{"a private key outside, not cleared", OpenCodeInput{Tool: "read", Path: sshKey, Strict: true, Evaluating: true, Cleared: []string{notes}}, whyNotAsked, 0},
+		{"a private key outside, saved allow and no hook", OpenCodeInput{Tool: "read", Path: sshKey, Strict: true, Always: true, Cleared: []string{sshKey}}, whyNotAsked, 0},
+		{"a private key outside, under --auto", OpenCodeInput{Tool: "read", Path: sshKey, Strict: true, Auto: true, Evaluating: true, Cleared: []string{sshKey}}, whyOutside, 0},
+		{"a private key behind a harmless name", OpenCodeInput{Tool: "read", Path: filepath.Join(other, "deploy_notes"), Strict: true, Evaluating: true, Cleared: []string{filepath.Join(other, "deploy_notes")}}, whyOutside, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -350,6 +367,53 @@ func TestOpenCodeOutsideRead(t *testing.T) {
 			d := OpenCodeGuard(b, env)
 			if d.Deny != (c.why != "") || d.Reason != c.why || d.Cleared != c.used {
 				t.Fatalf("got %+v, want %q, clear %d", d, c.why, c.used)
+			}
+		})
+	}
+}
+
+// TestOutsideProtectedSpelling (#133 review): aggy's state folder spelled in
+// other case, or in another Unicode normalisation, is still aggy's folder on
+// a file system that folds them (macOS by default), so a cleared outside read
+// of it is refused. Skipped where the file system tells the spellings apart.
+func TestOutsideProtectedSpelling(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	repo := filepath.Join(home, "repo")
+	state := filepath.Join(home, ".aggy")
+	nfc := filepath.Join(home, "café")
+	for _, d := range []string{repo, state, nfc} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{filepath.Join(state, "trust.json"), filepath.Join(nfc, "trust.json")} {
+		if err := os.WriteFile(f, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := OpenCodeEnv{Getenv: os.Getenv, Protected: []string{state, nfc}}
+	for _, c := range []struct{ name, path, probe string }{
+		{"other case", filepath.Join(home, ".AGGY", "trust.json"), filepath.Join(home, ".AGGY")},
+		{"another normalisation", filepath.Join(home, "café", "trust.json"), filepath.Join(home, "café")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := os.Lstat(c.probe); err != nil {
+				t.Skipf("this file system tells the spellings apart (%v)", err)
+			}
+			in := OpenCodeInput{Tool: "read", Path: c.path, Root: repo, Directory: repo, Strict: true, Evaluating: true, Cleared: []string{c.path}}
+			b, err := json.Marshal(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d := OpenCodeGuard(b, env); !d.Deny || d.Reason != whyOutside {
+				t.Fatalf("got %+v, want refused", d)
+			}
+			if !SameAsProtected(c.path, env.Protected, os.Stat, os.Lstat) {
+				t.Error("not the same folder by identity")
 			}
 		})
 	}

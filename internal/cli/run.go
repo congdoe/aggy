@@ -335,8 +335,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		// session (default none).
 		others := installedElse(cfg, pl.child.Cwd, v)
 		if o := pickInstead(ctx, v, others, offerIn, stderr); o != "" {
-			nt := target{New: true, Vendor: o, NoPolicy: t.NoPolicy, Direct: t.Direct}
-			*tp = nt
+			*tp = pickedTarget(o, t)
 			return launchOnce(name, tp, stderr, next, q)
 		}
 		return fail(diag.CodeCLIMissing, cliMissing(v, others))

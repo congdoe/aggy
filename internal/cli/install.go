@@ -75,9 +75,17 @@ func pickInstead(_ context.Context, v adapter.Vendor, others []adapter.Vendor, i
 	for i, o := range others {
 		names[i] = string(o)
 	}
-	i, _ := pickInPlace(os.Getenv, in, out, cliMissing(v, nil).Error()+".", names)
+	i, _ := pickInPlace(os.Getenv, in, out, cliMissing(v, nil).Error()+".\nA pick starts a new session of it with aggy's safety policy on, whatever flags you gave.", names)
 	if i < 0 {
 		return ""
 	}
 	return others[i]
+}
+
+// pickedTarget is the launch of o picked instead of a CLI not installed: a new
+// session, on aggy's own terminal if t was. Never --no-policy: the person
+// picked a vendor, not that flag for it (#133 review), and the pick's text
+// says the policy is on.
+func pickedTarget(o adapter.Vendor, t target) target {
+	return target{New: true, Vendor: o, Direct: t.Direct}
 }

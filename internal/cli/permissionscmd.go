@@ -639,6 +639,11 @@ var strictOffWarning = map[string]string{
 }
 
 // policyOffQuestion is the question aggy permissions policy GROUP allow asks.
+//
+// TODO(T6954): this question guards the command, not the file: a session's
+// shell on Grok, which has no hook to ask about writes to aggy's files, can
+// write a group set to allow into ~/.aggy/permissions.json directly (#133
+// review).
 func policyOffQuestion(group, where string) inPlace {
 	change := fmt.Sprintf("This turns the safety policy's %s off for %s, in your ~/.aggy/permissions.json: %s then gets no ask or deny from aggy on Claude Code, Grok Build, and OpenCode, and their own rules decide. Codex still asks, and a borrow child, a headless run, and print mode still refuse it.", group, where, policyGroupNames[group])
 	if w := strictOffWarning[group]; w != "" {

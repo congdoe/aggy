@@ -424,6 +424,12 @@ func (d DecidePlan) protectedPath(p string) bool {
 	if d.protectedClean(p) {
 		return true
 	}
+	// By identity as well as spelling (#133 review): a name in another
+	// Unicode normalisation of aggy's folder is that folder where the file
+	// system folds them.
+	if hook.SameAsProtected(p, d.Protected, safefs.Stat, lstat) {
+		return true
+	}
 	dir, err := realPath(filepath.Dir(p))
 	switch {
 	case errors.Is(err, fs.ErrNotExist):

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -76,6 +77,9 @@ type page struct {
 	// then is the switch a y on this page goes on with once its command
 	// succeeds (T6979: the Codex rules file written, then the switch).
 	then *switchAfter
+	// opened is when a fix page opened (T6979, #133 review): a key within
+	// checkTypeAhead of it was typed before it, and does nothing.
+	opened time.Time
 }
 
 // switchAfter is a pick a fix page holds until its command has run.

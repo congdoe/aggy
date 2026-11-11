@@ -148,7 +148,11 @@ func (s *session) runCommand(c sessioncmd.Command, keyed bool) {
 		if s.open {
 			s.closePicker()
 		}
+		// A switch a hook sent is not the person's: a fix it needs is told
+		// in a note, not opened as a page (#133 review).
+		s.agentPick = !keyed
 		s.pickSwitch(Choice{Vendor: c.Vendor, Brief: c.Brief, New: c.New, Model: c.Model}, keyed)
+		s.agentPick = false
 	case sessioncmd.AggyList:
 		s.showMenu(&menu{title: "commands", items: s.aggyItems(), filterable: true})
 	case sessioncmd.BorrowList:
@@ -608,6 +612,9 @@ func (s *session) menuKey(k viewKey, r rune) bool {
 // pageKey takes one key at a page, and reports whether the page is gone.
 func (s *session) pageKey(k viewKey, r rune) bool {
 	g := s.pk.page
+	if !g.opened.IsZero() && time.Since(g.opened) < checkTypeAhead {
+		return false // typed before the fix page was there
+	}
 	rows, _ := s.t.size()
 	if rows < 3 {
 		rows = screenRows
