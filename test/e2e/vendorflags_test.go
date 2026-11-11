@@ -22,9 +22,7 @@ func TestLooseningFlagNoted(t *testing.T) {
 	sc := map[string]any{"raw_echo": true, "stdout": "READY>", "extra_switches": []string{"--dangerously-skip-permissions"}}
 	s := w.start(t, sc, "claude", "--dangerously-skip-permissions")
 	s.waitFor([]byte("aggy's safety policy on for the rest? [y/N]"))
-	time.Sleep(400 * time.Millisecond) // past the typed-ahead window
-	s.send([]byte("n\r"))
-	s.waitFor([]byte("cli.flag_needs_no_policy"))
+	s.answerUntil("n\r", []byte("cli.flag_needs_no_policy"))
 	if code := s.exit(); code != 2 {
 		t.Errorf("without --no-policy: exit = %d, want 2", code)
 	}
@@ -51,9 +49,7 @@ func TestLooseningFlagNoted(t *testing.T) {
 	// Answered yes: the flag goes through for this launch, the policy on.
 	s = w.start(t, sc, "claude", "--dangerously-skip-permissions")
 	s.waitFor([]byte("aggy's safety policy on for the rest? [y/N]"))
-	time.Sleep(400 * time.Millisecond)
-	s.send([]byte("y\r"))
-	s.waitFor([]byte("a later launch starts without it"))
+	s.answerUntil("y\r", []byte("a later launch starts without it"))
 	s.waitFor([]byte("READY>"))
 	s.send([]byte{0x04})
 	if code := s.exit(); code != 0 {

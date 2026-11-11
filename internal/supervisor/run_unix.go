@@ -612,7 +612,10 @@ type session struct {
 	viewPaste  pasteFilter
 	// hookOffers asks the main loop to offer installing aggy's hooks (T6979),
 	// after an agent's switch the missing hooks refused; hooksOffered: once.
-	hookOffers   chan struct{}
+	hookOffers chan struct{}
+	// agentPick: the switch being picked came from a hook, not the person
+	// (#133 review), so a fix it needs is told rather than opened.
+	agentPick    bool
 	hooksOffered bool
 	// prompts brings the commands a CLI's prompt hook reported (T6910), each
 	// with where its answer goes; hookedName and hookedEnter are the last one
@@ -996,7 +999,7 @@ func (s *session) onSwitch(r Request) error {
 		case s.hookOffers <- struct{}{}:
 		default:
 		}
-		return coded(diag.CodeHooksMissing, fmt.Errorf("aggy's hooks for %s are not installed, so aggy would never see a turn end to switch at; aggy offers the person to install them on its own page (or run aggy hooks install), then a new session is needed", s.o.Vendor))
+		return coded(diag.CodeHooksMissing, fmt.Errorf("aggy's hooks for %s are not installed, so aggy would never see a turn end to switch at; aggy tells the person, and the person's switch key opens aggy's page that installs them (or run aggy hooks install), then a new session is needed", s.o.Vendor))
 	}
 	if r.New || r.Model != "" {
 		// O56-1: a new session or a model is the user's choice, in the
@@ -2739,6 +2742,14 @@ func (s *session) promptInput(b []byte) {
 		}
 		s.closePicker()
 		s.confirmSwitch()
+	case s.pk.isKey(b) && s.pk.fix != nil:
+		// A fix's note (T6979): the person's own switch key opens its page.
+		if time.Since(s.openedAt) < confirmGuard {
+			return
+		}
+		f := s.pk.fix
+		s.closePicker()
+		s.openFixPage(f.title, f.lines, f.confirm, f.label, f.then)
 	case s.pk.isKey(b) && s.pk.resume:
 		// A tool change's note on a vendor with no hold signal: the user
 		// queues the resume, still confirmed at the turn end (T6729). A

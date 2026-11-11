@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 )
@@ -15,6 +16,7 @@ import (
 func fixSess(t *testing.T, out string, fix bool) (*session, *[][]string, *bool) {
 	t.Helper()
 	s, ran := viewSess(t, adapter.Claude, out)
+	noFixWindow(t)
 	wired := false
 	s.o.CanSwitch = func(v adapter.Vendor) error {
 		if v == adapter.Codex && !wired {
@@ -81,17 +83,19 @@ func TestSwitchFixPage(t *testing.T) {
 	})
 }
 
-// TestHooksOffer (T6979): an agent's switch the missing hooks refuse is still
-// refused, saying the person is offered the install; aggy's page offers it
-// once, says a new session is still needed, and y installs them.
+// TestHooksOffer (T6979, #133 review): an agent's switch the missing hooks
+// refuse is still refused. aggy tells the person once, in a note: a y typed
+// into it goes to the CLI and installs nothing; only the switch key opens the
+// page, which says a new session is still needed, and y there installs them.
 func TestHooksOffer(t *testing.T) {
 	s, ran := viewSess(t, adapter.Claude, "Done (run r2). aggy unwire --run r2 undoes it.")
+	noFixWindow(t)
 	s.hookOffers = make(chan struct{}, 1)
 	s.o.HooksMissing = true
 	s.o.HooksFix = []string{"hooks", "install", "--vendor", "claude"}
 	s.hookSeen.Store(false)
 	err := s.onSwitch(Request{Vendor: "codex"})
-	if err == nil || !strings.Contains(err.Error(), "aggy offers the person to install them") || !strings.Contains(err.Error(), "a new session is needed") {
+	if err == nil || !strings.Contains(err.Error(), "the person's switch key opens aggy's page") || !strings.Contains(err.Error(), "a new session is needed") {
 		t.Fatalf("refusal: %v", err)
 	}
 	select {
@@ -100,6 +104,24 @@ func TestHooksOffer(t *testing.T) {
 		t.Fatal("no offer queued")
 	}
 	s.offerHooks()
+	if s.pk.page != nil || !s.pk.note || s.pk.fix == nil || !strings.Contains(strings.Join(s.pk.lines, " "), "Press Ctrl+") {
+		t.Fatalf("not a note: page %+v lines %q", s.pk.page, s.pk.lines)
+	}
+	// The person was typing: the y reaches the CLI, and nothing is installed.
+	var typed []byte
+	s.input = func(b []byte) { typed = append(typed, b...) }
+	s.pickerInput([]byte("y"))
+	if s.open || len(*ran) != 0 || string(typed) != "y" {
+		t.Fatalf("a stray y: open %v ran %q", s.open, *ran)
+	}
+	s.offerHooks()
+	if s.open {
+		t.Fatal("told twice")
+	}
+	// Told again by hand, the switch key opens the page.
+	s.hooksOffered = false
+	s.offerHooks()
+	s.pickerInput([]byte{s.pk.key})
 	g := s.pk.page
 	if g == nil || strings.Join(g.confirm, " ") != "hooks install --vendor claude" || !strings.Contains(strings.Join(g.lines, " "), "start a new session afterwards") {
 		t.Fatalf("page %+v", g)
@@ -109,9 +131,64 @@ func TestHooksOffer(t *testing.T) {
 	if len(*ran) != 1 || strings.Join((*ran)[0], " ") != "hooks install --vendor claude true" || s.sw.to != "" {
 		t.Fatalf("ran %q switch %q", *ran, s.sw.to)
 	}
-	s.closeView()
-	s.offerHooks()
-	if s.pk.page != nil {
-		t.Error("offered twice")
+}
+
+// TestFixPageTypeAhead (#133 review): a fix page ignores keys that arrive
+// within checkTypeAhead of it opening, so a y typed as it appears runs
+// nothing; past the window the same y runs the fix.
+func TestFixPageTypeAhead(t *testing.T) {
+	s, ran, _ := fixSess(t, "Done (run r1).", true)
+	old := checkTypeAhead
+	checkTypeAhead = time.Hour
+	t.Cleanup(func() { checkTypeAhead = old })
+	s.pickSwitch(Choice{Vendor: adapter.Codex}, true)
+	if s.pk.page == nil {
+		t.Fatal("no page")
 	}
+	s.viewInput([]byte("y"))
+	if len(*ran) != 0 || s.pk.page == nil || s.pk.page.busy {
+		t.Fatalf("a y in the window ran %q", *ran)
+	}
+	checkTypeAhead = 0
+	s.viewInput([]byte("y"))
+	settle(t, s)
+	if len(*ran) != 1 {
+		t.Fatalf("past the window: ran %q", *ran)
+	}
+}
+
+// TestAgentSwitchFixNote (#133 review): a switch a hook sent, which the
+// missing Codex rules file refuses, is told in a note rather than opened as a
+// page; a stray key goes on to the CLI, and the switch key opens the page.
+func TestAgentSwitchFixNote(t *testing.T) {
+	s, ran, _ := fixSess(t, "Done (run r1).", true)
+	noFixWindow(t)
+	s.agentPick = true
+	s.pickSwitch(Choice{Vendor: adapter.Codex}, false)
+	s.agentPick = false
+	if s.pk.page != nil || s.pk.fix == nil {
+		t.Fatalf("page %+v fix %+v", s.pk.page, s.pk.fix)
+	}
+	var typed []byte
+	s.input = func(b []byte) { typed = append(typed, b...) }
+	s.pickerInput([]byte("y"))
+	if s.open || len(*ran) != 0 || string(typed) != "y" {
+		t.Fatalf("a stray y: open %v ran %q", s.open, *ran)
+	}
+	s.agentPick = true
+	s.pickSwitch(Choice{Vendor: adapter.Codex}, false)
+	s.agentPick = false
+	s.pickerInput([]byte{s.pk.key})
+	if g := s.pk.page; g == nil || strings.Join(g.confirm, " ") != "policy wire" || g.then == nil {
+		t.Fatalf("page %+v", g)
+	}
+}
+
+// noFixWindow turns off the fix page's type-ahead window and the note's
+// guard, for a test that answers at once.
+func noFixWindow(t *testing.T) {
+	t.Helper()
+	oldW, oldG := checkTypeAhead, confirmGuard
+	checkTypeAhead, confirmGuard = 0, 0
+	t.Cleanup(func() { checkTypeAhead, confirmGuard = oldW, oldG })
 }

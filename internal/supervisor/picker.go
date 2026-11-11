@@ -90,6 +90,10 @@ type picker struct {
 	// queues a resume of the vendor on screen; in the list, the switch
 	// waiting is that resume.
 	resume bool
+	// fix: the note tells of a fix aggy can make (T6979, #133 review) that
+	// the person did not ask for; the switch key opens its page, any other
+	// key goes to the CLI as at any note.
+	fix *fixOffer
 	// menu and page, when set, are an option list or a result (T6909, view.go),
 	// which take the whole screen.
 	menu *menu
@@ -103,7 +107,7 @@ type picker struct {
 // list sets the picker to the vendor list, its toggles cleared.
 func (p *picker) list() {
 	p.menu, p.page = nil, nil
-	p.confirm, p.note, p.lines, p.resume = "", false, nil, false
+	p.confirm, p.note, p.lines, p.resume, p.fix = "", false, nil, false, nil
 	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
 	p.opts, p.editing, p.edit, p.editErr, p.stage, p.kids = Choice{}, false, nil, "", "", nil
 	p.seed = Choice{}
@@ -112,14 +116,14 @@ func (p *picker) list() {
 // ask sets the picker to confirm a switch to v, explained by lines.
 func (p *picker) ask(v adapter.Vendor, lines ...string) {
 	p.menu, p.page = nil, nil
-	p.confirm, p.note, p.lines, p.resume = v, false, lines, false
+	p.confirm, p.note, p.lines, p.resume, p.fix = v, false, lines, false, nil
 	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
 }
 
 // tell sets the picker to show a note.
 func (p *picker) tell(lines ...string) {
 	p.menu, p.page = nil, nil
-	p.confirm, p.note, p.lines, p.resume = "", true, lines, false
+	p.confirm, p.note, p.lines, p.resume, p.fix = "", true, lines, false, nil
 	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
 }
 

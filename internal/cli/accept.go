@@ -726,7 +726,18 @@ func checkTouched(raw, hooks string) ([]string, error) {
 type protectedTouch struct{ paths []string }
 
 func (e *protectedTouch) Error() string {
-	return fmt.Sprintf("refusing: the diff touches %s, which may hold hooks, CI, config, or instructions a tool or CLI runs or loads", strings.Join(e.paths, ", "))
+	return fmt.Sprintf("refusing: the diff touches %s, which may hold hooks, CI, config, or instructions a tool or CLI runs or loads", fieldList(e.paths))
+}
+
+// fieldList joins paths for a line on the terminal, each escaped: a borrow
+// child chose the names, and a control character in one must not rewrite the
+// line above a question (#133 review).
+func fieldList(paths []string) string {
+	out := make([]string, len(paths))
+	for i, p := range paths {
+		out[i] = termsafe.Field(p)
+	}
+	return strings.Join(out, ", ")
 }
 
 // maxProtectedLines caps the hunks showProtected prints.
@@ -735,7 +746,7 @@ const maxProtectedLines = 400
 // showProtected prints the hunks of the protected files the diff touches,
 // cut at maxProtectedLines, its control characters taken out.
 func showProtected(ctx context.Context, g *gitWorktrees, wt store.Worktree, paths []string, out io.Writer) {
-	fmt.Fprintf(out, "The diff touches files that may hold hooks, CI, config, or instructions: %s\n", strings.Join(paths, ", "))
+	fmt.Fprintf(out, "The diff touches files that may hold hooks, CI, config, or instructions: %s\n", fieldList(paths))
 	run, err := g.wtRun(ctx, wt)
 	if err != nil {
 		fmt.Fprintf(out, "aggy cannot show their hunks: %s\n", termsafe.Line(err.Error()))
@@ -750,7 +761,7 @@ func showProtected(ctx context.Context, g *gitWorktrees, wt store.Worktree, path
 	lines := strings.Split(strings.TrimRight(d, "\n"), "\n")
 	for i, l := range lines {
 		if i == maxProtectedLines {
-			fmt.Fprintf(out, "  ... %d more lines; review them in %s\n", len(lines)-i, wt.Path)
+			fmt.Fprintf(out, "  ... %d more lines; review them in %s\n", len(lines)-i, termsafe.Field(wt.Path))
 			break
 		}
 		fmt.Fprintf(out, "  %s\n", termsafe.Line(l))

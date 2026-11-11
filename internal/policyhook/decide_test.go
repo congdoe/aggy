@@ -14,6 +14,30 @@ import (
 
 const force = "git push --force origin main"
 
+// TestProtectedNormalisation (#133 review): a write to aggy's state folder
+// spelled in another Unicode normalisation asks, as the folder itself does,
+// on a file system that folds them. Skipped where it tells them apart.
+func TestProtectedNormalisation(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(home, "café")
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(home, "café")
+	if _, err := os.Lstat(other); err != nil {
+		t.Skipf("this file system tells the normalisations apart (%v)", err)
+	}
+	d := plan()
+	d.Root, d.Protected = filepath.Join(home, "repo"), []string{state}
+	got := Judge(d, []parity.Call{{Kind: parity.CallWrite, Text: filepath.Join(other, "permissions.json")}}, "", true)
+	if got.Verdict != parity.VerdictAsk || got.Reason != parity.ReasonProtected {
+		t.Errorf("got %+v, want a protected ask", got)
+	}
+}
+
 func plan() DecidePlan {
 	d := NewDecidePlan("claude", "2.1.322", false, parity.PolicyPlan{OnScreen: true}, parity.PreApproved{Commands: []string{force}})
 	d.Root, d.Protected = "/repo", []string{"/home/u/.aggy"}
@@ -598,6 +622,17 @@ func TestOpenCodeJudge(t *testing.T) {
 	}
 	if got := JudgeOpenCode(p, []parity.Call{{Kind: parity.CallRead, Text: "/elsewhere/a"}}, true); got.Reason != parity.ReasonOutside {
 		t.Errorf("outside read: %+v", got)
+	}
+	// #133 review: a private key outside the root asks every time: a saved
+	// allow (effect allow) is turned back, and a read pre-approval of it,
+	// which must lie under the root, never applies.
+	keyPlan := plan()
+	keyPlan.Reads = []parity.ReadApproval{{Path: "/home/u/.ssh/id_ed25519"}}
+	for _, effect := range []string{"allow", "ask"} {
+		calls, ok := OpenCodeCalls([]byte(`{"action":"read","resources":["/home/u/.ssh/id_ed25519"],"effect":"`+effect+`"}`), "/repo")
+		if got := JudgeOpenCode(keyPlan, calls, ok); got.Verdict != parity.VerdictAsk {
+			t.Errorf("a key outside, effect %s: %+v", effect, got)
+		}
 	}
 	// A group set to deny still refuses outside the root.
 	denied := plan()

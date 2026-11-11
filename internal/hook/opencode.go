@@ -243,6 +243,10 @@ func OpenCodeGuard(payload []byte, env OpenCodeEnv) Decision {
 // at any part of it, a location safefs lets aggy name (never a vendor
 // credential file), and not aggy's own state (env.Protected). A path that
 // reads as inside the repo but leads out through a link is not one.
+//
+// TODO(T6954): a second hard link outside the repo to a file aggy guards by
+// identity rather than name passes; the guard cannot find a file's other
+// names (#133 review).
 func honestOutside(p, dir, root string, env OpenCodeEnv) bool {
 	q, err := expandHome(p, env)
 	if err != nil {
@@ -258,16 +262,19 @@ func honestOutside(p, dir, root string, env OpenCodeEnv) bool {
 	if _, err := env.Real(q); err != nil {
 		return false
 	}
+	lq := strings.ToLower(q)
 	for _, pr := range env.Protected {
-		if within(q, filepath.Clean(pr)) {
+		if within(lq, strings.ToLower(filepath.Clean(pr))) {
 			return false
 		}
 		// The state folder's own real path, where a link leads to it.
-		if r, err := env.Real(pr); err != nil || within(q, r) {
+		if r, err := env.Real(pr); err != nil || within(lq, strings.ToLower(r)) {
 			return false
 		}
 	}
-	return true
+	// By identity, not spelling (#133 review): ~/.AGGY on a file system that
+	// folds case is aggy's folder.
+	return !SameAsProtected(q, env.Protected, safefs.Stat, env.Lstat)
 }
 
 // direct reports a path that leads where its text says, from base: no link
