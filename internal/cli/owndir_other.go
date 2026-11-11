@@ -7,3 +7,6 @@ import "io/fs"
 // ownPrivateDir cannot check owners here, so no folder passes until the
 // Windows port.
 func ownPrivateDir(fs.FileInfo) bool { return false }
+
+// ownPrivateFile, likewise, passes no file.
+func ownPrivateFile(fs.FileInfo) bool { return false }

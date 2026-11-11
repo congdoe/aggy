@@ -434,6 +434,12 @@ const staleAfter = time.Minute
 // folder, not a symlink, older than staleAfter, whose parent's supervisor
 // does not hold its lock. Errors are
 // ignored; the next run tries again.
+//
+// A crashed OpenCode launch's key file (T6931) stays in its folder until
+// this runs, at the next launch. TODO(T6954): sweep from aggy gc as one of
+// its listed items (it shows and asks before removing, so a silent sweep
+// does not fit) and name the leftover in aggy doctor (which changes
+// nothing, so it can only say so).
 func sweepMemoryDirs(runDir string, now time.Time) {
 	des, err := safefs.ReadDir(runDir)
 	if err != nil {

@@ -79,8 +79,9 @@ func runKeyCmd(args ...string) (int, string, string) {
 	return code, out.String(), errb.String()
 }
 
-// treeHolds reports the files under root that hold b.
-func treeHolds(t *testing.T, root string, b []byte, skip ...string) []string {
+// treeHolds reports the files under root that hold canary, plain or encoded
+// (holdsCanary).
+func treeHolds(t *testing.T, root string, canary string, skip ...string) []string {
 	t.Helper()
 	var hits []string
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -93,7 +94,7 @@ func treeHolds(t *testing.T, root string, b []byte, skip ...string) []string {
 			}
 		}
 		data, err := os.ReadFile(p)
-		if err == nil && bytes.Contains(data, b) {
+		if err == nil && holdsCanary(data, canary) {
 			hits = append(hits, p)
 		}
 		return nil
@@ -112,7 +113,7 @@ func TestKeyCycle(t *testing.T) {
 	for _, kind := range []keyring.Kind{keyring.Security, keyring.SecretTool} {
 		t.Run(keyring.Helper{Kind: kind}.Name(), func(t *testing.T) {
 			chain, home := keyWorld(t, kind)
-			const canary = "sk-ant-canary-T6931-0123456789"
+			const canary = keyCanary
 			var outs []string
 			step := func(want int, args ...string) (string, string) {
 				t.Helper()
@@ -161,15 +162,15 @@ func TestKeyCycle(t *testing.T) {
 				t.Errorf("list after remove = %q", out)
 			}
 			for _, o := range outs {
-				if strings.Contains(o, canary) {
+				if holdsCanary([]byte(o), canary) {
 					t.Errorf("printed the key: %q", o)
 				}
 			}
-			if hits := treeHolds(t, home, []byte(canary)); len(hits) > 0 {
+			if hits := treeHolds(t, home, canary); len(hits) > 0 {
 				t.Errorf("the key is in files under HOME: %q", hits)
 			}
 			calls, err := os.ReadFile(filepath.Join(chain, "calls.jsonl"))
-			if err != nil || bytes.Contains(calls, []byte(canary)) {
+			if err != nil || holdsCanary(calls, canary) {
 				t.Errorf("the key reached the tool's arguments, or no calls: %v", err)
 			}
 		})
@@ -290,7 +291,7 @@ func TestKeyUnwireNote(t *testing.T) {
 // launch a person started, only for a provider the repo lets in, and only as
 // a 0600 file the config names; the config itself never holds the value.
 func TestOpenCodeKeysLaunch(t *testing.T) {
-	const canary = "sk-ant-canary-launch-55555"
+	const canary = hexCanary
 	cases := []struct {
 		name     string
 		person   bool
@@ -336,9 +337,22 @@ func TestOpenCodeKeysLaunch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			defer s.wipeKeys()
 			if (reads > 0) != c.wantRead {
 				t.Errorf("reads = %d, want read %v", reads, c.wantRead)
 			}
+			// #138 review L2: nothing is written until the launch is recorded.
+			if hits := treeHolds(t, filepath.Dir(dir), canary); len(hits) > 0 {
+				t.Errorf("a key file before the commit: %q", hits)
+			}
+			lines, err := s.writeKeys()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s.keys != nil {
+				t.Error("writeKeys left the keys in memory")
+			}
+			s.warns = append(s.warns, lines...)
 			if c.wantLine != "" && !slices.ContainsFunc(s.warns, func(w string) bool { return strings.Contains(w, c.wantLine) }) {
 				t.Errorf("warns %q lack %q", s.warns, c.wantLine)
 			}
@@ -346,7 +360,7 @@ func TestOpenCodeKeysLaunch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if bytes.Contains(b, []byte(canary)) {
+			if holdsCanary(b, canary) {
 				t.Error("the config holds the key")
 			}
 			var doc struct {
@@ -386,7 +400,7 @@ func TestOpenCodeKeysLaunch(t *testing.T) {
 			if kb, _ := os.ReadFile(keyFile); string(kb) != canary {
 				t.Errorf("key file holds %q", kb)
 			}
-			if hits := treeHolds(t, filepath.Dir(dir), []byte(canary), keyFile); len(hits) > 0 {
+			if hits := treeHolds(t, filepath.Dir(dir), canary, keyFile); len(hits) > 0 {
 				t.Errorf("the key is in other files: %q", hits)
 			}
 		})
@@ -398,7 +412,7 @@ func TestOpenCodeKeysLaunch(t *testing.T) {
 // of Claude Code, Codex, or Grok gets it nowhere (environment, arguments,
 // stdin, prompt, files it is given), and no borrow runs the keychain tool.
 func TestKeyNeverReachesBorrows(t *testing.T) {
-	const canary = "sk-canary-borrow-7777777"
+	const canary = keyCanary
 	cases := []struct {
 		v        adapter.Vendor
 		scenario string
@@ -457,7 +471,7 @@ func TestKeyNeverReachesBorrows(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(chain, "calls.jsonl")); err == nil {
 				t.Error("a borrow ran the keychain tool")
 			}
-			if strings.Contains(out+errOut, canary) {
+			if holdsCanary([]byte(out+errOut), canary) {
 				t.Error("the borrow printed the key")
 			}
 		})
@@ -470,7 +484,7 @@ func TestKeyNeverReachesBorrows(t *testing.T) {
 // stores is not read at all.
 func TestKeyTamperedIndex(t *testing.T) {
 	chain, _ := keyWorld(t, keyring.Security)
-	const canary = "sk-ant-canary-tamper-1234"
+	const canary = hexCanary
 	if err := os.WriteFile(filepath.Join(chain, "item."+keyring.Service+".anth@anthropic"), []byte(canary), 0o600); err != nil {
 		t.Fatal(err)
 	}

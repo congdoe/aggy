@@ -16,8 +16,8 @@ rest of it is.
 - **No credentials.** An adapter never reads, copies, or stores a vendor
   credential file, a token, or an API key. The one key aggy itself holds
   is one the person stored with `aggy key` (design.md section 15): it is
-  read from the OS keychain by `internal/cli` and `internal/execrun`, never
-  by an adapter, and handed only to OpenCode on screen, as a file the
+  read from the OS keychain through `internal/execrun` when `internal/cli`
+  asks, never by an adapter, and handed only to OpenCode on screen, as a file the
   launch's config names; a new vendor gets none unless the design says so.
   Every file access goes through
   `internal/safefs`, and a new vendor's credential files are added to its

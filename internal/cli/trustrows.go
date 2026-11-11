@@ -108,7 +108,7 @@ func init() {
 	})
 	registerTrustRow(trustRowDef{
 		Row: trustlist.Row{ID: trustRowOpenCode, Label: "OpenCode (the ChatGPT and Grok harness)", Group: trustlist.Harness,
-			Warning: "this repo's own OpenCode plugins can run code, as you, on the full screen"},
+			Warning: "this repo's own OpenCode plugins can run code, as you, on the full screen, and can read a key you stored with aggy key while OpenCode runs"},
 		bin: vendorBin(adapter.OpenCode), order: 20,
 		current: func(tg trustTarget) bool {
 			on, _ := openCodeTrusted(tg.root)

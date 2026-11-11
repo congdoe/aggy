@@ -348,6 +348,8 @@ func TestOpenCodeOutsideRead(t *testing.T) {
 		{"an inside name that leads out", OpenCodeInput{Tool: "read", Path: "inside/notes.txt", Strict: true, Evaluating: true, Cleared: []string{"inside/notes.txt", notes}}, whyOutside, 0},
 		{"through a link outside", OpenCodeInput{Tool: "read", Path: filepath.Join(home, "via", "notes.txt"), Strict: true, Evaluating: true, Cleared: []string{filepath.Join(home, "via", "notes.txt")}}, whyOutside, 0},
 		{"aggy's own state", OpenCodeInput{Tool: "read", Path: filepath.Join(state, "permissions.json"), Strict: true, Evaluating: true, Cleared: []string{filepath.Join(state, "permissions.json")}}, whyOutside, 0},
+		// T6931 (#138 review M3): a stored key's file, cleared or not.
+		{"a stored key's file", OpenCodeInput{Tool: "read", Path: filepath.Join(state, "run", "p.1.memory", "opencode", "keys", "anthropic"), Strict: true, Evaluating: true, Cleared: []string{filepath.Join(state, "run", "p.1.memory", "opencode", "keys", "anthropic")}}, whyOutside, 0},
 		{"a vendor credential", OpenCodeInput{Tool: "read", Path: filepath.Join(home, ".codex", "auth.json"), Strict: true, Evaluating: true, Cleared: []string{filepath.Join(home, ".codex", "auth.json")}}, whyOutside, 0},
 		{".env outside stays refused", OpenCodeInput{Tool: "read", Path: filepath.Join(other, ".env"), Strict: true, Evaluating: true, Cleared: []string{filepath.Join(other, ".env")}}, whyDeniedName, 0},
 		{"a private key outside, cleared", OpenCodeInput{Tool: "read", Path: "~/.ssh/id_ed25519", Strict: true, Evaluating: true, Cleared: []string{sshKey}}, "", 1},

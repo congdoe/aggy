@@ -52,10 +52,16 @@ is for, never the value, and no aggy command prints a value.
 
 A key goes only to OpenCode, at a launch you start at a terminal, for a provider
 the repo's allowed_vendors lets in, as a 0600 file in that launch's own folder,
-removed when OpenCode exits. Any process OpenCode starts can read it. It never
-reaches Claude Code, Codex, Grok, Hermes, or a borrow, and a repo cannot name one.
+removed when OpenCode exits (after a crash, at the next aggy launch). Any
+process running as you can read it while OpenCode runs. It never reaches Claude
+Code, Codex, Grok, Hermes, or a borrow, and a repo cannot name one.
 On macOS every read asks you in a dialog: do not choose Always Allow there, or
-any program could read the key through security without asking.
+any program could read the key through security without asking. Just before
+each read aggy prints "macOS will now ask to let aggy read key NAME@P"; a
+keychain dialog with no such line just before it did not come from aggy, and
+you should choose Deny.
+add replaces an item already in the keychain by deleting it and storing a fresh
+one, and says so when aggy did not record that item.
 add and remove ask you at a terminal; a session's tool shell is refused, which
 holds against mistakes, not a model that tries. aggy unwire leaves keys alone.
 `
@@ -83,6 +89,11 @@ var keyHelper = func() (keyring.Helper, error) {
 
 // keyTerminal is the terminal the keychain tool asks on; a test replaces it.
 var keyTerminal = func() *os.File { return os.Stdin }
+
+// keyReadNotice is where the line before each keychain read at a launch goes:
+// stderr, the person's terminal, since a launch reads keys only for a person
+// at one. A test replaces it.
+var keyReadNotice io.Writer = os.Stderr
 
 // How long each keychain step may take: typing a key, answering macOS's
 // dialog, and the rest.
@@ -187,21 +198,58 @@ func keyAdd(args []string, stdout, stderr io.Writer) int {
 		// new provider is a new item: the old one goes first.
 		return keyRefuse(stderr, name, diag.CodeKeyProviderTaken, fmt.Sprintf("key %s is bound to provider %s: aggy key remove %s first, or pick another name", key, keys[i].Provider, key))
 	}
-	if i := slices.IndexFunc(keys, func(k store.Key) bool { return k.Name == key }); i >= 0 {
+	account := keyring.Account(key, *provider)
+	indexed := slices.ContainsFunc(keys, func(k store.Key) bool { return k.Name == key })
+	// #138 review H1: an item already there is never updated in place, which
+	// may keep its list of trusted programs; it is deleted and a fresh one
+	// added. On macOS aggy looks for it first, without reading it; secret-tool
+	// has no such look, so on Linux aggy clears the item every time.
+	there := h.Kind != keyring.Security
+	if args, ok := h.PresenceArgs(account); ok {
+		code, err := execrun.KeychainRun(ctx, h.Path, args, keyRunTimeout)
+		switch {
+		case err != nil:
+			return keyRefuse(stderr, name, diag.CodeKeyHelperFailed, fmt.Sprintf("%s did not finish (%s) looking for an item already there, so nothing was stored", h.Name(), keyErrWord(err)))
+		case code == 0:
+			there = true
+		case !h.NotFound(code):
+			return keyRefuse(stderr, name, diag.CodeKeyHelperFailed, fmt.Sprintf("%s exited %d looking for an item already there, so nothing was stored", h.Name(), code))
+		}
+	}
+	switch {
+	case indexed:
 		yes, _ := askInPlace(os.Getenv, offerIn, stdout, inPlace{
-			change: fmt.Sprintf("A key named %s is already stored, for provider %s. Adding it again replaces it in %s.", key, keys[i].Provider, h.Store()),
+			change: fmt.Sprintf("A key named %s is already stored, for provider %s. Adding it again deletes its item in %s and stores a fresh one.", key, *provider, h.Store()),
 			ask:    "Replace it?",
 		})
 		if !yes {
 			fmt.Fprintln(stdout, "Nothing changed.")
 			return 1
 		}
+	case there && h.Kind == keyring.Security:
+		yes, _ := askInPlace(os.Getenv, offerIn, stdout, inPlace{
+			change: fmt.Sprintf("%s already holds an item for key %s (provider %s), and aggy did not record it: it may have been planted, by a program that set itself to read the key you would type. aggy deletes that item and stores yours in a fresh one that trusts no program.", h.Store(), key, *provider),
+			ask:    "Delete it and store your key fresh?",
+		})
+		if !yes {
+			fmt.Fprintln(stdout, "Nothing changed.")
+			return 1
+		}
+	}
+	if there {
+		code, err := execrun.KeychainRun(ctx, h.Path, h.RemoveArgs(account), keyRunTimeout)
+		switch {
+		case err != nil:
+			return keyRefuse(stderr, name, diag.CodeKeyHelperFailed, fmt.Sprintf("%s did not finish (%s) deleting the item already there, so nothing was stored", h.Name(), keyErrWord(err)))
+		case code != 0 && !h.NotFound(code):
+			return keyRefuse(stderr, name, diag.CodeKeyHelperFailed, fmt.Sprintf("%s exited %d deleting the item already there, so nothing was stored; aggy never stores a key over an item it could not delete", h.Name(), code))
+		}
 	}
 	fmt.Fprintf(stdout, "%s asks for the key now. Paste or type it; it is not shown, and it goes from this terminal to %s without passing through aggy.\n", h.Name(), h.Store())
 	if h.Kind == keyring.Security {
 		fmt.Fprintln(stdout, "The item trusts no program, so each time aggy reads it for an OpenCode launch, macOS asks you in a dialog. Do not choose Always Allow there: any program could then read the key through security without asking.")
 	}
-	code, err := execrun.KeychainPrompt(ctx, h.Path, h.AddArgs(keyring.Account(key, *provider)), keyTerminal(), keyPromptTimeout)
+	code, err := execrun.KeychainPrompt(ctx, h.Path, h.AddArgs(account), keyTerminal(), keyPromptTimeout)
 	if err != nil {
 		return keyRefuse(stderr, name, diag.CodeKeyHelperFailed, fmt.Sprintf("%s did not finish (%s), so nothing was stored", h.Name(), keyErrWord(err)))
 	}
@@ -221,6 +269,9 @@ func keyAdd(args []string, stdout, stderr io.Writer) int {
 func keyErrWord(err error) string {
 	if errors.Is(err, execrun.ErrTimeout) {
 		return "it timed out"
+	}
+	if errors.Is(err, execrun.ErrInterrupted) {
+		return "it was interrupted"
 	}
 	return "it could not run"
 }
@@ -386,6 +437,13 @@ func readKeychain(ctx context.Context, k store.Key) (*keyring.Value, error) {
 	if err != nil {
 		return nil, err
 	}
+	// #138 review L6: the line right before the dialog, so a dialog with no
+	// such line is known not to be aggy's.
+	if h.Kind == keyring.Security {
+		fmt.Fprintf(keyReadNotice, "macOS will now ask to let aggy read key %s.\n", keyring.Account(k.Name, k.Provider))
+	} else {
+		fmt.Fprintf(keyReadNotice, "aggy now reads key %s from %s.\n", keyring.Account(k.Name, k.Provider), h.Store())
+	}
 	v, code, err := execrun.KeychainRead(ctx, h.Path, h.ReadArgs(keyring.Account(k.Name, k.Provider)), keyReadTimeout)
 	switch {
 	case err != nil && code == 0:
@@ -438,6 +496,14 @@ func openCodeKeys(in openCodeInput) (got []openCodeKey, warns []string) {
 		got = append(got, openCodeKey{name: k.Name, provider: k.Provider, value: v})
 	}
 	return got, warns
+}
+
+// keyPerson reports whether a launch may read stored keys: an on-screen
+// launch (not a borrow child, even one reopened on screen; #138 review L4)
+// that a person started at a terminal, outside a session's tool shell
+// (trustPerson).
+func keyPerson(who planFor, getenv func(string) string) bool {
+	return who == planOnScreen && trustPerson(getenv)
 }
 
 func keyNotPassed(provider string) {

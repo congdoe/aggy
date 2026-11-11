@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // fake-keychain stands in for macOS's /usr/bin/security and Linux's
@@ -21,6 +22,16 @@ import (
 // person's terminal (the same terminal in a test's pseudo-terminal); it turns
 // echo off there as both tools do. $AGGY_FAKE_KEYCHAIN_DENY=1 makes every
 // read fail as a Deny in macOS's dialog would (exit 51, unverified).
+//
+// The item's list of trusted programs (T6931, #138 review H1) is modelled as
+// a sidecar file, acl.<service>.<account>: "empty" for an item added with
+// -T "", "trusted" for one added without -T (security trusts the program that
+// adds it), or one a test planted. -U on an item already there keeps its old
+// list, the case the review feared (unverified live), so aggy never passes
+// -U. $AGGY_FAKE_KEYCHAIN_HANG=1 makes an add turn echo off and then hang,
+// never restoring the terminal, as a tool killed mid-prompt leaves it.
+// $AGGY_FAKE_KEYCHAIN_NODELETE=1 makes every delete (and secret-tool clear)
+// fail.
 
 // keychainCall is one line of calls.jsonl.
 type keychainCall struct {
@@ -55,6 +66,11 @@ func itemPath(dir, service, account string) (string, error) {
 		}
 	}
 	return filepath.Join(dir, "item."+service+"."+account), nil
+}
+
+// aclPath is the sidecar holding the item's list of trusted programs.
+func aclPath(item string) string {
+	return filepath.Join(filepath.Dir(item), "acl."+strings.TrimPrefix(filepath.Base(item), "item."))
 }
 
 // fakeSecurity follows security(1)'s generic-password commands, with -s, -a,
@@ -98,6 +114,24 @@ func fakeSecurity(dir string, args []string) int {
 		if !flags["-w"] {
 			return fail(2, "security: fake wants -w last, to ask for the value")
 		}
+		if os.Getenv("AGGY_FAKE_KEYCHAIN_HANG") == "1" {
+			if _, err := noEcho(0); err != nil {
+				return fail(1, "security: %v", err)
+			}
+			fmt.Fprint(os.Stderr, "password data for new item: ")
+			time.Sleep(time.Hour)
+			return 1
+		}
+		acl := "trusted"
+		if t, ok := opts["-T"]; ok && t == "" {
+			acl = "empty"
+		}
+		if exists {
+			// -U: the item's old list stays.
+			if b, err := os.ReadFile(aclPath(p)); err == nil {
+				acl = string(b)
+			}
+		}
 		first, err := askValue("password data for new item: ")
 		if err != nil {
 			return fail(1, "security: %v", err)
@@ -108,6 +142,9 @@ func fakeSecurity(dir string, args []string) int {
 			return 1
 		}
 		if err := os.WriteFile(p, []byte(first), 0o600); err != nil {
+			return fail(1, "security: %v", err)
+		}
+		if err := os.WriteFile(aclPath(p), []byte(acl), 0o600); err != nil {
 			return fail(1, "security: %v", err)
 		}
 		return 0
@@ -131,6 +168,12 @@ func fakeSecurity(dir string, args []string) int {
 		fmt.Printf("%s\n", b)
 		return 0
 	case "delete-generic-password":
+		if os.Getenv("AGGY_FAKE_KEYCHAIN_NODELETE") == "1" {
+			// As a Deny in a dialog for deleting an item that trusts no
+			// program might (unverified).
+			fmt.Fprintln(os.Stderr, "security: SecKeychainItemDelete: User interaction is not allowed.")
+			return 51
+		}
 		if !exists {
 			fmt.Fprintln(os.Stderr, "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.")
 			return 44
@@ -138,6 +181,7 @@ func fakeSecurity(dir string, args []string) int {
 		if err := os.Remove(p); err != nil {
 			return fail(1, "security: %v", err)
 		}
+		_ = os.Remove(aclPath(p))
 		return 0
 	}
 	return 2
@@ -191,6 +235,9 @@ func fakeSecretTool(dir string, args []string) int {
 		_, _ = os.Stdout.Write(b)
 		return 0
 	case "clear":
+		if os.Getenv("AGGY_FAKE_KEYCHAIN_NODELETE") == "1" {
+			return 1
+		}
 		_ = os.Remove(p)
 		return 0
 	}

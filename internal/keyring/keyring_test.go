@@ -90,8 +90,9 @@ func TestArgs(t *testing.T) {
 	if i := slices.Index(add, "-T"); i < 0 || add[i+1] != "" {
 		t.Errorf("security add: no -T \"\", so the item would trust security: %q", add)
 	}
-	if !slices.Contains(add, "-U") {
-		t.Errorf("security add: no -U: %q", add)
+	// #138 review H1: -U may keep a planted item's trusted programs.
+	if slices.Contains(add, "-U") {
+		t.Errorf("security add passes -U: %q", add)
 	}
 	for _, h := range []Helper{sec, st} {
 		for _, args := range [][]string{h.AddArgs("k"), h.ReadArgs("k"), h.RemoveArgs("k")} {
@@ -135,6 +136,15 @@ func TestParse(t *testing.T) {
 		{"sk-abc\r\n", "sk-abc", true},
 		{"sk-abc", "sk-abc", true},
 		{"a+b/c=", "a+b/c=", true},
+		{"A.b_c~d-9", "A.b_c~d-9", true},
+		// #138 review L5: only [A-Za-z0-9._~+/=-]; anything else could be read
+		// by OpenCode's {file:} or a JSON reader as more than a key.
+		{"sk-{env:HOME}", "", false},
+		{`sk"abc`, "", false},
+		{`sk\abc`, "", false},
+		{"sk$abc", "", false},
+		{"sk:abc", "", false},
+		{"sk'abc", "", false},
 		{"", "", false},
 		{"\n", "", false},
 		{"two words\n", "", false},
