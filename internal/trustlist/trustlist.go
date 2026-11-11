@@ -3,7 +3,8 @@
 // list of what may run in the folder, where its code may be sent, and how a
 // harness runs there (T6980: Claude Code's own sandbox), which the
 // person ticks once. It holds the list's rows as shown, its state while it is
-// answered, how a typed line answers it, and what aggy records of the answer
+// answered, how a typed line or a key answers it (T6981: the list as a select,
+// select.go; a terminal's bytes read as keys, keys.go), and what aggy records of the answer
 // per folder, in aggy's own trust file. It decides nothing about what ticking a
 // row changes: each row registers that itself, in internal/cli, so a new row
 // never means editing the list.
@@ -243,6 +244,9 @@ const (
 	NotNow
 	// Never: never ask for this folder.
 	Never
+	// Interrupt: Ctrl-C at the select (Select.Press); nothing is recorded,
+	// and the caller stops, as Ctrl-C at the typed list did.
+	Interrupt
 )
 
 // Keys says how a typed line answers the list.
@@ -285,30 +289,9 @@ func (s *State) Read(line string) Choice {
 // Lines are the list as shown: All, then each group's rows with their
 // numbers, ticks, new marks, and warnings.
 func (s *State) Lines() []string {
-	box := func(on bool) string {
-		if on {
-			return "[x]"
-		}
-		return "[ ]"
-	}
-	out := []string{fmt.Sprintf(" 1 %s All harnesses", box(s.AllOn()))}
-	var g Group
-	for i, r := range s.Rows {
-		if r.Group != g {
-			g = r.Group
-			out = append(out, "", "   "+g.Title())
-		}
-		label := r.Label
-		if r.Missing {
-			label += " (not installed)"
-		}
-		if s.New[i] {
-			label += "   new"
-		}
-		out = append(out, fmt.Sprintf("%2d %s %s", i+2, box(s.On[i]), label))
-		if r.Warning != "" {
-			out = append(out, "        ! "+r.Warning)
-		}
+	var out []string
+	for _, e := range s.entries() {
+		out = append(out, e.text)
 	}
 	return out
 }

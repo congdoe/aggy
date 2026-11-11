@@ -532,7 +532,7 @@ func (s *session) cmdDone(r cmdResult) {
 		s.pk.menu = &menu{title: "turn a tool on or off (a resume of this CLI picks it up)", items: r.items, filterable: true, filter: r.filter}
 	case r.trust != nil:
 		s.pk.page = nil
-		s.pk.menu = &menu{title: g.title, check: &checkList{lines: r.trust.Lines, st: r.trust.State, opened: time.Now()}}
+		s.pk.menu = &menu{title: g.title, check: newCheckList(r.trust.Lines, r.trust.State)}
 	default:
 		if s.fixDone(g, r.out) {
 			return
@@ -560,6 +560,9 @@ func (s *session) closeView() {
 // viewInput takes keys at a menu or a page. A paste is dropped: it never picks.
 func (s *session) viewInput(b []byte) {
 	keys, runes := viewKeys(s.viewPaste.drop(b), s.pk.key)
+	if s.pk.menu != nil && s.pk.menu.check != nil && !checkBurst(keys, runes) {
+		return
+	}
 	for i, k := range keys {
 		var done bool
 		switch {

@@ -3,8 +3,6 @@
 package supervisor
 
 import (
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/congdoe/aggy/internal/diag"
@@ -15,39 +13,48 @@ import (
 // /aggy trust (T6977): this folder's trust list on aggy's own screen, drawn as
 // a menu is, with its rows ticked in place. Only the keyboard opens it (the
 // command is keyboard only) and only keys answer it: a paste is dropped before
-// it (viewPaste), and keys that arrive within checkTypeAhead of it opening
-// were typed before it, so they do nothing.
+// it (viewPaste), keys that arrive within checkTypeAhead of it opening
+// were typed before it, so they do nothing, and a read of several keys, or
+// of one aggy does not know, does nothing (checkBurst).
 
 // checkTypeAhead is how soon after the list opens a key counts as typed
 // before it, as the trust list before a launch drops a line typed ahead; a
 // variable for tests.
 var checkTypeAhead = 150 * time.Millisecond
 
-// checkList is a trust list being answered.
+// checkList is a trust list being answered: the same select, keys, and look
+// as the list at a first start (trustlist.Select, T6981).
 type checkList struct {
 	lines  []string // what it says first
-	st     *trustlist.State
-	at     int // the highlighted item: 0 is All, then each row
+	sel    *trustlist.Select
 	opened time.Time
 }
 
-// view is the list's screen: title, what it says, the rows, and the keys.
-func (c *checkList) view(title string, rows int) []string {
+func newCheckList(lines []string, st *trustlist.State) *checkList {
+	return &checkList{lines: lines, sel: trustlist.NewSelect(st), opened: time.Now()}
+}
+
+// view is the list's screen: title, what it says, then the select in the
+// rows left, scrolled to its cursor, with its keys last.
+func (c *checkList) view(title string, rows, cols int) []string {
 	out := []string{"aggy: " + title, ""}
 	out = append(out, c.lines...)
-	mark := fmt.Sprintf("%2d ", c.at+1)
-	for _, l := range c.st.Lines() {
-		if strings.HasPrefix(l, mark) {
-			l = ">" + l
-		} else {
-			l = " " + l
+	return append(out, c.sel.Frame(cols, max(rows-len(out), 1))...)
+}
+
+// checkBurst reports whether a read's keys may answer the list: one key, or
+// the same arrow held. A burst of typing, or a read with a key aggy does not
+// know, answers nothing, as at a first start (trustlist.Decoder).
+func checkBurst(keys []viewKey, runes []rune) bool {
+	for i, k := range keys {
+		if k == keyNone && runes[i] == 0 {
+			return false
 		}
-		out = append(out, l)
+		if i > 0 && (k != keys[0] || k != keyUp && k != keyDown) {
+			return false
+		}
 	}
-	for len(out) < rows-2 {
-		out = append(out, "")
-	}
-	return append(out, "", "Space or a number ticks; Enter confirms; n: not now; x: never for this folder; Esc goes back to the CLI.")
+	return true
 }
 
 // startTrust opens the trust list: read off the main loop, onto a page that
@@ -86,24 +93,35 @@ func (s *session) checkKey(k viewKey, r rune) bool {
 	if time.Since(c.opened) < checkTypeAhead {
 		return false // typed before the list was there
 	}
-	switch {
-	case k == keyClose || r == 'q' || r == 'n':
+	in := trustlist.Input{Key: trustlist.KeyRune, Rune: r}
+	switch k {
+	case keyUp:
+		in.Key = trustlist.KeyUp
+	case keyDown:
+		in.Key = trustlist.KeyDown
+	case keyEnter:
+		in.Key = trustlist.KeyEnter
+	case keyClose:
+		in.Key = trustlist.KeyEsc // Esc, Ctrl-C, or the switch key
+	case keyBackspace:
+		in.Key = trustlist.KeyBack
+	case keyNone:
+		if r == 0 {
+			return false
+		}
+	default:
+		return false
+	}
+	switch c.sel.Press(in) {
+	case trustlist.NotNow, trustlist.Interrupt:
 		// Esc, or not now: nothing is recorded, and a start asks again.
 		s.closeView()
 		return true
-	case k == keyUp || r == 'k':
-		c.at = max(c.at-1, 0)
-	case k == keyDown || r == 'j':
-		c.at = min(c.at+1, len(c.st.Rows))
-	case r == ' ':
-		c.st.Toggle(c.at + 1)
-	case r >= '1' && r <= '9':
-		c.st.Toggle(int(r - '0'))
-	case k == keyEnter:
-		s.answerTrust(m.title, c.st.Ticked(), trustlist.Confirm)
+	case trustlist.Confirm:
+		s.answerTrust(m.title, c.sel.St.Ticked(), trustlist.Confirm)
 		return true
-	case r == 'x':
-		s.answerTrust(m.title, c.st.Ticked(), trustlist.Never)
+	case trustlist.Never:
+		s.answerTrust(m.title, c.sel.St.Ticked(), trustlist.Never)
 		return true
 	}
 	return false
