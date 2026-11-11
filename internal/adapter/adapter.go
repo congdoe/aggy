@@ -53,10 +53,11 @@ func ParseVendor(s string) (Vendor, error) {
 // ExitCommand is the line the supervisor types into vendor v's session,
 // at a turn end, to end it for a switch, and whether that is verified.
 // It is "/exit" for every vendor, unverified except on OpenCode, where
-// it exits 0 with nothing open (docs/verification.md, T6930); the others
-// have no live check of it yet (docs/adapters.md). The supervisor asks
+// it exits 0 with nothing open (docs/verification.md, T6930), and Hermes,
+// where it exits 0 at the prompt (T6933, 2026-11-11); the others have no
+// live check of it yet (docs/adapters.md). The supervisor asks
 // the user before it types anything, verified or not.
-func ExitCommand(v Vendor) (cmd string, verified bool) { return "/exit", v == OpenCode }
+func ExitCommand(v Vendor) (cmd string, verified bool) { return "/exit", v == OpenCode || v == Hermes }
 
 // localCommands are, per vendor, the commands that start no model turn. Each
 // comes from the vendor's docs; a vendor with none sourced has none, which is the

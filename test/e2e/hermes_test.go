@@ -139,6 +139,11 @@ func TestHermesOnScreen(t *testing.T) {
 		t.Fatalf("hermes args = %q", h.Args)
 	}
 	profile := h.Args[1]
+	// aggy's block answers the shared-metrics offer, so Hermes' first-run
+	// screen never takes the first line typed.
+	if n := len(hermesRecords(t, w, "metrics-offer")); n != 0 {
+		t.Errorf("the metrics offer showed %d times", n)
+	}
 	if h.Env["AGGY_VENDOR"] != "hermes" || h.Cwd != w.cwd {
 		t.Errorf("env %v, cwd %q", h.Env, h.Cwd)
 	}

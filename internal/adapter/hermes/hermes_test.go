@@ -236,6 +236,30 @@ func TestHookCommand(t *testing.T) {
 	}
 }
 
+// TestSessionIDShapes: both shapes Hermes 0.23.1 mints pass, local-<64 hex>
+// (the only one seen live) and <date>_<time>_<hex>; nothing else does.
+func TestSessionIDShapes(t *testing.T) {
+	live := "local-" + strings.Repeat("0123456789abcdef", 4)
+	for _, c := range []struct {
+		id string
+		ok bool
+	}{
+		{live, true},
+		{"20261110_101500_a1b2c3", true},
+		{"20261110_101500_a1b2c3d4e5f6", true},
+		{"local-" + strings.Repeat("a", 63), false},
+		{"local-" + strings.Repeat("A", 64), false},
+		{live + "0", false},
+		{"cron_job_20261110_101500", false},
+		{"local-../x", false},
+		{"", false},
+	} {
+		if err := adapter.ValidSessionID(adapter.Hermes, c.id); (err == nil) != c.ok {
+			t.Errorf("%q: err %v, want ok %v", c.id, err, c.ok)
+		}
+	}
+}
+
 func TestBlock(t *testing.T) {
 	b := Block{Bin: "/bin/aggy", Home: "/h/.aggy", Profile: testProfile, Deny: []string{"*rm -rf /*", "*git push --force*"}}
 	block, err := b.Render()

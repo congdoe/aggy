@@ -217,7 +217,7 @@ func TestHermesHook(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 	const profile = "aggy-0123456789ab"
-	const sid, other = "20261110_101500_a1b2c3", "20261110_101600_d4e5f6"
+	const sid, other = "local-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "20261110_101600_d4e5f6"
 	d := policyhook.NewDecidePlan("hermes", "0.23.1", false, parity.PolicyPlan{OnScreen: true}, parity.PreApproved{})
 	d.Root = repo
 	planPath, planSum, err := writeDecidePlan(dir, d)

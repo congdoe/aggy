@@ -74,7 +74,9 @@ type hermesFake struct {
 	args    []string
 }
 
-var hermesSessionRE = regexp.MustCompile(`^[0-9]{8}_[0-9]{6}_[0-9a-f]{6}$`)
+// hermesSessionRE is the two shapes Hermes 0.23.1 mints: local-<sha256 hex>,
+// seen live, and the older <date>_<time>_<hex> (internal/adapter.ValidSessionID).
+var hermesSessionRE = regexp.MustCompile(`^(local-[0-9a-f]{64}|[0-9]{8}_[0-9]{6}_[0-9a-f]{6,12})$`)
 
 func runHermes() int {
 	sc, err := loadScenario()
@@ -283,6 +285,19 @@ func (h *hermesFake) config() (map[string]any, error) {
 	return cfg, nil
 }
 
+// metricsAnswered says the profile's config answers the shared-metrics offer
+// at offer version 2 (shared_metrics_consent.py:57-72).
+func (h *hermesFake) metricsAnswered() bool {
+	cfg, err := h.config()
+	if err != nil {
+		return false
+	}
+	t, _ := cfg["telemetry"].(map[string]any)
+	sm, _ := t["shared_metrics"].(map[string]any)
+	_, enabled := sm["enabled"]
+	return enabled && sm["offer_version"] == 2
+}
+
 func merge(dst, src map[string]any) {
 	for k, v := range src {
 		if dm, ok := dst[k].(map[string]any); ok {
@@ -417,8 +432,9 @@ func (h *hermesFake) export(args []string) int {
 	return 0
 }
 
+// newHermesID mints the shape every live session showed: local-<64 hex>.
 func newHermesID() string {
-	return time.Now().UTC().Format("20060102_150405") + "_" + newUUID()[:6]
+	return "local-" + strings.ReplaceAll(newUUID()+newUUID(), "-", "")
 }
 
 func (h *hermesFake) chat(args []string) int {
@@ -482,6 +498,17 @@ func (h *hermesFake) chat(args []string) int {
 	if !h.registerHooks(true) {
 		return 1
 	}
+	// The first-run "Help improve Hermes?" screen (LIVE, 2026-11-11): shown
+	// before the prompt on a profile with no shared-metrics answer at offer
+	// version 2, unless --query-file is given (shared_metrics_consent.py:
+	// 167-189); it takes the first line typed.
+	if last("--query-file") == "" && !h.metricsAnswered() {
+		h.record("metrics-offer", nil)
+		fmt.Print("Help improve Hermes?\n  Share with Nous\n> No thanks\n")
+		if h.in.Scan() {
+			_ = h.in.Text()
+		}
+	}
 	fmt.Printf("Hermes Agent (fake) %s\n> ", h.id)
 	if qf := last("--query-file"); qf != "" {
 		b, err := os.ReadFile(qf)
@@ -508,6 +535,20 @@ func (h *hermesFake) chat(args []string) int {
 		fmt.Print("> ")
 	}
 	return 0
+}
+
+// scriptMtime is the consent record's script_mtime_at_approval: the mtime of
+// the command's first word (shell_hooks.py:833-840), or nil.
+func scriptMtime(cmd string) any {
+	f := strings.Fields(cmd)
+	if len(f) == 0 {
+		return nil
+	}
+	st, err := os.Stat(f[0])
+	if err != nil {
+		return nil
+	}
+	return st.ModTime().UTC().Format(time.RFC3339Nano)
 }
 
 func fileExists(p string) bool {
@@ -577,7 +618,7 @@ func (h *hermesFake) registerHooks(prompt bool) bool {
 					appendJSON(os.Getenv("AGGY_FAKE_RECORD"), map[string]any{"vendor": "hermes", "mode": "hook-refused", "args": []string{ev, cmd}})
 					continue
 				}
-				al.Approvals = append(al.Approvals, map[string]any{"event": ev, "command": cmd, "approved_at": time.Now().UTC().Format(time.RFC3339)})
+				al.Approvals = append(al.Approvals, map[string]any{"event": ev, "command": cmd, "approved_at": time.Now().UTC().Format(time.RFC3339), "script_mtime_at_approval": scriptMtime(cmd)})
 				b, _ := json.Marshal(al)
 				_ = os.WriteFile(allow, b, 0o600)
 			}
@@ -603,7 +644,10 @@ func (h *hermesFake) turn(text string) {
 	}
 	fmt.Println(reply)
 	h.saveTurn(text, reply)
-	end := map[string]any{"completed": hs.TurnEnd == "", "failed": hs.TurnEnd == "failed", "interrupted": hs.TurnEnd == "interrupted"}
+	// extra's keys as seen live (2026-11-11); aggy reads only failed and
+	// interrupted.
+	end := map[string]any{"completed": hs.TurnEnd == "", "failed": hs.TurnEnd == "failed", "interrupted": hs.TurnEnd == "interrupted",
+		"kanban_task_id": nil, "model": "fake-model", "platform": "cli", "task_id": "", "telemetry_schema_version": 1, "turn_exit_reason": "", "turn_id": newUUID()}
 	for _, hk := range hooksOn {
 		if hk.event == "on_session_end" {
 			h.runHook(hk, h.payload(hk.event, "", nil, end))
