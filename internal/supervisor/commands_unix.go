@@ -47,15 +47,8 @@ func (s *session) catchCommand(raw, typed []byte) bool {
 	if !ok || !s.takes(c) {
 		return false
 	}
-	if s.o.Vendor == adapter.Claude || s.o.Vendor == adapter.Grok {
-		// Claude and Grok render inline, so on the alternate screen the keys go
-		// to an editor or a pager the CLI opened, where / searches.
-		s.outMu.Lock()
-		alt := s.alt.on
-		s.outMu.Unlock()
-		if alt {
-			return false
-		}
+	if s.altBlocks() {
+		return false
 	}
 	clear := []byte{ctrlU}
 	if raw[0] == esc {
@@ -78,14 +71,51 @@ func (s *session) catchCommand(raw, typed []byte) bool {
 
 // lineKnown reports whether the composer holds exactly cmdLine: typed since an
 // Enter that sent what was there (or since launch), as printable keys only.
-func (s *session) lineKnown() bool {
-	switch {
-	case len(s.cmdLine) == 0, s.cmdBad, !s.lenKnown && !s.cmdFresh, s.draftBlind, s.draftPaste, s.inPaste, s.pastePop:
-		return false
-	case s.cleared, s.escDoubt, s.escEmpty, s.escTwice, s.moved, s.askOpen(), s.exitGap:
+func (s *session) lineKnown() bool { return len(s.lineDoubts()) == 0 }
+
+// lineDoubts names, in a fixed order, each reason the tracker does not know
+// the composer holds exactly cmdLine; none when it does. The names are what a
+// miss record says (noteMiss, docs/logging.md), so each stays a fixed word.
+func (s *session) lineDoubts() []string {
+	var why []string
+	for _, d := range []struct {
+		on   bool
+		name string
+	}{
+		{len(s.cmdLine) == 0, "no_line"},
+		{s.cmdBad, "not_plain_keys"},
+		{!s.lenKnown && !s.cmdFresh, "len_unknown"},
+		{s.draftBlind, "draft_blind"},
+		{s.draftPaste, "draft_paste"},
+		{s.inPaste, "in_paste"},
+		{s.pastePop, "paste_popup"},
+		{s.cleared, "cleared"},
+		{s.escDoubt, "esc_doubt"},
+		{s.escEmpty, "esc_empty"},
+		{s.escTwice, "esc_twice"},
+		{s.moved, "moved"},
+		{s.askOpen(), "ask_open"},
+		{s.exitGap, "exit_gap"},
+		{s.compLen != len(s.cmdLine), "comp_len"},
+		{s.draftLen != len(s.cmdLine), "draft_len"},
+	} {
+		if d.on {
+			why = append(why, d.name)
+		}
+	}
+	return why
+}
+
+// altBlocks reports whether the alternate screen keeps a command from being
+// caught: Claude and Grok render inline, so there the keys go to an editor or
+// a pager the CLI opened, where / searches.
+func (s *session) altBlocks() bool {
+	if s.o.Vendor != adapter.Claude && s.o.Vendor != adapter.Grok {
 		return false
 	}
-	return s.compLen == len(s.cmdLine) && s.draftLen == len(s.cmdLine)
+	s.outMu.Lock()
+	defer s.outMu.Unlock()
+	return s.alt.on
 }
 
 // plainEnter reports whether raw is one press of Enter with no modifier: the
@@ -273,8 +303,10 @@ func (s *session) hookCommand(c sessioncmd.Command, line string) error {
 	}
 	switch {
 	case !s.enterAtPrompt || s.enterPick.bad || s.afterEnter != 0 || time.Since(s.enterAt) >= promptBlockWait:
+		s.hookMiss(c, []string{"hook_no_enter"})
 		return coded(diag.CodeCommandNoEnter, errors.New("no Enter of a / command at the prompt just before it"))
 	case !sessioncmd.Picked(s.o.Vendor, string(s.enterPick.text), s.enterPick.tab, string(s.enterPick.args), line):
+		s.hookMiss(c, []string{"hook_keys_differ"})
 		return coded(diag.CodeCommandNoEnter, errors.New("the keys typed before that Enter do not start that command"))
 	case s.hookedEnter.Equal(s.enterAt):
 		return coded(diag.CodeCommandNoEnter, errors.New("aggy already took a command for that Enter"))
