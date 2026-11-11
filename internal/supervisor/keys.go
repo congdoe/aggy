@@ -47,8 +47,8 @@ type keyFilter struct {
 
 // maxHeld bounds a held sequence: one longer goes on as keys, even a whole reply
 // at the head of a burst that long, which then counts as typed: the safe side.
-// TODO(T6895): replies scanReport does not know (XTQMODKEYS's, XTSMGRAPHICS's)
-// count as typed too, also on the safe side, until a CLI is seen asking for them.
+// A reply scanReport does not know counts as typed too, on the safe side; a
+// miss record names its kind (attrs.seqs, T6982).
 const maxHeld = 4 << 10
 
 // flush gives up on the held sequence: it is input after all.
@@ -147,7 +147,8 @@ const (
 // scanReport reads the escape sequence at the start of b, which starts with
 // ESC, and says what it is and how long. These are replies a terminal sends a
 // CLI that asked, none of which can submit anything: focus events, CPR, DA1 and
-// DA2, DSR, window reports, DECRPM, the kitty keyboard query's answer, whole
+// DA2, DSR, window reports, DECRPM, the kitty keyboard query's answer,
+// XTQMODKEYS's and XTSMGRAPHICS's replies, whole
 // OSC, DCS, and APC strings (OSC 11, XTVERSION, XTGETTCAP), and the mouse
 // wheel and a hover, in SGR or X10 encoding. A key's sequence, a click, and a
 // paste marker are not; a click or a drag can do something, as far as aggy
@@ -210,6 +211,16 @@ func scanCSI(b []byte) (int, reportKind) {
 		}
 	case 'u':
 		if b[2] == '?' && !bytes.ContainsAny(b[3:i], ";?>") {
+			return i + 1, isReport
+		}
+	case 'm':
+		// XTQMODKEYS's reply, CSI > Pp ; Pv m (T6982); no key has a > there.
+		if b[2] == '>' && !bytes.ContainsAny(b[3:i], "?>") {
+			return i + 1, isReport
+		}
+	case 'S':
+		// XTSMGRAPHICS's reply, CSI ? Pi ; Ps ; Pv S; a key's S has no ?.
+		if b[2] == '?' && !bytes.ContainsAny(b[3:i], "?>") {
 			return i + 1, isReport
 		}
 	}
