@@ -6,9 +6,11 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -111,6 +113,70 @@ func TestSendHermesPinProof(t *testing.T) {
 				t.Fatalf("got %+v %v, want ErrUnproven", resp, err)
 			}
 		})
+	}
+	// #136 review: a reply carrying six open files (the lock's among them)
+	// is refused, and every open file that arrived is closed. Cut by the
+	// kernel (MSG_CTRUNC, a buffer lowered to four) it is refused too; Linux
+	// drops what does not fit, but darwin still puts every file in the
+	// receiver's table, so there the two past the buffer stay open (the real
+	// buffer holds more than either kernel sends in one message).
+	for i, tt := range []struct {
+		name   string
+		rights int
+		leak   int
+	}{
+		{"six open files", maxRights, 0},
+		{"cut by the kernel", 4, map[bool]int{true: 2, false: 0}[runtime.GOOS == "darwin"]},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			own := fmt.Sprintf("3b9d3c4e-1f2a-4b5c-8d7e-6f5a4b3c2d1%d", i)
+			lockFD := openLock(t, own)
+			if err := syscall.Flock(lockFD, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+				t.Fatal(err)
+			}
+			fds := []int{lockFD}
+			for range 5 {
+				f, err := os.CreateTemp(t.TempDir(), "x")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = f.Close() })
+				fds = append(fds, int(f.Fd()))
+			}
+			path := sock(own)
+			ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			go func() {
+				c, err := ln.AcceptUnix()
+				if err != nil {
+					return
+				}
+				defer func() { _ = c.Close() }()
+				if _, err := bufio.NewReader(c).ReadString('\n'); err != nil {
+					return
+				}
+				_, _, _ = c.WriteMsgUnix([]byte(`{"ok":true,"no_policy":true}`+"\n"), syscall.UnixRights(fds...), nil)
+			}()
+			old := maxRights
+			maxRights = tt.rights
+			t.Cleanup(func() { maxRights = old })
+			before := openFDs(t)
+			resp, err := SendHermesPin(run, path, req, 5*time.Second)
+			if !errors.Is(err, ErrUnproven) {
+				t.Fatalf("got %+v %v, want ErrUnproven", resp, err)
+			}
+			if after := openFDs(t); after != before+tt.leak {
+				t.Errorf("open files %d before, %d after, want %d more", before, after, tt.leak)
+			}
+		})
+	}
+	// rightsIn reads a message the kernel cut as far as it goes.
+	whole := syscall.UnixRights(7, 8, 9)
+	if got := rightsIn(whole[:syscall.CmsgLen(8)]); len(got) != 2 || got[0] != 7 || got[1] != 8 {
+		t.Errorf("rightsIn(cut) = %v, want [7 8]", got)
 	}
 	// The probes left the real supervisor's lock alone.
 	if live, err := Live(run, pid); err != nil || !live {
@@ -218,4 +284,14 @@ func TestSendChecksRequestFirst(t *testing.T) {
 			t.Errorf("Send(%s/%s) worked", req.Vendor, req.Event)
 		}
 	}
+}
+
+// openFDs counts the test process's open files.
+func openFDs(t *testing.T) int {
+	t.Helper()
+	es, err := os.ReadDir("/dev/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(es)
 }
