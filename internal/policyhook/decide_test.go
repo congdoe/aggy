@@ -513,7 +513,8 @@ func TestReadIdentity(t *testing.T) {
 }
 
 // TestParseDecidePlan: a plan with an unknown key, another version, text
-// after it, or a group set to allow is refused.
+// after it, or a setting aggy does not know is refused. A group set to allow
+// (turned off on screen, T6979) is taken, and the hook has no opinion on it.
 func TestParseDecidePlan(t *testing.T) {
 	gp := NewDecidePlan("claude", "", true, parity.PolicyPlan{OnScreen: true,
 		Settings: map[string]permissions.Kind{permissions.PolicyRmRf: permissions.Deny}}, parity.PreApproved{Commands: []string{"x"}})
@@ -530,7 +531,7 @@ func TestParseDecidePlan(t *testing.T) {
 		`{"version":2,"vendor":"claude","root":"/repo","extra":1}`,
 		`{"version":1,"vendor":"claude","root":"/repo"}`,
 		`{"version":2,"vendor":"claude","root":"/repo"} {}`,
-		`{"version":2,"vendor":"claude","root":"/repo","settings":{"rm-rf":"allow"}}`,
+		`{"version":2,"vendor":"claude","root":"/repo","settings":{"rm-rf":"maybe"}}`,
 		`{"version":2,"vendor":"claude","root":"/repo","settings":{"nope":"ask"}}`,
 		`{"version":2,"vendor":"claude"}`,
 		`{"version":2,"vendor":"claude","root":"repo"}`,
@@ -539,6 +540,26 @@ func TestParseDecidePlan(t *testing.T) {
 		if _, err := ParseDecidePlan([]byte(bad)); err == nil {
 			t.Errorf("took %s", bad)
 		}
+	}
+	off, err := ParseDecidePlan([]byte(`{"version":2,"vendor":"claude","root":"/repo","settings":{"rm-rf":"allow"}}`))
+	if err != nil {
+		t.Fatalf("a group turned off: %v", err)
+	}
+	for _, tc := range []struct {
+		cmd  string
+		want parity.Verdict
+	}{
+		{"rm -rf build", parity.VerdictNone},
+		{"git reset --hard", parity.VerdictAsk},
+	} {
+		if d := Judge(off, []parity.Call{{Kind: parity.CallShell, Text: tc.cmd}}, "", true); d.Verdict != tc.want {
+			t.Errorf("%s with rm-rf off: %+v, want %s", tc.cmd, d, tc.want)
+		}
+	}
+	// Turning a group off never turns off the protected paths' asks (#129).
+	off.Protected = []string{"/home/me/.aggy"}
+	if d := Judge(off, []parity.Call{{Kind: parity.CallShell, Text: "rm -rf /home/me/.aggy"}}, "", true); d.Verdict != parity.VerdictAsk {
+		t.Errorf("a protected path with rm-rf off: %+v, want ask", d)
 	}
 }
 
@@ -562,11 +583,27 @@ func TestOpenCodeJudge(t *testing.T) {
 		{`{"action":"read","resources":["main.go"],"effect":"allow"}`, parity.VerdictNone},
 		{`{"action":"edit","resources":["/x/.env"],"effect":"allow"}`, parity.VerdictNone},
 		{`not json`, parity.VerdictAsk},
+		// T6979: a read outside the root asks, so the plugin can clear it.
+		{`{"action":"read","resources":["/elsewhere/notes.txt"],"effect":"allow"}`, parity.VerdictAsk},
+		{`{"action":"read","resources":["/repo/../elsewhere/notes.txt"],"effect":"allow"}`, parity.VerdictAsk},
+		{`{"action":"read","resources":["/repository/notes.txt"],"effect":"allow"}`, parity.VerdictAsk},
+		{`{"action":"read","resources":["/repo/docs/a.md"],"effect":"allow"}`, parity.VerdictNone},
+		{`{"action":"read","resources":["~/notes.txt"],"effect":"allow"}`, parity.VerdictNone},
+		{`{"action":"shell","resources":["cat /elsewhere/notes.txt"],"effect":"allow"}`, parity.VerdictNone},
 	} {
 		calls, ok := OpenCodeCalls([]byte(tt.in), "/repo")
 		if got := JudgeOpenCode(p, calls, ok); got.Verdict != tt.want {
 			t.Errorf("%s: %+v, want %s", tt.in, got, tt.want)
 		}
+	}
+	if got := JudgeOpenCode(p, []parity.Call{{Kind: parity.CallRead, Text: "/elsewhere/a"}}, true); got.Reason != parity.ReasonOutside {
+		t.Errorf("outside read: %+v", got)
+	}
+	// A group set to deny still refuses outside the root.
+	denied := plan()
+	denied.Settings = map[string]string{permissions.PolicyEnv: "deny"}
+	if got := JudgeOpenCode(denied, []parity.Call{{Kind: parity.CallRead, Text: "/elsewhere/.env"}}, true); got.Verdict != parity.VerdictDeny {
+		t.Errorf("a denied group outside: %+v", got)
 	}
 	if string(OpenCodeOutput(parity.CallDecision{Verdict: parity.VerdictNone})) != "none\n" {
 		t.Error("no opinion is not none")

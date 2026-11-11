@@ -49,6 +49,11 @@ type RepoConfig struct {
 	// free_models is read only so the launch can say it is ignored
 	// (SetsFreeModels); any other key there is still an unknown key.
 	OpenCode RepoOpenCode `toml:"opencode"`
+	// Policy is a repo's [policy] table, decoded whatever it holds and never
+	// acted on: the safety policy's settings, a group turned off above all
+	// (T6979), are the person's own, in ~/.aggy/permissions.json. A launch
+	// says it is ignored (SetsPolicy).
+	Policy any `toml:"policy"`
 }
 
 // RepoOpenCode is a repo's [opencode] table. A repo can never turn on
@@ -62,6 +67,10 @@ type RepoOpenCode struct {
 // SetsFreeModels reports whether the repo's config sets [opencode]
 // free_models, which aggy ignores.
 func (rc RepoConfig) SetsFreeModels() bool { return rc.OpenCode.FreeModels != nil }
+
+// SetsPolicy reports whether the repo's config has a [policy] table, which
+// aggy ignores.
+func (rc RepoConfig) SetsPolicy() bool { return rc.Policy != nil }
 
 // toolNameRE is tooldef's tool name rule.
 var toolNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
@@ -119,7 +128,7 @@ func ParseRepo(text string) (RepoConfig, error) {
 	if err != nil {
 		return RepoConfig{}, err
 	}
-	if err := unknownKeys(md); err != nil {
+	if err := unknownKeys(md, "policy"); err != nil {
 		return RepoConfig{}, err
 	}
 	if md.IsDefined("allowed_vendors") && rc.AllowedVendors == nil {

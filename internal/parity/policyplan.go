@@ -78,7 +78,9 @@ type PolicyPlan struct {
 	// ask. Anything else (a borrow child, one reopened on screen, a headless
 	// run) gets every rule as a deny, whatever is set.
 	OnScreen bool
-	// Settings are the person's group settings (permissions.Set.Policy).
+	// Settings are the person's group settings (permissions.Set.Policy): ask,
+	// deny, or allow, which turns a group off on screen. Off screen they are
+	// not read.
 	Settings map[string]permissions.Kind
 	// Branches are default branches besides ProtectedBranches.
 	Branches []string
@@ -102,10 +104,17 @@ type PolicyDecision struct {
 // A headless plan's decisions are ClaudeDeny's rules, in that order: the
 // strict force-push rules are left out wherever the force-push group denies,
 // as its rules already cover them.
+//
+// On screen, a group the person set to allow (T6979) has no decision at all,
+// so every CLI's render leaves it out and DecideCall gives it no opinion. A
+// headless plan never reads Settings: every group denies there.
 func (p PolicyPlan) Decide() []PolicyDecision {
 	forceDenied := !p.OnScreen || p.Settings[permissions.PolicyForce] == permissions.Deny
 	var out []PolicyDecision
 	for _, r := range PolicyRules(p.OnScreen, p.Branches) {
+		if p.OnScreen && p.Settings[r.Group] == permissions.Allow {
+			continue
+		}
 		d := PolicyDecision{PolicyRule: r, Kind: permissions.Deny}
 		if p.OnScreen && p.Settings[r.Group] != permissions.Deny {
 			d.Kind = permissions.Ask

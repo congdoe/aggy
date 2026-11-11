@@ -95,6 +95,9 @@ type OpenCodeEnv struct {
 	// KeyNames are the private key file names the read tool may open, after a
 	// prompt, on a strict launch (parity.OpenCodeKeyFiles).
 	KeyNames []string
+	// Protected are aggy's own state paths (its state folder, its trust
+	// records): never read from outside the repo, asked or not.
+	Protected []string
 }
 
 // The refusals' words. They go to the model, as the tool's error.
@@ -106,6 +109,7 @@ const (
 	whyOutside    = "aggy's guard refuses a path outside this repo: its real location is elsewhere, or a link points out of the repo. Ask the person to copy it in, if it is needed."
 	whyDisguised  = "aggy's guard refuses this file: its name looks harmless, but it is a link, or passes through one, to a file the safety policy guards, and a prompt would show the harmless name."
 	whyUncleared  = "aggy's guard refuses this call: it matches a strict safety policy group (a force push to a protected branch, or reading a private key), and neither a prompt you answered nor an exact pre-approval cleared it, as aggy's permission check did not run for it. Run it on its own so OpenCode asks, or run it yourself."
+	whyNotAsked   = "aggy's guard refuses a read outside this repo that no prompt cleared: aggy's permission check asks for it, and did not run or was not answered. Read it again so OpenCode asks, or ask the person to copy it in."
 )
 
 // authExportRE matches the command by its words, in any spacing. It sees
@@ -159,7 +163,15 @@ func OpenCodeGuard(payload []byte, env OpenCodeEnv) Decision {
 	// Any tool's path counts, so a tool new in a later OpenCode is covered.
 	if in.Path != "" {
 		if !inside(in.Path) {
-			return Decision{Deny: true, Reason: whyOutside}
+			// T6979: on a strict launch (trusted, not --auto, aggy's evaluate
+			// hook there) the read tool may open an honest path outside the
+			// repo once a prompt cleared it; anything else outside is refused.
+			if !strict || in.Tool != "read" || !honestOutside(in.Path, dir, root, env) {
+				return Decision{Deny: true, Reason: whyOutside}
+			}
+			if used = clearedPath(in, dir, env); used == 0 {
+				return Decision{Deny: true, Reason: whyNotAsked}
+			}
 		}
 		plain := plainFile(in.Path, dir, env)
 		readable := env.ReadableNames
@@ -224,6 +236,38 @@ func OpenCodeGuard(payload []byte, env OpenCodeEnv) Decision {
 		}
 	}
 	return Decision{Cleared: used}
+}
+
+// honestOutside reports a path outside root that is what it says: written
+// outside the repo (so OpenCode's prompt shows where it goes), with no link
+// at any part of it, a location safefs lets aggy name (never a vendor
+// credential file), and not aggy's own state (env.Protected). A path that
+// reads as inside the repo but leads out through a link is not one.
+func honestOutside(p, dir, root string, env OpenCodeEnv) bool {
+	q, err := expandHome(p, env)
+	if err != nil {
+		return false
+	}
+	if !filepath.IsAbs(q) {
+		q = filepath.Join(dir, q)
+	}
+	q = filepath.Clean(q)
+	if within(q, root) || !direct(p, dir, env) {
+		return false
+	}
+	if _, err := env.Real(q); err != nil {
+		return false
+	}
+	for _, pr := range env.Protected {
+		if within(q, filepath.Clean(pr)) {
+			return false
+		}
+		// The state folder's own real path, where a link leads to it.
+		if r, err := env.Real(pr); err != nil || within(q, r) {
+			return false
+		}
+	}
+	return true
 }
 
 // direct reports a path that leads where its text says, from base: no link

@@ -38,9 +38,10 @@ the next launch or switch, and a deny always wins.
                              Remove one of aggy's rules, for this repo or --everywhere
   suggest [--all]            Propose rules from commands you ran in Claude Code,
                              in this repo or, with --all, every repo; you confirm each
-  policy [GROUP ask|deny]    List the safety policy's groups, or set one to ask
-                             (the default on screen) or deny, for this repo or
-                             --everywhere
+  policy [GROUP ask|deny|allow]
+                             List the safety policy's groups, or set one to ask
+                             (the default on screen), deny, or allow (off on
+                             screen), for this repo or --everywhere
 
   --everywhere   the rule holds in every repo, not only this one
   --dry-run      show the change and make none
@@ -69,6 +70,14 @@ main, master, trunk, or the default branch, and reading private key files; add
 says what such a pre-approval allows before it asks you, OpenCode lifts them
 only in a repo trusted for it without --auto, and suggest never proposes them.
 list marks them. A deny, yours or a group set to deny, always wins over an allow.
+
+policy GROUP allow turns one group off on screen: Claude Code, Grok Build, and
+OpenCode get no ask or deny for it, and their own rules decide. It is asked at a
+terminal, with a plain warning for the two strict groups, and is only ever set
+in your ~/.aggy/permissions.json, never by a repo. It stays on for Codex (its
+rules file is global), for a borrow child, a headless run, and print mode
+(refused there), and aggy's asks on writes to its own files and Claude's
+settings files stay. Each launch says which groups are off.
 
 Changing rules is for you, at a terminal: a session's tool shell and aggy unwire
 from one are refused. That holds against mistakes, not a model that tries: it can
@@ -468,6 +477,9 @@ func policyCoveredLine(rule, cwd string, policy map[string]permissions.Kind) str
 			return fmt.Sprintf("This matches aggy's safety policy (%s), and %s is set to deny here, so every CLI refuses it whatever you allow. aggy permissions policy %s ask sets it back to asking.", groups, g, g)
 		}
 	}
+	if !slices.ContainsFunc(m.groups, func(g string) bool { return policy[g] != permissions.Allow }) {
+		return fmt.Sprintf("This matches aggy's safety policy (%s), which you turned off here, so the policy adds nothing to it but on Codex, which still asks.", groups)
+	}
 	const other = " Codex and Grok Build: no effect on policy matches (Codex asks, Grok Build refuses)."
 	if !m.exact {
 		return fmt.Sprintf("This covers aggy's safety policy (%s), but only one exact command or file pre-approves a policy match, so what it covers still asks on Claude Code and OpenCode (refused under OpenCode --auto).%s aggy permissions policy <group> deny refuses it instead.", groups, other)
@@ -544,7 +556,7 @@ func permissionsPolicy(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if len(pos) != 2 {
-		return cmdUsage(stderr, name, "want a group and ask or deny", permissionsUsage)
+		return cmdUsage(stderr, name, "want a group and ask, deny, or allow", permissionsUsage)
 	}
 	fail := func(code diag.Code, msg string) int { return permFail(stderr, name, code, msg, *dryRun) }
 	group, setting := pos[0], pos[1]
@@ -592,7 +604,17 @@ func permissionsPolicy(args []string, stdout, stderr io.Writer) int {
 	if err := personGate(os.Getenv); err != nil {
 		return fail(diag.CodeNotAtKeyboard, err.Error())
 	}
-	if !confirmed(stdout, fmt.Sprintf("Set the safety policy's %s to %s for %s?", group, setting, where)) {
+	if setting == string(permissions.Allow) {
+		// T6979: turning a group off is asked in place, with its own words.
+		yes, asked := askInPlace(os.Getenv, offerIn, stdout, policyOffQuestion(group, where))
+		if !asked {
+			return fail(diag.CodeNotAtKeyboard, "turning a policy group off asks you at a terminal, with stdin and stderr terminals; run it yourself there")
+		}
+		if !yes {
+			fmt.Fprintln(stdout, "Nothing changed.")
+			return 1
+		}
+	} else if !confirmed(stdout, fmt.Sprintf("Set the safety policy's %s to %s for %s?", group, setting, where)) {
 		fmt.Fprintln(stdout, "Nothing changed.")
 		return 1
 	}
@@ -601,10 +623,32 @@ func permissionsPolicy(args []string, stdout, stderr io.Writer) int {
 		return fail(diag.CodePermBadFile, err.Error())
 	}
 	fmt.Fprintf(stdout, "Done (run %s). It applies at the next launch or switch. aggy unwire --run %s undoes it, once any change made after it is undone.\n", runID, runID)
-	if setting == string(permissions.Deny) {
+	switch setting {
+	case string(permissions.Deny):
 		fmt.Fprintln(stdout, "Claude Code, Grok Build, and OpenCode now refuse these; Codex's rules file is global and still asks.")
+	case string(permissions.Allow):
+		fmt.Fprintf(stdout, "%s is off on screen on Claude Code, Grok Build, and OpenCode; Codex still asks, and borrows still refuse. aggy permissions policy %s ask turns it back on.\n", group, group)
 	}
 	return 0
+}
+
+// strictOffWarning is the plain-words warning for turning a strict group off.
+var strictOffWarning = map[string]string{
+	permissions.PolicyKeys:      "key-read is strict. Off, a session reads your private key files (id_rsa, *.pem, *.key and the like) with no prompt from aggy on Claude Code and Grok Build, and the model can then copy a key into a reply, a file, or a command.",
+	permissions.PolicyForceMain: "force-push-main is strict. Off, a force push to main, master, trunk, or the default branch runs with no prompt from aggy on Claude Code, Grok Build, and OpenCode, and can erase work others pushed.",
+}
+
+// policyOffQuestion is the question aggy permissions policy GROUP allow asks.
+func policyOffQuestion(group, where string) inPlace {
+	change := fmt.Sprintf("This turns the safety policy's %s off for %s, in your ~/.aggy/permissions.json: %s then gets no ask or deny from aggy on Claude Code, Grok Build, and OpenCode, and their own rules decide. Codex still asks, and a borrow child, a headless run, and print mode still refuse it.", group, where, policyGroupNames[group])
+	if w := strictOffWarning[group]; w != "" {
+		change = w + "\n" + change
+	}
+	return inPlace{
+		change: change,
+		undo:   fmt.Sprintf("To undo: aggy permissions policy %s ask, or aggy unwire --run with the run id this prints.", group),
+		ask:    fmt.Sprintf("Turn %s off for %s?", group, where),
+	}
 }
 
 // notAggysRule words a remove of a rule aggy's file does not hold: a rule from

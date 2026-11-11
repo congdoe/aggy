@@ -288,6 +288,73 @@ func TestOpenCodeStrictGuard(t *testing.T) {
 	}
 }
 
+// TestOpenCodeOutsideRead (T6979): on a strict launch (trusted, not --auto,
+// aggy's evaluate hook there) the read tool opens an honest path outside the
+// repo once a prompt cleared it. A path through a link, one that reads as
+// inside but leads out, aggy's own state, a vendor credential, an edit, an
+// uncleared read, --auto, and an untrusted launch are refused.
+func TestOpenCodeOutsideRead(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	repo, other := filepath.Join(home, "repo"), filepath.Join(home, "other")
+	state := filepath.Join(home, ".aggy")
+	for _, d := range []string{repo, other, state, filepath.Join(home, ".codex")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{filepath.Join(other, "notes.txt"), filepath.Join(other, ".env"), filepath.Join(state, "permissions.json"), filepath.Join(home, ".codex", "auth.json")} {
+		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(other, filepath.Join(repo, "inside")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, filepath.Join(home, "via")); err != nil {
+		t.Fatal(err)
+	}
+	notes := filepath.Join(other, "notes.txt")
+	env := OpenCodeEnv{Getenv: os.Getenv, DeniedNames: []string{".env", "*.pem", "*.key"}, KeyNames: []string{"*.pem", "*.key"}, Protected: []string{state}}
+	cases := []struct {
+		name string
+		in   OpenCodeInput
+		why  string
+		used int
+	}{
+		{"cleared by a prompt", OpenCodeInput{Tool: "read", Path: notes, Strict: true, Evaluating: true, Cleared: []string{"x", notes}}, "", 2},
+		{"cleared, by a relative path", OpenCodeInput{Tool: "read", Path: "../other/notes.txt", Strict: true, Evaluating: true, Cleared: []string{notes}}, "", 1},
+		{"cleared, by ~", OpenCodeInput{Tool: "read", Path: "~/other/notes.txt", Strict: true, Evaluating: true, Cleared: []string{"~/other/notes.txt"}}, "", 1},
+		{"not cleared", OpenCodeInput{Tool: "read", Path: notes, Strict: true, Evaluating: true, Cleared: []string{filepath.Join(other, "else.txt")}}, whyNotAsked, 0},
+		{"no evaluate hook", OpenCodeInput{Tool: "read", Path: notes, Strict: true, Cleared: []string{notes}}, whyNotAsked, 0},
+		{"under --auto", OpenCodeInput{Tool: "read", Path: notes, Strict: true, Auto: true, Evaluating: true, Cleared: []string{notes}}, whyOutside, 0},
+		{"untrusted (not strict)", OpenCodeInput{Tool: "read", Path: notes, Evaluating: true, Cleared: []string{notes}}, whyOutside, 0},
+		{"an edit", OpenCodeInput{Tool: "edit", Path: notes, Strict: true, Evaluating: true, Cleared: []string{notes}}, whyOutside, 0},
+		{"an inside name that leads out", OpenCodeInput{Tool: "read", Path: "inside/notes.txt", Strict: true, Evaluating: true, Cleared: []string{"inside/notes.txt", notes}}, whyOutside, 0},
+		{"through a link outside", OpenCodeInput{Tool: "read", Path: filepath.Join(home, "via", "notes.txt"), Strict: true, Evaluating: true, Cleared: []string{filepath.Join(home, "via", "notes.txt")}}, whyOutside, 0},
+		{"aggy's own state", OpenCodeInput{Tool: "read", Path: filepath.Join(state, "permissions.json"), Strict: true, Evaluating: true, Cleared: []string{filepath.Join(state, "permissions.json")}}, whyOutside, 0},
+		{"a vendor credential", OpenCodeInput{Tool: "read", Path: filepath.Join(home, ".codex", "auth.json"), Strict: true, Evaluating: true, Cleared: []string{filepath.Join(home, ".codex", "auth.json")}}, whyOutside, 0},
+		{".env outside stays refused", OpenCodeInput{Tool: "read", Path: filepath.Join(other, ".env"), Strict: true, Evaluating: true, Cleared: []string{filepath.Join(other, ".env")}}, whyDeniedName, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			in := c.in
+			in.Root, in.Directory = repo, repo
+			b, err := json.Marshal(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := OpenCodeGuard(b, env)
+			if d.Deny != (c.why != "") || d.Reason != c.why || d.Cleared != c.used {
+				t.Fatalf("got %+v, want %q, clear %d", d, c.why, c.used)
+			}
+		})
+	}
+}
+
 // TestHoldsRuleCollapsesBoth: two spaces in a rule must not hide it from the gate.
 func TestHoldsRuleCollapsesBoth(t *testing.T) {
 	for _, tc := range []struct {
