@@ -72,7 +72,7 @@ type Server struct {
 	token string
 	// onPin answers a hermes-pin that carries the token (SetHermesPin); nil
 	// refuses them. Guarded by mu.
-	onPin  func(sessionID string) Response
+	onPin  func(sessionID string, shared bool) Response
 	wg     sync.WaitGroup
 	once   sync.Once
 	mu     sync.Mutex
@@ -183,7 +183,7 @@ func (s *Server) SetToken(t string) {
 // SetHermesPin sets what answers a hermes-pin carrying the launch's token
 // (#134 review). It runs on the connection's goroutine and must be quick and
 // safe for concurrent use.
-func (s *Server) SetHermesPin(f func(sessionID string) Response) {
+func (s *Server) SetHermesPin(f func(sessionID string, shared bool) Response) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onPin = f

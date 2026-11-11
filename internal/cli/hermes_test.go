@@ -122,11 +122,30 @@ func TestPrepareHermes(t *testing.T) {
 	}
 
 	// A live launch with no session id yet refuses a second one in the repo.
-	if _, err := s.PutHermesLaunch(ctx, store.HermesLaunch{ParentID: "p", ChildID: "c", Profile: out.launch.Profile, Token: "t", Started: time.Now()}); err != nil {
+	hid, err := s.PutHermesLaunch(ctx, store.HermesLaunch{ParentID: "p", ChildID: "c", Profile: out.launch.Profile, Token: "t", Started: time.Now()})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := prepareHermes(ctx, in); hermesCode(err) != diag.CodeHermesUnclaimed {
 		t.Fatalf("unclaimed: %v", err)
+	}
+
+	// T6954: once it has its session, a second launch may start, but not a
+	// new session under --direct, whose claim aggy could not tell apart; a
+	// resume under --direct knows its session and may.
+	if ok, err := s.ClaimHermesSession(ctx, hid, "", "20261110_101500_a1b2c3"); err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	if _, err := prepareHermes(ctx, in); err != nil {
+		t.Fatalf("a second launch: %v", err)
+	}
+	in.direct = true
+	if _, err := prepareHermes(ctx, in); hermesCode(err) != diag.CodeHermesDirectBusy {
+		t.Fatalf("--direct beside another launch: %v", err)
+	}
+	in.resume = true
+	if _, err := prepareHermes(ctx, in); err != nil {
+		t.Fatalf("a --direct resume: %v", err)
 	}
 }
 

@@ -42,6 +42,10 @@ type HermesPin struct {
 	// Brief says the launch sends a first turn itself (--query-file), so a
 	// hook may claim the new session before the person presses Enter.
 	Brief bool
+	// Direct is aggy --direct, where aggy sees no keys: the first session a
+	// hook names may claim the launch at any time, but only while no other
+	// aggy Hermes launch in the profile is live (HermesClaim.Answer).
+	Direct bool
 }
 
 // Options configure one supervised session.

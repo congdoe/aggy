@@ -277,6 +277,8 @@ var (
 	CodeHermesNoLaunch   = Code{"hermes.no_launch"}
 	CodeHermesProfile    = Code{"hermes.profile_failed"}
 	CodeHermesUnclaimed  = Code{"hermes.launch_unclaimed"}
+	CodeHermesClaimLate  = Code{"hermes.claim_late"}
+	CodeHermesDirectBusy = Code{"hermes.direct_shared"}
 	CodeHermesUntrusted  = Code{"hermes.not_ticked"}
 	CodeTrustBadDir      = Code{"trust.bad_dir"}
 	CodeTrustBadFile     = Code{"trust.bad_file"}
@@ -519,6 +521,8 @@ var codes = []CodeInfo{
 	{CodeHermesNoLaunch, true, "aggy's Hermes hook found no live aggy launch for the profile and session id its payload named (a session started outside aggy, one whose aggy has exited, or two aggy sessions in one repo with a session id neither recorded), so it refused the tool call.", "Quit Hermes and start it with aggy run hermes; in a repo with two aggy Hermes sessions, start one at a time."},
 	{CodeHermesProfile, false, "aggy could not make its Hermes profile for this repo, write aggy's block into its config.yaml, or read the block back as written, so Hermes was not started: without it, aggy's approvals and hooks would not reach the session.", "The message; aggy doctor. A config.yaml that sets approvals, hooks, auth, or updates outside aggy's block is refused: move those lines into aggy's block or delete them."},
 	{CodeHermesUnclaimed, false, "Another aggy Hermes session in this repo has not named its session id to aggy yet (no tool call or turn end), so a second one could take its place; this launch was refused.", "Type a first message in the other session, or quit it, then start this one."},
+	{CodeHermesClaimLate, true, "Another aggy Hermes session in this repo was live, and a new Hermes session's tool call came more than 60 s after the last Enter typed in the aggy session that has none yet (or under aggy --direct, where aggy sees no keys), so aggy could not tell it from a session the other one started (/new, a nested hermes) and refused the call.", "If this is the session you just typed in, type the message again there; else quit Hermes and start aggy run hermes, or run one aggy Hermes session per repo at a time."},
+	{CodeHermesDirectBusy, false, "aggy --direct was asked to start a new Hermes session while another aggy Hermes session in this repo was live; aggy sees no keys under --direct, so it could not tell this session's first tool call from one the other started, and refused the launch.", "Quit the other aggy Hermes session, or start this one without --direct."},
 	{CodeHermesUntrusted, false, "Hermes is not ticked in aggy's trust list for this folder, so aggy did not start it.", "aggy trust <dir> and tick Hermes, after reading its warning."},
 	{CodeGuardMissing, false, "aggy's OpenCode guard did not report from the launch's folder in time. OpenCode's rules from aggy's config still apply; the guard's own refusals may not.", "Quit and start again; aggy doctor for the CLI's version. A same-user process can overwrite or unload the plugin."},
 	{CodeTrustBadDir, false, "aggy trust was given a path that is not a folder aggy can resolve.", "The path; aggy resolves it to its repo root."},
