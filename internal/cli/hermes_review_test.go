@@ -99,6 +99,34 @@ func TestHermesProfileUnwire(t *testing.T) {
 	if _, err := os.Stat(out.profileDir); err != nil {
 		t.Fatalf("a dry run deleted it: %v", err)
 	}
+	// #134 re-review: deleting it takes Hermes' sessions with it, so it is
+	// asked in place, default no. With no terminal, or on a no, the profile
+	// stays and the command is printed.
+	for _, c := range []struct {
+		name        string
+		typed       string
+		term        bool
+		wantAsk     bool
+		wantNoAsker bool
+	}{
+		{"no terminal", "y\n", false, false, true},
+		{"no", "n\n", true, true, false},
+		{"enter", "\n", true, true, false},
+	} {
+		inPlaceWorld(t, c.typed, c.term, false)
+		o, e, code = unwire("--all")
+		if code != 0 || !strings.Contains(o, "kept aggy's Hermes profile") || !strings.Contains(o, "hermes profile delete") ||
+			strings.Contains(e, "Delete the profile") != c.wantAsk || strings.Contains(o, "no one at a terminal") != c.wantNoAsker {
+			t.Fatalf("%s: %d %q %q", c.name, code, o, e)
+		}
+		if c.wantAsk && !strings.Contains(e, "sessions, memory, and skills") {
+			t.Fatalf("%s: the question does not say what goes: %q", c.name, e)
+		}
+		if _, err := os.Stat(out.profileDir); err != nil {
+			t.Fatalf("%s: deleted it: %v", c.name, err)
+		}
+	}
+	inPlaceWorld(t, "y\n", true, false)
 	o, e, code = unwire("--all")
 	if code != 0 || !strings.Contains(o, "deleted aggy's Hermes profile") {
 		t.Fatalf("unwire: %d %q %q", code, o, e)

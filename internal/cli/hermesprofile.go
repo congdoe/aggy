@@ -65,9 +65,10 @@ func hermesProfileMarkers(ctx context.Context, s *store.Store, sel manifest.Sele
 }
 
 // unwireHermesProfiles deletes the profiles the markers name, newest first,
-// or says what it would do on a dry run. It returns how many it deleted (or
-// would) and whether any was left, with a line saying what is left and the
-// command to run.
+// or says what it would do on a dry run. Each delete is asked in place
+// first; a profile kept on a no, or with no terminal, is not a failure. It
+// returns how many it deleted (or would) and whether any was left, with a
+// line saying what is left and the command to run.
 func unwireHermesProfiles(ctx context.Context, s *store.Store, markers []store.Change, dryRun bool, stdout, stderr io.Writer) (done int, left bool) {
 	for i := len(markers) - 1; i >= 0; i-- {
 		c := markers[i]
@@ -101,6 +102,23 @@ func unwireHermesProfiles(ctx context.Context, s *store.Store, markers []store.C
 		cmd, err := hermes.ProfileDeleteCommand(path, name)
 		if err != nil {
 			leave(err.Error())
+			continue
+		}
+		// Deleting a profile takes the person's Hermes sessions, memory,
+		// and skills in it (#134 review), so it is asked in place, default
+		// no. With no one to ask, or on a no, the profile stays (its aggy
+		// block is already gone) and the command is printed.
+		yes, asked := askInPlace(os.Getenv, offerIn, stderr, inPlace{
+			change: fmt.Sprintf("aggy made the Hermes profile %s at %s. Deleting it also deletes everything Hermes keeps in it: its sessions, memory, and skills.", name, dir),
+			undo:   "This cannot be undone. aggy's settings in it are already removed.",
+			ask:    "Delete the profile " + name + "?",
+		})
+		if !yes {
+			why := ""
+			if !asked {
+				why = " (no one at a terminal to confirm deleting it)"
+			}
+			fmt.Fprintf(stdout, "kept aggy's Hermes profile %s at %s (change %s)%s; run %s to delete it with its sessions\n", name, dir, id, why, manual)
 			continue
 		}
 		o, err := hermesRun(ctx, cmd)

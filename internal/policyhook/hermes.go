@@ -102,6 +102,7 @@ type hermesCall struct {
 	class hermesClass
 	calls []parity.Call
 	files []string
+	write bool // a file tool that writes its files
 	ok    bool
 }
 
@@ -168,7 +169,7 @@ func readHermes(payload []byte, root string) hermesCall {
 	case "write_file", "patch":
 		// patch's V4A mode names its files inside the patch text, with no
 		// path (file_tools.py:1415-1433): unreadable, so it asks.
-		h.class = classFile
+		h.class, h.write = classFile, true
 		add(parity.CallWrite, "path", true)
 	case "search_files":
 		h.class = classFile
@@ -249,11 +250,19 @@ func JudgeHermes(plan DecidePlan, payload []byte) parity.CallDecision {
 	if d.Verdict == parity.VerdictAllow {
 		d.Verdict = parity.VerdictNone
 	}
-	if slices.ContainsFunc(h.files, func(f string) bool { return errors.Is(safefs.Check(f), safefs.ErrAuthPath) }) {
-		return parity.CallDecision{Verdict: parity.VerdictDeny, Group: d.Group, Reason: parity.ReasonProtected}
+	ask := parity.Reason("")
+	for _, f := range h.files {
+		switch v, why := hermesFile(plan, f, h.write); v {
+		case parity.VerdictDeny:
+			return parity.CallDecision{Verdict: parity.VerdictDeny, Group: d.Group, Reason: why}
+		case parity.VerdictAsk:
+			if ask == "" {
+				ask = why
+			}
+		}
 	}
-	if d.Verdict == parity.VerdictNone && slices.ContainsFunc(h.files, func(f string) bool { return hermesOutside(f, plan.Root) }) {
-		d = parity.CallDecision{Verdict: parity.VerdictAsk, Group: d.Group, Strict: d.Strict, Reason: parity.ReasonOutside}
+	if d.Verdict == parity.VerdictNone && ask != "" {
+		d = parity.CallDecision{Verdict: parity.VerdictAsk, Group: d.Group, Strict: d.Strict, Reason: ask}
 	}
 	if d.Verdict == parity.VerdictNone && (h.class == classCode || h.class == classOther) {
 		d = parity.CallDecision{Verdict: parity.VerdictAsk, Group: d.Group, Strict: d.Strict, Reason: parity.ReasonUnjudged}
@@ -261,35 +270,75 @@ func JudgeHermes(plan DecidePlan, payload []byte) parity.CallDecision {
 	return d
 }
 
-// hermesOutside says a file tool's path is not under root: as written, or
-// by the real path of its nearest folder that exists. A path aggy cannot
-// place (relative with no root, a leading ~, a folder it cannot resolve)
-// counts as outside.
-func hermesOutside(p, root string) bool {
-	if root == "" || !filepath.IsAbs(p) {
-		return true
+// hermesFile judges one file a file tool names, by where it leads (#134
+// re-review): the whole path resolved, a link in its last part included, as
+// the OpenCode guard's realTarget does. A vendor credential file, as named or
+// where it leads, is refused. A target that is aggy's own (a protected path)
+// asks; so does one outside the root, as written or resolved, a path aggy
+// cannot place (relative with no root, a leading ~), one it cannot resolve
+// for any reason but not being there, and, for a tool that writes, an
+// existing file with a second hard link, which could be any file's other
+// name. Anything else is no opinion.
+func hermesFile(plan DecidePlan, p string, write bool) (parity.Verdict, parity.Reason) {
+	if errors.Is(safefs.Check(p), safefs.ErrAuthPath) {
+		return parity.VerdictDeny, parity.ReasonProtected
 	}
-	if outsideRoot(p, root) {
-		return true
+	if plan.Root == "" || !filepath.IsAbs(p) || outsideRoot(p, plan.Root) {
+		return parity.VerdictAsk, parity.ReasonOutside
 	}
-	realRoot, err := realPath(root)
-	if err != nil {
-		return true
+	target, err := hermesTarget(filepath.Clean(p))
+	switch {
+	case errors.Is(err, safefs.ErrAuthPath):
+		return parity.VerdictDeny, parity.ReasonProtected
+	case err != nil:
+		return parity.VerdictAsk, parity.ReasonUnknownInput
 	}
-	dir := filepath.Dir(filepath.Clean(p))
-	for {
+	if errors.Is(safefs.Check(target), safefs.ErrAuthPath) {
+		return parity.VerdictDeny, parity.ReasonProtected
+	}
+	if plan.protectedPath(target) {
+		return parity.VerdictAsk, parity.ReasonProtected
+	}
+	realRoot, err := realPath(plan.Root)
+	if err != nil || outsideRoot(target, realRoot) {
+		return parity.VerdictAsk, parity.ReasonOutside
+	}
+	if write {
+		fi, err := lstat(p)
+		switch {
+		case err == nil && fi.Mode().IsRegular() && safefs.LinkCount(fi) > 1:
+			return parity.VerdictAsk, parity.ReasonProtected
+		case err != nil && !errors.Is(err, fs.ErrNotExist):
+			return parity.VerdictAsk, parity.ReasonUnknownInput
+		}
+	}
+	return parity.VerdictNone, parity.ReasonNoMatch
+}
+
+// hermesTarget is where the absolute, clean path p leads: its real path when
+// it is there (a link in its last part followed), else its nearest folder
+// that is there, resolved, with the rest of p after it.
+func hermesTarget(p string) (string, error) {
+	_, err := lstat(p)
+	switch {
+	case err == nil:
+		return realPath(p)
+	case !errors.Is(err, fs.ErrNotExist):
+		return "", err
+	}
+	rest := filepath.Base(p)
+	for dir := filepath.Dir(p); ; dir = filepath.Dir(dir) {
 		r, err := realPath(dir)
 		switch {
 		case err == nil:
-			return outsideRoot(r, realRoot)
+			return filepath.Join(r, rest), nil
 		case !errors.Is(err, fs.ErrNotExist):
-			return true
+			return "", err
 		}
-		up := filepath.Dir(dir)
-		if up == dir {
-			return true
+		if filepath.Dir(dir) == dir {
+			return "", err
 		}
-		dir = up
+		rest = filepath.Join(filepath.Base(dir), rest)
 	}
 }
 

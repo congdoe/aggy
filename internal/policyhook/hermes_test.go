@@ -157,6 +157,59 @@ func TestHermesOutput(t *testing.T) {
 	}
 }
 
+// TestJudgeHermesLinks (#134 re-review, MEDIUM-1): a file tool's path is
+// judged by where it leads, a link in its last part included, and a write to
+// a file with a second hard link asks.
+func TestJudgeHermesLinks(t *testing.T) {
+	h, _ := filepath.EvalSymlinks(t.TempDir())
+	t.Setenv("HOME", h)
+	repo, state, outside := filepath.Join(h, "repo"), filepath.Join(h, ".aggy"), filepath.Join(h, "outside")
+	for _, d := range []string{repo, state, outside, filepath.Join(h, ".codex")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{filepath.Join(state, "permissions.json"), filepath.Join(outside, "file"), filepath.Join(repo, "plain.md"), filepath.Join(h, ".codex", "auth.json")} {
+		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	links := map[string]string{"notes.md": "../.aggy/permissions.json", "out.md": filepath.Join(outside, "file"), "auth.md": filepath.Join(h, ".codex", "auth.json")}
+	for name, to := range links {
+		if err := os.Symlink(to, filepath.Join(repo, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Link(filepath.Join(outside, "file"), filepath.Join(repo, "hard.md")); err != nil {
+		t.Fatal(err)
+	}
+	p := plan()
+	p.Root, p.Protected = repo, []string{state}
+	for _, c := range []struct {
+		name, tool, path string
+		want             parity.Verdict
+	}{
+		{"write to a link into aggy's state", "write_file", "notes.md", parity.VerdictAsk},
+		{"patch through a link into aggy's state", "patch", "notes.md", parity.VerdictAsk},
+		{"write to a link out of the repo", "write_file", "out.md", parity.VerdictAsk},
+		{"read through a link out of the repo", "read_file", "out.md", parity.VerdictAsk},
+		{"write to a second hard link", "write_file", "hard.md", parity.VerdictAsk},
+		{"read through a link to a credential", "read_file", "auth.md", parity.VerdictDeny},
+		{"a plain file", "write_file", "plain.md", parity.VerdictNone},
+		{"a new file", "write_file", "new/x.md", parity.VerdictNone},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if d := JudgeHermes(p, hermesPayload(t, c.tool, map[string]any{"path": c.path, "content": "c"})); d.Verdict != c.want {
+				t.Fatalf("got %+v, want %s", d, c.want)
+			}
+		})
+	}
+	// Claude's write check reads the last part's link the same way.
+	if !p.protectedPath(filepath.Join(repo, "notes.md")) {
+		t.Error("Claude: a write through a link into aggy's state is not protected")
+	}
+}
+
 // TestJudgeHermesOnDisk (#134 review): a vendor credential file is refused,
 // whatever the policy says, and a path in the repo whose folder is a link out
 // of it asks; the tool's name is in the message, never its input.
