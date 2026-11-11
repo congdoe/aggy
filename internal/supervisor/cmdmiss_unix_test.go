@@ -70,7 +70,7 @@ func TestCommandMissRecord(t *testing.T) {
 		{name: "a cursor key first: lost", v: adapter.Claude, keys: line(append([]string{"\x1b[D"}, each("/switch grok")...)...), want: true,
 			why: []string{"not_plain_keys", "comp_len", "draft_blind"}, other: map[string]any{"seqs": "csiD"}},
 		{name: "an unknown reply first: lost", v: adapter.Claude, keys: line(append([]string{"\x1b[?1;2X"}, each("/switch grok")...)...), want: true,
-			why: []string{"not_plain_keys"}, other: map[string]any{"seqs": "csi?X"}},
+			why: []string{"not_plain_keys"}, other: map[string]any{"seqs": "csi??"}},
 		{name: "pasted: lost", v: adapter.Claude, keys: []string{"\x1b[200~/switch grok\x1b[201~", "\r"}, want: true, why: []string{"not_plain_keys"}},
 		{name: "Codex's $ form, lost", v: adapter.Codex, keys: line(append(each("$switcx"), "\x7f", "h")...), want: true, why: []string{"not_plain_keys"}},
 	}
@@ -85,6 +85,7 @@ func TestCommandMissRecord(t *testing.T) {
 			for _, k := range c.keys {
 				s.send([]byte(k))
 			}
+			s.flushMiss(true)
 			recs := records()
 			got := missRecs(t, recs)
 			if !c.want {
@@ -152,7 +153,7 @@ func TestCommandMissBound(t *testing.T) {
 	for range missPerWindow + 3 {
 		s.send([]byte("/switch grok\r"))
 	}
-	s.missAt = time.Now().Add(-missWindow)
+	s.keyMisses.at = time.Now().Add(-missWindow)
 	s.send([]byte("/switch grok\r"))
 	got := missRecs(t, records())
 	if len(got) != missPerWindow+1 {
@@ -184,5 +185,72 @@ func TestCommandMissUnsettled(t *testing.T) {
 	got := missRecs(t, records())
 	if len(got) != 1 || got[0]["unsettled"] != "enter_not_at_prompt" || got[0]["command"] != "switch" {
 		t.Fatalf("records %v, want one for switch, unsettled enter_not_at_prompt", got)
+	}
+}
+
+// TestMenuPickMiss (#142 review L8): a line picked from the CLI's menu is not
+// recorded when the prompt hook catches it a moment later, nor when its keys
+// start none of aggy's commands; one the hook does not take is recorded once
+// the next key comes.
+func TestMenuPickMiss(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		keys []string
+		hook string // the line the prompt hook reports, "" for none
+		want int
+	}{
+		{"the hook takes it", []string{"/", "s", "w", "\t", "\r"}, "/switch", 0},
+		{"another command's pick", []string{"/", "s", "t", "\x1b[B", "\r", "x"}, "", 0},
+		{"no hook", []string{"/", "s", "w", "\t", "\r", "x"}, "", 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			q, records := diagHome(t)
+			s := cmdSess(t, adapter.Claude)
+			s.o.Diag = q
+			for _, k := range c.keys {
+				s.send([]byte(k))
+			}
+			if c.hook != "" {
+				cmd, _ := sessioncmd.Parse(adapter.Claude, c.hook)
+				if err := s.hookCommand(cmd, c.hook); err != nil {
+					t.Fatal(err)
+				}
+				s.send([]byte("x"))
+			}
+			if got := missRecs(t, records()); len(got) != c.want {
+				t.Errorf("records %v, want %d", got, c.want)
+			}
+		})
+	}
+}
+
+// TestHookMissBudget (#142 review L8): the prompt hook's refusals, which any
+// process in the CLI's tree can cause, do not use up the key catch's records.
+func TestHookMissBudget(t *testing.T) {
+	q, records := diagHome(t)
+	s := cmdSess(t, adapter.Claude)
+	s.o.Diag = q
+	c, _ := sessioncmd.Parse(adapter.Claude, "/switch")
+	for range missPerWindow + 2 {
+		s.hookMiss(c, []string{"hook_no_enter"})
+	}
+	s.send([]byte("/switch grok\r"))
+	got := missRecs(t, records())
+	if len(got) != missPerWindow+1 || got[missPerWindow]["why"] != "enter_not_alone" {
+		t.Errorf("records %v: want %d of the hook's and the key catch's", got, missPerWindow)
+	}
+}
+
+// TestSeqKind (#142 review L7): only a key's final byte is kept; a letter typed
+// after Esc and [ shows as ?.
+func TestSeqKind(t *testing.T) {
+	for in, want := range map[string]string{
+		"\x1b": "esc", "\x1b[D": "csiD", "\x1b[1;5A": "csiA", "\x1bOP": "ss3P", "\x1b[5~": "csi~", "\x1b[13u": "csiu",
+		"\x1b[X": "csi?", "\x1b[K": "csi?", "\x1b[?1;2X": "csi??", "\x1b[>4;2m": "csi>?", "\x1bOx": "ss3?", "\x1bx": "alt",
+		"\x1b]11;x\x07": "osc", "\x1bPx": "dcs",
+	} {
+		if got := seqKind([]byte(in)); got != want {
+			t.Errorf("seqKind(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

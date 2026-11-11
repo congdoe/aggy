@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -272,6 +273,11 @@ func runSkill(args []string, stdout, stderr io.Writer) int {
 	if changed == 0 {
 		fmt.Fprintln(stdout, "Nothing to change.")
 		return 0
+	}
+	if op == "unlink" {
+		// Unlinked on purpose: the launch stops saying they are missing until
+		// another aggy version runs (T6982).
+		_ = s.SetNote(ctx, skillsUnlinkedNote, Version, time.Now())
 	}
 	fmt.Fprintf(stdout, "Done (run %s). aggy unwire --run %s undoes it.\n", runID, runID)
 	return 0

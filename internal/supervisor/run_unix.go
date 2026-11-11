@@ -116,6 +116,7 @@ func Run(o Options) (Exit, error) {
 	// socket and the main loop are done.
 	defer s.flushForeign(nil)
 	defer s.flushShutdown()
+	defer s.flushMiss(true)
 	var srv *Server
 	if o.RunDir != "" {
 		var err error
@@ -246,6 +247,7 @@ func Run(o Options) (Exit, error) {
 				s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchBusy, Msg: "the agent's switch came after the user's pick", Attrs: map[string]any{"to": string(c.Vendor)}})
 			}
 		case <-check:
+			s.flushMiss(false)
 			s.releaseQueued()
 			s.settleInterrupt()
 			if s.sw.to != "" && !s.sw.typed {
@@ -642,16 +644,18 @@ type session struct {
 	// cmdHead is the first byte of the line cmdLine follows past any escape
 	// sequence, once headSeen; headSeq is headByte's place in a sequence.
 	// unsettled names why the last counted turn end left lenKnown false, or
-	// that none came since the Enter that did. missAt, missN, and missSkipped
-	// bound the miss records (noteMiss, T6982).
-	cmdHead     byte
-	lineSeqs    []string
-	headSeen    bool
-	headSeq     int
-	unsettled   string
-	missAt      time.Time
-	missN       int
-	missSkipped int
+	// that none came since the Enter that did. lineSeqs are the kinds of the
+	// line's escape sequences. keyMisses and hookMisses bound the miss records
+	// of the key catch and of the prompt hook; heldMiss is a lost line's record
+	// waiting for the hook (noteMiss, T6982).
+	cmdHead    byte
+	lineSeqs   []string
+	headSeen   bool
+	headSeq    int
+	unsettled  string
+	keyMisses  missBudget
+	hookMisses missBudget
+	heldMiss   *heldMiss
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -816,6 +820,7 @@ func (s *session) onHook(r Request) {
 // another one takes the turn-end paths below, so a forged one is still
 // a security rejection (#101).
 func (s *session) hookEvent(ev hookEvent) {
+	s.flushMiss(false)
 	if s.openCodeEvent(ev) {
 		return
 	}
@@ -1154,6 +1159,7 @@ func (s *session) send(b []byte) {
 		return
 	}
 	s.enterRelease = false
+	s.flushMiss(true) // a key came: the prompt hook had its moment
 	if s.exitGap {
 		s.gapKeys = append(s.gapKeys, b...) // finishExit decides where they go
 		return
@@ -1769,8 +1775,10 @@ func (s *session) offerSwitch() {
 	if s.refuseSignalled() {
 		return
 	}
-	if !s.sw.again && (now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet) {
-		return // the person's switch key (again) is its own pause
+	// The person's switch key (again) is its own pause from typing; the CLI's
+	// output must still be quiet (#142 review).
+	if !s.sw.again && now.Sub(s.lastIn) < switchQuiet || now.Sub(time.Unix(0, s.lastOut.Load())) < switchQuiet {
+		return
 	}
 	if s.sw.resume && s.toolsWaitTurn {
 		return // one turned down at this turn end: the next one asks (L2)
@@ -2785,15 +2793,13 @@ func doubtLines(what string, on, to adapter.Vendor) []string {
 // Any other input closes the prompt and goes to the CLI as typed, through
 // the key filter: nothing is lost, and the switch, if any, still waits.
 func (s *session) promptInput(b []byte) {
+	confirming := s.pk.confirm != ""
 	if s.escBy != nil {
 		// The Esc was the start of a longer key: hand it all back.
 		s.escBy = nil
-		b = append([]byte{esc}, b...)
-		s.closePicker()
-		s.input(b)
+		s.leaveForKeys(confirming, append([]byte{esc}, b...))
 		return
 	}
-	confirming := s.pk.confirm != ""
 	switch {
 	case isEsc(b):
 		s.escBy = time.After(escTimeout)
@@ -2830,12 +2836,20 @@ func (s *session) promptInput(b []byte) {
 		}
 		s.openList()
 	default:
-		s.closePicker()
-		if confirming {
-			s.offerLapsed("typed")
-		}
-		s.input(b)
+		s.leaveForKeys(confirming, b)
 	}
+}
+
+// leaveForKeys closes a prompt aggy opened because keys came that are neither
+// its yes nor its no, and hands them to the CLI. Every such exit from a
+// switch's question goes through here, so it is recorded once (#142 review:
+// an Esc that began a longer key closed it unrecorded).
+func (s *session) leaveForKeys(confirming bool, b []byte) {
+	s.closePicker()
+	if confirming {
+		s.offerLapsed("typed")
+	}
+	s.input(b)
 }
 
 // offerLapsed records that the status line for the waiting switch closed with
@@ -2851,6 +2865,14 @@ func (s *session) offerLapsed(how string) {
 // other keys had closed got the list.
 func (s *session) switchKey() {
 	if s.sw.lapsed && s.sw.to != "" && !s.sw.typed {
+		if time.Since(time.Unix(0, s.lastOut.Load())) < switchQuiet {
+			// The CLI still draws: the question comes once it is quiet, as at
+			// any turn end, and the bottom row says so meanwhile, without
+			// holding the CLI's output (#142 review).
+			s.sw.lapsed = false
+			s.waitNote(fmt.Sprintf("aggy: asks about the switch to %s once %s stops drawing.", s.sw.to, s.o.Vendor))
+			return
+		}
 		s.sw.lapsed, s.sw.again = false, true
 		s.offerSwitch()
 		s.sw.again = false
@@ -2859,6 +2881,21 @@ func (s *session) switchKey() {
 		}
 	}
 	s.openList()
+}
+
+// waitNote writes text once on the bottom row, with the cursor saved and put
+// back, and leaves the CLI's output running: its next drawing may cover it.
+func (s *session) waitNote(text string) {
+	rows, cols := s.t.size()
+	if rows < 1 {
+		return
+	}
+	if cols > 1 && len(text) > cols-1 {
+		text = text[:cols-1]
+	}
+	s.outMu.Lock()
+	defer s.outMu.Unlock()
+	_, _ = fmt.Fprintf(s.o.Out, "\x1b7\x1b[%d;1H\x1b[2K%s\x1b8", rows, text)
 }
 
 // exitNote says what a late exit does, and how to cancel it.
