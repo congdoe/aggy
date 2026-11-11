@@ -390,7 +390,7 @@ func TestToldDoubtTurnEndAsks(t *testing.T) {
 				time.Sleep(60 * time.Millisecond)
 			}
 			poll(t, "the status line", []byte("Esc stays"), ts.screen)
-			if got := bytes.Contains(ts.screen(), []byte("can't tell")); got != tt.words {
+			if got := bytes.Contains(ts.screen(), []byte("may not be empty")); got != tt.words {
 				t.Errorf("the status line's doubt: %v, want %v: %q", got, tt.words, ts.screen())
 			}
 			ts.typeIn(t, "\x1b")
@@ -468,7 +468,7 @@ func TestDoubtLineFits(t *testing.T) {
 			if !strings.HasSuffix(out, keysEnd) {
 				t.Errorf("does not end at its keys: %q", out)
 			}
-			for _, w := range []string{"can't tell", "-> " + tt.to, "/exit", "Esc stays"} {
+			for _, w := range []string{"may not be empty", "-> " + tt.to, "/exit", "Esc stays"} {
 				if !strings.Contains(out, w) {
 					t.Errorf("%q is missing from %q", w, out)
 				}

@@ -120,6 +120,7 @@ var (
 	EvSwitchConfirmed      = Event{"switch.request.confirmed"}
 	EvSwitchRefused        = Event{"switch.request.refused"}
 	EvSwitchCancelled      = Event{"switch.request.cancelled"}
+	EvOfferLapsed          = Event{"switch.offer.lapsed"}
 	EvSwitchCompleted      = Event{"switch.request.completed"}
 	EvSwitchExitLate       = Event{"switch.exit.timed_out"}
 	EvPickerOpened         = Event{"switch.picker.opened"}
@@ -380,6 +381,7 @@ var events = []EventInfo{
 	{EvSwitchConfirmed, LevelInfo, "switch", "The user pressed the switch key at the confirmation; aggy typed the CLI's exit command.", "switch.request.completed, or switch.exit.timed_out if the CLI did not exit."},
 	{EvSwitchRefused, LevelWarn, "switch", "A switch was refused, or held back until the user acts; the code says why.", "The code's entry; " + showRun + "."},
 	{EvSwitchCancelled, LevelInfo, "switch", "A waiting switch ended: the user cancelled it (attrs.how: esc_confirm or esc_list), or the CLI they were told to quit crashed or was signalled (unclean_exit), quit too long after the pick (stale_pick), or aggy got a signal before typing the exit command (signalled).", "Nothing, unless the user did not cancel it."},
+	{EvOfferLapsed, LevelInfo, "switch", "A switch's status line closed with no yes or no, and the switch still waits (attrs.how: typed, other keys went to the CLI; picker_open or not_at_prompt, the check after a yes found aggy's list open or a turn running). The switch key brings the status line back.", "Press the switch key at the prompt to see the question again."},
 	{EvSwitchCompleted, LevelInfo, "switch", "The CLI exited after aggy typed its exit command; the next vendor is launched.", "The next supervisor.child.launched in the same trace."},
 	{EvSwitchExitLate, LevelWarn, "switch", "The CLI had not exited a while after aggy typed its exit command; the switch still stands.", "The CLI's screen: a turn or a menu may have taken the exit command."},
 	{EvPickerOpened, LevelInfo, "switch", "The switch picker opened on the vendor list (attrs.preselect: a vendor suggested after a limit or a near-limit warning).", "switch.picker.chosen or switch.picker.dismissed follows."},
