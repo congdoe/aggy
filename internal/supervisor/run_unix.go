@@ -109,7 +109,7 @@ func Run(o Options) (Exit, error) {
 	t := &tty{fd: fd}
 	s := &session{o: o, t: t, atPrompt: !o.StartsTurn, lenKnown: true, events: make(chan hookEvent, 16), asks: make(chan Choice, 1), quit: make(chan struct{}), shares: make(chan shareReading), childChecks: make(chan childCheck),
 		toolNotes: make(chan struct{}, 1), toolReads: make(chan toolReading), cmdResults: make(chan cmdResult),
-		prompts: make(chan promptReq, 1)}
+		prompts: make(chan promptReq, 1), hookOffers: make(chan struct{}, 1)}
 	defer close(s.quit)
 	// The last minute's repeats, queued before the caller closes the
 	// diagnostic queue (G67-R3); deferred first, so it runs after the
@@ -261,6 +261,8 @@ func Run(o Options) (Exit, error) {
 			s.childChecked(r)
 		case r := <-s.cmdResults:
 			s.cmdDone(r)
+		case <-s.hookOffers:
+			s.offerHooks()
 		case p := <-s.prompts:
 			s.answerPrompt(p)
 		case r := <-s.shares:
@@ -608,6 +610,10 @@ type session struct {
 	cmdResults chan cmdResult
 	cmdSeq     int
 	viewPaste  pasteFilter
+	// hookOffers asks the main loop to offer installing aggy's hooks (T6979),
+	// after an agent's switch the missing hooks refused; hooksOffered: once.
+	hookOffers   chan struct{}
+	hooksOffered bool
 	// prompts brings the commands a CLI's prompt hook reported (T6910), each
 	// with where its answer goes; hookedName and hookedEnter are the last one
 	// taken and the Enter it was taken for (hookCommand). pick follows what the
@@ -984,7 +990,13 @@ func (s *session) onSwitch(r Request) error {
 			s.o.Vendor, s.o.Vendor))
 	}
 	if s.o.HooksMissing && !s.hookSeen.Load() {
-		return coded(diag.CodeHooksMissing, fmt.Errorf("aggy's hooks for %s are not installed, so aggy would never see a turn end to switch at; run aggy hooks install, then start a new session", s.o.Vendor))
+		// T6979: the person is offered the install on aggy's own page; the
+		// agent's request is still refused, since this session has no hooks.
+		select {
+		case s.hookOffers <- struct{}{}:
+		default:
+		}
+		return coded(diag.CodeHooksMissing, fmt.Errorf("aggy's hooks for %s are not installed, so aggy would never see a turn end to switch at; aggy offers the person to install them on its own page (or run aggy hooks install), then a new session is needed", s.o.Vendor))
 	}
 	if r.New || r.Model != "" {
 		// O56-1: a new session or a model is the user's choice, in the
@@ -2656,6 +2668,9 @@ func (s *session) pickSwitch(c Choice, keyed bool) {
 	default:
 		if err := s.offered(picked); err != nil && !errors.Is(err, ErrChecking) {
 			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchVendor, Msg: refusedMsg(picked, err), Attrs: map[string]any{"to": string(picked)}})
+			if s.offerSwitchFix(picked, c, keyed, err) {
+				return
+			}
 			s.pk.tell(fmt.Sprintf("Cannot switch to %s: %v", picked, err))
 			s.openPicker()
 			return

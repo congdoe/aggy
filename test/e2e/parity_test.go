@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/congdoe/aggy/internal/fakecli"
 )
@@ -165,7 +166,8 @@ func TestSharedRulesOnCommandLine(t *testing.T) {
 
 // TestPolicyFailsClosed: aggy run refuses to start a CLI the safety
 // policy cannot reach (here Codex with no rules file) and starts nothing;
-// --no-policy starts it anyway.
+// --no-policy starts it anyway. At a terminal it first offers to write the
+// rules file (T6979); answered no, the refusal stands.
 func TestPolicyFailsClosed(t *testing.T) {
 	w := newWorld(t)
 	if err := os.Remove(filepath.Join(w.home, ".codex", "rules", "aggy.rules")); err != nil {
@@ -173,6 +175,9 @@ func TestPolicyFailsClosed(t *testing.T) {
 	}
 	for _, args := range [][]string{{"run", "codex"}, {"run", "--direct", "codex"}, {"--direct", "codex"}, {"new", "codex"}} {
 		s := w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, args...)
+		s.waitFor([]byte("Write it and start Codex? [y/N]"))
+		time.Sleep(400 * time.Millisecond) // past the typed-ahead window
+		s.send([]byte("n\r"))
 		s.waitFor([]byte("--no-policy"))
 		if code := s.exit(); code != 1 {
 			t.Errorf("%q: exit %d, want 1", args, code)
@@ -188,6 +193,18 @@ func TestPolicyFailsClosed(t *testing.T) {
 	s.send([]byte{0x04})
 	s.exit()
 	interactiveRecord(t, w)
+
+	// T6979: answered yes, aggy writes the rules file and starts Codex.
+	s = w.start(t, map[string]any{"raw_echo": true, "stdout": "READY>"}, "run", "codex")
+	s.waitFor([]byte("Write it and start Codex? [y/N]"))
+	time.Sleep(400 * time.Millisecond)
+	s.send([]byte("y\r"))
+	s.waitFor([]byte("READY>"))
+	s.send([]byte{0x04})
+	s.exit()
+	if _, err := os.Stat(filepath.Join(w.home, ".codex", "rules", "aggy.rules")); err != nil {
+		t.Errorf("rules file after yes: %v", err)
+	}
 }
 
 // TestResumeMemoryFromChildRepo (F23-1): aggy resume <id> run from

@@ -398,6 +398,18 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 	}
 	req.Tools = tools
 	results, err := b.Run(ctx, req)
+	// T6979: when every vendor was passed over and one only for a version
+	// aggy refuses, the person at a terminal is asked whether to run it
+	// untested this once; its lockdown checks still run.
+	if v, ok := untestedOnly(err); ok && !req.AllowUntested {
+		if yes, _ := askInPlace(env.getenv, offerIn, stderr, inPlace{
+			change: fmt.Sprintf("%s's version is outside what aggy has tested, so aggy did not borrow on it, and no other vendor could take the borrow.", v),
+			ask:    fmt.Sprintf("Run it on %s untested, this once? Its lockdown is still checked", v),
+		}); yes {
+			req.Vendor, req.UntestedOnce = string(v), true
+			results, err = b.Run(ctx, req)
+		}
+	}
 	code := 0
 	for _, r := range results {
 		printResult(stdout, r)
@@ -435,6 +447,21 @@ func borrowMedia(args []string, media *borrow.Media, env borrowEnv, stdout, stde
 		n.Show(nctx, "borrow", "aggy", borrowText(r.Kind, r.Vendor, r.Outcome))
 	}
 	return code
+}
+
+// untestedOnly finds, in a borrow no vendor could start, the first vendor
+// passed over only because aggy refuses its version (CodeUntested).
+func untestedOnly(err error) (adapter.Vendor, bool) {
+	var none *borrow.NoStartError
+	if !errors.As(err, &none) {
+		return "", false
+	}
+	for _, a := range none.Tried {
+		if a.Code == diag.CodeUntested {
+			return a.Vendor, true
+		}
+	}
+	return "", false
 }
 
 // maxArtifactLines caps the artifact lines of the short report.

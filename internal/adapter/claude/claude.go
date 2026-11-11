@@ -288,6 +288,7 @@ func (Adapter) PassFlags() adapter.PassFlags {
 		Commands: Commands,
 		// PR #124 re-review: the flags aggy merges with its own or whose
 		// value it checks (Interactive, internal/cli), refused after "--".
+		Effect: loosenEffect,
 		Owned: []string{"--settings", "--setting-sources", "--mcp-config", "--strict-mcp-config", "--append-system-prompt",
 			"--append-system-prompt-file", "--permission-mode", "--allowedTools", "--allowed-tools", "--disallowedTools",
 			"--disallowed-tools", "--add-dir", "--agents", "--agent", "--session-id", "--fork-session", "--system-prompt",

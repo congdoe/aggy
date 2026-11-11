@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/store"
 )
 
@@ -89,6 +90,45 @@ func TestConcurrencyCap(t *testing.T) {
 	}
 }
 
+// TestUntestedOnce (T6979): a person's yes at a terminal runs a CLI whose
+// version aggy refuses this once, but every lockdown check still runs: one
+// whose help lacks a lockdown flag is still refused, and no child runs.
+func TestUntestedOnce(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		dropCap bool
+		wantErr string
+	}{
+		{"runs and is checked", false, ""},
+		{"a lockdown flag gone is still refused", true, "does not list what a news lockdown needs"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w := newWorld(t)
+			w.newerCLI(adapter.Grok, "unreadable")
+			w.cfg.Versions.SelfTest = false
+			if c.dropCap {
+				w.caps[adapter.Grok] = slices.DeleteFunc(w.caps[adapter.Grok], func(s string) bool { return s == probe.CapNoSubagents })
+			}
+			w.scenario[adapter.Grok] = `{"json":{"result":"ok"}}`
+			req := w.req(adapter.News, "x")
+			if _, err := w.borrower().Run(context.Background(), req); err == nil || !strings.Contains(err.Error(), "could not parse the CLI version") {
+				t.Fatalf("without the yes: %v", err)
+			}
+			req.UntestedOnce = true
+			res, err := w.borrower().Run(context.Background(), req)
+			if c.wantErr == "" {
+				if err != nil || len(res) != 1 || res[0].VersionNote == "" || strings.Contains(res[0].VersionNote, "--allow-untested") {
+					t.Fatalf("res %+v err %v", res, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) || len(w.records()) != 0 {
+				t.Errorf("err %v, runs %d", err, len(w.records()))
+			}
+		})
+	}
+}
+
 // TestUntestedVersion (#10-5): a CLI outside the tested versions, or
 // with an unreadable version, is refused unless AllowUntested.
 func TestUntestedVersion(t *testing.T) {
@@ -107,7 +147,7 @@ func TestUntestedVersion(t *testing.T) {
 			w := newWorld(t)
 			w.version[adapter.Grok] = tt.version
 			if tt.version == "" {
-				w.version[adapter.Grok] = "unreadable"
+				w.newerCLI(adapter.Grok, "unreadable")
 			}
 			w.scenario[adapter.Grok] = `{"json":{"result":"ok"}}`
 			req := w.req(adapter.News, "x")

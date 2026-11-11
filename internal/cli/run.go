@@ -334,7 +334,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// The CLI's own words, sorted now that the vendor is known (T6961). A
 	// refusal is a usage error, as when aggy <vendor> sorts them first.
 	if t.Flags != nil {
-		if code, err := parseLaunchFlags(tp, v, adapter.ParseOpts{Values: probed.ValueFlags, Switches: probed.Switches}, pl.resume != ""); err != nil {
+		if code, err := parseLaunchFlags(tp, v, adapter.ParseOpts{Values: probed.ValueFlags, Switches: probed.Switches}, pl.resume != "", askLoosen(os.Getenv, offerIn, stderr)); err != nil {
 			r := ids
 			info, _ := diag.LookupCode(code)
 			r.Event, r.Code, r.Msg = diag.EvLaunchRefused, code, info.Meaning
@@ -404,8 +404,11 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	case pl.resumeName != "":
 		warns = append(warns, byNameNote)
 	}
-	if len(t.Loosens) > 0 {
+	switch {
+	case len(t.Loosens) > 0 && t.NoPolicy:
 		warns = append(warns, "your flags "+strings.Join(t.Loosens, ", ")+" loosen approvals, the sandbox, or hook trust for this launch; --no-policy lets them through")
+	case len(t.Loosens) > 0:
+		warns = append(warns, "you let "+strings.Join(t.Loosens, ", ")+" through for this launch, which loosens approvals, the sandbox, or hook trust; aggy's safety policy is on for the rest, and a later launch starts without it")
 	}
 	if trustNote != "" {
 		warns = append(warns, trustNote)
@@ -434,6 +437,13 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		// core/src/exec_policy.rs at rust-v0.164.0), so aggy does not reopen it.
 		return fail(diag.CodePolicy, errors.New("a Codex borrow child is not reopened on screen: Codex's global rules file would ask there before what the borrow refused, and aggy cannot make it refuse; aggy accept or aggy reject the borrow, or continue the work in a new on-screen session"))
 	} else {
+		// T6979: a Codex with no rules file is asked about in place, and the
+		// launch goes on once it is written.
+		if why, _ := policyDelivery(v, caps); why == whyRulesMissed && cfg.Policy.Required {
+			if _, err := wireCodexRulesInPlace(ctx, os.Getenv, offerIn, stderr); err != nil {
+				return fail(diag.CodeWireFailed, err)
+			}
+		}
 		pw, err := addPolicy(v, caps, cfg.Policy.Required, plan, &req)
 		if err != nil {
 			return fail(diag.CodePolicy, err)
@@ -783,6 +793,8 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		// T6848: only when aggy can say so for this binary; one that cannot
 		// be checked refuses nothing.
 		HooksMissing: hooksMissing(v),
+		HooksFix:     []string{"hooks", "install", "--vendor", string(v)},
+		SwitchFix:    switchFix,
 		Children:     children,
 		HasChild:     hasChild,
 		SwitchBlocked: func(o adapter.Vendor, id string) string {

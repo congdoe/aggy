@@ -73,6 +73,15 @@ type page struct {
 	answer       bool
 	busy         bool
 	seq          int
+	// then is the switch a y on this page goes on with once its command
+	// succeeds (T6979: the Codex rules file written, then the switch).
+	then *switchAfter
+}
+
+// switchAfter is a pick a fix page holds until its command has run.
+type switchAfter struct {
+	c     Choice
+	keyed bool
 }
 
 // screenRows and screenCols are the size the menu and page draw at when the
