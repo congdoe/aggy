@@ -16,6 +16,10 @@
 //     profile in its profiles/ folder, the credential, token, and secret
 //     cache files and folders in hermesEntries, and state.db, which holds
 //     the transcripts: they come only through `hermes sessions export`.
+//   - Antigravity (agy): the whole of ~/.gemini and ~/.antigravity
+//     (denyTrees). Its token sits in the OS keychain with an undocumented file
+//     fallback in that tree (Google's docs), and its transcripts sit beside
+//     it, so aggy opens nothing there until the file's place is known.
 //
 // Two checks run on every call:
 //
@@ -232,6 +236,15 @@ func hermesMatch(n, r string) bool {
 	return len(parts) == 3 && parts[0] == "profiles" && in(parts[2])
 }
 
+// denyTrees are folders under a home refused whole, every file in them at any
+// depth (T6957): Google's Antigravity CLI keeps its sign-in in the OS keychain
+// with an undocumented file fallback (antigravity.google/docs, read
+// 2026-11-11) under ~/.gemini, where its settings, logs, and transcripts sit
+// too (~/.gemini/antigravity-cli/, DOCS; the transcript path, live), and
+// ~/.antigravity is its other folder (DOCS). TODO(T6957): narrow this to the
+// token file once a live check names it.
+var denyTrees = []string{".gemini", ".antigravity"}
+
 // listDir lists a folder, for idMatch. A test counts its calls.
 var listDir = os.ReadDir
 
@@ -292,6 +305,10 @@ type guard struct {
 	// hermes are Hermes' roots, normalized, raw and real (hermesMatch), and
 	// hermesDirs the same as they are, whose profiles idMatch lists.
 	hermes, hermesDirs []string
+	// trees are the denyTrees under each home, normalized, raw and real: in
+	// paths too, so everything below them is refused; HoldsSecrets reads them
+	// as folders of keys, not as files in a folder.
+	trees []string
 }
 
 func loadGuard() (*guard, error) {
@@ -325,6 +342,18 @@ func loadGuard() (*guard, error) {
 		g.hermesDirs = append(g.hermesDirs, r)
 		if real, err := resolveExistingMemo(r, memo); err == nil && real != r {
 			g.hermes = append(g.hermes, normPath(real))
+		}
+	}
+	for _, h := range homes {
+		for _, d := range denyTrees {
+			// The folder itself, as a "file" of its parent: refused, and so is
+			// every path below it (pathMatch's prefix).
+			folders = append(folders, credFolder{h, []string{d}})
+			p := filepath.Join(h, d)
+			g.trees = append(g.trees, normPath(p))
+			if real, err := resolveExistingMemo(p, memo); err == nil && real != p {
+				g.trees = append(g.trees, normPath(real))
+			}
 		}
 	}
 	for _, d := range openCodeDirs(homes) {
@@ -600,8 +629,13 @@ func HoldsSecrets(name string) (bool, error) {
 		inner = append(inner, both(d)...)
 	}
 	for _, p := range t.g.paths {
+		if slices.Contains(t.g.trees, p) {
+			inner = append(inner, p)
+			continue
+		}
 		inner = append(inner, filepath.Dir(p))
 	}
+	inner = append(inner, t.g.trees...)
 	for _, d := range inner {
 		if under(np, d) || under(d, np) {
 			return true, nil

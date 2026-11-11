@@ -1205,6 +1205,136 @@ Unconfirmed, with what the code does:
 | The no-provider setup guard (`main.py:1617-1619`) | Hermes shows it itself; aggy passes keys through. |
 | That `telemetry.shared_metrics` off at offer version 2 keeps a later Hermes from asking (LIVE at 0.23.1) | aggy's block sets it; a newer offer version would show the screen again. |
 
+### Antigravity
+
+On screen only (T6957): Google's Antigravity CLI, `agy`, run on the person's
+own Google sign-in. `adapter.Known()` adds `antigravity`, `adapter.OpenHarness`
+is true for it (so no borrow, tool, or print mode reaches it), a route to it is
+refused, and `Headless` returns `ErrUnsupported`. agy is closed source, so
+every fact is LIVE (the checks of 2026-11-11 on agy 1.5.3 and 1.5.5, recorded
+in [verification.md](verification.md), "Antigravity CLI") or DOCS (Google's
+pages at antigravity.google/docs, read 2026-11-11, not run); anything else is
+unverified and built to fail closed. agy was not run under aggy; every test
+runs fake-agy (testdata/fakes/fake/antigravity.go). `Tested` is 1.5.3 to 1.5.5.
+
+- **Terms.** Plan level "tolerated, unaddressed" (owner decision, 2026-11-11):
+  Google's terms do not address running agy under another program, and its FAQ
+  answers a question about headless mode by calling agy wrapped in third-party
+  applications "not supported under consumer plans" (DOCS). So aggy runs it on
+  screen only, never print mode, and never offers the Google sign-in through
+  OpenCode or another harness. The trust row and the first launch carry
+  `antigravity.TermsNote`.
+- **Launch.** `agy --settings <file> [--conversation=<id>] [--model <m>]
+  [flags...] [-i <brief pointer>]` in the session's folder (LIVE help). agy
+  parses flags with Go's flag package (LIVE: `flags provided but not defined:
+  -no-such-flag`): `-x` and `--x` are one flag, a boolean takes `=true` or
+  `=false`, and parsing stops at the first bare word, so `PassFlags.GoFlags`
+  reads every spelling the same way and a bare first prompt is refused (aggy
+  names `-i`). Passed: `--model`, `--effort`, `-i`/`--prompt-interactive`
+  (once), `--sandbox` (noted), `--mode plan`, `-c`/`--continue`, and
+  `--conversation`. Asked one at a time, as loosening:
+  `--dangerously-skip-permissions`, `--mode auto`, `--mode accept-edits` (any
+  other `--mode` too), and `--add-dir` (`antigravity.loosenEffect`).
+  Always refused, each with a line why: the print flags (`-p`, `--print`,
+  `--prompt`, `--output-format`, `--input-format`, `--json-schema`,
+  `--print-timeout`), the person's own `--settings` (aggy's is the launch's),
+  `--remote-control`, `--remote-agent`, `--project`, `--new-project`,
+  `--agent`, `--log-file`, and `--disable-slash-commands` (aggy types `/exit`).
+  Any other flag is refused as not checked. The subcommands of the LIVE help
+  pass through bare.
+- **Environment.** The person's own, plus the usual `AGGY_*` and, only when
+  `AGGY_VENDOR=antigravity`, `AGGY_DECIDE_PLAN` and `AGGY_DECIDE_SHA256` (the
+  launch's decision plan and its pin), after removing inherited copies of
+  both (`execrun.PTYEnv`). Hooks inherit agy's environment (LIVE), so they see
+  them. aggy sets no key and no base URL, and never touches the sign-in.
+- **`--settings`.** aggy writes `antigravity-settings.json` in the launch's
+  private folder: `{"permissions":{"ask":[...],"deny":[...]}}` from the shared
+  policy, `Bash(x)` as `command(x)` and `Read(//**/f)` as `read_file(**/f)`
+  (`antigravity.Settings`). LIVE: `permissions.allow` there was honoured, a
+  file path works, and an unknown key exits 1 with `Error: --settings: unknown
+  setting "<key>"`. DOCS: the `action(target)` syntax and deny before ask
+  before allow. Unverified: that deny and ask are honoured from `--settings`,
+  and how a `*` in a target matches; the hook is the guard these back up.
+  Nothing there allows. After an exit 1 with no hook seen, aggy says the
+  settings may have been refused (`antigravity.settings_refused`).
+- **Hooks.** `--settings` cannot carry hooks (LIVE: `unknown setting "hooks"`),
+  and the global `~/.gemini/config/hooks.json` is shared with Google's desktop
+  app and IDE (DOCS), so aggy puts one named entry, `aggy`, in the launch
+  folder's `.agents/hooks.json` (LIVE shape: `{"<name>": {"SessionStart":
+  [h], "PreToolUse": [{"matcher": ".*", "hooks": [h]}], "Stop": [h]}}`, `h`
+  being `{"type":"command","command":...,"timeout":s}`). The command is aggy's
+  absolute path and fixed words (`<aggy> hook antigravity --event <e>`), the
+  same at every launch. The write goes through the manifest (reverse
+  `antigravity-hooks`: `aggy unwire` takes the entry out and leaves every
+  other byte), keeps the person's other entries byte for byte, refuses a file
+  that is not one JSON object, asks at a terminal (default no) before changing
+  a file git tracks, and adds a git exclude line only for a file it created.
+  Workspace hooks load only once the folder is trusted in agy's own dialog
+  (DOCS; LIVE: they loaded in a trusted folder with no further prompt). Which
+  folder agy treats as the workspace when started in a subfolder is
+  unverified: aggy writes in the launch folder.
+- **Hook behaviour.** Hooks run as agy's children with its environment and cwd
+  `<workspace>/.agents`, plus `ANTIGRAVITY_CONVERSATION_ID` (LIVE). Outside an
+  aggy Antigravity session (no `AGGY_SOCKET`, or `AGGY_VENDOR` another
+  vendor's) the hook reads its stdin, prints nothing, and exits 0, so a plain
+  agy in that folder runs as without aggy. Inside one, SessionStart and Stop
+  go to the supervisor as Claude's do (lineage checked), and PreToolUse is
+  judged by the launch's plan (`policyhook.JudgeAntigravity`): deny is
+  `{"decision":"deny","reason":...}`, ask is `{"decision":"force_ask",...}`
+  (LIVE: a plain `ask` did not prompt where an allow rule matched; `force_ask`
+  did), allow and no opinion print nothing, and where aggy cannot decide (a
+  panic, a plan missing or changed) it answers `force_ask`. Any hook failure
+  blocks the tool (LIVE: a command that cannot start, exit 1, output that is
+  not JSON, a timeout). `lastUserInput`, the person's prompt, is never read,
+  logged, or kept.
+- **Tools judged.** `run_command {CommandLine}` (LIVE) as a shell command;
+  `read_file` (LIVE name, arguments unseen) and `view_file {AbsolutePath}`
+  as reads; `write_to_file`, `replace_file_content`, and
+  `multi_replace_file_content {TargetFile}` as writes; `grep_search
+  {SearchPath}`, `find_by_name {SearchDirectory}`, and `list_dir
+  {DirectoryPath}` as searches; `manage_task` with `Action: send_input` judges
+  `Input` as a command that is never allowed. These names are DOCS
+  (antigravity.google/docs/hooks). A file path that is not absolute or lies
+  outside the repo asks, whether or not agy's own layer would. A shell or
+  write tool with its field missing asks; a read or search tool with its field
+  missing, and a tool aggy does not know, get no opinion, since agy's own
+  permission layer prompts by default (LIVE), unless the tool carries a field
+  aggy knows, which is judged and never allowed.
+- **Session.** The id is the hooks' `conversationId`, a UUID (LIVE); the first
+  SessionStart claims the launch. SessionStart fires on a new conversation's
+  first turn, not on a resume (LIVE). `/exit` exits 0 and prints `agy
+  --conversation=<uuid>` (LIVE); aggy resumes with `--conversation=<id>`
+  (DOCS; not run explicitly). No pre-assigned id.
+- **Brief and memory.** A brief goes as `-i` with a pointer to the brief file
+  (`adapter.BriefPrompt`; `-i` from the LIVE help, not run). The shared memory
+  is not delivered: agy reads `AGENTS.md`, `GEMINI.md`, and `.agents/rules`
+  (DOCS), and how to add to them without editing the person's files is open
+  (`TODO(T6957)`).
+- **Transcripts.** None is read: the transcript sits under
+  `~/.gemini/antigravity-cli/brain/` (DOCS), beside a token file fallback the
+  docs do not name, and all of `~/.gemini` and `~/.antigravity` are on the
+  `safefs` deny list. A brief from Antigravity carries the task file and git
+  state, and says why there is no transcript.
+- **Updates.** agy updates itself in the background (LIVE: 1.5.3 became 1.5.5
+  between two runs) unless `AGY_CLI_DISABLE_AUTO_UPDATE=true` (DOCS, LIVE in
+  use). aggy does not set it; `aggy doctor` and a launch outside the tested
+  range say so.
+- **Trust.** The trust row "Antigravity (Gemini)" is off until ticked, and
+  "All" never ticks it (`trustlist.Row.NotInAll`): the terms note needs a
+  tick of its own. At a terminal an unticked launch offers to tick that row
+  alone.
+
+| Unconfirmed fact (Antigravity) | Fallback in code |
+| --- | --- |
+| `permissions.deny` and `ask` from `--settings` are honoured, and how `*` matches in a target | Both are passed; the hook judges every call anyway. |
+| Tool names and argument keys beyond `run_command {CommandLine}` (DOCS only) | A write without its field asks; a read or search without it, or an unknown tool, has no opinion and agy prompts. |
+| Which folder is the workspace for hooks when agy starts in a subfolder | aggy writes the hooks file in the launch folder; a session whose hooks never arrive is told so after an exit 1, and a switch waits for `/exit`. |
+| `--conversation=<id>` resume and `-i` (help only) | Built from the help; a fake models them. |
+| Whether a persisted "always allow" (agy's settings.json) beats `force_ask` | aggy's ask is `force_ask`, which beat an allow rule from `--settings` (LIVE). |
+| The transcript format and the token file's name | Nothing under `~/.gemini` or `~/.antigravity` is read. |
+| agy under aggy's pseudo-terminal: the alternate screen, OSC 7501, `/exit` typed by the switch, Ctrl-C | Built as for the other alternate-screen CLIs; untested live. |
+| Whether `GEMINI_API_KEY` or `GOOGLE_GEMINI_BASE_URL` in the person's environment moves agy off the subscription (DOCS name them only) | aggy never sets either; `aggy doctor` does not yet flag them. |
+
 ### Transcript formats
 
 `internal/transcript` reads the tail of a session file for a brief. It
@@ -1251,6 +1381,7 @@ A launch of a vendor whose CLI is not on PATH names where to get it (T6979,
 | Claude Code | `https://code.claude.com/docs/en/setup` | unverified: on the docs site this guide cites (cli-reference, skills.md), but that this is the install page is not checked |
 | OpenCode | `https://opencode.ai/docs` | unverified: the docs site this guide cites (opencode.ai/docs/tui, docs/zen), not checked as the install page |
 | Hermes Agent | `https://github.com/NousResearch/hermes-agent` | the repository of the source checkout (v0.23.1, 3b42157858) this guide cites; offered as a pick instead of a missing CLI only in a folder whose trust list ticks Hermes |
+| Antigravity | `https://antigravity.google/docs` | the docs site this guide cites (DOCS facts above), not checked as the install page; offered as a pick only in a folder whose trust list ticks it |
 
 ### Sign-in
 
@@ -1315,7 +1446,7 @@ passes any of these variables to a CLI (`execrun.Env`).
 
 Each adapter declares the CLI versions it was tested on, from the verified
 versions above: claude 2.1.311 to 2.1.312, codex-cli 0.164.0, grok
-1.0.70, opencode 2.2.5, and Hermes Agent 0.23.1.
+1.0.70, opencode 2.2.5, Hermes Agent 0.23.1, and agy 1.5.3 to 1.5.5.
 Each declares it as `Tested` and through `TestedVersions()`.
 `adapter.VersionWarning(a, version, line)` returns a warning when a probed
 version falls outside that range or cannot be parsed (then it quotes

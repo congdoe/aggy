@@ -77,10 +77,23 @@ type PassFlags struct {
 	// allow_abbrev), where --yol is --yolo and --api-ke=x is --api-key=x, so no
 	// list of refused names can be complete (#134 review).
 	Only []string
+	// GoFlags is a CLI parsed by Go's flag package (Antigravity's agy, T6957):
+	// -name and --name are the same flag, a value goes as -name=value or
+	// -name value, a boolean flag takes =true or =false, and there are no
+	// short clusters. Every name in the table is written canonically: one
+	// dash for a one-letter flag (-c), two for a longer one (--mode). A word
+	// in either spelling is read as that canonical name (split), so
+	// -dangerously-skip-permissions and -mode=auto meet the same checks as
+	// their double-dash forms. A table without it is read as before.
+	GoFlags bool
 }
 
 // ErrNotListed matches a flag that is not one of PassFlags.Only.
 var ErrNotListed = errors.New("aggy passes only the flags it lists for this CLI, written in full: the CLI expands abbreviations, so an unlisted spelling could be a flag aggy refuses")
+
+// ErrNotChecked matches a flag that is not one of PassFlags.Only on a GoFlags
+// CLI, which expands no abbreviation: aggy has not checked what it does there.
+var ErrNotChecked = errors.New("aggy passes only the flags it has checked for this CLI, and this is not one of them")
 
 // LoosenEffect is p's line for a loosening flag: its Effect, or the generic
 // one.
@@ -245,6 +258,11 @@ const (
 func (p PassFlags) Mode(args []string) RunMode {
 	if len(args) == 1 && slices.Contains(p.Bare, args[0]) {
 		return RunBare
+	}
+	if p.GoFlags && len(args) == 1 && strings.HasPrefix(args[0], "-") && !strings.Contains(args[0], "=") {
+		if name, _, _ := goSplit(args[0]); slices.Contains(p.Bare, name) {
+			return RunBare
+		}
 	}
 	mode := RunScreen
 	if len(args) > 0 && slices.Contains(p.PrintCommands, args[0]) {
@@ -450,6 +468,10 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 				keep(words...)
 			}
 		case slices.Contains(p.Continue, name):
+			if p.GoFlags && hasVal {
+				// Go's -c=false would not continue at all; -c=true is -c.
+				return out, fmt.Errorf("write %s with no value", name)
+			}
 			out.Continue = true
 			if !slices.Contains(o.Switches, a) {
 				doubt(a)
@@ -608,6 +630,9 @@ func (p PassFlags) checkAfterDashes(words []string, o ParseOpts) ([]string, erro
 // a one-letter flag aggy takes or checks. Another short flag stays whole,
 // for checkPassed to look through.
 func (p PassFlags) split(a string) (name, val string, hasVal bool) {
+	if p.GoFlags {
+		return goSplit(a)
+	}
 	if strings.HasPrefix(a, "--") {
 		return strings.Cut(a, "=")
 	}
@@ -625,6 +650,23 @@ func (p PassFlags) split(a string) (name, val string, hasVal bool) {
 	return a, "", false
 }
 
+// goSplit is split for a GoFlags CLI: the flag's canonical name (one dash for
+// one letter, two for more) and its =value. Go's flag package takes one or two
+// dashes alike and nothing else, so a word of three dashes or more, which it
+// refuses as bad syntax, keeps its own spelling (and so matches nothing in the
+// table, where Only refuses it).
+func goSplit(a string) (name, val string, hasVal bool) {
+	bare := strings.TrimPrefix(strings.TrimPrefix(a, "-"), "-")
+	if bare == "" || strings.HasPrefix(bare, "-") || !strings.HasPrefix(a, "-") {
+		return strings.Cut(a, "=")
+	}
+	n, val, hasVal := strings.Cut(bare, "=")
+	if len(n) == 1 {
+		return "-" + n, val, hasVal
+	}
+	return "--" + n, val, hasVal
+}
+
 // listed refuses, where Only is set and the run is on screen, a flag that is
 // neither in Only nor a Refused spelling (which keeps its own reason). The
 // error names the flag without its value: --api-ke=sk-x is --api-ke, and a
@@ -637,6 +679,9 @@ func (p PassFlags) listed(name string, o ParseOpts) error {
 	shown := name
 	if !strings.HasPrefix(name, "--") && len(name) > 2 {
 		shown = name[:2] + "..."
+	}
+	if p.GoFlags {
+		return fmt.Errorf("%s: %w", shown, ErrNotChecked)
 	}
 	if strings.HasPrefix(name, "--") {
 		for _, r := range p.Refused {
@@ -654,7 +699,7 @@ func (p PassFlags) listed(name string, o ParseOpts) error {
 // strict prefix of a refused flag that loosens (--yol for --yolo): its parser
 // would expand it.
 func (p PassFlags) abbreviatesLoosening(name string) bool {
-	if len(p.Only) == 0 || !strings.HasPrefix(name, "--") || len(name) < 3 {
+	if len(p.Only) == 0 || p.GoFlags || !strings.HasPrefix(name, "--") || len(name) < 3 {
 		return false
 	}
 	return slices.ContainsFunc(p.Refused, func(r RefusedFlag) bool {

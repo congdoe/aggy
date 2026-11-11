@@ -4,7 +4,7 @@ One command for the coding agents you already use: Claude Code, Codex, and Grok 
 
 aggy runs the official CLIs, signed in with your own accounts, and lets them work together. From any of them you can hand one bounded task to another (an image, a short video, a web research question, a news check, or a code review) and get a short report back. Each task runs headless in the other vendor's CLI, locked down to the tools that task needs.
 
-> **Status: pre-release, heading for v0.1.0.** Read-only borrows, switching a session between vendors at the turn end (`Ctrl+\`, with an optional handoff brief, under one aggy session over the vendor sessions), edit borrows on Codex, shared permissions, and OpenCode on screen work today; Hermes Agent on screen is built but not yet run against a real Hermes. Commands typed inside a session, such as `/switch`, and the `/aggy` helper are planned, not shipped: for now you switch with `Ctrl+\`, or the agent asks with `aggy switch`. See [docs/design.md](docs/design.md), section 18.
+> **Status: pre-release, heading for v0.1.0.** Read-only borrows, switching a session between vendors at the turn end (`Ctrl+\`, with an optional handoff brief, under one aggy session over the vendor sessions), edit borrows on Codex, shared permissions, and OpenCode on screen work today; Hermes Agent and Google's Antigravity CLI on screen are built but not yet run against the real CLIs. Commands typed inside a session, such as `/switch`, and the `/aggy` helper are planned, not shipped: for now you switch with `Ctrl+\`, or the agent asks with `aggy switch`. See [docs/design.md](docs/design.md), section 18.
 
 ## What aggy never does
 
@@ -64,6 +64,7 @@ aggy key add anth --provider anthropic            # an API key for OpenCode, ask
 git diff | aggy -p "review this"                  # print mode: the CLI's own output, aggy's policy, nothing recorded
 aggy opencode --model xai/grok-4                  # OpenCode, on the plans and keys you set up
 aggy hermes                                       # Hermes Agent, once ticked in this folder's trust list
+aggy antigravity -i "fix the test"               # Google's agy, once ticked in this folder's trust list
 aggy claude mcp list                              # a vendor's own management command, run as typed
 aggy skill link        # let each CLI call aggy itself
 aggy policy wire       # write aggy's safety policy into Codex (Claude and Grok get it per launch)
@@ -127,10 +128,11 @@ Changes are for you at a terminal, apply at the next launch or switch, and `aggy
 - The safety policy is a guardrail against an agent's mistakes, not a sandbox.
 - OpenCode (`aggy opencode`) gets guardrails against mistakes, not protection from a hostile repo or a tricked model: a model's shell runs as you with no OS sandbox, so it can reach OpenCode's logins and aggy's config. A repo you have not trusted with `aggy trust --opencode <dir>` opens in `opencode mini`; a trusted one opens the full screen, and its screen plugins run before any guard. See [docs/design.md](docs/design.md), section 15.
 - Hermes Agent (`aggy hermes`) runs in a profile aggy makes for each repo, once you tick Hermes in that folder's trust list (`aggy trust <dir>`); Hermes asks you once there to allow aggy's two hooks. Its approvals cover terminal commands only, and its terminal tool can read any file you can. Its gateway daemon, messaging, cron, memory, and skills are its own, outside aggy. See [docs/design.md](docs/design.md), section 15.
+- Antigravity (`aggy antigravity`) runs Google's `agy` on your own Google sign-in, on screen only, once you tick "Antigravity (Gemini)" in that folder's trust list (`aggy trust <dir>`; "All" does not tick it). Google's terms do not address running agy under another program, and its FAQ calls agy wrapped in third-party applications "not supported under consumer plans": the account is your risk, and aggy never runs agy's print mode or borrows from it. aggy adds one entry to the folder's `.agents/hooks.json` (`aggy unwire` takes it out); agy loads it only once you trust the folder in agy's own dialog, and until then aggy's policy is not on there. See [docs/design.md](docs/design.md), section 15.
 
 ## Not affiliated
 
-aggy is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by Anthropic, OpenAI, xAI, or the makers of OpenCode or Hermes Agent. Claude Code, Codex, Grok Build, OpenCode, and Hermes Agent are their respective owners' products and trademarks, named here only to say what aggy works with.
+aggy is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by Anthropic, OpenAI, xAI, Google, or the makers of OpenCode or Hermes Agent. Claude Code, Codex, Grok Build, OpenCode, Hermes Agent, and Antigravity are their respective owners' products and trademarks, named here only to say what aggy works with.
 
 The vendor CLIs and subscriptions are yours: aggy runs the CLIs you installed, signed in with your own accounts, and every task it starts uses your plan. You are responsible for following each vendor's terms.
 

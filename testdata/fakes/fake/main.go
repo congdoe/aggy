@@ -1,4 +1,4 @@
-// Command fake is fake-claude, fake-codex, fake-grok, fake-opencode, fake-hermes, and fake-hook: a
+// Command fake is fake-claude, fake-codex, fake-grok, fake-opencode, fake-hermes, fake-agy, and fake-hook: a
 // stand-in for the vendor CLIs that follows a scenario file, so tests never
 // run a real vendor CLI or need a login. The vendor is the binary's name
 // without the "fake-" prefix, or $AGGY_FAKE_VENDOR. See ../README.md for
@@ -114,6 +114,8 @@ type Scenario struct {
 	// stdin, prompt, mcp_config, opencode_config). The record never holds
 	// the canary itself.
 	Canary string `json:"canary"`
+	// Agy drives fake-agy (antigravity.go).
+	Agy *AgyScenario `json:"agy"`
 }
 
 // ToolCall is one tool call a fake claude makes.
@@ -466,6 +468,9 @@ func run() int {
 	}
 	if vendor == "keychain" {
 		return runKeychain()
+	}
+	if vendor == "agy" {
+		return runAgy()
 	}
 	if vendor == "mcp" {
 		return runMCP()

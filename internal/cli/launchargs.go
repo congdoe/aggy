@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/adapter/antigravity"
 	"github.com/congdoe/aggy/internal/adapter/claude"
 	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
@@ -278,6 +279,10 @@ func promptRefusal(v adapter.Vendor, p adapter.ParsedFlags, resuming bool) strin
 		return "aggy passes no prompt to OpenCode yet; type it once the session starts"
 	case v == adapter.OpenCode && len(p.Extra) > 0:
 		return fmt.Sprintf("aggy passes none of OpenCode's own flags yet, so not %q", p.Extra[0])
+	case v == adapter.Antigravity && len(p.Prompt) > 0:
+		// T6957: agy's documented first prompt is -i (live help); a bare word
+		// would also end Go's flag parsing for every word after it.
+		return "give agy's first prompt as -i \"<text>\", not a bare word"
 	case v == adapter.Hermes && len(p.Prompt) > 0:
 		// TODO(T6933): chat -q seeds the first turn on a terminal
 		// (hermes_cli/_parser.py:236-240 at v0.23.1), unchecked under aggy.
@@ -390,6 +395,8 @@ func screenAdapter(v adapter.Vendor, caps []string) adapter.Adapter {
 		return opencode.New()
 	case adapter.Hermes:
 		return hermes.New()
+	case adapter.Antigravity:
+		return antigravity.New()
 	}
 	return claude.Adapter{Caps: caps}
 }
@@ -411,6 +418,9 @@ func runPrint(cmd string, v adapter.Vendor, t target, words []string, help adapt
 	fail := func(code diag.Code, err error) int {
 		refuse(ctx, stderr, cmd, diag.EvLaunchRefused, code, err.Error(), rec)
 		return 1
+	}
+	if v == adapter.Antigravity {
+		return launchUsageErr(stderr, cmd, diag.CodeAgyPrintMode, agyPrintRefusal(), "")
 	}
 	if adapter.OpenHarness(v) {
 		return launchUsageErr(stderr, cmd, diag.CodeUnsupported, fmt.Sprintf("aggy runs %s on screen only: print mode and a stdin that is no terminal are not wired for it; run %s itself", vendorNames[v], vendorBin(v)), "")
@@ -825,7 +835,7 @@ func nearCommand(word string) string {
 	if len(low) < 4 {
 		return ""
 	}
-	for _, c := range append(slices.Clone(commandNames), "claude", "codex", "grok", "opencode", "hermes") {
+	for _, c := range append(slices.Clone(commandNames), "claude", "codex", "grok", "opencode", "hermes", "antigravity") {
 		if len(c) < 4 || word == c {
 			continue
 		}

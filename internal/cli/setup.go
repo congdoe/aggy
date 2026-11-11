@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/adapter/antigravity"
 	"github.com/congdoe/aggy/internal/adapter/claude"
 	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
@@ -65,6 +66,8 @@ var vendorNames = map[adapter.Vendor]string{
 	adapter.Grok:     "Grok Build",
 	adapter.OpenCode: "OpenCode",
 	adapter.Hermes:   "Hermes Agent",
+	// T6957: the product is Antigravity, the plan Gemini's.
+	adapter.Antigravity: "Antigravity",
 }
 
 // checkEnv is what setup and doctor need from the outside world, so tests
@@ -86,7 +89,7 @@ type checkEnv struct {
 func defaultCheckEnv() checkEnv {
 	cwd, _ := os.Getwd()
 	return checkEnv{
-		adapters: []adapter.Adapter{claude.New(), codex.New(), grok.New(), opencode.New(), hermes.New()},
+		adapters: []adapter.Adapter{claude.New(), codex.New(), grok.New(), opencode.New(), hermes.New(), antigravity.New()},
 		run:      execrun.ExecRunner(probeTimeout),
 		in:       os.Stdin,
 		tty:      isTerminal(os.Stdin),
@@ -307,6 +310,9 @@ func (r *setupRun) vendor(ctx context.Context, a adapter.Adapter) int {
 	}
 	if v == adapter.OpenCode && res.Installed {
 		fmt.Fprint(r.out, openCodeSetupNote)
+	}
+	if v == adapter.Antigravity && res.Installed {
+		fmt.Fprint(r.out, antigravitySetupNote)
 	}
 	if v == adapter.Hermes && res.Installed {
 		fmt.Fprint(r.out, hermesSetupNote)

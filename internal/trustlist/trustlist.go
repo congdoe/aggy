@@ -70,10 +70,14 @@ type Row struct {
 	// or /aggy trust shows the list (T6980). A row that only changes how a
 	// harness runs is not worth asking everyone who answered again for.
 	Quiet bool
+	// NotInAll rows are never ticked by "All", which leaves them as they are
+	// (T6957): ticking one accepts a caveat its Warning says, which takes a
+	// tick of its own. The list says so under the row.
+	NotInAll bool
 }
 
 // inAll reports whether "All" ticks r.
-func (r Row) inAll() bool { return r.Group == Harness || AllTicksSources }
+func (r Row) inAll() bool { return !r.NotInAll && (r.Group == Harness || AllTicksSources) }
 
 // Folder is what aggy records of one folder's answer.
 type Folder struct {

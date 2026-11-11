@@ -593,7 +593,7 @@ func (p *launchPlan) newChildOf(ctx context.Context, s *store.Store, cfg config.
 	// Where its session files are looked for later, whatever that
 	// shell's CLAUDE_CONFIG_DIR, CODEX_HOME, or GROK_HOME.
 	c.VendorHome, _ = (&sessionFiles{}).home(v)
-	if v != adapter.Codex && v != adapter.Hermes {
+	if v != adapter.Codex && v != adapter.Hermes && v != adapter.Antigravity {
 		// Claude and Grok take --session-id <uuid>; Codex and Hermes cannot
 		// be given an id in advance (docs/adapters.md). OpenCode's --session
 		// takes a new id of its own shape.

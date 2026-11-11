@@ -57,7 +57,8 @@ Usage:
                     Reopen the session with this id (aggy's or the CLI's),
                     or pick from this directory's sessions
   aggy <vendor> [flags] [prompt]
-                    Start claude, codex, grok, opencode, or hermes, with its flags
+                    Start claude, codex, grok, opencode, hermes, or antigravity,
+                    with its flags
                     (aggy claude --model x); flags that clash with aggy's are
                     refused
   aggy <command>
@@ -157,7 +158,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runSwitch(args[1:], stdout, stderr)
 	case "run":
 		return runRun(args[1:], stdout, stderr)
-	case "claude", "codex", "grok", "opencode", "hermes":
+	case "claude", "codex", "grok", "opencode", "hermes", "antigravity":
 		return runLaunch(adapter.Vendor(args[0]), args[1:], stdout, stderr)
 	case "new":
 		return runNew(args[1:], stdout, stderr)

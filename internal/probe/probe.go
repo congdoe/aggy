@@ -250,6 +250,22 @@ var Specs = map[adapter.Vendor]Spec{
 			{CapQueryFile, 1, "--query-file", Option},
 		},
 	},
+	// Antigravity's agy 1.5.3: --version prints the version alone, and --help
+	// is Go's flag usage ("Usage of agy:"), live (docs/verification.md). Go
+	// prints a flag with one dash and the recorded help with two, so either
+	// spelling counts.
+	adapter.Antigravity: {
+		Programs: []string{"agy"},
+		Help:     [][]string{{"--help"}},
+		Features: []Feature{
+			{CapSettings, 0, "--settings", Option},
+			{CapSettings, 0, "-settings", Option},
+			{CapResume, 0, "--conversation", Option},
+			{CapResume, 0, "-conversation", Option},
+			{CapSandbox, 0, "--sandbox", Option},
+			{CapSandbox, 0, "-sandbox", Option},
+		},
+	},
 	adapter.Codex: {
 		Programs: []string{"codex-cli", "codex"},
 		Help:     [][]string{{"--help"}, {"exec", "--help"}, {"exec", "resume", "--help"}},
