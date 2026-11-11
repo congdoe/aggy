@@ -64,6 +64,17 @@ func sessionAggy(args []string, answer bool) string {
 			break
 		}
 		sessionRefuse(w, "tool", "aggy tool takes on, off, or status here")
+	case "policy", "hooks":
+		// T6979: the fixes aggy's own pages offer, each in exactly the form
+		// the page runs (the supervisor's SwitchFix and HooksFix), and only
+		// on the page's y.
+		fix := slices.Equal(args, []string{"policy", "wire"}) ||
+			len(args) == 4 && args[0] == "hooks" && args[1] == "install" && args[2] == "--vendor" && !strings.HasPrefix(args[3], "-")
+		if !answer || !fix {
+			sessionRefuse(w, args[0], "not a command for inside a session")
+			break
+		}
+		Run(args, w, w)
 	case "trust":
 		// The list itself is the supervisor's (sessionTrustList); only the
 		// shortcut that ticks OpenCode runs here, for this folder.
@@ -80,7 +91,10 @@ func sessionAggy(args []string, answer bool) string {
 		// /aggy allow "<rule>" (T6978): aggy permissions add allow, for this
 		// folder, with its own checks, refusals, and question, which the
 		// page answers (no, then y on the person's y).
-		allow := args[0] == "permissions" && len(args) == 4 && args[1] == "add" && args[2] == "allow" && !strings.HasPrefix(args[3], "-")
+		// T6979: /aggy permissions add|remove allow|ask|deny "<rule>" too,
+		// for this folder only.
+		allow := args[0] == "permissions" && len(args) == 4 && (args[1] == "add" || args[1] == "remove") &&
+			slices.Contains([]string{"allow", "ask", "deny"}, args[2]) && !strings.HasPrefix(args[3], "-")
 		if args[0] == "permissions" && !allow && (len(args) != 2 || args[1] != "list" && args[1] != "show") {
 			sessionRefuse(w, "permissions", "inside a session, aggy permissions lists and shows the rules; change them in a terminal")
 			break

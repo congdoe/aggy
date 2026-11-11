@@ -139,6 +139,9 @@ func Parse(v adapter.Vendor, line string) (Command, bool) {
 		// Its rule is quoted, so its words are not plain (parseAllow).
 		return parseAllow(line)
 	}
+	if name == "aggy" && len(args) > 2 && args[0] == "permissions" && (args[1] == "add" || args[1] == "remove") {
+		return parseRuleChange(line, args[1], args[2])
+	}
 	for _, w := range args {
 		if !plainWord(w) {
 			return Command{}, false
@@ -252,15 +255,45 @@ func parseAllow(line string) (Command, bool) {
 	if rest[0] != ' ' {
 		return Command{}, false
 	}
+	return ruleCommand(c, "add", "allow", rest)
+}
+
+// parseRuleChange takes /aggy permissions add|remove allow|ask|deny "<rule>"
+// (T6979): aggy permissions add or remove for this folder, keyboard only, as
+// /aggy allow is, its page showing the command's own question answered no
+// and y answering it yes. Any other word, --everywhere among them, is not
+// taken: that stays for a terminal.
+func parseRuleChange(line, verb, kind string) (Command, bool) {
+	if kind != "allow" && kind != "ask" && kind != "deny" {
+		return Command{}, false
+	}
+	_, rest, ok := strings.Cut(line, " "+verb+" "+kind)
+	if !ok || rest != "" && rest[0] != ' ' {
+		return Command{}, false
+	}
+	c := Command{Kind: Run, Name: "aggy permissions " + verb, Sub: "permissions", KeyboardOnly: true}
+	if rest == "" {
+		return Command{}, false
+	}
+	return ruleCommand(c, verb, kind, rest)
+}
+
+// ruleCommand finishes a rule change: the rule is the rest of the line, one
+// quoted or bare rule with no quote inside it.
+func ruleCommand(c Command, verb, kind, rest string) (Command, bool) {
 	rule := strings.TrimSpace(rest)
 	if len(rule) >= 2 && rule[0] == '"' && rule[len(rule)-1] == '"' {
 		rule = rule[1 : len(rule)-1]
 	}
-	if rule == "" || strings.ContainsRune(rule, '"') {
+	if rule == "" || strings.ContainsRune(rule, '"') || strings.HasPrefix(rule, "-") {
 		return Command{}, false
 	}
-	c.Args = []string{"permissions", "add", "allow", rule}
-	c.Confirm, c.ConfirmLabel, c.Answer, c.ConfirmIf = c.Args, "y adds the rule", true, Asked
+	c.Args = []string{"permissions", verb, kind, rule}
+	label := "y adds the rule"
+	if verb == "remove" {
+		label = "y removes the rule"
+	}
+	c.Confirm, c.ConfirmLabel, c.Answer, c.ConfirmIf = c.Args, label, true, Asked
 	return c, true
 }
 

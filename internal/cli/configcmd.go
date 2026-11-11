@@ -250,79 +250,14 @@ func configSet(args []string, stdout, stderr io.Writer) int {
 		refuseWith(writerFor(*dryRun), context.Background(), stderr, name, diag.EvConfigRefused, code, msg, diag.Rec{})
 		return 1
 	}
-	key, err := parseConfigKey(pos[0])
+	ps, already, code, err := configChange(pos[0], pos[1])
 	if err != nil {
-		return fail(diag.CodeConfigBadValue, err.Error())
+		return fail(code, err.Error())
 	}
-	value, err := key.value(pos[1])
-	if err != nil {
-		return fail(diag.CodeConfigBadValue, err.Error())
-	}
-	path, err := config.Path()
-	if err != nil {
-		return fail(diag.CodeStore, err.Error())
-	}
-	hash := patch.NoFile
-	src, err := safefs.ReadConfig(path, config.MaxFileSize)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		src = nil
-	case err != nil:
-		return fail(diag.CodeConfig, err.Error())
-	default:
-		hash = patch.Hash(src)
-	}
-	// want is what aggy reads once the change is made: the value on its own
-	// over the defaults.
-	alone, err := config.SetValue(nil, key.setting, value)
-	if err != nil {
-		return fail(diag.CodeConfigBadValue, err.Error())
-	}
-	wantCfg, err := config.Parse(string(alone))
-	if err != nil {
-		return fail(diag.CodeConfigBadValue, err.Error())
-	}
-	want := key.get(wantCfg)
-	// "Already" goes by the value aggy reads, never by the file's bytes.
-	if cur, err := config.Parse(string(src)); err == nil && key.get(cur) == want {
+	if already {
 		fmt.Fprintf(stdout, "%s is already %s.\n", pos[0], termsafe.Field(pos[1]))
 		return 0
 	}
-	byHand := fmt.Errorf("%s spells %s another way (a dotted key, an inline table, or another case), so aggy cannot set it to %s; edit that line by hand",
-		path, pos[0], pos[1])
-	transform := func(b []byte) ([]byte, error) {
-		out, err := config.SetValue(b, key.setting, value)
-		if err != nil {
-			return nil, err
-		}
-		// The result must load: a mistake here would stop every aggy command.
-		cfg, err := config.Parse(string(out))
-		if err != nil {
-			return nil, err
-		}
-		// And it must read as asked: a line edit that missed another spelling
-		// would leave the old value in force.
-		if key.get(cfg) != want {
-			return nil, byHand
-		}
-		return out, nil
-	}
-	codeFor := func(err error, other diag.Code) diag.Code {
-		if errors.Is(err, byHand) {
-			return diag.CodeConfigByHand
-		}
-		return other
-	}
-	out, err := transform(src)
-	if err != nil {
-		return fail(codeFor(err, diag.CodeConfigBadValue), err.Error())
-	}
-	if string(out) == string(src) {
-		// Unreachable while transform checks the value; never say "already"
-		// for a value aggy does not read.
-		return fail(diag.CodeConfigByHand, byHand.Error())
-	}
-	ps := []patch.Patch{{File: path, ExpectedHash: hash, Mode: 0o600, Transform: transform}}
 	if *dryRun {
 		if _, err := manifest.Preview(stdout, ps); err != nil {
 			return 1
@@ -356,4 +291,88 @@ func configSet(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "Done (run %s). It applies at the next launch or switch. aggy unwire --run %s undoes it, once any change made after it is undone.\n", runID, runID)
 	return 0
+}
+
+// errConfigByHand ends a config change aggy cannot make by a line edit.
+var errConfigByHand = errors.New("edit that line by hand")
+
+// codeFor is err's code: CodeConfigByHand for errConfigByHand, else other.
+func codeFor(err error, other diag.Code) diag.Code {
+	if errors.Is(err, errConfigByHand) {
+		return diag.CodeConfigByHand
+	}
+	return other
+}
+
+// configChange plans setting the user config's key name to val, as aggy
+// config set does: already when aggy reads that value now, else the patch,
+// checked to load and to read as asked. A launch that asks in place (T6979)
+// uses it too.
+func configChange(name, val string) (ps []patch.Patch, already bool, code diag.Code, err error) {
+	key, err := parseConfigKey(name)
+	if err != nil {
+		return nil, false, diag.CodeConfigBadValue, err
+	}
+	value, err := key.value(val)
+	if err != nil {
+		return nil, false, diag.CodeConfigBadValue, err
+	}
+	path, err := config.Path()
+	if err != nil {
+		return nil, false, diag.CodeStore, err
+	}
+	hash := patch.NoFile
+	src, err := safefs.ReadConfig(path, config.MaxFileSize)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		src = nil
+	case err != nil:
+		return nil, false, diag.CodeConfig, err
+	default:
+		hash = patch.Hash(src)
+	}
+	// want is what aggy reads once the change is made: the value on its own
+	// over the defaults.
+	alone, err := config.SetValue(nil, key.setting, value)
+	if err != nil {
+		return nil, false, diag.CodeConfigBadValue, err
+	}
+	wantCfg, err := config.Parse(string(alone))
+	if err != nil {
+		return nil, false, diag.CodeConfigBadValue, err
+	}
+	want := key.get(wantCfg)
+	// "Already" goes by the value aggy reads, never by the file's bytes.
+	if cur, err := config.Parse(string(src)); err == nil && key.get(cur) == want {
+		return nil, true, diag.Code{}, nil
+	}
+	byHand := fmt.Errorf("%s spells %s another way (a dotted key, an inline table, or another case), so aggy cannot set it to %s; %w",
+		path, name, val, errConfigByHand)
+	transform := func(b []byte) ([]byte, error) {
+		out, err := config.SetValue(b, key.setting, value)
+		if err != nil {
+			return nil, err
+		}
+		// The result must load: a mistake here would stop every aggy command.
+		cfg, err := config.Parse(string(out))
+		if err != nil {
+			return nil, err
+		}
+		// And it must read as asked: a line edit that missed another spelling
+		// would leave the old value in force.
+		if key.get(cfg) != want {
+			return nil, byHand
+		}
+		return out, nil
+	}
+	out, err := transform(src)
+	if err != nil {
+		return nil, false, codeFor(err, diag.CodeConfigBadValue), err
+	}
+	if string(out) == string(src) {
+		// Unreachable while transform checks the value; never say "already"
+		// for a value aggy does not read.
+		return nil, false, diag.CodeConfigByHand, byHand
+	}
+	return []patch.Patch{{File: path, ExpectedHash: hash, Mode: 0o600, Transform: transform}}, false, diag.Code{}, nil
 }

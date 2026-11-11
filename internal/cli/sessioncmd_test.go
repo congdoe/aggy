@@ -54,11 +54,30 @@ func TestSessionAllow(t *testing.T) {
 	if out := sessionAggy([]string{"permissions", "add", "allow", "Bash(*)"}, true); !strings.Contains(out, "permissions.bad_rule") {
 		t.Errorf("a rule aggy permissions refuses: %q", out)
 	}
+	// T6979: ask, deny, and remove the same way, each with its own y/N.
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"permissions", "add", "deny", "Bash(rm x)"}, "Add the deny rule Bash(rm x) for this repo? [y/N] Nothing changed"},
+		{[]string{"permissions", "add", "ask", "Bash(git push)"}, "Add the ask rule Bash(git push) for this repo? [y/N] Nothing changed"},
+		{[]string{"permissions", "remove", "allow", "Bash(npm test)"}, "Remove the allow rule Bash(npm test) for this repo? [y/N] Nothing changed"},
+	} {
+		if out := sessionAggy(c.args, false); !strings.Contains(out, c.want) {
+			t.Errorf("no: sessionAggy(%q) = %q", c.args, out)
+		}
+		if out := sessionAggy(c.args, true); !strings.Contains(out, "Done (run ") {
+			t.Errorf("y: sessionAggy(%q) = %q", c.args, out)
+		}
+	}
+	if strings.Contains(aggyFileText(t), "Bash(npm test)") || !strings.Contains(aggyFileText(t), "Bash(rm x)") {
+		t.Errorf("the file: %s", aggyFileText(t))
+	}
 	for _, args := range [][]string{
-		{"permissions", "add", "deny", "Bash(x)"},
 		{"permissions", "add", "allow", "Bash(x)", "--everywhere"},
 		{"permissions", "add", "allow", "--everywhere"},
-		{"permissions", "remove", "allow", "Bash(npm test)"},
+		{"permissions", "add", "nope", "Bash(x)"},
+		{"permissions", "policy", "rm-rf", "deny"},
 	} {
 		if out := sessionAggy(args, true); !strings.Contains(out, "change them in a terminal") {
 			t.Errorf("sessionAggy(%q) = %q", args, out)

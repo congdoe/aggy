@@ -13,12 +13,17 @@ import (
 	"github.com/congdoe/aggy/internal/fakecli"
 )
 
-// TestLooseningFlagNoted (T6903): a person's own bypass flag needs --no-policy,
-// then reaches the CLI with a launch note and a record that names it.
+// TestLooseningFlagNoted (T6903): a person's own bypass flag is asked about
+// at a terminal (T6979): answered no, it is refused and names --no-policy;
+// with --no-policy it reaches the CLI with a launch note and a record that
+// names it; answered yes, it reaches the CLI for this launch only.
 func TestLooseningFlagNoted(t *testing.T) {
 	w := newWorld(t)
 	sc := map[string]any{"raw_echo": true, "stdout": "READY>", "extra_switches": []string{"--dangerously-skip-permissions"}}
 	s := w.start(t, sc, "claude", "--dangerously-skip-permissions")
+	s.waitFor([]byte("aggy's safety policy on for the rest? [y/N]"))
+	time.Sleep(400 * time.Millisecond) // past the typed-ahead window
+	s.send([]byte("n\r"))
 	s.waitFor([]byte("cli.flag_needs_no_policy"))
 	if code := s.exit(); code != 2 {
 		t.Errorf("without --no-policy: exit = %d, want 2", code)
@@ -41,6 +46,22 @@ func TestLooseningFlagNoted(t *testing.T) {
 	code, out := w.aggyCode(t, "diag", "--json")
 	if code != 0 || !strings.Contains(out, "loosening_flags") || !strings.Contains(out, "--dangerously-skip-permissions") {
 		t.Errorf("diag = %d, %s", code, out)
+	}
+
+	// Answered yes: the flag goes through for this launch, the policy on.
+	s = w.start(t, sc, "claude", "--dangerously-skip-permissions")
+	s.waitFor([]byte("aggy's safety policy on for the rest? [y/N]"))
+	time.Sleep(400 * time.Millisecond)
+	s.send([]byte("y\r"))
+	s.waitFor([]byte("a later launch starts without it"))
+	s.waitFor([]byte("READY>"))
+	s.send([]byte{0x04})
+	if code := s.exit(); code != 0 {
+		t.Fatalf("answered yes: exit = %d", code)
+	}
+	recs = fakecli.Records(t, w.record)
+	if last := recs[len(recs)-1].Args; !slices.Contains(last, "--dangerously-skip-permissions") || !slices.Contains(last, "--settings") {
+		t.Errorf("answered yes, args = %q", last)
 	}
 }
 

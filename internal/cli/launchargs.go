@@ -200,7 +200,7 @@ func runLaunch(v adapter.Vendor, args []string, stdout, stderr io.Writer) int {
 		}
 		return launch("aggy", t, stderr)
 	}
-	p, err := passFlags(v).ParseWith(rest, adapter.ParseOpts{NoPolicy: t.NoPolicy, Values: help.Values, Switches: help.Switches})
+	p, err := parseAsking(v, &t, rest, adapter.ParseOpts{NoPolicy: t.NoPolicy, Values: help.Values, Switches: help.Switches}, askLoosen(os.Getenv, offerIn, stderr))
 	if err != nil {
 		return launchUsageErr(stderr, cmd, flagCode(err), err.Error(), "")
 	}
@@ -288,8 +288,8 @@ func promptRefusal(v adapter.Vendor, p adapter.ParsedFlags, resuming bool) strin
 // -c or -r found), and sets the target's model, CLI words, and notes from
 // them. help holds the value flags and switches the CLI's help lists. resuming says the
 // launch resumes a session.
-func parseLaunchFlags(tp *target, v adapter.Vendor, help adapter.ParseOpts, resuming bool) (diag.Code, error) {
-	p, err := passFlags(v).ParseWith(tp.Flags, adapter.ParseOpts{NoPolicy: tp.NoPolicy, Values: help.Values, Switches: help.Switches})
+func parseLaunchFlags(tp *target, v adapter.Vendor, help adapter.ParseOpts, resuming bool, ask loosenAsk) (diag.Code, error) {
+	p, err := parseAsking(v, tp, tp.Flags, adapter.ParseOpts{NoPolicy: tp.NoPolicy, Values: help.Values, Switches: help.Switches}, ask)
 	if err != nil {
 		return flagCode(err), err
 	}
@@ -306,6 +306,44 @@ func parseLaunchFlags(tp *target, v adapter.Vendor, help adapter.ParseOpts, resu
 	tp.Prompt = len(p.Prompt) > 0
 	tp.Flags = nil
 	return diag.Code{}, nil
+}
+
+// parseAsking sorts words as ParseWith does, asking (T6979) about each flag
+// that loosens the policy, one at a time: one let through passes alone, the
+// rest of the policy staying on, and is kept on t (Allowed), so a later sort
+// of the same words asks again about none of them.
+func parseAsking(v adapter.Vendor, t *target, words []string, o adapter.ParseOpts, ask loosenAsk) (adapter.ParsedFlags, error) {
+	pf := passFlags(v)
+	o.Allowed = slices.Clone(t.Allowed)
+	var p adapter.ParsedFlags
+	var err error
+	for range 16 {
+		p, err = pf.ParseWith(words, o)
+		f, ok := adapter.LoosenedFlag(err)
+		if !ok || ask == nil || slices.Contains(o.Allowed, f) || !ask(f, pf.LoosenEffect(f)) {
+			break
+		}
+		o.Allowed = append(o.Allowed, f)
+	}
+	t.Allowed = o.Allowed
+	return p, err
+}
+
+// loosenAsk asks whether a loosening flag, with what it does to the policy,
+// goes through for this launch (T6979); nil asks nothing.
+type loosenAsk func(flag, effect string) bool
+
+// askLoosen is the launch's loosenAsk: the person at the terminal answers,
+// and with no one to ask the flag stays refused.
+func askLoosen(getenv func(string) string, in io.Reader, out io.Writer) loosenAsk {
+	return func(flag, effect string) bool {
+		yes, _ := askInPlace(getenv, in, out, inPlace{
+			change: flag + " loosens approvals, the sandbox, or hook trust: " + effect + ".",
+			undo:   "It holds for this launch only: a later launch or switch of this session starts without it. --no-policy starts without the policy at all.",
+			ask:    "Start with " + flag + ", and aggy's safety policy on for the rest?",
+		})
+		return yes
+	}
 }
 
 // launchVendor is the vendor a launch with none named starts here: the rule

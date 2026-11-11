@@ -530,6 +530,9 @@ func (s *session) cmdDone(r cmdResult) {
 		s.pk.page = nil
 		s.pk.menu = &menu{title: g.title, check: &checkList{lines: r.trust.Lines, st: r.trust.State, opened: time.Now()}}
 	default:
+		if s.fixDone(g, r.out) {
+			return
+		}
 		g.lines, g.top = plainText(r.out), 0
 		if g.confirmIf != "" && !strings.Contains(r.out, g.confirmIf) {
 			g.confirm, g.also = nil, nil // it asked nothing, so y has nothing to answer

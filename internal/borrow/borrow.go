@@ -70,6 +70,12 @@ type Request struct {
 	// AllowUntested runs a CLI outside the adapter's tested range with none
 	// of the version checks (--allow-untested).
 	AllowUntested bool
+	// UntestedOnce runs a CLI whose version aggy refuses (below the tested
+	// range, a new major version, or unreadable) once, as the person
+	// answered at a terminal (T6979). Unlike AllowUntested it skips nothing
+	// else: the help and feature checks of the kind's lockdown, and the
+	// self-test, run as for a newer version, and a failure still refuses.
+	UntestedOnce bool
 	// Fresh skips the research cache (--fresh). A fresh report still
 	// replaces the cached one.
 	Fresh bool
@@ -365,7 +371,7 @@ func (b *Borrower) Run(ctx context.Context, req Request) ([]Result, error) {
 			res, err := b.runOne(ctx, req, v, "")
 			var pre *preStartError
 			if errors.As(err, &pre) {
-				tried = append(tried, Attempt{Vendor: v, Reason: pre.Error()})
+				tried = append(tried, Attempt{Vendor: v, Reason: pre.Error(), Code: pre.code})
 				ev := diag.EvBorrowVendorSkipped
 				if pre.code == diag.CodeNoSandbox && v == adapter.Grok {
 					ev = diag.EvGrokSandboxRefused
@@ -395,6 +401,8 @@ const Both = "both"
 type Attempt struct {
 	Vendor adapter.Vendor
 	Reason string
+	// Code is the refusal's reason code.
+	Code diag.Code
 }
 
 // NoStartError says that no candidate could start the borrow, and why

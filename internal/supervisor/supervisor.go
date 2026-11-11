@@ -66,6 +66,16 @@ type Options struct {
 	// switch is picked or requested and again before the exit command is
 	// typed. Nil means the session cannot switch.
 	CanSwitch func(v adapter.Vendor) error
+	// SwitchFix, when set, names a fix aggy can make on its own page for
+	// why CanSwitch refused v (T6979: the Codex rules file not written): the
+	// page's lines and the aggy command a y on it runs (Aggy), after which
+	// the switch goes on. ok is false when there is none and the refusal
+	// stands.
+	SwitchFix func(v adapter.Vendor, err error) (lines, confirm []string, ok bool)
+	// HooksFix is the aggy command that installs aggy's hooks for Vendor
+	// (T6979), offered on aggy's page when an agent asks for a switch the
+	// missing hooks refuse; nil offers nothing.
+	HooksFix []string
 	// StartsTurn is set when the CLI starts with a turn running (a brief
 	// prompt), so the session is not at its prompt until a turn end.
 	StartsTurn bool

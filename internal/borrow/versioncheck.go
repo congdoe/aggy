@@ -80,7 +80,7 @@ func (b *Borrower) checkVersion(ctx context.Context, a adapter.Adapter, v adapte
 	if req.AllowUntested {
 		return versionCheck{note: "outside the tested versions, run with --allow-untested, not checked"}, nil
 	}
-	if class == adapter.VersionRefused {
+	if class == adapter.VersionRefused && !req.UntestedOnce {
 		w := adapter.VersionWarning(a, cli.Version, cli.VersionLine)
 		return versionCheck{}, &preStartError{fmt.Errorf("%s; aggy will not borrow on it (pass --allow-untested to run it anyway)", w), diag.CodeUntested}
 	}

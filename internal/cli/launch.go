@@ -42,6 +42,9 @@ type target struct {
 	Direct bool
 	// NoPolicy starts the CLI without aggy's safety policy (--no-policy).
 	NoPolicy bool
+	// Allowed are the loosening flags the person let through one by one at the
+	// terminal (T6979, parseAsking), for this launch only.
+	Allowed []string
 	// Brief writes the child's brief to .aggy/briefs/<child-id>.md and
 	// tells the child to read it (--brief).
 	Brief bool

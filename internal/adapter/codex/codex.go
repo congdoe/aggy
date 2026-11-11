@@ -357,6 +357,7 @@ func (Adapter) PassFlags() adapter.PassFlags {
 		Commands:      Commands,
 		// PR #124 re-review: the flags aggy sets or whose value it checks,
 		// refused after "--".
+		Effect: loosenEffect,
 		Owned: []string{"-c", "--config", "-s", "--sandbox", "-a", "--ask-for-approval", "--add-dir", "-p", "--profile",
 			"--enable", "--disable", "--cd", "-C", "--no-alt-screen"},
 		DirFlags: []string{"--add-dir"},

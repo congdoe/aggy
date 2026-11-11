@@ -65,6 +65,33 @@ type PassFlags struct {
 	// form (checkAfterDashes): there it would reach the CLI unmerged and
 	// unchecked if the CLI did not take "--" as the end of its options.
 	Owned []string
+	// Effect says in plain words what a loosening flag, as LoosenedFlag
+	// names it, does to aggy's safety policy on this CLI, for the question
+	// aggy asks before letting it through (T6979). nil, or "", is the
+	// generic line: aggy has not checked.
+	Effect func(flag string) string
+}
+
+// LoosenEffect is p's line for a loosening flag: its Effect, or the generic
+// one.
+func (p PassFlags) LoosenEffect(flag string) string {
+	if p.Effect != nil {
+		if e := p.Effect(flag); e != "" {
+			return e
+		}
+	}
+	return "aggy has not checked what it does to its safety policy on this CLI, so treat the policy as off for what it allows"
+}
+
+// LoosenedFlag is the flag err refuses for ErrLoosens, as it names it (with
+// the value, where the value is what loosens: --permission-mode
+// bypassPermissions), or false for any other error.
+func LoosenedFlag(err error) (string, bool) {
+	if !errors.Is(err, ErrLoosens) {
+		return "", false
+	}
+	f, ok := strings.CutSuffix(err.Error(), ": "+ErrLoosens.Error())
+	return f, ok && f != ""
 }
 
 // DirFlag is one folder a flag on the command line names.
@@ -152,6 +179,10 @@ type ParseOpts struct {
 	// NoPolicy lets through the flags that loosen approvals, the sandbox, or
 	// hook trust (ErrLoosens), and lists them in Loosens.
 	NoPolicy bool
+	// Allowed are loosening flags, as LoosenedFlag names them, the person
+	// let through one by one at a terminal (T6979): each passes, listed in
+	// Loosens, and the rest of the policy stays.
+	Allowed []string
 	// Print parses for a run aggy neither supervises nor records (print mode,
 	// a stdin that is no terminal): aggy takes over no flag, so the model,
 	// continue, and resume flags go to the CLI as typed, and a RefusedFlag
@@ -547,6 +578,9 @@ func (p PassFlags) checked(name string) (CheckedFlag, bool) {
 func (p PassFlags) checkPassed(args []string, i *int, name, val string, hasVal bool, o ParseOpts) (bool, error) {
 	gate := func(err error) (bool, error) {
 		if errors.Is(err, ErrLoosens) && o.NoPolicy {
+			return true, nil
+		}
+		if f, ok := LoosenedFlag(err); ok && slices.Contains(o.Allowed, f) {
 			return true, nil
 		}
 		return false, err

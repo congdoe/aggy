@@ -412,6 +412,7 @@ func (Adapter) PassFlags() adapter.PassFlags {
 		Commands: Commands,
 		// PR #124 re-review: the flags aggy merges with its own, sets, or
 		// whose value it checks, refused after "--".
+		Effect: loosenEffect,
 		Owned: []string{"--rules", "--append-system-prompt", "--deny", "--disallowedTools", "--disallowed-tools", "--allow",
 			"--allowedTools", "--allowed-tools", "--permission-mode", "--sandbox", "--add-dir", "--agent", "--agents", "--tools",
 			"--session-id", "-s", "--no-alt-screen", "--cwd", "--load", "--fork-session"},

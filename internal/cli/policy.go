@@ -5,7 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 
+	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/manifest"
 	"github.com/congdoe/aggy/internal/parity"
@@ -86,20 +88,69 @@ func runPolicy(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Nothing to change.")
 		return 0
 	}
-	ctx := context.Background()
+	if err := applyCodexRules(context.Background(), path, ps, stdout); err != nil {
+		return fail(err)
+	}
+	return 0
+}
+
+// applyCodexRules writes the Codex rules file through the manifest, as aggy
+// policy wire does, and says so on out. A launch that asked in place
+// (T6979) uses it too.
+func applyCodexRules(ctx context.Context, path string, ps []patch.Patch, out io.Writer) error {
 	s, err := store.OpenDefault(ctx)
 	if err != nil {
-		return fail(err)
+		return err
 	}
 	defer func() { _ = s.Close() }()
 	m, err := manifest.Open(s)
 	if err != nil {
-		return fail(err)
+		return err
 	}
 	runID := manifest.NewRunID()
 	if _, err := m.Run(ctx, manifest.Write, runID, ps, io.Discard); err != nil {
-		return fail(err)
+		return err
 	}
-	fmt.Fprintf(stdout, "changed %s\nDone (run %s). aggy unwire --run %s undoes it.\n", termsafe.Field(path), runID, runID)
-	return 0
+	fmt.Fprintf(out, "changed %s\nDone (run %s). aggy unwire --run %s undoes it.\n", termsafe.Field(path), runID, runID)
+	return nil
+}
+
+// switchFix is the supervisor's SwitchFix (T6979): a switch to Codex that the
+// missing rules file refused is offered aggy policy wire on aggy's page.
+func switchFix(v adapter.Vendor, err error) (lines, confirm []string, ok bool) {
+	if v != adapter.Codex || err == nil || !strings.Contains(err.Error(), whyRulesMissed) {
+		return nil, nil, false
+	}
+	path, perr := parity.CodexRulesPath()
+	if perr != nil {
+		return nil, nil, false
+	}
+	return []string{
+		"Codex has no aggy rules file, so aggy's safety policy cannot reach it.",
+		"",
+		"y writes " + path + " now, as aggy policy wire does, and the switch goes on;",
+		"aggy unwire undoes it. Esc leaves things as they are.",
+	}, []string{"policy", "wire"}, true
+}
+
+// wireCodexRulesInPlace offers, at a launch of Codex whose rules file is not
+// written, to write it now (T6979), and reports whether it was written.
+func wireCodexRulesInPlace(ctx context.Context, getenv func(string) string, in io.Reader, out io.Writer) (bool, error) {
+	path, err := parity.CodexRulesPath()
+	if err != nil {
+		return false, err
+	}
+	p, err := parity.CodexRulesPatch(path)
+	if err != nil {
+		return false, err
+	}
+	yes, asked := askInPlace(getenv, in, out, inPlace{
+		change: "Codex has no aggy rules file, so aggy's safety policy cannot reach it. aggy can write " + path + " now, as aggy policy wire does.",
+		undo:   "aggy unwire undoes it.",
+		ask:    "Write it and start Codex?",
+	})
+	if !asked || !yes {
+		return false, nil
+	}
+	return true, applyCodexRules(ctx, path, []patch.Patch{p}, out)
 }
