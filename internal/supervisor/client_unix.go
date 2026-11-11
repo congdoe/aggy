@@ -40,8 +40,9 @@ func Send(runDir, path string, req Request, timeout time.Duration) (Response, er
 }
 
 // ErrUnproven is a hermes-pin answer that came without the proof that its
-// sender holds the supervisor's lock for the socket's parent id.
-var ErrUnproven = errors.New("supervisor: the socket's peer did not show it holds the supervisor's lock")
+// sender could open the supervisor's lock file for the socket's parent id
+// and that no one else holds that lock.
+var ErrUnproven = errors.New("supervisor: the socket's peer did not send the supervisor's lock file, held by no one else")
 
 // SendHermesPin is Send for a hermes-pin (T6954). The index row names the
 // socket, and anyone of this uid can bind a socket in the run directory, so
@@ -151,12 +152,16 @@ func readWithRights(c *net.UnixConn) (line []byte, fds []int, err error) {
 	}
 }
 
-// rightsIn returns the open files in the control messages b. A message the
-// kernel cut short (its length past the end of b; darwin still puts the
-// files that fit, and more, in the receiver's table) is read as far as b
-// goes, so those files can be closed too: its header is the length, then the
-// level and the type as two int32s right before the data, at CmsgLen(0), on
-// every OS aggy runs on, all little-endian.
+// rightsIn returns the open files in the control messages b. When b does not
+// parse, only its first message is read, and only as far as both b and the
+// message's own length go: a message the kernel cut short (its length past
+// the end of b; darwin still puts the files that fit, and more, in the
+// receiver's table) is read up to the end of b, so those files can be closed
+// too, and nothing past the first message's length is taken for a file
+// (#139 review). Its header is the length (as wide as the header less the
+// two int32s that follow: 4 bytes on darwin, 8 on 64-bit Linux), then the
+// level and the type right before the data, at CmsgLen(0), on every OS aggy
+// runs on, all little-endian.
 func rightsIn(b []byte) []int {
 	if msgs, err := syscall.ParseSocketControlMessage(b); err == nil {
 		var fds []int
@@ -172,8 +177,24 @@ func rightsIn(b []byte) []int {
 		int32(binary.LittleEndian.Uint32(b[hdr-4:])) != syscall.SCM_RIGHTS {
 		return nil
 	}
+	var size uint64
+	switch hdr - 8 {
+	case 4:
+		size = uint64(binary.LittleEndian.Uint32(b))
+	case 8:
+		size = binary.LittleEndian.Uint64(b)
+	default:
+		return nil
+	}
+	if size < uint64(hdr) {
+		return nil
+	}
+	end := len(b)
+	if size < uint64(end) {
+		end = int(size)
+	}
 	var fds []int
-	for i := hdr; i+4 <= len(b); i += 4 {
+	for i := hdr; i+4 <= end; i += 4 {
 		fds = append(fds, int(int32(binary.LittleEndian.Uint32(b[i:]))))
 	}
 	return fds

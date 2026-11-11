@@ -13,8 +13,9 @@ func Send(string, string, Request, time.Duration) (Response, error) {
 }
 
 // ErrUnproven is a hermes-pin answer that came without the proof that its
-// sender holds the supervisor's lock.
-var ErrUnproven = errors.New("supervisor: the socket's peer did not show it holds the supervisor's lock")
+// sender could open the supervisor's lock file and that no one else holds
+// that lock.
+var ErrUnproven = errors.New("supervisor: the socket's peer did not send the supervisor's lock file, held by no one else")
 
 // SendHermesPin cannot check the peer here, so it never answers: the hook
 // asks (T6954).

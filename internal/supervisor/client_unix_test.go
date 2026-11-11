@@ -19,8 +19,8 @@ import (
 )
 
 // TestSendHermesPinProof (T6954): the hook takes a hermes-pin answer only
-// from the process that holds the supervisor's lock for the socket's parent
-// id. A socket someone else bound at the path the index row names, answering
+// with the supervisor's lock file for the socket's parent id, held by no one
+// else. A socket someone else bound at the path the index row names, answering
 // --no-policy, is refused: with no open file, with its own open of the lock
 // file, with another file, or for a parent id with no lock file. The real
 // supervisor is accepted. The stand-ins run in the test's process: the proof
@@ -119,7 +119,9 @@ func TestSendHermesPinProof(t *testing.T) {
 	// kernel (MSG_CTRUNC, a buffer lowered to four) it is refused too; Linux
 	// drops what does not fit, but darwin still puts every file in the
 	// receiver's table, so there the two past the buffer stay open (the real
-	// buffer holds more than either kernel sends in one message).
+	// buffer holds more than either kernel sends in one message). Cut to one,
+	// the one that arrives is the lock file, held by no one else, so only the
+	// MSG_CTRUNC check refuses it (#139 review).
 	for i, tt := range []struct {
 		name   string
 		rights int
@@ -127,6 +129,7 @@ func TestSendHermesPinProof(t *testing.T) {
 	}{
 		{"six open files", maxRights, 0},
 		{"cut by the kernel", 4, map[bool]int{true: 2, false: 0}[runtime.GOOS == "darwin"]},
+		{"cut to one", 1, map[bool]int{true: 5, false: 0}[runtime.GOOS == "darwin"]},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			own := fmt.Sprintf("3b9d3c4e-1f2a-4b5c-8d7e-6f5a4b3c2d1%d", i)
@@ -177,6 +180,24 @@ func TestSendHermesPinProof(t *testing.T) {
 	whole := syscall.UnixRights(7, 8, 9)
 	if got := rightsIn(whole[:syscall.CmsgLen(8)]); len(got) != 2 || got[0] != 7 || got[1] != 8 {
 		t.Errorf("rightsIn(cut) = %v, want [7 8]", got)
+	}
+	// #139 review: when b does not parse because a second message is cut,
+	// only the first message's files are read, never the second's header.
+	first := syscall.UnixRights(7)
+	second := syscall.UnixRights(8, 9)
+	two := append(append([]byte{}, first...), second[:syscall.CmsgLen(4)]...)
+	if _, err := syscall.ParseSocketControlMessage(two); err == nil {
+		t.Fatal("the two messages parsed; the test needs them not to")
+	}
+	if got := rightsIn(two); len(got) != 1 || got[0] != 7 {
+		t.Errorf("rightsIn(whole, cut) = %v, want [7]", got)
+	}
+	// A first message whose length is shorter than its header gives nothing.
+	noLen := append([]byte{}, first...)
+	clear(noLen[:syscall.CmsgLen(0)-8])
+	noLen = append(noLen, second[:syscall.CmsgLen(4)]...)
+	if got := rightsIn(noLen); got != nil {
+		t.Errorf("rightsIn(no length) = %v, want none", got)
 	}
 	// The probes left the real supervisor's lock alone.
 	if live, err := Live(run, pid); err != nil || !live {
