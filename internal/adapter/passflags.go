@@ -667,7 +667,10 @@ func (p PassFlags) checkPassed(args []string, i *int, name, val string, hasVal b
 	names := shortsOf(name)
 	loosens := false
 	for _, n := range names {
-		if len(names) > 1 && (slices.Contains(p.Model, n) || slices.Contains(p.Continue, n) || slices.Contains(p.Resume, n)) {
+		// T6980: a flag aggy checks the value of, run on after another
+		// short flag (-hs danger-full-access), would reach the CLI with its
+		// value unchecked; split() only finds it first in the word.
+		if len(names) > 1 && (slices.Contains(p.Model, n) || slices.Contains(p.Continue, n) || slices.Contains(p.Resume, n) || p.isChecked(n)) {
 			return false, fmt.Errorf("write %s on its own, not as part of %s", n, name)
 		}
 		for _, r := range p.Refused {

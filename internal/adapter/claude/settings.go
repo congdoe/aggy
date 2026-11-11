@@ -85,7 +85,7 @@ func MergeSettings(a, b map[string]any) map[string]any {
 func SettingsJSON(req adapter.InteractiveRequest) ([]byte, bool, error) {
 	perms := permissionsLayer(req)
 	hooks := hooksLayer(req)
-	if len(perms) == 0 && len(hooks) == 0 && len(req.UserSettings) == 0 {
+	if len(perms) == 0 && len(hooks) == 0 && len(req.UserSettings) == 0 && !req.ClaudeSandbox {
 		return nil, false, nil
 	}
 	layer := map[string]any{}
@@ -94,6 +94,9 @@ func SettingsJSON(req adapter.InteractiveRequest) ([]byte, bool, error) {
 	}
 	if len(hooks) > 0 {
 		layer["hooks"] = hooks
+	}
+	if req.ClaudeSandbox {
+		layer["sandbox"] = SandboxLayer()
 	}
 	if len(req.UserSettings) == 0 && req.PolicyHook == nil {
 		// As before T6976, byte for byte.
@@ -195,6 +198,9 @@ func SettingsOverrides(req adapter.InteractiveRequest) []string {
 	}
 	if hooks := hooksLayer(req); len(hooks) > 0 {
 		layer["hooks"] = hooks
+	}
+	if req.ClaudeSandbox {
+		layer["sandbox"] = SandboxLayer()
 	}
 	own, err := asSettings(layer)
 	if err != nil {

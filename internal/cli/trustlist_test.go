@@ -108,7 +108,8 @@ func TestTrustAtStart(t *testing.T) {
 			t.Fatalf("first: note %q out %q", note, out)
 		}
 		a, _ := folderAnswer(t, repo)
-		if !slices.Equal(a.On, []string{"claude", "opencode"}) || !slices.Equal(a.Shown, []string{"claude", "opencode"}) {
+		// T6980: Claude's sandbox is ticked by default in a folder never answered.
+		if !slices.Equal(a.On, []string{"claude", "opencode", trustRowClaudeSandbox}) || !slices.Equal(a.Shown, []string{"claude", "opencode", trustRowClaudeSandbox}) {
 			t.Errorf("answer %+v", a)
 		}
 		key, _ := trustTargetFor(repo)
@@ -140,7 +141,7 @@ func TestTrustAtStart(t *testing.T) {
 			t.Fatalf("re-ask: %q", out)
 		}
 		a, _ := folderAnswer(t, repo)
-		if !slices.Equal(a.On, []string{"claude"}) || !slices.Contains(a.Shown, trustRowOpenCodeFree) {
+		if !slices.Equal(a.On, []string{"claude", trustRowClaudeSandbox}) || !slices.Contains(a.Shown, trustRowOpenCodeFree) {
 			t.Errorf("answer %+v", a)
 		}
 		if out, note := startIn(repo, freeOn(), "4\n\n"); out != "" || note != "" {
@@ -177,8 +178,8 @@ func TestTrustAtStart(t *testing.T) {
 	t.Run("a paste picks nothing", func(t *testing.T) {
 		_, repo := trustWorld(t, "claude")
 		startIn(repo, config.Default(), "\x1b[200~1\n\n\x1b[201~\n\n")
-		if a, _ := folderAnswer(t, repo); len(a.On) != 0 {
-			t.Errorf("a paste ticked or confirmed: %+v", a)
+		if a, _ := folderAnswer(t, repo); slices.Contains(a.On, "claude") {
+			t.Errorf("a paste ticked: %+v", a)
 		}
 	})
 }
@@ -339,7 +340,7 @@ func TestTrustClaudeFileRefusals(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(h, ".claude.json")); !os.IsNotExist(err) {
 			t.Error("~/.claude.json was made")
 		}
-		if a, _ := folderAnswer(t, repo); !slices.Equal(a.On, []string{"claude"}) {
+		if a, _ := folderAnswer(t, repo); !slices.Equal(a.On, []string{"claude", trustRowClaudeSandbox}) {
 			t.Errorf("the rest of the answer was not saved: %+v", a)
 		}
 	})

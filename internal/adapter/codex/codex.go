@@ -306,7 +306,8 @@ func (a Adapter) Interactive(req adapter.InteractiveRequest) (adapter.Command, e
 // 2026-11-06). -c is Codex's config override there, so aggy's continue has
 // no short form here. aggy never adds a loosening flag on its own, and one
 // the person gives needs --no-policy: every --dangerously-* (PassFlags.Parse),
-// --yolo, --approve-for-me, -a never, -s danger-full-access, a -c of a key
+// --yolo, --approve-for-me, -a never, -s danger-full-access (and -c
+// sandbox_mode=danger-full-access; another level is refused, T6980), a -c of a key
 // aggy cannot tell is harmless, which could say the same thing, a --disable of
 // a safety feature, which the reference says translates to such a -c, and an
 // --add-dir that holds $HOME or keys (at launch: DirFlags). --profile, --enable,
@@ -437,15 +438,6 @@ func checkApproval(val string) error {
 	return fmt.Errorf("--ask-for-approval %s: %w", val, adapter.ErrLoosens)
 }
 
-// checkSandbox gates -s danger-full-access, and any value the reference does
-// not list.
-func checkSandbox(val string) error {
-	if val == "read-only" || val == "workspace-write" {
-		return nil
-	}
-	return fmt.Errorf("--sandbox %s: %w", val, adapter.ErrLoosens)
-}
-
 // configHarmless are the -c keys that change only how Codex shows its work or
 // thinks. Any other key could set what --yolo sets (approval_policy,
 // sandbox_mode, hooks, ...), so it needs --no-policy. Unverified that Codex
@@ -468,6 +460,11 @@ func checkConfigOverride(val string) error {
 	}
 	root, _, _ := strings.Cut(strings.TrimSpace(key), ".")
 	root = strings.Trim(root, `"' `)
+	if root == "sandbox_mode" && strings.Trim(strings.TrimSpace(key), `"' `) == root {
+		// T6980: the same levels as --sandbox (checkLevel); a -c with no
+		// value is no level.
+		return checkLevel("-c sandbox_mode", value)
+	}
 	if hasValue && slices.Contains(configHarmless, root) {
 		return nil
 	}

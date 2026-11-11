@@ -154,6 +154,13 @@ func doctor(ctx context.Context, env checkEnv) doctorResult {
 		case vr.Installed:
 			fs = append(fs, hookFinding(v, name))
 		}
+		// T6980: the vendor's own sandbox, where aggy chooses or shows it.
+		switch {
+		case vr.Installed && v == adapter.Claude:
+			fs = append(fs, claudeSandboxFinding(env.cwd))
+		case vr.Installed && v == adapter.Codex:
+			fs = append(fs, codexSandboxFinding())
+		}
 		fs = append(fs, decideFindings(v, stats)...)
 		res.sections = append(res.sections, doctorSection{title: name, findings: fs})
 	}

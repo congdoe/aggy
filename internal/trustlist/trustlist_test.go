@@ -10,7 +10,30 @@ var (
 	claude = Row{ID: "claude", Label: "Claude Code", Group: Harness}
 	oc     = Row{ID: "opencode", Label: "OpenCode", Group: Harness, Warning: "plugins run"}
 	free   = Row{ID: "opencode-free", Label: "OpenCode free models", Group: Source, Warning: "sent to OpenCode"}
+	// sandbox is a setting row (T6980).
+	sandbox = Row{ID: "claude-sandbox", Label: "Claude sandboxed", Group: Setting, Quiet: true}
 )
+
+// TestSettingRowsLast (T6980): a setting row is listed after the harnesses
+// and sources, so their numbers stay as they were, and All leaves it alone.
+func TestSettingRowsLast(t *testing.T) {
+	s := NewState([]Row{sandbox, free, claude, oc}, Folder{}, false, nil)
+	var ids []string
+	for _, r := range s.Rows {
+		ids = append(ids, r.ID)
+	}
+	if !slices.Equal(ids, []string{"claude", "opencode", "opencode-free", "claude-sandbox"}) {
+		t.Fatalf("order %q", ids)
+	}
+	s.Toggle(1)
+	if slices.Contains(s.Ticked(), "claude-sandbox") {
+		t.Error("All ticked a setting row")
+	}
+	got := strings.Join(s.Lines(), "\n")
+	if !strings.Contains(got, Setting.Title()) || !strings.Contains(got, " 5 [ ] Claude sandboxed") {
+		t.Errorf("list:\n%s", got)
+	}
+}
 
 func TestPending(t *testing.T) {
 	cases := []struct {
@@ -24,6 +47,11 @@ func TestPending(t *testing.T) {
 		{"a new row", []Row{claude, oc, free}, Folder{Shown: []string{"claude", "opencode"}, On: []string{"claude"}}, []string{"opencode-free"}},
 		{"never", []Row{claude, oc, free}, Folder{Never: true}, nil},
 		{"a row gone is no question", []Row{claude}, Folder{Shown: []string{"claude", "opencode"}}, nil},
+		// T6980: a quiet row is asked at a first start, not after an answer.
+		{"a quiet row at a first start", []Row{claude, sandbox}, Folder{}, []string{"claude", "claude-sandbox"}},
+		{"a quiet row, answered before it", []Row{claude, sandbox}, Folder{Shown: []string{"claude"}, On: []string{"claude"}}, nil},
+		{"a quiet row beside a new one", []Row{claude, oc, sandbox}, Folder{Shown: []string{"claude"}}, []string{"opencode"}},
+		{"a quiet row answered", []Row{claude, sandbox}, Folder{Shown: []string{"claude", "claude-sandbox"}}, nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -1,6 +1,7 @@
 // Package trustlist is the one trust question aggy asks the first time it
 // starts on screen in a folder (T6977, docs/design.md section 10, "Trust"): a
-// list of what may run in the folder and where its code may be sent, which the
+// list of what may run in the folder, where its code may be sent, and how a
+// harness runs there (T6980: Claude Code's own sandbox), which the
 // person ticks once. It holds the list's rows as shown, its state while it is
 // answered, how a typed line answers it, and what aggy records of the answer
 // per folder, in aggy's own trust file. It decides nothing about what ticking a
@@ -25,12 +26,22 @@ const (
 	Harness Group = iota + 1
 	// Source rows are other places the folder's code may be sent.
 	Source
+	// Setting rows say how a harness runs in the folder (T6980: Claude
+	// Code's own sandbox). Listed last, so the earlier rows keep their
+	// numbers.
+	Setting
 )
+
+// groups are the groups in the order the list shows them.
+var groups = []Group{Harness, Source, Setting}
 
 // Title is a group's heading.
 func (g Group) Title() string {
-	if g == Harness {
+	switch g {
+	case Harness:
 		return "Harnesses that may run here"
+	case Setting:
+		return "How a harness runs here"
 	}
 	return "Other places this folder's code may be sent"
 }
@@ -53,6 +64,11 @@ type Row struct {
 	Warning string
 	// Missing, when set, says the row's CLI is not installed.
 	Missing bool
+	// Quiet rows are not asked about at a start in a folder answered before
+	// they were offered (Pending): they count as off there until aggy trust
+	// or /aggy trust shows the list (T6980). A row that only changes how a
+	// harness runs is not worth asking everyone who answered again for.
+	Quiet bool
 }
 
 // inAll reports whether "All" ticks r.
@@ -81,13 +97,17 @@ type File struct {
 }
 
 // Pending reports the rows of avail a start must ask about for f: those its
-// last answer did not show. A folder answered never has none.
+// last answer did not show, but for a Quiet row in a folder answered before.
+// A folder answered never has none.
 func Pending(avail []Row, f Folder) []string {
 	if f.Never {
 		return nil
 	}
 	var out []string
 	for _, r := range avail {
+		if r.Quiet && len(f.Shown) > 0 {
+			continue
+		}
 		if !slices.Contains(f.Shown, r.ID) {
 			out = append(out, r.ID)
 		}
@@ -110,7 +130,7 @@ type State struct {
 // did not show is marked new.
 func NewState(rows []Row, f Folder, answered bool, current func(id string) bool) *State {
 	s := &State{}
-	for _, g := range []Group{Harness, Source} {
+	for _, g := range groups {
 		for _, r := range rows {
 			if r.Group != g {
 				continue
