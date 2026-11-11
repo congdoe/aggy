@@ -65,9 +65,17 @@ func selectWorld(t *testing.T, rows, cols int, installed ...string) (repo string
 		}
 		*interrupted++
 	}
-	t.Cleanup(func() { selectTerminal, startInPlace, interruptAggy = oldSel, oldStart, oldInt })
+	oldNow := selectNow
+	keyGap = time.Second
+	at := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+	selectNow = func() time.Time { at = at.Add(keyGap); return at }
+	t.Cleanup(func() { selectTerminal, startInPlace, interruptAggy, selectNow = oldSel, oldStart, oldInt, oldNow })
 	return repo, raw, interrupted
 }
+
+// keyGap is how far apart selectWorld's clock puts the reads: a second, as a
+// person answering, unless a test types faster.
+var keyGap time.Duration
 
 // startKeys is one on-screen start in dir, answered with keys, one per read.
 func startKeys(dir string, cfg config.Config, keys ...string) string {
@@ -99,13 +107,17 @@ func TestTrustSelectAtStart(t *testing.T) {
 		{"a typed number", []string{"3", "\r"}, []string{"opencode"}, true, false, false, "Saved"},
 		{"n is not now", []string{"1", "n"}, nil, false, false, false, "Not now"},
 		{"Esc is not now", []string{"1", "\x1b"}, nil, false, false, false, "Not now"},
-		{"x is never", []string{"x"}, []string{}, true, true, false, "Never for this folder"},
+		{"x then Enter is never", []string{"x", "\r"}, []string{}, true, true, false, "Never for this folder"},
+		{"x alone is not never", []string{"x"}, nil, false, false, false, "Not now"},
 		{"Ctrl-C stops", []string{"1", "\x03"}, nil, false, false, true, ""},
+		{"Ctrl-C after a split sequence stops", []string{"\x1b[", "\x03"}, nil, false, false, true, ""},
 		{"the end of input is not now", []string{"1"}, nil, false, false, false, "Not now"},
 		{"a paste answers nothing", []string{"\x1b[200~1\r\x1b[201~", "\x1b"}, nil, false, false, false, "Not now"},
-		{"a paste across reads answers nothing", []string{"\x1b[200~1", "\r", "x\x1b[201~", "\r"}, []string{}, true, false, false, "Saved"},
-		{"a burst answers nothing", []string{"1\r", "\r"}, []string{}, true, false, false, "Saved"},
-		{"Alt-x is not Esc then x", []string{"\x1bx", "\r"}, []string{}, true, false, false, "Saved"},
+		// A paste, a burst, or a key aggy does not know is typing: the Enter
+		// after it does not confirm.
+		{"a paste across reads answers nothing", []string{"\x1b[200~1", "\r", "x\x1b[201~", "\r"}, nil, false, false, false, "Not now"},
+		{"a burst answers nothing", []string{"1\r", "\r"}, nil, false, false, false, "Not now"},
+		{"Alt-x is not Esc then x", []string{"\x1bx", "\r"}, nil, false, false, false, "Not now"},
 		{"an escape sequence split", []string{"\x1b[", "A", " ", "\r"}, []string{"claude", "opencode"}, true, false, false, "Saved"},
 	}
 	for _, c := range cases {
@@ -132,6 +144,43 @@ func TestTrustSelectAtStart(t *testing.T) {
 				t.Errorf("the list as answered is not left once:\n%q", out)
 			}
 		})
+	}
+}
+
+// TestTrustSelectTyping (PR #140 review, H1): a prompt typed at the list a
+// byte a read, at typing speed, answers nothing: no tick, no confirm, no
+// never. Each fails at 4de725e.
+func TestTrustSelectTyping(t *testing.T) {
+	for _, text := range []string{"ok go\r", "see issue 4\r", "add tests\r", "fix it\r", "just do it\r", " hello\r", "2 files\r", "x\r"} {
+		t.Run(strings.TrimSpace(text), func(t *testing.T) {
+			repo, _, intr := selectWorld(t, 40, 120, "claude", "opencode")
+			keyGap = 80 * time.Millisecond
+			var keys []string
+			for _, b := range text {
+				keys = append(keys, string(b))
+			}
+			out := startKeys(repo, freeOn(), keys...)
+			if a, saved := folderAnswer(t, repo); saved || *intr != 0 {
+				t.Errorf("typing answered: %+v", a)
+			}
+			if !strings.Contains(out, "Not now") {
+				t.Errorf("%q", out)
+			}
+		})
+	}
+}
+
+// TestTrustSelectClosedFirst (PR #140 review, L3): a select put away before
+// it was first drawn (a signal right after raw mode) draws nothing.
+func TestTrustSelectClosedFirst(t *testing.T) {
+	var out bytes.Buffer
+	st := trustlist.NewState([]trustlist.Row{{ID: "claude", Label: "Claude Code", Group: trustlist.Harness}}, trustlist.Folder{}, false, nil)
+	s := &trustScreen{w: &out, sel: trustlist.NewSelect(st), header: "header\n", closed: true}
+	if s.start() || out.Len() != 0 {
+		t.Errorf("drew %q", out.String())
+	}
+	if c := runTrustSelect(s, &reads{chunks: []string{" ", "\r"}}); c != trustlist.NotNow || out.Len() != 0 {
+		t.Errorf("choice %d, drew %q", c, out.String())
 	}
 }
 

@@ -561,7 +561,13 @@ func (s *session) closeView() {
 func (s *session) viewInput(b []byte) {
 	keys, runes := viewKeys(s.viewPaste.drop(b), s.pk.key)
 	if s.pk.menu != nil && s.pk.menu.check != nil && !checkBurst(keys, runes) {
-		return
+		// A burst, or a key aggy does not know: typing, as at a first start;
+		// but Esc or Ctrl-C in it still closes the list.
+		k := keyNone
+		if slices.Contains(keys, keyClose) {
+			k = keyClose
+		}
+		keys, runes = []viewKey{k}, []rune{0}
 	}
 	for i, k := range keys {
 		var done bool

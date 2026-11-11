@@ -42,7 +42,7 @@ func (s *session) keys(ks ...string) {
 	s.t.Helper()
 	for _, k := range ks {
 		s.send([]byte(k))
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(400 * time.Millisecond)
 	}
 }
 
@@ -99,6 +99,8 @@ func TestTrustSelectEnds(t *testing.T) {
 		{"an Enter typed ahead, then Esc", "\r", "\x1b", 0, true},
 		{"Ctrl-C", "", "\x03", syscall.SIGINT, false},
 		{"SIGTERM", "", "", syscall.SIGTERM, false},
+		{"SIGHUP", "", "", syscall.SIGHUP, false},
+		{"SIGQUIT", "", "", syscall.SIGQUIT, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -106,10 +108,14 @@ func TestTrustSelectEnds(t *testing.T) {
 			w.askTrust = true
 			s := w.start(t, sc, "run", "claude")
 			s.waitWithin([]byte(trustlist.SelectKeys[:20]), offerTimeout)
+			wait := 300 * time.Millisecond // past the typed-ahead guard
 			if c.early != "" {
 				s.send([]byte(c.early))
+				// A key typed ahead starts the typing guard: keys count
+				// again after a second's pause.
+				wait = 1500 * time.Millisecond
 			}
-			time.Sleep(300 * time.Millisecond)
+			time.Sleep(wait)
 			switch {
 			case c.key != "":
 				s.keys(c.key)
@@ -125,7 +131,8 @@ func TestTrustSelectEnds(t *testing.T) {
 			}
 			code := s.exit()
 			ws, _ := s.cmd.ProcessState.Sys().(syscall.WaitStatus)
-			died := ws.Signaled() && ws.Signal() == c.sig || code == 128+int(c.sig)
+			// Go's own default for SIGQUIT is a goroutine dump and exit 2.
+			died := ws.Signaled() && ws.Signal() == c.sig || code == 128+int(c.sig) || c.sig == syscall.SIGQUIT && code == 2
 			if c.sig != 0 && !died {
 				t.Errorf("aggy exit = %d (%v), want death by %v", code, ws, c.sig)
 			}

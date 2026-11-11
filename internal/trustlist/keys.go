@@ -1,6 +1,9 @@
 package trustlist
 
-import "bytes"
+import (
+	"bytes"
+	"slices"
+)
 
 // Decoder reads a terminal's bytes in raw mode, one read at a time, as keys
 // at the select (T6981). Its state carries from one read to the next, so a
@@ -8,19 +11,29 @@ import "bytes"
 // whole.
 //
 // What a read may answer, on the safe side:
+//   - Ctrl-C in a read ends the list, whatever else the read holds.
 //   - A bracketed paste answers nothing, its markers found across reads, and
-//     neither does any key in the same read as part of one.
+//     neither does any key in the same read as part of one: the read comes
+//     back as one KeyUnknown, which the select takes as typing.
 //   - A read holding a byte or an escape sequence that is not a known key is
-//     dropped whole, not read byte by byte: an Alt-x (ESC x), or a sequence
+//     one KeyUnknown, not read byte by byte: an Alt-x (ESC x), or a sequence
 //     aggy does not know, is never Esc and then x.
 //   - A read of several keys answers only when they are all the same arrow
 //     (a held key): a burst of typing, a paste with no brackets among them,
-//     never ticks or confirms.
+//     is one KeyUnknown.
 //   - An escape sequence cut off at the end of a read is held for the next.
 //     A read that is Esc alone is Esc: the terminal writes a key's sequence
 //     whole, and should one be split just after its Esc, the list ends as not
 //     now, which records nothing, and the rest of the sequence is never read
 //     as keys at it.
+//
+// TODO(T6954): that rest, and anything else typed once the list has ended,
+// stays in the terminal's input and reaches the CLI started next as typing.
+// Waiting a moment after a lone Esc, or discarding what is left, needs a read
+// that can time out or a flush of the terminal's input (poll, a non-blocking
+// stdin, tcflush), and none is allowed by lint: golang.org/x/term has neither,
+// the syscall allowlist has none of them, and /dev/tty opened non-blocking
+// relies on kqueue on macOS, which is reported not to support it (unverified).
 type Decoder struct {
 	paste bool   // inside a bracketed paste
 	held  []byte // the start of a sequence, or of a paste's end, not yet whole
@@ -44,14 +57,15 @@ func (d *Decoder) Feed(b []byte) []Input {
 		d.held = nil
 	}
 	var keys []Input
-	bad, pasted := false, false
+	bad, pasted, partial := false, false, false
+scan:
 	for i := 0; i < len(b); {
 		rest := b[i:]
 		if d.paste {
 			j := bytes.Index(rest, pasteEnd)
 			if j < 0 {
 				d.held = endPrefix(rest)
-				return nil
+				break scan
 			}
 			d.paste, pasted = false, true
 			i += j + len(pasteEnd)
@@ -65,7 +79,8 @@ func (d *Decoder) Feed(b []byte) []Input {
 				if len(rest) <= maxSeq {
 					d.held = append([]byte(nil), rest...)
 				}
-				return nil // what came before it in this read goes with it
+				partial = true // what came before it in this read goes with it
+				break scan
 			case seqPaste:
 				d.paste, pasted = true, true
 			case seqKey:
@@ -94,16 +109,27 @@ func (d *Decoder) Feed(b []byte) []Input {
 		}
 		i++
 	}
-	if bad || pasted || len(keys) == 0 {
+	// Ctrl-C always ends the list, whatever came with it (PR #140 review).
+	if slices.Contains(keys, Input{Key: KeyInterrupt}) {
+		return []Input{{Key: KeyInterrupt}}
+	}
+	if bad || pasted {
+		return unknown
+	}
+	if partial || len(keys) == 0 {
 		return nil
 	}
 	for _, k := range keys[1:] {
 		if k != keys[0] || k.Key != KeyUp && k.Key != KeyDown {
-			return nil
+			return unknown
 		}
 	}
 	return keys
 }
+
+// unknown is what a read that answers nothing returns: one KeyUnknown, which
+// the select takes as typing.
+var unknown = []Input{{Key: KeyUnknown}}
 
 // endPrefix is the end of b that could be the start of a paste's end marker,
 // held for the next read.

@@ -2,7 +2,9 @@ package trustlist
 
 import (
 	"fmt"
+	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -12,6 +14,15 @@ import (
 // place on the normal screen) and in a session (/aggy trust, on aggy's own
 // screen). How keys reach it is the caller's: Decoder reads a terminal's bytes
 // as keys, and the supervisor maps its own.
+//
+// Text typed at it is not an answer (PR #140 review): a person who runs aggy
+// and starts typing their first prompt, as at claude, may see the list appear
+// mid-word. So a key with no meaning here, or a character within typingRun of
+// another, means typing: what that run of characters did is undone, and every
+// key is ignored until a pause of typingQuiet. Enter confirms only right after
+// a move or a tick, or as the first key, enterQuiet after the list appeared;
+// x (never, which is recorded) needs Enter or y after it. n, q, and Esc, which
+// record nothing, stay one key. Ctrl-C always ends it.
 
 // Key is a key at the select that is not a character.
 type Key int
@@ -30,6 +41,9 @@ const (
 	// KeyInterrupt is Ctrl-C: the select ends and the caller stops, as Ctrl-C
 	// at the typed list did.
 	KeyInterrupt
+	// KeyUnknown is input that is no key here: a sequence aggy does not know,
+	// a paste, or a burst of keys in one read. It means typing.
+	KeyUnknown
 )
 
 // Input is one key.
@@ -39,7 +53,24 @@ type Input struct {
 }
 
 // SelectKeys is the select's hint line.
-const SelectKeys = "Up/Down move; Space ticks; Enter confirms; a number ticks its row; n or Esc: not now (asked next start); x: never for this folder."
+const SelectKeys = "Up/Down move; Space ticks; Enter confirms; a number ticks its row; n or Esc: not now (asked next start); x then Enter: never for this folder."
+
+// The typing guard's times.
+const (
+	// typingRun: a character this soon after another is typing.
+	typingRun = 300 * time.Millisecond
+	// typingQuiet: typing is over once no key comes for this long.
+	typingQuiet = time.Second
+	// enterQuiet: Enter as the first key confirms only this long after the
+	// list appeared.
+	enterQuiet = 500 * time.Millisecond
+)
+
+// TypingNote is the line the select shows while it ignores typed text.
+const TypingNote = "Ignoring typed text: pause, then use the arrows."
+
+// NeverNote is the line the select shows after x.
+const NeverNote = "Never ask in this folder? Enter or y says never; any other key goes back to the list."
 
 // Select is a list being answered with keys: its state, and the cursor.
 type Select struct {
@@ -51,36 +82,131 @@ type Select struct {
 	// longer number on the list: it ticks its row on Space, Enter, or once
 	// it can grow no longer.
 	digits string
+	// typing: keys are ignored until a pause (the package's comment).
+	typing bool
+	// never: x was pressed; Enter or y says never.
+	never bool
+	// acted: the last key moved the cursor or ticked a row, so Enter may
+	// confirm.
+	acted bool
+	// keys counts the keys taken since the list appeared.
+	keys int
+	// last is when the last key came, or the list appeared; lastChar when
+	// the last character (or input that is no key) came.
+	last, lastChar time.Time
+	// before is the list as it was before the current run of characters,
+	// put back when the run turns out to be typing.
+	beforeOn []bool
+	beforeAt int
 }
 
-// NewSelect starts the select on st with the cursor on the first row that
-// carries no warning, so a stray Space or Enter right away grants nothing
-// risky: not All, which ticks every harness. A list whose rows all carry one
+// NewSelect starts the select on st with the cursor on a row a stray Space
+// right away cannot make risky: never All, which ticks every harness. On a
+// list asked again for new rows, the first new row with no warning, else the
+// first new row, so a Space never changes an earlier answer unseen; otherwise
+// the first row with no warning. A first list whose rows all carry a warning
 // starts with no cursor, and Space does nothing until a move.
 func NewSelect(st *State) *Select {
 	s := &Select{St: st, At: -1}
-	for i, r := range st.Rows {
-		if r.Warning == "" {
-			s.At = i + 1
-			break
+	pick := func(ok func(i int) bool) bool {
+		for i := range st.Rows {
+			if ok(i) {
+				s.At = i + 1
+				return true
+			}
 		}
+		return false
 	}
+	if slices.Contains(st.New, true) {
+		_ = pick(func(i int) bool { return st.New[i] && st.Rows[i].Warning == "" }) || pick(func(i int) bool { return st.New[i] })
+	} else {
+		pick(func(i int) bool { return st.Rows[i].Warning == "" })
+	}
+	s.mark()
 	return s
+}
+
+// Shown records when the list appeared, for Enter as the first key.
+func (s *Select) Shown(now time.Time) { s.last = now }
+
+// Typed takes a key that came within the type-ahead window, typed before
+// the list was there: it answers nothing, and the select treats what follows
+// as typing until a pause.
+func (s *Select) Typed(now time.Time) {
+	s.last, s.lastChar = now, now
+	s.startTyping()
+}
+
+// Typing reports whether the select is ignoring typed text.
+func (s *Select) Typing() bool { return s.typing }
+
+// mark keeps the list as it is now, to put back if a run of characters turns
+// out to be typing.
+func (s *Select) mark() {
+	s.beforeOn, s.beforeAt = slices.Clone(s.St.On), s.At
+}
+
+// startTyping puts back what the run of characters did and ignores keys
+// until a pause.
+func (s *Select) startTyping() Choice {
+	copy(s.St.On, s.beforeOn)
+	s.At = s.beforeAt
+	s.typing, s.never, s.acted, s.digits = true, false, false, ""
+	return Toggled
 }
 
 // items is how many items the cursor moves over: All and each row.
 func (s *Select) items() int { return len(s.St.Rows) + 1 }
 
-// Press takes one key and says what it did: Toggled when the cursor moved or
-// a row was ticked or unticked, Nothing when the key does nothing here, and
-// Confirm, NotNow, Never, or Interrupt when it ends the select.
+// Press takes one key at now and says what it did: Toggled when the cursor
+// moved, a row was ticked or unticked, or what the select shows changed;
+// Nothing when the key does nothing here; and Confirm, NotNow, Never, or
+// Interrupt when it ends the select.
 //
 // Digits: a digit ticks the row of that number at once (1 is All) and moves
 // the cursor there, unless the list is long enough that another digit could
 // make a longer number on it (10 and up); then it waits for that digit, and
 // Space or Enter ticks the number typed so far (Enter then does not confirm).
 // Any other key drops a number waiting.
-func (s *Select) Press(in Input) Choice {
+func (s *Select) Press(in Input, now time.Time) Choice {
+	if in.Key == KeyInterrupt {
+		return Interrupt
+	}
+	gap := now.Sub(s.last)
+	s.last = now
+	s.keys++
+	if s.typing {
+		if gap < typingQuiet {
+			return Nothing
+		}
+		s.typing = false
+		s.mark()
+	}
+	if in.Key == KeyRune || in.Key == KeyUnknown {
+		run := !s.lastChar.IsZero() && now.Sub(s.lastChar) < typingRun
+		s.lastChar = now
+		// A digit after a digit waiting is one number, typed as fast as the
+		// person likes.
+		number := s.digits != "" && in.Key == KeyRune && in.Rune >= '0' && in.Rune <= '9'
+		if run && !number {
+			return s.startTyping()
+		}
+		if !run {
+			s.mark()
+		}
+	}
+	acted := s.acted
+	s.acted = false
+	if s.never {
+		s.never = false
+		if (in.Key == KeyEnter || in.Key == KeyRune && (in.Rune == 'y' || in.Rune == 'Y')) && gap >= typingRun {
+			return Never
+		}
+		if in.Key == KeyEnter || in.Key == KeyRune && (in.Rune == 'y' || in.Rune == 'Y') {
+			return Toggled // too soon after x to be an answer: back to the list
+		}
+		// Any other key goes back to the list, and does what it does there.
+	}
 	if in.Key == KeyRune && in.Rune >= '0' && in.Rune <= '9' {
 		return s.digit(in.Rune)
 	}
@@ -96,63 +222,65 @@ func (s *Select) Press(in Input) Choice {
 	}
 	switch in.Key {
 	case KeyUp:
-		s.move(-1)
-		return Toggled
+		return s.move(-1)
 	case KeyDown:
-		s.move(1)
-		return Toggled
+		return s.move(1)
 	case KeyEnter:
-		return Confirm
+		if acted || s.keys == 1 && gap >= enterQuiet {
+			return Confirm
+		}
+		return Nothing
 	case KeyEsc:
 		return NotNow
-	case KeyInterrupt:
-		return Interrupt
+	case KeyBack:
+		return Nothing
 	case KeyRune:
 		switch in.Rune {
 		case 'k':
-			s.move(-1)
-			return Toggled
+			return s.move(-1)
 		case 'j':
-			s.move(1)
-			return Toggled
+			return s.move(1)
 		case ' ':
 			if s.At < 0 {
 				return Nothing
 			}
 			s.St.Toggle(s.At + 1)
+			s.acted = true
 			return Toggled
 		case 'n', 'N', 'q':
 			return NotNow
 		case 'x', 'X':
-			return Never
+			s.never = true
+			return Toggled
 		}
 	}
-	return Nothing
+	// A character with no meaning here, or input that is no key: typing.
+	return s.startTyping()
 }
 
 // move moves the cursor by d, staying on the list; with none, a move shows
 // it on All.
-func (s *Select) move(d int) {
+func (s *Select) move(d int) Choice {
+	s.acted = true
 	if s.At < 0 {
 		s.At = 0
-		return
+		return Toggled
 	}
 	s.At = max(0, min(s.At+d, s.items()-1))
+	return Toggled
 }
 
-// digit takes one typed digit.
+// digit takes one typed digit; one that names no row on the list is typing.
 func (s *Select) digit(r rune) Choice {
 	d := s.digits + string(r)
 	n := atoi(d)
 	if n < 1 || n > s.items() {
-		s.digits = ""
-		return Nothing
-	}
-	if n*10 <= s.items() {
-		s.digits = d // a further digit could still name a row
-		return Toggled
+		return s.startTyping()
 	}
 	s.digits = d
+	if n*10 <= s.items() {
+		return Toggled // a further digit could still name a row
+	}
 	return s.typed()
 }
 
@@ -164,6 +292,7 @@ func (s *Select) typed() Choice {
 		return Nothing
 	}
 	s.At = n - 1
+	s.acted = true
 	return Toggled
 }
 
@@ -250,7 +379,12 @@ func (s *Select) Frame(cols, rows int) []string {
 		}
 	}
 	hint := SelectKeys
-	if s.digits != "" {
+	switch {
+	case s.typing:
+		hint = TypingNote + " " + hint
+	case s.never:
+		hint = NeverNote
+	case s.digits != "":
 		hint = "Typed " + s.digits + ": another digit, or Space or Enter to tick it. " + hint
 	}
 	foot := append([]string{""}, wrap(hint, width)...)
@@ -296,6 +430,8 @@ func (s *Select) Frame(cols, rows int) []string {
 // wrap breaks line at spaces into lines of at most width runes; a line
 // carried on is indented as the line's text starts (after its spaces, the
 // cursor's mark, and a warning's !). A word longer than width is cut.
+// TODO(T6954): it counts runes, so a wide character (two columns) would
+// misdraw; every label today is ASCII.
 func wrap(line string, width int) []string {
 	if utf8.RuneCountInString(line) <= width {
 		return []string{line}
