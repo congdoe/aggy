@@ -27,7 +27,11 @@ Homebrew (from v0.1.0):
 brew install congdoe/aggy/aggy
 ```
 
-The macOS binaries are not notarized yet, so Gatekeeper may block the first run; `go install` builds locally and avoids that.
+The macOS binaries are not signed or notarized yet, so Gatekeeper blocks the first run of a Homebrew install. Either use `go install` below, which builds locally and is not quarantined, or clear the quarantine flag yourself after installing:
+
+```sh
+xattr -d com.apple.quarantine "$(brew --prefix)/bin/aggy"
+```
 
 Go (the version in `go.mod`; no cgo):
 
