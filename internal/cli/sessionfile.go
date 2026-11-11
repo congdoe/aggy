@@ -111,8 +111,9 @@ func (f *sessionFiles) LastChanged(v adapter.Vendor, id, vendorHome, cwd string,
 	if err := adapter.ValidSessionID(v, id); err != nil {
 		return time.Time{}, err
 	}
-	if v == adapter.OpenCode {
-		// Sessions are in opencode.db with the sign-ins, never opened.
+	if adapter.OpenHarness(v) {
+		// Sessions are in opencode.db with the sign-ins, or in Hermes'
+		// state.db, never opened.
 		return time.Time{}, errUnknownSession
 	}
 	h := filepath.Clean(vendorHome)

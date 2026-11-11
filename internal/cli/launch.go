@@ -590,10 +590,10 @@ func (p *launchPlan) newChildOf(ctx context.Context, s *store.Store, cfg config.
 	// Where its session files are looked for later, whatever that
 	// shell's CLAUDE_CONFIG_DIR, CODEX_HOME, or GROK_HOME.
 	c.VendorHome, _ = (&sessionFiles{}).home(v)
-	if v != adapter.Codex {
-		// Claude and Grok take --session-id <uuid>; Codex cannot be given
-		// an id in advance (docs/adapters.md). OpenCode's --session takes a
-		// new id of its own shape.
+	if v != adapter.Codex && v != adapter.Hermes {
+		// Claude and Grok take --session-id <uuid>; Codex and Hermes cannot
+		// be given an id in advance (docs/adapters.md). OpenCode's --session
+		// takes a new id of its own shape.
 		if c.VendorSessionID, err = newUUID(); err != nil {
 			return err
 		}
@@ -624,7 +624,7 @@ func defaultVendor(ctx context.Context, s *store.Store, cfg config.Config, allow
 	}
 	for _, v := range allowed {
 		// An open harness opens only when the person named it.
-		if out[string(v)] || v == adapter.OpenCode {
+		if out[string(v)] || adapter.OpenHarness(v) {
 			continue
 		}
 		if _, err := probe.LookPath(vendorBin(v)); err == nil {

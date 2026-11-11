@@ -78,7 +78,15 @@ const (
 	trustRowClaude       = "claude"
 	trustRowOpenCode     = "opencode"
 	trustRowOpenCodeFree = "opencode-free"
+	trustRowHermes       = "hermes"
 )
+
+// hermesTrustWarning is the Hermes row's warning (docs/design.md, section 15,
+// "Hermes"): Hermes' approvals and approvals.deny cover terminal commands only
+// (tools/approval_floors.py:23-42 at v0.23.1), and its own guard says its
+// file-read denies are "not a security boundary; the terminal tool can still
+// bypass" (agent/file_safety.py:343-345).
+const hermesTrustWarning = "Hermes' own approvals cover terminal commands only, and its terminal tool can read any file you can; aggy's hook asks about its file tools too, but catches mistakes only"
 
 // openCodeFreeWarning is the free-models row's warning: what freeModelsNote
 // says, from OpenCode's own docs (opencode.ai/docs/zen, read 2026-11-10).
@@ -104,6 +112,13 @@ func init() {
 			return on
 		},
 		plan: openCodeRowPlan,
+	})
+	registerTrustRow(trustRowDef{
+		Row: trustlist.Row{ID: trustRowHermes, Label: "Hermes Agent", Group: trustlist.Harness, Warning: hermesTrustWarning},
+		bin: vendorBin(adapter.Hermes), order: 30,
+		// Its tick is the folder's record itself, which the launch reads
+		// (hermesTicked): unticked, aggy does not start Hermes here.
+		plan: func(trustTarget, bool) (trustRowPlan, error) { return trustRowPlan{}, nil },
 	})
 	registerTrustRow(trustRowDef{
 		Row:     trustlist.Row{ID: trustRowOpenCodeFree, Label: "OpenCode free models", Group: trustlist.Source, Warning: openCodeFreeWarning},

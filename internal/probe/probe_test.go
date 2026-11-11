@@ -63,6 +63,7 @@ func TestDetectFakes(t *testing.T) {
 			CapPermissionMode, CapNoAltScreen, CapTools, CapDisallowTools, CapMaxTurns, CapRules, CapDeny, CapSandbox, CapPromptFile, CapNoSubagents, CapAllow}},
 		adapter.Codex: {"0.164.0", []string{CapHeadless, CapResume, CapNoAltScreen, CapConfigOverride,
 			CapJSONOutput, CapSandbox, CapDisable, CapImageInput, CapIgnoreUserConfig, CapStrictConfig, CapSkipGitCheck, CapCwd}},
+		adapter.Hermes: {"0.23.1", []string{CapClassicScreen, CapResume, CapQueryFile}},
 	}
 	run := f.runner(t, "", 10*time.Second)
 	for v, w := range want {
@@ -213,6 +214,10 @@ func TestParseVersion(t *testing.T) {
 				t.Errorf("ParseVersion(%q, %v) = %q, %v, want %q", tt.in, programs, got, err, tt.want)
 			}
 		}
+	}
+	// Hermes Agent 0.23.1's first line, its hash replaced (docs/verification.md).
+	if got, err := ParseVersion([]byte("Hermes Agent v0.23.1 (2026.9.24) \u00b7 stable \u00b7 local 0123abcd\nUp to date\n"), nil, []string{"Hermes Agent"}); err != nil || got != "0.23.1" {
+		t.Errorf("Hermes: %q, %v", got, err)
 	}
 	// The tag is one bracketed word after the version, ending the line.
 	for _, in := range []string{"  \n", "\n  weird build xyz\n", "grok 1.0.70 [stable] extra\n", "grok 1.0.70 [two words]\n", "grok 1.0.70 [stable] (note)\n"} {

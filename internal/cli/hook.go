@@ -27,6 +27,7 @@ const hookUsage = `Usage: aggy hook pretooluse
        aggy hook opencode-guard
        aggy hook opencode-always
        aggy hook decide --vendor claude|opencode --plan <file>
+       aggy hook hermes --home <dir> --profile <p> --event <e>
        aggy hook --vendor V <event>
 
 Called by a vendor CLI's hook, with the JSON payload on stdin. aggy hooks
@@ -50,6 +51,12 @@ install writes these calls into each CLI's hook config.
                ask for any other policy match, deny for a group set to deny,
                and nothing otherwise. decide-failed is what its wrapper runs
                to record that it failed.
+  hermes       what Hermes' daemon runs for aggy's profile in a repo
+               (aggy hermes writes it into that profile's config.yaml):
+               on pre_tool_call, the safety policy's decision for the
+               launch that session belongs to, blocking the call when no
+               aggy launch is running for it; on on_session_end, the turn
+               end, passed to that launch's supervisor.
   <event>      a Claude, Codex, or Grok hook event (Stop, StopFailure,
                StopCancelled, SessionStart, Notification, and on Claude
                and Grok UserPromptSubmit, which blocks a command typed
@@ -83,6 +90,9 @@ func hookWith(args []string, in io.Reader, getenv func(string) string, stdout, s
 	if len(args) > 0 && args[0] == "decide-failed" {
 		drain(in)
 		return hookDecideFailed(args[1:], stderr)
+	}
+	if len(args) > 0 && args[0] == "hermes" {
+		return hermesHook(args[1:], in, stdout, stderr)
 	}
 	if len(args) == 1 {
 		switch args[0] {

@@ -111,6 +111,12 @@ const (
 	// aggy checks the host itself; callers add it at locate time, never
 	// to the cache, since the kernel can change under the same CLI.
 	CapKernelSandbox = "kernel-sandbox"
+	// CapClassicScreen is hermes --cli, the classic prompt_toolkit screen
+	// (hermes --help, live at 0.23.1); CapQueryFile hermes chat
+	// --query-file, a first turn read from a file (hermes_cli/_parser.py:241
+	// at v0.23.1, source only).
+	CapClassicScreen = "classic-screen"
+	CapQueryFile     = "query-file"
 	// The rest of the lockdown flags, for the check on a new CLI version
 	// (Adapter.LockdownCaps). Each was run live on the tested version
 	// (docs/adapters.md); that the real help lists it is recorded only
@@ -232,6 +238,18 @@ var Specs = map[adapter.Vendor]Spec{
 			{CapMiniSession, 1, "--session", Option},
 		},
 	},
+	// Hermes Agent 0.23.1: the top-level help is live (docs/verification.md),
+	// chat's is from hermes_cli/_parser.py:220-330 at v0.23.1. -p/--profile
+	// is taken before argparse and so is in neither (:13-16).
+	adapter.Hermes: {
+		Programs: []string{"Hermes Agent"},
+		Help:     [][]string{{"--help"}, {"chat", "--help"}},
+		Features: []Feature{
+			{CapClassicScreen, 0, "--cli", Option},
+			{CapResume, 0, "--resume", Option},
+			{CapQueryFile, 1, "--query-file", Option},
+		},
+	},
 	adapter.Codex: {
 		Programs: []string{"codex-cli", "codex"},
 		Help:     [][]string{{"--help"}, {"exec", "--help"}, {"exec", "resume", "--help"}},
@@ -271,7 +289,11 @@ const semver = `v?(\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)`
 // "(Claude Code)" or "(fake)", then an optional bracketed channel tag:
 // grok 1.0.70 prints "grok 1.0.70 (f50904eaee6c) [stable]" (live
 // diagnostic 2026-10-28).
-const note = `(?:\s+\([^)]*\))?(?:\s+\[[\w.-]+\])?`
+//
+// Hermes Agent 0.23.1 then adds " · <channel> · <install>": its first line is
+// "Hermes Agent v0.23.1 (2026.9.24) · stable · local <hash>" (live,
+// docs/verification.md), so a tail after a middle dot is taken too.
+const note = `(?:\s+\([^)]*\))?(?:\s+\[[\w.-]+\])?(?:\s+\x{00B7}\s.*)?`
 
 // anyLine matches a whole --version line: an optional program name of one
 // or more words, the version, and an optional note. The exact --version

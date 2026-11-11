@@ -9,6 +9,7 @@ package supervisor
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,7 +67,9 @@ type Server struct {
 	onTools func()
 	// log gets a record of each message refused or not acted on
 	// (SetLog); it must not block. Guarded by mu.
-	log    func(diag.Rec)
+	log func(diag.Rec)
+	// token is the Hermes launch token (SetToken). Guarded by mu.
+	token  string
 	wg     sync.WaitGroup
 	once   sync.Once
 	mu     sync.Mutex
@@ -164,6 +167,29 @@ func (s *Server) SetSwitch(f func(Request) error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onSwitch = f
+}
+
+// SetToken sets the Hermes launch token a hook-event may show in place of a
+// lineage (T6933). "" accepts none.
+func (s *Server) SetToken(t string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.token = t
+}
+
+// hermesToken reports a Hermes hook-event line carrying token, compared in
+// constant time. A line that is not one, or an empty token, is false.
+func hermesToken(line []byte, token string) bool {
+	if token == "" {
+		return false
+	}
+	var r struct {
+		Type, Vendor, Token string
+	}
+	if json.Unmarshal(line, &r) != nil || r.Type != ReqHookEvent || r.Vendor != string(adapter.Hermes) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(r.Token), []byte(token)) == 1
 }
 
 // SetLog sets what gets a record of each message the server refuses or
@@ -440,11 +466,15 @@ func (s *Server) serve(c *net.UnixConn) {
 			return // closed, idle, or a last line without a newline
 		}
 		s.mu.Lock()
-		onSwitch, onTools, log := s.onSwitch, s.onTools, s.log
+		onSwitch, onTools, log, token := s.onSwitch, s.onTools, s.log, s.token
 		s.mu.Unlock()
-		resp := answer(line[:len(line)-1], from, onHook, onSwitch, onTools, log)
+		// A Hermes hook-event with the launch's token counts as the session's
+		// (T6933): Hermes' hooks run in its daemon, so no lineage leads to the
+		// CLI. It is the same hint a lineage gives: a switch still asks.
+		fromLine := from || hermesToken(line[:len(line)-1], token)
+		resp := answer(line[:len(line)-1], fromLine, onHook, onSwitch, onTools, log)
 		reply(c, resp)
-		if !resp.OK || !from {
+		if !resp.OK || !fromLine {
 			return
 		}
 	}

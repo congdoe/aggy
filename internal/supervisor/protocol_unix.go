@@ -40,6 +40,9 @@ func decodeRequest(line []byte) (Request, error) {
 	if r.Type != ReqPromptCommand && r.Command != "" {
 		return r, errors.New("bad request: command is for prompt-command")
 	}
+	if r.Token != "" && (r.Type != ReqHookEvent || r.Vendor != string(adapter.Hermes)) {
+		return r, errors.New("bad request: token is for a Hermes hook-event")
+	}
 	switch r.Type {
 	case ReqPing, ReqToolsChanged:
 		if r.Vendor != "" || r.Event != "" || r.Payload != nil {

@@ -116,6 +116,9 @@ type Options struct {
 	// nothing. ChildID is the on-screen child's id in the index, for them.
 	Diag    *diag.Queue
 	ChildID string
+	// HermesToken is the launch token aggy's Hermes hook shows the socket in
+	// place of a lineage (Server.SetToken, T6933); "" for every other vendor.
+	HermesToken string
 	// Tools returns what of the managed tools this session's CLI would
 	// get if it were launched now, for its vendor and repo (T6729); it is
 	// called off the main loop when a tools-changed notice comes over the

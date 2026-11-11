@@ -93,6 +93,15 @@ func appendEvent(e store.Event) error {
 // hook is supervisor.Options.OnHook. Only Codex ids come from hooks, as
 // a claim, and only from the CLI's process tree (see sessionIndex).
 func (x *sessionIndex) hook(r supervisor.Request) {
+	// Hermes (T6933): a new session's id is first known from aggy's own hook,
+	// which claimed this launch's row for it (hermesFind) and sent it with the
+	// launch's token; the first one names the session.
+	if x.vendor == adapter.Hermes && r.Vendor == string(x.vendor) && r.FromSession {
+		if ev := hook.Parse(x.vendor, r.Payload); adapter.ValidSessionID(x.vendor, ev.SessionID) == nil {
+			x.set(ev.SessionID, "", "hook")
+		}
+		return
+	}
 	if x.vendor != adapter.Codex || r.Vendor != string(x.vendor) || !r.FromSession {
 		return
 	}

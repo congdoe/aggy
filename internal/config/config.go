@@ -212,6 +212,7 @@ type Vendors struct {
 	Codex    VendorConfig `toml:"codex"`
 	Grok     VendorConfig `toml:"grok"`
 	OpenCode VendorConfig `toml:"opencode"`
+	Hermes   VendorConfig `toml:"hermes"`
 }
 
 // VendorConfig is one vendor's settings.
@@ -235,6 +236,8 @@ func (vs Vendors) For(v adapter.Vendor) VendorConfig {
 		return vs.Grok
 	case adapter.OpenCode:
 		return vs.OpenCode
+	case adapter.Hermes:
+		return vs.Hermes
 	}
 	return VendorConfig{}
 }
@@ -635,6 +638,10 @@ func (c Config) Validate() error {
 	for _, route := range []Route{r.Image, r.Video, r.Research, r.News, r.Review, r.Edit} {
 		if slices.Contains(route.Vendors, adapter.OpenCode) {
 			return errors.New("routing: opencode runs on screen only, so a borrow cannot route to it")
+		}
+		// TODO(T6933): Hermes borrows are out of scope for now.
+		if slices.Contains(route.Vendors, adapter.Hermes) {
+			return errors.New("routing: hermes runs on screen only, so a borrow cannot route to it")
 		}
 	}
 	if !(c.Switch.WarnAt >= 0 && c.Switch.WarnAt <= 1) { // NaN fails too

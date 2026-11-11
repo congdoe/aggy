@@ -125,6 +125,7 @@ func Run(o Options) (Exit, error) {
 		}
 		defer func() { _ = srv.Close() }()
 		srv.SetLog(s.logWait)
+		srv.SetToken(o.HermesToken)
 		srv.SetTools(s.onTools)
 		if o.CanSwitch != nil {
 			srv.SetSwitch(s.onSwitch)
@@ -889,7 +890,9 @@ func (s *session) hookEvent(ev hookEvent) {
 // socket moves nothing.
 func sessionMoves(v adapter.Vendor, source string) bool {
 	switch v {
-	case adapter.Grok:
+	case adapter.Grok, adapter.Hermes:
+		// Hermes: aggy's hook sends SessionStart only when the session its
+		// launch recorded names a new id (internal/cli, hermesHook).
 		return true
 	case adapter.OpenCode:
 		return false
@@ -922,7 +925,9 @@ func (s *session) sessionStart(ev hookEvent, own string) {
 	if ev.sessionID == "" || ev.sessionID == own || own == "" || !sessionMoves(s.o.Vendor, ev.source) {
 		return
 	}
-	if adapter.ValidSessionID(s.o.Vendor, ev.sessionID) != nil || !s.followsFrom(ev.chain) {
+	// A Hermes event came with the launch's token, from Hermes' daemon: there
+	// is no lineage to check (Server.SetToken, T6933).
+	if adapter.ValidSessionID(s.o.Vendor, ev.sessionID) != nil || (s.o.Vendor != adapter.Hermes && !s.followsFrom(ev.chain)) {
 		s.log(diag.Rec{Event: diag.EvHookIgnored, Code: diag.CodeFollowRefused, Msg: "a session start that says the CLI moved, from outside where its own hooks run",
 			Attrs: map[string]any{"event": hookName(ev.name), "source": safeSource(ev.source), "known_host": s.host != nil}})
 		s.moveRefused = true
@@ -2949,8 +2954,9 @@ func (t *tty) size() (rows, cols int) {
 // it, a Stop forged by a tool process in the CLI's own tree is
 // indistinguishable from a real turn end, so a switch the agent asks for
 // is refused on such a vendor (S-12): only the user, looking at the
-// screen, starts one. TODO(T6617): revisit when Codex has a signal.
-func holdSignal(v adapter.Vendor) bool { return v != adapter.Codex }
+// screen, starts one. Hermes has no hook for its approval prompt that aggy
+// configures either (T6933). TODO(T6617): revisit when Codex has a signal.
+func holdSignal(v adapter.Vendor) bool { return v != adapter.Codex && v != adapter.Hermes }
 
 // turnEnd reports whether a hook event ends a turn (design.md section
 // 11): Stop for every vendor, StopCancelled (Grok), and StopFailure
