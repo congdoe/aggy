@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -47,9 +48,14 @@ var openCodeUIActions = []string{"todowrite", "question"}
 var openCodeReadTools = []string{"read", "grep", "glob"}
 
 // OpenCodeAlwaysDenied are providers no launch allows: claude-agent runs
-// the local claude, and anthropic is only for a key added with aggy key,
-// which does not exist yet.
-var OpenCodeAlwaysDenied = []string{"claude-agent", "anthropic"}
+// the local claude.
+var OpenCodeAlwaysDenied = []string{"claude-agent"}
+
+// OpenCodeKeyOnly are providers a launch allows only with a key aggy key
+// added (KeyFiles): anthropic, since a Claude plan's sign-in is reported
+// prohibited outside Claude Code (docs/design.md, section 15). Without one
+// they are denied after OpenCodeAlwaysDenied.
+var OpenCodeKeyOnly = []string{"anthropic"}
 
 // OpenCodeOwnProvider is OpenCode's own provider, whose models (its free
 // ones among them) send prompts to OpenCode's own service. It is denied
@@ -108,6 +114,12 @@ type OpenCodeConfig struct {
 	// DecideSum is the plan's SHA-256, hex, which aggy hook decide checks the
 	// file against on every call (PR #129 review).
 	DecideSum string
+	// KeyFiles maps a provider to the absolute path of the 0600 file in the
+	// launch's own folder that holds the key aggy key stored for it (T6931).
+	// The config names the file as "{file:<path>}" in the provider's apiKey
+	// option, so the value is never in the config itself. Each provider here
+	// must be in Providers.
+	KeyFiles map[string]string
 }
 
 // strictAsk says the strict shell rules ask rather than deny on this launch:
@@ -183,11 +195,24 @@ type openCodePlugin struct {
 }
 
 type openCodeDoc struct {
-	Model        string           `json:"model,omitempty"`
-	Permissions  []openCodeRule   `json:"permissions"`
-	Policies     []openCodeRule   `json:"policies"`
-	Instructions []string         `json:"instructions"`
-	Plugins      []openCodePlugin `json:"plugins"`
+	Model        string                      `json:"model,omitempty"`
+	Provider     map[string]openCodeProvider `json:"provider,omitempty"`
+	Permissions  []openCodeRule              `json:"permissions"`
+	Policies     []openCodeRule              `json:"policies"`
+	Instructions []string                    `json:"instructions"`
+	Plugins      []openCodePlugin            `json:"plugins"`
+}
+
+// openCodeProvider is one provider's settings: only its key, as
+// "{file:<path>}", which OpenCode reads at config load (docs/verification.md,
+// "Key file": the fake model received the file's value in its request
+// header; a real vendor's request is unverified).
+type openCodeProvider struct {
+	Options openCodeProviderOptions `json:"options"`
+}
+
+type openCodeProviderOptions struct {
+	APIKey string `json:"apiKey"`
 }
 
 // ExactRule refuses a command that cannot be listed as an exact rule:
@@ -399,9 +424,17 @@ func openCodePolicies(c OpenCodeConfig) ([]openCodeRule, error) {
 		if slices.Contains(OpenCodeAlwaysDenied, p) {
 			return nil, fmt.Errorf("parity: aggy never allows provider %q on OpenCode", p)
 		}
+		if _, keyed := c.KeyFiles[p]; slices.Contains(OpenCodeKeyOnly, p) && !keyed {
+			return nil, fmt.Errorf("parity: provider %q is allowed only with a key added with aggy key", p)
+		}
 		rules = append(rules, openCodeRule{"provider.use", p, "allow"})
 	}
 	denied := slices.Clone(OpenCodeAlwaysDenied)
+	for _, p := range OpenCodeKeyOnly {
+		if !slices.Contains(c.Providers, p) {
+			denied = append(denied, p)
+		}
+	}
 	if !slices.Contains(c.Providers, OpenCodeOwnProvider) {
 		denied = append(denied, OpenCodeOwnProvider)
 	}
@@ -450,6 +483,21 @@ func (c OpenCodeConfig) Render() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	var keyed map[string]openCodeProvider
+	for p, path := range c.KeyFiles {
+		if !slices.Contains(c.Providers, p) {
+			return nil, fmt.Errorf("parity: a key file for provider %q, which this launch does not allow", p)
+		}
+		// The path goes inside {file:...}: a clean absolute path with no
+		// brace or line break, so OpenCode reads that file and nothing else.
+		if !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsAny(path, "{}\n\r") {
+			return nil, fmt.Errorf("parity: a key file must be a clean absolute path with no brace, got %q", path)
+		}
+		if keyed == nil {
+			keyed = map[string]openCodeProvider{}
+		}
+		keyed[p] = openCodeProvider{Options: openCodeProviderOptions{APIKey: "{file:" + path + "}"}}
+	}
 	if c.Plugin == "" || c.Aggy == "" || c.Root == "" {
 		return nil, errors.New("parity: an OpenCode launch needs its guard")
 	}
@@ -468,6 +516,7 @@ func (c OpenCodeConfig) Render() ([]byte, error) {
 	}
 	doc := openCodeDoc{
 		Model:        c.Model,
+		Provider:     keyed,
 		Permissions:  perms,
 		Policies:     pol,
 		Instructions: c.Instructions,

@@ -153,6 +153,11 @@ var (
 	EvTrustRefused         = Event{"trust.request.refused"}
 	EvPermissionsRefused   = Event{"permissions.request.refused"}
 	EvConfigRefused        = Event{"config.request.refused"}
+	EvKeyRefused           = Event{"key.request.refused"}
+	EvKeyAdded             = Event{"key.item.added"}
+	EvKeyRemoved           = Event{"key.item.removed"}
+	EvKeyPassed            = Event{"launch.key.passed"}
+	EvKeyNotPassed         = Event{"launch.key.not_passed"}
 )
 
 // Codes.
@@ -318,6 +323,12 @@ var (
 	CodeProxyNotOwned    = Code{"tool.proxy_not_owned"}
 	CodeProxyEnvProxy    = Code{"tool.proxy_env_proxy"}
 	CodeProxyHoldFailed  = Code{"tool.proxy_hold_failed"}
+	// aggy key (T6931).
+	CodeKeyUnsupported   = Code{"key.unsupported"}
+	CodeKeyBadName       = Code{"key.bad_name"}
+	CodeKeyProviderTaken = Code{"key.provider_taken"}
+	CodeKeyHelperFailed  = Code{"key.helper_failed"}
+	CodeKeyNotPassed     = Code{"key.not_passed"}
 )
 
 const showRun = "aggy diag show <run id> for what led to it"
@@ -343,6 +354,11 @@ var events = []EventInfo{
 	{EvTrustRefused, LevelError, "trust", "aggy trust refused; nothing was changed.", "The code's entry."},
 	{EvPermissionsRefused, LevelError, "permissions", "aggy permissions refused; nothing was changed.", "The code's entry."},
 	{EvConfigRefused, LevelError, "config", "aggy config set refused; nothing was changed.", "The code's entry."},
+	{EvKeyRefused, LevelError, "key", "aggy key add or remove refused or failed. The record never holds the key's name or value.", "The code's entry."},
+	{EvKeyAdded, LevelInfo, "key", "aggy key add stored a key in the OS keychain and its name in the index (attrs: provider). The value went from the keyboard to the keychain tool and never through aggy.", "aggy key list."},
+	{EvKeyRemoved, LevelInfo, "key", "aggy key remove deleted a key from the OS keychain and the index (attrs: provider).", "aggy key list."},
+	{EvKeyPassed, LevelInfo, "launch", "An OpenCode launch read a key from the OS keychain and handed it to OpenCode in a 0600 file in the launch's own folder, removed when the CLI exits (attrs: provider). Any process OpenCode starts can read it.", "Nothing; aggy key remove <name> stops it."},
+	{EvKeyNotPassed, LevelWarn, "launch", "An OpenCode launch did not hand a stored key to OpenCode, so its provider is not offered in that session (attrs: provider).", "The code's entry; the line aggy printed at launch."},
 	{EvGrokSandboxRefused, LevelWarn, "adapter.grok", "Grok was passed over: its sandbox is not available for this kind on this CLI or host.", "sandbox.missing."},
 	{EvAcceptRefused, LevelError, "accept", "aggy accept refused or failed; nothing was applied.", "The code's entry; aggy diag show <borrow id>."},
 	{EvAcceptApplied, LevelInfo, "accept", "An edit's diff was applied to the main checkout.", "git status in the main checkout."},
@@ -532,6 +548,11 @@ var codes = []CodeInfo{
 	{CodePermNotFound, false, "aggy's own file has no such rule at that scope, or the rule is in a CLI's own file, which aggy does not edit.", "aggy permissions list, which names each rule's source."},
 	{CodePermScope, false, "A rule for this repo, or a suggestion for it, was asked for outside any git repo.", "Name --everywhere, or --all for suggestions."},
 	{CodeConfigBadValue, false, "aggy config set was given a key or value it does not take.", "aggy config --help."},
+	{CodeKeyUnsupported, false, "aggy key needs the macOS Keychain (/usr/bin/security) or the Linux secret service (/usr/bin/secret-tool), and this system has neither at that path. aggy never falls back to a file.", "On Linux, install libsecret's secret-tool (libsecret-tools) at /usr/bin; elsewhere, sign in inside the harness itself."},
+	{CodeKeyBadName, false, "aggy key was given a key name or provider it does not take.", "aggy key --help."},
+	{CodeKeyProviderTaken, false, "aggy key add refused: another stored key is already bound to that provider, and a provider takes one key.", "aggy key list, then aggy key remove <name> for the old one."},
+	{CodeKeyHelperFailed, false, "The OS keychain tool (security or secret-tool) exited with an error or timed out, so nothing was stored or removed. aggy never shows the tool's own text.", "Run aggy key list; on macOS, check the login keychain is unlocked; on Linux, check the secret service is running."},
+	{CodeKeyNotPassed, false, "A stored key was not handed to OpenCode: the keychain refused or timed out (on macOS, Deny in the dialog), the item is missing or not a printable key, the repo's allowed_vendors does not list its provider, or the launch was not started by a person at a terminal.", "The line aggy printed at launch; aggy key list."},
 	{CodeConfigByHand, false, "aggy config set could not make the setting take the value asked, as the config file spells it another way (a dotted key, an inline table, or another case), so nothing was changed.", "Edit that line of ~/.aggy/config.toml by hand; aggy config list shows the value in force."},
 	{CodeTrustBadFile, false, "aggy could not read or change its list of trusted repos (trust.json or opencode-trust.json in aggy's state folder).", "The file's contents, or aggy unwire."},
 	{CodeBadPayload, false, "aggy hook could not read the vendor's hook payload, or it was not a JSON object.", "The vendor CLI's version; aggy doctor."},

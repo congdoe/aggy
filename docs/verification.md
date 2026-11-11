@@ -2208,3 +2208,32 @@ Claude Code's sandbox facts are from its docs (code.claude.com/docs/en/sandboxin
 - Whether Claude's sandbox nests under another sandbox on macOS: Claude started inside `sandbox-exec` (Grok's strict sandbox refused to start there, S6 above).
 - aggy itself end to end, `aggy claude` in a folder with the row ticked: the layer reaches Claude, the decision hook (which runs outside the sandbox) still reads its plan in `~/.aggy/run`, and a policy match still asks.
 - Codex: that the level aggy's launch line names matches what Codex reports for the session (`/status`), with no flag in a trusted repo, in an untrusted one, and outside version control, and with `--sandbox read-only` and `-c sandbox_mode="workspace-write"`.
+
+## aggy key (T6931, 2026-11-11)
+
+**Runs: none.** No real keychain, `security`, `secret-tool`, or OpenCode ran for this task: unit tests and end-to-end tests against `fake-keychain` (`testdata/fakes`), which takes both tools' argument lists and keeps items as files in a test folder, and the fake OpenCode, which reads each `{file:}` key as OpenCode does at load and records only its SHA-256. The design is in docs/design.md, section 15, "Keys". The checks below are owed by the owner; none may run against the login keychain from an agent.
+
+What aggy relies on, and where it comes from (`<account>` is `<name>@<provider>`, `keyring.Account`):
+
+| Invocation | What aggy relies on | Source | Status |
+|---|---|---|---|
+| `/usr/bin/security add-generic-password -U -s aggy-key -a <account> -l "aggy key <account>" -T "" -w` | `-w` last with no value makes `security` ask for the value on the terminal (and again to confirm), with echo off, so no value is in any argv | `man security`, add-generic-password: "-w password  Specify password to be added. Put at end of command to be prompted (recommended)" | Unverified live |
+| same | `-T ""` leaves the item's trusted-application list empty, so every later read, by `security` too, shows macOS's access dialog | `man security`: "-T appPath  Specify an application which may access this item (multiple -T options are allowed)"; the empty-list behaviour is not documented there | Unverified live |
+| same | `-U` replaces an item that exists, and the update keeps `-T ""` | `man security`: "-U  Update item if it already exists (if omitted, the item cannot already exist)" | Unverified live |
+| `security find-generic-password -s aggy-key -a <account> -w` | prints only the value and a newline on stdout; exit 44 when the item is missing; a Deny in the dialog is a non-zero exit | `man security`: "-w  Display only the password on stdout"; exit 44 is errSecItemNotFound as commonly reported | Unverified live |
+| `security find-generic-password -s aggy-key -a <account>` | without `-w` or `-g`, prints attributes only, reads no value, and shows no dialog | `man security`: "-g  Display the password for the item found" | Unverified live |
+| `security delete-generic-password -s aggy-key -a <account>` | deletes the item; exit 44 when missing; whether deleting an item with an empty trusted list shows a dialog | `man security` | Unverified live |
+| `/usr/bin/secret-tool store --label="aggy key <account>" service aggy-key account <account>` | with a terminal on stdin, asks for the value itself (echo off); stores it in the default collection; replaces an item with the same attributes | secret-tool(1): "store ... The secret is read from stdin" | Unverified live |
+| `secret-tool lookup service aggy-key account <account>` | prints only the value on stdout (no trailing newline when stdout is a pipe), and exits non-zero when nothing matches | secret-tool(1) | Unverified live |
+| `secret-tool clear service aggy-key account <account>` | deletes matching items | secret-tool(1) | Unverified live |
+| OpenCode `"provider": {"<p>": {"options": {"apiKey": "{file:<path>}"}}}` | the file's value is the key OpenCode sends | "Key file" above (fake model: it reached the request header) | Fake model; a real vendor's request owed |
+
+Live checks owed (owner, at a terminal, on a throwaway keychain item):
+
+- macOS: `aggy key add t6931-check --provider anthropic` asks twice with echo off; `ps -ww -o args` during the prompt shows no value; Keychain Access shows the item under `aggy-key` with an empty "Always allow access by these applications" list.
+- macOS: `aggy run opencode` with that key shows the access dialog naming `security`; Allow starts OpenCode with `anthropic` listed, Deny starts it without and prints the `key ... is not handed to OpenCode` line; after Always Allow, a plain `security find-generic-password -s aggy-key -a t6931-check -w` from another shell prints the value with no dialog (the risk `aggy key add` warns of).
+- macOS: `aggy key list` shows `present` without a dialog; `aggy key remove t6931-check` deletes it (and whether that shows a dialog).
+- Linux (GNOME Keyring or KeePassXC): the same with `secret-tool`, including what a locked collection does at add and at launch.
+- A real OpenCode at the tested version: an `anthropic` key from `aggy key` reaches a real request (one minimal turn), and the key file is gone once OpenCode exits.
+- Which key OpenCode uses when the person also signed in to the same provider inside OpenCode.
+- Nothing reaches Claude Code, Codex, or Grok: with a key stored, `aggy run claude|codex|grok` and a borrow of each start no keychain tool (no dialog on macOS).

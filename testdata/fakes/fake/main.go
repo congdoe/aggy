@@ -14,6 +14,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -108,6 +109,11 @@ type Scenario struct {
 	ToolCalls []ToolCall `json:"tool_calls"`
 	// Hermes drives fake-hermes (hermes.go).
 	Hermes *HermesScenario `json:"hermes"`
+	// Canary is text no run should be given (aggy key's test value, T6931):
+	// the record's canary_in names each place it appeared (env:<name>, args,
+	// stdin, prompt, mcp_config, opencode_config). The record never holds
+	// the canary itself.
+	Canary string `json:"canary"`
 }
 
 // ToolCall is one tool call a fake claude makes.
@@ -306,6 +312,12 @@ type Record struct {
 	// MCPConfig is the content of the first --mcp-config file, if any.
 	MCPConfig json.RawMessage `json:"mcp_config,omitempty"`
 	PID       int             `json:"pid"`
+	// CanaryIn names where the scenario's canary appeared.
+	CanaryIn []string `json:"canary_in,omitempty"`
+	// OpenCodeKeys are the SHA-256s (hex) of the files each provider's
+	// apiKey "{file:<path>}" in the OpenCode launch's config names, read as
+	// OpenCode reads them at load, by provider; never the value.
+	OpenCodeKeys map[string]string `json:"opencode_keys,omitempty"`
 }
 
 // Versions the vendor facts were recorded against (docs/adapters.md).
@@ -451,6 +463,9 @@ func run() int {
 	}
 	if vendor == "hermes" {
 		return runHermes()
+	}
+	if vendor == "keychain" {
+		return runKeychain()
 	}
 	if vendor == "mcp" {
 		return runMCP()
@@ -1411,8 +1426,55 @@ func (f *fake) record(mode string, args []string) {
 	sort.Strings(r.EnvKeys)
 	if f.vendor == "opencode" && mode == "interactive" {
 		r.OpenCodeConfig, r.OpenCodeInstructions = openCodeConfig()
+		r.OpenCodeKeys = openCodeKeys(r.OpenCodeConfig)
+	}
+	if c := f.sc.Canary; c != "" {
+		for _, kv := range os.Environ() {
+			if k, v, _ := strings.Cut(kv, "="); strings.Contains(v, c) {
+				r.CanaryIn = append(r.CanaryIn, "env:"+k)
+			}
+		}
+		for place, s := range map[string]string{"args": strings.Join(args, "\x00"), "stdin": f.stdin, "prompt": f.prompt,
+			"mcp_config": string(r.MCPConfig), "opencode_config": string(r.OpenCodeConfig)} {
+			if strings.Contains(s, c) {
+				r.CanaryIn = append(r.CanaryIn, place)
+			}
+		}
+		sort.Strings(r.CanaryIn)
 	}
 	appendJSON(p, r)
+}
+
+// openCodeKeys reads each "{file:<path>}" apiKey in an OpenCode config, as
+// OpenCode does at load, and returns each file's SHA-256 by provider.
+func openCodeKeys(cfg json.RawMessage) map[string]string {
+	var doc struct {
+		Provider map[string]struct {
+			Options struct {
+				APIKey string `json:"apiKey"`
+			} `json:"options"`
+		} `json:"provider"`
+	}
+	if len(cfg) == 0 || json.Unmarshal(cfg, &doc) != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for p, v := range doc.Provider {
+		path, ok := strings.CutPrefix(v.Options.APIKey, "{file:")
+		path, ok2 := strings.CutSuffix(path, "}")
+		if !ok || !ok2 {
+			out[p] = "not a file"
+			continue
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			out[p] = "unreadable"
+			continue
+		}
+		sum := sha256.Sum256(b)
+		out[p] = hex.EncodeToString(sum[:])
+	}
+	return out
 }
 
 // openCodeConfig reads the file $OPENCODE_CONFIG names, and each file its

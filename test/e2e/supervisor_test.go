@@ -51,7 +51,19 @@ func buildAggy(t *testing.T) string {
 			return
 		}
 		aggyBin = filepath.Join(dir, "aggy")
-		cmd := exec.Command("go", "build", "-o", aggyBin, "./cmd/aggy")
+		// aggy key runs the fake keychain tool in place of security or
+		// secret-tool (T6931), so no test reaches a real keychain. It is named
+		// at build time only: no variable can point a real aggy elsewhere.
+		keychain := filepath.Join(dir, "fake-keychain")
+		b, err := os.ReadFile(fakecli.Build(t).Keychain)
+		if err == nil {
+			err = os.WriteFile(keychain, b, 0o755)
+		}
+		if err != nil {
+			buildErr = err
+			return
+		}
+		cmd := exec.Command("go", "build", "-ldflags", `-X "github.com/congdoe/aggy/internal/cli.keychainHelperPath=`+keychain+`"`, "-o", aggyBin, "./cmd/aggy")
 		cmd.Dir = filepath.Join(filepath.Dir(file), "..", "..")
 		cmd.Env = append(append([]string{}, buildEnv...), "CGO_ENABLED=0", "GOTOOLCHAIN=local")
 		buildOut, buildErr = cmd.CombinedOutput()

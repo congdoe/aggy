@@ -108,7 +108,7 @@ A warning, where the command goes on (`aggy tool list` with unreadable settings,
 
 The hard rules hold for every record, the export, and the bundle.
 
-- **Never stored:** prompt or task text, file contents, diffs, model output, environment values, credentials, vendor transcripts, a check's output or arguments, a child's reply or error text.
+- **Never stored:** prompt or task text, file contents, diffs, model output, environment values, credentials, vendor transcripts, a check's output or arguments, a child's reply or error text, and a key stored with `aggy key` or its name (the `key.*` and `launch.key.*` records carry the provider only, and the keychain tool's own text is never kept; a test searches every file under the state folder for the key after a full add, launch, and remove: `TestKeyCycle`).
 - **Fine:** ids, codes, aggy-state paths, exit codes, durations, counts, vendor names, error classes, and aggy's own messages.
 - Every free-text value (`msg` and each string attr) goes through `internal/redact` (secret-shaped lines are removed) and `internal/termsafe` (control and format characters are escaped), and is capped (300 characters for `msg`, 200 for an attr).
 - `aggy borrow` marks its task and constraints as forbidden text: the writer replaces them, and every line of them of 8 or more characters, with `[task text]` wherever they appear. The record of a refusal holds its code's registry text, never the printed error, which can quote a path or constraint.
@@ -219,6 +219,11 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `trust.request.refused` | error | trust | aggy trust refused; nothing was changed. | The code's entry. |
 | `permissions.request.refused` | error | permissions | aggy permissions refused; nothing was changed. | The code's entry. |
 | `config.request.refused` | error | config | aggy config set refused; nothing was changed. | The code's entry. |
+| `key.request.refused` | error | key | aggy key add or remove refused or failed. The record never holds the key's name or value. | The code's entry. |
+| `key.item.added` | info | key | aggy key add stored a key in the OS keychain and its name in the index (attrs: provider). The value went from the keyboard to the keychain tool and never through aggy. | aggy key list. |
+| `key.item.removed` | info | key | aggy key remove deleted a key from the OS keychain and the index (attrs: provider). | aggy key list. |
+| `launch.key.passed` | info | launch | An OpenCode launch read a key from the OS keychain and handed it to OpenCode in a 0600 file in the launch's own folder, removed when the CLI exits (attrs: provider). Any process OpenCode starts can read it. | Nothing; aggy key remove &lt;name&gt; stops it. |
+| `launch.key.not_passed` | warn | launch | An OpenCode launch did not hand a stored key to OpenCode, so its provider is not offered in that session (attrs: provider). | The code's entry; the line aggy printed at launch. |
 | `adapter.grok.sandbox_refused` | warn | adapter.grok | Grok was passed over: its sandbox is not available for this kind on this CLI or host. | sandbox.missing. |
 | `accept.request.refused` | error | accept | aggy accept refused or failed; nothing was applied. | The code's entry; aggy diag show &lt;borrow id&gt;. |
 | `accept.diff.applied` | info | accept | An edit's diff was applied to the main checkout. | git status in the main checkout. |
@@ -408,6 +413,11 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `permissions.not_found` |  | aggy's own file has no such rule at that scope, or the rule is in a CLI's own file, which aggy does not edit. | aggy permissions list, which names each rule's source. |
 | `permissions.no_repo` |  | A rule for this repo, or a suggestion for it, was asked for outside any git repo. | Name --everywhere, or --all for suggestions. |
 | `config.bad_value` |  | aggy config set was given a key or value it does not take. | aggy config --help. |
+| `key.unsupported` |  | aggy key needs the macOS Keychain (/usr/bin/security) or the Linux secret service (/usr/bin/secret-tool), and this system has neither at that path. aggy never falls back to a file. | On Linux, install libsecret's secret-tool (libsecret-tools) at /usr/bin; elsewhere, sign in inside the harness itself. |
+| `key.bad_name` |  | aggy key was given a key name or provider it does not take. | aggy key --help. |
+| `key.provider_taken` |  | aggy key add refused: another stored key is already bound to that provider, and a provider takes one key. | aggy key list, then aggy key remove &lt;name&gt; for the old one. |
+| `key.helper_failed` |  | The OS keychain tool (security or secret-tool) exited with an error or timed out, so nothing was stored or removed. aggy never shows the tool's own text. | Run aggy key list; on macOS, check the login keychain is unlocked; on Linux, check the secret service is running. |
+| `key.not_passed` |  | A stored key was not handed to OpenCode: the keychain refused or timed out (on macOS, Deny in the dialog), the item is missing or not a printable key, the repo's allowed_vendors does not list its provider, or the launch was not started by a person at a terminal. | The line aggy printed at launch; aggy key list. |
 | `config.edit_by_hand` |  | aggy config set could not make the setting take the value asked, as the config file spells it another way (a dotted key, an inline table, or another case), so nothing was changed. | Edit that line of ~/.aggy/config.toml by hand; aggy config list shows the value in force. |
 | `trust.bad_file` |  | aggy could not read or change its list of trusted repos (trust.json or opencode-trust.json in aggy's state folder). | The file's contents, or aggy unwire. |
 | `hook.bad_payload` |  | aggy hook could not read the vendor's hook payload, or it was not a JSON object. | The vendor CLI's version; aggy doctor. |

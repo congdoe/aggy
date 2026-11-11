@@ -142,6 +142,13 @@ func runUnwire(args []string, stdout, stderr io.Writer) int {
 		return cmdErrDry(stderr, "unwire", code, err, opt.DryRun)
 	}
 	code := report(undos, opt, *force && !*yes, stdout, stderr)
+	// T6931: unwire never deletes a secret on its own; it names the keys and
+	// the command that removes one.
+	if *all {
+		if note := keysLeftNote(ctx, s); note != "" {
+			fmt.Fprintln(stdout, note)
+		}
+	}
 	if len(profiles) > 0 && (!*force || *yes) {
 		if _, left := unwireHermesProfiles(ctx, s, profiles, opt.DryRun, stdout, stderr); left {
 			code = 1
