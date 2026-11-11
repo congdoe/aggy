@@ -713,10 +713,13 @@ func holdsName(f, n string) bool {
 // aggyFolderWords name aggy's state folder in a shell command, and
 // aggyFileNames the files in it that a command naming that folder must not
 // name too. A name is matched as holdsPath matches, so a longer name is not
-// it, and "cat .aggy/memory.md" names neither.
+// it, and "cat .aggy/memory.md" names neither. antigravity is the folder of
+// aggy's records of each Antigravity hooks file (#144 re-review, MEDIUM-B),
+// so rm -r ~/.aggy/antigravity asks; a command that only names .aggy and the
+// vendor (cat .aggy/memory.md; aggy antigravity) asks too, which is rare.
 var (
 	aggyFolderWords = []string{".aggy", "aggy_home"}
-	aggyFileNames   = []string{"permissions.json", "trust.json", "aggy.db", "diag.db"}
+	aggyFileNames   = []string{"permissions.json", "trust.json", "aggy.db", "diag.db", "antigravity"}
 )
 
 // holdsPath reports w in f ending a path part: not followed by a letter,

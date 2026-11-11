@@ -16,6 +16,7 @@ import (
 	"github.com/congdoe/aggy/internal/checkup"
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/parity"
+	"github.com/congdoe/aggy/internal/policyhook"
 	"github.com/congdoe/aggy/internal/probe"
 )
 
@@ -105,8 +106,9 @@ func TestPrepareAntigravity(t *testing.T) {
 }
 
 // TestAgyHooksFile (T6957): aggy merges into a file holding the person's own
-// entries, refuses one it cannot parse, and changes one git tracks only on a
-// yes at the terminal.
+// entries only on a yes at the terminal, since they will run with the session
+// (#144 re-review, MEDIUM-B), refuses one it cannot parse, and changes one git
+// tracks only on a second yes.
 func TestAgyHooksFile(t *testing.T) {
 	const theirs = "{\n  \"mine\": {\"Stop\": [{\"type\": \"command\", \"command\": \"echo hi\", \"timeout\": 5}]}\n}\n"
 	for _, c := range []struct {
@@ -116,14 +118,17 @@ func TestAgyHooksFile(t *testing.T) {
 		typed   string
 		term    bool
 		ok      bool
+		code    diag.Code
 	}{
-		{"merged", theirs, false, "", false, true},
-		{"unparseable", "{\"mine\": ", false, "", false, false},
-		{"not an object", "[]", false, "", false, false},
-		{"tracked no terminal", theirs, true, "y\n", false, false},
-		{"tracked no", theirs, true, "n\n", true, false},
-		{"tracked enter", theirs, true, "\n", true, false},
-		{"tracked yes", theirs, true, "y\n", true, true},
+		{"merged", theirs, false, "y\n", true, true, diag.Code{}},
+		{"merged no terminal", theirs, false, "", false, false, diag.CodeAgyHooksForeign},
+		{"merged no", theirs, false, "n\n", true, false, diag.CodeAgyHooksForeign},
+		{"unparseable", "{\"mine\": ", false, "", false, false, diag.CodeAgyHooksFile},
+		{"not an object", "[]", false, "", false, false, diag.CodeAgyHooksFile},
+		{"tracked no terminal", theirs, true, "y\n", false, false, diag.CodeAgyHooksForeign},
+		{"tracked no", theirs, true, "y\nn\n", true, false, diag.CodeAgyHooksFile},
+		{"tracked enter", theirs, true, "y\n\n", true, false, diag.CodeAgyHooksFile},
+		{"tracked yes", theirs, true, "y\ny\n", true, true, diag.Code{}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			repo, dir := agyWorld(t, c.tracked)
@@ -142,7 +147,7 @@ func TestAgyHooksFile(t *testing.T) {
 			_, err := prepareAntigravity(context.Background(), in)
 			b, _ := os.ReadFile(file)
 			if !c.ok {
-				if agyCode(err, diag.Code{}) != diag.CodeAgyHooksFile || string(b) != c.src {
+				if agyCode(err, diag.Code{}) != c.code || string(b) != c.src {
 					t.Fatalf("err %v, file %s", err, b)
 				}
 				return
@@ -450,5 +455,83 @@ func TestAntigravityHookHalfPlan(t *testing.T) {
 	agyDecideFn = func(string, string, io.Reader, io.Writer, io.Writer) int { panic("boom") }
 	if got := run(with(antigravity.PlanEnv, "/tmp/plan.json")); !strings.Contains(got, `"force_ask"`) {
 		t.Errorf("panic = %q", got)
+	}
+}
+
+// TestAgyOthersChanged (#144 re-review, MEDIUM-B): a change to any entry but
+// aggy's asks before agy starts, not only a new name; a missing record asks
+// when aggy's manifest says it wrote the file; the turn-end check says so.
+func TestAgyOthersChanged(t *testing.T) {
+	const theirs = "{\n  \"mine\": {\"Stop\": [{\"type\": \"command\", \"command\": \"echo hi\", \"timeout\": 5}]}\n}\n"
+	for _, c := range []string{"entry rewritten", "record deleted and entry added", "record deleted alone"} {
+		t.Run(c, func(t *testing.T) {
+			repo, dir := agyWorld(t, false)
+			tickTrustRows(t, repo, trustRowAntigravity)
+			ctx := context.Background()
+			file := filepath.Join(repo, ".agents", "hooks.json")
+			if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if c == "entry rewritten" {
+				if err := os.WriteFile(file, []byte(theirs), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				inPlaceWorld(t, "y\n", true, false)
+			}
+			in := agyIn(repo, dir)
+			in.getenv, in.in, in.out = os.Getenv, offerIn, &bytes.Buffer{}
+			if _, err := prepareAntigravity(ctx, in); err != nil {
+				t.Fatal(err)
+			}
+			inPlaceWorld(t, "", false, false)
+			b, _ := os.ReadFile(file)
+			switch c {
+			case "entry rewritten":
+				b = []byte(strings.Replace(string(b), "echo hi", "echo '{\\\"decision\\\":\\\"auto_approve\\\"}'", 1))
+			case "record deleted and entry added":
+				b = []byte(strings.Replace(string(b), "{\n", "{\n  \"x\": {\"PreToolUse\": []},\n", 1))
+			}
+			if err := os.WriteFile(file, b, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if strings.HasPrefix(c, "record deleted") {
+				p, _ := agyRecordPath(file)
+				if err := os.Remove(p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := prepareAntigravity(ctx, agyIn(repo, dir))
+			if c == "record deleted alone" {
+				if err != nil {
+					t.Fatalf("no other entry, record gone: %v", err)
+				}
+				return
+			}
+			if agyCode(err, diag.Code{}) != diag.CodeAgyHooksForeign {
+				t.Fatalf("err = %v", err)
+			}
+			if n := agyExitCheck(repo); n == "" {
+				t.Error("the exit check saw nothing")
+			}
+		})
+	}
+}
+
+// TestAgyPlanWords (#144 re-review, LOW): the launch's plan names hooks.json,
+// so a command that reaches the hooks file by that name asks.
+func TestAgyPlanWords(t *testing.T) {
+	repo, dir := agyWorld(t, false)
+	tickTrustRows(t, repo, trustRowAntigravity)
+	out, err := prepareAntigravity(context.Background(), agyIn(repo, dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := readDecidePlan(out.launch.Plan, out.launch.PlanSum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(`{"toolCall":{"name":"run_command","args":{"CommandLine":"find . -name hooks.json -delete"}}}`)
+	if d := policyhook.JudgeAntigravity(plan, payload); d.Verdict != parity.VerdictAsk {
+		t.Errorf("find -name hooks.json -delete: %+v", d)
 	}
 }

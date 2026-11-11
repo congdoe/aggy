@@ -34,10 +34,25 @@ func TestAntigravityCalls(t *testing.T) {
 		// #141 review, HIGH-1: a known tool missing its expected key is judged
 		// by every path-like string, and asks when it has none.
 		{"read_file with no path-like arg asks", "read_file", map[string]any{"Path": "x"}, nil, false},
-		{"read_file by another key", "read_file", map[string]any{"Path": "/home/u/.ssh/id_rsa"}, []parity.Call{{Kind: parity.CallRead, Text: "/home/u/.ssh/id_rsa"}}, true},
-		{"read_file nested", "read_file", map[string]any{"Files": []any{map[string]any{"FilePath": "/repo/.env"}}}, []parity.Call{{Kind: parity.CallRead, Text: "/repo/.env"}}, true},
+		// #144 re-review, MEDIUM-A: a known read or search tool missing its
+		// key asks (ok false), its strings still judged.
+		{"read_file by another key", "read_file", map[string]any{"Path": "/home/u/.ssh/id_rsa"}, []parity.Call{{Kind: parity.CallRead, Text: "/home/u/.ssh/id_rsa"}}, false},
+		{"read_file nested", "read_file", map[string]any{"Files": []any{map[string]any{"FilePath": "/repo/.env"}}},
+			[]parity.Call{{Kind: parity.CallRead, Text: "/repo/.env"}, {Kind: parity.CallRead, Text: "/repo/.env/FilePath"}}, false},
+		{"read_file by URI", "read_file", map[string]any{"Uri": "file:///home/u/.ssh/id_rsa", "Cwd": "/repo"},
+			[]parity.Call{{Kind: parity.CallRead, Text: "/repo"}, {Kind: parity.CallRead, Text: "/home/u/.ssh/id_rsa"}}, false},
+		{"read_file by name and folder", "read_file", map[string]any{"File": "id_rsa", "Dir": "/repo"},
+			[]parity.Call{{Kind: parity.CallRead, Text: "/repo"}, {Kind: parity.CallRead, Text: "/repo/id_rsa"}}, false},
+		{"unknown by file URI", "read_url", map[string]any{"Url": "file:///home/u/.ssh/id_rsa"},
+			[]parity.Call{{Kind: parity.CallRead, Text: "/home/u/.ssh/id_rsa", Other: true}, {Kind: parity.CallWrite, Text: "/home/u/.ssh/id_rsa", Other: true}}, true},
+		{"unknown by file URI with a host", "open_resource", map[string]any{"Uri": "file://localhost/repo/.env"},
+			[]parity.Call{{Kind: parity.CallRead, Text: "/repo/.env", Other: true}, {Kind: parity.CallWrite, Text: "/repo/.env", Other: true}}, true},
+		{"unknown with a Windows path asks", "open_resource", map[string]any{"Path": "C:\\Users\\u\\.ssh\\id_rsa"}, nil, false},
+		{"unknown with a path as a key", "batch", map[string]any{"Files": map[string]any{"/home/u/.ssh/id_rsa": "read"}},
+			[]parity.Call{{Kind: parity.CallRead, Text: "/home/u/.ssh/id_rsa", Other: true}, {Kind: parity.CallWrite, Text: "/home/u/.ssh/id_rsa", Other: true},
+				{Kind: parity.CallRead, Text: "/home/u/.ssh/id_rsa/read", Other: true}, {Kind: parity.CallWrite, Text: "/home/u/.ssh/id_rsa/read", Other: true}}, true},
 		{"read_file with nothing asks", "read_file", map[string]any{}, nil, false},
-		{"search by another key", "grep_search", map[string]any{"Dir": "/etc", "Query": "x"}, []parity.Call{{Kind: parity.CallSearch, Text: "/etc"}}, true},
+		{"search by another key", "grep_search", map[string]any{"Dir": "/etc", "Query": "x"}, []parity.Call{{Kind: parity.CallSearch, Text: "/etc"}, {Kind: parity.CallSearch, Text: "/etc/x"}}, false},
 		{"search with no path asks", "list_dir", map[string]any{"Recursive": true}, nil, false},
 		{"unknown with a path", "write_file", map[string]any{"Path": "/repo/.agents/hooks.json"},
 			[]parity.Call{{Kind: parity.CallRead, Text: "/repo/.agents/hooks.json", Other: true}, {Kind: parity.CallWrite, Text: "/repo/.agents/hooks.json", Other: true}}, true},
@@ -119,7 +134,17 @@ func TestJudgeAntigravity(t *testing.T) {
 		// #141 review, HIGH-1 probes.
 		{"read_file by Path to a key asks", "read_file", map[string]any{"Path": "/home/u/.ssh/id_rsa"}, parity.VerdictAsk},
 		{"read_file by FilePath to .env asks", "read_file", map[string]any{"FilePath": "/repo/.env"}, parity.VerdictAsk},
-		{"read_file by Path in the repo", "read_file", map[string]any{"Path": "/repo/a.go"}, parity.VerdictNone},
+		{"read_file by Path in the repo asks", "read_file", map[string]any{"Path": "/repo/a.go"}, parity.VerdictAsk},
+		// #144 re-review, MEDIUM-A probes.
+		{"read_file by file URI asks", "read_file", map[string]any{"Uri": "file:///home/u/.ssh/id_rsa", "Cwd": "/repo"}, parity.VerdictAsk},
+		{"read_file by name and folder asks", "read_file", map[string]any{"File": "id_rsa", "Dir": "/repo"}, parity.VerdictAsk},
+		{"read_file by Windows path asks", "read_file", map[string]any{"Path": "C:\\Users\\u\\.ssh\\id_rsa", "Cwd": "/repo"}, parity.VerdictAsk},
+		{"unknown read_url of a file URI asks", "read_url", map[string]any{"Url": "file:///home/u/.ssh/id_rsa"}, parity.VerdictAsk},
+		{"unknown open_resource of .env asks", "open_resource", map[string]any{"Uri": "file:///repo/.env"}, parity.VerdictAsk},
+		{"unknown with a key path asks", "batch", map[string]any{"Files": map[string]any{"/home/u/.ssh/id_rsa": "read"}}, parity.VerdictAsk},
+		{"unknown name beside a folder outside asks", "fetch_file", map[string]any{"Name": "id_rsa", "Folder": "/home/u/.ssh"}, parity.VerdictAsk},
+		{"unknown name beside the repo", "summarize", map[string]any{"Name": "notes", "Folder": "/repo/docs"}, parity.VerdictNone},
+		{"unknown https URL only", "read_url", map[string]any{"Url": "https://example.com/a"}, parity.VerdictNone},
 		{"unknown write to the hooks file asks", "write_file", map[string]any{"Path": "/repo/.agents/hooks.json", "Content": "{}"}, parity.VerdictAsk},
 		{"unknown tool on a path outside asks", "edit_file", map[string]any{"Path": "/etc/hosts"}, parity.VerdictAsk},
 	}
