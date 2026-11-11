@@ -439,21 +439,66 @@ func (d DecidePlan) protectedPath(p string) bool {
 	// a write to repo/notes.md -> ~/.aggy/permissions.json is a write there.
 	if fi, err := lstat(p); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
 		r, err := realPath(p)
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		switch {
+		case err != nil:
 			return true // cannot tell where it leads: ask
-		}
-		if err == nil && (d.protectedClean(r) || hook.SameAsProtected(r, d.Protected, safefs.Stat, lstat)) {
+		case d.protectedClean(r) || hook.SameAsProtected(r, d.Protected, safefs.Stat, lstat):
 			return true
 		}
+		// A dangling link (T6954): RealPath stops at a link whose target is
+		// not there yet, but the write creates that target, wherever the
+		// link leads. Follow the chain by hand and judge the last name.
+		t, ok := d.linkTarget(p)
+		if !ok {
+			return true
+		}
+		p = t
 	}
-	dir, err := realPath(filepath.Dir(p))
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return false
-	case err != nil:
+	// The folder by its real path; one not there yet by its nearest folder
+	// that is (T6954), so repo/link/new/x, with link -> ~/.aggy, counts.
+	dir, err := hermesTarget(filepath.Dir(p))
+	if err != nil {
 		return true // cannot tell where it leads: ask
 	}
 	return d.protectedClean(filepath.Join(dir, filepath.Base(p)))
+}
+
+// maxLinks bounds a chain of links linkTarget follows; past it, ask.
+const maxLinks = 40
+
+// readlink is safefs.Readlink; a test swaps it.
+var readlink = safefs.Readlink
+
+// linkTarget follows the chain of links from p, a link (its target there or
+// not), each target taken lexically against its link's folder, to the
+// first name that is not a link (or not there). It reports false, so the
+// caller asks, when any name on the way is protected, when a link cannot be
+// read, or when the chain is longer than maxLinks.
+func (d DecidePlan) linkTarget(p string) (string, bool) {
+	cur := p
+	for range maxLinks {
+		fi, err := lstat(cur)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return cur, true
+		case err != nil:
+			return "", false
+		case fi.Mode()&fs.ModeSymlink == 0:
+			return cur, true
+		}
+		t, err := readlink(cur)
+		if err != nil || t == "" {
+			return "", false
+		}
+		if !filepath.IsAbs(t) {
+			t = filepath.Join(filepath.Dir(cur), t)
+		}
+		cur = filepath.Clean(t)
+		if d.protectedClean(cur) || hook.SameAsProtected(cur, d.Protected, safefs.Stat, lstat) {
+			return "", false
+		}
+	}
+	return "", false
 }
 
 func (d DecidePlan) protectedClean(p string) bool {
