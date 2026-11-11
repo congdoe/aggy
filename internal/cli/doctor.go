@@ -152,6 +152,8 @@ func doctor(ctx context.Context, env checkEnv) doctorResult {
 			fs = append(fs, keyFindings(ctx)...)
 		case vr.Installed && v == adapter.Hermes:
 			fs = append(fs, hermesFindings(ctx, vr)...)
+		case vr.Installed && v == adapter.Antigravity:
+			fs = append(fs, antigravityFindings(vr)...)
 		case vr.Installed:
 			fs = append(fs, hookFinding(v, name))
 		}

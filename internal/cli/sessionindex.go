@@ -96,6 +96,17 @@ func (x *sessionIndex) hook(r supervisor.Request) {
 	// Hermes (T6933): a new session's id is first known from aggy's own hook,
 	// which claimed this launch's row for it (hermesFind) and sent it with the
 	// launch's token; the first one names the session.
+	// Antigravity (T6957): a new conversation's id is agy's own, first known
+	// from its SessionStart hook (live: it fires at the first turn of a new
+	// conversation), or any later hook, from the CLI's own tree; the first
+	// one names the session. A nested agy the model starts comes later, after
+	// the first turn's SessionStart.
+	if x.vendor == adapter.Antigravity && r.Vendor == string(x.vendor) && r.FromSession {
+		if ev := hook.Parse(x.vendor, r.Payload); adapter.ValidSessionID(x.vendor, ev.SessionID) == nil {
+			x.set(ev.SessionID, "", "hook")
+		}
+		return
+	}
 	if x.vendor == adapter.Hermes && r.Vendor == string(x.vendor) && r.FromSession {
 		if ev := hook.Parse(x.vendor, r.Payload); adapter.ValidSessionID(x.vendor, ev.SessionID) == nil {
 			x.set(ev.SessionID, "", "hook")
