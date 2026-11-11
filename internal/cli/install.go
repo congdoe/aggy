@@ -29,6 +29,8 @@ func installPage(v adapter.Vendor) string {
 	case adapter.Hermes:
 		// The repository of the source aggy's adapter cites (v0.23.1).
 		return "https://github.com/NousResearch/hermes-agent"
+	case adapter.Antigravity:
+		return "https://antigravity.google/docs"
 	}
 	return ""
 }
@@ -62,7 +64,7 @@ func installedElse(cfg config.Config, dir string, v adapter.Vendor) []adapter.Ve
 		}
 		// Hermes only where the folder's trust list ticks it (T6933): a pick
 		// of it elsewhere would only be refused.
-		if o == adapter.Hermes && !hermesTicked(dir) {
+		if o == adapter.Hermes && !hermesTicked(dir) || o == adapter.Antigravity && !antigravityTicked(dir) {
 			continue
 		}
 		if _, err := allowedIn(cfg, dir, o); err != nil {

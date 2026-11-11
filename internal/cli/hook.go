@@ -28,6 +28,7 @@ const hookUsage = `Usage: aggy hook pretooluse
        aggy hook opencode-always
        aggy hook decide --vendor claude|opencode --plan <file>
        aggy hook hermes --home <dir> --profile <p> --event <e>
+       aggy hook antigravity --event SessionStart|PreToolUse|Stop
        aggy hook --vendor V <event>
 
 Called by a vendor CLI's hook, with the JSON payload on stdin. aggy hooks
@@ -57,6 +58,14 @@ install writes these calls into each CLI's hook config.
                launch that session belongs to, blocking the call when no
                aggy launch is running for it; on on_session_end, the turn
                end, passed to that launch's supervisor.
+  antigravity  what agy runs from aggy's entry in a folder's
+               .agents/hooks.json (aggy antigravity writes it). Outside an
+               aggy Antigravity session it prints nothing and exits 0, so a
+               plain agy there runs as without aggy. Inside one, PreToolUse
+               gets the safety policy's decision (deny, or force_ask, which
+               agy shows as its own prompt), and SessionStart and Stop go to
+               the supervisor. It never fails: where aggy cannot decide, it
+               asks.
   <event>      a Claude, Codex, or Grok hook event (Stop, StopFailure,
                StopCancelled, SessionStart, Notification, and on Claude
                and Grok UserPromptSubmit, which blocks a command typed
@@ -93,6 +102,9 @@ func hookWith(args []string, in io.Reader, getenv func(string) string, stdout, s
 	}
 	if len(args) > 0 && args[0] == "hermes" {
 		return hermesHook(args[1:], in, stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "antigravity" {
+		return antigravityHook(args[1:], in, getenv, stdout, stderr)
 	}
 	if len(args) == 1 {
 		switch args[0] {

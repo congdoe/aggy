@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/adapter/antigravity"
 	"github.com/congdoe/aggy/internal/adapter/claude"
 	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
@@ -19,7 +20,7 @@ import (
 	"github.com/congdoe/aggy/internal/termsafe"
 )
 
-const vendorUsage = `Usage: aggy <claude|codex|grok|opencode|hermes> [--direct] [--no-policy] [--tool NAME]... [the CLI's own flags] [prompt]
+const vendorUsage = `Usage: aggy <claude|codex|grok|opencode|hermes|antigravity> [--direct] [--no-policy] [--tool NAME]... [the CLI's own flags] [prompt]
 
 Starts a new session of that CLI here, with the CLI's own flags and first
 prompt, as if you had opened it yourself: aggy claude --model opus "fix the
@@ -91,11 +92,25 @@ commands only. It takes no prompt yet. aggy always refuses --api-key,
 that skips its hooks or approvals (--yolo, --accept-hooks,
 --ignore-user-config, --safe-mode, --ignore-rules) unless --no-policy is
 given. Flags go in full: Hermes expands abbreviations, so aggy refuses them.
+
+aggy antigravity starts Google's agy on screen, on your own Google sign-in,
+once Antigravity (Gemini) is ticked on its own in this folder's trust list
+(All does not tick it: Google's terms do not address running agy under
+another program, and its FAQ calls wrapping agy in third-party applications
+not supported under consumer plans). aggy adds one entry to the folder's
+.agents/hooks.json. agy takes -flag and --flag alike, and aggy reads both:
+it passes --model, --effort, --sandbox, --mode plan, -i "<first prompt>", and
+asks about --add-dir, --mode auto or accept-edits, and
+--dangerously-skip-permissions. Print mode (-p, --print, --prompt, and their
+flags) and a stdin that is no terminal are refused, and so are --settings,
+--project, --agent, --log-file, and the remote flags. A first prompt goes as
+-i "<text>", not a bare word.
 `
 
 // passFlags is v's table of flags aggy takes over or refuses.
 func passFlags(v adapter.Vendor) adapter.PassFlags {
-	return map[adapter.Vendor]adapter.Adapter{adapter.Claude: claude.Adapter{}, adapter.Codex: codex.Adapter{}, adapter.Grok: grok.New(), adapter.OpenCode: opencode.New(), adapter.Hermes: hermes.New()}[v].PassFlags()
+	return map[adapter.Vendor]adapter.Adapter{adapter.Claude: claude.Adapter{}, adapter.Codex: codex.Adapter{}, adapter.Grok: grok.New(), adapter.OpenCode: opencode.New(), adapter.Hermes: hermes.New(),
+		adapter.Antigravity: antigravity.New()}[v].PassFlags()
 }
 
 // launchUsageErr prints a launch command's usage error: the tagged line,

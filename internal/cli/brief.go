@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/adapter/antigravity"
 	"github.com/congdoe/aggy/internal/brief"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/diag"
@@ -106,6 +107,8 @@ func briefWith(args []string, e borrowEnv, stdout, stderr io.Writer) int {
 		in.Transcript, in.TranscriptErr = openCodeTranscript(context.Background(), adapter.SessionRef{ID: *session, Cwd: cwd}, *turns)
 	case adapter.Hermes:
 		in.Transcript, in.TranscriptErr = hermesTranscript(context.Background(), adapter.SessionRef{ID: *session, Cwd: cwd}, *turns)
+	case adapter.Antigravity:
+		in.TranscriptErr = antigravity.ErrNoTranscript
 	default:
 		home, err := transcript.Home(in.From, e.getenv)
 		if err == nil {
@@ -194,6 +197,10 @@ func childBrief(ctx context.Context, s *store.Store, e borrowEnv, pl launchPlan)
 		if v == adapter.Hermes {
 			tr, err := hermesTranscript(ctx, adapter.SessionRef{ID: c.VendorSessionID, Cwd: c.Cwd}, turns)
 			return v, tr, err
+		}
+		if v == adapter.Antigravity {
+			// T6957: none is read; the brief has the task file and git state.
+			return v, adapter.Transcript{}, antigravity.ErrNoTranscript
 		}
 		home := c.VendorHome
 		if home == "" {
@@ -307,7 +314,7 @@ func missingTools(from, to adapter.Vendor, root string, getenv func(string) stri
 		}
 		return nil
 	}
-	if from == adapter.Hermes || to == adapter.Hermes {
+	if from == adapter.Hermes || to == adapter.Hermes || from == adapter.Antigravity || to == adapter.Antigravity {
 		// Hermes' MCP servers are its profile's own, which aggy does not wire
 		// (TODO(T6933)), so nothing is compared.
 		return nil

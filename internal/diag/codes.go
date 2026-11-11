@@ -287,6 +287,12 @@ var (
 	CodeHermesClaimLate  = Code{"hermes.claim_late"}
 	CodeHermesDirectBusy = Code{"hermes.direct_shared"}
 	CodeHermesUntrusted  = Code{"hermes.not_ticked"}
+	// Antigravity (T6957).
+	CodeAgyUntrusted     = Code{"antigravity.not_ticked"}
+	CodeAgyHooksFile     = Code{"antigravity.hooks_file"}
+	CodeAgyUnreachable   = Code{"antigravity.unreachable"}
+	CodeAgySettings      = Code{"antigravity.settings_refused"}
+	CodeAgyPrintMode     = Code{"antigravity.print_refused"}
 	CodeTrustBadDir      = Code{"trust.bad_dir"}
 	CodeTrustBadFile     = Code{"trust.bad_file"}
 	CodeNotAtKeyboard    = Code{"permissions.not_at_keyboard"}
@@ -544,6 +550,11 @@ var codes = []CodeInfo{
 	{CodeHermesClaimLate, true, "Another aggy Hermes session in this repo was live, and a new Hermes session's tool call came more than 60 s after the last Enter typed in the aggy session that has none yet (or under aggy --direct, where aggy sees no keys), so aggy could not tell it from a session the other one started (/new, a nested hermes) and refused the call.", "If this is the session you just typed in, type the message again there; else quit Hermes and start aggy run hermes, or run one aggy Hermes session per repo at a time."},
 	{CodeHermesDirectBusy, false, "aggy --direct was asked to start a new Hermes session while another aggy Hermes session in this repo was live; aggy sees no keys under --direct, so it could not tell this session's first tool call from one the other started, and refused the launch.", "Quit the other aggy Hermes session, or start this one without --direct."},
 	{CodeHermesUntrusted, false, "Hermes is not ticked in aggy's trust list for this folder, so aggy did not start it.", "aggy trust <dir> and tick Hermes, after reading its warning."},
+	{CodeAgyUntrusted, false, "Antigravity (Gemini) is not ticked in aggy's trust list for this folder, so aggy did not start agy. \"All\" never ticks it: it carries a note on Google's terms.", "aggy trust <dir> and tick Antigravity (Gemini) on its own, after reading its note."},
+	{CodeAgyHooksFile, false, "aggy could not put its entry into this folder's .agents/hooks.json (a file that is not one JSON object, one git tracks whose change you declined, or a write that failed), so agy was not started: without it aggy's policy and turn ends would not reach agy.", "The message; fix or move the file, or answer yes to writing the tracked file; aggy unwire takes aggy's entry out."},
+	{CodeAgyUnreachable, false, "agy's help does not list a flag aggy's launch needs (--settings or --conversation), so agy was not started.", "Update agy (aggy was checked on 1.5.3 to 1.5.5), then start again; aggy doctor shows what the probe found."},
+	{CodeAgySettings, false, "agy exited with status 1 before any of its hooks reached aggy, which is how it refuses a --settings key it does not know (live, 1.5.5): this agy may not take a setting aggy passes.", "Look at what agy printed; aggy doctor shows the version; turn agy's self-update off with AGY_CLI_DISABLE_AUTO_UPDATE=true if a new version broke it."},
+	{CodeAgyPrintMode, false, "aggy refused a print-mode or headless run of Antigravity: Google's FAQ calls agy wrapped in third-party applications not supported under consumer plans, under a question about headless mode, so aggy runs it on screen only.", "Run agy itself for that, or start aggy antigravity on a terminal."},
 	{CodeGuardMissing, false, "aggy's OpenCode guard did not report from the launch's folder in time. OpenCode's rules from aggy's config still apply; the guard's own refusals may not.", "Quit and start again; aggy doctor for the CLI's version. A same-user process can overwrite or unload the plugin."},
 	{CodeTrustBadDir, false, "aggy trust was given a path that is not a folder aggy can resolve.", "The path; aggy resolves it to its repo root."},
 	{CodeNotAtKeyboard, false, "A change to permissions or settings came from somewhere that is not a person at a terminal: a borrow child, a session's own tool shell, or no terminal on stdin.", "Run it yourself at a terminal outside the session."},

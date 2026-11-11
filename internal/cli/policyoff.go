@@ -52,6 +52,10 @@ func policyVendorLine(v adapter.Vendor, s permissions.Set) string {
 		// commands only (tools/approval_floors.py at v0.23.1); aggy's hook
 		// judges the file tools too.
 		return "on Hermes Agent, aggy's safety policy refuses what it denies and asks the rest through Hermes' own approval prompt; Hermes' approvals cover terminal commands only, and its terminal tool can read any file you can, so aggy's hook catches mistakes on its file tools, not a determined model. aggy permissions policy GROUP allow turns a group off"
+	case adapter.Antigravity:
+		// T6957: deny and force_ask from aggy's hook (live), and the same rules
+		// in --settings (Google's docs; deny and ask there unverified).
+		return "on Antigravity, aggy's hook refuses what the policy denies and asks the rest at agy's own prompt (force_ask, which shows even over an allow rule); it judges agy's shell and file tools by the names Google's docs give, so a tool it does not know runs under agy's own prompts. aggy permissions policy GROUP allow turns a group off"
 	case adapter.Codex:
 		return "on Codex, aggy's safety policy asks before each match, every time, and an exact pre-approval (aggy permissions add allow) does not apply. To skip the ask, do that step on Claude Code or OpenCode; aggy permissions policy GROUP allow turns a group off there, not on Codex, whose rules file is global and keeps borrows refused"
 	}

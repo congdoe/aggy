@@ -83,6 +83,30 @@ func TestAllTicksHarnessesOnly(t *testing.T) {
 	}
 }
 
+// TestAllSkipsNotInAll (T6957): a harness row marked NotInAll is never ticked
+// or unticked by All, which then counts as on without it, and the list says
+// so under the row.
+func TestAllSkipsNotInAll(t *testing.T) {
+	agy := Row{ID: "antigravity", Label: "Antigravity (Gemini)", Group: Harness, Warning: "terms", NotInAll: true}
+	s := NewState([]Row{oc, claude, agy}, Folder{}, false, nil)
+	s.All()
+	if got := s.Ticked(); slices.Contains(got, "antigravity") || !s.AllOn() {
+		t.Fatalf("All ticked %q, on %v", got, s.AllOn())
+	}
+	for i, r := range s.Rows {
+		if r.ID == "antigravity" {
+			s.On[i] = true
+		}
+	}
+	s.All() // all on: unticks the others only
+	if got := s.Ticked(); !slices.Equal(got, []string{"antigravity"}) {
+		t.Errorf("All again left %q", got)
+	}
+	if !strings.Contains(strings.Join(s.Lines(), "\n"), "All does not tick this one") {
+		t.Errorf("lines: %q", s.Lines())
+	}
+}
+
 // TestNewRowKeepsAnswers: a row added since the last answer is marked new,
 // earlier ticks and unticks are kept, and current fills only a row never
 // shown.
