@@ -261,11 +261,23 @@ func proxyGrant(k, v string, vendor adapter.Vendor) bool {
 	proxies.Lock()
 	defer proxies.Unlock()
 	for p := range proxies.m {
-		if p.spec.Var == k && p.url == v && p.spec.Vendor == vendor && !p.Exited() {
+		if p.spec.Var == k && p.url == v && p.spec.Vendor == vendor && p.running() {
 			return true
 		}
 	}
 	return false
+}
+
+// running reports whether a CLI may still be pointed at the proxy: it is
+// registered, not stopping, and its leader has not exited. Exited alone is
+// not enough: the process is reaped only after its leader's exit is seen,
+// the placeholder put on its address, Died closed, and the rest of its group
+// killed, so a CLI started in that gap would get a dead proxy's variable
+// (TestProxyDied on ubuntu CI). The caller holds proxies, never p.mu.
+func (p *Proxy) running() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.live && !p.stopping && !p.gone && !p.Exited()
 }
 
 // lockedTail is a capped tail safe to read while the process writes.

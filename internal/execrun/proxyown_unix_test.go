@@ -14,6 +14,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/tooldef"
 )
 
 var bg = context.Background()
@@ -124,6 +127,44 @@ func TestProxyDied(t *testing.T) {
 	}
 	if portTaken(spec2.Addr) {
 		t.Error("a stopped proxy's address is held")
+	}
+}
+
+// TestProxyGrantStates (TestProxyDied on ubuntu CI): a proxy's variable
+// passes only while the proxy is running. Its leader's exit is seen, and
+// Died closed, before the process is reaped; the grant used to check the
+// reap only, so a CLI started in between got a dead proxy's variable. The
+// states are set by hand, so this does not depend on when the reap lands.
+func TestProxyGrantStates(t *testing.T) {
+	addr := netip.MustParseAddrPort("127.0.0.1:1")
+	spec := ProxySpec{Vendor: adapter.Claude, Var: tooldef.ProxyVars[adapter.Claude], Addr: addr}
+	for _, tt := range []struct {
+		name                 string
+		live, stopping, gone bool
+		reaped               bool
+		want                 bool
+	}{
+		{"running", true, false, false, false, true},
+		{"leader exited, not reaped", true, false, true, false, false},
+		{"reaped", true, false, true, true, false},
+		{"stopping", true, true, false, false, false},
+		{"not yet live", false, false, false, false, false},
+	} {
+		p := &Proxy{spec: spec, url: proxyURL(addr), done: make(chan struct{}), live: tt.live, stopping: tt.stopping, gone: tt.gone}
+		if tt.reaped {
+			close(p.done)
+		}
+		proxies.Lock()
+		proxies.m[p] = true
+		proxies.Unlock()
+		_, err := PTYEnv(nil, []string{"AGGY_VENDOR=claude", p.Env()})
+		stale := staleProxyURL(spec.Var, p.url)
+		proxies.Lock()
+		delete(proxies.m, p)
+		proxies.Unlock()
+		if (err == nil) != tt.want || stale == tt.want {
+			t.Errorf("%s: PTYEnv err %v, stale %v; want passed %v", tt.name, err, stale, tt.want)
+		}
 	}
 }
 
