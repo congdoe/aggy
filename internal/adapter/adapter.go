@@ -300,6 +300,11 @@ type InteractiveRequest struct {
 	// PassFlags.Parse let through. Each adapter puts them after its own
 	// arguments and before a brief pointer.
 	Extra []string
+	// ClaudeSandbox turns Claude Code's own sandbox on for its shell
+	// commands (T6980): Claude's adapter puts claude.SandboxLayer under
+	// "sandbox" in the same inline --settings layer. Only an on-screen launch
+	// in a folder whose trust list ticks it sets it; no other adapter reads it.
+	ClaudeSandbox bool
 	// UserSettings is the person's own --settings layers for Claude, read and
 	// checked by the launch (T6962), which Claude merges into the inline layer
 	// it passes, under aggy's: neither is dropped, and aggy's deny rules stay.

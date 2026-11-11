@@ -193,7 +193,13 @@ func openTrustList(tg trustTarget, cfg config.Config, all bool) (*trustListAt, e
 	}
 	l.st = trustlist.NewState(rows, l.prev, l.answered, func(id string) bool {
 		d, ok := l.def(id)
-		return ok && d.current != nil && d.current(tg)
+		switch {
+		case !ok:
+			return false
+		case d.current != nil && d.current(tg):
+			return true
+		}
+		return !l.answered && d.defaultOn != nil && d.defaultOn()
 	})
 	trustedBefore := tg.inRepo && repoTrusted(tg.key)
 	l.oldTrust = trustedBefore && !l.answered
@@ -256,7 +262,7 @@ func (l *trustListAt) header(start bool) string {
 	// TODO(T6895): record the folder for Grok too, as a row, once a live check
 	// says where Grok keeps a folder's trust (unverified).
 	b.WriteString("- Grok is not on this list: aggy does not know where Grok keeps a folder's trust, so it asks you\n  itself. Once it trusts this folder, it loads the repo's committed .claude/settings.json, hooks\n  and allow rules included, which aggy cannot filter.\n")
-	b.WriteString("- aggy gives guardrails against mistakes, not protection from a hostile repo or a tricked\n  model. A model's shell runs as you with no OS sandbox.\n\n")
+	b.WriteString("- aggy gives guardrails against mistakes, not protection from a hostile repo or a tricked\n  model. aggy builds no OS sandbox of its own: a model's shell runs as you, inside only\n  the sandbox its harness gives (Claude Code's, if ticked below; Codex's, on by default).\n\n")
 	return b.String()
 }
 

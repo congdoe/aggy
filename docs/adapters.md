@@ -128,6 +128,25 @@ was tested against.
   call does not appear in the JSON stream, and one request can produce more
   than one image, so collect every file in the folder.
 - Reference images: `codex exec -i <file>`.
+- Sandbox on screen (T6980; `codex/sandbox.go`). The levels are
+  `SandboxModeCliArg` at 6aaac69
+  ([sandbox_mode_cli_arg.rs#L10-L16](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/utils/cli/src/sandbox_mode_cli_arg.rs#L10)):
+  `read-only`, `workspace-write`, `danger-full-access`, as `--sandbox` or
+  `-s` ([shared_options.rs#L38-L41](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/utils/cli/src/shared_options.rs#L38))
+  or the config key `sandbox_mode`. The same file has no `--full-auto`;
+  `--dangerously-bypass-approvals-and-sandbox` (alias `--yolo`) runs
+  "without sandboxing", and `--approve-for-me` (alias `--not-so-yolo`) sets
+  `sandbox_mode="workspace-write"` with on-request approvals. The default,
+  from the docs
+  ([agent approvals and security](https://learn.chatgpt.com/docs/agent-approvals-security),
+  read 2026-11-11, not live-checked at 0.164.0): workspace write with
+  on-request approvals in a version-controlled folder, read-only in one that
+  is not, possibly read-only until the folder is trusted; network off;
+  `.git`, `.codex`, `.agents`, and `.aws` stay read-only in a writable root.
+  aggy passes `read-only` and `workspace-write` unasked, asks before
+  `danger-full-access` in any spelling, refuses any other value, and names
+  the level in the launch line (`codex.SandboxLevel`); a `--profile` may set
+  one too, which aggy does not read.
 - Resume: `codex resume <id>` and `codex exec resume <id>`. A new session
   cannot be given an id in advance.
 - Limit: there is no failure hook, and `exec --json` has no machine code:
@@ -330,6 +349,33 @@ was tested against.
 - Extra context: `--append-system-prompt-file <path>` works although
   `--help` omits it. The system prompt is snapshotted on the first
   request, so a new value is ignored on resume.
+- Its own sandbox on screen (T6980; `claude/sandbox.go`). From the docs, read
+  2026-11-11, not live-checked at 2.1.322 (verification.md lists the checks
+  owed). [Sandboxing](https://code.claude.com/docs/en/sandboxing): "The
+  sandbox is off by default"; `sandbox.enabled` turns it on. It "covers shell
+  commands only": Bash, PowerShell, and Monitor and the processes they start;
+  the file and web tools, command hooks, and MCP servers run outside it.
+  Writes: the working folder, a per-user temp folder, and folders added;
+  reads: most of the machine; network: none direct, through a proxy whose
+  allowed domains start empty. A blocked command may be retried with
+  `dangerouslyDisableSandbox`, which asks ("Bash command (unsandboxed)") in
+  manual and acceptEdits modes, and `sandbox.allowUnsandboxedCommands: false`
+  forbids it. In auto-allow mode (`sandbox.autoAllowBashIfSandboxed`, default
+  true) a sandboxed command runs without a prompt, but deny rules and
+  content-scoped ask rules still apply, and a bare `Bash` ask rule does not.
+  macOS uses Seatbelt; Linux and WSL2 need `bubblewrap` and `socat`; native
+  Windows runs commands unsandboxed. "By default, when the platform doesn't
+  support the sandbox or the dependency check at startup fails, Claude Code
+  runs commands without sandboxing"; `sandbox.failIfUnavailable: true` makes
+  it exit at startup. [Settings](https://code.claude.com/docs/en/settings):
+  `--settings` "can set any key your user settings file can set" and sits
+  above the user and project files; the settings index gives each of those
+  `sandbox.*` keys the scope "Any file". aggy passes
+  `{"sandbox":{"enabled":true,"failIfUnavailable":true}}` in its inline layer
+  (`InteractiveRequest.ClaudeSandbox`, `claude.SandboxLayer`) when the
+  folder's trust list ticks it, and leaves the other keys as Claude sets them.
+  A person's own `--settings` `sandbox` keys merge under aggy's, so their
+  `enabled: false` gives way and the launch's overrides note names it.
 
 ### Hooks and limits
 
@@ -858,7 +904,9 @@ sources (`PagerArgs.prompt`; codex's usage `codex [OPTIONS] [PROMPT]`).
   (`loosening_flags`): anything naming `dangerously`, on every vendor; Claude
   `--permission-mode` outside `default` (`manual`), `acceptEdits`, `plan`, `auto`,
   and `dontAsk`; Codex `--yolo`, `--approve-for-me`, `--not-so-yolo`, `-a` but
-  `on-request` or `untrusted`, `-s danger-full-access`, `--disable` of a feature
+  `on-request` or `untrusted`, `-s danger-full-access` (also as `-c
+  sandbox_mode=`; any level Codex does not list is refused outright, T6980),
+  `--disable` of a feature
   that is a safety layer (`hooks`, `codex_hooks`, sandbox, approval, guardian,
   permission features, `credential_masking`, `secret_auth_storage`,
   `code_mode_only`), and `-c` of any key but a short list that changes only display
@@ -1303,6 +1351,8 @@ the code until a live check settles them.
 | Claude's JSON reply fields (`result`, `session_id`, `is_error`, `subtype`, `usage`) | Read when present; a reply with none of them is `ErrUnparsed`. |
 | Codex events after `thread.started` (`item.completed` agent messages, `turn.completed` usage, `error`, `turn.failed`) | Read when present; output with no `thread.started` is `ErrUnparsed`. |
 | Grok's reply text field and error field | `grok.TextFields` (`text`, recorded live on 1.0.70; then the unconfirmed `result` and `response`; never `thought`); an `error` string and `is_error`, unconfirmed, mapped with `adapter.ClassifyName`. |
+| Claude's `sandbox.enabled` and `sandbox.failIfUnavailable` from `--settings` turn its sandbox on and make it exit where the sandbox cannot start (T6980; docs only, at 2.1.322) | `claude.SandboxLayer`, passed only when the folder ticks it and aggy's own check (`claudeSandboxMissing`: macOS, or Linux with `bwrap` and `socat`) passes; otherwise aggy asks before starting without it. |
+| Codex's default sandbox level, and that `--sandbox`, `-s`, and `-c sandbox_mode=` take the same three values (T6980; source at 6aaac69 for the values, docs for the default) | `codex.SandboxLevel` names the level from the words given, or "Codex's own default"; any value outside the three is refused. |
 | Error class names other than `rate_limit` | `adapter.ClassifyName` also accepts Claude Code's likely names (`authentication_failed`, `billing_error`, `server_error`, `error_max_turns`). |
 
 ## Testing an adapter

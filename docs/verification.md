@@ -2179,3 +2179,16 @@ A maintainer's live check should settle: under `claude --safe-mode` with aggy's 
 - Whether `--query-file` and `HERMES_EPHEMERAL_SYSTEM_PROMPT` reach a fresh and a resumed session.
 - `HERMES_HOME` set to a profile, and `HERMES_DATA_DIR_SUFFIX`, as `safefs` reads them.
 - ChatGPT sign-in, and Hermes in Docker.
+
+## The vendors' own sandboxes (T6980, from docs, not live-checked)
+
+**Nothing here was run.** Claude Code's sandbox facts are from its docs (code.claude.com/docs/en/sandboxing and code.claude.com/docs/en/settings, read 2026-11-11), not live-checked at 2.1.322; Codex's levels are from its source at 6aaac69 (rust-v0.164.0) and its default from its docs (learn.chatgpt.com/docs/agent-approvals-security, read 2026-11-11), not live-checked at 0.164.0. docs/adapters.md ("Claude" and "Codex") quotes each. Everything aggy does with them is tested against the fakes: the rendered `--settings` layer (golden files in `internal/adapter/claude/testdata/settings`), the trust-list row, the Codex flag matrix, the launch lines, and `aggy doctor`.
+
+**Live checks owed** (a maintainer, a throwaway `CLAUDE_CONFIG_DIR` and a scratch repo, no permission- or trust-skipping flag):
+
+- Claude's sandbox, passed as `claude --settings '{"sandbox":{"enabled":true,"failIfUnavailable":true}}'`, confines a Bash write to the folder Claude starts in: a write to a file in the repo succeeds, one to a scratch folder outside it (standing in for `~/.aggy` or another repo) is refused, and Claude then offers the unsandboxed retry ("Bash command (unsandboxed)") rather than running it.
+- aggy's PreToolUse decision hook and a sandboxed shell together, under `aggy claude` in a folder that ticks the sandbox: a policy match still asks through the hook; a plain command runs sandboxed with no prompt (auto-allow); the hook itself, which runs outside the sandbox, still reads its plan in `~/.aggy/run`.
+- What happens when the sandbox cannot start, with `failIfUnavailable` set: on a Linux machine without `bwrap` or `socat`, and on WSL1, that Claude exits at startup with its message, and what aggy's launch shows then. Without the key, whether Claude says anything when it runs unsandboxed.
+- That `failIfUnavailable` and `enabled` are both read from `--settings` at 2.1.322 (the settings index gives them the scope "Any file"), and that an unknown key there would only be a settings warning.
+- Whether Claude's sandbox nests under another sandbox on macOS: Claude started inside `sandbox-exec` (Grok's strict sandbox refused to start there, S6 above).
+- Codex: that the level aggy's launch line names matches what Codex reports for the session (`/status`), with no flag in a trusted repo, in an untrusted one, and outside version control, and with `--sandbox read-only` and `-c sandbox_mode="workspace-write"`.
