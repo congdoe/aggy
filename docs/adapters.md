@@ -1024,7 +1024,7 @@ A route to it is refused, and `Headless` returns `ErrUnsupported`. Facts are in
 On screen only (T6933): `adapter.Known()` adds Hermes, `adapter.OpenHarness` is
 true for it, a route to it is refused, and `Headless` returns `ErrUnsupported`.
 Facts are from the source at hermes-agent v0.23.1 (commit 3b42157858), cited
-by path and line, or LIVE: the checks of 2026-11-10 recorded in
+by path and line, or LIVE: the checks of 2026-11-10 and 2026-11-11 recorded in
 [verification.md](verification.md) ("Hermes Agent 0.23.1"). Hermes was not run
 under aggy; every test runs fake-hermes (testdata/fakes/fake/hermes.go).
 
@@ -1034,8 +1034,10 @@ under aggy; every test runs fake-hermes (testdata/fakes/fake/hermes.go).
   (`hermes_cli/_parser.py:13-16`, `main.py:508-566`); `--cli` is the classic
   screen (`_parser.py:216, :326`); `--resume` and `--no-restore-cwd`
   (`:179-182, :278-282`); `--query-file` seeds the first turn on a terminal
-  (`:236-245`). Hermes mints its session ids, `YYYYMMDD_HHMMSS_<6 hex>`
-  (`hermes_state_ids.py:50-60`), so a new session's id comes from aggy's hook.
+  (`:236-245`). Hermes mints its session ids: `local-<64 hex>` (`local_identity`,
+  `hermes_state_keys.py:71-74`; LIVE, every id seen), or the older
+  `YYYYMMDD_HHMMSS_<6-12 hex>` (`hermes_state_ids.py:50-60`); aggy accepts both,
+  and a new session's id comes from aggy's hook.
 - Environment: `execrun.PTYEnv` drops every `HERMES_*` but `HERMES_HOME` and
   `HERMES_DATA_DIR_SUFFIX`; the memory goes as `HERMES_EPHEMERAL_SYSTEM_PROMPT`
   (`agent/session_client_env.py:23`, `hermes_cli/cli_init_mixin.py:349`).
@@ -1066,8 +1068,12 @@ under aggy; every test runs fake-hermes (testdata/fakes/fake/hermes.go).
   `shell-hooks-allowlist.json`, asked on a terminal only (`:703-790`),
   skipped by `--accept-hooks`, `HERMES_ACCEPT_HOOKS`, or `hooks_auto_accept`
   (`:816-823`). `on_session_end` fires at the end of every turn with
-  `completed`, `failed`, and `interrupted` in `extra`
-  (`agent/turn_finalizer.py:882-896`; LIVE for one `-q` turn).
+  `completed`, `failed`, `interrupted`, and `turn_exit_reason` among the keys
+  of `extra` (`agent/turn_finalizer.py:882-896`; LIVE: once per turn of an
+  interactive `--cli` session, Esc at an approval gave `interrupted` true).
+  Block, exit 2 with stderr, `fail_closed` on exit 1 with no output, and
+  approve reaching the four-choice approval prompt: LIVE. Under fail_closed the
+  model is told the hook's full command, which holds no token.
 - Tools judged by the hook (`policyhook.HermesCalls`): `terminal{command}`
   (`tools/terminal_tool.py:1750`), `read_file{path}`, `write_file{path}`,
   `patch{path}`, `search_files{pattern, path}` (`tools/file_tools.py:1152-1435`);
@@ -1094,15 +1100,13 @@ Unconfirmed, with what the code does:
 
 | Fact | In code |
 | --- | --- |
-| A hook runs for a `--cli` session's tool calls in the daemon, as for `-q` | The hook takes nothing from its environment or folder; a hook that cannot place its launch blocks. |
-| `on_session_end` fires once per turn of an interactive `--cli` session | It is the only turn end; without it a switch waits for the person to quit Hermes. |
-| A `pre_tool_call` block, `fail_closed`, and `{"action":"approve"}` with a `rule_key` behave as the source says | `fail_closed: true` and a 10 s timeout; an ask is an approve with a new `rule_key` per call. |
+| What Allow for this session and Add to permanent allowlist do with a per-call `rule_key` | An ask is an approve with a new `rule_key` per call, so either answer should cover that one call. |
 | The consent prompt without `--accept-hooks` under aggy's pseudo-terminal | The launch says Hermes will ask, and why. |
 | `--query-file` and `HERMES_EPHEMERAL_SYSTEM_PROMPT` reach a resumed session | Both are passed on a resume too. |
-| `/exit` ends `--cli` at its prompt | `adapter.ExitCommand` (unverified for every vendor but OpenCode). |
-| `config get <key> --json` prints JSON | The read-back refuses the launch on anything else. |
+| `config get <key> --json` for a boolean (LIVE for `hooks`) | The read-back refuses the launch on anything else. |
 | `sessions export ... --redact` output under a real session | `ParseExport` refuses a shape it does not recognize (`ErrNoTranscript`). |
-| The first-run telemetry consent and the no-provider setup guard (`hermes_cli/observability/shared_metrics_consent.py`, `main.py:1617-1619`) | Hermes shows them itself; aggy passes keys through. |
+| The no-provider setup guard (`main.py:1617-1619`) | Hermes shows it itself; aggy passes keys through. |
+| That `telemetry.shared_metrics` off at offer version 2 keeps a later Hermes from asking (LIVE at 0.23.1) | aggy's block sets it; a newer offer version would show the screen again. |
 
 ### Transcript formats
 

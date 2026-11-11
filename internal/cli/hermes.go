@@ -669,8 +669,7 @@ func hermesDecide(l store.HermesLaunch, raw []byte, stdout, stderr io.Writer) in
 		fmt.Fprintf(stderr, "aggy hook hermes: the launch's decision plan is missing, unreadable, or changed, so this call is asked about %s\n", dlog.Tag(code))
 		return 0
 	}
-	calls, ok := policyhook.HermesCalls(raw, plan.Root)
-	d := policyhook.JudgeHermes(plan, calls, ok)
+	d := policyhook.JudgeHermes(plan, raw)
 	_, _ = stdout.Write(policyhook.HermesOutput(d))
 	end(decideCodes[d.Reason], string(d.Verdict), d.Group)
 	return 0

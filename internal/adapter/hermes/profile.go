@@ -26,7 +26,7 @@ const (
 // OwnedKeys are the top-level keys aggy's block sets. One of them outside
 // the block would be a second copy whose effect aggy cannot tell, so the
 // launch is refused.
-var OwnedKeys = []string{"approvals", "hooks", "hooks_auto_accept", "updates", "auth"}
+var OwnedKeys = []string{"approvals", "hooks", "hooks_auto_accept", "updates", "auth", "telemetry"}
 
 // The hook events aggy configures (hermes_cli/plugins.py:111-156, VALID_HOOKS):
 // pre_tool_call, the policy decision before each tool call, the only event a
@@ -99,6 +99,14 @@ type Block struct {
 //     (hermes_cli/source_check.py:570).
 //   - auth.adopt_external_logins false: this profile never reads or refreshes
 //     Codex's or Claude Code's logins (config_defaults.py:1733-1739).
+//   - telemetry.shared_metrics off, answered: enabled and send false with
+//     offer_version 2 is the "No thanks" answer at this version
+//     (hermes_cli/observability/shared_metrics_consent.py:54-72, :80-89), so
+//     a new profile's first interactive launch skips the "Help improve
+//     Hermes?" screen (:167-189; LIVE, 2026-11-11: it did not appear, and the
+//     first typed line reached the prompt). A newer Hermes may raise
+//     OFFER_VERSION and show the screen again. A launch with --query-file
+//     skips it anyway (:174).
 func (b Block) Render() ([]byte, error) {
 	var w bytes.Buffer
 	line := func(indent int, s string) { w.WriteString(strings.Repeat(" ", indent) + s + "\n") }
@@ -141,6 +149,11 @@ func (b Block) Render() ([]byte, error) {
 	line(2, "check: false")
 	line(0, "auth:")
 	line(2, "adopt_external_logins: false")
+	line(0, "telemetry:")
+	line(2, "shared_metrics:")
+	line(4, "enabled: false")
+	line(4, "send: false")
+	line(4, "offer_version: 2")
 	line(0, BlockEnd)
 	return w.Bytes(), nil
 }
