@@ -481,7 +481,11 @@ func (s *Server) serve(c *net.UnixConn) {
 		onSwitch, onTools, log, token, onPin := s.onSwitch, s.onTools, s.log, s.token, s.onPin
 		s.mu.Unlock()
 		if resp, ok := hermesPin(line[:len(line)-1], token, onPin); ok {
-			reply(c, resp)
+			if resp.OK {
+				s.replyWithLock(c, resp)
+			} else {
+				reply(c, resp)
+			}
 			return
 		}
 		// A Hermes hook-event with the launch's token counts as the session's
@@ -499,4 +503,15 @@ func (s *Server) serve(c *net.UnixConn) {
 func reply(c *net.UnixConn, r Response) {
 	b, _ := json.Marshal(r)
 	_, _ = c.Write(append(b, '\n'))
+}
+
+// replyWithLock sends r with the server's locked lock file attached
+// (SCM_RIGHTS): the proof a hermes-pin answer needs that it comes from the
+// process holding this parent id's lock, not from a socket someone else
+// bound at the path (T6954; SendHermesPin checks it). The descriptor is the
+// very open file the flock is on, so the receiver can tell it from any other
+// open of the same file: only it can take the lock while the server holds it.
+func (s *Server) replyWithLock(c *net.UnixConn, r Response) {
+	b, _ := json.Marshal(r)
+	_, _, _ = c.WriteMsgUnix(append(b, '\n'), syscall.UnixRights(int(s.lock.Fd())), nil)
 }

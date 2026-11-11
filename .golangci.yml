@@ -334,6 +334,17 @@ linters:
       - path: ^internal/supervisor/client_unix\.go$
         text: "use of `net\\.DialUnix`"
         linters: [forbidigo]
+      # A hermes-pin answer counts only with its proof (T6954): the
+      # supervisor sends the open file its lock is on with the reply
+      # (SCM_RIGHTS, socket.go), and the hook reads it from the control
+      # message, compares its device and inode (fstat, metadata only) with
+      # the lock file's, tries the flock, and closes it (client_unix.go).
+      - path: ^internal/supervisor/socket\.go$
+        text: "use of `syscall\\.UnixRights`"
+        linters: [forbidigo]
+      - path: ^internal/supervisor/client_unix\.go$
+        text: "use of `syscall\\.(CmsgSpace|ParseSocketControlMessage|ParseUnixRights|Fstat|Close)`"
+        linters: [forbidigo]
       # The socket's peer checks: the stdlib has no getpeereid
       # (LOCAL_PEERCRED) or LOCAL_PEERPID on darwin, so golang.org/x/sys/unix,
       # for exactly these calls in these two files: the peer's uid and pid,
