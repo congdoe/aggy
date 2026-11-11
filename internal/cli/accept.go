@@ -387,8 +387,9 @@ func acceptWith(args []string, env borrowEnv, in io.Reader, tty bool, stdout, st
 		// T6979: at a terminal, the files that triggered it and their
 		// hunks, then a question; every other check stays.
 		yes, asked := false, false
-		if tty {
-			showProtected(ctx, g, wt, prot, stdout)
+		// What was shown must be what would be applied (#133 re-review): a
+		// file whose hunks did not show is refused, not asked about.
+		if tty && showProtected(ctx, g, wt, prot, stdout) {
 			yes, asked = askInPlace(os.Getenv, in, stdout, inPlace{
 				change: "These files may hold hooks, CI, config, or instructions a tool or CLI runs or loads; accepting writes them into " + wt.Repo + ".",
 				undo:   "aggy does not stage or commit it: git restore or git checkout in that repo takes it back.",
@@ -744,19 +745,34 @@ func fieldList(paths []string) string {
 const maxProtectedLines = 400
 
 // showProtected prints the hunks of the protected files the diff touches,
-// cut at maxProtectedLines, its control characters taken out.
-func showProtected(ctx context.Context, g *gitWorktrees, wt store.Worktree, paths []string, out io.Writer) {
+// cut at maxProtectedLines, its control characters taken out, and reports
+// whether every one of paths was in what it printed. The paths are a borrow
+// child's names, so they are literal pathspecs (#133 re-review): a name such
+// as ":(exclude,glob)**/.github/**" must not hide the others' hunks.
+func showProtected(ctx context.Context, g *gitWorktrees, wt store.Worktree, paths []string, out io.Writer) bool {
 	fmt.Fprintf(out, "The diff touches files that may hold hooks, CI, config, or instructions: %s\n", fieldList(paths))
 	run, err := g.wtRun(ctx, wt)
 	if err != nil {
 		fmt.Fprintf(out, "aggy cannot show their hunks: %s\n", termsafe.Line(err.Error()))
-		return
+		return false
 	}
-	args := append([]string{"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", wt.Base, wt.Tree, "--"}, paths...)
-	d, _, err := run(args...)
-	if err != nil {
-		fmt.Fprintf(out, "aggy cannot show their hunks: %s\n", termsafe.Line(err.Error()))
-		return
+	diff := []string{"--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames"}
+	names, cut, err := run(append(append(diff, "--name-only", "-z", wt.Base, wt.Tree, "--"), paths...)...)
+	if err != nil || cut {
+		fmt.Fprintln(out, "aggy cannot show their hunks.")
+		return false
+	}
+	got := strings.Split(strings.TrimSuffix(names, "\x00"), "\x00")
+	slices.Sort(got)
+	want := slices.Sorted(slices.Values(paths))
+	if !slices.Equal(got, slices.Compact(want)) {
+		fmt.Fprintln(out, "aggy cannot show the hunks of every one of them.")
+		return false
+	}
+	d, _, err := run(append(append(diff, wt.Base, wt.Tree, "--"), paths...)...)
+	if err != nil || strings.TrimSpace(d) == "" {
+		fmt.Fprintln(out, "aggy cannot show their hunks.")
+		return false
 	}
 	lines := strings.Split(strings.TrimRight(d, "\n"), "\n")
 	for i, l := range lines {
@@ -766,6 +782,7 @@ func showProtected(ctx context.Context, g *gitWorktrees, wt store.Worktree, path
 		}
 		fmt.Fprintf(out, "  %s\n", termsafe.Line(l))
 	}
+	return true
 }
 
 // protectedOf reports the files err refuses for, or nil.

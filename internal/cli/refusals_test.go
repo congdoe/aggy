@@ -150,6 +150,17 @@ func TestAcceptProtectedAsks(t *testing.T) {
 			}
 		}
 	})
+	// #133 re-review: a name that reads as pathspec magic must not hide the
+	// other files' hunks: the question shows ci.yml's, or is not asked.
+	t.Run("a name that reads as pathspec magic", func(t *testing.T) {
+		inPlaceWorld(t, "", true, false)
+		magic := map[string]string{"a.go": "package a\n", ".github/workflows/ci.yml": "on: push # SEEN\n", ":(exclude,glob)**/.github/**": "x\n"}
+		id, _ := editBorrow(t, f, magic)
+		code, out, errOut := accept(f, "n\n", true, id)
+		if code != 1 || !strings.Contains(out, "on: push # SEEN") || !strings.Contains(out, "Accept anyway") {
+			t.Errorf("code %d: %s %s", code, out, errOut)
+		}
+	})
 	t.Run("a .git path is refused", func(t *testing.T) {
 		inPlaceWorld(t, "", true, false)
 		if _, err := checkTouched(":100644 100644 0 0 M\x00sub/.git/config\x00", ""); err == nil || protectedOf(err) != nil || !strings.Contains(err.Error(), "inside a .git folder") {
