@@ -1056,8 +1056,13 @@ Docs and source only, not run live (read 2026-11-09). What aggy relies on:
 - **Claude `UserPromptSubmit`** (`code.claude.com/docs/en/hooks.md`): its input
   adds `prompt`, "the submitted text"; output `decision: "block"` "stops the
   prompt before it reaches Claude", `reason` is "Shown to the user ... Not added
-  to context", and `suppressOriginalPrompt: true` leaves the text out of the
-  block message. Exit 2 blocks too, but aggy's hook command ends in `|| true`.
+  to context", and `suppressOriginalPrompt: true` inside `hookSpecificOutput`
+  (with `hookEventName`; the docs' example, read again 2026-11-11) leaves the
+  text out of the block message. Live, Claude Code 2.1.322 (owner, T6982):
+  with the field at the top level, as aggy first wrote it, the block message
+  still ended "Original prompt: /switch". The docs also say a prompt blocked as
+  Esc interrupts the check "doesn't return to the input"; for a plain block
+  they do not say where the text goes. Exit 2 blocks too, but aggy's hook command ends in `|| true`.
   `UserPromptExpansion` fires "When a user-typed command expands into a prompt",
   with `command_name`, `command_args`, and the original `prompt`, and blocks the
   same way. The docs do not say outright whether a blocked prompt's text goes

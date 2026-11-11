@@ -120,7 +120,7 @@ func hookWith(args []string, in io.Reader, getenv func(string) string, stdout, s
 	// UserPromptExpansion is handled too, though aggy hooks install does not
 	// install it yet (R121, hooks.go).
 	if event == "UserPromptSubmit" || event == "UserPromptExpansion" && v == adapter.Claude {
-		return promptSubmit(v, in, getenv, stdout, stderr)
+		return promptSubmit(v, event, in, getenv, stdout, stderr)
 	}
 	if !hook.Forward(v, getenv) {
 		// Not under aggy, or another vendor's hook (see hook.Forward).
