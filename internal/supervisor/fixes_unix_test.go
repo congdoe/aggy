@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/sessioncmd"
 )
 
 // fixSess is a session on Claude whose switch to Codex CanSwitch refuses
@@ -157,15 +158,14 @@ func TestFixPageTypeAhead(t *testing.T) {
 	}
 }
 
-// TestAgentSwitchFixNote (#133 review): a switch a hook sent, which the
+// TestAgentSwitchFixNote (#133 review): a switch a hook sent (runCommand,
+// not keyed), which the
 // missing Codex rules file refuses, is told in a note rather than opened as a
 // page; a stray key goes on to the CLI, and the switch key opens the page.
 func TestAgentSwitchFixNote(t *testing.T) {
 	s, ran, _ := fixSess(t, "Done (run r1).", true)
 	noFixWindow(t)
-	s.agentPick = true
-	s.pickSwitch(Choice{Vendor: adapter.Codex}, false)
-	s.agentPick = false
+	s.runCommand(sessioncmd.Command{Kind: sessioncmd.Switch, Vendor: adapter.Codex}, false) // from a hook
 	if s.pk.page != nil || s.pk.fix == nil {
 		t.Fatalf("page %+v fix %+v", s.pk.page, s.pk.fix)
 	}
@@ -175,9 +175,7 @@ func TestAgentSwitchFixNote(t *testing.T) {
 	if s.open || len(*ran) != 0 || string(typed) != "y" {
 		t.Fatalf("a stray y: open %v ran %q", s.open, *ran)
 	}
-	s.agentPick = true
-	s.pickSwitch(Choice{Vendor: adapter.Codex}, false)
-	s.agentPick = false
+	s.runCommand(sessioncmd.Command{Kind: sessioncmd.Switch, Vendor: adapter.Codex}, false) // from a hook
 	s.pickerInput([]byte{s.pk.key})
 	if g := s.pk.page; g == nil || strings.Join(g.confirm, " ") != "policy wire" || g.then == nil {
 		t.Fatalf("page %+v", g)
