@@ -531,12 +531,33 @@ func claudeSettingsPath(p string) bool {
 // Claude settings file's name. ".claude" with "settings" anywhere counts too,
 // as does aggy's folder (".aggy", or "aggy_home" for $AGGY_HOME) with one of
 // aggyFileNames anywhere (cd ~/.aggy, then the file).
-var protectedWords = []string{"policy-decide", ".aggy/run", ".aggy/permissions", ".aggy/trust.json", ".aggy/opencode-trust.json", "settings.local.json", "managed-settings",
-	// aggy's index and diagnostic log, which hold the launch rows a hook trusts
-	// (#134 review: live, a terminal sqlite3 on the index ran unasked).
-	// TODO(T6954): as bare words these ask on ordinary text that only names
-	// them (a commit message, say); narrow them to path-shaped mentions.
-	"aggy.db", "diag.db"}
+var protectedWords = []string{"policy-decide", ".aggy/run", ".aggy/permissions", ".aggy/trust.json", ".aggy/opencode-trust.json", "settings.local.json", "managed-settings"}
+
+// stateFileNames are aggy's index and diagnostic log, which hold the launch
+// rows a hook trusts (#134 review: live, a terminal sqlite3 on the index ran
+// unasked). Named anywhere in a command as a file name (holdsName) they ask,
+// in a path through aggy's folder in any spelling (aggyFolderWords) or bare,
+// since a shell's folder may already be ~/.aggy; but not inside a commit
+// message or an echo's text (stripMessages), which only names them (T6954).
+var stateFileNames = []string{"aggy.db", "diag.db"}
+
+// holdsName reports n in f as a whole file name: holdsPath, and not
+// preceded by a letter, digit, _, -, or ., so x/aggy.db and 'aggy.db' hold
+// it and myaggy.db does not.
+func holdsName(f, n string) bool {
+	for from := 0; ; {
+		i := strings.Index(f[from:], n)
+		if i < 0 {
+			return false
+		}
+		at, end := from+i, from+i+len(n)
+		if (at == 0 || !strings.ContainsRune("abcdefghijklmnopqrstuvwxyz0123456789_-.", rune(f[at-1]))) &&
+			(end == len(f) || !strings.ContainsRune("abcdefghijklmnopqrstuvwxyz0123456789_", rune(f[end]))) {
+			return true
+		}
+		from = at + 1
+	}
+}
 
 // aggyFolderWords name aggy's state folder in a shell command, and
 // aggyFileNames the files in it that a command naming that folder must not
@@ -591,6 +612,15 @@ func protectedText(cmd string, protected, words []string) bool {
 		}
 		if slices.ContainsFunc(aggyFolderWords, func(w string) bool { return strings.Contains(f, w) }) &&
 			slices.ContainsFunc(aggyFileNames, func(n string) bool { return holdsPath(f, n) }) {
+			return true
+		}
+	}
+	// aggy's index and log by name, outside a message's text: the command
+	// with its messages blanked, in the same spellings.
+	msgless := stripMessages(joined)
+	for _, f := range []string{msgless, strings.NewReplacer(`"`, "", "'", "", `\`, "").Replace(msgless)} {
+		f = strings.ToLower(f)
+		if slices.ContainsFunc(stateFileNames, func(n string) bool { return holdsName(f, n) }) {
 			return true
 		}
 	}
