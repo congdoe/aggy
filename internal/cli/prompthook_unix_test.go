@@ -95,8 +95,14 @@ func TestPromptSubmitBlocks(t *testing.T) {
 			if err := json.Unmarshal(out.Bytes(), &dec); err != nil || dec["decision"] != "block" || dec["reason"] == "" {
 				t.Fatalf("stdout %q: want a block decision", out.String())
 			}
-			if _, ok := dec["suppressOriginalPrompt"]; ok != (c.vendor == "claude") {
-				t.Errorf("suppressOriginalPrompt on %s: %v", c.vendor, ok)
+			// T6982: Claude reads it inside hookSpecificOutput (hooks.md); at the
+			// top level the block message still quoted the prompt.
+			if _, ok := dec["suppressOriginalPrompt"]; ok {
+				t.Errorf("suppressOriginalPrompt at the top level on %s", c.vendor)
+			}
+			hso, _ := dec["hookSpecificOutput"].(map[string]any)
+			if ok := hso["suppressOriginalPrompt"] == true && hso["hookEventName"] == "UserPromptSubmit"; ok != (c.vendor == "claude") {
+				t.Errorf("hookSpecificOutput on %s: %v", c.vendor, dec["hookSpecificOutput"])
 			}
 		})
 	}

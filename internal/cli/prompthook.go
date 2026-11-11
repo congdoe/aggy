@@ -27,7 +27,7 @@ import (
 // the supervisor and, when the supervisor takes it, blocks the prompt with a
 // JSON decision on stdout: Claude's hooks.md, UserPromptSubmit, "decision:
 // block stops the prompt before it reaches Claude", reason "Shown to the user
-// ... Not added to context", suppressOriginalPrompt leaves the text out of that
+// ... Not added to context", suppressOriginalPrompt inside hookSpecificOutput leaves the text out of that
 // message (read 2026-11-09, not seen live); Grok's 10-hooks.md at grok-build
 // 2bdd1d6a: {"decision": "block", "reason": "..."} on stdout blocks on any exit
 // code, the reason is shown to the user and not added to the model's context
@@ -41,7 +41,7 @@ import (
 // that times out lets the prompt through too (10-hooks.md: "a timed-out or
 // crashed hook fails open"). Nothing of the prompt is forwarded but a parsed
 // command's own line.
-func promptSubmit(v adapter.Vendor, in io.Reader, getenv func(string) string, stdout, stderr io.Writer) int {
+func promptSubmit(v adapter.Vendor, event string, in io.Reader, getenv func(string) string, stdout, stderr io.Writer) int {
 	if !hook.Forward(v, getenv) {
 		drain(in)
 		return 0
@@ -92,7 +92,10 @@ func promptSubmit(v adapter.Vendor, in io.Reader, getenv func(string) string, st
 	out := map[string]any{"decision": "block",
 		"reason": fmt.Sprintf("aggy took %s%s: see aggy's screen (Esc returns). It spent no model turn.", sessioncmd.Prefix(v), c.Name)}
 	if v == adapter.Claude {
-		out["suppressOriginalPrompt"] = true
+		// Inside hookSpecificOutput, as hooks.md's UserPromptSubmit example
+		// has it (read 2026-11-11); at the top level Claude ignored it and the
+		// block message ended "Original prompt: /switch" (owner's run, T6982).
+		out["hookSpecificOutput"] = map[string]any{"hookEventName": event, "suppressOriginalPrompt": true}
 	}
 	b, _ := json.Marshal(out)
 	fmt.Fprintln(stdout, string(b))
