@@ -30,7 +30,8 @@ const (
 	// token, whether a session id is its session, and for the decision plan's
 	// path, SHA-256, and whether the policy is off (#134 review): the pin
 	// lives in the supervisor's memory, never only in the index a tool can
-	// write. Its payload is {"session_id": ...}.
+	// write. Its payload is {"session_id": ..., "shared": bool}, shared saying
+	// another aggy Hermes launch in the profile is live (T6954).
 	ReqHermesPin = "hermes-pin"
 )
 

@@ -7,6 +7,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/congdoe/aggy/internal/diag"
 )
 
 // TestHermesToken (T6933): a Hermes hook runs in Hermes' daemon, outside the
@@ -107,10 +110,102 @@ func TestHermesPin(t *testing.T) {
 	}
 	// A resume knows its session up front, and takes no other.
 	r := NewHermesClaim(HermesPin{Session: b, NoPolicy: true})
-	if got := r.Answer(b); !got.OK || !got.NoPolicy {
+	if got := r.Answer(b, false); !got.OK || !got.NoPolicy {
 		t.Fatalf("resume: %+v", got)
 	}
-	if got := r.Answer(a); got.OK {
+	if got := r.Answer(a, false); got.OK {
 		t.Fatalf("resume took another session: %+v", got)
+	}
+}
+
+// TestHermesClaimShared (T6954): with another aggy Hermes launch live in the
+// profile, a new session claims an unclaimed launch only within
+// HermesClaimWindow of the last Enter typed in it (or its brief), and never
+// under --direct; alone in its profile, a launch claims as before, however
+// long after. The claimed session is always answered.
+func TestHermesClaimShared(t *testing.T) {
+	const a, b = "20261110_101500_a1b2c3", "20261110_101600_d4e5f6"
+	clock := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+	at := func(p HermesPin) *HermesClaim {
+		h := NewHermesClaim(p)
+		h.now = func() time.Time { return clock }
+		if p.Brief && !p.Direct {
+			h.entered = clock
+		}
+		return h
+	}
+	late := func(r Response) bool { return !r.OK && r.Code == diag.CodeHermesClaimLate.String() }
+	step := func(d time.Duration) { clock = clock.Add(d) }
+
+	// Alone in the profile: no window.
+	h := at(HermesPin{})
+	h.Entered()
+	step(10 * time.Minute)
+	if r := h.Answer(a, false); !r.OK {
+		t.Fatalf("alone, long after the Enter: %+v", r)
+	}
+
+	// Shared: within the window after the Enter, the claim is taken, and the
+	// claimed session is answered later whatever the time.
+	h = at(HermesPin{})
+	h.Entered()
+	step(HermesClaimWindow - time.Second)
+	if r := h.Answer(a, true); !r.OK {
+		t.Fatalf("shared, within the window: %+v", r)
+	}
+	step(time.Hour)
+	if r := h.Answer(a, true); !r.OK {
+		t.Fatalf("the claimed session later: %+v", r)
+	}
+	if r := h.Answer(b, true); r.OK || late(r) {
+		t.Fatalf("another session after the claim: %+v", r)
+	}
+
+	// Shared, past the window (another launch's /new, say): refused, and the
+	// launch stays unclaimed; an Enter typed again opens the window again.
+	h = at(HermesPin{})
+	h.Entered()
+	step(HermesClaimWindow + time.Second)
+	if r := h.Answer(b, true); !late(r) {
+		t.Fatalf("shared, past the window: %+v", r)
+	}
+	if h.Claimed() != "" {
+		t.Fatalf("claimed %q past the window", h.Claimed())
+	}
+	h.Entered()
+	if r := h.Answer(a, true); !r.OK || h.Claimed() != a {
+		t.Fatalf("after another Enter: %+v %q", r, h.Claimed())
+	}
+
+	// Shared, before any Enter: refused as before (not the launch's yet).
+	h = at(HermesPin{})
+	if r := h.Answer(a, true); r.OK {
+		t.Fatalf("before the first turn: %+v", r)
+	}
+
+	// The brief is the first turn, sent at launch: the window runs from then.
+	h = at(HermesPin{Brief: true})
+	step(HermesClaimWindow + time.Second)
+	if r := h.Answer(a, true); !late(r) {
+		t.Fatalf("brief, past the window: %+v", r)
+	}
+	h = at(HermesPin{Brief: true})
+	if r := h.Answer(a, true); !r.OK {
+		t.Fatalf("brief, within the window: %+v", r)
+	}
+
+	// --direct: aggy sees no keys, so a shared claim is never taken; alone,
+	// the first session named is.
+	h = at(HermesPin{Direct: true})
+	if r := h.Answer(a, true); !late(r) {
+		t.Fatalf("--direct, shared: %+v", r)
+	}
+	if r := h.Answer(a, false); !r.OK {
+		t.Fatalf("--direct, alone: %+v", r)
+	}
+	// A resume knows its session under --direct too.
+	h = at(HermesPin{Direct: true, Session: b})
+	if r := h.Answer(b, true); !r.OK {
+		t.Fatalf("--direct resume, shared: %+v", r)
 	}
 }
