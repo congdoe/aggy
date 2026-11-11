@@ -215,3 +215,41 @@ func TestAntigravitySwitchTo(t *testing.T) {
 		t.Errorf("args = %q", runs[1].Args)
 	}
 }
+
+// TestAntigravityForceAskBeatsAllow (#141 review, L5): a command the policy
+// asks about still prompts where the person's own agy settings allow it,
+// since aggy's hook answers force_ask (a plain ask would let the allow run it,
+// LIVE); declined at agy's prompt, it does not run.
+func TestAntigravityForceAskBeatsAllow(t *testing.T) {
+	w := agyWorldE2E(t, true)
+	saved := filepath.Join(w.home, ".gemini", "antigravity-cli", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(saved), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(saved, []byte(`{"permissions":{"allow":["command(rm -rf build)","command(ls)"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sc := map[string]any{"stdout": "READY>", "agy": map[string]any{
+		"tool_calls": []map[string]any{
+			{"name": "run_command", "args": map[string]any{"CommandLine": "rm -rf build", "Cwd": w.cwd}},
+			{"name": "run_command", "args": map[string]any{"CommandLine": "ls", "Cwd": w.cwd}},
+		},
+	}}
+	s := w.start(t, sc, "run", "antigravity")
+	s.waitWithin([]byte("Do you trust the contents of this project?"), offerTimeout)
+	s.send([]byte("\r"))
+	s.waitWithin([]byte("agy (fake)"), offerTimeout)
+	s.send([]byte("work\r"))
+	s.waitWithin([]byte("ok: work"), offerTimeout)
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d; screen %q", code, s.screen())
+	}
+	var outcomes []string
+	for _, r := range agyRecords(t, w, "tool") {
+		outcomes = append(outcomes, strings.Join(r.Args, "="))
+	}
+	if want := []string{"run_command=declined=force_ask", "run_command=ran=none"}; !slices.Equal(outcomes, want) {
+		t.Errorf("tool calls = %q, want %q", outcomes, want)
+	}
+}

@@ -158,6 +158,7 @@ var (
 	EvKeyRemoved           = Event{"key.item.removed"}
 	EvKeyPassed            = Event{"launch.key.passed"}
 	EvKeyNotPassed         = Event{"launch.key.not_passed"}
+	EvAgyHooksChanged      = Event{"hook.agy_file.changed"}
 )
 
 // Codes.
@@ -288,6 +289,9 @@ var (
 	// Antigravity (T6957).
 	CodeAgyUntrusted     = Code{"antigravity.not_ticked"}
 	CodeAgyHooksFile     = Code{"antigravity.hooks_file"}
+	CodeAgyHooksLink     = Code{"antigravity.hooks_link"}
+	CodeAgyHooksForeign  = Code{"antigravity.hooks_foreign"}
+	CodeAgyHooksChanged  = Code{"antigravity.hooks_changed"}
 	CodeAgyUnreachable   = Code{"antigravity.unreachable"}
 	CodeAgySettings      = Code{"antigravity.settings_refused"}
 	CodeAgyPrintMode     = Code{"antigravity.print_refused"}
@@ -352,6 +356,7 @@ var events = []EventInfo{
 	{EvGrokLockdown, LevelError, "adapter.grok", "Grok rejected a lockdown flag, reported an unknown tool, or ran without its sandbox; the run was discarded.", "aggy doctor for the version; attach aggy diag bundle to an issue."},
 	{EvGuardRefused, LevelWarn, "hook", "aggy's OpenCode guard refused a tool call: a variable declaration in a shell command, a real path outside the repo, a call from another folder, or opencode auth export.", "The code's entry; the model saw the same reason."},
 	{EvGuardMissing, LevelWarn, "hook", "aggy's OpenCode guard did not report in time, so its refusals may not be running; a plugin that fails to load gives no error.", "The code's entry."},
+	{EvAgyHooksChanged, LevelWarn, "hook", "A folder's .agents/hooks.json differs from what aggy last wrote: its entry is gone or changed, or another entry appeared (the code says which check).", "The code's entry; the file itself."},
 	{EvDecideStarted, LevelInfo, "hook", "aggy's policy decision hook started on one tool call (attrs.vendor_version). It never records the command or the path.", "A start with no hook.decision.ended (cause_id) is a hang or a kill: aggy doctor counts them per CLI version."},
 	{EvDecideEnded, LevelInfo, "hook", "aggy's policy decision hook answered (attrs.decision: allow, ask, deny, no-opinion, or error; attrs.group; the code says why; duration_ms).", "The code's entry; aggy doctor sums them per CLI version."},
 	{EvDecideFallback, LevelWarn, "hook", "aggy hook decide failed or was missing, and its wrapper's fixed answer (ask, or deny where no prompt can show) went to the CLI instead.", "aggy doctor; a hook.decision.ended with decision.plan_unreadable, or none, in the same trace says more."},
@@ -548,6 +553,9 @@ var codes = []CodeInfo{
 	{CodeHermesUntrusted, false, "Hermes is not ticked in aggy's trust list for this folder, so aggy did not start it.", "aggy trust <dir> and tick Hermes, after reading its warning."},
 	{CodeAgyUntrusted, false, "Antigravity (Gemini) is not ticked in aggy's trust list for this folder, so aggy did not start agy. \"All\" never ticks it: it carries a note on Google's terms.", "aggy trust <dir> and tick Antigravity (Gemini) on its own, after reading its note."},
 	{CodeAgyHooksFile, false, "aggy could not put its entry into this folder's .agents/hooks.json (a file that is not one JSON object, one git tracks whose change you declined, or a write that failed), so agy was not started: without it aggy's policy and turn ends would not reach agy.", "The message; fix or move the file, or answer yes to writing the tracked file; aggy unwire takes aggy's entry out."},
+	{CodeAgyHooksLink, false, "This folder's .agents is a symbolic link, not a folder, or resolves outside the folder, or its hooks.json is a link or not a regular file, so aggy did not write its hook entry there (or take it out): it would have changed a file outside the folder.", "Replace the link with a real .agents folder and hooks.json, then start again; aggy unwire refuses the same path until then."},
+	{CodeAgyHooksForeign, false, "This folder's .agents/hooks.json has entries aggy did not see when it last wrote the file. An entry there runs with agy's tools and can allow or auto-approve them past aggy's hook, so aggy asked before starting agy, and did not start it.", "Look at the entries named in the message; start again at a terminal and answer yes if they are yours, or remove them."},
+	{CodeAgyHooksChanged, false, "This folder's .agents/hooks.json changed during an Antigravity session: aggy's entry is gone or changed, or entries aggy did not write appeared. Whether agy read the change during the session is unverified.", "Look at the file; the next aggy antigravity here puts aggy's entry back and asks about new entries."},
 	{CodeAgyUnreachable, false, "agy's help does not list a flag aggy's launch needs (--settings or --conversation), so agy was not started.", "Update agy (aggy was checked on 1.5.3 to 1.5.5), then start again; aggy doctor shows what the probe found."},
 	{CodeAgySettings, false, "agy exited with status 1 before any of its hooks reached aggy, which is how it refuses a --settings key it does not know (live, 1.5.5): this agy may not take a setting aggy passes.", "Look at what agy printed; aggy doctor shows the version; turn agy's self-update off with AGY_CLI_DISABLE_AUTO_UPDATE=true if a new version broke it."},
 	{CodeAgyPrintMode, false, "aggy refused a print-mode or headless run of Antigravity: Google's FAQ calls agy wrapped in third-party applications not supported under consumer plans, under a question about headless mode, so aggy runs it on screen only.", "Run agy itself for that, or start aggy antigravity on a terminal."},

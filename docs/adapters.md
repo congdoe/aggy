@@ -1225,14 +1225,21 @@ runs fake-agy (testdata/fakes/fake/antigravity.go). `Tested` is 1.5.3 to 1.5.5.
   OpenCode or another harness. The trust row and the first launch carry
   `antigravity.TermsNote`.
 - **Launch.** `agy --settings <file> [--conversation=<id>] [--model <m>]
-  [flags...] [-i <brief pointer>]` in the session's folder (LIVE help). agy
-  parses flags with Go's flag package (LIVE: `flags provided but not defined:
-  -no-such-flag`): `-x` and `--x` are one flag, a boolean takes `=true` or
-  `=false`, and parsing stops at the first bare word, so `PassFlags.GoFlags`
-  reads every spelling the same way and a bare first prompt is refused (aggy
-  names `-i`). Passed: `--model`, `--effort`, `-i`/`--prompt-interactive`
-  (once), `--sandbox` (noted), `--mode plan`, `-c`/`--continue`, and
-  `--conversation`. Asked one at a time, as loosening:
+  [flags...] [-i <brief pointer>]` in the session's folder (LIVE help).
+  LIVE is only what agy printed: `Usage of agy:` and, for an unknown flag,
+  `flags provided but not defined: -no-such-flag` and the usage (Go's standard
+  library says "flag provided", so this is not plainly its parser). That agy
+  parses with Go's flag package, that `-name` means `--name`, and that parsing
+  stops at the first bare word are unverified assumptions, and aggy's gate
+  does not rest on them (#141 review): `PassFlags.GoFlags` reads only each
+  flag's canonical spelling (one dash for `-c`, `-i`, `-h`, `-p`; two for the
+  rest), which a Go-style and a getopt-style parser read alike, and refuses
+  any other spelling (`-model`, `--c`, `-prompt-interactive`, which a getopt
+  parser would read as `-p`) as not checked; it never runs letters together;
+  and a bare first word is refused (aggy names `-i`). Passed: `--model`,
+  `--effort`, `-i`/`--prompt-interactive` (once), `--sandbox` (noted; any
+  value but true, `--sandbox=false` included, is refused, so the note that it
+  is on stays true), `--mode plan`, `-c`/`--continue`, and `--conversation`. Asked one at a time, as loosening:
   `--dangerously-skip-permissions`, `--mode auto`, `--mode accept-edits` (any
   other `--mode` too), and `--add-dir` (`antigravity.loosenEffect`).
   Always refused, each with a line why: the print flags (`-p`, `--print`,
@@ -1240,8 +1247,12 @@ runs fake-agy (testdata/fakes/fake/antigravity.go). `Tested` is 1.5.3 to 1.5.5.
   `--print-timeout`), the person's own `--settings` (aggy's is the launch's),
   `--remote-control`, `--remote-agent`, `--project`, `--new-project`,
   `--agent`, `--log-file`, and `--disable-slash-commands` (aggy types `/exit`).
-  Any other flag is refused as not checked. The subcommands of the LIVE help
-  pass through bare.
+  Any other flag is refused as not checked. agy's subcommands (the LIVE help's
+  `models`, `update`, `mcp`, and the rest) do not run through aggy: as a first
+  word each is refused (`PassFlags.Commands`, `ErrNotFlag`), since agy would
+  run it instead of the session aggy records, and there is no `adapter.Manage`
+  entry for Antigravity. Run `agy` itself for them. The design keeps
+  Antigravity on screen only, so the text was fixed, not the code.
 - **Environment.** The person's own, plus the usual `AGGY_*` and, only when
   `AGGY_VENDOR=antigravity`, `AGGY_DECIDE_PLAN` and `AGGY_DECIDE_SHA256` (the
   launch's decision plan and its pin), after removing inherited copies of
@@ -1269,6 +1280,24 @@ runs fake-agy (testdata/fakes/fake/antigravity.go). `Tested` is 1.5.3 to 1.5.5.
   other byte), keeps the person's other entries byte for byte, refuses a file
   that is not one JSON object, asks at a terminal (default no) before changing
   a file git tracks, and adds a git exclude line only for a file it created.
+  It refuses, at launch and in `aggy unwire`, a `.agents` that is a link, not a
+  folder, or resolves outside the folder holding it, and a `hooks.json` that is
+  a link or not a regular file (`antigravity.CheckHooksPath`,
+  `antigravity.hooks_link`; #141 review), and an entry named `aggy` that aggy
+  did not write (`antigravity.ForeignEntry`), which it would otherwise take
+  over and later remove. After each write aggy records the file's hash and
+  entry names in its own state folder (`~/.aggy/antigravity/`); at the next
+  launch an entry that appeared since asks before agy starts (default no,
+  `antigravity.hooks_foreign`), since it could allow or auto-approve tools,
+  and the SessionStart and Stop hooks and the exit say when aggy's entry is
+  gone or changed or a new entry appeared (`hook.agy_file.changed`,
+  `hook.agy_file.changed`). Whether agy reads the file again during a
+  session, and how it combines several hooks' decisions, are unverified. The
+  entry runs aggy by its absolute path: once aggy is removed or moved, a plain
+  agy there cannot start the hook, which blocks every tool (LIVE), until
+  `aggy unwire`; the first launch line and `aggy doctor` say so. A form that
+  skips a missing aggy needs a shell, and whether agy runs a hook command
+  through one is unverified.
   Workspace hooks load only once the folder is trusted in agy's own dialog
   (DOCS; LIVE: they loaded in a trusted folder with no further prompt). Which
   folder agy treats as the workspace when started in a subfolder is
@@ -1276,8 +1305,10 @@ runs fake-agy (testdata/fakes/fake/antigravity.go). `Tested` is 1.5.3 to 1.5.5.
 - **Hook behaviour.** Hooks run as agy's children with its environment and cwd
   `<workspace>/.agents`, plus `ANTIGRAVITY_CONVERSATION_ID` (LIVE). Outside an
   aggy Antigravity session (no `AGGY_SOCKET`, or `AGGY_VENDOR` another
-  vendor's) the hook reads its stdin, prints nothing, and exits 0, so a plain
-  agy in that folder runs as without aggy. Inside one, SessionStart and Stop
+  vendor's; Grok's hook variables are not consulted here) the hook reads its
+  stdin, prints nothing, and exits 0, so a plain agy in that folder runs as
+  without aggy. That empty output with exit 0 means "no opinion" to agy is
+  from the docs and the fake, not seen live. Inside one, SessionStart and Stop
   go to the supervisor as Claude's do (lineage checked), and PreToolUse is
   judged by the launch's plan (`policyhook.JudgeAntigravity`): deny is
   `{"decision":"deny","reason":...}`, ask is `{"decision":"force_ask",...}`
@@ -1296,10 +1327,18 @@ runs fake-agy (testdata/fakes/fake/antigravity.go). `Tested` is 1.5.3 to 1.5.5.
   `Input` as a command that is never allowed. These names are DOCS
   (antigravity.google/docs/hooks). A file path that is not absolute or lies
   outside the repo asks, whether or not agy's own layer would. A shell or
-  write tool with its field missing asks; a read or search tool with its field
-  missing, and a tool aggy does not know, get no opinion, since agy's own
-  permission layer prompts by default (LIVE), unless the tool carries a field
-  aggy knows, which is judged and never allowed.
+  write tool with its field missing asks. A read or search tool with its field
+  missing has every path-like string in its arguments, at any depth, judged
+  as its kind, and asks when it has none (#141 review, HIGH-1: read_file's
+  real keys are unseen). A tool aggy does not know is judged by a field it
+  knows, else by every path-like string as both a read and a write, never
+  allowed; with no path-like string it gets no opinion, as Claude's judge
+  gives a tool it does not know (`ClaudeCalls`), since agy's own layer
+  prompts by default (LIVE for `run_command`); Hermes' judge asks instead,
+  as Hermes has no such layer. A shell command that names `.agents` or
+  `hooks.json`, or reaches `.agents` by a dot glob (`.ag*`, `.*`) or around a
+  variable (`${d}ents`), asks (`policyhook.agyReach`); `find . -delete` or a
+  script still reaches it, which the file checks above catch afterwards.
 - **Session.** The id is the hooks' `conversationId`, a UUID (LIVE); the first
   SessionStart claims the launch. SessionStart fires on a new conversation's
   first turn, not on a resume (LIVE). `/exit` exits 0 and prints `agy
@@ -1327,7 +1366,10 @@ runs fake-agy (testdata/fakes/fake/antigravity.go). `Tested` is 1.5.3 to 1.5.5.
 | Unconfirmed fact (Antigravity) | Fallback in code |
 | --- | --- |
 | `permissions.deny` and `ask` from `--settings` are honoured, and how `*` matches in a target | Both are passed; the hook judges every call anyway. |
-| Tool names and argument keys beyond `run_command {CommandLine}` (DOCS only) | A write without its field asks; a read or search without it, or an unknown tool, has no opinion and agy prompts. |
+| Tool names and argument keys beyond `run_command {CommandLine}` (DOCS only) | A write without its field asks; a read or search without it is judged by every path-like string and asks with none; an unknown tool with no path-like string has no opinion and agy prompts. |
+| That agy's parser is Go's flag package (`-name` as `--name`, stopping at the first bare word) | Only canonical spellings pass; a bare first word is refused. |
+| A hook's empty output with exit 0 is "no opinion" | aggy relies on it for allow and no opinion; a wrong guess would block or prompt, not allow. |
+| agy reads `.agents/hooks.json` again during a session, and how several entries' decisions combine | aggy checks the file at each SessionStart, Stop, exit, and launch, and asks about a new entry at launch. |
 | Which folder is the workspace for hooks when agy starts in a subfolder | aggy writes the hooks file in the launch folder; a session whose hooks never arrive is told so after an exit 1, and a switch waits for `/exit`. |
 | `--conversation=<id>` resume and `-i` (help only) | Built from the help; a fake models them. |
 | Whether a persisted "always allow" (agy's settings.json) beats `force_ask` | aggy's ask is `force_ask`, which beat an allow rule from `--settings` (LIVE). |

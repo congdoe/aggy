@@ -33,34 +33,35 @@ func TestPassFlags(t *testing.T) {
 				t.Errorf("model %q extra %v", p.Model, p.Extra)
 			}
 		}},
-		{name: "model one dash =", args: []string{"-model=m1"}, check: func(t *testing.T, p adapter.ParsedFlags) {
+		{name: "model =", args: []string{"--model=m1"}, check: func(t *testing.T, p adapter.ParsedFlags) {
 			if p.Model != "m1" {
 				t.Errorf("model %q", p.Model)
 			}
 		}},
+		// #141 review, M2: only the canonical spelling is read as the flag.
+		{name: "model one dash refused", args: []string{"-model=m1"}, want: adapter.ErrNotChecked},
+		{name: "prompt-interactive one dash refused", args: []string{"-prompt-interactive", "x"}, want: adapter.ErrNotChecked},
+		{name: "print one dash refused", args: []string{"-print"}, want: adapter.ErrNotChecked},
 		{name: "continue", args: []string{"-c"}, check: func(t *testing.T, p adapter.ParsedFlags) {
 			if !p.Continue {
 				t.Error("not continue")
 			}
 		}},
-		{name: "continue two dashes one letter", args: []string{"--c"}, check: func(t *testing.T, p adapter.ParsedFlags) {
-			if !p.Continue {
-				t.Error("not continue")
-			}
-		}},
-		{name: "continue long one dash", args: []string{"-continue"}, check: func(t *testing.T, p adapter.ParsedFlags) {
+		{name: "continue two dashes one letter refused", args: []string{"--c"}, want: adapter.ErrNotChecked},
+		{name: "continue long one dash refused", args: []string{"-continue"}, want: adapter.ErrNotChecked},
+		{name: "continue long", args: []string{"--continue"}, check: func(t *testing.T, p adapter.ParsedFlags) {
 			if !p.Continue {
 				t.Error("not continue")
 			}
 		}},
 		{name: "continue =false", args: []string{"-c=false"}, refuses: "with no value"},
-		{name: "conversation", args: []string{"-conversation=11111111-2222-4333-8444-555555555555"}, check: func(t *testing.T, p adapter.ParsedFlags) {
+		{name: "conversation", args: []string{"--conversation=11111111-2222-4333-8444-555555555555"}, check: func(t *testing.T, p adapter.ParsedFlags) {
 			if !p.Resume || p.ResumeID != "11111111-2222-4333-8444-555555555555" {
 				t.Errorf("resume %v %q", p.Resume, p.ResumeID)
 			}
 		}},
-		{name: "effort", args: []string{"-effort", "high"}, check: func(t *testing.T, p adapter.ParsedFlags) {
-			if !slices.Equal(p.Extra, []string{"-effort", "high"}) || len(p.Prompt) != 0 {
+		{name: "effort", args: []string{"--effort", "high"}, check: func(t *testing.T, p adapter.ParsedFlags) {
+			if !slices.Equal(p.Extra, []string{"--effort", "high"}) || len(p.Prompt) != 0 {
 				t.Errorf("extra %v prompt %v", p.Extra, p.Prompt)
 			}
 		}},
@@ -69,56 +70,61 @@ func TestPassFlags(t *testing.T) {
 				t.Errorf("notes %v", p.Notes)
 			}
 		}},
-		{name: "sandbox one dash =true", args: []string{"-sandbox=true"}, check: func(t *testing.T, p adapter.ParsedFlags) {
+		{name: "sandbox =true", args: []string{"--sandbox=true"}, check: func(t *testing.T, p adapter.ParsedFlags) {
 			if len(p.Notes) != 1 {
 				t.Errorf("notes %v", p.Notes)
 			}
 		}},
+		// #141 review, L2: the note says the sandbox is on, so off is refused.
+		{name: "sandbox =false refused", args: []string{"--sandbox=false"}, refuses: "leave it out"},
+		{name: "sandbox =0 refused", args: []string{"--sandbox=0"}, refuses: "leave it out"},
 		{name: "first prompt -i", args: []string{"-i", "fix it"}, check: func(t *testing.T, p adapter.ParsedFlags) {
 			if len(p.Prompt) != 0 || !slices.Contains(p.Once, "-i") || len(p.Safe) != 0 {
 				t.Errorf("prompt %v once %v safe %v", p.Prompt, p.Once, p.Safe)
 			}
 		}},
-		{name: "first prompt --i=", args: []string{"--i=fix"}, check: func(t *testing.T, p adapter.ParsedFlags) {
+		{name: "first prompt -i=", args: []string{"-i=fix"}, check: func(t *testing.T, p adapter.ParsedFlags) {
 			if !slices.Contains(p.Once, "-i") {
 				t.Errorf("once %v", p.Once)
 			}
 		}},
-		{name: "mode plan", args: []string{"-mode", "plan"}},
+		{name: "first prompt --i refused", args: []string{"--i=fix"}, want: adapter.ErrNotChecked},
+		{name: "mode plan", args: []string{"--mode", "plan"}},
 		{name: "mode plan =", args: []string{"--mode=plan"}},
 		{name: "mode auto", args: []string{"--mode", "auto"}, want: adapter.ErrLoosens},
-		{name: "mode auto one dash =", args: []string{"-mode=auto"}, want: adapter.ErrLoosens},
-		{name: "mode accept-edits", args: []string{"-mode", "accept-edits"}, want: adapter.ErrLoosens},
+		{name: "mode auto =", args: []string{"--mode=auto"}, want: adapter.ErrLoosens},
+		{name: "mode auto one dash refused", args: []string{"-mode=auto"}, want: adapter.ErrNotChecked},
+		{name: "mode accept-edits", args: []string{"--mode", "accept-edits"}, want: adapter.ErrLoosens},
 		{name: "mode unknown", args: []string{"--mode=yolo"}, want: adapter.ErrLoosens},
 		{name: "skip permissions", args: []string{"--dangerously-skip-permissions"}, want: adapter.ErrLoosens},
-		{name: "skip permissions one dash", args: []string{"-dangerously-skip-permissions"}, want: adapter.ErrLoosens},
-		{name: "skip permissions =true", args: []string{"-dangerously-skip-permissions=true"}, want: adapter.ErrLoosens},
+		{name: "skip permissions one dash refused", args: []string{"-dangerously-skip-permissions"}, want: adapter.ErrNotChecked},
+		{name: "skip permissions =true", args: []string{"--dangerously-skip-permissions=true"}, want: adapter.ErrLoosens},
 		{name: "skip permissions =false", args: []string{"--dangerously-skip-permissions=false"}, want: adapter.ErrLoosens},
 		{name: "add-dir", args: []string{"--add-dir", "../other"}, want: adapter.ErrLoosens},
-		{name: "add-dir one dash =", args: []string{"-add-dir=../other"}, want: adapter.ErrLoosens},
+		{name: "add-dir =", args: []string{"--add-dir=../other"}, want: adapter.ErrLoosens},
 		{name: "print", args: []string{"-p"}, refuses: "on screen only"},
 		{name: "print long", args: []string{"--print"}, refuses: "on screen only"},
-		{name: "print one dash", args: []string{"-print"}, refuses: "on screen only"},
+
 		{name: "print =true", args: []string{"-p=true"}, refuses: "on screen only"},
-		{name: "prompt alias", args: []string{"-prompt", "x"}, refuses: "on screen only"},
-		{name: "output format", args: []string{"-output-format=json"}, refuses: "on screen only"},
+		{name: "prompt alias", args: []string{"--prompt", "x"}, refuses: "on screen only"},
+		{name: "output format", args: []string{"--output-format=json"}, refuses: "on screen only"},
 		{name: "input format", args: []string{"--input-format", "text"}, refuses: "on screen only"},
-		{name: "json schema", args: []string{"-json-schema={}"}, refuses: "on screen only"},
+		{name: "json schema", args: []string{"--json-schema={}"}, refuses: "on screen only"},
 		{name: "print timeout", args: []string{"--print-timeout=5"}, refuses: "on screen only"},
-		{name: "settings", args: []string{"-settings", "{}"}, refuses: "own --settings"},
+		{name: "settings", args: []string{"--settings", "{}"}, refuses: "own --settings"},
 		{name: "settings =", args: []string{"--settings={}"}, refuses: "own --settings"},
-		{name: "remote control", args: []string{"-remote-control"}, refuses: "does not supervise"},
+		{name: "remote control", args: []string{"--remote-control"}, refuses: "does not supervise"},
 		{name: "remote agent", args: []string{"--remote-agent=x"}, refuses: "does not supervise"},
-		{name: "project", args: []string{"-project", "x"}, refuses: "changes what aggy starts"},
+		{name: "project", args: []string{"--project", "x"}, refuses: "changes what aggy starts"},
 		{name: "new project", args: []string{"--new-project=x"}, refuses: "changes what aggy starts"},
-		{name: "agent", args: []string{"-agent", "x"}, refuses: "changes what aggy starts"},
-		{name: "log file", args: []string{"-log-file=/tmp/x"}, refuses: "log"},
-		{name: "slash commands", args: []string{"-disable-slash-commands"}, refuses: "/exit"},
+		{name: "agent", args: []string{"--agent", "x"}, refuses: "changes what aggy starts"},
+		{name: "log file", args: []string{"--log-file=/tmp/x"}, refuses: "log"},
+		{name: "slash commands", args: []string{"--disable-slash-commands"}, refuses: "/exit"},
 		{name: "unknown flag", args: []string{"--no-such-flag"}, want: adapter.ErrNotChecked},
 		{name: "unknown flag one dash", args: []string{"-yolo"}, want: adapter.ErrNotChecked},
 		{name: "three dashes", args: []string{"---model=x"}, want: adapter.ErrNotChecked},
 		{name: "subcommand word", args: []string{"models"}, want: adapter.ErrNotFlag},
-		{name: "subcommand after flag", args: []string{"-effort", "high", "update"}, want: adapter.ErrNotFlag},
+		{name: "subcommand after flag", args: []string{"--effort", "high", "update"}, want: adapter.ErrNotFlag},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -150,8 +156,8 @@ func TestLoosenAsked(t *testing.T) {
 		args    []string
 		allowed string
 	}{
-		{[]string{"-dangerously-skip-permissions"}, "--dangerously-skip-permissions"},
-		{[]string{"-mode=auto"}, "--mode auto"},
+		{[]string{"--dangerously-skip-permissions"}, "--dangerously-skip-permissions"},
+		{[]string{"--mode=auto"}, "--mode auto"},
 		{[]string{"--add-dir", "../x"}, "--add-dir"},
 	} {
 		_, err := pf.Parse(tt.args, false)
@@ -172,17 +178,20 @@ func TestLoosenAsked(t *testing.T) {
 // launch), and --version or -version alone runs bare.
 func TestModes(t *testing.T) {
 	pf := New().PassFlags()
-	for _, a := range [][]string{{"-p"}, {"--print"}, {"-print=true"}, {"-prompt", "x"}, {"--output-format=json"}} {
+	for _, a := range [][]string{{"-p"}, {"--print"}, {"--print=true"}, {"-p=true"}, {"--prompt", "x"}, {"--output-format=json"}} {
 		if pf.Mode(a) != adapter.RunPrint {
 			t.Errorf("Mode(%v) = %v, want print", a, pf.Mode(a))
 		}
 	}
-	for _, a := range [][]string{{"--version"}, {"-version"}, {"-h"}, {"--help"}} {
+	for _, a := range [][]string{{"--version"}, {"-h"}, {"--help"}} {
 		if pf.Mode(a) != adapter.RunBare {
 			t.Errorf("Mode(%v) = %v, want bare", a, pf.Mode(a))
 		}
 	}
-	if pf.Mode([]string{"-version", "-c"}) == adapter.RunBare {
+	if pf.Mode([]string{"-version"}) == adapter.RunBare {
+		t.Error("-version, not the canonical spelling, ran bare")
+	}
+	if pf.Mode([]string{"--version", "-c"}) == adapter.RunBare {
 		t.Error("a version flag with another word ran bare")
 	}
 }
@@ -222,8 +231,8 @@ func TestInteractive(t *testing.T) {
 		{"new", adapter.InteractiveRequest{Cwd: "/r"}, []string{"--settings", "/run/x/antigravity-settings.json"}, false},
 		{"resume", adapter.InteractiveRequest{Cwd: "/r", Resume: id, Model: "m"},
 			[]string{"--settings", "/run/x/antigravity-settings.json", "--conversation=" + id, "--model", "m"}, false},
-		{"brief", adapter.InteractiveRequest{Cwd: "/r", BriefFile: "/r/.aggy/briefs/c.md", Extra: []string{"-effort", "high"}},
-			[]string{"--settings", "/run/x/antigravity-settings.json", "-effort", "high", "-i", adapter.BriefPrompt("/r/.aggy/briefs/c.md")}, false},
+		{"brief", adapter.InteractiveRequest{Cwd: "/r", BriefFile: "/r/.aggy/briefs/c.md", Extra: []string{"--effort", "high"}},
+			[]string{"--settings", "/run/x/antigravity-settings.json", "--effort", "high", "-i", adapter.BriefPrompt("/r/.aggy/briefs/c.md")}, false},
 		{"session id", adapter.InteractiveRequest{Cwd: "/r", SessionID: id}, nil, true},
 		{"print", adapter.InteractiveRequest{Cwd: "/r", Print: true}, nil, true},
 		{"fork", adapter.InteractiveRequest{Cwd: "/r", Resume: id, Fork: true}, nil, true},
@@ -340,6 +349,32 @@ func TestHooksFile(t *testing.T) {
 		}
 		if strings.Contains(src, "mine") && !strings.Contains(string(back), "mine") {
 			t.Errorf("their entry is gone: %s", back)
+		}
+	}
+	// #141 review, L6: every byte outside aggy's entry comes back, the space
+	// inside empty braces included.
+	for _, src := range []string{"{\n\n   \n}\n", "{}", "{ }", "\n{\t}\n\n", theirs, "{\"a\": 1 ,\n\n \"b\" : [ ]\n}"} {
+		out, err := SetHooks([]byte(src), entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if back, err := StripHooks(out); err != nil || string(back) != src {
+			t.Errorf("round trip of %q gave %q, %v", src, back, err)
+		}
+	}
+	if f, err := ForeignEntry([]byte(theirs)); err != nil || f {
+		t.Errorf("no aggy entry: foreign %v %v", f, err)
+	}
+	if mine, _ := SetHooks([]byte(theirs), entry); func() bool { f, _ := ForeignEntry(mine); return f }() {
+		t.Error("aggy's own entry read as foreign")
+	}
+	other, _ := Entry("/opt/aggy/bin/aggy")
+	if moved, _ := SetHooks([]byte(theirs), other); func() bool { f, _ := ForeignEntry(moved); return f }() {
+		t.Error("aggy's entry from another aggy path read as foreign")
+	}
+	for _, f := range []string{`{"aggy": {"Stop": []}}`, `{"aggy": 1}`, `{"aggy": {"SessionStart": [{"type":"command","command":"/x/aggy hook antigravity --event SessionStart","timeout":5}]}}`} {
+		if foreign, _ := ForeignEntry([]byte(f)); !foreign {
+			t.Errorf("%s not foreign", f)
 		}
 	}
 	for _, bad := range []string{"[]", "not json", `{"a":1} x`, `{"aggy":{},"aggy":{}}`, `{"a":`} {

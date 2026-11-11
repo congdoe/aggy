@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,5 +81,37 @@ func TestAntigravityHooksUndo(t *testing.T) {
 				t.Errorf("after undo:\n%s\nwant:\n%s", b, want)
 			}
 		})
+	}
+}
+
+// TestAntigravityHooksUndoRefusesLink (#141 review, M1): once .agents is a
+// link, aggy unwire refuses to touch the file it leads to.
+func TestAntigravityHooksUndoRefusesLink(t *testing.T) {
+	ctx := context.Background()
+	entry, err := antigravity.Entry("/bin/aggy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := setup(t)
+	file := filepath.Join(f.dir, ".agents", "hooks.json")
+	c, err := f.m.Apply(ctx, NewRunID(), patch.Patch{File: file, ExpectedHash: patch.NoFile, Mode: 0o644, Reverse: antigravity.Reverse,
+		Transform: func([]byte) ([]byte, error) { return antigravity.SetHooks(nil, entry) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The real folder moves elsewhere, and .agents becomes a link to it.
+	outside := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.Rename(filepath.Dir(file), outside); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Dir(file)); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(filepath.Join(outside, "hooks.json"))
+	if err := f.m.Revert(ctx, c.ChangeID); err == nil || !errors.Is(err, antigravity.ErrHooksPath) {
+		t.Fatalf("Revert = %v", err)
+	}
+	if after, _ := os.ReadFile(filepath.Join(outside, "hooks.json")); string(after) != string(before) {
+		t.Errorf("the file behind the link changed:\n%s", after)
 	}
 }

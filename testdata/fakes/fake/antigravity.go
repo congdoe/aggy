@@ -526,8 +526,17 @@ func (a *agyFake) ruleFor(c AgyToolCall) string {
 		action = "write_file"
 		target, _ = args["TargetFile"].(string)
 	}
+	// The person's own settings.json, where agy persists an "always allow"
+	// (Google's docs), adds its rules to --settings's.
+	var saved map[string]any
+	if b, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".gemini", "antigravity-cli", "settings.json")); err == nil {
+		_ = json.Unmarshal(b, &saved)
+	}
+	savedPerms, _ := saved["permissions"].(map[string]any)
 	for _, kind := range []string{"deny", "ask", "allow"} {
 		list, _ := perms[kind].([]any)
+		more, _ := savedPerms[kind].([]any)
+		list = append(list, more...)
 		for _, r := range list {
 			s, _ := r.(string)
 			act, spec, ok := strings.Cut(strings.TrimSuffix(s, ")"), "(")

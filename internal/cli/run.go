@@ -978,6 +978,9 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		if n := agyExitNote(ex.Code, agySeen.Load() || facts.TurnRan); n != "" {
 			fmt.Fprintf(stderr, "%s: %s %s\n", name, n, dlog.Tag(diag.CodeAgySettings))
 		}
+		if n := agyExitCheck(pl.child.Cwd); n != "" {
+			fmt.Fprintf(stderr, "%s: %s %s\n", name, n, dlog.Tag(diag.CodeAgyHooksChanged))
+		}
 	}
 	if ex.SwitchTo != "" {
 		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next, child: pl.child.ID, from: v, fromID: cids.current(), origin: facts.SwitchOrigin}
