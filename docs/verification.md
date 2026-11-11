@@ -2236,6 +2236,8 @@ Live checks owed (owner, at a terminal, on a throwaway keychain item):
 - macOS (#138 review): whether `security add-generic-password -U` on an item that exists keeps its old trusted-application list. On a throwaway item under another service: add it without `-T` (so `security` is trusted), then run `-U ... -T "" -w`, and see in Keychain Access whether `security` is still listed. aggy does not pass `-U` either way; this records whether the reason holds.
 - macOS (#138 review): an item planted under `aggy-key` with `security` trusted, then `aggy key add`: aggy names it as not recorded, asks, deletes it, and the new item's list is empty. `secret-tool clear` with nothing matching exits 0 (Linux).
 - macOS: the line `macOS will now ask to let aggy read key <account>.` appears just before the dialog at `aggy run opencode`; a ^C during `aggy key add`'s prompt leaves the terminal echoing.
+- macOS (#138 re-review): on an item added with `-T ""`, whether `security find-generic-password -s aggy-key -a <account>` (no `-w`, as `aggy key add` and `aggy key list` run it) and `security delete-generic-password` each show a dialog.
+- macOS (#138 re-review): a launch planned again because another aggy took the session (`errAdoptedElsewhere`) reads the key again, so it shows a second dialog; check that it does, and that the first launch's folder is gone.
 - Linux (GNOME Keyring or KeePassXC): the same with `secret-tool`, including what a locked collection does at add and at launch.
 - A real OpenCode at the tested version: an `anthropic` key from `aggy key` reaches a real request (one minimal turn), and the key file is gone once OpenCode exits.
 - Which key OpenCode uses when the person also signed in to the same provider inside OpenCode.

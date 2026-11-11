@@ -34,8 +34,10 @@ func TestKeyFileAsks(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("HOME", base)
 	p := plan()
 	p.Root, p.Protected = root, []string{state}
+	keyRel := "/.aggy/run/p.1234abcd.memory/opencode/keys/anthropic"
 	cases := []struct {
 		name string
 		call parity.Call
@@ -54,6 +56,19 @@ func TestKeyFileAsks(t *testing.T) {
 		{"shell globs aggy's folder", parity.Call{Kind: parity.CallShell, Text: "cat ~/.aggy/r*/*/opencode/k*/*"}, true},
 		{"shell globs $AGGY_HOME", parity.Call{Kind: parity.CallShell, Text: `head "$AGGY_HOME"/r?n/*/*/*/*`}, true},
 		{"shell glob in the repo", parity.Call{Kind: parity.CallShell, Text: "ls src/*.go"}, false},
+		// #138 re-review L2: ~/ and $HOME/ are the home, not the repo.
+		{"read the key by ~/", parity.Call{Kind: parity.CallRead, Text: "~" + keyRel}, true},
+		{"read the key by $HOME/", parity.Call{Kind: parity.CallRead, Text: "$HOME" + keyRel}, true},
+		{"read a repo file by ~/", parity.Call{Kind: parity.CallRead, Text: "~/notes.md"}, false},
+		// #138 re-review L1: the repo's own .aggy folder with a glob does
+		// not ask; the state folder does.
+		{"repo .aggy listed", parity.Call{Kind: parity.CallShell, Text: "ls .aggy/*"}, false},
+		{"repo briefs", parity.Call{Kind: parity.CallShell, Text: "cat .aggy/briefs/*.md"}, false},
+		{"git add beside a glob", parity.Call{Kind: parity.CallShell, Text: "git add .aggy/memory.md docs/*.md"}, false},
+		{"test bracket", parity.Call{Kind: parity.CallShell, Text: "[ -f .aggy/memory.md ] && echo ok"}, false},
+		{"shell globs $HOME/.aggy", parity.Call{Kind: parity.CallShell, Text: "ls $HOME/.aggy/r*"}, true},
+		{"shell globs ${AGGY_HOME}", parity.Call{Kind: parity.CallShell, Text: "cat ${AGGY_HOME}/*/*"}, true},
+		{"shell globs the state path", parity.Call{Kind: parity.CallShell, Text: "cat " + state + "/r*/*/*/*/*"}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
