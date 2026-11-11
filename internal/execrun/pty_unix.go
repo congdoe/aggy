@@ -166,7 +166,7 @@ func staleProxyURL(k, v string) bool {
 	proxies.Lock()
 	defer proxies.Unlock()
 	for p := range proxies.m {
-		if p.spec.Var == k && p.url == v && !p.Exited() {
+		if p.spec.Var == k && p.url == v && p.running() {
 			return false
 		}
 	}

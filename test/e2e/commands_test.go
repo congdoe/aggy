@@ -65,17 +65,44 @@ func waitStops(t *testing.T, log string, n int) {
 	}
 }
 
+// waitTurnEnds waits until the supervisor's loop has counted n turn ends of
+// the CLI on screen, by its diagnostic records: the hooks log sees a Stop
+// before the supervisor does.
+func waitTurnEnds(t *testing.T, w *world, n int) {
+	t.Helper()
+	got := 0
+	for end := time.Now().Add(offerTimeout); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		code, out := w.aggyCode(t, "diag", "export", "--jsonl", "--event", "hook.event.accepted")
+		if code != 0 {
+			t.Fatalf("aggy diag export: exit %d\n%s", code, out)
+		}
+		got = strings.Count(out, `"counted":true`)
+		if got >= n {
+			return
+		}
+	}
+	t.Fatalf("turn ends counted = %d, want %d", got, n)
+}
+
 // TestTypedSwitchCaught (T6908): /switch grok typed in full at Claude's prompt
 // never reaches the CLI (no turn, no Stop), and a caught command started no
 // turn, so nothing waits for a turn end: the status line asks at once (R121:
 // Ctrl+U clearing Claude's composer is not recorded live, so it still asks).
+//
+// It waits on events, not durations (it failed once under load): the hooks
+// log counts a Stop before aggy hook sends it, so the test also waits until
+// the supervisor's loop has counted both turn ends; and the Enter is sent
+// only once the CLI has echoed the whole line, so the supervisor has read
+// every key and the Enter comes alone in its read, as catchCommand requires.
 func TestTypedSwitchCaught(t *testing.T) {
 	w, sc, log := commandWorld(t)
 	s := w.start(t, sc, "run", "claude")
 	s.waitWithin([]byte("READY>"), offerTimeout)
 	s.send([]byte("work\r"))
 	waitStops(t, log, 2) // the launch's and the turn's
+	waitTurnEnds(t, w, 2)
 	s.typeSlowly("/switch grok")
+	s.waitWithin([]byte("/switch grok"), offerTimeout)
 	s.send([]byte("\r"))
 	s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
 	s.confirmPastGuard(time.Now())

@@ -26,7 +26,7 @@ deny) echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecis
 big) printf '{"hookSpecificOutput":{"permissionDecisionReason":"'; /usr/bin/head -c 70000 /dev/zero | /usr/bin/tr '\0' a; echo '"}}' ;;
 bad) echo 'not json' ;;
 fail) echo '{"hookSpecificOutput":{"permissionDecision":"deny"}}'; exit 1 ;;
-slow) /bin/sleep 5; echo '{"hookSpecificOutput":{"permissionDecision":"deny"}}' ;;
+slow) /bin/sleep 600; echo '{"hookSpecificOutput":{"permissionDecision":"deny"}}' ;;
 dnt) echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"dnt='"$DO_NOT_TRACK"'"}}' ;;
 env) echo '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"home='"$CLAUDE_CONFIG_DIR$CODEX_HOME$GROK_HOME"'"}}' ;;
 esac
@@ -36,6 +36,11 @@ esac
 // through the filter: an allow is stripped, a deny passes, and too big,
 // invalid, failed, or slow output passes nothing; a changed definition
 // runs nothing.
+//
+// The hooks that answer get a timeout far beyond any load (a 1 s one
+// timed out in loaded full runs, so their output came back empty); only the
+// slow hook gets 1 s, and it sleeps far past the test's own bound, so it
+// passes nothing whatever the machine's speed.
 func TestHookTool(t *testing.T) {
 	isolate(t)
 	t.Setenv("PATH", "/usr/bin:/bin") // hook-tool rewrites it
@@ -45,7 +50,11 @@ func TestHookTool(t *testing.T) {
 	t.Setenv("CODEX_HOME", "/codex-home")
 	rewrites := true
 	tool := func(arg string) tooldef.Tool {
-		h := tooldef.Hook{Vendors: []adapter.Vendor{adapter.Claude}, Event: "PreToolUse", Decides: true, Timeout: 1,
+		timeout := 300
+		if arg == "slow" {
+			timeout = 1
+		}
+		h := tooldef.Hook{Vendors: []adapter.Vendor{adapter.Claude}, Event: "PreToolUse", Decides: true, Timeout: timeout,
 			Argv: []string{prog, arg}}
 		if rewrites {
 			h.Rewrites, h.RewritePrefix = true, "rtk "
@@ -99,7 +108,8 @@ func TestHookTool(t *testing.T) {
 	}
 	rewrites = true
 	start := time.Now()
-	if got := run("slow"); got != "" || time.Since(start) > 4*time.Second {
+	// The timeout killed it: it would have slept 600 s.
+	if got := run("slow"); got != "" || time.Since(start) > 120*time.Second {
 		t.Errorf("slow: %q after %s", got, time.Since(start))
 	}
 	// Another digest, hook index, or vendor runs nothing.
