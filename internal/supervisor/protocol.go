@@ -26,6 +26,12 @@ const (
 	// takes it. It must come from the session, and the supervisor parses
 	// the line again and never takes a keyboard-only command from it.
 	ReqPromptCommand = "prompt-command"
+	// ReqHermesPin asks the supervisor of a Hermes launch, with the launch's
+	// token, whether a session id is its session, and for the decision plan's
+	// path, SHA-256, and whether the policy is off (#134 review): the pin
+	// lives in the supervisor's memory, never only in the index a tool can
+	// write. Its payload is {"session_id": ...}.
+	ReqHermesPin = "hermes-pin"
 )
 
 // Request is one message to the supervisor.
@@ -74,4 +80,9 @@ type Response struct {
 	// can print and record it too. The sender looks it up in the
 	// registry and never trusts it further.
 	Code string `json:"code,omitempty"`
+	// Plan, PlanSum, and NoPolicy answer a hermes-pin: the launch's decision
+	// plan and its SHA-256, or NoPolicy for a launch with --no-policy.
+	Plan     string `json:"plan,omitempty"`
+	PlanSum  string `json:"plan_sum,omitempty"`
+	NoPolicy bool   `json:"no_policy,omitempty"`
 }

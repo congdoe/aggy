@@ -69,7 +69,10 @@ type Server struct {
 	// (SetLog); it must not block. Guarded by mu.
 	log func(diag.Rec)
 	// token is the Hermes launch token (SetToken). Guarded by mu.
-	token  string
+	token string
+	// onPin answers a hermes-pin that carries the token (SetHermesPin); nil
+	// refuses them. Guarded by mu.
+	onPin  func(sessionID string) Response
 	wg     sync.WaitGroup
 	once   sync.Once
 	mu     sync.Mutex
@@ -177,6 +180,15 @@ func (s *Server) SetToken(t string) {
 	s.token = t
 }
 
+// SetHermesPin sets what answers a hermes-pin carrying the launch's token
+// (#134 review). It runs on the connection's goroutine and must be quick and
+// safe for concurrent use.
+func (s *Server) SetHermesPin(f func(sessionID string) Response) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onPin = f
+}
+
 // hermesToken reports a Hermes hook-event line carrying token, compared in
 // constant time. A line that is not one, or an empty token, is false.
 func hermesToken(line []byte, token string) bool {
@@ -186,7 +198,7 @@ func hermesToken(line []byte, token string) bool {
 	var r struct {
 		Type, Vendor, Token string
 	}
-	if json.Unmarshal(line, &r) != nil || r.Type != ReqHookEvent || r.Vendor != string(adapter.Hermes) {
+	if json.Unmarshal(line, &r) != nil || r.Type != ReqHookEvent && r.Type != ReqHermesPin || r.Vendor != string(adapter.Hermes) {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(r.Token), []byte(token)) == 1
@@ -466,8 +478,12 @@ func (s *Server) serve(c *net.UnixConn) {
 			return // closed, idle, or a last line without a newline
 		}
 		s.mu.Lock()
-		onSwitch, onTools, log, token := s.onSwitch, s.onTools, s.log, s.token
+		onSwitch, onTools, log, token, onPin := s.onSwitch, s.onTools, s.log, s.token, s.onPin
 		s.mu.Unlock()
+		if resp, ok := hermesPin(line[:len(line)-1], token, onPin); ok {
+			reply(c, resp)
+			return
+		}
 		// A Hermes hook-event with the launch's token counts as the session's
 		// (T6933): Hermes' hooks run in its daemon, so no lineage leads to the
 		// CLI. It is the same hint a lineage gives: a switch still asks.

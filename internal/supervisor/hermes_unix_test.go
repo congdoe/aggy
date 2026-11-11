@@ -62,3 +62,55 @@ func TestHermesToken(t *testing.T) {
 		t.Error("an empty token matched")
 	}
 }
+
+// TestHermesPin (#134 review): the decision plan's pin and the launch's
+// session live in the supervisor. Only a hermes-pin with the token is
+// answered; a new session claims the launch only after its first turn was
+// sent from the terminal, and no other session is ever answered.
+func TestHermesPin(t *testing.T) {
+	const tok = "0123456789abcdef0123456789abcdef"
+	const a, b = "local-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "20261110_101500_a1b2c3"
+	run := filepath.Join(shortDir(t), "run")
+	s, err := Listen(run, pid, nil, func(Request) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	s.SetRoot(1 << 30)
+	s.SetToken(tok)
+	claim := NewHermesClaim(HermesPin{Plan: "/plan", PlanSum: "sum"})
+	s.SetHermesPin(claim.Answer)
+	pin := func(id, token string) string {
+		return ask(t, s, `{"type":"hermes-pin","vendor":"hermes","payload":{"session_id":"`+id+`"},"token":"`+token+`"}`+"\n")
+	}
+	if r := pin(a, tok); !strings.Contains(r, "hermes.no_launch") {
+		t.Fatalf("before the first turn: %q", r)
+	}
+	claim.Entered()
+	if r := pin(a, tok[1:]+"0"); strings.Contains(r, `"ok":true`) || strings.Contains(r, "sum") {
+		t.Fatalf("another token: %q", r)
+	}
+	if r := pin(a, tok); !strings.Contains(r, `"ok":true`) || !strings.Contains(r, `"plan_sum":"sum"`) {
+		t.Fatalf("first session: %q", r)
+	}
+	if r := pin(b, tok); !strings.Contains(r, "hermes.no_launch") {
+		t.Fatalf("a second session: %q", r)
+	}
+	if r := pin(a, tok); !strings.Contains(r, `"ok":true`) {
+		t.Fatalf("the launch's session again: %q", r)
+	}
+	if r := pin("../x", tok); strings.Contains(r, `"ok":true`) {
+		t.Fatalf("a bad id: %q", r)
+	}
+	if claim.Claimed() != a {
+		t.Fatalf("claimed %q", claim.Claimed())
+	}
+	// A resume knows its session up front, and takes no other.
+	r := NewHermesClaim(HermesPin{Session: b, NoPolicy: true})
+	if got := r.Answer(b); !got.OK || !got.NoPolicy {
+		t.Fatalf("resume: %+v", got)
+	}
+	if got := r.Answer(a); got.OK {
+		t.Fatalf("resume took another session: %+v", got)
+	}
+}

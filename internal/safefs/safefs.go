@@ -165,9 +165,27 @@ var hermesEntries = []string{
 // ~/.hermes for each home (hermes_constants.py:57-64, 190-197 at v0.23.1),
 // with $HERMES_DATA_DIR_SUFFIX when it is a plain name. Each root's profiles
 // are under profiles/<name> (hermes_cli/profiles.py:442-455).
+// HermesSuffixOK says s may follow ".hermes" in a home folder's name: empty, or
+// a plain name (no separator, NUL, or control character, and not . or ..).
+// aggy's Hermes root and the deny list share it (#134 review).
+func HermesSuffixOK(s string) bool {
+	if s == "" {
+		return true
+	}
+	if s == "." || s == ".." || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		if r == '/' || r == '\\' || r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 func hermesRoots(homes []string) ([]string, error) {
 	suffix := os.Getenv("HERMES_DATA_DIR_SUFFIX")
-	if strings.ContainsAny(suffix, `/\`) || suffix == "." || suffix == ".." {
+	if !HermesSuffixOK(suffix) {
 		suffix = ""
 	}
 	var roots []string

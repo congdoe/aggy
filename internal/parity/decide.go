@@ -70,6 +70,7 @@ const (
 	ReasonPlanChanged  Reason = "plan-changed"  // the launch's plan is missing, unreadable, or not what the launch wrote: asked
 	ReasonOtherTool    Reason = "other-tool"    // pre-approved text from a tool the pre-approval is not for: no opinion
 	ReasonOutside      Reason = "outside"       // an OpenCode read of a path outside the launch's root: asked (T6979)
+	ReasonUnjudged     Reason = "unjudged"      // a Hermes tool that runs code and matched nothing, or one aggy has not classified: asked (#134 review)
 )
 
 // MaxCallText caps what the matcher scans of one call. A longer one asks at

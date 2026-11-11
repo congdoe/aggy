@@ -68,6 +68,7 @@ var decideCodes = map[parity.Reason]diag.Code{
 	parity.ReasonOtherTool:    diag.CodeDecideOtherTool,
 	parity.ReasonPlanChanged:  diag.CodeDecidePlanChanged,
 	parity.ReasonOutside:      diag.CodeDecideOutside,
+	parity.ReasonUnjudged:     diag.CodeDecideUnjudged,
 }
 
 // hookDecide is aggy hook decide. On Claude it prints a PreToolUse decision,

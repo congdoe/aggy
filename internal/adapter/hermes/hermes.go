@@ -94,6 +94,14 @@ func (Adapter) PassFlags() adapter.PassFlags {
 		// The subcommands `hermes --help` lists (LIVE).
 		Commands: []string{"chat", "model", "auth", "config", "profile", "sessions", "hooks", "gateway"},
 		Effect:   loosenEffect,
+		// Hermes' parser takes abbreviations (argparse allow_abbrev,
+		// hermes_cli/_parser.py:354-397; LIVE: `hermes chat --yol`, `--api-ke
+		// x`, `--accept-hook`, `--safe-mod`, and `--onesho` were each taken),
+		// so on screen aggy passes only these spellings, in full (the flags of
+		// _parser.py:144-212, :264-319 that aggy neither takes over nor
+		// refuses), and refuses any other dash-led word.
+		Only: []string{"--provider", "--reasoning", "-t", "--toolsets", "-s", "--skills", "--max-turns", "--run-budget",
+			"--cpu-profile", "--checkpoints", "-v", "--verbose", "--version", "-V", "-h", "--help"},
 	}
 }
 
@@ -263,6 +271,21 @@ func ProfileCreateCommand(path, name string) (adapter.Command, error) {
 	}
 	return adapter.Command{Path: path, Args: []string{"profile", "create", name, "--no-alias", "--no-skills"}}, nil
 }
+
+// ProfileDeleteCommand builds `hermes profile delete <name> --yes`, for aggy
+// unwire to remove a profile aggy made (LIVE: it removed the profile;
+// hermes_cli/profiles.py). Only a name aggy makes: never the default.
+func ProfileDeleteCommand(path, name string) (adapter.Command, error) {
+	if !ValidProfile(name) {
+		return adapter.Command{}, fmt.Errorf("hermes: %q is not a profile aggy makes", name)
+	}
+	return adapter.Command{Path: path, Args: []string{"profile", "delete", name, "--yes"}}, nil
+}
+
+// ProfileReverse names, on a marker row in aggy's changes, a Hermes profile
+// aggy made with hermes profile create, which aggy unwire deletes (#134
+// review). The row's file is the profile's folder.
+const ProfileReverse = "hermes-profile"
 
 // ConfigGetCommand builds `hermes [-p <profile>] config get <key> --json`
 // (hermes_cli/subcommands/config.py:20-25; hermes_cli/config.py:3450-3483:

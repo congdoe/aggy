@@ -70,7 +70,17 @@ type PassFlags struct {
 	// aggy asks before letting it through (T6979). nil, or "", is the
 	// generic line: aggy has not checked.
 	Effect func(flag string) string
+	// Only, when set, are the exact spellings of the CLI's own flags that may
+	// pass on screen, besides Model, Continue, Resume, and Refused (which keep
+	// their own handling): any other dash-led word is refused (ErrNotListed).
+	// For a CLI whose parser expands abbreviations (Python's argparse, with
+	// allow_abbrev), where --yol is --yolo and --api-ke=x is --api-key=x, so no
+	// list of refused names can be complete (#134 review).
+	Only []string
 }
+
+// ErrNotListed matches a flag that is not one of PassFlags.Only.
+var ErrNotListed = errors.New("aggy passes only the flags it lists for this CLI, written in full: the CLI expands abbreviations, so an unlisted spelling could be a flag aggy refuses")
 
 // LoosenEffect is p's line for a loosening flag: its Effect, or the generic
 // one.
@@ -562,6 +572,48 @@ func (p PassFlags) split(a string) (name, val string, hasVal bool) {
 	return a, "", false
 }
 
+// listed refuses, where Only is set and the run is on screen, a flag that is
+// neither in Only nor a Refused spelling (which keeps its own reason). The
+// error names the flag without its value: --api-ke=sk-x is --api-ke, and a
+// short word with letters run on, which may be a value (-psk-x), only its
+// first letter.
+func (p PassFlags) listed(name string, o ParseOpts) error {
+	if len(p.Only) == 0 || o.Print || slices.Contains(p.Only, name) || p.refusedName(name) {
+		return nil
+	}
+	shown := name
+	if !strings.HasPrefix(name, "--") && len(name) > 2 {
+		shown = name[:2] + "..."
+	}
+	if strings.HasPrefix(name, "--") {
+		for _, r := range p.Refused {
+			for _, n := range r.Names {
+				if strings.HasPrefix(n, name) && n != name {
+					return fmt.Errorf("%s (perhaps %s, abbreviated): %w", shown, n, ErrNotListed)
+				}
+			}
+		}
+	}
+	return fmt.Errorf("%s: %w", shown, ErrNotListed)
+}
+
+// abbreviatesLoosening reports, for a CLI with Only set, a long flag that is a
+// strict prefix of a refused flag that loosens (--yol for --yolo): its parser
+// would expand it.
+func (p PassFlags) abbreviatesLoosening(name string) bool {
+	if len(p.Only) == 0 || !strings.HasPrefix(name, "--") || len(name) < 3 {
+		return false
+	}
+	return slices.ContainsFunc(p.Refused, func(r RefusedFlag) bool {
+		return r.UnlessNoPolicy && slices.ContainsFunc(r.Names, func(n string) bool { return n != name && strings.HasPrefix(n, name) })
+	})
+}
+
+// refusedName reports a spelling one of Refused names exactly.
+func (p PassFlags) refusedName(name string) bool {
+	return slices.ContainsFunc(p.Refused, func(r RefusedFlag) bool { return slices.Contains(r.Names, name) })
+}
+
 // checked finds name's CheckedFlag.
 func (p PassFlags) checked(name string) (CheckedFlag, bool) {
 	for _, c := range p.Checked {
@@ -583,6 +635,9 @@ func (p PassFlags) checkPassed(args []string, i *int, name, val string, hasVal b
 		if f, ok := LoosenedFlag(err); ok && slices.Contains(o.Allowed, f) {
 			return true, nil
 		}
+		return false, err
+	}
+	if err := p.listed(name, o); err != nil {
 		return false, err
 	}
 	if c, ok := p.checked(name); ok {
@@ -652,7 +707,7 @@ func (p PassFlags) Gated(words []string, extra ...string) error {
 			continue
 		}
 		name, val, hasVal := p.split(a)
-		if slices.Contains(extra, name) {
+		if slices.Contains(extra, name) || p.abbreviatesLoosening(name) {
 			return fmt.Errorf("%s: %w", name, ErrSubcommandGated)
 		}
 		if _, err := p.checkPassed(words, &i, name, val, hasVal, ParseOpts{Print: true}); errors.Is(err, ErrLoosens) || err != nil && p.isChecked(name) {

@@ -269,6 +269,7 @@ var (
 	CodeDecidePlanChanged = Code{"decision.plan_changed"}
 	CodeDecideProtected   = Code{"decision.protected_path"}
 	CodeDecideOutside     = Code{"decision.outside_repo"}
+	CodeDecideUnjudged    = Code{"decision.unjudged_tool"}
 	CodeDecideTooLong     = Code{"decision.call_too_long"}
 	CodeDecideOtherTool   = Code{"decision.other_tool"}
 	CodeDecideFallback    = Code{"decision.fallback"}
@@ -511,6 +512,7 @@ var codes = []CodeInfo{
 	{CodeDecidePlanChanged, false, "The launch's decision plan no longer matched the SHA-256 the launch put in the hook's command: something changed it during the session, so the hook asked about the call (or refused it where no prompt can show) and never allowed it.", "Quit and start the session again; if it happens again, look for what in the session writes to aggy's run folder."},
 	{CodeDecideProtected, false, "The call writes, or a shell command names, aggy's own files (its run folder, the decision plan, its permissions file) or a Claude settings file, so the hook asked about it, whatever else it matched.", "Approve it at the prompt if you meant it."},
 	{CodeDecideOutside, false, "An OpenCode read named a file outside the launch's repo, so the hook asked about it (T6979); aggy's guard then lets that one read through only if the prompt was answered and the path is the file itself with no link on the way. Vendor credential files, aggy's own state, links, and .env are refused whatever is answered; a private key file asks each time.", "Approve it at the prompt if you meant it, or copy the file into the repo."},
+	{CodeDecideUnjudged, false, "On Hermes, a tool that runs code (execute_code, browser_exec, typed stdin to a background process) matched no rule, or a tool aggy has not classified as read-only (an MCP tool, cron, delegation, skills, memory) was called; Hermes asks nothing before these, so aggy's hook asked (#134 review).", "Approve it at Hermes' prompt if you meant it, or do that step another way."},
 	{CodeDecideOtherTool, false, "A tool other than the shell or Claude's own file tools (an MCP tool, say) carried text you pre-approved; a pre-approval is not for that tool, so the hook gave no opinion and the CLI's own permission flow decided.", "Nothing; approve it at the CLI's prompt if it asks."},
 	{CodeDecideTooLong, false, "The call's command or path was longer than the hook scans (64 KiB), so it asked at once rather than judge it.", "Approve it at the prompt, or run it as a script file."},
 	{CodeDecideFallback, false, "aggy's policy decision hook failed or was missing, so its wrapper asked about the call (or refused it where no prompt can show) without judging it.", "aggy doctor for failures by CLI version; check that aggy is still installed at the path the launch used."},

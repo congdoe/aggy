@@ -8,45 +8,72 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/congdoe/aggy/internal/parity"
+	"github.com/congdoe/aggy/internal/safefs"
 )
 
 // Hermes Agent's pre_tool_call, at v0.23.1. The payload is
 // {hook_event_name, tool_name, tool_input, session_id, cwd, profile, extra}
-// (agent/shell_hooks.py:87-107, :626-628; live, docs/verification.md). cwd
-// is the gateway daemon's folder, never the session's, and extra may hold the
-// conversation: neither is read here.
+// (agent/shell_hooks.py:87-107, :626-628; LIVE). cwd is the gateway daemon's
+// folder, never the session's, and extra may hold the conversation: neither is
+// read here.
 //
-// Every tool goes through the hook, not only terminal: live (T6933,
-// 2026-11-11) read_file, write_file, and search_files did, and write_file
-// wrote with no approval prompt under approvals.mode manual. Hermes'
-// approvals cover terminal commands (and execute_code, below) only, so for
-// the file tools this hook is the only check. The tools judged by name, with
-// the input each takes (tools/terminal_tool.py:1750-1758,
-// tools/file_tools.py:1152-1435; the shapes live): terminal {command};
-// read_file {path}; write_file {path, content}; patch {path, ...};
-// search_files {path, pattern}. The rest of the registry, at v0.23.1, decided
-// from its source and not checked live:
-//   - execute_code {code} runs a script that can do anything a shell can
-//     (tools/code_execution_tool.py:955-968; Hermes' own approval guards it,
-//     tools/approval.py:1345-1370): its code is judged as a command's text.
-//   - process_manage {action, data}: write and submit type data into a
-//     running process's stdin (tools/process_registry.py:2586-2616), judged
-//     as a command; its other actions get no opinion.
-//   - cronjob_manage schedules work that runs later, outside this session
-//     (tools/cronjob_tools.py:1260), and computer_use drives the desktop
-//     (tools/computer_use_tool.py:13): every call asks.
-//   - delegate_task starts a subagent (tools/delegate_tool.py:934); whether
-//     the subagent's own tool calls reach this hook is unverified. No opinion.
-//   - web, browser, image, video, speech, memory, skills, todo, clarify, and
-//     the screen and terminal-pane tools: no opinion, unless their input has
-//     a command or a file field, below.
-//   - Any other name, an MCP tool among them, is judged by its input as in
-//     ClaudeCalls and never pre-approved: a command as a command's text, a
-//     path, file_path, or notebook_path as a file it may write.
+// Every tool goes through the hook, and Hermes' own approvals cover terminal
+// commands only: LIVE (2026-11-11), write_file and execute_code ran with no
+// prompt under approvals.mode manual, and pre_tool_call fired for each. So on
+// Hermes the hook is the guard, and no opinion is safe only for a tool known
+// to be read-only (#134 review). Each tool is in one of four classes, from the
+// tool registry at v0.23.1 (tools/*.py, registry.register):
+//
+//   - Code: judged by its text as a command, and asked even when no rule
+//     matches, since code can do what no rule sees. execute_code {code}
+//     (tools/code_execution_tool.py:955-968; LIVE, unasked by Hermes),
+//     browser_exec {code} (tools/browser_use_cli.py:990-1003), and
+//     process_manage's write and submit, which type {data} into a background
+//     process's stdin (tools/process_registry.py:2586-2616).
+//   - terminal {command, workdir, background, ...} (tools/terminal_tool.py:
+//     1617-1670): its command is judged as a shell command, its workdir as a
+//     folder; no match is no opinion, since Hermes' manual approvals see it.
+//   - Files, by path: read_file {path}, write_file {path, content}, patch
+//     {path, ...}, search_files {path, pattern} (tools/file_tools.py:
+//     1152-1435; LIVE shapes), and vision_analyze's image_url and video_url
+//     when they are local (tools/vision_tools.py:1031). A path outside the
+//     repo asks; a write to aggy's state, the trust files, a Claude settings
+//     file, or the profile's folder asks; a key-named read asks; a vendor
+//     credential file is refused.
+//   - Read-only and local, or a search of the web with no file: no opinion.
+//     hermesNoOpinion lists them.
+//
+// Every other tool asks, the tool's name in the message: cronjob_manage,
+// delegate_task, skill_manage, skill_view, memory, session_search (which may
+// name another profile), computer_use, process_manage's other actions but
+// list, poll, log, and wait, any MCP tool, and any name a later Hermes adds.
+// A command or file field in its input is judged too, so a deny rule still
+// denies. A pre-approval never applies to a code or other tool (Call.Other).
+
+// hermesNoOpinion are the tools known to be read-only, from their source at
+// v0.23.1: web_search and web_extract (tools/web_tools.py:560-570), x_search
+// (tools/x_search_tool.py:339), clarify, which asks the person
+// (tools/clarify_tool.py:218), todo_list, the session's own to-do list
+// (tools/todo_tool.py:333), read_terminal and read_window_below, which read
+// Hermes' own panes (tools/read_terminal_tool.py:76,
+// tools/read_window_tool.py:42), and skills_list (tools/skills_tool.py:753).
+var hermesNoOpinion = []string{"web_search", "web_extract", "x_search", "clarify", "todo_list", "read_terminal", "read_window_below", "skills_list"}
+
+// hermesClass is how a tool is judged.
+type hermesClass int
+
+const (
+	classNone  hermesClass = iota // read-only: no opinion
+	classShell                    // terminal: judged; no match, no opinion
+	classFile                     // a file tool: judged by path
+	classCode                     // runs code: judged, and asks with no match
+	classOther                    // not classified: judged, and asks with no match
+)
 
 // HermesPayload is the part of a pre_tool_call payload aggy reads.
 type HermesPayload struct {
@@ -67,36 +94,31 @@ func ParseHermes(payload []byte) (p HermesPayload, ok bool) {
 	return p, true
 }
 
-// hermesAskTools ask on every call: what they do cannot be judged from
-// their input.
-var hermesAskTools = []string{"cronjob_manage", "computer_use"}
-
-// hermesCall is one payload read for judging: the calls, the files the tool
-// reads or writes (absolute, from the repo root), and whether it asks
-// whatever the calls say. ok is false for input aggy cannot read.
+// hermesCall is one payload read for judging: the tool, its class, the calls,
+// the files it reads or writes (absolute, from the repo root), and ok, false
+// for input aggy cannot read.
 type hermesCall struct {
+	tool  string
+	class hermesClass
 	calls []parity.Call
 	files []string
-	ask   bool
 	ok    bool
 }
 
-// HermesCalls reads one pre_tool_call payload into the calls to judge. ok is
-// false for a payload that is not a JSON object, or a known tool whose field
-// is missing or mistyped: such a call is asked about, never allowed. A
-// relative path is taken from root, the launch's repo root, never from the
-// payload's cwd. A tool that asks on every call (hermesAskTools) reads as
-// not ok, so a caller that only counts calls asks too.
-func HermesCalls(payload []byte, root string) (calls []parity.Call, ok bool) {
+// HermesCalls reads one pre_tool_call payload into the calls to judge. judged
+// is false only for a tool aggy has no opinion on (hermesNoOpinion): a
+// caller whose plan failed asks for every other one.
+func HermesCalls(payload []byte, root string) (calls []parity.Call, judged bool) {
 	h := readHermes(payload, root)
-	return h.calls, h.ok && !h.ask
+	return h.calls, !h.ok || h.class != classNone
 }
 
 func readHermes(payload []byte, root string) hermesCall {
 	p, ok := ParseHermes(payload)
 	if !ok || p.ToolName == "" {
-		return hermesCall{}
+		return hermesCall{class: classOther}
 	}
+	h := hermesCall{tool: p.ToolName, class: classOther, ok: true}
 	field := func(k string) (string, bool, bool) {
 		raw, has := p.ToolInput[k]
 		if !has {
@@ -114,90 +136,127 @@ func readHermes(payload []byte, root string) hermesCall {
 		}
 		return s
 	}
-	one := func(kind parity.CallKind, key string, other bool) hermesCall {
+	// add judges key's text as kind; required says a missing or empty field
+	// is unreadable.
+	add := func(kind parity.CallKind, key string, required bool) {
 		s, has, typed := field(key)
-		if !has || !typed || s == "" {
-			return hermesCall{}
+		if !typed || required && (!has || s == "") {
+			h.ok = false
+			return
 		}
-		h := hermesCall{ok: true}
+		if s == "" {
+			return
+		}
 		if kind != parity.CallShell {
 			s = path(s)
-			h.files = []string{s}
+			h.files = append(h.files, s)
 		}
-		h.calls = []parity.Call{{Kind: kind, Text: s, Other: other}}
-		return h
+		h.calls = append(h.calls, parity.Call{Kind: kind, Text: s, Other: h.class == classCode || h.class == classOther})
 	}
-	switch {
-	case p.ToolName == "terminal":
-		return one(parity.CallShell, "command", false)
-	case p.ToolName == "read_file":
-		return one(parity.CallRead, "path", false)
-	case p.ToolName == "write_file" || p.ToolName == "patch":
+	switch p.ToolName {
+	case "terminal":
+		h.class = classShell
+		add(parity.CallShell, "command", true)
+		if s, has, typed := field("workdir"); !typed {
+			h.ok = false
+		} else if has && s != "" {
+			h.files = append(h.files, path(s))
+		}
+	case "read_file":
+		h.class = classFile
+		add(parity.CallRead, "path", true)
+	case "write_file", "patch":
 		// patch's V4A mode names its files inside the patch text, with no
 		// path (file_tools.py:1415-1433): unreadable, so it asks.
-		return one(parity.CallWrite, "path", false)
-	case p.ToolName == "search_files":
-		h := hermesCall{ok: true}
-		for _, k := range []string{"path", "pattern"} {
-			s, has, typed := field(k)
-			if has && !typed {
-				return hermesCall{}
-			}
-			if s == "" {
-				continue
-			}
-			if k == "path" {
-				s = path(s)
-				h.files = append(h.files, s)
-			}
+		h.class = classFile
+		add(parity.CallWrite, "path", true)
+	case "search_files":
+		h.class = classFile
+		if s, has, typed := field("path"); !typed {
+			h.ok = false
+		} else if has && s != "" {
+			h.files = append(h.files, path(s))
+			h.calls = append(h.calls, parity.Call{Kind: parity.CallSearch, Text: path(s)})
+		}
+		if s, _, typed := field("pattern"); !typed {
+			h.ok = false
+		} else if s != "" {
 			h.calls = append(h.calls, parity.Call{Kind: parity.CallSearch, Text: s})
 		}
-		return h
-	case p.ToolName == "execute_code":
-		return one(parity.CallShell, "code", true)
-	case p.ToolName == "process_manage":
-		action, has, typed := field("action")
-		if !has || !typed {
-			return hermesCall{}
+	case "vision_analyze":
+		h.class = classFile
+		for _, k := range []string{"image_url", "video_url"} {
+			s, _, typed := field(k)
+			if !typed {
+				h.ok = false
+			} else if s != "" && !webURL.MatchString(s) {
+				add(parity.CallRead, k, false)
+			}
 		}
-		if action != "write" && action != "submit" {
-			return hermesCall{ok: true}
+	case "execute_code", "browser_exec":
+		h.class = classCode
+		add(parity.CallShell, "code", true)
+	case "process_manage":
+		action, _, typed := field("action")
+		switch {
+		case !typed:
+			h.ok = false
+		case action == "list" || action == "poll" || action == "log" || action == "wait":
+			h.class = classNone
+		case action == "write" || action == "submit":
+			h.class = classCode
+			add(parity.CallShell, "data", false)
 		}
-		return one(parity.CallShell, "data", true)
-	case slices.Contains(hermesAskTools, p.ToolName):
-		return hermesCall{ok: true, ask: true}
-	}
-	if _, has := p.ToolInput["command"]; has {
-		return one(parity.CallShell, "command", true)
-	}
-	for _, k := range fileKeys {
-		if _, has := p.ToolInput[k]; has {
-			return one(parity.CallWrite, k, true)
+	default:
+		if slices.Contains(hermesNoOpinion, p.ToolName) {
+			h.class = classNone
+			break
+		}
+		// Not classified: a command or a file field is judged too, so a
+		// deny rule still denies.
+		if _, has := p.ToolInput["command"]; has {
+			add(parity.CallShell, "command", false)
+		}
+		for _, k := range fileKeys {
+			if _, has := p.ToolInput[k]; has {
+				add(parity.CallWrite, k, false)
+			}
 		}
 	}
-	return hermesCall{ok: true}
+	return h
 }
 
-// JudgeHermes is Judge for one Hermes pre_tool_call payload. Hermes has no
-// hook answer that allows a call past its own approvals, so an exact
-// pre-approval gives no opinion, and Hermes' own manual approvals decide. A
-// file tool's path outside the plan's root, or one that starts with ~, asks
-// (ReasonOutside), as does one whose folder's real path leads out of the
-// root's: Hermes asks nothing before its file tools, so this is the only ask
-// a read of ~/.ssh or a write to another repo meets. aggy's state, the trust
-// files, and the profile's own folder are protected paths in the plan, and a
-// write there asks (ReasonProtected).
+// webURL is an http or https URL, which vision_analyze fetches rather than
+// reads from disk.
+var webURL = regexp.MustCompile(`(?i)^https?://`)
+
+// JudgeHermes is Judge for one Hermes pre_tool_call payload, by the tool's
+// class (above). Hermes has no hook answer that allows a call past its own
+// approvals, so an exact pre-approval gives no opinion. A file path outside
+// the plan's root, or one that starts with ~, asks (ReasonOutside), as does
+// one whose folder's real path leads out of the root's. A vendor credential
+// file is refused. A code tool, or one not classified, asks when nothing else
+// decided (ReasonUnjudged); input aggy cannot read asks (ReasonUnknownInput).
 func JudgeHermes(plan DecidePlan, payload []byte) parity.CallDecision {
 	h := readHermes(payload, plan.Root)
-	if h.ok && h.ask {
-		return parity.CallDecision{Verdict: parity.VerdictAsk, Reason: parity.ReasonUnknownInput}
+	if h.ok && h.class == classNone {
+		return parity.CallDecision{Verdict: parity.VerdictNone, Reason: parity.ReasonNoMatch}
 	}
 	d := Judge(plan, h.calls, "", h.ok)
+	if !h.ok {
+		return d
+	}
 	if d.Verdict == parity.VerdictAllow {
 		d.Verdict = parity.VerdictNone
 	}
-	if h.ok && d.Verdict == parity.VerdictNone && slices.ContainsFunc(h.files, func(f string) bool { return hermesOutside(f, plan.Root) }) {
+	if slices.ContainsFunc(h.files, func(f string) bool { return errors.Is(safefs.Check(f), safefs.ErrAuthPath) }) {
+		return parity.CallDecision{Verdict: parity.VerdictDeny, Group: d.Group, Reason: parity.ReasonProtected}
+	}
+	if d.Verdict == parity.VerdictNone && slices.ContainsFunc(h.files, func(f string) bool { return hermesOutside(f, plan.Root) }) {
 		d = parity.CallDecision{Verdict: parity.VerdictAsk, Group: d.Group, Strict: d.Strict, Reason: parity.ReasonOutside}
+	}
+	if d.Verdict == parity.VerdictNone && (h.class == classCode || h.class == classOther) {
+		d = parity.CallDecision{Verdict: parity.VerdictAsk, Group: d.Group, Strict: d.Strict, Reason: parity.ReasonUnjudged}
 	}
 	return d
 }
@@ -234,30 +293,50 @@ func hermesOutside(p, root string) bool {
 	}
 }
 
-// HermesOutput is the hook's stdout for d (agent/shell_hooks.py:637-658,
-// _parse_pre_tool_call): {"action":"block","message":...} refuses the call
-// (live: the model is told the message); {"action":"approve","message":...,
-// "rule_key":...} sends it to Hermes' human approval gate, the one its
-// dangerous commands use (tools/approval.py:1246-1270; live: titled
-// "<tool> (plugin approval rule)", with Allow once, Allow for this session,
-// Add to permanent allowlist, and Deny); nothing leaves it to Hermes. The
-// rule_key is new for every call, so a session or permanent answer there
-// should cover that one call only and never stop a later policy match from
-// asking; what Hermes does with those two answers for a per-call key is
-// unverified. The message is aggy's fixed text and a group name, never the
-// tool input.
-func HermesOutput(d parity.CallDecision) []byte {
+// HermesTool is the payload's tool name as aggy may show it: letters, digits,
+// and _ . - only, at most 64, else "this tool".
+func HermesTool(payload []byte) string {
+	p, _ := ParseHermes(payload)
+	if p.ToolName == "" || len(p.ToolName) > 64 || !toolName.MatchString(p.ToolName) {
+		return "this tool"
+	}
+	return p.ToolName
+}
+
+var toolName = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
+// HermesOutput is the hook's stdout for d on the call to tool
+// (agent/shell_hooks.py:637-658, _parse_pre_tool_call): {"action":"block",
+// "message":...} refuses the call (LIVE: the model is told the message);
+// {"action":"approve","message":...,"rule_key":...} sends it to Hermes' human
+// approval gate (tools/approval.py:1246-1270; LIVE: titled "<tool> (plugin
+// approval rule)", with Allow once, Allow for this session, Add to permanent
+// allowlist, and Deny); nothing leaves it to Hermes. The rule_key is new for
+// every call, so a session or permanent answer there should cover that one
+// call only; what Hermes does with those two answers for a per-call key is
+// unverified. The message is aggy's fixed text, a group name, and the tool's
+// name (HermesTool), never the tool input.
+func HermesOutput(d parity.CallDecision, tool string) []byte {
 	if d.Verdict == parity.VerdictNone || d.Verdict == parity.VerdictAllow {
 		return nil
 	}
-	b := ClaudeOutput(d)
-	var o struct {
-		H struct {
-			Reason string `json:"permissionDecisionReason"`
-		} `json:"hookSpecificOutput"`
+	var msg string
+	switch d.Reason {
+	case parity.ReasonUnjudged:
+		msg = fmt.Sprintf("aggy cannot judge what Hermes' %s tool will do, and Hermes asks nothing before it, so aggy asks: approve this yourself", tool)
+	case parity.ReasonOutside:
+		msg = fmt.Sprintf("Hermes' %s tool names a file outside this repo, so aggy asks: approve this yourself", tool)
+	default:
+		b := ClaudeOutput(d)
+		var o struct {
+			H struct {
+				Reason string `json:"permissionDecisionReason"`
+			} `json:"hookSpecificOutput"`
+		}
+		_ = json.Unmarshal(b, &o)
+		msg = o.H.Reason
 	}
-	_ = json.Unmarshal(b, &o)
-	out := map[string]string{"action": "block", "message": o.H.Reason}
+	out := map[string]string{"action": "block", "message": msg}
 	if d.Verdict == parity.VerdictAsk {
 		out["action"] = "approve"
 		out["rule_key"] = "aggy-" + nonce()

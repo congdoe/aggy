@@ -90,7 +90,7 @@ commands only. It takes no prompt yet. aggy always refuses --api-key,
 --base-url, --profile, --tui, and --oneshot there, and asks about each flag
 that skips its hooks or approvals (--yolo, --accept-hooks,
 --ignore-user-config, --safe-mode, --ignore-rules) unless --no-policy is
-given.
+given. Flags go in full: Hermes expands abbreviations, so aggy refuses them.
 `
 
 // passFlags is v's table of flags aggy takes over or refuses.

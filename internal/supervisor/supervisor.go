@@ -30,6 +30,20 @@ type Child interface {
 	Pid() int
 }
 
+// HermesPin is what a Hermes launch's supervisor holds for its hook (#134
+// review): the decision plan's path and SHA-256, or NoPolicy, and the session
+// the launch has, known up front on a resume. The index row only finds the
+// socket; a tool that rewrites the row changes none of this.
+type HermesPin struct {
+	Plan, PlanSum string
+	NoPolicy      bool
+	// Session is the resumed session's id, "" for a new session.
+	Session string
+	// Brief says the launch sends a first turn itself (--query-file), so a
+	// hook may claim the new session before the person presses Enter.
+	Brief bool
+}
+
 // Options configure one supervised session.
 type Options struct {
 	// In and Out are the user's terminal, normally os.Stdin and os.Stdout.
@@ -129,6 +143,9 @@ type Options struct {
 	// HermesToken is the launch token aggy's Hermes hook shows the socket in
 	// place of a lineage (Server.SetToken, T6933); "" for every other vendor.
 	HermesToken string
+	// HermesPin is what the hook asks this supervisor for over the socket, with
+	// that token (ReqHermesPin, #134 review); nil for every other vendor.
+	HermesPin *HermesPin
 	// Tools returns what of the managed tools this session's CLI would
 	// get if it were launched now, for its vendor and repo (T6729); it is
 	// called off the main loop when a tools-changed notice comes over the
