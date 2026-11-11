@@ -141,9 +141,9 @@ func TestPassFlags(t *testing.T) {
 		// T6961: print mode is the caller's choice (PrintRequested); Parse marks it.
 		{name: "claude -p", p: cl, args: []string{"-p"},
 			want: adapter.ParsedFlags{Print: true, Extra: []string{"-p"}, Safe: []string{"-p"}}},
-		// PR #124 review: a cluster is not split to find print mode.
+		// PR #135 re-review: a Print short run together is read, as Mode reads it.
 		{name: "claude -p run together", p: cl, args: []string{"-dp"},
-			want: adapter.ParsedFlags{Extra: []string{"-dp"}, Safe: []string{"-dp"}}},
+			want: adapter.ParsedFlags{Print: true, Extra: []string{"-dp"}, Safe: []string{"-dp"}}},
 		{name: "claude -c run together", p: cl, args: []string{"-dc"}, refused: "write -c on its own"},
 		{name: "claude --worktree, for the first launch only", p: cl, args: []string{"-w", "x"},
 			want: adapter.ParsedFlags{Extra: []string{"-w", "x"}}},
@@ -387,7 +387,7 @@ func TestRunMode(t *testing.T) {
 	}{
 		{"claude -p", cl, []string{"-p", "hi"}, print},
 		{"claude --print later", cl, []string{"--model", "opus", "--print"}, print},
-		{"claude a cluster is not split", cl, []string{"-dp"}, screen},
+		{"claude -p run together is print (PR #135 re-review)", cl, []string{"-dp"}, print},
 		{"claude a value that says -p still adds the policy", cl, []string{"--model", "-p"}, print},
 		{"claude after --", cl, []string{"--", "-p"}, screen},
 		{"claude none", cl, []string{"--verbose", "hi"}, screen},
@@ -410,7 +410,7 @@ func TestRunMode(t *testing.T) {
 		{"grok --prompt-file", gk, []string{"--prompt-file", "/x"}, print},
 		{"grok -w", gk, []string{"-w"}, print},
 		{"grok -v alone", gk, []string{"-v"}, bare},
-		{"grok -pv", gk, []string{"-pv"}, screen},
+		{"grok -pv: -p with its value attached (PR #135 re-review)", gk, []string{"-pv"}, print},
 		{"grok -mv", gk, []string{"-mv", "do it"}, screen},
 	}
 	for _, tt := range tests {
