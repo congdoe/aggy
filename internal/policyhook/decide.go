@@ -470,10 +470,12 @@ const maxLinks = 40
 var readlink = safefs.Readlink
 
 // linkTarget follows the chain of links from p, a link (its target there or
-// not), each target taken lexically against its link's folder, to the
-// first name that is not a link (or not there). It reports false, so the
+// not), to the first name that is not a link (or not there). Each target is
+// resolved as the kernel resolves it (linkStep): from the real path of its
+// link's folder, a part at a time, so a ".." after a linked folder climbs
+// from where that folder really is (#136 review). It reports false, so the
 // caller asks, when any name on the way is protected, when a link cannot be
-// read, or when the chain is longer than maxLinks.
+// read or resolved, or when the chain is longer than maxLinks.
 func (d DecidePlan) linkTarget(p string) (string, bool) {
 	cur := p
 	for range maxLinks {
@@ -490,15 +492,74 @@ func (d DecidePlan) linkTarget(p string) (string, bool) {
 		if err != nil || t == "" {
 			return "", false
 		}
-		if !filepath.IsAbs(t) {
-			t = filepath.Join(filepath.Dir(cur), t)
+		next, ok := linkStep(filepath.Dir(cur), t)
+		if !ok {
+			return "", false
 		}
-		cur = filepath.Clean(t)
+		cur = next
 		if d.protectedClean(cur) || hook.SameAsProtected(cur, d.Protected, safefs.Stat, lstat) {
 			return "", false
 		}
 	}
 	return "", false
+}
+
+// linkStep is where target t of a link in folder dir leads, but for its last
+// part, which is left as named (the caller follows it if it is a link too).
+// It starts at "/" for an absolute t, else at dir's real path, and takes t's
+// parts in turn: ".." goes to the parent of the real path so far, an existing
+// part is resolved through its links (one that leads nowhere is false), and
+// from the first part not there on, the rest is joined by text, since the
+// kernel would refuse to go further.
+func linkStep(dir, t string) (string, bool) {
+	cur := "/"
+	if !filepath.IsAbs(t) {
+		r, err := realPath(dir)
+		if err != nil {
+			return "", false
+		}
+		cur = r
+	}
+	parts := strings.Split(filepath.ToSlash(t), "/")
+	last := len(parts) - 1
+	for last > 0 && (parts[last] == "" || parts[last] == ".") {
+		last--
+	}
+	for i, part := range parts[:last] {
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+			continue
+		}
+		next := filepath.Join(cur, part)
+		fi, err := lstat(next)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return filepath.Join(append([]string{cur}, parts[i:]...)...), true
+		case err != nil:
+			return "", false
+		case fi.Mode()&fs.ModeSymlink != 0:
+			r, err := realPath(next)
+			if err != nil {
+				return "", false
+			}
+			if fi, err := lstat(r); err != nil || fi.Mode()&fs.ModeSymlink != 0 {
+				return "", false // a link on the way that leads nowhere
+			}
+			cur = r
+		default:
+			cur = next
+		}
+	}
+	switch parts[last] {
+	case "..":
+		return filepath.Dir(cur), true
+	case "", ".":
+		return cur, true
+	}
+	return filepath.Join(cur, parts[last]), true
 }
 
 func (d DecidePlan) protectedClean(p string) bool {
@@ -543,16 +604,29 @@ var stateFileNames = []string{"aggy.db", "diag.db"}
 
 // holdsName reports n in f as a whole file name: holdsPath, and not
 // preceded by a letter, digit, _, -, or ., so x/aggy.db and 'aggy.db' hold
-// it and myaggy.db does not.
+// it and myaggy.db does not; or preceded by letters and digits that follow a
+// - starting the word, a short option with its value attached (tar
+// -cfaggy.db, curl -oaggy.db, #136 review). After = it counts as after any
+// other mark.
 func holdsName(f, n string) bool {
+	const word = "abcdefghijklmnopqrstuvwxyz0123456789_"
 	for from := 0; ; {
 		i := strings.Index(f[from:], n)
 		if i < 0 {
 			return false
 		}
 		at, end := from+i, from+i+len(n)
-		if (at == 0 || !strings.ContainsRune("abcdefghijklmnopqrstuvwxyz0123456789_-.", rune(f[at-1]))) &&
-			(end == len(f) || !strings.ContainsRune("abcdefghijklmnopqrstuvwxyz0123456789_", rune(f[end]))) {
+		before := at == 0 || !strings.ContainsRune(word+"-.", rune(f[at-1]))
+		if !before {
+			// A short-option cluster: -letters right before the name, at the
+			// start of a word.
+			j := at
+			for j > 0 && strings.ContainsRune("abcdefghijklmnopqrstuvwxyz0123456789", rune(f[j-1])) {
+				j--
+			}
+			before = j < at && j > 0 && f[j-1] == '-' && (j == 1 || !strings.ContainsRune(word+"-./", rune(f[j-2])))
+		}
+		if before && (end == len(f) || !strings.ContainsRune(word, rune(f[end]))) {
 			return true
 		}
 		from = at + 1

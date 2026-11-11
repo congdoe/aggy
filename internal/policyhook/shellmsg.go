@@ -1,15 +1,18 @@
 package policyhook
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // stripMessages returns cmd with the text of its message arguments blanked:
-// the message of git commit or git tag (-m, --message, -m<msg>, -am <msg>,
-// --message=<msg>) and the arguments of an echo or printf whose output is
-// not piped. They are text the command prints or stores, not a path it
-// opens, so naming aggy's index there is no reason to ask (T6954). It is
-// conservative: a command with a substitution ($(, `, <(, >(), a here
-// document, or anything it cannot lex (an open quote) comes back whole, and
-// a redirection's target is never blanked.
+// the message of git commit or git tag (gitMessages) and the text of an echo
+// or printf (echoText). They are text the command prints or stores, not a
+// path it opens, so naming aggy's index there is no reason to ask (T6954).
+// It is conservative: a command with a substitution ($(, `, <(, >(), a here
+// document, or anything it cannot lex (an open quote) comes back whole, a
+// redirection's target is never blanked, and anything it does not know
+// leaves the words as they are.
 func stripMessages(cmd string) string {
 	for _, s := range []string{"$(", "`", "<(", ">(", "<<"} {
 		if strings.Contains(cmd, s) {
@@ -28,12 +31,17 @@ func stripMessages(cmd string) string {
 			}
 		}
 	}
+	// Any pipe in the command (a subshell's included) may hand an echo's
+	// text to something that runs it.
+	piped := false
+	for _, t := range toks {
+		piped = piped || t.sep && (t.text == "|" || t.text == "|&")
+	}
 	for start := 0; start < len(toks); {
 		end := start
 		for end < len(toks) && !toks[end].sep {
 			end++
 		}
-		piped := end < len(toks) && toks[end].text == "|"
 		stripSimple(toks[start:end], piped, blank)
 		start = end + 1
 	}
@@ -44,65 +52,158 @@ func stripMessages(cmd string) string {
 // redirections, no separators).
 func stripSimple(toks []shellToken, piped bool, blank func(shellToken)) {
 	// The words that are arguments: not a redirection, not its target, and
-	// not a leading NAME=value.
+	// not a leading NAME=value. quiet says every redirection only goes to
+	// /dev/null or another descriptor (>&2).
 	var args []shellToken
-	target := false
-	for _, t := range toks {
+	quiet := true
+	var redir *shellToken
+	for i, t := range toks {
 		switch {
 		case t.redir:
-			target = true // the next word is its target (or fd): never blanked
-		case target:
-			target = false
+			redir = &toks[i]
+		case redir != nil:
+			dup := strings.HasSuffix(redir.text, "&") && (allDigits(t.value) || t.value == "-")
+			quiet = quiet && (dup || t.value == "/dev/null" && !strings.HasPrefix(redir.text, "<"))
+			redir = nil
 		case len(args) == 0 && assignment(t.value):
 		default:
 			args = append(args, t)
 		}
 	}
-	if len(args) == 0 {
+	if len(args) == 0 || redir != nil {
 		return
 	}
 	switch args[0].value {
 	case "echo", "printf":
-		if piped {
-			return
-		}
-		for _, a := range args[1:] {
-			blank(a)
+		if !piped && quiet {
+			echoText(args[0].value, args[1:], blank)
 		}
 	case "git":
-		sub := -1
-		for i, a := range args[1:] {
-			if a.value == "commit" || a.value == "tag" {
-				sub = i + 1
-				break
-			}
+		gitMessages(args[1:], blank)
+	}
+}
+
+// echoText blanks an echo's or printf's text: everything after echo's own
+// options (-n, -e, -E, in any cluster), or all of printf's arguments. An
+// option it does not know, and printf's -v (which sets a variable), leave
+// the words as they are.
+func echoText(cmd string, args []shellToken, blank func(shellToken)) {
+	i := 0
+	for ; i < len(args); i++ {
+		v := args[i].value
+		if len(v) < 2 || v[0] != '-' {
+			break
 		}
-		if sub < 0 {
+		if cmd == "printf" || strings.Trim(v[1:], "neE") != "" {
 			return
 		}
-		for i := sub + 1; i < len(args); i++ {
-			v := args[i].value
+	}
+	for _, a := range args[i:] {
+		blank(a)
+	}
+}
+
+// gitGlobals are git's options before its command (git(1)); value takes
+// the next word too. Any other option leaves the command as it is.
+var gitGlobals = map[string]bool{
+	"-c": true, "-C": true, "--git-dir": true, "--work-tree": true, "--namespace": true, "--config-env": true, "--super-prefix": true,
+	"-p": false, "--paginate": false, "-P": false, "--no-pager": false, "--no-replace-objects": false, "--no-lazy-fetch": false,
+	"--no-optional-locks": false, "--no-advice": false, "--bare": false, "--literal-pathspecs": false, "--glob-pathspecs": false,
+	"--noglob-pathspecs": false, "--icase-pathspecs": false,
+}
+
+// gitMsgOpts are the short options of git commit and git tag, by command
+// (git-commit(1) and git-tag(1), SYNOPSIS and OPTIONS): flags take nothing,
+// value takes the rest of the word or else the next word, and optional takes
+// only the rest of the word. m is the message. long are the long options that
+// take the next word as a value; a long option in neither list, unless given
+// with =, leaves the rest of the command as it is.
+var gitMsgOpts = map[string]struct {
+	flags, value, optional string
+	long, longFlags        []string
+}{
+	"commit": {flags: "apsnqveioz", value: "FCct", optional: "uS",
+		long: []string{"--file", "--reuse-message", "--reedit-message", "--template", "--author", "--date", "--cleanup", "--fixup", "--squash", "--trailer", "--pathspec-from-file"},
+		longFlags: []string{"--all", "--patch", "--signoff", "--no-signoff", "--no-verify", "--verify", "--quiet", "--verbose", "--edit", "--no-edit",
+			"--include", "--only", "--amend", "--no-post-rewrite", "--reset-author", "--allow-empty", "--allow-empty-message", "--dry-run",
+			"--short", "--branch", "--porcelain", "--long", "--null", "--status", "--no-status", "--interactive", "--no-gpg-sign", "--gpg-sign", "--pathspec-file-nul"}},
+	"tag": {flags: "asfdvlie", value: "Fu", optional: "n",
+		long: []string{"--file", "--local-user", "--cleanup", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "--sort", "--format"},
+		longFlags: []string{"--annotate", "--sign", "--no-sign", "--force", "--delete", "--verify", "--list", "--edit", "--no-edit", "--ignore-case",
+			"--create-reflog", "--omit-empty"}},
+}
+
+// gitMessages blanks the message of git commit or git tag: -m <msg>, -m<msg>,
+// --message <msg>, --message=<msg>, and a cluster of the command's flags
+// ending in m (-am <msg>) or holding it (-am<msg>). The command is the first
+// word after git's own options; a word it cannot place stops it.
+func gitMessages(args []shellToken, blank func(shellToken)) {
+	i := 0
+	for ; i < len(args); i++ {
+		v := args[i].value
+		if !strings.HasPrefix(v, "-") {
+			break
+		}
+		name, _, eq := strings.Cut(v, "=")
+		value, ok := gitGlobals[name]
+		switch {
+		case !ok:
+			return
+		case value && !eq:
+			i++
+		}
+	}
+	if i >= len(args) {
+		return
+	}
+	opts, ok := gitMsgOpts[args[i].value]
+	if !ok {
+		return
+	}
+	for i++; i < len(args); i++ {
+		v := args[i].value
+		switch {
+		case v == "--":
+			return
+		case v == "-m" || v == "--message":
+			if i+1 < len(args) {
+				blank(args[i+1])
+				i++
+			}
+		case strings.HasPrefix(v, "--message="):
+			blank(args[i])
+		case strings.HasPrefix(v, "--"):
+			name, _, eq := strings.Cut(v, "=")
 			switch {
-			case v == "--":
+			case eq:
+			case slices.Contains(opts.long, name):
+				i++
+			case !slices.Contains(opts.longFlags, name):
 				return
-			case v == "-m" || v == "--message":
-				if i+1 < len(args) {
-					blank(args[i+1])
-					i++
-				}
-			case strings.HasPrefix(v, "--message="):
-				blank(args[i])
-			case strings.HasPrefix(v, "-") && !strings.HasPrefix(v, "--"):
-				j := strings.IndexByte(v, 'm')
+			}
+		case strings.HasPrefix(v, "-") && len(v) > 1:
+		cluster:
+			for j := 1; j < len(v); j++ {
+				c := v[j]
 				switch {
-				case j < 0:
-				case j == len(v)-1:
+				case c == 'm' && j == len(v)-1:
 					if i+1 < len(args) {
 						blank(args[i+1])
 						i++
 					}
-				default:
+				case c == 'm':
 					blank(args[i])
+					break cluster
+				case strings.IndexByte(opts.flags, c) >= 0:
+				case strings.IndexByte(opts.value, c) >= 0:
+					if j == len(v)-1 {
+						i++
+					}
+					break cluster
+				case strings.IndexByte(opts.optional, c) >= 0:
+					break cluster
+				default:
+					return
 				}
 			}
 		}

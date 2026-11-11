@@ -656,7 +656,7 @@ func TestProtectedPathDangling(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo, state := filepath.Join(h, "repo"), filepath.Join(h, ".aggy")
-	for _, d := range []string{repo, state} {
+	for _, d := range []string{repo, state, filepath.Join(state, "backups"), filepath.Join(h, "outside", "deep")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -670,6 +670,11 @@ func TestProtectedPathDangling(t *testing.T) {
 		{"loop1", "loop2"},
 		{"loop2", "loop1"},
 		{"st", "../.aggy"},
+		// #136 review: ".." after a linked folder climbs from its real path.
+		{"s", filepath.Join(state, "backups")},
+		{"l", "s/../permissions.json"},
+		{"t", filepath.Join(h, "outside", "deep")},
+		{"m", "t/../new.md"},
 	}
 	for _, l := range links {
 		if err := os.Symlink(l.to, filepath.Join(repo, l.name)); err != nil {
@@ -690,6 +695,8 @@ func TestProtectedPathDangling(t *testing.T) {
 		{"a loop", "loop1", true},
 		{"a new folder under a link to aggy's state", "st/new/x", true},
 		{"a new file in a new folder in the repo", "new/dir/x.md", false},
+		{"a .. after a link to aggy's state", "l", true},
+		{"a .. after a link out to a plain folder", "m", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := p.protectedPath(filepath.Join(repo, tt.path)); got != tt.want {
