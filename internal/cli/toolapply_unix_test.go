@@ -63,6 +63,7 @@ func TestToolSwitchNotifies(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = srv.Close() })
+		srv.SetRoot(1 << 30) // no CLI: a notice comes from any peer, so do not wait rootWait for a lineage
 		srv.SetTools(func() {
 			mu.Lock()
 			defer mu.Unlock()
