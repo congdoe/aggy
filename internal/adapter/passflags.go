@@ -158,7 +158,7 @@ var ErrLoosens = errors.New("it loosens approvals, the sandbox, or hook trust, o
 // ErrNotFlag matches a word on the command line that aggy will not pass as a
 // prompt: one that names a subcommand of the CLI, which the CLI could run
 // instead of a session.
-var ErrNotFlag = errors.New("aggy passes a word there to the CLI as the session's first prompt, and this one names a subcommand of the CLI; put the prompt after -- to send it as text")
+var ErrNotFlag = errors.New("it names a subcommand of the CLI, and aggy starts a session there, not the subcommand: run the CLI itself for that subcommand, or, for a prompt that starts with this word, put the prompt after -- to send it as text")
 
 // ErrCommandAfterDashes matches a first word after "--" that names a
 // subcommand of the CLI.

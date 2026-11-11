@@ -314,12 +314,32 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// The child's repo decides which vendors may see it, the one on
 	// screen and the ones the switch picker offers.
 	eff, err := allowedIn(cfg, pl.child.Cwd, v)
+	if errors.Is(err, errHarnessOff) {
+		// T6979: asked in place, and the launch goes on once it is on.
+		if on, herr := harnessOnInPlace(ctx, v, os.Getenv, offerIn, stderr); herr != nil {
+			return fail(diag.CodeConfig, herr)
+		} else if on {
+			if cfg, err = config.LoadDefault(); err != nil {
+				return fail(diag.CodeConfig, err)
+			}
+			eff, err = allowedIn(cfg, pl.child.Cwd, v)
+		}
+	}
 	if err != nil {
 		return fail(launchCode(err, diag.CodeConfig), err)
 	}
 	path, err := probe.LookPath(vendorBin(v))
 	if err != nil {
-		return fail(diag.CodeCLIMissing, err)
+		// T6979: say it is not installed and where to get it; at a
+		// terminal, offer an installed vendor to start instead, as a new
+		// session (default none).
+		others := installedElse(cfg, pl.child.Cwd, v)
+		if o := pickInstead(ctx, v, others, offerIn, stderr); o != "" {
+			nt := target{New: true, Vendor: o, NoPolicy: t.NoPolicy, Direct: t.Direct}
+			*tp = nt
+			return launchOnce(name, tp, stderr, next, q)
+		}
+		return fail(diag.CodeCLIMissing, cliMissing(v, others))
 	}
 	// The probe finds the flags whose presence is only known from help:
 	// Codex --no-alt-screen and -c, Claude --settings, Grok --rules and

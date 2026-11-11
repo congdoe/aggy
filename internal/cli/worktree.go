@@ -40,6 +40,9 @@ type gitWorktrees struct {
 	// named when a setup command is not allowed.
 	allow   config.UserWorktree
 	cfgPath string
+	// allowProtected takes a diff that touches files that may hold hooks, CI,
+	// config, or instructions: the person saw them and said yes (T6979).
+	allowProtected bool
 }
 
 // validBorrowID reports whether id is a borrow id: 16 lowercase hex digits.

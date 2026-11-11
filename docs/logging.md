@@ -283,7 +283,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `cli.flag_needs_no_policy` |  | A flag for the vendor CLI loosens approvals, the sandbox, or hook trust, or aggy cannot tell that it does not. | Add --no-policy to start the session that way; aggy notes it at launch. |
 | `borrow.no_screen` |  | A research or news borrow's session does not go on screen: it has no file or MCP tools by rule, and its transcript may hold text from the web. | aggy inbox shows its report; aggy borrow asks a follow-up. |
 | `cli.flag_clash` |  | A flag for the vendor CLI clashes with what aggy passes it at launch. | Drop the flag; the message says what aggy does instead. Run the CLI itself if you need it. |
-| `cli.vendor_not_allowed` |  | This repo's allowed_vendors does not list that vendor. | The repo's .aggy/config.toml. |
+| `cli.vendor_not_allowed` |  | This repo's allowed_vendors does not list that vendor. | The allowed_vendors key in the repo's .aggy/config.toml, which the refusal names. |
 | `cli.ambiguous_id` |  | More than one session or borrow starts with that id. | Give more of the id. |
 | `cli.not_in_repo` |  | The command needs a git work tree, and this directory is in none. | Run it inside the repo. |
 | `cli.failed` |  | The command could not finish; the message says what failed. | The message; aggy diag show &lt;run id&gt; for what led to it. |
@@ -298,7 +298,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `borrow.grok_edit` |  | aggy image --edit named an image Grok made. Grok keeps a session under its working directory, and the borrow's temp dir is gone, so a resumed child cannot start; no child ran. | Make a new image with a full brief, or make it with --vendor codex, whose images --edit can change. |
 | `borrow.no_vendor` |  | No candidate vendor could start the borrow. | aggy diag --run &lt;run id&gt; --event borrow.vendor.skipped lists why each was passed over; aggy setup. |
 | `borrow.start_failed` |  | The borrow failed after a vendor was chosen, while making its dirs, worktree, or records (the concurrency caps included). | aggy diag show &lt;run id&gt; for what led to it; aggy doctor. |
-| `vendor.cli_missing` |  | The vendor's CLI is not on PATH, or its probe failed. | aggy setup. |
+| `vendor.cli_missing` |  | The vendor's CLI is not on PATH, or its probe failed. | Install it from the page the refusal names (at a terminal aggy offers an installed vendor instead); aggy setup. |
 | `adapter.unsupported` |  | The vendor's adapter does not run this kind or request on this CLI or in this repo. | The README's vendor support table; another --vendor. |
 | `adapter.no_capability` |  | The CLI's --help lacks a flag the lockdown needs. | Update the CLI; aggy setup shows its version. |
 | `adapter.file_tools_off` |  | The request needs Grok's media file tools, which are off. | [media] grok_file_tools in ~/.aggy/config.toml, after reading what it uploads. |
@@ -317,7 +317,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `borrow.interrupted` |  | aggy was interrupted (Ctrl-C, SIGTERM, SIGHUP) and killed the child. | Nothing, unless you did not interrupt it. |
 | `borrow.child_failed` |  | The child failed for another reason: unparsed output, an unknown error class, or a runner error. | aggy inbox &lt;borrow id&gt; for the report. |
 | `accept.target_invalid` |  | No such edit borrow, or it is running, already accepted or rejected, or its worktree was removed. | aggy inbox; aggy diag show &lt;borrow id&gt;. |
-| `accept.protected_path` | yes | The diff touches .git, a symlink or submodule, the hooks path, or a file that holds hooks, CI, config, or instructions. | Review the worktree by hand; never accept such a diff blind. |
+| `accept.protected_path` | yes | The diff touches .git, a symlink or submodule, the hooks path, or a file that holds hooks, CI, config, or instructions. | At a terminal aggy accept shows those files and their hunks and asks; with none, review the worktree by hand with the commands the refusal prints. A .git path, a symlink, or a submodule is never accepted. |
 | `accept.worktree_changed` | yes | The worktree changed after the borrow ended (edits in an on-screen session of this child, or a process it left behind?). | Review the worktree by hand. |
 | `accept.checkout_dirty` |  | The main checkout has changes in the paths the diff touches. | Commit or stash them, then accept again. |
 | `accept.failed` |  | Another accept error: git failed, or the diff no longer applies. | The record's msg; git status. |
