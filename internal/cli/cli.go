@@ -104,6 +104,8 @@ Commands:
   permissions
             List and change the rules every CLI shares, and take suggestions
   config    List and change aggy's settings: harness, model, permission mode
+  key       Store, list, or remove API keys for OpenCode in your OS keychain
+            (names only; no command prints a key)
   mcp       Copy Claude's public MCP servers into Codex and Grok
   attribution
             Install the commit hook that adds Aggy-Vendor and Aggy-Model
@@ -197,6 +199,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runPermissions(args[1:], stdout, stderr)
 	case "config":
 		return runConfig(args[1:], stdout, stderr)
+	case "key":
+		return runKey(args[1:], stdout, stderr)
 	case "mcp":
 		return runMCP(args[1:], stdout, stderr)
 	case "attribution":

@@ -149,6 +149,7 @@ func doctor(ctx context.Context, env checkEnv) doctorResult {
 		switch {
 		case vr.Installed && v == adapter.OpenCode:
 			fs = append(fs, openCodeManagedFindings()...)
+			fs = append(fs, keyFindings(ctx)...)
 		case vr.Installed && v == adapter.Hermes:
 			fs = append(fs, hermesFindings(ctx, vr)...)
 		case vr.Installed:

@@ -360,10 +360,11 @@ linters:
       - path: ^internal/(supervisor|borrow)/
         text: "`(exec\\.(Command|CommandContext)|os\\.StartProcess)`"
         linters: [forbidigo]
-      - path: ^internal/execrun/(execrun|pty_unix|direct_unix|proxy_unix)\.go$
+      # keychain.go runs the OS keychain tool for aggy key (T6931).
+      - path: ^internal/execrun/(execrun|pty_unix|direct_unix|proxy_unix|keychain)\.go$
         text: "`exec\\.(Command|CommandContext)`"
         linters: [forbidigo]
-      - path: ^internal/execrun/(execrun(_unix|_other)?|pty_unix|direct_unix)\.go$
+      - path: ^internal/execrun/(execrun(_unix|_other)?|pty_unix|direct_unix|keychain)\.go$
         text: "`exec\\.Cmd`"
         linters: [forbidigo]
       - path: ^internal/fakecli/build\.go$

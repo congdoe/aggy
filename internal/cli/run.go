@@ -24,6 +24,7 @@ import (
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/execrun"
 	"github.com/congdoe/aggy/internal/home"
+	"github.com/congdoe/aggy/internal/keyring"
 	"github.com/congdoe/aggy/internal/limits"
 	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/permissions"
@@ -480,6 +481,10 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			}
 		}
 	}
+	// T6931: a repo's [keys] table is ignored, whatever the vendor or policy.
+	if l := repoKeysLine(eff.Repo); l != "" && who == planOnScreen {
+		warns = append(warns, l)
+	}
 	if who == planOnScreen {
 		warns = append(warns, addPermissions(v, caps, rules, &req)...)
 	}
@@ -564,7 +569,8 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	if v == adapter.OpenCode {
 		oc, err := prepareOpenCode(openCodeInput{cfg: eff, caps: caps, cwd: pl.child.Cwd, dir: memDir,
 			model: pl.child.Model, memory: req.Memory, brief: briefText, noPolicy: t.NoPolicy, rules: rules, policy: plan.Decide(),
-			plan: plan, version: version, ids: readIdentities(ctx, s)})
+			plan: plan, version: version, ids: readIdentities(ctx, s),
+			keys: storedKeys(ctx, s), person: trustPerson(os.Getenv), readKey: func(k store.Key) (*keyring.Value, error) { return readKeychain(ctx, k) }})
 		if err != nil {
 			return fail(diag.CodePolicy, err)
 		}
