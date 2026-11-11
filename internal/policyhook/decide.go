@@ -435,6 +435,17 @@ func (d DecidePlan) protectedPath(p string) bool {
 	if hook.SameAsProtected(p, d.Protected, safefs.Stat, lstat) {
 		return true
 	}
+	// A link in the last part is judged by where it leads (#134 re-review):
+	// a write to repo/notes.md -> ~/.aggy/permissions.json is a write there.
+	if fi, err := lstat(p); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
+		r, err := realPath(p)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return true // cannot tell where it leads: ask
+		}
+		if err == nil && (d.protectedClean(r) || hook.SameAsProtected(r, d.Protected, safefs.Stat, lstat)) {
+			return true
+		}
+	}
 	dir, err := realPath(filepath.Dir(p))
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -478,6 +489,8 @@ func claudeSettingsPath(p string) bool {
 var protectedWords = []string{"policy-decide", ".aggy/run", ".aggy/permissions", ".aggy/trust.json", ".aggy/opencode-trust.json", "settings.local.json", "managed-settings",
 	// aggy's index and diagnostic log, which hold the launch rows a hook trusts
 	// (#134 review: live, a terminal sqlite3 on the index ran unasked).
+	// TODO(T6954): as bare words these ask on ordinary text that only names
+	// them (a commit message, say); narrow them to path-shaped mentions.
 	"aggy.db", "diag.db"}
 
 // aggyFolderWords name aggy's state folder in a shell command, and

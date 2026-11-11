@@ -36,6 +36,7 @@ func runDirect(c adapter.Command, runDir, parentID string, v adapter.Vendor, ass
 	if pin != nil {
 		// No keys pass through aggy here, so the first session a hook names
 		// is taken (supervisor.NewHermesClaim).
+		// TODO(T6954): the claim window under --direct (see NewHermesClaim).
 		p := *pin
 		p.Brief = true
 		srv.SetHermesPin(supervisor.NewHermesClaim(p).Answer)

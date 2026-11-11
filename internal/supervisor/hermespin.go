@@ -47,6 +47,11 @@ type HermesClaim struct {
 // NewHermesClaim holds p for a launch's hook. Under aggy --direct, where
 // aggy sees no keys, the caller sets p.Brief, so the first session a hook
 // names is taken: the earliest a tool call can come is the first turn.
+//
+// TODO(T6954): the claim window. When another launch in the same repo has a
+// key typed but no hook call yet, the first session a hook names may be that
+// launch's; and under --direct the first session named is taken outright.
+// Tie the claim to the launch's own Hermes process instead.
 func NewHermesClaim(p HermesPin) *HermesClaim {
 	return &HermesClaim{pin: p, session: p.Session, started: p.Brief}
 }

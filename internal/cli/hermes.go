@@ -792,6 +792,12 @@ func hermesClaimRow(ctx context.Context, l store.HermesLaunch, id string) error 
 // hermesAskPin asks the launch's supervisor, with the row's token, whether id
 // is its session, and for its decision plan's pin. errNotHermesSession is its
 // refusal; any other error is that it could not be asked.
+//
+// TODO(T6954): the hook does not authenticate the supervisor: the index row
+// picks the socket, so a script that binds a socket in the run directory and
+// edits the row can answer --no-policy (docs/design.md, "Consent and the
+// pin"). Check that the peer pid on the socket holds the supervisor's lock
+// for the row's parent id.
 func hermesAskPin(runDir string, l store.HermesLaunch, id string) (supervisor.Response, error) {
 	payload, _ := json.Marshal(map[string]string{"session_id": id})
 	resp, err := supervisor.Send(runDir, filepath.Join(runDir, l.ParentID+".sock"),

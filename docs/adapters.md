@@ -1109,7 +1109,8 @@ under aggy; every test runs fake-hermes (testdata/fakes/fake/hermes.go).
   launch's first turn (the brief, or an Enter in aggy's terminal); no move is
   followed.
 - Profile removal: `hermes profile delete <name> --yes` (LIVE), run by `aggy
-  unwire` for a profile aggy made (`hermes.ProfileReverse`).
+  unwire` for a profile aggy made (`hermes.ProfileReverse`), once the person
+  confirms at a terminal.
 - Transcripts: `hermes -p <profile> sessions export - --session-id <id> --format
   jsonl --redact`, one JSON session per line on stdout
   (`hermes_cli/subcommands/sessions.py:100-127`,
