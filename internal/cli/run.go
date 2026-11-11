@@ -415,8 +415,13 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	}
 	// T6966: after a declined first-run offer, whose one note said so, hooks
 	// not installed at all are not said on every launch.
-	if w := hookWarning(v); w != "" && (!hooksMissing(v) || !setupDeclined(ctx, s)) {
-		warns = append(warns, w)
+	// T6982: what is missing is asked about, with one key, at a new on-screen
+	// start; a switch, --direct, and a borrow's child only say it.
+	fix := findLaunchFix(ctx, v, hooksMissing(v) && setupDeclined(ctx, s))
+	if !t.Direct && t.SwitchFrom == "" && pl.child.Kind == "" {
+		warns = append(warns, offerLaunchFix(ctx, s, v, fix, Version, os.Getenv, offerIn, stderr)...)
+	} else {
+		warns = append(warns, fix.lines()...)
 	}
 	switch {
 	case pl.adopted:
@@ -961,6 +966,9 @@ func hookWarning(v adapter.Vendor) string {
 	switch {
 	case err != nil:
 		return ""
+	case len(pr.Absent) > 0 && slices.Contains(pr.Absent, "UserPromptSubmit"):
+		// T6982: say what the person loses, in their terms.
+		return fmt.Sprintf("some of aggy's hooks for %s are not installed (%s): a command picked from %s's menu goes to the model instead of aggy. aggy hooks install adds them", v, strings.Join(pr.Absent, ", "), v)
 	case len(pr.Absent) > 0:
 		return fmt.Sprintf("some of aggy's hooks for %s are not installed (%s), so aggy may miss what they report. aggy hooks install adds them", v, strings.Join(pr.Absent, ", "))
 	case len(pr.Stale) > 0:
