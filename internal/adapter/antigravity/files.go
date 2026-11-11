@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/congdoe/aggy/internal/hook"
 	"github.com/congdoe/aggy/internal/permissions"
+	"github.com/congdoe/aggy/internal/safefs"
 )
 
 // Settings renders the policy's decisions as the --settings file aggy passes:
@@ -209,7 +212,7 @@ func SetHooks(src, entry []byte) ([]byte, error) {
 	if src == nil {
 		return []byte("{\n  \"" + EntryName + "\": " + string(entry) + "\n}\n"), nil
 	}
-	open, end, ms, err := members(src)
+	open, _, ms, err := members(src)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +226,10 @@ func SetHooks(src, entry []byte) ([]byte, error) {
 		m := ms[at]
 		out = slices.Concat(src[:m.valStart], entry, src[m.valEnd:])
 	case len(ms) == 0:
-		out = slices.Concat(src[:open+1], []byte("\n  \""+EntryName+"\": "), entry, []byte("\n"), src[end:])
+		// Inserted right after the brace, so every byte the file had inside
+		// its braces stays after aggy's entry, and StripHooks gives it back
+		// (#141 review, L6).
+		out = slices.Concat(src[:open+1], []byte("\n  \""+EntryName+"\": "), entry, src[open+1:])
 	default:
 		last := ms[len(ms)-1].valEnd
 		out = slices.Concat(src[:last], []byte(",\n  \""+EntryName+"\": "), entry, src[last:])
@@ -234,7 +240,7 @@ func SetHooks(src, entry []byte) ([]byte, error) {
 // StripHooks returns src without aggy's entry, every other byte as it was. A
 // file without it is returned as it is.
 func StripHooks(src []byte) ([]byte, error) {
-	open, end, ms, err := members(src)
+	open, _, ms, err := members(src)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +250,9 @@ func StripHooks(src []byte) ([]byte, error) {
 	}
 	switch {
 	case len(ms) == 1:
-		return slices.Concat(src[:open+1], src[end:]), nil
+		// From the brace to the end of aggy's value: what SetHooks put in a
+		// file with no entries, so the bytes inside the braces come back.
+		return slices.Concat(src[:open+1], src[ms[0].valEnd:]), nil
 	case at < len(ms)-1:
 		return slices.Concat(src[:ms[at].keyStart], src[ms[at+1].keyStart:]), nil
 	}
@@ -274,3 +282,95 @@ func HasEntry(src, entry []byte) bool {
 // Reverse names, on a manifest row, the structural undo of aggy's entry in a
 // hooks file (StripHooks): the person's other entries stay as they are.
 const Reverse = "antigravity-hooks"
+
+// ErrHooksPath matches a hooks file aggy will not write or take its entry out
+// of because of where it is (#141 review, M1): its .agents folder is a link,
+// is not a folder, or resolves anywhere but inside the folder that holds it,
+// or the file itself is a link or not a regular file. Through such a path
+// aggy would write outside the launch folder, and git's tracked-file check
+// would look in the wrong place.
+var ErrHooksPath = errors.New("the hooks file's .agents folder or the file itself is a link or not what it seems")
+
+// CheckHooksPath refuses file (<folder>/.agents/hooks.json) when ErrHooksPath
+// says so; a missing .agents or file is fine, since aggy makes them. As
+// aggydir does for .aggy, it checks before each write and each undo; a link
+// made between the check and the write is not caught.
+func CheckHooksPath(file string) error {
+	dir := filepath.Dir(file)
+	bad := func(why string) error { return fmt.Errorf("%s: %w: %s", dir, ErrHooksPath, why) }
+	fi, err := safefs.Lstat(dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return err
+	case fi.Mode()&fs.ModeSymlink != 0:
+		return bad("it is a symbolic link")
+	case !fi.IsDir():
+		return bad("it is not a folder")
+	}
+	real, err := safefs.RealPath(dir)
+	if err != nil {
+		return err
+	}
+	parent, err := safefs.RealPath(filepath.Dir(dir))
+	if err != nil {
+		return err
+	}
+	if real != filepath.Join(parent, filepath.Base(dir)) {
+		return bad("it resolves outside the folder that holds it")
+	}
+	fi, err = safefs.Lstat(file)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return err
+	case !fi.Mode().IsRegular():
+		return fmt.Errorf("%s: %w: hooks.json is a link or not a regular file", file, ErrHooksPath)
+	}
+	return nil
+}
+
+// Names are a hooks file's top-level entry names, in file order.
+func Names(src []byte) ([]string, error) {
+	_, _, ms, err := members(src)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, m.key)
+	}
+	return out, nil
+}
+
+// ForeignEntry reports an entry named EntryName in src that aggy did not
+// write (#141 review, L6): its value is not Entry for any aggy path, which
+// aggy reads back from its SessionStart command. aggy refuses to take such
+// an entry over, since aggy unwire would then remove the person's own.
+func ForeignEntry(src []byte) (bool, error) {
+	_, _, ms, err := members(src)
+	if err != nil {
+		return false, err
+	}
+	at, err := find(ms)
+	if err != nil || at < 0 {
+		return false, err
+	}
+	var e struct {
+		SessionStart []handler `json:"SessionStart"`
+	}
+	if json.Unmarshal(src[ms[at].valStart:ms[at].valEnd], &e) != nil || len(e.SessionStart) != 1 {
+		return true, nil
+	}
+	bin, ok := strings.CutSuffix(e.SessionStart[0].Command, " hook antigravity --event SessionStart")
+	if !ok {
+		return true, nil
+	}
+	mine, err := Entry(bin)
+	if err != nil {
+		return true, nil
+	}
+	return !HasEntry(src, mine), nil
+}

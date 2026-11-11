@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -77,14 +78,15 @@ type PassFlags struct {
 	// allow_abbrev), where --yol is --yolo and --api-ke=x is --api-key=x, so no
 	// list of refused names can be complete (#134 review).
 	Only []string
-	// GoFlags is a CLI parsed by Go's flag package (Antigravity's agy, T6957):
-	// -name and --name are the same flag, a value goes as -name=value or
-	// -name value, a boolean flag takes =true or =false, and there are no
-	// short clusters. Every name in the table is written canonically: one
-	// dash for a one-letter flag (-c), two for a longer one (--mode). A word
-	// in either spelling is read as that canonical name (split), so
-	// -dangerously-skip-permissions and -mode=auto meet the same checks as
-	// their double-dash forms. A table without it is read as before.
+	// GoFlags is a CLI whose help reads like Go's flag package's (Antigravity's
+	// agy, T6957; that it is that parser is unverified): a value goes as
+	// --name=value or --name value, a boolean flag takes =true or =false, and
+	// letters are never run together. Every name in the table is written
+	// canonically, one dash for a one-letter flag (-c), two for a longer one
+	// (--mode), and only that spelling is read as the flag (goSplit): -mode or
+	// --c, which Go's parser would take and a getopt-style one would read
+	// otherwise, are refused as unchecked. A table without it is read as
+	// before.
 	GoFlags bool
 }
 
@@ -504,6 +506,14 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 				out.Print = true
 			}
 			for _, n := range p.Noted {
+				// A GoFlags switch noted as on (#141 review, L2): --sandbox=false
+				// would pass while the note says it is on, so any value but
+				// true is refused; leaving the flag out does the same.
+				if p.GoFlags && hasVal && slices.Contains(n.Names, name) {
+					if on, err := strconv.ParseBool(val); err != nil || !on {
+						return out, fmt.Errorf("%s=%s: write %s with no value, or leave it out to run without it", name, val, name)
+					}
+				}
 				if slices.Contains(n.Names, name) && !slices.Contains(out.Notes, n.Note) {
 					out.Notes = append(out.Notes, n.Note)
 				}
@@ -650,21 +660,28 @@ func (p PassFlags) split(a string) (name, val string, hasVal bool) {
 	return a, "", false
 }
 
-// goSplit is split for a GoFlags CLI: the flag's canonical name (one dash for
-// one letter, two for more) and its =value. Go's flag package takes one or two
-// dashes alike and nothing else, so a word of three dashes or more, which it
-// refuses as bad syntax, keeps its own spelling (and so matches nothing in the
-// table, where Only refuses it).
+// goSplit is split for a GoFlags CLI: the flag's name and its =value, with no
+// letters run together. Only the canonical spelling (one dash for one letter,
+// two for more) is read as the flag (#141 review, M2): that agy parses with
+// Go's flag package, which would take -model as --model, is an unverified
+// assumption, and under a getopt-style parser -prompt-interactive would be -p
+// (print mode) with a value. Both kinds of parser read the canonical spelling
+// the same way, so any other spelling (--c, -model, ---model) keeps its own
+// and matches nothing in the table, where Only refuses it.
 func goSplit(a string) (name, val string, hasVal bool) {
 	bare := strings.TrimPrefix(strings.TrimPrefix(a, "-"), "-")
 	if bare == "" || strings.HasPrefix(bare, "-") || !strings.HasPrefix(a, "-") {
 		return strings.Cut(a, "=")
 	}
 	n, val, hasVal := strings.Cut(bare, "=")
+	canon := "--" + n
 	if len(n) == 1 {
-		return "-" + n, val, hasVal
+		canon = "-" + n
 	}
-	return "--" + n, val, hasVal
+	if written, _, _ := strings.Cut(a, "="); written != canon {
+		return written, val, hasVal
+	}
+	return canon, val, hasVal
 }
 
 // listed refuses, where Only is set and the run is on screen, a flag that is

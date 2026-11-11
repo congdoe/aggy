@@ -75,10 +75,14 @@ const printWhy = "aggy runs Antigravity on screen only: Google's FAQ answers a q
 // --prompt (an alias of --print), and the flags that only shape a print run.
 var printFlags = []string{"-p", "--print", "--prompt", "--output-format", "--input-format", "--json-schema", "--print-timeout"}
 
-// PassFlags is `aggy antigravity`'s table. agy parses its flags with Go's
-// flag package (LIVE: "Usage of agy:", and an unknown flag prints "flags
-// provided but not defined: -no-such-flag"), so -name and --name are one flag
-// and a boolean takes =true or =false: GoFlags reads every word that way.
+// PassFlags is `aggy antigravity`'s table. agy's help and its unknown-flag
+// message look like Go's flag package's (LIVE: "Usage of agy:", and "flags
+// provided but not defined: -no-such-flag", where the standard library says
+// "flag provided"), but which parser it is, whether -name means --name, and
+// whether parsing stops at the first bare word are unverified. So GoFlags
+// passes only the canonical spelling of each flag (two dashes for a long
+// one), which every such parser reads alike, refuses a bare first word, and
+// never runs letters together.
 // aggy takes over --model, -c/--continue, and --conversation, and passes only
 // the flags in Only; every other dash-led word is refused.
 func (Adapter) PassFlags() adapter.PassFlags {

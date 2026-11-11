@@ -121,7 +121,9 @@ func Forward(label adapter.Vendor, getenv func(string) string) bool {
 	if getenv("AGGY_SOCKET") == "" {
 		return false
 	}
-	if label != adapter.Grok && (getenv("GROK_HOOK_EVENT") != "" || getenv("GROK_SESSION_ID") != "") {
+	// Antigravity's hooks come only from agy's own hooks files, which Grok
+	// never runs, so Grok's variables say nothing there (#141 review, L1).
+	if label != adapter.Grok && label != adapter.Antigravity && (getenv("GROK_HOOK_EVENT") != "" || getenv("GROK_SESSION_ID") != "") {
 		return false
 	}
 	return getenv("AGGY_VENDOR") == string(label)

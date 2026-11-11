@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -275,10 +276,179 @@ func TestAntigravityDoctor(t *testing.T) {
 		}
 		return strings.Join(out, ",")
 	}
-	if got := codes(antigravityFindings(checkup.Vendor{Capabilities: agyCaps})); got != "antigravity-scope,antigravity-updates" {
+	if got := codes(antigravityFindings(checkup.Vendor{Capabilities: agyCaps})); got != "antigravity-scope,antigravity-entry,antigravity-updates" {
 		t.Errorf("reachable: %s", got)
 	}
-	if got := codes(antigravityFindings(checkup.Vendor{Capabilities: []string{probe.CapResume}})); got != "antigravity-scope,antigravity-unreachable,antigravity-updates" {
+	if got := codes(antigravityFindings(checkup.Vendor{Capabilities: []string{probe.CapResume}})); got != "antigravity-scope,antigravity-unreachable,antigravity-entry,antigravity-updates" {
 		t.Errorf("unreachable: %s", got)
+	}
+}
+
+// TestAgyHooksLink (#141 review, M1): a .agents that is a link, or a
+// hooks.json that is one, is refused before anything is written, and the
+// folder it leads to is left as it was.
+func TestAgyHooksLink(t *testing.T) {
+	for _, c := range []string{"agents link", "hooks link", "agents a file"} {
+		t.Run(c, func(t *testing.T) {
+			repo, dir := agyWorld(t, false)
+			tickTrustRows(t, repo, trustRowAntigravity)
+			outside := t.TempDir()
+			switch c {
+			case "agents link":
+				if err := os.Symlink(outside, filepath.Join(repo, ".agents")); err != nil {
+					t.Fatal(err)
+				}
+			case "hooks link":
+				if err := os.Mkdir(filepath.Join(repo, ".agents"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(outside, "hooks.json"), []byte("{}\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(outside, "hooks.json"), filepath.Join(repo, ".agents", "hooks.json")); err != nil {
+					t.Fatal(err)
+				}
+			case "agents a file":
+				if err := os.WriteFile(filepath.Join(repo, ".agents"), []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := prepareAntigravity(context.Background(), agyIn(repo, dir))
+			if agyCode(err, diag.Code{}) != diag.CodeAgyHooksLink {
+				t.Fatalf("err = %v", err)
+			}
+			if b, _ := os.ReadFile(filepath.Join(outside, "hooks.json")); strings.Contains(string(b), "aggy") {
+				t.Errorf("wrote through the link: %s", b)
+			}
+		})
+	}
+}
+
+// TestAgyForeignAggyEntry (#141 review, L6): an entry named aggy that aggy
+// did not write is refused, never taken over.
+func TestAgyForeignAggyEntry(t *testing.T) {
+	repo, dir := agyWorld(t, false)
+	tickTrustRows(t, repo, trustRowAntigravity)
+	file := filepath.Join(repo, ".agents", "hooks.json")
+	const src = "{\"aggy\": {\"Stop\": [{\"type\": \"command\", \"command\": \"echo mine\", \"timeout\": 5}]}}\n"
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := prepareAntigravity(context.Background(), agyIn(repo, dir))
+	if agyCode(err, diag.Code{}) != diag.CodeAgyHooksFile || !strings.Contains(err.Error(), "did not write") {
+		t.Fatalf("err = %v", err)
+	}
+	if b, _ := os.ReadFile(file); string(b) != src {
+		t.Errorf("file changed: %s", b)
+	}
+}
+
+// TestAgyForeignEntryAppeared (#141 review, M3): an entry that appears after
+// aggy's last write asks before agy starts (default no); a change to the
+// person's own entry only rewrites aggy's; the hook and the exit say when the
+// file changed during a session.
+func TestAgyForeignEntryAppeared(t *testing.T) {
+	repo, dir := agyWorld(t, false)
+	tickTrustRows(t, repo, trustRowAntigravity)
+	ctx := context.Background()
+	if _, err := prepareAntigravity(ctx, agyIn(repo, dir)); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(repo, ".agents", "hooks.json")
+	if agyExitCheck(repo) != "" {
+		t.Errorf("unchanged file reported: %q", agyExitCheck(repo))
+	}
+	b, _ := os.ReadFile(file)
+	planted := strings.Replace(string(b), "{\n", "{\n  \"x\": {\"PreToolUse\": []},\n", 1)
+	if err := os.WriteFile(file, []byte(planted), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n := agyExitCheck(repo); !strings.Contains(n, `"x"`) {
+		t.Errorf("exit check = %q", n)
+	}
+	// The SessionStart or Stop hook, run in .agents, says so.
+	t.Chdir(filepath.Join(repo, ".agents"))
+	var stderr bytes.Buffer
+	agyHookCheck(&stderr)
+	if !strings.Contains(stderr.String(), "antigravity.hooks_changed") {
+		t.Errorf("hook check: %q", stderr.String())
+	}
+	// No terminal: refused.
+	if _, err := prepareAntigravity(ctx, agyIn(repo, dir)); agyCode(err, diag.Code{}) != diag.CodeAgyHooksForeign {
+		t.Fatalf("no terminal: %v", err)
+	}
+	// At a terminal, no: refused; yes: started, and recorded.
+	for _, typed := range []string{"n\n", "y\n"} {
+		inPlaceWorld(t, typed, true, false)
+		in := agyIn(repo, dir)
+		var out bytes.Buffer
+		in.getenv, in.in, in.out = os.Getenv, offerIn, &out
+		_, err := prepareAntigravity(ctx, in)
+		if typed == "n\n" && agyCode(err, diag.Code{}) != diag.CodeAgyHooksForeign {
+			t.Fatalf("no: %v", err)
+		}
+		if typed == "y\n" && err != nil {
+			t.Fatalf("yes: %v", err)
+		}
+	}
+	inPlaceWorld(t, "", false, false)
+	if _, err := prepareAntigravity(ctx, agyIn(repo, dir)); err != nil {
+		t.Fatalf("after yes: %v", err)
+	}
+}
+
+// TestAntigravityHookIgnoresGrok (#141 review, L1): Grok's variables do not
+// turn Antigravity's decisions off.
+func TestAntigravityHookIgnoresGrok(t *testing.T) {
+	repo, dir := agyWorld(t, false)
+	tickTrustRows(t, repo, trustRowAntigravity)
+	out, err := prepareAntigravity(context.Background(), agyIn(repo, dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"AGGY_SOCKET": "/tmp/x.sock", "AGGY_VENDOR": "antigravity", "GROK_HOOK_EVENT": "PreToolUse", "GROK_SESSION_ID": "s",
+		antigravity.PlanEnv: out.launch.Plan, antigravity.PlanSumEnv: out.launch.PlanSum}
+	payload := `{"toolCall":{"name":"run_command","args":{"CommandLine":"rm -rf build"}}}`
+	var stdout bytes.Buffer
+	antigravityHook([]string{"--event", "PreToolUse"}, strings.NewReader(payload), func(k string) string { return env[k] }, &stdout, &bytes.Buffer{})
+	if !strings.Contains(stdout.String(), "force_ask") {
+		t.Errorf("out = %q", stdout.String())
+	}
+}
+
+// TestAntigravityHookHalfPlan (#141 review, L4): a plan path without its sum,
+// or a sum without its path, asks; only both missing (--no-policy) gives no
+// decision. A panic in the decision asks.
+func TestAntigravityHookHalfPlan(t *testing.T) {
+	payload := `{"toolCall":{"name":"run_command","args":{"CommandLine":"ls"}}}`
+	run := func(env map[string]string) string {
+		var stdout bytes.Buffer
+		if code := antigravityHook([]string{"--event", "PreToolUse"}, strings.NewReader(payload), func(k string) string { return env[k] }, &stdout, &bytes.Buffer{}); code != 0 {
+			t.Fatalf("code %d", code)
+		}
+		return stdout.String()
+	}
+	base := map[string]string{"AGGY_SOCKET": "/tmp/x.sock", "AGGY_VENDOR": "antigravity"}
+	with := func(k, v string) map[string]string {
+		m := map[string]string{k: v}
+		for a, b := range base {
+			m[a] = b
+		}
+		return m
+	}
+	if got := run(with(antigravity.PlanEnv, "/tmp/plan.json")); !strings.Contains(got, "force_ask") {
+		t.Errorf("path only = %q", got)
+	}
+	if got := run(with(antigravity.PlanSumEnv, strings.Repeat("a", 64))); !strings.Contains(got, "force_ask") {
+		t.Errorf("sum only = %q", got)
+	}
+	old := agyDecideFn
+	t.Cleanup(func() { agyDecideFn = old })
+	agyDecideFn = func(string, string, io.Reader, io.Writer, io.Writer) int { panic("boom") }
+	if got := run(with(antigravity.PlanEnv, "/tmp/plan.json")); !strings.Contains(got, `"force_ask"`) {
+		t.Errorf("panic = %q", got)
 	}
 }

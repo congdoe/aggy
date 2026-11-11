@@ -31,7 +31,17 @@ func TestAntigravityCalls(t *testing.T) {
 		{"shell missing", "run_command", map[string]any{}, nil, false},
 		{"shell mistyped", "run_command", map[string]any{"CommandLine": 1}, nil, false},
 		{"view", "view_file", map[string]any{"AbsolutePath": "/repo/.env"}, []parity.Call{{Kind: parity.CallRead, Text: "/repo/.env"}}, true},
-		{"read_file with unseen args", "read_file", map[string]any{"Path": "x"}, nil, true},
+		// #141 review, HIGH-1: a known tool missing its expected key is judged
+		// by every path-like string, and asks when it has none.
+		{"read_file with no path-like arg asks", "read_file", map[string]any{"Path": "x"}, nil, false},
+		{"read_file by another key", "read_file", map[string]any{"Path": "/home/u/.ssh/id_rsa"}, []parity.Call{{Kind: parity.CallRead, Text: "/home/u/.ssh/id_rsa"}}, true},
+		{"read_file nested", "read_file", map[string]any{"Files": []any{map[string]any{"FilePath": "/repo/.env"}}}, []parity.Call{{Kind: parity.CallRead, Text: "/repo/.env"}}, true},
+		{"read_file with nothing asks", "read_file", map[string]any{}, nil, false},
+		{"search by another key", "grep_search", map[string]any{"Dir": "/etc", "Query": "x"}, []parity.Call{{Kind: parity.CallSearch, Text: "/etc"}}, true},
+		{"search with no path asks", "list_dir", map[string]any{"Recursive": true}, nil, false},
+		{"unknown with a path", "write_file", map[string]any{"Path": "/repo/.agents/hooks.json"},
+			[]parity.Call{{Kind: parity.CallRead, Text: "/repo/.agents/hooks.json", Other: true}, {Kind: parity.CallWrite, Text: "/repo/.agents/hooks.json", Other: true}}, true},
+		{"unknown with a URL only", "read_url", map[string]any{"Url": "https://x/y"}, nil, true},
 		{"write", "write_to_file", map[string]any{"TargetFile": "/repo/a.go"}, []parity.Call{{Kind: parity.CallWrite, Text: "/repo/a.go"}}, true},
 		{"replace", "replace_file_content", map[string]any{"TargetFile": "/repo/a.go"}, []parity.Call{{Kind: parity.CallWrite, Text: "/repo/a.go"}}, true},
 		{"multi replace", "multi_replace_file_content", map[string]any{"TargetFile": "/repo/a.go"}, []parity.Call{{Kind: parity.CallWrite, Text: "/repo/a.go"}}, true},
@@ -68,7 +78,7 @@ func TestAntigravityCalls(t *testing.T) {
 func TestJudgeAntigravity(t *testing.T) {
 	p := plan()
 	p.Protected = append(p.Protected, "/repo/.agents", "/home/u/.gemini")
-	p.Words = []string{".agents", ".gemini"}
+	p.Words = []string{".agents", "hooks.json", ".gemini"}
 	tests := []struct {
 		name string
 		tool string
@@ -92,6 +102,26 @@ func TestJudgeAntigravity(t *testing.T) {
 		{"climbing out asks", "write_to_file", map[string]any{"TargetFile": "/repo/../etc/x"}, parity.VerdictAsk},
 		{"search in the repo", "find_by_name", map[string]any{"SearchDirectory": "/repo/src"}, parity.VerdictNone},
 		{"unknown tool, no opinion", "browser_open", map[string]any{"Url": "https://x"}, parity.VerdictNone},
+		// #141 review, M3: spellings that reach the hooks file ask; ordinary
+		// globs and variables do not.
+		{"glob to the hooks file asks", "run_command", map[string]any{"CommandLine": "rm .ag*/hooks.json"}, parity.VerdictAsk},
+		{"find by name asks", "run_command", map[string]any{"CommandLine": "find . -name hooks.json -delete"}, parity.VerdictAsk},
+		{"built name asks", "run_command", map[string]any{"CommandLine": "d=.ag; rm -f ${d}ents/hooks.json"}, parity.VerdictAsk},
+		{"glob of the folder asks", "run_command", map[string]any{"CommandLine": "rm -rf .ag*"}, parity.VerdictAsk},
+		{"question-mark glob asks", "run_command", map[string]any{"CommandLine": "mv .a?ents /tmp/x"}, parity.VerdictAsk},
+		{"variable piece asks", "run_command", map[string]any{"CommandLine": "rm -r ${D}gents"}, parity.VerdictAsk},
+		{"dot-star asks", "run_command", map[string]any{"CommandLine": "rm -rf .*"}, parity.VerdictAsk},
+		{"plain star", "run_command", map[string]any{"CommandLine": "ls *"}, parity.VerdictNone},
+		{"glob in src", "run_command", map[string]any{"CommandLine": "rm src/*.go"}, parity.VerdictNone},
+		{"dot glob elsewhere", "run_command", map[string]any{"CommandLine": "ls .git*"}, parity.VerdictNone},
+		{"a variable", "run_command", map[string]any{"CommandLine": "echo $HOME/x ${PATH}"}, parity.VerdictNone},
+		{"agent word", "run_command", map[string]any{"CommandLine": "go test ./internal/agents/..."}, parity.VerdictNone},
+		// #141 review, HIGH-1 probes.
+		{"read_file by Path to a key asks", "read_file", map[string]any{"Path": "/home/u/.ssh/id_rsa"}, parity.VerdictAsk},
+		{"read_file by FilePath to .env asks", "read_file", map[string]any{"FilePath": "/repo/.env"}, parity.VerdictAsk},
+		{"read_file by Path in the repo", "read_file", map[string]any{"Path": "/repo/a.go"}, parity.VerdictNone},
+		{"unknown write to the hooks file asks", "write_file", map[string]any{"Path": "/repo/.agents/hooks.json", "Content": "{}"}, parity.VerdictAsk},
+		{"unknown tool on a path outside asks", "edit_file", map[string]any{"Path": "/etc/hosts"}, parity.VerdictAsk},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
