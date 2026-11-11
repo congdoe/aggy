@@ -198,7 +198,7 @@ func TestHermesHookNoPolicy(t *testing.T) {
 		t.Fatalf("no-policy: %q", stdout.String())
 	}
 	// T6954: a socket at the row's path whose answer comes without the proof
-	// that it holds the supervisor's lock, or an OS where that cannot be
+	// (the supervisor's lock file, held by no one else), or an OS where that cannot be
 	// checked (supervisor.ErrUnproven either way), asks: never no decision.
 	t.Run("unproven", func(t *testing.T) {
 		old := hermesPinSend
