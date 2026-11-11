@@ -17,10 +17,11 @@ build:
 vet:
 	go vet ./...
 
-# 30m per package, an explicit margin: internal/cli is the slowest, about 15
-# minutes under -race. Keep it in step with .github/workflows/ci.yml.
+# 20m per package, an explicit margin over Go's 10m default: internal/cli is
+# the slowest, about 8 minutes under -race (T6954). Keep it in step with
+# .github/workflows/ci.yml.
 test: vet
-	go test -race -timeout 30m ./...
+	go test -race -timeout 20m ./...
 
 # Keep the targets in step with the lint matrix in .github/workflows/ci.yml.
 lint: nocgo noasm

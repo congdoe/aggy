@@ -8,12 +8,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/congdoe/aggy/internal/adapter"
@@ -79,14 +81,11 @@ func Build(t testing.TB) Fakes {
 	src := filepath.Join(filepath.Dir(file), "..", "..", "testdata", "fakes", "fake")
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-claude")
-	cmd := exec.Command(goTool, "build", "-o", bin, ".")
-	cmd.Dir = src
-	cmd.Env = append(append([]string{}, buildEnv...), "CGO_ENABLED=0", "GOTOOLCHAIN=local")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("fakecli: go build: %v\n%s", err, out)
-	}
-	data, err := safefs.ReadFile(bin)
+	data, err := buildFake(src)
 	if err != nil {
+		t.Fatalf("fakecli: %v", err)
+	}
+	if err := safefs.WriteFile(bin, data, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, v := range []string{"codex", "grok", "opencode", "hermes", "hook", "mcp"} {
@@ -97,6 +96,41 @@ func Build(t testing.TB) Fakes {
 	f := Fakes{Dir: dir}
 	f.Claude, f.Codex, f.Grok, f.OpenCode, f.Hermes, f.Hook, f.MCP = f.For("claude"), f.For("codex"), f.For("grok"), f.For("opencode"), f.For("hermes"), f.For("hook"), f.For("mcp")
 	return f
+}
+
+// built holds the fake's bytes once built in this test process, so the go
+// tool runs once per process rather than once per Build (T6954): each Build
+// still writes fresh files of its own into its own temp dir.
+var built struct {
+	sync.Mutex
+	data []byte
+}
+
+// buildFake returns the fake built from src, building it the first time.
+func buildFake(src string) ([]byte, error) {
+	built.Lock()
+	defer built.Unlock()
+	if built.data != nil {
+		return built.data, nil
+	}
+	dir, err := safefs.MkdirTemp("", "aggy-fake")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = safefs.RemoveAll(dir) }()
+	bin := filepath.Join(dir, "fake")
+	cmd := exec.Command(goTool, "build", "-o", bin, ".")
+	cmd.Dir = src
+	cmd.Env = append(append([]string{}, buildEnv...), "CGO_ENABLED=0", "GOTOOLCHAIN=local")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("go build: %v\n%s", err, out)
+	}
+	data, err := safefs.ReadFile(bin)
+	if err != nil {
+		return nil, err
+	}
+	built.data = data
+	return data, nil
 }
 
 // BuildProxy compiles testdata/fakes/proxy, the stand-in for a tool's
