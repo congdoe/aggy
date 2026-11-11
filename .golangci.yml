@@ -343,7 +343,7 @@ linters:
         text: "use of `syscall\\.UnixRights`"
         linters: [forbidigo]
       - path: ^internal/supervisor/client_unix\.go$
-        text: "use of `syscall\\.(CmsgSpace|ParseSocketControlMessage|ParseUnixRights|Fstat|Close)`"
+        text: "use of `syscall\\.(CmsgSpace|CmsgLen|ParseSocketControlMessage|ParseUnixRights|Fstat|Close|MSG_CTRUNC|SOL_SOCKET|SCM_RIGHTS)`"
         linters: [forbidigo]
       # The socket's peer checks: the stdlib has no getpeereid
       # (LOCAL_PEERCRED) or LOCAL_PEERPID on darwin, so golang.org/x/sys/unix,
