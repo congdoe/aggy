@@ -36,25 +36,39 @@ type agyCall struct {
 
 // AntigravityCalls reads one PreToolUse payload into the calls to judge. ok is
 // false for a payload that is not a JSON object with a toolCall naming a tool,
-// or a call aggy cannot judge: those ask.
+// or a call aggy must ask about whatever it holds; calls are still returned
+// then, so a deny among them denies (JudgeAntigravity).
 //
-// The argument keys are from the docs only, but run_command's (LIVE), so a
-// known tool whose expected key is missing is not let through (#141 review,
-// HIGH-1): a read or search tool has every path-like string in its arguments
-// (pathStrings, nested ones too) judged as its kind, and asks when there is
-// none; a write tool missing TargetFile asks. A tool aggy does not know by
-// name is judged by a field it knows, and otherwise has each path-like string
-// judged as both a read and a write, never allowed (Call.Other). With no
-// path-like string at all it gets no opinion, as Claude's judge gives a tool
-// it does not know (ClaudeCalls): agy's own permission layer prompts by
-// default (LIVE for run_command; for other tools unverified). Hermes' judge
-// asks instead, since Hermes has no such layer for its other tools.
+// The argument keys are from the docs only, but run_command's (LIVE). So
+// (#141 review, HIGH-1; #144 re-review, MEDIUM-A):
+//   - A read or search tool missing its expected key asks, full stop, until a
+//     live check settles the real key (TODO(T6957): read_file's argument keys,
+//     docs/verification.md); every path-like string in its arguments is still
+//     judged as its kind.
+//   - A write tool missing TargetFile asks.
+//   - A tool aggy does not know by name is judged by a field it knows, and
+//     otherwise by every path-like string in its arguments (agyArgs: values
+//     and object keys at any depth, file:// URIs as their paths, a bare name
+//     joined to each absolute folder beside it) as both a read and a write,
+//     never allowed (Call.Other). A Windows-style path, which aggy cannot
+//     place, asks. With nothing path-like it gets no opinion, as Claude's
+//     judge gives a tool it does not know (ClaudeCalls): agy's own permission
+//     layer prompts by default (LIVE for run_command; for other tools
+//     unverified). Hermes' judge asks instead, since Hermes has no such layer
+//     for its other tools.
 func AntigravityCalls(payload []byte) (calls []parity.Call, ok bool) {
+	calls, ok, ask := agyCalls(payload)
+	return calls, ok && !ask
+}
+
+// agyCalls is AntigravityCalls with its two answers apart: ok false is a
+// payload aggy cannot read at all; ask is a readable call that must ask.
+func agyCalls(payload []byte) (calls []parity.Call, ok, ask bool) {
 	var in agyCall
 	var probe map[string]json.RawMessage
 	if json.Unmarshal(payload, &probe) != nil || probe == nil || json.Unmarshal(payload, &in) != nil ||
 		in.ToolCall == nil || in.ToolCall.Name == "" {
-		return nil, false
+		return nil, false, false
 	}
 	args := in.ToolCall.Args
 	field := func(k string) (string, bool) {
@@ -69,27 +83,30 @@ func AntigravityCalls(payload []byte) (calls []parity.Call, ok bool) {
 		return s, true
 	}
 	// must judges key as kind, asking when it cannot be read.
-	must := func(kind parity.CallKind, key string, other bool) ([]parity.Call, bool) {
+	must := func(kind parity.CallKind, key string, other bool) ([]parity.Call, bool, bool) {
 		s, has := field(key)
 		if !has || s == "" {
-			return nil, false
+			return nil, true, true
 		}
-		return []parity.Call{{Kind: kind, Text: s, Other: other}}, true
+		if u, isFile := fileURI(s); isFile && kind != parity.CallShell {
+			s = u
+		}
+		return []parity.Call{{Kind: kind, Text: s, Other: other}}, true, false
 	}
 	// paths judges key as kind where it is there; else every path-like
-	// string in the arguments, asking when there is none.
-	paths := func(kind parity.CallKind, key string) ([]parity.Call, bool) {
+	// string in the arguments, and asks.
+	paths := func(kind parity.CallKind, key string) ([]parity.Call, bool, bool) {
 		if _, present := args[key]; present {
 			return must(kind, key, false)
 		}
-		ps, ok := pathStrings(args)
-		if !ok || len(ps) == 0 {
-			return nil, false
+		found, readable := agyArgs(args)
+		if !readable {
+			return nil, false, false
 		}
-		for _, p := range ps {
+		for _, p := range found.paths {
 			calls = append(calls, parity.Call{Kind: kind, Text: p})
 		}
-		return calls, true
+		return calls, true, true
 	}
 	switch in.ToolCall.Name {
 	case "run_command":
@@ -106,10 +123,10 @@ func AntigravityCalls(payload []byte) (calls []parity.Call, ok bool) {
 		return paths(parity.CallSearch, "DirectoryPath")
 	case "manage_task":
 		if a, _ := field("Action"); a != "send_input" {
-			return nil, true
+			return nil, true, false
 		}
 		if _, present := args["Input"]; !present {
-			return nil, true
+			return nil, true, false
 		}
 		return must(parity.CallShell, "Input", true)
 	}
@@ -121,36 +138,56 @@ func AntigravityCalls(payload []byte) (calls []parity.Call, ok bool) {
 			return must(parity.CallWrite, k, true)
 		}
 	}
-	ps, ok := pathStrings(args)
-	if !ok {
-		return nil, false
+	found, readable := agyArgs(args)
+	if !readable {
+		return nil, false, false
 	}
-	for _, p := range ps {
+	for _, p := range found.paths {
 		calls = append(calls, parity.Call{Kind: parity.CallRead, Text: p, Other: true}, parity.Call{Kind: parity.CallWrite, Text: p, Other: true})
 	}
-	return calls, true
+	return calls, true, found.odd
 }
 
-// maxAgyStrings caps the strings pathStrings reads; more is not judged (ok
+// maxAgyStrings caps the strings agyArgs reads; more is not judged (readable
 // false), so the call asks.
 const maxAgyStrings = 256
 
-// pathStrings is every string in args, at any depth (objects and arrays),
-// that looks like a file path: no line break, not a URL, and starting with
-// /, ~, or ., or holding a /. ok is false when args hold more strings than
-// maxAgyStrings.
-func pathStrings(args map[string]json.RawMessage) (out []string, ok bool) {
+// agyFound is what agyArgs found in a tool's arguments.
+type agyFound struct {
+	paths []string // path-like strings, and bare names joined to folders
+	odd   bool     // a Windows-style path, which aggy cannot place
+}
+
+// agyArgs reads every string in args, values and object keys, at any depth.
+// A path-like one is kept (file:// URIs as their paths); a bare name (no
+// slash, no space) is kept joined to each absolute folder among the strings,
+// so {"File": "id_rsa", "Dir": "/repo"} is judged as /repo/id_rsa. readable is
+// false when args hold more strings than maxAgyStrings.
+func agyArgs(args map[string]json.RawMessage) (found agyFound, readable bool) {
 	n := 0
+	var names []string
 	var walk func(v any) bool
+	see := func(x string) bool {
+		if n++; n > maxAgyStrings {
+			return false
+		}
+		switch {
+		case winPath(x):
+			found.odd = true
+		case pathLike(x):
+			if u, isFile := fileURI(x); isFile {
+				x = u
+			}
+			found.paths = append(found.paths, x)
+		case bareName(x):
+			names = append(names, x)
+		}
+		return true
+	}
 	walk = func(v any) bool {
 		switch x := v.(type) {
 		case string:
-			if n++; n > maxAgyStrings {
-				return false
-			}
-			if pathLike(x) {
-				out = append(out, x)
-			}
+			return see(x)
 		case []any:
 			for _, e := range x {
 				if !walk(e) {
@@ -158,15 +195,22 @@ func pathStrings(args map[string]json.RawMessage) (out []string, ok bool) {
 				}
 			}
 		case map[string]any:
-			for _, e := range x {
-				if !walk(e) {
+			keys := make([]string, 0, len(x))
+			for k := range x {
+				keys = append(keys, k)
+			}
+			slices.Sort(keys)
+			for _, k := range keys {
+				if !see(k) || !walk(x[k]) {
 					return false
 				}
 			}
 		}
 		return true
 	}
-	// Keys in a fixed order, so the calls do not depend on map order.
+	// Keys in a fixed order, so the calls do not depend on map order. The
+	// top-level keys are aggy's to know (AbsolutePath and the like), not
+	// paths, so only nested keys are read as strings.
 	keys := make([]string, 0, len(args))
 	for k := range args {
 		keys = append(keys, k)
@@ -175,21 +219,73 @@ func pathStrings(args map[string]json.RawMessage) (out []string, ok bool) {
 	for _, k := range keys {
 		var v any
 		if json.Unmarshal(args[k], &v) != nil {
-			return nil, false
+			return agyFound{}, false
 		}
 		if !walk(v) {
-			return nil, false
+			return agyFound{}, false
 		}
 	}
-	return out, true
+	var dirs []string
+	for _, p := range found.paths {
+		if filepath.IsAbs(p) {
+			dirs = append(dirs, p)
+		}
+	}
+	for _, name := range names {
+		for _, d := range dirs {
+			if len(found.paths) >= maxAgyStrings {
+				return agyFound{}, false
+			}
+			found.paths = append(found.paths, filepath.Join(d, name))
+		}
+	}
+	return found, true
 }
 
-// pathLike says s looks like a file path to judge.
+// pathLike says s looks like a file path to judge: no line break, and
+// starting with /, ~, or ., or holding a /; a URL only when it is file://.
 func pathLike(s string) bool {
-	if s == "" || strings.ContainsAny(s, "\n\r") || strings.Contains(s, "://") {
+	if s == "" || strings.ContainsAny(s, "\n\r") {
 		return false
 	}
+	if strings.Contains(s, "://") {
+		_, isFile := fileURI(s)
+		return isFile
+	}
 	return strings.HasPrefix(s, "/") || strings.HasPrefix(s, "~") || strings.HasPrefix(s, ".") || strings.Contains(s, "/")
+}
+
+// fileURI is a file:// URI's path, its scheme and host taken off, its
+// percent escapes kept as written (a path aggy then judges as spelled).
+func fileURI(s string) (string, bool) {
+	rest, ok := strings.CutPrefix(strings.ToLower(s[:min(len(s), 7)])+s[min(len(s), 7):], "file://")
+	if !ok {
+		return "", false
+	}
+	if !strings.HasPrefix(rest, "/") {
+		_, after, found := strings.Cut(rest, "/")
+		if !found {
+			return "/", true
+		}
+		rest = "/" + after
+	}
+	return rest, true
+}
+
+// bareName says s could be a file name with no folder: one word with a
+// letter, no slash, no line break, at most 255 bytes.
+func bareName(s string) bool {
+	if s == "" || len(s) > 255 || strings.ContainsAny(s, "/\\ \t\n\r") {
+		return false
+	}
+	return strings.ContainsFunc(s, func(r rune) bool { return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' })
+}
+
+// winPath says s looks like a Windows path (C:\x, \\host\x), which aggy
+// cannot place, so the call asks.
+func winPath(s string) bool {
+	return len(s) >= 3 && s[1] == ':' && (s[2] == '\\' || s[2] == '/') && (s[0]|0x20 >= 'a' && s[0]|0x20 <= 'z') ||
+		strings.HasPrefix(s, "\\\\")
 }
 
 // JudgeAntigravity decides one PreToolUse payload by the plan. An allow is no
@@ -197,9 +293,10 @@ func pathLike(s string) bool {
 // aggy from asking. A file tool's path that is not absolute, or lies outside
 // the plan's root, asks short of a deny, as on Hermes: whether agy's own layer
 // asks for files outside its workspace is unverified, so aggy does not count
-// on it.
+// on it. A call agyCalls says must ask is judged first, so a deny still
+// denies, and otherwise asks.
 func JudgeAntigravity(plan DecidePlan, payload []byte) parity.CallDecision {
-	calls, ok := AntigravityCalls(payload)
+	calls, ok, ask := agyCalls(payload)
 	d := Judge(plan, calls, "", ok)
 	if ok && (d.Verdict == parity.VerdictNone || d.Verdict == parity.VerdictAllow) &&
 		slices.ContainsFunc(calls, func(c parity.Call) bool { return c.Kind != parity.CallShell && agyOutside(c.Text, plan.Root) }) {
@@ -208,6 +305,9 @@ func JudgeAntigravity(plan DecidePlan, payload []byte) parity.CallDecision {
 	if ok && (d.Verdict == parity.VerdictNone || d.Verdict == parity.VerdictAllow) &&
 		slices.ContainsFunc(calls, func(c parity.Call) bool { return c.Kind == parity.CallShell && agyReach(c.Text) }) {
 		d = parity.CallDecision{Verdict: parity.VerdictAsk, Group: d.Group, Strict: d.Strict, Reason: parity.ReasonProtected}
+	}
+	if ok && ask && d.Verdict != parity.VerdictDeny && d.Verdict != parity.VerdictAsk {
+		d = noPrompt(parity.CallDecision{Verdict: parity.VerdictAsk, Group: d.Group, Strict: d.Strict, Reason: parity.ReasonUnknownInput}, plan.NoPrompt)
 	}
 	return d
 }

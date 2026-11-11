@@ -1285,13 +1285,21 @@ runs fake-agy (testdata/fakes/fake/antigravity.go). `Tested` is 1.5.3 to 1.5.5.
   a link or not a regular file (`antigravity.CheckHooksPath`,
   `antigravity.hooks_link`; #141 review), and an entry named `aggy` that aggy
   did not write (`antigravity.ForeignEntry`), which it would otherwise take
-  over and later remove. After each write aggy records the file's hash and
-  entry names in its own state folder (`~/.aggy/antigravity/`); at the next
-  launch an entry that appeared since asks before agy starts (default no,
-  `antigravity.hooks_foreign`), since it could allow or auto-approve tools,
-  and the SessionStart and Stop hooks and the exit say when aggy's entry is
-  gone or changed or a new entry appeared (`hook.agy_file.changed`,
-  `hook.agy_file.changed`). Whether agy reads the file again during a
+  over and later remove. Every other entry in the file runs with the
+  session and could allow or auto-approve tools, so the first write into a
+  file that already holds other entries lists their names and asks before agy
+  starts (default no, `antigravity.hooks_foreign`). After each write aggy
+  records, in its own state folder (`~/.aggy/antigravity/`), the file's hash
+  and the hash of every entry but its own, byte for byte. At the next launch
+  any change to those other entries, not only a new name, asks the same way;
+  so does a missing record when aggy's manifest says it wrote the file
+  (#144 re-review, MEDIUM-B). The SessionStart and Stop hooks and the exit say
+  when aggy's entry is gone or changed or another entry changed
+  (`antigravity.hooks_changed`, logged as `hook.agy_file.changed`). The
+  record sits where the person's own processes can edit or delete it, as they
+  can the hooks file, so this catches mistakes and stray tools, not a
+  determined process; the shell judge asks before a command that names
+  `~/.aggy/antigravity`. Whether agy reads the file again during a
   session, and how it combines several hooks' decisions, are unverified. The
   entry runs aggy by its absolute path: once aggy is removed or moved, a plain
   agy there cannot start the hook, which blocks every tool (LIVE), until
@@ -1308,7 +1316,7 @@ runs fake-agy (testdata/fakes/fake/antigravity.go). `Tested` is 1.5.3 to 1.5.5.
   vendor's; Grok's hook variables are not consulted here) the hook reads its
   stdin, prints nothing, and exits 0, so a plain agy in that folder runs as
   without aggy. That empty output with exit 0 means "no opinion" to agy is
-  from the docs and the fake, not seen live. Inside one, SessionStart and Stop
+  modelled by the fake only, unverified. Inside one, SessionStart and Stop
   go to the supervisor as Claude's do (lineage checked), and PreToolUse is
   judged by the launch's plan (`policyhook.JudgeAntigravity`): deny is
   `{"decision":"deny","reason":...}`, ask is `{"decision":"force_ask",...}`
@@ -1328,14 +1336,19 @@ runs fake-agy (testdata/fakes/fake/antigravity.go). `Tested` is 1.5.3 to 1.5.5.
   (antigravity.google/docs/hooks). A file path that is not absolute or lies
   outside the repo asks, whether or not agy's own layer would. A shell or
   write tool with its field missing asks. A read or search tool with its field
-  missing has every path-like string in its arguments, at any depth, judged
-  as its kind, and asks when it has none (#141 review, HIGH-1: read_file's
-  real keys are unseen). A tool aggy does not know is judged by a field it
-  knows, else by every path-like string as both a read and a write, never
-  allowed; with no path-like string it gets no opinion, as Claude's judge
-  gives a tool it does not know (`ClaudeCalls`), since agy's own layer
-  prompts by default (LIVE for `run_command`); Hermes' judge asks instead,
-  as Hermes has no such layer. A shell command that names `.agents` or
+  missing asks, full stop, until a live check shows its real keys
+  (`TODO(T6957)`; #144 re-review, MEDIUM-A); every path-like string in its
+  arguments, at any depth, is still judged as its kind, so a deny still
+  denies. A path-like string is an absolute or dot-relative path, a `~`
+  path, or a `file://` URI (the scheme and host are dropped, and the path is
+  judged); object keys are judged as well as values; a bare name such as
+  `id_rsa` beside an absolute folder is judged joined to that folder; and a
+  Windows path (`C:\`, `\\host`) asks. A tool aggy does not know is judged
+  by a field it knows, else by those strings as both a read and a write,
+  never allowed; with none it gets no opinion, as Claude's judge gives a
+  tool it does not know (`ClaudeCalls`), since agy's own layer prompts by
+  default (LIVE for `run_command`); Hermes' judge asks instead, as Hermes
+  has no such layer. A shell command that names `.agents` or
   `hooks.json`, or reaches `.agents` by a dot glob (`.ag*`, `.*`) or around a
   variable (`${d}ents`), asks (`policyhook.agyReach`); `find . -delete` or a
   script still reaches it, which the file checks above catch afterwards.
@@ -1366,13 +1379,13 @@ runs fake-agy (testdata/fakes/fake/antigravity.go). `Tested` is 1.5.3 to 1.5.5.
 | Unconfirmed fact (Antigravity) | Fallback in code |
 | --- | --- |
 | `permissions.deny` and `ask` from `--settings` are honoured, and how `*` matches in a target | Both are passed; the hook judges every call anyway. |
-| Tool names and argument keys beyond `run_command {CommandLine}` (DOCS only) | A write without its field asks; a read or search without it is judged by every path-like string and asks with none; an unknown tool with no path-like string has no opinion and agy prompts. |
+| Tool names and argument keys beyond `run_command {CommandLine}` (DOCS only), and whether `file://` URIs appear in them | A write, read, or search without its field asks, its path-like strings still judged; `file://` URIs, keys, and bare names beside a folder are judged as paths, a Windows path asks; an unknown tool with no path-like string has no opinion and agy prompts. |
 | That agy's parser is Go's flag package (`-name` as `--name`, stopping at the first bare word) | Only canonical spellings pass; a bare first word is refused. |
 | A hook's empty output with exit 0 is "no opinion" | aggy relies on it for allow and no opinion; a wrong guess would block or prompt, not allow. |
-| agy reads `.agents/hooks.json` again during a session, and how several entries' decisions combine | aggy checks the file at each SessionStart, Stop, exit, and launch, and asks about a new entry at launch. |
+| agy reads `.agents/hooks.json` again during a session, and how several entries' decisions combine (one entry's `auto_approve` against aggy's `force_ask`) | aggy checks the file at each SessionStart, Stop, exit, and launch, and asks at launch about other entries on a first write and after any change to them. |
 | Which folder is the workspace for hooks when agy starts in a subfolder | aggy writes the hooks file in the launch folder; a session whose hooks never arrive is told so after an exit 1, and a switch waits for `/exit`. |
 | `--conversation=<id>` resume and `-i` (help only) | Built from the help; a fake models them. |
-| Whether a persisted "always allow" (agy's settings.json) beats `force_ask` | aggy's ask is `force_ask`, which beat an allow rule from `--settings` (LIVE). |
+| Whether a persisted "always allow" (agy's settings.json) beats `force_ask` | aggy's ask is `force_ask`, which beat an allow rule from `--settings` (LIVE). The fake's persisted allow is modelled on that, not verified. |
 | The transcript format and the token file's name | Nothing under `~/.gemini` or `~/.antigravity` is read. |
 | agy under aggy's pseudo-terminal: the alternate screen, OSC 7501, `/exit` typed by the switch, Ctrl-C | Built as for the other alternate-screen CLIs; untested live. |
 | Whether `GEMINI_API_KEY` or `GOOGLE_GEMINI_BASE_URL` in the person's environment moves agy off the subscription (DOCS name them only) | aggy never sets either; `aggy doctor` does not yet flag them. |

@@ -26,6 +26,7 @@ import (
 	"github.com/congdoe/aggy/internal/permissions"
 	"github.com/congdoe/aggy/internal/policyhook"
 	"github.com/congdoe/aggy/internal/safefs"
+	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/internal/trustlist"
 )
 
@@ -307,15 +308,15 @@ func writeAgyHooks(ctx context.Context, in agyInput, bin string) (written bool, 
 		if foreign, _ := antigravity.ForeignEntry(before); foreign {
 			return false, "", agyFail(diag.CodeAgyHooksFile, "%s already has an entry named %q that aggy did not write, so aggy left it as it is and did not start agy: rename that entry, then start again", file, antigravity.EntryName)
 		}
-		if _, added := agyHooksChanged(file, entry); len(added) > 0 {
+		if why, others := agyOthersChanged(ctx, file, before); why != "" {
 			dlog.Log(ctx, diag.Rec{Event: diag.EvAgyHooksChanged, Code: diag.CodeAgyHooksForeign, Vendor: string(adapter.Antigravity)})
 			yes := agyAsk(in, inPlace{
-				change: fmt.Sprintf("%s has entries aggy did not see when it last wrote the file: %q. An entry there runs with agy's tools and can allow or auto-approve them past aggy's hook.", file, added),
+				change: fmt.Sprintf("%s %s: %q. Every entry there runs with agy's tools in this session and can allow or auto-approve them past aggy's hook.", file, why, others),
 				undo:   "Nothing is changed by answering; look at the file first.",
 				ask:    "Start agy with those entries?",
 			})
 			if !yes {
-				return false, "", agyFail(diag.CodeAgyHooksForeign, "%s has entries aggy did not write since its last launch here (%q), so agy was not started: look at them, then start again at a terminal and answer yes, or remove them", file, added)
+				return false, "", agyFail(diag.CodeAgyHooksForeign, "%s %s (%q), so agy was not started: look at them, then start again at a terminal and answer yes, or remove them", file, why, others)
 			}
 		}
 		p.ExpectedHash = patch.Hash(before)
@@ -518,11 +519,16 @@ func agyRules(ds []parity.PolicyDecision) []antigravity.Rule {
 const agyEntryNote = "aggy's entry in a folder's .agents/hooks.json runs aggy by its absolute path: if you remove or move aggy, plain agy blocks every tool in that folder until you run aggy unwire (or delete the entry named aggy)"
 
 // agyRecord is what aggy keeps of a hooks file right after it last wrote it
-// or found its entry in place (#141 review, M3): the file's SHA-256 and its
-// entries' names, in aggy's own state folder, keyed by the file's path.
+// or found its entry in place (#141 review, M3): the file's SHA-256, the
+// SHA-256 of the file with aggy's entry taken out (Others: every other entry,
+// byte for byte), and the other entries' names, in aggy's own state folder,
+// keyed by the file's path. The person's own processes can edit or delete
+// it, as they can the hooks file, so it catches mistakes, not a determined
+// process (#144 re-review, MEDIUM-B).
 type agyRecord struct {
-	Hash  string   `json:"hash"`
-	Names []string `json:"names"`
+	Hash   string   `json:"hash"`
+	Others string   `json:"others"`
+	Names  []string `json:"names"`
 }
 
 // agyRecordPath is where aggy keeps file's record.
@@ -544,10 +550,24 @@ func readAgyRecord(file string) (agyRecord, bool) {
 		return r, false
 	}
 	b, err := safefs.ReadFileLimit(p, 1<<16)
-	if err != nil || json.Unmarshal(b, &r) != nil || r.Hash == "" {
+	if err != nil || json.Unmarshal(b, &r) != nil || r.Hash == "" || r.Others == "" {
 		return agyRecord{}, false
 	}
 	return r, true
+}
+
+// agyOthers is the hooks file without aggy's entry: its SHA-256 and the
+// names of the entries left.
+func agyOthers(src []byte) (hash string, names []string, err error) {
+	rest, err := antigravity.StripHooks(src)
+	if err != nil {
+		return "", nil, err
+	}
+	all, err := antigravity.Names(rest)
+	if err != nil {
+		return "", nil, err
+	}
+	return patch.Hash(rest), all, nil
 }
 
 // recordAgyHooks records the hooks file as it is now.
@@ -556,7 +576,7 @@ func recordAgyHooks(file string) error {
 	if err != nil {
 		return agyFail(diag.CodeAgyHooksFile, "cannot read %s back: %v", file, err)
 	}
-	names, err := antigravity.Names(src)
+	others, names, err := agyOthers(src)
 	if err != nil {
 		return agyFail(diag.CodeAgyHooksFile, "%s: %v", file, err)
 	}
@@ -567,34 +587,66 @@ func recordAgyHooks(file string) error {
 	if err := ensureDir(filepath.Dir(p)); err != nil {
 		return err
 	}
-	b, _ := json.Marshal(agyRecord{Hash: patch.Hash(src), Names: names})
+	b, _ := json.Marshal(agyRecord{Hash: patch.Hash(src), Others: others, Names: names})
 	return safefs.WriteFile(p, b, 0o600)
 }
 
+// agyWroteHooks reports whether aggy's manifest holds a change it applied to
+// file with aggy's entry as its undo: aggy wrote the file before.
+var agyWroteHooks = func(ctx context.Context, file string) bool {
+	st, err := store.OpenDefault(ctx)
+	if err != nil {
+		return true // cannot tell: count it as written, so a missing record asks
+	}
+	defer func() { _ = st.Close() }()
+	cs, err := st.Changes(ctx, "")
+	if err != nil {
+		return true
+	}
+	return slices.ContainsFunc(cs, func(c store.Change) bool {
+		return c.File == file && c.Reverse == antigravity.Reverse && c.Status == store.ChangeApplied
+	})
+}
+
+// agyOthersChanged compares the entries other than aggy's with the record
+// (#144 re-review, MEDIUM-B). why is "" when they are as aggy last saw them;
+// otherwise it says how, with names the entries now there. A missing record
+// counts as a change when aggy's manifest says it wrote the file and other
+// entries are there; a first write into a file that already holds entries
+// says so too.
+func agyOthersChanged(ctx context.Context, file string, src []byte) (why string, names []string) {
+	others, names, err := agyOthers(src)
+	if err != nil {
+		return "cannot be read as aggy wrote it", nil
+	}
+	rec, ok := readAgyRecord(file)
+	switch {
+	case ok && rec.Others != others:
+		return "has entries other than aggy's that changed or appeared since aggy last wrote it", names
+	case ok || len(names) == 0:
+		return "", names
+	case agyWroteHooks(ctx, file):
+		return "has entries other than aggy's, and aggy's record of the file is missing", names
+	}
+	return "already holds entries other than aggy's", names
+}
+
 // agyHooksChanged says how the hooks file differs from what aggy last
-// recorded: msg is "" when it holds aggy's entry exactly and no entry aggy did
-// not see; added are the entries that appeared since.
-func agyHooksChanged(file string, entry []byte) (msg string, added []string) {
+// recorded: "" when it holds aggy's entry exactly and the other entries are
+// as aggy last saw them.
+func agyHooksChanged(file string, entry []byte) string {
 	src, err := safefs.ReadFileLimit(file, agyMaxHooks)
 	if err != nil {
-		return "it cannot be read, so aggy's entry may be gone", nil
+		return "it cannot be read, so aggy's entry may be gone"
 	}
 	var why []string
 	if !antigravity.HasEntry(src, entry) {
 		why = append(why, "aggy's entry in it is gone or changed")
 	}
-	if rec, ok := readAgyRecord(file); ok && patch.Hash(src) != rec.Hash {
-		names, _ := antigravity.Names(src)
-		for _, n := range names {
-			if n != antigravity.EntryName && !slices.Contains(rec.Names, n) {
-				added = append(added, n)
-			}
-		}
-		if len(added) > 0 {
-			why = append(why, fmt.Sprintf("entries aggy did not write appeared (%q)", added))
-		}
+	if w, names := agyOthersChanged(context.Background(), file, src); w != "" && !strings.HasPrefix(w, "already") {
+		why = append(why, fmt.Sprintf("it %s (%q)", w, names))
 	}
-	return strings.Join(why, ", and "), added
+	return strings.Join(why, ", and ")
 }
 
 // agyHookCheck is the SessionStart and Stop hook's look at its own hooks file
@@ -614,7 +666,7 @@ func agyHookCheck(stderr io.Writer) {
 	if err != nil {
 		return
 	}
-	if msg, _ := agyHooksChanged(filepath.Join(wd, "hooks.json"), entry); msg != "" {
+	if msg := agyHooksChanged(filepath.Join(wd, "hooks.json"), entry); msg != "" {
 		dlog.Log(context.Background(), diag.Rec{Event: diag.EvAgyHooksChanged, Code: diag.CodeAgyHooksChanged, Vendor: string(adapter.Antigravity)})
 		fmt.Fprintf(stderr, "aggy: this folder's .agents/hooks.json changed during the session: %s %s\n", msg, dlog.Tag(diag.CodeAgyHooksChanged))
 	}
@@ -631,7 +683,7 @@ func agyExitCheck(cwd string) string {
 	if err != nil {
 		return ""
 	}
-	msg, _ := agyHooksChanged(filepath.Join(filepath.Clean(cwd), antigravity.HooksFile), entry)
+	msg := agyHooksChanged(filepath.Join(filepath.Clean(cwd), antigravity.HooksFile), entry)
 	if msg == "" {
 		return ""
 	}
