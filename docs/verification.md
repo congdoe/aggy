@@ -2276,8 +2276,8 @@ Second round (1.5.5, a trusted folder, logging hooks in `<folder>/.agents/hooks.
 **Live checks still owed** (none of these ran; the list from the #141 review):
 
 1. A PreToolUse hook that prints nothing and exits 0: that agy takes it as no opinion, for an allowed and for an unruled command.
-2. `read_file`'s real argument keys, and the docs' tool names and keys (`view_file {AbsolutePath}`, `write_to_file`, `replace_file_content`, `multi_replace_file_content {TargetFile}`, `grep_search {SearchPath}`, `find_by_name {SearchDirectory}`, `list_dir {DirectoryPath}`, `manage_task {Action, Input}`) in real payloads.
-3. Whether agy reads `.agents/hooks.json` again during a session (an entry added or removed mid-session), and how it combines several entries' PreToolUse decisions (deny and allow, force_ask and allow).
+2. `read_file`'s real argument keys, whether any file tool's arguments carry `file://` URIs, bare names beside a folder, or Windows paths, and the docs' tool names and keys (`view_file {AbsolutePath}`, `write_to_file`, `replace_file_content`, `multi_replace_file_content {TargetFile}`, `grep_search {SearchPath}`, `find_by_name {SearchDirectory}`, `list_dir {DirectoryPath}`, `manage_task {Action, Input}`) in real payloads.
+3. Whether agy reads `.agents/hooks.json` again during a session (an entry added or removed mid-session), and how it combines several entries' PreToolUse decisions (deny and allow, force_ask and allow, and one entry's `auto_approve` against aggy's `force_ask`).
 4. `permissions.deny` and `permissions.ask` from `--settings`: that they hold, and how a `*` in a target matches (`command(git push * main)`, `read_file(**/.env)`).
 5. agy's flag parser: whether `-model` means `--model`, whether `--c` is `-c`, whether letters run together, and whether parsing stops at the first bare word.
 6. A saved "always allow" (the approval prompt's third choice, written to agy's settings.json) against `force_ask`; and `force_ask` and `deny` under `--dangerously-skip-permissions` and under `--mode auto`.

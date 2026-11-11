@@ -372,6 +372,11 @@ func TestJudgeProtected(t *testing.T) {
 		{"Bash", map[string]any{"command": `cp x ".cla"ude/sett"ings.json"`}},
 		{"Bash", map[string]any{"command": "rm ~/.aggy/run/*/policy-decide.json"}},
 		{"Monitor", map[string]any{"command": "tee .claude/settings.local.json"}},
+		// #144 re-review, MEDIUM-B: aggy's record of agy's hooks file.
+		{"Bash", map[string]any{"command": "echo x > ~/.aggy/antigravity/x.json"}},
+		{"Bash", map[string]any{"command": "rm -r ~/.aggy/antigravity"}},
+		{"Bash", map[string]any{"command": "rm -r $AGGY_HOME/antigravity"}},
+		{"Bash", map[string]any{"command": "cd ~/.aggy && rm -r antigravity"}},
 	} {
 		got := judgeP(t, p, payload(t, tt.tool, tt.input, nil))
 		if got.Verdict != parity.VerdictAsk {
