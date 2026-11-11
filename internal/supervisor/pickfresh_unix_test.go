@@ -117,6 +117,15 @@ func TestTerminalReport(t *testing.T) {
 		{"\x1b[?1;2u", false},
 		{"\x1b[1;2$y", true},
 		{"\x1b[>1$y", false},
+		// T6982: XTQMODKEYS's and XTSMGRAPHICS's replies (xterm ctlseqs), which
+		// no key sends: they counted as typing and spoiled the line after them.
+		{"\x1b[>4;2m", true},
+		{"\x1b[>4m", true},
+		{"\x1b[?1;0;256S", true},
+		{"\x1b[?2;0;640;480S", true},
+		{"\x1b[1;2S", false}, // Shift+F4
+		{"\x1b[m", false},
+		{"\x1b[4m", false},
 	} {
 		if got := terminalReport([]byte(tt.in)); got != tt.want {
 			t.Errorf("terminalReport(%q) = %v, want %v", tt.in, got, tt.want)
