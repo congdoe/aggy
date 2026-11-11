@@ -3,6 +3,7 @@ package policyhook
 import (
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -642,5 +643,64 @@ func TestOpenCodeJudge(t *testing.T) {
 	}
 	if string(OpenCodeOutput(parity.CallDecision{Verdict: parity.VerdictNone})) != "none\n" {
 		t.Error("no opinion is not none")
+	}
+}
+
+// TestProtectedPathDangling (T6954): a link in the last part whose target is
+// not there yet is judged by where it leads, through a chain of links, and a
+// new path under a folder link is judged by the folder's real path; a link
+// that cannot be read asks.
+func TestProtectedPathDangling(t *testing.T) {
+	h, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, state := filepath.Join(h, "repo"), filepath.Join(h, ".aggy")
+	for _, d := range []string{repo, state} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	links := []struct{ name, to string }{
+		{"new.md", "../.aggy/newfile"},
+		{"abs.md", filepath.Join(state, "sub", "new")},
+		{"a.md", "b.md"},
+		{"b.md", "../.aggy/chained"},
+		{"fresh.md", "fresh-target.md"},
+		{"loop1", "loop2"},
+		{"loop2", "loop1"},
+		{"st", "../.aggy"},
+	}
+	for _, l := range links {
+		if err := os.Symlink(l.to, filepath.Join(repo, l.name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := plan()
+	p.Root, p.Protected = repo, []string{state}
+	for _, tt := range []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"a dangling link into aggy's state", "new.md", true},
+		{"an absolute dangling link under a folder not there yet", "abs.md", true},
+		{"a chain ending in aggy's state", "a.md", true},
+		{"a dangling link in the repo", "fresh.md", false},
+		{"a loop", "loop1", true},
+		{"a new folder under a link to aggy's state", "st/new/x", true},
+		{"a new file in a new folder in the repo", "new/dir/x.md", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := p.protectedPath(filepath.Join(repo, tt.path)); got != tt.want {
+				t.Errorf("protectedPath(%s) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+	old := readlink
+	readlink = func(string) (string, error) { return "", fs.ErrPermission }
+	t.Cleanup(func() { readlink = old })
+	if !p.protectedPath(filepath.Join(repo, "fresh.md")) {
+		t.Error("a link that cannot be read is not asked about")
 	}
 }
