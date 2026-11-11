@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/sessioncmd"
 )
 
 // cmdSess is a session at its prompt after a counted turn end, which can
@@ -207,5 +208,34 @@ func TestTypedSwitchConfirms(t *testing.T) {
 				t.Fatal("Run did not return")
 			}
 		})
+	}
+}
+
+// TestHookPickTellsNoTurn (T6982): on a fresh launch, a /switch the prompt hook
+// took, then a pick from the list it opened, is told at once that no turn has
+// ended: the blocked prompt started nothing, so nothing may be running.
+// Before, the line's keys counted as input and the note never came.
+func TestHookPickTellsNoTurn(t *testing.T) {
+	s := cmdSess(t, adapter.Claude)
+	s.turnRan, s.inputSinceTurn = false, false
+	s.alt.on = true // the key catch lets it through, as in the owner's run
+	for _, k := range append(strings.Split("/switch", ""), "\r") {
+		s.send([]byte(k))
+	}
+	c, _ := sessioncmd.Parse(adapter.Claude, "/switch")
+	if err := s.hookCommand(c, "/switch"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.open {
+		t.Fatal("the list did not open")
+	}
+	s.pickerInput([]byte("1"))
+	if s.sw.to != adapter.Grok {
+		t.Fatalf("switch %+v, want one to grok", s.sw)
+	}
+	s.lastIn = time.Now().Add(-time.Minute)
+	s.offerSwitch()
+	if !s.open || !s.sw.noteShown {
+		t.Errorf("open %v noteShown %v inputSinceTurn %v: want the no-turn note", s.open, s.sw.noteShown, s.inputSinceTurn)
 	}
 }

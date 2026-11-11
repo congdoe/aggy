@@ -317,6 +317,10 @@ func (s *session) hookCommand(c sessioncmd.Command, line string) error {
 	}
 	s.hookedName, s.hookedEnter = c.Name, s.enterAt
 	s.atPrompt = !s.held
+	// The blocked prompt started nothing, as a caught command's line does not
+	// (catchCommand), so a pick it opens is told what the CLI's launch state
+	// means, not held back as if a turn might run (T6982).
+	s.inputSinceTurn = s.lineInput
 	// TODO(T6975): a blocked prompt is taken as an empty composer, unverified;
 	// if the CLI puts the text back, an exit command is typed after it.
 	s.emptyComposer()
