@@ -40,10 +40,7 @@ const (
 type Call struct {
 	Kind CallKind
 	Text string
-	// Other is a call from a tool that is not the one a pre-approval is for
-	// (an MCP tool with a command, say): it is never allowed, and what would
-	// be an allow is no opinion, so the CLI's own flow decides (PR #129
-	// re-review).
+
 	Other bool
 }
 
@@ -94,24 +91,46 @@ type CallDecision struct {
 type PreApproved struct {
 	Commands []string
 	Reads    []ReadApproval
-	// CheckRead says the file a read names is still the one approved: the
-	// path as given, with no link on the way, and the same identity. Nil
-	// allows no read (internal/policyhook sets it, as it reads the disk).
+
 	CheckRead func(ReadApproval) bool
 }
 
 // ReadApproval is one exact read pre-approval: the cleaned absolute path and
-// the file's device and inode when aggy permissions add recorded them, so a
-// file replaced, or a link put in its place, asks again (PR #129 review).
+// the file's identity when aggy permissions add recorded it, so a file
+// replaced, or a link put in its place, asks again (PR #129 review). Each
+// field must match; none of them is the file's content, which aggy never
+// reads.
+//
+//   - Dev and Ino name the file on its disk. Alone they are not enough: Linux
+//     gives a new file the inode number of one just removed, so a key removed
+//     and written again can carry the same pair.
+//   - Size catches a replacement of another length.
+//   - ModNS, the modification time, catches a rewrite; the writer can set it
+//     back (touch -d), so it is not enough alone either.
+//   - ChangeNS, the status change time, cannot be set directly: any write,
+//     chmod, chown, or link moves it to now, so a file made again at
+//     the same inode has a later one. A chmod of the key asks the person
+//     again, which is fine. Linux stamps it from a coarse clock (a few
+//     milliseconds), so a file removed and written again, at the same size,
+//     within one tick, and with its mtime set back, would still match; that
+//     takes a program racing the clock on the person's disk. 0 on an OS
+//     that reports none (safefs.FileChange).
 type ReadApproval struct {
-	Path string `json:"path"`
-	Dev  uint64 `json:"dev"`
-	Ino  uint64 `json:"ino"`
+	Path     string `json:"path"`
+	Dev      uint64 `json:"dev"`
+	Ino      uint64 `json:"ino"`
+	Size     int64  `json:"size"`
+	ModNS    int64  `json:"mod_ns"`
+	ChangeNS int64  `json:"change_ns"`
 }
 
+// Same reports b as the same file as a: every identity field equal.
+func (a ReadApproval) Same(b ReadApproval) bool { return a == b }
+
 // ReadIdentity is the identity aggy recorded for an exact read
-// pre-approval's path, from the index; ok is false when there is none.
-type ReadIdentity func(path string) (dev, ino uint64, ok bool)
+// pre-approval's path, from the index, with its Path set; ok is false when
+// there is none, or only one an older aggy wrote without every field.
+type ReadIdentity func(path string) (ReadApproval, bool)
 
 // PreApprovedFrom collects the exact pre-approvals in s: allows from aggy's
 // own permissions file only (permissions.FromAggy and FromAggyRepo), which
@@ -144,8 +163,8 @@ func PreApprovedFrom(s permissions.Set, root string, ids ReadIdentity) PreApprov
 		if !ok || !s.Trusted || ids == nil || slices.ContainsFunc(out.Reads, func(a ReadApproval) bool { return a.Path == p }) {
 			continue
 		}
-		if dev, ino, ok := ids(p); ok {
-			out.Reads = append(out.Reads, ReadApproval{Path: p, Dev: dev, Ino: ino})
+		if a, ok := ids(p); ok && a.Path == p {
+			out.Reads = append(out.Reads, a)
 		}
 	}
 	return out

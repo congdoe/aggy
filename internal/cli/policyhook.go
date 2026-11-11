@@ -286,14 +286,18 @@ func settingsHooksOff(p string) bool {
 }
 
 // readIdentities looks up read pre-approvals' identities in the index s; nil
-// s gives none.
+// s gives none. A row recorded before aggy kept the size and times gives none
+// either, so that read asks until the rule is added again.
 func readIdentities(ctx context.Context, s *store.Store) parity.ReadIdentity {
 	if s == nil {
 		return nil
 	}
-	return func(p string) (uint64, uint64, bool) {
-		dev, ino, ok, err := s.ReadApprovalFor(ctx, p)
-		return dev, ino, ok && err == nil
+	return func(p string) (parity.ReadApproval, bool) {
+		a, ok, err := s.ReadApprovalFor(ctx, p)
+		if !ok || err != nil || !a.Complete {
+			return parity.ReadApproval{}, false
+		}
+		return parity.ReadApproval{Path: a.Path, Dev: a.Dev, Ino: a.Ino, Size: a.Size, ModNS: a.ModNS, ChangeNS: a.ChangeNS}, true
 	}
 }
 

@@ -157,7 +157,9 @@ func TestPreApprovedFrom(t *testing.T) {
 		rule("Read(~/.ssh/id_rsa)", permissions.FromAggy),
 		{Kind: permissions.Ask, Text: "Bash(rm -rf x)", Origin: permissions.FromAggy},
 	}}
-	ids := func(p string) (uint64, uint64, bool) { return 1, uint64(len(p)), p != "/etc/ssl/k.pem" }
+	ids := func(p string) (ReadApproval, bool) {
+		return ReadApproval{Path: p, Dev: 1, Ino: uint64(len(p))}, p != "/etc/ssl/k.pem"
+	}
 	paths := func(rs []ReadApproval) string {
 		var out []string
 		for _, r := range rs {

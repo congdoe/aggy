@@ -124,12 +124,12 @@ func TestJudgeTools(t *testing.T) {
 	if err := os.WriteFile(key, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dev, ino, err := FileIdentity(root, key)
+	id, err := FileIdentity(root, key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := NewDecidePlan("claude", "", false, parity.PolicyPlan{OnScreen: true},
-		parity.PreApproved{Commands: []string{force}, Reads: []parity.ReadApproval{{Path: key, Dev: dev, Ino: ino}}})
+		parity.PreApproved{Commands: []string{force}, Reads: []parity.ReadApproval{id}})
 	p.Root = root
 	for _, tt := range []struct {
 		tool  string
@@ -139,8 +139,7 @@ func TestJudgeTools(t *testing.T) {
 		{"Bash", map[string]any{"command": force}, parity.VerdictAllow},
 		{"Bash", map[string]any{"command": force + " && true"}, parity.VerdictAsk},
 		{"Bash", map[string]any{"command": "ls"}, parity.VerdictNone},
-		// PR #129 review, HIGH-3: Monitor runs a shell command, and a tool
-		// aggy does not know by name is judged by its input.
+
 		{"Monitor", map[string]any{"command": "rm -rf ~", "description": "x"}, parity.VerdictAsk},
 		{"Monitor", map[string]any{"command": force}, parity.VerdictAllow},
 		{"mcp__shell__run", map[string]any{"command": "git push --force origin dev"}, parity.VerdictAsk},
@@ -285,13 +284,13 @@ func TestOtherToolNeverAllowed(t *testing.T) {
 	if err := os.WriteFile(key, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dev, ino, err := FileIdentity(root, key)
+	id, err := FileIdentity(root, key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := plan()
 	p.Root, p.Commands = root, []string{"rm -rf node_modules"}
-	p.Reads = []parity.ReadApproval{{Path: key, Dev: dev, Ino: ino}}
+	p.Reads = []parity.ReadApproval{id}
 	for _, tt := range []struct {
 		tool  string
 		input map[string]any
@@ -361,7 +360,7 @@ func TestJudgeProtected(t *testing.T) {
 		{"Write", map[string]any{"file_path": filepath.Join(root, "main.go")}},
 		{"Write", map[string]any{"file_path": filepath.Join(root, ".vscode", "launch.json")}},
 		{"Bash", map[string]any{"command": "go test ./..."}},
-		// PR #129 re-review: .aggy and the word run are not the run folder.
+
 		{"Bash", map[string]any{"command": "cat .aggy/memory.md && npm run build"}},
 		{"Bash", map[string]any{"command": "ls ~/.aggy/runner"}},
 		{"Read", map[string]any{"file_path": filepath.Join(root, ".claude", "settings.json")}},
@@ -427,34 +426,57 @@ func TestJudgeTrustRecords(t *testing.T) {
 // TestReadIdentity (PR #129 review, MEDIUM-4): a read pre-approval allows only
 // the same file at the same path: not a symlink put in its place or on its
 // path, not a replaced file, not a path outside the root.
+//
+// T6976 (CI on ubuntu): device and inode alone allowed a replaced file, since
+// Linux gave the new file the inode number the removed one freed. The cases
+// below do not depend on whether this OS reuses an inode: the replaced file
+// has another size, and the reuse is forced by a recorded identity with the
+// file's own device and inode but other size and times.
 func TestReadIdentity(t *testing.T) {
 	root := t.TempDir()
-	write := func(p string) {
+	write := func(p, content string) {
 		t.Helper()
 		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(p, []byte("k"), 0o600); err != nil {
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	key, other := filepath.Join(root, "certs", "server.key"), filepath.Join(root, "other.key")
-	write(key)
-	write(other)
-	dev, ino, err := FileIdentity(root, key)
+	write(key, "k")
+	write(other, "k")
+	id, err := FileIdentity(root, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mk := func() DecidePlan {
+	readAs := func(a parity.ReadApproval) parity.Verdict {
 		d := plan()
-		d.Root, d.Reads = root, []parity.ReadApproval{{Path: key, Dev: dev, Ino: ino}}
-		return d
+		d.Root, d.Reads = root, []parity.ReadApproval{a}
+		return judgeP(t, d, payload(t, "Read", map[string]any{"file_path": key}, nil)).Verdict
 	}
-	read := func() parity.Verdict {
-		return judgeP(t, mk(), payload(t, "Read", map[string]any{"file_path": key}, nil)).Verdict
-	}
+	read := func() parity.Verdict { return readAs(id) }
 	if v := read(); v != parity.VerdictAllow {
 		t.Fatalf("same file: %s", v)
+	}
+	// The recorded identity differs from the file in one field, or (inode
+	// reuse) in everything but device and inode.
+	for _, tt := range []struct {
+		name string
+		edit func(*parity.ReadApproval)
+	}{
+		{"inode reused", func(a *parity.ReadApproval) { a.Size, a.ModNS, a.ChangeNS = a.Size+1, a.ModNS-1, a.ChangeNS-1 }},
+		{"device", func(a *parity.ReadApproval) { a.Dev++ }},
+		{"inode", func(a *parity.ReadApproval) { a.Ino++ }},
+		{"size", func(a *parity.ReadApproval) { a.Size++ }},
+		{"modification time", func(a *parity.ReadApproval) { a.ModNS-- }},
+		{"change time", func(a *parity.ReadApproval) { a.ChangeNS-- }},
+	} {
+		a := id
+		tt.edit(&a)
+		if v := readAs(a); v != parity.VerdictAsk {
+			t.Errorf("%s differs: %s", tt.name, v)
+		}
 	}
 	// A symlink in its place, to another key.
 	if err := os.Remove(key); err != nil {
@@ -471,20 +493,21 @@ func TestReadIdentity(t *testing.T) {
 	if err := os.Rename(filepath.Join(root, "certs"), filepath.Join(root, "real")); err != nil {
 		t.Fatal(err)
 	}
-	write(filepath.Join(root, "real", "server.key"))
+	write(filepath.Join(root, "real", "server.key"), "k")
 	if err := os.Symlink(filepath.Join(root, "real"), filepath.Join(root, "certs")); err != nil {
 		t.Fatal(err)
 	}
 	if v := read(); v != parity.VerdictAsk {
 		t.Errorf("a symlink on its path: %s", v)
 	}
-	// A replaced file at the same path.
+	// A replaced file at the same path, which may well get the removed file's
+	// inode on Linux: its size differs, so this asks whatever the inode.
 	_ = os.Remove(filepath.Join(root, "certs"))
-	write(key)
+	write(key, "another key")
 	if v := read(); v != parity.VerdictAsk {
 		t.Errorf("a replaced file: %s", v)
 	}
-	if _, _, err := FileIdentity(root, filepath.Join(filepath.Dir(root), "x.key")); err == nil {
+	if _, err := FileIdentity(root, filepath.Join(filepath.Dir(root), "x.key")); err == nil {
 		t.Error("a path outside the root has an identity")
 	}
 }

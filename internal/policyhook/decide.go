@@ -165,24 +165,27 @@ var lstat = safefs.Lstat
 // sameFile says a read pre-approval's file is still the one the person
 // approved (PR #129 review, MEDIUM-4): it lies under the plan's root, no part
 // of its path below the root is a symlink, and it is a regular file with the
-// device and inode recorded when it was added. A replaced file, a link in its
-// place or on the way, or anything it cannot check, asks again.
+// identity recorded when it was added (parity.ReadApproval says what each
+// field defends against). A replaced file, a link in its place or on the way,
+// or anything it cannot check, asks again.
 func (d DecidePlan) sameFile(a parity.ReadApproval) bool {
-	dev, ino, err := FileIdentity(d.Root, a.Path)
-	return err == nil && dev == a.Dev && ino == a.Ino
+	got, err := FileIdentity(d.Root, a.Path)
+	return err == nil && got.Same(a)
 }
 
-// FileIdentity is the device and inode of the regular file at p, which must
-// be absolute, clean, and under root, with no symlink at any part of its path
+// FileIdentity is the identity of the regular file at p, which must be
+// absolute, clean, and under root, with no symlink at any part of its path
 // below root: what aggy permissions add records for a read pre-approval, and
-// what the hook compares against. Anything else is an error.
-func FileIdentity(root, p string) (dev, ino uint64, err error) {
+// what the hook compares against. It reads metadata only, never the file.
+// Anything else is an error.
+func FileIdentity(root, p string) (parity.ReadApproval, error) {
+	var none parity.ReadApproval
 	if !filepath.IsAbs(root) || !filepath.IsAbs(p) || filepath.Clean(p) != p {
-		return 0, 0, errors.New("not an absolute, clean path under the repo")
+		return none, errors.New("not an absolute, clean path under the repo")
 	}
 	rel, err := filepath.Rel(filepath.Clean(root), p)
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return 0, 0, errors.New("not under the repo")
+		return none, errors.New("not under the repo")
 	}
 	cur := filepath.Clean(root)
 	parts := strings.Split(rel, string(filepath.Separator))
@@ -190,23 +193,24 @@ func FileIdentity(root, p string) (dev, ino uint64, err error) {
 		cur = filepath.Join(cur, name)
 		fi, err := lstat(cur)
 		if err != nil {
-			return 0, 0, err
+			return none, err
 		}
 		last := i == len(parts)-1
 		switch {
 		case fi.Mode()&fs.ModeSymlink != 0:
-			return 0, 0, errors.New("a symlink is on its path")
+			return none, errors.New("a symlink is on its path")
 		case !last && !fi.IsDir():
-			return 0, 0, errors.New("not a folder on its path")
+			return none, errors.New("not a folder on its path")
 		case last:
 			dev, ino, ok := safefs.FileID(fi)
 			if !ok || !fi.Mode().IsRegular() {
-				return 0, 0, errors.New("not a regular file")
+				return none, errors.New("not a regular file")
 			}
-			return dev, ino, nil
+			change, _ := safefs.FileChange(fi)
+			return parity.ReadApproval{Path: p, Dev: dev, Ino: ino, Size: fi.Size(), ModNS: fi.ModTime().UnixNano(), ChangeNS: change}, nil
 		}
 	}
-	return 0, 0, errors.New("no file")
+	return none, errors.New("no file")
 }
 
 // ClaudeHookTools are the Claude Code tools aggy's decision hook judges by

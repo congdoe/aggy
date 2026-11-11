@@ -165,7 +165,16 @@ func permissionsList(args []string, stdout, stderr io.Writer) int {
 	printPermissionsHeader(stdout, s, in)
 	printRules(stdout, s)
 	if cwd, err := os.Getwd(); err == nil {
-		printPreApprovals(stdout, s, cwd)
+		var legacy func(string) bool
+		ctx := context.Background()
+		if db, _, err := openIndexReadOnly(ctx); err == nil && db != nil {
+			defer func() { _ = db.Close() }()
+			legacy = func(p string) bool {
+				a, ok, err := db.ReadApprovalFor(ctx, p)
+				return ok && err == nil && !a.Complete
+			}
+		}
+		printPreApprovals(stdout, s, cwd, legacy)
 	}
 	if n := len(s.Skipped); n > 0 {
 		fmt.Fprintf(stdout, "\n%d rules do not apply. aggy permissions show says why.\n", n)
@@ -356,9 +365,9 @@ func permissionsChange(args []string, remove bool, stdout, stderr io.Writer) int
 // readApprovalIn is an exact Read allow's file: its path, and its identity or
 // why there is none.
 type readApprovalIn struct {
-	path     string
-	dev, ino uint64
-	err      error
+	path string
+	id   parity.ReadApproval
+	err  error
 }
 
 // readPreApproval reads the file an exact Read allow names, from cwd's repo
@@ -375,8 +384,8 @@ func readPreApproval(rule, cwd string, kind permissions.Kind) readApprovalIn {
 	if root == "" {
 		return readApprovalIn{path: p, err: errors.New("not in a git repo")}
 	}
-	dev, ino, err := policyhook.FileIdentity(root, p)
-	return readApprovalIn{path: p, dev: dev, ino: ino, err: err}
+	id, err := policyhook.FileIdentity(root, p)
+	return readApprovalIn{path: p, id: id, err: err}
 }
 
 // recordReadApproval records, or with remove forgets, a read pre-approval's
@@ -395,7 +404,8 @@ func recordReadApproval(ctx context.Context, r readApprovalIn, remove bool) erro
 		return err
 	}
 	defer func() { _ = s.Close() }()
-	return s.PutReadApproval(ctx, store.ReadApproval{Path: r.path, Dev: r.dev, Ino: r.ino, At: time.Now()})
+	id := r.id
+	return s.PutReadApproval(ctx, store.ReadApproval{Path: r.path, Dev: id.Dev, Ino: id.Ino, Size: id.Size, ModNS: id.ModNS, ChangeNS: id.ChangeNS, At: time.Now()})
 }
 
 // preApproval is what an allow rule pre-approves of the safety policy: the
@@ -470,8 +480,11 @@ func policyCoveredLine(rule, cwd string, policy map[string]permissions.Kind) str
 }
 
 // printPreApprovals lists the exact pre-approvals of policy matches in s, the
-// strict ones marked.
-func printPreApprovals(w io.Writer, s permissions.Set, cwd string) {
+// strict ones marked. legacy, which may be nil, reports a read pre-approval
+// whose recorded identity predates the size and times aggy now compares: it
+// matches no file, so the line says it asks until the rule is added again.
+func printPreApprovals(w io.Writer, s permissions.Set, cwd string, legacy func(path string) bool) {
+	root, _ := repoRoot(cwd)
 	var lines []string
 	for _, r := range s.Rules {
 		if r.Kind != permissions.Allow || (r.Origin != permissions.FromAggy && r.Origin != permissions.FromAggyRepo) {
@@ -484,6 +497,9 @@ func printPreApprovals(w io.Writer, s permissions.Set, cwd string) {
 		mark := ""
 		if m.strict {
 			mark = "  STRICT"
+		}
+		if p, ok := parity.ExactRead(r.Text, root); ok && legacy != nil && legacy(p) {
+			mark += "  (added before aggy recorded enough of the file to tell a replaced one: asks until you add it again)"
 		}
 		lines = append(lines, fmt.Sprintf("  %s  [%s] %s%s", termsafe.Field(r.Text), originName(r.Origin), strings.Join(m.groups, ", "), mark))
 	}
