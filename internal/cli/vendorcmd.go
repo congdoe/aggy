@@ -12,13 +12,14 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/claude"
 	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
+	"github.com/congdoe/aggy/internal/adapter/hermes"
 	"github.com/congdoe/aggy/internal/adapter/opencode"
 	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/safefs"
 	"github.com/congdoe/aggy/internal/termsafe"
 )
 
-const vendorUsage = `Usage: aggy <claude|codex|grok|opencode> [--direct] [--no-policy] [--tool NAME]... [the CLI's own flags] [prompt]
+const vendorUsage = `Usage: aggy <claude|codex|grok|opencode|hermes> [--direct] [--no-policy] [--tool NAME]... [the CLI's own flags] [prompt]
 
 Starts a new session of that CLI here, with the CLI's own flags and first
 prompt, as if you had opened it yourself: aggy claude --model opus "fix the
@@ -80,11 +81,21 @@ aggy opencode takes only the flags above, none of OpenCode's own. Its model
 is provider/model. As on the other CLIs, --model on a resume applies in opencode
 mini; on the full screen a resumed session keeps its own. Full auto is the
 [opencode] auto setting, in a repo you ran aggy trust --opencode on.
+
+aggy hermes starts Hermes' classic screen (hermes chat --cli) in a profile
+aggy makes for this repo, once Hermes is ticked in this folder's trust list
+(aggy trust; at a terminal aggy offers to tick it). Hermes asks you once
+there to allow aggy's two hooks: answer y. Its approvals cover terminal
+commands only. It takes no prompt yet. aggy always refuses --api-key,
+--base-url, --profile, --tui, and --oneshot there, and asks about each flag
+that skips its hooks or approvals (--yolo, --accept-hooks,
+--ignore-user-config, --safe-mode, --ignore-rules) unless --no-policy is
+given.
 `
 
 // passFlags is v's table of flags aggy takes over or refuses.
 func passFlags(v adapter.Vendor) adapter.PassFlags {
-	return map[adapter.Vendor]adapter.Adapter{adapter.Claude: claude.Adapter{}, adapter.Codex: codex.Adapter{}, adapter.Grok: grok.New(), adapter.OpenCode: opencode.New()}[v].PassFlags()
+	return map[adapter.Vendor]adapter.Adapter{adapter.Claude: claude.Adapter{}, adapter.Codex: codex.Adapter{}, adapter.Grok: grok.New(), adapter.OpenCode: opencode.New(), adapter.Hermes: hermes.New()}[v].PassFlags()
 }
 
 // launchUsageErr prints a launch command's usage error: the tagged line,

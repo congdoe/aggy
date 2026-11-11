@@ -193,6 +193,15 @@ func ValidSessionID(v Vendor, id string) error {
 		}
 		return nil
 	}
+	if v == Hermes {
+		// Hermes mints <YYYYMMDD_HHMMSS>_<hex>: 6 hex digits on screen, 8 or 12
+		// elsewhere (hermes_state_ids.py:50-60 at v0.23.1); the caller cannot
+		// set one.
+		if !hermesSessionRE.MatchString(id) {
+			return fmt.Errorf("adapter: %s session id %q is not <date>_<time>_<hex>", v, id)
+		}
+		return nil
+	}
 	for _, r := range id {
 		if !strings.ContainsRune(idChars, r) {
 			return fmt.Errorf("adapter: %s session id %q has a character outside [A-Za-z0-9-]", v, id)
@@ -206,6 +215,9 @@ func ValidSessionID(v Vendor, id string) error {
 
 // openCodeSessionRE is what ValidSessionID accepts for OpenCode.
 var openCodeSessionRE = regexp.MustCompile(`^ses_[A-Za-z0-9]{1,64}$`)
+
+// hermesSessionRE is what ValidSessionID accepts for Hermes.
+var hermesSessionRE = regexp.MustCompile(`^[0-9]{8}_[0-9]{6}_[0-9a-f]{6,12}$`)
 
 // idChars are the characters a session id may hold.
 const idChars = "-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"

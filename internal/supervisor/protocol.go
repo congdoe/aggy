@@ -58,6 +58,11 @@ type Request struct {
 	Tools []string `json:"tools,omitempty"`
 	// Command is a prompt-command's line, as submitted.
 	Command string `json:"command,omitempty"`
+	// Token is a Hermes hook-event's launch token (T6933): Hermes runs its
+	// hooks in its own daemon, outside the CLI's process tree, so aggy's hook
+	// shows the token aggy run recorded for the launch instead
+	// (Server.SetToken). Never logged.
+	Token string `json:"token,omitempty"`
 }
 
 // Response answers one Request.

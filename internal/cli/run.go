@@ -17,6 +17,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/claude"
 	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
+	"github.com/congdoe/aggy/internal/adapter/hermes"
 	"github.com/congdoe/aggy/internal/adapter/opencode"
 	"github.com/congdoe/aggy/internal/brief"
 	"github.com/congdoe/aggy/internal/config"
@@ -515,9 +516,9 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// switch or resume is wired again for the CLI it starts. Their files
 	// share the launch's private folder, removed when the CLI exits.
 	var tw []string
-	if v == adapter.OpenCode && len(t.Tools) > 0 {
-		tw = []string{"managed tools are not wired to OpenCode yet, so --tool is ignored here"}
-	} else if v != adapter.OpenCode {
+	if adapter.OpenHarness(v) && len(t.Tools) > 0 {
+		tw = []string{"managed tools are not wired to " + vendorNames[v] + " yet, so --tool is ignored here"}
+	} else if !adapter.OpenHarness(v) {
 		tw = addTools(ctx, v, caps, pl.child.Cwd, memDir, t.Tools, &req)
 	}
 	defer func() { _ = safefs.RemoveAll(memDir) }()
@@ -562,6 +563,29 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		}
 		if oc.launch.Mini {
 			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(openCodeUntrustedNote(oc.root, rules.HeldLocal)))
+		}
+	}
+	// Hermes (T6933): aggy's profile for this repo, its block, and the plan its
+	// hook reads, ready before the launch is recorded.
+	var hs hermesSetup
+	if v == adapter.Hermes {
+		hs, err = prepareHermes(ctx, hermesInput{s: s, caps: caps, path: path, cwd: pl.child.Cwd, dir: memDir, runDir: runDir,
+			noPolicy: t.NoPolicy, plan: plan, rules: rules, version: version, ids: readIdentities(ctx, s), getenv: os.Getenv, in: offerIn, out: stderr})
+		if err != nil {
+			code := diag.CodeHermesProfile
+			if he := (*hermesErr)(nil); errors.As(err, &he) {
+				code = he.code
+			}
+			return fail(code, err)
+		}
+		req.Hermes = &hs.launch
+		for _, w := range hs.warns {
+			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
+		}
+		// The untested-version path every adapter has: a version outside
+		// hermes.Tested starts with the warning aggy doctor shows.
+		if w := adapter.VersionWarning(hermes.New(), version, ""); w != "" {
+			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w+"; Hermes' hooks, approvals, and session export are checked only on that version"))
 		}
 	}
 	cmd, err := a.Interactive(req)
@@ -624,6 +648,16 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		if warn != "" {
 			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(warn))
 		}
+	}
+	// Hermes' hooks find this launch by its row while the CLI runs (hermesFind).
+	if v == adapter.Hermes {
+		hid, err := s.PutHermesLaunch(ctx, store.HermesLaunch{ParentID: parentID, ChildID: pl.child.ID, Profile: hs.launch.Profile,
+			Root: hs.root, Cwd: pl.child.Cwd, Plan: hs.planPath, PlanSum: hs.planSum, Token: hs.token,
+			SessionID: pl.child.VendorSessionID, Started: time.Now()})
+		if err != nil {
+			return fail(diag.CodeStore, err)
+		}
+		defer func() { _ = s.DeleteHermesLaunch(context.WithoutCancel(ctx), hid) }()
 	}
 	// T6780: a tool's proxy, once the launch is recorded, so a refused
 	// launch never starts one. It is stopped when this CLI exits, before
@@ -706,7 +740,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	}
 	if t.Direct {
 		// --direct's CLI shares aggy's process group: only it is killed.
-		code, err := runDirect(cmd, runDir, parentID, v, assigned, cids.set, onNamed, func(r diag.Rec) {
+		code, err := runDirect(cmd, runDir, parentID, v, assigned, hs.token, cids.set, onNamed, func(r diag.Rec) {
 			r.Parent, r.Child, r.Vendor = parentID, pl.child.ID, string(v)
 			q.LogWait(r, 100*time.Millisecond) // the socket's goroutines
 		}, func(pid int) {
@@ -784,7 +818,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// (a repo config or index aggy cannot read) none is offered.
 	var tools func() (supervisor.ToolSet, error)
 	toolBase, err := sessionToolSet(ctx, v, caps, pl.child.Cwd, t.Tools)
-	if err == nil && v != adapter.OpenCode {
+	if err == nil && !adapter.OpenHarness(v) {
 		tools = func() (supervisor.ToolSet, error) {
 			set, err := sessionToolSet(pctx, v, caps, pl.child.Cwd, t.Tools)
 			px.withoutProxy(set)
@@ -835,6 +869,8 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		WarnAt:   eff.Switch.WarnAt,
 		Diag:     q,
 		ChildID:  pl.child.ID,
+		// T6933: a Hermes hook runs in its daemon, with this token for a lineage.
+		HermesToken: hs.token,
 		// T6909: commands typed in the session run in this process.
 		Aggy:      sessionAggy,
 		ToolNames: sessionToolNames,
@@ -1202,13 +1238,13 @@ func pickerVendors(order []adapter.Vendor, on adapter.Vendor) []adapter.Vendor {
 
 // vendorBin is the vendor CLI's command name.
 func vendorBin(v adapter.Vendor) string {
-	return map[adapter.Vendor]string{adapter.Claude: claude.Bin, adapter.Codex: codex.Bin, adapter.Grok: grok.Bin, adapter.OpenCode: opencode.Bin}[v]
+	return map[adapter.Vendor]string{adapter.Claude: claude.Bin, adapter.Codex: codex.Bin, adapter.Grok: grok.Bin, adapter.OpenCode: opencode.Bin, adapter.Hermes: hermes.Bin}[v]
 }
 
-// proxyTools are the --tool names a tool proxy may start for: none on
-// OpenCode, which has no managed tools yet.
+// proxyTools are the --tool names a tool proxy may start for: none on an
+// open harness, which has no managed tools yet.
 func proxyTools(v adapter.Vendor, tools []string) []string {
-	if v == adapter.OpenCode {
+	if adapter.OpenHarness(v) {
 		return nil
 	}
 	return tools

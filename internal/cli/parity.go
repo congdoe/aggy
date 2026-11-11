@@ -12,6 +12,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/adapter/hermes"
 	"github.com/congdoe/aggy/internal/checkup"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/parity"
@@ -161,6 +162,11 @@ func policyDelivery(v adapter.Vendor, caps []string) (why string, err error) {
 		// server: a shared service keeps the config it started with.
 		if !slices.Contains(caps, probe.CapStandalone) {
 			return whyNoStandalone, nil
+		}
+	case adapter.Hermes:
+		// Rendered into aggy's profile per launch (prepareHermes).
+		if why := hermes.Reachable(caps); why != "" {
+			return why, nil
 		}
 	case adapter.Codex:
 		path, err := parity.CodexRulesPath()

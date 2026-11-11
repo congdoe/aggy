@@ -16,6 +16,7 @@ import (
 	"github.com/congdoe/aggy/internal/adapter/claude"
 	"github.com/congdoe/aggy/internal/adapter/codex"
 	"github.com/congdoe/aggy/internal/adapter/grok"
+	"github.com/congdoe/aggy/internal/adapter/hermes"
 	"github.com/congdoe/aggy/internal/adapter/opencode"
 	"github.com/congdoe/aggy/internal/borrow"
 	"github.com/congdoe/aggy/internal/config"
@@ -545,6 +546,8 @@ func newAdapter(v adapter.Vendor, cli borrow.CLI) adapter.Adapter {
 		return codex.New()
 	case adapter.OpenCode:
 		return opencode.New() // its Headless refuses
+	case adapter.Hermes:
+		return hermes.New() // so does its
 	}
 	return grok.Adapter{Caps: cli.Caps}
 }
@@ -556,7 +559,7 @@ type borrowWorld struct {
 }
 
 // binName is each vendor's program name.
-var binName = map[adapter.Vendor]string{adapter.Claude: claude.Bin, adapter.Codex: codex.Bin, adapter.Grok: grok.Bin, adapter.OpenCode: opencode.Bin}
+var binName = map[adapter.Vendor]string{adapter.Claude: claude.Bin, adapter.Codex: codex.Bin, adapter.Grok: grok.Bin, adapter.OpenCode: opencode.Bin, adapter.Hermes: hermes.Bin}
 
 // locate finds v's CLI on PATH and its capabilities, through the probe
 // cache.

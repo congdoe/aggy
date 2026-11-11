@@ -92,6 +92,22 @@ func openCodeDrops(k string) bool {
 		strings.HasSuffix(k, "_API_KEY") || strings.HasSuffix(k, "_API_TOKEN") || strings.HasSuffix(k, "_AUTH_TOKEN")
 }
 
+// hermesExtraNames are what a Hermes launch sets besides those, and only
+// when AGGY_VENDOR names it: aggy's shared memory, which Hermes takes as a
+// session client variable it never persists (agent/session_client_env.py:23
+// at v0.23.1). It is no key and no base URL.
+var hermesExtraNames = []string{"HERMES_EPHEMERAL_SYSTEM_PROMPT"}
+
+// hermesDrops reports an inherited variable a Hermes launch removes: every
+// HERMES_* but HERMES_HOME (which names the person's Hermes root) and
+// HERMES_DATA_DIR_SUFFIX. Among them are the loosening forms
+// HERMES_YOLO_MODE, HERMES_ACCEPT_HOOKS, HERMES_SAFE_MODE, and HERMES_TUI
+// (docs/adapters.md, "Hermes"), and an inherited ephemeral
+// system prompt, which would replace aggy's memory.
+func hermesDrops(k string) bool {
+	return strings.HasPrefix(k, "HERMES_") && k != "HERMES_HOME" && k != "HERMES_DATA_DIR_SUFFIX"
+}
+
 // PTYEnv is base, without any variable extra sets and without
 // AGGY_VENDOR and AGGY_MODEL (a child's own, never inherited: a stale
 // one would land in its commits' trailers), followed by extra. An extra
@@ -117,7 +133,7 @@ func PTYEnv(base, extra []string) ([]string, error) {
 		if !ok || k == "" {
 			return nil, fmt.Errorf("execrun: bad environment entry %q", kv)
 		}
-		if vendor == adapter.OpenCode && contains(openCodeExtraNames, k) {
+		if vendor == adapter.OpenCode && contains(openCodeExtraNames, k) || vendor == adapter.Hermes && contains(hermesExtraNames, k) {
 			set[k] = true
 			continue
 		}
@@ -134,7 +150,7 @@ func PTYEnv(base, extra []string) ([]string, error) {
 	})
 	for _, kv := range base {
 		k, v, _ := strings.Cut(kv, "=")
-		if vendor == adapter.OpenCode && openCodeDrops(k) {
+		if vendor == adapter.OpenCode && openCodeDrops(k) || vendor == adapter.Hermes && hermesDrops(k) {
 			continue
 		}
 		if !set[k] && (!nested || !staleProxyURL(k, v)) {

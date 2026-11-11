@@ -101,9 +101,12 @@ func briefWith(args []string, e borrowEnv, stdout, stderr io.Writer) int {
 		in.MissingTools = missingTools(in.From, in.To, root, e.getenv)
 	}
 	in.Task, in.TaskErr = brief.ReadTask(cwd)
-	if in.From == adapter.OpenCode {
+	switch in.From {
+	case adapter.OpenCode:
 		in.Transcript, in.TranscriptErr = openCodeTranscript(context.Background(), adapter.SessionRef{ID: *session, Cwd: cwd}, *turns)
-	} else {
+	case adapter.Hermes:
+		in.Transcript, in.TranscriptErr = hermesTranscript(context.Background(), adapter.SessionRef{ID: *session, Cwd: cwd}, *turns)
+	default:
 		home, err := transcript.Home(in.From, e.getenv)
 		if err == nil {
 			in.Transcript, err = transcript.Tail(in.From, home, adapter.SessionRef{ID: *session, Cwd: cwd}, *turns)
@@ -186,6 +189,10 @@ func childBrief(ctx context.Context, s *store.Store, e borrowEnv, pl launchPlan)
 		}
 		if v == adapter.OpenCode {
 			tr, err := openCodeTranscript(ctx, adapter.SessionRef{ID: c.VendorSessionID, Cwd: c.Cwd}, turns)
+			return v, tr, err
+		}
+		if v == adapter.Hermes {
+			tr, err := hermesTranscript(ctx, adapter.SessionRef{ID: c.VendorSessionID, Cwd: c.Cwd}, turns)
 			return v, tr, err
 		}
 		home := c.VendorHome
@@ -298,6 +305,11 @@ func missingTools(from, to adapter.Vendor, root string, getenv func(string) stri
 		if to == adapter.OpenCode {
 			return []string{"MCP servers: an OpenCode session under aggy has none"}
 		}
+		return nil
+	}
+	if from == adapter.Hermes || to == adapter.Hermes {
+		// Hermes' MCP servers are its profile's own, which aggy does not wire
+		// (TODO(T6933)), so nothing is compared.
 		return nil
 	}
 	have, err := parity.MCPNames(from, root, getenv)

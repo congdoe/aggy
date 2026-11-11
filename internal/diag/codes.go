@@ -148,6 +148,8 @@ var (
 	EvDecideStarted        = Event{"hook.decision.started"}
 	EvDecideEnded          = Event{"hook.decision.ended"}
 	EvDecideFallback       = Event{"hook.decision.fallback"}
+	EvHermesRefused        = Event{"hook.hermes.refused"}
+	EvHermesProfile        = Event{"launch.hermes.profile"}
 	EvTrustRefused         = Event{"trust.request.refused"}
 	EvPermissionsRefused   = Event{"permissions.request.refused"}
 	EvConfigRefused        = Event{"config.request.refused"}
@@ -270,44 +272,49 @@ var (
 	CodeDecideTooLong     = Code{"decision.call_too_long"}
 	CodeDecideOtherTool   = Code{"decision.other_tool"}
 	CodeDecideFallback    = Code{"decision.fallback"}
-	CodeTrustBadDir       = Code{"trust.bad_dir"}
-	CodeTrustBadFile      = Code{"trust.bad_file"}
-	CodeNotAtKeyboard     = Code{"permissions.not_at_keyboard"}
-	CodePermBadRule       = Code{"permissions.bad_rule"}
-	CodePermBadFile       = Code{"permissions.bad_file"}
-	CodePermNotFound      = Code{"permissions.not_found"}
-	CodePermScope         = Code{"permissions.no_repo"}
-	CodeConfigBadValue    = Code{"config.bad_value"}
-	CodeConfigByHand      = Code{"config.edit_by_hand"}
-	CodeToolChanged       = Code{"tool.changed_since_add"}
-	CodeToolNameClash     = Code{"tool.name_clash"}
-	CodeToolRepoPath      = Code{"tool.repo_path"}
-	CodeToolNoFlag        = Code{"tool.no_launch_flag"}
-	CodeToolWireFailed    = Code{"tool.wire_failed"}
-	CodeToolUnverified    = Code{"tool.vendor_unverified"}
-	CodeToolExec          = Code{"tool.exec_refused"}
-	CodeToolHookApproves  = Code{"tool.hook_approves"}
-	CodeToolHookOutput    = Code{"tool.hook_output"}
-	CodeToolHookFailed    = Code{"tool.hook_failed"}
-	CodeToolSkillMissing  = Code{"tool.skill_missing"}
-	CodeToolBorrowKind    = Code{"tool.borrow_kind"}
-	CodeToolUnlisted      = Code{"tool.borrow_unlisted"}
-	CodeToolNetwork       = Code{"tool.borrow_network"}
-	CodeToolSkillChanged  = Code{"tool.skill_changed"}
-	CodeToolIndexFailed   = Code{"tool.index_failed"}
-	CodeToolIndexCopy     = Code{"tool.index_copy_refused"}
-	CodeToolSkillExists   = Code{"tool.skill_exists"}
-	CodeToolSkillRefused  = Code{"tool.skill_refused"}
-	CodeToolSkillSwapped  = Code{"tool.skill_swapped"}
-	CodeProxyVendor       = Code{"tool.proxy_vendor_needed"}
-	CodeProxyConfirm      = Code{"tool.proxy_not_confirmed"}
-	CodeProxyPortTaken    = Code{"tool.proxy_port_taken"}
-	CodeProxyUnhealthy    = Code{"tool.proxy_unhealthy"}
-	CodeProxyFailed       = Code{"tool.proxy_failed"}
-	CodeProxyConflict     = Code{"tool.proxy_conflict"}
-	CodeProxyNotOwned     = Code{"tool.proxy_not_owned"}
-	CodeProxyEnvProxy     = Code{"tool.proxy_env_proxy"}
-	CodeProxyHoldFailed   = Code{"tool.proxy_hold_failed"}
+	// Hermes Agent (T6933).
+	CodeHermesNoLaunch   = Code{"hermes.no_launch"}
+	CodeHermesProfile    = Code{"hermes.profile_failed"}
+	CodeHermesUnclaimed  = Code{"hermes.launch_unclaimed"}
+	CodeHermesUntrusted  = Code{"hermes.not_ticked"}
+	CodeTrustBadDir      = Code{"trust.bad_dir"}
+	CodeTrustBadFile     = Code{"trust.bad_file"}
+	CodeNotAtKeyboard    = Code{"permissions.not_at_keyboard"}
+	CodePermBadRule      = Code{"permissions.bad_rule"}
+	CodePermBadFile      = Code{"permissions.bad_file"}
+	CodePermNotFound     = Code{"permissions.not_found"}
+	CodePermScope        = Code{"permissions.no_repo"}
+	CodeConfigBadValue   = Code{"config.bad_value"}
+	CodeConfigByHand     = Code{"config.edit_by_hand"}
+	CodeToolChanged      = Code{"tool.changed_since_add"}
+	CodeToolNameClash    = Code{"tool.name_clash"}
+	CodeToolRepoPath     = Code{"tool.repo_path"}
+	CodeToolNoFlag       = Code{"tool.no_launch_flag"}
+	CodeToolWireFailed   = Code{"tool.wire_failed"}
+	CodeToolUnverified   = Code{"tool.vendor_unverified"}
+	CodeToolExec         = Code{"tool.exec_refused"}
+	CodeToolHookApproves = Code{"tool.hook_approves"}
+	CodeToolHookOutput   = Code{"tool.hook_output"}
+	CodeToolHookFailed   = Code{"tool.hook_failed"}
+	CodeToolSkillMissing = Code{"tool.skill_missing"}
+	CodeToolBorrowKind   = Code{"tool.borrow_kind"}
+	CodeToolUnlisted     = Code{"tool.borrow_unlisted"}
+	CodeToolNetwork      = Code{"tool.borrow_network"}
+	CodeToolSkillChanged = Code{"tool.skill_changed"}
+	CodeToolIndexFailed  = Code{"tool.index_failed"}
+	CodeToolIndexCopy    = Code{"tool.index_copy_refused"}
+	CodeToolSkillExists  = Code{"tool.skill_exists"}
+	CodeToolSkillRefused = Code{"tool.skill_refused"}
+	CodeToolSkillSwapped = Code{"tool.skill_swapped"}
+	CodeProxyVendor      = Code{"tool.proxy_vendor_needed"}
+	CodeProxyConfirm     = Code{"tool.proxy_not_confirmed"}
+	CodeProxyPortTaken   = Code{"tool.proxy_port_taken"}
+	CodeProxyUnhealthy   = Code{"tool.proxy_unhealthy"}
+	CodeProxyFailed      = Code{"tool.proxy_failed"}
+	CodeProxyConflict    = Code{"tool.proxy_conflict"}
+	CodeProxyNotOwned    = Code{"tool.proxy_not_owned"}
+	CodeProxyEnvProxy    = Code{"tool.proxy_env_proxy"}
+	CodeProxyHoldFailed  = Code{"tool.proxy_hold_failed"}
 )
 
 const showRun = "aggy diag show <run id> for what led to it"
@@ -328,6 +335,8 @@ var events = []EventInfo{
 	{EvDecideStarted, LevelInfo, "hook", "aggy's policy decision hook started on one tool call (attrs.vendor_version). It never records the command or the path.", "A start with no hook.decision.ended (cause_id) is a hang or a kill: aggy doctor counts them per CLI version."},
 	{EvDecideEnded, LevelInfo, "hook", "aggy's policy decision hook answered (attrs.decision: allow, ask, deny, no-opinion, or error; attrs.group; the code says why; duration_ms).", "The code's entry; aggy doctor sums them per CLI version."},
 	{EvDecideFallback, LevelWarn, "hook", "aggy hook decide failed or was missing, and its wrapper's fixed answer (ask, or deny where no prompt can show) went to the CLI instead.", "aggy doctor; a hook.decision.ended with decision.plan_unreadable, or none, in the same trace says more."},
+	{EvHermesRefused, LevelWarn, "hook", "aggy's Hermes hook found no aggy launch for the profile and session its payload named, so a tool call was refused (pre_tool_call) or a turn end was dropped. It never records the payload.", "The code's entry."},
+	{EvHermesProfile, LevelInfo, "launch", "A Hermes launch made aggy's profile for the repo (hermes profile create) or rewrote aggy's block in its config.yaml; attrs.created and attrs.written say which.", "aggy unwire --run <id> takes the block out; hermes profile delete removes the profile."},
 	{EvTrustRefused, LevelError, "trust", "aggy trust refused; nothing was changed.", "The code's entry."},
 	{EvPermissionsRefused, LevelError, "permissions", "aggy permissions refused; nothing was changed.", "The code's entry."},
 	{EvConfigRefused, LevelError, "config", "aggy config set refused; nothing was changed.", "The code's entry."},
@@ -505,6 +514,10 @@ var codes = []CodeInfo{
 	{CodeDecideOtherTool, false, "A tool other than the shell or Claude's own file tools (an MCP tool, say) carried text you pre-approved; a pre-approval is not for that tool, so the hook gave no opinion and the CLI's own permission flow decided.", "Nothing; approve it at the CLI's prompt if it asks."},
 	{CodeDecideTooLong, false, "The call's command or path was longer than the hook scans (64 KiB), so it asked at once rather than judge it.", "Approve it at the prompt, or run it as a script file."},
 	{CodeDecideFallback, false, "aggy's policy decision hook failed or was missing, so its wrapper asked about the call (or refused it where no prompt can show) without judging it.", "aggy doctor for failures by CLI version; check that aggy is still installed at the path the launch used."},
+	{CodeHermesNoLaunch, true, "aggy's Hermes hook found no live aggy launch for the profile and session id its payload named (a session started outside aggy, one whose aggy has exited, or two aggy sessions in one repo with a session id neither recorded), so it refused the tool call.", "Quit Hermes and start it with aggy run hermes; in a repo with two aggy Hermes sessions, start one at a time."},
+	{CodeHermesProfile, false, "aggy could not make its Hermes profile for this repo, write aggy's block into its config.yaml, or read the block back as written, so Hermes was not started: without it, aggy's approvals and hooks would not reach the session.", "The message; aggy doctor. A config.yaml that sets approvals, hooks, auth, or updates outside aggy's block is refused: move those lines into aggy's block or delete them."},
+	{CodeHermesUnclaimed, false, "Another aggy Hermes session in this repo has not named its session id to aggy yet (no tool call or turn end), so a second one could take its place; this launch was refused.", "Type a first message in the other session, or quit it, then start this one."},
+	{CodeHermesUntrusted, false, "Hermes is not ticked in aggy's trust list for this folder, so aggy did not start it.", "aggy trust <dir> and tick Hermes, after reading its warning."},
 	{CodeGuardMissing, false, "aggy's OpenCode guard did not report from the launch's folder in time. OpenCode's rules from aggy's config still apply; the guard's own refusals may not.", "Quit and start again; aggy doctor for the CLI's version. A same-user process can overwrite or unload the plugin."},
 	{CodeTrustBadDir, false, "aggy trust was given a path that is not a folder aggy can resolve.", "The path; aggy resolves it to its repo root."},
 	{CodeNotAtKeyboard, false, "A change to permissions or settings came from somewhere that is not a person at a terminal: a borrow child, a session's own tool shell, or no terminal on stdin.", "Run it yourself at a terminal outside the session."},
