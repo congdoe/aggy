@@ -114,8 +114,7 @@ func TestTrustOldRecord(t *testing.T) {
 	if !repoTrusted(mustKey(t, repo)) {
 		t.Fatal("the first answer took aggy's old trust back")
 	}
-	// Only Claude's sandbox, ticked by default (T6980), which confines.
-	if a, ok := folderAnswer(t, repo); !ok || !slices.Equal(a.On, []string{trustRowClaudeSandbox}) {
+	if a, ok := folderAnswer(t, repo); !ok || len(a.On) != 0 {
 		t.Errorf("answer %+v", a)
 	}
 	if out, _ := startIn(repo, config.Default(), "\n"); out != "" {

@@ -501,19 +501,18 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		return fail(diag.CodeUsage, err)
 	}
 	// T6980: the vendor's own sandbox, said on every on-screen launch. Claude's
-	// is turned on when the folder's trust list ticks it; --no-policy leaves
-	// the person's own Claude settings to decide.
+	// is turned on when the folder's trust list ticks it, --no-policy or not
+	// (PR #135 review: --no-policy turns off aggy's decisions, not
+	// confinement the person chose).
 	if who == planOnScreen {
-		switch {
-		case v == adapter.Claude && t.NoPolicy:
-			warns = append(warns, "Claude's sandbox: as your own Claude settings set it (--no-policy)")
-		case v == adapter.Claude:
-			line, err := claudeSandboxLaunch(&req, pl.child.Cwd, os.Getenv, offerIn, stderr)
+		switch v {
+		case adapter.Claude:
+			line, err := claudeSandboxLaunch(&req, pl.child.Cwd, t.NoPolicy, os.Getenv, offerIn, stderr)
 			if err != nil {
 				return fail(diag.CodeNoSandbox, err)
 			}
 			warns = append(warns, line)
-		case v == adapter.Codex:
+		case adapter.Codex:
 			warns = append(warns, codexSandboxLine(t.Extra))
 		}
 	}

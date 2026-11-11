@@ -16,7 +16,9 @@ var updateGolden = flag.Bool("update", false, "rewrite the golden settings layer
 // TestSandboxSettingsGolden (T6980): the inline --settings layer a launch
 // passes, byte for byte, with Claude's sandbox ticked for the folder and
 // without; with it, the sandbox is on and Claude exits rather than run its
-// shell unsandboxed, and a person's own sandbox.enabled false gives way to
+// shell unsandboxed, and every sandboxed command still asks as before (no
+// auto-allow, PR #135 review); a person's own sandbox.enabled false and
+// autoAllowBashIfSandboxed true give way to
 // aggy's, named in the overrides note. Run with -update to rewrite.
 func TestSandboxSettingsGolden(t *testing.T) {
 	cases := []struct {
@@ -28,8 +30,8 @@ func TestSandboxSettingsGolden(t *testing.T) {
 		{"sandbox", adapter.InteractiveRequest{Cwd: "/w", Deny: []string{"Bash(rm -rf*)"}, Ask: []string{"Bash(git push*)"}, ClaudeSandbox: true}, nil},
 		{"sandbox-only", adapter.InteractiveRequest{Cwd: "/w", ClaudeSandbox: true}, nil},
 		{"sandbox-over-user", adapter.InteractiveRequest{Cwd: "/w", Deny: []string{"Bash(rm -rf*)"}, ClaudeSandbox: true,
-			UserSettings: map[string]any{"sandbox": map[string]any{"enabled": false, "excludedCommands": []any{"docker *"}}}},
-			[]string{"sandbox.enabled"}},
+			UserSettings: map[string]any{"sandbox": map[string]any{"enabled": false, "autoAllowBashIfSandboxed": true, "excludedCommands": []any{"docker *"}}}},
+			[]string{"sandbox.autoAllowBashIfSandboxed", "sandbox.enabled"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

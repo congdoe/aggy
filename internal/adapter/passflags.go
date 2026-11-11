@@ -271,6 +271,34 @@ func shortsOf(name string) []string {
 	return out
 }
 
+// cluster reads a short-flag word (-abc) left to right as the CLI would, from
+// the flags aggy knows (PR #135 review): each letter is a flag until one that
+// takes a value (the table's Model, Resume, Checked, and Values, and the CLI's
+// help, o.Values), and the rest of the word is that flag's value, so a value
+// such as -ia.png is never read as flags. names are the letters read as flags.
+// runOn names a flag aggy takes over or checks the value of (Model, Continue,
+// Resume, Checked) that is not the word's first letter: run on after another
+// short flag (-hs danger-full-access), its value would reach the CLI
+// unchecked. After a letter aggy does not know, which may itself take the
+// rest as its value, the letters are still read as flags, so a checked one
+// there is refused too (-xs read-only). A long flag, or one letter, is itself.
+func (p PassFlags) cluster(name string, o ParseOpts) (names []string, runOn string) {
+	if strings.HasPrefix(name, "--") || len(name) <= 2 {
+		return []string{name}, ""
+	}
+	for i, r := range name[1:] {
+		n := "-" + string(r)
+		names = append(names, n)
+		if i > 0 && (slices.Contains(p.Model, n) || slices.Contains(p.Continue, n) || slices.Contains(p.Resume, n) || p.isChecked(n)) {
+			return names, n
+		}
+		if slices.Contains(p.Model, n) || slices.Contains(p.Resume, n) || p.takesValue(n, o.Values) != valueNone {
+			return names, ""
+		}
+	}
+	return names, ""
+}
+
 // valueKind says how many of the next words a flag takes as its value.
 type valueKind int
 
@@ -565,7 +593,11 @@ func (p PassFlags) split(a string) (name, val string, hasVal bool) {
 	if len(a) > 2 {
 		short := a[:2]
 		_, checked := p.checked(short)
-		if checked || slices.Contains(p.Model, short) || slices.Contains(p.Resume, short) {
+		// PR #135 review: a table Values flag with its value attached (Hermes
+		// -tweb) is that flag too, unless it is a Print flag, which picks
+		// how aggy runs the CLI (Mode) by its name alone.
+		value := slices.Contains(p.Values, short) && !slices.Contains(p.Print, short)
+		if checked || value || slices.Contains(p.Model, short) || slices.Contains(p.Resume, short) {
 			return short, strings.TrimPrefix(a[2:], "="), true
 		}
 	}
@@ -664,15 +696,12 @@ func (p PassFlags) checkPassed(args []string, i *int, name, val string, hasVal b
 		}
 	}
 	// Short flags run together, as -cp: any of them may clash.
-	names := shortsOf(name)
+	names, runOn := p.cluster(name, o)
+	if runOn != "" {
+		return false, fmt.Errorf("write %s on its own, not as part of %s", runOn, name)
+	}
 	loosens := false
 	for _, n := range names {
-		// T6980: a flag aggy checks the value of, run on after another
-		// short flag (-hs danger-full-access), would reach the CLI with its
-		// value unchecked; split() only finds it first in the word.
-		if len(names) > 1 && (slices.Contains(p.Model, n) || slices.Contains(p.Continue, n) || slices.Contains(p.Resume, n) || p.isChecked(n)) {
-			return false, fmt.Errorf("write %s on its own, not as part of %s", n, name)
-		}
 		for _, r := range p.Refused {
 			if !slices.Contains(r.Names, n) || o.Print && r.ScreenOnly {
 				continue

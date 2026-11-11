@@ -17,8 +17,9 @@ import (
 )
 
 // TestClaudeSandboxLaunch (T6980): a Claude launch in a folder whose trust
-// list ticks Claude's sandbox carries sandbox.enabled and failIfUnavailable in
-// its inline --settings layer and says so in its launch line; in a folder that
+// list ticks Claude's sandbox carries sandbox.enabled, failIfUnavailable, and
+// autoAllowBashIfSandboxed false in its inline --settings layer and says so in
+// its launch line, with --no-policy too (PR #135 review); in a folder that
 // does not, the layer has no sandbox key and the line says the person's own
 // settings decide. Claude's sandbox can start on the test machine: macOS
 // always, Linux only with bubblewrap and socat, so the ticked half is skipped
@@ -39,10 +40,10 @@ func TestClaudeSandboxLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	sc := map[string]any{"stdout": "READY>"}
-	launch := func(t *testing.T) (map[string]any, string) {
+	launch := func(t *testing.T, args ...string) (map[string]any, string) {
 		t.Helper()
 		_ = os.Remove(w.record)
-		s := w.start(t, sc, "claude")
+		s := w.start(t, sc, append([]string{"claude"}, args...)...)
 		s.waitWithin([]byte("READY>"), offerTimeout)
 		s.send([]byte("/exit\r"))
 		if code := s.exit(); code != 0 {
@@ -80,13 +81,21 @@ func TestClaudeSandboxLaunch(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(state, "trust.json"), body, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		layer, out := launch(t)
-		sb, _ := layer["sandbox"].(map[string]any)
-		if sb["enabled"] != true || sb["failIfUnavailable"] != true {
-			t.Errorf("sandbox layer %v", layer["sandbox"])
-		}
-		if !strings.Contains(out, "Claude's sandbox: on for its shell commands") {
-			t.Errorf("launch line missing:\n%s", out)
+		for _, c := range []struct {
+			args []string
+			line string
+		}{
+			{nil, "Claude's sandbox: on for its shell commands"},
+			{[]string{"--no-policy"}, "Claude's sandbox: still on with --no-policy"},
+		} {
+			layer, out := launch(t, c.args...)
+			sb, _ := layer["sandbox"].(map[string]any)
+			if sb["enabled"] != true || sb["failIfUnavailable"] != true || sb["autoAllowBashIfSandboxed"] != false {
+				t.Errorf("%v: sandbox layer %v", c.args, layer["sandbox"])
+			}
+			if !strings.Contains(out, c.line) {
+				t.Errorf("%v: launch line missing:\n%s", c.args, out)
+			}
 		}
 	})
 }

@@ -361,8 +361,11 @@ was tested against.
   `dangerouslyDisableSandbox`, which asks ("Bash command (unsandboxed)") in
   manual and acceptEdits modes, and `sandbox.allowUnsandboxedCommands: false`
   forbids it. In auto-allow mode (`sandbox.autoAllowBashIfSandboxed`, default
-  true) a sandboxed command runs without a prompt, but deny rules and
-  content-scoped ask rules still apply, and a bare `Bash` ask rule does not.
+  true) Claude "approves a command automatically, with no prompt, when the
+  command runs inside the sandbox"; in regular permissions mode "All Bash
+  commands go through the regular permission flow, even when sandboxed"
+  ("Sandbox modes"). Deny rules and content-scoped ask rules still apply
+  under auto-allow; a bare `Bash` ask rule does not.
   macOS uses Seatbelt; Linux and WSL2 need `bubblewrap` and `socat`; native
   Windows runs commands unsandboxed. "By default, when the platform doesn't
   support the sandbox or the dependency check at startup fails, Claude Code
@@ -371,11 +374,24 @@ was tested against.
   `--settings` "can set any key your user settings file can set" and sits
   above the user and project files; the settings index gives each of those
   `sandbox.*` keys the scope "Any file". aggy passes
-  `{"sandbox":{"enabled":true,"failIfUnavailable":true}}` in its inline layer
-  (`InteractiveRequest.ClaudeSandbox`, `claude.SandboxLayer`) when the
-  folder's trust list ticks it, and leaves the other keys as Claude sets them.
-  A person's own `--settings` `sandbox` keys merge under aggy's, so their
-  `enabled: false` gives way and the launch's overrides note names it.
+  `{"sandbox":{"enabled":true,"failIfUnavailable":true,"autoAllowBashIfSandboxed":false}}`
+  in its inline layer (`InteractiveRequest.ClaudeSandbox`,
+  `claude.SandboxLayer`) when the folder's trust list ticks it, `--no-policy`
+  or not, and leaves the other keys as Claude sets them. Auto-allow is off so
+  the sandbox only adds confinement (PR #135 review). A person's own
+  `--settings` `sandbox` keys merge under aggy's, so their `enabled: false` or
+  `autoAllowBashIfSandboxed: true` gives way and the launch's overrides note
+  names it.
+  Live, 2026-11-11 (2.1.322, macOS, verification.md "The vendors' own
+  sandboxes"): the keys are honoured from a `--settings` file; with auto-allow
+  at its default an in-folder `touch` ran with no prompt; a write outside the
+  project was blocked and its unsandboxed retry asked; with
+  `autoAllowBashIfSandboxed: false` the normal prompt came back; a PreToolUse
+  hook's `ask` prompted even under auto-allow.
+  aggy's own check before the launch (`claudeSandboxMissing`) is the OS and,
+  on Linux, only whether `bwrap` and `socat` are on `PATH`. WSL1, or a kernel
+  that refuses bubblewrap its user namespaces, passes it; Claude's own exit at
+  startup (`failIfUnavailable`) catches those, not aggy's question.
 
 ### Hooks and limits
 
@@ -1351,7 +1367,7 @@ the code until a live check settles them.
 | Claude's JSON reply fields (`result`, `session_id`, `is_error`, `subtype`, `usage`) | Read when present; a reply with none of them is `ErrUnparsed`. |
 | Codex events after `thread.started` (`item.completed` agent messages, `turn.completed` usage, `error`, `turn.failed`) | Read when present; output with no `thread.started` is `ErrUnparsed`. |
 | Grok's reply text field and error field | `grok.TextFields` (`text`, recorded live on 1.0.70; then the unconfirmed `result` and `response`; never `thought`); an `error` string and `is_error`, unconfirmed, mapped with `adapter.ClassifyName`. |
-| Claude's `sandbox.enabled` and `sandbox.failIfUnavailable` from `--settings` turn its sandbox on and make it exit where the sandbox cannot start (T6980; docs only, at 2.1.322) | `claude.SandboxLayer`, passed only when the folder ticks it and aggy's own check (`claudeSandboxMissing`: macOS, or Linux with `bwrap` and `socat`) passes; otherwise aggy asks before starting without it. |
+| Claude's `sandbox.failIfUnavailable` from `--settings` makes it exit where the sandbox cannot start (T6980; docs only at 2.1.322; `enabled` and `autoAllowBashIfSandboxed` from `--settings` are live-checked) | `claude.SandboxLayer`, passed only when the folder ticks it and aggy's own PATH check (`claudeSandboxMissing`: macOS, or Linux with `bwrap` and `socat`) passes; otherwise aggy asks at a terminal before starting without it, and refuses with no one to ask. |
 | Codex's default sandbox level, and that `--sandbox`, `-s`, and `-c sandbox_mode=` take the same three values (T6980; source at 6aaac69 for the values, docs for the default) | `codex.SandboxLevel` names the level from the words given, or "Codex's own default"; any value outside the three is refused. |
 | Error class names other than `rate_limit` | `adapter.ClassifyName` also accepts Claude Code's likely names (`authentication_failed`, `billing_error`, `server_error`, `error_max_turns`). |
 

@@ -193,13 +193,7 @@ func openTrustList(tg trustTarget, cfg config.Config, all bool) (*trustListAt, e
 	}
 	l.st = trustlist.NewState(rows, l.prev, l.answered, func(id string) bool {
 		d, ok := l.def(id)
-		switch {
-		case !ok:
-			return false
-		case d.current != nil && d.current(tg):
-			return true
-		}
-		return !l.answered && d.defaultOn != nil && d.defaultOn()
+		return ok && d.current != nil && d.current(tg)
 	})
 	trustedBefore := tg.inRepo && repoTrusted(tg.key)
 	l.oldTrust = trustedBefore && !l.answered

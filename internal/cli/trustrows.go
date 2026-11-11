@@ -37,9 +37,6 @@ type trustRowDef struct {
 	// current reports whether the row's change is in place already, for a
 	// folder whose record has not shown the row.
 	current func(tg trustTarget) bool
-	// defaultOn, when set, ticks the row in a folder with no answer yet
-	// (T6980: Claude's sandbox, where it can start).
-	defaultOn func() bool
 	// note, when set and not "", is the row's warning in place of Warning,
 	// worked out when the list is shown.
 	note func() string
