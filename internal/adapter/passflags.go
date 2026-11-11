@@ -234,12 +234,14 @@ const (
 // start with one of the PrintCommands, else RunScreen.
 //
 // aggy never guesses how the CLI parses its words in a way that would drop its
-// policy (PR #124 review): a short-flag cluster (-nv) is not split to find a
-// mode, since the CLI may read it as a flag with a value; a Bare flag with any
-// other word is no bare run, whatever the CLI makes of it. Both other modes
-// add aggy's policy, so a wrong guess between them (a Print flag's spelling
-// read as some flag's value) costs only whether the run is recorded. Nothing
-// after "--" counts.
+// policy (PR #124 review): a Bare flag with any other word is no bare run,
+// whatever the CLI makes of it. A short-flag word is read as ParseWith reads it
+// (printFlag; PR #135 re-review): a Print short with its value attached
+// (grok -pfoo) or run on after another letter (-dp) is print mode, since the
+// on-screen plan asks, and in print mode no one can answer; a letter inside
+// another flag's attached value (-nmy-p) is not. Both modes add aggy's policy,
+// so a wrong guess between them costs whether the run is recorded and whether
+// a policy match asks or is refused. Nothing after "--" counts.
 func (p PassFlags) Mode(args []string) RunMode {
 	if len(args) == 1 && slices.Contains(p.Bare, args[0]) {
 		return RunBare
@@ -252,11 +254,25 @@ func (p PassFlags) Mode(args []string) RunMode {
 		if a == "--" {
 			break
 		}
-		if name, _, _ := strings.Cut(a, "="); strings.HasPrefix(a, "-") && slices.Contains(p.Print, name) {
+		if strings.HasPrefix(a, "-") && p.printFlag(a) {
 			mode = RunPrint
 		}
 	}
 	return mode
+}
+
+// printFlag reports whether the dash-led word a is, or holds, a Print flag,
+// read as ParseWith reads it (PR #135 re-review): a long flag by its name
+// before any "=", and a short word as split and cluster read it, so a Print
+// short with its value attached (grok -pfoo) or run on after another letter
+// (-dp) counts, and a letter inside another flag's attached value does not.
+func (p PassFlags) printFlag(a string) bool {
+	name, _, _ := p.split(a)
+	if slices.Contains(p.Print, name) {
+		return true
+	}
+	names, _ := p.cluster(name, ParseOpts{})
+	return slices.ContainsFunc(names, func(n string) bool { return slices.Contains(p.Print, n) })
 }
 
 // shortsOf is name, or each of the short flags run together in it (-dp).
@@ -276,12 +292,17 @@ func shortsOf(name string) []string {
 // takes a value (the table's Model, Resume, Checked, and Values, and the CLI's
 // help, o.Values), and the rest of the word is that flag's value, so a value
 // such as -ia.png is never read as flags. names are the letters read as flags.
-// runOn names a flag aggy takes over or checks the value of (Model, Continue,
-// Resume, Checked) that is not the word's first letter: run on after another
-// short flag (-hs danger-full-access), its value would reach the CLI
-// unchecked. After a letter aggy does not know, which may itself take the
-// rest as its value, the letters are still read as flags, so a checked one
-// there is refused too (-xs read-only). A long flag, or one letter, is itself.
+// runOn names a flag read in a word of more than one letter that aggy must
+// handle itself, so it must stand alone: a Continue flag anywhere (-cd would
+// continue the CLI's own last session while aggy records a new one), or a
+// flag aggy takes over or checks the value of (Model, Resume, Checked) after
+// the first letter, where its value would reach the CLI unchecked (-hs
+// danger-full-access). At the first letter, those three carry their value
+// attached and split() reads them. After a letter aggy does not know, which
+// may itself take the rest as its value, the letters are still read as flags,
+// so a checked one there is refused too (-xs read-only). A Print flag in a
+// cluster is no run-on: Mode reads the same letters and runs the CLI in print
+// mode. A long flag, or one letter, is itself.
 func (p PassFlags) cluster(name string, o ParseOpts) (names []string, runOn string) {
 	if strings.HasPrefix(name, "--") || len(name) <= 2 {
 		return []string{name}, ""
@@ -289,7 +310,7 @@ func (p PassFlags) cluster(name string, o ParseOpts) (names []string, runOn stri
 	for i, r := range name[1:] {
 		n := "-" + string(r)
 		names = append(names, n)
-		if i > 0 && (slices.Contains(p.Model, n) || slices.Contains(p.Continue, n) || slices.Contains(p.Resume, n) || p.isChecked(n)) {
+		if slices.Contains(p.Continue, n) || i > 0 && (slices.Contains(p.Model, n) || slices.Contains(p.Resume, n) || p.isChecked(n)) {
 			return names, n
 		}
 		if slices.Contains(p.Model, n) || slices.Contains(p.Resume, n) || p.takesValue(n, o.Values) != valueNone {
@@ -457,7 +478,7 @@ func (p PassFlags) ParseWith(args []string, o ParseOpts) (ParsedFlags, error) {
 			if err != nil {
 				return out, err
 			}
-			if slices.Contains(p.Print, name) || slices.Contains(p.Bare, name) {
+			if p.printFlag(a) || slices.Contains(p.Bare, name) {
 				out.Print = true
 			}
 			for _, n := range p.Noted {
