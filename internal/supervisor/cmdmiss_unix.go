@@ -48,7 +48,7 @@ func (s *session) noteMiss(raw, typed []byte) {
 		if len(s.cmdLine) == 0 && !s.cmdBad {
 			head, ok = firstKey(before)
 		}
-		if !ok || head != '/' && head != '$' {
+		if !ok || head != '/' && head != '$' || s.menuPickOfOther() {
 			return
 		}
 	}
@@ -74,23 +74,64 @@ func (s *session) noteMiss(raw, typed []byte) {
 		} else if !s.takes(c) {
 			why = append(why, "not_taken")
 		}
-	}
-	s.logMiss(c.Name, why)
-}
-
-// logMiss writes a miss record, at most missPerWindow a missWindow, on the
-// terminal loop's path that never waits (diag.Queue.Log). name is "" for a
-// line the tracker lost.
-func (s *session) logMiss(name string, why []string) {
-	now := time.Now()
-	if now.Sub(s.missAt) >= missWindow {
-		s.missAt, s.missN = now, 0
-	}
-	if s.missN >= missPerWindow {
-		s.missSkipped++
+		s.logMiss(&s.keyMisses, s.missAttrs(c.Name, why))
 		return
 	}
-	s.missN++
+	// A lost line may be a pick from the CLI's menu that its prompt hook
+	// catches a moment later, so its record waits (flushMiss) and goes if the
+	// hook takes the command for this Enter (#142 review).
+	s.flushMiss(true)
+	s.heldMiss = &heldMiss{attrs: s.missAttrs("", why), at: time.Now()}
+}
+
+// heldMiss is a record of a lost line, held for the prompt hook (noteMiss).
+type heldMiss struct {
+	attrs map[string]any
+	at    time.Time
+}
+
+// missHold is how long a held record waits for the prompt hook unless a key
+// comes first: past aggy hook's own answer time.
+const missHold = promptAnswerWait
+
+// flushMiss writes the held record: always when force (a key came, or the
+// session ends), else once missHold has passed.
+func (s *session) flushMiss(force bool) {
+	if s.heldMiss == nil || !force && time.Since(s.heldMiss.at) < missHold {
+		return
+	}
+	attrs := s.heldMiss.attrs
+	s.heldMiss = nil
+	s.logMiss(&s.keyMisses, attrs)
+}
+
+// menuPickOfOther reports whether the line just ended was picked from the CLI's
+// menu with keys that start none of aggy's commands (/st for /status), so
+// it was the CLI's own command, not aggy's (#142 review).
+func (s *session) menuPickOfOther() bool {
+	p := s.pick
+	if p.bad || !p.menu || len(p.text) < 2 || !strings.ContainsRune(sessioncmd.Prefixes(s.o.Vendor), rune(p.text[0])) {
+		return false
+	}
+	word, _, _ := strings.Cut(string(p.text[1:]), " ")
+	for _, w := range []string{"switch", "borrow", "inbox", "aggy"} {
+		if strings.HasPrefix(w, word) {
+			return false
+		}
+	}
+	return true
+}
+
+// missBudget bounds one kind of miss record: missPerWindow a missWindow, the
+// rest counted in the next one.
+type missBudget struct {
+	at         time.Time
+	n, skipped int
+}
+
+// missAttrs is a miss record's attrs, as the session stands now. name is ""
+// for a line the tracker lost.
+func (s *session) missAttrs(name string, why []string) map[string]any {
 	if len(why) == 0 {
 		why = []string{"unknown"}
 	}
@@ -104,9 +145,25 @@ func (s *session) logMiss(name string, why []string) {
 	if !s.lenKnown && s.unsettled != "" {
 		attrs["unsettled"] = s.unsettled
 	}
-	if s.missSkipped > 0 {
-		attrs["skipped"] = s.missSkipped
-		s.missSkipped = 0
+	return attrs
+}
+
+// logMiss writes a miss record within b, on the terminal loop's path that never
+// waits (diag.Queue.Log). The key catch's and the prompt hook's records each
+// have their own budget, so forged hook requests cannot use up the other.
+func (s *session) logMiss(b *missBudget, attrs map[string]any) {
+	now := time.Now()
+	if now.Sub(b.at) >= missWindow {
+		b.at, b.n = now, 0
+	}
+	if b.n >= missPerWindow {
+		b.skipped++
+		return
+	}
+	b.n++
+	if b.skipped > 0 {
+		attrs["skipped"] = b.skipped
+		b.skipped = 0
 	}
 	s.log(diag.Rec{Event: diag.EvCommandPassed, Attrs: attrs})
 }
@@ -129,7 +186,10 @@ func (s *session) hookMiss(c sessioncmd.Command, why []string) {
 			why = append(why, d.name)
 		}
 	}
-	s.logMiss(c.Name, why)
+	s.flushMiss(true)
+	attrs := s.missAttrs(c.Name, why)
+	attrs["via"] = "hook"
+	s.logMiss(&s.hookMisses, attrs)
 }
 
 // maxLineSeqs bounds the escape sequences kept for a miss record.
@@ -155,15 +215,19 @@ func (s *session) noteSeqs(typed []byte) {
 	}
 }
 
+// keyFinals are the final bytes seqKind keeps: those of the keys (arrows, Home,
+// End, F1 to F4, the ~ keys, CSI u). Any other, a letter a person typed after a
+// lone Esc and [ among them, shows as ? (#142 review).
+const keyFinals = "ABCDHFPQRS~u"
+
 // seqKind names an escape sequence's kind without its text: its introducer, a
-// CSI's private marker, and a final byte only from a fixed set (a lowercase
-// letter outside it, which a person could type after a lone Esc, shows as ?).
+// CSI's private marker, and its final byte when it is a key's (keyFinals).
 func seqKind(seq []byte) string {
 	if len(seq) < 2 {
 		return "esc"
 	}
-	final := func(b byte, set string) string {
-		if b >= 'A' && b <= 'Z' || strings.IndexByte(set, b) >= 0 {
+	final := func(b byte) string {
+		if strings.IndexByte(keyFinals, b) >= 0 {
 			return string(b)
 		}
 		return "?"
@@ -174,9 +238,9 @@ func seqKind(seq []byte) string {
 		if len(seq) > 2 && strings.IndexByte("<=>?", seq[2]) >= 0 {
 			k += string(seq[2])
 		}
-		return k + final(seq[len(seq)-1], "~$cmnqtuy")
+		return k + final(seq[len(seq)-1])
 	case 'O':
-		return "ss3" + final(seq[len(seq)-1], "")
+		return "ss3" + final(seq[len(seq)-1])
 	case ']':
 		return "osc"
 	case 'P':

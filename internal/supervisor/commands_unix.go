@@ -316,6 +316,7 @@ func (s *session) hookCommand(c sessioncmd.Command, line string) error {
 		return coded(diag.CodeCommandNotTaken, errors.New("a switch is already waiting"))
 	}
 	s.hookedName, s.hookedEnter = c.Name, s.enterAt
+	s.heldMiss = nil // the key catch's miss of this Enter was the hook's catch
 	s.atPrompt = !s.held
 	// The blocked prompt started nothing, as a caught command's line does not
 	// (catchCommand), so a pick it opens is told what the CLI's launch state

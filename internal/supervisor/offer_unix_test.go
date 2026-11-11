@@ -41,6 +41,30 @@ func TestCheckAfterYesLapses(t *testing.T) {
 	}
 }
 
+// TestEscThenKeyLapses (#142 review L5): an Esc that turns out to start a
+// longer key closes the switch's question as other keys do, and is recorded.
+func TestEscThenKeyLapses(t *testing.T) {
+	q, records := diagHome(t)
+	s := cmdSess(t, adapter.Claude)
+	s.o.Diag = q
+	s.input = s.send
+	s.child = nil
+	s.lastIn = time.Now().Add(-time.Minute)
+	s.setSwitch(pendingSwitch{to: adapter.Grok, picked: true})
+	s.offerSwitch()
+	if !s.open || s.pk.confirm == "" {
+		t.Fatalf("no question: open %v", s.open)
+	}
+	s.pickerInput([]byte{esc})
+	s.pickerInput([]byte("[B"))
+	if s.open || !s.sw.lapsed || s.sw.to != adapter.Grok {
+		t.Fatalf("open %v lapsed %v switch %q", s.open, s.sw.lapsed, s.sw.to)
+	}
+	if _, ok := find(records(), diag.EvOfferLapsed, diag.Code{}); !ok {
+		t.Error("no lapse recorded")
+	}
+}
+
 // TestOfferKeysAfterLapse (T6982): at a switch's status line, a click changes
 // nothing and the switch key still says yes; other keys close it and go to the
 // CLI, and the switch key alone then brings the status line back, not the list
@@ -87,9 +111,13 @@ func TestOfferKeysAfterLapse(t *testing.T) {
 				since := func() []byte { return ts.screen()[mark:] }
 				never(t, "the status line on its own", []byte("-> grok. Ctrl+"), since, 200*time.Millisecond)
 				ts.typeIn(t, "\x1c")
-				poll(t, "the status line again", []byte("-> grok. Ctrl+"), since)
+				// #142 review: not while the CLI draws; the bottom row says it
+				// waits, and the question comes once the CLI is quiet.
+				poll(t, "the waiting words", []byte("asks about the switch to grok once claude stops drawing"), since)
+				never(t, "the status line while the CLI draws", []byte("-> grok. Ctrl+"), since, 200*time.Millisecond)
 				close(stop)
 				<-drawn
+				poll(t, "the status line again", []byte("-> grok. Ctrl+"), since)
 				if bytes.Contains(since(), []byte("aggy: switch vendor")) {
 					t.Errorf("the list opened: %q", since())
 				}

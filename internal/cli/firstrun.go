@@ -231,6 +231,7 @@ const declinedNote = "setup skipped: without it aggy hears no turn end (a switch
 // returns, and the launch goes on. Every failure is a line, never a refused
 // launch.
 func offerSetup(ctx context.Context, env checkEnv, out io.Writer) {
+	setupAskedNow = true // the launch after it asks nothing more (T6982)
 	w := planWire(env.home)
 	fmt.Fprint(out, offerScreen(w))
 	fmt.Fprint(out, "Set up now? [y/N] ")

@@ -418,8 +418,8 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// not installed at all are not said on every launch.
 	// T6982: what is missing is asked about, with one key, at a new on-screen
 	// start; a switch, --direct, and a borrow's child only say it.
-	fix := findLaunchFix(ctx, v, hooksMissing(v) && setupDeclined(ctx, s))
-	if !t.Direct && t.SwitchFrom == "" && pl.child.Kind == "" {
+	fix := findLaunchFix(ctx, v, hooksMissing(v) && setupDeclined(ctx, s), declinedFor(ctx, s, Version))
+	if askAtLaunch(t, pl.child.Kind) {
 		warns = append(warns, offerLaunchFix(ctx, s, v, fix, Version, os.Getenv, offerIn, stderr)...)
 	} else {
 		warns = append(warns, fix.lines()...)

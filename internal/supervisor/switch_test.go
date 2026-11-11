@@ -467,8 +467,16 @@ func TestSwitchSplitEscHandedBack(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	ts.typeIn(t, "[A")
 	c.waitGot(t, []byte("\x1b[A"))
-	ts.typeIn(t, "\x1c") // the switch still waits: the list shows it
-	poll(t, "the list", []byte("Switching to grok"), ts.screen)
+	// The switch still waits, and the Esc's key closed its question as any key
+	// does (#142 review L5): the switch key asks again, not the list, here with
+	// the doubt the cursor key left about the prompt.
+	mark := len(ts.screen())
+	since := func() []byte { return ts.screen()[mark:] }
+	ts.typeIn(t, "\x1c")
+	poll(t, "the question again", []byte("cannot tell if claude's prompt is empty"), since)
+	if bytes.Contains(since(), []byte("aggy: switch vendor")) {
+		t.Errorf("the list opened: %q", since())
+	}
 	ts.typeIn(t, "\x1b")
 	finish(t, c, done)
 }

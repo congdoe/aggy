@@ -23,6 +23,11 @@ func isolate(t *testing.T) string {
 	t.Setenv("CODEX_HOME", "")
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("GROK_HOME", "")
+	// A fresh process has not asked the setup question; a test before this
+	// one may have (offerSetup sets it for the rest of the process).
+	old := setupAskedNow
+	setupAskedNow = false
+	t.Cleanup(func() { setupAskedNow = old })
 	return h
 }
 
