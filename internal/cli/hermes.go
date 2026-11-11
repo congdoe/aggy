@@ -822,14 +822,14 @@ func hermesClaimRow(ctx context.Context, l store.HermesLaunch, id string) error 
 // is its session, and for its decision plan's pin. errNotHermesSession is its
 // refusal; any other error is that it could not be asked.
 //
-// TODO(T6954): the hook does not authenticate the supervisor: the index row
-// picks the socket, so a script that binds a socket in the run directory and
-// edits the row can answer --no-policy (docs/design.md, "Consent and the
-// pin"). Check that the peer pid on the socket holds the supervisor's lock
-// for the row's parent id.
+// The index row picks the socket, so an answer counts only from a process
+// that could open the supervisor's lock file for the row's parent id while no
+// one else held the lock (supervisor.SendHermesPin, T6954): one that cannot
+// show it, or an OS where it cannot be checked, is a supervisor that cannot
+// be asked, so the call asks.
 func hermesAskPin(runDir string, l store.HermesLaunch, id string, shared bool) (supervisor.Response, error) {
 	payload, _ := json.Marshal(map[string]any{"session_id": id, "shared": shared})
-	resp, err := supervisor.Send(runDir, filepath.Join(runDir, l.ParentID+".sock"),
+	resp, err := hermesPinSend(runDir, filepath.Join(runDir, l.ParentID+".sock"),
 		supervisor.Request{Type: supervisor.ReqHermesPin, Vendor: string(adapter.Hermes), Payload: payload, Token: l.Token}, hookTimeout)
 	switch {
 	case err != nil:
@@ -843,6 +843,9 @@ func hermesAskPin(runDir string, l store.HermesLaunch, id string, shared bool) (
 	}
 	return resp, nil
 }
+
+// hermesPinSend is supervisor.SendHermesPin; a test swaps it.
+var hermesPinSend = supervisor.SendHermesPin
 
 // hermesSend tells the launch's supervisor of a turn end, with the launch's
 // token in place of a lineage, and the session id as the whole payload.

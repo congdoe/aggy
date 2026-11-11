@@ -9,9 +9,11 @@ package supervisor
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"os"
@@ -33,6 +35,32 @@ import (
 // socket another user could have planted, whatever AGGY_SOCKET says. req
 // must be a request the server would accept.
 func Send(runDir, path string, req Request, timeout time.Duration) (Response, error) {
+	return send(runDir, path, req, timeout, false)
+}
+
+// ErrUnproven is a hermes-pin answer that came without the proof that its
+// sender holds the supervisor's lock for the socket's parent id.
+var ErrUnproven = errors.New("supervisor: the socket's peer did not show it holds the supervisor's lock")
+
+// SendHermesPin is Send for a hermes-pin (T6954). The index row names the
+// socket, and anyone of this uid can bind a socket in the run directory, so
+// an answer that is OK counts only when it carries the proof replyWithLock
+// attaches: one open file, the lock file runDir/<parent-id>.lock by
+// identity, on which an exclusive flock succeeds at once. While the real
+// supervisor holds that lock, only its own open file passes; any other open
+// of the same file fails the flock. Without the proof the answer is
+// ErrUnproven, which the hook treats as a supervisor it cannot reach: it
+// asks. A refusal needs no proof, since it loosens nothing.
+//
+// What it does not stop: a process of this uid that takes the lock itself
+// (for a parent id of its own, or after removing the lock file) and points
+// the row at it, or one that relays a real supervisor's answer and its open
+// file. It closes the plain path of binding a socket and editing a row.
+func SendHermesPin(runDir, path string, req Request, timeout time.Duration) (Response, error) {
+	return send(runDir, path, req, timeout, true)
+}
+
+func send(runDir, path string, req Request, timeout time.Duration, proof bool) (Response, error) {
 	if err := checkSocket(runDir, path); err != nil {
 		return Response{}, err
 	}
@@ -57,7 +85,14 @@ func Send(runDir, path string, req Request, timeout time.Duration) (Response, er
 	if _, err := c.Write(append(line, '\n')); err != nil {
 		return Response{}, err
 	}
-	out, err := bufio.NewReaderSize(c, MaxMessage+1).ReadSlice('\n')
+	var out []byte
+	var fds []int
+	if proof {
+		out, fds, err = readWithRights(c)
+		defer closeFDs(fds)
+	} else {
+		out, err = bufio.NewReaderSize(c, MaxMessage+1).ReadSlice('\n')
+	}
 	if err != nil {
 		return Response{}, fmt.Errorf("supervisor: no reply: %w", err)
 	}
@@ -65,7 +100,91 @@ func Send(runDir, path string, req Request, timeout time.Duration) (Response, er
 	if err := json.Unmarshal(out, &resp); err != nil {
 		return Response{}, fmt.Errorf("supervisor: bad reply: %w", err)
 	}
+	if proof && resp.OK {
+		id := strings.TrimSuffix(filepath.Base(path), ".sock")
+		if err := holdsLock(filepath.Join(runDir, id+".lock"), fds); err != nil {
+			return Response{}, err
+		}
+	}
 	return resp, nil
+}
+
+// maxRights is how many open files a reply may carry before the rest are
+// cut off; a proof is exactly one.
+const maxRights = 4
+
+// readWithRights reads one reply line from c with the open files sent along
+// with it (SCM_RIGHTS), which the caller closes.
+func readWithRights(c *net.UnixConn) (line []byte, fds []int, err error) {
+	buf := make([]byte, MaxMessage+1)
+	oob := make([]byte, syscall.CmsgSpace(4*maxRights))
+	n := 0
+	for {
+		k, oobn, _, _, rerr := c.ReadMsgUnix(buf[n:], oob)
+		if oobn > 0 {
+			msgs, perr := syscall.ParseSocketControlMessage(oob[:oobn])
+			if perr == nil {
+				for i := range msgs {
+					if r, err := syscall.ParseUnixRights(&msgs[i]); err == nil {
+						fds = append(fds, r...)
+					}
+				}
+			}
+		}
+		n += k
+		if i := bytes.IndexByte(buf[:n], '\n'); i >= 0 {
+			return buf[:i+1], fds, nil
+		}
+		switch {
+		case rerr != nil:
+			return nil, fds, rerr
+		case n == len(buf):
+			return nil, fds, fmt.Errorf("reply longer than %d bytes", MaxMessage)
+		case k == 0:
+			return nil, fds, io.ErrUnexpectedEOF
+		}
+	}
+}
+
+func closeFDs(fds []int) {
+	for _, fd := range fds {
+		_ = syscall.Close(fd)
+	}
+}
+
+// holdsLock reports whether fds is the proof that its sender holds the
+// lock at lockPath: exactly one open file, which is that lock file (by
+// device and inode) and on which an exclusive flock succeeds without
+// waiting. flock locks belong to an open file, not a process, so while the
+// supervisor holds its lock no other open of the file can take it, and on
+// the supervisor's own open file the flock is a no-op. It only reads the
+// file's metadata.
+func holdsLock(lockPath string, fds []int) error {
+	if len(fds) != 1 {
+		return ErrUnproven
+	}
+	fi, err := safefs.Lstat(lockPath)
+	if err != nil || !fi.Mode().IsRegular() {
+		return ErrUnproven
+	}
+	want, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return ErrUnproven
+	}
+	var got syscall.Stat_t
+	if err := syscall.Fstat(fds[0], &got); err != nil || got.Dev != want.Dev || got.Ino != want.Ino {
+		return ErrUnproven
+	}
+	for {
+		err = syscall.Flock(fds[0], syscall.LOCK_EX|syscall.LOCK_NB)
+		if !errors.Is(err, syscall.EINTR) {
+			break
+		}
+	}
+	if err != nil {
+		return ErrUnproven
+	}
+	return nil
 }
 
 // checkSocket refuses a path that is not runDir/<uuid>.sock, a socket of

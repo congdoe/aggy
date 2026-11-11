@@ -197,6 +197,21 @@ func TestHermesHookNoPolicy(t *testing.T) {
 	if stdout.String() != "" {
 		t.Fatalf("no-policy: %q", stdout.String())
 	}
+	// T6954: a socket at the row's path whose answer comes without the proof
+	// that it holds the supervisor's lock, or an OS where that cannot be
+	// checked (supervisor.ErrUnproven either way), asks: never no decision.
+	t.Run("unproven", func(t *testing.T) {
+		old := hermesPinSend
+		hermesPinSend = func(string, string, supervisor.Request, time.Duration) (supervisor.Response, error) {
+			return supervisor.Response{}, supervisor.ErrUnproven
+		}
+		t.Cleanup(func() { hermesPinSend = old })
+		var stdout, stderr bytes.Buffer
+		hookWith([]string{"hermes", "--home", homeDir, "--profile", profile, "--event", "pre_tool_call"}, bytes.NewReader(b), os.Getenv, &stdout, &stderr)
+		if !strings.Contains(stdout.String(), `"action":"approve"`) {
+			t.Fatalf("unproven: %q, want an ask", stdout.String())
+		}
+	})
 }
 
 // TestHermesHookShared (T6954): the hook tells the supervisor of a launch

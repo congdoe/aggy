@@ -3,15 +3,133 @@
 package supervisor
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
+
+// TestSendHermesPinProof (T6954): the hook takes a hermes-pin answer only
+// from the process that holds the supervisor's lock for the socket's parent
+// id. A socket someone else bound at the path the index row names, answering
+// --no-policy, is refused: with no open file, with its own open of the lock
+// file, with another file, or for a parent id with no lock file. The real
+// supervisor is accepted. The stand-ins run in the test's process: the proof
+// is the open file the lock is on, not a pid, so that is no easier case.
+func TestSendHermesPinProof(t *testing.T) {
+	const tok = "0123456789abcdef0123456789abcdef"
+	const sid = "20261110_101500_a1b2c3"
+	const other = "1b9d3c4e-1f2a-4b5c-8d7e-6f5a4b3c2d1e"
+	run := filepath.Join(shortDir(t), "run")
+	s, err := Listen(run, pid, nil, func(Request) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	s.SetRoot(1 << 30)
+	s.SetToken(tok)
+	s.SetHermesPin(NewHermesClaim(HermesPin{Session: sid, NoPolicy: true}).Answer)
+	payload, _ := json.Marshal(map[string]string{"session_id": sid})
+	req := Request{Type: ReqHermesPin, Vendor: "hermes", Payload: payload, Token: tok}
+	sock := func(id string) string { return filepath.Join(run, id+".sock") }
+
+	// The real supervisor.
+	resp, err := SendHermesPin(run, sock(pid), req, 5*time.Second)
+	if err != nil || !resp.OK || !resp.NoPolicy {
+		t.Fatalf("the supervisor: %+v %v", resp, err)
+	}
+	// A refusal needs no proof: it loosens nothing.
+	bad := req
+	bad.Token = tok[1:] + "0"
+	if resp, err := SendHermesPin(run, sock(pid), bad, 5*time.Second); err != nil || resp.OK {
+		t.Fatalf("a refusal: %+v %v", resp, err)
+	}
+
+	// standIn binds a socket at path, in place of whatever is there, and
+	// answers one request with --no-policy, sending fd along when it is >= 0.
+	standIn := func(t *testing.T, path string, fd int) {
+		t.Helper()
+		_ = os.Remove(path)
+		ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+		go func() {
+			c, err := ln.AcceptUnix()
+			if err != nil {
+				return
+			}
+			defer func() { _ = c.Close() }()
+			if _, err := bufio.NewReader(c).ReadString('\n'); err != nil {
+				return
+			}
+			var oob []byte
+			if fd >= 0 {
+				oob = syscall.UnixRights(fd)
+			}
+			_, _, _ = c.WriteMsgUnix([]byte(`{"ok":true,"no_policy":true}`+"\n"), oob, nil)
+		}()
+	}
+	openLock := func(t *testing.T, id string) int {
+		t.Helper()
+		f, err := os.OpenFile(filepath.Join(run, id+".lock"), os.O_RDWR|os.O_CREATE, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = f.Close() })
+		return int(f.Fd())
+	}
+	for _, tt := range []struct {
+		name string
+		id   string
+		fd   func(t *testing.T) int
+	}{
+		{"no open file, in the supervisor's place", pid, func(*testing.T) int { return -1 }},
+		{"its own open of the held lock file", pid, func(t *testing.T) int { return openLock(t, pid) }},
+		{"a file that is not the lock", pid, func(t *testing.T) int {
+			f, err := os.CreateTemp(t.TempDir(), "x")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = f.Close() })
+			return int(f.Fd())
+		}},
+		{"a parent id with no lock file", other, func(*testing.T) int { return -1 }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			standIn(t, sock(tt.id), tt.fd(t))
+			resp, err := SendHermesPin(run, sock(tt.id), req, 5*time.Second)
+			if !errors.Is(err, ErrUnproven) {
+				t.Fatalf("got %+v %v, want ErrUnproven", resp, err)
+			}
+		})
+	}
+	// The probes left the real supervisor's lock alone.
+	if live, err := Live(run, pid); err != nil || !live {
+		t.Fatalf("the supervisor's lock: %v %v", live, err)
+	}
+	// What this does not stop: a stand-in that holds a lock of its own, for a
+	// parent id it made up, passes (docs/design.md, "Consent and the pin").
+	t.Run("a stand-in holding its own lock is not stopped", func(t *testing.T) {
+		const own = "2b9d3c4e-1f2a-4b5c-8d7e-6f5a4b3c2d1e"
+		fd := openLock(t, own)
+		if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			t.Fatal(err)
+		}
+		standIn(t, sock(own), fd)
+		if resp, err := SendHermesPin(run, sock(own), req, 5*time.Second); err != nil || !resp.OK {
+			t.Fatalf("got %+v %v", resp, err)
+		}
+	})
+}
 
 func TestSendDeliversHookEvent(t *testing.T) {
 	run := filepath.Join(shortDir(t), "run")
