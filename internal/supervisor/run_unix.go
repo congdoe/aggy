@@ -230,7 +230,7 @@ func Run(o Options) (Exit, error) {
 		// check polls a switch that waits for the turn end.
 		// It also polls a near-limit warning due at a turn end.
 		var check <-chan time.Time
-		if (s.sw.to != "" && !s.sw.typed || s.warnDue || s.toolsDue || s.limitDue != nil) && !s.open {
+		if (s.sw.to != "" && !s.sw.typed || s.warnDue || s.toolsDue || s.limitDue != nil || !s.relAt.IsZero()) && !s.open {
 			check = time.After(switchPoll)
 		}
 		select {
@@ -248,6 +248,7 @@ func Run(o Options) (Exit, error) {
 			}
 		case <-check:
 			s.flushMiss(false)
+			s.releaseBlock()
 			s.releaseQueued()
 			s.settleInterrupt()
 			if s.sw.to != "" && !s.sw.typed {
@@ -674,6 +675,17 @@ type session struct {
 	// fires). Until an Esc (sideEsc) and then a counted turn end, the line is
 	// in doubt and no Enter counts as one at the prompt.
 	sideView, sideEsc bool
+	// enterHead is the first text key of the line the last Enter ended (0 for
+	// none seen); modeLine: it was ! or #, which may leave Claude in its bash
+	// or memory mode, where Backspace, Delete, and Ctrl+U on an empty composer
+	// may leave that mode (not checked live, TODO(T6895)).
+	enterHead byte
+	modeLine  bool
+	// relAt, when not zero, is when aggy blocked a prompt it ran nothing for
+	// and the keys did not spell, for the Enter at relEnter (armRelease);
+	// releaseBlock takes the CLI as back at its prompt once its output stays
+	// quiet.
+	relAt, relEnter time.Time
 	// blockNotes are when the bottom row last said aggy did not run a command
 	// a prompt hook reported (blockHook), at most hookAskMax a window.
 	blockNotes []time.Time
@@ -1209,6 +1221,7 @@ func (s *session) send(b []byte) {
 		s.lastIn = time.Now()
 		if !s.atPrompt || s.held || s.askOpen() {
 			s.held, s.inputSinceTurn = false, true
+			s.afterEnter++ // a key after the Enter: it may answer what that Enter opened
 		}
 		s.toChild.push(b)
 		return
@@ -1276,10 +1289,10 @@ func (s *session) noteSideView(typed []byte) {
 	}
 }
 
-// composerKeyRE matches an arrow, Home, or End as a legacy terminal or kitty
-// sends it, a press, a repeat, or a release, with no modifier but Caps or Num
-// Lock; the final byte names it.
-var composerKeyRE = regexp.MustCompile(`^\x1b(\[(1;(1|65|129|193)(:[123])?)?|O)([A-DHF])$`)
+// composerKeyRE matches an arrow, Home, or End in its legacy form, CSI or SS3,
+// the form the live checks sent; the final byte names it. The kitty forms
+// (CSI 1;... X) are not checked, so they are no key of these (#146 review).
+var composerKeyRE = regexp.MustCompile(`^\x1b(\[|O)([A-DHF])$`)
 
 // composerKey names the one key typed is, for adapter.EmptyComposerKey: down,
 // up, left, right, home, end, backspace, delete, or ctrl+u; "" for another.
@@ -1300,7 +1313,7 @@ func composerKey(typed []byte) string {
 	if m == nil {
 		return ""
 	}
-	return map[byte]string{'A': "up", 'B': "down", 'C': "right", 'D': "left", 'H': "home", 'F': "end"}[m[5][0]]
+	return map[byte]string{'A': "up", 'B': "down", 'C': "right", 'D': "left", 'H': "home", 'F': "end"}[m[2][0]]
 }
 
 // emptyNoop reports whether typed is one key that, on this CLI's composer when
@@ -1313,8 +1326,16 @@ func (s *session) emptyNoop(typed []byte) bool {
 	if k == "" || s.inPaste || s.draftPaste || !adapter.EmptyComposerKey(s.o.Vendor, s.o.VendorVersion, k) {
 		return false
 	}
+	if s.modeLine && (k == "backspace" || k == "delete" || k == "ctrl+u") {
+		// After a ! or # line Claude may still be in that mode, which these
+		// keys may leave on an empty composer. TODO(T6895): a live check.
+		return false
+	}
 	d := s.lineDoubts()
-	return len(d) == 1 && d[0] == "no_line" && !s.popup
+	// No popup check (#146 review): a popup comes from a line's text, so with no
+	// line it is gone, or it left its Enter in doubt (len_unknown) or the line
+	// edited (not_plain_keys), each of which lineDoubts names.
+	return len(d) == 1 && d[0] == "no_line"
 }
 
 // followKeys follows keys that reach the composer, past any dialog.
@@ -1780,6 +1801,11 @@ func (s *session) compose(c byte) {
 		// history or move into it) leaves it unspelled.
 		s.enterSlash = s.slashOnly && !s.inPaste && prev != esc && prev != '\\' && len(s.lineSeqs) == 0
 		s.enterLine = append(s.enterLine[:0], s.cmdLine...)
+		s.enterHead = 0
+		if s.headSeen {
+			s.enterHead = s.cmdHead
+		}
+		s.modeLine = s.enterHead == '!' || s.enterHead == '#'
 	}
 	switch {
 	case c == '\r':

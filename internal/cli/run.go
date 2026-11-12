@@ -626,7 +626,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// T6982: the live checks of the composer hold at the versions they ran on;
 	// on another, a switch asks on the status line, and the notice says a
 	// re-check is owed, as aggy doctor does.
-	if w := adapter.ComposerCheckOwed(v, version); w != "" && !t.Direct {
+	if w := composerCheckNote(ctx, s, v, version); w != "" && !t.Direct {
 		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
 	}
 	// Antigravity (T6957): its trust tick, aggy's hooks entry in the folder's
@@ -1348,6 +1348,26 @@ func proxyTools(v adapter.Vendor, tools []string) []string {
 		return nil
 	}
 	return tools
+}
+
+// composerCheckVersion is the version_checks row that says the person has been
+// told the composer's live checks are owed for this CLI version (#146 review).
+const composerCheckVersion = "composer_check_owed"
+
+// composerCheckNote is adapter.ComposerCheckOwed for a launch, said once for
+// each version: every launch, switch, and tool restart said it before. aggy
+// doctor still reports it each time (checkup.CodeLiveCheckOwed). With no index
+// it is said each time.
+func composerCheckNote(ctx context.Context, s *store.Store, v adapter.Vendor, version string) string {
+	w := adapter.ComposerCheckOwed(v, version)
+	if w == "" || s == nil {
+		return w
+	}
+	if _, err := s.GetVersionCheck(ctx, string(v), version, composerCheckVersion, ""); err == nil {
+		return ""
+	}
+	_ = s.PutVersionCheck(ctx, store.VersionCheck{Vendor: string(v), Version: version, Check: composerCheckVersion, Passed: true, Reason: "told", At: time.Now()})
+	return w + "; aggy says this once for each version"
 }
 
 // newUUID returns a random (version 4) UUID.
