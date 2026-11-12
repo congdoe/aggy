@@ -5,6 +5,7 @@ package supervisor
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -15,12 +16,16 @@ import (
 	"github.com/congdoe/aggy/internal/store"
 )
 
+// checkedClaude is the Claude version the live checks of its composer ran on
+// (adapter.liveChecks).
+const checkedClaude = "2.1.322"
+
 // wantAsked checks that a command from a prompt hook the keys did not vouch for
-// was blocked (no error: aggy hook blocks the prompt, so no model turn) and
+// was blocked (errAsked: aggy hook blocks the prompt, so no model turn) and
 // asked about: the question open, nothing run or switched, atPrompt as it was.
 func wantAsked(t *testing.T, s *session, err error, atPrompt bool) {
 	t.Helper()
-	if err != nil {
+	if !errors.Is(err, errAsked) {
 		t.Fatalf("err %v, want the prompt blocked and a question", err)
 	}
 	if !s.open || !s.pk.cmdAsk || s.hookAsk == nil {
@@ -28,6 +33,22 @@ func wantAsked(t *testing.T, s *session, err error, atPrompt bool) {
 	}
 	if s.sw.to != "" || s.pk.menu != nil || s.pk.page != nil {
 		t.Fatalf("ran before the person's key: switch %q menu %v page %v", s.sw.to, s.pk.menu != nil, s.pk.page != nil)
+	}
+	if s.atPrompt != atPrompt {
+		t.Errorf("atPrompt %v -> %v", atPrompt, s.atPrompt)
+	}
+}
+
+// wantRefused checks that a command from a prompt hook was refused as before
+// the question (code), so the prompt goes on to the CLI: nothing open or
+// switched, atPrompt as it was.
+func wantRefused(t *testing.T, s *session, err error, code diag.Code, atPrompt bool) {
+	t.Helper()
+	if codeOf(err, diag.Code{}) != code {
+		t.Fatalf("err %v, want %s", err, code)
+	}
+	if s.open || s.hookAsk != nil || s.sw.to != "" {
+		t.Fatalf("refused, yet open %v asked %v switch %q", s.open, s.hookAsk != nil, s.sw.to)
 	}
 	if s.atPrompt != atPrompt {
 		t.Errorf("atPrompt %v -> %v", atPrompt, s.atPrompt)
@@ -54,33 +75,37 @@ func recAttrs(t *testing.T, recs []store.DiagRecord, ev diag.Event) []map[string
 // pastGuard lets a key at the question count as meant (confirmGuard).
 func pastGuard(s *session) { s.openedAt = time.Now().Add(-time.Second) }
 
+// forge sends line as a prompt hook's command, with no Enter of the person's.
+func forge(s *session, line string) error {
+	s.hookedEnter = time.Time{}
+	return hookAsk(s, Request{Type: ReqPromptCommand, Vendor: "claude", Command: line})
+}
+
 // TestOwnerRunReplay (T6982): the owner's two lines in Apple Terminal, replayed.
-// First, at launch, a Down on the empty prompt, /switch, a Down, and Enter: the
-// key catch lost the line, and the hook's /switch was refused for keys no menu
-// pick could be, so the prompt went to the model. Then, after that turn's Stop,
-// a Backspace and /switch codex typed in full: refused the same way, with no
-// key record at all. Now each prompt is blocked and asked about, and one key
-// runs it; nothing reaches the model.
+// First, at launch, a Down on the empty prompt, then /switch and Enter: the Down
+// spoiled the line for the key catch, and the hook's /switch was refused, so
+// the prompt went to the model. On Claude at the checked version a Down on the
+// empty composer changes nothing (#146 review), so the key catch takes it at
+// once. Then, after that turn's Stop, a Backspace and /switch codex typed in
+// full: the key catch still loses it, and the hook's command, which the keys
+// spell, is blocked and asked about; the switch key runs it as typed.
 func TestOwnerRunReplay(t *testing.T) {
 	noSettleGap(t)
 	q, records := diagHome(t)
 	s := cmdSess(t, adapter.Claude)
-	s.o.Diag = q
+	s.o.Diag, s.o.VendorVersion = q, checkedClaude
 	s.input = s.send
 	s.turnRan = false // a fresh launch: no Stop yet
-	for _, k := range append(append([]string{kDown}, strings.Split("/switch", "")...), kDown, "\r") {
+	for _, k := range append(append([]string{kDown}, strings.Split("/switch", "")...), "\r") {
 		s.send([]byte(k))
 	}
-	c, _ := sessioncmd.Parse(adapter.Claude, "/switch")
-	wantAsked(t, s, s.hookCommand(c, "/switch"), false)
-	pastGuard(s)
-	s.pickerInput([]byte("\r"))
 	if !s.open || s.pk.cmdAsk || s.pk.confirm != "" || s.pk.menu != nil {
-		t.Fatalf("Enter did not open the switch list: open %v cmdAsk %v", s.open, s.pk.cmdAsk)
+		t.Fatalf("the key catch did not open the switch list: open %v cmdAsk %v", s.open, s.pk.cmdAsk)
 	}
-	if !s.atPrompt {
-		t.Error("the blocked prompt left aggy thinking a turn runs")
+	if got := sentTo(s); got != kDown+"/switch\x15" {
+		t.Errorf("the CLI got %q, want the Down, the line, and Ctrl+U for its Enter", got)
 	}
+	s.toChild = newByteQueue(maxQueued)
 	s.pickerInput([]byte{esc}) // the list's Esc: back to the CLI
 	s.hookEvent(hookEvent{name: "Stop", sessionID: childSID, chain: ownChain})
 
@@ -88,40 +113,81 @@ func TestOwnerRunReplay(t *testing.T) {
 	for _, k := range append(append([]string{kBS}, strings.Split("/switch codex", "")...), "\r") {
 		s.send([]byte(k))
 	}
-	c, _ = sessioncmd.Parse(adapter.Claude, "/switch codex")
+	c, _ := sessioncmd.Parse(adapter.Claude, "/switch codex")
 	wantAsked(t, s, s.hookCommand(c, "/switch codex"), false)
 	pastGuard(s)
-	s.pickerInput([]byte{0x1c}) // the switch key says yes too
+	s.pickerInput([]byte{0x1c})
 	if s.sw.to != adapter.Codex || !s.sw.keyed || s.sw.hooked {
 		t.Fatalf("switch %q keyed %v hooked %v, want codex as typed", s.sw.to, s.sw.keyed, s.sw.hooked)
 	}
 	if s.sw.cleared {
-		// aggy typed no Ctrl+U for it: the blocked prompt's composer is taken as
-		// empty, unverified, so the status line still asks before /exit.
-		t.Error("a hook's question's yes skips the status line")
+		t.Error("a hook's question's yes skips the status line: aggy typed no Ctrl+U for it")
 	}
 	if got := sentTo(s); strings.Contains(got, "\x15") {
 		t.Errorf("a Ctrl+U went to the CLI: %q", got)
 	}
 	recs := records()
-	asked := recAttrs(t, recs, diag.EvCommandAsked)
-	if len(asked) != 2 || asked[0]["why"] != "hook_no_enter,keys_not_a_pick" || asked[0]["pick"] != "menu_key_first" ||
-		asked[0]["command"] != "switch" || asked[1]["pick"] != "backspace" {
-		t.Errorf("question records %v", asked)
+	if caught := recAttrs(t, recs, diag.EvCommandCaught); len(caught) != 2 || caught[0]["via"] != "keys" || caught[1]["via"] != "hook" {
+		t.Errorf("caught records %v", caught)
 	}
-	ans := recAttrs(t, recs, diag.EvCommandAnswered)
-	if len(ans) != 2 || ans[0]["answer"] != "yes" || ans[1]["answer"] != "yes" {
-		t.Errorf("answer records %v", ans)
+	asked := recAttrs(t, recs, diag.EvCommandAsked)
+	if len(asked) != 1 || asked[0]["pick"] != "backspace" || asked[0]["spelled"] != true {
+		t.Errorf("question records %v", asked)
 	}
 	if p := recAttrs(t, recs, diag.EvCommandPassed); len(p) != 0 {
 		t.Errorf("records of commands passed to the CLI: %v", p)
 	}
 }
 
-// TestHookAskKeys (T6982): at the question, Enter, a kitty Enter, or the switch
-// key runs the command, but not as the question appears (type-ahead); Esc drops
-// it, once no longer key follows; any other key drops it and reaches the CLI.
-// Nothing reaches the CLI for the command itself.
+// TestEmptyComposerKeys (#146 review): a key a live check shows changing
+// nothing on the empty composer leaves a command typed next known whole: on
+// Claude at the checked version, a Down. Up recalls history, the others have
+// no check, another version has none, and after text a Down moves in the menu,
+// so each of those still spoils the line. An escape sequence never counts as
+// composer text.
+func TestEmptyComposerKeys(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		version string
+		keys    []string
+		caught  bool
+	}{
+		{"Down first", checkedClaude, []string{kDown}, true},
+		{"Down in application mode", checkedClaude, []string{"\x1bOB"}, true},
+		{"Down twice", checkedClaude, []string{kDown, kDown}, true},
+		{"another version", "2.1.330", []string{kDown}, false},
+		{"Up first", checkedClaude, []string{kUp}, false},
+		{"Left first, unchecked", checkedClaude, []string{kLeft}, false},
+		{"Backspace first, unchecked", checkedClaude, []string{kBS}, false},
+		{"Ctrl+U first, unchecked", checkedClaude, []string{kCtrlU}, false},
+		{"Ctrl+R first: history search", checkedClaude, []string{"\x12"}, false},
+		{"an @ erased first", checkedClaude, []string{"@", kBS}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := cmdSess(t, adapter.Claude)
+			s.o.VendorVersion = c.version
+			for _, k := range c.keys {
+				s.send([]byte(k))
+			}
+			typeLine(s, "/switch grok")
+			if got := caught(sentTo(s), "/switch grok"); got != c.caught {
+				t.Errorf("caught %v, want %v", got, c.caught)
+			}
+		})
+	}
+	t.Run("a sequence counts no text", func(t *testing.T) {
+		s := cmdSess(t, adapter.Claude)
+		s.send([]byte(kLeft))
+		if s.compLen != 0 || len(s.cmdLine) != 0 {
+			t.Errorf("compLen %d cmdLine %q after a Left on the empty composer", s.compLen, s.cmdLine)
+		}
+	})
+}
+
+// TestHookAskKeys (T6982, #146 review): at the question only the switch key
+// runs the command, and not as the question appears (type-ahead). Enter, which
+// may be meant for the CLI, drops it and goes there, as any other key; Esc
+// drops it once no longer key follows.
 func TestHookAskKeys(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -131,10 +197,11 @@ func TestHookAskKeys(t *testing.T) {
 		answer string // the answer record's, "" for none
 		sent   string // what reached the CLI after the question
 	}{
-		{"Enter", []string{"\r"}, false, true, "yes", ""},
-		{"kitty Enter", []string{"\x1b[13u"}, false, true, "yes", ""},
 		{"the switch key", []string{"\x1c"}, false, true, "yes", ""},
-		{"Enter as it appears", []string{"\r"}, true, false, "", ""},
+		{"the kitty switch key", []string{"\x1b[92;5u"}, false, true, "yes", ""},
+		{"the switch key as it appears", []string{"\x1c"}, true, false, "", ""},
+		{"Enter", []string{"\r"}, false, false, "typed", "\r"},
+		{"kitty Enter", []string{"\x1b[13u"}, false, false, "typed", "\x1b[13u"},
 		{"Esc", []string{"\x1b", "esc"}, false, false, "esc", ""},
 		{"Esc that starts a key", []string{"\x1b", "[A"}, false, false, "typed", "\x1b[A"},
 		{"other keys", []string{"hi"}, true, false, "typed", "hi"},
@@ -144,10 +211,7 @@ func TestHookAskKeys(t *testing.T) {
 			s, _ := viewSess(t, adapter.Claude, "")
 			s.o.Diag = q
 			s.input = s.send
-			sendKeys(s, []string{"/", kDown})
-			before := sentTo(s)
-			s.toChild = newByteQueue(maxQueued)
-			wantAsked(t, s, hookAsk(s, Request{Type: ReqPromptCommand, Vendor: "claude", Command: "/inbox"}), s.atPrompt)
+			wantAsked(t, s, forge(s, "/inbox"), true)
 			if !c.soon {
 				pastGuard(s)
 			}
@@ -158,9 +222,8 @@ func TestHookAskKeys(t *testing.T) {
 				}
 				s.pickerInput([]byte(k))
 			}
-			ran := s.pk.page != nil
-			if ran != c.ran {
-				t.Fatalf("ran %v, want %v (before: %q)", ran, c.ran, before)
+			if ran := s.pk.page != nil; ran != c.ran {
+				t.Fatalf("ran %v, want %v", ran, c.ran)
 			}
 			if !c.ran && c.answer != "" && (s.open || s.hookAsk != nil) {
 				t.Fatal("the question stayed open")
@@ -179,57 +242,172 @@ func TestHookAskKeys(t *testing.T) {
 	}
 }
 
+// TestHookAskRefused (#146 review): no question opens where the CLI may be busy
+// or a key meant for it could land on the question: a turn that may be
+// running (a forged command just after the person's own message), a hold, an
+// open ask, unsent text; nor one whose command would not show whole. Each is
+// refused as before the question, recorded with why.
+func TestHookAskRefused(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		setup func(s *session)
+		line  string
+		why   string
+	}{
+		{"after the person's message", func(s *session) { typeKeys(s, "fix the bug"); s.send([]byte("\r")) }, "/switch grok", "turn_may_run"},
+		{"after the person's /review", func(s *session) { typeKeys(s, "/review"); s.send([]byte("\r")) }, "/switch grok", "turn_may_run"},
+		{"a hold", func(s *session) { s.held = true }, "/switch grok", "held"},
+		{"unsent text", func(s *session) { typeKeys(s, "draft") }, "/inbox", "unsent_text"},
+		{"too long to show", func(s *session) {}, "/aggy diag " + strings.Repeat("a", 64), "too_long_to_ask"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			q, records := diagHome(t)
+			s, _ := viewSess(t, adapter.Claude, "")
+			s.o.Diag = q
+			c.setup(s)
+			atPrompt := s.atPrompt
+			wantRefused(t, s, forge(s, c.line), diag.CodeCommandNoEnter, atPrompt)
+			p := recAttrs(t, records(), diag.EvCommandPassed)
+			if len(p) == 0 || !strings.HasSuffix(p[len(p)-1]["why"].(string), ","+c.why) {
+				t.Errorf("records %v, want why ending %s", p, c.why)
+			}
+		})
+	}
+}
+
+// TestForgedYesKeepsState (#146 review H1): a yes to a command the keys did not
+// spell runs it as a hook's: the composer and atPrompt stay as they were (here
+// a composer in doubt), the switch is not keyed, and its status line still
+// asks before anything is typed. A yes to one the keys spelled records the
+// blocked prompt: the composer empty, and the switch keyed.
+func TestForgedYesKeepsState(t *testing.T) {
+	s, _ := viewSess(t, adapter.Claude, "")
+	s.lenKnown, s.unsettled = false, "enter_not_at_prompt" // a turn end that settled nothing
+	wantAsked(t, s, forge(s, "/switch grok"), true)
+	pastGuard(s)
+	s.pickerInput([]byte{0x1c})
+	if s.lenKnown || !s.doubt() {
+		t.Error("a forged command's yes took the composer as empty")
+	}
+	if s.sw.to != adapter.Grok || s.sw.keyed || !s.sw.hooked {
+		t.Fatalf("switch %q keyed %v hooked %v, want a hook's switch", s.sw.to, s.sw.keyed, s.sw.hooked)
+	}
+	s.lastIn = time.Now().Add(-time.Minute)
+	s.lastOut.Store(time.Now().Add(-time.Minute).UnixNano())
+	s.offerSwitch()
+	if strings.Contains(sentTo(s), "/exit") {
+		t.Fatal("the exit command went with no status line")
+	}
+
+	// The keys spelled it: the person's own /switch grok, the key catch lost.
+	s2, _ := viewSess(t, adapter.Claude, "")
+	s2.input = s2.send
+	for _, k := range append(append([]string{kBS}, strings.Split("/switch grok", "")...), "\r") {
+		s2.send([]byte(k))
+	}
+	c, _ := sessioncmd.Parse(adapter.Claude, "/switch grok")
+	wantAsked(t, s2, s2.hookCommand(c, "/switch grok"), false)
+	pastGuard(s2)
+	s2.pickerInput([]byte{0x1c})
+	if !s2.lenKnown || !s2.atPrompt || !s2.sw.keyed {
+		t.Errorf("lenKnown %v atPrompt %v keyed %v: the spelled command's blocked prompt", s2.lenKnown, s2.atPrompt, s2.sw.keyed)
+	}
+}
+
+// TestHookAskBeforeTurnEnd (#146 review M3): before the first turn end a yes to
+// a hook's /switch only opens the list, as the hook's switch taken at once does.
+func TestHookAskBeforeTurnEnd(t *testing.T) {
+	s := cmdSess(t, adapter.Claude)
+	s.turnRan, s.atPrompt, s.inputSinceTurn = false, true, false
+	wantAsked(t, s, forge(s, "/switch grok"), true)
+	pastGuard(s)
+	s.pickerInput([]byte{0x1c})
+	if s.sw.to != "" || !s.open || s.pk.cmdAsk || s.pk.confirm != "" {
+		t.Fatalf("switch %q open %v: want the list, no switch queued", s.sw.to, s.open)
+	}
+}
+
+// TestHookAskFillWaits (#146 review): a yes to a hook's /borrow <kind> types
+// nothing into the composer once a turn may be running.
+func TestHookAskFillWaits(t *testing.T) {
+	s, _ := viewSess(t, adapter.Claude, "")
+	wantAsked(t, s, forge(s, "/borrow res"), true)
+	s.atPrompt = false // a turn started meanwhile
+	pastGuard(s)
+	s.pickerInput([]byte{0x1c})
+	if got := sentTo(s); got != "" {
+		t.Errorf("typed into a running turn: %q", got)
+	}
+	if !s.open || !s.pk.note {
+		t.Error("nothing said why it was not typed")
+	}
+}
+
 // TestHookAskLimit (T6982): a process in the CLI's tree can raise one question
 // at a time, and once hookAskMax went unanswered within hookAskWindow, the next
 // command is refused as before the question, the bottom row says so once, and
-// the refusal is recorded with its code; a minute later aggy asks again.
+// the refusal is recorded with its code; a minute later aggy asks again. A
+// question another screen closed does not count (#146 review).
 func TestHookAskLimit(t *testing.T) {
 	q, records := diagHome(t)
 	s, _ := viewSess(t, adapter.Claude, "")
 	s.o.Diag = q
 	s.input = s.send
-	forge := func() error { return hookAsk(s, Request{Type: ReqPromptCommand, Vendor: "claude", Command: "/inbox"}) }
+	wantAsked(t, s, forge(s, "/inbox"), true)
+	s.pk.tell("a note that takes aggy's screen")
+	s.openPicker()
+	s.closePicker()
+	if len(s.askDrops) != 0 {
+		t.Fatalf("a question another screen closed counted: %v", s.askDrops)
+	}
 	for i := range hookAskMax {
-		s.hookedEnter = time.Time{} // each forged with no Enter of its own
-		wantAsked(t, s, forge(), s.atPrompt)
+		wantAsked(t, s, forge(s, "/inbox"), true)
 		if i == 0 {
 			// One at a time: another while it is open is refused.
-			if err := forge(); codeOf(err, diag.Code{}) != diag.CodeCommandNotTaken {
+			if err := forge(s, "/inbox"); codeOf(err, diag.Code{}) != diag.CodeCommandNotTaken {
 				t.Fatalf("a second question while one is open: err %v", err)
 			}
 		}
 		s.pickerInput([]byte{esc})
 		s.promptEsc()
 	}
-	s.hookedEnter = time.Time{}
-	err := forge()
-	if codeOf(err, diag.Code{}) != diag.CodeCommandAskLimit || s.open {
-		t.Fatalf("err %v open %v, want %s and no question", err, s.open, diag.CodeCommandAskLimit)
-	}
+	wantRefused(t, s, forge(s, "/inbox"), diag.CodeCommandAskLimit, true)
 	if p := recAttrs(t, records(), diag.EvCommandPassed); len(p) != 1 || p[0]["via"] != "hook" {
 		t.Errorf("records of the refusal %v", p)
 	}
 	s.askDrops[0] = time.Now().Add(-hookAskWindow)
-	s.hookedEnter = time.Time{}
-	wantAsked(t, s, forge(), s.atPrompt)
+	wantAsked(t, s, forge(s, "/inbox"), true)
 }
 
-// TestHookAskStatusLine (T6982): the question is one status line that names the
-// command and its keys; a long command is cut, never the keys.
+// TestHookAskStatusLine (T6982, #146 review M1): the question names the command
+// in canonical form, its words one space apart as Parse reads them, so runs of
+// spaces cannot push what a yes runs out of view; it is never cut, and a
+// window too narrow for it says to widen it, where the switch key does nothing.
 func TestHookAskStatusLine(t *testing.T) {
 	p := &picker{key: 0x1c}
 	p.askCommand("/switch codex", adapter.Claude)
-	if got := p.statusLine(80); got != `aggy: /switch codex from claude's prompt? Enter or Ctrl+\ runs it, Esc drops it` {
+	if got := p.statusLine(80); got != `aggy: /switch codex from claude's prompt? Ctrl+\ runs it, Esc drops it` {
 		t.Errorf("line %q", got)
 	}
-	p.askCommand("/aggy diag "+strings.Repeat("a", 60), adapter.Claude)
-	got := p.statusLine(80)
-	if len(got) > 79 || !strings.HasSuffix(got, "Esc drops it") || !strings.Contains(got, "...") {
-		t.Errorf("line %q (%d)", got, len(got))
+	if got := p.statusLine(40); strings.Contains(got, "/switch") || !strings.Contains(got, "widen") {
+		t.Errorf("narrow line %q", got)
 	}
 	var b bytes.Buffer
 	p.draw(&b, false)
 	if !strings.Contains(b.String(), "aggy did not see it typed") {
 		t.Errorf("the full form %q", b.String())
+	}
+
+	s, _ := viewSess(t, adapter.Claude, "")
+	wantAsked(t, s, forge(s, "/switch"+strings.Repeat(" ", 200)+"codex   --new"), true)
+	if got := s.pk.statusLine(80); !strings.Contains(got, "/switch codex --new from") {
+		t.Errorf("line %q, want the canonical command", got)
+	}
+	s.t = &tty{fd: -1}
+	pastGuard(s)
+	s.hookAsk.line = "/aggy diag " + strings.Repeat("a", 64) // as if the window shrank
+	s.pickerInput([]byte{0x1c})
+	if s.hookAsk == nil || s.sw.to != "" {
+		t.Error("the switch key ran a command the line could not show")
 	}
 }

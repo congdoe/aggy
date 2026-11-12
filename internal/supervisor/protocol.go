@@ -73,9 +73,14 @@ type Request struct {
 }
 
 // Response answers one Request.
+// RespAsked is a prompt-command's Response.Type when the supervisor blocked
+// the prompt to ask about the command on its status line rather than taking it
+// (T6982), so aggy hook's reason says so.
+const RespAsked = "asked"
+
 type Response struct {
 	OK    bool   `json:"ok"`
-	Type  string `json:"type,omitempty"` // "pong" for a ping
+	Type  string `json:"type,omitempty"` // "pong" for a ping; RespAsked for a prompt-command
 	Error string `json:"error,omitempty"`
 	// Code is a refusal's reason code (docs/logging.md), so the sender
 	// can print and record it too. The sender looks it up in the

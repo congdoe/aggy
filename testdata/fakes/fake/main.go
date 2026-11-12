@@ -895,6 +895,15 @@ func (f *fake) versionText() string {
 	}
 	v := f.sc.Version
 	if v == "" {
+		// A version file beside the binary: aggy's launch probe runs
+		// --version with no scenario, so a test sets one vendor's version so.
+		if exe, err := os.Executable(); err == nil {
+			if b, err := os.ReadFile(exe + ".version"); err == nil {
+				v = strings.TrimSpace(string(b))
+			}
+		}
+	}
+	if v == "" {
 		v = defaultVersion[f.vendor]
 	}
 	if f.vendor == "grok" {

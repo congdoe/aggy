@@ -46,33 +46,35 @@ func TestLongCommandCaught(t *testing.T) {
 	})
 }
 
-// TestForgedHookAsks (R121, T6982): a prompt-command that goes with no Enter of
-// a / command at the prompt just before it (a forged one, mid-turn or after
-// keys) runs nothing and leaves atPrompt as it was: aggy asks (wantAsked), and
-// the next key goes to the CLI and drops the question. A second one for the
-// same Enter is refused.
-func TestForgedHookAsks(t *testing.T) {
+// TestForgedHookRefused (R121, T6982, #146 review): a prompt-command that goes
+// with no Enter of a / command at the prompt just before it runs nothing and
+// leaves atPrompt as it was. Mid-turn or after keys it is refused, as a turn
+// may be running; at an idle prompt aggy asks (wantAsked), and the next key
+// goes to the CLI and drops the question. A second one for the same Enter is
+// refused.
+func TestForgedHookRefused(t *testing.T) {
 	for _, c := range []struct {
 		name  string
 		setup func(s *session)
 		cmd   string
+		asked bool
 	}{
 		{"keys typed since the Enter", func(s *session) {
 			s.send([]byte("x"))
 			s.send([]byte("\r"))
 			s.enterAt = time.Now().Add(-time.Minute)
 			typeKeys(s, "hel")
-		}, "/aggy"},
+		}, "/aggy", false},
 		{"long after the Enter", func(s *session) {
 			typeKeys(s, "/ag")
 			s.send([]byte("\r"))
 			s.enterAt = time.Now().Add(-time.Minute)
-		}, "/aggy doctor"},
+		}, "/aggy doctor", false},
 		{"a message's Enter, mid-turn", func(s *session) {
 			typeKeys(s, "fix the bug")
 			s.send([]byte("\r"))
-		}, "/inbox"},
-		{"no Enter at all", func(s *session) {}, "/switch"},
+		}, "/inbox", false},
+		{"no Enter at all", func(s *session) {}, "/switch", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s, _ := viewSess(t, adapter.Claude, "")
@@ -80,6 +82,14 @@ func TestForgedHookAsks(t *testing.T) {
 			c.setup(s)
 			atPrompt := s.atPrompt
 			err := hookAsk(s, Request{Type: ReqPromptCommand, Vendor: "claude", Command: c.cmd})
+			if !c.asked {
+				wantRefused(t, s, err, diag.CodeCommandNoEnter, atPrompt)
+				s.send([]byte("lo"))
+				if got := sentTo(s); !strings.HasSuffix(got, "lo") {
+					t.Errorf("the next keys did not reach the CLI: %q", got)
+				}
+				return
+			}
 			wantAsked(t, s, err, atPrompt)
 			s.input = s.send
 			s.pickerInput([]byte("lo"))

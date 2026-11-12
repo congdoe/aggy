@@ -623,6 +623,12 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w+"; Hermes' hooks, approvals, and session export are checked only on that version"))
 		}
 	}
+	// T6982: the live checks of the composer hold at the versions they ran on;
+	// on another, a switch asks on the status line, and the notice says a
+	// re-check is owed, as aggy doctor does.
+	if w := adapter.ComposerCheckOwed(v, version); w != "" && !t.Direct {
+		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
+	}
 	// Antigravity (T6957): its trust tick, aggy's hooks entry in the folder's
 	// .agents/hooks.json, the --settings file, and the plan its hook reads,
 	// ready before the launch is recorded.
@@ -912,6 +918,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		ToolsAtLaunch: toolBase,
 		ToolsNudge:    proxyNudge,
 		In:            os.Stdin, Out: os.Stdout, Command: cmd,
+		VendorVersion: version,
 		// The CLI leads its own session in the pseudo-terminal.
 		Start: func(c adapter.Command, rows, cols int) (supervisor.Child, error) {
 			ch, err := startPTY(c, rows, cols)

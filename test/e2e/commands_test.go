@@ -11,9 +11,15 @@ import (
 	"time"
 )
 
-// commandWorld is a world with aggy set up, and a Claude scenario whose hooks
-// go through aggy hook and are also counted, one line per event, in the file
-// it returns: a line that reached the CLI as a turn adds a Stop.
+// checkedClaude is the Claude Code version the live checks of its composer were
+// recorded on (docs/verification.md, "Claude Code's Ctrl+U and /exit"): only
+// there does a typed switch go in one step (adapter.ClearLineChecked).
+const checkedClaude = "2.1.322"
+
+// commandWorld is a world with aggy set up, and a Claude scenario at
+// checkedClaude whose hooks go through aggy hook and are also counted, one line
+// per event, in the file it returns: a line that reached the CLI as a turn adds
+// a Stop.
 func commandWorld(t *testing.T) (*world, map[string]any, string) {
 	t.Helper()
 	w := newWorld(t)
@@ -31,7 +37,33 @@ func commandWorld(t *testing.T) (*world, map[string]any, string) {
 		"hooks":         []map[string]any{{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}},
 		"session_files": startedFiles(),
 	}
+	claudeVersion(t, w, checkedClaude)
 	return w, sc, log
+}
+
+// claudeVersion makes the fake claude in w report version to --version, as
+// aggy's launch probe runs it with no scenario; "" keeps the fake's default.
+func claudeVersion(t *testing.T, w *world, version string) {
+	t.Helper()
+	if version == "" {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(w.bin, "claude.version"), []byte(version+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// keyedOffer fails the test unless the switch was offered keyed, in one step
+// with no status line (switch.request.offered, attrs.keyed), and never asked.
+func keyedOffer(t *testing.T, w *world) {
+	t.Helper()
+	code, out := w.aggyCode(t, "diag", "export", "--jsonl", "--event", "switch.request.offered")
+	if code != 0 {
+		t.Fatalf("aggy diag export: exit %d\n%s", code, out)
+	}
+	if !strings.Contains(out, `"keyed":true`) || strings.Contains(out, `"asked":`) {
+		t.Errorf("switch offers = %q, want it keyed, with no status line", out)
+	}
 }
 
 // stops counts the Stop hooks Claude has run.
@@ -106,9 +138,7 @@ func TestTypedSwitchCaught(t *testing.T) {
 	s.waitWithin([]byte("/switch grok"), offerTimeout)
 	s.send([]byte("\r"))
 	w.waitRuns(t, s, 2)
-	if strings.Contains(s.screen(), "Esc stays") {
-		t.Errorf("a status line asked about a switch typed in full: %q", s.screen())
-	}
+	keyedOffer(t, w)
 	if got := stops(t, log); got != 2 {
 		t.Errorf("Stop hooks = %d, want 2: the command reached Claude as a turn", got)
 	}
@@ -120,6 +150,37 @@ func TestTypedSwitchCaught(t *testing.T) {
 		t.Fatalf("interactive runs = %+v, want claude then grok", runs)
 	}
 	s.restored("after the switch")
+}
+
+// TestDownThenSwitchCaught (#146 review, the owner's first line): on Claude at
+// the checked version, Down on the empty prompt is recorded live to change
+// nothing (adapter.EmptyComposerKey), so Down, then /switch grok typed in full
+// and Enter, is caught from the keys at once and goes in one step: no turn, no
+// question, no status line.
+func TestDownThenSwitchCaught(t *testing.T) {
+	w, sc, log := commandWorld(t)
+	s := w.start(t, sc, "run", "claude")
+	s.waitWithin([]byte("READY>"), offerTimeout)
+	s.send([]byte("work\r"))
+	waitStops(t, log, 2)
+	waitTurnEnds(t, w, 2)
+	s.send([]byte("\x1b[B"))
+	time.Sleep(50 * time.Millisecond)
+	s.typeSlowly("/switch grok")
+	s.waitWithin([]byte("/switch grok"), offerTimeout)
+	s.send([]byte("\r"))
+	w.waitRuns(t, s, 2)
+	keyedOffer(t, w)
+	if got := stops(t, log); got != 2 {
+		t.Errorf("Stop hooks = %d, want 2: the command reached Claude as a turn", got)
+	}
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	if runs := interactiveRuns(t, w); len(runs) != 2 || runs[1].Vendor != "grok" {
+		t.Fatalf("interactive runs = %+v, want claude then grok", runs)
+	}
 }
 
 // TestTypedCommandNotCaught (T6908): a pasted command, and one the tracker
@@ -215,9 +276,9 @@ func TestHookBlockedSwitch(t *testing.T) {
 // promptHookWorld is a world with aggy set up and a Claude scenario whose prompt
 // hook reports prompt for every line after the launch, its answer kept in the
 // file it returns, and whose Stop counts only at the launch, as a blocked prompt
-// sends none. It waits until the launch's prompt hook has run, and past the
-// launch's quiet gap.
-func promptHookWorld(t *testing.T, prompt string) (*world, *session, string) {
+// sends none. Claude reports version (the fake's default when ""). It waits
+// until the launch's prompt hook has run, and past the launch's quiet gap.
+func promptHookWorld(t *testing.T, prompt, version string) (*world, *session, string) {
 	t.Helper()
 	w := newWorld(t)
 	setup := exec.Command(buildAggy(t), "setup", "--yes")
@@ -241,6 +302,7 @@ func promptHookWorld(t *testing.T, prompt string) (*world, *session, string) {
 		},
 		"session_files": startedFiles(),
 	}
+	claudeVersion(t, w, version)
 	s := w.start(t, sc, "run", "claude")
 	s.waitWithin([]byte("READY>"), offerTimeout)
 	deadline := time.Now().Add(timeout)
@@ -275,9 +337,9 @@ func hookAnswer(t *testing.T, answers string) string {
 // (/sw, Tab, then the vendor), which the keys do not spell whole, is taken
 // from the UserPromptSubmit hook, as the typed prefix and the arguments match
 // the reported command; it asks on the status line as every hook's switch.
-// The same keys with another vendor reported are not the person's: since
-// T6982 the hook blocks that prompt too, so it reaches no model, and aggy asks
-// whether to run it; Esc drops it, and nothing switches.
+// The same keys with another vendor reported are not the person's, and spell
+// another line, from which a turn may be running: aggy refuses it, asks
+// nothing, and the prompt goes on to the CLI (#146 review).
 func TestHookMenuPickTab(t *testing.T) {
 	for _, c := range []struct {
 		name, prompt string
@@ -287,7 +349,7 @@ func TestHookMenuPickTab(t *testing.T) {
 		{"other arguments", "/switch codex", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			w, s, answers := promptHookWorld(t, c.prompt)
+			w, s, answers := promptHookWorld(t, c.prompt, "")
 			s.typeSlowly("/sw")
 			s.send([]byte("\t"))
 			time.Sleep(50 * time.Millisecond)
@@ -298,12 +360,13 @@ func TestHookMenuPickTab(t *testing.T) {
 				s.confirmPastGuard(time.Now())
 				w.waitRuns(t, s, 2)
 			} else {
-				s.waitWithin([]byte("/switch codex from claude's prompt? Enter or Ctrl+"), offerTimeout)
-				if b := hookAnswer(t, answers); !strings.Contains(b, `"block"`) {
-					t.Fatalf("the hook let a prompt aggy asks about through: %q", b)
+				if b := hookAnswer(t, answers); strings.Contains(b, `"block"`) {
+					t.Fatalf("the hook blocked a prompt the keys do not vouch for: %q", b)
 				}
-				s.send([]byte("\x1b"))
 				time.Sleep(500 * time.Millisecond)
+				if strings.Contains(s.screen(), "from claude's prompt?") {
+					t.Fatalf("aggy asked about a refused command: %q", s.screen())
+				}
 				if runs := interactiveRuns(t, w); len(runs) != 1 {
 					t.Fatalf("interactive runs = %+v, want claude alone", runs)
 				}
@@ -319,30 +382,25 @@ func TestHookMenuPickTab(t *testing.T) {
 	}
 }
 
-// TestHookUnvouchedAsks (T6982, the owner's run in Apple Terminal): a Down on
-// the empty prompt, then /switch grok and Enter. The keys vouch for no
-// command, so the key catch passes the line, and before T6982 the prompt
-// hook's /switch grok was refused and went to the model. Now the hook blocks
-// the prompt, aggy asks on its status line, and one Enter there runs the
-// switch as one typed in full.
+// TestHookUnvouchedAsks (T6982, the owner's second line in Apple Terminal): a
+// Backspace on the empty prompt, then /switch grok and Enter. The Backspace
+// spoils the line for the key catch, which passes it, and before T6982 the
+// prompt hook's /switch grok was refused and went to the model. Now the hook
+// blocks the prompt (its reason says aggy asked), aggy asks on its status
+// line, and the switch key, the only yes, runs the switch as one typed in
+// full; aggy typed no Ctrl+U for it, so the switch asks on the status line
+// before /exit is typed.
 func TestHookUnvouchedAsks(t *testing.T) {
-	w, s, answers := promptHookWorld(t, "/switch grok")
-	s.send([]byte("\x1b[B"))
+	w, s, answers := promptHookWorld(t, "/switch grok", "")
+	s.send([]byte("\x7f"))
 	time.Sleep(50 * time.Millisecond)
 	s.typeSlowly("/switch grok")
 	s.send([]byte("\r"))
-	s.waitWithin([]byte("/switch grok from claude's prompt? Enter or Ctrl+"), offerTimeout)
-	if b := hookAnswer(t, answers); !strings.Contains(b, `"block"`) {
-		t.Fatalf("the hook let the prompt through to the model: %q", b)
+	s.waitWithin([]byte("/switch grok from claude's prompt? Ctrl+"), offerTimeout)
+	if b := hookAnswer(t, answers); !strings.Contains(b, `"block"`) || !strings.Contains(b, "asked about") {
+		t.Fatalf("the hook let the prompt through, or gave the wrong reason: %q", b)
 	}
-	seen := time.Now()
-	for time.Since(seen) < 600*time.Millisecond {
-		time.Sleep(10 * time.Millisecond)
-	}
-	s.send([]byte("\r"))
-	// aggy typed no Ctrl+U for it: the blocked prompt's composer is taken as
-	// empty, which is unverified, so the switch still asks on the status line
-	// before /exit is typed.
+	s.confirmPastGuard(time.Now())
 	s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
 	s.confirmPastGuard(time.Now())
 	w.waitRuns(t, s, 2)

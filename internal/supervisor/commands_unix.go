@@ -384,19 +384,27 @@ func (s *session) hookDoubts(line string) []string {
 func (s *session) promptBlocked() {
 	s.atPrompt = !s.held
 	s.inputSinceTurn = s.lineInput
-	// TODO(T6975): a blocked prompt is taken as an empty composer, unverified;
-	// if the CLI puts the text back, an exit command is typed after it.
+	// A blocked prompt is taken as an empty composer: recorded live for Claude
+	// 2.1.322 (docs/verification.md, "Claude Code's Ctrl+U and /exit").
+	// TODO(T6975): unverified on Grok, and on other Claude versions; if the CLI
+	// puts the text back, an exit command is typed after it.
 	s.emptyComposer()
 }
 
-// hookQuestion is a command from a prompt hook that aggy asks about (askHookCommand):
-// the command, its line, the Enter it came after and whether that Enter vouched
-// for a prompt (enterVouches), and the record of the question.
+// errAsked is hookCommand's answer when it blocked the prompt to ask about the
+// command on the status line (askHookCommand): aggy hook blocks the prompt with
+// a reason of its own (Response.Type RespAsked).
+var errAsked = errors.New("aggy asks about the command on its status line")
+
+// hookQuestion is a command from a prompt hook that aggy asks about
+// (askHookCommand): the command, its line in canonical form, the Enter it came
+// after and whether the keys vouched that Enter sent that line (spelled), and
+// the record of the question.
 type hookQuestion struct {
 	c       sessioncmd.Command
 	line    string
 	enterAt time.Time
-	enter   bool
+	spelled bool
 	rec     string
 }
 
@@ -408,17 +416,64 @@ const (
 	hookAskMax    = 3
 )
 
+// canonLine is line as its command reads: its prefix and its words, one space
+// apart. Parse takes words so, so this is what a yes runs; runs of spaces in a
+// forged line could push its arguments out of view (#146 review).
+func canonLine(line string) string {
+	if line == "" {
+		return ""
+	}
+	return line[:1] + strings.Join(strings.Fields(line[1:]), " ")
+}
+
+// spelled reports whether the keys say the last Enter sent line: it went at the
+// prompt with no key since (enterVouches), on a line that began with / on a
+// composer aggy counted empty (enterSlash), whose printable keys spell line's
+// words. A forged command after the person's own /review or message is not.
+func (s *session) spelled(line string) bool {
+	return s.enterVouches() && s.enterSlash && canonLine(string(s.enterLine)) == canonLine(line)
+}
+
 // askHookCommand blocks the prompt that carried c, which the keys do not vouch
 // for (why), and asks on the status line whether to run it (T6982). The
-// person's key there is the proof a forged request lacks, so a process in the
-// CLI's tree can at worst raise a question: one at a time (hookCommand refuses
-// another while aggy's screen is up), and none once hookAskMax went unanswered
-// within hookAskWindow.
+// person's switch key there is the proof a forged request lacks, so a process
+// in the CLI's tree can at worst raise a question: one at a time (hookCommand
+// refuses another while aggy's screen is up), and none once hookAskMax went
+// unanswered within hookAskWindow. None opens where a key meant for the CLI
+// could land on it, or the CLI could be busy: a hold, an open ask, a turn that
+// may be running, or unsent text, unless the keys spelled this line (the
+// prompt the CLI just sent was this one, now blocked); nor one whose command
+// would not show whole on the line. Those are refused, as before the question.
 func (s *session) askHookCommand(c sessioncmd.Command, line string, why []string) error {
+	line = canonLine(line)
+	spelled := s.spelled(line)
+	not := ""
+	switch {
+	case s.held:
+		not = "held"
+	case s.askOpen():
+		not = "ask_open"
+	case !spelled && s.knownText():
+		not = "unsent_text"
+	case !spelled && s.mayBeRunning():
+		not = "turn_may_run"
+	case !s.pk.commandFits(line, s.o.Vendor, s.cols()):
+		not = "too_long_to_ask"
+	}
+	if not != "" {
+		if !slices.Contains(why, not) { // hookDoubts may already name held
+			why = append(why, not)
+		}
+		s.hookMiss(c, why)
+		if not == "too_long_to_ask" {
+			s.waitNote(fmt.Sprintf("aggy: a command from %s's prompt was too long to show whole, so it went to %s.", s.o.Vendor, s.o.Vendor))
+		}
+		return coded(diag.CodeCommandNoEnter, errors.New("the keys do not vouch for that command, and aggy cannot ask now"))
+	}
 	now := time.Now()
 	s.askDrops = slices.DeleteFunc(s.askDrops, func(t time.Time) bool { return now.Sub(t) >= hookAskWindow })
 	if len(s.askDrops) >= hookAskMax {
-		s.hookMiss(c, why)
+		s.hookMiss(c, append(why, "ask_limit"))
 		if now.Sub(s.askLimitNoted) >= hookAskWindow {
 			s.askLimitNoted = now
 			s.waitNote(fmt.Sprintf("aggy: %d questions about commands from %s's prompt went unanswered; for a minute they go to %s.",
@@ -426,8 +481,7 @@ func (s *session) askHookCommand(c sessioncmd.Command, line string, why []string
 		}
 		return coded(diag.CodeCommandAskLimit, fmt.Errorf("%d of aggy's questions about commands from the prompt hook went unanswered within a minute", hookAskMax))
 	}
-	enter := s.enterVouches()
-	if enter {
+	if spelled {
 		s.heldMiss = nil // the key catch's miss of this Enter: the prompt is blocked
 	} else {
 		s.flushMiss(true)
@@ -437,16 +491,27 @@ func (s *session) askHookCommand(c sessioncmd.Command, line string, why []string
 	if s.enterPick.bad && s.enterPick.why != "" {
 		attrs["pick"] = s.enterPick.why
 	}
-	s.hookAsk = &hookQuestion{c: c, line: line, enterAt: s.enterAt, enter: enter, rec: s.log(diag.Rec{Event: diag.EvCommandAsked, Attrs: attrs})}
+	attrs["spelled"] = spelled
+	s.hookAsk = &hookQuestion{c: c, line: line, enterAt: s.enterAt, spelled: spelled, rec: s.log(diag.Rec{Event: diag.EvCommandAsked, Attrs: attrs})}
 	s.pk.askCommand(line, s.o.Vendor)
 	s.openPicker()
-	return nil
+	return errAsked
 }
 
-// hookAskInput takes a key at the question askHookCommand opened. Enter or the
-// switch key runs the command, once confirmGuard has passed, so a key typed
-// as the question appeared answers nothing; Esc drops it, once escTimeout shows
-// it began no longer key; any other key drops it and goes to the CLI as typed.
+// cols is the terminal's width, 80 when it cannot be read.
+func (s *session) cols() int {
+	if _, c := s.t.size(); c > 1 {
+		return c
+	}
+	return 80
+}
+
+// hookAskInput takes a key at the question askHookCommand opened. Only the
+// switch key says yes, once confirmGuard has passed, so a key typed as the
+// question appeared answers nothing, and an Enter meant for the CLI (an
+// approval, a message) never runs a command (#146 review); and only while the
+// command shows whole. Esc drops it, once escTimeout shows it began no longer
+// key; any other key, Enter among them, drops it and goes to the CLI as typed.
 func (s *session) hookAskInput(b []byte) {
 	if s.escBy != nil {
 		s.escBy = nil
@@ -457,9 +522,9 @@ func (s *session) hookAskInput(b []byte) {
 	switch {
 	case isEsc(b):
 		s.escBy = time.After(escTimeout)
-	case s.pk.isKey(b) || plainEnter(b):
-		if time.Since(s.openedAt) < confirmGuard {
-			return // too soon to be meant: ignored
+	case s.pk.isKey(b):
+		if time.Since(s.openedAt) < confirmGuard || !s.pk.commandFits(s.hookAsk.line, s.o.Vendor, s.cols()) {
+			return // too soon to be meant, or the command does not show: ignored
 		}
 		s.runHookAsk()
 	default:
@@ -468,32 +533,56 @@ func (s *session) hookAskInput(b []byte) {
 	}
 }
 
-// runHookAsk runs the command the person said yes to, as one typed in full at
-// the prompt is run. What the blocked prompt left is recorded only when the
-// Enter before it vouched for a prompt and nothing reached the CLI since; a
-// forged request after a turn started must not make the CLI look idle.
+// runHookAsk runs the command the person said yes to. Only when the keys
+// spelled it (spelled) is it run as one typed in full, keyed, with the blocked
+// prompt's state recorded: the CLI at its prompt, its composer empty. Any other
+// is run as a hook's: a switch always asks on the status line and waits for the
+// full checks, a turn end included, and atPrompt and the composer stay as they
+// were, so a forged request answered yes cannot mark a running CLI idle (#146
+// review). Before the first turn end a switch only opens the list, as from the
+// hook at once; a fill waits for no turn to be running.
 func (s *session) runHookAsk() {
 	a := s.hookAsk
 	s.hookAsk = nil
 	s.closePicker()
 	s.log(diag.Rec{Event: diag.EvCommandAnswered, Cause: a.rec, Attrs: map[string]any{"command": a.c.Name, "answer": "yes"}})
-	if a.enter && s.enterAt.Equal(a.enterAt) && s.afterEnter == 0 {
+	spelled := a.spelled && s.enterAt.Equal(a.enterAt) && s.afterEnter == 0
+	c := a.c
+	if c.Kind == sessioncmd.Fill && !spelled && s.mayBeRunning() {
+		s.pk.tell(fmt.Sprintf("aggy did not type %s into %s's prompt: a turn may be running there.", a.line, s.o.Vendor),
+			"Type it yourself once the turn ends.")
+		s.openPicker()
+		return
+	}
+	if spelled {
 		s.promptBlocked()
 	}
-	s.log(diag.Rec{Event: diag.EvCommandCaught, Cause: a.rec, Attrs: map[string]any{"command": a.c.Name, "via": "hook", "asked": true}})
-	s.runCommand(a.c, true)
+	s.log(diag.Rec{Event: diag.EvCommandCaught, Cause: a.rec, Attrs: map[string]any{"command": c.Name, "via": "hook", "asked": true, "spelled": spelled}})
+	if c.Kind == sessioncmd.Switch && !s.turnRan {
+		// As hookCommand: before a turn end only quitting the CLI completes a
+		// switch, and a hook's request must not set that up.
+		c = sessioncmd.Command{Kind: sessioncmd.Picker, Name: c.Name}
+	}
+	s.runCommand(c, spelled)
+	if c.Kind == sessioncmd.Switch && !spelled && s.sw.to == c.Vendor && !s.sw.typed {
+		s.sw.hooked, s.sw.keyed = true, false
+	}
 }
 
 // dropHookAsk closes the question with no yes (how: esc, typed, or closed when
-// something else took aggy's screen) and counts it for hookAskMax. The caller
-// closes the picker, unless it is closing it.
+// something else took aggy's screen) and, unless something else closed it,
+// counts it for hookAskMax: a turn end's note or a limit's taking the screen is
+// not the person turning it down. The caller closes the picker, unless it is
+// closing it.
 func (s *session) dropHookAsk(how string) {
 	a := s.hookAsk
 	if a == nil {
 		return
 	}
 	s.hookAsk = nil
-	s.askDrops = append(s.askDrops, time.Now())
+	if how != "closed" {
+		s.askDrops = append(s.askDrops, time.Now())
+	}
 	s.log(diag.Rec{Event: diag.EvCommandAnswered, Cause: a.rec, Attrs: map[string]any{"command": a.c.Name, "answer": how}})
 	if how != "closed" {
 		s.closePicker()

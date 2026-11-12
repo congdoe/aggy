@@ -150,7 +150,9 @@ func answer(line []byte, fromSession bool, onHook func(Request), onSwitch func(R
 		if onSwitch == nil {
 			return refuse(diag.EvPromptRefused, diag.CodeNotSupervised, errors.New("this session takes no commands (aggy --direct)"), attrs)
 		}
-		if err := onSwitch(r); err != nil {
+		if err := onSwitch(r); errors.Is(err, errAsked) {
+			return Response{OK: true, Type: RespAsked}
+		} else if err != nil {
 			return refuse(diag.EvPromptRefused, codeOf(err, diag.CodeCommandNotTaken), err, attrs)
 		}
 		return Response{OK: true}

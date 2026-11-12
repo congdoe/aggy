@@ -666,6 +666,10 @@ type session struct {
 	// byteClear: the command being run was typed in full, and aggy cleared its
 	// line with Ctrl+U's byte, the form a live check covers (catchCommand).
 	byteClear bool
+	// enterSlash: the last Enter ended a line that began with / on a composer
+	// aggy counted empty; enterLine: that line's printable keys (spelled).
+	enterSlash bool
+	enterLine  []byte
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -1182,6 +1186,18 @@ func (s *session) send(b []byte) {
 		return
 	}
 	s.noteMiss(b, typed)
+	if s.emptyNoop(typed) {
+		// T6982: a key a live check shows changing nothing on this CLI's empty
+		// composer (a Down in Claude): the line stays known empty, so a command
+		// typed next is still caught. At a dialog or mid-turn it may answer or
+		// queue something, so it counts as input there.
+		s.lastIn = time.Now()
+		if !s.atPrompt || s.held || s.askOpen() {
+			s.held, s.inputSinceTurn = false, true
+		}
+		s.toChild.push(b)
+		return
+	}
 	if len(s.cmdLine) == 0 && !s.cmdBad {
 		s.lineInput = s.inputSinceTurn // as it was before this line began
 	}
@@ -1231,6 +1247,47 @@ func (s *session) send(b []byte) {
 	s.toChild.push(b)
 }
 
+// composerKeyRE matches an arrow, Home, or End as a legacy terminal or kitty
+// sends it, a press, a repeat, or a release, with no modifier but Caps or Num
+// Lock; the final byte names it.
+var composerKeyRE = regexp.MustCompile(`^\x1b(\[(1;(1|65|129|193)(:[123])?)?|O)([A-DHF])$`)
+
+// composerKey names the one key typed is, for adapter.EmptyComposerKey: down,
+// up, left, right, home, end, backspace, delete, or ctrl+u; "" for another.
+func composerKey(typed []byte) string {
+	switch string(typed) {
+	case "\x7f", "\x08":
+		return "backspace"
+	case "\x1b[3~":
+		return "delete"
+	case "\x15":
+		return "ctrl+u"
+	case "\x1b[1~", "\x1b[7~":
+		return "home"
+	case "\x1b[4~", "\x1b[8~":
+		return "end"
+	}
+	m := composerKeyRE.FindSubmatch(typed)
+	if m == nil {
+		return ""
+	}
+	return map[byte]string{'A': "up", 'B': "down", 'C': "right", 'D': "left", 'H': "home", 'F': "end"}[m[5][0]]
+}
+
+// emptyNoop reports whether typed is one key that, on this CLI's composer when
+// aggy knows it empty (no line, nothing in doubt), a live check shows changing
+// nothing (adapter.EmptyComposerKey, at the probed version). Up is never one:
+// it recalls history. After any text the cursor keys matter, so the line is
+// not empty then.
+func (s *session) emptyNoop(typed []byte) bool {
+	k := composerKey(typed)
+	if k == "" || s.inPaste || s.draftPaste || !adapter.EmptyComposerKey(s.o.Vendor, s.o.VendorVersion, k) {
+		return false
+	}
+	d := s.lineDoubts()
+	return len(d) == 1 && d[0] == "no_line" && !s.popup
+}
+
 // followKeys follows keys that reach the composer, past any dialog.
 func (s *session) followKeys(typed []byte) {
 	enter := bytes.IndexByte(typed, '\r') >= 0
@@ -1266,8 +1323,27 @@ func (s *session) followKeys(typed []byte) {
 	inert := s.followDraft(typed)
 	s.noteSeqs(typed)
 	before := s.compLen
-	for _, c := range typed {
-		s.compose(c)
+	for i := 0; i < len(typed); {
+		if typed[i] != esc || s.inPaste {
+			s.compose(typed[i])
+			i++
+			continue
+		}
+		// An escape sequence types no text: its bytes count neither in the
+		// composer's length nor in the line (#146 review: a Down's three bytes
+		// left a / typed next not at the start of the composer).
+		n := seqLen(typed[i:])
+		at, line := s.compLen, len(s.cmdLine)
+		for _, c := range typed[i : i+n] {
+			s.compose(c)
+		}
+		if typed[i+n-1] != '\r' {
+			s.compLen = at
+			if len(s.cmdLine) > line {
+				s.cmdLine = s.cmdLine[:line]
+			}
+		}
+		i += n
 	}
 	// A sequence is whole in its read (the key filter holds a split one), so
 	// an Esc the read ends on is the key, and the next read starts afresh.
@@ -1668,6 +1744,13 @@ func (s *session) compose(c byte) {
 		if prev == esc || prev == '\\' || s.inPaste {
 			s.pick.spoil("newline")
 		}
+		// What a hook's question may take as spelled by the keys (spelled): a
+		// line that began with / on a composer aggy counted empty, and its
+		// printable keys, a Backspace's removal not followed (#146 review).
+		// Any escape sequence on the line (a cursor key after text may recall
+		// history or move into it) leaves it unspelled.
+		s.enterSlash = s.slashOnly && !s.inPaste && prev != esc && prev != '\\' && len(s.lineSeqs) == 0
+		s.enterLine = append(s.enterLine[:0], s.cmdLine...)
 	}
 	switch {
 	case c == '\r':
@@ -1868,7 +1951,7 @@ func (s *session) offerSwitch() {
 		s.tellNoTurn(what)
 		return
 	}
-	if s.sw.keyed && s.sw.cleared && !s.sw.hooked && !s.sw.resume && holdSignal(on) && clearsLine(on) && !s.doubt() {
+	if s.sw.keyed && s.sw.cleared && !s.sw.hooked && !s.sw.resume && holdSignal(on) && clearsLine(on, s.o.VendorVersion) && !s.doubt() {
 		// T6908: the person typed the switch at this prompt, and the CLI says
 		// when it waits for them, so the command was the confirmation. All the
 		// checks above still held: a turn ended, nothing holds it, the prompt
@@ -1884,7 +1967,7 @@ func (s *session) offerSwitch() {
 	// One status line (S-12, O56-1): who or what asked and the switch's
 	// options first, then the keys, then the check; a narrow terminal
 	// cuts the end.
-	cmd, verified := adapter.ExitCommand(on)
+	cmd, verified := adapter.ExitCommandAt(on, s.o.VendorVersion)
 	tools := "tools " + strings.Join(s.sw.tools, " ")
 	// short is how far a doubt's line is shortened (the fit below).
 	short := 0

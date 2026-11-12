@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/diag"
 )
 
 // The keys a person may send, one per read.
@@ -43,9 +44,9 @@ func sendKeys(s *session, keys []string) {
 // TestRR121ForgedAfterSlashEnter (T6975, from R121's review): a forged
 // prompt-command sent just after the person's own Enter of a / line that is
 // none of aggy's (a skill or command that starts a turn, or /clear) names
-// nothing they typed: it runs nothing and leaves atPrompt as it was. Since
-// T6982 its prompt is blocked and aggy asks (wantAsked), where before it was
-// refused.
+// nothing they typed: it is refused, opens nothing, and leaves atPrompt as it
+// was. A turn may be running from that line, so aggy does not ask about it
+// either (#146 review).
 func TestRR121ForgedAfterSlashEnter(t *testing.T) {
 	for _, first := range []string{"/deploy", "/review", "/clear", "/compact"} {
 		for _, forged := range []string{"/aggy doctor", "/aggy", "/inbox", "/switch grok"} {
@@ -56,7 +57,7 @@ func TestRR121ForgedAfterSlashEnter(t *testing.T) {
 				s.send([]byte("\r"))
 				before := s.atPrompt
 				err := hookAsk(s, Request{Type: ReqPromptCommand, Vendor: "claude", Command: forged})
-				wantAsked(t, s, err, before)
+				wantRefused(t, s, err, diag.CodeCommandNoEnter, before)
 			})
 		}
 	}
@@ -132,8 +133,9 @@ func TestRR121CmdFreshOverDialog(t *testing.T) {
 // at least one letter of its name, then Up, Down, or a Tab and its arguments.
 // A paste, a cursor move into the text, history recall, an edit in the
 // middle, Esc, or text after an arrow spoils it; a bare / matches nothing,
-// being a prefix of every command, the person's own too. Those are asked
-// about (T6982).
+// being a prefix of every command, the person's own too. Those are refused:
+// the keys spell another line, from which a turn may be running, so aggy does
+// not ask either (#146 review).
 func TestMenuPickTyped(t *testing.T) {
 	for _, c := range []struct {
 		name  string
@@ -177,7 +179,7 @@ func TestMenuPickTyped(t *testing.T) {
 			atPrompt := s.atPrompt
 			err := hookAsk(s, Request{Type: ReqPromptCommand, Vendor: "claude", Command: c.cmd})
 			if !c.taken {
-				wantAsked(t, s, err, atPrompt)
+				wantRefused(t, s, err, diag.CodeCommandNoEnter, atPrompt)
 				return
 			}
 			if err != nil {
