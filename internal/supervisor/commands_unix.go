@@ -65,7 +65,11 @@ func (s *session) catchCommand(raw, typed []byte) bool {
 	s.typedSince = false
 	s.emptyComposer()
 	s.log(diag.Rec{Event: diag.EvCommandCaught, Attrs: map[string]any{"command": c.Name, "via": "keys"}})
+	// Only the byte form of Ctrl+U has a live check (adapter.ClearLineChecked),
+	// so a switch this clears with the CSI u form still asks (pickSwitch).
+	s.byteClear = raw[0] != esc
 	s.runCommand(c, true)
+	s.byteClear = false
 	return true
 }
 

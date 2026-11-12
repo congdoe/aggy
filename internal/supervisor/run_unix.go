@@ -663,6 +663,9 @@ type session struct {
 	hookAsk       *hookQuestion
 	askDrops      []time.Time
 	askLimitNoted time.Time
+	// byteClear: the command being run was typed in full, and aggy cleared its
+	// line with Ctrl+U's byte, the form a live check covers (catchCommand).
+	byteClear bool
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -735,6 +738,10 @@ type pendingSwitch struct {
 	// reported the command, which any process in its tree can forge, so the
 	// status line always asks (T6910).
 	keyed, hooked bool
+	// cleared: with keyed, aggy cleared the command's line with Ctrl+U's byte,
+	// whose clearing a live check records only for some CLIs
+	// (adapter.ClearLineChecked); the CSI u form has none, so it asks.
+	cleared bool
 	// lapsed: its status line closed without a yes or a no (other keys went to
 	// the CLI, or the check after a yes found the picker open or a turn
 	// running), so the switch key brings that line back rather than the list
@@ -1861,11 +1868,14 @@ func (s *session) offerSwitch() {
 		s.tellNoTurn(what)
 		return
 	}
-	if s.sw.keyed && !s.sw.hooked && !s.sw.resume && holdSignal(on) && clearsLine(on) && !s.doubt() {
+	if s.sw.keyed && s.sw.cleared && !s.sw.hooked && !s.sw.resume && holdSignal(on) && clearsLine(on) && !s.doubt() {
 		// T6908: the person typed the switch at this prompt, and the CLI says
 		// when it waits for them, so the command was the confirmation. All the
 		// checks above still held: a turn ended, nothing holds it, the prompt
-		// is empty and quiet. In doubt the status line asks, as for a pick.
+		// is empty and quiet. In doubt the status line asks, as for a pick, and
+		// so it does where aggy cleared the line with a Ctrl+U form no live
+		// check covers (cleared), or cleared none (a hook's question's yes:
+		// the blocked prompt's composer is taken as empty, unverified).
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: s.turnCause(), Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "keyed": true})})
 		s.pk.preselect = ""
 		s.confirmSwitch()
@@ -2756,7 +2766,7 @@ func (s *session) pickSwitch(c Choice, keyed bool) {
 		}
 		c.Tools = s.sw.choice.Tools // the list cannot set them, so an agent's stay
 		s.sw.choice, s.sw.asked, s.sw.picked, s.sw.noteShown = c, false, true, false
-		s.sw.keyed, s.sw.hooked = keyed, false
+		s.sw.keyed, s.sw.hooked, s.sw.cleared = keyed, false, keyed && s.byteClear
 		s.sw.doubtOK = s.sw.toldDoubt || s.pk.doubtSaid // told, and picked again: the person has looked
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Cause: s.sw.rec, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked), "again": true})})
 		s.markNoTurn()
@@ -2771,7 +2781,7 @@ func (s *session) pickSwitch(c Choice, keyed bool) {
 			return
 		}
 		// A typed one was not picked from the list, whose words it never saw.
-		s.setSwitch(pendingSwitch{to: picked, choice: c, picked: true, toldDoubt: s.pk.doubtSaid && !keyed, keyed: keyed})
+		s.setSwitch(pendingSwitch{to: picked, choice: c, picked: true, toldDoubt: s.pk.doubtSaid && !keyed, keyed: keyed, cleared: keyed && s.byteClear})
 		s.toldDirty = false // a first pick is told again, or nothing would say why it waits
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked), "keyed": keyed})})
 		s.markNoTurn()

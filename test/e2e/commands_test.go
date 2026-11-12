@@ -86,8 +86,9 @@ func waitTurnEnds(t *testing.T, w *world, n int) {
 
 // TestTypedSwitchCaught (T6908): /switch grok typed in full at Claude's prompt
 // never reaches the CLI (no turn, no Stop), and a caught command started no
-// turn, so nothing waits for a turn end: the status line asks at once (R121:
-// Ctrl+U clearing Claude's composer is not recorded live, so it still asks).
+// turn, so nothing waits for a turn end: the switch goes at once, in one step,
+// with no status line (Ctrl+U's byte clearing Claude's composer is recorded
+// live, docs/verification.md, so the typed command is the confirmation).
 //
 // It waits on events, not durations (it failed once under load): the hooks
 // log counts a Stop before aggy hook sends it, so the test also waits until
@@ -104,9 +105,10 @@ func TestTypedSwitchCaught(t *testing.T) {
 	s.typeSlowly("/switch grok")
 	s.waitWithin([]byte("/switch grok"), offerTimeout)
 	s.send([]byte("\r"))
-	s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
-	s.confirmPastGuard(time.Now())
 	w.waitRuns(t, s, 2)
+	if strings.Contains(s.screen(), "Esc stays") {
+		t.Errorf("a status line asked about a switch typed in full: %q", s.screen())
+	}
 	if got := stops(t, log); got != 2 {
 		t.Errorf("Stop hooks = %d, want 2: the command reached Claude as a turn", got)
 	}
@@ -338,8 +340,9 @@ func TestHookUnvouchedAsks(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	s.send([]byte("\r"))
-	// Ctrl+U clearing Claude's composer is not recorded live, so the switch
-	// still asks on the status line before /exit is typed.
+	// aggy typed no Ctrl+U for it: the blocked prompt's composer is taken as
+	// empty, which is unverified, so the switch still asks on the status line
+	// before /exit is typed.
 	s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
 	s.confirmPastGuard(time.Now())
 	w.waitRuns(t, s, 2)
