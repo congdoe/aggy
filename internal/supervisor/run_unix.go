@@ -675,9 +675,12 @@ type session struct {
 	// in doubt and no Enter counts as one at the prompt.
 	sideView, sideEsc bool
 	// enterHead is the first text key of the line the last Enter ended (0 for
-	// none seen); modeLine: it was ! or #, which may leave Claude in its bash
-	// or memory mode, where Backspace, Delete, and Ctrl+U on an empty composer
-	// may leave that mode (not checked live, TODO(T6895)).
+	// none seen); modeLine: a line since the last counted turn end of a line
+	// that was neither was ! or #, which may leave Claude in its bash or
+	// memory mode, where Backspace, Delete, and Ctrl+U on an empty composer
+	// may leave that mode, and a line typed next may go to it (not checked
+	// live, TODO(T6895)). It stays through the lines after it until a turn
+	// end of an ordinary line (#146 review, fourth round).
 	enterHead byte
 	modeLine  bool
 	// enterTyped, enterLineTyped, enterAlone: what typedMatch reads of the
@@ -935,6 +938,9 @@ func (s *session) hookEvent(ev hookEvent) {
 				// (settleDoubt still wants no key after that Enter).
 				s.sideView, s.sideEsc = false, false
 				s.popupEnter = true
+			}
+			if s.modeLine && s.enterHead != '!' && s.enterHead != '#' {
+				s.modeLine = false // an ordinary line's turn ended
 			}
 			s.escStop = time.Time{}
 			s.settleDoubt()
@@ -1783,6 +1789,15 @@ func (s *session) mayBeRunning() bool {
 	return !s.atPrompt || s.inputSinceTurn
 }
 
+// turnMayRun reports whether an Enter since the last counted turn end may
+// have started a turn, or a message waits queued: the exit command must not
+// go then, whatever path asked for it (#146 review, fourth round). Unlike
+// mayBeRunning, text typed and not sent does not count: the unsent-text
+// check says that.
+func (s *session) turnMayRun() bool {
+	return !s.atPrompt || s.queued > 0
+}
+
 // cursorKey reports whether c moves the cursor (or starts an escape
 // sequence that may), or may bring text back: ESC, Ctrl+A, B, E, F, N,
 // P, yank (Ctrl+Y) and undo (Ctrl+_).
@@ -1845,7 +1860,7 @@ func (s *session) compose(c byte) {
 		if s.headSeen {
 			s.enterHead = s.cmdHead
 		}
-		s.modeLine = s.enterHead == '!' || s.enterHead == '#'
+		s.modeLine = s.modeLine || s.enterHead == '!' || s.enterHead == '#'
 	}
 	switch {
 	case c == '\r':
@@ -1970,7 +1985,7 @@ func (s *session) offerSwitch() {
 		}
 		return
 	}
-	if s.turnRan && !s.atPrompt {
+	if s.turnRan && s.turnMayRun() {
 		return // the list said so: a notice here could hold a turn's output
 	}
 	if s.refuseSignalled() {
@@ -2707,6 +2722,11 @@ func (s *session) typeExit() {
 		return
 	case s.held, s.askOpen():
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "the switch key was pressed, but the CLI waits for the user"})
+		return
+	case s.turnMayRun():
+		// offerSwitch checks it too; this is the last guard before the exit
+		// command, whatever path led here (#146 review, fourth round).
+		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeTurnMayRun, Cause: s.sw.rec, Msg: "the switch key was pressed, but a turn may be running"})
 		return
 	}
 	s.typeExitCommand()

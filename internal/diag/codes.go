@@ -247,6 +247,7 @@ var (
 	CodeSwitchVendor     = Code{"switch.vendor_unavailable"}
 	CodeSwitchBusy       = Code{"switch.already_waiting"}
 	CodeSwitchHeld       = Code{"switch.held"}
+	CodeTurnMayRun       = Code{"switch.turn_may_run"}
 	CodeCommandNotTaken  = Code{"command.not_taken"}
 	CodeCommandKeyboard  = Code{"command.keyboard_only"}
 	CodeCommandNoEnter   = Code{"command.no_enter"}
@@ -526,6 +527,7 @@ var codes = []CodeInfo{
 	{CodeCommandAskLimit, false, "A command from a CLI's prompt hook came without keys that vouch for it, and 3 of aggy's questions about such commands had closed unanswered within a minute, so aggy did not ask again and let the prompt through; the bottom row said so.", "Answer the question (Enter runs it, Esc drops it), or type the command in full at the prompt. If you asked for none of them, a process in the CLI's tree is sending them: aggy diag shows when."},
 	{CodeCommandKeyboard, false, "A command that changes something (accept, check, reject, tool, permissions, trust) came from a prompt hook, which any process in the CLI's tree can send, so aggy did not take it.", "Type it in full at the prompt: from the keys aggy takes it, and shows what it does before it runs."},
 	{CodeSwitchHeld, false, "The CLI said it waits for the user (a permission prompt or a notice), so the switch waits.", "Answer the CLI, and the switch goes on at that turn's end. If nothing is waiting on screen, press Enter on the empty prompt and pick the vendor again, which spends no turn."},
+	{CodeTurnMayRun, false, "A turn may be running in the CLI, or a message waits queued, so aggy typed nothing: the switch waits for the turn end.", "If nothing is running, press the switch key and pick the vendor again, which spends no turn."},
 	{CodeNotSupervised, false, "aggy switch ran outside a session aggy supervises, or in one started with --direct.", "Press aggy's switch key in a session started with aggy run."},
 	{CodeExitTimeout, false, "The CLI did not exit within the wait after aggy typed its exit command.", "The CLI's screen; cancel with the switch key, then Esc."},
 	{CodeNoQuota, false, "After a limit, no vendor the picker offers has quota left.", "aggy usage; aggy log shows the limits."},

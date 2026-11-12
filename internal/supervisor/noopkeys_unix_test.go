@@ -65,3 +65,38 @@ func TestNoopKeyGuards(t *testing.T) {
 		})
 	}
 }
+
+// TestModeLineDoubt (#146 review, fourth round): after a ! or # line, a line
+// typed next may go to Claude's bash or memory mode, so the doubt stands
+// through it: the key catch passes /switch, and the hook's switch asks on its
+// status line, saying the prompt may not be empty. An ordinary line's turn
+// end ends the doubt.
+func TestModeLineDoubt(t *testing.T) {
+	noSettleGap(t)
+	s, _ := viewSess(t, adapter.Claude, "")
+	s.o.VendorVersion = checkedClaude
+	s.input = s.send
+	typeLine(s, "!ls")
+	s.hookEvent(hookEvent{name: "Stop", sessionID: childSID, chain: ownChain})
+	typeLine(s, "/switch grok")
+	if s.sw.to != "" {
+		t.Fatal("the key catch took a line typed after a ! line")
+	}
+	_ = forge(s, "/switch grok")
+	if s.sw.to != adapter.Grok || s.sw.cleared || !s.modeLine || !s.doubt() {
+		t.Fatalf("switch %q cleared %v modeLine %v doubt %v", s.sw.to, s.sw.cleared, s.modeLine, s.doubt())
+	}
+
+	s2, _ := viewSess(t, adapter.Claude, "")
+	s2.input = s2.send
+	typeLine(s2, "!ls")
+	s2.hookEvent(hookEvent{name: "Stop", sessionID: childSID, chain: ownChain})
+	typeLine(s2, "fix the bug")
+	if !s2.modeLine {
+		t.Fatal("the doubt ended before the line's turn end")
+	}
+	s2.hookEvent(hookEvent{name: "Stop", sessionID: childSID, chain: ownChain})
+	if s2.modeLine {
+		t.Error("an ordinary line's turn end left the doubt")
+	}
+}

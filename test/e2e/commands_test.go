@@ -483,19 +483,27 @@ func TestHookMenuPickTab(t *testing.T) {
 // Backspace spoils the line for the key catch at a version with no live check
 // of it, and before T6982 the prompt hook's /switch grok went to the model. Now
 // the hook blocks the prompt, and since the keys typed exactly that line
-// (typedMatch, #146 review, third round) aggy switches as on one typed in
-// full; with no live fact for a blocked prompt at this version, the switch
-// asks on the status line before /exit is typed.
+// (typedMatch, #146 review, third round) the switch is the person's, with no
+// question. The typing says nothing of where the Enter went (fourth round),
+// so the switch waits for a turn end, and the bottom row says the switch
+// key and a pick again go on; the status line then asks before /exit.
 func TestHookTypedActs(t *testing.T) {
 	w, s, answers := promptHookWorld(t, "/switch grok", "")
 	s.send([]byte("\x7f"))
 	time.Sleep(50 * time.Millisecond)
 	s.typeSlowly("/switch grok")
 	s.send([]byte("\r"))
-	s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
+	s.waitWithin([]byte("pick grok."), offerTimeout)
 	if b := hookAnswer(t, answers); !strings.Contains(b, `"block"`) || strings.Contains(b, "asked about") {
 		t.Fatalf("the hook let the prompt through, or asked: %q", b)
 	}
+	if m := lineModes(t, w); m["prompt-blocked"] != 1 || m["turn"] != 0 {
+		t.Fatalf("lines %v: want the /switch blocked before the model", m)
+	}
+	s.send([]byte("\x1c"))
+	s.waitWithin([]byte("aggy: switch vendor"), offerTimeout)
+	s.send([]byte("2")) // grok, again: nothing runs
+	s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
 	s.confirmPastGuard(time.Now())
 	w.waitRuns(t, s, 2)
 	s.send([]byte("/exit\r"))
