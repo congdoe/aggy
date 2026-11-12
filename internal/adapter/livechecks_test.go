@@ -38,6 +38,10 @@ func TestLiveChecksByVersion(t *testing.T) {
 				t.Errorf("%s %q: EmptyComposerKey(%s) = %v", c.v, c.version, k.key, got)
 			}
 		}
+		// A blocked prompt's empty composer was checked with the rest.
+		if got := BlockedPromptEmpty(c.v, c.version); got != c.clear {
+			t.Errorf("%s %q: BlockedPromptEmpty = %v", c.v, c.version, got)
+		}
 		owed := ComposerCheckOwed(c.v, c.version)
 		if (owed != "") != c.owed {
 			t.Errorf("%s %q: ComposerCheckOwed = %q", c.v, c.version, owed)

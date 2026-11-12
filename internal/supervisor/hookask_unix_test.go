@@ -133,8 +133,9 @@ func TestOwnerRunReplay(t *testing.T) {
 
 // TestOwnerRunUnchecked (T6982): the owner's second line on a Claude version
 // with no live check of Backspace: the key catch loses it, and the hook's
-// command, which the keys spell, is blocked and asked about; the switch key
-// runs it as typed.
+// command, which the person typed in full (typedMatch), is blocked and run at
+// once as typed (#146 review, third round); with no live fact for a blocked
+// prompt at this version, the switch asks on its status line.
 func TestOwnerRunUnchecked(t *testing.T) {
 	noSettleGap(t)
 	q, records := diagHome(t)
@@ -145,20 +146,23 @@ func TestOwnerRunUnchecked(t *testing.T) {
 		s.send([]byte(k))
 	}
 	c, _ := sessioncmd.Parse(adapter.Claude, "/switch codex")
-	wantAsked(t, s, s.hookCommand(c, "/switch codex"), false)
-	pastGuard(s)
-	s.pickerInput([]byte{0x1c})
+	if err := s.hookCommand(c, "/switch codex"); err != nil || s.open {
+		t.Fatalf("err %v open %v: want it run at once", err, s.open)
+	}
 	if s.sw.to != adapter.Codex || !s.sw.keyed || s.sw.hooked {
 		t.Fatalf("switch %q keyed %v hooked %v, want codex as typed", s.sw.to, s.sw.keyed, s.sw.hooked)
 	}
 	if s.sw.cleared {
-		t.Error("a hook's question's yes skips the status line: aggy typed no Ctrl+U for it")
+		t.Error("one step at a version with no live fact for a blocked prompt")
 	}
 	if got := sentTo(s); strings.Contains(got, "\x15") {
 		t.Errorf("a Ctrl+U went to the CLI: %q", got)
 	}
-	asked := recAttrs(t, records(), diag.EvCommandAsked)
-	if len(asked) != 1 || asked[0]["pick"] != "backspace" || asked[0]["spelled"] != true {
+	recs := records()
+	if caught := recAttrs(t, recs, diag.EvCommandCaught); len(caught) != 1 || caught[0]["via"] != "hook" || caught[0]["typed"] != true {
+		t.Errorf("caught records %v", caught)
+	}
+	if asked := recAttrs(t, recs, diag.EvCommandAsked); len(asked) != 0 {
 		t.Errorf("question records %v", asked)
 	}
 }
@@ -177,7 +181,7 @@ func TestEmptyComposerKeys(t *testing.T) {
 		caught  bool
 	}{
 		{"Down first", checkedClaude, []string{kDown}, true},
-		{"Down in application mode", checkedClaude, []string{"\x1bOB"}, true},
+		{"Down in application mode", checkedClaude, []string{"\x1bOB"}, false}, // not the form checked
 		{"Down twice", checkedClaude, []string{kDown, kDown}, true},
 		{"another version", "2.1.330", []string{kDown}, false},
 		{"Up first", checkedClaude, []string{kUp}, false},
@@ -335,9 +339,8 @@ func TestForgedYesKeepsState(t *testing.T) {
 	// The keys spelled it: the person's own /switch grok, the key catch lost.
 	s2, _ := viewSess(t, adapter.Claude, "")
 	s2.input = s2.send
-	for _, k := range append(append([]string{kBS}, strings.Split("/switch grok", "")...), "\r") {
-		s2.send([]byte(k))
-	}
+	s2.send([]byte(kBS))
+	s2.send([]byte("/switch grok\r")) // with its Enter in one read: no typedMatch
 	c, _ := sessioncmd.Parse(adapter.Claude, "/switch grok")
 	wantAsked(t, s2, s2.hookCommand(c, "/switch grok"), false)
 	pastGuard(s2)

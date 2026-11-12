@@ -15,25 +15,29 @@ import (
 
 // TestStrayKeyRunReplay (T6982, the coordinator's live run on Claude 2.1.322):
 // a stray key at launch spoils the line for the key catch, and the hook's
-// /switch is blocked with a note, never refused and passed to the model; a
-// later turn end puts the CLI back at its prompt, and /switch codex typed in
-// full is then caught from the keys, in one step. Each key the run tried is
-// replayed; the ones a live check shows changing nothing on the empty composer
-// are caught at once, the rest are blocked.
+// /switch is never refused and passed to the model; a later turn end puts the
+// CLI back at its prompt, and /switch codex typed in full is then caught from
+// the keys, in one step. Each key the run tried is replayed: the ones a live
+// check shows changing nothing on the empty composer are caught from the keys;
+// Up is caught from the hook, the line the person typed (typedMatch, #146
+// review, third round); Left, whose keys may be in Claude's other view, is
+// blocked with a note.
 func TestStrayKeyRunReplay(t *testing.T) {
 	for _, c := range []struct {
-		name   string
-		key    string
-		caught bool // the first line is caught from the keys at once
+		name string
+		key  string
+		how  string // the first line: caught from the keys, typed (from the hook), or blocked
 	}{
-		{"Backspace", kBS, true},
-		{"Right", "\x1b[C", true},
-		{"Home", "\x1b[H", true},
-		{"End", "\x1b[F", true},
-		{"Delete", "\x1b[3~", true},
-		{"Ctrl+U", kCtrlU, true},
-		{"Up", kUp, false},
-		{"Left", kLeft, false},
+		{"Backspace", kBS, "keys"},
+		{"Right", "\x1b[C", "keys"},
+		{"Home", "\x1b[H", "keys"},
+		{"End", "\x1b[F", "keys"},
+		{"Delete", "\x1b[3~", "keys"},
+		{"Ctrl+U", kCtrlU, "keys"},
+		{"Up", kUp, "typed"},
+		{"Ctrl+H", "\x08", "typed"},
+		{"Home as ESC [1~", "\x1b[1~", "typed"},
+		{"Left", kLeft, "blocked"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			noSettleGap(t)
@@ -44,13 +48,24 @@ func TestStrayKeyRunReplay(t *testing.T) {
 			s.turnRan = false // a fresh launch: no Stop yet
 			s.send([]byte(c.key))
 			typeLine(s, "/switch")
-			if c.caught {
+			switch c.how {
+			case "keys":
 				if !s.open || s.pk.cmdAsk {
 					t.Fatalf("the key catch did not open the switch list after %s", c.name)
 				}
 				s.pickerInput([]byte{esc})
 				s.promptEsc()
-			} else {
+			case "typed":
+				if s.open {
+					t.Fatalf("the key catch took the line after %s", c.name)
+				}
+				err := hookAsk(s, Request{Type: ReqPromptCommand, Vendor: "claude", Command: "/switch"})
+				if err != nil || !s.open || s.pk.cmdAsk {
+					t.Fatalf("err %v open %v: the hook's /switch, typed in full, did not open the list", err, s.open)
+				}
+				s.pickerInput([]byte{esc})
+				s.promptEsc()
+			default:
 				if c.key == kLeft {
 					// Left opened Claude's other view: the Enter went there,
 					// and no prompt hook fires. A forged one changes nothing.
@@ -92,7 +107,7 @@ func TestStrayKeyRunReplay(t *testing.T) {
 					t.Errorf("a hook's command was refused and passed: %s", r.Event)
 				}
 			}
-			if b := recAttrs(t, recs, diag.EvCommandBlocked); len(b) != map[bool]int{true: 0, false: 1}[c.caught] {
+			if b := recAttrs(t, recs, diag.EvCommandBlocked); len(b) != map[string]int{"blocked": 1}[c.how] {
 				t.Errorf("blocked records %v", b)
 			}
 		})
@@ -141,7 +156,7 @@ func TestBlockedSpelledRecovers(t *testing.T) {
 	s.o.VendorVersion = "2.1.330" // Backspace unchecked: the key catch loses the line
 	s.askDrops = []time.Time{time.Now(), time.Now(), time.Now()}
 	s.send([]byte(kBS))
-	typeLine(s, "/inbox")
+	s.send([]byte("/inbox\r")) // its Enter in the same read: spelled, no typedMatch
 	if s.atPrompt {
 		t.Fatal("setup: the Enter left the CLI at its prompt")
 	}

@@ -30,11 +30,20 @@ func TestComposerCheckNote(t *testing.T) {
 		{adapter.Claude, "2.1.330", false},
 		{adapter.Claude, "2.1.331", true},
 	} {
-		if got := composerCheckNote(ctx, s, c.v, c.version); (got != "") != c.want {
+		got, told := composerCheckNote(ctx, s, c.v, c.version)
+		if (got != "") != c.want {
 			t.Errorf("%s %q: %q, want a note %v", c.v, c.version, got, c.want)
 		}
+		told()
 	}
-	if composerCheckNote(ctx, nil, adapter.Claude, "2.1.330") == "" {
+	// Not shown (aggy --direct, or a launch refused after it): not recorded.
+	if got, _ := composerCheckNote(ctx, s, adapter.Claude, "2.1.340"); got == "" {
+		t.Fatal("no note for a new version")
+	}
+	if got, _ := composerCheckNote(ctx, s, adapter.Claude, "2.1.340"); got == "" {
+		t.Error("a note never shown was recorded as told")
+	}
+	if got, _ := composerCheckNote(ctx, nil, adapter.Claude, "2.1.330"); got == "" {
 		t.Error("with no index the note was not said")
 	}
 }
