@@ -14,7 +14,9 @@ import (
 
 // TestAggySwitchCaught (T6978): /aggy switch grok, typed at the prompt with
 // the stand-alone /switch turned off in [commands], is caught as /switch
-// is: it never reaches Claude as a turn, and the switch goes to grok.
+// is: it never reaches Claude as a turn, and the switch goes to grok in one
+// step, the typed command its own confirmation (Ctrl+U's byte is checked live
+// on Claude, docs/verification.md).
 func TestAggySwitchCaught(t *testing.T) {
 	w, sc, log := commandWorld(t)
 	if err := os.WriteFile(filepath.Join(w.home, ".aggy", "config.toml"), []byte("[commands.switch]\noff = true\n"), 0o600); err != nil {
@@ -26,9 +28,10 @@ func TestAggySwitchCaught(t *testing.T) {
 	waitStops(t, log, 2) // the launch's and the turn's
 	s.typeSlowly("/aggy switch grok")
 	s.send([]byte("\r"))
-	s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
-	s.confirmPastGuard(time.Now())
 	w.waitRuns(t, s, 2)
+	if strings.Contains(s.screen(), "Esc stays") {
+		t.Errorf("a status line asked about a switch typed in full: %q", s.screen())
+	}
 	if got := stops(t, log); got != 2 {
 		t.Errorf("Stop hooks = %d, want 2: the command reached Claude as a turn", got)
 	}

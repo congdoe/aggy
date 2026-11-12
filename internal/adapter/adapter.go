@@ -61,11 +61,14 @@ func ParseVendor(s string) (Vendor, error) {
 // It is "/exit" for every vendor, unverified except on OpenCode, where
 // it exits 0 with nothing open (docs/verification.md, T6930), and Hermes,
 // where it exits 0 at the prompt (T6933, 2026-11-11), and Antigravity, where
-// /exit exits 0 and prints the resume line (agy 1.5.5, 2026-11-11); the others
-// have no live check of it yet (docs/adapters.md). The supervisor asks
-// the user before it types anything, verified or not.
+// /exit exits 0 and prints the resume line (agy 1.5.5, 2026-11-11), and Claude,
+// where /exit typed into the empty composer exits 0 (2.1.322, live 2026-11-11,
+// docs/verification.md "Claude Code's Ctrl+U and /exit"); the others have no
+// live check of it yet (docs/adapters.md). The supervisor asks the user
+// before it types anything, verified or not, unless the person typed the
+// switch in full where Ctrl+U is checked (ClearLineChecked).
 func ExitCommand(v Vendor) (cmd string, verified bool) {
-	return "/exit", v == OpenCode || v == Hermes || v == Antigravity
+	return "/exit", v == OpenCode || v == Hermes || v == Antigravity || v == Claude
 }
 
 // localCommands are, per vendor, the commands that start no model turn. Each
@@ -102,15 +105,17 @@ var localCommands = map[Vendor][]string{
 }
 
 // clearLineChecked lists the CLIs whose composer a live check recorded in
-// docs/verification.md shows emptied by Ctrl+U (the byte 0x15, and its CSI u
-// form for a terminal that reports keys so), which aggy types in place of a
-// typed command's Enter (docs/design.md section 5). None is recorded yet: on
-// each, that Ctrl+U clears the whole composer is unverified, so a switch typed
-// there still asks on the status line before the exit command is typed after
-// what may be leftover text. A live check flips its entry.
-// TODO(T6895): the live check for each CLI.
+// docs/verification.md shows emptied by Ctrl+U as its byte, 0x15, which aggy
+// types in place of a typed command's Enter (docs/design.md section 5). Claude:
+// 2.1.322, live 2026-11-11 ("Claude Code's Ctrl+U and /exit"). Its CSI u form,
+// which aggy types when the terminal reported the Enter so, is checked on no
+// CLI, so a switch typed there still asks (the supervisor's clearCSIu). On the
+// others that Ctrl+U clears the whole composer is unverified, so a switch
+// typed there still asks on the status line before the exit command is typed
+// after what may be leftover text. A live check flips its entry.
+// TODO(T6895): the live check for each other CLI, and the CSI u form.
 var clearLineChecked = map[Vendor]bool{
-	Claude:      false,
+	Claude:      true,
 	Codex:       false,
 	Grok:        false,
 	OpenCode:    false,

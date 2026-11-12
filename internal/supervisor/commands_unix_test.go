@@ -160,31 +160,44 @@ func TestPlainEnter(t *testing.T) {
 // TestTypedSwitchConfirms (T6908): a /switch typed at Claude's prompt types the
 // exit command at the quiet turn end with no status line, as the command was the
 // confirmation; on Codex, which signals no approval prompt, the status line asks.
+// Claude's entry is the recorded live check (T6982): its Ctrl+U byte, typed for
+// a plain Enter, is checked; the CSI u form, typed for a kitty Enter, is not, so
+// that switch asks.
 func TestTypedSwitchConfirms(t *testing.T) {
 	for _, c := range []struct {
-		on      adapter.Vendor
-		checked bool // a live check recorded Ctrl+U clearing the composer
-		asks    bool
+		on    adapter.Vendor
+		check string // "recorded": adapter.ClearLineChecked; else stubbed yes or no
+		enter string
+		asks  bool
 	}{
-		{adapter.Claude, false, true}, // R121: none is recorded yet
-		{adapter.Claude, true, false},
-		{adapter.Codex, true, true}, // no approval signal
+		{adapter.Claude, "no", "\r", true},
+		{adapter.Claude, "yes", "\r", false},
+		{adapter.Codex, "yes", "\r", true}, // no approval signal
+		{adapter.Claude, "recorded", "\r", false},
+		{adapter.Claude, "recorded", "\x1b[13u", true},
+		{adapter.Claude, "yes", "\x1b[13u", true}, // the CSI u Ctrl+U has no check anywhere
+		{adapter.Codex, "recorded", "\r", true},
 	} {
-		t.Run(fmt.Sprintf("%s checked %v", c.on, c.checked), func(t *testing.T) {
-			was := clearsLine
-			clearsLine = func(adapter.Vendor) bool { return c.checked }
-			t.Cleanup(func() { clearsLine = was })
+		t.Run(fmt.Sprintf("%s checked %s enter %q", c.on, c.check, c.enter), func(t *testing.T) {
+			if c.check != "recorded" {
+				was := clearsLine
+				clearsLine = func(adapter.Vendor) bool { return c.check == "yes" }
+				t.Cleanup(func() { clearsLine = was })
+			}
 			ts, ch, done, _ := switchRunTurned(t, c.on)
 			for _, k := range strings.Split("/switch grok", "") {
 				ts.typeIn(t, k)
 			}
 			ch.waitGot(t, []byte("/switch grok"))
 			time.Sleep(30 * time.Millisecond)
-			ts.typeIn(t, "\r")
+			ts.typeIn(t, c.enter)
 			if c.asks {
 				poll(t, "the status line", []byte("-> grok. Ctrl+"), ts.screen)
 				if bytes.Contains(ch.received(), []byte("/exit")) {
 					t.Fatalf("%s got the exit command before the person confirmed: %q", c.on, ch.received())
+				}
+				if c.on == adapter.Claude && bytes.Contains(ts.screen(), []byte("is unverified")) {
+					t.Errorf("Claude's /exit has a live check, yet the line says it is unverified: %q", ts.screen())
 				}
 				ts.typeIn(t, "\x1b")
 				time.Sleep(escTimeout + 60*time.Millisecond)

@@ -95,6 +95,11 @@ func TestOwnerRunReplay(t *testing.T) {
 	if s.sw.to != adapter.Codex || !s.sw.keyed || s.sw.hooked {
 		t.Fatalf("switch %q keyed %v hooked %v, want codex as typed", s.sw.to, s.sw.keyed, s.sw.hooked)
 	}
+	if s.sw.cleared {
+		// aggy typed no Ctrl+U for it: the blocked prompt's composer is taken as
+		// empty, unverified, so the status line still asks before /exit.
+		t.Error("a hook's question's yes skips the status line")
+	}
 	if got := sentTo(s); strings.Contains(got, "\x15") {
 		t.Errorf("a Ctrl+U went to the CLI: %q", got)
 	}
