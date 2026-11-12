@@ -481,23 +481,39 @@ func (s *session) hookCommand(c sessioncmd.Command, line string) error {
 }
 
 // actTyped runs c, a command typedMatch shows the person typed and the hook
-// blocked: the CLI is back at its prompt with its composer empty
-// (promptBlocked), and c runs as one typed in full (keyed), so a switch still
-// passes every check of a switch before anything is typed; aggy typed no
-// Ctrl+U, so its one step needs the live fact that a blocked prompt leaves the
-// composer empty at this version (adapter.BlockedPromptEmpty). Before a turn
-// end a switch opens the list, as one caught from the keys does.
+// blocked. That proves intent, not state (#146 review, fourth round): the
+// person asked for c, so no question is needed, but not where the Enter went
+// or what the composer held. A forger who saw the line can send the same
+// request while the Enter went into Claude's dialog, its other view, or a
+// queue behind a running turn, or sent history Up recalled with the line. So
+// aggy's view of the CLI stays exactly as it was: c runs at once if it types
+// nothing into the CLI; a switch waits as one from a hook does (hooked: the
+// status line asks before /exit, once aggy takes the CLI as idle, at a turn
+// end or when the person picks the vendor again in the list); a fill is
+// refused while a turn may run. Before a turn end a switch opens the list,
+// as one caught from the keys does. A line the keys show typed at an idle
+// prompt on a composer known empty is the key catch's (catchCommand), which
+// types Ctrl+U itself; the hook never sees it.
 func (s *session) actTyped(c sessioncmd.Command) error {
 	s.hookedName, s.hookedEnter = c.Name, s.enterAt
 	s.heldMiss = nil // the key catch's miss of this Enter was the hook's catch
-	s.promptBlocked()
 	s.log(diag.Rec{Event: diag.EvCommandCaught, Attrs: map[string]any{"command": c.Name, "via": "hook", "typed": true}})
 	if c.Kind == sessioncmd.Switch && !s.turnRan {
 		c = sessioncmd.Command{Kind: sessioncmd.Picker, Name: c.Name}
 	}
-	s.byteClear = adapter.BlockedPromptEmpty(s.o.Vendor, s.o.VendorVersion)
-	s.runCommand(c, true)
-	s.byteClear = false
+	if c.Kind == sessioncmd.Fill && s.mayBeRunning() {
+		s.pk.tell(fmt.Sprintf("aggy did not type %s into %s's prompt: a turn may be running there.", c.Line, s.o.Vendor),
+			"Type it yourself once the turn ends.")
+		s.openPicker()
+		return nil
+	}
+	s.runCommand(c, false)
+	if c.Kind == sessioncmd.Switch && s.sw.to == c.Vendor && !s.sw.typed {
+		s.sw.hooked, s.sw.keyed, s.sw.cleared = true, false, false
+		if s.turnMayRun() && !s.open {
+			s.waitNote(fmt.Sprintf("aggy: switches to %s at %s's turn end. None coming? %s, pick %s.", c.Vendor, s.o.Vendor, keyName(s.pk.key), c.Vendor))
+		}
+	}
 	return nil
 }
 
@@ -726,7 +742,12 @@ func (s *session) runHookAsk() {
 		// switch, and a hook's request must not set that up.
 		c = sessioncmd.Command{Kind: sessioncmd.Picker, Name: c.Name}
 	}
+	// The one step after a hook is the strict case's alone: the keys spelled
+	// the line at the prompt, and a live check shows the blocked prompt left
+	// the composer empty at this version (#146 review, fourth round).
+	s.byteClear = spelled && adapter.BlockedPromptEmpty(s.o.Vendor, s.o.VendorVersion)
 	s.runCommand(c, spelled)
+	s.byteClear = false
 	if c.Kind == sessioncmd.Switch && !spelled && s.sw.to == c.Vendor && !s.sw.typed {
 		s.sw.hooked, s.sw.keyed = true, false
 	}

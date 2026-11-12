@@ -133,9 +133,11 @@ func TestOwnerRunReplay(t *testing.T) {
 
 // TestOwnerRunUnchecked (T6982): the owner's second line on a Claude version
 // with no live check of Backspace: the key catch loses it, and the hook's
-// command, which the person typed in full (typedMatch), is blocked and run at
-// once as typed (#146 review, third round); with no live fact for a blocked
-// prompt at this version, the switch asks on its status line.
+// command, which the person typed in full (typedMatch), is blocked and taken
+// as theirs with no question (#146 review, third round), but as a hook's
+// switch (fourth round): the typing says nothing of where the Enter went, so
+// it waits for a turn end, or the person's pick again, and its status line
+// asks before /exit.
 func TestOwnerRunUnchecked(t *testing.T) {
 	noSettleGap(t)
 	q, records := diagHome(t)
@@ -147,13 +149,10 @@ func TestOwnerRunUnchecked(t *testing.T) {
 	}
 	c, _ := sessioncmd.Parse(adapter.Claude, "/switch codex")
 	if err := s.hookCommand(c, "/switch codex"); err != nil || s.open {
-		t.Fatalf("err %v open %v: want it run at once", err, s.open)
+		t.Fatalf("err %v open %v: want it taken at once", err, s.open)
 	}
-	if s.sw.to != adapter.Codex || !s.sw.keyed || s.sw.hooked {
-		t.Fatalf("switch %q keyed %v hooked %v, want codex as typed", s.sw.to, s.sw.keyed, s.sw.hooked)
-	}
-	if s.sw.cleared {
-		t.Error("one step at a version with no live fact for a blocked prompt")
+	if s.sw.to != adapter.Codex || s.sw.keyed || !s.sw.hooked || s.sw.cleared {
+		t.Fatalf("switch %q keyed %v hooked %v cleared %v, want a hook's switch", s.sw.to, s.sw.keyed, s.sw.hooked, s.sw.cleared)
 	}
 	if got := sentTo(s); strings.Contains(got, "\x15") {
 		t.Errorf("a Ctrl+U went to the CLI: %q", got)
