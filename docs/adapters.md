@@ -22,7 +22,9 @@ adapters are built. These gaps are known:
   except where a live check is recorded in docs/verification.md: OpenCode,
   Hermes, Antigravity, and Claude Code 2.1.322 (T6982). The supervisor asks
   the user before typing it, except after a switch typed in full where
-  Ctrl+U's byte is checked live, Claude only (design.md section 5).
+  Ctrl+U's byte, and `/exit` (`ExitCommandAt`), are checked live for Claude
+  Code 2.1.322 only (`livechecks.go`, design.md section 5); another version
+  asks on the status line until checked again.
 - The inputs `ConfigPatches` needs: tool toggles, the safety policy, and
   the MCP server list.
 - Patches that create symlinks or delete files.

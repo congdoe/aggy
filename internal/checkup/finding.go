@@ -99,6 +99,7 @@ const (
 	CodeNoCLI           = "no-cli"               // error: no vendor CLI is installed
 	CodeProbeFailed     = "cli-probe-failed"     // error: installed, but --version failed
 	CodeVersionUntested = "version-untested"     // warning: outside the tested range, or unreadable
+	CodeLiveCheckOwed   = "live-check-owed"      // info: the composer's live checks ran on other versions (T6982)
 	CodeSignedIn        = "signed-in"            // info
 	CodeSignedOut       = "signed-out"           // warning: the CLI reports it is not signed in
 	CodeSignInUnknown   = "sign-in-unknown"      // info: no verified way to ask

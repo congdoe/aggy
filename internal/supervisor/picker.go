@@ -130,26 +130,33 @@ func (p *picker) tell(lines ...string) {
 	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
 }
 
+// askLine is the status line that asks whether to run line, a command on's
+// prompt hook reported, in canonical form (canonLine).
+func (p *picker) askLine(line string, on adapter.Vendor) string {
+	return fmt.Sprintf("aggy: %s from %s's prompt? %s runs it, Esc drops it", line, on, keyName(p.key))
+}
+
+// commandFits reports whether the question for line shows whole at cols: the
+// command is never cut, so what a yes runs is what the line shows (#146
+// review).
+func (p *picker) commandFits(line string, on adapter.Vendor, cols int) bool {
+	return cols <= 1 || len(p.askLine(line, on)) <= cols-1
+}
+
 // askCommand sets the picker to ask whether to run line, a command on's prompt
-// hook reported (T6982). The status line keeps its keys in view: a long line
-// is cut in the middle of the command, never at the keys.
+// hook reported (T6982), in canonical form. Only the switch key says yes. On a
+// window too narrow for the whole line it says to widen it, and the switch
+// key does nothing until it fits (hookAskInput).
 func (p *picker) askCommand(line string, on adapter.Vendor) {
 	p.tell()
 	p.note, p.cmdAsk = false, true
-	keys := fmt.Sprintf("Enter or %s runs it, Esc drops it", keyName(p.key))
-	form := func(l string) string { return fmt.Sprintf("aggy: %s from %s's prompt? %s", l, on, keys) }
+	keys := fmt.Sprintf("%s runs it, Esc drops it", keyName(p.key))
 	p.lines = []string{fmt.Sprintf("%s came from %s's prompt, and aggy did not see it typed.", line, on), keys + "."}
 	p.fit = func(cols int) string {
-		full := form(line)
-		over := len(full) - (cols - 1)
-		if cols <= 1 || over <= 0 {
-			return full
+		if p.commandFits(line, on, cols) {
+			return p.askLine(line, on)
 		}
-		keep := max(len(line)-over-len("..."), 2)
-		if keep >= len(line) {
-			return full
-		}
-		return form(line[:keep] + "...")
+		return fmt.Sprintf("aggy: widen the window to see a command from %s's prompt; Esc drops it", on)
 	}
 }
 

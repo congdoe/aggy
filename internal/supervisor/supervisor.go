@@ -56,6 +56,10 @@ type Options struct {
 	// Command is the interactive CLI to run (adapter.Adapter.Interactive),
 	// with an absolute Path.
 	Command adapter.Command
+	// VendorVersion is the CLI's version as the launch probed it, "" when
+	// unknown: a live check of its composer holds only at the versions it ran
+	// on (adapter.ClearLineChecked, T6982).
+	VendorVersion string
 	// Start starts Command in a new pseudo-terminal of rows by cols.
 	Start func(c adapter.Command, rows, cols int) (Child, error)
 	// SwitchKey is the control byte that opens the switch picker

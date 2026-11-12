@@ -162,29 +162,33 @@ func TestPlainEnter(t *testing.T) {
 // confirmation; on Codex, which signals no approval prompt, the status line asks.
 // Claude's entry is the recorded live check (T6982): its Ctrl+U byte, typed for
 // a plain Enter, is checked; the CSI u form, typed for a kitty Enter, is not, so
-// that switch asks.
+// that switch asks. The check holds only at the version it ran on (#146
+// review): another version asks.
 func TestTypedSwitchConfirms(t *testing.T) {
 	for _, c := range []struct {
-		on    adapter.Vendor
-		check string // "recorded": adapter.ClearLineChecked; else stubbed yes or no
-		enter string
-		asks  bool
+		on      adapter.Vendor
+		check   string // "recorded": adapter.ClearLineChecked; else stubbed yes or no
+		version string // the probed version, for "recorded"
+		enter   string
+		asks    bool
 	}{
-		{adapter.Claude, "no", "\r", true},
-		{adapter.Claude, "yes", "\r", false},
-		{adapter.Codex, "yes", "\r", true}, // no approval signal
-		{adapter.Claude, "recorded", "\r", false},
-		{adapter.Claude, "recorded", "\x1b[13u", true},
-		{adapter.Claude, "yes", "\x1b[13u", true}, // the CSI u Ctrl+U has no check anywhere
-		{adapter.Codex, "recorded", "\r", true},
+		{adapter.Claude, "no", "", "\r", true},
+		{adapter.Claude, "yes", "", "\r", false},
+		{adapter.Codex, "yes", "", "\r", true}, // no approval signal
+		{adapter.Claude, "recorded", "2.1.322", "\r", false},
+		{adapter.Claude, "recorded", "2.1.322", "\x1b[13u", true},
+		{adapter.Claude, "yes", "", "\x1b[13u", true}, // the CSI u Ctrl+U has no check anywhere
+		{adapter.Codex, "recorded", "2.1.322", "\r", true},
+		{adapter.Claude, "recorded", "2.1.330", "\r", true}, // not the version checked
+		{adapter.Claude, "recorded", "", "\r", true},        // an unknown version
 	} {
-		t.Run(fmt.Sprintf("%s checked %s enter %q", c.on, c.check, c.enter), func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s checked %s %s enter %q", c.on, c.check, c.version, c.enter), func(t *testing.T) {
 			if c.check != "recorded" {
 				was := clearsLine
-				clearsLine = func(adapter.Vendor) bool { return c.check == "yes" }
+				clearsLine = func(adapter.Vendor, string) bool { return c.check == "yes" }
 				t.Cleanup(func() { clearsLine = was })
 			}
-			ts, ch, done, _ := switchRunTurned(t, c.on)
+			ts, ch, done, _ := switchRunTurned(t, c.on, func(o *Options) { o.VendorVersion = c.version })
 			for _, k := range strings.Split("/switch grok", "") {
 				ts.typeIn(t, k)
 			}
@@ -196,7 +200,7 @@ func TestTypedSwitchConfirms(t *testing.T) {
 				if bytes.Contains(ch.received(), []byte("/exit")) {
 					t.Fatalf("%s got the exit command before the person confirmed: %q", c.on, ch.received())
 				}
-				if c.on == adapter.Claude && bytes.Contains(ts.screen(), []byte("is unverified")) {
+				if c.on == adapter.Claude && c.version == "2.1.322" && bytes.Contains(ts.screen(), []byte("is unverified")) {
 					t.Errorf("Claude's /exit has a live check, yet the line says it is unverified: %q", ts.screen())
 				}
 				ts.typeIn(t, "\x1b")

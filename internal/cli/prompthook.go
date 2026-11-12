@@ -89,8 +89,12 @@ func promptSubmit(v adapter.Vendor, event string, in io.Reader, getenv func(stri
 		fmt.Fprintf(stderr, "aggy hook: %s%s\n", termsafe.Line(why), tag)
 		return 0
 	}
-	out := map[string]any{"decision": "block",
-		"reason": fmt.Sprintf("aggy took %s%s: see aggy's screen (Esc returns). It spent no model turn.", sessioncmd.Prefix(v), c.Name)}
+	reason := fmt.Sprintf("aggy took %s%s: see aggy's screen (Esc returns). It spent no model turn.", sessioncmd.Prefix(v), c.Name)
+	if resp.Type == supervisor.RespAsked {
+		// The supervisor took nothing yet: it asks on its status line (T6982).
+		reason = fmt.Sprintf("aggy asked about %s%s on its status line; it spent no model turn.", sessioncmd.Prefix(v), c.Name)
+	}
+	out := map[string]any{"decision": "block", "reason": reason}
 	if v == adapter.Claude {
 		// Inside hookSpecificOutput, as hooks.md's UserPromptSubmit example
 		// has it (read 2026-11-11); at the top level Claude ignored it and the

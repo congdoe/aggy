@@ -93,6 +93,9 @@ func VendorFindings(res Vendor, name, steps string) []Finding {
 	if res.VersionWarning != "" {
 		out = append(out, f(CodeVersionUntested, LevelWarn, res.VersionWarning))
 	}
+	if w := adapter.ComposerCheckOwed(res.Vendor, res.Version); w != "" && res.ProbeErr == nil {
+		out = append(out, f(CodeLiveCheckOwed, LevelInfo, w))
+	}
 	switch {
 	case res.ProbeErr != nil:
 		e := f(CodeProbeFailed, LevelError, name+" did not answer its version check")

@@ -29,9 +29,7 @@ func TestAggySwitchCaught(t *testing.T) {
 	s.typeSlowly("/aggy switch grok")
 	s.send([]byte("\r"))
 	w.waitRuns(t, s, 2)
-	if strings.Contains(s.screen(), "Esc stays") {
-		t.Errorf("a status line asked about a switch typed in full: %q", s.screen())
-	}
+	keyedOffer(t, w)
 	if got := stops(t, log); got != 2 {
 		t.Errorf("Stop hooks = %d, want 2: the command reached Claude as a turn", got)
 	}
