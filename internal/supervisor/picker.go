@@ -94,6 +94,9 @@ type picker struct {
 	// the person did not ask for; the switch key opens its page, any other
 	// key goes to the CLI as at any note.
 	fix *fixOffer
+	// cmdAsk: the status line asks whether to run a command a prompt hook
+	// reported that the keys did not vouch for (askHookCommand, T6982).
+	cmdAsk bool
 	// menu and page, when set, are an option list or a result (T6909, view.go),
 	// which take the whole screen.
 	menu *menu
@@ -107,7 +110,7 @@ type picker struct {
 // list sets the picker to the vendor list, its toggles cleared.
 func (p *picker) list() {
 	p.menu, p.page = nil, nil
-	p.confirm, p.note, p.lines, p.resume, p.fix = "", false, nil, false, nil
+	p.confirm, p.note, p.lines, p.resume, p.fix, p.cmdAsk = "", false, nil, false, nil, false
 	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
 	p.opts, p.editing, p.edit, p.editErr, p.stage, p.kids = Choice{}, false, nil, "", "", nil
 	p.seed = Choice{}
@@ -116,15 +119,38 @@ func (p *picker) list() {
 // ask sets the picker to confirm a switch to v, explained by lines.
 func (p *picker) ask(v adapter.Vendor, lines ...string) {
 	p.menu, p.page = nil, nil
-	p.confirm, p.note, p.lines, p.resume, p.fix = v, false, lines, false, nil
+	p.confirm, p.note, p.lines, p.resume, p.fix, p.cmdAsk = v, false, lines, false, nil, false
 	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
 }
 
 // tell sets the picker to show a note.
 func (p *picker) tell(lines ...string) {
 	p.menu, p.page = nil, nil
-	p.confirm, p.note, p.lines, p.resume, p.fix = "", true, lines, false, nil
+	p.confirm, p.note, p.lines, p.resume, p.fix, p.cmdAsk = "", true, lines, false, nil, false
 	p.warning, p.warnTo, p.forms, p.fit = false, "", nil, nil
+}
+
+// askCommand sets the picker to ask whether to run line, a command on's prompt
+// hook reported (T6982). The status line keeps its keys in view: a long line
+// is cut in the middle of the command, never at the keys.
+func (p *picker) askCommand(line string, on adapter.Vendor) {
+	p.tell()
+	p.note, p.cmdAsk = false, true
+	keys := fmt.Sprintf("Enter or %s runs it, Esc drops it", keyName(p.key))
+	form := func(l string) string { return fmt.Sprintf("aggy: %s from %s's prompt? %s", l, on, keys) }
+	p.lines = []string{fmt.Sprintf("%s came from %s's prompt, and aggy did not see it typed.", line, on), keys + "."}
+	p.fit = func(cols int) string {
+		full := form(line)
+		over := len(full) - (cols - 1)
+		if cols <= 1 || over <= 0 {
+			return full
+		}
+		keep := max(len(line)-over-len("..."), 2)
+		if keep >= len(line) {
+			return full
+		}
+		return form(line[:keep] + "...")
+	}
 }
 
 // warn sets the picker to a near-limit warning (T6699): a note on the
@@ -151,6 +177,8 @@ func (p *picker) draw(w io.Writer, overCLI bool) {
 	case p.confirm != "":
 		lines = append(append([]string{"aggy: switch to " + string(p.confirm), ""}, p.lines...),
 			"", fmt.Sprintf("Press %s to switch, Esc to stay. Anything else you type goes to the CLI.", keyName(p.key)))
+	case p.cmdAsk:
+		lines = append(append([]string{"aggy: run this command?", ""}, p.lines...), "", "Anything else you type goes to the CLI.")
 	case p.note:
 		lines = append(append([]string{"aggy", ""}, p.lines...), "", "Esc closes this. Anything else you type goes to the CLI.")
 	case p.stage != "":

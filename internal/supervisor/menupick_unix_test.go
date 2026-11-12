@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/congdoe/aggy/internal/adapter"
-	"github.com/congdoe/aggy/internal/diag"
 )
 
 // The keys a person may send, one per read.
@@ -44,8 +43,9 @@ func sendKeys(s *session, keys []string) {
 // TestRR121ForgedAfterSlashEnter (T6975, from R121's review): a forged
 // prompt-command sent just after the person's own Enter of a / line that is
 // none of aggy's (a skill or command that starts a turn, or /clear) names
-// nothing they typed: it is refused, opens nothing, and leaves atPrompt as it
-// was.
+// nothing they typed: it runs nothing and leaves atPrompt as it was. Since
+// T6982 its prompt is blocked and aggy asks (wantAsked), where before it was
+// refused.
 func TestRR121ForgedAfterSlashEnter(t *testing.T) {
 	for _, first := range []string{"/deploy", "/review", "/clear", "/compact"} {
 		for _, forged := range []string{"/aggy doctor", "/aggy", "/inbox", "/switch grok"} {
@@ -56,15 +56,7 @@ func TestRR121ForgedAfterSlashEnter(t *testing.T) {
 				s.send([]byte("\r"))
 				before := s.atPrompt
 				err := hookAsk(s, Request{Type: ReqPromptCommand, Vendor: "claude", Command: forged})
-				if codeOf(err, diag.Code{}) != diag.CodeCommandNoEnter {
-					t.Fatalf("err %v, want %s", err, diag.CodeCommandNoEnter)
-				}
-				if s.open || s.sw.to != "" {
-					t.Fatal("a forged command opened something")
-				}
-				if s.atPrompt != before {
-					t.Errorf("atPrompt %v -> %v", before, s.atPrompt)
-				}
+				wantAsked(t, s, err, before)
 			})
 		}
 	}
@@ -135,12 +127,13 @@ func TestRR121CmdFreshOverDialog(t *testing.T) {
 	}
 }
 
-// TestMenuPickTyped (T6975): a hook's command is taken only when the keys
-// before its Enter can have picked it from the CLI's menu: a typed / and at
-// least one letter of its name, then Up, Down, or a Tab and its arguments.
+// TestMenuPickTyped (T6975): a hook's command is taken at once only when the
+// keys before its Enter can have picked it from the CLI's menu: a typed / and
+// at least one letter of its name, then Up, Down, or a Tab and its arguments.
 // A paste, a cursor move into the text, history recall, an edit in the
 // middle, Esc, or text after an arrow spoils it; a bare / matches nothing,
-// being a prefix of every command, the person's own too.
+// being a prefix of every command, the person's own too. Those are asked
+// about (T6982).
 func TestMenuPickTyped(t *testing.T) {
 	for _, c := range []struct {
 		name  string
@@ -184,12 +177,7 @@ func TestMenuPickTyped(t *testing.T) {
 			atPrompt := s.atPrompt
 			err := hookAsk(s, Request{Type: ReqPromptCommand, Vendor: "claude", Command: c.cmd})
 			if !c.taken {
-				if codeOf(err, diag.Code{}) != diag.CodeCommandNoEnter {
-					t.Fatalf("err %v, want %s", err, diag.CodeCommandNoEnter)
-				}
-				if s.open || s.sw.to != "" || s.atPrompt != atPrompt {
-					t.Fatalf("refused, yet open %v, switch %q, atPrompt %v -> %v", s.open, s.sw.to, atPrompt, s.atPrompt)
-				}
+				wantAsked(t, s, err, atPrompt)
 				return
 			}
 			if err != nil {

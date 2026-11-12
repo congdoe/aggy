@@ -285,14 +285,18 @@ func (s *session) answerPrompt(p promptReq) {
 // and one command per Enter. And the keys before that Enter must be able to
 // have picked line from the CLI's menu (T6975, menuPick and sessioncmd.Picked):
 // the person typed at least / and one letter of its name (/sw for /switch),
-// then perhaps Up, Down, or Tab, and after a Tab its arguments. So a forged
-// request after the person's own /deploy or /clear names nothing they typed,
-// and is refused. Nothing is taken over a list, page, or picker already on
+// then perhaps Up, Down, or Tab, and after a Tab its arguments. Such a command
+// is taken at once. Nothing is taken over a list, page, or picker already on
 // screen, nor a switch over one waiting. The hook then blocked that prompt, so
 // that Enter started no turn: the prompt is where it was, and its line is gone
 // from the composer (both CLIs document a block as stopping the prompt; that
 // the composer is left empty is unverified, TODO(T6895)). A switch caught this
 // way always asks on the status line.
+//
+// When the keys do not vouch for the command (the tracker lost the line, or a
+// forged request names nothing the person typed), the prompt is blocked all the
+// same, so it never reaches the model, and aggy asks on its status line
+// (askHookCommand, T6982): a key there is the proof a forged request lacks.
 func (s *session) hookCommand(c sessioncmd.Command, line string) error {
 	// Claude may report one prompt twice, as submitted and as a command's
 	// expansion (UserPromptSubmit and UserPromptExpansion, hooks.md; which of
@@ -301,30 +305,20 @@ func (s *session) hookCommand(c sessioncmd.Command, line string) error {
 	if c.Name == s.hookedName && s.hookedEnter.Equal(s.enterAt) && time.Since(s.enterAt) < promptRepeat {
 		return nil
 	}
+	doubts := s.hookDoubts(line)
 	switch {
-	case !s.enterAtPrompt || s.enterPick.bad || s.afterEnter != 0 || time.Since(s.enterAt) >= promptBlockWait:
-		s.hookMiss(c, []string{"hook_no_enter"})
-		return coded(diag.CodeCommandNoEnter, errors.New("no Enter of a / command at the prompt just before it"))
-	case !sessioncmd.Picked(s.o.Vendor, string(s.enterPick.text), s.enterPick.tab, string(s.enterPick.args), line):
-		s.hookMiss(c, []string{"hook_keys_differ"})
-		return coded(diag.CodeCommandNoEnter, errors.New("the keys typed before that Enter do not start that command"))
-	case s.hookedEnter.Equal(s.enterAt):
+	case !s.hookedEnter.IsZero() && s.hookedEnter.Equal(s.enterAt):
 		return coded(diag.CodeCommandNoEnter, errors.New("aggy already took a command for that Enter"))
 	case s.open:
 		return coded(diag.CodeCommandNotTaken, errors.New("aggy's list or page is open"))
 	case (c.Kind == sessioncmd.Switch || c.Kind == sessioncmd.Picker) && s.sw.to != "":
 		return coded(diag.CodeCommandNotTaken, errors.New("a switch is already waiting"))
+	case len(doubts) > 0:
+		return s.askHookCommand(c, line, doubts)
 	}
 	s.hookedName, s.hookedEnter = c.Name, s.enterAt
 	s.heldMiss = nil // the key catch's miss of this Enter was the hook's catch
-	s.atPrompt = !s.held
-	// The blocked prompt started nothing, as a caught command's line does not
-	// (catchCommand), so a pick it opens is told what the CLI's launch state
-	// means, not held back as if a turn might run (T6982).
-	s.inputSinceTurn = s.lineInput
-	// TODO(T6975): a blocked prompt is taken as an empty composer, unverified;
-	// if the CLI puts the text back, an exit command is typed after it.
-	s.emptyComposer()
+	s.promptBlocked()
 	s.log(diag.Rec{Event: diag.EvCommandCaught, Attrs: map[string]any{"command": c.Name, "via": "hook"}})
 	if c.Kind == sessioncmd.Switch && !s.turnRan {
 		// Before a turn end only quitting the CLI completes a switch, and a
@@ -339,6 +333,167 @@ func (s *session) hookCommand(c sessioncmd.Command, line string) error {
 		s.sw.hooked, s.sw.keyed, s.sw.doubtOK = true, false, true
 	}
 	return nil
+}
+
+// enterVouches reports whether the last Enter can be the one that submitted a
+// prompt the hook reports now: it went at the prompt, with no key since, within
+// promptBlockWait.
+func (s *session) enterVouches() bool {
+	return s.enterAtPrompt && s.afterEnter == 0 && time.Since(s.enterAt) < promptBlockWait
+}
+
+// hookDoubts names why the keys do not vouch for line, a command a prompt hook
+// reported, as fixed words: hook_no_enter (no such Enter, or keys before it no
+// menu pick could be) or hook_keys_differ (they do not start line), then the
+// parts that failed. None when they vouch for it.
+func (s *session) hookDoubts(line string) []string {
+	var why []string
+	switch {
+	case !s.enterVouches() || s.enterPick.bad:
+		why = append(why, "hook_no_enter")
+	case !sessioncmd.Picked(s.o.Vendor, string(s.enterPick.text), s.enterPick.tab, string(s.enterPick.args), line):
+		why = append(why, "hook_keys_differ")
+	default:
+		return nil
+	}
+	for _, d := range []struct {
+		on   bool
+		name string
+	}{
+		{!s.enterAtPrompt, "enter_not_at_prompt"},
+		{s.enterPick.bad, "keys_not_a_pick"},
+		{s.afterEnter != 0, "keys_after_enter"},
+		{time.Since(s.enterAt) >= promptBlockWait, "enter_too_old"},
+		{s.held, "held"},
+	} {
+		if d.on {
+			why = append(why, d.name)
+		}
+	}
+	return why
+}
+
+// promptBlocked records what a blocked prompt left: the CLI at its prompt, as it
+// was, and its composer empty. It started nothing, as a caught command's line
+// does not (catchCommand), so a pick it opens is told what the CLI's launch
+// state means, not held back as if a turn might run (T6982).
+func (s *session) promptBlocked() {
+	s.atPrompt = !s.held
+	s.inputSinceTurn = s.lineInput
+	// TODO(T6975): a blocked prompt is taken as an empty composer, unverified;
+	// if the CLI puts the text back, an exit command is typed after it.
+	s.emptyComposer()
+}
+
+// hookQuestion is a command from a prompt hook that aggy asks about (askHookCommand):
+// the command, its line, the Enter it came after and whether that Enter vouched
+// for a prompt (enterVouches), and the record of the question.
+type hookQuestion struct {
+	c       sessioncmd.Command
+	line    string
+	enterAt time.Time
+	enter   bool
+	rec     string
+}
+
+// hookAskWindow and hookAskMax bound the questions a prompt hook can raise: once
+// hookAskMax of them closed unanswered within hookAskWindow, the next command
+// is refused, as before the question, and the bottom row says so once a window.
+const (
+	hookAskWindow = time.Minute
+	hookAskMax    = 3
+)
+
+// askHookCommand blocks the prompt that carried c, which the keys do not vouch
+// for (why), and asks on the status line whether to run it (T6982). The
+// person's key there is the proof a forged request lacks, so a process in the
+// CLI's tree can at worst raise a question: one at a time (hookCommand refuses
+// another while aggy's screen is up), and none once hookAskMax went unanswered
+// within hookAskWindow.
+func (s *session) askHookCommand(c sessioncmd.Command, line string, why []string) error {
+	now := time.Now()
+	s.askDrops = slices.DeleteFunc(s.askDrops, func(t time.Time) bool { return now.Sub(t) >= hookAskWindow })
+	if len(s.askDrops) >= hookAskMax {
+		s.hookMiss(c, why)
+		if now.Sub(s.askLimitNoted) >= hookAskWindow {
+			s.askLimitNoted = now
+			s.waitNote(fmt.Sprintf("aggy: %d questions about commands from %s's prompt went unanswered; for a minute they go to %s.",
+				hookAskMax, s.o.Vendor, s.o.Vendor))
+		}
+		return coded(diag.CodeCommandAskLimit, fmt.Errorf("%d of aggy's questions about commands from the prompt hook went unanswered within a minute", hookAskMax))
+	}
+	enter := s.enterVouches()
+	if enter {
+		s.heldMiss = nil // the key catch's miss of this Enter: the prompt is blocked
+	} else {
+		s.flushMiss(true)
+	}
+	s.hookedName, s.hookedEnter = c.Name, s.enterAt
+	attrs := s.missAttrs(c.Name, why)
+	if s.enterPick.bad && s.enterPick.why != "" {
+		attrs["pick"] = s.enterPick.why
+	}
+	s.hookAsk = &hookQuestion{c: c, line: line, enterAt: s.enterAt, enter: enter, rec: s.log(diag.Rec{Event: diag.EvCommandAsked, Attrs: attrs})}
+	s.pk.askCommand(line, s.o.Vendor)
+	s.openPicker()
+	return nil
+}
+
+// hookAskInput takes a key at the question askHookCommand opened. Enter or the
+// switch key runs the command, once confirmGuard has passed, so a key typed
+// as the question appeared answers nothing; Esc drops it, once escTimeout shows
+// it began no longer key; any other key drops it and goes to the CLI as typed.
+func (s *session) hookAskInput(b []byte) {
+	if s.escBy != nil {
+		s.escBy = nil
+		s.dropHookAsk("typed")
+		s.input(append([]byte{esc}, b...))
+		return
+	}
+	switch {
+	case isEsc(b):
+		s.escBy = time.After(escTimeout)
+	case s.pk.isKey(b) || plainEnter(b):
+		if time.Since(s.openedAt) < confirmGuard {
+			return // too soon to be meant: ignored
+		}
+		s.runHookAsk()
+	default:
+		s.dropHookAsk("typed")
+		s.input(b)
+	}
+}
+
+// runHookAsk runs the command the person said yes to, as one typed in full at
+// the prompt is run. What the blocked prompt left is recorded only when the
+// Enter before it vouched for a prompt and nothing reached the CLI since; a
+// forged request after a turn started must not make the CLI look idle.
+func (s *session) runHookAsk() {
+	a := s.hookAsk
+	s.hookAsk = nil
+	s.closePicker()
+	s.log(diag.Rec{Event: diag.EvCommandAnswered, Cause: a.rec, Attrs: map[string]any{"command": a.c.Name, "answer": "yes"}})
+	if a.enter && s.enterAt.Equal(a.enterAt) && s.afterEnter == 0 {
+		s.promptBlocked()
+	}
+	s.log(diag.Rec{Event: diag.EvCommandCaught, Cause: a.rec, Attrs: map[string]any{"command": a.c.Name, "via": "hook", "asked": true}})
+	s.runCommand(a.c, true)
+}
+
+// dropHookAsk closes the question with no yes (how: esc, typed, or closed when
+// something else took aggy's screen) and counts it for hookAskMax. The caller
+// closes the picker, unless it is closing it.
+func (s *session) dropHookAsk(how string) {
+	a := s.hookAsk
+	if a == nil {
+		return
+	}
+	s.hookAsk = nil
+	s.askDrops = append(s.askDrops, time.Now())
+	s.log(diag.Rec{Event: diag.EvCommandAnswered, Cause: a.rec, Attrs: map[string]any{"command": a.c.Name, "answer": how}})
+	if how != "closed" {
+		s.closePicker()
+	}
 }
 
 // aggyItems are /aggy's list: every command, in the CLI's own form, switch,
@@ -746,12 +901,22 @@ func (s *session) fillComposer(line string) {
 // (the command word has ended, and the menu with it), text typed after Up or
 // Down but before a Tab (the menu filters again, or a recalled line grows), a
 // key after a Tab other than text and Backspace, an edit other than a
-// Backspace at the end, Ctrl+U, a control key, a click, or a newline.
+// Backspace at the end, Ctrl+U, a control key, a click, or a newline. why
+// names the first of these, as a fixed word for a record (T6982).
 type menuPick struct {
 	text, args []byte
 	menu, tab  bool
 	bad        bool
+	why        string
 	seq        []byte
+}
+
+// spoil marks the pick bad, keeping the first reason.
+func (p *menuPick) spoil(why string) {
+	if !p.bad {
+		p.why = why
+	}
+	p.bad = true
 }
 
 // menuArrow matches Up or Down as a legacy terminal or kitty sends it, a press
@@ -766,7 +931,7 @@ var (
 func (s *session) pickByte(c byte) {
 	p := &s.pick
 	if s.inPaste {
-		p.bad = true
+		p.spoil("paste")
 		return
 	}
 	if len(p.seq) > 0 || c == esc {
@@ -781,7 +946,7 @@ func (s *session) pickByte(c byte) {
 		case menuArrow.MatchString(seq):
 			p.menuKey(false)
 		default:
-			p.bad = true
+			p.spoil("other_key")
 		}
 		return
 	}
@@ -796,14 +961,16 @@ func (s *session) pickByte(c byte) {
 		case !p.menu && len(p.text) > 0:
 			p.text = p.text[:len(p.text)-1]
 		default:
-			p.bad = true
+			p.spoil("backspace")
 		}
-	case c < 0x20 || c > 0x7e, len(p.text)+len(p.args) >= sessioncmd.MaxLine:
-		p.bad = true
+	case len(p.text)+len(p.args) >= sessioncmd.MaxLine:
+		p.spoil("too_long")
+	case c < 0x20 || c > 0x7e:
+		p.spoil("control_key")
 	case p.tab:
 		p.args = append(p.args, c)
 	case p.menu:
-		p.bad = true
+		p.spoil("text_after_menu")
 	default:
 		p.text = append(p.text, c)
 	}
@@ -812,11 +979,14 @@ func (s *session) pickByte(c byte) {
 // menuKey takes Up, Down (tab false), or a Tab: allowed after the start of a
 // command word, before a space and before any Tab.
 func (p *menuPick) menuKey(tab bool) {
-	if len(p.text) == 0 || p.tab || bytes.IndexByte(p.text, ' ') >= 0 {
-		p.bad = true
-		return
+	switch {
+	case len(p.text) == 0:
+		p.spoil("menu_key_first")
+	case p.tab, bytes.IndexByte(p.text, ' ') >= 0:
+		p.spoil("menu_key_late")
+	default:
+		p.menu, p.tab = true, tab
 	}
-	p.menu, p.tab = true, tab
 }
 
 // seqDone reports whether seq, which starts with ESC, is a whole escape
