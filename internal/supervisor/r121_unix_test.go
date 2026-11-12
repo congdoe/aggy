@@ -46,11 +46,12 @@ func TestLongCommandCaught(t *testing.T) {
 	})
 }
 
-// TestForgedHookRefused (R121): a prompt-command that goes with no Enter of a /
-// command at the prompt just before it (a forged one, mid-turn or after keys)
-// is refused with a code, opens nothing, takes no key, and leaves atPrompt as
-// it was; a second one for the same Enter is refused too.
-func TestForgedHookRefused(t *testing.T) {
+// TestForgedHookAsks (R121, T6982): a prompt-command that goes with no Enter of
+// a / command at the prompt just before it (a forged one, mid-turn or after
+// keys) runs nothing and leaves atPrompt as it was: aggy asks (wantAsked), and
+// the next key goes to the CLI and drops the question. A second one for the
+// same Enter is refused.
+func TestForgedHookAsks(t *testing.T) {
 	for _, c := range []struct {
 		name  string
 		setup func(s *session)
@@ -79,16 +80,12 @@ func TestForgedHookRefused(t *testing.T) {
 			c.setup(s)
 			atPrompt := s.atPrompt
 			err := hookAsk(s, Request{Type: ReqPromptCommand, Vendor: "claude", Command: c.cmd})
-			if codeOf(err, diag.Code{}) != diag.CodeCommandNoEnter {
-				t.Fatalf("err %v, want %s", err, diag.CodeCommandNoEnter)
+			wantAsked(t, s, err, atPrompt)
+			s.input = s.send
+			s.pickerInput([]byte("lo"))
+			if s.open || s.hookAsk != nil {
+				t.Fatal("a key for the CLI left the question open")
 			}
-			if s.open || s.sw.to != "" {
-				t.Fatal("a forged command opened something")
-			}
-			if s.atPrompt != atPrompt {
-				t.Errorf("atPrompt %v -> %v", atPrompt, s.atPrompt)
-			}
-			s.send([]byte("lo"))
 			if got := sentTo(s); !strings.HasSuffix(got, "lo") {
 				t.Errorf("the next keys did not reach the CLI: %q", got)
 			}

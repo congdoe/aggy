@@ -656,6 +656,13 @@ type session struct {
 	keyMisses  missBudget
 	hookMisses missBudget
 	heldMiss   *heldMiss
+	// hookAsk is the command from a prompt hook aggy asks about on its status
+	// line, nil when none (askHookCommand); askDrops are when such questions
+	// closed with no yes, and askLimitNoted when the bottom row last said
+	// aggy stopped asking (hookAskMax).
+	hookAsk       *hookQuestion
+	askDrops      []time.Time
+	askLimitNoted time.Time
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -881,7 +888,7 @@ func (s *session) hookEvent(ev hookEvent) {
 					s.pk.padRows++
 				}
 				s.pk.noTurn, s.pk.moveRefused, s.pk.mayRun, s.pk.doubtSaid = false, false, false, false
-				if s.pk.confirm == "" && !s.pk.note && s.pk.stage == "" && s.pk.menu == nil && s.pk.page == nil {
+				if s.pk.confirm == "" && !s.pk.note && !s.pk.cmdAsk && s.pk.stage == "" && s.pk.menu == nil && s.pk.page == nil {
 					s.pk.draw(s.o.Out, s.pickerOverCLI)
 				}
 				s.pk.padRows = 0
@@ -1503,7 +1510,7 @@ func (s *session) pointer(b []byte) {
 	s.inputSinceTurn = true
 	s.moved = true
 	s.slashOnly = false
-	s.pick.bad = true
+	s.pick.spoil("click")
 	s.afterEnter++
 	s.sw.toldDoubt, s.sw.doubtOK = false, false
 	if s.hadAt {
@@ -1643,8 +1650,17 @@ func (s *session) compose(c byte) {
 		// leading / command, typed as menuPick allows. An Enter that makes a
 		// newline leaves the next line no pick.
 		s.enterPick = s.pick
-		s.enterPick.bad = s.pick.bad || !s.slashOnly || s.inPaste
-		s.pick = menuPick{bad: prev == esc || prev == '\\' || s.inPaste}
+		switch {
+		case s.inPaste:
+			s.enterPick.spoil("paste")
+		case !s.slashOnly:
+			// The line did not start with / on a composer aggy counted empty.
+			s.enterPick.spoil("not_slash_line")
+		}
+		s.pick = menuPick{}
+		if prev == esc || prev == '\\' || s.inPaste {
+			s.pick.spoil("newline")
+		}
 	}
 	switch {
 	case c == '\r':
@@ -2578,7 +2594,7 @@ func (s *session) openPicker() {
 	s.openedAt = time.Now()
 	s.pickerOverCLI = s.alt.on
 	s.statusRows = 0
-	if s.pk.confirm != "" || s.pk.warning {
+	if s.pk.confirm != "" || s.pk.warning || s.pk.cmdAsk {
 		if rows, cols := s.t.size(); rows > 1 {
 			s.statusRows, s.pickerOverCLI = rows, true
 			s.pk.drawStatus(s.o.Out, rows, cols, s.alt.on)
@@ -2609,6 +2625,9 @@ func (s *session) closePicker() {
 	if !s.open {
 		return
 	}
+	// Something else takes aggy's screen over a command's question: it closes
+	// unanswered.
+	s.dropHookAsk("closed")
 	s.noTurnOpen = false
 	if s.statusRows > 0 {
 		s.pk.eraseStatus(s.o.Out, s.statusRows, s.alt.on)
@@ -2657,6 +2676,10 @@ func (s *session) pickerInput(b []byte) {
 	}
 	if s.pk.menu != nil || s.pk.page != nil {
 		s.viewInput(b)
+		return
+	}
+	if s.pk.cmdAsk && s.hookAsk != nil {
+		s.hookAskInput(b)
 		return
 	}
 	if s.pk.confirm != "" || s.pk.note {
@@ -2909,6 +2932,10 @@ func exitNote(sw pendingSwitch) string {
 // promptEsc is a lone Esc at a prompt aggy opened, once nothing followed
 // it within escTimeout.
 func (s *session) promptEsc() {
+	if s.open && s.hookAsk != nil {
+		s.dropHookAsk("esc")
+		return
+	}
 	if !s.open || (s.pk.confirm == "" && !s.pk.note) {
 		return
 	}

@@ -73,6 +73,11 @@ func TestCommandMissRecord(t *testing.T) {
 			why: []string{"not_plain_keys"}, other: map[string]any{"seqs": "csi??"}},
 		{name: "pasted: lost", v: adapter.Claude, keys: []string{"\x1b[200~/switch grok\x1b[201~", "\r"}, want: true, why: []string{"not_plain_keys"}},
 		{name: "Codex's $ form, lost", v: adapter.Codex, keys: line(append(each("$switcx"), "\x7f", "h")...), want: true, why: []string{"not_plain_keys"}},
+		// The owner's second line (T6982): a Backspace or a Ctrl+U before the /
+		// made the line's head a control key, and nothing was recorded.
+		{name: "a Backspace first: lost", v: adapter.Claude, keys: line(append([]string{"\x7f"}, each("/switch codex")...)...), want: true, why: []string{"not_plain_keys"}},
+		{name: "a Ctrl+U first: lost", v: adapter.Claude, keys: line(append([]string{"\x15"}, each("/switch codex")...)...), want: true, why: []string{"not_plain_keys", "cleared"}},
+		{name: "Backspace and / in one read: lost", v: adapter.Claude, keys: line("\x7f/switch codex"), want: true, why: []string{"not_plain_keys"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -121,8 +126,9 @@ func TestCommandMissRecord(t *testing.T) {
 	}
 }
 
-// TestHookMissRecord (T6982): a command a prompt hook reported and refused for
-// want of its Enter is recorded with the part of the rule that failed.
+// TestHookMissRecord (T6982): a command a prompt hook reported without the Enter
+// it goes with is asked about, and the question's record names the part of the
+// rule that failed.
 func TestHookMissRecord(t *testing.T) {
 	q, records := diagHome(t)
 	s := cmdSess(t, adapter.Claude)
@@ -132,15 +138,16 @@ func TestHookMissRecord(t *testing.T) {
 		s.send([]byte(k))
 	}
 	c, _ := sessioncmd.Parse(adapter.Claude, "/switch")
-	if err := s.hookCommand(c, "/switch"); err == nil {
-		t.Fatal("taken with a key after its Enter")
+	if err := s.hookCommand(c, "/switch"); err != nil || s.hookAsk == nil {
+		t.Fatalf("err %v asked %v: want the prompt blocked and a question", err, s.hookAsk != nil)
 	}
-	got := missRecs(t, records())
-	if len(got) != 2 {
-		t.Fatalf("records %v, want the key catch's and the hook's", got)
+	recs := records()
+	if got := missRecs(t, recs); len(got) != 1 || got[0]["command"] != "switch" {
+		t.Fatalf("records %v, want the key catch's", got)
 	}
-	if why := got[1]["why"]; why != "hook_no_enter,keys_after_enter" || got[1]["command"] != "switch" {
-		t.Errorf("hook record %v", got[1])
+	r, ok := find(recs, diag.EvCommandAsked, diag.Code{})
+	if !ok || !strings.Contains(string(r.Attrs), `"why":"hook_no_enter,keys_after_enter"`) {
+		t.Errorf("question record %v %s", ok, r.Attrs)
 	}
 }
 

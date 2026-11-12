@@ -169,26 +169,15 @@ func (s *session) logMiss(b *missBudget, attrs map[string]any) {
 }
 
 // hookMiss records a command a prompt hook reported that hookCommand refused
-// for want of the Enter it goes with: why names the rule, and the parts of it
-// that failed follow, each a fixed word.
+// for want of the keys that go with it: why (hookDoubts) names the rule, and
+// the parts of it that failed follow, each a fixed word.
 func (s *session) hookMiss(c sessioncmd.Command, why []string) {
-	for _, d := range []struct {
-		on   bool
-		name string
-	}{
-		{!s.enterAtPrompt, "enter_not_at_prompt"},
-		{s.enterPick.bad, "keys_not_a_pick"},
-		{s.afterEnter != 0, "keys_after_enter"},
-		{time.Since(s.enterAt) >= promptBlockWait, "enter_too_old"},
-		{s.held, "held"},
-	} {
-		if d.on {
-			why = append(why, d.name)
-		}
-	}
 	s.flushMiss(true)
 	attrs := s.missAttrs(c.Name, why)
 	attrs["via"] = "hook"
+	if s.enterPick.bad && s.enterPick.why != "" {
+		attrs["pick"] = s.enterPick.why
+	}
 	s.logMiss(&s.hookMisses, attrs)
 }
 
@@ -251,17 +240,20 @@ func seqKind(seq []byte) string {
 	return "alt"
 }
 
-// firstKey is the first byte of b past any escape sequence: a terminal reply
-// aggy did not know, a cursor key, or a paste's marker.
+// firstKey is the first byte of b past any escape sequence (a terminal reply
+// aggy did not know, a cursor key, or a paste's marker) and any control key or
+// Backspace, which types no text.
 func firstKey(b []byte) (byte, bool) {
 	for i := 0; i < len(b); {
-		switch b[i] {
-		case esc:
+		switch c := b[i]; {
+		case c == esc:
 			i += seqLen(b[i:])
-		case '\r', '\n':
+		case c == '\r' || c == '\n':
 			return 0, false
+		case c < 0x20 || c == 0x7f:
+			i++
 		default:
-			return b[i], true
+			return c, true
 		}
 	}
 	return 0, false
@@ -298,10 +290,12 @@ func (s *session) headByte(c byte) {
 		s.headSeq = 0
 		return
 	}
-	switch c {
-	case esc:
+	switch {
+	case c == esc:
 		s.headSeq = 1
-	case '\r', '\n':
+	case c < 0x20 || c == 0x7f:
+		// A control key or a Backspace types no text: a Ctrl+U or a Backspace
+		// before the / left the line unrecorded (the owner's run, T6982).
 	default:
 		s.cmdHead, s.headSeen = c, true
 	}
