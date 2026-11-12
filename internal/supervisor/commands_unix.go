@@ -101,6 +101,7 @@ func (s *session) lineDoubts() []string {
 		{s.askOpen(), "ask_open"},
 		{s.exitGap, "exit_gap"},
 		{s.sideView, "side_view"},
+		{s.modeLine, "mode_line"},
 		{s.compLen != len(s.cmdLine), "comp_len"},
 		{s.draftLen != len(s.cmdLine), "draft_len"},
 	} {
@@ -149,6 +150,7 @@ func (s *session) emptyComposer() {
 	s.cmdLine, s.cmdBad = s.cmdLine[:0], false
 	s.pick = menuPick{}
 	s.toldDirty, s.cmdFresh = false, false
+	s.resetTyped()
 	s.updateDirty()
 }
 
@@ -305,93 +307,38 @@ func busyBlock(c sessioncmd.Command, on adapter.Vendor, key byte, why string) er
 
 // wayThrough is the keyboard's way to what c would have done: the switch key
 // for a switch, which no forged request can press and which works whatever
-// aggy knows of the prompt; otherwise the command typed in full, which the
-// keys catch only once aggy knows the prompt is empty: at once or after a
-// moment's quiet when it recovers (blockHook), else after a turn end, so the
-// person sends a message first (#146 review).
-func wayThrough(c sessioncmd.Command, on adapter.Vendor, key byte, recovers bool) string {
+// aggy knows of the prompt; otherwise the command typed in full, which proves
+// itself (typedMatch) whatever aggy doubted before the line. After Left with no
+// Esc the keys go to Claude's other view, so an Esc comes first (sideNoEsc).
+func wayThrough(c sessioncmd.Command, on adapter.Vendor, key byte, sideNoEsc bool) string {
 	switch {
 	case c.Kind == sessioncmd.Switch || c.Kind == sessioncmd.Picker:
 		return keyName(key) + " opens the switch list."
-	case recovers:
-		return fmt.Sprintf("Wait a moment, then type it in full at %s's prompt.", on)
+	case sideNoEsc:
+		return fmt.Sprintf("Press Esc, then type it in full at %s's prompt.", on)
 	}
-	return fmt.Sprintf("Send %s any message first, then type it in full.", on)
+	return fmt.Sprintf("Type it in full at %s's prompt.", on)
 }
 
-// blockQuiet is how long the CLI's output and the keyboard must stay quiet
-// after a block aggy cannot otherwise tie to its Enter (armRelease) before
-// releaseBlock takes the CLI as back at its prompt. On Claude 2.1.322 a running
-// turn redraws its spinner continuously (live), many times a second, so 3
-// seconds holds many frames a turn would draw; it covers the block reason
-// Claude draws once, and is short enough that "wait a moment" is true.
-var blockQuiet = 3 * time.Second
-
-// blockQuietMax gives up on a release whose output never goes quiet: a turn
-// runs after all.
-const blockQuietMax = 30 * time.Second
-
-// armRelease starts the quiet release (releaseBlock) for a prompt aggy blocked
-// and ran nothing for, which the keys did not spell (#146 review): where a
-// live check shows a running turn never quiet (adapter.QuietMeansIdle), for a
-// request tied to the Enter the keys saw last (within promptBlockWait, no key
-// since) on a line whose first text key was / or $, as a command's is and an
-// ordinary prompt's or an approval's answer is not; and not while a hold, a
-// question of the CLI's, or Claude's other view (sideView, unless an Esc came)
-// may have taken that Enter. A forged request cannot mark a busy CLI idle, as
-// a busy CLI is not quiet, nor one at an approval, which holds. It reports
-// whether it armed.
-func (s *session) armRelease() bool {
+// typedMatch reports whether the person typed line (#146 review, third
+// round): the printable keys since the previous Enter, with any non-printing
+// key or escape sequence before the first of them left out, spell exactly the
+// command; no paste, edit, cursor key, or newline came after the first of
+// them; the Enter came alone; no key since; within promptBlockWait, or, for an
+// Enter that went while a turn may have run (the CLI queues the line, and its
+// hook fires when it takes it), any time before another key. A real hook that
+// reports exactly that command then proves the composer held exactly that
+// line, whatever aggy doubted before it: anything else in the composer would
+// have made another prompt. A forger cannot see the keys; guessing right only
+// claims what the person typed.
+func (s *session) typedMatch(line string) bool {
 	switch {
-	case !adapter.QuietMeansIdle(s.o.Vendor, s.o.VendorVersion),
-		s.enterAt.IsZero() || s.afterEnter != 0 || time.Since(s.enterAt) >= promptBlockWait,
-		s.enterHead != '/' && s.enterHead != '$',
-		s.held || s.askOpen(),
-		s.sideView && !s.sideEsc:
+	case s.enterAt.IsZero() || s.afterEnter != 0 || !s.enterTyped || !s.enterAlone,
+		s.enterAtPrompt && time.Since(s.enterAt) >= promptBlockWait,
+		canonLine(string(s.enterLineTyped)) != canonLine(line):
 		return false
 	}
-	s.relAt, s.relEnter = time.Now(), s.enterAt
 	return true
-}
-
-// restartRelease starts the quiet wait again when a question about a command
-// whose prompt armRelease armed closes: aggy's screen was up until now.
-func (s *session) restartRelease(enter time.Time) {
-	if !s.relAt.IsZero() && s.relEnter.Equal(enter) {
-		s.relAt = time.Now()
-	}
-}
-
-// releaseBlock, on the main loop's poll, takes the CLI as back at its prompt
-// with its composer empty once its output and the keyboard stayed quiet for
-// blockQuiet after a block armRelease armed: no turn started, and the block
-// emptied the composer (live, Claude 2.1.322). A key, another Enter, a hold,
-// or a question of the CLI's ends the wait, as does blockQuietMax.
-func (s *session) releaseBlock() {
-	if s.relAt.IsZero() {
-		return
-	}
-	now := time.Now()
-	switch {
-	case !s.enterAt.Equal(s.relEnter), s.afterEnter != 0, s.lastIn.After(s.relAt), s.held, s.askOpen(), now.Sub(s.relAt) >= blockQuietMax:
-		s.relAt = time.Time{}
-		return
-	}
-	quiet := s.relAt
-	if out := time.Unix(0, s.lastOut.Load()); out.After(quiet) {
-		quiet = out
-	}
-	if now.Sub(quiet) < blockQuiet {
-		return
-	}
-	s.relAt = time.Time{}
-	s.atPrompt, s.inputSinceTurn, s.queued, s.queuedWait = true, false, 0, false
-	s.escEmpty, s.escTwice, s.escDoubt, s.popupEnter, s.unsettled = false, false, false, false, ""
-	if s.sideEsc {
-		s.sideView, s.sideEsc = false, false // the Esc closed Claude's other view
-	}
-	s.emptyComposer()
-	s.log(diag.Rec{Event: diag.EvCommandReleased, Attrs: map[string]any{"quiet_ms": blockQuiet.Milliseconds()}})
 }
 
 // blockHook runs nothing for c, which a prompt hook reported as line, and keeps
@@ -408,17 +355,12 @@ func (s *session) blockHook(c sessioncmd.Command, line string, code diag.Code, w
 	if why != nil {
 		s.hookMiss(c, why)
 	}
-	recovers := false
-	switch {
-	case !s.enterAt.IsZero() && !s.hookedEnter.Equal(s.enterAt) && s.spelled(canonLine(line)):
+	if !s.enterAt.IsZero() && !s.hookedEnter.Equal(s.enterAt) && s.spelled(canonLine(line)) {
 		s.heldMiss = nil
 		s.hookedEnter = s.enterAt // a second report of this Enter is blocked too, silently
 		s.promptBlocked()
-		recovers = true
-	case !s.hookedEnter.Equal(s.enterAt):
-		recovers = s.armRelease()
 	}
-	way := wayThrough(c, s.o.Vendor, s.pk.key, recovers)
+	way := wayThrough(c, s.o.Vendor, s.pk.key, s.sideView && !s.sideEsc)
 	note := fmt.Sprintf("aggy did not run %s%s. %s", sessioncmd.Prefix(s.o.Vendor), c.Name, way)
 	if plain != "" {
 		note = fmt.Sprintf("aggy did not run %s%s (%s). %s", sessioncmd.Prefix(s.o.Vendor), c.Name, plain, way)
@@ -510,6 +452,12 @@ func (s *session) hookCommand(c sessioncmd.Command, line string) error {
 		return s.blockHook(c, line, diag.CodeCommandNotTaken, append(doubts, "screen_open"), s.blockPlain("screen_open"))
 	case (c.Kind == sessioncmd.Switch || c.Kind == sessioncmd.Picker) && s.sw.to != "":
 		return s.blockHook(c, line, diag.CodeCommandNotTaken, append(doubts, "switch_waiting"), s.blockPlain("switch_waiting"))
+	case len(doubts) > 0 && s.typedMatch(line) && (!s.sideView || s.sideEsc) && !s.held && !s.askOpen() && s.hookAsk == nil:
+		// The person typed this very line, and the hook reports it: act as on
+		// a command typed in full (#146 review, third round). Not while Left
+		// may have sent the keys to Claude's other view (no Esc since), nor
+		// over a hold or a question of the CLI's.
+		return s.actTyped(c)
 	case len(doubts) > 0:
 		return s.askHookCommand(c, line, doubts)
 	}
@@ -529,6 +477,27 @@ func (s *session) hookCommand(c sessioncmd.Command, line string) error {
 		// switch came from.
 		s.sw.hooked, s.sw.keyed, s.sw.doubtOK = true, false, true
 	}
+	return nil
+}
+
+// actTyped runs c, a command typedMatch shows the person typed and the hook
+// blocked: the CLI is back at its prompt with its composer empty
+// (promptBlocked), and c runs as one typed in full (keyed), so a switch still
+// passes every check of a switch before anything is typed; aggy typed no
+// Ctrl+U, so its one step needs the live fact that a blocked prompt leaves the
+// composer empty at this version (adapter.BlockedPromptEmpty). Before a turn
+// end a switch opens the list, as one caught from the keys does.
+func (s *session) actTyped(c sessioncmd.Command) error {
+	s.hookedName, s.hookedEnter = c.Name, s.enterAt
+	s.heldMiss = nil // the key catch's miss of this Enter was the hook's catch
+	s.promptBlocked()
+	s.log(diag.Rec{Event: diag.EvCommandCaught, Attrs: map[string]any{"command": c.Name, "via": "hook", "typed": true}})
+	if c.Kind == sessioncmd.Switch && !s.turnRan {
+		c = sessioncmd.Command{Kind: sessioncmd.Picker, Name: c.Name}
+	}
+	s.byteClear = adapter.BlockedPromptEmpty(s.o.Vendor, s.o.VendorVersion)
+	s.runCommand(c, true)
+	s.byteClear = false
 	return nil
 }
 
@@ -577,7 +546,6 @@ func (s *session) hookDoubts(line string) []string {
 func (s *session) promptBlocked() {
 	s.atPrompt = !s.held
 	s.inputSinceTurn = s.lineInput
-	s.relAt = time.Time{}
 	if s.sideEsc {
 		// The hook ran for a prompt from the composer: Claude's other view,
 		// which the Esc since Left may have closed, is closed.
@@ -680,7 +648,6 @@ func (s *session) askHookCommand(c sessioncmd.Command, line string, why []string
 		s.heldMiss = nil // the key catch's miss of this Enter: the prompt is blocked
 	} else {
 		s.flushMiss(true)
-		s.armRelease() // its wait starts once the question closes (restartRelease)
 	}
 	s.hookedName, s.hookedEnter = c.Name, s.enterAt
 	attrs := s.missAttrs(c.Name, why)
@@ -752,8 +719,6 @@ func (s *session) runHookAsk() {
 	}
 	if spelled {
 		s.promptBlocked()
-	} else {
-		s.restartRelease(a.enterAt)
 	}
 	s.log(diag.Rec{Event: diag.EvCommandCaught, Cause: a.rec, Attrs: map[string]any{"command": c.Name, "via": "hook", "asked": true, "spelled": spelled}})
 	if c.Kind == sessioncmd.Switch && !s.turnRan {
@@ -783,12 +748,10 @@ func (s *session) dropHookAsk(how string) {
 	}
 	s.log(diag.Rec{Event: diag.EvCommandAnswered, Cause: a.rec, Attrs: map[string]any{"command": a.c.Name, "answer": how}})
 	// Either way the prompt was blocked (#146 review): one the keys spelled
-	// leaves the CLI at its prompt, empty, as a yes does; another may be
-	// released once the CLI stays quiet. The key that dropped it comes after.
+	// leaves the CLI at its prompt, empty, as a yes does; another changes
+	// nothing. The key that dropped it comes after.
 	if a.spelled && s.enterAt.Equal(a.enterAt) && s.afterEnter == 0 {
 		s.promptBlocked()
-	} else {
-		s.restartRelease(a.enterAt)
 	}
 	if how != "closed" {
 		s.closePicker()

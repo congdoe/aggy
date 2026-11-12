@@ -22,10 +22,9 @@ type liveCheck struct {
 	// emptyKeys are keys that, pressed on an empty composer, leave it empty and
 	// change nothing a command typed next would see (EmptyComposerKey's names).
 	emptyKeys []string
-	// quietIdle: a running turn redraws the CLI's screen continuously (its
-	// spinner), so output that stays quiet after a blocked prompt means the
-	// block started no turn (QuietMeansIdle).
-	quietIdle bool
+	// blockedEmpty: after a prompt hook blocked a prompt, the composer was
+	// empty (BlockedPromptEmpty).
+	blockedEmpty bool
 }
 
 // liveChecks are the recorded checks, per CLI.
@@ -43,8 +42,6 @@ type liveCheck struct {
 // (its footer read "enter to create · esc to clear · ctrl+f to find"), and
 // the /switch and Enter typed next went to that view, with no prompt hook.
 // The supervisor keeps the line in doubt after it (sideView).
-// - a running turn redraws its spinner line continuously (seen in every live
-// run of 2026-11-11, a maintainer's observation, not a measured rate).
 // - after a UserPromptSubmit block the composer was empty (the supervisor's
 // promptBlocked takes it so on every CLI; TODO(T6975) for the others).
 //
@@ -54,7 +51,7 @@ type liveCheck struct {
 // kitty (CSI u) forms on an empty composer.
 // TODO(T6895): the same checks for Codex, Grok, OpenCode, and the keys above.
 var liveChecks = map[Vendor]liveCheck{
-	Claude: {versions: []string{"2.1.322"}, clear: true, exit: true, emptyKeys: []string{"down", "backspace", "right", "home", "end", "delete", "ctrl+u"}, quietIdle: true},
+	Claude: {versions: []string{"2.1.322"}, clear: true, exit: true, emptyKeys: []string{"down", "backspace", "right", "home", "end", "delete", "ctrl+u"}, blockedEmpty: true},
 }
 
 // checkAt returns v's recorded check when version is one it ran on.
@@ -82,13 +79,13 @@ func EmptyComposerKey(v Vendor, version, key string) bool {
 	return ok && slices.Contains(c.emptyKeys, key)
 }
 
-// QuietMeansIdle reports whether, on v at version, output that stays quiet
-// after aggy blocked a prompt means no turn started there: a live check shows
-// a running turn redrawing the screen continuously, and a blocked prompt
-// leaving the composer empty.
-func QuietMeansIdle(v Vendor, version string) bool {
+// BlockedPromptEmpty reports whether a live check shows v's composer empty
+// after its prompt hook blocked a prompt, at version: what lets a command the
+// person typed, which the hook blocked, switch in one step (the supervisor's
+// actTyped), as Ctrl+U's byte does for one caught from the keys.
+func BlockedPromptEmpty(v Vendor, version string) bool {
 	c, ok := checkAt(v, version)
-	return ok && c.quietIdle
+	return ok && c.blockedEmpty
 }
 
 // ComposerCheckOwed says, for a version of v outside the ones its live checks

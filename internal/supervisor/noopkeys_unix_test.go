@@ -36,7 +36,14 @@ func TestNoopKeyGuards(t *testing.T) {
 		{"Backspace after a ! line", "!ls", kBS, false},
 		{"Ctrl+U after a # line", "#note", kCtrlU, false},
 		{"Delete after a ! line", "!ls", "\x1b[3~", false},
-		{"Down after a ! line", "!ls", kDown, true},
+		{"Down after a ! line", "!ls", kDown, false}, // mode_line: no Ctrl+U or /exit typed
+		{"nothing after a # line", "#note", "", false},
+		{"SS3 Down", "", "\x1bOB", false},
+		{"Ctrl+H", "", "\x08", false},
+		{"Home as ESC [1~", "", "\x1b[1~", false},
+		{"Backspace as CSI u", "", "\x1b[127u", false},
+		{"Backspace as CSI u with an event", "", "\x1b[127;1:1u", false},
+		{"Ctrl+U as CSI u", "", "\x1b[117;5u", false},
 		{"Backspace after a message", "hi", kBS, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -48,7 +55,9 @@ func TestNoopKeyGuards(t *testing.T) {
 				s.hookEvent(hookEvent{name: "Stop", sessionID: childSID, chain: ownChain})
 			}
 			s.toChild = newByteQueue(maxQueued)
-			s.send([]byte(c.key))
+			if c.key != "" {
+				s.send([]byte(c.key))
+			}
 			typeLine(s, "/switch grok")
 			if got := caught(sentTo(s), "/switch grok"); got != c.caught {
 				t.Errorf("caught %v, want %v (doubts %v)", got, c.caught, s.lineDoubts())

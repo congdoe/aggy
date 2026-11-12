@@ -230,7 +230,7 @@ func Run(o Options) (Exit, error) {
 		// check polls a switch that waits for the turn end.
 		// It also polls a near-limit warning due at a turn end.
 		var check <-chan time.Time
-		if (s.sw.to != "" && !s.sw.typed || s.warnDue || s.toolsDue || s.limitDue != nil || !s.relAt.IsZero()) && !s.open {
+		if (s.sw.to != "" && !s.sw.typed || s.warnDue || s.toolsDue || s.limitDue != nil) && !s.open {
 			check = time.After(switchPoll)
 		}
 		select {
@@ -248,7 +248,6 @@ func Run(o Options) (Exit, error) {
 			}
 		case <-check:
 			s.flushMiss(false)
-			s.releaseBlock()
 			s.releaseQueued()
 			s.settleInterrupt()
 			if s.sw.to != "" && !s.sw.typed {
@@ -681,11 +680,17 @@ type session struct {
 	// may leave that mode (not checked live, TODO(T6895)).
 	enterHead byte
 	modeLine  bool
-	// relAt, when not zero, is when aggy blocked a prompt it ran nothing for
-	// and the keys did not spell, for the Enter at relEnter (armRelease);
-	// releaseBlock takes the CLI as back at its prompt once its output stays
-	// quiet.
-	relAt, relEnter time.Time
+	// enterTyped, enterLineTyped, enterAlone: what typedMatch reads of the
+	// last Enter: the printable keys since the Enter before it (typedLine,
+	// with any key before the first of them left out) were clean, and the
+	// Enter came alone in its read.
+	enterTyped, enterAlone bool
+	enterLineTyped         []byte
+	// typedLine follows the line being typed for typedMatch: typedOn once a
+	// printable key came, typedBad once a paste, edit, cursor key, or
+	// newline followed it.
+	typedLine         []byte
+	typedOn, typedBad bool
 	// blockNotes are when the bottom row last said aggy did not run a command
 	// a prompt hook reported (blockHook), at most hookAskMax a window.
 	blockNotes []time.Time
@@ -1213,7 +1218,7 @@ func (s *session) send(b []byte) {
 	}
 	s.noteMiss(b, typed)
 	s.noteSideView(typed)
-	if s.emptyNoop(typed) {
+	if s.emptyNoop(b) {
 		// T6982: a key a live check shows changing nothing on this CLI's empty
 		// composer (a Down in Claude): the line stays known empty, so a command
 		// typed next is still caught. At a dialog or mid-turn it may answer or
@@ -1245,6 +1250,7 @@ func (s *session) send(b []byte) {
 			s.queuedWait = false
 		}
 		s.enterAtPrompt = s.atPrompt && !s.askOpen() && (!s.sideView || s.sideEsc)
+		s.enterAlone = plainEnter(b)
 		s.atPrompt, s.toldDirty = false, false // an Enter may start a turn
 		s.escStop = time.Time{}
 	} else if isEsc(typed) && s.turnRan && !s.atPrompt && !s.held && !s.askOpen() {
@@ -1282,60 +1288,85 @@ func (s *session) send(b []byte) {
 func (s *session) noteSideView(typed []byte) {
 	switch {
 	case s.o.Vendor != adapter.Claude || s.inPaste:
-	case composerKey(typed) == "left" && s.compLen == 0 && len(s.cmdLine) == 0 && !s.cmdBad:
+	case leftKeyRE.Match(typed) && s.compLen == 0 && len(s.cmdLine) == 0 && !s.cmdBad:
 		s.sideView, s.sideEsc = true, false
 	case s.sideView && isEsc(typed):
 		s.sideEsc = true
 	}
 }
 
-// composerKeyRE matches an arrow, Home, or End in its legacy form, CSI or SS3,
-// the form the live checks sent; the final byte names it. The kitty forms
-// (CSI 1;... X) are not checked, so they are no key of these (#146 review).
-var composerKeyRE = regexp.MustCompile(`^\x1b(\[|O)([A-DHF])$`)
+// leftKeyRE matches Left in any form, modified or not, legacy or kitty: what
+// may open Claude's other view (noteSideView). Broad on purpose: a Left it
+// takes wrongly only keeps a line in doubt.
+var leftKeyRE = regexp.MustCompile(`^\x1b(\[|O)(1(;[0-9:]+)?)?D$`)
 
-// composerKey names the one key typed is, for adapter.EmptyComposerKey: down,
-// up, left, right, home, end, backspace, delete, or ctrl+u; "" for another.
-func composerKey(typed []byte) string {
-	switch string(typed) {
-	case "\x7f", "\x08":
-		return "backspace"
-	case "\x1b[3~":
-		return "delete"
-	case "\x15":
-		return "ctrl+u"
-	case "\x1b[1~", "\x1b[7~":
-		return "home"
-	case "\x1b[4~", "\x1b[8~":
-		return "end"
-	}
-	m := composerKeyRE.FindSubmatch(typed)
-	if m == nil {
-		return ""
-	}
-	return map[byte]string{'A': "up", 'B': "down", 'C': "right", 'D': "left", 'H': "home", 'F': "end"}[m[2][0]]
+// noopKeys are the exact bytes of the keys the live checks sent, by the name
+// adapter.EmptyComposerKey knows them by (#146 review, third round): only
+// those bytes are what was checked. Another form of the same key (SS3, kitty's
+// CSI u, a modified one, Ctrl+H for Backspace, ESC[1~ for Home) was not, so it
+// counts as input. Up and Left are not here: neither is a no-op.
+var noopKeys = map[string]string{
+	"\x1b[B":  "down",
+	"\x1b[C":  "right",
+	"\x1b[H":  "home",
+	"\x1b[F":  "end",
+	"\x1b[3~": "delete",
+	"\x7f":    "backspace",
+	"\x15":    "ctrl+u",
 }
 
-// emptyNoop reports whether typed is one key that, on this CLI's composer when
-// aggy knows it empty (no line, nothing in doubt), a live check shows changing
-// nothing (adapter.EmptyComposerKey, at the probed version). Up is never one:
-// it recalls history. After any text the cursor keys matter, so the line is
-// not empty then.
-func (s *session) emptyNoop(typed []byte) bool {
-	k := composerKey(typed)
+// emptyNoop reports whether raw, the bytes as the terminal sent them, is one
+// key that, on this CLI's composer when aggy knows it empty (no line, nothing
+// in doubt), a live check shows changing nothing (adapter.EmptyComposerKey, at
+// the probed version), in the very form the check sent (noopKeys). After any
+// text the cursor keys matter, so the line is not empty then.
+func (s *session) emptyNoop(raw []byte) bool {
+	k := noopKeys[string(raw)]
 	if k == "" || s.inPaste || s.draftPaste || !adapter.EmptyComposerKey(s.o.Vendor, s.o.VendorVersion, k) {
-		return false
-	}
-	if s.modeLine && (k == "backspace" || k == "delete" || k == "ctrl+u") {
-		// After a ! or # line Claude may still be in that mode, which these
-		// keys may leave on an empty composer. TODO(T6895): a live check.
 		return false
 	}
 	d := s.lineDoubts()
 	// No popup check (#146 review): a popup comes from a line's text, so with no
 	// line it is gone, or it left its Enter in doubt (len_unknown) or the line
-	// edited (not_plain_keys), each of which lineDoubts names.
+	// edited (not_plain_keys), each of which lineDoubts names. After a ! or #
+	// line Claude may still be in that mode, which lineDoubts names (mode_line):
+	// these keys may leave it on an empty composer. TODO(T6895): a live check.
 	return len(d) == 1 && d[0] == "no_line"
+}
+
+// typedByte follows one byte that is not an escape sequence for typedMatch:
+// a printable ASCII key adds to the line; once one came, any other byte (an
+// edit, a control key, a newline) spoils it; before it, a non-printing key is
+// left out, as the hook's line shows what it left. The Enter is compose's.
+func (s *session) typedByte(c byte) {
+	switch {
+	case c == '\r':
+	case s.inPaste || c >= 0x80:
+		s.typedBad = true // pasted, or not ASCII: aggy does not spell it
+	case c >= 0x20 && c < 0x7f:
+		s.typedOn = true
+		if len(s.typedLine) < maxCmdLine {
+			s.typedLine = append(s.typedLine, c)
+		} else {
+			s.typedBad = true
+		}
+	case s.typedOn:
+		s.typedBad = true
+	}
+}
+
+// typedSeq follows one escape sequence for typedMatch: a paste spoils the
+// line; so does any key sequence once a printable key came (a cursor key may
+// move into the line, or recall history).
+func (s *session) typedSeq(seq []byte) {
+	if s.typedOn || bytes.Contains(seq, pasteStart) {
+		s.typedBad = true
+	}
+}
+
+// resetTyped starts typedMatch's line afresh.
+func (s *session) resetTyped() {
+	s.typedLine, s.typedOn, s.typedBad = s.typedLine[:0], false, false
 }
 
 // followKeys follows keys that reach the composer, past any dialog.
@@ -1375,6 +1406,7 @@ func (s *session) followKeys(typed []byte) {
 	before := s.compLen
 	for i := 0; i < len(typed); {
 		if typed[i] != esc || s.inPaste {
+			s.typedByte(typed[i])
 			s.compose(typed[i])
 			i++
 			continue
@@ -1383,6 +1415,7 @@ func (s *session) followKeys(typed []byte) {
 		// composer's length nor in the line (#146 review: a Down's three bytes
 		// left a / typed next not at the start of the composer).
 		n := seqLen(typed[i:])
+		s.typedSeq(typed[i : i+n])
 		at, line := s.compLen, len(s.cmdLine)
 		for _, c := range typed[i : i+n] {
 			s.compose(c)
@@ -1577,7 +1610,7 @@ func (s *session) followDraft(b []byte) (inert bool) {
 // person can see the screen and aggy cannot, so this does not block: they are
 // told, and confirm (offerSwitch).
 func (s *session) doubt() bool {
-	return !s.knownText() && (!s.lenKnown || s.popup || s.cleared || s.escEmpty || s.escDoubt || s.draftBlind || s.sideView)
+	return !s.knownText() && (!s.lenKnown || s.popup || s.cleared || s.escEmpty || s.escDoubt || s.draftBlind || s.sideView || s.modeLine)
 }
 
 func (s *session) updateDirty() {
@@ -1801,6 +1834,13 @@ func (s *session) compose(c byte) {
 		// history or move into it) leaves it unspelled.
 		s.enterSlash = s.slashOnly && !s.inPaste && prev != esc && prev != '\\' && len(s.lineSeqs) == 0
 		s.enterLine = append(s.enterLine[:0], s.cmdLine...)
+		if prev == esc || prev == '\\' || s.inPaste {
+			s.typedBad = true // a newline in the composer: the line goes on
+		} else {
+			s.enterTyped = s.typedOn && !s.typedBad
+			s.enterLineTyped = append(s.enterLineTyped[:0], s.typedLine...)
+			s.resetTyped()
+		}
 		s.enterHead = 0
 		if s.headSeen {
 			s.enterHead = s.cmdHead

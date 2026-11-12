@@ -198,15 +198,14 @@ func TestDownThenSwitchCaught(t *testing.T) {
 	}
 }
 
-// TestStrayKeyBlocked (T6982, the coordinator's live run on Claude 2.1.322): a
+// TestStrayKeyTyped (T6982, the coordinator's live run on Claude 2.1.322): a
 // stray key with no live check (Up) at the prompt, then /switch and Enter. The
 // key catch loses the line, and the prompt hook reports /switch: it must never
-// reach the model. aggy runs nothing (a turn may be running, as far as the
-// keys say), blocks the prompt with a reason, and says on its bottom row why
-// and the keyboard's way. A message after it runs a turn whose end puts the
-// tracker back on its feet, and /switch codex typed in full is then caught from
-// the keys and switches in one step.
-func TestStrayKeyBlocked(t *testing.T) {
+// reach the model. The person typed that very line (typedMatch, #146 review,
+// third round), so aggy blocks the prompt and acts at once: the switch list
+// opens. A message after it runs a turn, and /switch codex typed in full is
+// then caught from the keys and switches in one step.
+func TestStrayKeyTyped(t *testing.T) {
 	w := newWorld(t)
 	setup := exec.Command(buildAggy(t), "setup", "--yes")
 	setup.Dir = w.cwd
@@ -239,14 +238,16 @@ func TestStrayKeyBlocked(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	s.typeSlowly("/switch")
 	s.send([]byte("\r"))
-	s.waitWithin([]byte("aggy: did not run /switch"), offerTimeout)
+	s.waitWithin([]byte("aggy: switch vendor"), offerTimeout)
 	b, err := os.ReadFile(answers)
-	if err != nil || !strings.Contains(string(b), `"block"`) || !strings.Contains(string(b), `opens the switch list`) {
-		t.Fatalf("the hook's answer %q (%v): want a block saying the keyboard's way", b, err)
+	if err != nil || !strings.Contains(string(b), `"block"`) {
+		t.Fatalf("the hook's answer %q (%v): want a block", b, err)
 	}
 	if m := lineModes(t, w); m["prompt-blocked"] != 1 || m["turn"] != 0 {
 		t.Fatalf("lines %v: want the /switch blocked before the model", m)
 	}
+	s.send([]byte("\x1b")) // the list's Esc
+	time.Sleep(300 * time.Millisecond)
 
 	s.typeSlowly("fix the bug")
 	s.send([]byte("\r"))
@@ -477,20 +478,46 @@ func TestHookMenuPickTab(t *testing.T) {
 	}
 }
 
-// TestHookUnvouchedAsks (T6982, the owner's second line in Apple Terminal): a
-// Backspace on the empty prompt, then /switch grok and Enter. The Backspace
-// spoils the line for the key catch, which passes it, and before T6982 the
-// prompt hook's /switch grok was refused and went to the model. Now the hook
-// blocks the prompt (its reason says aggy asked), aggy asks on its status
-// line, and the switch key, the only yes, runs the switch as one typed in
-// full; aggy typed no Ctrl+U for it, so the switch asks on the status line
-// before /exit is typed.
-func TestHookUnvouchedAsks(t *testing.T) {
+// TestHookTypedActs (T6982, the owner's second line in Apple Terminal): a
+// Backspace on the empty prompt, then /switch grok typed and Enter. The
+// Backspace spoils the line for the key catch at a version with no live check
+// of it, and before T6982 the prompt hook's /switch grok went to the model. Now
+// the hook blocks the prompt, and since the keys typed exactly that line
+// (typedMatch, #146 review, third round) aggy switches as on one typed in
+// full; with no live fact for a blocked prompt at this version, the switch
+// asks on the status line before /exit is typed.
+func TestHookTypedActs(t *testing.T) {
 	w, s, answers := promptHookWorld(t, "/switch grok", "")
 	s.send([]byte("\x7f"))
 	time.Sleep(50 * time.Millisecond)
 	s.typeSlowly("/switch grok")
 	s.send([]byte("\r"))
+	s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
+	if b := hookAnswer(t, answers); !strings.Contains(b, `"block"`) || strings.Contains(b, "asked about") {
+		t.Fatalf("the hook let the prompt through, or asked: %q", b)
+	}
+	s.confirmPastGuard(time.Now())
+	w.waitRuns(t, s, 2)
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	if runs := interactiveRuns(t, w); len(runs) != 2 || runs[1].Vendor != "grok" {
+		t.Fatalf("interactive runs = %+v, want claude then grok", runs)
+	}
+}
+
+// TestHookUnvouchedAsks (T6982): a Backspace on the empty prompt, then
+// /switch grok with its Enter in the same read (no typedMatch: a person's
+// Enter comes alone). The hook blocks the prompt (its reason says aggy
+// asked), aggy asks on its status line, and the switch key, the only yes,
+// runs the switch as one typed in full; aggy typed no Ctrl+U for it, so the
+// switch asks on the status line before /exit is typed.
+func TestHookUnvouchedAsks(t *testing.T) {
+	w, s, answers := promptHookWorld(t, "/switch grok", "")
+	s.send([]byte("\x7f"))
+	time.Sleep(50 * time.Millisecond)
+	s.send([]byte("/switch grok\r"))
 	s.waitWithin([]byte("/switch grok from claude's prompt? Ctrl+"), offerTimeout)
 	if b := hookAnswer(t, answers); !strings.Contains(b, `"block"`) || !strings.Contains(b, "asked about") {
 		t.Fatalf("the hook let the prompt through, or gave the wrong reason: %q", b)

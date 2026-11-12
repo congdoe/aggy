@@ -626,8 +626,12 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// T6982: the live checks of the composer hold at the versions they ran on;
 	// on another, a switch asks on the status line, and the notice says a
 	// re-check is owed, as aggy doctor does.
-	if w := composerCheckNote(ctx, s, v, version); w != "" && !t.Direct {
-		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
+	composerTold := func() {}
+	if !t.Direct {
+		var w string
+		if w, composerTold = composerCheckNote(ctx, s, v, version); w != "" {
+			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
+		}
 	}
 	// Antigravity (T6957): its trust tick, aggy's hooks entry in the folder's
 	// .agents/hooks.json, the --settings file, and the plan its hook reads,
@@ -792,6 +796,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// Queued, like the rest of the session's records, so the launch
 	// never waits on the disk (G67-6).
 	cause := q.Log(launched)
+	composerTold() // the note was shown, and the launch goes ahead
 	// The CLI owns the terminal from here: a warning about the log waits
 	// until it is back (G67-5).
 	dlog.Hold()
@@ -1356,18 +1361,21 @@ const composerCheckVersion = "composer_check_owed"
 
 // composerCheckNote is adapter.ComposerCheckOwed for a launch, said once for
 // each version: every launch, switch, and tool restart said it before. aggy
-// doctor still reports it each time (checkup.CodeLiveCheckOwed). With no index
-// it is said each time.
-func composerCheckNote(ctx context.Context, s *store.Store, v adapter.Vendor, version string) string {
+// doctor still reports it each time (checkup.CodeLiveCheckOwed). told records
+// that it was said; the caller calls it only once the note was shown and the
+// launch goes ahead (#146 review). With no index it is said each time.
+func composerCheckNote(ctx context.Context, s *store.Store, v adapter.Vendor, version string) (note string, told func()) {
+	told = func() {}
 	w := adapter.ComposerCheckOwed(v, version)
 	if w == "" || s == nil {
-		return w
+		return w, told
 	}
 	if _, err := s.GetVersionCheck(ctx, string(v), version, composerCheckVersion, ""); err == nil {
-		return ""
+		return "", told
 	}
-	_ = s.PutVersionCheck(ctx, store.VersionCheck{Vendor: string(v), Version: version, Check: composerCheckVersion, Passed: true, Reason: "told", At: time.Now()})
-	return w + "; aggy says this once for each version"
+	return w + "; aggy says this once for each version", func() {
+		_ = s.PutVersionCheck(ctx, store.VersionCheck{Vendor: string(v), Version: version, Check: composerCheckVersion, Passed: true, Reason: "told", At: time.Now()})
+	}
 }
 
 // newUUID returns a random (version 4) UUID.
