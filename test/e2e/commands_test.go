@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/congdoe/aggy/internal/fakecli"
 )
 
 // checkedClaude is the Claude Code version the live checks of its composer were
@@ -51,6 +53,19 @@ func claudeVersion(t *testing.T, w *world, version string) {
 	if err := os.WriteFile(filepath.Join(w.bin, "claude.version"), []byte(version+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// lineModes counts the fake CLI's lines by how they ended: "turn" reached the
+// model, "prompt-blocked" a UserPromptSubmit hook blocked.
+func lineModes(t *testing.T, w *world) map[string]int {
+	t.Helper()
+	m := map[string]int{}
+	for _, r := range fakecli.Records(t, w.record) {
+		if r.Mode == "turn" || r.Mode == "prompt-blocked" {
+			m[r.Mode]++
+		}
+	}
+	return m
 }
 
 // keyedOffer fails the test unless the switch was offered keyed, in one step
@@ -183,6 +198,80 @@ func TestDownThenSwitchCaught(t *testing.T) {
 	}
 }
 
+// TestStrayKeyBlocked (T6982, the coordinator's live run on Claude 2.1.322): a
+// stray key with no live check (Up) at the prompt, then /switch and Enter. The
+// key catch loses the line, and the prompt hook reports /switch: it must never
+// reach the model. aggy runs nothing (a turn may be running, as far as the
+// keys say), blocks the prompt with a reason, and says on its bottom row why
+// and the keyboard's way. A message after it runs a turn whose end puts the
+// tracker back on its feet, and /switch codex typed in full is then caught from
+// the keys and switches in one step.
+func TestStrayKeyBlocked(t *testing.T) {
+	w := newWorld(t)
+	setup := exec.Command(buildAggy(t), "setup", "--yes")
+	setup.Dir = w.cwd
+	setup.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
+	if out, err := setup.CombinedOutput(); err != nil {
+		t.Fatalf("aggy setup: %v\n%s", err, out)
+	}
+	answers := filepath.Join(w.home, "answers.log")
+	// A turn takes longer than the supervisor's settleTurnGap, as a real one
+	// does, so its Stop settles the composer.
+	script := `[ "$AGGY_VENDOR" = claude ] || exit 0; case "$1" in ` +
+		`Stop) sleep 1.2; exec ` + aggySh(t) + ` hook --vendor claude Stop ;; ` +
+		`UserPromptSubmit) ` + aggySh(t) + ` hook --vendor claude UserPromptSubmit | tee -a '` + answers + `' ;; esac`
+	sc := map[string]any{
+		"stdout":       "READY>",
+		"hook_command": []string{"/bin/sh", "-c", script, "sh"},
+		"hooks": []map[string]any{
+			{"event": "UserPromptSubmit", "payload": map[string]any{"session_id": "{session_id}", "prompt": "{prompt}"}},
+			{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}},
+		},
+		"session_files": startedFiles(),
+	}
+	claudeVersion(t, w, checkedClaude)
+	s := w.start(t, sc, "run", "claude")
+	s.waitWithin([]byte("READY>"), offerTimeout)
+	waitTurnEnds(t, w, 1)
+	time.Sleep(1500 * time.Millisecond) // past the launch's quiet gap
+
+	s.send([]byte("\x1b[A"))
+	time.Sleep(50 * time.Millisecond)
+	s.typeSlowly("/switch")
+	s.send([]byte("\r"))
+	s.waitWithin([]byte("aggy: did not run /switch"), offerTimeout)
+	b, err := os.ReadFile(answers)
+	if err != nil || !strings.Contains(string(b), `"block"`) || !strings.Contains(string(b), `opens the switch list`) {
+		t.Fatalf("the hook's answer %q (%v): want a block saying the keyboard's way", b, err)
+	}
+	if m := lineModes(t, w); m["prompt-blocked"] != 1 || m["turn"] != 0 {
+		t.Fatalf("lines %v: want the /switch blocked before the model", m)
+	}
+
+	s.typeSlowly("fix the bug")
+	s.send([]byte("\r"))
+	waitTurnEnds(t, w, 2)
+	s.typeSlowly("/switch codex")
+	s.waitWithin([]byte("/switch codex"), offerTimeout)
+	s.send([]byte("\r"))
+	w.waitRuns(t, s, 2)
+	keyedOffer(t, w)
+	if m := lineModes(t, w); m["prompt-blocked"] != 1 || m["turn"] != 1 {
+		t.Errorf("lines %v: want one blocked and one turn", m)
+	}
+	code, out := w.aggyCode(t, "diag", "export", "--jsonl", "--event", "supervisor.command.refused")
+	if code != 0 || strings.TrimSpace(out) != "" {
+		t.Errorf("a hook's command was refused and passed: exit %d %q", code, out)
+	}
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d", code)
+	}
+	if runs := interactiveRuns(t, w); len(runs) != 2 || runs[1].Vendor != "codex" {
+		t.Fatalf("interactive runs = %+v, want claude then codex", runs)
+	}
+}
+
 // TestTypedCommandNotCaught (T6908): a pasted command, and one the tracker
 // cannot see whole (a cursor key in it), go to the CLI as typed: a turn, and
 // no switch.
@@ -290,15 +379,17 @@ func promptHookWorld(t *testing.T, prompt, version string) (*world, *session, st
 	mark := filepath.Join(w.home, "launched")
 	answers := filepath.Join(w.home, "answers.log")
 	script := `[ "$AGGY_VENDOR" = claude ] || exit 0; case "$1" in ` +
-		`Stop) [ -f '` + mark + `' ] && exit 0; exec ` + aggySh(t) + ` hook --vendor claude Stop ;; ` +
+		`Stop) [ -f '` + mark + `.stop' ] && exit 0; touch '` + mark + `.stop'; exec ` + aggySh(t) + ` hook --vendor claude Stop ;; ` +
 		`UserPromptSubmit) [ -f '` + mark + `' ] || { touch '` + mark + `'; exit 0; }; ` +
-		aggySh(t) + ` hook --vendor claude UserPromptSubmit > '` + answers + `.tmp'; mv '` + answers + `.tmp' '` + answers + `' ;; esac`
+		aggySh(t) + ` hook --vendor claude UserPromptSubmit | tee '` + answers + `.tmp'; mv '` + answers + `.tmp' '` + answers + `' ;; esac`
 	sc := map[string]any{
 		"stdout":       "READY>",
 		"hook_command": []string{"/bin/sh", "-c", script, "sh"},
+		// The fake stops a line whose UserPromptSubmit printed a block before
+		// the hooks after it (a Stop), as Claude does (T6982).
 		"hooks": []map[string]any{
-			{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}},
 			{"event": "UserPromptSubmit", "payload": map[string]any{"session_id": "{session_id}", "prompt": prompt}},
+			{"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}},
 		},
 		"session_files": startedFiles(),
 	}
@@ -338,8 +429,9 @@ func hookAnswer(t *testing.T, answers string) string {
 // from the UserPromptSubmit hook, as the typed prefix and the arguments match
 // the reported command; it asks on the status line as every hook's switch.
 // The same keys with another vendor reported are not the person's, and spell
-// another line, from which a turn may be running: aggy refuses it, asks
-// nothing, and the prompt goes on to the CLI (#146 review).
+// another line, from which a turn may be running: aggy runs nothing and asks
+// nothing, but the prompt is blocked all the same, never reaching the model,
+// and the bottom row says why and the keyboard's way (T6982).
 func TestHookMenuPickTab(t *testing.T) {
 	for _, c := range []struct {
 		name, prompt string
@@ -360,12 +452,15 @@ func TestHookMenuPickTab(t *testing.T) {
 				s.confirmPastGuard(time.Now())
 				w.waitRuns(t, s, 2)
 			} else {
-				if b := hookAnswer(t, answers); strings.Contains(b, `"block"`) {
-					t.Fatalf("the hook blocked a prompt the keys do not vouch for: %q", b)
+				if b := hookAnswer(t, answers); !strings.Contains(b, `"block"`) || !strings.Contains(b, "did not run /switch") {
+					t.Fatalf("the hook let a command aggy did not run through to the model: %q", b)
 				}
-				time.Sleep(500 * time.Millisecond)
+				s.waitWithin([]byte("aggy: did not run /switch"), offerTimeout)
 				if strings.Contains(s.screen(), "from claude's prompt?") {
 					t.Fatalf("aggy asked about a refused command: %q", s.screen())
+				}
+				if m := lineModes(t, w); m["prompt-blocked"] != 1 || m["turn"] != 0 {
+					t.Fatalf("lines %v: want the one prompt blocked before the model", m)
 				}
 				if runs := interactiveRuns(t, w); len(runs) != 1 {
 					t.Fatalf("interactive runs = %+v, want claude alone", runs)

@@ -32,17 +32,23 @@ type liveCheck struct {
 // and with /switch or /switch grok typed while the slash menu was open.
 // - /exit typed into the empty composer exits 0.
 // - Down on the empty composer, then /switch and Enter: the prompt hook
-// reported exactly /switch.
+// reported exactly /switch. The same after Backspace, Right, Home, End,
+// Delete (CSI 3~), or Ctrl+U (one session; between keys zz was typed and
+// cleared with Ctrl+U, and an Esc was pressed).
+// - Left on the empty composer is not harmless: it opened another view
+// (its footer read "enter to create · esc to clear · ctrl+f to find"), and
+// the /switch and Enter typed next went to that view, with no prompt hook.
+// The supervisor keeps the line in doubt after it (sideView).
 // - after a UserPromptSubmit block the composer was empty (the supervisor's
 // promptBlocked takes it so on every CLI; TODO(T6975) for the others).
 //
 // Not checked: Ctrl+U as CSI u, a multi-line composer, Ctrl+U with another
 // popup open (the @ file menu, history search), during a running turn,
-// fullscreen mode, Apple Terminal; Backspace, Left, Right, Home, End,
-// Delete, and Ctrl+U on an empty composer.
+// fullscreen mode, Apple Terminal; Up (it recalls history) and the keys'
+// kitty (CSI u) forms on an empty composer.
 // TODO(T6895): the same checks for Codex, Grok, OpenCode, and the keys above.
 var liveChecks = map[Vendor]liveCheck{
-	Claude: {versions: []string{"2.1.322"}, clear: true, exit: true, emptyKeys: []string{"down"}},
+	Claude: {versions: []string{"2.1.322"}, clear: true, exit: true, emptyKeys: []string{"down", "backspace", "right", "home", "end", "delete", "ctrl+u"}},
 }
 
 // checkAt returns v's recorded check when version is one it ran on.

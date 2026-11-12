@@ -34,13 +34,23 @@ import (
 // (read 2026-11-09, not seen live). JSON, not exit 2: aggy's hook command ends
 // in || true, which turns every exit into 0 (hook.Command).
 //
+// The supervisor blocks every one of aggy's commands it is handed (T6982): it
+// takes it, asks about it on its status line, or runs nothing (RespBlocked,
+// whose reason says why and the keyboard's way). A keyboard-only command is
+// handed over too, and blocked. Only a command turned off in the person's
+// config, a supervisor that cannot be reached, or a refusal it sends lets the
+// prompt through.
+//
 // Anything else prints nothing and exits 0, so the prompt goes on: a line that
 // is no command, one with a model turn (/borrow with a task, /aggy with a
-// question), a keyboard-only one, and any command outside aggy, where the
-// skill tells the model to say to start the session with aggy. On Grok a hook
+// question), and any command outside aggy, where the skill tells the model to
+// say to start the session with aggy. On Grok a hook
 // that times out lets the prompt through too (10-hooks.md: "a timed-out or
 // crashed hook fails open"). Nothing of the prompt is forwarded but a parsed
 // command's own line.
+// maxBlockReason bounds the supervisor's reason aggy hook shows for a block.
+const maxBlockReason = 400
+
 func promptSubmit(v adapter.Vendor, event string, in io.Reader, getenv func(string) string, stdout, stderr io.Writer) int {
 	if !hook.Forward(v, getenv) {
 		drain(in)
@@ -61,7 +71,7 @@ func promptSubmit(v adapter.Vendor, event string, in io.Reader, getenv func(stri
 	}
 	line := strings.TrimRight(p.Prompt, " \r\n")
 	c, ok := sessioncmd.Parse(v, line)
-	if !ok || c.KeyboardOnly {
+	if !ok {
 		return 0
 	}
 	dir, err := home.Dir()
@@ -90,9 +100,17 @@ func promptSubmit(v adapter.Vendor, event string, in io.Reader, getenv func(stri
 		return 0
 	}
 	reason := fmt.Sprintf("aggy took %s%s: see aggy's screen (Esc returns). It spent no model turn.", sessioncmd.Prefix(v), c.Name)
-	if resp.Type == supervisor.RespAsked {
+	switch resp.Type {
+	case supervisor.RespAsked:
 		// The supervisor took nothing yet: it asks on its status line (T6982).
 		reason = fmt.Sprintf("aggy asked about %s%s on its status line; it spent no model turn.", sessioncmd.Prefix(v), c.Name)
+	case supervisor.RespBlocked:
+		// It ran nothing, and the prompt must not reach the model either (T6982).
+		why := termsafe.Line(resp.Reason)
+		if why == "" || len(why) > maxBlockReason {
+			why = fmt.Sprintf("aggy did not run %s%s.", sessioncmd.Prefix(v), c.Name)
+		}
+		reason = why + " It spent no model turn."
 	}
 	out := map[string]any{"decision": "block", "reason": reason}
 	if v == adapter.Claude {

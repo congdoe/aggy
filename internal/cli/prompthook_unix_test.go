@@ -63,7 +63,8 @@ func TestPromptSubmitBlocks(t *testing.T) {
 		{"grok's inbox", "grok", `{"prompt":"/inbox"}`, env("grok"), "grok /inbox", true},
 		{"a question for the helper", "claude", `{"prompt":"/aggy why is it slow"}`, env("claude"), "", false},
 		{"a borrow with a task", "claude", `{"prompt":"/borrow research what changed"}`, env("claude"), "", false},
-		{"keyboard only", "claude", `{"prompt":"/aggy accept 9f2"}`, env("claude"), "", false},
+		// T6982: handed over too; the supervisor blocks it with a note.
+		{"keyboard only", "claude", `{"prompt":"/aggy accept 9f2"}`, env("claude"), "claude /aggy accept 9f2", true},
 		{"a message", "claude", `{"prompt":"hello"}`, env("claude"), "", false},
 		{"outside aggy", "claude", `{"prompt":"/switch grok"}`, none, "", false},
 		{"another vendor on screen", "claude", `{"prompt":"/switch grok"}`, env("grok"), "", false},

@@ -618,6 +618,7 @@ type fake struct {
 	stdin      string
 	prompt     string // grok's headless prompt
 	terminal   bool
+	line       string // the line an interactive turn got, for {prompt}
 }
 
 func (f *fake) has(flag string) bool { _, ok := f.flags[flag]; return ok }
@@ -1034,11 +1035,18 @@ func (f *fake) expand(s string) string {
 		"{cwd}", cwd,
 		"{home}", os.Getenv("HOME"),
 		"{vendor_home}", vendorHome(f.vendor),
+		"{prompt}", jsonText(f.line),
 	}
 	if f.vendor == "grok" {
 		pairs = append(pairs, "{session_dir}", f.grokSessionDir())
 	}
 	return strings.NewReplacer(pairs...).Replace(s)
+}
+
+// jsonText is s as the inside of a JSON string.
+func jsonText(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b[1 : len(b)-1])
 }
 
 func (f *fake) expandJSON(raw json.RawMessage) string {
@@ -1367,6 +1375,17 @@ func rawEcho(banner string) error {
 // far as term_queries can ask.
 var termReply = regexp.MustCompile(`\x1b(\[[0-9;?>$]*[IORcnty]|\[<[0-9;]*[Mm]|\[M...|[\]P_][^\x07\x1b]*(\x07|\x1b\\))`)
 
+// recordLine records how a line typed at a terminal ended (turn); a run whose
+// stdin is a pipe records none, so a print-mode run keeps its one record.
+func (f *fake) recordLine(mode string) {
+	if f.terminal {
+		f.record(mode, nil)
+	}
+}
+
+// keySeq matches a cursor or editing key's escape sequence.
+var keySeq = regexp.MustCompile(`\x1b(\[[0-9;]*[A-Za-z~]|O[A-Za-z])`)
+
 // waitForExit reads lines until "/exit" or EOF, like a session waiting at
 // its prompt. Every other non-empty line is a turn, which ends by calling
 // the hooks again.
@@ -1393,11 +1412,53 @@ func (f *fake) waitForExit() {
 				fmt.Fprintf(os.Stderr, "hook: %v\n", err)
 			}
 		default:
-			if err := f.runHooks(); err != nil {
+			// A cursor key types no text into the composer.
+			f.line = strings.TrimSpace(keySeq.ReplaceAllString(termReply.ReplaceAllString(sc.Text(), ""), ""))
+			if err := f.turn(); err != nil {
 				fmt.Fprintf(os.Stderr, "hook: %v\n", err)
 			}
 		}
 	}
+}
+
+// turn is one line at the prompt: its hooks in order, as runHooks runs them,
+// except that a UserPromptSubmit hook whose stdout is a JSON block decision
+// stops the prompt before the model, as Claude's hooks.md and Grok's
+// 10-hooks.md say: the hooks after it (a Stop) do not run, and the line is
+// recorded as mode "prompt-blocked"; otherwise as mode "turn".
+func (f *fake) turn() error {
+	if len(f.sc.Hooks) == 0 {
+		f.recordLine("turn")
+		return f.runHooks()
+	}
+	if len(f.sc.HookCommand) == 0 {
+		return errors.New("hooks listed but no hook_command")
+	}
+	for _, h := range f.sc.Hooks {
+		if h.Event != "UserPromptSubmit" {
+			if err := f.callHooks([]Hook{h}); err != nil {
+				return err
+			}
+			continue
+		}
+		args := append(append([]string{}, f.sc.HookCommand[1:]...), h.Event)
+		cmd := exec.Command(f.sc.HookCommand[0], args...)
+		cmd.Stdin = strings.NewReader(f.expandJSON(h.Payload))
+		var out bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("%s: %w", h.Event, err)
+		}
+		var d struct {
+			Decision string `json:"decision"`
+		}
+		if json.Unmarshal(bytes.TrimSpace(out.Bytes()), &d) == nil && d.Decision == "block" {
+			f.recordLine("prompt-blocked")
+			return nil
+		}
+	}
+	f.recordLine("turn")
+	return nil
 }
 
 func isTerminal(f *os.File) bool {

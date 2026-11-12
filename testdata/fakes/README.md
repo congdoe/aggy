@@ -60,6 +60,7 @@ A JSON object. Every field is optional, and unknown fields are an error.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
+| (hook payloads) | | `{prompt}` in a hook's payload expands to the line an interactive turn got, JSON-escaped. After each line typed at a terminal the fake records mode `turn`, or `prompt-blocked` when a `UserPromptSubmit` hook printed a JSON `{"decision":"block"}`, which stops the line before the model: the hooks after it, such as `Stop`, do not run (Claude `hooks.md`, Grok `10-hooks.md`). |
 | `version` | string | Version for `--version`. Without it, the text of a file `<binary>.version` beside the fake (aggy's launch probe runs `--version` with no scenario, so an end-to-end test sets one vendor's version so), else the defaults: claude 2.1.311, codex 0.164.0, grok 1.0.70. |
 | `version_output` | string | Exact `--version` text, replacing the default `<vendor> <version> (fake)` (Grok: `grok <version> (fakehash) [stable]`, the real format). |
 | `help` | string | Exact `--help` text, replacing the generated list of honored flags. |

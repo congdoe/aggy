@@ -19,7 +19,8 @@ func missRecs(t *testing.T, recs []store.DiagRecord) []map[string]any {
 	t.Helper()
 	var out []map[string]any
 	for _, r := range recs {
-		if r.Event != diag.EvCommandPassed.String() {
+		// T6982: a hook's command is blocked, not passed, and recorded so.
+		if r.Event != diag.EvCommandPassed.String() && r.Event != diag.EvCommandBlocked.String() {
 			continue
 		}
 		var a map[string]any
