@@ -4,6 +4,7 @@ package supervisor
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -21,18 +22,19 @@ func TestPromptCommandTaken(t *testing.T) {
 		vendor  string
 		command string
 		code    diag.Code // zero: taken
+		blocked bool      // T6982: run nothing, but the prompt is blocked
 	}{
-		{adapter.Claude, "claude", "/switch grok", diag.Code{}},
-		{adapter.Grok, "grok", "/inbox", diag.Code{}},
-		{adapter.Claude, "claude", "/aggy", diag.Code{}},
-		{adapter.Claude, "claude", "/aggy accept 9f2", diag.CodeCommandKeyboard},
-		{adapter.Claude, "claude", "/aggy tool on rtk", diag.CodeCommandKeyboard},
-		{adapter.Claude, "claude", "/aggy trust", diag.CodeCommandKeyboard},
-		{adapter.Claude, "claude", "/borrow research x", diag.CodeCommandNotTaken},
-		{adapter.Claude, "claude", "hello", diag.CodeCommandNotTaken},
-		{adapter.Claude, "grok", "/switch codex", diag.CodeWrongVendor},
-		{adapter.Codex, "codex", "$switch grok", diag.CodeCommandNotTaken},
-		{adapter.OpenCode, "opencode", "/switch grok", diag.CodeCommandNotTaken},
+		{adapter.Claude, "claude", "/switch grok", diag.Code{}, false},
+		{adapter.Grok, "grok", "/inbox", diag.Code{}, false},
+		{adapter.Claude, "claude", "/aggy", diag.Code{}, false},
+		{adapter.Claude, "claude", "/aggy accept 9f2", diag.CodeCommandKeyboard, true},
+		{adapter.Claude, "claude", "/aggy tool on rtk", diag.CodeCommandKeyboard, true},
+		{adapter.Claude, "claude", "/aggy trust", diag.CodeCommandKeyboard, true},
+		{adapter.Claude, "claude", "/borrow research x", diag.CodeCommandNotTaken, false},
+		{adapter.Claude, "claude", "hello", diag.CodeCommandNotTaken, false},
+		{adapter.Claude, "grok", "/switch codex", diag.CodeWrongVendor, false},
+		{adapter.Codex, "codex", "$switch grok", diag.CodeCommandNotTaken, false},
+		{adapter.OpenCode, "opencode", "/switch grok", diag.CodeCommandNotTaken, false},
 	} {
 		t.Run(string(c.on)+" "+c.command, func(t *testing.T) {
 			s, _ := viewSess(t, c.on, "")
@@ -50,6 +52,10 @@ func TestPromptCommandTaken(t *testing.T) {
 			}
 			if err == nil || codeOf(err, diag.Code{}) != c.code {
 				t.Fatalf("err %v, want code %s", err, c.code)
+			}
+			var be *blockedErr
+			if errors.As(err, &be) != c.blocked {
+				t.Errorf("err %v: blocked %v, want %v", err, be != nil, c.blocked)
 			}
 		})
 	}

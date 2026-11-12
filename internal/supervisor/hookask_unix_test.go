@@ -39,13 +39,17 @@ func wantAsked(t *testing.T, s *session, err error, atPrompt bool) {
 	}
 }
 
-// wantRefused checks that a command from a prompt hook was refused as before
-// the question (code), so the prompt goes on to the CLI: nothing open or
-// switched, atPrompt as it was.
+// wantRefused checks that aggy ran nothing for a command from a prompt hook
+// (code) and asked nothing, yet blocked its prompt (T6982: a blockedErr, so it
+// never reaches the model): nothing open or switched, atPrompt as it was.
 func wantRefused(t *testing.T, s *session, err error, code diag.Code, atPrompt bool) {
 	t.Helper()
 	if codeOf(err, diag.Code{}) != code {
 		t.Fatalf("err %v, want %s", err, code)
+	}
+	var be *blockedErr
+	if !errors.As(err, &be) || be.note == "" {
+		t.Fatalf("err %v: the prompt was not blocked with a note", err)
 	}
 	if s.open || s.hookAsk != nil || s.sw.to != "" {
 		t.Fatalf("refused, yet open %v asked %v switch %q", s.open, s.hookAsk != nil, s.sw.to)
@@ -82,13 +86,12 @@ func forge(s *session, line string) error {
 }
 
 // TestOwnerRunReplay (T6982): the owner's two lines in Apple Terminal, replayed.
-// First, at launch, a Down on the empty prompt, then /switch and Enter: the Down
-// spoiled the line for the key catch, and the hook's /switch was refused, so
-// the prompt went to the model. On Claude at the checked version a Down on the
-// empty composer changes nothing (#146 review), so the key catch takes it at
-// once. Then, after that turn's Stop, a Backspace and /switch codex typed in
-// full: the key catch still loses it, and the hook's command, which the keys
-// spell, is blocked and asked about; the switch key runs it as typed.
+// First, at launch, a Down on the empty prompt, then /switch and Enter; then,
+// after that turn's Stop, a Backspace and /switch codex typed in full. Before
+// T6982 the stray key spoiled each line for the key catch and the hook's
+// command went to the model. On Claude at the checked version both keys change
+// nothing on the empty composer (live), so the key catch takes each at once:
+// the list before the first turn end, then a switch in one step.
 func TestOwnerRunReplay(t *testing.T) {
 	noSettleGap(t)
 	q, records := diagHome(t)
@@ -113,6 +116,34 @@ func TestOwnerRunReplay(t *testing.T) {
 	for _, k := range append(append([]string{kBS}, strings.Split("/switch codex", "")...), "\r") {
 		s.send([]byte(k))
 	}
+	if s.sw.to != adapter.Codex || !s.sw.keyed || !s.sw.cleared || s.sw.hooked {
+		t.Fatalf("switch %q keyed %v cleared %v hooked %v, want codex caught from the keys", s.sw.to, s.sw.keyed, s.sw.cleared, s.sw.hooked)
+	}
+	if got := sentTo(s); got != kBS+"/switch codex\x15" {
+		t.Errorf("the CLI got %q, want the Backspace, the line, and Ctrl+U for its Enter", got)
+	}
+	recs := records()
+	if caught := recAttrs(t, recs, diag.EvCommandCaught); len(caught) != 2 || caught[0]["via"] != "keys" || caught[1]["via"] != "keys" {
+		t.Errorf("caught records %v", caught)
+	}
+	if p := recAttrs(t, recs, diag.EvCommandPassed); len(p) != 0 {
+		t.Errorf("records of commands passed to the CLI: %v", p)
+	}
+}
+
+// TestOwnerRunUnchecked (T6982): the owner's second line on a Claude version
+// with no live check of Backspace: the key catch loses it, and the hook's
+// command, which the keys spell, is blocked and asked about; the switch key
+// runs it as typed.
+func TestOwnerRunUnchecked(t *testing.T) {
+	noSettleGap(t)
+	q, records := diagHome(t)
+	s := cmdSess(t, adapter.Claude)
+	s.o.Diag, s.o.VendorVersion = q, "2.1.330"
+	s.input = s.send
+	for _, k := range append(append([]string{kBS}, strings.Split("/switch codex", "")...), "\r") {
+		s.send([]byte(k))
+	}
 	c, _ := sessioncmd.Parse(adapter.Claude, "/switch codex")
 	wantAsked(t, s, s.hookCommand(c, "/switch codex"), false)
 	pastGuard(s)
@@ -126,16 +157,9 @@ func TestOwnerRunReplay(t *testing.T) {
 	if got := sentTo(s); strings.Contains(got, "\x15") {
 		t.Errorf("a Ctrl+U went to the CLI: %q", got)
 	}
-	recs := records()
-	if caught := recAttrs(t, recs, diag.EvCommandCaught); len(caught) != 2 || caught[0]["via"] != "keys" || caught[1]["via"] != "hook" {
-		t.Errorf("caught records %v", caught)
-	}
-	asked := recAttrs(t, recs, diag.EvCommandAsked)
+	asked := recAttrs(t, records(), diag.EvCommandAsked)
 	if len(asked) != 1 || asked[0]["pick"] != "backspace" || asked[0]["spelled"] != true {
 		t.Errorf("question records %v", asked)
-	}
-	if p := recAttrs(t, recs, diag.EvCommandPassed); len(p) != 0 {
-		t.Errorf("records of commands passed to the CLI: %v", p)
 	}
 }
 
@@ -157,9 +181,18 @@ func TestEmptyComposerKeys(t *testing.T) {
 		{"Down twice", checkedClaude, []string{kDown, kDown}, true},
 		{"another version", "2.1.330", []string{kDown}, false},
 		{"Up first", checkedClaude, []string{kUp}, false},
-		{"Left first, unchecked", checkedClaude, []string{kLeft}, false},
-		{"Backspace first, unchecked", checkedClaude, []string{kBS}, false},
-		{"Ctrl+U first, unchecked", checkedClaude, []string{kCtrlU}, false},
+		// Live at 2.1.322 (T6982): these change nothing on the empty composer.
+		{"Backspace first", checkedClaude, []string{kBS}, true},
+		{"Ctrl+U first", checkedClaude, []string{kCtrlU}, true},
+		{"Right first", checkedClaude, []string{"\x1b[C"}, true},
+		{"Home first", checkedClaude, []string{"\x1b[H"}, true},
+		{"End first", checkedClaude, []string{"\x1b[F"}, true},
+		{"Delete first", checkedClaude, []string{"\x1b[3~"}, true},
+		{"Backspace, another version", "2.1.330", []string{kBS}, false},
+		// Left opens another view in Claude (live): never harmless, and
+		// an Esc alone does not end it before a turn end does.
+		{"Left first", checkedClaude, []string{kLeft}, false},
+		{"Left, then Esc", checkedClaude, []string{kLeft, kEsc}, false},
 		{"Ctrl+R first: history search", checkedClaude, []string{"\x12"}, false},
 		{"an @ erased first", checkedClaude, []string{"@", kBS}, false},
 	} {
@@ -267,7 +300,7 @@ func TestHookAskRefused(t *testing.T) {
 			c.setup(s)
 			atPrompt := s.atPrompt
 			wantRefused(t, s, forge(s, c.line), diag.CodeCommandNoEnter, atPrompt)
-			p := recAttrs(t, records(), diag.EvCommandPassed)
+			p := recAttrs(t, records(), diag.EvCommandBlocked)
 			if len(p) == 0 || !strings.HasSuffix(p[len(p)-1]["why"].(string), ","+c.why) {
 				t.Errorf("records %v, want why ending %s", p, c.why)
 			}
@@ -372,7 +405,8 @@ func TestHookAskLimit(t *testing.T) {
 		s.promptEsc()
 	}
 	wantRefused(t, s, forge(s, "/inbox"), diag.CodeCommandAskLimit, true)
-	if p := recAttrs(t, records(), diag.EvCommandPassed); len(p) != 1 || p[0]["via"] != "hook" {
+	// The second while one was open, then the one over the limit.
+	if p := recAttrs(t, records(), diag.EvCommandBlocked); len(p) != 2 || p[1]["via"] != "hook" || !strings.HasSuffix(p[1]["why"].(string), ",ask_limit") {
 		t.Errorf("records of the refusal %v", p)
 	}
 	s.askDrops[0] = time.Now().Add(-hookAskWindow)

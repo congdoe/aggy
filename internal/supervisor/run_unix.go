@@ -658,11 +658,9 @@ type session struct {
 	heldMiss   *heldMiss
 	// hookAsk is the command from a prompt hook aggy asks about on its status
 	// line, nil when none (askHookCommand); askDrops are when such questions
-	// closed with no yes, and askLimitNoted when the bottom row last said
-	// aggy stopped asking (hookAskMax).
-	hookAsk       *hookQuestion
-	askDrops      []time.Time
-	askLimitNoted time.Time
+	// closed with no yes (hookAskMax).
+	hookAsk  *hookQuestion
+	askDrops []time.Time
 	// byteClear: the command being run was typed in full, and aggy cleared its
 	// line with Ctrl+U's byte, the form a live check covers (catchCommand).
 	byteClear bool
@@ -670,6 +668,15 @@ type session struct {
 	// aggy counted empty; enterLine: that line's printable keys (spelled).
 	enterSlash bool
 	enterLine  []byte
+	// sideView: Left went to Claude's composer with nothing counted in it,
+	// which opens another view there (live, Claude Code 2.1.322: the keys
+	// after it, an Enter among them, go to that view, and no prompt hook
+	// fires). Until an Esc (sideEsc) and then a counted turn end, the line is
+	// in doubt and no Enter counts as one at the prompt.
+	sideView, sideEsc bool
+	// blockNotes are when the bottom row last said aggy did not run a command
+	// a prompt hook reported (blockHook), at most hookAskMax a window.
+	blockNotes []time.Time
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -905,6 +912,13 @@ func (s *session) hookEvent(ev hookEvent) {
 				s.pk.padRows = 0
 			}
 			s.moveRefused = false // it names the session on screen
+			if s.sideEsc {
+				// An Esc closed Claude's other view, and this turn end of the
+				// session on screen says the Enter since went at its prompt
+				// (settleDoubt still wants no key after that Enter).
+				s.sideView, s.sideEsc = false, false
+				s.popupEnter = true
+			}
 			s.escStop = time.Time{}
 			s.settleDoubt()
 			s.popupEnter = false
@@ -1186,6 +1200,7 @@ func (s *session) send(b []byte) {
 		return
 	}
 	s.noteMiss(b, typed)
+	s.noteSideView(typed)
 	if s.emptyNoop(typed) {
 		// T6982: a key a live check shows changing nothing on this CLI's empty
 		// composer (a Down in Claude): the line stays known empty, so a command
@@ -1216,7 +1231,7 @@ func (s *session) send(b []byte) {
 			s.queued++
 			s.queuedWait = false
 		}
-		s.enterAtPrompt = s.atPrompt && !s.askOpen()
+		s.enterAtPrompt = s.atPrompt && !s.askOpen() && (!s.sideView || s.sideEsc)
 		s.atPrompt, s.toldDirty = false, false // an Enter may start a turn
 		s.escStop = time.Time{}
 	} else if isEsc(typed) && s.turnRan && !s.atPrompt && !s.held && !s.askOpen() {
@@ -1245,6 +1260,20 @@ func (s *session) send(b []byte) {
 		s.followKeys(typed)
 	}
 	s.toChild.push(b)
+}
+
+// noteSideView follows Claude's other view (sideView): Left on a composer
+// with nothing counted in it opens it, and an Esc may close it, which a
+// counted turn end then confirms. Left's effect is recorded at 2.1.322 only;
+// at any version it is kept in doubt, the safe side.
+func (s *session) noteSideView(typed []byte) {
+	switch {
+	case s.o.Vendor != adapter.Claude || s.inPaste:
+	case composerKey(typed) == "left" && s.compLen == 0 && len(s.cmdLine) == 0 && !s.cmdBad:
+		s.sideView, s.sideEsc = true, false
+	case s.sideView && isEsc(typed):
+		s.sideEsc = true
+	}
 }
 
 // composerKeyRE matches an arrow, Home, or End as a legacy terminal or kitty
@@ -1527,7 +1556,7 @@ func (s *session) followDraft(b []byte) (inert bool) {
 // person can see the screen and aggy cannot, so this does not block: they are
 // told, and confirm (offerSwitch).
 func (s *session) doubt() bool {
-	return !s.knownText() && (!s.lenKnown || s.popup || s.cleared || s.escEmpty || s.escDoubt || s.draftBlind)
+	return !s.knownText() && (!s.lenKnown || s.popup || s.cleared || s.escEmpty || s.escDoubt || s.draftBlind || s.sideView)
 }
 
 func (s *session) updateDirty() {

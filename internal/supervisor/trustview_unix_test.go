@@ -3,12 +3,14 @@
 package supervisor
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/trustlist"
 )
 
@@ -158,8 +160,10 @@ func TestTrustListTyping(t *testing.T) {
 // session with no list to read.
 func TestTrustListKeyboardOnly(t *testing.T) {
 	s, _ := trustSess(t)
-	if err := s.onPromptCommand(Request{Vendor: "claude", Command: "/aggy trust"}); err == nil || !strings.Contains(err.Error(), "only typed in full") {
-		t.Errorf("a hook's /aggy trust: %v", err)
+	err := hookAsk(s, Request{Type: ReqPromptCommand, Vendor: "claude", Command: "/aggy trust"})
+	var be *blockedErr
+	if codeOf(err, diag.Code{}) != diag.CodeCommandKeyboard || !errors.As(err, &be) || s.open {
+		t.Errorf("a hook's /aggy trust: %v, open %v", err, s.open)
 	}
 	s.o.TrustList = nil
 	typeLine(s, "/aggy trust")

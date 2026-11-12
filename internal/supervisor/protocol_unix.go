@@ -150,9 +150,18 @@ func answer(line []byte, fromSession bool, onHook func(Request), onSwitch func(R
 		if onSwitch == nil {
 			return refuse(diag.EvPromptRefused, diag.CodeNotSupervised, errors.New("this session takes no commands (aggy --direct)"), attrs)
 		}
-		if err := onSwitch(r); errors.Is(err, errAsked) {
+		err := onSwitch(r)
+		var be *blockedErr
+		switch {
+		case errors.Is(err, errAsked):
 			return Response{OK: true, Type: RespAsked}
-		} else if err != nil {
+		case errors.As(err, &be):
+			code := codeOf(err, diag.CodeCommandNotTaken)
+			if !be.recorded {
+				log(diag.Rec{Event: diag.EvCommandBlocked, Code: code, Msg: "a command from the prompt hook that aggy did not run; the prompt was blocked", Attrs: attrs})
+			}
+			return Response{OK: true, Type: RespBlocked, Code: code.String(), Reason: be.note}
+		case err != nil:
 			return refuse(diag.EvPromptRefused, codeOf(err, diag.CodeCommandNotTaken), err, attrs)
 		}
 		return Response{OK: true}

@@ -100,6 +100,7 @@ func (s *session) lineDoubts() []string {
 		{s.moved, "moved"},
 		{s.askOpen(), "ask_open"},
 		{s.exitGap, "exit_gap"},
+		{s.sideView, "side_view"},
 		{s.compLen != len(s.cmdLine), "comp_len"},
 		{s.draftLen != len(s.cmdLine), "draft_len"},
 	} {
@@ -221,7 +222,7 @@ const promptRepeat = 2 * time.Second
 
 // promptAnswerWait bounds how long a socket goroutine waits for the main loop
 // to answer a prompt-command: under aggy hook's own 3 seconds, so a busy loop
-// lets the prompt through rather than the hook timing out.
+// blocks the prompt (busyBlock) rather than the hook timing out.
 const promptAnswerWait = 2 * time.Second
 
 // promptReq is one prompt-command on its way to the main loop: the command,
@@ -236,10 +237,11 @@ type promptReq struct {
 
 // onPromptCommand takes a command a CLI's UserPromptSubmit hook reported
 // (T6910), on a connection's goroutine: the line is parsed again here, only
-// from the vendor on screen, only where aggy installs that hook (Claude and
-// Grok), and never a keyboard-only one, since any process in the CLI's tree
-// can send it. The main loop then decides (hookCommand), and a nil answer
-// makes aggy hook block the prompt; any other lets it through.
+// from the vendor on screen, and only where aggy installs that hook (Claude and
+// Grok). The main loop then decides (hookCommand). A nil answer, errAsked, or a
+// blockedErr makes aggy hook block the prompt; only a command turned off in the
+// person's config, or one this session has nothing to run with (takes), and a
+// request that is not one of aggy's commands, let it through.
 func (s *session) onPromptCommand(r Request) error {
 	on := s.o.Vendor
 	if r.Vendor != string(on) {
@@ -249,17 +251,19 @@ func (s *session) onPromptCommand(r Request) error {
 		return coded(diag.CodeCommandNotTaken, fmt.Errorf("aggy installs no prompt hook for %s", on))
 	}
 	c, ok := sessioncmd.Parse(on, r.Command)
-	switch {
-	case ok && c.KeyboardOnly:
-		return coded(diag.CodeCommandKeyboard, fmt.Errorf("%s changes something, so aggy takes it only typed in full at the prompt", c.Name))
-	case !ok || !s.takes(c):
+	off := false
+	if name, _, _ := strings.Cut(c.Name, " "); ok && s.o.CommandOff != nil {
+		off = s.o.CommandOff(name)
+	}
+	// A keyboard-only command goes on to be blocked (hookCommand), unless off.
+	if !ok || off || !c.KeyboardOnly && !s.takes(c) {
 		return coded(diag.CodeCommandNotTaken, errors.New("not a command aggy takes from a hook"))
 	}
 	p := promptReq{c: c, line: r.Command, answer: make(chan error, 1), claimed: new(atomic.Bool)}
 	select {
 	case s.prompts <- p:
 	default:
-		return coded(diag.CodeCommandNotTaken, errors.New("another command from a hook is still waiting"))
+		return busyBlock(c, on, s.o.SwitchKey, "another command from the prompt is still waiting")
 	}
 	t := time.NewTimer(promptAnswerWait)
 	defer t.Stop()
@@ -269,9 +273,105 @@ func (s *session) onPromptCommand(r Request) error {
 	case <-t.C:
 	}
 	if p.claimed.CompareAndSwap(false, true) {
-		return coded(diag.CodeCommandNotTaken, errors.New("aggy was busy, so the prompt went to the CLI"))
+		return busyBlock(c, on, s.o.SwitchKey, "aggy was busy")
 	}
 	return <-p.answer // the main loop claimed it first and answers now
+}
+
+// blockedErr is hookCommand's answer when it ran nothing for a command a
+// prompt hook reported but the prompt is blocked all the same (T6982): the
+// hook's answer goes only to the process that called it, so a forged call
+// gains nothing from a block, and a real one must never reach the model. note
+// says why in plain words, and the keyboard way through; aggy hook shows it as
+// the block's reason. recorded: the supervisor wrote its record already.
+type blockedErr struct {
+	err      error
+	note     string
+	recorded bool
+}
+
+func (e *blockedErr) Error() string { return e.err.Error() }
+func (e *blockedErr) Unwrap() error { return e.err }
+
+// busyBlock is a blockedErr for a command the main loop never saw.
+// key is Options.SwitchKey, which the session's goroutines may read.
+func busyBlock(c sessioncmd.Command, on adapter.Vendor, key byte, why string) error {
+	if key == 0 {
+		key = 0x1c
+	}
+	return &blockedErr{err: coded(diag.CodeCommandNotTaken, errors.New(why)),
+		note: fmt.Sprintf("aggy did not run %s%s (%s). %s", sessioncmd.Prefix(on), c.Name, why, wayThrough(c, on, key))}
+}
+
+// wayThrough is the keyboard's way to what c would have done: the switch key
+// for a switch, which no forged request can press, and the command typed in
+// full otherwise, which the keys catch.
+func wayThrough(c sessioncmd.Command, on adapter.Vendor, key byte) string {
+	if c.Kind == sessioncmd.Switch || c.Kind == sessioncmd.Picker {
+		return keyName(key) + " opens the switch list."
+	}
+	return fmt.Sprintf("Type it in full at %s's empty prompt.", on)
+}
+
+// blockHook runs nothing for c, which a prompt hook reported as line, and keeps
+// its prompt from the model (blockedErr). why records the rule that failed, as
+// fixed words (hookMiss); with none, nothing is recorded here. plain says it to
+// the person, on the bottom row (at most hookAskMax a window) and as the
+// block's reason; "" says nothing on the bottom row.
+//
+// When the keys showed the Enter for this very line (spelled), the prompt the
+// hook blocked is the one that Enter sent, so the CLI is back at its prompt with
+// its composer empty (promptBlocked; on Claude 2.1.322 recorded live). A
+// request alone, which any process in the tree can send, changes nothing.
+func (s *session) blockHook(c sessioncmd.Command, line string, code diag.Code, why []string, plain string) error {
+	if why != nil {
+		s.hookMiss(c, why)
+	}
+	if !s.enterAt.IsZero() && !s.hookedEnter.Equal(s.enterAt) && s.spelled(canonLine(line)) {
+		s.heldMiss = nil
+		s.hookedEnter = s.enterAt // a second report of this Enter is blocked too, silently
+		s.promptBlocked()
+	}
+	way := wayThrough(c, s.o.Vendor, s.pk.key)
+	note := fmt.Sprintf("aggy did not run %s%s. %s", sessioncmd.Prefix(s.o.Vendor), c.Name, way)
+	if plain != "" {
+		note = fmt.Sprintf("aggy did not run %s%s (%s). %s", sessioncmd.Prefix(s.o.Vendor), c.Name, plain, way)
+		now := time.Now()
+		s.blockNotes = slices.DeleteFunc(s.blockNotes, func(t time.Time) bool { return now.Sub(t) >= hookAskWindow })
+		if len(s.blockNotes) < hookAskMax && !s.open {
+			s.blockNotes = append(s.blockNotes, now)
+			s.waitNote("aggy: " + strings.TrimPrefix(note, "aggy "))
+		}
+	}
+	return &blockedErr{err: coded(code, errors.New(note)), note: note, recorded: why != nil}
+}
+
+// blockPlain says a reason aggy did not ask about a command in a few words.
+func (s *session) blockPlain(not string) string {
+	on := s.o.Vendor
+	switch not {
+	case "held":
+		return fmt.Sprintf("%s may be showing a question or an approval", on)
+	case "ask_open":
+		return "another question of aggy's is open"
+	case "unsent_text":
+		return fmt.Sprintf("%s's prompt holds unsent text", on)
+	case "turn_may_run":
+		return fmt.Sprintf("cannot tell if %s is idle", on)
+	case "too_long_to_ask":
+		return "too long to show on aggy's status line"
+	case "no_turn_yet":
+		return fmt.Sprintf("%s has not finished a turn yet", on)
+	case "ask_limit":
+		return "too many questions went unanswered in the last minute"
+	case "keyboard_only":
+		return "it changes something, so aggy takes it only from the keys"
+	case "screen_open":
+		return "aggy's own screen is open"
+	case "switch_waiting":
+		return "a switch is already waiting"
+	}
+	return "the keys do not vouch for it"
 }
 
 // answerPrompt is the main loop's side of onPromptCommand.
@@ -312,11 +412,14 @@ func (s *session) hookCommand(c sessioncmd.Command, line string) error {
 	doubts := s.hookDoubts(line)
 	switch {
 	case !s.hookedEnter.IsZero() && s.hookedEnter.Equal(s.enterAt):
-		return coded(diag.CodeCommandNoEnter, errors.New("aggy already took a command for that Enter"))
+		return s.blockHook(c, line, diag.CodeCommandNoEnter, nil, "") // that Enter's command was taken, or blocked
+	case c.KeyboardOnly:
+		// It changes something, and any process in the CLI's tree can send this.
+		return s.blockHook(c, line, diag.CodeCommandKeyboard, append(doubts, "keyboard_only"), s.blockPlain("keyboard_only"))
 	case s.open:
-		return coded(diag.CodeCommandNotTaken, errors.New("aggy's list or page is open"))
+		return s.blockHook(c, line, diag.CodeCommandNotTaken, append(doubts, "screen_open"), s.blockPlain("screen_open"))
 	case (c.Kind == sessioncmd.Switch || c.Kind == sessioncmd.Picker) && s.sw.to != "":
-		return coded(diag.CodeCommandNotTaken, errors.New("a switch is already waiting"))
+		return s.blockHook(c, line, diag.CodeCommandNotTaken, append(doubts, "switch_waiting"), s.blockPlain("switch_waiting"))
 	case len(doubts) > 0:
 		return s.askHookCommand(c, line, doubts)
 	}
@@ -438,12 +541,14 @@ func (s *session) spelled(line string) bool {
 // for (why), and asks on the status line whether to run it (T6982). The
 // person's switch key there is the proof a forged request lacks, so a process
 // in the CLI's tree can at worst raise a question: one at a time (hookCommand
-// refuses another while aggy's screen is up), and none once hookAskMax went
+// blocks another while aggy's screen is up), and none once hookAskMax went
 // unanswered within hookAskWindow. None opens where a key meant for the CLI
 // could land on it, or the CLI could be busy: a hold, an open ask, a turn that
 // may be running, or unsent text, unless the keys spelled this line (the
 // prompt the CLI just sent was this one, now blocked); nor one whose command
-// would not show whole on the line. Those are refused, as before the question.
+// would not show whole on the line, nor, before a turn end, one for anything
+// but the switch list. Those run nothing, and their prompt is blocked all the
+// same, with a note (blockHook).
 func (s *session) askHookCommand(c sessioncmd.Command, line string, why []string) error {
 	line = canonLine(line)
 	spelled := s.spelled(line)
@@ -457,6 +562,9 @@ func (s *session) askHookCommand(c sessioncmd.Command, line string, why []string
 		not = "unsent_text"
 	case !spelled && s.mayBeRunning():
 		not = "turn_may_run"
+	case !s.turnRan && c.Kind != sessioncmd.Switch && c.Kind != sessioncmd.Picker:
+		// Before a turn end only the switch list is offered on a question.
+		not = "no_turn_yet"
 	case !s.pk.commandFits(line, s.o.Vendor, s.cols()):
 		not = "too_long_to_ask"
 	}
@@ -464,22 +572,12 @@ func (s *session) askHookCommand(c sessioncmd.Command, line string, why []string
 		if !slices.Contains(why, not) { // hookDoubts may already name held
 			why = append(why, not)
 		}
-		s.hookMiss(c, why)
-		if not == "too_long_to_ask" {
-			s.waitNote(fmt.Sprintf("aggy: a command from %s's prompt was too long to show whole, so it went to %s.", s.o.Vendor, s.o.Vendor))
-		}
-		return coded(diag.CodeCommandNoEnter, errors.New("the keys do not vouch for that command, and aggy cannot ask now"))
+		return s.blockHook(c, line, diag.CodeCommandNoEnter, why, s.blockPlain(not))
 	}
 	now := time.Now()
 	s.askDrops = slices.DeleteFunc(s.askDrops, func(t time.Time) bool { return now.Sub(t) >= hookAskWindow })
 	if len(s.askDrops) >= hookAskMax {
-		s.hookMiss(c, append(why, "ask_limit"))
-		if now.Sub(s.askLimitNoted) >= hookAskWindow {
-			s.askLimitNoted = now
-			s.waitNote(fmt.Sprintf("aggy: %d questions about commands from %s's prompt went unanswered; for a minute they go to %s.",
-				hookAskMax, s.o.Vendor, s.o.Vendor))
-		}
-		return coded(diag.CodeCommandAskLimit, fmt.Errorf("%d of aggy's questions about commands from the prompt hook went unanswered within a minute", hookAskMax))
+		return s.blockHook(c, line, diag.CodeCommandAskLimit, append(why, "ask_limit"), s.blockPlain("ask_limit"))
 	}
 	if spelled {
 		s.heldMiss = nil // the key catch's miss of this Enter: the prompt is blocked

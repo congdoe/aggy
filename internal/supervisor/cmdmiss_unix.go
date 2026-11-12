@@ -74,7 +74,7 @@ func (s *session) noteMiss(raw, typed []byte) {
 		} else if !s.takes(c) {
 			why = append(why, "not_taken")
 		}
-		s.logMiss(&s.keyMisses, s.missAttrs(c.Name, why))
+		s.logMiss(&s.keyMisses, diag.EvCommandPassed, s.missAttrs(c.Name, why))
 		return
 	}
 	// A lost line may be a pick from the CLI's menu that its prompt hook
@@ -102,7 +102,7 @@ func (s *session) flushMiss(force bool) {
 	}
 	attrs := s.heldMiss.attrs
 	s.heldMiss = nil
-	s.logMiss(&s.keyMisses, attrs)
+	s.logMiss(&s.keyMisses, diag.EvCommandPassed, attrs)
 }
 
 // menuPickOfOther reports whether the line just ended was picked from the CLI's
@@ -151,7 +151,7 @@ func (s *session) missAttrs(name string, why []string) map[string]any {
 // logMiss writes a miss record within b, on the terminal loop's path that never
 // waits (diag.Queue.Log). The key catch's and the prompt hook's records each
 // have their own budget, so forged hook requests cannot use up the other.
-func (s *session) logMiss(b *missBudget, attrs map[string]any) {
+func (s *session) logMiss(b *missBudget, ev diag.Event, attrs map[string]any) {
 	now := time.Now()
 	if now.Sub(b.at) >= missWindow {
 		b.at, b.n = now, 0
@@ -165,12 +165,12 @@ func (s *session) logMiss(b *missBudget, attrs map[string]any) {
 		attrs["skipped"] = b.skipped
 		b.skipped = 0
 	}
-	s.log(diag.Rec{Event: diag.EvCommandPassed, Attrs: attrs})
+	s.log(diag.Rec{Event: ev, Attrs: attrs})
 }
 
-// hookMiss records a command a prompt hook reported that hookCommand refused
-// for want of the keys that go with it: why (hookDoubts) names the rule, and
-// the parts of it that failed follow, each a fixed word.
+// hookMiss records a command a prompt hook reported that hookCommand did not
+// run but blocked (blockHook): why (hookDoubts) names the rule, and the parts
+// of it that failed follow, each a fixed word.
 func (s *session) hookMiss(c sessioncmd.Command, why []string) {
 	s.flushMiss(true)
 	attrs := s.missAttrs(c.Name, why)
@@ -178,7 +178,7 @@ func (s *session) hookMiss(c sessioncmd.Command, why []string) {
 	if s.enterPick.bad && s.enterPick.why != "" {
 		attrs["pick"] = s.enterPick.why
 	}
-	s.logMiss(&s.hookMisses, attrs)
+	s.logMiss(&s.hookMisses, diag.EvCommandBlocked, attrs)
 }
 
 // maxLineSeqs bounds the escape sequences kept for a miss record.

@@ -78,6 +78,11 @@ type Request struct {
 // (T6982), so aggy hook's reason says so.
 const RespAsked = "asked"
 
+// RespBlocked is a prompt-command's Response.Type when the supervisor ran
+// nothing for the command but the prompt must not reach the model either
+// (T6982): aggy hook blocks it with Response.Reason as the block's reason.
+const RespBlocked = "blocked"
+
 type Response struct {
 	OK    bool   `json:"ok"`
 	Type  string `json:"type,omitempty"` // "pong" for a ping; RespAsked for a prompt-command
@@ -86,6 +91,9 @@ type Response struct {
 	// can print and record it too. The sender looks it up in the
 	// registry and never trusts it further.
 	Code string `json:"code,omitempty"`
+	// Reason is RespBlocked's words for the person: why aggy ran nothing, and
+	// the keyboard's way through. aggy hook shows it as one line.
+	Reason string `json:"reason,omitempty"`
 	// Plan, PlanSum, and NoPolicy answer a hermes-pin: the launch's decision
 	// plan and its SHA-256, or NoPolicy for a launch with --no-policy.
 	Plan     string `json:"plan,omitempty"`

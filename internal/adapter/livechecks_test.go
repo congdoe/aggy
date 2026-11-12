@@ -16,7 +16,7 @@ func TestLiveChecksByVersion(t *testing.T) {
 		down, up, bksp bool
 		owed           bool
 	}{
-		{Claude, "2.1.322", true, true, true, false, false, false},
+		{Claude, "2.1.322", true, true, true, false, true, false},
 		{Claude, "2.1.330", false, false, false, false, false, true},
 		{Claude, "2.1.311", false, false, false, false, false, true},
 		{Claude, "", false, false, false, false, false, true},
@@ -33,7 +33,7 @@ func TestLiveChecksByVersion(t *testing.T) {
 		for _, k := range []struct {
 			key  string
 			want bool
-		}{{"down", c.down}, {"up", c.up}, {"backspace", c.bksp}, {"ctrl+u", false}} {
+		}{{"down", c.down}, {"up", c.up}, {"backspace", c.bksp}, {"ctrl+u", c.bksp}, {"delete", c.bksp}, {"left", false}} {
 			if got := EmptyComposerKey(c.v, c.version, k.key); got != k.want {
 				t.Errorf("%s %q: EmptyComposerKey(%s) = %v", c.v, c.version, k.key, got)
 			}

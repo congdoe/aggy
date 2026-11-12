@@ -3,10 +3,12 @@
 package supervisor
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/diag"
 )
 
 // labels are the items a menu shows now, by their keys.
@@ -195,11 +197,14 @@ func TestToolNamePrefix(t *testing.T) {
 }
 
 // TestAggyAllowKeyboardOnly (T6978): /aggy allow runs aggy permissions add
-// allow on the page, answering its question no until y, and no hook runs it.
+// allow on the page, answering its question no until y, and no hook runs it:
+// a hook's is blocked with a note (T6982), never passed to the model.
 func TestAggyAllowKeyboardOnly(t *testing.T) {
 	s, ran := viewSess(t, adapter.Claude, "Add the allow rule Bash(npm test) for this repo? [y/N] Nothing changed.")
-	if err := s.onPromptCommand(Request{Vendor: "claude", Command: `/aggy allow "Bash(npm test)"`}); err == nil || !strings.Contains(err.Error(), "only typed in full") {
-		t.Errorf("a hook's /aggy allow: %v", err)
+	err := hookAsk(s, Request{Type: ReqPromptCommand, Vendor: "claude", Command: `/aggy allow "Bash(npm test)"`})
+	var be *blockedErr
+	if codeOf(err, diag.Code{}) != diag.CodeCommandKeyboard || !errors.As(err, &be) || len(*ran) != 0 {
+		t.Errorf("a hook's /aggy allow: %v, ran %q", err, *ran)
 	}
 	typeLine(s, `/aggy allow "Bash(npm test)"`)
 	settle(t, s)
