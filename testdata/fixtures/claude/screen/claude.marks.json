@@ -1,0 +1,83 @@
+{
+ "version": "2.1.326",
+ "recorded": "2026-11-17",
+ "rows": 30,
+ "cols": 100,
+ "marks": [
+  {
+   "state": "start_idle",
+   "from": 0,
+   "to": 1672
+  },
+  {
+   "state": "typed_text",
+   "from": 1672,
+   "to": 1745
+  },
+  {
+   "state": "cleared",
+   "from": 1745,
+   "to": 1887
+  },
+  {
+   "state": "slash_menu",
+   "from": 1887,
+   "to": 3824
+  },
+  {
+   "state": "cleared_menu",
+   "from": 3824,
+   "to": 4471
+  },
+  {
+   "state": "bash_mode",
+   "from": 4471,
+   "to": 5188
+  },
+  {
+   "state": "bash_mode_left",
+   "from": 5188,
+   "to": 5972
+  },
+  {
+   "state": "model_dialog",
+   "from": 5972,
+   "to": 8951
+  },
+  {
+   "state": "model_dialog_esc",
+   "from": 8951,
+   "to": 10220
+  },
+  {
+   "state": "left_view",
+   "from": 10220,
+   "to": 10220
+  },
+  {
+   "state": "left_view_esc",
+   "from": 10220,
+   "to": 10220
+  },
+  {
+   "state": "idle_again",
+   "from": 10220,
+   "to": 10220
+  },
+  {
+   "state": "turn_running",
+   "from": 10220,
+   "to": 11968
+  },
+  {
+   "state": "turn_done",
+   "from": 11968,
+   "to": 14974
+  },
+  {
+   "state": "exit",
+   "from": 14974,
+   "to": 18132
+  }
+ ]
+}

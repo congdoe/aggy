@@ -162,6 +162,10 @@ func Run(o Options) (Exit, error) {
 		srv.SetRoot(child.Pid())
 	}
 	s.child = child
+	if o.ReadScreen != nil && rows > 0 && cols > 0 {
+		s.scr = newScreenFeed(rows, cols)
+		s.goSafe(func() { s.scr.run(s.quit) })
+	}
 	s.startGuardWatch()
 	defer s.stopHangupKill()
 	outDone := make(chan struct{})
@@ -731,6 +735,9 @@ type session struct {
 	// blockNotes are when the bottom row last said aggy did not run a command
 	// a prompt hook reported (blockHook), at most hookAskMax a window.
 	blockNotes []time.Time
+	// scr is the copy of the CLI's screen (T7016), nil unless Options.ReadScreen
+	// is set.
+	scr *screenFeed
 }
 
 // turnCause is the cause of a switch's step at a turn end: the counted
@@ -818,6 +825,16 @@ type pendingSwitch struct {
 	// running), so the switch key brings that line back rather than the list
 	// (T6982). again: offerSwitch runs for that key, past the quiet gap.
 	lapsed, again bool
+	// byScreen: before the first turn end, the screen read as the empty prompt,
+	// so the switch went on with no question (screenOneStep, T7016); offerIn and
+	// offerOut are lastIn and lastOut of that moment, which typeExit checks
+	// again (screenStill). noScreen: that changed before the exit command went,
+	// so the status line asks. evidence is the word the records carry for what
+	// said the CLI was at its prompt.
+	byScreen, noScreen bool
+	offerIn            time.Time
+	offerOut           int64
+	evidence           string
 	// choice is what was picked or asked for with the vendor (T6665).
 	choice Choice
 	// rec is the id of the switch's latest diagnostic record, the cause
@@ -2134,9 +2151,16 @@ func (s *session) offerSwitch() {
 		// so it does where aggy cleared the line with a Ctrl+U form no live
 		// check covers (cleared), or cleared none (a hook's question's yes:
 		// the blocked prompt's composer is taken as empty, unverified).
-		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: s.turnCause(), Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "keyed": true})})
+		s.sw.evidence, s.sw.byScreen = evidenceKeys, false
+		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: s.turnCause(), Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "keyed": true, "evidence": evidenceKeys})})
 		s.pk.preselect = ""
 		s.confirmSwitch()
+		return
+	}
+	if !s.turnRan && s.screenOneStep() {
+		// T7016: before Claude's first turn end, its screen shows the empty
+		// prompt, and the hooks and keys agree: no question.
+		s.goByScreen()
 		return
 	}
 	// One status line (S-12, O56-1): who or what asked and the switch's
@@ -2203,7 +2227,8 @@ func (s *session) offerSwitch() {
 	line := confirmLine(s.sw.choice.Model, tools)
 	lines := []string{line}
 	s.sw.vouched, s.sw.vouchIn = first && s.turnMayRun(), s.lastIn
-	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: s.turnCause(), Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "asked": s.sw.asked, "limit": s.sw.limit, "resume": s.sw.resume, "first_turn": first})})
+	s.sw.evidence, s.sw.byScreen = evidencePerson, false
+	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: s.turnCause(), Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "asked": s.sw.asked, "limit": s.sw.limit, "resume": s.sw.resume, "first_turn": first, "evidence": evidencePerson})})
 	if !s.sw.resume {
 		s.pk.preselect = "" // offered once (O56-5); a limit's stays past a resume
 	}
@@ -2361,10 +2386,10 @@ const (
 // (dropPaste). rest is what follows that paste's end in b, input again.
 func (s *session) dropKeys(b []byte) (rest []byte, drop bool) {
 	if s.dropPaste {
+		// The end marker may be split across reads: look in the last bytes of
+		// the one before too (dropPasteEnd).
+		buf := append(append([]byte{}, s.dropPasteEnd...), b...)
 		if time.Since(s.dropPasteAt) <= pasteDropWait && s.dropPasteN <= pasteDropMax {
-			// The end marker may be split across reads: look in the last
-			// bytes of the one before too (dropPasteEnd).
-			buf := append(append([]byte{}, s.dropPasteEnd...), b...)
 			if i := bytes.Index(buf, pasteEnd); i >= 0 {
 				s.dropPaste, s.dropPasteEnd = false, nil
 				return buf[i+len(pasteEnd):], true
@@ -2378,9 +2403,15 @@ func (s *session) dropKeys(b []byte) (rest []byte, drop bool) {
 		}
 		// Too long: keys flow again, but the paste stays a paste: the CLI
 		// gets its start marker first, so a newline in the rest is pasted
-		// text, never an Enter, whether or not its end is in this read.
+		// text, never an Enter. An end marker split across this read and the
+		// one before goes whole, with the few bytes carried (#147 review: it
+		// went cut, and the paste the CLI got never ended).
 		s.dropPaste, s.dropPasteEnd = false, nil
-		return append(append([]byte{}, pasteStart...), b...), true
+		rest := b
+		if !bytes.Contains(b, pasteEnd) && bytes.Contains(buf, pasteEnd) {
+			rest = buf
+		}
+		return append(append([]byte{}, pasteStart...), rest...), true
 	}
 	switch {
 	case s.handOverDrop():
@@ -2979,7 +3010,13 @@ func (s *session) childChecked(r childCheck) {
 		s.waitNote(fmt.Sprintf("aggy: the switch to %s waits: %s may be running a turn. %s asks again.", s.sw.to, s.o.Vendor, keyName(s.pk.key)))
 		return
 	case r.ok:
-		s.typeExit()
+		vouched := s.sw.vouched && !s.sw.byScreen
+		if !s.typeExit() && vouched && !s.sw.typed && s.sw.to != "" {
+			// #147 review: the yes stood for the person's look, and something
+			// changed since; the bottom row says what the switch waits for.
+			s.offerLapsed("refused")
+			s.waitNote(s.switchWaitLine())
+		}
 		return
 	}
 	v := s.sw.to
@@ -3006,35 +3043,46 @@ func (s *session) childChecked(r childCheck) {
 // TODO(T6917): Codex can open a rate-limit popup at turn completion whose
 // first item is "Switch to <model>" (unverified live), and turnRan does not
 // guard that: the Enter after the exit command could land on it.
-func (s *session) typeExit() {
+//
+// It reports whether it typed the exit command.
+func (s *session) typeExit() bool {
 	if s.refuseSignalled() {
-		return
+		return false
 	}
 	switch {
 	case !s.turnRan && !s.firstAsk():
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeNoTurnYet, Cause: s.sw.rec, Msg: "the switch key was pressed, but no turn has ended since the CLI launched"})
-		return
+		return false
+	case s.sw.byScreen && (s.turnRan || !s.screenStill()):
+		// T7016: the one step rests on the screen at this moment, read again.
+		s.screenChanged()
+		return false
 	case s.doubt() && !s.sw.doubtOK:
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodePromptDoubt, Cause: s.sw.rec, Msg: "the switch key was pressed, but the prompt has changed since the person confirmed", Attrs: map[string]any{"to": string(s.sw.to)}})
-		return
+		return false
 	case s.knownText():
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeUnsentText, Cause: s.sw.rec, Msg: "the switch key was pressed, but text the user typed is not sent"})
-		return
+		return false
 	case s.held, s.askOpen():
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "the switch key was pressed, but the CLI waits for the user"})
-		return
+		return false
 	case s.turnMayRun() && !s.vouchedNow():
 		// offerSwitch checks it too; this is the last guard before the exit
 		// command, whatever path led here (#146 review, fourth round). Past
 		// it only the person's yes to a question they asked for, with no key
 		// to the CLI since (vouched).
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeTurnMayRun, Cause: s.sw.rec, Msg: "the switch key was pressed, but a turn may be running"})
-		return
+		return false
 	}
 	s.typeExitCommand()
 	s.sw.typed = true
-	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchConfirmed, Cause: s.sw.rec, Attrs: map[string]any{"to": string(s.sw.to)}})
+	evidence := s.sw.evidence
+	if evidence == "" {
+		evidence = evidencePerson // a yes to a hook's question
+	}
+	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchConfirmed, Cause: s.sw.rec, Attrs: map[string]any{"to": string(s.sw.to), "evidence": evidence}})
 	s.exitBy = time.After(exitWait)
+	return true
 }
 
 // vouchedNow reports whether the person said yes to a question before the
@@ -3177,7 +3225,7 @@ func (s *session) repaint() {
 	if rows < 2 || cols < 1 {
 		return
 	}
-	_ = s.child.Resize(rows-1, cols)
+	s.childResize(rows-1, cols)
 	time.AfterFunc(repaintNudge, s.resize)
 }
 
@@ -3509,6 +3557,9 @@ func (s *session) copyOut() {
 			s.alt.feed(buf[:n])
 			_, werr := s.o.Out.Write(buf[:n])
 			s.outMu.Unlock()
+			if s.scr != nil {
+				s.scr.feed(buf[:n]) // never waits (screenFeed)
+			}
 			if werr != nil {
 				return
 			}
@@ -3577,7 +3628,15 @@ func (s *session) wait(ch chan<- waitResult) {
 func (s *session) resize() {
 	rows, cols := s.t.size()
 	if rows > 0 && cols > 0 {
-		_ = s.child.Resize(rows, cols)
+		s.childResize(rows, cols)
+	}
+}
+
+// childResize sets the CLI's terminal size, and the screen copy's.
+func (s *session) childResize(rows, cols int) {
+	_ = s.child.Resize(rows, cols)
+	if s.scr != nil {
+		s.scr.resize(rows, cols)
 	}
 }
 

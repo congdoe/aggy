@@ -919,6 +919,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		In:            os.Stdin, Out: os.Stdout, Command: cmd,
 		HandOver:      t.SwitchFrom != "",
 		VendorVersion: version,
+		ReadScreen:    screenReader(v, version),
 		// The CLI leads its own session in the pseudo-terminal.
 		Start: func(c adapter.Command, rows, cols int) (supervisor.Child, error) {
 			ch, err := startPTY(c, rows, cols)
