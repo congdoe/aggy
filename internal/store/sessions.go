@@ -245,29 +245,6 @@ func (s *Store) SetChildFileSeen(ctx context.Context, childID string) error {
 	return err
 }
 
-// SetChildTurnSeen records that the on-screen child had a turn end aggy
-// counted (T6982).
-func (s *Store) SetChildTurnSeen(ctx context.Context, childID string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE children SET turn_seen = 1 WHERE id = ?`, childID)
-	return err
-}
-
-// TurnSeenInDir reports whether an interactive child of vendor, other than
-// except, in a parent whose directory has the canonical form key (or, for a
-// row without one, is dir), had a turn end aggy counted (SetChildTurnSeen).
-func (s *Store) TurnSeenInDir(ctx context.Context, vendor, key, dir, except string) (bool, error) {
-	var one int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT 1 FROM children c JOIN parents p ON p.id = c.parent_id
-		 WHERE c.vendor = ? AND c.kind = '' AND c.turn_seen = 1 AND c.id <> ?
-		   AND (p.dir_key = ? OR (p.dir_key = '' AND p.dir = ?)) LIMIT 1`,
-		vendor, except, key, dir).Scan(&one)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	return err == nil, err
-}
-
 // ErrSessionSet means a child already has a different vendor session id.
 var ErrSessionSet = errors.New("store: child already has a vendor session id")
 

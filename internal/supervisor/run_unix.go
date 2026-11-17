@@ -515,16 +515,17 @@ type session struct {
 	// dropPaste: a bracketed paste began in keys dropped for the hand-over
 	// or after the exit command, and its end has not come (#147 review): the
 	// rest of it goes nowhere too, up to pasteDropMax bytes or pasteDropWait
-	// from dropPasteAt. Past either, keys flow again and reopenPaste re-opens
-	// the paste for the CLI, so its tail is pasted text, never typed keys.
-	dropPaste, reopenPaste bool
-	dropPasteAt            time.Time
-	dropPasteN             int
-	// keysBeforeTurn: a key passed to the CLI before its first turn end, even
-	// one a live check shows changing nothing on an empty composer (#147
-	// review): at a dialog a Down moves its selection. Lines aggy took do not
-	// count. firstClean needs none.
-	keysBeforeTurn bool
+	// from dropPasteAt. Past either, keys flow again and the paste is opened
+	// again for the CLI (its start marker first), so its tail is pasted
+	// text, never typed keys. dropPasteEnd holds the last bytes of the read
+	// before, for an end marker split across reads.
+	dropPaste    bool
+	dropPasteAt  time.Time
+	dropPasteN   int
+	dropPasteEnd []byte
+	// enterBeforeTurn: an Enter reached the CLI before its first turn end, so
+	// a reply may be running; a switch's question says so (#147 review).
+	enterBeforeTurn bool
 	// hookAgain: the repeat attempt offerNow handles came from a hook's
 	// report, so it never goes in one step (#147 review, L4).
 	hookAgain bool
@@ -1278,9 +1279,6 @@ func (s *session) send(b []byte) {
 		// typed next is still caught. At a dialog or mid-turn it may answer or
 		// queue something, so it counts as input there.
 		s.lastIn = time.Now()
-		if !s.turnRan {
-			s.keysBeforeTurn = true
-		}
 		if !s.atPrompt || s.held || s.askOpen() {
 			s.held, s.inputSinceTurn = false, true
 			s.afterEnter++ // a key after the Enter: it may answer what that Enter opened
@@ -1307,6 +1305,9 @@ func (s *session) send(b []byte) {
 			s.queuedWait = false
 		}
 		s.enterAtPrompt = s.atPrompt && !s.askOpen() && (!s.sideView || s.sideEsc)
+		if !s.turnRan {
+			s.enterBeforeTurn = true
+		}
 		s.enterAlone = plainEnter(b)
 		s.atPrompt, s.toldDirty = false, false // an Enter may start a turn
 		s.escStop = time.Time{}
@@ -2125,17 +2126,6 @@ func (s *session) offerSwitch() {
 		s.tellNoTurn(what)
 		return
 	}
-	if s.firstOneStep() {
-		// T6982, the owner's decision: on Claude at a version in the live-check
-		// table, a switch before the first turn end goes in one step on clean
-		// evidence (firstClean), typed in full and caught from the keys (aggy
-		// typed Ctrl+U's byte itself) or picked in aggy's own list, a
-		// deliberate key at aggy's screen. Not one from a hook.
-		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: s.turnCause(), Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "keyed": s.sw.keyed, "first_turn": true})})
-		s.pk.preselect = ""
-		s.confirmSwitch()
-		return
-	}
 	if s.turnRan && s.sw.keyed && s.sw.cleared && !s.sw.hooked && !s.hookAgain && !s.sw.resume && holdSignal(on) && clearsLine(on, s.o.VendorVersion) && !s.doubt() {
 		// T6908: the person typed the switch at this prompt, and the CLI says
 		// when it waits for them, so the command was the confirmation. All the
@@ -2166,6 +2156,10 @@ func (s *session) offerSwitch() {
 	confirmLine := func(model, tools string) string {
 		var why []string
 		switch {
+		case first && s.enterBeforeTurn:
+			// An Enter went to the CLI since it opened: a message, or a
+			// dialog's answer. aggy cannot tell which (#147 review).
+			why = append(why, []string{fmt.Sprintf("an Enter went to %s, so a reply may be running and this types into it", on), "a reply may be running", "may be running"}[short])
 		case first:
 			why = append(why, []string{fmt.Sprintf("%s has not finished a turn yet, so check it shows its prompt", on), fmt.Sprintf("no turn yet, check %s's prompt", on), "no turn yet"}[short])
 		case inDoubt:
@@ -2368,21 +2362,24 @@ const (
 func (s *session) dropKeys(b []byte) (rest []byte, drop bool) {
 	if s.dropPaste {
 		if time.Since(s.dropPasteAt) <= pasteDropWait && s.dropPasteN <= pasteDropMax {
-			if i := bytes.Index(b, pasteEnd); i >= 0 {
-				s.dropPaste = false
-				return b[i+len(pasteEnd):], true
+			// The end marker may be split across reads: look in the last
+			// bytes of the one before too (dropPasteEnd).
+			buf := append(append([]byte{}, s.dropPasteEnd...), b...)
+			if i := bytes.Index(buf, pasteEnd); i >= 0 {
+				s.dropPaste, s.dropPasteEnd = false, nil
+				return buf[i+len(pasteEnd):], true
 			}
+			if k := len(pasteEnd) - 1; len(buf) > k {
+				buf = buf[len(buf)-k:]
+			}
+			s.dropPasteEnd = buf
 			s.dropPasteN += len(b)
 			return nil, true
 		}
-		// Too long: keys flow again, the paste's tail as a paste.
-		s.dropPaste, s.reopenPaste = false, true
-	}
-	if s.reopenPaste {
-		s.reopenPaste = false
-		if !bytes.Contains(b, pasteEnd) || bytes.Contains(b, pasteStart) && bytes.Index(b, pasteStart) < bytes.Index(b, pasteEnd) {
-			return nil, false // no end here, or a new paste first: nothing to re-open
-		}
+		// Too long: keys flow again, but the paste stays a paste: the CLI
+		// gets its start marker first, so a newline in the rest is pasted
+		// text, never an Enter, whether or not its end is in this read.
+		s.dropPaste, s.dropPasteEnd = false, nil
 		return append(append([]byte{}, pasteStart...), b...), true
 	}
 	switch {
@@ -2397,6 +2394,7 @@ func (s *session) dropKeys(b []byte) (rest []byte, drop bool) {
 	}
 	if i := bytes.LastIndex(b, pasteStart); i >= 0 && !bytes.Contains(b[i:], pasteEnd) {
 		s.dropPaste, s.dropPasteAt, s.dropPasteN = true, time.Now(), len(b)-i
+		s.dropPasteEnd = append([]byte{}, b[max(i+len(pasteStart), len(b)-len(pasteEnd)+1):]...)
 	}
 	return nil, true
 }
@@ -2422,34 +2420,6 @@ func (s *session) endHandOver() {
 // (docs/verification.md), and aggy cannot see such a screen.
 func (s *session) firstAsk() bool {
 	return !s.turnRan && s.o.Vendor == adapter.Claude && s.ownStart
-}
-
-// firstClean reports aggy's evidence that the CLI shows its empty prompt
-// before its first turn end: firstAsk at a version where the live checks
-// allow it (adapter.FirstTurnSwitch); an earlier session of this CLI in this
-// folder ended a turn (Options.PromptSeen: the folder-trust dialog was
-// answered then); no key passed to the CLI since launch but lines aggy took
-// (keysBeforeTurn: a no-op key on the composer moves a dialog's selection);
-// no doubt of any kind (a popup, an Esc, Claude's
-// other view, a ! or # line), no hold, no question, not the alternate
-// screen. The quiet gap is offerSwitch's.
-func (s *session) firstClean() bool {
-	return s.firstAsk() && adapter.FirstTurnSwitch(s.o.Vendor, s.o.VendorVersion) && s.o.PromptSeen && !s.keysBeforeTurn &&
-		s.atPrompt && !s.inputSinceTurn && s.queued == 0 && !s.held && !s.askOpen() &&
-		s.lenKnown && s.compLen == 0 && !s.knownText() && !s.doubt() && !s.sideView && !s.modeLine && !s.altBlocks()
-}
-
-// firstOneStep reports whether the waiting switch goes in one step before the
-// first turn end: clean evidence, and a switch the person asked for with a
-// key of their own: typed in full and caught from the keys (cleared: aggy
-// typed Ctrl+U's byte), or picked in aggy's list. A hook's, an agent's, a
-// limit's, and a resume never do.
-func (s *session) firstOneStep() bool {
-	sw := s.sw
-	if !s.firstClean() || s.hookAgain || sw.hooked || sw.asked || sw.limit || sw.resume || !sw.picked || !clearsLine(s.o.Vendor, s.o.VendorVersion) {
-		return false
-	}
-	return sw.keyed && sw.cleared || !sw.keyed
 }
 
 // offerNow asks about the waiting switch at once, as the switch key does
@@ -2549,7 +2519,7 @@ func (s *session) markNoTurn() {
 		return
 	}
 	if s.firstAsk() {
-		// offerSwitch asks, or goes in one step; meanwhile the person's own
+		// offerSwitch asks on the status line; meanwhile the person's own
 		// clean quit completes the switch, as before T6982 (#147 review).
 		s.sw.toldNoTurn, s.sw.toldAt = true, time.Now()
 		return
@@ -3000,9 +2970,13 @@ func (s *session) childChecked(r childCheck) {
 	switch {
 	case s.open:
 		s.offerLapsed("picker_open")
+		s.waitNote(fmt.Sprintf("aggy: the switch to %s waits: aggy's screen was open. %s asks again.", s.sw.to, keyName(s.pk.key)))
 		return
-	case !s.atPrompt:
+	case !s.atPrompt && !s.vouchedNow():
+		// A vouched yes (the person's word, before the first turn end, that no
+		// turn runs) goes on; a turn that started since the question does not.
 		s.offerLapsed("not_at_prompt")
+		s.waitNote(fmt.Sprintf("aggy: the switch to %s waits: %s may be running a turn. %s asks again.", s.sw.to, s.o.Vendor, keyName(s.pk.key)))
 		return
 	case r.ok:
 		s.typeExit()

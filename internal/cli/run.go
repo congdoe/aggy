@@ -908,7 +908,6 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		}
 	}
 	var facts supervisor.RunFacts
-	promptSeen := v == adapter.Claude && turnSeenHere(ctx, s, v, pl.parent)
 	// Taken from before the supervisor restores the terminal, so no moment
 	// out of raw mode is left uncovered; kept only for a switch (T6982).
 	handOver := supervisor.HandOverSignals()
@@ -919,7 +918,6 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		ToolsNudge:    proxyNudge,
 		In:            os.Stdin, Out: os.Stdout, Command: cmd,
 		HandOver:      t.SwitchFrom != "",
-		PromptSeen:    promptSeen,
 		VendorVersion: version,
 		// The CLI leads its own session in the pseudo-terminal.
 		Start: func(c adapter.Command, rows, cols int) (supervisor.Child, error) {
@@ -982,10 +980,6 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		handOver.StopAfter(supervisor.HandOverGrace)
 	}
 	px.guard(0, false) // the CLI was reaped: never signal its pid again
-	if facts.TurnRan {
-		// T6982: evidence for a later launch in this folder (turnSeenHere).
-		_ = s.SetChildTurnSeen(ctx, pl.child.ID)
-	}
 	dlog.Release()
 	// Before the next launch, whose brief reads this child's transcript.
 	cids.settle(ctx, appendEvent, &sessionFiles{})
@@ -1034,34 +1028,6 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		_, _ = s.DeleteUnstartedChild(ctx, pl.child.ID)
 	}
 	return ex.Code
-}
-
-// turnSeenHere reports whether an on-screen session of v in par's folder
-// (its canonical form) had a turn end aggy counted (T6982): the CLI had
-// shown its prompt in this folder before, so a folder-trust dialog was
-// answered then, and Claude saves that answer per folder ("trust acceptance
-// is saved per directory", code.claude.com/docs/en/security, "Trust
-// verification"). Not in the home folder, where Claude holds it for one
-// session only, so the dialog comes at each launch (the same page). Any
-// doubt (an unreadable folder, home, or index) is false.
-func turnSeenHere(ctx context.Context, s *store.Store, v adapter.Vendor, par store.Parent) bool {
-	key := par.DirKey
-	if key == "" {
-		k, err := safefs.CanonicalPath(par.Dir)
-		if err != nil || k == "" {
-			return false
-		}
-		key = k
-	}
-	h, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-	if hk, err := safefs.CanonicalPath(h); err != nil || hk == key || h == par.Dir {
-		return false
-	}
-	seen, err := s.TurnSeenInDir(ctx, string(v), key, par.Dir, "")
-	return err == nil && seen
 }
 
 // hooksMissing reports whether aggy's turn-end hook for v is not installed, for

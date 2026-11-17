@@ -25,7 +25,9 @@ adapters are built. These gaps are known:
   full where Ctrl+U's byte, and `/exit` (`ExitCommandAt`), are checked live
   for Claude Code, at 2.1.322 and 2.1.326, and held for later 2.1.x versions
   (`livechecks.go`, design.md section 5); an older version or another minor
-  or major asks on the status line until checked there.
+  or major asks on the status line until checked there. Before Claude's
+  first turn end a switch always asks: from hooks alone aggy cannot tell its
+  prompt from a start-up dialog (T6982, #147 review).
 - The inputs `ConfigPatches` needs: tool toggles, the safety policy, and
   the MCP server list.
 - Patches that create symlinks or delete files.
