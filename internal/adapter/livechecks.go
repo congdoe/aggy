@@ -7,10 +7,19 @@ import (
 )
 
 // liveCheck is what a maintainer's live check recorded in docs/verification.md
-// shows about a CLI's composer, at the versions it ran on. Each fact holds only
-// at those versions: another version keeps aggy's safe side until it is
-// checked again (ComposerCheckOwed).
+// shows about a CLI's composer, at the versions it ran on. Each fact holds at
+// those versions and at later patch versions of the same major.minor line
+// (2.1.x with x at least the first checked patch), until a check at a newer
+// version records a difference: these are editor behaviours (kill-line, the
+// exit command) that vendors rarely change in a patch release, and if one does
+// change, the worst case is a switch that types into a non-empty prompt, which
+// the person sees. An older version, another major or minor, or an unreadable
+// version keeps aggy's safe side (covers). aggy doctor says when the running
+// version is newer than the last check (ComposerCheckOwed), so a maintainer
+// runs it again.
 type liveCheck struct {
+	// versions are the versions checks ran on, oldest first, all on one
+	// major.minor line.
 	versions []string
 	// clear: Ctrl+U as its byte, 0x15, empties the composer, a slash menu open
 	// or not, which aggy types in place of a typed command's Enter (docs/design.md
@@ -25,6 +34,10 @@ type liveCheck struct {
 	// blockedEmpty: after a prompt hook blocked a prompt, the composer was
 	// empty (BlockedPromptEmpty).
 	blockedEmpty bool
+	// firstSwitch: a switch before the first turn end may go in one step when
+	// the session's start was seen and the keys show the prompt clean
+	// (FirstTurnSwitch).
+	firstSwitch bool
 }
 
 // liveChecks are the recorded checks, per CLI.
@@ -45,22 +58,80 @@ type liveCheck struct {
 // - after a UserPromptSubmit block the composer was empty (the supervisor's
 // promptBlocked takes it so on every CLI; TODO(T6975) for the others).
 //
+// Claude Code 2.1.326, live 2026-11-17, a bare pseudo-terminal, no model
+// request: Ctrl+U's byte emptied the composer with /switch grok typed (the
+// slash menu open) and with plain text typed, and /exit then exited 0, both as
+// at 2.1.322. The other facts were not checked again there; they carry over
+// from 2.1.322 as same-line facts.
+//
+// - a maintainer's run in Apple Terminal, 2026-11-12: SessionStart came 1 s
+// after launch, and /switch codex typed in full 5 s later was caught from the
+// keys at the prompt (no turn had ended). On that, and the owner's decision
+// that a switch before the first turn end goes in one step on clean evidence
+// (T6982, firstSwitch), Claude at this version is the one CLI where it does.
+// Unverified (TODO(T6895), a live check owed): that no start-up dialog of
+// Claude's (folder trust, sign-in, an update notice, new terms) is still up
+// after SessionStart; Claude's hooks.md says only that SessionStart runs when
+// a session starts or resumes, and a run on 2026-11-11 saw SessionStart 0.4 s
+// after launch, before an Enter that likely answered the folder-trust
+// dialog. Such a dialog would get /exit and its Enter.
+//
 // Not checked: Ctrl+U as CSI u, a multi-line composer, Ctrl+U with another
 // popup open (the @ file menu, history search), during a running turn,
 // fullscreen mode, Apple Terminal; Up (it recalls history) and the keys'
 // kitty (CSI u) forms on an empty composer.
 // TODO(T6895): the same checks for Codex, Grok, OpenCode, and the keys above.
 var liveChecks = map[Vendor]liveCheck{
-	Claude: {versions: []string{"2.1.322"}, clear: true, exit: true, emptyKeys: []string{"down", "backspace", "right", "home", "end", "delete", "ctrl+u"}, blockedEmpty: true},
+	Claude: {versions: []string{"2.1.322", "2.1.326"}, clear: true, exit: true, emptyKeys: []string{"down", "backspace", "right", "home", "end", "delete", "ctrl+u"}, blockedEmpty: true, firstSwitch: true},
 }
 
-// checkAt returns v's recorded check when version is one it ran on.
+// checkAt returns v's recorded check when it covers version.
 func checkAt(v Vendor, version string) (liveCheck, bool) {
 	c, ok := liveChecks[v]
-	if !ok || !slices.Contains(c.versions, version) {
+	if !ok || !c.covers(version) {
 		return liveCheck{}, false
 	}
 	return c, true
+}
+
+// semver parses a plain major.minor.patch version; ok is false for anything
+// else (a pre-release suffix, a missing part, text).
+func semver(v string) (major, minor, patch int, ok bool) {
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return 0, 0, 0, false
+	}
+	var n [3]int
+	for i, p := range parts {
+		if p == "" || len(p) > 6 {
+			return 0, 0, 0, false
+		}
+		for _, r := range p {
+			if r < '0' || r > '9' {
+				return 0, 0, 0, false
+			}
+			n[i] = n[i]*10 + int(r-'0')
+		}
+	}
+	return n[0], n[1], n[2], true
+}
+
+// covers reports whether version is on the checked major.minor line, at or
+// after the first checked patch.
+func (c liveCheck) covers(version string) bool {
+	if len(c.versions) == 0 {
+		return false
+	}
+	ma, mi, pa, ok := semver(version)
+	cma, cmi, cpa, cok := semver(c.versions[0])
+	return ok && cok && ma == cma && mi == cmi && pa >= cpa
+}
+
+// newer reports whether version is past the last version a check ran on.
+func (c liveCheck) newer(version string) bool {
+	_, _, pa, _ := semver(version)
+	_, _, last, _ := semver(c.versions[len(c.versions)-1])
+	return pa > last
 }
 
 // ClearLineChecked reports whether a live check shows Ctrl+U's byte emptying
@@ -88,16 +159,43 @@ func BlockedPromptEmpty(v Vendor, version string) bool {
 	return ok && c.blockedEmpty
 }
 
-// ComposerCheckOwed says, for a version of v outside the ones its live checks
-// ran on, that they are owed again, or "" when none is owed.
+// FirstTurnSwitch reports whether, on v at version, a switch before the first
+// turn end may go in one step when the supervisor's evidence is clean: the
+// session's start seen, nothing typed since launch but lines aggy took or
+// no-op keys, no doubt, no hold. It rests on the facts recorded with the
+// Claude entry and an owner's decision, and on one unverified point: that no
+// start-up dialog is up after SessionStart (see liveChecks).
+func FirstTurnSwitch(v Vendor, version string) bool {
+	c, ok := checkAt(v, version)
+	return ok && c.firstSwitch
+}
+
+// ComposerCheckOwed says, for aggy doctor, that v's live checks are owed
+// again at version: it is outside the line they cover, so a switch asks on
+// the status line, or newer than the last check, so they carry over until a
+// maintainer runs them again. "" when none is owed.
 func ComposerCheckOwed(v Vendor, version string) string {
 	c, ok := liveChecks[v]
 	if !ok || slices.Contains(c.versions, version) {
 		return ""
 	}
+	last := c.versions[len(c.versions)-1]
+	if c.covers(version) {
+		if !c.newer(version) {
+			return ""
+		}
+		return fmt.Sprintf("%s is newer than the last live check of the composer (Ctrl+U, /exit, keys on an empty prompt), on %s; the checks carry over within the same minor version, and a maintainer should run them again (docs/verification.md)",
+			version, last)
+	}
 	if version == "" {
 		version = "an unreadable version"
 	}
-	return fmt.Sprintf("aggy's live checks of the composer (Ctrl+U, /exit, keys on an empty prompt) were recorded on %s only, not %s: a switch asks on the status line until they are checked again (docs/verification.md)",
-		strings.Join(c.versions, ", "), version)
+	return fmt.Sprintf("aggy's live checks of the composer (Ctrl+U, /exit, keys on an empty prompt) were recorded on %s and hold for later %s versions, not %s: a switch asks on the status line until they are checked there (docs/verification.md)",
+		strings.Join(c.versions, ", "), lineOf(c.versions[0]), version)
+}
+
+// lineOf is version's major.minor line, as "2.1.x".
+func lineOf(version string) string {
+	ma, mi, _, _ := semver(version)
+	return fmt.Sprintf("%d.%d.x", ma, mi)
 }

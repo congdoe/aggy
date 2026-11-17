@@ -117,6 +117,10 @@ func Run(o Options) (Exit, error) {
 	defer s.flushForeign(nil)
 	defer s.flushShutdown()
 	defer s.flushMiss(true)
+	if o.HandOver {
+		s.handFrom = time.Now()
+	}
+	defer s.endHandOver()
 	var srv *Server
 	if o.RunDir != "" {
 		var err error
@@ -437,6 +441,8 @@ type session struct {
 	// aggy must never lead to launching the next CLI. noTurnOpen: the open
 	// note is tellNoTurn's.
 	signalled, noTurnOpen bool
+	// ownStart: a SessionStart naming the on-screen session came (firstAsk).
+	ownStart bool
 	// inputSinceTurn: input has gone to the CLI since its last counted turn
 	// end, or its launch. Any of it may have started a turn, in whatever
 	// encoding the terminal sends Enter, so notices that can wait do not try
@@ -495,6 +501,17 @@ type session struct {
 	// written by copyOut, when the CLI last drew.
 	lastIn  time.Time
 	lastOut atomic.Int64
+	// firstOut is when the CLI first wrote anything (UnixNano), 0 before.
+	firstOut atomic.Int64
+	// handFrom, when not zero, is when a switch's hand-over began: this CLI
+	// starts for a switch (Options.HandOver), and keys go nowhere until it
+	// has drawn its first screen (handOverDrop). dropped counts them, for
+	// one record (endHandOver); exitDropped counts the keys dropped after
+	// aggy typed the exit command for a switch.
+	handFrom time.Time
+	// noted is the last bottom-row note (waitNote), for tests.
+	noted                string
+	dropped, exitDropped int
 	// exitBy fires exitWait after the exit command was typed.
 	exitBy <-chan time.Time
 	// waiting mirrors sw.to != "" for the socket's goroutines, so a
@@ -1021,6 +1038,9 @@ func (s *session) followsFrom(chain []int) bool {
 // other, it means nothing here; naming another, with a source that says the CLI
 // moved, it is followed if it ran where the CLI's own hooks run.
 func (s *session) sessionStart(ev hookEvent, own string) {
+	if own != "" && ev.sessionID == own {
+		s.ownStart = true // firstAsk: the on-screen session has started
+	}
 	if ev.sessionID == "" || ev.sessionID == own || own == "" || !sessionMoves(s.o.Vendor, ev.source) {
 		return
 	}
@@ -1198,6 +1218,16 @@ func refusedMsg(v adapter.Vendor, err error) string {
 func (s *session) send(b []byte) {
 	if terminalReport(b) {
 		s.toChild.push(b) // the terminal answering the CLI, not the user
+		return
+	}
+	if s.handOverDrop() {
+		s.dropped++ // a key meant for the CLI that exited, or typed blind
+		return
+	}
+	if s.sw.typed && s.exitBy != nil && !s.exitGap {
+		// The exit command is typed for a switch: a key now would land in
+		// the CLI as it exits, or after it in the next one.
+		s.exitDropped++
 		return
 	}
 	if mouseOnly(b) {
@@ -1976,8 +2006,11 @@ func (s *session) offerSwitch() {
 	// A notice must never hold output while a turn may be running, and
 	// without a turn end only a launch given no input and no brief has none.
 	// The list this was picked from has already told the user (markNoTurn).
-	if !s.turnRan && s.mayBeRunning() {
+	if !s.turnRan && (s.firstAsk() && s.turnMayRun() || !s.firstAsk() && s.mayBeRunning()) {
 		return
+	}
+	if !s.turnRan && s.held {
+		return // a hold before the first turn end: the CLI waits for the person
 	}
 	if s.askOpen() {
 		if s.askStale && !s.askTold {
@@ -2012,7 +2045,7 @@ func (s *session) offerSwitch() {
 	if s.sw.resume {
 		what = fmt.Sprintf("resume %s with the changed tools", v)
 	}
-	if s.knownText() && s.turnRan {
+	if s.knownText() && (s.turnRan || s.firstAsk()) {
 		// S-1: the exit command would go after the unsent text and send
 		// both, so the switch waits; the user is told once.
 		if !s.toldDirty {
@@ -2057,11 +2090,22 @@ func (s *session) offerSwitch() {
 		s.openPicker()
 		return
 	}
-	if !s.turnRan {
+	if !s.turnRan && !s.firstAsk() {
 		s.tellNoTurn(what)
 		return
 	}
-	if s.sw.keyed && s.sw.cleared && !s.sw.hooked && !s.sw.resume && holdSignal(on) && clearsLine(on, s.o.VendorVersion) && !s.doubt() {
+	if s.firstOneStep() {
+		// T6982, the owner's decision: on Claude at a version in the live-check
+		// table, a switch before the first turn end goes in one step on clean
+		// evidence (firstClean), typed in full and caught from the keys (aggy
+		// typed Ctrl+U's byte itself) or picked in aggy's own list, a
+		// deliberate key at aggy's screen. Not one from a hook.
+		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: s.turnCause(), Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "keyed": s.sw.keyed, "first_turn": true})})
+		s.pk.preselect = ""
+		s.confirmSwitch()
+		return
+	}
+	if s.turnRan && s.sw.keyed && s.sw.cleared && !s.sw.hooked && !s.sw.resume && holdSignal(on) && clearsLine(on, s.o.VendorVersion) && !s.doubt() {
 		// T6908: the person typed the switch at this prompt, and the CLI says
 		// when it waits for them, so the command was the confirmation. All the
 		// checks above still held: a turn ended, nothing holds it, the prompt
@@ -2082,9 +2126,18 @@ func (s *session) offerSwitch() {
 	// short is how far a doubt's line is shortened (the fit below).
 	short := 0
 	inDoubt := s.turnRan && s.doubt()
+	// Before the first turn end (firstAsk) the line says what aggy is unsure
+	// of, as a doubt's does, and its yes stands for the look (typeExit).
+	first := !s.turnRan
+	if first {
+		inDoubt, s.sw.doubtOK = true, true
+	}
 	confirmLine := func(model, tools string) string {
 		var why []string
-		if inDoubt {
+		switch {
+		case first:
+			why = append(why, []string{fmt.Sprintf("%s has not finished a turn yet, so check it shows its prompt", on), fmt.Sprintf("no turn yet, check %s's prompt", on), "no turn yet"}[short])
+		case inDoubt:
 			why = append(why, []string{"the prompt may not be empty", "prompt may not be empty", "may not be empty"}[short])
 		}
 		switch {
@@ -2124,7 +2177,7 @@ func (s *session) offerSwitch() {
 	}
 	line := confirmLine(s.sw.choice.Model, tools)
 	lines := []string{line}
-	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: s.turnCause(), Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "asked": s.sw.asked, "limit": s.sw.limit, "resume": s.sw.resume})})
+	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: s.turnCause(), Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "asked": s.sw.asked, "limit": s.sw.limit, "resume": s.sw.resume, "first_turn": first})})
 	if !s.sw.resume {
 		s.pk.preselect = "" // offered once (O56-5); a limit's stays past a resume
 	}
@@ -2186,6 +2239,143 @@ func (s *session) offerSwitch() {
 	s.openPicker()
 }
 
+// HandOverSignals takes SIGINT and SIGQUIT until the returned func is called
+// (T6982). The caller takes them from just before Run until a switch's next
+// launch returns: between two CLIs the terminal is out of raw mode, so a
+// Ctrl+C the person meant for the CLI that exited, or the switch key
+// (Ctrl+\), is the line discipline's signal. aggy must not die of it, and
+// the key never reaches the next CLI. Run takes them too, as before.
+func HandOverSignals() func() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGQUIT)
+	return func() { signal.Stop(c) }
+}
+
+// handOverMax bounds a switch's hand-over: keys flow again after it even if
+// the new CLI drew nothing. handOverSettle is how long after its first output
+// they still go nowhere, while it draws its first screen.
+const (
+	handOverMax    = 2 * time.Second
+	handOverSettle = 300 * time.Millisecond
+)
+
+// handOverDrop reports whether keys go nowhere now: a switch's hand-over,
+// until the new CLI has drawn its first screen (handOverSettle after its
+// first output) or handOverMax. The switch key is the key filter's, so it
+// still opens the list.
+func (s *session) handOverDrop() bool {
+	if s.handFrom.IsZero() {
+		return false
+	}
+	now := time.Now()
+	first := s.firstOut.Load()
+	if now.Sub(s.handFrom) >= handOverMax || first != 0 && now.Sub(time.Unix(0, first)) >= handOverSettle {
+		s.endHandOver()
+		return false
+	}
+	return true
+}
+
+// endHandOver ends a switch's hand-over and records how many keys went
+// nowhere, then or after the exit command (a count only).
+func (s *session) endHandOver() {
+	s.handFrom = time.Time{}
+	if s.dropped > 0 {
+		s.log(diag.Rec{Event: diag.EvKeysDiscarded, Attrs: map[string]any{"count": s.dropped, "when": "start"}})
+		s.dropped = 0
+	}
+	if s.exitDropped > 0 {
+		s.log(diag.Rec{Event: diag.EvKeysDiscarded, Attrs: map[string]any{"count": s.exitDropped, "when": "exit"}})
+		s.exitDropped = 0
+	}
+}
+
+// firstAsk reports whether a switch before the first turn end is asked
+// about rather than refused (T6982): on Claude only, once a SessionStart
+// naming the on-screen session came. Other CLIs keep no_turn_yet: Codex
+// opened live on an update prompt whose Enter runs the upgrade
+// (docs/verification.md), and aggy cannot see such a screen.
+func (s *session) firstAsk() bool {
+	return !s.turnRan && s.o.Vendor == adapter.Claude && s.ownStart
+}
+
+// firstClean reports aggy's evidence that the CLI shows its empty prompt
+// before its first turn end: firstAsk at a version where the live checks
+// allow it (adapter.FirstTurnSwitch); nothing typed since launch but no-op
+// keys and lines aggy took; no doubt of any kind (a popup, an Esc, Claude's
+// other view, a ! or # line), no hold, no question, not the alternate
+// screen. The quiet gap is offerSwitch's.
+func (s *session) firstClean() bool {
+	return s.firstAsk() && adapter.FirstTurnSwitch(s.o.Vendor, s.o.VendorVersion) &&
+		s.atPrompt && !s.inputSinceTurn && s.queued == 0 && !s.held && !s.askOpen() &&
+		s.lenKnown && s.compLen == 0 && !s.knownText() && !s.doubt() && !s.sideView && !s.modeLine && !s.altBlocks()
+}
+
+// firstOneStep reports whether the waiting switch goes in one step before the
+// first turn end: clean evidence, and a switch the person asked for with a
+// key of their own: typed in full and caught from the keys (cleared: aggy
+// typed Ctrl+U's byte), or picked in aggy's list. A hook's, an agent's, a
+// limit's, and a resume never do.
+func (s *session) firstOneStep() bool {
+	sw := s.sw
+	if !s.firstClean() || sw.hooked || sw.asked || sw.limit || sw.resume || !sw.picked || !clearsLine(s.o.Vendor, s.o.VendorVersion) {
+		return false
+	}
+	return sw.keyed && sw.cleared || !sw.keyed
+}
+
+// offerNow asks about the waiting switch at once, as the switch key does
+// (a second /switch typed in full, or a pick again), and when it cannot,
+// says on the bottom row what the switch waits for and the key that gets
+// through (switchWaitLine).
+func (s *session) offerNow() {
+	if s.sw.to == "" || s.sw.typed {
+		return
+	}
+	s.sw.again = true
+	s.offerSwitch()
+	s.sw.again = false
+	if !s.open && !s.sw.typed && s.sw.to != "" && s.sw.checkSeq == 0 {
+		s.waitNote(s.switchWaitLine())
+	}
+}
+
+// waitFor says in a few words what the waiting switch waits for.
+func (s *session) waitFor() string {
+	on := s.o.Vendor
+	switch {
+	case !s.turnRan && !s.firstAsk():
+		return fmt.Sprintf("a turn end from %s, or for you to quit it", on)
+	case s.held || s.askOpen():
+		return fmt.Sprintf("your answer to %s", on)
+	case s.knownText():
+		return "the text you typed to be sent or cleared"
+	case s.turnMayRun():
+		return fmt.Sprintf("%s's turn end", on)
+	}
+	return fmt.Sprintf("%s to stop drawing", on)
+}
+
+// switchWaitLine is one bottom-row line: what the waiting switch waits for,
+// and the key that gets through.
+func (s *session) switchWaitLine() string {
+	v, key := s.sw.to, keyName(s.pk.key)
+	var way string
+	switch {
+	case !s.turnRan && !s.firstAsk():
+		way = fmt.Sprintf("%s says how.", key)
+	case s.held || s.askOpen():
+		way = fmt.Sprintf("Answer it, then %s, pick %s.", key, v)
+	case s.knownText():
+		way = fmt.Sprintf("Clear it, Enter, then %s, pick %s.", key, v)
+	case s.turnMayRun():
+		way = fmt.Sprintf("None running? %s, pick %s.", key, v)
+	default:
+		way = "It asks then."
+	}
+	return fmt.Sprintf("aggy: the switch to %s waits for %s. %s", v, s.waitFor(), way)
+}
+
 // tellNoTurn repeats, once per pick, what the list said, with room to explain,
 // for someone who picked without reading it. offerSwitch comes here only when
 // nothing can be running, so this note holds no turn's output. what is the
@@ -2225,8 +2415,8 @@ var noTurnPickFresh = noTurnPickMinutes * time.Minute
 // markNoTurn notes a pick from a list that said to quit the CLI (openList):
 // with no turn ended, its clean exit now completes the switch.
 func (s *session) markNoTurn() {
-	if s.turnRan {
-		return
+	if s.turnRan || s.firstAsk() {
+		return // firstAsk: offerSwitch asks, or goes in one step
 	}
 	s.sw.toldNoTurn, s.sw.toldAt = true, time.Now()
 	s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeNoTurnYet, Cause: s.sw.rec,
@@ -2711,7 +2901,7 @@ func (s *session) typeExit() {
 		return
 	}
 	switch {
-	case !s.turnRan:
+	case !s.turnRan && !s.firstAsk():
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeNoTurnYet, Cause: s.sw.rec, Msg: "the switch key was pressed, but no turn has ended since the CLI launched"})
 		return
 	case s.doubt() && !s.sw.doubtOK:
@@ -2746,7 +2936,7 @@ const altSettle = 50 * time.Millisecond
 func (s *session) openList() {
 	s.pk.list()
 	s.pk.waiting, s.pk.checking, s.pk.resume = s.sw.to, false, s.sw.resume
-	s.pk.noTurn, s.pk.on = !s.turnRan, s.o.Vendor
+	s.pk.noTurn, s.pk.on = !s.turnRan && !s.firstAsk(), s.o.Vendor
 	s.pk.noHooks = s.o.HooksMissing && !s.hookSeen.Load()
 	s.pk.moveRefused = s.moveRefused
 	// A pick would wait: section 5's rule is to say so here, in the list the
@@ -2968,6 +3158,7 @@ func (s *session) pickSwitch(c Choice, keyed bool) {
 		s.sw.doubtOK = s.sw.toldDoubt || s.pk.doubtSaid // told, and picked again: the person has looked
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Cause: s.sw.rec, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked), "again": true})})
 		s.markNoTurn()
+		s.offerNow()
 	default:
 		if err := s.offered(picked); err != nil && !errors.Is(err, ErrChecking) {
 			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchVendor, Msg: refusedMsg(picked, err), Attrs: map[string]any{"to": string(picked)}})
@@ -2977,6 +3168,9 @@ func (s *session) pickSwitch(c Choice, keyed bool) {
 			s.pk.tell(fmt.Sprintf("Cannot switch to %s: %v", picked, err))
 			s.openPicker()
 			return
+		}
+		if prev := s.sw.to; prev != "" && !s.open {
+			s.waitNote(fmt.Sprintf("aggy: the switch to %s replaces the one to %s.", picked, prev))
 		}
 		// A typed one was not picked from the list, whose words it never saw.
 		s.setSwitch(pendingSwitch{to: picked, choice: c, picked: true, toldDoubt: s.pk.doubtSaid && !keyed, keyed: keyed, cleared: keyed && s.byteClear})
@@ -3117,6 +3311,7 @@ func (s *session) switchKey() {
 // waitNote writes text once on the bottom row, with the cursor saved and put
 // back, and leaves the CLI's output running: its next drawing may cover it.
 func (s *session) waitNote(text string) {
+	s.noted = text
 	rows, cols := s.t.size()
 	if rows < 1 {
 		return
@@ -3188,7 +3383,9 @@ func (s *session) copyOut() {
 	for {
 		n, err := s.child.Read(buf)
 		if n > 0 {
-			s.lastOut.Store(time.Now().UnixNano())
+			now := time.Now().UnixNano()
+			s.lastOut.Store(now)
+			s.firstOut.CompareAndSwap(0, now)
 			s.outMu.Lock()
 			s.alt.feed(buf[:n])
 			_, werr := s.o.Out.Write(buf[:n])

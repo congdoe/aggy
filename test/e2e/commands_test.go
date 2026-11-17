@@ -588,3 +588,46 @@ func TestTypedPickerOpens(t *testing.T) {
 		t.Fatalf("interactive runs = %+v, want claude alone", runs)
 	}
 }
+
+// TestFirstTurnSwitch (T6982, the owner's run in Apple Terminal): a fresh
+// Claude at the checked version, its SessionStart seen and no turn ended,
+// /switch codex typed in full: aggy types /exit in one step, with no question,
+// and Codex starts. A Ctrl+C sent around the hand-over, meant for Claude, goes
+// nowhere: the owner's Codex exited 130 from one. Where it lands depends on
+// timing: after the exit command (dropped by the supervisor), between the two
+// CLIs (the terminal's own signal, which aggy takes), or before Codex drew
+// (dropped); the unit tests pin each.
+func TestFirstTurnSwitch(t *testing.T) {
+	w := newWorld(t)
+	setup := exec.Command(buildAggy(t), "setup", "--yes")
+	setup.Dir = w.cwd
+	setup.Env = []string{"HOME=" + w.home, "AGGY_HOME=" + filepath.Join(w.home, ".aggy"), "PATH=" + w.bin + ":/usr/bin:/bin"}
+	if out, err := setup.CombinedOutput(); err != nil {
+		t.Fatalf("aggy setup: %v\n%s", err, out)
+	}
+	script := `[ "$AGGY_VENDOR" = claude ] || exit 0; exec ` + aggySh(t) + ` hook --vendor claude "$1"`
+	sc := map[string]any{
+		"stdout":       "READY>",
+		"hook_command": []string{"/bin/sh", "-c", script, "sh"},
+		// At launch the fake runs its hooks once: a SessionStart, and no
+		// turn end.
+		"hooks":         []map[string]any{{"event": "SessionStart", "payload": map[string]any{"session_id": "{session_id}", "source": "startup"}}},
+		"session_files": startedFiles(),
+	}
+	claudeVersion(t, w, "2.1.326") // checked live, as is the line from 2.1.322
+	s := w.start(t, sc, "run", "claude")
+	s.waitWithin([]byte("READY>"), offerTimeout)
+	time.Sleep(1500 * time.Millisecond) // past the launch's quiet gap, and the SessionStart
+	s.typeSlowly("/switch codex")
+	s.send([]byte("\r"))
+	s.waitWithin([]byte("/exit"), offerTimeout)
+	s.send([]byte{0x03}) // the person's Ctrl+C, meant for Claude
+	w.waitRuns(t, s, 2)  // and past the hand-over
+	s.send([]byte("/exit\r"))
+	if code := s.exit(); code != 0 {
+		t.Fatalf("aggy exit = %d: the Ctrl+C reached Codex?", code)
+	}
+	if runs := interactiveRuns(t, w); len(runs) != 2 || runs[1].Vendor != "codex" {
+		t.Fatalf("interactive runs = %+v, want claude then codex", runs)
+	}
+}

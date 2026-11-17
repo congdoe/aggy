@@ -157,10 +157,7 @@ func TestToolSessionSwitch(t *testing.T) {
 	s := w.start(t, sc, "run", "--tool", "context7", "grok")
 	s.waitWithin([]byte("-> claude. Ctrl+"), offerTimeout)
 	s.confirmPastGuard(time.Now())
-	deadline := time.Now().Add(timeout)
-	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
+	w.waitRuns(t, s, 2)
 	s.send([]byte("/exit\r"))
 	if code := s.exit(); code != 0 {
 		t.Fatalf("aggy exit = %d", code)
@@ -305,10 +302,7 @@ func TestToolShimSwitchResume(t *testing.T) {
 	s := w.start(t, sc, "run", "grok")
 	s.waitWithin([]byte("-> claude. Ctrl+"), offerTimeout)
 	s.confirmPastGuard(time.Now())
-	deadline := time.Now().Add(timeout)
-	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
+	w.waitRuns(t, s, 2)
 	s.send([]byte("/exit\r"))
 	if code := s.exit(); code != 0 {
 		t.Fatalf("aggy exit = %d", code)
@@ -428,10 +422,7 @@ func TestToolOnResumes(t *testing.T) {
 	}
 	s.waitWithin([]byte("tools +context7, same session -> claude. Ctrl+"), offerTimeout)
 	s.confirmPastGuard(time.Now())
-	deadline := time.Now().Add(timeout)
-	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
+	w.waitRuns(t, s, 2)
 	s.send([]byte("/exit\r"))
 	if code := s.exit(); code != 0 {
 		t.Fatalf("aggy exit = %d", code)

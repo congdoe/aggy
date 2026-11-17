@@ -153,7 +153,7 @@ func TestHookAlwaysBlocks(t *testing.T) {
 // keys did not spell, changes nothing (H1).
 func TestBlockedSpelledRecovers(t *testing.T) {
 	s, _ := viewSess(t, adapter.Claude, "")
-	s.o.VendorVersion = "2.1.330" // Backspace unchecked: the key catch loses the line
+	s.o.VendorVersion = "2.2.0" // Backspace unchecked: the key catch loses the line
 	s.askDrops = []time.Time{time.Now(), time.Now(), time.Now()}
 	s.send([]byte(kBS))
 	s.send([]byte("/inbox\r")) // its Enter in the same read: spelled, no typedMatch

@@ -207,6 +207,7 @@ func TestAntigravitySwitchTo(t *testing.T) {
 	s.waitWithin([]byte("brief -> antigravity. Ctrl+"), offerTimeout)
 	s.confirmPastGuard(time.Now())
 	s.waitWithin([]byte("Do you trust the contents of this project?"), offerTimeout)
+	time.Sleep(drawnWait) // a key before the CLI has settled is dropped
 	s.send([]byte("\r"))
 	s.waitWithin([]byte("ok: "), offerTimeout)
 	s.send([]byte("/exit\r"))

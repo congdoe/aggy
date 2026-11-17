@@ -269,7 +269,7 @@ func TestTypedTracker(t *testing.T) {
 // the prompt, said yes to, at a version where a live check shows the blocked
 // prompt leaving the composer empty.
 func TestSpelledYesOneStep(t *testing.T) {
-	for _, version := range []string{checkedClaude, "2.1.330"} {
+	for _, version := range []string{checkedClaude, "2.2.0"} {
 		s, _ := viewSess(t, adapter.Claude, "")
 		s.o.VendorVersion = version
 		s.input = s.send

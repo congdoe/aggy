@@ -39,7 +39,18 @@ func (w *world) waitRuns(t *testing.T, s *session, n int) {
 			t.Fatalf("%d interactive runs never started; terminal: %q", n, s.screen())
 		}
 	}
+	if n > 1 {
+		// Keys typed before the CLI switched to has drawn its first screen
+		// are dropped (T6982, at most 2 s from its launch): wait it out, as
+		// a person waits to see the CLI before typing.
+		time.Sleep(2300 * time.Millisecond)
+	}
 }
+
+// drawnWait is how long a test waits, once the CLI switched to has drawn,
+// before typing to it: keys are dropped until 0.3 s after its first output
+// (T6982).
+const drawnWait = 500 * time.Millisecond
 
 // TestLimitSwitchWithBrief (T6683): the on-screen Claude reports its plan
 // limit (the fake's rate_limit StopFailure hook and limit text); aggy

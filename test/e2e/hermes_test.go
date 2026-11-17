@@ -211,6 +211,7 @@ func TestHermesSwitchTo(t *testing.T) {
 	s.waitWithin([]byte("brief -> hermes. Ctrl+"), offerTimeout)
 	s.confirmPastGuard(time.Now())
 	s.waitWithin([]byte("Event:   on_session_end"), offerTimeout)
+	time.Sleep(drawnWait) // a key before the CLI has settled is dropped
 	s.send([]byte("y\r"))
 	s.waitWithin([]byte("Event:   pre_tool_call"), offerTimeout)
 	s.send([]byte("y\r"))

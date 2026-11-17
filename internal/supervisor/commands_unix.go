@@ -399,7 +399,7 @@ func (s *session) blockPlain(not string) string {
 	case "screen_open":
 		return "aggy's own screen is open"
 	case "switch_waiting":
-		return "a switch is already waiting"
+		return fmt.Sprintf("the switch to %s waits for %s", s.sw.to, s.waitFor())
 	}
 	return "the keys do not vouch for it"
 }
@@ -450,6 +450,19 @@ func (s *session) hookCommand(c sessioncmd.Command, line string) error {
 		return s.blockHook(c, line, diag.CodeCommandKeyboard, append(doubts, "keyboard_only"), s.blockPlain("keyboard_only"))
 	case s.open:
 		return s.blockHook(c, line, diag.CodeCommandNotTaken, append(doubts, "screen_open"), s.blockPlain("screen_open"))
+	case (c.Kind == sessioncmd.Switch || c.Kind == sessioncmd.Picker) && s.sw.to != "" && !s.sw.typed && s.typedMatch(line) && (!s.sideView || s.sideEsc) && !s.held && !s.askOpen() && s.hookAsk == nil:
+		// A second switch the person typed while one waits (T6982): another
+		// vendor replaces it (actTyped, a hook's switch); the same one, or the
+		// list, asks now if it can, or says what the switch waits for. Neither
+		// changes aggy's view of the CLI (#146 review, fourth round).
+		if c.Kind == sessioncmd.Switch && c.Vendor != s.sw.to {
+			return s.actTyped(c)
+		}
+		s.hookedName, s.hookedEnter = c.Name, s.enterAt
+		s.heldMiss = nil
+		s.log(diag.Rec{Event: diag.EvCommandCaught, Attrs: map[string]any{"command": c.Name, "via": "hook", "typed": true, "again": true}})
+		s.offerNow()
+		return nil
 	case (c.Kind == sessioncmd.Switch || c.Kind == sessioncmd.Picker) && s.sw.to != "":
 		return s.blockHook(c, line, diag.CodeCommandNotTaken, append(doubts, "switch_waiting"), s.blockPlain("switch_waiting"))
 	case len(doubts) > 0 && s.typedMatch(line) && (!s.sideView || s.sideEsc) && !s.held && !s.askOpen() && s.hookAsk == nil:
@@ -507,11 +520,16 @@ func (s *session) actTyped(c sessioncmd.Command) error {
 		s.openPicker()
 		return nil
 	}
+	prev := s.sw.to
 	s.runCommand(c, false)
 	if c.Kind == sessioncmd.Switch && s.sw.to == c.Vendor && !s.sw.typed {
 		s.sw.hooked, s.sw.keyed, s.sw.cleared = true, false, false
 		if s.turnMayRun() && !s.open {
-			s.waitNote(fmt.Sprintf("aggy: switches to %s at %s's turn end. None coming? %s, pick %s.", c.Vendor, s.o.Vendor, keyName(s.pk.key), c.Vendor))
+			to := string(c.Vendor)
+			if prev != "" && prev != c.Vendor {
+				to += " (not " + string(prev) + ")" // it replaces the one that waited
+			}
+			s.waitNote(fmt.Sprintf("aggy: switches to %s at %s's turn end. None coming? %s, pick %s.", to, s.o.Vendor, keyName(s.pk.key), c.Vendor))
 		}
 	}
 	return nil

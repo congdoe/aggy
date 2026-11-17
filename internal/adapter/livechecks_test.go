@@ -5,9 +5,12 @@ import (
 	"testing"
 )
 
-// TestLiveChecksByVersion (#146 review): the composer's live checks hold only
-// at the version they ran on; any other version, or an unreadable one, gets
-// none of them and is told a check is owed.
+// TestLiveChecksByVersion (#146 review; T6982): the composer's live checks
+// hold at the versions they ran on and at later patch versions of the same
+// major.minor line; an older version, another minor or major, or an
+// unreadable or pre-release version gets none of them. aggy doctor says a
+// check is owed for those, and for a covered version newer than the last
+// check.
 func TestLiveChecksByVersion(t *testing.T) {
 	for _, c := range []struct {
 		v              Vendor
@@ -17,13 +20,22 @@ func TestLiveChecksByVersion(t *testing.T) {
 		owed           bool
 	}{
 		{Claude, "2.1.322", true, true, true, false, true, false},
-		{Claude, "2.1.330", false, false, false, false, false, true},
+		{Claude, "2.1.326", true, true, true, false, true, false},
+		{Claude, "2.1.324", true, true, true, false, true, false},
+		{Claude, "2.1.330", true, true, true, false, true, true},
 		{Claude, "2.1.311", false, false, false, false, false, true},
+		{Claude, "2.1.32", false, false, false, false, false, true},
+		{Claude, "2.2.0", false, false, false, false, false, true},
+		{Claude, "3.1.330", false, false, false, false, false, true},
+		{Claude, "2.1.330-beta", false, false, false, false, false, true},
 		{Claude, "", false, false, false, false, false, true},
 		{Codex, "0.164.0", false, false, false, false, false, false},
 		{Grok, "2.1.322", false, false, false, false, false, false},
 		{OpenCode, "2.2.5", false, true, false, false, false, false},
 	} {
+		if got := FirstTurnSwitch(c.v, c.version); got != c.clear {
+			t.Errorf("%s %q: FirstTurnSwitch = %v", c.v, c.version, got)
+		}
 		if got := ClearLineChecked(c.v, c.version); got != c.clear {
 			t.Errorf("%s %q: ClearLineChecked = %v", c.v, c.version, got)
 		}
@@ -46,7 +58,7 @@ func TestLiveChecksByVersion(t *testing.T) {
 		if (owed != "") != c.owed {
 			t.Errorf("%s %q: ComposerCheckOwed = %q", c.v, c.version, owed)
 		}
-		if c.owed && !strings.Contains(owed, "2.1.322") {
+		if c.owed && !strings.Contains(owed, "2.1.32") {
 			t.Errorf("%s %q: the note names no checked version: %q", c.v, c.version, owed)
 		}
 	}
