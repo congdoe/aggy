@@ -115,6 +115,10 @@ forwards (`internal/screen`, T7016) and asks the vendor's classifier, an
   random-size chunks, and every dialog recorded must read `ScreenOther` at
   every byte.
 
+- **For its use.** The supervisor reads it only before the first turn end;
+  marks may be tuned for that time (Claude's reads an empty composer below an
+  echoed prompt as `ScreenOther`).
+
 Only Claude Code has one (`claude.ClassifyScreen`, recorded at 2.1.326;
 docs/verification.md, "Claude Code's screen"), wired by `internal/cli`
 (`screenClassifiers`). Codex, Grok, OpenCode, Hermes, and Antigravity have none:

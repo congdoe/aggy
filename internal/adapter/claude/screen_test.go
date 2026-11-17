@@ -65,7 +65,10 @@ var chunkings = []struct {
 // TestClassifyRecording (T7016): the live recording replayed mark by mark,
 // whole and in 1-byte and random-size chunks; after each mark the class is
 // what the screen showed. slash_menu may be PromptText or Other, and
-// bash_mode anything but PromptEmpty; exit is not judged.
+// bash_mode anything but PromptEmpty; exit is not judged. After /model and
+// Enter the echo "❯ /model" stays above the composer, so from model_dialog_esc
+// on, an empty composer reads as Other (#149 review, L3): the classifier is
+// for the time before the first prompt only.
 func TestClassifyRecording(t *testing.T) {
 	raw, m := readScreenFixture(t)
 	if m.Version != screenMarks.version {
@@ -81,12 +84,12 @@ func TestClassifyRecording(t *testing.T) {
 		"bash_mode":        {text, other, busy},
 		"bash_mode_left":   {empty},
 		"model_dialog":     {other},
-		"model_dialog_esc": {empty},
-		"left_view":        {empty}, // Left drew nothing at 2.1.326
-		"left_view_esc":    {empty},
-		"idle_again":       {empty},
+		"model_dialog_esc": {other},
+		"left_view":        {other}, // Left drew nothing at 2.1.326
+		"left_view_esc":    {other},
+		"idle_again":       {other},
 		"turn_running":     {busy},
-		"turn_done":        {empty},
+		"turn_done":        {other},
 	}
 	for _, ch := range chunkings {
 		t.Run(ch.name, func(t *testing.T) {
@@ -109,6 +112,47 @@ func TestClassifyRecording(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRecordingExitRedraw (#149 review, L2): Claude 2.1.326's redraw at
+// /exit homes the cursor and erases every row with EL 2 before it draws: the
+// copy takes it as a full clear, so it is sure again after it.
+func TestRecordingExitRedraw(t *testing.T) {
+	raw, m := readScreenFixture(t)
+	s := screen.New(m.Rows, m.Cols)
+	s.Feed(raw)
+	if s.Snapshot().Unsure {
+		t.Fatal("still Unsure after the redraw at /exit")
+	}
+}
+
+// TestClassifyAfterEnter (#149 review): between /model's Enter and its
+// dialog, Claude 2.1.326 redraws its composer, empty, with no "esc to
+// interrupt" below; the echo of the line above it keeps that from reading as
+// the empty prompt, at every byte from the echo on. (Before the echo the
+// screen is still the idle one the Enter was typed at.)
+func TestClassifyAfterEnter(t *testing.T) {
+	raw, m := readScreenFixture(t)
+	for _, k := range m.Marks {
+		if k.State != "model_dialog" {
+			continue
+		}
+		echo := strings.Index(string(raw[k.From:k.To]), "/model\x1b[39m")
+		if echo < 0 {
+			t.Fatal("no echo of /model in the recording")
+		}
+		from := k.From + echo
+		s := screen.New(m.Rows, m.Cols)
+		s.Feed(raw[:from])
+		for i := from; i < k.To; i++ {
+			s.Feed(raw[i : i+1])
+			if got := ClassifyScreen(m.Version, s.Snapshot()); got == adapter.ScreenPromptEmpty {
+				t.Fatalf("after byte %d: the empty prompt", i)
+			}
+		}
+		return
+	}
+	t.Fatal("no model_dialog mark")
 }
 
 // TestClassifyTrustDialog (T7016): Claude 2.1.326 in a folder it had not
@@ -162,6 +206,9 @@ func TestClassifyMarks(t *testing.T) {
 		{"the upper rule cut", "2.1.326", "\x1b[A\x1b[50G \x1b[B\x1b[3G", 30, 100, adapter.ScreenOther},
 		{"the lower rule cut", "2.1.326", "\x1b[B\x1b[100G \x1b[A\x1b[3G", 30, 100, adapter.ScreenOther},
 		{"a menu below", "2.1.326", "\x1b[3B\x1b[3G❯ /x\x1b[3A\x1b[3G", 30, 100, adapter.ScreenOther},
+		{"a selection above a focused composer", "2.1.326", "\x1b[3A\x1b[3G❯ Yes\x1b[3B\x1b[3G", 30, 100, adapter.ScreenOther},
+		{"a selection above, in column 0", "2.1.326", "\x1b[2A\r❯ No\x1b[2B\x1b[3G", 30, 100, adapter.ScreenOther},
+		{"the mark above, past column 2", "2.1.326", "\x1b[3A\x1b[10G❯\x1b[3B\x1b[3G", 30, 100, adapter.ScreenPromptEmpty},
 		{"a turn running", "2.1.326", "\x1b[3B\x1b[40Gesc to interrupt\x1b[3A\x1b[3G", 30, 100, adapter.ScreenBusy},
 		{"the alternate screen", "2.1.326", "\x1b[?1049h", 30, 100, adapter.ScreenOther},
 		{"back from the alternate screen", "2.1.326", "\x1b[?1049h\x1b[2J\x1b[?1049l", 30, 100, adapter.ScreenPromptEmpty},

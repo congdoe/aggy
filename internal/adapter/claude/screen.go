@@ -27,7 +27,16 @@ import (
 // "No, exit", with ❯ and a plain space, with no rule around it and the cursor
 // hidden. Left on a fresh session's empty composer drew nothing at this
 // version. The MCP approval, update, and terms dialogs were never recorded:
-// they read as adapter.ScreenOther only if they lack these marks.
+// they read as adapter.ScreenOther only if they lack these marks. The run was
+// nested in another Claude Code session, which adds a warning line to the
+// footer; the marks read nothing below the lower rule but the busy text and
+// the menu's mark, so a normal run's footer (unverified) should not matter.
+//
+// The empty prompt also needs no ❯ in columns 0 to 2 above the composer
+// (#149 review): before the first prompt nothing is echoed there. After one,
+// its echo is, so the empty composer then reads as adapter.ScreenOther: the
+// marks are tuned for the time before the first turn end, the only time the
+// supervisor reads them.
 var screenMarks = struct {
 	version      string
 	prompt, sep  rune
@@ -86,10 +95,23 @@ func ClassifyScreen(version string, s *screen.Snapshot) adapter.ScreenState {
 	switch {
 	case !empty:
 		return adapter.ScreenPromptText
-	case s.Col == m.textCol:
-		return adapter.ScreenPromptEmpty
+	case s.Col != m.textCol:
+		return adapter.ScreenOther
 	}
-	return adapter.ScreenOther
+	// Before the first turn end, with no Enter sent, nothing above the
+	// composer carries the prompt mark: no prompt was echoed, and a ❯ there
+	// is another selection (a menu or a dialog's choice) drawn above a
+	// composer (#149 review). After a turn the echo of each prompt is there,
+	// so the empty prompt then reads as Other: the classifier is for the
+	// first turn only.
+	for row := range r {
+		for c := 0; c <= m.textCol; c++ {
+			if s.Cell(row, c).R == m.prompt {
+				return adapter.ScreenOther
+			}
+		}
+	}
+	return adapter.ScreenPromptEmpty
 }
 
 // rule reports whether row r is ch across the whole screen.
