@@ -192,9 +192,9 @@ func prepareOpenCode(in openCodeInput) (openCodeSetup, error) {
 		return out, err
 	}
 	shared, skipped := parity.OpenCodeShared(in.rules)
-	if n := len(skipped); n > 0 {
-		out.warns = append(out.warns, skippedNote(n, "OpenCode", !in.rules.Trusted))
-	}
+	// #148 review H2: denies and asks that do not reach OpenCode are said at
+	// launch; allows that do not are aggy doctor's (launchStatus).
+	out.warns = append(out.warns, skippedLines(skipped, "OpenCode")...)
 	// The decision hook's plan (T6976), for an on-screen launch with the policy.
 	decide, sum := "", ""
 	if !in.noPolicy && in.plan.OnScreen {
@@ -367,6 +367,19 @@ func readInstruction(path string) (string, error) {
 // openCodeUntrustedNote: a launch says it once for each repo root, and aggy
 // doctor after (T7015).
 const openCodeUntrustedKey = "opencode-untrusted\x00"
+
+// openCodeNoteFolder is the folder openCodeUntrustedNote's record names: the
+// repo root, or outside a repo the launch folder, canonical, so one record
+// never stands for every folder outside a repo (#148 review L2).
+func openCodeNoteFolder(root, cwd string) string {
+	if root != "" {
+		return root
+	}
+	if c, err := safefs.CanonicalPath(cwd); err == nil {
+		return c
+	}
+	return filepath.Clean(cwd)
+}
 
 // openCodeUntrustedNote says what an untrusted repo gets. root is the real
 // one, as trust records it: a link to a repo must name the repo it leads to.

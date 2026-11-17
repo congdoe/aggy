@@ -657,7 +657,8 @@ in a scratch git repo with a `.env`, a `.env.example`, `server.pem`, and a
    aggy's justification. `aggy borrow edit` (or any `codex exec`) must
    still refuse it.
 6. `aggy run grok`: `rm -rf dist` is refused with no prompt (deny), and
-   the launch notes that an allow naming it does not go to Grok.
+   `aggy doctor` (`permission-rules`) notes that an allow naming it does
+   not go to Grok (a launch said it before T7015).
 7. `aggy run opencode`: `rm -rf dist` asks; with `--auto` it is refused;
    `git push --force origin main` is refused in both.
 8. `aggy resume <id>` of a finished Codex edit borrow: refused with
@@ -2236,7 +2237,7 @@ Claude Code's sandbox facts are from its docs (code.claude.com/docs/en/sandboxin
 - `failIfUnavailable` where the sandbox cannot start: on a Linux machine without `bwrap` or `socat`, and on WSL1, that Claude exits at startup with its message, and what aggy's launch shows then.
 - Whether Claude's sandbox nests under another sandbox on macOS: Claude started inside `sandbox-exec` (Grok's strict sandbox refused to start there, S6 above).
 - aggy itself end to end, `aggy claude` in a folder with the row ticked: the layer reaches Claude, the decision hook (which runs outside the sandbox) still reads its plan in `~/.aggy/run`, and a policy match still asks.
-- Codex: that the level aggy's launch line names matches what Codex reports for the session (`/status`), with no flag in a trusted repo, in an untrusted one, and outside version control, and with `--sandbox read-only` and `-c sandbox_mode="workspace-write"`.
+- Codex: that the level aggy reads from the words given (`codex.SandboxLevel`, which a launch names only for `danger-full-access` since T7015) matches what Codex reports for the session (`/status`), with no flag in a trusted repo, in an untrusted one, and outside version control, and with `--sandbox read-only` and `-c sandbox_mode="workspace-write"`.
 
 ## aggy key (T6931, 2026-11-11)
 

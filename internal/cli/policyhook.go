@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/adapter/claude"
@@ -76,13 +80,23 @@ type policyHookIn struct {
 	ids parity.ReadIdentity
 }
 
-// The two kinds of note usePolicyHook gives. The first means more asking, not
-// less protection, so a launch leaves it to aggy doctor; the second means a
-// protection is missing, so a launch says it (T7015).
-const (
-	preApprovalsOffPrefix = "exact pre-approvals do not apply this session, and the safety policy asks as before: "
-	guardsOffPrefix       = "aggy's asks on writes to its own files and Claude's settings files are not on this session: "
-)
+// guardsOff begins usePolicyHook's note: without the decision hook, aggy's
+// asks on writes to its own files (protectedPaths) and to Claude's settings
+// files (settingsGuardAsks) are not on, a protection missing, so every
+// on-screen launch says it, a switch's too (T7015, #148 review H1).
+const guardsOff = "aggy's asks on writes to its own files and Claude's settings files are not on this session"
+
+// guardsOffPrefix is the note's start, ahead of the reason, naming the n exact
+// pre-approvals of policy matches that do not apply either.
+func guardsOffPrefix(n int) string {
+	switch n {
+	case 0:
+		return guardsOff + ": "
+	case 1:
+		return guardsOff + ", and your 1 exact pre-approval of a safety policy match does not apply: "
+	}
+	return fmt.Sprintf("%s, and your %d exact pre-approvals of safety policy matches do not apply: ", guardsOff, n)
+}
 
 // usePolicyHook moves req's static asks to aggy's decision hook, writing the
 // launch's plan into in.dir and pinning it by its SHA-256 in the hook's
@@ -100,10 +114,7 @@ func usePolicyHook(req *adapter.InteractiveRequest, in policyHookIn) string {
 	if !in.plan.OnScreen || (len(req.Ask) == 0 && !off) || req.PolicyHook != nil {
 		return ""
 	}
-	keep := preApprovalsOffPrefix
-	if len(req.Ask) == 0 {
-		keep = guardsOffPrefix
-	}
+	keep := guardsOffPrefix(preApprovalCount(parity.PreApprovedFrom(in.rules, in.root, in.ids), in.plan.Branches))
 	switch {
 	case claude.SkipsHooks(req.Extra):
 		return keep + "--safe-mode and --bare start Claude without hooks"
@@ -317,18 +328,71 @@ func readIdentities(ctx context.Context, s *store.Store) parity.ReadIdentity {
 
 // preApprovalCount is how many of pre's entries match a policy rule.
 func preApprovalCount(pre parity.PreApproved, branches []string) int {
-	n := 0
+	return len(preApprovalKeys(pre, branches))
+}
+
+// preApprovalKeys are pre's entries that match a policy rule, each as a
+// short hash of its kind and text, so a record of them holds no rule text.
+func preApprovalKeys(pre parity.PreApproved, branches []string) []string {
+	var out []string
+	key := func(kind, text string) string {
+		h := sha256.Sum256([]byte(kind + "\x00" + text))
+		return hex.EncodeToString(h[:8])
+	}
 	for _, c := range pre.Commands {
 		if g, _ := parity.MatchedGroups(parity.Call{Kind: parity.CallShell, Text: c}, branches); len(g) > 0 {
-			n++
+			out = append(out, key("shell", c))
 		}
 	}
 	for _, r := range pre.Reads {
 		if g, _ := parity.MatchedGroups(parity.Call{Kind: parity.CallRead, Text: r.Path}, branches); len(g) > 0 {
+			out = append(out, key("read", r.Path))
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// preApprovalsSeenNote prefixes the notes row holding, for a folder (its
+// canonical path follows), the pre-approvals of policy matches the last
+// on-screen launch there applied (preApprovalKeys, comma-joined).
+const preApprovalsSeenNote = "preapprovals_seen:"
+
+// newPreApprovalsLine is the launch's line when exact pre-approvals of policy
+// matches apply in dir that the last on-screen launch there did not apply: a
+// change to what runs unasked, said once (#148 review M1). It records the set
+// now applying, so an unchanged set says nothing. "" for no new one.
+func newPreApprovalsLine(ctx context.Context, s *store.Store, dir string, keys []string) string {
+	folder, err := safefs.CanonicalPath(dir)
+	if err != nil || s == nil {
+		return ""
+	}
+	name := preApprovalsSeenNote + folder
+	old, _, err := s.Note(ctx, name)
+	if err != nil {
+		return ""
+	}
+	seen := strings.Split(old, ",")
+	n := 0
+	for _, k := range keys {
+		if !slices.Contains(seen, k) {
 			n++
 		}
 	}
-	return n
+	cur := strings.Join(keys, ",")
+	if cur == "" {
+		cur = "-" // none: a note needs a value
+	}
+	if cur != old {
+		_ = s.SetNote(ctx, name, cur, time.Now())
+	}
+	switch n {
+	case 0:
+		return ""
+	case 1:
+		return "1 new exact pre-approval of a safety policy match applies here (aggy permissions list)"
+	}
+	return fmt.Sprintf("%d new exact pre-approvals of safety policy matches apply here (aggy permissions list)", n)
 }
 
 // preApprovalNote says how many exact pre-approvals of policy matches run

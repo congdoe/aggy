@@ -49,35 +49,45 @@ func memoryDelivery(v adapter.Vendor, caps []string) (bool, string) {
 }
 
 // addMemory puts the shared memory of the repo holding cwd on req for
-// vendor v. For
-// Claude it writes the framed text to a private temp file; cleanup
-// removes it after the session. Warnings say what was not delivered and
-// why; none of them stops the launch.
+// vendor v. For Claude it writes the framed text to a private temp file;
+// cleanup removes it after the session. Warnings say what was not delivered
+// and why; none of them stops the launch.
 func addMemory(v adapter.Vendor, caps []string, cwd, memDir string, req *adapter.InteractiveRequest) (cleanup func(), warns []string) {
+	cleanup, warns, _ = addMemoryWhy(v, caps, cwd, memDir, req)
+	return cleanup, warns
+}
+
+// addMemoryWhy is addMemory with the kind of reason the memory was not
+// delivered, for the diagnostic log (#148 review M2): too_big, unreadable,
+// no_flag, codex_config, or write_failed; "" when it was, or there is none.
+func addMemoryWhy(v adapter.Vendor, caps []string, cwd, memDir string, req *adapter.InteractiveRequest) (cleanup func(), warns []string, why string) {
 	cleanup = func() {}
 	root, _ := repoRoot(cwd)
 	text, err := parity.LoadMemory(root)
+	if errors.Is(err, parity.ErrMemoryTooBig) {
+		return cleanup, []string{"shared memory not delivered: " + err.Error()}, "too_big"
+	}
 	if err != nil {
-		return cleanup, []string{"shared memory not delivered: " + err.Error()}
+		return cleanup, []string{"shared memory not delivered: " + err.Error()}, "unreadable"
 	}
 	if text == "" {
-		return cleanup, nil
+		return cleanup, nil, ""
 	}
 	if ok, why := memoryDelivery(v, caps); !ok {
-		return cleanup, []string{"shared memory not delivered: " + why}
+		return cleanup, []string{"shared memory not delivered: " + why}, "no_flag"
 	}
 	framed := parity.FrameMemory(text)
 	switch v {
 	case adapter.Claude:
 		dir := memDir
 		if err := safefs.Mkdir(dir, 0o700); err != nil {
-			return cleanup, []string{"shared memory not delivered: " + err.Error()}
+			return cleanup, []string{"shared memory not delivered: " + err.Error()}, "write_failed"
 		}
 		cleanup = func() { _ = safefs.RemoveAll(dir) }
 		f := filepath.Join(dir, "memory.md")
 		if err := safefs.WriteFile(f, []byte(framed), 0o600); err != nil {
 			cleanup()
-			return func() {}, []string{"shared memory not delivered: " + err.Error()}
+			return func() {}, []string{"shared memory not delivered: " + err.Error()}, "write_failed"
 		}
 		req.MemoryFile = f
 	case adapter.Codex:
@@ -86,13 +96,13 @@ func addMemory(v adapter.Vendor, caps []string, cwd, memDir string, req *adapter
 			framed, err = parity.CodexInstructions(layers, framed)
 		}
 		if err != nil {
-			return cleanup, []string{"shared memory not delivered: " + err.Error()}
+			return cleanup, []string{"shared memory not delivered: " + err.Error()}, "codex_config"
 		}
 		req.Memory = framed
 	default:
 		req.Memory = framed
 	}
-	return cleanup, nil
+	return cleanup, nil, ""
 }
 
 // codexConfigs reads the config.toml of every Codex layer folder
