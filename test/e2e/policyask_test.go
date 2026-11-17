@@ -53,10 +53,7 @@ func TestPolicyAcrossSwitch(t *testing.T) {
 	s.send(key)
 	s.waitWithin([]byte("-> grok. Ctrl+"), offerTimeout)
 	s.confirmPastGuard(time.Now())
-	deadline := time.Now().Add(timeout)
-	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
+	w.waitRuns(t, s, 2)
 	s.send([]byte("/exit\r"))
 	if code := s.exit(); code != 0 {
 		t.Fatalf("aggy exit = %d", code)

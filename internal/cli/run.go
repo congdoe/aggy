@@ -112,9 +112,16 @@ func launch(name string, t target, stderr io.Writer) int {
 	// before is the launch the CLI on screen was switched from, to go back to
 	// when that CLI never starts (T6899).
 	var before *reopen
+	settled := func() {}
+	defer func() { settled() }()
 	for {
 		var next switchTo
 		code := launchOnce(name, &t, stderr, &next, q)
+		settled()
+		settled = func() {}
+		if next.settle != nil {
+			settled = next.settle
+		}
 		if next.vendor == "" {
 			if next.unstarted == nil || before == nil {
 				return code
@@ -192,6 +199,8 @@ type switchTo struct {
 	fromID    string         // its session id, "" if aggy never learned it
 	origin    string         // who asked for the switch (supervisor.RunFacts.SwitchOrigin)
 	unstarted *unstarted
+	// settle stops supervisor.HandOverSignals, once the next launch returns.
+	settle func()
 }
 
 // reopen is a launch to go back to: its target, and that child as a switchTo.
@@ -623,16 +632,8 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w+"; Hermes' hooks, approvals, and session export are checked only on that version"))
 		}
 	}
-	// T6982: the live checks of the composer hold at the versions they ran on;
-	// on another, a switch asks on the status line, and the notice says a
-	// re-check is owed, as aggy doctor does.
-	composerTold := func() {}
-	if !t.Direct {
-		var w string
-		if w, composerTold = composerCheckNote(ctx, s, v, version); w != "" {
-			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
-		}
-	}
+	// T6982: a re-check of the composer's live checks is owed to aggy doctor
+	// only (checkup.CodeLiveCheckOwed): a launch says nothing of it.
 	// Antigravity (T6957): its trust tick, aggy's hooks entry in the folder's
 	// .agents/hooks.json, the --settings file, and the plan its hook reads,
 	// ready before the launch is recorded.
@@ -796,7 +797,6 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// Queued, like the rest of the session's records, so the launch
 	// never waits on the disk (G67-6).
 	cause := q.Log(launched)
-	composerTold() // the note was shown, and the launch goes ahead
 	// The CLI owns the terminal from here: a warning about the log waits
 	// until it is back (G67-5).
 	dlog.Hold()
@@ -917,12 +917,16 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		}
 	}
 	var facts supervisor.RunFacts
+	// Taken from before the supervisor restores the terminal, so no moment
+	// out of raw mode is left uncovered; kept only for a switch (T6982).
+	settle := supervisor.HandOverSignals()
 	ex, err := supervisor.Run(supervisor.Options{
 		Facts:         &facts,
 		Tools:         tools,
 		ToolsAtLaunch: toolBase,
 		ToolsNudge:    proxyNudge,
 		In:            os.Stdin, Out: os.Stdout, Command: cmd,
+		HandOver:      t.SwitchFrom != "",
 		VendorVersion: version,
 		// The CLI leads its own session in the pseudo-terminal.
 		Start: func(c adapter.Command, rows, cols int) (supervisor.Child, error) {
@@ -973,6 +977,19 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		TrustList:   sessionTrustList(pl.child.Cwd),
 		TrustAnswer: sessionTrustAnswer(pl.child.Cwd),
 	})
+	// The terminal is out of raw mode from here to the next CLI's launch: a
+	// Ctrl+C meant for the CLI that exited must not end aggy (T6982). With no
+	// switch, signals are aggy's again at once.
+	if ex.SwitchTo == "" {
+		settle()
+		settle = func() {}
+	}
+	handed := false
+	defer func() {
+		if !handed {
+			settle()
+		}
+	}()
 	px.guard(0, false) // the CLI was reaped: never signal its pid again
 	dlog.Release()
 	// Before the next launch, whose brief reads this child's transcript.
@@ -1000,7 +1017,8 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		}
 	}
 	if ex.SwitchTo != "" {
-		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next, child: pl.child.ID, from: v, fromID: cids.current(), origin: facts.SwitchOrigin}
+		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next, child: pl.child.ID, from: v, fromID: cids.current(), origin: facts.SwitchOrigin, settle: settle}
+		handed = true
 		return ex.Code
 	}
 	// A signal to aggy or a signal that killed the CLI never leads to another
@@ -1353,29 +1371,6 @@ func proxyTools(v adapter.Vendor, tools []string) []string {
 		return nil
 	}
 	return tools
-}
-
-// composerCheckVersion is the version_checks row that says the person has been
-// told the composer's live checks are owed for this CLI version (#146 review).
-const composerCheckVersion = "composer_check_owed"
-
-// composerCheckNote is adapter.ComposerCheckOwed for a launch, said once for
-// each version: every launch, switch, and tool restart said it before. aggy
-// doctor still reports it each time (checkup.CodeLiveCheckOwed). told records
-// that it was said; the caller calls it only once the note was shown and the
-// launch goes ahead (#146 review). With no index it is said each time.
-func composerCheckNote(ctx context.Context, s *store.Store, v adapter.Vendor, version string) (note string, told func()) {
-	told = func() {}
-	w := adapter.ComposerCheckOwed(v, version)
-	if w == "" || s == nil {
-		return w, told
-	}
-	if _, err := s.GetVersionCheck(ctx, string(v), version, composerCheckVersion, ""); err == nil {
-		return "", told
-	}
-	return w + "; aggy says this once for each version", func() {
-		_ = s.PutVersionCheck(ctx, store.VersionCheck{Vendor: string(v), Version: version, Check: composerCheckVersion, Passed: true, Reason: "told", At: time.Now()})
-	}
 }
 
 // newUUID returns a random (version 4) UUID.

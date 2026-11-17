@@ -148,10 +148,7 @@ func TestAddDirDroppedOnReopen(t *testing.T) {
 	s.confirmPastGuard(time.Now())
 	s.waitWithin([]byte("same session -> codex. Ctrl+"), offerTimeout)
 	s.confirmPastGuard(time.Now())
-	deadline := time.Now().Add(timeout)
-	for len(interactiveRuns(t, w)) < 2 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
+	w.waitRuns(t, s, 2)
 	s.send([]byte("/exit\r"))
 	if code := s.exit(); code != 0 {
 		t.Fatalf("aggy exit = %d\nterminal: %q", code, s.screen())

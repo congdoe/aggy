@@ -112,6 +112,10 @@ type Options struct {
 	// (followSession): the launch records it once a session file backs it. It
 	// is called off the main loop. It may be nil.
 	OnFollow func(id, via string)
+	// HandOver: this CLI starts for a switch. Keys typed until it has drawn
+	// its first screen are dropped (handOverDrop), so a second Ctrl+C or an
+	// Enter meant for the CLI that exited does not land in this one.
+	HandOver bool
 	// HooksMissing: aggy's hooks are not installed for Vendor, so until a hook
 	// does arrive no turn end can be counted: an agent's switch is refused,
 	// and the list says so (T6848).

@@ -179,8 +179,8 @@ func TestTypedSwitchConfirms(t *testing.T) {
 		{adapter.Claude, "recorded", "2.1.322", "\x1b[13u", true},
 		{adapter.Claude, "yes", "", "\x1b[13u", true}, // the CSI u Ctrl+U has no check anywhere
 		{adapter.Codex, "recorded", "2.1.322", "\r", true},
-		{adapter.Claude, "recorded", "2.1.330", "\r", true}, // not the version checked
-		{adapter.Claude, "recorded", "", "\r", true},        // an unknown version
+		{adapter.Claude, "recorded", "2.2.0", "\r", true}, // not the version checked
+		{adapter.Claude, "recorded", "", "\r", true},      // an unknown version
 	} {
 		t.Run(fmt.Sprintf("%s checked %s %s enter %q", c.on, c.check, c.version, c.enter), func(t *testing.T) {
 			if c.check != "recorded" {

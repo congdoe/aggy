@@ -142,7 +142,7 @@ func TestOwnerRunUnchecked(t *testing.T) {
 	noSettleGap(t)
 	q, records := diagHome(t)
 	s := cmdSess(t, adapter.Claude)
-	s.o.Diag, s.o.VendorVersion = q, "2.1.330"
+	s.o.Diag, s.o.VendorVersion = q, "2.2.0"
 	s.input = s.send
 	for _, k := range append(append([]string{kBS}, strings.Split("/switch codex", "")...), "\r") {
 		s.send([]byte(k))
@@ -182,7 +182,7 @@ func TestEmptyComposerKeys(t *testing.T) {
 		{"Down first", checkedClaude, []string{kDown}, true},
 		{"Down in application mode", checkedClaude, []string{"\x1bOB"}, false}, // not the form checked
 		{"Down twice", checkedClaude, []string{kDown, kDown}, true},
-		{"another version", "2.1.330", []string{kDown}, false},
+		{"another version", "2.2.0", []string{kDown}, false},
 		{"Up first", checkedClaude, []string{kUp}, false},
 		// Live at 2.1.322 (T6982): these change nothing on the empty composer.
 		{"Backspace first", checkedClaude, []string{kBS}, true},
@@ -191,7 +191,7 @@ func TestEmptyComposerKeys(t *testing.T) {
 		{"Home first", checkedClaude, []string{"\x1b[H"}, true},
 		{"End first", checkedClaude, []string{"\x1b[F"}, true},
 		{"Delete first", checkedClaude, []string{"\x1b[3~"}, true},
-		{"Backspace, another version", "2.1.330", []string{kBS}, false},
+		{"Backspace, another version", "2.2.0", []string{kBS}, false},
 		// Left opens another view in Claude (live): never harmless, and
 		// an Esc alone does not end it before a turn end does.
 		{"Left first", checkedClaude, []string{kLeft}, false},

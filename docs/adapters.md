@@ -20,11 +20,12 @@ adapters are built. These gaps are known:
 - The exit sequence the supervisor types to end a session at turn end.
   `adapter.ExitCommand` gives `/exit` for every vendor, **unverified**
   except where a live check is recorded in docs/verification.md: OpenCode,
-  Hermes, Antigravity, and Claude Code 2.1.322 (T6982). The supervisor asks
-  the user before typing it, except after a switch typed in full where
-  Ctrl+U's byte, and `/exit` (`ExitCommandAt`), are checked live for Claude
-  Code 2.1.322 only (`livechecks.go`, design.md section 5); another version
-  asks on the status line until checked again.
+  Hermes, Antigravity, and Claude Code 2.1.322 and 2.1.326 (T6982). The
+  supervisor asks the user before typing it, except after a switch typed in
+  full where Ctrl+U's byte, and `/exit` (`ExitCommandAt`), are checked live
+  for Claude Code, at 2.1.322 and 2.1.326, and held for later 2.1.x versions
+  (`livechecks.go`, design.md section 5); an older version or another minor
+  or major asks on the status line until checked there.
 - The inputs `ConfigPatches` needs: tool toggles, the safety policy, and
   the MCP server list.
 - Patches that create symlinks or delete files.

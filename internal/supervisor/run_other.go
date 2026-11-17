@@ -14,3 +14,6 @@ func PrivateDir(string) error { return errors.New("supervisor: not supported on 
 
 // Live is false here: no supervisor runs on this OS.
 func Live(string, string) (bool, error) { return false, nil }
+
+// HandOverSignals does nothing here: no supervisor runs on this OS.
+func HandOverSignals() func() { return func() {} }
