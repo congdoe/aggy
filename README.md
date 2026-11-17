@@ -106,7 +106,7 @@ Every session also gets aggy's safety policy: reading `.env` files (on screen, t
 required = false   # start with a warning instead of refusing
 ```
 
-`aggy doctor` shows, per CLI, whether it gets the memory and the policy. A launch stays quiet: aggy prints before a CLI starts, and between two CLIs on a switch, only what means a protection is off or missing this run (a deny or ask that does not reach the CLI, aggy's own guards off because Claude's hooks cannot run, new exact pre-approvals of policy matches, and the like), its questions, and its refusals. The rest (each vendor's own sandbox, how the policy works on each CLI, allows that do not reach one, missing command skills) is in `aggy doctor`.
+`aggy doctor` shows, per CLI, whether it gets the memory and the policy. A launch stays quiet: aggy prints before a CLI starts, and between two CLIs on a switch, only what means a protection is off or missing this run (on Claude Code, Grok, and OpenCode a shared deny or ask that does not reach the CLI; aggy's own guards off because Claude's hooks cannot run; new exact pre-approvals of policy matches; and the like), its questions, and its refusals. On Codex, Hermes, and Antigravity your shared deny and ask rules are not applied yet; `aggy doctor` warns about it. The rest (each vendor's own sandbox, how the policy works on each CLI, allows that do not reach one, missing command skills) is in `aggy doctor`.
 
 ## One set of permissions
 

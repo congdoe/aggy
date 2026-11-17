@@ -8,6 +8,7 @@ import (
 	"github.com/congdoe/aggy/internal/checkup"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/parity"
+	"github.com/congdoe/aggy/internal/permissions"
 	"github.com/congdoe/aggy/internal/suggest"
 )
 
@@ -25,13 +26,14 @@ import (
 
 // Doctor's finding codes for what a launch no longer says.
 const (
-	codePolicyOnVendor = "policy-on-vendor"    // info: how the safety policy works on this CLI
-	codePreApprovals   = "pre-approvals"       // info: exact pre-approvals of policy matches here
-	codeRepoIgnored    = "repo-config-ignored" // info: a repo table aggy ignores
-	codeCommandSkills  = "command-skills"      // info: aggy's commands not in a CLI's menu
-	codeOpenCodeMini   = "opencode-untrusted"  // info: this repo gets opencode mini
-	codeSuggest        = "suggest-candidates"  // info: commands aggy permissions suggest could allow
-	codeClaudeHooksOff = "claude-hooks-off"    // warning: aggy's guards and pre-approvals are off on Claude Code here
+	codePolicyOnVendor   = "policy-on-vendor"         // info: how the safety policy works on this CLI
+	codePreApprovals     = "pre-approvals"            // info: exact pre-approvals of policy matches here
+	codeRepoIgnored      = "repo-config-ignored"      // info: a repo table aggy ignores
+	codeCommandSkills    = "command-skills"           // info: aggy's commands not in a CLI's menu
+	codeOpenCodeMini     = "opencode-untrusted"       // info: this repo gets opencode mini
+	codeSuggest          = "suggest-candidates"       // info: commands aggy permissions suggest could allow
+	codeClaudeHooksOff   = "claude-hooks-off"         // warning: aggy's guards and pre-approvals are off on Claude Code here
+	codeSharedNotApplied = "shared-rules-not-applied" // warning: shared denies and asks this CLI does not get yet
 )
 
 // launchStatus is the section's findings for cwd, for each installed CLI of
@@ -85,6 +87,14 @@ func launchStatus(ctx context.Context, cwd string, vendors []checkup.Vendor) []c
 		switch v {
 		case adapter.Claude, adapter.Grok:
 			out = append(out, sharedRules(v, vr.Capabilities, rules, &adapter.InteractiveRequest{}).status...)
+		case adapter.Codex, adapter.Hermes, adapter.Antigravity:
+			// TODO(T6955): these CLIs get none of the person's shared deny or
+			// ask rules yet. Said here only: a launch line would print on
+			// every launch (#148 re-review).
+			if n := sharedDenyAsk(rules); n > 0 {
+				out = append(out, checkup.Finding{Code: codeSharedNotApplied, Level: checkup.LevelWarn, Vendor: v,
+					Message: fmt.Sprintf("%d of your shared deny or ask rules %s not applied on %s yet: aggy does not pass shared rules to it", n, plural(n, "is", "are"), vendorNames[v])})
+			}
 		case adapter.OpenCode:
 			if _, skipped := parity.OpenCodeShared(rules); skippedAllows(skipped) > 0 {
 				add(codePermRules, v, "", skippedNote(skippedAllows(skipped), "OpenCode", !rules.Trusted), "")
@@ -111,7 +121,7 @@ func launchStatus(ctx context.Context, cwd string, vendors []checkup.Vendor) []c
 			// #148 review H1: hooks off is a protection missing, said
 			// whether or not pre-approvals exist (usePolicyHook's reasons,
 			// those a launch knows only from its flags aside).
-			hooksOff := "Claude's hooks are off here, so " + guardsOff + " in Claude Code sessions here, and exact pre-approvals do not apply"
+			hooksOff := "Claude's hooks are off here, so in Claude Code sessions here aggy's asks on writes to its own files and Claude's settings files are not on, and exact pre-approvals do not apply"
 			switch {
 			case off != "":
 				out = append(out, checkup.Finding{Code: codeClaudeHooksOff, Level: checkup.LevelWarn, Vendor: v, Path: off,
@@ -140,6 +150,17 @@ func launchStatus(ctx context.Context, cwd string, vendors []checkup.Vendor) []c
 		}
 	}
 	return out
+}
+
+// sharedDenyAsk counts the person's shared deny and ask rules in s.
+func sharedDenyAsk(s permissions.Set) int {
+	n := 0
+	for _, r := range s.Rules {
+		if r.Kind == permissions.Deny || r.Kind == permissions.Ask {
+			n++
+		}
+	}
+	return n
 }
 
 // openCodeMiniStatus is doctor's openCodeUntrustedNote: the repo is the

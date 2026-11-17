@@ -185,6 +185,9 @@ func TestQuietSwitch(t *testing.T) {
 			case c.want != "" && !strings.Contains(strings.Join(strings.Fields(strings.Join(lines, " ")), " "), c.want):
 				t.Errorf("no %q between %s and %s:\n%s", c.want, c.from, c.to, strings.Join(lines, "\n"))
 			}
+			if _, err := os.Stat(filepath.Join(w.cwd, ".aggy", "briefs")); err == nil {
+				t.Error("a brief was written for a switch without one")
+			}
 			_ = s.cmd.Process.Kill()
 		})
 	}
