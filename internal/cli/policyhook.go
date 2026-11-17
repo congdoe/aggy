@@ -111,6 +111,9 @@ func guardsOffPrefix(n int) string {
 // files, which turning a group off never turns off.
 func usePolicyHook(req *adapter.InteractiveRequest, in policyHookIn) string {
 	off := len(in.rules.OffGroups()) > 0
+	// TODO(T7016): with every policy group set to deny there are no static
+	// asks, so this returns "" and aggy's own-file guards are off with no
+	// launch line and no doctor finding.
 	if !in.plan.OnScreen || (len(req.Ask) == 0 && !off) || req.PolicyHook != nil {
 		return ""
 	}

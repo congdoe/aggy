@@ -75,11 +75,19 @@ func TestLaunchStatus(t *testing.T) {
 				t.Fatalf("add: %d %q %q", code, out, errb)
 			}
 			writeAt(t, filepath.Join(repo, ".claude", "settings.json"), `{"disableAllHooks": true}`, 0o600)
-		}, installed(adapter.Claude), codeClaudeHooksOff, adapter.Claude, "turns Claude's hooks off: Claude's hooks are off here, so aggy's asks on writes to its own files"},
+		}, installed(adapter.Claude), codeClaudeHooksOff, adapter.Claude, "turns Claude's hooks off: Claude's hooks are off here, so in Claude Code sessions here aggy's asks on writes to its own files and Claude's settings files are not on, and exact pre-approvals do not apply"},
 		// #148 review H1: said with no pre-approval at all.
 		{"hooks off, no pre-approval", func(t *testing.T, repo string) {
 			writeAt(t, filepath.Join(repo, ".claude", "settings.json"), `{"disableAllHooks": true}`, 0o600)
 		}, installed(adapter.Claude), codeClaudeHooksOff, adapter.Claude, "aggy's asks on writes to its own files and Claude's settings files are not on"},
+		// #148 re-review: shared denies and asks not applied on Codex,
+		// Hermes, and Antigravity yet (T6955), a warning with no rule text.
+		{"codex gets no shared deny", func(t *testing.T, repo string) {
+			writePermissions(t, `{"permissions":{"deny":["Bash(curl *)"],"ask":["Bash(git push *)"]}}`)
+		}, installed(adapter.Codex), codeSharedNotApplied, adapter.Codex, "2 of your shared deny or ask rules are not applied on Codex yet"},
+		{"hermes gets no shared deny", func(t *testing.T, repo string) {
+			writePermissions(t, `{"permissions":{"deny":["Bash(curl *)"]}}`)
+		}, installed(adapter.Hermes), codeSharedNotApplied, adapter.Hermes, "1 of your shared deny or ask rules is not applied on"},
 		{"command skills missing", nil, installed(adapter.Claude), codeCommandSkills, adapter.Claude, "are not in claude's menu"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -90,7 +98,7 @@ func TestLaunchStatus(t *testing.T) {
 			}
 			var got []string
 			for _, f := range launchStatus(t.Context(), repo, c.vendors) {
-				if f.Level != checkup.LevelInfo && f.Code != codeClaudeHooksOff {
+				if f.Level != checkup.LevelInfo && f.Code != codeClaudeHooksOff && f.Code != codeSharedNotApplied {
 					t.Errorf("%s is %s, want info", f.Code, f.Level)
 				}
 				if strings.Contains(f.Message, repo) || strings.Contains(f.Message, "Bash(") {

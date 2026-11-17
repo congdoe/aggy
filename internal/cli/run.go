@@ -882,6 +882,10 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	if v == adapter.Antigravity {
 		inner := onHook
 		onHook = func(r supervisor.Request) {
+			// TODO(T7016): any FromSession request whose sender says vendor
+			// antigravity sets this, so a process in the session can silence
+			// the trust note (markAgyHookSeen); count only SessionStart and
+			// PreToolUse through the plan-pinned hook command.
 			if r.FromSession && r.Vendor == string(adapter.Antigravity) {
 				agySeen.Store(true)
 			}
