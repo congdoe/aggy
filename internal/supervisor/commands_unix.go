@@ -461,7 +461,7 @@ func (s *session) hookCommand(c sessioncmd.Command, line string) error {
 		s.hookedName, s.hookedEnter = c.Name, s.enterAt
 		s.heldMiss = nil
 		s.log(diag.Rec{Event: diag.EvCommandCaught, Attrs: map[string]any{"command": c.Name, "via": "hook", "typed": true, "again": true}})
-		s.offerNow()
+		s.offerNow(true) // asks: a hook's report never goes in one step
 		return nil
 	case (c.Kind == sessioncmd.Switch || c.Kind == sessioncmd.Picker) && s.sw.to != "":
 		return s.blockHook(c, line, diag.CodeCommandNotTaken, append(doubts, "switch_waiting"), s.blockPlain("switch_waiting"))

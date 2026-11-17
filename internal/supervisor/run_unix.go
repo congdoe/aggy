@@ -512,6 +512,22 @@ type session struct {
 	// noted is the last bottom-row note (waitNote), for tests.
 	noted                string
 	dropped, exitDropped int
+	// dropPaste: a bracketed paste began in keys dropped for the hand-over
+	// or after the exit command, and its end has not come (#147 review): the
+	// rest of it goes nowhere too, up to pasteDropMax bytes or pasteDropWait
+	// from dropPasteAt. Past either, keys flow again and reopenPaste re-opens
+	// the paste for the CLI, so its tail is pasted text, never typed keys.
+	dropPaste, reopenPaste bool
+	dropPasteAt            time.Time
+	dropPasteN             int
+	// keysBeforeTurn: a key passed to the CLI before its first turn end, even
+	// one a live check shows changing nothing on an empty composer (#147
+	// review): at a dialog a Down moves its selection. Lines aggy took do not
+	// count. firstClean needs none.
+	keysBeforeTurn bool
+	// hookAgain: the repeat attempt offerNow handles came from a hook's
+	// report, so it never goes in one step (#147 review, L4).
+	hookAgain bool
 	// exitBy fires exitWait after the exit command was typed.
 	exitBy <-chan time.Time
 	// waiting mirrors sw.to != "" for the socket's goroutines, so a
@@ -772,6 +788,12 @@ type pendingSwitch struct {
 	// no key has reached the composer since. doubtOK: the person picked again
 	// after it, so the status line may ask, saying so.
 	toldDoubt, doubtOK bool
+	// vouched: before the first turn end, where a turn may be running, the
+	// person picked the switch again and the status line asked (#147 review):
+	// its yes stands for their look at the CLI, while no key has reached it
+	// since (vouchIn, the lastIn of that moment).
+	vouched bool
+	vouchIn time.Time
 	// resume: a restart of the vendor on screen on the same session, for
 	// the tool changes named in tools (T6729).
 	resume bool
@@ -1220,14 +1242,10 @@ func (s *session) send(b []byte) {
 		s.toChild.push(b) // the terminal answering the CLI, not the user
 		return
 	}
-	if s.handOverDrop() {
-		s.dropped++ // a key meant for the CLI that exited, or typed blind
-		return
-	}
-	if s.sw.typed && s.exitBy != nil && !s.exitGap {
-		// The exit command is typed for a switch: a key now would land in
-		// the CLI as it exits, or after it in the next one.
-		s.exitDropped++
+	if rest, drop := s.dropKeys(b); drop {
+		if len(rest) > 0 {
+			s.send(rest)
+		}
 		return
 	}
 	if mouseOnly(b) {
@@ -1260,6 +1278,9 @@ func (s *session) send(b []byte) {
 		// typed next is still caught. At a dialog or mid-turn it may answer or
 		// queue something, so it counts as input there.
 		s.lastIn = time.Now()
+		if !s.turnRan {
+			s.keysBeforeTurn = true
+		}
 		if !s.atPrompt || s.held || s.askOpen() {
 			s.held, s.inputSinceTurn = false, true
 			s.afterEnter++ // a key after the Enter: it may answer what that Enter opened
@@ -1699,6 +1720,12 @@ func (s *session) settleDoubt() {
 // letters and its Enter it waits with the keys, as it could land on a dialog or
 // move the cursor out of the composer before that Enter (finishExit).
 func (s *session) pointer(b []byte) {
+	if rest, drop := s.dropKeys(b); drop {
+		if len(rest) > 0 {
+			s.send(rest)
+		}
+		return
+	}
 	if s.exitGap {
 		s.gapKeys = append(s.gapKeys, b...)
 		return
@@ -2006,7 +2033,11 @@ func (s *session) offerSwitch() {
 	// A notice must never hold output while a turn may be running, and
 	// without a turn end only a launch given no input and no brief has none.
 	// The list this was picked from has already told the user (markNoTurn).
-	if !s.turnRan && (s.firstAsk() && s.turnMayRun() || !s.firstAsk() && s.mayBeRunning()) {
+	// On Claude (firstAsk) the person's repeat attempt (again) gets past a
+	// turn that may be running: the status line asks, and its yes is their
+	// word that none is (vouched). Otherwise a pick after an Enter that started
+	// no turn waited for a turn end that never came (#147 review).
+	if !s.turnRan && (s.firstAsk() && s.turnMayRun() && !s.sw.again || !s.firstAsk() && s.mayBeRunning()) {
 		return
 	}
 	if !s.turnRan && s.held {
@@ -2105,7 +2136,7 @@ func (s *session) offerSwitch() {
 		s.confirmSwitch()
 		return
 	}
-	if s.turnRan && s.sw.keyed && s.sw.cleared && !s.sw.hooked && !s.sw.resume && holdSignal(on) && clearsLine(on, s.o.VendorVersion) && !s.doubt() {
+	if s.turnRan && s.sw.keyed && s.sw.cleared && !s.sw.hooked && !s.hookAgain && !s.sw.resume && holdSignal(on) && clearsLine(on, s.o.VendorVersion) && !s.doubt() {
 		// T6908: the person typed the switch at this prompt, and the CLI says
 		// when it waits for them, so the command was the confirmation. All the
 		// checks above still held: a turn ended, nothing holds it, the prompt
@@ -2177,6 +2208,7 @@ func (s *session) offerSwitch() {
 	}
 	line := confirmLine(s.sw.choice.Model, tools)
 	lines := []string{line}
+	s.sw.vouched, s.sw.vouchIn = first && s.turnMayRun(), s.lastIn
 	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchOffered, Cause: s.turnCause(), Attrs: switchAttrs(s.sw.choice, map[string]any{"to": string(v), "asked": s.sw.asked, "limit": s.sw.limit, "resume": s.sw.resume, "first_turn": first})})
 	if !s.sw.resume {
 		s.pk.preselect = "" // offered once (O56-5); a limit's stays past a resume
@@ -2239,16 +2271,62 @@ func (s *session) offerSwitch() {
 	s.openPicker()
 }
 
-// HandOverSignals takes SIGINT and SIGQUIT until the returned func is called
-// (T6982). The caller takes them from just before Run until a switch's next
-// launch returns: between two CLIs the terminal is out of raw mode, so a
-// Ctrl+C the person meant for the CLI that exited, or the switch key
-// (Ctrl+\), is the line discipline's signal. aggy must not die of it, and
-// the key never reaches the next CLI. Run takes them too, as before.
-func HandOverSignals() func() {
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGINT, syscall.SIGQUIT)
-	return func() { signal.Stop(c) }
+// HandOverGrace is how long after a CLI exits for a switch aggy takes
+// SIGINT and SIGQUIT (HandOverSignals): long enough for a key typed ahead,
+// the Ctrl+C the person meant for the CLI that exited, and short enough
+// that aggy's own questions before the next launch get theirs (#147 review).
+const HandOverGrace = time.Second
+
+// HandOver holds SIGINT and SIGQUIT for a switch's hand-over (T6982).
+type HandOver struct {
+	c    chan os.Signal
+	mu   sync.Mutex
+	done bool
+	got  int
+}
+
+// HandOverSignals takes SIGINT and SIGQUIT until Stop. The caller takes
+// them from just before Run, so no moment out of raw mode is uncovered:
+// between two CLIs the terminal is in cooked mode, so a Ctrl+C the person
+// meant for the CLI that exited, or the switch key (Ctrl+\), is the line
+// discipline's signal, and aggy must not die of it. Run takes them too.
+func HandOverSignals() *HandOver {
+	h := &HandOver{c: make(chan os.Signal, 8)}
+	signal.Notify(h.c, syscall.SIGINT, syscall.SIGQUIT)
+	go func() {
+		for range h.c {
+			h.mu.Lock()
+			h.got++
+			h.mu.Unlock()
+		}
+	}()
+	return h
+}
+
+// Stop gives SIGINT and SIGQUIT back: from then on they act as without it.
+// It may be called more than once.
+func (h *HandOver) Stop() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.done {
+		return
+	}
+	h.done = true
+	signal.Stop(h.c)
+	close(h.c)
+}
+
+// StopAfter calls Stop after d: a Ctrl+C after it, at aggy's own question
+// before the next launch or in a slow step, ends aggy as it did before
+// (nothing started), rather than vanishing.
+func (h *HandOver) StopAfter(d time.Duration) { time.AfterFunc(d, h.Stop) }
+
+// Caught reports how many signals the hand-over took, and whether it still
+// takes them.
+func (h *HandOver) Caught() (n int, active bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.got, !h.done
 }
 
 // handOverMax bounds a switch's hand-over: keys flow again after it even if
@@ -2276,6 +2354,53 @@ func (s *session) handOverDrop() bool {
 	return true
 }
 
+// pasteDropMax and pasteDropWait bound how much of a paste that began in
+// dropped keys goes nowhere after them (dropKeys).
+const (
+	pasteDropMax  = 1 << 20
+	pasteDropWait = 5 * time.Second
+)
+
+// dropKeys reports whether b, input for the CLI, goes nowhere: in a switch's
+// hand-over (handOverDrop), after aggy typed the exit command for a switch,
+// or as the rest of a bracketed paste that began in keys dropped there
+// (dropPaste). rest is what follows that paste's end in b, input again.
+func (s *session) dropKeys(b []byte) (rest []byte, drop bool) {
+	if s.dropPaste {
+		if time.Since(s.dropPasteAt) <= pasteDropWait && s.dropPasteN <= pasteDropMax {
+			if i := bytes.Index(b, pasteEnd); i >= 0 {
+				s.dropPaste = false
+				return b[i+len(pasteEnd):], true
+			}
+			s.dropPasteN += len(b)
+			return nil, true
+		}
+		// Too long: keys flow again, the paste's tail as a paste.
+		s.dropPaste, s.reopenPaste = false, true
+	}
+	if s.reopenPaste {
+		s.reopenPaste = false
+		if !bytes.Contains(b, pasteEnd) || bytes.Contains(b, pasteStart) && bytes.Index(b, pasteStart) < bytes.Index(b, pasteEnd) {
+			return nil, false // no end here, or a new paste first: nothing to re-open
+		}
+		return append(append([]byte{}, pasteStart...), b...), true
+	}
+	switch {
+	case s.handOverDrop():
+		s.dropped++ // a key meant for the CLI that exited, or typed blind
+	case s.sw.typed && s.exitBy != nil && !s.exitGap:
+		// The exit command is typed for a switch: a key now would land in
+		// the CLI as it exits, or after it in the next one.
+		s.exitDropped++
+	default:
+		return nil, false
+	}
+	if i := bytes.LastIndex(b, pasteStart); i >= 0 && !bytes.Contains(b[i:], pasteEnd) {
+		s.dropPaste, s.dropPasteAt, s.dropPasteN = true, time.Now(), len(b)-i
+	}
+	return nil, true
+}
+
 // endHandOver ends a switch's hand-over and records how many keys went
 // nowhere, then or after the exit command (a count only).
 func (s *session) endHandOver() {
@@ -2301,12 +2426,15 @@ func (s *session) firstAsk() bool {
 
 // firstClean reports aggy's evidence that the CLI shows its empty prompt
 // before its first turn end: firstAsk at a version where the live checks
-// allow it (adapter.FirstTurnSwitch); nothing typed since launch but no-op
-// keys and lines aggy took; no doubt of any kind (a popup, an Esc, Claude's
+// allow it (adapter.FirstTurnSwitch); an earlier session of this CLI in this
+// folder ended a turn (Options.PromptSeen: the folder-trust dialog was
+// answered then); no key passed to the CLI since launch but lines aggy took
+// (keysBeforeTurn: a no-op key on the composer moves a dialog's selection);
+// no doubt of any kind (a popup, an Esc, Claude's
 // other view, a ! or # line), no hold, no question, not the alternate
 // screen. The quiet gap is offerSwitch's.
 func (s *session) firstClean() bool {
-	return s.firstAsk() && adapter.FirstTurnSwitch(s.o.Vendor, s.o.VendorVersion) &&
+	return s.firstAsk() && adapter.FirstTurnSwitch(s.o.Vendor, s.o.VendorVersion) && s.o.PromptSeen && !s.keysBeforeTurn &&
 		s.atPrompt && !s.inputSinceTurn && s.queued == 0 && !s.held && !s.askOpen() &&
 		s.lenKnown && s.compLen == 0 && !s.knownText() && !s.doubt() && !s.sideView && !s.modeLine && !s.altBlocks()
 }
@@ -2318,23 +2446,24 @@ func (s *session) firstClean() bool {
 // limit's, and a resume never do.
 func (s *session) firstOneStep() bool {
 	sw := s.sw
-	if !s.firstClean() || sw.hooked || sw.asked || sw.limit || sw.resume || !sw.picked || !clearsLine(s.o.Vendor, s.o.VendorVersion) {
+	if !s.firstClean() || s.hookAgain || sw.hooked || sw.asked || sw.limit || sw.resume || !sw.picked || !clearsLine(s.o.Vendor, s.o.VendorVersion) {
 		return false
 	}
 	return sw.keyed && sw.cleared || !sw.keyed
 }
 
 // offerNow asks about the waiting switch at once, as the switch key does
-// (a second /switch typed in full, or a pick again), and when it cannot,
+// (a second /switch typed in full, or a pick again), never in one step when
+// the attempt came from a hook's report (viaHook), and when it cannot,
 // says on the bottom row what the switch waits for and the key that gets
 // through (switchWaitLine).
-func (s *session) offerNow() {
+func (s *session) offerNow(viaHook bool) {
 	if s.sw.to == "" || s.sw.typed {
 		return
 	}
-	s.sw.again = true
+	s.sw.again, s.hookAgain = true, viaHook
 	s.offerSwitch()
-	s.sw.again = false
+	s.sw.again, s.hookAgain = false, false
 	if !s.open && !s.sw.typed && s.sw.to != "" && s.sw.checkSeq == 0 {
 		s.waitNote(s.switchWaitLine())
 	}
@@ -2412,11 +2541,18 @@ const noTurnPickMinutes = 10
 // noTurnPickFresh is noTurnPickMinutes; tests shorten it.
 var noTurnPickFresh = noTurnPickMinutes * time.Minute
 
-// markNoTurn notes a pick from a list that said to quit the CLI (openList):
-// with no turn ended, its clean exit now completes the switch.
+// markNoTurn notes a pick before the first turn end: from a list that said
+// to quit the CLI (openList), or on Claude (firstAsk) one aggy asks about.
+// With no turn ended, the CLI's clean exit now completes the switch.
 func (s *session) markNoTurn() {
-	if s.turnRan || s.firstAsk() {
-		return // firstAsk: offerSwitch asks, or goes in one step
+	if s.turnRan {
+		return
+	}
+	if s.firstAsk() {
+		// offerSwitch asks, or goes in one step; meanwhile the person's own
+		// clean quit completes the switch, as before T6982 (#147 review).
+		s.sw.toldNoTurn, s.sw.toldAt = true, time.Now()
+		return
 	}
 	s.sw.toldNoTurn, s.sw.toldAt = true, time.Now()
 	s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeNoTurnYet, Cause: s.sw.rec,
@@ -2913,9 +3049,11 @@ func (s *session) typeExit() {
 	case s.held, s.askOpen():
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchHeld, Cause: s.sw.rec, Msg: "the switch key was pressed, but the CLI waits for the user"})
 		return
-	case s.turnMayRun():
+	case s.turnMayRun() && !s.vouchedNow():
 		// offerSwitch checks it too; this is the last guard before the exit
-		// command, whatever path led here (#146 review, fourth round).
+		// command, whatever path led here (#146 review, fourth round). Past
+		// it only the person's yes to a question they asked for, with no key
+		// to the CLI since (vouched).
 		s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeTurnMayRun, Cause: s.sw.rec, Msg: "the switch key was pressed, but a turn may be running"})
 		return
 	}
@@ -2923,6 +3061,13 @@ func (s *session) typeExit() {
 	s.sw.typed = true
 	s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchConfirmed, Cause: s.sw.rec, Attrs: map[string]any{"to": string(s.sw.to)}})
 	s.exitBy = time.After(exitWait)
+}
+
+// vouchedNow reports whether the person said yes to a question before the
+// first turn end that they asked for while a turn may be running (vouched),
+// with no key to the CLI since: their word that none runs.
+func (s *session) vouchedNow() bool {
+	return s.sw.vouched && s.firstAsk() && s.lastIn.Equal(s.sw.vouchIn)
 }
 
 // altSettle bounds how long openPicker waits for the CLI's output to
@@ -3158,7 +3303,7 @@ func (s *session) pickSwitch(c Choice, keyed bool) {
 		s.sw.doubtOK = s.sw.toldDoubt || s.pk.doubtSaid // told, and picked again: the person has looked
 		s.sw.rec = s.log(diag.Rec{Event: diag.EvSwitchQueued, Cause: s.sw.rec, Attrs: switchAttrs(c, map[string]any{"origin": "user", "to": string(picked), "again": true})})
 		s.markNoTurn()
-		s.offerNow()
+		s.offerNow(false)
 	default:
 		if err := s.offered(picked); err != nil && !errors.Is(err, ErrChecking) {
 			s.log(diag.Rec{Event: diag.EvSwitchRefused, Code: diag.CodeSwitchVendor, Msg: refusedMsg(picked, err), Attrs: map[string]any{"to": string(picked)}})

@@ -4,7 +4,9 @@ package supervisor
 
 import (
 	"errors"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -14,13 +16,14 @@ import (
 )
 
 // freshSess is a CLI just launched: no turn end yet, its SessionStart seen
-// (start) or not.
+// (start) or not, in a folder where an earlier session of it ended a turn
+// (PromptSeen).
 func freshSess(t *testing.T, v adapter.Vendor, version string, start bool) *session {
 	t.Helper()
 	noSettleGap(t)
 	s, _ := viewSess(t, v, "")
 	s.turnRan, s.inputSinceTurn = false, false
-	s.o.VendorVersion = version
+	s.o.VendorVersion, s.o.PromptSeen = version, true
 	s.input = s.send
 	if start {
 		s.hookEvent(hookEvent{name: "SessionStart", sessionID: childSID, source: "startup", chain: ownChain})
@@ -99,6 +102,9 @@ func TestFirstTurnAsks(t *testing.T) {
 	}{
 		{"text typed, then cleared", checkedClaude, func(s *session) { typeKeys(s, "abc"); s.send([]byte(kCtrlU)) }},
 		{"Up first", checkedClaude, func(s *session) { s.send([]byte(kUp)) }},
+		{"Down first", checkedClaude, func(s *session) { s.send([]byte(kDown)) }},
+		{"Backspace first", checkedClaude, func(s *session) { s.send([]byte(kBS)) }},
+		{"no earlier turn end in this folder", checkedClaude, func(s *session) { s.o.PromptSeen = false }},
 		{"Left first", checkedClaude, func(s *session) { s.send([]byte(kLeft)) }},
 		{"another version", "2.2.0", func(s *session) {}},
 		{"no version", "", func(s *session) {}},
@@ -133,6 +139,140 @@ func TestFirstTurnAsks(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestFirstTurnFolderEvidence (#147 review, H1): SessionStart came before
+// the folder-trust dialog's Enter in a recorded run, so it is no evidence
+// that no dialog is up. One step needs an earlier on-screen session of the
+// CLI in this folder with a turn end (PromptSeen), and no key passed to the
+// CLI since launch: a Down that changes nothing on an empty composer moves a
+// dialog's selection. Otherwise the status line asks.
+func TestFirstTurnFolderEvidence(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		promptSeen bool
+		keys       string
+		oneStep    bool
+	}{
+		{"a fresh folder", false, "", false},
+		{"an earlier session with a turn end", true, "", true},
+		{"Down before the pick", true, kDown, false},
+		{"Down before the pick, fresh folder", false, kDown, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := freshSess(t, adapter.Claude, checkedClaude, true)
+			s.o.PromptSeen = c.promptSeen
+			if c.keys != "" {
+				s.send([]byte(c.keys))
+			}
+			pickInList(s, "2")
+			got := offerQuiet(s)
+			if c.oneStep {
+				if got != "/exit\r" {
+					t.Fatalf("typed %q: want one step", got)
+				}
+				return
+			}
+			if got != "" || !s.open || s.pk.confirm != adapter.Codex {
+				t.Fatalf("typed %q open %v confirm %q: want the status line", got, s.open, s.pk.confirm)
+			}
+		})
+	}
+}
+
+// TestFirstTurnNoDeadEnd (#147 review, H2): on Claude after SessionStart, an
+// Enter that started no turn (an empty prompt, a dialog's answer) leaves a
+// turn that may be running. A pick then waits, but never into a dead end: the
+// person's clean quit completes it, as before T6982, and picking it again asks
+// on the status line, whose yes types /exit. So does the same /switch typed
+// again, reported by the hook.
+func TestFirstTurnNoDeadEnd(t *testing.T) {
+	t.Run("picked again asks", func(t *testing.T) {
+		s := freshSess(t, adapter.Claude, checkedClaude, true)
+		s.send([]byte("\r"))
+		pickInList(s, "2")
+		if got := offerQuiet(s); got != "" || s.open {
+			t.Fatalf("typed %q open %v: a turn may be running", got, s.open)
+		}
+		s.lastIn = time.Now().Add(-time.Minute)
+		s.lastOut.Store(time.Now().Add(-time.Minute).UnixNano())
+		pickInList(s, "2")
+		if !s.open || s.pk.confirm != adapter.Codex {
+			t.Fatalf("open %v confirm %q noted %q: no question", s.open, s.pk.confirm, s.noted)
+		}
+		if got := statusYes(t, s, adapter.Codex); got != "/exit\r" {
+			t.Fatalf("the yes typed %q", got)
+		}
+	})
+	t.Run("a key after the question stops its yes", func(t *testing.T) {
+		q, records := diagHome(t)
+		s := freshSess(t, adapter.Claude, checkedClaude, true)
+		s.o.Diag = q
+		s.send([]byte("\r"))
+		pickInList(s, "2")
+		s.lastIn = time.Now().Add(-time.Minute)
+		s.lastOut.Store(time.Now().Add(-time.Minute).UnixNano())
+		pickInList(s, "2")
+		if s.pk.confirm != adapter.Codex {
+			t.Fatalf("no question")
+		}
+		s.lastIn = time.Now() // a key reached the CLI since
+		s.toChild = newByteQueue(maxQueued)
+		s.typeExit()
+		if got := sentTo(s); got != "" || !refused(t, records, diag.CodeTurnMayRun) {
+			t.Fatalf("typed %q", got)
+		}
+	})
+	t.Run("the person's clean quit completes it", func(t *testing.T) {
+		s := freshSess(t, adapter.Claude, checkedClaude, true)
+		s.send([]byte("\r"))
+		pickInList(s, "2")
+		offerQuiet(s)
+		if !s.exitSwitches(0) {
+			t.Fatal("a clean quit did not complete the switch")
+		}
+	})
+	t.Run("a caught /switch, then the clean quit", func(t *testing.T) {
+		s := freshSess(t, adapter.Claude, checkedClaude, true)
+		s.send([]byte("\r"))
+		typeLine(s, "/switch codex")
+		if s.sw.to != adapter.Codex {
+			t.Fatalf("switch %q", s.sw.to)
+		}
+		offerQuiet(s)
+		if !s.exitSwitches(0) {
+			t.Fatal("a clean quit did not complete the switch")
+		}
+	})
+}
+
+// TestFirstTurnHookAgainAsks (#147 review, L4): a repeat attempt that arrives
+// as a hook's report never goes in one step, whatever switch waits: here a
+// list pick in a clean state, which the CLI's drawing held back.
+func TestFirstTurnHookAgainAsks(t *testing.T) {
+	s := freshSess(t, adapter.Claude, checkedClaude, true)
+	s.lastOut.Store(time.Now().UnixNano())
+	pickInList(s, "2")
+	s.offerSwitch()
+	if s.sw.to != adapter.Codex || s.open || s.sw.typed {
+		t.Fatalf("setup: switch %q open %v typed %v", s.sw.to, s.open, s.sw.typed)
+	}
+	// The keys saw the person's Enter for this very line; the key catch did
+	// not take it.
+	s.enterAt, s.afterEnter, s.enterTyped, s.enterAlone = time.Now(), 0, true, true
+	s.enterLineTyped = []byte("/switch codex")
+	s.toChild = newByteQueue(maxQueued)
+	s.lastIn = time.Now().Add(-time.Minute)
+	s.lastOut.Store(time.Now().Add(-time.Minute).UnixNano())
+	if err := forge(s, "/switch codex"); err != nil {
+		t.Fatalf("err %v", err)
+	}
+	if got := sentTo(s); strings.Contains(got, "/exit") || s.sw.typed {
+		t.Fatalf("typed %q in one step from a hook's report", got)
+	}
+	if !s.open || s.pk.confirm != adapter.Codex {
+		t.Fatalf("open %v confirm %q: want the status line", s.open, s.pk.confirm)
 	}
 }
 
@@ -324,6 +464,82 @@ func TestHandOverDrop(t *testing.T) {
 	s3.send([]byte{0x03})
 	if got := sentTo(s3); got != "" || s3.exitDropped != 1 {
 		t.Errorf("after the exit command the CLI got %q (dropped %d)", got, s3.exitDropped)
+	}
+}
+
+// TestHandOverDropPaste (#147 review, M2): a paste whose start came in keys
+// dropped for the hand-over goes nowhere to its end, even past the window,
+// so its Enter never reaches the CLI bare; what follows its end is input. A
+// paste with no end in time comes back as a paste.
+func TestHandOverDropPaste(t *testing.T) {
+	s := cmdSess(t, adapter.Codex)
+	s.handFrom = time.Now()
+	s.send([]byte("\x1b[200~rm -rf"))
+	s.firstOut.Store(time.Now().Add(-time.Second).UnixNano()) // the window ends
+	s.send([]byte(" build\r\x1b[201~x"))
+	if got := sentTo(s); got != "x" {
+		t.Fatalf("the CLI got %q", got)
+	}
+
+	s2 := cmdSess(t, adapter.Codex)
+	s2.sw.to, s2.sw.typed = adapter.Codex, true
+	s2.exitBy = make(chan time.Time)
+	s2.send([]byte("\x1b[200~one"))
+	s2.exitBy = nil // the exit wait is over
+	s2.dropPasteAt = time.Now().Add(-pasteDropWait - time.Second)
+	s2.send([]byte("two\r\x1b[201~"))
+	if got := sentTo(s2); !strings.HasPrefix(got, "\x1b[200~two") {
+		t.Fatalf("past the cap the CLI got %q, want the tail as a paste", got)
+	}
+}
+
+// TestHandOverDropMouse (#147 review, L5): a mouse report in the hand-over or
+// after the exit command goes nowhere, as a key does.
+func TestHandOverDropMouse(t *testing.T) {
+	click := []byte("\x1b[<0;10;5M")
+	s := cmdSess(t, adapter.OpenCode)
+	s.handFrom = time.Now()
+	s.pointer(click)
+	if got := sentTo(s); got != "" || s.dropped != 1 {
+		t.Fatalf("in the hand-over the CLI got %q (dropped %d)", got, s.dropped)
+	}
+	s2 := cmdSess(t, adapter.OpenCode)
+	s2.sw.to, s2.sw.typed = adapter.Codex, true
+	s2.exitBy = make(chan time.Time)
+	s2.pointer(click)
+	if got := sentTo(s2); got != "" || s2.exitDropped != 1 {
+		t.Fatalf("after the exit command the CLI got %q (dropped %d)", got, s2.exitDropped)
+	}
+}
+
+// TestHandOverSignals (#147 review, M1): the hand-over takes a Ctrl+C typed
+// ahead (SIGINT), and gives the signals back after HandOverGrace, so a Ctrl+C
+// at aggy's own question before the next launch ends aggy as before.
+func TestHandOverSignals(t *testing.T) {
+	h := HandOverSignals()
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	for end := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if n, _ := h.Caught(); n == 1 {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatal("the hand-over did not take the SIGINT")
+		}
+	}
+	h.StopAfter(20 * time.Millisecond)
+	for end := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if _, active := h.Caught(); !active {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatal("the hand-over kept the signals past its grace")
+		}
+	}
+	h.Stop() // again: no panic
+	if HandOverGrace > 2*time.Second {
+		t.Errorf("HandOverGrace %v: aggy's own questions wait that long for their Ctrl+C", HandOverGrace)
 	}
 }
 
