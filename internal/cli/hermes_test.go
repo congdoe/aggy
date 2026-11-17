@@ -77,10 +77,14 @@ func TestPrepareHermes(t *testing.T) {
 		t.Fatalf("config.yaml:\n%s", cfg)
 	}
 	warns := strings.Join(out.warns, "\n")
-	for _, w := range []string{"made aggy's Hermes profile", "asks you once", "not aggy's", "adopt_external_logins"} {
+	for _, w := range []string{"made aggy's Hermes profile", "asks you once", "adopt_external_logins"} {
 		if !strings.Contains(warns, w) {
 			t.Errorf("warns lack %q:\n%s", w, warns)
 		}
+	}
+	// T7015: the daemon is aggy doctor's to say (hermesFindings).
+	if strings.Contains(warns, "not aggy's") {
+		t.Errorf("warns hold the daemon note:\n%s", warns)
 	}
 	// The plan the hook reads is the launch's, and holds the profile as protected.
 	plan, err := readDecidePlan(out.planPath, out.planSum)

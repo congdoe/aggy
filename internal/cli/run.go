@@ -28,7 +28,6 @@ import (
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/keyring"
 	"github.com/congdoe/aggy/internal/limits"
-	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/permissions"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
@@ -108,7 +107,7 @@ func launch(name string, t target, stderr io.Writer) int {
 	defer q.Close(diagFlush)
 	// An upgraded aggy refreshes its linked skills before any CLI loads them
 	// (T6911); with nothing out of date this only looks.
-	refreshSkills(context.Background(), stderr)
+	refreshSkills(context.Background(), stderr, true)
 	// before is the launch the CLI on screen was switched from, to go back to
 	// when that CLI never starts (T6899).
 	var before *reopen
@@ -420,16 +419,18 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// not installed at all are not said on every launch.
 	// T6982: what is missing is asked about, with one key, at a new on-screen
 	// start; a switch, --direct, and a borrow's child only say it.
+	// T7015: once asked, yes or no, a later launch says nothing of it (aggy
+	// doctor does), and a switch never does.
 	fix := findLaunchFix(ctx, v, hooksMissing(v) && setupDeclined(ctx, s), declinedFor(ctx, s, Version))
-	if askAtLaunch(t, pl.child.Kind) {
+	switch {
+	case askAtLaunch(t, pl.child.Kind):
 		warns = append(warns, offerLaunchFix(ctx, s, v, fix, Version, os.Getenv, offerIn, stderr)...)
-	} else {
+	case t.SwitchFrom == "" && !t.SameChild && !fixAsked(ctx, s, Version):
 		warns = append(warns, fix.lines()...)
 	}
-	switch {
-	case pl.adopted:
-		warns = append(warns, fmt.Sprintf("%s's own session %s is aggy's session %s now: aggy log, switching, and briefs know it", v, shortID(pl.child.VendorSessionID), shortID(pl.parent.ID)))
-	case pl.resumeName != "":
+	// An adopted session is recorded in aggy log (its session event), and
+	// not said on screen (T7015).
+	if pl.resumeName != "" && !pl.adopted {
 		warns = append(warns, byNameNote)
 	}
 	switch {
@@ -477,20 +478,15 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			return fail(diag.CodePolicy, err)
 		}
 		warns = append(warns, pw...)
-		// T6979: one line each while a group is off, for a repo's own [policy]
-		// table, which is ignored, and for Grok and Codex, where the policy
-		// cannot ask as it does on Claude Code and OpenCode.
+		// T6979: one line while a group is off. A repo's own [policy] table,
+		// which is ignored, and how the policy works on a CLI where it cannot
+		// ask as it does on Claude Code and OpenCode, are aggy doctor's to say
+		// (T7015: launchStatus).
 		if who == planOnScreen && len(pw) == 0 {
-			for _, l := range []string{policyOffLine(rules), repoPolicyLine(eff.Repo), policyVendorLine(v, rules)} {
-				if l != "" {
-					warns = append(warns, l)
-				}
+			if l := policyOffLine(rules); l != "" {
+				warns = append(warns, l)
 			}
 		}
-	}
-	// T6931: a repo's [keys] table is ignored, whatever the vendor or policy.
-	if l := repoKeysLine(eff.Repo); l != "" && who == planOnScreen {
-		warns = append(warns, l)
 	}
 	if who == planOnScreen {
 		warns = append(warns, addPermissions(v, caps, rules, &req)...)
@@ -504,18 +500,21 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	}
 	// An edit borrow's child could write its worktree's memory file, and no
 	// one has reviewed that worktree yet, so it is not taken as instructions.
-	cleanup, mw := func() {}, []string(nil)
+	// Memory not delivered is aggy doctor's to say (parity findings), not
+	// the launch's (T7015).
+	cleanup := func() {}
 	if adapter.Kind(pl.child.Kind) != adapter.Edit {
-		cleanup, mw = addMemory(v, caps, pl.child.Cwd, memDir, &req)
+		cleanup, _ = addMemory(v, caps, pl.child.Cwd, memDir, &req)
 	}
 	defer cleanup()
 	if err := joinAppendFiles(&req, pl.child.Cwd); err != nil {
 		return fail(diag.CodeUsage, err)
 	}
-	// T6980: the vendor's own sandbox, said on every on-screen launch. Claude's
-	// is turned on when the folder's trust list ticks it, --no-policy or not
-	// (PR #135 review: --no-policy turns off aggy's decisions, not
-	// confinement the person chose).
+	// T6980: the vendor's own sandbox. Claude's is turned on when the folder's
+	// trust list ticks it, --no-policy or not (PR #135 review: --no-policy
+	// turns off aggy's decisions, not confinement the person chose). T7015: a
+	// launch says it only when it is off this run (a chosen sandbox that
+	// cannot start, Codex's danger-full-access); aggy doctor says the rest.
 	if who == planOnScreen {
 		switch v {
 		case adapter.Claude:
@@ -523,9 +522,13 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			if err != nil {
 				return fail(diag.CodeNoSandbox, err)
 			}
-			warns = append(warns, line)
+			if line != "" {
+				warns = append(warns, line)
+			}
 		case adapter.Codex:
-			warns = append(warns, codexSandboxLine(t.Extra))
+			if l := codexSandboxOffLine(t.Extra); l != "" {
+				warns = append(warns, l)
+			}
 		}
 	}
 	// Before the tools, whose rewrite copies are made of the static asks: with
@@ -533,10 +536,11 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	if v == adapter.Claude && !t.NoPolicy {
 		root, _ := repoRoot(pl.child.Cwd)
 		ids := readIdentities(ctx, s)
+		// T7015: only aggy's asks on its own files and Claude's settings files
+		// not being on is said here, a protection missing; pre-approvals that
+		// apply, or do not, are aggy doctor's (launchStatus).
 		if w := usePolicyHook(&req, policyHookIn{plan: plan, rules: rules, root: root, cwd: pl.child.Cwd, version: version,
-			dir: memDir, settingsFile: g.settingsFile, ids: ids}); w != "" {
-			warns = append(warns, w)
-		} else if w := policyHookNote(req, parity.PreApprovedFrom(rules, root, ids), plan.Branches); w != "" {
+			dir: memDir, settingsFile: g.settingsFile, ids: ids}); strings.HasPrefix(w, guardsOffPrefix) {
 			warns = append(warns, w)
 		}
 	}
@@ -557,7 +561,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		}
 		tw = append(tw, settingsNotes(req)...)
 	}
-	for _, w := range append(append(warns, mw...), tw...) {
+	for _, w := range append(warns, tw...) {
 		fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
 	}
 	// The brief is built now and written only once the lease is held, so
@@ -596,7 +600,8 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 				fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
 			}
 		}
-		if oc.launch.Mini {
+		// T7015: once per folder; aggy doctor says it after.
+		if oc.launch.Mini && t.SwitchFrom == "" && !t.SameChild && noteOnce(openCodeUntrustedKey+oc.root) {
 			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(openCodeUntrustedNote(oc.root, rules.HeldLocal)))
 		}
 	}
@@ -635,6 +640,11 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			return fail(agyCode(err, diag.CodeLaunchFailed), err)
 		}
 		req.Antigravity = &as.launch
+		// T7015: agy's trust gate on aggy's hook is said once per folder, and
+		// never between two CLIs; aggy doctor says it after.
+		if t.SwitchFrom == "" && !t.SameChild && noteOnce(agyHookKey+pl.child.Cwd) {
+			as.warns = append(as.warns, agyHookNote)
+		}
 		for _, w := range as.warns {
 			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
 		}
@@ -681,11 +691,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		}
 	}
 	if pl.child.Kind == "" {
-		stopScan, note := suggestAtLaunch(ctx, s, pl.child.Cwd)
-		defer stopScan()
-		if note != "" {
-			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(note))
-		}
+		defer suggestAtLaunch(pl.child.Cwd)()
 	}
 	defer func() {
 		if lease != nil {

@@ -752,7 +752,7 @@ func (s *session) setSwitch(p pendingSwitch) {
 // origin is who asked for the switch, for RunFacts.SwitchOrigin, from the
 // fields the confirmation line reads (confirmLine): a pick in the list, a first one
 // or again over an agent's or a limit's switch, is the user's; a limit only
-// a hook reported is unverified, as the status line says (limitWho).
+// a hook reported is unverified (limitWho says "reports" for it).
 func (p pendingSwitch) origin() string {
 	switch {
 	case p.picked:
@@ -2142,7 +2142,7 @@ func (s *session) offerSwitch() {
 	// One status line (S-12, O56-1): who or what asked and the switch's
 	// options first, then the keys, then the check; a narrow terminal
 	// cuts the end.
-	cmd, verified := adapter.ExitCommandAt(on, s.o.VendorVersion)
+	cmd, _ := adapter.ExitCommandAt(on, s.o.VendorVersion)
 	tools := "tools " + strings.Join(s.sw.tools, " ")
 	// short is how far a doubt's line is shortened (the fit below).
 	short := 0
@@ -2195,9 +2195,9 @@ func (s *session) offerSwitch() {
 		if short > 0 {
 			line = fmt.Sprintf("%s. %s types %s, %s", head, keyName(s.pk.key), cmd, keysEnd)
 		}
-		if !verified {
-			line += fmt.Sprintf(" (%s is unverified.)", cmd)
-		}
+		// T7015: no hedge on the line: whether the exit command is checked
+		// at this version is in docs/verification.md and aggy doctor
+		// (live-check-owed).
 		return line
 	}
 	line := confirmLine(s.sw.choice.Model, tools)
@@ -2254,7 +2254,7 @@ func (s *session) offerSwitch() {
 				}
 				if end := strings.Index(l, keysEnd) + len(keysEnd); short > 0 && end <= cols-1 {
 					if len(l) > cols-1 {
-						l = l[:end] // no half of the note on /exit being unverified
+						l = l[:end] // no half of what follows the keys
 					}
 					return l
 				}
@@ -2891,11 +2891,12 @@ func (s *session) onLimit(h LimitHit) {
 	}
 }
 
-// limitWho says who reported h: a hook's report is labeled unverified
-// (O56-2).
+// limitWho says who reported h: a hook's report is one the CLI "reports"
+// (O56-2), with no parenthetical hedge (T7015); the switch's log record
+// keeps attrs.unverified.
 func limitWho(h LimitHit) string {
 	if h.Unverified {
-		return string(h.Vendor) + " reports a limit (unverified)"
+		return string(h.Vendor) + " reports a limit"
 	}
 	return string(h.Vendor) + " hit its limit"
 }

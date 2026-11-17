@@ -94,7 +94,7 @@ func TestRefreshLeavesOthersSkills(t *testing.T) {
 			state := os.Getenv(home.Env)
 			file, want := tt.setup(t, h, state)
 			var out strings.Builder
-			refreshSkills(t.Context(), &out)
+			refreshSkills(t.Context(), &out, false)
 			if b, _ := os.ReadFile(file); string(b) != want {
 				t.Fatalf("a launch replaced %s (%q): %q", file, out.String(), b)
 			}
@@ -102,7 +102,7 @@ func TestRefreshLeavesOthersSkills(t *testing.T) {
 				t.Errorf("note = %q, want %q", out.String(), tt.note)
 			}
 			var again strings.Builder
-			refreshSkills(t.Context(), &again)
+			refreshSkills(t.Context(), &again, false)
 			if again.Len() > 0 {
 				t.Errorf("said twice: %q", again.String())
 			}

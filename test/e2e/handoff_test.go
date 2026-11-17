@@ -84,7 +84,7 @@ func TestLimitSwitchWithBrief(t *testing.T) {
 		"session_files": append(startedFiles(), map[string]any{"path": "projects/" + transcript.ClaudeProjectDir(w.cwd) + "/{session_id}.jsonl", "content": turns}),
 	}
 	s := w.start(t, sc, "run", "claude")
-	s.waitWithin([]byte("claude reports a limit (unverified)"), offerTimeout)
+	s.waitWithin([]byte("claude reports a limit"), offerTimeout)
 	s.waitWithin([]byte(". Ctrl+"), offerTimeout)
 	s.confirmPastGuard(time.Now())
 	w.waitRuns(t, s, 2)

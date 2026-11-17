@@ -200,8 +200,9 @@ func TestTypedSwitchConfirms(t *testing.T) {
 				if bytes.Contains(ch.received(), []byte("/exit")) {
 					t.Fatalf("%s got the exit command before the person confirmed: %q", c.on, ch.received())
 				}
-				if c.on == adapter.Claude && c.version == "2.1.322" && bytes.Contains(ts.screen(), []byte("is unverified")) {
-					t.Errorf("Claude's /exit has a live check, yet the line says it is unverified: %q", ts.screen())
+				// T7015: the line carries no hedge at any version.
+				if bytes.Contains(ts.screen(), []byte("is unverified")) {
+					t.Errorf("the status line hedges the exit command: %q", ts.screen())
 				}
 				ts.typeIn(t, "\x1b")
 				time.Sleep(escTimeout + 60*time.Millisecond)

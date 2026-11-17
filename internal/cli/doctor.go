@@ -29,8 +29,10 @@ const doctorUsage = `Usage: aggy doctor [--report]
 Checks each vendor CLI (installed, version against the versions aggy was
 tested on, sign-in), API-key and base-URL variables and vendor config
 settings that can bill an API instead of the subscription, whether each
-CLI gets this repo's shared memory and aggy's safety policy, whether
-each managed tool that is on can be wired and each one that is off left
+CLI gets this repo's shared memory and aggy's safety policy, what a
+launch in this folder does not say on screen (how the policy works on
+each CLI, rules that do not reach one, the vendors' own sandboxes,
+missing command skills), whether each managed tool that is on can be wired and each one that is off left
 no skill link behind (each problem names the command that fixes it),
 and whether config files aggy changed have changed since. It changes
 nothing; an error finding goes to aggy's diagnostic log (aggy diag).
@@ -177,6 +179,10 @@ func doctor(ctx context.Context, env checkEnv) doctorResult {
 		res.sections = append(res.sections, doctorSection{title: "General", findings: general})
 	}
 	res.sections = append(res.sections, doctorSection{title: "Parity", findings: parityFindings(env.cwd, vrs)})
+	// T7015: what a launch no longer says on screen.
+	if fs := launchStatus(ctx, env.cwd, vrs); len(fs) > 0 {
+		res.sections = append(res.sections, doctorSection{title: "Launches here", findings: fs})
+	}
 	if fs := permissionFindings(ctx); len(fs) > 0 {
 		res.sections = append(res.sections, doctorSection{title: "Permissions and settings", findings: fs})
 	}

@@ -140,17 +140,22 @@ func TestAddPermissions(t *testing.T) {
 		Problems: []permissions.Problem{{Path: "/p", Why: "broken"}},
 	}
 	var req adapter.InteractiveRequest
-	notes := addPermissions(adapter.Claude, []string{probe.CapSettings}, s, &req)
+	rn := sharedRules(adapter.Claude, []string{probe.CapSettings}, s, &req)
 	if !slices.Equal(req.Rules.Allow, []string{"Bash(gh pr list)"}) || !slices.Equal(req.Rules.Deny, []string{"Bash(curl *)"}) || req.Rules.Mode != "auto" {
 		t.Errorf("%+v", req.Rules)
 	}
-	joined := strings.Join(notes, "\n")
-	if !strings.Contains(joined, "1 of your permission rules") || !strings.Contains(joined, "/p") {
+	// T7015: the screen gets the deny that may be missing; the rule that does
+	// not apply is aggy doctor's.
+	joined := strings.Join(rn.screen, "\n")
+	if strings.Contains(joined, "1 of your permission rules") || !strings.Contains(joined, "/p") {
 		t.Errorf("notes: %s", joined)
+	}
+	if st := statusText(rn); !strings.Contains(st, "1 of your permission rules") {
+		t.Errorf("status: %s", st)
 	}
 
 	req = adapter.InteractiveRequest{}
-	notes = addPermissions(adapter.Claude, nil, s, &req)
+	notes := addPermissions(adapter.Claude, nil, s, &req)
 	if len(req.Rules.Allow) != 0 || !strings.Contains(strings.Join(notes, "\n"), "--settings") {
 		t.Errorf("no --settings: %+v %v", req.Rules, notes)
 	}
@@ -166,9 +171,10 @@ func TestAddPermissions(t *testing.T) {
 		t.Errorf("the person's own flag comes first: %+v", req.Rules)
 	}
 	req = adapter.InteractiveRequest{}
-	notes = addPermissions(adapter.Grok, nil, s, &req)
-	if len(req.Rules.Allow)+len(req.Rules.Deny) != 0 || req.Rules.Mode != "" || len(notes) < 3 {
-		t.Errorf("no flags: %+v %v", req.Rules, notes)
+	rn = sharedRules(adapter.Grok, nil, s, &req)
+	if len(req.Rules.Allow)+len(req.Rules.Deny) != 0 || req.Rules.Mode != "" || !strings.Contains(strings.Join(rn.screen, "\n"), "--deny") ||
+		!strings.Contains(statusText(rn), "--permission-mode") {
+		t.Errorf("no flags: %+v %v %v", req.Rules, rn.screen, rn.status)
 	}
 
 	req = adapter.InteractiveRequest{}
@@ -259,4 +265,13 @@ func TestLoadPermissionsConfigMode(t *testing.T) {
 	if s.Mode != "default" || s.ModeFrom != permissions.FromConfig {
 		t.Errorf("%+v", s)
 	}
+}
+
+// statusText joins sharedRules' status notes as aggy doctor shows them.
+func statusText(rn ruleNotes) string {
+	var out []string
+	for _, f := range rn.status {
+		out = append(out, f.Text(""))
+	}
+	return strings.Join(out, "\n")
 }

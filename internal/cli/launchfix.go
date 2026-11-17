@@ -22,9 +22,10 @@ import (
 // install --vendor <v> and aggy skill link --vendor <v> do, through the
 // manifest, so aggy unwire takes them out. The question names every file a yes
 // changes. Both are planned before anything is asked, and written in one run
-// or not at all. A no is kept for this aggy version: the launch then says only
-// the hooks' line, and nothing about the skills. Nobody to ask (no terminal, a
-// borrow child, a session's own shell) gets the lines.
+// or not at all. A no is kept for this aggy version: later launches then say
+// nothing of it (T7015), and aggy doctor reports what is still missing. Nobody
+// to ask (no terminal, a borrow child, a session's own shell) gets the lines,
+// until it was asked once; a switch never does.
 
 // fixDeclinedNote is the notes row that keeps a no, holding the aggy version
 // it was given for. skillsUnlinkedNote keeps the version an aggy skill unlink
@@ -77,11 +78,17 @@ func findLaunchFix(ctx context.Context, v adapter.Vendor, quietHooks, declined b
 	if len(ls) == 0 {
 		return f
 	}
-	f.skillLine = fmt.Sprintf("aggy's commands %s are not in %s's menu: picked there they do not exist, typed in full they still work. aggy skill link adds them", strings.Join(names, ", "), v)
+	f.skillLine = skillsMissingLine(v, names)
 	ps, err := planSkills(ls, map[string]bool{string(v): true})
 	f.skills = ps
 	f.planned = f.planned && err == nil && len(ps) > 0
 	return f
+}
+
+// skillsMissingLine says which of aggy's command skills v's menu lacks, for a
+// launch and for aggy doctor.
+func skillsMissingLine(v adapter.Vendor, names []string) string {
+	return fmt.Sprintf("aggy's commands %s are not in %s's menu: picked there they do not exist, typed in full they still work. aggy skill link adds them", strings.Join(names, ", "), v)
 }
 
 // missingSkills returns the layouts of aggy's command skills (switch, borrow,
@@ -150,6 +157,14 @@ func declinedFor(ctx context.Context, s *store.Store, version string) bool {
 	return false
 }
 
+// fixAsked reports whether the question was asked, or could not be planned,
+// for this aggy version: then a launch says nothing more of what is missing,
+// and aggy doctor does (T7015).
+func fixAsked(ctx context.Context, s *store.Store, version string) bool {
+	v, ok, err := s.Note(ctx, fixDeclinedNote)
+	return err == nil && ok && v == version
+}
+
 // askAtLaunch reports whether this launch may ask about what is missing: a new
 // on-screen start, not a switch, a resume of the same child (a tool change's,
 // while the supervisor's reader holds the terminal), --direct, or a borrow's
@@ -166,7 +181,12 @@ func offerLaunchFix(ctx context.Context, s *store.Store, v adapter.Vendor, f lau
 	if f.hookLine == "" && f.skillLine == "" {
 		return nil
 	}
-	if getenv(fixAskEnv) == "0" || setupAskedNow || declinedFor(ctx, s, version) {
+	// T7015: asked once, yes or no (or just asked by the first-run setup), a
+	// later launch says nothing; aggy doctor reports what is missing.
+	if setupAskedNow || fixAsked(ctx, s, version) {
+		return nil
+	}
+	if getenv(fixAskEnv) == "0" || declinedFor(ctx, s, version) {
 		return f.lines()
 	}
 	if !f.planned {
@@ -195,8 +215,10 @@ func offerLaunchFix(ctx context.Context, s *store.Store, v adapter.Vendor, f lau
 	case !asked:
 		return f.lines()
 	case !yes:
+		// The question said what is missing: the launch does not say it
+		// again (T7015).
 		_ = s.SetNote(ctx, fixDeclinedNote, version, time.Now())
-		return f.lines()
+		return nil
 	}
 	runID, err := applyPatchesRun(ctx, append(slices.Clone(f.hooks), f.skills...))
 	if err != nil {

@@ -79,10 +79,13 @@ func TestPrepareAntigravity(t *testing.T) {
 		t.Fatalf("plan = %+v, %v", plan, err)
 	}
 	warns := strings.Join(out.warns, "\n")
-	for _, w := range []string{"not supported under consumer plans", "load only once you do"} {
-		if !strings.Contains(warns, w) {
-			t.Errorf("warns lack %q:\n%s", w, warns)
-		}
+	if !strings.Contains(warns, "not supported under consumer plans") {
+		t.Errorf("warns lack the terms note:\n%s", warns)
+	}
+	// T7015: the folder trust note is the launch's to say once per folder
+	// (agyHookKey), not prepareAntigravity's.
+	if strings.Contains(warns, "load only once you do") {
+		t.Errorf("warns hold the trust note:\n%s", warns)
 	}
 	again, err := prepareAntigravity(ctx, in)
 	if err != nil || strings.Contains(strings.Join(again.warns, "\n"), "consumer plans") {
@@ -282,10 +285,10 @@ func TestAntigravityDoctor(t *testing.T) {
 		}
 		return strings.Join(out, ",")
 	}
-	if got := codes(antigravityFindings(checkup.Vendor{Capabilities: agyCaps})); got != "antigravity-scope,antigravity-entry,antigravity-updates" {
+	if got := codes(antigravityFindings(checkup.Vendor{Capabilities: agyCaps})); got != "antigravity-scope,antigravity-entry,antigravity-trust,antigravity-updates" {
 		t.Errorf("reachable: %s", got)
 	}
-	if got := codes(antigravityFindings(checkup.Vendor{Capabilities: []string{probe.CapResume}})); got != "antigravity-scope,antigravity-unreachable,antigravity-entry,antigravity-updates" {
+	if got := codes(antigravityFindings(checkup.Vendor{Capabilities: []string{probe.CapResume}})); got != "antigravity-scope,antigravity-unreachable,antigravity-entry,antigravity-trust,antigravity-updates" {
 		t.Errorf("unreachable: %s", got)
 	}
 }

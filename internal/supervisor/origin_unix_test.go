@@ -46,7 +46,7 @@ func TestSwitchOriginFacts(t *testing.T) {
 		want    string
 	}{
 		{"limit", LimitHit{Vendor: adapter.Claude}, false, "claude hit its limit, brief -> grok.", "limit"},
-		{"unverified", LimitHit{Vendor: adapter.Claude, Unverified: true}, false, "claude reports a limit (unverified), brief -> grok.", "limit, unverified"},
+		{"unverified", LimitHit{Vendor: adapter.Claude, Unverified: true}, false, "claude reports a limit, brief -> grok.", "limit, unverified"},
 		{"picked again", LimitHit{Vendor: adapter.Claude, Unverified: true}, true, "-> grok. Ctrl+", "user"},
 	}
 	for _, tt := range tests {

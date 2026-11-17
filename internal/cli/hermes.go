@@ -460,8 +460,9 @@ func checkHermesBlock(ctx context.Context, path, profile, file string, block []b
 }
 
 // hermesLaunchNotes are the lines a Hermes launch prints: the profile made,
-// the hook consent Hermes asks for, the daemon, and the
-// person's root config when it adopts other CLIs' logins.
+// the hook consent Hermes asks for, and the person's root config when it
+// adopts other CLIs' logins. That Hermes' daemon is its own is aggy doctor's
+// to say (hermesFindings), not every launch's (T7015).
 func hermesLaunchNotes(ctx context.Context, path, profileDir, bin, stateDir, profile string, created bool) []string {
 	var out []string
 	if created {
@@ -470,7 +471,6 @@ func hermesLaunchNotes(ctx context.Context, path, profileDir, bin, stateDir, pro
 	if missing := hermesConsentMissing(profileDir, bin, stateDir, profile); len(missing) > 0 {
 		out = append(out, "Hermes asks you once, at its own prompt, to allow aggy's hooks ("+strings.Join(missing, " and ")+"): answer y, or aggy's policy decisions and switching cannot reach this session")
 	}
-	out = append(out, "Hermes runs its tools and hooks in its own daemon, which outlives this session and is not aggy's: aggy never starts, stops, or signals it")
 	if hermesAdopts(ctx, path) {
 		out = append(out, hermesAdoptNote)
 	}

@@ -462,7 +462,7 @@ func TestLostRuleNoteNamesIt(t *testing.T) {
 		{Kind: permissions.Ask, Text: "Bash(git push *)", Origin: permissions.FromAggy},
 	}}
 	var req adapter.InteractiveRequest
-	notes := strings.Join(addPermissions(adapter.Grok, []string{probe.CapAllow, probe.CapDeny}, s, &req), "\n")
+	notes := statusText(sharedRules(adapter.Grok, []string{probe.CapAllow, probe.CapDeny}, s, &req))
 	if len(req.Rules.Allow) != 0 || !strings.Contains(notes, "none of your allow rules") || !strings.Contains(notes, "Bash(git push *)") {
 		t.Errorf("%+v %q", req.Rules, notes)
 	}

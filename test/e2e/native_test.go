@@ -119,8 +119,9 @@ func TestContinueNativeSession(t *testing.T) {
 		if !slices.Equal(r.Flags["--resume"], []string{nativeA}) || len(r.Flags["--session-id"]) != 0 {
 			t.Fatalf("run %d args = %q, want --resume %s", i, r.Args, nativeA)
 		}
-		if adopted := strings.Contains(s.screen(), "is aggy's session"); adopted != (i == 0) {
-			t.Errorf("run %d: adoption note %v, want %v", i, adopted, i == 0)
+		// T7015: an adoption is aggy log's to show, not the launch's.
+		if strings.Contains(s.screen(), "is aggy's session") {
+			t.Errorf("run %d: an adoption note on screen", i)
 		}
 	}
 	if n := childrenWith(t, w, nativeA); n != 1 {
@@ -212,7 +213,7 @@ func TestResumeNativeIDAndName(t *testing.T) {
 		!slices.Contains(r.Args, "--resume=auth-refactor") {
 		t.Fatalf("args = %q, want --resume=auth-refactor and no session id", r.Args)
 	}
-	if !strings.Contains(s.screen(), "records it as it exits") || !strings.Contains(s.screen(), "is aggy's session") {
+	if !strings.Contains(s.screen(), "records it as it exits") {
 		t.Errorf("no note about the name: %q", s.screen())
 	}
 	if n := childrenWith(t, w, nativeB); n != 1 {
