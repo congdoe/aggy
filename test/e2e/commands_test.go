@@ -131,6 +131,23 @@ func waitTurnEnds(t *testing.T, w *world, n int) {
 	t.Fatalf("turn ends counted = %d, want %d", got, n)
 }
 
+// waitAccepted waits until the supervisor has accepted n hook events whose
+// record names event, by the diagnostic records.
+func waitAccepted(t *testing.T, w *world, event string, n int) {
+	t.Helper()
+	got := 0
+	for end := time.Now().Add(offerTimeout); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		code, out := w.aggyCode(t, "diag", "export", "--jsonl", "--event", "hook.event.accepted")
+		if code != 0 {
+			t.Fatalf("aggy diag export: exit %d\n%s", code, out)
+		}
+		if got = strings.Count(out, `"event":"`+event+`"`); got >= n {
+			return
+		}
+	}
+	t.Fatalf("%s hooks accepted = %d, want %d", event, got, n)
+}
+
 // TestTypedSwitchCaught (T6908): /switch grok typed in full at Claude's prompt
 // never reaches the CLI (no turn, no Stop), and a caught command started no
 // turn, so nothing waits for a turn end: the switch goes at once, in one step,
@@ -590,7 +607,8 @@ func TestTypedPickerOpens(t *testing.T) {
 }
 
 // TestFirstTurnSwitch (T6982, the owner's run in Apple Terminal): a fresh
-// Claude at the checked version, its SessionStart seen and no turn ended,
+// Claude at a checked version, in a folder where an earlier Claude session
+// ended a turn, its SessionStart seen and no turn ended,
 // /switch codex typed in full: aggy types /exit in one step, with no question,
 // and Codex starts. A Ctrl+C sent around the hand-over, meant for Claude, goes
 // nowhere: the owner's Codex exited 130 from one. Where it lands depends on
@@ -606,28 +624,40 @@ func TestFirstTurnSwitch(t *testing.T) {
 		t.Fatalf("aggy setup: %v\n%s", err, out)
 	}
 	script := `[ "$AGGY_VENDOR" = claude ] || exit 0; exec ` + aggySh(t) + ` hook --vendor claude "$1"`
+	start := map[string]any{"event": "SessionStart", "payload": map[string]any{"session_id": "{session_id}", "source": "startup"}}
+	claudeVersion(t, w, "2.1.326") // checked live, as is the line from 2.1.322
+	// First an earlier Claude session in this folder that ends a turn
+	// (#147 review, H1): Claude had shown its prompt here.
+	earlier := w.start(t, map[string]any{"stdout": "READY>", "hook_command": []string{"/bin/sh", "-c", script, "sh"},
+		"hooks":         []map[string]any{start, {"event": "Stop", "payload": map[string]any{"session_id": "{session_id}"}}},
+		"session_files": startedFiles()}, "run", "claude")
+	earlier.waitWithin([]byte("READY>"), offerTimeout)
+	waitTurnEnds(t, w, 1)
+	earlier.send([]byte("/exit\r"))
+	if code := earlier.exit(); code != 0 {
+		t.Fatalf("the earlier session: aggy exit = %d", code)
+	}
 	sc := map[string]any{
 		"stdout":       "READY>",
 		"hook_command": []string{"/bin/sh", "-c", script, "sh"},
 		// At launch the fake runs its hooks once: a SessionStart, and no
 		// turn end.
-		"hooks":         []map[string]any{{"event": "SessionStart", "payload": map[string]any{"session_id": "{session_id}", "source": "startup"}}},
+		"hooks":         []map[string]any{start},
 		"session_files": startedFiles(),
 	}
-	claudeVersion(t, w, "2.1.326") // checked live, as is the line from 2.1.322
 	s := w.start(t, sc, "run", "claude")
 	s.waitWithin([]byte("READY>"), offerTimeout)
-	time.Sleep(1500 * time.Millisecond) // past the launch's quiet gap, and the SessionStart
+	waitAccepted(t, w, "SessionStart", 2) // this launch's, after the earlier one's
 	s.typeSlowly("/switch codex")
 	s.send([]byte("\r"))
 	s.waitWithin([]byte("/exit"), offerTimeout)
 	s.send([]byte{0x03}) // the person's Ctrl+C, meant for Claude
-	w.waitRuns(t, s, 2)  // and past the hand-over
+	w.waitRuns(t, s, 3)  // and past the hand-over
 	s.send([]byte("/exit\r"))
 	if code := s.exit(); code != 0 {
 		t.Fatalf("aggy exit = %d: the Ctrl+C reached Codex?", code)
 	}
-	if runs := interactiveRuns(t, w); len(runs) != 2 || runs[1].Vendor != "codex" {
-		t.Fatalf("interactive runs = %+v, want claude then codex", runs)
+	if runs := interactiveRuns(t, w); len(runs) != 3 || runs[2].Vendor != "codex" {
+		t.Fatalf("interactive runs = %d, want claude, claude, then codex", len(runs))
 	}
 }

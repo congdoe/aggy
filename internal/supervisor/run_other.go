@@ -2,7 +2,10 @@
 
 package supervisor
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 // Run needs a Unix terminal; Windows needs ConPTY (after 1.0).
 func Run(Options) (Exit, error) {
@@ -15,5 +18,17 @@ func PrivateDir(string) error { return errors.New("supervisor: not supported on 
 // Live is false here: no supervisor runs on this OS.
 func Live(string, string) (bool, error) { return false, nil }
 
-// HandOverSignals does nothing here: no supervisor runs on this OS.
-func HandOverSignals() func() { return func() {} }
+// HandOverGrace is unused here: no supervisor runs on this OS.
+const HandOverGrace = 0
+
+// HandOver does nothing here: no supervisor runs on this OS.
+type HandOver struct{}
+
+// HandOverSignals does nothing here.
+func HandOverSignals() *HandOver { return &HandOver{} }
+
+// Stop does nothing here.
+func (*HandOver) Stop() {}
+
+// StopAfter does nothing here.
+func (*HandOver) StopAfter(time.Duration) {}

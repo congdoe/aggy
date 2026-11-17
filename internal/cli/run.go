@@ -112,16 +112,9 @@ func launch(name string, t target, stderr io.Writer) int {
 	// before is the launch the CLI on screen was switched from, to go back to
 	// when that CLI never starts (T6899).
 	var before *reopen
-	settled := func() {}
-	defer func() { settled() }()
 	for {
 		var next switchTo
 		code := launchOnce(name, &t, stderr, &next, q)
-		settled()
-		settled = func() {}
-		if next.settle != nil {
-			settled = next.settle
-		}
 		if next.vendor == "" {
 			if next.unstarted == nil || before == nil {
 				return code
@@ -199,8 +192,6 @@ type switchTo struct {
 	fromID    string         // its session id, "" if aggy never learned it
 	origin    string         // who asked for the switch (supervisor.RunFacts.SwitchOrigin)
 	unstarted *unstarted
-	// settle stops supervisor.HandOverSignals, once the next launch returns.
-	settle func()
 }
 
 // reopen is a launch to go back to: its target, and that child as a switchTo.
@@ -917,9 +908,10 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		}
 	}
 	var facts supervisor.RunFacts
+	promptSeen := v == adapter.Claude && turnSeenHere(ctx, s, v, pl.parent)
 	// Taken from before the supervisor restores the terminal, so no moment
 	// out of raw mode is left uncovered; kept only for a switch (T6982).
-	settle := supervisor.HandOverSignals()
+	handOver := supervisor.HandOverSignals()
 	ex, err := supervisor.Run(supervisor.Options{
 		Facts:         &facts,
 		Tools:         tools,
@@ -927,6 +919,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		ToolsNudge:    proxyNudge,
 		In:            os.Stdin, Out: os.Stdout, Command: cmd,
 		HandOver:      t.SwitchFrom != "",
+		PromptSeen:    promptSeen,
 		VendorVersion: version,
 		// The CLI leads its own session in the pseudo-terminal.
 		Start: func(c adapter.Command, rows, cols int) (supervisor.Child, error) {
@@ -978,19 +971,21 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		TrustAnswer: sessionTrustAnswer(pl.child.Cwd),
 	})
 	// The terminal is out of raw mode from here to the next CLI's launch: a
-	// Ctrl+C meant for the CLI that exited must not end aggy (T6982). With no
-	// switch, signals are aggy's again at once.
+	// Ctrl+C meant for the CLI that exited must not end aggy, so a switch's
+	// hand-over keeps the signals a moment (HandOverGrace), and no longer:
+	// a Ctrl+C at aggy's own question before the next launch ends aggy, with
+	// nothing started, as before (T6982, #147 review). With no switch,
+	// signals are aggy's again at once.
 	if ex.SwitchTo == "" {
-		settle()
-		settle = func() {}
+		handOver.Stop()
+	} else {
+		handOver.StopAfter(supervisor.HandOverGrace)
 	}
-	handed := false
-	defer func() {
-		if !handed {
-			settle()
-		}
-	}()
 	px.guard(0, false) // the CLI was reaped: never signal its pid again
+	if facts.TurnRan {
+		// T6982: evidence for a later launch in this folder (turnSeenHere).
+		_ = s.SetChildTurnSeen(ctx, pl.child.ID)
+	}
 	dlog.Release()
 	// Before the next launch, whose brief reads this child's transcript.
 	cids.settle(ctx, appendEvent, &sessionFiles{})
@@ -1017,8 +1012,7 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		}
 	}
 	if ex.SwitchTo != "" {
-		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next, child: pl.child.ID, from: v, fromID: cids.current(), origin: facts.SwitchOrigin, settle: settle}
-		handed = true
+		*next = switchTo{vendor: ex.SwitchTo, parentID: parentID, choice: ex.Next, child: pl.child.ID, from: v, fromID: cids.current(), origin: facts.SwitchOrigin}
 		return ex.Code
 	}
 	// A signal to aggy or a signal that killed the CLI never leads to another
@@ -1040,6 +1034,34 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		_, _ = s.DeleteUnstartedChild(ctx, pl.child.ID)
 	}
 	return ex.Code
+}
+
+// turnSeenHere reports whether an on-screen session of v in par's folder
+// (its canonical form) had a turn end aggy counted (T6982): the CLI had
+// shown its prompt in this folder before, so a folder-trust dialog was
+// answered then, and Claude saves that answer per folder ("trust acceptance
+// is saved per directory", code.claude.com/docs/en/security, "Trust
+// verification"). Not in the home folder, where Claude holds it for one
+// session only, so the dialog comes at each launch (the same page). Any
+// doubt (an unreadable folder, home, or index) is false.
+func turnSeenHere(ctx context.Context, s *store.Store, v adapter.Vendor, par store.Parent) bool {
+	key := par.DirKey
+	if key == "" {
+		k, err := safefs.CanonicalPath(par.Dir)
+		if err != nil || k == "" {
+			return false
+		}
+		key = k
+	}
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	if hk, err := safefs.CanonicalPath(h); err != nil || hk == key || h == par.Dir {
+		return false
+	}
+	seen, err := s.TurnSeenInDir(ctx, string(v), key, par.Dir, "")
+	return err == nil && seen
 }
 
 // hooksMissing reports whether aggy's turn-end hook for v is not installed, for

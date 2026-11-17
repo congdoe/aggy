@@ -20,8 +20,8 @@ func TestLiveChecksByVersion(t *testing.T) {
 		owed           bool
 	}{
 		{Claude, "2.1.322", true, true, true, false, true, false},
-		{Claude, "2.1.326", true, true, true, false, true, false},
-		{Claude, "2.1.324", true, true, true, false, true, false},
+		{Claude, "2.1.326", true, true, true, false, true, true}, // the keys were checked on 2.1.322 only
+		{Claude, "2.1.324", true, true, true, false, true, true},
 		{Claude, "2.1.330", true, true, true, false, true, true},
 		{Claude, "2.1.311", false, false, false, false, false, true},
 		{Claude, "2.1.32", false, false, false, false, false, true},
@@ -60,6 +60,18 @@ func TestLiveChecksByVersion(t *testing.T) {
 		}
 		if c.owed && !strings.Contains(owed, "2.1.32") {
 			t.Errorf("%s %q: the note names no checked version: %q", c.v, c.version, owed)
+		}
+	}
+	// #147 review (L1): doctor names each fact by the last version it was
+	// checked on: at 2.1.326 Ctrl+U and /exit are current, the keys are not.
+	for _, c := range []struct {
+		version  string
+		ctrlU    bool
+		keysOwed bool
+	}{{"2.1.326", false, true}, {"2.1.324", false, true}, {"2.1.330", true, true}} {
+		owed := ComposerCheckOwed(Claude, c.version)
+		if strings.Contains(owed, "Ctrl+U and /exit on 2.1.326") != c.ctrlU || strings.Contains(owed, "keys on an empty prompt") != c.keysOwed {
+			t.Errorf("%s: ComposerCheckOwed = %q", c.version, owed)
 		}
 	}
 	if _, verified := ExitCommand(Claude); verified {

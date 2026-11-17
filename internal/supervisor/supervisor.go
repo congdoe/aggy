@@ -116,6 +116,11 @@ type Options struct {
 	// its first screen are dropped (handOverDrop), so a second Ctrl+C or an
 	// Enter meant for the CLI that exited does not land in this one.
 	HandOver bool
+	// PromptSeen: an earlier on-screen session of this vendor in this folder
+	// had a turn end aggy counted, so the CLI had shown its prompt here and a
+	// folder-trust dialog was answered then (T6982, #147 review). Without it,
+	// a switch before the first turn end asks on the status line.
+	PromptSeen bool
 	// HooksMissing: aggy's hooks are not installed for Vendor, so until a hook
 	// does arrive no turn end can be counted: an agent's switch is refused,
 	// and the list says so (T6848).
