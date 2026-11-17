@@ -45,7 +45,7 @@ git clone https://github.com/congdoe/aggy && cd aggy && make build   # ./bin/agg
 
 ```sh
 aggy setup             # find each CLI and check its version
-aggy doctor            # API keys, base URLs, untested versions, config drift
+aggy doctor            # API keys, base URLs, untested versions, config drift, status
 
 aggy borrow research "What changed in Go 1.27's toolchain?"
 aggy borrow news "Latest stable release of SQLite"
@@ -106,7 +106,7 @@ Every session also gets aggy's safety policy: reading `.env` files (on screen, t
 required = false   # start with a warning instead of refusing
 ```
 
-`aggy doctor` shows, per CLI, whether it gets the memory and the policy.
+`aggy doctor` shows, per CLI, whether it gets the memory and the policy. A launch stays quiet: aggy prints before a CLI starts, and between two CLIs on a switch, only what means a protection is off or missing this run, its questions, and its refusals. The rest (each vendor's own sandbox, how the policy works on each CLI, rules that do not reach one, missing command skills) is in `aggy doctor`.
 
 ## One set of permissions
 

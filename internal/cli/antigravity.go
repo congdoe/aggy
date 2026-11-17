@@ -260,7 +260,6 @@ func prepareAntigravity(ctx context.Context, in agyInput) (agySetup, error) {
 	if written {
 		out.warns = append(out.warns, "Antigravity: "+antigravity.TermsNote+".", agyEntryNote)
 	}
-	out.warns = append(out.warns, agyHookNote)
 	if in.noPolicy {
 		out.warns = append(out.warns, "aggy's hook gives no decisions this session (--no-policy); it still tells aggy of turn ends")
 	}
@@ -273,8 +272,12 @@ func prepareAntigravity(ctx context.Context, in agyInput) (agySetup, error) {
 // agyHookNote is the launch line on what aggy cannot see: agy's own trust
 // dialog (live) gates the workspace hooks file (Google's docs), so until the
 // person trusts the folder in agy, aggy's policy hook is not running, and
-// aggy cannot tell before a hook arrives.
+// aggy cannot tell before a hook arrives. A launch says it once per folder
+// (agyHookKey), and aggy doctor always (T7015).
 const agyHookNote = "agy asks once whether you trust this folder; its workspace hooks, aggy's safety policy and turn ends among them, load only once you do, and aggy cannot tell before its first hook arrives: until then aggy's policy is not on, and a switch waits for you to quit agy"
+
+// agyHookKey keys agyHookNote's once-per-folder record (noteOnce).
+const agyHookKey = "agy-hook-trust\x00"
 
 // ensureDir makes dir when it is not there.
 func ensureDir(dir string) error {
@@ -494,6 +497,7 @@ func antigravityFindings(vr checkup.Vendor) []checkup.Finding {
 			Message: why + ", which aggy's launch needs"})
 	}
 	out = append(out, checkup.Finding{Code: codeAgyEntry, Level: checkup.LevelInfo, Vendor: adapter.Antigravity, Message: agyEntryNote})
+	out = append(out, checkup.Finding{Code: codeAgyTrust, Level: checkup.LevelInfo, Vendor: adapter.Antigravity, Message: agyHookNote})
 	out = append(out, checkup.Finding{Code: codeAgyUpdates, Level: checkup.LevelInfo, Vendor: adapter.Antigravity,
 		Message: "agy updates itself in the background, and a new version may change its hooks (1.5.4 changed their payload): " + antigravity.UpdateEnv + "=true in your shell turns that off"})
 	return out
@@ -505,6 +509,7 @@ const (
 	codeAgyUnreachable = "antigravity-unreachable"
 	codeAgyUpdates     = "antigravity-updates"
 	codeAgyEntry       = "antigravity-entry"
+	codeAgyTrust       = "antigravity-trust" // agy's folder trust gates aggy's hook (T7015)
 )
 
 // antigravitySetupNote is what setup says about Antigravity.

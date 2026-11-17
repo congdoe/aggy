@@ -283,7 +283,8 @@ func adoptNamed(ctx context.Context, s *store.Store, child store.Child, reported
 	_ = s.SetChildFileSeen(ctx, child.ID)
 	_ = s.AppendEvent(ctx, store.Event{At: time.Now(), ParentID: child.ParentID, ChildID: child.ID, Type: store.EventSession,
 		Detail: map[string]any{"vendor": child.Vendor, "session": n.ID, "via": "adopted by name"}})
-	fmt.Fprintf(out, "aggy: %s session %s is aggy's session %s now\n", v, shortID(n.ID), shortID(child.ParentID))
+	// T7015: aggy log shows the adoption (the session event above); the
+	// screen does not.
 }
 
 // indexRO opens the index read-only, or nil when there is none yet or it

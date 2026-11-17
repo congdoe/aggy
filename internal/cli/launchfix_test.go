@@ -41,8 +41,9 @@ func fixWorld(t *testing.T, typed string, term bool) (string, *store.Store) {
 // TestOfferLaunchFix (T6982): a launch that finds aggy's hooks or command
 // skills missing for the CLI asks once whether to add them, naming every file
 // a yes changes; a yes writes both in one manifest run; a no is kept for this
-// aggy version and also silences the skills' line; nobody to ask, or a person
-// asked about setup in this same process, gets the lines only.
+// aggy version; nobody to ask gets the lines only. T7015: once asked, yes or
+// no, and after the first-run setup question in this same process, a launch
+// says nothing (quiet), and aggy doctor reports what is missing.
 func TestOfferLaunchFix(t *testing.T) {
 	for _, c := range []struct {
 		name     string
@@ -52,14 +53,15 @@ func TestOfferLaunchFix(t *testing.T) {
 		setup    bool   // the first-run question was asked in this process
 		asked    bool
 		fixed    bool
+		quiet    bool   // no lines left, though nothing was fixed
 		note     string // the note after
 	}{
-		{"yes", "y\n", true, "", false, true, true, ""},
-		{"no", "n\n", true, "", false, true, false, "v1"},
-		{"no terminal", "y\n", false, "", false, false, false, ""},
-		{"no given for this version", "y\n", true, "v1", false, false, false, "v1"},
-		{"no given for another version", "y\n", true, "v0", false, true, true, "v0"},
-		{"setup asked already", "y\n", true, "", true, false, false, ""},
+		{"yes", "y\n", true, "", false, true, true, false, ""},
+		{"no", "n\n", true, "", false, true, false, true, "v1"},
+		{"no terminal", "y\n", false, "", false, false, false, false, ""},
+		{"no given for this version", "y\n", true, "v1", false, false, false, true, "v1"},
+		{"no given for another version", "y\n", true, "v0", false, true, true, false, "v0"},
+		{"setup asked already", "y\n", true, "", true, false, false, true, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h, s := fixWorld(t, c.typed, c.term)
@@ -91,7 +93,7 @@ func TestOfferLaunchFix(t *testing.T) {
 					}
 				}
 			}
-			if (len(left) == 0) != c.fixed {
+			if (len(left) == 0) != (c.fixed || c.quiet) {
 				t.Errorf("left %q", left)
 			}
 			after := findLaunchFix(ctx, adapter.Claude, false, false)

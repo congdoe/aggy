@@ -402,7 +402,7 @@ func recordText(v store.VendorStatus) string {
 // context every turn; without asking it only says how. A failure is a warning:
 // setup's records stand.
 func (r *setupRun) skills(ctx context.Context, selected []adapter.Adapter) {
-	refreshSkills(ctx, r.out)
+	refreshSkills(ctx, r.out, false)
 	var vendors []string
 	for _, a := range selected {
 		if v := string(a.Vendor()); slices.Contains(skillVendors, v) {

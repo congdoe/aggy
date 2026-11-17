@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/congdoe/aggy/internal/diag"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/store"
 	"github.com/congdoe/aggy/skills"
@@ -347,7 +348,7 @@ func TestRefreshSkills(t *testing.T) {
 			}
 			before, _ := os.ReadFile(file)
 			var out strings.Builder
-			refreshSkills(t.Context(), &out)
+			refreshSkills(t.Context(), &out, false)
 			after, _ := os.ReadFile(file)
 			if !tt.rewrite {
 				if out.Len() > 0 || string(after) != string(before) {
@@ -364,7 +365,7 @@ func TestRefreshSkills(t *testing.T) {
 			}
 			runID := strings.Fields(rest)[0]
 			var again strings.Builder
-			refreshSkills(t.Context(), &again)
+			refreshSkills(t.Context(), &again, false)
 			if again.Len() > 0 {
 				t.Errorf("a second refresh said %q", again.String())
 			}
@@ -373,5 +374,30 @@ func TestRefreshSkills(t *testing.T) {
 				t.Errorf("after unwire SKILL.md = %q, want the old text", b)
 			}
 		})
+	}
+}
+
+// TestRefreshSkillsQuiet (T7015): a launch's refresh says nothing on screen
+// and records the run in the diagnostic log, where aggy unwire --run finds
+// it.
+func TestRefreshSkillsQuiet(t *testing.T) {
+	_, l := skillHome(t)
+	mustRun(t, "skill", "link", "--vendor", "claude")
+	file := filepath.Join(l.store, "SKILL.md")
+	writeAsAggy(t, file, "---\nname: aggy\ndescription: an older aggy's skill\n---\nold\n")
+	var out strings.Builder
+	refreshSkills(t.Context(), &out, true)
+	if out.Len() > 0 {
+		t.Errorf("a launch's refresh said %q", out.String())
+	}
+	if b, _ := os.ReadFile(file); string(b) != string(skills.Aggy) {
+		t.Fatalf("SKILL.md = %q, want this aggy's", b)
+	}
+	state, err := home.Dir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := allDiagText(t, state); !strings.Contains(got, diag.EvSkillRefreshed.String()) {
+		t.Errorf("no %s record:\n%s", diag.EvSkillRefreshed, got)
 	}
 }

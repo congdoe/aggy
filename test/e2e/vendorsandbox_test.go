@@ -18,10 +18,10 @@ import (
 
 // TestClaudeSandboxLaunch (T6980): a Claude launch in a folder whose trust
 // list ticks Claude's sandbox carries sandbox.enabled, failIfUnavailable, and
-// autoAllowBashIfSandboxed false in its inline --settings layer and says so in
-// its launch line, with --no-policy too (PR #135 review); in a folder that
-// does not, the layer has no sandbox key and the line says the person's own
-// settings decide. Claude's sandbox can start on the test machine: macOS
+// autoAllowBashIfSandboxed false in its inline --settings layer, with
+// --no-policy too (PR #135 review); in a folder that does not, the layer has
+// no sandbox key. T7015: the launch says neither on screen, and aggy doctor
+// says which holds for the folder. Claude's sandbox can start on the test machine: macOS
 // always, Linux only with bubblewrap and socat, so the ticked half is skipped
 // on a Linux machine without them.
 func TestClaudeSandboxLaunch(t *testing.T) {
@@ -64,8 +64,11 @@ func TestClaudeSandboxLaunch(t *testing.T) {
 		if _, ok := layer["sandbox"]; ok {
 			t.Errorf("a sandbox key with nothing ticked: %v", layer["sandbox"])
 		}
-		if !strings.Contains(out, "Claude's sandbox: not chosen for this folder") {
-			t.Errorf("launch line missing:\n%s", out)
+		if strings.Contains(out, "Claude's sandbox") {
+			t.Errorf("a sandbox line at launch:\n%s", out)
+		}
+		if _, doc := w.aggyCode(t, "doctor"); !strings.Contains(doc, "Claude's sandbox: not chosen for this folder") {
+			t.Errorf("doctor does not say it:\n%s", doc)
 		}
 	})
 	t.Run("ticked", func(t *testing.T) {
@@ -81,37 +84,33 @@ func TestClaudeSandboxLaunch(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(state, "trust.json"), body, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		for _, c := range []struct {
-			args []string
-			line string
-		}{
-			{nil, "Claude's sandbox: on for its shell commands"},
-			{[]string{"--no-policy"}, "Claude's sandbox: still on with --no-policy"},
-		} {
-			layer, out := launch(t, c.args...)
+		for _, args := range [][]string{nil, {"--no-policy"}} {
+			layer, out := launch(t, args...)
 			sb, _ := layer["sandbox"].(map[string]any)
 			if sb["enabled"] != true || sb["failIfUnavailable"] != true || sb["autoAllowBashIfSandboxed"] != false {
-				t.Errorf("%v: sandbox layer %v", c.args, layer["sandbox"])
+				t.Errorf("%v: sandbox layer %v", args, layer["sandbox"])
 			}
-			if !strings.Contains(out, c.line) {
-				t.Errorf("%v: launch line missing:\n%s", c.args, out)
+			if strings.Contains(out, "Claude's sandbox") {
+				t.Errorf("%v: a sandbox line at launch:\n%s", args, out)
 			}
+		}
+		if _, doc := w.aggyCode(t, "doctor"); !strings.Contains(doc, "Claude's sandbox: on for this folder's sessions") {
+			t.Errorf("doctor does not say it:\n%s", doc)
 		}
 	})
 }
 
-// TestCodexSandboxLaunchLine (T6980): a Codex launch names its sandbox level
-// in its launch line, and a level as tight as the default passes unasked to
-// the CLI.
+// TestCodexSandboxLaunchLine (T6980): a level as tight as the default passes
+// unasked to the CLI. T7015: a launch that keeps the sandbox on says nothing
+// of it, and aggy doctor says how aggy treats Codex's sandbox.
 func TestCodexSandboxLaunchLine(t *testing.T) {
 	w := newWorld(t)
 	sc := map[string]any{"stdout": "READY>"}
 	for _, c := range []struct {
 		args []string
-		line string
 	}{
-		{[]string{"codex"}, "Codex's sandbox: Codex's own default"},
-		{[]string{"codex", "-c", "sandbox_mode=read-only"}, "Codex's sandbox: read-only (from -c sandbox_mode)"},
+		{[]string{"codex"}},
+		{[]string{"codex", "-c", "sandbox_mode=read-only"}},
 	} {
 		_ = os.Remove(w.record)
 		s := w.start(t, sc, c.args...)
@@ -120,12 +119,15 @@ func TestCodexSandboxLaunchLine(t *testing.T) {
 		if code := s.exit(); code != 0 {
 			t.Fatalf("%v: exit = %d", c.args, code)
 		}
-		if out := s.screen(); !strings.Contains(out, c.line) {
-			t.Errorf("%v: launch line %q missing:\n%s", c.args, c.line, out)
+		if out := s.screen(); strings.Contains(out, "Codex's sandbox") {
+			t.Errorf("%v: a sandbox line at launch:\n%s", c.args, out)
 		}
 		recs := fakecli.Records(t, w.record)
 		if len(c.args) > 1 && (len(recs) == 0 || !slices.Contains(recs[len(recs)-1].Args, "sandbox_mode=read-only")) {
 			t.Errorf("%v: args %+v", c.args, recs)
 		}
+	}
+	if _, doc := w.aggyCode(t, "doctor"); !strings.Contains(doc, "Codex's sandbox: on by default") {
+		t.Errorf("doctor does not say it:\n%s", doc)
 	}
 }

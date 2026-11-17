@@ -404,8 +404,9 @@ func TestAdoptNamed(t *testing.T) {
 		want     string   // the id recorded, or "" for the rows dropped
 		say      string
 	}{
-		{"reported and here", natA, []string{natA}, false, natA, "is aggy's session"},
-		{"reported, another changed too", natA, []string{natA, natB}, false, natA, "is aggy's session"},
+		// T7015: an adoption is aggy log's to show; nothing is said.
+		{"reported and here", natA, []string{natA}, false, natA, ""},
+		{"reported, another changed too", natA, []string{natA, natB}, false, natA, ""},
 		{"nothing reported, one changed", "", []string{natA}, false, "", "did not say"},
 		{"reported but not here", natD, []string{natA}, false, "", "not this folder's"},
 		{"reported and held", natC, nil, true, "", "already"},
@@ -448,7 +449,7 @@ func TestAdoptNamed(t *testing.T) {
 			}
 			var out strings.Builder
 			adoptNamed(ctx, s, p.child, tt.reported, &sessionFiles{}, &out)
-			if !strings.Contains(out.String(), tt.say) {
+			if tt.say == "" && out.Len() > 0 || !strings.Contains(out.String(), tt.say) {
 				t.Errorf("said %q, want %q", out.String(), tt.say)
 			}
 			cs, _ := s.Children(ctx, p.parent.ID)

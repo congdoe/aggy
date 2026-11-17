@@ -745,7 +745,7 @@ func TestSwitchOnLimitUnverified(t *testing.T) {
 	ch <- LimitHit{Vendor: adapter.Claude, Unverified: true}
 	never(t, "mid-turn", []byte("Esc stays"), ts.screen, 200*time.Millisecond)
 	_ = request(t, sock, `{"type":"hook-event","vendor":"claude","event":"StopFailure","payload":{"session_id":"`+childSID+`","error":"rate_limit"}}`)
-	poll(t, "the confirmation", []byte("claude reports a limit (unverified), brief -> grok."), ts.screen)
+	poll(t, "the confirmation", []byte("claude reports a limit, brief -> grok."), ts.screen)
 	time.Sleep(300 * time.Millisecond)
 	if bytes.Contains(c.received(), []byte("/exit")) {
 		t.Fatal("/exit typed without the switch key")

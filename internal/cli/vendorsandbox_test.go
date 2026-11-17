@@ -138,11 +138,12 @@ func TestClaudeSandboxLaunch(t *testing.T) {
 		line     string
 		question bool
 	}{
-		{name: "ticked, can start", ticked: true, on: true, line: "Claude's sandbox: on for its shell commands"},
-		{name: "ticked, can start, --no-policy", ticked: true, noPolicy: true, on: true, line: "still on with --no-policy, since this folder chose it; aggy trust"},
-		{name: "not ticked", line: "not chosen for this folder, so your own Claude settings decide; aggy trust"},
-		{name: "not ticked, --no-policy", noPolicy: true, line: "as your own Claude settings set it (--no-policy"},
-		{name: "not ticked, cannot start", missing: "no bwrap", line: "not chosen for this folder"},
+		// T7015: a launch says nothing unless the chosen sandbox is off.
+		{name: "ticked, can start", ticked: true, on: true},
+		{name: "ticked, can start, --no-policy", ticked: true, noPolicy: true, on: true},
+		{name: "not ticked"},
+		{name: "not ticked, --no-policy", noPolicy: true},
+		{name: "not ticked, cannot start", missing: "no bwrap"},
 		{name: "ticked, cannot start, yes", ticked: true, missing: "no bwrap", person: true, answer: "y\n", line: "off this launch, as you said: no bwrap", question: true},
 		{name: "ticked, cannot start, no", ticked: true, missing: "no bwrap", person: true, answer: "\n", err: errClaudeSandboxDeclined, question: true},
 		{name: "ticked, cannot start, no one to ask", ticked: true, missing: "no bwrap", err: errClaudeSandboxNoOne},
@@ -170,8 +171,8 @@ func TestClaudeSandboxLaunch(t *testing.T) {
 			if req.ClaudeSandbox != c.on {
 				t.Errorf("ClaudeSandbox = %v, want %v", req.ClaudeSandbox, c.on)
 			}
-			if !strings.Contains(line, c.line) {
-				t.Errorf("line %q lacks %q", line, c.line)
+			if c.line == "" && line != "" || !strings.Contains(line, c.line) {
+				t.Errorf("line %q, want %q", line, c.line)
 			}
 			if asked := strings.Contains(out.String(), "without its sandbox this time? [y/N]"); asked != c.question {
 				t.Errorf("asked %v: %q", asked, out.String())
@@ -182,7 +183,7 @@ func TestClaudeSandboxLaunch(t *testing.T) {
 		h, _ := trustWorld(t, "claude")
 		var req adapter.InteractiveRequest
 		line, err := claudeSandboxLaunch(&req, h, false, os.Getenv, strings.NewReader(""), &bytes.Buffer{})
-		if err != nil || req.ClaudeSandbox || !strings.Contains(line, "does not turn it on in this folder") {
+		if err != nil || req.ClaudeSandbox || line != "" {
 			t.Errorf("%q %v %v", line, req.ClaudeSandbox, err)
 		}
 	})
@@ -221,5 +222,24 @@ func TestSandboxDoctor(t *testing.T) {
 	}
 	if f := codexSandboxFinding(); !strings.Contains(f.Message, "asks before danger-full-access") || f.Vendor != adapter.Codex {
 		t.Errorf("codex %+v", f)
+	}
+}
+
+// TestCodexSandboxOffLine (T7015): a Codex launch says its sandbox only when
+// the person's flags turn it off.
+func TestCodexSandboxOffLine(t *testing.T) {
+	for _, c := range []struct {
+		extra []string
+		want  string
+	}{
+		{nil, ""},
+		{[]string{"--sandbox", "read-only"}, ""},
+		{[]string{"-c", "sandbox_mode=workspace-write"}, ""},
+		{[]string{"--profile", "p"}, ""},
+		{[]string{"--sandbox", "danger-full-access"}, "Codex's sandbox: off (danger-full-access, from --sandbox)"},
+	} {
+		if got := codexSandboxOffLine(c.extra); c.want == "" && got != "" || !strings.Contains(got, c.want) {
+			t.Errorf("%q: %q, want %q", c.extra, got, c.want)
+		}
 	}
 }

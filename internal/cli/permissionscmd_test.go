@@ -501,8 +501,9 @@ func mustPermissionsFile(t *testing.T) string {
 	return p
 }
 
-// TestSuggestAtLaunch: the job never makes an allow, resumes where it stopped,
-// and says one line only when there is something new.
+// TestSuggestAtLaunch: the job never makes an allow and resumes where it
+// stopped; a launch says nothing of the candidates (T7015), and aggy doctor
+// counts them.
 func TestSuggestAtLaunch(t *testing.T) {
 	isolate(t)
 	repo := inRepo(t)
@@ -518,10 +519,7 @@ func TestSuggestAtLaunch(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 
-	stop, note := suggestAtLaunch(ctx, s, repo)
-	if note != "" {
-		t.Errorf("nothing scanned yet, but: %q", note)
-	}
+	stop := suggestAtLaunch(repo)
 	waitForCandidates(t, s, key, 1)
 	stop()
 	if aggyFileText(t) != "" {
@@ -531,21 +529,20 @@ func TestSuggestAtLaunch(t *testing.T) {
 	if err != nil || row.Offset == 0 {
 		t.Fatalf("%+v, %v", row, err)
 	}
-
-	stop, note = suggestAtLaunch(ctx, s, repo)
-	stop()
-	if !strings.Contains(note, "1 command") || !strings.Contains(note, "aggy permissions suggest") {
-		t.Errorf("note: %q", note)
-	}
-	stop, note = suggestAtLaunch(ctx, s, repo)
-	stop()
-	if note != "" {
-		t.Errorf("said twice: %q", note)
-	}
+	suggestAtLaunch(repo)()
 	// No line is counted twice.
 	c, err := s.SuggestCandidates(ctx, key, 1)
 	if err != nil || len(c) != 1 || c[0].Count != 3 {
 		t.Errorf("%+v, %v", c, err)
+	}
+	var found string
+	for _, f := range launchStatus(ctx, repo, nil) {
+		if f.Code == codeSuggest {
+			found = f.Message
+		}
+	}
+	if !strings.Contains(found, "1 command you run often could be allowed here: aggy permissions suggest") {
+		t.Errorf("doctor's finding: %q", found)
 	}
 }
 

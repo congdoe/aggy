@@ -76,6 +76,14 @@ type policyHookIn struct {
 	ids parity.ReadIdentity
 }
 
+// The two kinds of note usePolicyHook gives. The first means more asking, not
+// less protection, so a launch leaves it to aggy doctor; the second means a
+// protection is missing, so a launch says it (T7015).
+const (
+	preApprovalsOffPrefix = "exact pre-approvals do not apply this session, and the safety policy asks as before: "
+	guardsOffPrefix       = "aggy's asks on writes to its own files and Claude's settings files are not on this session: "
+)
+
 // usePolicyHook moves req's static asks to aggy's decision hook, writing the
 // launch's plan into in.dir and pinning it by its SHA-256 in the hook's
 // command. It changes nothing, and says why in a note, when the hook might not
@@ -92,9 +100,9 @@ func usePolicyHook(req *adapter.InteractiveRequest, in policyHookIn) string {
 	if !in.plan.OnScreen || (len(req.Ask) == 0 && !off) || req.PolicyHook != nil {
 		return ""
 	}
-	keep := "exact pre-approvals do not apply this session, and the safety policy asks as before: "
+	keep := preApprovalsOffPrefix
 	if len(req.Ask) == 0 {
-		keep = "aggy's asks on writes to its own files and Claude's settings files are not on this session: "
+		keep = guardsOffPrefix
 	}
 	switch {
 	case claude.SkipsHooks(req.Extra):
@@ -323,18 +331,15 @@ func preApprovalCount(pre parity.PreApproved, branches []string) int {
 	return n
 }
 
-// policyHookNote is the launch line when the hook is on and there are
-// pre-approvals of policy matches, so the person knows some run unasked.
-func policyHookNote(req adapter.InteractiveRequest, pre parity.PreApproved, branches []string) string {
-	if req.PolicyHook == nil {
+// preApprovalNote says how many exact pre-approvals of policy matches run
+// unasked in Claude Code sessions here, for aggy doctor (T7015: a launch no
+// longer says it). "" for none.
+func preApprovalNote(n int) string {
+	switch n {
+	case 0:
 		return ""
+	case 1:
+		return "1 exact pre-approval of a safety policy match applies in Claude Code sessions here, while aggy's decision hook runs (aggy permissions list)"
 	}
-	n := preApprovalCount(pre, branches)
-	if n == 0 {
-		return ""
-	}
-	if n == 1 {
-		return "1 exact pre-approval of a safety policy match applies this session (aggy permissions list)"
-	}
-	return fmt.Sprintf("%d exact pre-approvals of safety policy matches apply this session (aggy permissions list)", n)
+	return fmt.Sprintf("%d exact pre-approvals of safety policy matches apply in Claude Code sessions here, while aggy's decision hook runs (aggy permissions list)", n)
 }

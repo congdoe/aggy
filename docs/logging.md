@@ -226,6 +226,7 @@ Generated from `internal/diag/codes.go`; `AGGY_UPDATE_DOCS=1 go test ./internal/
 | `hook.decision.fallback` | warn | hook | aggy hook decide failed or was missing, and its wrapper's fixed answer (ask, or deny where no prompt can show) went to the CLI instead. | aggy doctor; a hook.decision.ended with decision.plan_unreadable, or none, in the same trace says more. |
 | `hook.hermes.refused` | warn | hook | aggy's Hermes hook found no aggy launch for the profile and session its payload named, so a tool call was refused (pre_tool_call) or a turn end was dropped. It never records the payload. | The code's entry. |
 | `launch.hermes.profile` | info | launch | A Hermes launch made aggy's profile for the repo (hermes profile create) or rewrote aggy's block in its config.yaml; attrs.created and attrs.written say which. | aggy unwire --run &lt;id&gt; takes the block out; hermes profile delete removes the profile. |
+| `launch.skill.refreshed` | info | launch | Before a launch, an upgraded aggy brought the skills it linked into the CLIs up to date with this version, which a launch no longer says on screen (attrs.run: the manifest run; attrs.files: how many). | aggy unwire --run &lt;id&gt; undoes it. |
 | `trust.request.refused` | error | trust | aggy trust refused; nothing was changed. | The code's entry. |
 | `permissions.request.refused` | error | permissions | aggy permissions refused; nothing was changed. | The code's entry. |
 | `config.request.refused` | error | config | aggy config set refused; nothing was changed. | The code's entry. |

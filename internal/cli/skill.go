@@ -1000,8 +1000,10 @@ func noteOnce(note string) bool {
 // undoes it, and says on w what it changed, and once each what it left alone.
 // It runs at each launch and in aggy setup; a failure is a warning, and it
 // writes no skill at all when no installed copy of aggy's is out of date. It
-// never changes a file aggy did not write.
-func refreshSkills(ctx context.Context, w io.Writer) {
+// never changes a file aggy did not write. quiet (a launch, T7015) records
+// what it changed in aggy's diagnostic log (launch.skill.refreshed, with the
+// run aggy unwire --run takes) instead of saying it.
+func refreshSkills(ctx context.Context, w io.Writer, quiet bool) {
 	err := func() error {
 		ls, err := ownLayouts()
 		if err != nil {
@@ -1048,10 +1050,18 @@ func refreshSkills(ctx context.Context, w io.Writer) {
 		}
 		runID := manifest.NewRunID()
 		cs, err := m.Run(ctx, manifest.Write, runID, ps, io.Discard)
+		n := 0
 		for _, c := range cs {
-			if c.Status == store.ChangeApplied {
+			if c.Status != store.ChangeApplied {
+				continue
+			}
+			n++
+			if !quiet {
 				fmt.Fprintf(w, "aggy: updated its skill at %s to this version (aggy unwire --run %s undoes it).\n", termsafe.Field(c.File), runID)
 			}
+		}
+		if quiet && n > 0 {
+			dlog.Log(ctx, diag.Rec{Event: diag.EvSkillRefreshed, Attrs: map[string]any{"run": runID, "files": n}})
 		}
 		return err
 	}()

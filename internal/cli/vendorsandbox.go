@@ -107,32 +107,23 @@ var errClaudeSandboxDeclined = errors.New("not started: you chose to run Claude 
 var errClaudeSandboxNoOne = errors.New("not started: this folder chose to run Claude Code sandboxed, its sandbox cannot start here, and no one is at a terminal to say to start without it")
 
 // claudeSandboxLaunch sets req to turn Claude's sandbox on when cwd's trust
-// list ticks it, and returns the launch's line saying what holds. noPolicy
-// keeps it on: --no-policy turns off aggy's decisions, not confinement the
-// person chose (PR #135 review). Ticked but unable to start, it asks in place
-// whether to start without it, and a no refuses the launch; with no one to
-// ask (no terminal, a borrow child, a session's tool shell) it refuses too,
-// naming the ways forward (PR #135 review).
+// list ticks it. noPolicy keeps it on: --no-policy turns off aggy's
+// decisions, not confinement the person chose (PR #135 review). Ticked but
+// unable to start, it asks in place whether to start without it, and a no
+// refuses the launch; with no one to ask (no terminal, a borrow child, a
+// session's tool shell) it refuses too, naming the ways forward (PR #135
+// review). Its line is "" unless the sandbox the folder chose is off this
+// launch (T7015): what holds otherwise is aggy doctor's to say
+// (claudeSandboxFinding).
 func claudeSandboxLaunch(req *adapter.InteractiveRequest, cwd string, noPolicy bool, getenv func(string) string, in io.Reader, out io.Writer) (string, error) {
 	on, root := claudeSandboxHere(cwd)
 	if !on {
-		switch {
-		case noPolicy:
-			return "Claude's sandbox: as your own Claude settings set it (--no-policy, and not chosen for this folder)", nil
-		case root == "":
-			return "Claude's sandbox: aggy does not turn it on in this folder; your own Claude settings decide", nil
-		}
-		return "Claude's sandbox: not chosen for this folder, so your own Claude settings decide; aggy trust " + root + " offers it", nil
+		return "", nil
 	}
 	missing := claudeSandboxMissing()
 	if missing == "" {
 		req.ClaudeSandbox = true
-		line := "Claude's sandbox: on for its shell commands (writes to this folder and temp only, no network unless a domain is allowed), and Claude still asks before each command; " +
-			"its file tools, hooks, and MCP servers are outside it, and Claude exits if the sandbox cannot start"
-		if noPolicy {
-			line = "Claude's sandbox: still on with --no-policy, since this folder chose it; aggy trust " + root + " unticks it"
-		}
-		return line, nil
+		return "", nil
 	}
 	ways := "install what is missing (on Linux, bubblewrap and socat), or untick the sandbox with aggy trust " + root
 	yes, asked := askInPlace(getenv, in, out, inPlace{
@@ -149,10 +140,16 @@ func claudeSandboxLaunch(req *adapter.InteractiveRequest, cwd string, noPolicy b
 	return "Claude's sandbox: off this launch, as you said: " + missing, nil
 }
 
-// codexSandboxLine is a Codex launch's line for its sandbox, from the CLI
-// words the person gave.
-func codexSandboxLine(extra []string) string {
-	return codex.SandboxLine(codex.SandboxLevel(extra))
+// codexSandboxOffLine is a Codex launch's line for its sandbox, from the CLI
+// words the person gave: only when they turn it off (danger-full-access), a
+// protection off this run (T7015). "" otherwise; aggy doctor says how aggy
+// treats Codex's sandbox (codexSandboxFinding).
+func codexSandboxOffLine(extra []string) string {
+	level, from := codex.SandboxLevel(extra)
+	if level != codex.SandboxFullAccess {
+		return ""
+	}
+	return codex.SandboxLine(level, from)
 }
 
 // Doctor's findings for the vendors' sandboxes.

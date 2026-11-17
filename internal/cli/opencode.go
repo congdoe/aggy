@@ -363,6 +363,11 @@ func readInstruction(path string) (string, error) {
 	return parity.CleanMemory(string(b)), nil
 }
 
+// openCodeUntrustedKey keys the once-per-folder record (noteOnce) of
+// openCodeUntrustedNote: a launch says it once for each repo root, and aggy
+// doctor after (T7015).
+const openCodeUntrustedKey = "opencode-untrusted\x00"
+
 // openCodeUntrustedNote says what an untrusted repo gets. root is the real
 // one, as trust records it: a link to a repo must name the repo it leads to.
 func openCodeUntrustedNote(root string, held int) string {

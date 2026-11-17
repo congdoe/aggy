@@ -194,7 +194,7 @@ func TestAllowsNeverChangePolicy(t *testing.T) {
 	if _, err := addPolicy(adapter.Grok, []string{probe.CapDeny, probe.CapAllow}, true, policyPlan(planOnScreen, repo, s), &req); err != nil {
 		t.Fatal(err)
 	}
-	notes := addPermissions(adapter.Grok, []string{probe.CapDeny, probe.CapAllow}, s, &req)
+	notes := strings.Split(statusText(sharedRules(adapter.Grok, []string{probe.CapDeny, probe.CapAllow}, s, &req)), "\n")
 	cmd, err := grok.New().Interactive(req)
 	if err != nil {
 		t.Fatal(err)

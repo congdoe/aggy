@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -28,17 +27,10 @@ const (
 
 // suggestAtLaunch is the scan when aggy opens: a background job in this process,
 // not a daemon, that never delays the launch and fails quietly. It returns what
-// stops it, and a line if earlier scans found new candidates. Candidates never
-// become allows on their own.
-func suggestAtLaunch(ctx context.Context, s *store.Store, cwd string) (stop func(), note string) {
-	if repo, err := toolRepo(cwd, false); err == nil && repo.key != "" {
-		if n, err := s.AnnounceSuggest(ctx, repo.key, suggest.MinCount); err == nil && n > 0 {
-			note = fmt.Sprintf("%d commands you run often could be allowed here: aggy permissions suggest", n)
-			if n == 1 {
-				note = "1 command you run often could be allowed here: aggy permissions suggest"
-			}
-		}
-	}
+// stops it. Candidates never become allows on their own, and a launch does not
+// mention them (T7015): aggy doctor counts them, and aggy permissions suggest
+// lists them.
+func suggestAtLaunch(cwd string) (stop func()) {
 	scanCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -57,7 +49,7 @@ func suggestAtLaunch(ctx context.Context, s *store.Store, cwd string) (stop func
 		case <-done:
 		case <-time.After(scanStopWait):
 		}
-	}, note
+	}
 }
 
 // scanRepo reads this repo's Claude session files: those of the main checkout

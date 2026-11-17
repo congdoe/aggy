@@ -111,10 +111,15 @@ func TestHermesOnScreen(t *testing.T) {
 	s.send([]byte("y\r"))
 	s.waitWithin([]byte("Hermes Agent (fake)"), offerTimeout)
 	shown := s.screen()
-	for _, want := range []string{"terminal commands only", "asks you once"} {
-		if !strings.Contains(strings.Join(strings.Fields(shown), " "), want) {
-			t.Errorf("no %q at launch: %q", want, shown)
-		}
+	if !strings.Contains(strings.Join(strings.Fields(shown), " "), "asks you once") {
+		t.Errorf("no consent note at launch: %q", shown)
+	}
+	// T7015: how the policy works on Hermes is aggy doctor's to say.
+	if strings.Contains(strings.Join(strings.Fields(shown), " "), "terminal commands only") {
+		t.Errorf("the policy's Hermes line at launch: %q", shown)
+	}
+	if _, doc := w.aggyCode(t, "doctor"); !strings.Contains(strings.Join(strings.Fields(doc), " "), "on Hermes Agent, aggy's safety policy refuses") {
+		t.Errorf("doctor does not say it:\n%s", doc)
 	}
 	s.send([]byte("work\r"))
 	s.waitWithin([]byte("ok: work"), offerTimeout)

@@ -156,6 +156,7 @@ var (
 	EvDecideFallback       = Event{"hook.decision.fallback"}
 	EvHermesRefused        = Event{"hook.hermes.refused"}
 	EvHermesProfile        = Event{"launch.hermes.profile"}
+	EvSkillRefreshed       = Event{"launch.skill.refreshed"}
 	EvTrustRefused         = Event{"trust.request.refused"}
 	EvPermissionsRefused   = Event{"permissions.request.refused"}
 	EvConfigRefused        = Event{"config.request.refused"}
@@ -370,6 +371,7 @@ var events = []EventInfo{
 	{EvDecideFallback, LevelWarn, "hook", "aggy hook decide failed or was missing, and its wrapper's fixed answer (ask, or deny where no prompt can show) went to the CLI instead.", "aggy doctor; a hook.decision.ended with decision.plan_unreadable, or none, in the same trace says more."},
 	{EvHermesRefused, LevelWarn, "hook", "aggy's Hermes hook found no aggy launch for the profile and session its payload named, so a tool call was refused (pre_tool_call) or a turn end was dropped. It never records the payload.", "The code's entry."},
 	{EvHermesProfile, LevelInfo, "launch", "A Hermes launch made aggy's profile for the repo (hermes profile create) or rewrote aggy's block in its config.yaml; attrs.created and attrs.written say which.", "aggy unwire --run <id> takes the block out; hermes profile delete removes the profile."},
+	{EvSkillRefreshed, LevelInfo, "launch", "Before a launch, an upgraded aggy brought the skills it linked into the CLIs up to date with this version, which a launch no longer says on screen (attrs.run: the manifest run; attrs.files: how many).", "aggy unwire --run <id> undoes it."},
 	{EvTrustRefused, LevelError, "trust", "aggy trust refused; nothing was changed.", "The code's entry."},
 	{EvPermissionsRefused, LevelError, "permissions", "aggy permissions refused; nothing was changed.", "The code's entry."},
 	{EvConfigRefused, LevelError, "config", "aggy config set refused; nothing was changed.", "The code's entry."},

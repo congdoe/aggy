@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/congdoe/aggy/internal/adapter"
+	"github.com/congdoe/aggy/internal/checkup"
 	"github.com/congdoe/aggy/internal/config"
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/parity"
@@ -171,27 +172,49 @@ func switchBlocked(dir string, v adapter.Vendor) string {
 }
 
 // addPermissions puts the shared rules on req for vendor v, and returns the
-// launch's notes. A rule that cannot reach a CLI never stops the launch: it
-// only means that CLI asks.
+// launch's lines for the screen: only what means a deny may be missing. A
+// rule that cannot reach a CLI never stops the launch: it only means that CLI
+// asks, which aggy doctor says (sharedRules' status, T7015).
 func addPermissions(v adapter.Vendor, caps []string, s permissions.Set, req *adapter.InteractiveRequest) []string {
-	var notes []string
+	return sharedRules(v, caps, s, req).screen
+}
+
+// ruleNotes are what putting the shared rules on a launch found: screen, the
+// lines a launch prints (a deny may be missing), and status, what aggy doctor
+// says instead (T7015): rules that do not apply on this CLI, and allows that
+// do not reach it, which only mean it asks more. A status note's message holds
+// no rule text or path; those go in its detail.
+type ruleNotes struct {
+	screen []string
+	status []checkup.Finding
+}
+
+// codePermRules is doctor's finding for a rule that does not reach a CLI.
+const codePermRules = "permission-rules"
+
+// sharedRules is addPermissions with the status notes kept.
+func sharedRules(v adapter.Vendor, caps []string, s permissions.Set, req *adapter.InteractiveRequest) ruleNotes {
+	var n ruleNotes
+	status := func(msg, detail string) {
+		n.status = append(n.status, checkup.Finding{Code: codePermRules, Level: checkup.LevelInfo, Vendor: v, Message: msg, Detail: detail})
+	}
 	for _, p := range s.Problems {
 		if p.Repo {
-			notes = append(notes, fmt.Sprintf("a permissions file that could have come with this repo is not used: %s: %s", p.Path, p.Why))
+			n.screen = append(n.screen, fmt.Sprintf("a permissions file that could have come with this repo is not used: %s: %s", p.Path, p.Why))
 			continue
 		}
-		notes = append(notes, fmt.Sprintf("a deny may be missing, from %s: %s", p.Path, p.Why))
+		n.screen = append(n.screen, fmt.Sprintf("a deny may be missing, from %s: %s", p.Path, p.Why))
 	}
 	if s.Withhold != "" {
-		notes = append(notes, s.Withhold)
+		n.screen = append(n.screen, s.Withhold)
 	}
-	notes = append(notes, s.Notes...)
+	n.screen = append(n.screen, s.Notes...)
 	if v != adapter.Claude && v != adapter.Grok {
-		return notes
+		return n
 	}
 	r := s.Render(v)
 	if r.Lost != "" {
-		notes = append(notes, fmt.Sprintf("none of your allow rules from aggy reach Grok this session: the rule %s cannot reach it, and it might have stopped one", termsafe.Field(r.Lost)))
+		status("none of your allow rules from aggy reach Grok: a rule cannot reach it, and it might have stopped one", termsafe.Field(r.Lost))
 	}
 	skipped := len(r.Skipped)
 	for _, k := range s.Skipped {
@@ -203,15 +226,16 @@ func addPermissions(v adapter.Vendor, caps []string, s permissions.Set, req *ada
 		}
 	}
 	if skipped > 0 {
-		notes = append(notes, skippedNote(skipped, vendorNames[v], !s.Trusted))
+		status(skippedNote(skipped, vendorNames[v], !s.Trusted), "")
 	}
 	switch v {
 	case adapter.Claude:
 		if !slices.Contains(caps, probe.CapSettings) {
 			if len(r.Allow)+len(r.Ask)+len(r.Deny) > 0 || r.Mode != "" {
-				notes = append(notes, "claude --help does not list --settings, so your rules from aggy do not reach this session")
+				// Denies among them: a protection missing, on screen.
+				n.screen = append(n.screen, "claude --help does not list --settings, so your rules from aggy do not reach this session")
 			}
-			return notes
+			return n
 		}
 	case adapter.Grok:
 		// An allow that names or covers a safety policy rule is not passed to
@@ -222,22 +246,23 @@ func addPermissions(v adapter.Vendor, caps []string, s permissions.Set, req *ada
 		var kept []string
 		for _, a := range r.Allow {
 			if len(parity.CoveredRules(a, nil)) > 0 {
-				notes = append(notes, fmt.Sprintf("your allow %s names a safety policy rule, so it does not go to Grok", termsafe.Field(a)))
+				status("an allow of yours names a safety policy rule, so it does not go to Grok", termsafe.Field(a))
 				continue
 			}
 			kept = append(kept, a)
 		}
 		r.Allow = kept
 		if len(r.Allow) > 0 && !slices.Contains(caps, probe.CapAllow) {
-			notes = append(notes, "grok --help does not list --allow, so your allow rules from aggy do not reach this session")
+			status("grok --help does not list --allow, so your allow rules from aggy do not reach it", "")
 			r.Allow = nil
 		}
 		if len(r.Deny) > 0 && !slices.Contains(caps, probe.CapDeny) {
-			notes = append(notes, "grok --help does not list --deny, so your deny rules from aggy do not reach this session, and neither do your allows, since a deny might have stopped one")
+			// A deny not passed: a protection missing, on screen.
+			n.screen = append(n.screen, "grok --help does not list --deny, so your deny rules from aggy do not reach this session, and neither do your allows, since a deny might have stopped one")
 			r.Deny, r.Allow = nil, nil
 		}
 		if r.Mode != "" && !slices.Contains(caps, probe.CapPermissionMode) {
-			notes = append(notes, "grok --help does not list --permission-mode, so the mode set in aggy does not reach this session")
+			status("grok --help does not list --permission-mode, so the mode set in aggy does not reach it", "")
 			r.Mode = ""
 		}
 		if slices.ContainsFunc(req.Extra, func(a string) bool {
@@ -247,7 +272,7 @@ func addPermissions(v adapter.Vendor, caps []string, s permissions.Set, req *ada
 		}
 	}
 	req.Rules = adapter.SharedRules{Allow: r.Allow, Ask: r.Ask, Deny: r.Deny, Mode: r.Mode}
-	return notes
+	return n
 }
 
 // skippedNote is the launch's one line about rules that do not apply. In a
