@@ -493,13 +493,9 @@ func runPrint(cmd string, v adapter.Vendor, t target, words []string, help adapt
 		}
 		warns = append(warns, pw...)
 	}
-	// Print mode is not the screen between a person and a CLI (T7015), so it
-	// keeps the status notes an on-screen launch leaves to aggy doctor.
-	rn := sharedRules(v, caps, rules, &req)
-	warns = append(warns, rn.screen...)
-	for _, f := range rn.status {
-		warns = append(warns, f.Text(""))
-	}
+	// Print mode is not the screen between a person and a CLI (T7015): it
+	// prints every note, in its own words and order (#148 review L4).
+	warns = append(warns, sharedRules(v, caps, rules, &req).all...)
 	if v == adapter.Claude {
 		warns = append(warns, settingsNotes(req)...)
 	}

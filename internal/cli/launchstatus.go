@@ -31,6 +31,7 @@ const (
 	codeCommandSkills  = "command-skills"      // info: aggy's commands not in a CLI's menu
 	codeOpenCodeMini   = "opencode-untrusted"  // info: this repo gets opencode mini
 	codeSuggest        = "suggest-candidates"  // info: commands aggy permissions suggest could allow
+	codeClaudeHooksOff = "claude-hooks-off"    // warning: aggy's guards and pre-approvals are off on Claude Code here
 )
 
 // launchStatus is the section's findings for cwd, for each installed CLI of
@@ -85,8 +86,8 @@ func launchStatus(ctx context.Context, cwd string, vendors []checkup.Vendor) []c
 		case adapter.Claude, adapter.Grok:
 			out = append(out, sharedRules(v, vr.Capabilities, rules, &adapter.InteractiveRequest{}).status...)
 		case adapter.OpenCode:
-			if _, skipped := parity.OpenCodeShared(rules); len(skipped) > 0 {
-				add(codePermRules, v, "", skippedNote(len(skipped), "OpenCode", !rules.Trusted), "")
+			if _, skipped := parity.OpenCodeShared(rules); skippedAllows(skipped) > 0 {
+				add(codePermRules, v, "", skippedNote(skippedAllows(skipped), "OpenCode", !rules.Trusted), "")
 			}
 			if root != "" {
 				if trusted, _ := openCodeTrusted(root); !trusted {
@@ -107,14 +108,21 @@ func launchStatus(ctx context.Context, cwd string, vendors []checkup.Vendor) []c
 			if f := managedSettingsPath(); off == "" && f != "" && settingsHooksOff(f) {
 				off = f
 			}
-			switch l := preApprovalNote(n); {
-			case l == "":
+			// #148 review H1: hooks off is a protection missing, said
+			// whether or not pre-approvals exist (usePolicyHook's reasons,
+			// those a launch knows only from its flags aside).
+			hooksOff := "Claude's hooks are off here, so " + guardsOff + " in Claude Code sessions here, and exact pre-approvals do not apply"
+			switch {
 			case off != "":
-				// usePolicyHook's reason, for what a launch can know only
-				// from its flags (--safe-mode, a --settings file) aside.
-				add(codePreApprovals, v, off, "this Claude settings file turns Claude's hooks off, so exact pre-approvals do not apply here, and the safety policy asks as before", "")
+				out = append(out, checkup.Finding{Code: codeClaudeHooksOff, Level: checkup.LevelWarn, Vendor: v, Path: off,
+					Message: "this Claude settings file turns Claude's hooks off: " + hooksOff})
+			case simpleMode(nil):
+				out = append(out, checkup.Finding{Code: codeClaudeHooksOff, Level: checkup.LevelWarn, Vendor: v,
+					Message: claudeSimpleVar + " is set, which may start Claude without hooks: " + hooksOff})
 			default:
-				add(codePreApprovals, v, "", l, "")
+				if l := preApprovalNote(n); l != "" {
+					add(codePreApprovals, v, "", l, "")
+				}
 			}
 		}
 	}

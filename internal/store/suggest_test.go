@@ -42,12 +42,6 @@ func TestSuggest(t *testing.T) {
 	if err != nil || len(c) != 1 || c[0].Command != "git status" || c[0].Count != 3 {
 		t.Fatalf("%+v, %v", c, err)
 	}
-	if n, err := s.AnnounceSuggest(ctx, "/r", 3); err != nil || n != 1 {
-		t.Errorf("announce: %d, %v", n, err)
-	}
-	if n, err := s.AnnounceSuggest(ctx, "/r", 3); err != nil || n != 0 {
-		t.Errorf("announce again: %d, %v", n, err)
-	}
 	if err := s.DismissSuggest(ctx, "/r", "git status"); err != nil {
 		t.Fatal(err)
 	}

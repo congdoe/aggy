@@ -152,8 +152,9 @@ was tested against.
   `.git`, `.codex`, `.agents`, and `.aws` stay read-only in a writable root.
   aggy passes `read-only` and `workspace-write` unasked, asks before
   `danger-full-access` in any spelling, refuses any other value, and names
-  the level in the launch line (`codex.SandboxLevel`); a `--profile` may set
-  one too, which aggy does not read.
+  the level in a launch line only when it is `danger-full-access`
+  (`codex.SandboxLevel`; `aggy doctor` says how aggy treats the sandbox); a
+  `--profile` may set one too, which aggy does not read.
 - Resume: `codex resume <id>` and `codex exec resume <id>`. A new session
   cannot be given an id in advance.
 - Limit: there is no failure hook, and `exec --json` has no machine code:

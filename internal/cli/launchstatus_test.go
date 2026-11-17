@@ -75,7 +75,11 @@ func TestLaunchStatus(t *testing.T) {
 				t.Fatalf("add: %d %q %q", code, out, errb)
 			}
 			writeAt(t, filepath.Join(repo, ".claude", "settings.json"), `{"disableAllHooks": true}`, 0o600)
-		}, installed(adapter.Claude), codePreApprovals, adapter.Claude, "turns Claude's hooks off, so exact pre-approvals do not apply here"},
+		}, installed(adapter.Claude), codeClaudeHooksOff, adapter.Claude, "turns Claude's hooks off: Claude's hooks are off here, so aggy's asks on writes to its own files"},
+		// #148 review H1: said with no pre-approval at all.
+		{"hooks off, no pre-approval", func(t *testing.T, repo string) {
+			writeAt(t, filepath.Join(repo, ".claude", "settings.json"), `{"disableAllHooks": true}`, 0o600)
+		}, installed(adapter.Claude), codeClaudeHooksOff, adapter.Claude, "aggy's asks on writes to its own files and Claude's settings files are not on"},
 		{"command skills missing", nil, installed(adapter.Claude), codeCommandSkills, adapter.Claude, "are not in claude's menu"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -86,7 +90,7 @@ func TestLaunchStatus(t *testing.T) {
 			}
 			var got []string
 			for _, f := range launchStatus(t.Context(), repo, c.vendors) {
-				if f.Level != checkup.LevelInfo {
+				if f.Level != checkup.LevelInfo && f.Code != codeClaudeHooksOff {
 					t.Errorf("%s is %s, want info", f.Code, f.Level)
 				}
 				if strings.Contains(f.Message, repo) || strings.Contains(f.Message, "Bash(") {

@@ -272,12 +272,34 @@ func prepareAntigravity(ctx context.Context, in agyInput) (agySetup, error) {
 // agyHookNote is the launch line on what aggy cannot see: agy's own trust
 // dialog (live) gates the workspace hooks file (Google's docs), so until the
 // person trusts the folder in agy, aggy's policy hook is not running, and
-// aggy cannot tell before a hook arrives. A launch says it once per folder
-// (agyHookKey), and aggy doctor always (T7015).
+// aggy cannot tell before a hook arrives. Every on-screen start says it until
+// a hook of agy's has come from that folder (agyHookSeen), and aggy doctor
+// always.
 const agyHookNote = "agy asks once whether you trust this folder; its workspace hooks, aggy's safety policy and turn ends among them, load only once you do, and aggy cannot tell before its first hook arrives: until then aggy's policy is not on, and a switch waits for you to quit agy"
 
-// agyHookKey keys agyHookNote's once-per-folder record (noteOnce).
-const agyHookKey = "agy-hook-trust\x00"
+// agyHookSeenNote prefixes the notes row that records a hook of agy's having
+// reached aggy from a folder (its canonical path follows): agy's trust dialog
+// was answered there, so agyHookNote is no longer said (#148 review H3).
+const agyHookSeenNote = "agy_hook_seen:"
+
+// agyHookSeen reports a hook of agy's recorded from dir. One that cannot be
+// read counts as not seen, so the note is said.
+func agyHookSeen(ctx context.Context, s *store.Store, dir string) bool {
+	key, err := safefs.CanonicalPath(dir)
+	if err != nil || s == nil {
+		return false
+	}
+	_, ok, err := s.Note(ctx, agyHookSeenNote+key)
+	return err == nil && ok
+}
+
+// markAgyHookSeen records that a hook of agy's reached aggy from dir. A
+// failure only means the note is said again.
+func markAgyHookSeen(ctx context.Context, s *store.Store, dir string) {
+	if key, err := safefs.CanonicalPath(dir); err == nil && s != nil {
+		_ = s.SetNote(ctx, agyHookSeenNote+key, "1", time.Now())
+	}
+}
 
 // ensureDir makes dir when it is not there.
 func ensureDir(dir string) error {

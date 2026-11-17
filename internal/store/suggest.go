@@ -122,17 +122,8 @@ func (s *Store) SuggestCandidates(ctx context.Context, repo string, min int) ([]
 	return out, rows.Err()
 }
 
-// AnnounceSuggest returns how many candidates of repo have not been mentioned,
-// and marks them, so the launch line shows only when there is something new.
-func (s *Store) AnnounceSuggest(ctx context.Context, repo string, min int) (int, error) {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE suggest_commands SET announced = 1 WHERE repo = ? AND count >= ? AND dismissed = 0 AND announced = 0`, repo, min)
-	if err != nil {
-		return 0, err
-	}
-	n, err := res.RowsAffected()
-	return int(n), err
-}
+// suggest_commands.announced (migration 0022) is unused since launches stopped
+// mentioning candidates (T7015); it stays, as no migration drops it.
 
 // DismissSuggest records that the person turned a command down.
 func (s *Store) DismissSuggest(ctx context.Context, repo, command string) error {

@@ -157,6 +157,7 @@ var (
 	EvHermesRefused        = Event{"hook.hermes.refused"}
 	EvHermesProfile        = Event{"launch.hermes.profile"}
 	EvSkillRefreshed       = Event{"launch.skill.refreshed"}
+	EvMemoryMissed         = Event{"launch.memory.not_delivered"}
 	EvTrustRefused         = Event{"trust.request.refused"}
 	EvPermissionsRefused   = Event{"permissions.request.refused"}
 	EvConfigRefused        = Event{"config.request.refused"}
@@ -303,6 +304,7 @@ var (
 	CodeAgyHooksChanged  = Code{"antigravity.hooks_changed"}
 	CodeAgyUnreachable   = Code{"antigravity.unreachable"}
 	CodeAgySettings      = Code{"antigravity.settings_refused"}
+	CodeMemoryMissed     = Code{"memory.not_delivered"}
 	CodeAgyPrintMode     = Code{"antigravity.print_refused"}
 	CodeTrustBadDir      = Code{"trust.bad_dir"}
 	CodeTrustBadFile     = Code{"trust.bad_file"}
@@ -371,6 +373,7 @@ var events = []EventInfo{
 	{EvDecideFallback, LevelWarn, "hook", "aggy hook decide failed or was missing, and its wrapper's fixed answer (ask, or deny where no prompt can show) went to the CLI instead.", "aggy doctor; a hook.decision.ended with decision.plan_unreadable, or none, in the same trace says more."},
 	{EvHermesRefused, LevelWarn, "hook", "aggy's Hermes hook found no aggy launch for the profile and session its payload named, so a tool call was refused (pre_tool_call) or a turn end was dropped. It never records the payload.", "The code's entry."},
 	{EvHermesProfile, LevelInfo, "launch", "A Hermes launch made aggy's profile for the repo (hermes profile create) or rewrote aggy's block in its config.yaml; attrs.created and attrs.written say which.", "aggy unwire --run <id> takes the block out; hermes profile delete removes the profile."},
+	{EvMemoryMissed, LevelWarn, "launch", "A launch did not give the CLI the repo's shared memory, which it no longer says on screen (T7015); the code's attrs.why says which kind of reason. It never records the memory or an error's text.", "aggy doctor's Parity section; the code's entry."},
 	{EvSkillRefreshed, LevelInfo, "launch", "Before a launch, an upgraded aggy brought the skills it linked into the CLIs up to date with this version, which a launch no longer says on screen (attrs.run: the manifest run; attrs.files: how many).", "aggy unwire --run <id> undoes it."},
 	{EvTrustRefused, LevelError, "trust", "aggy trust refused; nothing was changed.", "The code's entry."},
 	{EvPermissionsRefused, LevelError, "permissions", "aggy permissions refused; nothing was changed.", "The code's entry."},
@@ -575,6 +578,7 @@ var codes = []CodeInfo{
 	{CodeAgyHooksForeign, false, "This folder's .agents/hooks.json has entries aggy did not see when it last wrote the file. An entry there runs with agy's tools and can allow or auto-approve them past aggy's hook, so aggy asked before starting agy, and did not start it.", "Look at the entries named in the message; start again at a terminal and answer yes if they are yours, or remove them."},
 	{CodeAgyHooksChanged, false, "This folder's .agents/hooks.json changed during an Antigravity session: aggy's entry is gone or changed, or entries aggy did not write appeared. Whether agy read the change during the session is unverified.", "Look at the file; the next aggy antigravity here puts aggy's entry back and asks about new entries."},
 	{CodeAgyUnreachable, false, "agy's help does not list a flag aggy's launch needs (--settings or --conversation), so agy was not started.", "Update agy (aggy was checked on 1.5.3 to 1.5.5), then start again; aggy doctor shows what the probe found."},
+	{CodeMemoryMissed, false, "A launch did not give the CLI the repo's shared memory (.aggy/memory.md); attrs.why says which kind of reason: too_big, unreadable, no_flag, codex_config, or write_failed.", "aggy doctor's Parity section for the reason it can see; fix the memory file or the CLI's config, or update the CLI."},
 	{CodeAgySettings, false, "agy exited with status 1 before any of its hooks reached aggy, which is how it refuses a --settings key it does not know (live, 1.5.5): this agy may not take a setting aggy passes.", "Look at what agy printed; aggy doctor shows the version; turn agy's self-update off with AGY_CLI_DISABLE_AUTO_UPDATE=true if a new version broke it."},
 	{CodeAgyPrintMode, false, "aggy refused a print-mode or headless run of Antigravity: Google's FAQ calls agy wrapped in third-party applications not supported under consumer plans, under a question about headless mode, so aggy runs it on screen only.", "Run agy itself for that, or start aggy antigravity on a terminal."},
 	{CodeGuardMissing, false, "aggy's OpenCode guard did not report from the launch's folder in time. OpenCode's rules from aggy's config still apply; the guard's own refusals may not.", "Quit and start again; aggy doctor for the CLI's version. A same-user process can overwrite or unload the plugin."},

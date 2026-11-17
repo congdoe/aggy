@@ -190,7 +190,8 @@ func offerLaunchFix(ctx context.Context, s *store.Store, v adapter.Vendor, f lau
 		return f.lines()
 	}
 	if !f.planned {
-		_ = s.SetNote(ctx, fixDeclinedNote, version, time.Now())
+		// Nothing can be asked, and no one answered, so nothing is recorded
+		// as asked: the lines stay until it is fixed (#148 review L1).
 		return f.lines()
 	}
 	files := f.files()

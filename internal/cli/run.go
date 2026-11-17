@@ -28,6 +28,7 @@ import (
 	"github.com/congdoe/aggy/internal/home"
 	"github.com/congdoe/aggy/internal/keyring"
 	"github.com/congdoe/aggy/internal/limits"
+	"github.com/congdoe/aggy/internal/parity"
 	"github.com/congdoe/aggy/internal/permissions"
 	"github.com/congdoe/aggy/internal/probe"
 	"github.com/congdoe/aggy/internal/safefs"
@@ -501,10 +502,15 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	// An edit borrow's child could write its worktree's memory file, and no
 	// one has reviewed that worktree yet, so it is not taken as instructions.
 	// Memory not delivered is aggy doctor's to say (parity findings), not
-	// the launch's (T7015).
+	// the launch's (T7015); a launch's own failure goes to the diagnostic log
+	// (#148 review M2).
 	cleanup := func() {}
 	if adapter.Kind(pl.child.Kind) != adapter.Edit {
-		cleanup, _ = addMemory(v, caps, pl.child.Cwd, memDir, &req)
+		var why string
+		cleanup, _, why = addMemoryWhy(v, caps, pl.child.Cwd, memDir, &req)
+		if why != "" {
+			dlog.Log(ctx, diag.Rec{Event: diag.EvMemoryMissed, Code: diag.CodeMemoryMissed, Vendor: string(v), Attrs: map[string]any{"why": why}})
+		}
 	}
 	defer cleanup()
 	if err := joinAppendFiles(&req, pl.child.Cwd); err != nil {
@@ -536,12 +542,21 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 	if v == adapter.Claude && !t.NoPolicy {
 		root, _ := repoRoot(pl.child.Cwd)
 		ids := readIdentities(ctx, s)
-		// T7015: only aggy's asks on its own files and Claude's settings files
-		// not being on is said here, a protection missing; pre-approvals that
-		// apply, or do not, are aggy doctor's (launchStatus).
+		// T7015, #148 review H1: with no decision hook, aggy's asks on its own
+		// files and Claude's settings files are off, which every launch says.
 		if w := usePolicyHook(&req, policyHookIn{plan: plan, rules: rules, root: root, cwd: pl.child.Cwd, version: version,
-			dir: memDir, settingsFile: g.settingsFile, ids: ids}); strings.HasPrefix(w, guardsOffPrefix) {
+			dir: memDir, settingsFile: g.settingsFile, ids: ids}); w != "" {
 			warns = append(warns, w)
+		}
+	}
+	// #148 review M1: exact pre-approvals of policy matches run unasked, so a
+	// launch says when ones apply that the last on-screen launch in this
+	// folder did not; an unchanged set is aggy doctor's to count.
+	if who == planOnScreen && !t.NoPolicy && (v == adapter.Claude && req.PolicyHook != nil || v == adapter.OpenCode || v == adapter.Hermes || v == adapter.Antigravity) {
+		root, _ := repoRoot(pl.child.Cwd)
+		keys := preApprovalKeys(parity.PreApprovedFrom(rules, root, readIdentities(ctx, s)), plan.Branches)
+		if l := newPreApprovalsLine(ctx, s, pl.child.Cwd, keys); l != "" {
+			warns = append(warns, l)
 		}
 	}
 	// The tools that are on, for this child's own vendor and repo: a
@@ -600,8 +615,9 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 				fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(w))
 			}
 		}
-		// T7015: once per folder; aggy doctor says it after.
-		if oc.launch.Mini && t.SwitchFrom == "" && !t.SameChild && noteOnce(openCodeUntrustedKey+oc.root) {
+		// T7015: once per folder, on a terminal that shows it; aggy doctor
+		// says it after.
+		if oc.launch.Mini && t.SwitchFrom == "" && !t.SameChild && stderrTerminal() && noteOnce(openCodeUntrustedKey+openCodeNoteFolder(oc.root, pl.child.Cwd)) {
 			fmt.Fprintf(stderr, "%s: %s\n", name, termsafe.Line(openCodeUntrustedNote(oc.root, rules.HeldLocal)))
 		}
 	}
@@ -640,9 +656,10 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 			return fail(agyCode(err, diag.CodeLaunchFailed), err)
 		}
 		req.Antigravity = &as.launch
-		// T7015: agy's trust gate on aggy's hook is said once per folder, and
-		// never between two CLIs; aggy doctor says it after.
-		if t.SwitchFrom == "" && !t.SameChild && noteOnce(agyHookKey+pl.child.Cwd) {
+		// #148 review H3: agy's trust gate on aggy's hook means the policy may
+		// not be on, so every on-screen start in the folder says it, a
+		// switch's too, until a hook of agy's has come from it.
+		if !agyHookSeen(ctx, s, pl.child.Cwd) {
 			as.warns = append(as.warns, agyHookNote)
 		}
 		for _, w := range as.warns {
@@ -1003,6 +1020,9 @@ func launchOnce(name string, tp *target, stderr io.Writer, next *switchTo, q *di
 		return ex.Code
 	}
 	exited(ex.Code, ex.SwitchTo)
+	if v == adapter.Antigravity && agySeen.Load() {
+		markAgyHookSeen(ctx, s, pl.child.Cwd)
+	}
 	if v == adapter.Antigravity {
 		if n := agyExitNote(ex.Code, agySeen.Load() || facts.TurnRan); n != "" {
 			fmt.Fprintf(stderr, "%s: %s %s\n", name, n, dlog.Tag(diag.CodeAgySettings))

@@ -130,7 +130,9 @@ func TestUsePolicyHook(t *testing.T) {
 		in := hookIn(plan, s, repo, repo, "", filepath.Join(t.TempDir(), "m"))
 		mut(&req, &in)
 		note := usePolicyHook(&req, in)
-		if req.PolicyHook != nil || len(req.Ask) == 0 || !strings.Contains(note, "asks as before") {
+		// #148 review H1: the note says the guards are off, and the one
+		// pre-approval this test made does not apply.
+		if req.PolicyHook != nil || len(req.Ask) == 0 || !strings.HasPrefix(note, guardsOff+", and your 1 exact pre-approval") {
 			t.Errorf("%s: hook %+v asks %d note %q", name, req.PolicyHook, len(req.Ask), note)
 		}
 	}

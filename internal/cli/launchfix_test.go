@@ -138,8 +138,8 @@ func TestOwnSkillNotMissing(t *testing.T) {
 }
 
 // TestUnplannedAsksNothing (#142 review M1): when a part that is missing cannot
-// be planned, nothing is asked or written, and the next launch of this version
-// does not ask either.
+// be planned, nothing is asked or written. #148 review L1: no one answered, so
+// it is not recorded as asked, and the next launch still says what is missing.
 func TestUnplannedAsksNothing(t *testing.T) {
 	_, s := fixWorld(t, "y\n", true)
 	ctx := context.Background()
@@ -152,8 +152,11 @@ func TestUnplannedAsksNothing(t *testing.T) {
 	if after := findLaunchFix(ctx, adapter.Claude, false, false); after.hookLine == "" {
 		t.Error("something was written")
 	}
-	if !declinedFor(ctx, s, "v1") {
-		t.Error("asks again for this version")
+	if fixAsked(ctx, s, "v1") {
+		t.Error("recorded as asked, though no one was")
+	}
+	if left := offerLaunchFix(ctx, s, adapter.Claude, f, "v1", os.Getenv, offerIn, &out); len(left) == 0 || strings.Contains(out.String(), "[y/N]") {
+		t.Errorf("next launch: left %q, out %q", left, out.String())
 	}
 }
 
