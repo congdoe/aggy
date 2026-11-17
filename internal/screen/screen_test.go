@@ -165,19 +165,37 @@ func TestUnsure(t *testing.T) {
 	}
 }
 
-// TestUnsureSticks (T7016): Unsure lasts through ordinary drawing and ends
-// at a full clear; a resize makes it, a size out of range keeps it.
+// TestUnsureSticks (T7016; #149 review): content doubt lasts through
+// ordinary drawing and ends at a full clear; a mode lasts until it is turned
+// off, whatever is cleared; an unknown one until a reset; a resize makes
+// doubt, a size out of range keeps it.
 func TestUnsureSticks(t *testing.T) {
+	type step struct {
+		in     string
+		unsure bool
+	}
+	for _, c := range []struct {
+		name  string
+		steps []step
+	}{
+		{"content doubt ends at a full clear", []step{{"\r\n\x1b[2A", true}, {"abc\x1b[K", true}, {"\x1b[2J", false}}},
+		{"a scroll region lasts until reset", []step{{"\x1b[2;3r", true}, {"\x1b[2J", true}, {"\x1b[r", false}}},
+		{"insert mode lasts until off", []step{{"\x1b[4h", true}, {"\x1b[2J", true}, {"\x1b[4l", false}}},
+		{"newline mode lasts until off", []step{{"\x1b[20h", true}, {"\x1b[H\x1b[J", true}, {"\x1b[20l", false}}},
+		{"origin mode lasts until off", []step{{"\x1b[?6h", true}, {"\x1b[2J", true}, {"\x1b[?6l", false}}},
+		{"an unknown mode lasts until RIS", []step{{"\x1b[?9999h", true}, {"\x1b[2J", true}, {"\x1b[?9999l", true}, {"\x1bc", false}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := New(5, 10)
+			for i, st := range c.steps {
+				s.Feed([]byte(st.in))
+				if got := s.Snapshot().Unsure; got != st.unsure {
+					t.Fatalf("after step %d %q: Unsure %v, want %v", i, st.in, got, st.unsure)
+				}
+			}
+		})
+	}
 	s := New(5, 10)
-	s.Feed([]byte("\x1b[2;3r"))
-	s.Feed([]byte("\r\nabc\x1b[K\x1b[2A"))
-	if !s.Snapshot().Unsure {
-		t.Fatal("drawing ended Unsure")
-	}
-	s.Feed([]byte("\x1b[2J"))
-	if s.Snapshot().Unsure {
-		t.Fatal("a full clear did not end Unsure")
-	}
 	s.Resize(5, 10)
 	if s.Snapshot().Unsure {
 		t.Fatal("the same size made it Unsure")
@@ -187,16 +205,99 @@ func TestUnsureSticks(t *testing.T) {
 		t.Fatal("a resize did not make it Unsure")
 	}
 	s.Feed([]byte("\x1b[2J"))
+	if s.Snapshot().Unsure {
+		t.Fatal("a clear after a resize did not end it")
+	}
 	s.Resize(MaxRows+1, 10)
 	s.Feed([]byte("\x1b[2J"))
 	if !s.Snapshot().Unsure {
 		t.Fatal("a size out of range is not Unsure")
 	}
-	s.SetUnsure()
 	s.Resize(5, 10)
 	s.Feed([]byte("\x1b[2J"))
 	if s.Snapshot().Unsure {
 		t.Fatal("a size in range and a clear did not end it")
+	}
+}
+
+// TestGapNeedsReset (#149 review, M2): bytes never fed may have hidden the
+// cursor or turned faint off, so after a gap a full clear does not restore
+// trust; only a reset does.
+func TestGapNeedsReset(t *testing.T) {
+	s := New(5, 10)
+	s.SetUnsure()
+	s.Feed([]byte("\x1b[H\x1b[2Jabc"))
+	if !s.Snapshot().Unsure {
+		t.Fatal("a full clear after a gap ended Unsure")
+	}
+	s.Feed([]byte("\x1bc"))
+	if s.Snapshot().Unsure {
+		t.Fatal("a reset did not end it")
+	}
+}
+
+// TestAltClearKeepsMain (#149 review, M1): a clear on the alternate screen
+// says nothing of the main screen's rows: back on it, with the cursor's row
+// known from the alternate screen, the main screen stays Unsure; nor does it
+// end the main screen's doubt.
+func TestAltClearKeepsMain(t *testing.T) {
+	for _, mode := range []string{"47", "1047", "1049"} {
+		s := New(10, 20)
+		s.Feed([]byte("ab\r\ncd\r\n"))
+		s.Feed([]byte("\x1b[?" + mode + "h\x1b[H\x1b[2J\x1b[?" + mode + "l\x1b[2;3H"))
+		if !s.Snapshot().Unsure {
+			t.Errorf("?%s: the main screen's rows taken as known", mode)
+		}
+	}
+	s := New(10, 20)
+	s.Feed([]byte("\r\n\x1b[3A\x1b[?1049h\x1b[2J\x1b[?1049l"))
+	if !s.Snapshot().Unsure {
+		t.Error("a clear on the alternate screen ended the main screen's doubt")
+	}
+}
+
+// TestAnchorOnBlank (#149 review, L2): a full clear, then home (Ink's order),
+// makes the rows real, as home then a clear does; a redraw from home that
+// erases every row with EL 2 before drawing counts as a full clear (Claude
+// Code 2.1.326's, in the recording's exit), and one that draws before the
+// last row, leaves one, or scrolls does not.
+func TestAnchorOnBlank(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		in     string
+		unsure bool
+	}{
+		{"clear then home", "x\x1b[2J\x1b[3J\x1b[Hab", false},
+		{"home then clear", "x\x1b[H\x1b[2J\x1b[3Jab", false},
+		{"clear, text, then home", "x\x1b[2Jy\x1b[Hab", true},
+		{"every row erased from home", "x\r\n\x1b[H\x1b[2K\x1b[1B\x1b[2K\x1b[1B\x1b[2K\x1b[Hab", false},
+		{"a row left", "x\r\n\x1b[H\x1b[2K\x1b[1B\x1b[2K\x1b[Hab", true},
+		{"text between", "x\r\n\x1b[H\x1b[2Kq\x1b[1B\x1b[2K\x1b[1B\x1b[2K\x1b[Hab", true},
+		{"a scroll between", "x\r\n\x1b[H\x1b[2K\x1b[1B\x1b[2K\n\n\n\x1b[2K\x1b[Hab", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := New(3, 10)
+			s.Feed([]byte(c.in))
+			if got := s.Snapshot().Unsure; got != c.unsure {
+				t.Errorf("Unsure %v, want %v", got, c.unsure)
+			}
+		})
+	}
+}
+
+// TestFeedBudget (#149 review, L4): a flood of whole-screen operations stops
+// being followed past the budget, and the screen is lost until a reset.
+func TestFeedBudget(t *testing.T) {
+	for _, flood := range []string{"\x1b[2J", "\x1bc", "\x1b[299S", "\x1b[299L", "\x1b[299M", "\x1b[299T"} {
+		s := New(MaxRows, MaxCols)
+		in := []byte(strings.Repeat(flood, 4096))
+		s.Feed(in)
+		if s.work > s.feedBudget(len(in))+4*MaxRows*MaxCols {
+			t.Errorf("%q: %d cells touched", flood, s.work)
+		}
+		if !s.lost || !s.Snapshot().Unsure {
+			t.Errorf("%q: past the budget and not lost", flood)
+		}
 	}
 }
 

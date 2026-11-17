@@ -65,14 +65,31 @@ type Screen struct {
 	hasSaved   [2]bool
 	visible    bool
 	autowrap   bool
-	// unsure is sticky until a full clear; bad (a size out of range) until a
-	// size in range.
-	unsure, bad bool
-	// anchored: rows are the real ones (a full clear came with the row known).
+	// unsure, per buffer (main, alternate): its content may differ from the
+	// real screen's, until a full clear of that buffer. lost: a state aggy does
+	// not model may be on (a mode, a chunk of output never fed), until a reset
+	// (RIS): a clear blanks cells, not modes. irm, lnm, origin, and region:
+	// insert mode, newline mode, origin mode, and a scroll region that is not
+	// the whole screen are on, until turned off. bad: a size out of range,
+	// until a size in range.
+	unsure                   [2]bool
+	lost, bad                bool
+	irm, lnm, origin, region bool
+	// anchored, per buffer: its rows are the real ones (a full clear came with
+	// the row known, or the row became known on a buffer blank since a full
+	// clear). blank, per buffer: nothing drawn or erased since a full clear.
 	// maxRow is the lowest row the cursor reached since the start or the last
 	// full clear, while rows are relative.
-	anchored bool
-	maxRow   int
+	anchored, blank [2]bool
+	maxRow          int
+	// wipe follows a redraw from home that erases every row with EL 2 before
+	// any other write (Claude's, T7016 review): wipeRows are the rows erased,
+	// wipeN how many; once all are, it counts as a full clear.
+	wipeOn   bool
+	wipeRows []bool
+	wipeN    int
+	// work counts the cells a Feed call has touched (feedBudget).
+	work int
 
 	st       int
 	params   [maxParams]int
@@ -124,6 +141,7 @@ func (s *Screen) alloc(rows, cols int) {
 		s.grids[i] = g
 	}
 	s.rows, s.cols = rows, cols
+	s.wipeRows, s.wipeOn = make([]bool, rows), false
 	for r := range s.rows {
 		s.fixWide(r)
 	}
@@ -144,18 +162,37 @@ func (s *Screen) Resize(rows, cols int) {
 		return
 	}
 	s.alloc(rows, cols)
-	s.unsure = true
+	s.unsure = [2]bool{true, true}
+	s.anchored, s.blank = [2]bool{}, [2]bool{}
 }
 
-// SetUnsure marks the screen Unsure until a full clear: its owner lost bytes.
-func (s *Screen) SetUnsure() { s.unsure = true }
+// SetUnsure marks the screen Unsure until a reset (RIS): its owner lost
+// bytes, which may have held a mode or the cursor's visibility, so a full
+// clear does not end it (T7016 review).
+func (s *Screen) SetUnsure() { s.lost = true }
+
+// feedBudget bounds the cells one Feed call may touch: per byte, and a few
+// whole screens. Output past it (a flood of clears or scrolls) is not
+// followed: the screen is lost until a reset (T7016 review).
+func (s *Screen) feedBudget(n int) int { return 256*n + 4*s.rows*s.cols + 4096 }
 
 // Feed takes the CLI's output, in any split across calls.
 func (s *Screen) Feed(b []byte) {
+	s.work = 0
+	budget := s.feedBudget(len(b))
 	for _, c := range b {
+		if s.work > budget {
+			s.lost = true
+			s.st, s.utfN, s.utfNeed = stGround, 0, 0
+			return
+		}
 		s.byte(c)
+		s.work++
 	}
 }
+
+// doubt marks the content of the buffer in use as possibly not the real one's.
+func (s *Screen) doubt() { s.unsure[s.buf()] = true }
 
 func (s *Screen) grid() [][]Cell {
 	if s.alt {
@@ -210,7 +247,7 @@ func (s *Screen) control(c byte) {
 		return
 	case 0x08:
 		if s.cur.wrapNext {
-			s.unsure = true // terminals differ on BS from the wrap position
+			s.doubt() // terminals differ on BS from the wrap position
 		}
 		s.cur.wrapNext = false
 		if s.cur.col > 0 {
@@ -269,7 +306,7 @@ func (s *Screen) strStep(c byte) {
 	if len(s.strHead) == 2 {
 		h := string(s.strHead)
 		if h != "+q" && h != "$q" {
-			s.unsure = true
+			s.lost = true
 		}
 	}
 }
@@ -289,7 +326,7 @@ func (s *Screen) escByte(c byte) {
 		s.st, s.strHead = stStr, s.strBuf[:0]
 	case 'X', '^', '_':
 		s.st, s.strHead = stStr, nil
-		s.unsure = true // APC draws images in some terminals; PM and SOS are unknown
+		s.lost = true // APC draws images in some terminals; PM and SOS are unknown
 	case '7':
 		s.saveCursor()
 	case '8':
@@ -307,7 +344,7 @@ func (s *Screen) escByte(c byte) {
 	case '(', ')', '*', '+', '-', '.', '/', '#', ' ', '%':
 		s.st, s.escInter = stEscInter, c
 	default:
-		s.unsure = true // HTS, SS2, SS3, LS2, LS3, and anything else
+		s.lost = true // HTS, SS2, SS3, LS2, LS3, and anything else
 	}
 }
 
@@ -327,10 +364,10 @@ func (s *Screen) escInterByte(c byte) {
 	case ' ':
 	case '%':
 		if c != 'G' {
-			s.unsure = true // out of UTF-8
+			s.lost = true // out of UTF-8
 		}
 	default: // '#': line sizes and DECALN
-		s.unsure = true
+		s.lost = true
 	}
 }
 
@@ -383,7 +420,7 @@ func (s *Screen) csiByte(c byte) {
 			n = min(s.np+1, maxParams)
 		}
 		if s.badSeq || s.tooMany {
-			s.unsure = true
+			s.lost = true
 			return
 		}
 		s.dispatch(c, n)
@@ -406,7 +443,7 @@ func (s *Screen) dispatch(f byte, n int) {
 		case " q", "$p", " t", " u":
 			return // cursor style, a mode query, bell volumes
 		}
-		s.unsure = true
+		s.lost = true
 		return
 	}
 	switch s.priv {
@@ -426,7 +463,7 @@ func (s *Screen) dispatch(f byte, n int) {
 		s.moveRight(p1)
 	case 'D':
 		if s.cur.wrapNext {
-			s.unsure = true
+			s.doubt()
 		}
 		s.cur.wrapNext = false
 		s.cur.col = max(s.cur.col-p1, 0)
@@ -442,6 +479,9 @@ func (s *Screen) dispatch(f byte, n int) {
 	case 'H', 'f':
 		s.setRow(s.param(0, n, 1) - 1)
 		s.cur.col = min(s.param(1, n, 1), s.cols) - 1
+		if s.cur.row == 0 {
+			s.startWipe()
+		}
 	case 'd':
 		s.setRow(p1 - 1)
 	case 'I':
@@ -471,7 +511,7 @@ func (s *Screen) dispatch(f byte, n int) {
 		s.lines(f, p1)
 	case 'T':
 		if n > 1 {
-			s.unsure = true // the mouse highlight form
+			s.lost = true // the mouse highlight form
 			return
 		}
 		s.lines(f, p1)
@@ -479,34 +519,35 @@ func (s *Screen) dispatch(f byte, n int) {
 		s.sgr(n)
 	case 'r':
 		top, bottom := s.param(0, n, 1), s.param(1, n, s.rows)
-		if top != 1 || bottom < s.rows {
-			s.unsure = true // a scroll region that is not the whole screen
-		}
+		s.region = top != 1 || bottom < s.rows // a scroll region aggy does not model
 		s.cur.wrapNext = false
 		s.setRow(0)
 		s.cur.col = 0
 	case 's':
 		if n > 0 {
-			s.unsure = true // left and right margins
+			s.lost = true // left and right margins
 			return
 		}
 		s.saveCursor()
 	case 'u':
 		s.restoreCursor()
-	case 'h':
+	case 'h', 'l':
 		for i := range n {
-			if s.params[i] == 4 || s.params[i] == 20 {
-				s.unsure = true // insert mode, newline mode
+			switch s.params[i] {
+			case 4:
+				s.irm = f == 'h' // insert mode
+			case 20:
+				s.lnm = f == 'h' // newline mode
 			}
 		}
-	case 'l', 'c', 'q', 't', 'x', 'i':
+	case 'c', 'q', 't', 'x', 'i':
 		// Resets, device attributes, LEDs, window reports, printer: no cells.
 	case 'n':
-		if s.param(0, n, 0) == 6 && !s.anchored {
-			s.unsure = true // the CLI learns the real row (see the package doc)
+		if s.param(0, n, 0) == 6 && !s.anchored[s.buf()] {
+			s.doubt() // the CLI learns the real row (see the package doc)
 		}
 	default:
-		s.unsure = true // tab clears, REP, and anything else
+		s.lost = true // tab clears, REP, and anything else
 	}
 }
 
@@ -534,13 +575,13 @@ func (s *Screen) privDispatch(f byte, n int) {
 	case 'K':
 		s.eraseLine(s.param(0, n, 0))
 	case 'n':
-		if s.param(0, n, 0) == 6 && !s.anchored {
-			s.unsure = true
+		if s.param(0, n, 0) == 6 && !s.anchored[s.buf()] {
+			s.doubt()
 		}
 	case 'u', 'c', 's', 'm', 'q':
 		// Kitty's key query, device attributes, XTSAVE, key-modifier queries.
 	default:
-		s.unsure = true // XTRESTORE and anything else
+		s.lost = true // XTRESTORE and anything else
 	}
 }
 
@@ -571,9 +612,13 @@ func (s *Screen) privMode(m int, on bool) {
 		} else {
 			s.restoreCursor()
 		}
+	case 6:
+		s.origin = on // homes the cursor, in either direction
+		s.setRow(0)
+		s.cur.col = 0
 	default:
 		if !harmlessModes[m] {
-			s.unsure = true // origin mode, 132 columns, side margins, and the rest
+			s.lost = true // 132 columns, side margins, and the rest
 		}
 	}
 }
@@ -581,6 +626,7 @@ func (s *Screen) privMode(m int, on bool) {
 // setAlt moves to the alternate screen or back. clearOn clears it on the way
 // in; clearOff clears it on the way out.
 func (s *Screen) setAlt(on, clearOn, clearOff bool) {
+	s.wipeOn = false
 	if on == s.alt {
 		if on && clearOn {
 			s.clearGrid(s.grids[1])
@@ -597,6 +643,7 @@ func (s *Screen) setAlt(on, clearOn, clearOff bool) {
 }
 
 func (s *Screen) clearGrid(g [][]Cell) {
+	s.work += s.rows * s.cols
 	for _, r := range g {
 		clear(r)
 	}
@@ -644,8 +691,8 @@ func (s *Screen) restoreCursor() {
 		return
 	}
 	s.cur = s.saved[b]
-	if s.anchored && !s.cur.rowKnown {
-		s.unsure = true // a place saved before the screen's rows were known
+	if s.anchored[b] && !s.cur.rowKnown {
+		s.doubt() // a place saved before the screen's rows were known
 	}
 }
 
@@ -656,23 +703,29 @@ func (s *Screen) reset() {
 	s.alt, s.visible, s.autowrap = false, true, true
 	s.cur = cursor{g: [2]byte{'B', 'B'}, rowKnown: true}
 	s.hasSaved = [2]bool{}
-	s.anchored, s.unsure, s.maxRow = true, false, 0
+	s.anchored, s.blank, s.unsure, s.maxRow = [2]bool{true, true}, [2]bool{true, true}, [2]bool{}, 0
+	s.lost, s.irm, s.lnm, s.origin, s.region, s.wipeOn = false, false, false, false, false, false
 }
 
-// setRow puts the cursor on an absolute row.
+// setRow puts the cursor on an absolute row. On a buffer blank since a full
+// clear, nothing drawn can be off, so its rows become real (T7016 review: Ink
+// clears, then homes).
 func (s *Screen) setRow(r int) {
 	s.cur.wrapNext = false
 	s.cur.row = max(0, min(r, s.rows-1))
 	s.cur.rowKnown = true
+	if b := s.buf(); s.blank[b] {
+		s.anchored[b] = true
+	}
 }
 
 // relative reports whether rows are known only relative to the CLI's start.
-func (s *Screen) relative() bool { return !s.cur.rowKnown && !s.anchored }
+func (s *Screen) relative() bool { return !s.cur.rowKnown && !s.anchored[s.buf()] }
 
 func (s *Screen) moveUp(n int) {
 	s.cur.wrapNext = false
 	if s.cur.row-n < 0 && s.relative() {
-		s.unsure = true // the real screen may have room above
+		s.doubt() // the real screen may have room above
 	}
 	s.cur.row = max(s.cur.row-n, 0)
 }
@@ -681,7 +734,7 @@ func (s *Screen) moveDown(n int) {
 	s.cur.wrapNext = false
 	t := min(s.cur.row+n, s.rows-1)
 	if s.relative() && s.cur.row+n > s.maxRow {
-		s.unsure = true // the real screen may end sooner
+		s.doubt() // the real screen may end sooner
 	}
 	s.cur.row = t
 }
@@ -710,7 +763,7 @@ func (s *Screen) reverseIndex() {
 		return
 	}
 	if s.relative() {
-		s.unsure = true // the real cursor may not be on the top row
+		s.doubt() // the real cursor may not be on the top row
 	}
 	s.edit()
 	s.scrollDown(1)
@@ -719,6 +772,8 @@ func (s *Screen) reverseIndex() {
 func (s *Screen) scrollUp(n int) {
 	g := s.grid()
 	n = min(n, s.rows)
+	s.wipeOn = false
+	s.work += n * (s.rows + s.cols)
 	for range n {
 		first := g[0]
 		copy(g, g[1:])
@@ -730,6 +785,8 @@ func (s *Screen) scrollUp(n int) {
 func (s *Screen) scrollDown(n int) {
 	g := s.grid()
 	n = min(n, s.rows)
+	s.wipeOn = false
+	s.work += n * (s.rows + s.cols)
 	for range n {
 		last := g[len(g)-1]
 		copy(g[1:], g[:len(g)-1])
@@ -742,12 +799,13 @@ func (s *Screen) scrollDown(n int) {
 // Unsure already).
 func (s *Screen) lines(f byte, n int) {
 	if s.relative() {
-		s.unsure = true // the real screen's bottom is not known
+		s.doubt() // the real screen's bottom is not known
 	}
 	s.edit()
 	s.cur.wrapNext = false
 	g := s.grid()
 	n = min(n, s.rows)
+	s.work += n * (s.rows + s.cols)
 	switch f {
 	case 'S':
 		s.scrollUp(n)
@@ -776,10 +834,14 @@ func (s *Screen) lines(f byte, n int) {
 
 // edit notes a change to cells: with the cursor's row real and the content's
 // rows relative, the two no longer line up.
+//
+// It also ends a buffer's blank state and a wipe in progress.
 func (s *Screen) edit() {
-	if s.cur.rowKnown && !s.anchored {
-		s.unsure = true
+	b := s.buf()
+	if s.cur.rowKnown && !s.anchored[b] {
+		s.doubt()
 	}
+	s.blank[b], s.wipeOn = false, false
 }
 
 func (s *Screen) eraseDisplay(m int) {
@@ -806,23 +868,38 @@ func (s *Screen) eraseDisplay(m int) {
 	case 3:
 		// The scrollback only.
 	default:
-		s.unsure = true
+		s.lost = true
 	}
 }
 
 // fullClear blanks the screen in use: the content no longer depends on where
 // the CLI started. With the cursor's row real, rows become real.
+//
+// It ends the buffer's doubt over its content, not lost or a mode: a clear
+// blanks cells, and leaves modes and the cursor's visibility as they were.
 func (s *Screen) fullClear() {
+	b := s.buf()
 	s.clearGrid(s.grid())
+	s.wipeOn = false
 	if s.bad {
 		return
 	}
-	s.unsure = false
+	s.unsure[b], s.blank[b] = false, true
 	if s.cur.rowKnown {
-		s.anchored = true
+		s.anchored[b] = true
 	} else {
 		s.maxRow = s.cur.row
 	}
+}
+
+// startWipe begins following a redraw from home (wipe): the cursor went to
+// the real top row of a buffer whose rows are relative.
+func (s *Screen) startWipe() {
+	if s.anchored[s.buf()] {
+		return
+	}
+	clear(s.wipeRows)
+	s.wipeOn, s.wipeN = true, 0
 }
 
 func (s *Screen) eraseLine(m int) {
@@ -834,10 +911,23 @@ func (s *Screen) eraseLine(m int) {
 		s.edit()
 		s.clearCells(s.cur.row, 0, s.cur.col+1)
 	case 2:
+		wiping := s.wipeOn && s.cur.rowKnown
 		s.edit()
 		s.clearCells(s.cur.row, 0, s.cols)
+		if wiping {
+			// Every real row erased with nothing else drawn between is the
+			// whole real screen erased: as a full clear (T7016 review).
+			s.wipeOn = true
+			if !s.wipeRows[s.cur.row] {
+				s.wipeRows[s.cur.row] = true
+				s.wipeN++
+			}
+			if s.wipeN == s.rows {
+				s.fullClear()
+			}
+		}
 	default:
-		s.unsure = true
+		s.lost = true
 	}
 }
 
@@ -847,8 +937,15 @@ func (s *Screen) clearCells(r, from, to int) {
 		return
 	}
 	row := s.grid()[r]
+	s.work += to - from
 	clear(row[from:to])
-	s.fixWide(r)
+	// Only the edges can cut a wide character.
+	if from > 0 && row[from-1].Wide {
+		row[from-1] = Cell{}
+	}
+	if to < len(row) && row[to].Cont {
+		row[to] = Cell{}
+	}
 }
 
 func (s *Screen) deleteChars(n int) {
@@ -885,6 +982,7 @@ func unsplit(row []Cell, c int) {
 // fixWide blanks the halves of wide characters that lost their other half.
 func (s *Screen) fixWide(r int) {
 	row := s.grid()[r]
+	s.work += len(row)
 	for c := range row {
 		switch {
 		case row[c].Wide && (c+1 >= len(row) || !row[c+1].Cont):
@@ -905,7 +1003,7 @@ func (s *Screen) text(c byte) {
 			r := decode(s.utf[:s.utfN])
 			s.utfN, s.utfNeed = 0, 0
 			if r < 0 {
-				s.unsure = true
+				s.doubt()
 				r = 0xfffd
 			}
 			s.print(r)
@@ -924,7 +1022,7 @@ func (s *Screen) text(c byte) {
 	case c&0xf8 == 0xf0:
 		s.utf[0], s.utfN, s.utfNeed = c, 1, 4
 	default:
-		s.unsure = true // terminals differ on invalid UTF-8
+		s.doubt() // terminals differ on invalid UTF-8
 		s.print(0xfffd)
 	}
 }
@@ -932,7 +1030,7 @@ func (s *Screen) text(c byte) {
 // badUTF ends a UTF-8 sequence cut short.
 func (s *Screen) badUTF() {
 	s.utfN, s.utfNeed = 0, 0
-	s.unsure = true
+	s.doubt()
 	s.print(0xfffd)
 }
 
@@ -963,11 +1061,11 @@ func decode(b []byte) rune {
 // print draws r at the cursor.
 func (s *Screen) print(r rune) {
 	if r >= 0x80 && r <= 0x9f {
-		s.unsure = true // a C1 control: terminals differ in UTF-8
+		s.lost = true // a C1 control: terminals differ in UTF-8, and it may be CSI
 		return
 	}
 	if g := s.cur.g[s.cur.shift]; g != 'B' {
-		s.unsure = true // a character set other than ASCII maps characters
+		s.doubt() // a character set other than ASCII maps characters
 	}
 	w := Width(r)
 	if w == 0 {
@@ -980,7 +1078,7 @@ func (s *Screen) print(r rune) {
 	}
 	if w == 2 && s.cur.col == s.cols-1 {
 		if !s.autowrap || s.cols < 2 {
-			s.unsure = true
+			s.doubt()
 			return
 		}
 		s.clearCells(s.cur.row, s.cur.col, s.cols)
@@ -1022,15 +1120,16 @@ type Snapshot struct {
 
 // Snapshot copies the screen in use.
 func (s *Screen) Snapshot() *Snapshot {
-	g := s.grid()
+	g, b := s.grid(), s.buf()
 	cells := make([][]Cell, len(g))
 	for r := range g {
 		cells[r] = append([]Cell(nil), g[r]...)
 	}
 	return &Snapshot{
 		Rows: s.rows, Cols: s.cols, Row: s.cur.row, Col: s.cur.col, Visible: s.visible, Alt: s.alt,
-		Unsure: s.unsure || s.bad || s.cur.rowKnown && !s.anchored || s.st != stGround || s.utfNeed > 0,
-		cells:  cells,
+		Unsure: s.unsure[b] || s.lost || s.bad || s.irm || s.lnm || s.origin || s.region ||
+			s.cur.rowKnown && !s.anchored[b] || s.st != stGround || s.utfNeed > 0,
+		cells: cells,
 	}
 }
 

@@ -246,6 +246,59 @@ func TestFirstTurnScreenChanges(t *testing.T) {
 	}
 }
 
+// TestFirstTurnScreenOutputDuringRead (#149 review, L1): output that lands
+// while the screen is read (copyOut stamps lastOut before it queues the
+// bytes) is never taken as read: at the offer the status line asks, and just
+// before /exit nothing is typed.
+func TestFirstTurnScreenOutputDuringRead(t *testing.T) {
+	for _, at := range []int{1, 2} {
+		q, records := diagHome(t)
+		s := freshSess(t, adapter.Claude, "2.1.326", true)
+		s.o.Diag = q
+		withScreen(s)
+		shows(s, recordedUpTo(t, "start_idle"))
+		read, calls := s.o.ReadScreen, 0
+		s.o.ReadScreen = func(p *screen.Snapshot) adapter.ScreenState {
+			calls++
+			if calls == at {
+				s.lastOut.Store(time.Now().UnixNano()) // the CLI draws as the copy is read
+			}
+			return read(p)
+		}
+		pickInList(s, "2")
+		got := afterOffer(t, s)
+		if got != "" || s.sw.typed {
+			t.Fatalf("read %d: typed %q", at, got)
+		}
+		switch at {
+		case 1:
+			if !s.open || s.pk.confirm != adapter.Codex {
+				t.Errorf("read 1: open %v confirm %q, want the status line", s.open, s.pk.confirm)
+			}
+		case 2:
+			if !refused(t, records, diag.CodeScreenChanged) {
+				t.Error("read 2: no screen_changed record")
+			}
+		}
+	}
+}
+
+// TestFirstTurnScreenGap (#149 review, M2): a chunk the copy lost, then a
+// full clear and a frame that looks like the empty prompt: the lost bytes may
+// have hidden the cursor, so the switch asks.
+func TestFirstTurnScreenGap(t *testing.T) {
+	s := freshSess(t, adapter.Claude, "2.1.326", true)
+	withScreen(s)
+	shows(s, recordedUpTo(t, "start_idle"))
+	s.scr.gap = true
+	frame := "\x1b[H\x1b[2J\r\n" + strings.Repeat("─", 100) + "\r\n❯\u00a0\r\n" + strings.Repeat("─", 100) + "\r\n\x1b[2A\x1b[3G"
+	shows(s, []byte(frame))
+	pickInList(s, "2")
+	if got := afterOffer(t, s); got != "" || !s.open || s.pk.confirm != adapter.Codex {
+		t.Fatalf("typed %q, open %v confirm %q: want the status line", got, s.open, s.pk.confirm)
+	}
+}
+
 // TestVouchedRefusalNote (#147 review follow-up): a yes the person gave
 // before the first turn end, with an Enter gone to Claude (vouched), that
 // typeExit then refuses after the launch check (a hold came meanwhile) says

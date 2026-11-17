@@ -2157,10 +2157,10 @@ func (s *session) offerSwitch() {
 		s.confirmSwitch()
 		return
 	}
-	if !s.turnRan && s.screenOneStep() {
+	if ok, out := s.screenOneStep(); ok && !s.turnRan {
 		// T7016: before Claude's first turn end, its screen shows the empty
 		// prompt, and the hooks and keys agree: no question.
-		s.goByScreen()
+		s.goByScreen(out)
 		return
 	}
 	// One status line (S-12, O56-1): who or what asked and the switch's
