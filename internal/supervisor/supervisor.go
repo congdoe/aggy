@@ -9,6 +9,7 @@ import (
 
 	"github.com/congdoe/aggy/internal/adapter"
 	"github.com/congdoe/aggy/internal/diag"
+	"github.com/congdoe/aggy/internal/screen"
 	"github.com/congdoe/aggy/internal/trustlist"
 )
 
@@ -60,6 +61,13 @@ type Options struct {
 	// unknown: a live check of its composer holds only at the versions it ran
 	// on (adapter.ClearLineChecked, T6982).
 	VendorVersion string
+	// ReadScreen classifies a copy of the CLI's screen, kept from the output the
+	// supervisor forwards (internal/screen, T7016): the vendor's adapter's
+	// classifier at VendorVersion. The supervisor uses it in one place only: a
+	// switch the person asked for on Claude before its first turn end goes in
+	// one step when it reads adapter.ScreenPromptEmpty and every other check
+	// holds. Nil keeps no copy, and that switch asks.
+	ReadScreen func(*screen.Snapshot) adapter.ScreenState
 	// Start starts Command in a new pseudo-terminal of rows by cols.
 	Start func(c adapter.Command, rows, cols int) (Child, error)
 	// SwitchKey is the control byte that opens the switch picker

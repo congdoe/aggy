@@ -74,7 +74,8 @@ type factCheck struct{ facts, version string }
 // servers, an update notice, new terms) from hooks alone: SessionStart came
 // 0.4 s after launch in a run of 2026-11-11, before an Enter that likely
 // answered the folder-trust dialog. So such a switch asks once on the status
-// line (T6982, #147 review); reading the screen is planned to remove that.
+// line (T6982, #147 review), unless the supervisor reads Claude's screen as its
+// empty prompt (claude.ClassifyScreen, T7016).
 //
 // Not checked: Ctrl+U as CSI u, a multi-line composer, Ctrl+U with another
 // popup open (the @ file menu, history search), during a running turn,
@@ -128,6 +129,14 @@ func (c liveCheck) covers(version string) bool {
 	ma, mi, pa, ok := semver(version)
 	cma, cmi, cpa, cok := semver(c.versions[0])
 	return ok && cok && ma == cma && mi == cmi && pa >= cpa
+}
+
+// CoversLine reports whether version is on the major.minor line of first, at
+// or after first's patch: the rule every live check here follows (2.1.x from
+// 2.1.326 for a check recorded at 2.1.326). An unreadable version is never
+// covered.
+func CoversLine(first, version string) bool {
+	return liveCheck{versions: []string{first}}.covers(version)
 }
 
 // stale returns the groups of facts whose last check ran on a version before

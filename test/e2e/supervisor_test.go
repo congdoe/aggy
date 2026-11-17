@@ -108,6 +108,9 @@ type world struct {
 	// askFix leaves the launch's question about missing hooks and command
 	// skills on (T6982); every other test runs with it off.
 	askFix bool
+	// rows and cols, when set, are the terminal's size in place of 24 by 80
+	// (T7016: the recorded Claude screen is 30 by 100).
+	rows, cols uint16
 }
 
 func newWorld(t *testing.T) *world {
@@ -207,7 +210,11 @@ func (w *world) start(t *testing.T, scenario map[string]any, args ...string) *se
 		case <-time.After(timeout):
 		}
 	})
-	if err := pty.Setsize(master, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
+	size := pty.Winsize{Rows: 24, Cols: 80}
+	if w.rows > 0 && w.cols > 0 {
+		size = pty.Winsize{Rows: w.rows, Cols: w.cols}
+	}
+	if err := pty.Setsize(master, &size); err != nil {
 		close(read)
 		t.Fatal(err)
 	}

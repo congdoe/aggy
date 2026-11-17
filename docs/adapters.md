@@ -89,6 +89,38 @@ Rules every adapter follows:
   every plan-limit signal to it.
 - **Pass the model through unchanged.** An empty model means no model flag.
 
+## Reading the screen
+
+The supervisor keeps a copy of an on-screen CLI's screen from the output it
+forwards (`internal/screen`, T7016) and asks the vendor's classifier, an
+`adapter.ScreenClassifier`, what it shows. The contract for a classifier:
+
+- **A pure function** of the CLI's version and a `screen.Snapshot`. It starts
+  nothing, reads no file, and keeps no state.
+- **Four answers.** `ScreenPromptEmpty` (the composer, empty, the cursor in
+  it, nothing open over it), `ScreenPromptText`, `ScreenBusy` (a turn
+  running), and `ScreenOther` for anything else. Each answer other than
+  `ScreenOther` is given only when all of its marks hold; when unsure, the
+  answer is `ScreenOther`.
+- **Marks from a recording.** The marks come from a live recording of the CLI's
+  output, committed as a scrubbed fixture with its states, and recorded in
+  docs/verification.md. They sit in one table with the recorded version, and
+  hold on that version's line (2.1.x from the recorded patch,
+  `adapter.CoversLine`); any other version is `ScreenOther`.
+- **Structure, not text.** A screen shows text from the repo and the model
+  (folder names, file lines, tool output). A classifier anchors on the cursor's
+  place and visibility and the screen's structure, never on text alone, and
+  answers `ScreenOther` on the alternate screen or when the copy is `Unsure`.
+- **Tested** by replaying the fixture mark by mark, whole and in 1-byte and
+  random-size chunks, and every dialog recorded must read `ScreenOther` at
+  every byte.
+
+Only Claude Code has one (`claude.ClassifyScreen`, recorded at 2.1.326;
+docs/verification.md, "Claude Code's screen"), wired by `internal/cli`
+(`screenClassifiers`). Codex, Grok, OpenCode, Hermes, and Antigravity have none:
+the supervisor reads nothing of their screens, and their switches keep asking
+as before.
+
 ## Verified vendor facts
 
 These were checked on 2026-10-27 with claude 2.1.311, codex-cli 0.164.0, and
