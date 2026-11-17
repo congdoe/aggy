@@ -24,8 +24,8 @@ import (
 // rule, with ❯ marking its selected row, over the footer. The /model dialog
 // hides the cursor and draws over the composer. Bash mode (!) puts ! in
 // column 0. The folder-trust dialog in a new folder marks its first option,
-// "No, exit", with ❯ and a plain space, with no rule around it and the cursor
-// hidden. Left on a fresh session's empty composer drew nothing at this
+// "No, exit", with ❯ and a plain space, with no rules directly above and below
+// its option row (a rule tops the dialog), and the cursor hidden. Left on a fresh session's empty composer drew nothing at this
 // version. The MCP approval, update, and terms dialogs were never recorded:
 // they read as adapter.ScreenOther only if they lack these marks. The run was
 // nested in another Claude Code session, which adds a warning line to the
