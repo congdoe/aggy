@@ -14,7 +14,9 @@
 //     home that erases every row with EL 2 before it draws anything.
 //   - A mode it does not model but knows the end of (insert mode, newline
 //     mode, origin mode, a scroll region that is not the whole screen), until
-//     it is turned off: a clear blanks cells, not modes.
+//     it is turned off: a clear blanks cells, not modes. What was drawn while
+//     it was on, and the cursor's place, stay in doubt as content after it,
+//     and under a scroll region or origin mode no clear counts.
 //   - Anything else (a mode it does not know, a character set switch it cannot
 //     follow, a sixel, bytes its owner lost and never fed): lost, until a
 //     reset (RIS). Lost bytes may have hidden the cursor or ended faint text,

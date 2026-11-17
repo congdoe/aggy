@@ -179,10 +179,10 @@ func TestUnsureSticks(t *testing.T) {
 		steps []step
 	}{
 		{"content doubt ends at a full clear", []step{{"\r\n\x1b[2A", true}, {"abc\x1b[K", true}, {"\x1b[2J", false}}},
-		{"a scroll region lasts until reset", []step{{"\x1b[2;3r", true}, {"\x1b[2J", true}, {"\x1b[r", false}}},
-		{"insert mode lasts until off", []step{{"\x1b[4h", true}, {"\x1b[2J", true}, {"\x1b[4l", false}}},
-		{"newline mode lasts until off", []step{{"\x1b[20h", true}, {"\x1b[H\x1b[J", true}, {"\x1b[20l", false}}},
-		{"origin mode lasts until off", []step{{"\x1b[?6h", true}, {"\x1b[2J", true}, {"\x1b[?6l", false}}},
+		{"a scroll region lasts until reset, its content until a clear", []step{{"\x1b[2;3r", true}, {"\x1b[2J", true}, {"\x1b[r", true}, {"\x1b[2J", false}}},
+		{"insert mode lasts until off, its content until a clear", []step{{"\x1b[4h", true}, {"\x1b[2J", true}, {"\x1b[4l", true}, {"\x1b[2J", false}}},
+		{"newline mode lasts until off, its content until a clear", []step{{"\x1b[20h", true}, {"\x1b[H\x1b[J", true}, {"\x1b[20l", true}, {"\x1b[2J", false}}},
+		{"origin mode lasts until off, its content until a clear", []step{{"\x1b[?6h", true}, {"\x1b[2J", true}, {"\x1b[?6l", true}, {"\x1b[2J", false}}},
 		{"an unknown mode lasts until RIS", []step{{"\x1b[?9999h", true}, {"\x1b[2J", true}, {"\x1b[?9999l", true}, {"\x1bc", false}}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -217,6 +217,42 @@ func TestUnsureSticks(t *testing.T) {
 	s.Feed([]byte("\x1b[2J"))
 	if s.Snapshot().Unsure {
 		t.Fatal("a size in range and a clear did not end it")
+	}
+}
+
+// TestModeContent (#149 review, N1): content drawn while a mode the model
+// does not follow is on (insert, newline, origin, a scroll region) is not
+// placed as the real terminal places it, so the screen stays Unsure after
+// the mode goes off, until a full clear with it off; under a scroll region a
+// clear, or a wipe from home, restores nothing. An ED 0 from the model's home
+// with rows relative is no full clear (N2).
+func TestModeContent(t *testing.T) {
+	for _, c := range []struct {
+		name, in string
+	}{
+		{"insert mode", "ab\r\x1b[4hX\x1b[4l"},
+		{"newline mode", "\x1b[20hab\ncd\x1b[20l"},
+		{"a scroll region", "top\x1b[1;3r\x1b[3;1Hx\n\ny\x1b[r"},
+		{"origin mode in a region", "\x1b[3;6r\x1b[?6h\x1b[1;1Hhi\x1b[?6l\x1b[r"},
+		{"a wipe under a region", "\x1b[1;2r\x1b[H" + strings.Repeat("\x1b[2K\x1b[1B", 6) + "\x1b[r"},
+		{"a clear under a region", "\x1b[1;2r\x1b[2J\x1b[r"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := New(6, 10)
+			s.Feed([]byte("\x1b[H\x1b[2J" + c.in))
+			if !s.Snapshot().Unsure {
+				t.Fatal("trusted after the mode went off")
+			}
+			s.Feed([]byte("\x1b[2J"))
+			if s.Snapshot().Unsure {
+				t.Fatal("a full clear with the mode off did not end it")
+			}
+		})
+	}
+	s := New(6, 10)
+	s.Feed([]byte("a\r\n\x1b[2A\x1b[J\x1b[3;1Hx"))
+	if !s.Snapshot().Unsure {
+		t.Error("ED 0 from the model's home with rows relative counted as a full clear")
 	}
 }
 

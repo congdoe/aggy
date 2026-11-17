@@ -174,6 +174,10 @@ func (s *Screen) SetUnsure() { s.lost = true }
 // feedBudget bounds the cells one Feed call may touch: per byte, and a few
 // whole screens. Output past it (a flood of clears or scrolls) is not
 // followed: the screen is lost until a reset (T7016 review).
+//
+// TODO(T7016): at the largest sizes (300 by 600) legitimate output that erases
+// long lines often can come near the budget and lose the copy (#149 review,
+// N3); a per-session budget would be kinder there.
 func (s *Screen) feedBudget(n int) int { return 256*n + 4*s.rows*s.cols + 4096 }
 
 // Feed takes the CLI's output, in any split across calls.
@@ -519,7 +523,7 @@ func (s *Screen) dispatch(f byte, n int) {
 		s.sgr(n)
 	case 'r':
 		top, bottom := s.param(0, n, 1), s.param(1, n, s.rows)
-		s.region = top != 1 || bottom < s.rows // a scroll region aggy does not model
+		s.setMode(&s.region, top != 1 || bottom < s.rows) // a scroll region aggy does not model
 		s.cur.wrapNext = false
 		s.setRow(0)
 		s.cur.col = 0
@@ -535,9 +539,9 @@ func (s *Screen) dispatch(f byte, n int) {
 		for i := range n {
 			switch s.params[i] {
 			case 4:
-				s.irm = f == 'h' // insert mode
+				s.setMode(&s.irm, f == 'h') // insert mode
 			case 20:
-				s.lnm = f == 'h' // newline mode
+				s.setMode(&s.lnm, f == 'h') // newline mode
 			}
 		}
 	case 'c', 'q', 't', 'x', 'i':
@@ -613,7 +617,7 @@ func (s *Screen) privMode(m int, on bool) {
 			s.restoreCursor()
 		}
 	case 6:
-		s.origin = on // homes the cursor, in either direction
+		s.setMode(&s.origin, on) // homes the cursor, in either direction
 		s.setRow(0)
 		s.cur.col = 0
 	default:
@@ -774,6 +778,9 @@ func (s *Screen) scrollUp(n int) {
 	n = min(n, s.rows)
 	s.wipeOn = false
 	s.work += n * (s.rows + s.cols)
+	if s.region {
+		s.doubt() // the real terminal scrolls the region only
+	}
 	for range n {
 		first := g[0]
 		copy(g, g[1:])
@@ -787,6 +794,9 @@ func (s *Screen) scrollDown(n int) {
 	n = min(n, s.rows)
 	s.wipeOn = false
 	s.work += n * (s.rows + s.cols)
+	if s.region {
+		s.doubt() // the real terminal scrolls the region only
+	}
 	for range n {
 		last := g[len(g)-1]
 		copy(g[1:], g[:len(g)-1])
@@ -835,10 +845,12 @@ func (s *Screen) lines(f byte, n int) {
 // edit notes a change to cells: with the cursor's row real and the content's
 // rows relative, the two no longer line up.
 //
-// It also ends a buffer's blank state and a wipe in progress.
+// It also ends a buffer's blank state and a wipe in progress. Under a mode the
+// model does not follow, the change is not placed as the real terminal places
+// it, so the content is in doubt past the mode's end (#149 review, N1).
 func (s *Screen) edit() {
 	b := s.buf()
-	if s.cur.rowKnown && !s.anchored[b] {
+	if s.cur.rowKnown && !s.anchored[b] || s.irm || s.lnm || s.origin || s.region {
 		s.doubt()
 	}
 	s.blank[b], s.wipeOn = false, false
@@ -848,7 +860,10 @@ func (s *Screen) eraseDisplay(m int) {
 	g := s.grid()
 	switch m {
 	case 0:
-		if s.cur.row == 0 && s.cur.col == 0 && !s.cur.wrapNext {
+		// From the model's home only with the row known: with rows relative,
+		// the real cursor may be lower, and rows above it keep their text
+		// (#149 review, N2).
+		if s.cur.row == 0 && s.cur.col == 0 && !s.cur.wrapNext && s.cur.rowKnown {
 			s.fullClear()
 			return
 		}
@@ -881,7 +896,10 @@ func (s *Screen) fullClear() {
 	b := s.buf()
 	s.clearGrid(s.grid())
 	s.wipeOn = false
-	if s.bad {
+	if s.bad || s.region || s.origin {
+		// Under a scroll region or origin mode the model's cells and rows are
+		// not the real ones; a clear does not make them so (#149 review, N1).
+		s.doubt()
 		return
 	}
 	s.unsure[b], s.blank[b] = false, true
@@ -892,10 +910,22 @@ func (s *Screen) fullClear() {
 	}
 }
 
+// setMode sets a mode the model does not follow. When it goes on or off, the
+// content, and the cursor's place, may differ from the real screen's until a
+// full clear with the mode off (#149 review, N1); a wipe in progress ends.
+func (s *Screen) setMode(m *bool, on bool) {
+	if *m == on {
+		return
+	}
+	*m = on
+	s.doubt()
+	s.wipeOn = false
+}
+
 // startWipe begins following a redraw from home (wipe): the cursor went to
 // the real top row of a buffer whose rows are relative.
 func (s *Screen) startWipe() {
-	if s.anchored[s.buf()] {
+	if s.anchored[s.buf()] || s.region || s.origin {
 		return
 	}
 	clear(s.wipeRows)
