@@ -33,9 +33,6 @@ func TestLiveChecksByVersion(t *testing.T) {
 		{Grok, "2.1.322", false, false, false, false, false, false},
 		{OpenCode, "2.2.5", false, true, false, false, false, false},
 	} {
-		if got := FirstTurnSwitch(c.v, c.version); got != c.clear {
-			t.Errorf("%s %q: FirstTurnSwitch = %v", c.v, c.version, got)
-		}
 		if got := ClearLineChecked(c.v, c.version); got != c.clear {
 			t.Errorf("%s %q: ClearLineChecked = %v", c.v, c.version, got)
 		}

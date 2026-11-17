@@ -37,10 +37,6 @@ type liveCheck struct {
 	// blockedEmpty: after a prompt hook blocked a prompt, the composer was
 	// empty (BlockedPromptEmpty).
 	blockedEmpty bool
-	// firstSwitch: a switch before the first turn end may go in one step when
-	// the session's start was seen and the keys show the prompt clean
-	// (FirstTurnSwitch).
-	firstSwitch bool
 }
 
 // factCheck is a group of facts and the last version a live check of it ran
@@ -73,17 +69,12 @@ type factCheck struct{ facts, version string }
 //
 // - a maintainer's run in Apple Terminal, 2026-11-12: SessionStart came 1 s
 // after launch, and /switch codex typed in full 5 s later was caught from the
-// keys at the prompt (no turn had ended). On that, and the owner's decision
-// that a switch before the first turn end goes in one step on clean evidence
-// (T6982, firstSwitch), Claude at this version is the one CLI where it does.
-// SessionStart is no evidence that no dialog is up: a run on 2026-11-11 saw it
-// 0.4 s after launch, before an Enter that likely answered the folder-trust
-// dialog. The supervisor also needs an earlier session in the folder with a
-// turn end (Options.PromptSeen; Claude saves trust per folder, but not in the
-// home folder: code.claude.com/docs/en/security) and no key since launch.
-// Unverified (TODO(T6895), a live check owed): that no other start-up dialog
-// of Claude's (an update notice, new terms) is up then; it would get /exit and
-// its Enter.
+// keys at the prompt (no turn had ended). Before the first turn end aggy cannot
+// tell Claude's prompt from a start-up dialog (folder trust, a project's MCP
+// servers, an update notice, new terms) from hooks alone: SessionStart came
+// 0.4 s after launch in a run of 2026-11-11, before an Enter that likely
+// answered the folder-trust dialog. So such a switch asks once on the status
+// line (T6982, #147 review); reading the screen is planned to remove that.
 //
 // Not checked: Ctrl+U as CSI u, a multi-line composer, Ctrl+U with another
 // popup open (the @ file menu, history search), during a running turn,
@@ -94,7 +85,7 @@ var liveChecks = map[Vendor]liveCheck{
 	Claude: {versions: []string{"2.1.322", "2.1.326"}, last: []factCheck{
 		{"Ctrl+U and /exit", "2.1.326"},
 		{"keys on an empty prompt, Left's other view, the composer after a blocked prompt", "2.1.322"},
-	}, clear: true, exit: true, emptyKeys: []string{"down", "backspace", "right", "home", "end", "delete", "ctrl+u"}, blockedEmpty: true, firstSwitch: true},
+	}, clear: true, exit: true, emptyKeys: []string{"down", "backspace", "right", "home", "end", "delete", "ctrl+u"}, blockedEmpty: true},
 }
 
 // checkAt returns v's recorded check when it covers version.
@@ -175,17 +166,6 @@ func EmptyComposerKey(v Vendor, version, key string) bool {
 func BlockedPromptEmpty(v Vendor, version string) bool {
 	c, ok := checkAt(v, version)
 	return ok && c.blockedEmpty
-}
-
-// FirstTurnSwitch reports whether, on v at version, a switch before the first
-// turn end may go in one step when the supervisor's evidence is clean: the
-// session's start seen, an earlier session in the folder with a turn end, no
-// key since launch but lines aggy took, no doubt, no hold. It rests on the
-// facts recorded with the Claude entry and an owner's decision, and on one
-// unverified point: that no update or terms dialog is up (see liveChecks).
-func FirstTurnSwitch(v Vendor, version string) bool {
-	c, ok := checkAt(v, version)
-	return ok && c.firstSwitch
 }
 
 // ComposerCheckOwed says, for aggy doctor, that v's live checks are owed
